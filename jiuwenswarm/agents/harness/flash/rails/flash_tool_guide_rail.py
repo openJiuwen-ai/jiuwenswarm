@@ -15,9 +15,11 @@ from jiuwenswarm.agents.harness.flash.prompt.content.tools import (
     _BROWSER_ROUTING_CN,
     _BROWSER_ROUTING_EN,
     _NAME_BASH,
+    _NAME_BROWSER_ROUTING,
     _NAME_RESULT,
     _NAME_SELECTION,
     _PRIO_BASH,
+    _PRIO_BROWSER_ROUTING,
     _PRIO_RESULT,
     _PRIO_SELECTION,
     _RESULT_BASE_CN,
@@ -28,8 +30,12 @@ from jiuwenswarm.agents.harness.flash.prompt.content.tools import (
     _SELECTION_EN,
     _TOOLS_BASH_CN,
     _TOOLS_BASH_EN,
+    _TOOLS_BASH_BULLETS_CN,
+    _TOOLS_BASH_BULLETS_EN,
     _TOOLS_DEDUP_CN,
     _TOOLS_DEDUP_EN,
+    _TOOLS_DEDUP_BULLETS_CN,
+    _TOOLS_DEDUP_BULLETS_EN,
     _TOOLS_TASKTOOL_CN,
     _TOOLS_TASKTOOL_EN,
     _strip_tools_guide,
@@ -51,21 +57,28 @@ class FlashToolGuideRail(DeepAgentRail):
         self._system_prompt_builder: Any = None
         self._subagent_types: frozenset[str] = frozenset()
         self._ability_manager: Any = None
+        # init 时绑定的外层 DeepAgent（有 deep_config.subagents）；BEFORE_MODEL_CALL 会
+        # 派发给内层 ReActAgent（无 deep_config），子代理类型须从外层读（评审 #3）。
+        self._config_agent: Any = None
 
     def init(self, agent: Any) -> None:
         self._system_prompt_builder = getattr(agent, "system_prompt_builder", None)
+        self._config_agent = agent
         self._subagent_types = self._available_subagent_types(agent)
         self._ability_manager = getattr(agent, "ability_manager", None)
 
     def uninit(self, agent: Any) -> None:
         self._system_prompt_builder = None
+        self._config_agent = None
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
         builder = (
             getattr(ctx.agent, "system_prompt_builder", None)
             or self._system_prompt_builder
         )
-        self._subagent_types = self._available_subagent_types(ctx.agent)
+        # 子代理类型从 init 绑定的外层 agent 读（内层 ReActAgent 无 deep_config）；
+        # 工具面从本轮回调的 ctx.agent（内层）读（评审 #3）。
+        self._subagent_types = self._available_subagent_types(self._config_agent or ctx.agent)
         self._ability_manager = getattr(ctx.agent, "ability_manager", None)
         self.apply(builder)
 
@@ -89,12 +102,14 @@ class FlashToolGuideRail(DeepAgentRail):
         dedup = _TOOLS_DEDUP_CN if is_cn else _TOOLS_DEDUP_EN
         bash = _TOOLS_BASH_CN if is_cn else _TOOLS_BASH_EN
         tasktool = _TOOLS_TASKTOOL_CN if is_cn else _TOOLS_TASKTOOL_EN
+        dedup_bullets = _TOOLS_DEDUP_BULLETS_CN if is_cn else _TOOLS_DEDUP_BULLETS_EN
+        bash_bullets = _TOOLS_BASH_BULLETS_CN if is_cn else _TOOLS_BASH_BULLETS_EN
 
         section = self._get_section(builder, _SECTION_TOOLS)
         if section is None:
             return
         content = self._extract_content(section, language)
-        stripped = _strip_tools_guide(content, dedup, bash, tasktool)
+        stripped = _strip_tools_guide(content, dedup, bash, tasktool, dedup_bullets, bash_bullets)
         if stripped is None:
             # 「去重子标题缺失」有两种可能：① 本 rail 已剥过（ContextAssembleRail 的
             # fingerprint 命中后不再重建 tools 段，正常态）；② 上游改文案。二者无法可靠区分，
@@ -119,12 +134,24 @@ class FlashToolGuideRail(DeepAgentRail):
 
         # 与注册表 _render_tools 同一个判断：浏览器任务强制路由只在 task_tool 存在且
         # browser_agent 子代理可用时注入——否则会强制模型调用不存在的 browser_agent
-        # （Subagent spec not found）。340 基础段无条件注入。
+        # （Subagent spec not found）。340 基础段无条件注入；路由拆为独立动态段
+        # browser_routing@345（评审 C1），子代理/工具面变化时不影响静态 340。
         result = _RESULT_BASE_CN if is_cn else _RESULT_BASE_EN
-        if self._browser_agent_available(builder):
-            result += "\n" + (_BROWSER_ROUTING_CN if is_cn else _BROWSER_ROUTING_EN)
-
         self._upsert(builder, _NAME_RESULT, _PRIO_RESULT, language, result)
+        if self._browser_agent_available(builder):
+            self._upsert(
+                builder,
+                _NAME_BROWSER_ROUTING,
+                _PRIO_BROWSER_ROUTING,
+                language,
+                _BROWSER_ROUTING_CN if is_cn else _BROWSER_ROUTING_EN,
+            )
+        else:
+            # 路由从「可用」翻「不可用」（如 task_tool 被 disabled_tools 禁用）时，
+            # 上一轮写入的 browser_routing@345 会残留、模型继续被要求调用已不可用的
+            # browser_agent——显式清除（评审 C1 收尾）。
+            if self._get_section(builder, _NAME_BROWSER_ROUTING) is not None:
+                builder.remove_section(_NAME_BROWSER_ROUTING)
 
     def _browser_agent_available(self, builder: Any) -> bool:
         """与注册表 _render_tools 同一判断：task_tool 在工具面 且 browser_agent 在子代理类型里。"""

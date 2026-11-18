@@ -40,7 +40,15 @@ from jiuwenswarm.agents.harness.flash.prompt.content.tools import (
 
 
 def _strip(content: str) -> str | None:
-    return _strip_tools_guide(content, _TOOLS_DEDUP_CN, _TOOLS_BASH_CN, _TOOLS_TASKTOOL_CN)
+    # 夹具用简化 bullet：已知 bullet 作为参数传入（生产路径传 SDK 原文）。
+    return _strip_tools_guide(
+        content,
+        _TOOLS_DEDUP_CN,
+        _TOOLS_BASH_CN,
+        _TOOLS_TASKTOOL_CN,
+        dedup_bullets=("去重规则正文",),
+        bash_bullets=("bash 原则正文",),
+    )
 
 
 _KNOWN = (
@@ -93,5 +101,28 @@ def test_unknown_subsection_without_tasktool_returns_none() -> None:
         "# 可用工具\n- read_file: 读取文件\n\n"
         + _TOOLS_DEDUP_CN + "\n- 去重规则正文\n\n"
         + "## 某新原则\n- 未知内容\n"
+    )
+    assert _strip(content) is None
+
+
+def test_unknown_bullet_in_strip_zone_returns_none() -> None:
+    # 评审 B1：剔除区插入未知 bullet（非已知 dedup/bash bullet）→ 回退，不盲删。
+    content = (
+        "# 可用工具\n- read_file: 读取文件\n\n"
+        + _TOOLS_DEDUP_CN + "\n- 去重规则正文\n- 租户新增规则\n\n"
+        + _TOOLS_BASH_CN + "\n- bash 原则正文\n\n"
+        + _TOOLS_TASKTOOL_CN + "\n- task_tool 原则正文\n"
+    )
+    assert _strip(content) is None
+
+
+def test_plain_text_in_strip_zone_returns_none() -> None:
+    # 评审 B1：剔除区插入正文（非标题、非 bullet）→ 回退，不盲删。
+    content = (
+        "# 可用工具\n- read_file: 读取文件\n\n"
+        + _TOOLS_DEDUP_CN + "\n- 去重规则正文\n\n"
+        + "这里是一段租户正文\n\n"
+        + _TOOLS_BASH_CN + "\n- bash 原则正文\n\n"
+        + _TOOLS_TASKTOOL_CN + "\n- task_tool 原则正文\n"
     )
     assert _strip(content) is None

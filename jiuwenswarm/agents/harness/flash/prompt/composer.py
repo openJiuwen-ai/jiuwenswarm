@@ -12,6 +12,8 @@ from ..rails.flash_persona_rail import FlashPersonaRail
 from ..rails.flash_response_rail import FlashResponseRail
 from ..rails.flash_safety_rail import FlashSafetyRail
 from ..rails.flash_tool_guide_rail import FlashToolGuideRail
+from .content.safety import _SAFETY_PRODUCED_NAMES
+from .content.tools import _TOOLS_PRODUCED_NAMES
 from .registry import (
     FLASH_PROMPT_REGISTRY,
     PromptRenderContext,
@@ -20,6 +22,14 @@ from .registry import (
 )
 
 logger = logging.getLogger(__name__)
+
+# 域禁用时需清理的派生段名（评审 A）：safety/tools 的派生段名与源段不同，禁用后上游
+# 每轮重注入源段、派生段残留（新旧同时进模型），需显式清理。response 段名与源段同名、
+# 上游覆盖即回退，无需清理。
+_DOMAIN_PRODUCED_NAMES: dict[str, tuple[str, ...]] = {
+    "safety": _SAFETY_PRODUCED_NAMES,
+    "tools": _TOOLS_PRODUCED_NAMES,
+}
 
 
 # 可安全走声明式接管（declarative takeover）的域：必须同时满足
@@ -161,6 +171,16 @@ class FlashPromptComposerRail(DeepAgentRail):
 
         for key, rail in self._domain_rails:
             if not self._enabled.get(key, True) or key in self._takeover_domains:
+                # persona 关闭 → 撤销上一轮拆分（评审 #4）：恢复 identity、清派生段，
+                # 避免旧指令残留进模型。restore 幂等，未拆分时是 no-op。
+                if key == "persona":
+                    rail.restore(builder)
+                # safety/tools 关闭 → 清理该域派生段（评审 A）：源段上游每轮重注入、
+                # 派生段名与源段不同会残留，新旧内容同时进模型，需显式清理。
+                elif key in _DOMAIN_PRODUCED_NAMES and not self._enabled.get(key, True):
+                    for name in _DOMAIN_PRODUCED_NAMES[key]:
+                        if self._get_section(builder, name) is not None:
+                            builder.remove_section(name)
                 continue
             # 走各 rail 自己的 before_model_call（而非 apply），让 tool_guide 的
             # 子代理/工具面逐轮刷新也生效（评审 #3）；persona/safety/response 的

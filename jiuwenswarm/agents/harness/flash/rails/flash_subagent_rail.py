@@ -266,15 +266,21 @@ class FlashSubagentRail(SubagentRail):
 
         async 分支（sessions_spawn）不属 flash 语义，回落 stock 行为。
         """
-        if not self.tools or self.system_prompt_builder is None:
+        if not self.tools:
             return
+        # 每轮从 ctx.agent 现取活 builder（评审 D3）：热重载重建 builder 时用旧实例会把
+        # task_tool@440 写进旧 builder。
+        builder = getattr(getattr(ctx, "agent", None), "system_prompt_builder", None) or self.system_prompt_builder
+        if builder is None:
+            return
+        self.system_prompt_builder = builder
         if self.enable_async_subagent:
             await super().before_model_call(ctx)
             return
         language = self._resolve_language()
         content = FLASH_TASK_SECTION.get(language, FLASH_TASK_SECTION["cn"])
         try:
-            self.system_prompt_builder.add_section(
+            builder.add_section(
                 PromptSection(
                     name=SectionName.TASK_TOOL,
                     content={language: content},

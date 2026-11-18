@@ -37,6 +37,20 @@ from jiuwenswarm.agents.harness.flash.prompt.content.persona import (
 
 logger = logging.getLogger(__name__)
 
+# 本 rail 拆分产出的全部段名（回滚用，评审 #4）：restore 时移除这些派生段、恢复原始
+# identity。含 intro（仍叫 identity@0）与 _inject_* 新增的三段。
+_PERSONA_PRODUCED_NAMES: tuple[str, ...] = (
+    "identity",              # intro @0（同名于源段，拆分后重新 add）
+    "execution_priority",    # 020
+    "path_permission",       # 210
+    "workspace_model",       # 200
+    "output_placement",      # 220
+    "execution_principles",  # 400
+    "artifact_format",       # 420
+    "file_delivery",         # 460
+    "runtime_environment",   # 1001（Python 库与权限）
+)
+
 
 class FlashPersonaRail(DeepAgentRail):
     """拆分 identity 巨石段为 000/200/210/220/400/420/460（零内容损失）。"""
@@ -54,6 +68,8 @@ class FlashPersonaRail(DeepAgentRail):
         # system_prompt_builder 并重新带入完整 identity 巨石段，实例级 flag 会阻止对新
         # builder 再次拆分，导致闪回未拆分的巨石提示词。
         self._split_builder_id: int | None = None
+        # 拆分前的原始 identity 段快照（name, priority, content），restore 用（评审 #4）。
+        self._original_identity: tuple[str, int, Any] | None = None
 
     def init(self, agent: Any) -> None:
         self._system_prompt_builder = getattr(agent, "system_prompt_builder", None)
@@ -100,6 +116,12 @@ class FlashPersonaRail(DeepAgentRail):
             )
             return
 
+        # 保存原始 identity 段快照（name/priority/content），供 restore 回滚（评审 #4）。
+        self._original_identity = (
+            str(section.name),
+            int(getattr(section, "priority", 0) or 0),
+            getattr(section, "content", None),
+        )
         builder.remove_section(_SECTION_IDENTITY)
         intro_title = _INTRO_TITLE_CN if language == "cn" else _INTRO_TITLE_EN
         for name, priority, text in split:
@@ -120,6 +142,22 @@ class FlashPersonaRail(DeepAgentRail):
         self._inject_execution_priority(builder, language)
         self._inject_path_permission(builder, language)
         self._split_builder_id = id(builder)
+
+    def restore(self, builder: Any) -> None:
+        """撤销本 rail 的拆分（评审 #4）：移除派生段、恢复原始 identity、重置幂等状态。
+
+        幂等：原始快照为 None（从未拆分 / 守卫回退 / 已回滚）时是 no-op——尤其不能
+        在「从未拆分」时把源 identity 段当成派生段误删（源段名与 intro 同名）。
+        """
+        if builder is None or self._original_identity is None:
+            return
+        for name in _PERSONA_PRODUCED_NAMES:
+            if self._get_section(builder, name) is not None:
+                builder.remove_section(name)
+        name, priority, content = self._original_identity
+        builder.add_section(PromptSection(name=name, content=content, priority=priority))
+        self._split_builder_id = None
+        self._original_identity = None
 
     def _inject_execution_priority(self, builder: Any, language: str) -> None:
         """020 执行优先级（新段）：六级裁决表，外部门禁清单由 1080 注入（此处仅引用）。"""

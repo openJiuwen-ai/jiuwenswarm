@@ -297,6 +297,34 @@ class TestResolveCarrierNameAware:
         h_tools = _make_rail(with_tools).check_compliance().static_hash
         assert h_base == h_tools
 
+    def test_tool_navigation_not_in_static_hash(self) -> None:
+        """评审 #5（本轮）：渐进式工具导航（tool_navigation@350，carrier=attachment）不入静态 hash。
+
+        导航段随按需工具列表每请求变化，与 tools@310 同属动态面。
+        """
+        assert resolve_carrier(350, "tool_navigation") == "attachment"
+        base = _FakeAgent(_CLEAN)
+        with_nav = _FakeAgent(
+            _CLEAN + [_sec("tool_navigation", 350, "# 工具导航\n- mcp_a\n- mcp_b")]
+        )
+        h_base = _make_rail(base).check_compliance().static_hash
+        h_nav = _make_rail(with_nav).check_compliance().static_hash
+        assert h_base == h_nav
+
+    def test_memory_not_in_static_hash(self) -> None:
+        """评审 C2：记忆（memory@600，carrier=durable）不入静态 hash。
+
+        记忆正文随检索 session 级变化；若登记 system，记忆再检索会误判静态漂移。
+        """
+        assert resolve_carrier(600, "memory") == "durable"
+        base = _FakeAgent(_CLEAN)
+        with_mem = _FakeAgent(
+            _CLEAN + [_sec("memory", 600, "# 记忆\n- 今日记忆正文……")]
+        )
+        h_base = _make_rail(base).check_compliance().static_hash
+        h_mem = _make_rail(with_mem).check_compliance().static_hash
+        assert h_base == h_mem
+
 
 class TestAdvisoryChecks:
     def test_unregistered_priority_reported_not_fatal(self) -> None:

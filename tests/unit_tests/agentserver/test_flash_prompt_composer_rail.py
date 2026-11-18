@@ -267,7 +267,7 @@ async def test_declarative_safety_source_missing_cleans_stale_sections() -> None
 async def test_tool_guide_refreshes_subagent_list() -> None:
     """评审 #3：Composer 走各 rail 的 before_model_call，tool_guide 每轮刷新子代理列表。
 
-    冷启动只有 general-purpose → 340 无浏览器路由；同一 Agent 加入 browser_agent 后
+    冷启动只有 general-purpose → 无 browser_routing 动态段；同一 Agent 加入 browser_agent 后
     （task_tool 仍在工具面）下一轮应生成浏览器路由。
     """
     class _MutableAgent:
@@ -283,14 +283,38 @@ async def test_tool_guide_refreshes_subagent_list() -> None:
     rail = FlashPromptComposerRail()  # 全开：persona 生成 execution_principles@400
     rail.init(agent)
     await rail.before_model_call(SimpleNamespace(agent=agent))
-    result = agent.system_prompt_builder.get_section("tool_result")
-    assert result is not None
-    assert "browser_agent" not in result.content["cn"]  # 无 browser_agent → 无路由
+    assert agent.system_prompt_builder.get_section("browser_routing") is None  # 无 browser_agent → 无路由
 
     agent.deep_config.subagents.append(SimpleNamespace(card=SimpleNamespace(name="browser_agent")))
     await rail.before_model_call(SimpleNamespace(agent=agent))
-    result = agent.system_prompt_builder.get_section("tool_result")
-    assert "browser_agent" in result.content["cn"]  # 加入后 → 生成路由
+    routing = agent.system_prompt_builder.get_section("browser_routing")
+    assert routing is not None
+    assert "browser_agent" in routing.content["cn"]  # 加入后 → 生成路由动态段
+
+
+@pytest.mark.asyncio
+async def test_tool_guide_removes_browser_routing_when_unavailable() -> None:
+    """评审 C1 收尾：browser_agent 从可用翻不可用（同一 builder）→ 清掉残留的 browser_routing。"""
+    class _MutableAgent:
+        def __init__(self, sections) -> None:
+            self.system_prompt_builder = _FakeBuilder()
+            self.deep_config = SimpleNamespace(
+                subagents=[SimpleNamespace(card=SimpleNamespace(name="browser_agent"))]
+            )
+            self.ability_manager = SimpleNamespace(cards={"task_tool": object()})
+            for section in sections:
+                self.system_prompt_builder.add_section(section)
+
+    sections = _agent().system_prompt_builder.get_all_sections()
+    agent = _MutableAgent(sections)
+    rail = FlashPromptComposerRail()
+    rail.init(agent)
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+    assert agent.system_prompt_builder.get_section("browser_routing") is not None  # 生成路由
+
+    agent.deep_config.subagents = []  # 移除 browser_agent → 翻不可用
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+    assert agent.system_prompt_builder.get_section("browser_routing") is None  # 残留被清
 
 
 @pytest.mark.asyncio
@@ -332,6 +356,122 @@ def test_config_provider_reflected_after_init() -> None:
     rail.init(_agent())
     # safety/response 被接管 → 只剩 persona/tools 两个 rail。
     assert rail.transform_names == ("FlashPersonaRail", "FlashToolGuideRail")
+
+
+@pytest.mark.asyncio
+async def test_persona_disable_restores_identity_on_same_builder() -> None:
+    """评审 #4：同一 builder 上 persona True→False，应恢复原始 identity、清空派生段。"""
+    state = {
+        "persona_enabled": True,
+        "safety_enabled": False,
+        "tool_guide_enabled": False,
+        "response_enabled": False,
+        "verify_only": False,
+        "takeover_domains": frozenset(),
+    }
+    agent = _agent()
+    rail = FlashPromptComposerRail(config_provider=lambda: dict(state))
+    rail.init(agent)
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+    builder = agent.system_prompt_builder
+    assert builder.get_section("execution_priority") is not None  # persona 拆分生效
+    assert builder.get_section("identity").priority == 0  # intro 仍叫 identity@0
+
+    state["persona_enabled"] = False
+    await rail.before_model_call(SimpleNamespace(agent=agent))  # 同一 builder 第二轮
+    assert builder.get_section("identity").priority == 10  # 原始 identity 恢复
+    for name in (
+        "execution_priority", "path_permission", "workspace_model",
+        "output_placement", "execution_principles", "artifact_format",
+        "file_delivery", "runtime_environment",
+    ):
+        assert builder.get_section(name) is None  # 派生段清空
+
+
+@pytest.mark.asyncio
+async def test_safety_disable_cleans_stale_sections() -> None:
+    """评审 A：safety 域禁用后清理派生段（派生段名与源段不同，禁用后残留会新旧共存）。"""
+    from jiuwenswarm.agents.harness.flash.prompt.content.safety import _SAFETY_PRODUCED_NAMES
+
+    state = {
+        "persona_enabled": False,
+        "safety_enabled": True,
+        "tool_guide_enabled": False,
+        "response_enabled": False,
+        "verify_only": False,
+        "takeover_domains": frozenset(),
+    }
+    agent = _agent()
+    rail = FlashPromptComposerRail(config_provider=lambda: dict(state))
+    rail.init(agent)
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+    builder = agent.system_prompt_builder
+    assert builder.get_section("safety_general") is not None  # safety 拆分生效
+
+    state["safety_enabled"] = False
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+    for name in _SAFETY_PRODUCED_NAMES:
+        assert builder.get_section(name) is None  # 派生段清空
+
+
+@pytest.mark.asyncio
+async def test_tools_disable_cleans_stale_sections() -> None:
+    """评审 A：tools 域禁用后清理派生段（tool_selection/bash_discipline/tool_result/browser_routing）。"""
+    from jiuwenswarm.agents.harness.flash.prompt.content.tools import _TOOLS_PRODUCED_NAMES
+
+    state = {
+        "persona_enabled": True,  # 需生成 execution_principles@400，340 才产出
+        "safety_enabled": False,
+        "tool_guide_enabled": True,
+        "response_enabled": False,
+        "verify_only": False,
+        "takeover_domains": frozenset(),
+    }
+    agent = _agent()
+    rail = FlashPromptComposerRail(config_provider=lambda: dict(state))
+    rail.init(agent)
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+    builder = agent.system_prompt_builder
+    assert builder.get_section("tool_result") is not None  # tools 拆分生效
+
+    state["tool_guide_enabled"] = False
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+    for name in _TOOLS_PRODUCED_NAMES:
+        assert builder.get_section(name) is None  # 派生段清空
+
+
+@pytest.mark.asyncio
+async def test_tool_guide_reads_subagents_from_outer_agent() -> None:
+    """评审 #3：init 绑外层（有 deep_config.subagents）、回调派发内层（有工具面无 deep_config）。
+
+    子代理类型须从外层读、工具面从内层读；否则内层无 deep_config 会把子代理集清空，
+    browser_agent 首轮就漏。
+    """
+    class _InnerAgent:
+        def __init__(self, sections) -> None:
+            self.system_prompt_builder = _FakeBuilder()
+            self.ability_manager = SimpleNamespace(cards={"task_tool": object()})
+            # 无 deep_config
+            for section in sections:
+                self.system_prompt_builder.add_section(section)
+
+    class _OuterAgent:
+        def __init__(self) -> None:
+            self.deep_config = SimpleNamespace(
+                subagents=[SimpleNamespace(card=SimpleNamespace(name="browser_agent"))]
+            )
+
+    sections = _agent().system_prompt_builder.get_all_sections()
+    outer = _OuterAgent()
+    inner = _InnerAgent(sections)
+
+    rail = FlashPromptComposerRail()
+    rail.init(outer)  # 外层 DeepAgent
+    await rail.before_model_call(SimpleNamespace(agent=inner))  # 内层 ReActAgent 回调
+
+    routing = inner.system_prompt_builder.get_section("browser_routing")
+    assert routing is not None
+    assert "browser_agent" in routing.content["cn"]  # 子代理从外层读到 → 生成路由动态段
 
 
 # ── 接管域白名单校验（P1 tools 禁接管 + P2#5 非法值校验）───────────────────

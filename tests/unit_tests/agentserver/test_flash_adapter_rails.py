@@ -210,6 +210,47 @@ def test_flash_owned_config_keys_cover_static_rail_switches():
         assert key in owned
 
 
+def test_flash_config_keys_declared_in_template_and_survive_merge():
+    """评审 #1：7 组 flash 配置须在 config.yaml 模板声明，用户 YAML 覆盖后保留。
+
+    模板合并（merge_template_with_override）会删除「override 有、模板没有」的键；若
+    这 7 组未在模板声明，audit.fail_closed=true / persona.enabled=false 会被静默丢弃。
+    """
+    import yaml
+
+    from jiuwenswarm.common.utils import (
+        merge_template_with_override,
+        resolve_shipped_template_config_path,
+    )
+
+    template = yaml.safe_load(
+        resolve_shipped_template_config_path().read_text(encoding="utf-8")
+    )
+    assert isinstance(template.get("flash"), dict)
+    for key in ("audit", "persona", "safety", "tool_guide", "response", "composer", "section_order"):
+        assert key in template["flash"], f"flash.{key} 未在 config.yaml 模板声明"
+
+    override = {
+        "flash": {
+            "audit": {"fail_closed": True},
+            "persona": {"enabled": False},
+            "safety": {"enabled": False},
+            "tool_guide": {"enabled": False},
+            "response": {"enabled": False},
+            "composer": {"takeover_domains": [], "verify_only": True},
+            "section_order": {"enabled": False},
+        }
+    }
+    merged = merge_template_with_override(template, override)
+    flash = merged["flash"]
+    assert flash["audit"]["fail_closed"] is True
+    assert flash["persona"]["enabled"] is False
+    assert flash["safety"]["enabled"] is False
+    assert flash["composer"]["takeover_domains"] == []
+    assert flash["composer"]["verify_only"] is True
+    assert flash["section_order"]["enabled"] is False
+
+
 # ---------------------------------------------------------------------------
 # #4 _update_rails_for_mode does not penetrate the whitelist
 # ---------------------------------------------------------------------------

@@ -116,17 +116,21 @@ class FlashMemoryRail(MemoryRail):
         差异仅两点：read_only 取双源 OR 结果；记忆/每日记忆文案里的工具名
         改写为统一入口（memory(mode=...)）。
         """
-        if self.system_prompt_builder is None:
+        # 每轮从 ctx.agent 现取活 builder（评审 D3）：热重载会重建 system_prompt_builder，
+        # 用 init 缓存的旧实例会把 memory@600 写进旧 builder、新 builder 拿不到。
+        builder = getattr(getattr(ctx, "agent", None), "system_prompt_builder", None) or self.system_prompt_builder
+        if builder is None:
             return
+        self.system_prompt_builder = builder
 
-        self.system_prompt_builder.remove_section("memory")
+        builder.remove_section("memory")
         memory_section = build_memory_section(
-            language=self.system_prompt_builder.language,
+            language=builder.language,
             read_only=self._read_only_now(),
             is_proactive=self._is_proactive,
         )
         if memory_section is not None:
-            self.system_prompt_builder.add_section(
+            builder.add_section(
                 self._rewrite_section(memory_section)
             )
 
@@ -134,7 +138,7 @@ class FlashMemoryRail(MemoryRail):
         if daily_content:
             from openjiuwen.harness.prompts.builder import PromptSection
 
-            lang = self.system_prompt_builder.language or "cn"
+            lang = builder.language or "cn"
             if lang == "cn":
                 header = (
                     "# 今日与昨日记忆（已自动加载）\n\n"
@@ -153,7 +157,7 @@ class FlashMemoryRail(MemoryRail):
                 content={lang: header + daily_content},
                 priority=52,
             )
-            self.system_prompt_builder.add_section(dm_section)
+            builder.add_section(dm_section)
 
     def _rewrite_section(self, section):
         """把 section 文案里的五件套工具名改写为统一入口形式。"""

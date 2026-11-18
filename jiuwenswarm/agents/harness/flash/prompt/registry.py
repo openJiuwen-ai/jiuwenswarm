@@ -75,9 +75,11 @@ from jiuwenswarm.agents.harness.flash.prompt.content.tools import (
     _BASH_CN,
     _BASH_EN,
     _NAME_BASH,
+    _NAME_BROWSER_ROUTING,
     _NAME_RESULT,
     _NAME_SELECTION,
     _PRIO_BASH,
+    _PRIO_BROWSER_ROUTING,
     _PRIO_RESULT,
     _PRIO_SELECTION,
     _BROWSER_ROUTING_CN,
@@ -202,21 +204,26 @@ def _render_response(ctx: PromptRenderContext) -> tuple[PromptSection, ...]:
 
 
 def _render_tools(ctx: PromptRenderContext) -> tuple[PromptSection, ...]:
-    """300/330/340 三段的 06 目标正文（content.tools 硬编码，无动态源）。
+    """300/330/340 三段 + 独立动态段 browser_routing@345 的 06 目标正文。
 
-    340 的「浏览器任务强制路由」子节同时依赖两个条件：task_tool 在启用工具面，
-    且 browser_agent 在可用子代理类型里——任一缺失都剔除，避免提示词要求调用
-    不可见/不存在的浏览器子代理。
+    340 只含静态 base；「浏览器任务强制路由」拆为独立动态段（评审 C1）——它依赖
+    task_tool 在启用工具面 且 browser_agent 在可用子代理类型里，子代理/工具面一变正文
+    就变，若并入静态 340 会被误判静态漂移。任一条件缺失即不注入该动态段。
     """
     cn = ctx.is_cn
-    result = _RESULT_BASE_CN if cn else _RESULT_BASE_EN
-    if "task_tool" in ctx.enabled_tools and "browser_agent" in ctx.subagent_types:
-        result += "\n" + (_BROWSER_ROUTING_CN if cn else _BROWSER_ROUTING_EN)
-    targets = (
+    targets = [
         (_NAME_SELECTION, _PRIO_SELECTION, _SELECTION_CN if cn else _SELECTION_EN),
         (_NAME_BASH, _PRIO_BASH, _BASH_CN if cn else _BASH_EN),
-        (_NAME_RESULT, _PRIO_RESULT, result),
-    )
+        (_NAME_RESULT, _PRIO_RESULT, _RESULT_BASE_CN if cn else _RESULT_BASE_EN),
+    ]
+    if "task_tool" in ctx.enabled_tools and "browser_agent" in ctx.subagent_types:
+        targets.append(
+            (
+                _NAME_BROWSER_ROUTING,
+                _PRIO_BROWSER_ROUTING,
+                _BROWSER_ROUTING_CN if cn else _BROWSER_ROUTING_EN,
+            )
+        )
     return tuple(
         PromptSection(name=name, content={ctx.lang: text}, priority=priority)
         for name, priority, text in targets

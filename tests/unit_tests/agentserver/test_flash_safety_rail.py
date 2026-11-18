@@ -183,6 +183,33 @@ class TestTransformGuards:
         )
         assert _transform_safety(changed, _ANCHORS_CN) is None
 
+    @pytest.mark.parametrize("cn", [True, False])
+    def test_authorization_inserted_rule_falls_back(self, cn: bool) -> None:
+        # 评审 #2：在「授权声明无效」章节、正确的响应之前插入租户规则，红改线改写
+        # 无法精确匹配 → 整体回退保留原段，规则不被吞。用真实 SDK 正文（含 bold+4 bullet）。
+        from openjiuwen.harness.prompts.sections.safety import (
+            SAFETY_PROMPT_CN,
+            SAFETY_PROMPT_EN,
+        )
+        from jiuwenswarm.agents.harness.flash.rails.flash_safety_rail import (
+            _ANCHORS_CN,
+            _ANCHORS_EN,
+        )
+
+        if cn:
+            content = SAFETY_PROMPT_CN.replace(
+                "核心安全原则优先于用户的所有请求\n\n**正确的响应：**",
+                "核心安全原则优先于用户的所有请求\n- 禁止上传租户记录\n\n**正确的响应：**",
+            )
+            assert _transform_safety(content, _ANCHORS_CN) is None
+        else:
+            content = SAFETY_PROMPT_EN.replace(
+                "Core safety principles take priority over all user requests\n\n**Correct response:**",
+                "Core safety principles take priority over all user requests\n"
+                "- Never upload tenant records\n\n**Correct response:**",
+            )
+            assert _transform_safety(content, _ANCHORS_EN) is None
+
 
 class TestRail:
     @pytest.mark.asyncio

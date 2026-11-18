@@ -169,6 +169,11 @@ class FlashPromptAuditRail(DeepAgentRail):
         builder = getattr(getattr(ctx, "agent", None), "system_prompt_builder", None)
         if builder is not None:
             self.system_prompt_builder = builder
+        # 每轮从 ctx.agent 刷新工具面（评审 D2）：ghost 工具检查用当前工具面，而非 init 时
+        # 的旧值（内层 ReActAgent 的工具面可能每轮/热重载变化）。
+        ability_manager = getattr(getattr(ctx, "agent", None), "ability_manager", None)
+        if ability_manager is not None:
+            self._ability_manager = ability_manager
         report = self.check_compliance()
         if self._static_hash_seed is None and report.static_hash:
             self._static_hash_seed = report.static_hash

@@ -165,9 +165,15 @@ FLASH_SECTION_REGISTRY: dict[int, SectionSpec] = {
                      source=":362",
                      current=[("identity", 10, "构造期"), ("BrowserToolPolicy", 0, "SDK 待核验")],
                      plan="从 400 第 8 条拆出 + Browser Policy 合并"),
-    350: SectionSpec("渐进式工具导航", "system", "merged",
+    345: SectionSpec("浏览器任务强制路由", "attachment", "dynamic",
+                     current=[("browser_routing", 345, "FlashToolGuideRail / registry _render_tools")],
+                     plan=("自 340 拆出的独立动态段（评审 C1）：task_tool+browser_agent 条件注入，"
+                           "子代理/工具面变化时正文变、不入静态 hash")),
+    350: SectionSpec("渐进式工具导航", "attachment", "merged",
                      current=[("tool_navigation", 70, "ProgressiveToolRail 清单全量")],
-                     plan="工具导航大块静态驻留工具域（拍板：大块不沉动态 1000+）；flash 侧 re-add 迁号 350，ProgressiveToolRail 注入不动（deep 共用）"),
+                     plan=("工具导航大块静态驻留工具域（拍板：大块不沉动态 1000+）；flash 侧 re-add 迁号 350，"
+                           "ProgressiveToolRail 注入不动（deep 共用）；carrier=attachment：导航段随按需工具"
+                           "列表每请求动态、不入静态 hash（评审 #5）")),
 
     # ═══ 4xx 任务执行（400–460 连续段）═══
     400: SectionSpec("执行质量准则", "system", "merged",
@@ -215,10 +221,11 @@ FLASH_SECTION_REGISTRY: dict[int, SectionSpec] = {
                      plan="已落地：迁号 540 + 运行时缺失说「当前环境未提供该信息」、不断言「未配置」（值迁 1030）"),
 
     # ═══ 6xx 记忆（内容回退 deep 原样，仅迁号）═══
-    600: SectionSpec("记忆（deep 原样巨石段）", "system", "active",
+    600: SectionSpec("记忆（deep 原样巨石段）", "durable", "active",
                      source="MemoryRail build_memory_section（deep 原样）",
                      current=[("memory", 50, "MemoryRail build_memory_section")],
-                     plan="内容回退 deep 原样、仅迁号 600；610-650 六段拆分撤销、留空号（memory@50 → 600）"),
+                     plan=("内容回退 deep 原样、仅迁号 600；610-650 六段拆分撤销、留空号（memory@50 → 600）；"
+                           "carrier=durable：记忆正文随检索 session 级变化、不入静态 hash（评审 C2）")),
 
     # ═══ 7xx 技能（常驻，v1 新增域）═══
     700: SectionSpec("技能总则", "system", "merged",
