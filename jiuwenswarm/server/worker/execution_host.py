@@ -849,11 +849,11 @@ class WorkerExecutionHost(ExecutionRequests, ManagementFacade):
             endpoint = get_sandbox_endpoint()
             url = endpoint.get("url") or "http://127.0.0.1:8321"
             sandbox_type = endpoint.get("type") or "jiuwenbox"
-            # yuanrong 不需要本机 jiuwenbox 进程; 仅通过 config 启用 SysOperation。
-            if str(sandbox_type).strip().lower() == "yuanrong":
+            # ADX 不需要本机 jiuwenbox 进程; 仅通过 config 启用 SysOperation。
+            if str(sandbox_type).strip().lower() == "adx-environment":
                 logger.info(
-                    "[AgentWebSocketServer] sandbox.type=yuanrong, skipping "
-                    "jiuwenbox auto-start (YuanRong uses YR_* env + yr.init)"
+                    "[AgentWebSocketServer] sandbox.type=adx-environment, skipping "
+                    "jiuwenbox auto-start (tool lifecycle is managed through ADX)"
                 )
                 return
             raw_policy = endpoint.get("policy_file") or ""

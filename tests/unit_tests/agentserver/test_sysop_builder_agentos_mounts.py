@@ -17,16 +17,16 @@ _USER_DIR = "/home/agentos/users/alice"
 def agentos_mount_env(monkeypatch, tmp_path):
     """Anchor the AgentOS home and workspace under a temporary directory."""
     home = tmp_path / "home"
-    workspace = Path("/home/agentos/.jiuwenswarm/agent/workspace")
+    workspace = home / ".jiuwenswarm" / "agent" / "workspace"
+    workspace.mkdir(parents=True)
+    tasks = home / "Documents" / "JiuwenSwarm"
+    monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "agentos")
     monkeypatch.setenv("JIUWENSWARM_USER_DIRECTORY", _USER_DIR)
-    monkeypatch.setattr(sysop_builder, "get_user_home", lambda: home)
+    monkeypatch.setenv("JIUWENSWARM_TASKS_DIR", str(tasks))
     monkeypatch.setattr(sysop_builder, "_resolve_workspace_dir", lambda: workspace)
-    monkeypatch.setattr(
-        sysop_builder, "_build_agentos_yuanrong_mounts", lambda: ([], str(workspace)),
-    )
     monkeypatch.setattr(sysop_builder, "get_sandbox_endpoint", lambda: {"type": "adx-environment"})
-    return home / "Documents" / "JiuwenSwarm"
+    return tasks
 
 
 def test_task_root_mount_uses_the_host_user_directory(agentos_mount_env) -> None:

@@ -322,7 +322,7 @@ class ExecutionRequests:
                 and str(get_sandbox_endpoint().get("type") or "jiuwenbox")
                 .strip()
                 .lower()
-                != "yuanrong"
+                != "adx-environment"
             )
         except Exception:  # noqa: BLE001 - an unknown backend retains its barrier
             return True

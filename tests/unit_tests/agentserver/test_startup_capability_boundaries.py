@@ -18,7 +18,7 @@ from jiuwenswarm.runtime.execution_telemetry import sdk_entry_sink
     ("win32", "internal", "jiuwenbox", True, False),
     ("linux", None, "jiuwenbox", False, False),
     ("linux", "external", "jiuwenbox", True, False),
-    ("linux", "internal", "yuanrong", True, False),
+    ("linux", "internal", "adx-environment", True, False),
     ("linux", "internal", "jiuwenbox", False, True),
     ("linux", "internal", "jiuwenbox", True, True),
 ])

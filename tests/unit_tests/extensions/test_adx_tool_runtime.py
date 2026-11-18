@@ -7,11 +7,14 @@ import pytest
 def test_adx_tool_card_uses_shared_agentos_workspace(monkeypatch, tmp_path):
     from jiuwenswarm.server.runtime.agent_adapter import sysop_builder as builder
 
+    home = tmp_path / 'agentos'
+    workspace = home / '.jiuwenswarm/agent/workspace'
+    tasks = home / 'Documents/JiuwenSwarm'
     monkeypatch.setenv('JIUWENSWARM_RUNTIME_PROFILE', 'agentos')
     monkeypatch.setenv('JIUWENSWARM_USER_DIRECTORY', '/home/agentos/users/alice')
-    monkeypatch.setenv('HOME', '/home/agentos')
-    monkeypatch.setattr(builder, 'get_user_home', lambda: tmp_path / 'agentos', raising=False)
-    monkeypatch.setattr(builder, '_resolve_workspace_dir', lambda: Path('/home/agentos/.jiuwenswarm/agent/workspace'))
+    monkeypatch.setenv('HOME', str(home))
+    monkeypatch.setattr(builder, '_resolve_workspace_dir', lambda: workspace)
+    monkeypatch.setattr(builder, 'get_projectless_tasks_dir', lambda: tasks)
     monkeypatch.setattr(builder, '_sandbox_isolation_custom_id', lambda _: 'project-test')
     monkeypatch.setattr(builder, 'get_sandbox_endpoint', lambda: {
         'type': 'adx-environment', 'url': 'https://adx.example', 'image': 'tools:v1',
@@ -19,6 +22,7 @@ def test_adx_tool_card_uses_shared_agentos_workspace(monkeypatch, tmp_path):
     })
     card = builder.create_sandbox_sysop_card('https://adx.example', 'adx-environment')
     assert card is not None
+    assert card.gateway_config.isolation.custom_id == 'project-test'
     launch = card.gateway_config.launcher_config
     assert launch.sandbox_type == 'adx-environment'
     assert launch.extra_params['runtime'] == 'conch'
@@ -27,9 +31,9 @@ def test_adx_tool_card_uses_shared_agentos_workspace(monkeypatch, tmp_path):
     assert launch.extra_params['group'] == '1000'
     assert launch.extra_params['mounts'] == [
         {'host_path': '/home/agentos/users/alice/.jiuwenswarm/agent/workspace',
-         'target': '/home/agentos/.jiuwenswarm/agent/workspace', 'options': ['rw']},
+         'target': str(workspace), 'options': ['rw']},
         {'host_path': '/home/agentos/users/alice/Documents/JiuwenSwarm',
-         'target': str(tmp_path / 'agentos/Documents/JiuwenSwarm'), 'options': ['rw']},
+         'target': str(tasks), 'options': ['rw']},
     ]
 
 
@@ -63,10 +67,11 @@ def test_adx_tool_endpoint_preserves_runtime_settings(monkeypatch):
     from jiuwenswarm.common import config
 
     monkeypatch.setattr(config, 'get_config', lambda: {'sandbox': {
-        'type': 'adx-environment', 'url': 'https://adx.example', 'image': 'tools:v1',
+        'type': 'ADX-Environment', 'url': 'https://adx.example', 'image': 'tools:v1',
         'runtime': 'conch', 'idle_timeout': 60, 'user': 1000, 'group': 1000,
     }})
     endpoint = config.get_sandbox_endpoint()
+    assert endpoint['type'] == 'adx-environment'
     assert endpoint['image'] == 'tools:v1'
     assert endpoint['runtime'] == 'conch'
     assert endpoint['idle_timeout'] == 60

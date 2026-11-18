@@ -673,3 +673,8 @@ trajectory_ui:
 Restart services after editing. Session archival requires an explicit operation; there is no scheduled automatic archival. These settings leave manual archive/delete operations and ordinary log/OTel file-exporter rotation available. Disk usage grows as history accumulates.
 
 When the SQLite schema is incompatible, the SQLite backup API first saves the old database, including committed WAL contents, as a standalone database. Only a successful backup permits rebuilding the active store. Archives keep the original filename and schema inside a sibling directory named `<database-filename>.schema-<old-version>.<UTC-timestamp>.<unique-id>.archive/`. They are never automatically expired or overwritten by later upgrades. Archive failure stops initialization and preserves the original database. Read archived history offline with tools compatible with its old schema; the current trajectory UI reads only the new database.
+
+
+## Remote ADX tools
+
+AgentOS uses `sandbox.type: adx-environment`. Deployment prepares the runtime, rootfs template, mounts and network policy; AgentServer binds the current node endpoint and credentials. Tool user/group names are resolved to numeric IDs in AgentServer before ADX dispatch. Existing files and workspace ownership are preserved.
