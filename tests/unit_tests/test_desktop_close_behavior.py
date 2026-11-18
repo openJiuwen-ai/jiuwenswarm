@@ -7,13 +7,32 @@ import inspect
 import sys
 import threading
 import types
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
+from concurrent.futures import Future
 from pathlib import Path
+from typing import TypeVar
 from unittest.mock import AsyncMock
 
 import pytest
 
 from jiuwenswarm.instance_manager.config import calculate_instance_ports
+
+
+_Result = TypeVar("_Result")
+
+
+def _call_in_daemon_thread(call: Callable[[], _Result]) -> Future[_Result]:
+    """Collect a result without an executor joining a stuck thread at exit."""
+    result: Future[_Result] = Future()
+
+    def run() -> None:
+        try:
+            result.set_result(call())
+        except BaseException as exc:
+            result.set_exception(exc)
+
+    threading.Thread(target=run, daemon=True).start()
+    return result
 
 
 @pytest.fixture
@@ -85,9 +104,9 @@ def test_pre_service_shutdown_failure_cannot_complete_update(desktop_app, tmp_pa
     assert receipt.read_text(encoding="utf-8") == "failed\n"
 
 
-@pytest.mark.parametrize("outcome", ["ok", "failed", "early_error"])
-def test_desktop_main_waits_for_background_shutdown(desktop_app, tmp_path, monkeypatch, outcome):
-    from jiuwenswarm.common.update_shutdown import create_shutdown_receipt
+@pytest.mark.parametrize("outcome", ["ok", "failed", "early_error", "timeout"])
+def test_desktop_main_waits_for_background_shutdown(desktop_app, tmp_path, monkeypatch, caplog, outcome):
+    from jiuwenswarm.common.update_shutdown import create_shutdown_receipt, require_clean_shutdown
     from jiuwenswarm.server.supervisor import shutdown
 
     receipt = create_shutdown_receipt(tmp_path / "updates")
@@ -95,7 +114,7 @@ def test_desktop_main_waits_for_background_shutdown(desktop_app, tmp_path, monke
     allow_cleanup = threading.Event()
     window_returning = threading.Event()
     calls = []
-    cleanup_jobs = []
+    cleanup = None
 
     def hold_cleanup():
         cleanup_started.set()
@@ -115,6 +134,10 @@ def test_desktop_main_waits_for_background_shutdown(desktop_app, tmp_path, monke
     monkeypatch.setattr(shutdown, "shutdown_resident_worker", retire_worker)
     if outcome == "early_error":
         monkeypatch.setattr(desktop_app.DesktopRuntime, "_abort_all_blob_saves", fail_before_worker_shutdown)
+    if outcome == "timeout":
+        monkeypatch.setattr(desktop_app, "DESKTOP_SHUTDOWN_TIMEOUT_SECONDS", 0.1, raising=False)
+        monkeypatch.setattr(desktop_app, "DESKTOP_SHUTDOWN_GRACE_SECONDS", 0.0, raising=False)
+        monkeypatch.setattr(desktop_app.logger, "propagate", True)
     monkeypatch.setattr(desktop_app, "get_logs_dir", lambda: tmp_path / "logs")
     monkeypatch.setattr(desktop_app, "_cleanup_stale_update_artifacts", lambda: None)
     monkeypatch.setattr(desktop_app, "_setup_tui_path", lambda: None)
@@ -122,8 +145,9 @@ def test_desktop_main_waits_for_background_shutdown(desktop_app, tmp_path, monke
     monkeypatch.setattr(sys, "argv", ["workswarm"])
 
     def run_window(runtime, **_kwargs):
+        nonlocal cleanup
         runtime._update_shutdown_receipt = receipt
-        cleanup_jobs.append(pool.submit(runtime._on_closed))
+        cleanup = _call_in_daemon_thread(runtime._on_closed)
         assert cleanup_started.wait(5)
         window_returning.set()
 
@@ -132,27 +156,35 @@ def test_desktop_main_waits_for_background_shutdown(desktop_app, tmp_path, monke
         return receipt.read_text(encoding="utf-8").strip()
 
     monkeypatch.setattr(desktop_app.DesktopRuntime, "run", run_window)
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        exiting = pool.submit(exit_desktop)
-        try:
-            assert window_returning.wait(5)
+    exiting = _call_in_daemon_thread(exit_desktop)
+    try:
+        assert window_returning.wait(5)
+        assert cleanup is not None
+        if outcome == "timeout":
+            assert exiting.result(timeout=3) == "pending"
+            assert not cleanup.done()
+            assert "shutdown did not complete within the shutdown budget" in caplog.text
+            with pytest.raises(RuntimeError, match="Update refused"):
+                require_clean_shutdown(receipt)
+        else:
             # Cleanup is already owned by the close callback and cannot finish
             # until released. The desktop entrypoint must stay alive.
             with pytest.raises(TimeoutError):
                 exiting.result(timeout=0.2)
-        finally:
-            allow_cleanup.set()
+    finally:
+        allow_cleanup.set()
 
-        if outcome == "early_error":
-            with pytest.raises(OSError, match="Desktop cleanup interrupted"):
-                cleanup_jobs[0].result(timeout=5)
-            assert exiting.result(timeout=5) == "pending"
-            assert not calls
-        else:
-            cleanup_jobs[0].result(timeout=5)
+    if outcome == "early_error":
+        with pytest.raises(OSError, match="Desktop cleanup interrupted"):
+            cleanup.result(timeout=5)
+        assert exiting.result(timeout=5) == "pending"
+        assert not calls
+    else:
+        cleanup.result(timeout=5)
+        if outcome != "timeout":
             assert exiting.result(timeout=5) == outcome
-            assert len(calls) == 1
-            assert calls[0]["include_legacy"] is True
+        assert len(calls) == 1
+        assert calls[0]["include_legacy"] is True
 
 
 def test_close_action_preference_round_trip(

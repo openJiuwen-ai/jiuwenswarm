@@ -84,6 +84,8 @@ UPDATE_HELPER_FLAG = "--desktop-install-update"
 DESKTOP_ENV_FLAG = "JIUWENSWARM_DESKTOP"
 STARTUP_TIMEOUT_SECONDS = 120.0
 STARTUP_DOCTOR_TIMEOUT_SECONDS = DOCTOR_TIMEOUT_SECONDS + 15.0
+DESKTOP_SHUTDOWN_TIMEOUT_SECONDS = 30.0
+DESKTOP_SHUTDOWN_GRACE_SECONDS = 5.0
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 DESKTOP_BLOB_CHUNK_SIZE = 1024 * 1024
 MAX_JAVASCRIPT_SAFE_INTEGER = 9_007_199_254_740_991
@@ -1307,6 +1309,7 @@ class DesktopRuntime:
         self._blob_save_transfers: dict[str, _BlobSaveTransfer] = {}
         self._is_shutting_down = False
         self._shutdown_complete = threading.Event()
+        self._shutdown_deadline = 0.0
         self._update_shutdown_receipt: Path | None = None
         self._allow_window_close = False
         self._tray_icon = None
@@ -3292,6 +3295,8 @@ nohup {q_executable} >/dev/null 2>&1 &
         with self._lock:
             if self._is_shutting_down:
                 return
+            deadline = time.monotonic() + DESKTOP_SHUTDOWN_TIMEOUT_SECONDS
+            self._shutdown_deadline = deadline
             self._is_shutting_down = True
             self._startup_cancelled.set()
             processes = list(self.processes.values())
@@ -3299,7 +3304,6 @@ nohup {q_executable} >/dev/null 2>&1 &
         try:
             self._abort_all_blob_saves()
             shutdown_ok = True
-            deadline = time.monotonic() + 30.0
             logger.info("[desktop] shutting down child processes")
 
             for process in processes:
@@ -3354,9 +3358,11 @@ nohup {q_executable} >/dev/null 2>&1 &
     def shutdown_and_wait(self) -> None:
         """Finish desktop cleanup before the main thread exits."""
         self.shutdown()
-        # A window or startup callback may already own shutdown. Keep the
-        # interpreter alive until that thread has finished, including the receipt.
-        self._shutdown_complete.wait()
+        # The owner shares its deadline with the main thread. Allow time after
+        # it for final process cleanup and writing the update receipt.
+        remaining = self._shutdown_deadline + DESKTOP_SHUTDOWN_GRACE_SECONDS - time.monotonic()
+        if not self._shutdown_complete.wait(timeout=max(0.0, remaining)):
+            logger.error("[desktop] shutdown did not complete within the shutdown budget")
 
     @staticmethod
     def _clear_wkwebview_system_cache() -> None:
