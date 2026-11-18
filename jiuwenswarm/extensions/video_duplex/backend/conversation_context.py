@@ -9,7 +9,6 @@ from openjiuwen.core.foundation.llm.schema.message import (
     OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA,
 )
 
-from jiuwenswarm.server.runtime.session import session_history
 from jiuwenswarm.server.runtime.session.history_replay import (
     HistoryReplayError,
     read_history_replay,
