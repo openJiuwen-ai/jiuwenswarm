@@ -1954,6 +1954,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 "_session_messaging_route_rail",
                 self._build_session_messaging_route_rail,
             ),
+            # cron budget rail（issue #5018 L3/L4，atomgit 2026-11-18 #10210）：
+            # code adapter 同样承接 cron 会话（create_instance 解析 cron 执行
+            # 标志），缺此条则 mode=code 的 cron run 无迭代/墙钟软收敛护栏，
+            # L3/L4 对该路径静默失效。rail 本体对交互请求恒 no-op，安全。
+            _RailBuildInfo("_cron_budget_rail", self._build_cron_budget_rail),
             _RailBuildInfo("_lsp_rail", self._build_lsp_rail_via_config),
             _RailBuildInfo("_project_memory_rail", self._build_project_memory_rail),
             *([_RailBuildInfo("_permission_rail", lambda: group["_permission_rail"])]
