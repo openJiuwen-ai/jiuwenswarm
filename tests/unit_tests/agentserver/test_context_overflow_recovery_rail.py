@@ -12,6 +12,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from openjiuwen.core.context_engine.context.context_utils import DEFAULT_CONTEXT_MAX_TOKENS
+
 from jiuwenswarm.agents.harness.common.rails.context_overflow_recovery_rail import (
     RECOVERY_THRESHOLD_RATIO,
     ContextOverflowRecoveryRail,
@@ -192,8 +194,8 @@ async def test_proactive_compact_reads_model_dump_usage():
 
 
 @pytest.mark.asyncio
-async def test_proactive_compact_skips_unknown_model():
-    """未知模型不能落到 agent-core 的 200000 默认窗口上。"""
+async def test_proactive_compact_falls_back_to_default_window_for_unknown_model():
+    """未知模型按 agent-core 的 200000 默认窗口触发，而不是静默跳过。"""
     rail = ContextOverflowRecoveryRail(max_recovery_attempts=3)
     processor = _FakeFullCompactProcessor()
     ctx = _make_ctx(
@@ -204,7 +206,23 @@ async def test_proactive_compact_skips_unknown_model():
 
     await rail.before_model_call(ctx)
 
-    assert processor.force_compact is False
+    assert processor.force_compact is True
+    assert processor.overflow_threshold_override == int(
+        DEFAULT_CONTEXT_MAX_TOKENS * RECOVERY_THRESHOLD_RATIO
+    )
+
+
+def test_resolve_model_context_limit_returns_default_for_unknown_model():
+    ctx = _make_ctx(
+        input_tokens=0,
+        processor=_FakeFullCompactProcessor(),
+        model_name="custom-enterprise-alias",
+    )
+
+    assert (
+        ContextOverflowRecoveryRail._resolve_model_context_limit(ctx)
+        == DEFAULT_CONTEXT_MAX_TOKENS
+    )
 
 
 @pytest.mark.asyncio
