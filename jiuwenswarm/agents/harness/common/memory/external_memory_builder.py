@@ -57,7 +57,10 @@ def build_external_memory_rail(
         elif provider_name == "jiuwenmemory":
             provider = _build_jiuwen_provider(ext_cfg, config)
         else:
-            provider = _load_plugin_provider(provider_name, ext_cfg.get("allowed_plugins") or None)
+            # allowed_plugins: None (unset) = accept all; [] = reject all; a
+            # list = strict whitelist. No `or None` here — an explicit empty
+            # list must stay distinguishable from an unset value.
+            provider = _load_plugin_provider(provider_name, ext_cfg, ext_cfg.get("allowed_plugins"))
     except Exception as exc:
         logger.warning(
             "[ExternalMemoryBuilder] build provider '%s' failed: %s",
@@ -479,7 +482,8 @@ def _strip_embeddings_suffix(base_url: str) -> str:
     return base_url
 
 
-def _load_plugin_provider(name: str, allowed: Optional[list] = None):
+def _load_plugin_provider(name: str, config: Optional[Dict[str, Any]] = None,
+                          allowed: Optional[list] = None):
     try:
         from .plugin_discovery import load_memory_plugin
     except ImportError:
@@ -488,4 +492,4 @@ def _load_plugin_provider(name: str, allowed: Optional[list] = None):
             name,
         )
         return None
-    return load_memory_plugin(name, allowed_plugins=allowed)
+    return load_memory_plugin(name, config=config, allowed_plugins=allowed)
