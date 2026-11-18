@@ -204,7 +204,10 @@ def _renew(request: AgentRequest, params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _conversations(request: AgentRequest, params: dict[str, Any]) -> list[dict[str, Any]]:
-    """The requester's conversations of the app ``client_app`` last attached to the resource ``resource_key``."""
+    """The requester's conversations of the app ``client_app`` last attached to the resource ``resource_key``.
+
+    One nobody has written in yet is left out: the pane shows the one it is in anyway.
+    """
     from jiuwenswarm.server.runtime.session.session_metadata import collect_all_sessions_metadata
 
     client_app, key = params.get("client_app"), params.get("resource_key")
@@ -216,7 +219,8 @@ def _conversations(request: AgentRequest, params: dict[str, Any]) -> list[dict[s
     owner = str(request.user_id or "").strip()
     conversations = []
     for metadata in collect_all_sessions_metadata(enable_writeback=False):
-        if str(metadata.get("user_id") or "").strip() != owner or metadata.get("client_app") != client_app:
+        if (str(metadata.get("user_id") or "").strip() != owner or metadata.get("client_app") != client_app
+                or not metadata.get("message_count")):
             continue
         session_id = metadata["session_id"]
         resource = _saved_capabilities(session_id).get("resource")

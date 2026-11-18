@@ -139,13 +139,17 @@ export function findVendorPreset(catalog: VendorPresetMap, selection: string): V
 
 /** Normalize the draft after capabilities load or the model changes; never persist it here. */
 export function reconcileModelReasoning(draft: ModelDraft, catalog: VendorPresetMap): ModelDraft {
+  if (!catalog.reasoning) return draft;
+  if (draft.vendor_selection === CUSTOM_VENDOR_SELECTION) {
+    return draft.reasoning_level ? { ...draft, reasoning_level: '' } : draft;
+  }
   const capability = resolveModelReasoning(
     catalog,
     findVendorPreset(catalog, draft.vendor_selection),
     draft.model_name,
     draft.protocol,
   );
-  return capability && !isReasoningLevelSupported(draft.reasoning_level, capability)
+  return (!capability || !isReasoningLevelSupported(draft.reasoning_level, capability))
     ? { ...draft, reasoning_level: '' }
     : draft;
 }
@@ -236,7 +240,7 @@ export function createModelDraft(model: ModelEntry | undefined, catalog: VendorP
     model_input_mode: preset ? 'options' : 'manual',
     api_key: model.api_key,
     api_base: model.api_base,
-    reasoning_level: model.reasoning_level ?? '',
+    reasoning_level: vendorSelection === CUSTOM_VENDOR_SELECTION ? '' : (model.reasoning_level ?? ''),
     context_window_tokens: contextWindowTokens,
     is_default: model.is_default ?? false,
   };
@@ -263,6 +267,7 @@ export function applyVendorSelection(draft: ModelDraft, selection: string, catal
       model_input_mode: 'manual',
       api_key: '',
       api_base: '',
+      reasoning_level: '',
     };
   }
 
@@ -273,7 +278,7 @@ export function applyVendorSelection(draft: ModelDraft, selection: string, catal
     ...draft, kv_cache_affinity: false,
     protocol: anthropic ? 'anthropic' : 'openai',
     vendor_selection: selection,
-    model_name: '',
+    model_name: preset.default_model,
     model_input_mode: 'options',
     api_key: '',
     api_base: anthropic ? (preset.anthropic_base ?? '') : preset.api_base,
@@ -289,12 +294,40 @@ export function applyModelProtocol(draft: ModelDraft, protocol: ModelProtocol, c
   };
 }
 
+/**
+ * Resolve the address a preset entry saves with.
+ *
+ * A preset that names its own address always wins. A preset that leaves it to
+ * the user (OpenCode Go) saves the draft value, but not one the draft merely
+ * inherited: an address that is still byte-for-byte the edited entry's own and
+ * belongs to another vendor would point the new entry at the previous provider.
+ * Switching vendors in the dialog already clears the field, so this only guards
+ * the untouched value; anything the user typed, even over a switched vendor, is
+ * kept (FR-002 lets the user name any usable address).
+ */
+function resolvePresetApiBase(
+  preset: VendorPreset,
+  protocol: ModelProtocol,
+  existing: ModelEntry | undefined,
+  draftApiBase: string,
+): string {
+  const presetApiBase = protocol === 'anthropic' ? (preset.anthropic_base ?? '') : preset.api_base;
+  if (presetApiBase) return presetApiBase;
+  const inherited =
+    existing !== undefined &&
+    existing.vendor_key !== undefined &&
+    existing.vendor_key !== preset.vendor_key &&
+    draftApiBase === existing.api_base.trim();
+  return inherited ? '' : draftApiBase;
+}
+
 export function modelDraftToEntry(
   draft: ModelDraft,
   existing: ModelEntry | undefined,
   catalog: VendorPresetMap,
   connectionChanged: boolean,
 ): ModelEntry {
+  const normalizedDraft = reconcileModelReasoning(draft, catalog);
   const next: ModelEntry = {
     ...existing,
     alias: draft.alias.trim(),
@@ -302,7 +335,7 @@ export function modelDraftToEntry(
     api_key: draft.api_key.trim(),
     api_base: draft.api_base.trim(),
     model_provider: existing?.model_provider ?? '',
-    reasoning_level: draft.reasoning_level,
+    reasoning_level: normalizedDraft.reasoning_level,
     context_window_tokens: resolveDraftContextWindowTokens(draft.context_window_tokens),
     is_default: draft.is_default,
   };
@@ -332,11 +365,11 @@ export function modelDraftToEntry(
     next.plan = preset.plan;
     if (draft.protocol === 'anthropic') {
       next.model_provider = preset.anthropic_client_provider ?? '';
-      next.api_base = preset.anthropic_base ?? '';
+      next.api_base = resolvePresetApiBase(preset, 'anthropic', existing, next.api_base);
       delete next.endpoint_profile;
     } else {
       next.model_provider = preset.client_provider;
-      next.api_base = preset.api_base;
+      next.api_base = resolvePresetApiBase(preset, 'openai', existing, next.api_base);
       if (preset.endpoint_profile) next.endpoint_profile = preset.endpoint_profile;
       else delete next.endpoint_profile;
     }

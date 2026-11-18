@@ -1,7 +1,6 @@
 ---
 title: 当前规约 S索引
-author: xinyang_bali
-author_email: 835397263@qq.com
+author: sync_documents.py
 generated: true
 ---
 
@@ -15,135 +14,163 @@ generated: true
 
 | 模块 |
 |---|
-| [jiuwenswarm/agents/harness/common/prompt](#module-1) |
-| [jiuwenswarm/agents/harness/common/rails](#module-2) |
-| [jiuwenswarm/agents/harness/common/recommendation](#module-3) |
-| [jiuwenswarm/agents/harness/common/tools](#module-4) |
-| [jiuwenswarm/channels/web/frontend](#module-5) |
-| [jiuwenswarm/channels/web/frontend/src/features/settings](#module-6) |
-| [jiuwenswarm/common](#module-7) |
-| [jiuwenswarm/common/config_panel](#module-8) |
-| [jiuwenswarm/extensions/sdk](#module-9) |
-| [jiuwenswarm/resources/plugins/ttse](#module-10) |
-| [jiuwenswarm/server/control](#module-11) |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-12) |
-| [scripts](#module-13) |
-| [未分类](#module-14) |
+| [jiuwenswarm/agents/harness/common/prompt](#module-jiuwenswarm-agents-harness-common-prompt) |
+| [jiuwenswarm/agents/harness/common/rails](#module-jiuwenswarm-agents-harness-common-rails) |
+| [jiuwenswarm/agents/harness/common/recommendation](#module-jiuwenswarm-agents-harness-common-recommendation) |
+| [jiuwenswarm/agents/harness/common/rsi](#module-jiuwenswarm-agents-harness-common-rsi) |
+| [jiuwenswarm/agents/harness/common/tools](#module-jiuwenswarm-agents-harness-common-tools) |
+| [jiuwenswarm/channels/web/frontend](#module-jiuwenswarm-channels-web-frontend) |
+| [jiuwenswarm/channels/web/frontend/src/features/rsi](#module-jiuwenswarm-channels-web-frontend-src-features-rsi) |
+| [jiuwenswarm/channels/web/frontend/src/features/settings](#module-jiuwenswarm-channels-web-frontend-src-features-settings) |
+| [jiuwenswarm/common](#module-jiuwenswarm-common) |
+| [jiuwenswarm/common/config_panel](#module-jiuwenswarm-common-config_panel) |
+| [jiuwenswarm/extensions/sdk](#module-jiuwenswarm-extensions-sdk) |
+| [jiuwenswarm/resources/plugins/ttse](#module-jiuwenswarm-resources-plugins-ttse) |
+| [jiuwenswarm/server/control](#module-jiuwenswarm-server-control) |
+| [jiuwenswarm/server/runtime](#module-jiuwenswarm-server-runtime) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-jiuwenswarm-server-runtime-agent_adapter) |
+| [scripts](#module-scripts) |
+| [未分类](#module-unclassified) |
 
-<a id="module-1"></a>
+<a id="module-jiuwenswarm-agents-harness-common-prompt"></a>
 
 ## jiuwenswarm/agents/harness/common/prompt
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/agents/harness/common/recommendation, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/prompt/browser_task_prompt.py, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, setup.py, pyproject.toml, uv.lock, MANIFEST.in | — |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
-<a id="module-2"></a>
+<a id="module-jiuwenswarm-agents-harness-common-rails"></a>
 
 ## jiuwenswarm/agents/harness/common/rails
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_01_tool-discovery-language](jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py | — |
-| [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/agents/harness/common/recommendation, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/prompt/browser_task_prompt.py, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, setup.py, pyproject.toml, uv.lock, MANIFEST.in | — |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_01_tool-discovery-language](jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | — |
+| [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
-<a id="module-3"></a>
+<a id="module-jiuwenswarm-agents-harness-common-recommendation"></a>
 
 ## jiuwenswarm/agents/harness/common/recommendation
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/agents/harness/common/recommendation, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/prompt/browser_task_prompt.py, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, setup.py, pyproject.toml, uv.lock, MANIFEST.in | — |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
-<a id="module-4"></a>
+<a id="module-jiuwenswarm-agents-harness-common-rsi"></a>
+
+## jiuwenswarm/agents/harness/common/rsi
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_01_observation-projection](jiuwenswarm/agents/harness/common/rsi/S_01_observation-projection.md) | S | RSI 进度、报告与前端终态投影 | l_x_d | — |
+
+<a id="module-jiuwenswarm-agents-harness-common-tools"></a>
 
 ## jiuwenswarm/agents/harness/common/tools
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_01_tool-discovery-language](jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py | — |
-| [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/agents/harness/common/recommendation, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/prompt/browser_task_prompt.py, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, setup.py, pyproject.toml, uv.lock, MANIFEST.in | — |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_01_tool-discovery-language](jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | — |
+| [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
-<a id="module-5"></a>
+<a id="module-jiuwenswarm-channels-web-frontend"></a>
 
 ## jiuwenswarm/channels/web/frontend
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_01_app-agent-interaction](mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | — |
-| [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/agents/harness/common/recommendation, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/prompt/browser_task_prompt.py, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, setup.py, pyproject.toml, uv.lock, MANIFEST.in | — |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_01_app-agent-interaction](mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
+| [S_01_plugin-marketplace](jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
+| [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
-<a id="module-6"></a>
+<a id="module-jiuwenswarm-channels-web-frontend-src-features-rsi"></a>
+
+## jiuwenswarm/channels/web/frontend/src/features/rsi
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_01_observation-projection](jiuwenswarm/agents/harness/common/rsi/S_01_observation-projection.md) | S | RSI 进度、报告与前端终态投影 | l_x_d | — |
+
+<a id="module-jiuwenswarm-channels-web-frontend-src-features-settings"></a>
 
 ## jiuwenswarm/channels/web/frontend/src/features/settings
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_01_affinity-settings](jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | jiuwenswarm/common, jiuwenswarm/channels/web/frontend/src/features/settings | jiuwenswarm/common/kv_cache_affinity_config.py, jiuwenswarm/common/config.py | — |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_01_affinity-settings](jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | — |
 
-<a id="module-7"></a>
+<a id="module-jiuwenswarm-common"></a>
 
 ## jiuwenswarm/common
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_01_affinity-settings](jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | jiuwenswarm/common, jiuwenswarm/channels/web/frontend/src/features/settings | jiuwenswarm/common/kv_cache_affinity_config.py, jiuwenswarm/common/config.py | — |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_01_affinity-settings](jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | — |
 
-<a id="module-8"></a>
+<a id="module-jiuwenswarm-common-config_panel"></a>
 
 ## jiuwenswarm/common/config_panel
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/agents/harness/common/recommendation, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/prompt/browser_task_prompt.py, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, setup.py, pyproject.toml, uv.lock, MANIFEST.in | — |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
-<a id="module-9"></a>
+<a id="module-jiuwenswarm-extensions-sdk"></a>
 
 ## jiuwenswarm/extensions/sdk
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_03_native-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/extensions/sdk | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/extensions/sdk/plugin_runtime.py | — |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_03_native-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | — |
 
-<a id="module-10"></a>
+<a id="module-jiuwenswarm-resources-plugins-ttse"></a>
 
 ## jiuwenswarm/resources/plugins/ttse
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_02_ttse-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_02_ttse-plugin-runtime.md) | S | TTSE Coding 插件运行契约 | xinyang_bali | jiuwenswarm/resources/plugins/ttse | jiuwenswarm/resources/plugins/ttse/rails/ttse_plugin_rail.py, jiuwenswarm/resources/plugins/ttse/manifest.json | — |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_02_ttse-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_02_ttse-plugin-runtime.md) | S | TTSE Coding 插件运行契约 | xinyang_bali | — |
 
-<a id="module-11"></a>
+<a id="module-jiuwenswarm-server-control"></a>
 
 ## jiuwenswarm/server/control
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/agents/harness/common/recommendation, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/prompt/browser_task_prompt.py, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, setup.py, pyproject.toml, uv.lock, MANIFEST.in | — |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
-<a id="module-12"></a>
+<a id="module-jiuwenswarm-server-runtime"></a>
+
+## jiuwenswarm/server/runtime
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_01_plugin-marketplace](jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
+
+<a id="module-jiuwenswarm-server-runtime-agent_adapter"></a>
 
 ## jiuwenswarm/server/runtime/agent_adapter
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_01_app-agent-interaction](mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | — |
-| [S_01_tool-discovery-language](jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py | — |
-| [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/agents/harness/common/recommendation, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/prompt/browser_task_prompt.py, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, setup.py, pyproject.toml, uv.lock, MANIFEST.in | — |
-| [S_03_native-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/extensions/sdk | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/extensions/sdk/plugin_runtime.py | — |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_01_app-agent-interaction](mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
+| [S_01_tool-discovery-language](jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | — |
+| [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
+| [S_03_native-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | — |
 
-<a id="module-13"></a>
+<a id="module-scripts"></a>
 
 ## scripts
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/common/config_panel, jiuwenswarm/server/control, jiuwenswarm/channels/web/frontend, jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/prompt, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/agents/harness/common/recommendation, scripts | jiuwenswarm/server/runtime/agent_adapter/trusted_web_search.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/common/utils.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, jiuwenswarm/channels/web/frontend/src/features/settings/services/settingsContract.ts, jiuwenswarm/channels/web/frontend/src/features/settings/modules/agent/definition.ts, jiuwenswarm/agents/harness/common/tools/search_tools.py, jiuwenswarm/agents/harness/common/tools/mcp_toolkits.py, jiuwenswarm/agents/harness/common/prompt/browser_task_prompt.py, jiuwenswarm/agents/harness/common/rails/browser_task_prompt_rail.py, jiuwenswarm/agents/harness/common/recommendation/topic_search.py, jiuwenswarm/agents/harness/common/recommendation/topic_model.py, jiuwenswarm/agents/harness/common/recommendation/topic_starter.py, scripts/release_dependencies.py, scripts/build.sh, scripts/build.ps1, setup.py, pyproject.toml, uv.lock, MANIFEST.in | — |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
-<a id="module-14"></a>
+<a id="module-unclassified"></a>
 
 ## 未分类
 
-| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
-|---|---|---|---|---|---|---|
-| [S_01_multimodal-tool-loading](jiuwenswarm/server/runtime/agent_adapter/S_01_multimodal-tool-loading.md) | S | Work / Code 多模态工具加载契约 | 待确认 | — | — | — |
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_01_multimodal-tool-loading](jiuwenswarm/server/runtime/agent_adapter/S_01_multimodal-tool-loading.md) | S | Work / Code 多模态工具加载契约 | 待确认 | — |

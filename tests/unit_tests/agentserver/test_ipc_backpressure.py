@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -359,33 +360,58 @@ def _capture_logs(caplog):
 
 
 @pytest.mark.asyncio
-async def test_worker_process_persists_stdout_and_stderr(tmp_path, monkeypatch):
-    """Capture both Worker output streams in the private worker log directory."""
+@pytest.mark.parametrize("transport", ["resident", "front_loopback"])
+@pytest.mark.parametrize("exit_code", [0, 1])
+async def test_worker_process_inherits_stdout_and_persists_stderr(
+    tmp_path, monkeypatch, capfd, caplog, transport, exit_code,
+):
+    """Keep the pre-diagnostics output routing without relabeling INFO records."""
+    script = (
+        "import logging, sys\n"
+        "sys.stdin.buffer.read()\n"
+        "logging.basicConfig(level=logging.INFO)\n"
+        "print('stdout diagnostic', flush=True)\n"
+        "logging.getLogger('common').info('Registered parser TxtMdParser for .markdown')\n"
+    )
+    if exit_code:
+        script += "raise RuntimeError('worker stderr regression probe')\n"
     monkeypatch.setattr(
         process_module,
         "build_worker_command",
-        lambda *args, **kwargs: [
-            sys.executable,
-            "-c",
-            (
-                "import sys; "
-                "print('stdout diagnostic', flush=True); "
-                "print('stderr diagnostic', file=sys.stderr, flush=True)"
-            ),
-        ],
+        lambda *args, **kwargs: [sys.executable, "-c", script],
+    )
+    listener = (
+        process_module.FrontLoopbackListener()
+        if transport == "front_loopback" else None
     )
     process = process_module.WorkerProcess(
         str(tmp_path / "worker.pipe"),
         host="127.0.0.1",
         port=18092,
+        ipc_listener=listener,
     )
-
-    await process.spawn()
-    assert await process.wait(timeout=5) == 0
-
-    assert process.stdout_path.parent == process.stderr_path.parent
-    assert process.stdout_path.read_text(encoding="utf-8") == "stdout diagnostic\n"
-    assert process.stderr_path.read_text(encoding="utf-8") == "stderr diagnostic\n"
+    try:
+        await process.spawn()
+        if listener is not None:
+            payload = listener.launch_payload()
+            assert payload["transport"] == "front_loopback" and payload["port"] > 0
+        assert await process.wait(timeout=5) == exit_code
+        captured = capfd.readouterr()
+        assert "stdout diagnostic" in captured.out
+        stderr = process.stderr_path.read_text(encoding="utf-8")
+        assert "INFO:common:Registered parser TxtMdParser for .markdown" in stderr
+        if exit_code:
+            assert "Traceback (most recent call last):" in stderr
+            assert "RuntimeError: worker stderr regression probe" in stderr
+        assert not list(process.stderr_path.parent.glob("*.stdout.log"))
+        assert not any(
+            record.getMessage().startswith(("[Worker stdout pid=", "[Worker stderr pid="))
+            for record in caplog.records
+        )
+    finally:
+        await process.stop()
+        if listener is not None:
+            await listener.close()
 
 
 @asynccontextmanager
@@ -1155,13 +1181,7 @@ async def test_real_abnormal_exit_keeps_exception_traceback(
         assert "Traceback" in stderr and "WorkerForceExit" in stderr
         assert "injected diagnostic exit" in stderr
         assert "fatal exit" in stderr
-        if supervisor._ipc_mode == supervisor_module.FRONT_LOOPBACK:
-            async with asyncio.timeout(15):
-                while (
-                    f"[Worker stderr pid={pid}]" not in caplog.text
-                    or "injected diagnostic exit" not in caplog.text
-                ):
-                    await asyncio.sleep(0.05)
+        assert f"[Worker stderr pid={pid}]" not in caplog.text
         (tmp_path / "acceptance.json").write_text(
             json.dumps(
                 {
@@ -1174,6 +1194,29 @@ async def test_real_abnormal_exit_keeps_exception_traceback(
             ),
             encoding="utf-8",
         )
+
+
+@pytest.mark.asyncio
+async def test_worker_exit_reports_only_the_persisted_stderr_path(tmp_path, caplog):
+    supervisor = RuntimeSupervisor(Readiness(), forwarder=EventForwarder())
+    supervisor._generation = 1
+    supervisor._owns_process = True
+    stderr_path = tmp_path / "worker.stderr.log"
+    supervisor._process = SimpleNamespace(
+        wait=AsyncMock(return_value=7), stderr_path=stderr_path,
+    )
+    connection = SimpleNamespace(close=AsyncMock())
+    supervisor._conn = connection
+
+    await supervisor._watch_process(1)
+
+    message = next(
+        record.getMessage() for record in caplog.records
+        if record.getMessage().startswith("[Supervisor] runtime worker exited:")
+    )
+    assert "code=7" in message and f"stderr={stderr_path}" in message
+    assert "stdout=" not in message
+    connection.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -1197,6 +1240,9 @@ async def test_event_loop_lag_dump_is_bounded_and_omits_queue_payload(
     text = supervisor._last_dump_path.read_text(encoding="utf-8")
     snapshot = json.loads(text.splitlines()[0])
     assert snapshot["event_loop_lag_seconds"] >= 0.08
+    assert snapshot["worker_stderr"] == str(supervisor._process.stderr_path)
+    assert "worker_stdout" not in snapshot
+    assert supervisor._last_dump_path.parent == supervisor._process.stderr_path.parent
     assert "ASYNCIO TASKS" in text and "THREAD STACKS" in text
     assert (
         text.index("THREAD STACKS")

@@ -230,7 +230,7 @@ async def test_the_rail_takes_the_tools_of_the_package_whose_template_loads_it(
     (importable / "copied_apps" / "powerpoint" / "tools.json").write_text(
         json.dumps([tool for tool in tools if tool["name"] != UNSUPPORTED]), "utf-8")
     monkeypatch.syspath_prepend(str(importable))
-    monkeypatch.setitem(registry.APPS, CLIENT_APP, ("copied_apps/powerpoint", registry.APPS[CLIENT_APP][1]))
+    monkeypatch.setitem(registry.APPS, CLIENT_APP, ("copied_apps/powerpoint", *registry.APPS[CLIENT_APP][1:]))
     registry.client_apps.cache_clear()
 
     async with SessionAdapter(tmp_path, monkeypatch, "deck-a", CLIENT_APP) as pane:

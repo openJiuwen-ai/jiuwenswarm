@@ -171,11 +171,17 @@ def test_a_resource_s_conversations_are_the_owner_s_of_its_app_latest_first(newe
     for session_id, last_message_at in [(newest, 300.0), (older, 200.0)]:
         (attach.get_agent_sessions_dir() / session_id / "metadata.json").write_text(json.dumps(
             {**new_conversation(session_id, "user-1"), "last_message_at": last_message_at,
-             "title": titles[session_id]}))
+             "title": titles[session_id], "message_count": 2}))
+    empty = attach.get_agent_sessions_dir() / "session-4"  # created in the pane, nobody wrote in it
+    empty.mkdir()
+    (empty / "metadata.json").write_text(json.dumps(new_conversation("session-4", "user-1")))
     answer(request())
+    answer(request(session="session-4", socket="ws-4"))
     answer(request(session="session-2"))
     answer(request(session="foreign", owner="user-2"))
     created_for("session-3", OTHER_APP)  # the same key, attached in another app
+    metadata = attach.get_agent_sessions_dir() / "session-3" / "metadata.json"
+    metadata.write_text(json.dumps({**json.loads(metadata.read_text()), "message_count": 2}))
     answer(request(session="session-3", socket="ws-3", capabilities={"supported_tools": ["read_deck"]}))
 
     listed = answer(request(ReqMethod.CLIENT_CONVERSATIONS, client_app=CLIENT_APP, resource_key=" office-deck "))

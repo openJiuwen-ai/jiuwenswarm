@@ -826,6 +826,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         # on conv_id naming conventions.
         if ctx.session is None:
             return
+        from jiuwenswarm.agents.harness.team.native_lifecycle import track_native_context_lifecycle
+
+        await track_native_context_lifecycle(self._deep_agent)
         # Use the real conversation_id as the session key; fall back to "default"
         # only for the pause/abort state lookup key (sid).  Do NOT store the
         # "default" sentinel as a conversation_id value — after_tool_call uses
@@ -854,12 +857,6 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         # Sub-agents inherit this from the parent's invoke since they don't
         # fire their own before_invoke (ctx.session is None → early return above).
         ctx.extra[self._SID_KEY] = sid
-        ctx.extra["_history_consumed_requests"] = set()
-        try:
-            carrier = root_decision_context_from_extra(getattr(ctx.inputs.run_context, "extra", None))
-            ctx.extra["_history_incoming_request"] = carrier.request_id
-        except (AttributeError, TypeError, ValueError):
-            ctx.extra["_history_incoming_request"] = ""
         try:
             from openjiuwen.core.sys_operation.shell_process_registry import (
                 set_shell_session_id,
@@ -1057,27 +1054,6 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         await self._save_effective_context(ctx)
         await self._emit_llm_call_signal(ctx, "llm_call_start")
 
-    async def on_user_message(self, ctx: AgentCallbackContext) -> None:
-        """Record consumed request identities, including individual steer inputs."""
-        consumed = ctx.extra.setdefault("_history_consumed_requests", set())
-        source = getattr(ctx.inputs, "source", "query")
-        if source != "steering":
-            request_id = ctx.extra.get("_history_incoming_request")
-            if request_id:
-                consumed.add(request_id)
-        for part in getattr(ctx.inputs, "parts", ()):
-            try:
-                carrier = root_decision_context_from_extra(getattr(getattr(part, "run_context", None), "extra", None))
-                consumed.add(carrier.request_id)
-            except (AttributeError, TypeError, ValueError):
-                continue
-        # ON_USER_MESSAGE means Core has drained these inputs for processing.
-        # Keep this host disposition even when a later rail intentionally drops
-        # the message, or abort persistence retains only the cleaned prefix.
-        context = getattr(ctx, "context", None)
-        if context is not None:
-            context.history_recovery_covered = set(getattr(context, "history_recovery_covered", ())) | consumed
-
     async def after_react_iteration(self, ctx: AgentCallbackContext) -> None:
         # Native Core fires this only after all tool results have been installed.
         await self._save_effective_context(ctx)
@@ -1091,8 +1067,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             return
         from jiuwenswarm.server.runtime.session.context_snapshot import save_context_snapshot
 
-        await save_context_snapshot(context_engine=react.context_engine, session=ctx.session,
-                                    consumed_request_ids=ctx.extra.get("_history_consumed_requests", set()))
+        await save_context_snapshot(context_engine=react.context_engine, session=ctx.session)
 
     @staticmethod
     def _inject_tool_call_goal_schema(ctx: AgentCallbackContext) -> None:

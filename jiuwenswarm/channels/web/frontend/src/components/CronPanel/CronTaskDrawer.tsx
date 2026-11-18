@@ -458,6 +458,7 @@ export default function CronTaskDrawer({
                         setForm({ ...form, modelSelection, modelName: matchedName });
                       }}
                       includeModelGroups={false}
+                      excludeFreeModels={isEnterprise()}
                     />
                   </div>
                   {defaultModelHint && (

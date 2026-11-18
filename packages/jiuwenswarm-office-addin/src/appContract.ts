@@ -8,8 +8,8 @@
 import type { DocumentId } from './documentIdentity';
 import { isRecord } from './gatewayClient';
 
-/** Who makes the host application; WPS comes as a second platform. */
-export type Platform = 'microsoft';
+/** Whose host application it is: the key of a tool's ``host_requirements``, and the attach's ``host_vendor``. */
+export type Platform = 'office' | 'wps';
 /** What the host edits, as the attach names it (``resource.kind``). */
 export type Surface = 'presentation' | 'document' | 'workbook';
 
@@ -58,7 +58,7 @@ const KEYWORDS = new Set(['type', 'properties', 'required', 'additionalPropertie
 
 /** What a host must offer to run a tool: every requirement set at its version, and a Worker if ``worker``. */
 interface HostRequirements {
-  sets: Record<string, string>;
+  sets?: Record<string, string>;
   worker?: boolean;
 }
 
@@ -67,10 +67,11 @@ export interface ContractTool {
   /** A ``Schema``; the JSON's inferred type is a union of every tool's fields, which no one interface matches. */
   input_schema: object;
   annotations: { mutating: boolean };
-  host_requirements: HostRequirements;
+  /** By platform; a tool runs only on the platforms it names. */
+  host_requirements: Partial<Record<Platform, HostRequirements>>;
 }
 
-/** What the running Office host offers the contract's ``host_requirements``. */
+/** What the running host offers the contract's ``host_requirements``. */
 export interface OfficeHost {
   isSetSupported(name: string, version: string): boolean;
   worker: boolean;
@@ -99,11 +100,14 @@ export class ToolContract {
     return problem(tool.input_schema as Schema, input, '');
   }
 
-  /** The tools that are in the contract, implemented by the pane's tool runtime, and supported by the host. */
-  supported(host: OfficeHost, implemented: ReadonlySet<string>): string[] {
-    return this.tools.filter(({ name, host_requirements: { sets, worker } }) => implemented.has(name)
-      && Object.entries(sets).every(([set, version]) => host.isSetSupported(set, version))
-      && (!worker || host.worker)).map(tool => tool.name);
+  /**
+   * The tools that are in the contract, run on ``platform``, are implemented by the pane's tool runtime, and whose
+   * requirements the host meets.
+   */
+  supported(platform: Platform, host: OfficeHost, implemented: ReadonlySet<string>): string[] {
+    return this.tools.filter(({ name, host_requirements: { [platform]: needs } }) => needs && implemented.has(name)
+      && Object.entries(needs.sets ?? {}).every(([set, version]) => host.isSetSupported(set, version))
+      && (!needs.worker || host.worker)).map(tool => tool.name);
   }
 }
 
@@ -209,6 +213,6 @@ export function attachDeclaration(app: OfficeApp, { documentId, displayName, hos
 }): AttachDeclaration {
   return {
     resource: { key: documentId, display_name: displayName, kind: app.surface, host_vendor: app.platform },
-    capabilities: { supported_tools: app.contract.supported(host, implemented) },
+    capabilities: { supported_tools: app.contract.supported(app.platform, host, implemented) },
   };
 }

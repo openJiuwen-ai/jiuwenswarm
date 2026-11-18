@@ -15,6 +15,7 @@ sdk 模式的内核配置优先级（2026-10-17 起 builder 不再自行缝合�
 默认装配（裸构造）；``sdk.config_path`` 为历史字段，已不再读取。
 """
 
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -504,3 +505,143 @@ def test_fingerprint_sensitive_to_http_endpoint():
     a = jrb.jiuwen_builtin_config_fingerprint(_cfg({"mode": "http", "base_url": "http://a:1"}))
     b = jrb.jiuwen_builtin_config_fingerprint(_cfg({"mode": "http", "base_url": "http://b:1"}))
     assert a != b
+
+
+@pytest.mark.parametrize("mode", ["sdk", "http"])
+@pytest.mark.asyncio
+async def test_jiuwen_provider_uses_default_project_across_operations(monkeypatch, mode):
+    prefetch = AsyncMock()
+    sync_turn = AsyncMock()
+    tool = AsyncMock()
+    monkeypatch.setattr(_FakeAgentMemoryProvider, "prefetch", prefetch, raising=False)
+    monkeypatch.setattr(_FakeAgentMemoryProvider, "sync_turn", sync_turn, raising=False)
+    monkeypatch.setattr(_FakeAgentMemoryProvider, "handle_tool_call", tool, raising=False)
+    provider = jrb.build_jiuwen_memory_rail(_cfg({"mode": mode})).provider
+
+    await provider.prefetch("query", project=None)
+    await provider.sync_turn("user", "assistant")
+    assert prefetch.call_args.kwargs["project"] == sync_turn.call_args.kwargs["project"] == "default"
+    await provider.prefetch("query", project="testMemory")
+    await provider.sync_turn("user", "assistant", project="testMemory")
+    assert prefetch.call_args.kwargs["project"] == sync_turn.call_args.kwargs["project"] == "testMemory"
+
+    for tool_name in (
+        "agent_memory_conclude", "agent_memory_search", "agent_memory_video_submit",
+        "agent_memory_read_md_file", "agent_memory_edit_md_file",
+    ):
+        await provider.handle_tool_call(tool_name, {})
+        tool.assert_awaited_with(tool_name, {"project": "default"})
+    await provider.handle_tool_call("agent_memory_read_md_file", {"project": ""})
+    tool.assert_awaited_with("agent_memory_read_md_file", {"project": ""})
+    await provider.handle_tool_call("agent_memory_conclude", {"project": "testMemory"})
+    tool.assert_awaited_with("agent_memory_conclude", {"project": "testMemory"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("template_source", ["swarm", "core", "edited", "custom-root"])
+async def test_sdk_initialize_archives_only_stock_workspace_memory(monkeypatch, tmp_path, template_source):
+    from jiuwenswarm.common import utils
+    from openjiuwen.harness.workspace.workspace import Workspace
+
+    workspace = tmp_path / "agent" / "workspace"
+    root = tmp_path / "custom" if template_source == "custom-root" else workspace
+    target = root / "memory" / "MEMORY.md"
+    target.parent.mkdir(parents=True)
+    content = (
+        utils._find_package_root() / "resources" / "agent" / "workspace" / "memory" / "MEMORY_EN.md"
+    ).read_text(encoding="utf-8")
+    if template_source == "core":
+        templates = next(node["children"] for node in Workspace.get_default_directory("cn") if node["name"] == "memory")
+        content = next(node["default_content"] for node in templates if node["name"] == "MEMORY.md")
+    elif template_source == "edited":
+        content += "\nI prefer Python.\n"
+    target.write_text(content, encoding="utf-8")
+    monkeypatch.setattr(utils, "get_agent_workspace_dir", lambda: workspace)
+    monkeypatch.setattr(utils, "get_user_workspace_dir", lambda: tmp_path)
+
+    archive_stock = template_source in ("swarm", "core")
+
+    async def initialize():
+        assert target.exists() is not archive_stock
+
+    base_initialize = AsyncMock(side_effect=initialize)
+    monkeypatch.setattr(_FakeAgentMemoryProvider, "initialize", base_initialize, raising=False)
+    rail = jrb.build_jiuwen_memory_rail(_cfg({
+        "mode": "sdk", "sdk": {"markdown_store": {"default": {"params": {"root": str(root)}}}},
+    }))
+    await rail.provider.initialize()
+    base_initialize.assert_awaited_once()
+
+    backups = list(target.parent.glob(".MEMORY.md.bootstrap-*.bak"))
+    if archive_stock:
+        assert len(backups) == 1
+        assert backups[0].read_text(encoding="utf-8") == content
+    else:
+        assert not backups
+        assert target.read_text(encoding="utf-8") == content
+
+
+@pytest.mark.asyncio
+async def test_jiuwen_rail_routes_same_named_projects_by_absolute_path(monkeypatch, tmp_path):
+    rail_module = pytest.importorskip("openjiuwen.harness.rails.memory.jiuwen_memory_rail")
+    rail_class = getattr(rail_module, "JiuwenMemoryRail", None)
+    if rail_class is None:
+        pytest.skip("Installed Core does not provide JiuwenMemoryRail")
+    monkeypatch.setattr("openjiuwen.harness.rails.JiuwenMemoryRail", rail_class, raising=False)
+    schema = {"name": "agent_memory_conclude", "parameters": {"properties": {
+        "project": {"type": "string"}, "conclusion": {"type": "string"},
+    }}}
+    monkeypatch.setattr(_FakeAgentMemoryProvider, "get_tool_schemas", lambda self: [schema], raising=False)
+    tool_handler = AsyncMock(return_value='{"result": "stored"}')
+    monkeypatch.setattr(_FakeAgentMemoryProvider, "handle_tool_call", tool_handler, raising=False)
+    monkeypatch.setattr(_FakeAgentMemoryProvider, "initialize", AsyncMock(), raising=False)
+    prefetch = AsyncMock(return_value="")
+    sync_finished = asyncio.Event()
+
+    async def mark_synced(*_args, **_kwargs):
+        sync_finished.set()
+
+    sync_turn = AsyncMock(side_effect=mark_synced)
+    monkeypatch.setattr(_FakeAgentMemoryProvider, "prefetch", prefetch, raising=False)
+    monkeypatch.setattr(_FakeAgentMemoryProvider, "sync_turn", sync_turn, raising=False)
+
+    rail = jrb.build_jiuwen_memory_rail(_cfg({"mode": "sdk"}))
+    registrations = {}
+
+    def register(card, function):
+        registrations[card.name] = function
+        return SimpleNamespace(added=True)
+
+    agent = SimpleNamespace(ability_manager=SimpleNamespace(add_ability=register))
+    rail.init(agent)
+    tool = registrations["agent_memory_conclude"]
+    coordinates = set()
+
+    for parent in ("work", "archive"):
+        sync_finished.clear()
+        agent._jiuwenswarm_memory_project_dir = str(tmp_path / parent / "testMemory")
+        ctx = SimpleNamespace(
+            agent=agent, session=None, extra={},
+            inputs=SimpleNamespace(query="Uses Python", messages=[], result={"output": "Saved"}),
+        )
+        await rail.before_invoke(ctx)
+        await rail.before_model_call(ctx)
+        await rail.after_invoke(ctx)
+        await asyncio.wait_for(sync_finished.wait(), timeout=2)
+        project = prefetch.call_args.kwargs["project"]
+        assert project.split("-", 1)[0].casefold() == "testmemory"
+        assert len(project.rsplit("-", 1)[1]) == 12
+        assert sync_turn.call_args.kwargs["project"] == project
+        await tool.invoke({"conclusion": "Uses Python"})
+        assert tool_handler.call_args.args[1]["project"] == project
+        coordinates.add(project)
+    assert len(coordinates) == 2
+    assert "description" not in schema["parameters"]["properties"]["project"]
+
+    agent._jiuwenswarm_memory_project_dir = None
+    agent._jiuwenswarm_project_dir = str(tmp_path / "chat-1")
+    await tool.invoke({"conclusion": "General memory"})
+    assert tool_handler.call_args.args[1]["project"] == "default"
+
+    await tool._func(conclusion="Explicit group", project="testMemory")
+    assert tool_handler.call_args.args[1]["project"] == "testMemory"

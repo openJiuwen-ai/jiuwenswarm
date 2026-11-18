@@ -830,11 +830,15 @@
         "maas": "Maas Pangu",
         "minimax": "MiniMax",
         "mimo": "Xiaomi MiMo",
+        "opencode-go": "OpenCode Go",
         "openrouter": "OpenRouter",
         "vllm-omni": "vLLM-Omni",
         "volcengine": "Volcengine",
         "zhipu": "Zhipu GLM",
         "unrecognized": "Unrecognized provider ({{vendor}})"
+      },
+      "apiBasePlaceholders": {
+        "opencode-go": "e.g. https://opencode.ai/zen/go/v1"
       },
       "protocols": {
         "openai": "OpenAI",
@@ -1401,7 +1405,6 @@
     },
     "team": {
       "memberLanes": "Member trajectory lanes",
-      "members": "Members",
       "workflowGroupAria": "Workflow {{name}}, {{count}} operators",
       "workflowGroupOperators": "{{count}} operators",
       "schedule": {
@@ -1421,6 +1424,7 @@
         "expandReviews": "Expand review records",
         "collapseReviews": "Collapse review records",
         "noReviews": "No reviews yet",
+        "directCompleted": "Completed directly without review",
         "reviewCount_one": "{{count}} Review",
         "reviewCount_other": "{{count}} Reviews",
         "phase": {
@@ -1874,6 +1878,14 @@
     "planning": {
       "tab": "Task Planning",
       "progressTitle": "Task Progress",
+      "taskCompletion": "Tasks completed",
+      "executionProgress": "Execution progress",
+      "estimatedProgress": "Execution progress (estimated)",
+      "agentProgress": "Loaded workflow nodes: {{ended}} / {{total}} ended",
+      "phaseAgentProgress": "Phase nodes: {{ended}} / {{total}} ended",
+      "agentProgressUnavailable": "Loaded workflow nodes: some workflow node counts are unavailable",
+      "teamMetricScope": "Task counts include team tasks and workflow phases, excluding application tasks. Progress combines ordinary tasks and workflows, using workflow node counts when available.",
+      "teamBoardMetricScope": "Progress includes team tasks and workflows only. Status counts include all board tasks, including application tasks.",
       "token": "Token",
       "taskList": "Task List",
       "taskListAria": "{{task}} task list",
@@ -4604,6 +4616,7 @@
     "historyPreviewEmpty": "No messages to show after the same filtering as history restore (or the file is empty). Turn off preview to see raw JSON.",
     "edit": "Edit",
     "unknownError": "Unknown error",
+    "saveFailedForPath": "Failed to save {{path}}: ",
     "fileMissingPrefix": "This file does not exist. Create the file at",
     "fileMissingSuffix": "before editing.",
     "notPreviewable": "This file cannot be previewed. Only Markdown/JSON (.md/.mdx/.json) files are supported."
@@ -5266,7 +5279,10 @@
     "skippedSummary": "Skipped"
   },
   "skillPackagePrompt": {
-    "creating": "Creating…"
+    "creating": "Creating…",
+    "nameConflict": "Creation failed: a local skill or skill package has the same name. Its contents were not overwritten. Choose Later, or resolve the name conflict and retry.",
+    "createFailed": "Failed to create the skill package. The confirmation remains open. Retry later or choose Later.",
+    "resultUnavailable": "The skill package creation result is not yet confirmed. The confirmation remains open. Check My Skills before retrying, or choose Later."
   },
   "qaSummary": {
     "title": "Clarifications"
@@ -6715,6 +6731,10 @@
         "promptRequired": "Enter a task description.",
         "required": "Enter a name and a description",
         "executorRequired": "Select an AI employee to run this task.",
+        "onceDateRequired": "Select an execution date.",
+        "timeRequired": "Select an execution time.",
+        "monthDayInvalid": "Enter a day of the month between 1 and 31.",
+        "intervalRequired": "Enter an execution interval.",
         "intervalInvalid": "The interval must be a positive integer",
         "futureRequired": "A one-time run must be in the future",
         "rangeInvalid": "The effective end must be after the start"
@@ -6782,6 +6802,7 @@
       "periodEnd": "End date",
       "periodTo": "to",
       "periodLimit": "Up to {{count}} days can be shown; the start date was adjusted",
+      "periodLimitEnd": "Up to {{count}} days can be shown; the end date was adjusted",
       "metrics": {
         "members": "Members",
         "activeDays": "Active days",
@@ -6815,9 +6836,11 @@
       "minutesAgo": "{{count}} min ago",
       "hoursAgo": "{{count}} hr ago",
       "daysAgo": "{{count}} day ago",
+      "previous": "Previous",
       "next": "Next",
       "workRecord": "Work record",
-      "groupChats": "Group chats {{count}}",
+      "groupChats": "Group chats",
+      "groupChatsCount": "{{count}} total",
       "channelColumns": {
         "group": "Group chat",
         "channel": "Channel",

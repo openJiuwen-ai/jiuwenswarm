@@ -460,7 +460,7 @@ function shapeXml(shape: FakeShapeState): string {
  * ``slide`` as ``exportAsBase64`` gives it: a package of one slide with its master and every layout of that master
  * (the slide's own among them), the theme and the notes.
  */
-function exportSlide(slide: FakeSlideState, deck: FakeDeck): string {
+export function exportSlide(slide: FakeSlideState, deck: FakeDeck): string {
   const { size } = deck;
   const { master, layout } = deck.template(slide);
   const { layouts } = master;
@@ -541,7 +541,7 @@ function exportSlide(slide: FakeSlideState, deck: FakeDeck): string {
  * name of each one's layout; and the package's first master: its theme, whether it is preserved, the name and
  * placeholder count of each layout.
  */
-function importSlides(base64: string, sourceSlideIds?: string[]): {
+export function importSlides(base64: string, sourceSlideIds?: string[]): {
   slides: { slide: Omit<FakeSlideState, 'id'>; layout?: string }[];
   template?: { theme: FakeTheme; preserve: boolean; layouts: { name: string; placeholders: number }[] };
 } {

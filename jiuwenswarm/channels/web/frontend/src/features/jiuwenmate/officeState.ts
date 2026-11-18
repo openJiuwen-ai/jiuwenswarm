@@ -115,13 +115,44 @@ export function exceedsActivityPeriod(periodStart: string, periodEnd: string): b
   return Math.abs(daysBetween(parseIsoDate(periodStart), parseIsoDate(periodEnd))) >= MAX_PERIOD_DAYS;
 }
 
-export function setActivityPeriod(state: JiuwenMateOfficeState, periodStart: string, periodEnd: string): JiuwenMateOfficeState {
+export type JiuwenMatePeriodEdge = 'start' | 'end';
+
+/**
+ * Which bound `setActivityPeriod` moves to fit the limit: the user's latest pick stays,
+ * so the other bound of the ordered range is adjusted. Null when the range already fits.
+ */
+export function adjustedPeriodEdge(
+  periodStart: string,
+  periodEnd: string,
+  edited: JiuwenMatePeriodEdge,
+): JiuwenMatePeriodEdge | null {
+  if (!exceedsActivityPeriod(periodStart, periodEnd)) return null;
+  const picked = edited === 'start' ? periodStart : periodEnd;
+  const later = periodStart > periodEnd ? periodStart : periodEnd;
+  return picked === later ? 'start' : 'end';
+}
+
+export function setActivityPeriod(
+  state: JiuwenMateOfficeState,
+  periodStart: string,
+  periodEnd: string,
+  edited?: JiuwenMatePeriodEdge,
+  latest?: string,
+): JiuwenMateOfficeState {
   const start = parseIsoDate(periodStart);
   const end = parseIsoDate(periodEnd);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return state;
-  const [from, to] = start > end ? [end, start] : [start, end];
-  const clampedFrom = daysBetween(from, to) >= MAX_PERIOD_DAYS ? addDays(to, -(MAX_PERIOD_DAYS - 1)) : from;
-  return { ...state, periodStart: toIsoDate(clampedFrom), periodEnd: toIsoDate(to), hoveredCellId: null };
+  let [from, to] = start > end ? [end, start] : [start, end];
+  const adjusted = edited
+    ? adjustedPeriodEdge(periodStart, periodEnd, edited)
+    : exceedsActivityPeriod(periodStart, periodEnd) ? 'start' : null;
+  if (adjusted === 'start') from = addDays(to, -(MAX_PERIOD_DAYS - 1));
+  if (adjusted === 'end') {
+    to = addDays(from, MAX_PERIOD_DAYS - 1);
+    const cap = latest ? parseIsoDate(latest) : null;
+    if (cap && !Number.isNaN(cap.getTime()) && to > cap) to = cap;
+  }
+  return { ...state, periodStart: toIsoDate(from), periodEnd: toIsoDate(to), hoveredCellId: null };
 }
 
 export function setActivityColleague(state: JiuwenMateOfficeState, selectedColleagueId: string): JiuwenMateOfficeState {
@@ -148,15 +179,53 @@ export function hourlyLevel(value: number): JiuwenMateHeatLevel {
   return 4;
 }
 
+/** The current year shows the rolling last twelve months; any other year is its calendar year. */
+function yearBounds(year: number, today: Date): { start: Date; end: Date } {
+  const rolling = year === today.getFullYear();
+  return {
+    start: rolling ? new Date(today.getFullYear() - 1, today.getMonth() + 1, 1) : new Date(year, 0, 1),
+    end: rolling ? today : new Date(year, 11, 31),
+  };
+}
+
 export function yearHeatmap(
   year: number,
   today: Date,
   activities: readonly JiuwenMateDailyActivity[],
 ): JiuwenMateYearHeatmap {
-  const rolling = year === today.getFullYear();
-  const rangeStart = rolling ? new Date(today.getFullYear() - 1, today.getMonth() + 1, 1) : new Date(year, 0, 1);
-  const rangeEnd = rolling ? today : new Date(year, 11, 31);
-  return buildHeatmap(rangeStart, rangeEnd, activities);
+  const { start, end } = yearBounds(year, today);
+  return buildHeatmap(start, end, activities);
+}
+
+/** The dates the overview counts: the shown year, or the picked period. */
+export function activityRangeBounds(state: JiuwenMateOfficeState, today: Date): { start: string; end: string } {
+  if (state.activityRange === 'period') return { start: state.periodStart, end: state.periodEnd };
+  const { start, end } = yearBounds(state.year, today);
+  return { start: toIsoDate(start), end: toIsoDate(end) };
+}
+
+/** Compare a known creation date with the inclusive end of the range. */
+export function colleagueJoinedBy(joinedAt: string, end: string): boolean {
+  const joined = new Date(joinedAt);
+  return Number.isFinite(joined.getTime()) && toIsoDate(joined) <= end;
+}
+
+export function joinedColleagueCount(joinedAts: readonly string[], end: string): number {
+  return joinedAts.filter((joinedAt) => colleagueJoinedBy(joinedAt, end)).length;
+}
+
+/** A member's tokens and successful replies on the days inside `start`..`end` (inclusive ISO dates). */
+export function memberRangeTotals(
+  days: readonly JiuwenMateActivityDay[],
+  start: string,
+  end: string,
+): { tokens: number; replies: number } {
+  return days.reduce(
+    (sum, day) => (day.date >= start && day.date <= end
+      ? { tokens: sum.tokens + day.tokens, replies: sum.replies + (day.replies ?? 0) }
+      : sum),
+    { tokens: 0, replies: 0 },
+  );
 }
 
 export function halfYearHeatmap(
@@ -232,15 +301,14 @@ export function periodHeatmap(
 }
 
 export function activitySummary(
-  heatmap: JiuwenMateYearHeatmap,
+  days: readonly JiuwenMateDailyActivity[],
   memberCount: number,
   stats: readonly JiuwenMateMemberStats[],
 ): { members: number; activeDays: number; tasks: number; tokens: number } {
-  const cells = heatmap.weeks.flat().filter((cell) => cell.inRange);
   return {
     members: memberCount,
-    activeDays: cells.filter((cell) => cell.tasks > 0).length,
-    tasks: cells.reduce((sum, cell) => sum + cell.tasks, 0),
+    activeDays: days.filter((day) => day.tasks > 0).length,
+    tasks: days.reduce((sum, day) => sum + day.tasks, 0),
     tokens: stats.slice(0, memberCount).reduce((sum, item) => sum + item.tokens, 0),
   };
 }
@@ -267,22 +335,21 @@ function sumTokens(days: readonly JiuwenMateActivityDay[], start: Date, end: Dat
   return days.reduce((sum, day) => (inDateRange(day.date, start, end) ? sum + day.tokens : sum), 0);
 }
 
-/** Token total for the selected window, and the change against the previous window of the same length. */
-export function usageChange(
-  days: readonly JiuwenMateActivityDay[],
-  period: JiuwenMateWorkPeriod,
-  today: Date,
-): { tokens: number; percent: number | null } {
-  if (period === 'all') {
-    return { tokens: days.reduce((sum, day) => sum + day.tokens, 0), percent: null };
-  }
-  const current = periodBounds(period, today);
-  const length = PERIOD_DAYS[period];
-  const previous = { start: addDays(current.start, -length), end: addDays(current.start, -1) };
-  const tokens = sumTokens(days, current.start, current.end);
-  const before = sumTokens(days, previous.start, previous.end);
-  if (before === 0) return { tokens, percent: null };
-  return { tokens, percent: Math.round(((tokens - before) / before) * 1000) / 10 };
+/** Token total for the selected window. */
+export function periodUsage(days: readonly JiuwenMateActivityDay[], period: JiuwenMateWorkPeriod, today: Date): number {
+  if (period === 'all') return days.reduce((sum, day) => sum + day.tokens, 0);
+  const { start, end } = periodBounds(period, today);
+  return sumTokens(days, start, end);
+}
+
+/** Change of this week's tokens (Monday through today) against the whole previous Monday–Sunday week. */
+export function weeklyUsageChange(days: readonly JiuwenMateActivityDay[], today: Date): number | null {
+  const end = parseIsoDate(toIsoDate(today));
+  const monday = addDays(end, -((end.getDay() + 6) % 7));
+  const current = sumTokens(days, monday, end);
+  const before = sumTokens(days, addDays(monday, -7), addDays(monday, -1));
+  if (before === 0) return null;
+  return Math.round(((current - before) / before) * 1000) / 10;
 }
 
 export function mergeDailyActivity(members: readonly JiuwenMateActivityMember[]): JiuwenMateDailyActivity[] {
@@ -336,6 +403,21 @@ export function responseAge(minutes: number): { unit: 'minutes' | 'hours' | 'day
   if (whole >= MINUTES_PER_DAY) return { unit: 'days', count: Math.floor(whole / MINUTES_PER_DAY) };
   if (whole >= MINUTES_PER_HOUR) return { unit: 'hours', count: Math.floor(whole / MINUTES_PER_HOUR) };
   return { unit: 'minutes', count: whole };
+}
+
+export const CAROUSEL_CARD_MIN_WIDTH = 230;
+export const CAROUSEL_GAP = 14;
+
+/** Whole cards that fit the carousel, so every page starts and ends on a card edge. */
+export function carouselCardsPerView(width: number): number {
+  return Math.max(1, Math.floor((width + CAROUSEL_GAP) / (CAROUSEL_CARD_MIN_WIDTH + CAROUSEL_GAP)));
+}
+
+export function carouselEdges(scrollLeft: number, clientWidth: number, scrollWidth: number): {
+  atStart: boolean;
+  atEnd: boolean;
+} {
+  return { atStart: scrollLeft <= 1, atEnd: scrollLeft + clientWidth >= scrollWidth - 1 };
 }
 
 export function activeChannelCount(member: JiuwenMateActivityMember): number {

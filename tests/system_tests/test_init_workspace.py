@@ -229,6 +229,39 @@ class TestInitUserWorkspace:
         assert result == "cancelled"
 
 
+@pytest.mark.parametrize("provider", ["", "jiuwen"], ids=["native", "jiuwen"])
+@pytest.mark.asyncio
+async def test_memory_template_matches_builtin_provider(tmp_path, monkeypatch, clean_environment, provider):
+    from types import SimpleNamespace
+
+    from openjiuwen.core.sys_operation import SysOperation, SysOperationCard
+    from openjiuwen.harness.workspace.directory_builder import DirectoryBuilder
+
+    from jiuwenswarm.common import utils
+    from jiuwenswarm.enterprise.tenant.tenant_paths import seed_tenant_agent_workspace
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    config = {"memory": {"builtin": {"provider": provider, "jiuwen": {"mode": "sdk"}}}}
+    config_file = tmp_path / "config" / "config.yaml"
+    config_file.parent.mkdir()
+    with config_file.open("w", encoding="utf-8") as stream:
+        YAML().dump(config, stream)
+    utils.prepare_workspace(overwrite=False, workspace_dir=tmp_path, migrate_config=False)
+    monkeypatch.setattr(utils, "get_config_file", lambda: config_file)
+    tenant_root = tmp_path / "tenant"
+    seed_tenant_agent_workspace(tenant_root)
+
+    runtime_root = tmp_path / "runtime"
+    workspace = JiuWenSwarmDeepAdapter._get_memory_workspace(
+        SimpleNamespace(_workspace_dir=str(runtime_root)), config=config
+    )
+    operation = SysOperation(SysOperationCard(id="test-memory-workspace-seed"))
+    await DirectoryBuilder(operation, str(runtime_root)).build(workspace.directories)
+
+    for root in (tmp_path / "agent" / "workspace", tenant_root / "agent" / "workspace", runtime_root):
+        assert (root / "memory" / "MEMORY.md").is_file() is (provider == "")
+
+
 class TestInitWorkspaceMain:
     """Test init_workspace.py main entry point."""
 

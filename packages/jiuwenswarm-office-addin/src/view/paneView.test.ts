@@ -49,7 +49,7 @@ afterEach(() => {
 /** The pane on a controller whose state the test sets and whose actions it records. */
 function mounted(initial: Partial<PaneState> = {}) {
   let state: PaneState = {
-    attachment: ATTACHED, conversation: emptyConversation, conversations: [], documents: new Map([['s9', '市场分析.pptx']]),
+    attachment: ATTACHED, conversation: emptyConversation, conversations: [], documents: new Map([['s9', { name: '市场分析.pptx', kind: 'presentation', current: false }]]),
     loadingHistory: false, connection: { kind: 'open' }, models: [], undo: { offers: new Set() }, ...initial,
   };
   const listeners = new Set<(state: PaneState) => void>();
@@ -73,7 +73,7 @@ function mounted(initial: Partial<PaneState> = {}) {
   const root = document.createElement('div');
   document.body.replaceChildren(root);
   mountPane(root, controller, documentCopy.presentation,
-    { now: () => clockNow, every: (_ms, tick) => ticks.push(tick) });
+    { clock: { now: () => clockNow, every: (_ms, tick) => ticks.push(tick) } });
   const set = (change: Partial<PaneState>): void => {
     state = { ...state, ...change };
     listeners.forEach(listener => listener(state));
@@ -288,6 +288,25 @@ describe('the composer', () => {
     await vi.waitFor(() => expect(text('.composer-note')).toBe('图片类型不支持：brief.pdf（支持 PNG、JPEG、WebP、GIF）；'
       + '图片太大：big.png（单张最大 10 MB）；图片读取失败：gone.png'));
     expect(root.querySelector('.composer-image img')?.getAttribute('alt')).toBe('ok.png');
+    expect(button('发送').disabled).toBe(false);
+  });
+
+  it('shows an image as soon as it is added, and one that never reads holds the message only until removed or given up', async () => {
+    const { root, button, text, input } = mounted();
+    vi.spyOn(FileReader.prototype, 'readAsDataURL').mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => undefined);
+    root.querySelector('.composer-card')!.dispatchEvent(withData('drop', 'dataTransfer',
+      { files: [png('a.png'), png('b.png')] }));
+    input().value = '看图';
+    input().dispatchEvent(new Event('input'));
+    expect(root.querySelectorAll('.composer-image')).toHaveLength(2);
+    expect(button('发送').disabled).toBe(true);
+
+    button('移除图片 a.png').click();
+    expect(root.querySelectorAll('.composer-image')).toHaveLength(1);
+    vi.advanceTimersByTime(10_000);
+    await vi.waitFor(() => expect(text('.composer-note')).toBe('图片读取失败：b.png'));
+    expect(root.querySelectorAll('.composer-image')).toHaveLength(0);
     expect(button('发送').disabled).toBe(false);
   });
 
@@ -537,6 +556,19 @@ describe('the end of a turn', () => {
 });
 
 describe('the header', () => {
+  it('lists the open files of this kind, this one first and marked', () => {
+    const { root, button } = mounted({ documents: new Map([
+      ['s9', { name: '市场分析.pptx', kind: 'presentation', current: false }],
+      ['s8', { name: '预算.xlsx', kind: 'workbook', current: false }],
+      [S1, { name: '季度汇报.pptx', kind: 'presentation', current: true }],
+    ]) });
+    expect(root.querySelector('.files-count')?.textContent).toBe('2');
+    button('打开的演示文稿').click();
+    const items = [...root.querySelectorAll('#files-menu .menu-item')];
+    expect(items.map(item => item.querySelector('.menu-item-title')!.textContent)).toEqual(['季度汇报.pptx', '市场分析.pptx']);
+    expect(items.map(item => item.querySelector('.menu-item-meta')?.textContent)).toEqual(['本文件', undefined]);
+  });
+
   it('lists the document\'s conversations, marks the current one, and switches', () => {
     const now = Math.floor(Date.now() / 1000);
     const { root, button, controller } = mounted({ conversations: [

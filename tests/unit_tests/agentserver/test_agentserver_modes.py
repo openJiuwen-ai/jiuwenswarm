@@ -635,21 +635,74 @@ def test_agent_ws_resuming_tool_interrupt_recognizes_evolution_interrupt_approva
     assert not is_interrupt_resume_payload(passive_params)
 
 
-def test_build_inputs_maps_team_plan_confirm_interrupt_answers_to_interactive_input(monkeypatch):
+@pytest.fixture(
+    params=[
+        pytest.param(
+            ("Approve", "", {"approved": True, "auto_confirm": False, "feedback": ""}),
+            id="tui-approve",
+        ),
+        pytest.param(
+            (
+                "plan_execute",
+                "",
+                {"approved": True, "auto_confirm": False, "feedback": "", "plan_execute": True},
+            ),
+            id="execute",
+        ),
+        pytest.param(
+            (
+                "plan_skip",
+                "",
+                {
+                    "approved": False,
+                    "auto_confirm": False,
+                    "feedback": "用户选择跳过本次计划审批，暂不执行，也未提出修改意见。",
+                    "plan_skip": True,
+                },
+            ),
+            id="skip",
+        ),
+        pytest.param(
+            (
+                "plan_revise",
+                "把任务拆得再细一点",
+                {
+                    "approved": False,
+                    "auto_confirm": False,
+                    "feedback": "把任务拆得再细一点",
+                    "plan_revise": True,
+                },
+            ),
+            id="revise",
+        ),
+    ],
+)
+def team_plan_approval_answer(request):
+    """Cover Web plan actions while retaining the TUI approval contract."""
+    return request.param
+
+
+@pytest.mark.parametrize("mode", ["team.work.plan", "team.code.plan"])
+def test_build_inputs_maps_team_plan_confirm_interrupt_answers_to_interactive_input(
+    monkeypatch,
+    mode,
+    team_plan_approval_answer,
+):
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
     monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
     monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
 
-    answers = [{"selected_options": ["Approve"], "custom_input": ""}]
+    selected_option, custom_input, expected_payload = team_plan_approval_answer
+    answers = [{"selected_options": [selected_option], "custom_input": custom_input}]
     request = AgentRequest(
         request_id="req-answer",
         channel_id="tui",
         session_id="team-session",
         params={
             "query": "",
-            "mode": "team.plan",
+            "mode": mode,
             "request_id": "exit_plan_mode_call_1",
             "answers": answers,
             "source": "confirm_interrupt",
@@ -663,16 +716,13 @@ def test_build_inputs_maps_team_plan_confirm_interrupt_answers_to_interactive_in
 
     assert isinstance(inputs["query"], InteractiveInput)
     assert inputs["query"].user_inputs == {
-        "exit_plan_mode_call_1": {
-            "approved": True,
-            "auto_confirm": False,
-            "feedback": "",
-        }
+        "exit_plan_mode_call_1": expected_payload,
     }
     assert raw_query.text is inputs["query"]
 
 
-def test_build_inputs_maps_team_plan_reject_answers_to_interactive_input(monkeypatch):
+@pytest.mark.parametrize("mode", ["team.plan", "team.work.plan", "team.code.plan"])
+def test_build_inputs_maps_team_plan_reject_answers_to_interactive_input(monkeypatch, mode):
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
@@ -685,7 +735,7 @@ def test_build_inputs_maps_team_plan_reject_answers_to_interactive_input(monkeyp
         session_id="team-session",
         params={
             "query": "",
-            "mode": "team.plan",
+            "mode": mode,
             "request_id": "exit_plan_mode_call_1",
             "answers": [{"selected_options": ["Reject"], "custom_input": "把任务拆得再细一点"}],
             "source": "confirm_interrupt",
@@ -831,7 +881,12 @@ def test_build_inputs_drops_bare_other_without_custom_input(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_chat_answer_routes_team_plan_confirm_interrupt_to_adapter(monkeypatch):
+@pytest.mark.parametrize("mode", ["team.work.plan", "team.code.plan"])
+async def test_chat_answer_routes_team_plan_confirm_interrupt_to_adapter(
+    monkeypatch,
+    mode,
+    team_plan_approval_answer,
+):
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
     class FakeAdapter:
@@ -851,6 +906,7 @@ async def test_chat_answer_routes_team_plan_confirm_interrupt_to_adapter(monkeyp
     fake_adapter = FakeAdapter()
     monkeypatch.setattr(interface_module, "create_adapter", lambda _sdk, mode="agent": fake_adapter)
 
+    selected_option, custom_input, _expected_payload = team_plan_approval_answer
     request = AgentRequest(
         request_id="req-answer",
         req_method=ReqMethod.CHAT_ANSWER,
@@ -858,9 +914,9 @@ async def test_chat_answer_routes_team_plan_confirm_interrupt_to_adapter(monkeyp
         session_id="team-session",
         params={
             "query": "",
-            "mode": "team.plan",
+            "mode": mode,
             "request_id": "exit_plan_mode_call_1",
-            "answers": [{"selected_options": ["Approve"], "custom_input": ""}],
+            "answers": [{"selected_options": [selected_option], "custom_input": custom_input}],
             "source": "confirm_interrupt",
             "plan_approval_kind": "plan_approval",
             "plan_content": "# Team Plan",
@@ -876,8 +932,11 @@ async def test_chat_answer_routes_team_plan_confirm_interrupt_to_adapter(monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["team.work.plan", "team.code.plan"])
 async def test_process_message_stream_routes_team_plan_confirm_interrupt_as_team_follow_up(
     monkeypatch,
+    mode,
+    team_plan_approval_answer,
 ):
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
@@ -936,15 +995,16 @@ async def test_process_message_stream_routes_team_plan_confirm_interrupt_as_team
         lambda _channel_id: FakeTeamManager(),
     )
 
+    selected_option, custom_input, expected_payload = team_plan_approval_answer
     request = AgentRequest(
         request_id="req-stream-answer",
         channel_id="tui",
         session_id="team-session",
         params={
             "query": "",
-            "mode": "team.plan",
+            "mode": mode,
             "request_id": "exit_plan_mode_call_1",
-            "answers": [{"selected_options": ["Approve"], "custom_input": ""}],
+            "answers": [{"selected_options": [selected_option], "custom_input": custom_input}],
             "source": "confirm_interrupt",
             "plan_approval_kind": "plan_approval",
             "plan_content": "# Team Plan",
@@ -961,7 +1021,8 @@ async def test_process_message_stream_routes_team_plan_confirm_interrupt_as_team
     assert FakeSessionManager.submit_task_calls == []
     assert len(FakeTeamManager.interact_calls) == 0
     assert isinstance(fake_adapter.seen_inputs["query"], InteractiveInput)
-    assert fake_adapter.seen_inputs["query"].user_inputs["exit_plan_mode_call_1"]["approved"] is True
+    assert fake_adapter.seen_inputs["query"].user_inputs == {"exit_plan_mode_call_1": expected_payload}
+    assert request.params["mode"] == mode
     assert chunks[0].payload == {"event_type": "chat.done"}
     assert chunks[0].is_complete is True
     assert chunks[-1].is_complete is True

@@ -6,7 +6,11 @@ import { EXCEL } from './excelApp';
 import { excelRuntime } from './excelTools';
 import { FakeWorkbook } from './fakeExcel';
 import { HostWriteQueue } from './hostWriteQueue';
+import { DocEditReview } from './docEditReview';
+import { FakeDocument, FakeSettings } from './fakeWord';
 import { SYNC_MS } from './officeCodeRunner';
+import { WORD } from './wordApp';
+import { wordRuntime } from './wordTools';
 
 // MicrosoftAjax as Office.js loads it before any code runs, reduced to extensions its own APIs call, two that
 // evaluate text in the page's scope, and, sloppy as MicrosoftAjax is, two that see the page's global object as
@@ -31,7 +35,7 @@ const SHEET = 'const sheet = context.workbook.worksheets.getActiveWorksheet();';
 
 function run(book: FakeWorkbook, code: string, writes = new HostWriteQueue()): Promise<ClientToolResult> {
   const runtime = excelRuntime({ run: book.run, host: HOST, enums: { RangeCopyType: { all: 'All' } },
-    surface: async () => '' });
+    surface: async () => '', writes });
   return new ClientToolDispatcher(EXCEL, runtime, writes).execute(
     { requestId: 'call_1', interruptId: 'int_1', toolName: 'execute_office_js', input: { code, explanation: 'x' },
       downloads: {} });
@@ -160,4 +164,38 @@ describe('execute_office_js', () => {
       await later;
       expect(next).toBe(true);
     });
+});
+
+describe('execute_office_js on Word', () => {
+  const runWord = (doc: FakeDocument, code: string) => new ClientToolDispatcher(WORD, wordRuntime({ run: doc.run,
+    host: HOST, enums: {}, reviews: new DocEditReview(new FakeSettings(), doc.run, new HostWriteQueue()) }),
+    new HostWriteQueue())
+    .execute({ requestId: 'call_1', interruptId: 'int_1', toolName: 'execute_office_js',
+      input: { code, explanation: 'x' }, downloads: {} });
+
+  it('warns when the code changed the Track Changes mode', async () => {
+    const doc = new FakeDocument(['Hello']);
+    const result = await runWord(doc, `context.document.changeTrackingMode = 'Off'; await context.sync();
+      context.document.changeTrackingMode = 'TrackAll'; await context.sync(); return 'ok';`);
+    expect(answer(result)).toMatchObject({ success: true, result: 'ok',
+      tracked_change_warning: expect.stringContaining('from Off to TrackAll') });
+  });
+
+  it.each([
+    ['a change to the templates every document shares',
+      'context.application.templates.getFirst().save(); await context.sync();', 'every document on this computer shares'],
+    ['another document', 'context.application.createDocument(); await context.sync();', 'cannot open or create'],
+    ['a field that fetches another file', `context.document.body.paragraphs.getFirst().getRange()
+      .insertField('End', 'IncludeText', '"C:/secret.docx"'); await context.sync();`, 'fetch content from another'],
+    ['a linked picture in OOXML', `context.document.body.insertOoxml('<a:blip r:link="rId1"/>', 'End');
+      await context.sync();`, 'fetch from another file'],
+    ['an outside part in OOXML', `context.document.body.insertOoxml('<Relationship Target="http://x" '
+      + 'TargetMode="External"/>', 'End'); await context.sync();`, 'fetch from another file'],
+    ['a document inserted whole', 'context.document.body.insertFileFromBase64("UEs=", "End"); await context.sync();',
+      'Inserting another document'],
+  ])('refuses %s', async (_case, code, reason) => {
+    const result = await runWord(new FakeDocument(['Hello']), code);
+    expect(answer(result)).toMatchObject({ success: false, code: 'TOOL_EXECUTION_BLOCKED',
+      error: expect.stringContaining(reason) });
+  });
 });

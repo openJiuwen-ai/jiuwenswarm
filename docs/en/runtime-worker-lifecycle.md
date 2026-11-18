@@ -57,3 +57,9 @@ On a transient resident IPC disconnect, Front retains submitted streaming waiter
 The 90-second budget applies to transport recovery, not normal execution time. Confirmed Worker exit, replacement or unhealthy retirement, exhausted reconnect attempts, an unavailable dispatch, expired undelivered replay, and service stop still fail the original waiter explicitly. Missing output cannot imply success. Non-streaming RPCs retain their delivery acknowledgement and failure semantics; `front_loopback` retains its existing Worker lifetime behavior.
 
 If both IPC send and close fail, Front retains the original recovery waiters. A failed recovery subscription retires that connection before all preserved streams resume. Service stop cleans up waiters and background tasks even when IPC close raises.
+
+## Worker output logs
+
+Both resident and `front_loopback` Workers use the original output routing: stdout inherits the launching process's output, while stderr is appended directly to `worker-logs/runtime-worker-*.stderr.log`. Supervisor startup logs and runtime diagnostics expose the stderr file path. Exception tracebacks remain in that file.
+
+The Supervisor does not read and relabel individual Worker output lines or create a separate stdout log file. Stderr can contain ordinary INFO records. Diagnose failures using the original log levels, exception tracebacks, and process exit code.

@@ -6,6 +6,7 @@ import json
 import logging
 from typing import Any
 
+from jiuwenswarm.common.schema.message import SESSION_REQUEST_COMPLETED_EVENT
 from jiuwenswarm.server.runtime.session import lifecycle as lc
 from jiuwenswarm.server.runtime.session.context_snapshot import bind_recovery_boundary, save_context_snapshot
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
@@ -14,6 +15,9 @@ from jiuwenswarm.server.runtime.session.history_stream import iter_history_rows
 
 logger = logging.getLogger(__name__)
 _COMPRESS_AT_BYTES = 512 * 1024
+# Leave room for the rest of a tool batch before the hard page limit.
+_PAGE_AT_RECORDS = 1024
+_MAX_PAGE_RECORDS = 2048
 _MAX_CONTEXT_BYTES = 4 * 1024 * 1024
 
 
@@ -26,21 +30,57 @@ def _message_bytes(context: Any) -> int:
     return total
 
 
+def _history_request_id(record: dict[str, Any]) -> str:
+    request_id = str(record.get("request_id") or "").strip()
+    if request_id:
+        return request_id
+    # History writers also encode the request in their stable record identity.
+    role = record.get("role")
+    suffix = ":request_completed" if record.get("event_type") == SESSION_REQUEST_COMPLETED_EVENT else (
+        f":{role}" if role in {"user", "assistant"} else ""
+    )
+    record_id = str(record.get("id") or "").strip()
+    return record_id[:-len(suffix)].strip() if suffix and record_id.endswith(suffix) else ""
+
+
 def _next_page(iterator, pending: dict[str, Any], before_request_id: str | None, covered: set[str]):
     records = []
     size = 0
-    open_calls: set[str] = set()
+    open_calls: set[tuple[str, str]] = set()
+    request_scope: set[str] = set(pending.get("legacy_request_scope", ()))
+
+    def finish_page():
+        # Preserve a single owner across pages. Multiple or unknown owners stay
+        # ambiguous, without retaining an unbounded set of queued request IDs.
+        pending["legacy_request_scope"] = tuple(request_scope) if len(request_scope) <= 1 else ("",)
+        return records
+
     for row in iterator:
         record = row.record
-        if (before_request_id and record.get("request_id") == before_request_id
+        request_id = _history_request_id(record)
+        if (before_request_id and request_id == before_request_id
                 and record.get("role") in {"user", "human"}):
             pending.update(offset=row.start, done=True)
             break
         pending["offset"] = row.end
-        if str(record.get("request_id") or "") in covered:
+        if request_id in covered:
+            continue
+        if record.get("event_type") == SESSION_REQUEST_COMPLETED_EVENT:
+            if request_id and record.get("status") in {"success", "error", "failed", "cancelled"}:
+                request_scope.discard(request_id)
+            if request_id and record.get("status") == "cancelled":
+                # The terminal marker follows the request's durable output.
+                # Missing results from this cancelled request cannot hold later
+                # turns in one page. The message builder removes unresolved
+                # calls; the original audit records remain untouched.
+                open_calls.difference_update({call for call in open_calls if call[0] == request_id})
+                if records and not open_calls:
+                    return finish_page()
             continue
         if not is_context_record(record):
             continue
+        if request_id or record.get("role") in {"user", "human"}:
+            request_scope.add(request_id)
         if record.get("event_type") == "context.compact_summary":
             # Auto summaries are audit projections, not effective windows. The
             # original messages are still present and get compressed once here.
@@ -52,20 +92,39 @@ def _next_page(iterator, pending: dict[str, Any], before_request_id: str | None,
         if record.get("event_type") == "chat.tool_call" and isinstance(call, dict):
             call_id = call.get("tool_call_id") or call.get("id")
             if call_id:
-                open_calls.add(str(call_id))
+                owner = request_id
+                if not owner:
+                    candidates = request_scope | {key[0] for key in open_calls if key[0]}
+                    if len(candidates) == 1:
+                        owner = next(iter(candidates))
+                open_calls.add((owner, str(call_id)))
         if record.get("event_type") == "chat.tool_result":
-            open_calls.discard(str(record.get("tool_call_id") or ""))
+            call_id = str(record.get("tool_call_id") or "")
+            key = (request_id, call_id)
+            if key in open_calls:
+                open_calls.discard(key)
+            else:
+                # Older rows may omit request_id on either half of a pair.
+                # Only accept an unambiguous match when that metadata is absent.
+                legacy_matches = {call for call in open_calls
+                                  if call[1] == call_id and (not request_id or not call[0])}
+                if len(legacy_matches) == 1:
+                    open_calls.difference_update(legacy_matches)
+        if record.get("event_type") == "chat.final" and request_id and all(
+            owner and owner != request_id for owner, _ in open_calls
+        ):
+            request_scope.discard(request_id)
         records.append(record)
         size += len(json.dumps(record, ensure_ascii=False).encode("utf-8"))
-        if size > _MAX_CONTEXT_BYTES or len(records) > 2048:
+        if size > _MAX_CONTEXT_BYTES or len(records) > _MAX_PAGE_RECORDS:
             raise HistoryReplayError("A legacy tool group exceeds the migration budget", code="HISTORY_RESTORE_LIMIT")
-        if size >= _COMPRESS_AT_BYTES and not open_calls:
-            return records
+        if (size >= _COMPRESS_AT_BYTES or len(records) >= _PAGE_AT_RECORDS) and not open_calls:
+            return finish_page()
     else:
         pending["done"] = True
     if open_calls:
         raise HistoryReplayError("Legacy history has an unfinished tool group; original data was preserved")
-    return records
+    return finish_page()
 
 
 async def migrate_history_context(*, context_engine: Any, session: Any, processors: Any,

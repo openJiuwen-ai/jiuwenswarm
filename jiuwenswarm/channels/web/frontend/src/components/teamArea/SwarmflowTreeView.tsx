@@ -59,6 +59,7 @@ import {
   partitionAgentsByVerifyGroups,
   compactTokenLabel,
   sessionMembersAcrossPhases,
+  workflowAgentFullName,
 } from './workflowTypes';
 import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
@@ -133,8 +134,8 @@ function statusText(status: WorkflowStatus, t: (k: string) => string): string {
 function ProgressBar({ completed, total }: { completed: number; total: number }) {
   const pct = total > 0 ? Math.round((completed / total) * 100) : 0;
   return (
-    <div className="flex items-center gap-2 shrink-0">
-      <div className="swarmflow-run-progress-track w-16 h-1.5 rounded-full bg-secondary overflow-hidden">
+    <div className="flex items-center gap-2 shrink-0 whitespace-nowrap">
+      <div className="swarmflow-run-progress-track w-16 h-1.5 shrink-0 rounded-full bg-secondary overflow-hidden">
         <div
           className="h-full rounded-full bg-blue-500 transition-all"
           style={{ width: `${pct}%` }}
@@ -677,13 +678,20 @@ function AgentNode({
             >
               fork{agent.parent_session_id ? `(${forkParentDisplay(agent.parent_session_id)})` : ''}
             </span>
-            <TeamMemberAvatar
-              member={avatarName ?? workflowAgentAvatarName(agent)}
-              identity={workflowAgentIdentity(agent)}
-              className="w-5 h-5 shrink-0 rounded-full"
-              imageClassName="rounded-full"
-              alt={avatarName ?? workflowAgentAvatarName(agent)}
-            />
+            <span
+              className="shrink-0"
+              title={workflowAgentFullName(agent, runId)}
+              data-testid="team-area-swarmflow-agent-avatar"
+              data-variant={agent.id}
+            >
+              <TeamMemberAvatar
+                member={avatarName ?? workflowAgentAvatarName(agent)}
+                identity={workflowAgentIdentity(agent)}
+                className="w-5 h-5 shrink-0 rounded-full"
+                imageClassName="rounded-full"
+                alt={avatarName ?? workflowAgentAvatarName(agent)}
+              />
+            </span>
           </>
         ) : (
           <>
@@ -698,13 +706,20 @@ function AgentNode({
                 {roleTag}
               </span>
             )}
-            <TeamMemberAvatar
-              member={avatarName ?? workflowAgentAvatarName(agent)}
-              identity={workflowAgentIdentity(agent)}
-              className="w-5 h-5 shrink-0 rounded-full"
-              imageClassName="rounded-full"
-              alt={avatarName ?? workflowAgentAvatarName(agent)}
-            />
+            <span
+              className="shrink-0"
+              title={workflowAgentFullName(agent, runId)}
+              data-testid="team-area-swarmflow-agent-avatar"
+              data-variant={agent.id}
+            >
+              <TeamMemberAvatar
+                member={avatarName ?? workflowAgentAvatarName(agent)}
+                identity={workflowAgentIdentity(agent)}
+                className="w-5 h-5 shrink-0 rounded-full"
+                imageClassName="rounded-full"
+                alt={avatarName ?? workflowAgentAvatarName(agent)}
+              />
+            </span>
           </>
         )}
         {/* 主文字永远是脚本给节点的 label（同一专家被多次调用时唯一可区分）；
@@ -1436,7 +1451,7 @@ function RunNode({
   useLayoutEffect(() => {
     setExpanded(!ended);
   }, [ended]);
-  // Folded terminal runs compress to a single header row: the summary and the
+  // Folded terminal runs show only the header: the summary and the
   // result / error detail rows stay hidden until the card is expanded again.
   const compressed = ended && !expanded;
   // Control request in-flight flag: clicking pause/resume/stop immediately
@@ -1599,7 +1614,7 @@ function RunNode({
         </div>
         {/* 指标簇 + 控制按钮。整簇作为一个 grid item：宽档与名称同排贴右，窄档由
             grid 模板换到第二行、左沿对齐名称轨。 */}
-        <div className="swarmflow-run-metrics flex min-w-0 items-center gap-x-2 gap-y-1">
+        <div className="swarmflow-run-metrics flex min-w-0 items-center gap-x-2 gap-y-2" data-testid="team-area-swarmflow-run-metrics">
           {waitingCount > 0 && (
             <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500 shrink-0 animate-pulse" data-testid="team-area-swarmflow-run-waiting-badge" data-variant={run.id}>
               {t('swarmflow.waitingForHuman', { count: waitingCount })}

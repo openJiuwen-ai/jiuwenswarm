@@ -134,7 +134,7 @@ export function ModelProviderSelect({
       : selected?.kind === 'account'
         ? getProviderLogoUrl('openai')
         : selected?.kind === 'preset'
-          ? getVendorLogoUrl(selected.preset.vendor_key)
+          ? getVendorLogoUrl(selected.preset.vendor_key) ?? settingsCustomModelIcon
           : undefined;
   const selectedApiAddress = selected?.kind === 'preset' ? getPresetApiAddress(selected.preset, protocol) : '';
 
@@ -300,7 +300,7 @@ export function ModelProviderSelect({
                             ? settingsCustomModelIcon
                             : option.kind === 'account'
                               ? getProviderLogoUrl('openai')
-                              : getVendorLogoUrl(option.preset.vendor_key);
+                              : getVendorLogoUrl(option.preset.vendor_key) ?? settingsCustomModelIcon;
                         const label =
                           option.kind === 'custom'
                             ? t('settingsPanel.models.customVendor')

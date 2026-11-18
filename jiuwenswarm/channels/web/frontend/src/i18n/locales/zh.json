@@ -830,11 +830,15 @@
         "maas": "Maas 盘古",
         "minimax": "MiniMax",
         "mimo": "小米 MiMo",
+        "opencode-go": "OpenCode Go",
         "openrouter": "OpenRouter",
         "vllm-omni": "vLLM-Omni",
         "volcengine": "火山引擎",
         "zhipu": "智谱 GLM",
         "unrecognized": "未识别提供商（{{vendor}}）"
+      },
+      "apiBasePlaceholders": {
+        "opencode-go": "例如：https://opencode.ai/zen/go/v1"
       },
       "protocols": {
         "openai": "OpenAI",
@@ -1401,7 +1405,6 @@
     },
     "team": {
       "memberLanes": "成员轨迹泳道",
-      "members": "成员",
       "workflowGroupAria": "工作流 {{name}}，{{count}} 个算子",
       "workflowGroupOperators": "{{count}} 个算子",
       "schedule": {
@@ -1421,6 +1424,7 @@
         "expandReviews": "展开评审记录",
         "collapseReviews": "收起评审记录",
         "noReviews": "暂无 Review 记录",
+        "directCompleted": "无需验收，直接完成",
         "reviewCount_one": "{{count}} 次评审",
         "reviewCount_other": "{{count}} 次评审",
         "phase": {
@@ -1874,6 +1878,14 @@
     "planning": {
       "tab": "任务",
       "progressTitle": "任务进度",
+      "taskCompletion": "任务完成",
+      "executionProgress": "执行进度",
+      "estimatedProgress": "执行进度（估算）",
+      "agentProgress": "已加载工作流的执行节点：{{ended}} / {{total}} 已结束",
+      "phaseAgentProgress": "阶段执行节点：{{ended}} / {{total}} 已结束",
+      "agentProgressUnavailable": "已加载工作流的执行节点：部分工作流节点状态不可用",
+      "teamMetricScope": "任务数包含团队任务和工作流阶段，不含应用任务；执行进度综合普通任务与工作流，工作流优先使用节点计数",
+      "teamBoardMetricScope": "执行进度仅统计团队任务和工作流；各状态数量包含看板中的全部任务（含应用任务）",
       "token": "Token",
       "taskList": "任务列表",
       "taskListAria": "{{task}} 任务列表",
@@ -4601,6 +4613,7 @@
     "historyPreviewEmpty": "按与历史恢复相同的规则过滤后，没有可展示的消息（或文件为空）。可关闭预览查看原始 JSON。",
     "edit": "编辑",
     "unknownError": "未知错误",
+    "saveFailedForPath": "保存 {{path}} 失败：",
     "fileMissingPrefix": "文件不存在。请先在",
     "fileMissingSuffix": "创建该文件后再编辑。",
     "notPreviewable": "该文件无法预览，仅支持 Markdown/JSON（.md/.mdx/.json）文件"
@@ -5263,7 +5276,10 @@
     "skippedSummary": "已跳过"
   },
   "skillPackagePrompt": {
-    "creating": "正在创建…"
+    "creating": "正在创建…",
+    "nameConflict": "创建失败：本地已有同名技能或技能包，原内容未覆盖。可选择“暂不创建”，或处理同名冲突后重试。",
+    "createFailed": "创建技能包失败，确认卡已保留。请稍后重试，或选择“暂不创建”。",
+    "resultUnavailable": "暂未确认技能包创建结果，确认卡已保留。请检查技能列表后重试，或选择“暂不创建”。"
   },
   "qaSummary": {
     "title": "问题澄清"
@@ -6712,6 +6728,10 @@
         "promptRequired": "请输入任务描述",
         "required": "请填写任务名称和描述",
         "executorRequired": "请选择执行此任务的员工",
+        "onceDateRequired": "请选择执行日期",
+        "timeRequired": "请选择执行时间",
+        "monthDayInvalid": "请输入 1 到 31 之间的每月执行日期",
+        "intervalRequired": "请输入执行间隔",
         "intervalInvalid": "间隔必须是正整数",
         "futureRequired": "单次执行时间必须晚于当前时间",
         "rangeInvalid": "生效结束时间必须晚于开始时间"
@@ -6779,6 +6799,7 @@
       "periodEnd": "结束日期",
       "periodTo": "至",
       "periodLimit": "最多支持查看 {{count}} 天数据，已自动调整开始日期",
+      "periodLimitEnd": "最多支持查看 {{count}} 天数据，已自动调整结束日期",
       "metrics": {
         "members": "员工数量",
         "activeDays": "活跃天数",
@@ -6812,9 +6833,11 @@
       "minutesAgo": "{{count}} 分钟前",
       "hoursAgo": "{{count}} 小时前",
       "daysAgo": "{{count}} 天前",
+      "previous": "上一组",
       "next": "下一组",
       "workRecord": "工作记录",
-      "groupChats": "群聊 {{count}}",
+      "groupChats": "群聊列表",
+      "groupChatsCount": "共 {{count}} 个",
       "channelColumns": {
         "group": "群聊",
         "channel": "频道",

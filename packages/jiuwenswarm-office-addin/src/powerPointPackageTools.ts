@@ -87,13 +87,16 @@ interface Call extends SlideWrite {
 /** A slide and the edited package that replaces it; ``refit`` are the shapes whose frames fit their text again. */
 interface Replacement { id: string; before: string; after: string; refit: string[] }
 
-export function powerPointPackageRuntime({ run, host, journal, sandbox, forgetUndo, fetcher }: {
+export function powerPointPackageRuntime({ run, host, journal, sandbox, forgetUndo, insertTakesDeckDesign = false,
+  fetcher }: {
   run: PowerPointRun;
   host: OfficeHost;
   journal: (callId: string) => SlideJournal;
   sandbox: Sandbox;
   /** Clears the pane's undo, after an edit of the slide master that no turn can put back. */
   forgetUndo: () => void;
+  /** The host gives a slide it inserts the deck's theme, master and layouts, not the package's (WPS). */
+  insertTakesDeckDesign?: boolean;
   fetcher?: (url: string, init: RequestInit) => Promise<Response>;
 }): ClientToolRuntime<PresentationToolName> {
   /** Puts each edited copy in place of its slide, as one write of the turn; the copies' ids by the slides'. */
@@ -141,7 +144,7 @@ export function powerPointPackageRuntime({ run, host, journal, sandbox, forgetUn
     const [before] = (await call.batch(b => exportSlides(b, call.timings, [id]))).exports;
     const ran = await sandbox(call.input.code as string, before);
     if (!ran.dirty) return unchanged(ran);
-    checkEdit(before, ran.base64);
+    checkEdit(before, ran.base64, insertTakesDeckDesign);
     const refit = (call.input.autosize_shape_ids as string[] | undefined) ?? [];
     const shapes = slideShapeIds(ran.base64);
     const unknown = refit.filter(shape => !shapes.includes(shape));

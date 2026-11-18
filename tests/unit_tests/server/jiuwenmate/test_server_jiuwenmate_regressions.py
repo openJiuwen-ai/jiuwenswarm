@@ -18,7 +18,7 @@ from agent_gateway.app_gateway import RouteConfig
 from agent_gateway.channel_manager.web.app_web_handlers import (
     _FORWARD_NO_LOCAL_HANDLER_METHODS, _FORWARD_REQ_METHODS,
 )
-from tests.unit_tests.gateway.test_app_gateway_acp import build_server, FakeWebSocket
+from tests.unit_tests.gateway.gateway_server_fakes import FakeWebSocket, build_server
 from datetime import datetime, timezone
 from e2a.message import ReqMethod as WireMethod
 from e2a.models import E2AEnvelope

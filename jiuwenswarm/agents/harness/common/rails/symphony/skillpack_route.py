@@ -35,6 +35,7 @@ class DirectRouteToken:
     allowed_member_ids: tuple[str, ...]
     inventory_revision: str
     source: str
+    validation_revision: str = ""
 
 
 @dataclass
@@ -155,6 +156,8 @@ class SkillPackRouter:
             if not all(isinstance(member, str) and member for member in members):
                 continue
             if len(set(members)) != len(members):
+                continue
+            if not isinstance(item.get("validation_revision"), str) or not item["validation_revision"]:
                 continue
             candidates[identifier] = dict(item)
         return candidates
@@ -295,10 +298,14 @@ class SkillPackRouter:
         return matches if seen == set(by_id) else []
 
     async def confirm(self, route: PackRoute, identifier: str, *, source: str) -> bool:
-        """Revalidate the same inventory before minting the trusted token."""
+        """Revalidate the selected Pack's closure before minting the token."""
         snapshot = await self.snapshot()
         eligible = self.eligible(snapshot)
-        if snapshot.get("inventory_revision") != route.inventory_revision or identifier not in eligible:
+        selected = next((item for item in route.candidates if item["id"] == identifier), None)
+        if selected is None:
+            return False
+        current = eligible.get(identifier)
+        if current is None or selected.get("validation_revision") != current["validation_revision"]:
             route.candidates = [eligible[item["id"]] for item in route.candidates if item["id"] in eligible]
             route.inventory_revision = str(snapshot.get("inventory_revision") or "")
             route.changed = True
@@ -306,10 +313,10 @@ class SkillPackRouter:
             route.confirmation_call_id = ""
             route.token = None
             return False
-        if identifier not in {item["id"] for item in route.candidates}:
-            return False
+        route.inventory_revision = str(snapshot.get("inventory_revision") or "")
         route.token = DirectRouteToken(
             identifier, tuple(eligible[identifier]["members"]), route.inventory_revision, source,
+            current["validation_revision"],
         )
         logger.info(
             "skillpack.route confirmed pack=%s source=%s revision=%s", identifier, source, route.inventory_revision,
@@ -335,18 +342,21 @@ class SkillPackRouter:
                     return False
                 current = self.eligible(snapshot).get(route.token.pack_id)
                 valid = (
-                    snapshot.get("inventory_revision") == route.token.inventory_revision
-                    and current is not None
+                    current is not None
+                    and bool(route.token.validation_revision)
+                    and current["validation_revision"] == route.token.validation_revision
                     and tuple(current["members"]) == route.token.allowed_member_ids
                 )
                 if not valid:
                     route.blocked = True
                     logger.warning(
-                        "skillpack.route inventory_changed pack=%s revision_changed=%s eligible=%s members_changed=%s",
+                        "skillpack.route inventory_changed pack=%s revision_changed=%s eligible=%s "
+                        "members_changed=%s validation_changed=%s",
                         route.token.pack_id,
                         snapshot.get("inventory_revision") != route.token.inventory_revision,
                         current is not None,
                         current is not None and tuple(current["members"]) != route.token.allowed_member_ids,
+                        current is not None and current["validation_revision"] != route.token.validation_revision,
                     )
                 return valid
         except asyncio.CancelledError:

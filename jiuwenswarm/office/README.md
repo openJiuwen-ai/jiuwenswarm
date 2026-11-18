@@ -2,16 +2,20 @@
 
 Office 任务窗格在 AgentServer 侧的能力：工具合同、在任务窗格执行的客户端工具、人设与 skills、
 插入用的会话资产。`server/client_attachments/registry.py` 把应用编号 `office-powerpoint`、`office-word`、
-`office-excel` 分别登记为包目录 `powerpoint/`、`word/`、`excel/`；每个目录既是合同，也是对话加载的
-agent template（`manifest.json`）。
+`office-excel` 分别登记为包目录 `powerpoint/`、`word/`、`excel/`，`wps-presentation`（WPS 演示）也登记为
+`powerpoint/`；每个目录既是合同，也是对话加载的 agent template（`manifest.json`）。
+
+每个工具的 `host_requirements` 按平台（`office`、`wps`）写宿主要具备什么（`sets`：Office.js 需求集合；
+`worker`：要 Worker）。工具只在写了的平台上运行：登记表给每个应用一个平台，attach 拒绝声明本平台
+没有的工具；窗格只声明本平台写了、条件满足、自己实现了的工具。只有 WPS 能做的工具以后只写 `wps`。
 
 ## 目录
 
 ```text
 contract.py            读包目录的 tools.json，校验 annotations，生成 ToolCard
 client_tools.py        TaskPaneTool(ClientTool)：build_request 判断能否执行并给出下载链接，complete 处理截图；
-                       VisualReviewTool：按工具名表 _VISUAL_REVIEWS 挂审稿（verify_slide_visual、verify_doc_visual）
-review.py              视觉复核：选审稿模型、审稿调用（60s）、判定、几何摘要、返回给作者的结果
+                       ReviewTool：按工具名表 _REVIEWS 挂独立审稿（verify_slide_visual、verify_doc_visual、explain_edits）
+review.py              独立审稿：视觉复核（选审稿模型、审稿调用 60s、判定、几何摘要）与 explain_edits 的依据核对
 rails.py               OfficeToolsRail：注册所在包的工具，第一次模型调用时按 supported_tools 去掉窗格跑不了的；
                        把窗格随消息发来的文档状态作为一次 read_surface_context 调用和结果加进对话
 excel_reminders.py     ExcelReminderRail：Excel 回合要结束时，写了没读回、改了图表没看、调用失败没重试，各提醒一次
@@ -21,7 +25,8 @@ runtime.py             会话目录、资产允许目录、把图片存进会话
 powerpoint/            合同 tools.json、profile.json（任务窗格构建时读取）；agent template：
                        manifest.json、persona/（替换默认身份）、rails/（指向 OfficeToolsRail）、skills/；
                        review.md（verify_slide_visual 的审稿清单）
-word/、excel/          同上的 Word、Excel 包；word/review.md 是 verify_doc_visual 的审稿清单，excel/ 没有视觉复核
+word/、excel/          同上的 Word、Excel 包；word/review.md 是 verify_doc_visual 的审稿清单，word/claim_check.md
+                       是 explain_edits 的核对说明；excel/ 没有独立审稿
 ```
 
 `contract.py`、`TaskPaneTool`、`rails.py` 不认识 Office：任何在自己包里声明工具、由客户端执行的应用都是
@@ -67,6 +72,11 @@ word/、excel/          同上的 Word、Excel 包；word/review.md 是 verify_d
   60s 内没有答复、供应商报错或两次空答复时，返回不带 verdict 的结果。作者拿到 `done|needs_work`、
   `hard_defects`/`advisories`/`expected_change_checks` 和同一张截图（截图的去向同上一条）。
   怎么用这个结果（`needs_work` 不算完成、同一页三轮就停、没有 verdict 时自己看图并说明）只写在人设的编辑循环里。
+- 依据核对 `explain_edits`（Word）：同一张表的一行。窗格答复文档的定稿正文（待处理修订已应用）和待处理修订；
+  complete 把 `claim_check.md`、正文、修订、依据里点名且包里有的 skill 和要核对的依据交给本对话当前的模型，
+  不带对话内容，按 JSON 数组读回每条依据的 verdict。`model_judgment` 记 `not_checked`；法律（要联网搜索）和
+  用户的长期偏好（审稿拿不到）记 `could_not_verify`，不进审稿调用。审稿失败或答复不成形时，送审的依据都记
+  `could_not_verify` 并写明原因。作者拿到每条计划修改及其 `verdicts`、`has_unverified_claims`。
 - 跨文档协作走 `list_open_documents` + 现有的 `session_send_message`，session 之间只传文字。
 
 ## 每回合的文档状态与 Excel 提醒
