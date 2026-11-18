@@ -938,6 +938,7 @@ function resolveIconPath() {
 }
 
 function showAndMaximizeMainWindow() {
+  if (quitRequested) return false;
   if (!mainWindow || mainWindow.isDestroyed()) return false;
   mainWindow.show();
   if (mainWindow.isMinimized()) mainWindow.restore();
@@ -968,8 +969,13 @@ function ensureTray() {
 }
 
 function destroyTray() {
-  if (tray && !tray.isDestroyed()) tray.destroy();
-  tray = null;
+  try {
+    if (tray && !tray.isDestroyed()) tray.destroy();
+  } catch (error) {
+    console.error('[electron] failed to destroy tray', error);
+  } finally {
+    tray = null;
+  }
 }
 
 async function promptCloseAction() {
@@ -1033,7 +1039,7 @@ async function handleMainWindowCloseRequest() {
     action = choice.action;
     if (choice.remember) saveCloseAction(action);
   }
-  if (action === null) return;
+  if (quitRequested || action === null) return;
   if (action === CLOSE_ACTION_QUIT) {
     requestShutdown(0);
     return;
@@ -1814,6 +1820,7 @@ async function showStartupFailure(error) {
     if (shouldRunStartupDoctor(error, childFailure)) {
       try {
         await mainWindow.loadURL(diagnosingHtml());
+        if (quitRequested) return;
         mainWindow.show();
         mainWindow.focus();
       } catch (loadError) {
@@ -1835,6 +1842,7 @@ async function showStartupFailure(error) {
   }
   try {
     await mainWindow.loadURL(failureHtml(status));
+    if (quitRequested) return;
     mainWindow.show();
     mainWindow.focus();
   } catch (loadError) {
@@ -3077,7 +3085,9 @@ async function createMainWindow() {
       sandbox: true,
     },
   });
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  mainWindow.once('ready-to-show', () => {
+    if (!quitRequested) mainWindow.show();
+  });
   registerDisplayMediaHandler({
     session: mainWindow.webContents.session,
     desktopCapturer,
@@ -3138,6 +3148,7 @@ async function createMainWindow() {
     void mainWindow
       .loadURL(earlyUrl)
       .then(() => {
+        if (quitRequested) return;
         mainWindow.show();
         mainWindow.focus();
         if (process.platform === 'darwin') app.focus({ steal: true });
@@ -3186,6 +3197,7 @@ async function createMainWindow() {
     currentFrontendUrl = frontendUrl;
     console.log('[electron] loading frontend:', frontendUrl);
     await mainWindow.loadURL(frontendUrl);
+    if (quitRequested) return;
     mainWindow.show();
     mainWindow.focus();
     if (process.platform === 'darwin') app.focus({ steal: true });
@@ -3201,6 +3213,7 @@ async function createMainWindow() {
     const entryUrl = VITE_DEV_MODE ? frontendBase : desktopEntryUrl(frontendBase);
     console.log('[electron] loading frontend:', frontendBase);
     await mainWindow.loadURL(entryUrl);
+    if (quitRequested) return;
     mainWindow.show();
     mainWindow.focus();
     if (process.platform === 'darwin') app.focus({ steal: true });
@@ -3211,6 +3224,7 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', () => {
+    if (quitRequested) return;
     if (!mainWindow) return;
     if (process.platform === 'win32') {
       showAndMaximizeMainWindow();
@@ -3257,6 +3271,13 @@ app.on('before-quit', event => {
   if (shutdownComplete) return;
   event.preventDefault();
   if (finalShutdownPromise) return;
+  // Hide before stopping services so intentional disconnects are never shown.
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+  } catch (error) {
+    console.error('[electron] failed to hide main window before shutdown', error);
+  }
+  destroyTray();
   // 冲刷待写的会话页面 URL（取消防抖定时器），保证重启还原不丢最后一次导航。
   saveSessionLastUrls();
   // 冲刷下载历史，保证重启后下载记录完整。
@@ -3272,6 +3293,7 @@ app.on('before-quit', event => {
     });
 });
 app.on('activate', () => {
+  if (quitRequested) return;
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
