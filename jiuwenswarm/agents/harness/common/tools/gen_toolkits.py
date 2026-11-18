@@ -519,7 +519,8 @@ def _minimax_h3_image_area_tier(size: str | None) -> str:
     pixels = parsed[0] * parsed[1]
     # Map the requested pixel area onto the closest official H3-Image area tier.
     targets = {"1K": 1024 * 1024, "2K": 2048 * 2048, "4K": 4096 * 4096}
-    return min(targets, key=lambda tier: abs(targets[tier] - pixels))
+    tier, _ = min(targets.items(), key=lambda item: abs(item[1] - pixels))
+    return tier
 
 
 def _minimax_h3_image_size_fields(options: ImageOptions, aspect_ratio: str) -> dict[str, str]:

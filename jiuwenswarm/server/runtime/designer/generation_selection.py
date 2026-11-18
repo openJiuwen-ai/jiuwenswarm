@@ -116,7 +116,7 @@ def _catalogue_is_stored(path) -> bool:
 
 def _load_locked(path) -> tuple[dict, dict]:
     with config_write_lock(config_path=path):
-        return MultimodalStore()._load(path)
+        return MultimodalStore.load_catalogue_locked(path)
 
 
 def catalogue_generation_model(slot: str) -> CatalogueModel:
@@ -191,7 +191,7 @@ def set_generation_selection(slot: object, model_id: object) -> dict[str, str | 
         raise DesignSelectionError("Multimodal models are not available.")
     with config_write_lock(config_path=path):
         try:
-            raw, state = MultimodalStore()._load(path)
+            raw, state = MultimodalStore.load_catalogue_locked(path)
         except MultimodalError as exc:
             raise DesignSelectionError("Multimodal models are not available.") from exc
         match = next((model for model in _models_for(state, slot) if model.get("model_id") == model_id), None)

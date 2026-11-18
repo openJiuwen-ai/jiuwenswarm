@@ -3,8 +3,8 @@
 
 The toolbar offers a ratio and a tier; the backend sends ``IMAGE_SIZES[tier][ratio]``
 as the model's width x height. Which tiers a model gets follows the vendor limits:
-Qwen-Image 3.0 accepts 512-2048 px per side, MiniMax-H3-Image takes 1K-4K (area at least 655,360 px), Seedream models take
-their documented tiers, vLLM-Omni serves 0.5K-2K, and anything else gets 1K.
+Qwen-Image 3.0 accepts 512-2048 px per side, and MiniMax-H3-Image takes 1K-4K (area at least 655,360 px).
+Seedream models take their documented tiers, vLLM-Omni serves 0.5K-2K, and anything else gets 1K.
 """
 
 from __future__ import annotations

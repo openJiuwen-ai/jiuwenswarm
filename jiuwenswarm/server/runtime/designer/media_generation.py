@@ -55,9 +55,9 @@ _PENDING_JOB = re.compile(r"^Video job (\S+) (?:submitted and still|is still) ")
 _OPENROUTER_HOST = re.compile(r"(^|\.)openrouter\.ai$", re.IGNORECASE)
 
 
-def _is_openrouter(protocol_env: str, api_base: str) -> bool:
+def _is_openrouter(protocol: str, api_base: str) -> bool:
     """True when the slot is saved as OpenRouter or points at an openrouter.ai host."""
-    if os.environ.get(protocol_env, "").strip().lower() == gen_toolkits.OPENROUTER:
+    if protocol.strip().lower() == gen_toolkits.OPENROUTER:
         return True
     return bool(_OPENROUTER_HOST.search(urlparse(api_base).hostname or ""))
 
@@ -86,7 +86,7 @@ def _env_slot_settings(kind: Kind) -> SlotSettings:
     prefix = _ENV_PREFIX[kind]
     api_base = os.environ.get(f"{prefix}_API_BASE", "").strip()
     backend = gen_toolkits.detect_backend(f"{prefix}_PROTOCOL", api_base)
-    if backend is None and api_base and _is_openrouter(f"{prefix}_PROTOCOL", api_base):
+    if backend is None and api_base and _is_openrouter(os.environ.get(f"{prefix}_PROTOCOL", ""), api_base):
         backend = gen_toolkits.OPENROUTER
     return SlotSettings(
         api_key=os.environ.get(f"{prefix}_API_KEY", "").strip(),
@@ -101,10 +101,7 @@ def _slot_from_model(model: dict) -> SlotSettings:
     api_base = str(connection.get("api_base") or "").strip()
     protocol = str(connection.get("protocol") or "")
     backend = gen_toolkits.backend_from_protocol(protocol, api_base)
-    if backend is None and api_base and (
-        protocol.strip().lower() == gen_toolkits.OPENROUTER
-        or bool(_OPENROUTER_HOST.search(urlparse(api_base).hostname or ""))
-    ):
+    if backend is None and api_base and _is_openrouter(protocol, api_base):
         backend = gen_toolkits.OPENROUTER
     return SlotSettings(
         api_key=str(connection.get("api_key") or "").strip(),
