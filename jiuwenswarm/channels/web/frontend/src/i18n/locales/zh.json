@@ -919,7 +919,7 @@
       "rsi": "RSI 递归自我改进",
       "trajectoryUi": "轨迹诊断",
       "kvCacheAffinity": "算力亲和",
-      "teamOrganization": "Team Organization",
+      "teamOrganization": "Swarm Organization",
       "teamScheduledDispatch": "调度模式",
       "skillPack": "技能包",
       "multiModelCollaboration": "多模型协同",
@@ -1251,8 +1251,8 @@
         "description": "在会话中显示「诊断与归因」视图，分析执行失败的原因并给出优化建议。开启后会自动记录轨迹数据；仅能诊断开启之后产生的记录。关闭后不再显示轨迹相关页面。"
       },
       "team_organization_ui_enabled": {
-        "title": "启用 Team Organization 界面",
-        "description": "显示实验性的多 Team 视图和组织任务池。此开关不关闭后端组织能力。"
+        "title": "启用 Swarm Organization 界面",
+        "description": "显示实验性的多 Team 视图和组织任务池。"
       },
       "comfyui_workflow_enabled": {
         "title": "ComfyUI 工作流集成",
