@@ -29,6 +29,7 @@ from jiuwenswarm.server.handlers.bootstrap import (
 )
 from jiuwenswarm.server.handlers.video_conversation import handle_video_conversation_append
 from jiuwenswarm.server.handlers.hub_catalog import handle_hub_equipment_catalog
+from jiuwenswarm.server.handlers.expert_team_batch import handle_expert_teams_add
 from jiuwenswarm.server.handlers.chat import handle_chat_cancel
 from jiuwenswarm.server.handlers.cron_gateway import handle_cron_gateway_callback
 from jiuwenswarm.server.handlers.a4p import handle_a4p_request
@@ -253,6 +254,7 @@ HANDLERS: dict[ReqMethod, Handler] = {
     ReqMethod.TEAM_SNAPSHOT: handle_team_snapshot,
     ReqMethod.TEAM_LIST: handle_team_list,
     ReqMethod.ORG_SNAPSHOT: handle_org_snapshot,
+    ReqMethod.ORG_EXPERT_TEAMS_ADD: handle_expert_teams_add,
     ReqMethod.A4P_CONFIG_GET: handle_a4p_request,
     ReqMethod.A4P_CONFIG_UPDATE: handle_a4p_request,
     # 企业版 Gateway→Pod HTTP：授权 complete/reject 等必须进 HANDLERS，

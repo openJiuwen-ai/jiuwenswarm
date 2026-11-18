@@ -168,6 +168,7 @@ import {
   isConversationMissing,
   registerCreatedConversation,
   forgetCreatedConversation,
+  moveConversationDraft,
   resolveNewConversationEntrySettings,
   resetNewConversationRuntime,
 } from './multi-session/state/newConversationLifecycle';
@@ -3565,6 +3566,7 @@ function AppContent({
         createParams.previous_mode = previousSession.mode;
       }
       if (runtimeSettings.selectedModelName) createParams.model_name = runtimeSettings.selectedModelName;
+      if (pendingRuntime?.selectedModelSelection) createParams.model_selection = pendingRuntime.selectedModelSelection;
       if (workContext.project_id) createParams.project_id = workContext.project_id;
       if (workContext.project_dir) createParams.project_dir = workContext.project_dir;
 
@@ -3582,6 +3584,7 @@ function AppContent({
           persist_session: created.persist_session,
         },
       );
+      moveConversationDraft(NEW_CONVERSATION_ID, newSid);
 
       (pendingRuntime?.selectedSkills ?? []).forEach((skill) => sessionStore.addSelectedSkill(newSid, skill));
       (pendingRuntime?.enabledPlugins ?? []).forEach((id) => sessionStore.addEnabledPlugin(newSid, id));
