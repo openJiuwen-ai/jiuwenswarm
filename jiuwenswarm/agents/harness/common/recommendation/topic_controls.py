@@ -140,6 +140,31 @@ class RecommendationConsentStore:
         return {"history_after": history_after, "deleted_at": deleted_at}
 
 
+# ``get_config`` re-reads and parses config.yaml; the stage invoker asks for the
+# language on every model call. Cache it briefly and clear it on a locale save.
+_LANGUAGE_CACHE: tuple[float, str] | None = None
+_LANGUAGE_CACHE_TTL_SECONDS = 2.0
+
+
+def clear_recommendation_language_cache() -> None:
+    global _LANGUAGE_CACHE
+    _LANGUAGE_CACHE = None
+
+
+def recommendation_language() -> str:
+    """The language user-visible recommendation copy must use."""
+
+    global _LANGUAGE_CACHE
+    now = time.monotonic()
+    cached = _LANGUAGE_CACHE
+    if cached is not None and now - cached[0] < _LANGUAGE_CACHE_TTL_SECONDS:
+        return cached[1]
+    raw = str(get_config().get("preferred_language") or "zh").strip().lower()
+    language = "en" if raw == "en" else "zh"
+    _LANGUAGE_CACHE = (now, language)
+    return language
+
+
 def load_recommendation_controls(store: Any = None) -> dict[str, Any]:
     """The switches as resolved, plus the recorded consent boundary and deletion epoch."""
 
@@ -441,6 +466,8 @@ def recommendation_model_config(environ: Any = None) -> ArkBackgroundConfig | No
     Name, endpoint, key and window come from the explicit entry. None when
     that model cannot be called this way.
     """
+    from jiuwenswarm.common.reasoning_config import resolve_sampling_override
+
     override = ArkBackgroundConfig.from_environ(environ)
     if override is not None:
         return override
@@ -450,10 +477,15 @@ def recommendation_model_config(environ: Any = None) -> ArkBackgroundConfig | No
     if isinstance(dedicated, dict):
         if not all(dedicated.get(key) for key in ("api_key", "api_base", "model")):
             return None
+        # Endpoints with mandated sampling (Kimi) reject the deterministic 0.0
+        # default; their required values win over the background defaults.
+        sampling = resolve_sampling_override(dedicated["api_base"], dedicated["model"]) or {}
         return ArkBackgroundConfig(
             api_key=dedicated["api_key"],
             model=dedicated["model"],
             base_url=dedicated["api_base"],
+            temperature=float(sampling.get("temperature", 0.0)),
+            top_p=float(sampling.get("top_p", 1.0)),
             context_window_tokens=(
                 parse_positive_int(dedicated.get("context_window_tokens"))
                 or RECOMMENDATION_CONTEXT_WINDOW_TOKENS
@@ -470,10 +502,14 @@ def recommendation_model_config(environ: Any = None) -> ArkBackgroundConfig | No
     base_url = str(client.get("api_base") or "").strip()
     if not api_key or not base_url:
         return None
+    model_name = _model_name(entry)
+    sampling = resolve_sampling_override(base_url, model_name) or {}
     return ArkBackgroundConfig(
         api_key=api_key,
-        model=_model_name(entry),
+        model=model_name,
         base_url=base_url,
+        temperature=float(sampling.get("temperature", 0.0)),
+        top_p=float(sampling.get("top_p", 1.0)),
         context_window_tokens=parse_positive_int((entry.get("model_config_obj") or {}).get("context_window"))
         or RECOMMENDATION_CONTEXT_WINDOW_TOKENS,
         client_provider=str(client.get("client_provider") or "OpenAI"),
@@ -521,13 +557,8 @@ def permitted_recommendation_history(
     } for row in records]
 
 
-def recommendation_sources(store: Any, locators: list[Any]) -> list[dict[str, Any]]:
-    """Resolve only unchanged, currently permitted completed user records."""
-    from jiuwenswarm.server.runtime.session.session_history import (
-        load_history_records,
-        project_completed_session_records,
-    )
-
+def load_recommendation_source_context(store: Any) -> dict[str, Any]:
+    """The ledger witness snapshot and per-session cache shared by one profile read."""
     from . import topic_history as history
     state = history.load_latest_history_state(store) or {}
     witnesses = {}
@@ -535,13 +566,39 @@ def recommendation_sources(store: Any, locators: list[Any]) -> list[dict[str, An
         for entry in session.get("entries", []):
             if not entry.get("retracted"):
                 witnesses[(sid, entry["ordinal"])] = entry.get("witness")
-    completed = {}
+    return {"state": state, "witnesses": witnesses, "completed": {}}
+
+
+def recommendation_sources(
+    store: Any,
+    locators: list[Any],
+    *,
+    context: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Resolve only unchanged, currently permitted completed user records.
+
+    ``context`` lets one profile read check every memory unit against a single
+    ledger snapshot and reuse each source session's projection instead of
+    re-reading the same session once per unit. The read itself goes through the
+    bounded, projected history reader; callers on the event loop must run this
+    in a worker thread.
+    """
+    from jiuwenswarm.server.runtime.session.session_history import (
+        project_completed_session_records,
+    )
+
+    from . import topic_history as history
+    shared = context if context is not None else load_recommendation_source_context(store)
+    witnesses = shared["witnesses"]
+    completed = shared["completed"]
     sources = []
     for sid, ordinal in locators:
         if sid not in completed:
             completed[sid] = project_completed_session_records(
                 sid,
-                permitted_recommendation_history(load_history_records(sid)),
+                permitted_recommendation_history(
+                    history.load_recommendation_source_records(sid)
+                ),
                 allow_gaps=True,
             )
         rows = completed[sid]
@@ -549,59 +606,27 @@ def recommendation_sources(store: Any, locators: list[Any]) -> list[dict[str, An
             return []
         if rows[ordinal].get("role") not in {"user", "human"}:
             return []
-        if witnesses.get((sid, ordinal)) != history.record_witness(rows[ordinal], True):
+        if history.normalize_witness(
+            witnesses.get((sid, ordinal))
+        ) != history.record_witness(rows[ordinal], True):
             return []
         sources.append({"session_id": sid, "ordinal": ordinal,
                         "event_id": rows[ordinal].get("id"), "content": rows[ordinal].get("content", "")})
     return sources
 
 
-def _global_feedback(store: Any, state: dict[str, Any], now: float) -> Any:
-    from .topic_product import GLOBAL_NEW_CHAT_SCOPE, InterestFeedback
-    return InterestFeedback.load(store, state, context_scope=GLOBAL_NEW_CHAT_SCOPE, project_id=None, now=now)
-
-
 def inspect_recommendation_profile(store: Any, *, now: float) -> dict[str, Any]:
-    from . import topic_history as history
-    state = history.load_latest_history_state(store) or {}
+    context = load_recommendation_source_context(store)
+    state = context["state"]
     units = []
     for unit in state.get("memory", {}).get("units", []):
-        sources = recommendation_sources(store, unit.get("companion", {}).get("canonical_source_locators", []))
+        sources = recommendation_sources(
+            store,
+            unit.get("companion", {}).get("canonical_source_locators", []),
+            context=context,
+        )
         if sources:
             units.append({"unit_id": unit["companion"]["unit_id"],
                           "summary": unit["core"]["preference_summary"], "sources": sources})
-    summaries = {unit["companion"]["unit_id"]: unit["core"]["preference_summary"]
-                 for unit in state.get("memory", {}).get("units", [])}
-    # Only the global page has directions that become permanent; a project dismissal takes off one card.
-    permanent = [
-        {
-            "direction_id": direction.direction_id,
-            "summary": (
-                direction.direction_anchor
-                or summaries.get(direction.unit_id)
-                or direction.records[-1].get("direction", "")
-            ),
-            "since": direction.permanent_since,
-        }
-        for direction in _global_feedback(store, state, now).permanent_directions
-    ]
-    return {"units": units, "semantic_version": state.get("memory", {}).get("semantic_version", 0),
-            "permanent_directions": permanent}
-
-
-def restore_dismissed_direction(store: Any, direction_id: str, *, now: float) -> bool:
-    """Lift a permanent global direction with one more record; it may return at the next regeneration."""
-    from . import topic_history as history
-    state = history.load_latest_history_state(store)
-    if state is None:
-        return False
-    feedback = _global_feedback(store, state, now)
-    direction = next((item for item in feedback.permanent_directions if item.direction_id == direction_id), None)
-    if direction is None:
-        return False
-    sidecar = state.setdefault("memory_sidecar", {})
-    sidecar["negative_preferences"] = [*(sidecar.get("negative_preferences") or []),
-                                       feedback.restore_record(direction, at=now)]
-    sidecar["negative_preference_version"] = int(sidecar.get("negative_preference_version") or 0) + 1
-    history.save_history_state(store, state, now=now)
-    return True
+    del now
+    return {"units": units, "semantic_version": state.get("memory", {}).get("semantic_version", 0)}

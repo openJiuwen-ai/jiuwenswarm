@@ -245,6 +245,19 @@ class ConfigAdapter(GatewayAdapter):
                 )
             lang = raw_lang.strip().lower()
             update_preferred_language_in_config(lang)
+            from jiuwenswarm.server.runtime.recommendation_host import (
+                active_recommendation_host,
+            )
+
+            host = active_recommendation_host()
+            if host is not None:
+                try:
+                    await host.on_language_changed(lang)
+                except Exception:  # noqa: BLE001 - language save must still succeed
+                    logger.warning(
+                        "[Config] recommendation language refresh failed",
+                        exc_info=True,
+                    )
             return AgentResponse(
                 request_id=request.request_id, channel_id=request.channel_id,
                 ok=True, payload={"preferred_language": lang}, metadata=request.metadata,
