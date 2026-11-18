@@ -1,6 +1,6 @@
 """Opt-in real-weight duplex E2E; Core's external model/action is deterministic.
 
-Run with VLLM_OMNI_E2E_URL pointing at the PR #9909 deployment. The production
+Run with VLLM_OMNI_E2E_URL pointing at either supported duplex WebSocket route. The production
 WebSocket bridge, protocol adapter, task executor, TaskService and SQLite store
 are real. The Core execution boundary is replaced by a counted artifact writer,
 so an independently read file proves the tool actually ran exactly once.
@@ -15,6 +15,7 @@ import os
 import socket
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, WebSocket
 import pytest
@@ -119,6 +120,7 @@ async def test_real_duplex_model_executes_one_task_and_answers_with_its_result(m
                    and item.get("item", {}).get("id", "").startswith("item-tool-") for item in events)
         (tmp_path / "e2e-evidence.json").write_text(json.dumps({
             "backend_revision": os.getenv("VLLM_OMNI_E2E_REVISION", "unspecified"),
+            "backend_route": urlsplit(os.environ["VLLM_OMNI_E2E_URL"]).path,
             "execution_count": len(records), "task_status": tasks[0]["status"],
             "business_call_id": tasks[0]["request"]["tool_call_id"],
             "output_admitted": True, "assistant_text": text,

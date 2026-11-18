@@ -2,6 +2,8 @@
 
 The video duplex interface can connect to a vLLM-Omni Realtime WebSocket backend. This integration requires the tool capabilities from [PR #9909](https://github.com/vllm-project/vllm-omni/pull/9909); use a verified deployment revision. HTTP tool calling and in-process inference are not supported.
 
+Both `ws://<host>/v1/realtime?duplex=1` and `ws://<host>/v1/duplex` are supported. In the verified vLLM-Omni revision, `/v1/duplex` is an alias for the same Realtime duplex protocol. Set either URL in the existing WebSocket URL field; the adapter preserves its path and adds the served model, `duplex=1` and `autostart=0` for an explicit session handshake.
+
 In Settings → Experimental, configure the vLLM-Omni WebSocket URL, served model, optional API key and tool timeout. Select **vLLM-Omni WebSocket**, then open a new duplex session. Existing sessions keep their original connection. The ordinary duplex connection test checks the saved provider and its declared tool capabilities.
 
 For managed deployments the equivalent environment settings are:

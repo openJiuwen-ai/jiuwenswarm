@@ -4,6 +4,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -47,9 +48,12 @@ def test_rejects_unsupported_capabilities(mode, continuation):
         }}, tool_count=2)
 
 
-def test_config_forces_explicit_handshake_and_no_credential_url():
-    config = VllmOmniConfig("ws://localhost:1234/v1/realtime?autostart=1", "model")
-    assert "autostart=0" in config.endpoint()
+@pytest.mark.parametrize("path", ["/v1/realtime", "/v1/duplex"])
+def test_config_forces_explicit_handshake_and_no_credential_url(path):
+    config = VllmOmniConfig(f"ws://localhost:1234{path}?autostart=1&duplex=0", "model")
+    endpoint = urlsplit(config.endpoint())
+    assert endpoint.path == path
+    assert parse_qs(endpoint.query) == {"autostart": ["0"], "duplex": ["1"], "model": ["model"]}
     with pytest.raises(ValueError):
         VllmOmniConfig("ws://user:secret@localhost", "model").endpoint()
 
