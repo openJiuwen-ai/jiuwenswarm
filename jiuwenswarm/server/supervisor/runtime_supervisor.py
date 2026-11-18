@@ -254,9 +254,15 @@ class RuntimeSupervisor:
             self._snapshot_send_task = sending
             self._side_tasks.append(sending)
             sending.add_done_callback(self._snapshot_send_done)
-            # Windows must close a pipe when a native write is cancelled.
-            # The connection owns this write; an observer timeout must not.
-            await asyncio.wait_for(asyncio.shield(sending), timeout=_SNAPSHOT_WAIT_SECONDS)
+            # Observer cancellation must not cancel the native write. Owner
+            # cancellation retires the write but leaves this query recoverable.
+            done, _ = await asyncio.wait({sending}, timeout=_SNAPSHOT_WAIT_SECONDS)
+            if not done:
+                logger.info("[Supervisor] runtime snapshot write pending query_id=%s", query_id)
+                return self._recovery_pending("snapshot_transport_timeout")
+            if sending.cancelled():
+                return self._recovery_pending("snapshot_transport_cancelled")
+            await sending
             # Retry the wait on the same query. Sending another subscription
             # would replay the journal twice and could race the first recovery.
             for _ in range(_SNAPSHOT_WAIT_ATTEMPTS):
@@ -268,9 +274,6 @@ class RuntimeSupervisor:
             logger.warning("[Supervisor] runtime snapshot pending query_id=%s session_id=%s",
                            query_id, request.session_id)
             return self._recovery_pending("snapshot_timeout")
-        except asyncio.TimeoutError:
-            logger.info("[Supervisor] runtime snapshot write pending query_id=%s", query_id)
-            return self._recovery_pending("snapshot_transport_timeout")
         except (OSError, RuntimeError, ValueError) as exc:
             logger.info("[Supervisor] runtime snapshot unavailable: %s", exc)
             return self._recovery_pending("snapshot_unavailable")

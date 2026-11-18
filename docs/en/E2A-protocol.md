@@ -547,3 +547,9 @@ accept an absent `prompt` and degrade the full-input details view accordingly.
 latencies. Context occupancy uses `context.usage`, and cumulative usage uses the
 existing session usage snapshot. Readers continue to accept older records with
 `prompt` fields.
+
+## Automatic recovery of session snapshots and model lists
+
+`session.get_metadata` queries runtime snapshots over the shared Worker IPC connection. If the send wait times out or connection retirement cancels the send, the metadata request still returns `runtime.recovery_pending=true`, with `recovery_reason` set to `snapshot_transport_timeout` or `snapshot_transport_cancelled`, respectively. Such responses preserve the persisted `is_processing` and `status` metadata; an unavailable snapshot does not imply an idle session. An observer timeout does not cancel the shared pipe write. Connection retirement remains responsible for cancelling and cleaning up the send task.
+
+While connected and active, the model settings page automatically retries `models.list` after `WORKER_CLOSED`, `WORKER_UNSTABLE`, `RUNTIME_WARMING`, `RUNTIME_FAILED`, or `SERVICE_UNAVAILABLE`: after 1, 2, and 4 seconds, then every 10 seconds. `RUNTIME_FAILED` may also represent a backend waiting for automatic recovery, so this code alone does not stop observation. Success refreshes the list, clears the temporary error, and enables the add button. Disconnecting or leaving the page clears the retry timer. This recovery flow requires no manual reload control.

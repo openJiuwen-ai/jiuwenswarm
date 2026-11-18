@@ -481,3 +481,9 @@ Web 仅在用户查看原文时读取内容，本地只保留最多 64 KiB 的�
 `chat.usage_metadata` 的输入、输出、缓存 token、费用和耗时统计继续上报。
 上下文占用使用 `context.usage`，累计用量使用既有 session usage 快照。
 历史读取兼容已保存的含 `prompt` 记录。
+
+## 会话快照与模型列表的自动恢复
+
+`session.get_metadata` 的运行时快照通过共享 Worker IPC 查询。等待发送超时或连接回收取消发送时，元数据请求仍返回 `runtime.recovery_pending=true`；对应的 `recovery_reason` 分别为 `snapshot_transport_timeout`、`snapshot_transport_cancelled`。这类响应保留持久化元数据中的 `is_processing` 和 `status`，不能把尚未取得快照解释为会话已经空闲。查询等待超时不会取消共享管道写；连接回收仍负责取消和清理发送任务。
+
+模型设置页在保持连接且页面可用时，对 `models.list` 返回的 `WORKER_CLOSED`、`WORKER_UNSTABLE`、`RUNTIME_WARMING`、`RUNTIME_FAILED` 和 `SERVICE_UNAVAILABLE` 自动重试：先等待 1、2、4 秒，之后每 10 秒继续查询。`RUNTIME_FAILED` 也可能表示后端正在等待自动恢复，因此不能仅凭该错误码停止观察。成功后更新列表、清除临时错误并恢复添加按钮；断开连接或离开页面会清理重试定时器。该恢复流程不需要手动重新加载入口。
