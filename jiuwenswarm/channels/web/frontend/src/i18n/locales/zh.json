@@ -2307,6 +2307,22 @@
     "referHint": "输入框里输入 @ 引用",
     "reference": "已引用"
   },
+  "assetTransfer": {
+    "errors": {
+      "notFound": "资产或指定版本不存在",
+      "exportForbidden": "未安装或受限的资产不可导出",
+      "invalidPackage": "资产包无效：缺少清单文件或包结构不合法",
+      "unsafePath": "资产包包含符号链接或非法路径，已拒绝",
+      "credentialDetected": "资产文件中检测到明文敏感凭证，请清理后重试",
+      "limitExceeded": "文件数量、单文件或压缩包体积超出限制",
+      "alreadyExists": "同 id 资产已存在，不支持覆盖，请先删除或改名",
+      "builtinReadOnly": "与系统内置资产冲突，不可覆盖",
+      "uploadFailed": "文件上传失败，请重试",
+      "downloadFailed": "导出包下载失败，请重新导出或稍后重试",
+      "saveFailed": "文件保存失败，请重试",
+      "requestFailed": "请求失败，请重试"
+    }
+  },
   "artifacts": {
     "title": "所有产物",
     "tab": "产物",

@@ -2307,6 +2307,22 @@
     "referHint": "Type @ in the chat box to reference",
     "reference": "Referenced"
   },
+  "assetTransfer": {
+    "errors": {
+      "notFound": "The asset or the requested version does not exist",
+      "exportForbidden": "Uninstalled or restricted assets cannot be exported",
+      "invalidPackage": "Invalid asset package: missing manifest or bad structure",
+      "unsafePath": "The package contains symlinks or unsafe paths and was rejected",
+      "credentialDetected": "Plaintext credentials detected in package files; remove them and retry",
+      "limitExceeded": "File count, single file, or archive size exceeds the limit",
+      "alreadyExists": "An asset with the same id already exists; overwriting is not supported",
+      "builtinReadOnly": "Conflicts with a built-in asset; overwriting is not allowed",
+      "uploadFailed": "File upload failed, please try again",
+      "downloadFailed": "Failed to download the export package; export again or retry later",
+      "saveFailed": "Failed to save the file, please try again",
+      "requestFailed": "Request failed, please try again"
+    }
+  },
   "artifacts": {
     "title": "Artifacts",
     "tab": "Artifacts",

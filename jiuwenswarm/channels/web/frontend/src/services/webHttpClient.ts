@@ -260,6 +260,11 @@ const ROUTES: Record<string, RouteRow> = {
   'team.stop': { verb: 'POST', path: '/teams/actions/stop', kind: 'unary' },
   'team.delete': { verb: 'DELETE', path: '/teams/{team_name}', kind: 'unary' },
   'team.quota.get': { verb: 'GET', path: '/teams/quota', kind: 'unary' },
+  // 统一资产导入导出：包体经 /file-api/assets/upload-temp 上传、
+  // /file-api/download 短效链接下载，此处只登记控制面 RPC，
+  // 路径与服务端 pod_rest_map 的声明一致。
+  'assets.export': { verb: 'POST', path: '/assets/export', kind: 'unary' },
+  'assets.import': { verb: 'POST', path: '/assets/import', kind: 'unary' },
 };
 
 const PATH_PLACEHOLDER = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
