@@ -125,8 +125,11 @@ def build_cua_repl_prompt(language: str, *, legacy_available: bool, api: str | N
         instructions = (
             "cua_repl executes Python. computer, print and print_image are preloaded. "
             "Call SDK methods synchronously. Variables persist within this delegation. "
-            "The host closes the session afterwards. Reads present text automatically. "
-            "Use print_image for images and read again to verify actions. "
+            "The host closes the session afterwards. Inspect the interface with `app.read()`, or "
+            '`app.read(view="both")` for the tree and screenshot. The result is shown automatically. '
+            "There is no need to print or slice `obs.text` to see it. "
+            "On macOS, open a named app directly with `computer.app(name).read()` unless the user "
+            "specifies a method such as double-clicking in Finder. Read again to verify actions. "
             "After a timeout or cancellation, actions may already have executed. Never replay them "
             "automatically. This code runs with the host user's permissions."
         )
@@ -141,7 +144,10 @@ def build_cua_repl_prompt(language: str, *, legacy_available: bool, api: str | N
         instructions = (
             "cua_repl 执行 Python，已预载 computer、print 和 print_image。"
             "直接调用同步 SDK 方法。变量在本次委派期间保留，委派结束后由宿主关闭会话。"
-            "读取会自动显示文本，图片使用 print_image。操作后重新读取以验证结果。"
+            '查看界面直接用 `app.read()`，需要界面树和截图时用 `app.read(view="both")`。'
+            "读取结果会自动显示，无需打印或截取 `obs.text`。"
+            "在 macOS 上，打开已知名称的应用时直接用 `computer.app(name).read()`。"
+            "用户明确指定从访达双击等方式时，按指定方式操作。操作后重新读取以验证结果。"
             "超时或取消时，动作可能已执行，禁止自动重放。代码以宿主用户的权限运行。"
         )
         api_heading = "Computer Use SDK 公共接口"

@@ -710,6 +710,9 @@ def test_cua_factory_keeps_caller_rails_with_repl(monkeypatch, tmp_path, legacy_
     assert spec.factory_name == (CUA_AGENT_FACTORY_NAME if legacy_available else None)
     assert ("list_windows" in spec.system_prompt) is legacy_available
     assert guidance in spec.system_prompt
+    assert "computer.app(name).read()" in spec.system_prompt
+    assert 'app.read(view="both")' in spec.system_prompt
+    assert ("无需打印或截取" if language == "cn" else "no need to print or slice") in spec.system_prompt
     assert "class Computer: ..." in spec.system_prompt
     assert any(isinstance(rail, CuaProgressRail) for rail in spec.rails) is not legacy_available
 
