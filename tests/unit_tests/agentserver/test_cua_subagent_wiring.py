@@ -745,6 +745,55 @@ async def test_repl_only_subagent_registers_repl_without_legacy_tools_or_sdk_ins
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("platform", "cleanup_fails"),
+    [("win32", False), ("win32", True), ("darwin", False), ("linux", False)],
+)
+async def test_repl_owns_windows_activity_banner(monkeypatch, platform, cleanup_fails):
+    from computer_use_mcp import session as sdk_session, windows_banner
+
+    from jiuwenswarm.agents.harness.common.tools import cua_runtime
+
+    monkeypatch.setattr(cua_runtime, "sys", SimpleNamespace(platform=platform, frozen=True))
+    banner = SimpleNamespace(close=AsyncMock())
+    make_banner = MagicMock(return_value=banner)
+    monkeypatch.setattr(windows_banner, "WindowsExecutionBanner", make_banner)
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value={"content": [{"type": "text", "text": "ok"}]}),
+        close=AsyncMock(return_value={
+            "isError": cleanup_fails,
+            "content": [{"type": "text", "text": "Native worker is still running"}],
+        }),
+    )
+    make_session = MagicMock(return_value=session)
+    monkeypatch.setattr(sdk_session, "ExecutionSession", make_session)
+
+    runtime = cua_runtime.ReplRuntime()
+    make_banner.assert_not_called()
+    try:
+        await runtime.execute("print('first')")
+        await runtime.execute("print('second')")
+        if platform == "win32":
+            make_banner.assert_called_once_with(windows_banner.DEFAULT_AGENT_DISPLAY_NAME)
+            make_session.assert_called_once_with(banner=banner)
+        else:
+            make_banner.assert_not_called()
+            make_session.assert_called_once_with(banner=None)
+    finally:
+        if cleanup_fails:
+            with pytest.raises(RuntimeError, match="Native worker is still running"):
+                await runtime.close()
+        else:
+            await runtime.close()
+            await runtime.close()
+    session.close.assert_awaited_once()
+    if platform == "win32":
+        banner.close.assert_awaited_once()
+    else:
+        banner.close.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("error", "detail"),
     [
         (FileLockTimeout("native-build.lock"), "Another session is preparing the desktop driver"),
@@ -763,7 +812,7 @@ async def test_repl_can_retry_after_driver_preparation_fails(monkeypatch, error,
         execute=AsyncMock(return_value={"content": [{"type": "text", "text": "ok"}]}),
         close=AsyncMock(return_value={"isError": False}),
     )
-    monkeypatch.setattr(sdk_session, "ExecutionSession", lambda: session)
+    monkeypatch.setattr(sdk_session, "ExecutionSession", MagicMock(return_value=session))
     runtime = cua_runtime.ReplRuntime()
     tool = CuaReplTool(runtime, "test")
     try:
