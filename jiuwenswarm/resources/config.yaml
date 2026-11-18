@@ -25,6 +25,9 @@ sensitive_mask:
       pattern: '(?:sk|rk|pk|ak)-[A-Za-z0-9]{8,}'
     - title: Token
       pattern: 'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
+    # http(s)://user:password@host，掩 password（HTTP_PROXY / HTTPS_PROXY 等）
+    - title: URL 密码
+      pattern: '(?<=:)[^:@/\s]+(?=@)'
 
 # Web 首次模型配置引导；用户确认完成后会自动关闭，可通过侧栏问号再次打开
 setup_guide:

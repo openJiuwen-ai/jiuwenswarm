@@ -159,6 +159,23 @@ def _mask_string(text: str, patterns: list[str], mask_complete: Any) -> str:
         return text
 
 
+def mask_permission_question(text: str) -> str:
+    """对定稿后的权限审批文案做一次整段脱敏。
+
+    复用 ``sensitive_mask`` 开关与 rules；关闭、无规则或库未安装时原文返回。
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    patterns = _active_patterns()
+    if not patterns:
+        return text
+    loaded = _load_mask_types()
+    if loaded is None:
+        return text
+    _, mask_complete = loaded
+    return _mask_string(text, patterns, mask_complete)
+
+
 def _mask_value(value: Any, patterns: list[str], mask_complete: Any, depth: int = 0) -> Any:
     """替换字符串，并走进字典和列表。返回新对象，不改调用方手里的原对象。"""
     if isinstance(value, str):
