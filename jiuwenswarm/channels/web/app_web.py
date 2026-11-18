@@ -247,7 +247,8 @@ def _guess_text_charset(file_path: Path) -> str:
     files. ``gb18030`` is a superset of GBK/GB2312, so one fallback decodes
     both. The UTF-8 check is incremental so large files stay bounded in memory;
     scanning the complete file avoids treating an ASCII-only prefix as evidence
-    that the rest of a legacy file is UTF-8.
+    that the rest of a legacy file is UTF-8. An incomplete UTF-8 sequence at EOF
+    is tolerated because an artifact may still be in the process of being written.
     """
     try:
         with file_path.open("rb") as file_obj:
@@ -266,7 +267,8 @@ def _guess_text_charset(file_path: Path) -> str:
                 if not chunk:
                     break
                 decoder.decode(chunk, final=False)
-            decoder.decode(b"", final=True)
+            # Keep a partial trailing character buffered: it must not change
+            # the charset of an otherwise valid UTF-8 document.
     except OSError:
         return "utf-8"
     except UnicodeDecodeError:
