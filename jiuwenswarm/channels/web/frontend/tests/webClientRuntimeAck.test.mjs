@@ -332,16 +332,17 @@ async function beginMetadataRecovery(client, sessionId, options) {
   const result = client.request('session.get_metadata', { session_id: sessionId }, options);
   await Promise.resolve();
   const query = socket.lastRequest;
+  const sessionDetails = { session_id: sessionId, title: 'Original metadata', mode: 'team' };
   socket.receive({
     type: 'res', id: query.id, ok: true,
     payload: {
-      title: 'Original metadata', status: 'processing', is_processing: true,
+      ...sessionDetails, status: 'processing', is_processing: true,
       runtime: { worker_instance: 'worker', cursor: 6892, is_processing: true },
     },
   });
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(client.isRecoveringExecution(sessionId), true);
-  return { socket, result, recovery: socket.sentRequests.find((item) => item.params?.runtime_resume) };
+  return { socket, result, sessionDetails, recovery: socket.sentRequests.find((item) => item.params?.runtime_resume) };
 }
 
 test('metadata returns the complete recovery response when the Team finishes during recovery', async () => {
@@ -382,24 +383,40 @@ test('metadata returns the complete recovery response when the Team finishes dur
   }
 });
 
-for (const failure of ['INTERNAL_ERROR', 'WS_CLOSED']) {
-  test(`metadata reports ${failure} when recovery fails after the first response`, async () => {
+for (const failure of ['INTERNAL_ERROR', 'REQUEST_TIMEOUT', 'WS_CLOSED', 'WS_DISCONNECTED']) {
+  test(`session details remain available when recovery fails with ${failure}`, async () => {
     const client = new webClient.constructor();
     await client.connect();
     try {
-      const { socket, result, recovery } = await beginMetadataRecovery(client, `recover-${failure}`);
-      const rejected = assert.rejects(result, { code: failure });
+      const { socket, result, recovery, sessionDetails } = await beginMetadataRecovery(client, `recover-${failure}`);
       if (failure === 'WS_CLOSED') {
         await client.disconnect();
+      } else if (failure === 'WS_DISCONNECTED') {
+        socket.close(1006);
       } else {
         socket.receive({ type: 'res', id: recovery.id, ok: false, code: failure, error: 'Recovery failed' });
       }
-      await rejected;
+      assert.deepEqual(await result, sessionDetails);
     } finally {
       await client.disconnect();
     }
   });
 }
+
+test('metadata still rejects when the first request fails', async () => {
+  const client = new webClient.constructor();
+  await client.connect();
+  try {
+    const result = client.request('session.get_metadata', { session_id: 'missing-session' });
+    await Promise.resolve();
+    const socket = FakeWebSocket.instance;
+    socket.receive({ type: 'res', id: socket.lastRequest.id, ok: false, code: 'NOT_FOUND' });
+    await assert.rejects(result, { code: 'NOT_FOUND' });
+    assert.equal(socket.sentRequests.length, 1);
+  } finally {
+    await client.disconnect();
+  }
+});
 
 test('cancelling a metadata caller leaves another caller on the same recovery request', async () => {
   const client = new webClient.constructor();
@@ -409,12 +426,14 @@ test('cancelling a metadata caller leaves another caller on the same recovery re
   try {
     const first = await beginMetadataRecovery(client, sessionId, { signal: controller.signal });
     const second = await beginMetadataRecovery(client, sessionId);
-    const rejected = assert.rejects(first.result, { code: 'REQUEST_ABORTED' });
+    const results = Promise.allSettled([first.result, second.result]);
     controller.abort();
     const completed = { status: 'idle', is_processing: false, runtime: { is_processing: false } };
     first.socket.receive({ type: 'res', id: first.recovery.id, ok: true, payload: completed });
-    await rejected;
-    assert.deepEqual(await second.result, completed);
+    assert.deepEqual(await results, [
+      { status: 'fulfilled', value: first.sessionDetails },
+      { status: 'fulfilled', value: completed },
+    ]);
     assert.equal(first.socket.sentRequests.filter((item) => item.params?.runtime_resume).length, 1);
   } finally {
     await client.disconnect();
@@ -584,6 +603,7 @@ test('an idle recovery response cannot settle a newer locally started turn', asy
     await fresh.connect();
     const request = FakeWebSocket.instance.lastRequest;
     assert.equal(request.params.runtime_resume.after, 9);
+    const { result, sessionDetails } = await beginMetadataRecovery(fresh, sessionId);
     store.setProcessing(sessionId, true, { newTurn: true });
     FakeWebSocket.instance.receive({
       type: 'res',
@@ -591,7 +611,7 @@ test('an idle recovery response cannot settle a newer locally started turn', asy
       ok: true,
       payload: { runtime: { is_processing: false } },
     });
-    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(await result, sessionDetails);
     assert.deepEqual(statuses, []);
     assert.equal(store.getRuntime(sessionId).foregroundIsProcessing, true);
   } finally {

@@ -41,7 +41,8 @@ export interface Session {
   /** Legacy server metadata; collaboration is derived from feature settings and model_selection. */
   moa_enabled?: boolean;
   mode: AgentMode;
-  status: SessionStatus;
+  /** WebSocket metadata can omit activity when execution recovery has no current snapshot. */
+  status?: SessionStatus;
   message_count: number;
   created_at: string;
   updated_at: string;
@@ -94,7 +95,7 @@ export type AgentMode =
   | 'team.work.plan'
   | 'team.code.normal'
   | 'team.code.plan';
-export type SessionStatus = 'active' | 'paused' | 'completed' | 'interrupted';
+export type SessionStatus = 'active' | 'paused' | 'completed' | 'interrupted' | 'processing' | 'idle';
 export type Permission = 'default' | 'automatic' | 'full_access';
 
 export type ModelPlan = 'token_plan' | 'coding_plan' | 'custom_api';
