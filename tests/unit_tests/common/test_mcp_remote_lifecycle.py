@@ -977,6 +977,64 @@ async def test_request_scoped_tool_rebuilds_after_transport_group_cancel(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["call", "reconnect"])
+async def test_request_scoped_tool_persistent_transport_group_cancel_is_tool_error(
+    transport, patched, monkeypatch, phase,
+):
+    from openjiuwen.core.common.exception.errors import BaseError
+    from openjiuwen.core.foundation.tool import ToolCard
+
+    monkeypatch.setattr(mcp_config, "ensure_request_scoped_mcp_tool_allowed", lambda _tool_id: None)
+    monkeypatch.setattr(mcp_config, "ensure_office_claw_tool_invocation_matches_active", lambda _tool: None)
+    request_id = f"req-transport-cancel-persistent-{phase}"
+    tool = mcp_config.RequestScopedOfficeClawMcpTool(
+        ToolCard(id=f"office-claw-request-{phase}.pptx-mcp.echo", name="echo", input_params={}),
+        {
+            "_mcp_client_type": "streamable-http", "server_name": "pptx-mcp",
+            "server_path": config("streamable-http")["url"],
+        },
+        request_id,
+        "pptx-mcp",
+    )
+    crashes = 0
+
+    async def crash_transport(self, *args, **kwargs):
+        nonlocal crashes
+        crashes += 1
+
+        async def post_failed():
+            raise RuntimeError("Client error '401 Unauthorized'")
+
+        self.group.start_soon(post_failed)
+        await asyncio.Event().wait()
+
+    try:
+        assert (await asyncio.wait_for(tool.invoke({}), 1)) == {"result": "ok"}
+        session_cls = type(transport.sessions[-1])
+        monkeypatch.setattr(session_cls, "call_tool", crash_transport)
+        if phase == "reconnect":
+            monkeypatch.setattr(session_cls, "initialize", crash_transport)
+        caller = asyncio.create_task(tool.invoke({}))
+        with pytest.raises(BaseError) as raised:
+            await asyncio.wait_for(caller, 2)
+        assert not caller.cancelled() and caller.cancelling() == 0
+        chain, cur = [], raised.value
+        while cur is not None and len(chain) < 8:
+            chain.append(cur)
+            cur = cur.__cause__ or cur.__context__
+        assert any(isinstance(exc, mcp_config.McpWorkerStoppedError) for exc in chain)
+        assert not any(isinstance(exc, asyncio.CancelledError) for exc in chain[:1])
+        # 首调崩溃 + 重建后再崩一次（call：新会话的 tools/call；reconnect：新会话的
+        # initialize），恰好重建一次，没有无限重试。
+        assert crashes == 2
+        if phase == "call":
+            assert transport.connects == 2  # reconnect 替换了 initialize，不经过计数
+    finally:
+        await mcp_config.release_request_scoped_mcp_sessions(request_id)
+    await settled(transport)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["streamable-http", "sse"])
 async def test_external_cancel_during_internal_cancel_cleanup(
     transport, patched, monkeypatch, kind,

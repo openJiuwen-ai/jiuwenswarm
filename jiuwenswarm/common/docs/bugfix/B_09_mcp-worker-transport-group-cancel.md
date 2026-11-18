@@ -74,6 +74,13 @@ CancelledError，而当前任务并未被取消。
 
 修复前两项均失败（调用者收到 `CancelledError: Cancelled via cancel scope`），修复后通过。
 
+检视补充：
+- `test_request_scoped_tool_persistent_transport_group_cancel_is_tool_error[call|reconnect]`
+  覆盖"租约一直失效"：重建后的会话仍然失败。`call` 是新会话的 tools/call 再次崩溃；
+  `reconnect` 是现场形态，新会话的 initialize 也崩溃。
+- 断言：请求级工具返回普通工具错误，原因链含 `McpWorkerStoppedError`；调用者未被取消；
+  恰好重建一次。修复前两项均失败，修复后通过。
+
 真实链路复现另见 `.agents/testing/repro_ppt_transport_cancel.py`（Git 忽略），以本地文件
 形式提供，不随代码提交。它用 FastMCP + uvicorn 起真实 streamable-http 服务端，模拟租约
 失效后返回 401；客户端走生产的请求级工具、worker 和 timeout 补丁。dev-stable 上两个
