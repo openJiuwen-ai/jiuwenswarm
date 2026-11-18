@@ -72,9 +72,10 @@ def test_register_expert_adapter_installer_sets_lazy_installer(
         register_expert_adapter_installer,
     )
 
-    register_expert_adapter_installer()
+    runtime = register_expert_adapter_installer()
     assert captured["installer"] is install_expert_org_adapters
-    assert getattr(runner, "_team_runtime_manager") is not None
+    assert runtime is getattr(runner, "_team_runtime_manager")
+    assert register_expert_adapter_installer() is runtime
 
 
 @pytest.mark.asyncio
