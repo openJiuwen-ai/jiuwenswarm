@@ -50,6 +50,7 @@ import { maySnapshotRelightProcessing } from './features/interruptSettleGuard';
 import { mergeCronRunUserSeed } from './features/cron/cronSeedMessage';
 import HeartbeatPanel from './components/HeartbeatPanel';
 import { ToolPanel } from './components/ToolPanel';
+import { getMaxTeamChatWidthPct } from './components/teamArea/teamPanelLayout';
 import { UpdatePanel } from './components/UpdatePanel';
 import type { ExternalCliInstallStatuses } from './components/ExternalCliInstallDialog';
 import { PersonalContextPanel } from './components/PersonalContext';
@@ -1120,22 +1121,25 @@ function AppContent({
     chatPanelResizeDragRef.current = {
       pointerId: event.pointerId,
       startX: event.clientX,
-      startPct: chatPanelWidthPct,
+      startPct: mode === 'team'
+        ? Math.min(chatPanelWidthPct, getMaxTeamChatWidthPct(containerWidth))
+        : chatPanelWidthPct,
       containerWidth,
     };
-  }, [chatPanelWidthPct]);
+  }, [chatPanelWidthPct, mode]);
 
   const handleDividerPointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = chatPanelResizeDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     const dx = event.clientX - drag.startX;
     const nextWidthPct = drag.startPct + (dx / drag.containerWidth) * 100;
-    const clampedWidthPct = Math.min(
-      CHAT_PANEL_MAX_WIDTH_PCT,
-      Math.max(CHAT_PANEL_MIN_WIDTH_PCT, nextWidthPct),
-    );
+    const maxWidthPct = mode === 'team'
+      ? getMaxTeamChatWidthPct(drag.containerWidth)
+      : CHAT_PANEL_MAX_WIDTH_PCT;
+    const minWidthPct = Math.min(CHAT_PANEL_MIN_WIDTH_PCT, maxWidthPct);
+    const clampedWidthPct = Math.min(maxWidthPct, Math.max(minWidthPct, nextWidthPct));
     setChatPanelWidthPct(clampedWidthPct);
-  }, []);
+  }, [mode]);
 
   const clearChatPanelResize = useCallback((pointerId?: number): boolean => {
     if (pointerId !== undefined && chatPanelResizeDragRef.current?.pointerId !== pointerId) return false;
