@@ -3350,8 +3350,8 @@ nohup {q_executable} >/dev/null 2>&1 &
             # immune to the interpreter state.
             logger.exception("[desktop] resident Worker final shutdown incomplete")
             try:
-                from jiuwenswarm.common.utils import get_user_workspace_dir
-
+                # get_user_workspace_dir 已在模块顶部导入, 此处直接复用,
+                # 避免在局部作用域重复 import 覆盖外部标识符 (G.VAR.03)。
                 if shutdown_application_worker(
                     workspace=Path(get_user_workspace_dir()),
                     timeout=max(.001, deadline - time.monotonic()),
