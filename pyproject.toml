@@ -76,7 +76,7 @@ dependencies = [
     "uvloop==0.22.1; sys_platform != 'win32'",
     "python-json-logger>=2.0.0",
     "jiuwenbox @ git+https://gitcode.com/openJiuwen/agent-security.git@74a6c48647092b8c1ebcbfa8124020202afff278#subdirectory=jiuwenbox",
-    "agent-shield @ git+https://gitcode.com/openJiuwen/agent-security.git@74a6c48647092b8c1ebcbfa8124020202afff278#subdirectory=agent_shield",
+    "agent-shield @ git+https://gitcode.com/openJiuwen/agent-security.git@b65eb19100320764c4245c8415e4cea650711b89#subdirectory=agent_shield",
     "agent-ssas @ git+https://gitcode.com/openJiuwen/agent-security.git@74a6c48647092b8c1ebcbfa8124020202afff278#subdirectory=agent_ssas",
     "security-mask @ git+https://gitcode.com/openJiuwen/agent-security.git@74a6c48647092b8c1ebcbfa8124020202afff278#subdirectory=foundation/security-mask",
 ]
