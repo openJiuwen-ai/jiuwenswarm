@@ -306,6 +306,7 @@ A few things to know:
 - Only installed experts can be used; nothing is downloaded during a conversation.
 - When the session is bound to an expert group, the Leader can spawn more instances of a group member (for example `clip-2` next to `clip`); they are identical to the member the team started with, even if the package is upgraded later.
 - An expert that runs on an external CLI (Claude Code / Codex) needs that CLI enabled for teams, just like other external CLI members.
+- External experts inherit the team's CLI executable path, working directory, and other deployment settings; templates add skills and behavior settings. Custom-path detection verifies the program identity, so Claude and Codex paths are not interchangeable. Recreate the team after changing its launch configuration.
 - A spawned expert keeps the version it was spawned with: upgrading or uninstalling the package later does not change members already in the team.
 
 ---

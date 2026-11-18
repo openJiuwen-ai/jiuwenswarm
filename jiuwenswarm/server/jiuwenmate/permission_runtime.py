@@ -27,9 +27,7 @@ class EmployeePermissionRailFactory:
             normalize_auto_permission_options,
             normalize_permissions_for_runtime,
         )
-        from jiuwenswarm.agents.harness.common.rails.permissions.auto_permission_rail import (
-            AutoPermissionInterruptRail,
-        )
+        from jiuwenswarm.server.jiuwenmate.employee_permission_rail import EmployeeAutoPermissionRail
         from jiuwenswarm.agents.harness.common.rails.permissions.auto_reviewer import (
             AutoReviewer,
             IsolatedModelReviewerClient,
@@ -64,12 +62,12 @@ class EmployeePermissionRailFactory:
             AutoReviewer(
                 client=IsolatedModelReviewerClient(model=reviewer_model, display_language_getter=lambda: "zh"),
                 timeout_ms=options["reviewer_timeout_ms"],
-                min_confidence=options["reviewer_min_confidence"],
+                reviewer_output_format=options["reviewer_output_format"],
             )
             if reviewer_model is not None
             else None
         )
-        return AutoPermissionInterruptRail(
+        return EmployeeAutoPermissionRail(
             base_rail=base_rail,
             permission_config=policy,
             workspace_root=workspace,

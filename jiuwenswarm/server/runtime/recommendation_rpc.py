@@ -274,6 +274,7 @@ async def _get(host: Any, params: dict[str, Any], session_id: str) -> Recommenda
     )
     from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
         GLOBAL_NEW_CHAT_SCOPE,
+        normalize_topic_work_mode,
         project_id_for_scope,
     )
     from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
@@ -281,6 +282,7 @@ async def _get(host: Any, params: dict[str, Any], session_id: str) -> Recommenda
     )
 
     policy_id = str(params.get("policy_id") or "").strip()
+    work_mode = normalize_topic_work_mode(params.get("work_mode"))
     if policy_id in {"", "topic-starter-mvp-v4"}:
         task = asyncio.current_task()
         host.legacy_tasks.add(task)
@@ -357,6 +359,7 @@ async def _get(host: Any, params: dict[str, Any], session_id: str) -> Recommenda
                 "policy_id": TOPIC_POLICY_ID,
                 "context_scope": context_scope,
                 "project_id": project_id,
+                "work_mode": work_mode,
             }
         else:
             if host.topic_service.ark_config is None:
@@ -371,20 +374,13 @@ async def _get(host: Any, params: dict[str, Any], session_id: str) -> Recommenda
             wanted = is_topic_recommendation_enabled()
             if bool(host.topic_service.configuration_status()["enabled"]) != wanted:
                 await host.topic_service.set_enabled(wanted, persist=False)
-            if params.get("manual_retry") is True:
-                host.topic_service.retry(
-                    context_scope=context_scope,
-                    project_id=project_id,
-                    visit_id=requested_session_id,
-                )
             payload = host.topic_service.serve(
                 requested_session_id,
                 context_scope=context_scope,
                 project_id=project_id,
+                work_mode=work_mode,
                 **({"slate_id": params["slate_id"]} if params.get("slate_id") else {}),
             )
-            if context_scope == GLOBAL_NEW_CHAT_SCOPE:
-                host.topic_service.schedule_news_check(requested_session_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[Topic] pool read failed: %s", exc)
         payload = {
@@ -394,24 +390,16 @@ async def _get(host: Any, params: dict[str, Any], session_id: str) -> Recommenda
             "policy_id": TOPIC_POLICY_ID,
             "context_scope": context_scope,
             "project_id": project_id,
+            "work_mode": work_mode,
         }
     return _ok(payload)
 
 
 def _foreground(host: Any, params: dict[str, Any], session_id: str) -> RecommendationResult:
-    from jiuwenswarm.agents.harness.common.recommendation.topic_controls import (
-        load_recommendation_controls,
-    )
+    """Kept for older clients; hot news no longer schedules a dedicated check."""
 
-    scheduled = False
-    if (
-        load_recommendation_controls()["enabled"]
-        and host.topic_service is not None
-        and params.get("context_scope") == "global_new_chat"
-    ):
-        visit_id = str(params.get("visit_id") or session_id or "").strip() or "foreground"
-        scheduled = host.topic_service.schedule_news_check(visit_id) is not None
-    return _ok({"scheduled": scheduled})
+    del host, params, session_id
+    return _ok({"scheduled": False})
 
 
 async def _event(
@@ -485,7 +473,7 @@ def _prepare_event(
         GLOBAL_NEW_CHAT_SCOPE,
     )
 
-    if selection_mode not in {"personalized_dynamic", "mixed_dynamic", "generic_dynamic"}:
+    if selection_mode not in {"personalized_dynamic", "generic_dynamic"}:
         return _fail("selection_mode is required", "BAD_REQUEST")
     payload = event.get("payload")
     if not isinstance(payload, dict):
@@ -534,7 +522,7 @@ def _prepare_event(
                 },
                 created_at=time.time(),
             )
-        elif event_type in {"topic_click", "not_interested"}:
+        elif event_type == "topic_click":
             card_revision_id = str(payload.get("card_revision_id") or "").strip()
             if card_revision_id and card_revision_id == str(event.get("topic_id") or "").strip():
                 recorded = record_v5_interaction(
@@ -548,8 +536,6 @@ def _prepare_event(
                     request_id=str(request_id),
                     created_at=time.time(),
                 )
-                if recorded and event_type == "not_interested" and host.topic_prepare_service is not None:
-                    host.topic_prepare_service.schedule_successor()
         elif event_type in {"post_exposure_direct", "page_left", "session_bound"}:
             recorded = record_v5_slate_event(
                 store,
@@ -568,7 +554,7 @@ def _product_event(host: Any, event: dict[str, Any], selection_mode: str) -> Rec
         project_id_for_scope,
     )
 
-    if selection_mode not in {"personalized_dynamic", "mixed_dynamic", "generic_dynamic"}:
+    if selection_mode not in {"personalized_dynamic", "generic_dynamic"}:
         return _fail("selection_mode is required", "BAD_REQUEST")
     payload = event.get("payload")
     if not isinstance(payload, dict):
@@ -602,7 +588,7 @@ def _product_event(host: Any, event: dict[str, Any], selection_mode: str) -> Rec
             created_at=time.time(),
         )
     elif (
-        event_type in {"topic_click", "not_interested"}
+        event_type == "topic_click"
         and service is not None
         and host.topic_outcome_queue is not None
     ):

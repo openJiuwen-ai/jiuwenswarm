@@ -42,6 +42,28 @@ async def test_handler_produces_assets_without_calling_an_agent(monkeypatch, tmp
     assert state["output_refs"] == [ref]
 
 
+async def test_music_node_runs_the_music_handler_instead_of_a_worker(monkeypatch, tmp_path):
+    node = {"id": "n_music", "type": "audio",
+            "config": {"role": "music", "pipeline": "music", "delegate": "agent", "prompt": "warm piano"}}
+    graph = {"graph_id": "g_music", "nodes": [node], "edges": []}
+    run = {"run_id": "run_music", "node_states": {}}
+    bridge = DesignEventBridge(run, None, graph=graph)
+    inner = SimpleNamespace(run=AsyncMock(side_effect=AssertionError("worker must not run")))
+    bed = tmp_path / "designer_music_run_music_n_music.mp3"
+    bed.write_bytes(b"ID3" + b"\0" * 2048)
+    ref = {"kind": "audio", "mime_type": "audio/mpeg", "uri": bed.as_uri()}
+    handler = SimpleNamespace(execute=AsyncMock(return_value=NodeResult(output_ref=ref, message="music")))
+    monkeypatch.setattr("jiuwenswarm.server.runtime.designer.handlers.get_node_handler", lambda _: handler)
+    backend = MediaGuaranteeBackend(inner, graph=graph, run=run, bridge=bridge, media_root=tmp_path)
+
+    result = await backend.run("compiled prompt", {"label": "n_music"}, None)
+
+    assert result.structured["output_ref"] == ref
+    inner.run.assert_not_called()
+    handler.execute.assert_awaited_once()
+    assert run["node_states"]["n_music"]["output_ref"] == ref
+
+
 async def test_handler_failure_is_reported_without_retrying_an_agent(monkeypatch):
     graph = {"graph_id": "g_handler", "nodes": [{"id": "n_comfy", "type": "video",
              "config": {"delegate": "handler", "is_comfyui": True}}]}

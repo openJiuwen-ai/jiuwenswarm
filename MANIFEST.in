@@ -8,6 +8,9 @@ include jiuwenswarm/agents/harness/common/auto_harness/issue_fix/code_rule.txt
 include jiuwenswarm/server/runtime/agent_adapter/browser_runtime_network_guard.js
 include OPEN_SOURCE_SOFTWARE_NOTICE.md
 include scripts/build_config.py
+include scripts/release_dependencies.py
+# Release validation also checks the transitive SDK when building from an sdist.
+include uv.lock
 include third_party/playwright-mcp/package.json
 include third_party/playwright-mcp/package-lock.json
 prune jiuwenswarm/resources/agent/workspace/skills/project-maintainer

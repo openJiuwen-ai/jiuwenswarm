@@ -30,6 +30,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
     interest_session_ids,
     is_cold_start_card,
     memory_sessions_by_unit,
+    normalize_topic_work_mode,
     project_id_for_scope,
     valid_search_receipt,
 )
@@ -1283,7 +1284,7 @@ def _shown_card(
     return exposure, card, revision_ids.index(card_revision_id) + 1
 
 
-TERMINAL_INTERACTION_EVENT_TYPES = frozenset({"topic_click", "not_interested"})
+TERMINAL_INTERACTION_EVENT_TYPES = frozenset({"topic_click"})
 
 
 def _standing_record(
@@ -1321,11 +1322,7 @@ def record_terminal_interaction(
     project_id: str | None,
     created_at: float,
 ) -> bool:
-    """Record a click or a card dismissal only for an exact visible revision.
-
-    A dismissal takes off that card alone, and it stands until the user deletes
-    their recommendation data.
-    """
+    """Record a click only for an exact visible revision."""
 
     if event_type not in TERMINAL_INTERACTION_EVENT_TYPES or not _finite_timestamp(
         created_at
@@ -1361,6 +1358,7 @@ def record_terminal_interaction(
         "source_starter_id": card.get("source_starter_id"),
         "context_scope": context_scope,
         "project_id": project_id,
+        "work_mode": normalize_topic_work_mode(card.get("work_mode")),
         "user_state_snapshot_id": card.get("generation_input_snapshot_id"),
         "version_refs": _version_refs(card),
         "component_request_ids": [list(item) for item in component_request_ids],
@@ -1379,51 +1377,7 @@ def record_terminal_interaction(
         "payload": event_payload,
         "created_at": created_at,
     }
-    if event_type == "topic_click":
-        return store.record_event(event)
-    if event_type != "not_interested":
-        return False
-    # A dismissal recorded before dismissals could be undone stands for good.
-    _row_items = store.query_events(
-        event_type="not_interested", slate_id=exposure_id, topic_id=card_revision_id,
-        policy_id=POLICY_ID, limit=1,
-    )
-    if any(
-        "dismissal_record_id" not in row["payload"]
-        for row in _row_items
-    ):
-        return False
-    previous = load_latest_history_state(store)
-    state = json.loads(json.dumps(previous)) if previous else empty_history_state()
-    sidecar_value = state.get("memory_sidecar")
-    sidecar = sidecar_value if isinstance(sidecar_value, dict) else {}
-    state["memory_sidecar"] = sidecar
-    preferences = list(sidecar.get("negative_preferences") or [])
-    # A dismissal already standing is not recorded twice.
-    if _standing_record(
-        preferences, exposure_id=exposure_id, card_revision_id=card_revision_id,
-    ) is not None:
-        return False
-    record = _card_dismissal_record(
-        store, card, manifest_id=manifest_id, context_scope=context_scope,
-        project_id=project_id, dismissed_at=created_at,
-    )
-    record.update({
-        "record_id": f"dismissal-{uuid.uuid4().hex}",
-        "exposure_id": exposure_id,
-        "card_revision_id": card_revision_id,
-    })
-    event_payload["dismissal_record_id"] = record["record_id"]
-    event_payload["reason"] = "explicit_not_interested"
-    event["feedback_record_id"] = record["record_id"]
-    preferences.append(record)
-    sidecar["negative_preferences"] = preferences
-    sidecar.setdefault("explicit_corrections", [])
-    negative_version = int(sidecar.get("negative_preference_version") or 0) + 1
-    sidecar["negative_preference_version"] = negative_version
-    event_payload["negative_preference_version"] = negative_version
-    save_history_state(store, state, events=[event], now=created_at)
-    return True
+    return store.record_event(event)
 
 
 def _exact_event(
@@ -1923,13 +1877,13 @@ def join_starter_outcomes(
 
 OUTCOME_SIGNAL_SCHEMA_VERSION = "topic-starter-v6-new-page-outcome-signal-v1"
 DeliveryStatus = Literal["queued", "recorded", "rejected"]
-OutcomeName = Literal["accepted", "not_interested"]
-_OUTCOME_NAMES = frozenset({"accepted", "not_interested"})
+OutcomeName = Literal["accepted"]
+_OUTCOME_NAMES = frozenset({"accepted"})
 
 
 @dataclass(frozen=True)
 class NewPageOutcomeSignal:
-    """One accepted or dismissed card, bound to its shown revision."""
+    """One accepted card, bound to its shown revision."""
 
     outcome: OutcomeName
     manifest_id: str
@@ -1949,7 +1903,7 @@ class NewPageOutcomeSignal:
         if self.schema_version != OUTCOME_SIGNAL_SCHEMA_VERSION:
             raise ValueError("unsupported outcome signal schema_version")
         if self.outcome not in _OUTCOME_NAMES:
-            raise ValueError("outcome must be accepted or not_interested")
+            raise ValueError("outcome must be accepted")
         _value_items9 = (
             self.manifest_id,
             self.generation_batch_id,
@@ -2028,7 +1982,7 @@ class NewPageOutcomeQueue:
 
 
 class TopicStarterStoreOutcomeSink:
-    """Persist accepted/disliked signals only when exact shown provenance matches."""
+    """Persist accepted click signals only when exact shown provenance matches."""
 
     def __init__(self, store: TopicStarterStore) -> None:
         self._store = store
@@ -2136,11 +2090,11 @@ class TopicStarterStoreOutcomeSink:
                 != stored_search_receipt
             ):
                 return False
+        if signal.outcome != "accepted":
+            return False
         return record_terminal_interaction(
             self._store,
-            event_type=(
-                "topic_click" if signal.outcome == "accepted" else signal.outcome
-            ),
+            event_type="topic_click",
             manifest_id=signal.manifest_id,
             generation_batch_id=signal.generation_batch_id,
             exposure_id=signal.exposure_id,
@@ -2229,7 +2183,6 @@ def record_terminal_slate_outcome(
             "payload": {
                 **expected,
                 "exposure_id": exposure_id,
-                "negative_feedback": False,
             },
             "created_at": created_at,
         }

@@ -279,6 +279,7 @@ def filter_engine_result(
     judges = filter_evolution_judge(result.evolution_judge, index=index, profile=profile)
     return EngineResult(
         trajectory_summary=result.trajectory_summary,
+        summary_tree=result.summary_tree,
         reward_failure_causes=causes,
         evolution_judge=judges,
         artifact_improvement=result.artifact_improvement,
@@ -540,6 +541,19 @@ class DiagnosisService:
 
     async def _on_engine_event(self, session_id: str, state: _RunState, event: EngineEvent) -> None:
         record = state.record
+        if event.kind == "trajectory_summary":
+            if event.summary_tree is None:
+                return
+            record.summary_tree = event.summary_tree
+            record.trajectory_summary = str(event.summary_tree.get("trajectory_summary") or "")
+            record.seq += 1
+            await self._persist(session_id, record)
+            progress = DiagnosisProgressEvent(
+                session_id=session_id, diagnosis_id=record.diagnosis_id, seq=record.seq,
+                stage_id=event.stage_id, kind=event.kind, summary_tree=record.summary_tree,
+            )
+            await self._safe_push(session_id, PROGRESS_EVENT, progress.model_dump(mode="json", exclude_none=True))
+            return
         if event.kind == "reward":
             await self._on_reward(session_id, state, event)
             return
@@ -684,7 +698,10 @@ class DiagnosisService:
 
     @staticmethod
     def _apply_result(record: DiagnosisRecord, result: EngineResult) -> None:
-        record.trajectory_summary = result.trajectory_summary
+        if result.summary_tree is not None:
+            record.summary_tree = result.summary_tree
+        if result.trajectory_summary or record.summary_tree is None:
+            record.trajectory_summary = result.trajectory_summary
         record.reward_failure_causes = result.reward_failure_causes
         record.evolution_judge = result.evolution_judge
         record.artifact_improvement = result.artifact_improvement

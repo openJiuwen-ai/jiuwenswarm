@@ -279,6 +279,24 @@
   font-weight: 500;
   list-style-position: inside;
 }
+.asset-publish-advanced > summary::after,
+.asset-publish-records-fold > summary::after {
+  width: 6px;
+  height: 6px;
+  flex: none;
+  margin-inline-start: auto;
+  margin-inline-end: 3px;
+  border-inline-end: 1px solid currentColor;
+  border-block-end: 1px solid currentColor;
+  content: '';
+  transform: rotate(-45deg);
+}
+
+.asset-publish-advanced[open] > summary::after,
+.asset-publish-records-fold[open] > summary::after {
+  transform: rotate(45deg);
+}
+
 .asset-publish-advanced-content {
   padding: 4px 0 2px;
 }

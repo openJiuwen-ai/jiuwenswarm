@@ -351,11 +351,21 @@
   top: 0;
   right: 0;
   left: 0;
-  height: 2px;
-  background: var(--dsw-alias-border-l1);
+  height: 3px;
+  background: color-mix(in srgb, var(--dsw-alias-label-tertiary) 35%, var(--dsw-alias-border-l1));
   content: '';
   pointer-events: none;
   transform: translateY(-50%);
+}
+
+.table tbody tr[data-turn-start='true']:not(:first-child) td {
+  padding-top: 12px;
+  background-image: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--dsw-alias-label-tertiary) 6%, transparent),
+    transparent 18px
+  );
+  background-repeat: no-repeat;
 }
 
 .event {

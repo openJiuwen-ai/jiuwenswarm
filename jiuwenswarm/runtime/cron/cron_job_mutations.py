@@ -24,25 +24,12 @@ from jiuwenswarm.runtime.cron.models import (
 
 logger = logging.getLogger(__name__)
 
-# proactive.tick 是由 proactive_cron_sync 自动注册、由 config 开关驱动的任务。
-# 其 name/enabled/description/wake_offset/targets/mode 均由系统/配置侧维护，
-# update 时只允许改调度本身（cron_expr/timezone）；expired/updated_at 由调度器/内部写。
+# Kept for gateway package / historical imports; no special mutation guards remain.
 _PROACTIVE_TICK_MODE = "proactive.tick"
-_PROACTIVE_UPDATE_ALLOWED_KEYS: frozenset[str] = frozenset(
-    {"cron_expr", "timezone", "expired", "updated_at"}
-)
 # 创建时写定的身份。修改补丁里如果再带这些字段，直接丢掉，不能改掉。
 _STICKY_IDENTITY_FIELDS = frozenset(
     {"group_id", "bot_id", "user_id", "job_id", "created_at"}
 )
-
-
-class _ProactiveJobProtected(RuntimeError):
-    """proactive.tick job 受保护，禁止手动 删除/toggle/改非调度字段 时抛出。
-
-    所有删除路径（web handler / TUI /cron / 自然语言 cron 工具）共用 store 层，
-    在此抛出可统一拦截，避免 config 开关与 cron store 不一致。
-    """
 
 
 def strip_sticky_identity_fields(patch: dict[str, Any]) -> dict[str, Any]:
@@ -226,36 +213,11 @@ def build_new_cron_job(
     return job
 
 
-def filter_proactive_update_patch(existing: CronJob, patch: dict[str, Any]) -> dict[str, Any]:
-    if str(getattr(existing, "mode", "") or "").strip().lower() != _PROACTIVE_TICK_MODE:
-        return patch
-    dropped = [k for k in patch if k not in _PROACTIVE_UPDATE_ALLOWED_KEYS]
-    if dropped:
-        logger.warning(
-            "[CronStore] reject proactive.tick update fields on job=%s: %s (only %s allowed)",
-            existing.id,
-            ", ".join(dropped),
-            ", ".join(sorted(_PROACTIVE_UPDATE_ALLOWED_KEYS)),
-        )
-        return {k: v for k, v in patch.items() if k in _PROACTIVE_UPDATE_ALLOWED_KEYS}
-    return patch
-
-
-def ensure_proactive_deletable(existing: CronJob | None, *, force: bool) -> None:
-    if force or existing is None:
-        return
-    if str(getattr(existing, "mode", "") or "").strip().lower() == _PROACTIVE_TICK_MODE:
-        raise _ProactiveJobProtected(
-            "主动推荐定时任务由设置→主动推荐开关控制，不能删除；请到设置关闭开关。"
-        )
-
-
 def apply_cron_job_patch(existing: CronJob, patch: dict[str, Any]) -> CronJob:
     if "_expected_legacy_model_name" in patch:
         if existing.model_selection is not None or existing.model_name != patch["_expected_legacy_model_name"]:
             return existing
     patch = strip_sticky_identity_fields(patch)
-    patch = filter_proactive_update_patch(existing, dict(patch or {}))
     updated = existing
     if "name" in patch:
         updated = replace(updated, name=str(patch.get("name") or "").strip())

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
@@ -210,6 +211,7 @@ def stub_invocation_builder(monkeypatch, addenda=None):
                 fingerprint=self.fingerprint,
                 system_prompt=self.system_prompt,
                 tools=update.get("tools", self.tools),
+                rails=update.get("rails", self.rails),
             )
 
     def build(snapshot, request, execution, *, ports, system_prompt_addendum=None):
@@ -229,6 +231,7 @@ def stub_invocation_builder(monkeypatch, addenda=None):
             fingerprint=lambda: request.config_fingerprint,
             system_prompt=None,
             tools=[],
+            rails=[],
         ), context
 
     monkeypatch.setattr(execution_driver, "build_invocation", build)
@@ -808,3 +811,105 @@ async def test_expired_window_data_is_purged_periodically(tmp_path):
         assert await backend.get("pa:mate_dev:sess-1:summary") == "摘要"
     finally:
         await host.manager.aclose()
+
+
+@pytest.mark.parametrize("drain_during_dispatch", [False, True])
+async def test_dispatch_is_reported_running_before_start_execution_returns(host, monkeypatch, drain_during_dispatch):
+    stored = threading.Event()
+    release = threading.Event()
+    start_execution = host.sessions.start_execution
+
+    def delayed_start(*args, **kwargs):
+        execution = start_execution(*args, **kwargs)
+        stored.set()
+        if not release.wait(5):
+            raise TimeoutError("dispatch test was not released")
+        return execution
+
+    monkeypatch.setattr(host.sessions, "start_execution", delayed_start)
+    sending = asyncio.create_task(host.send("dispatch-race"))
+    draining = None
+    try:
+        await settle(stored.is_set)
+        state = host.sessions.session_requests(NS, host.session().session_id)[0]
+        view = await host.manager.request_view(NS, state.record.request_id)
+        assert view.state.status == "dispatched"
+        assert view.running is True
+        if drain_during_dispatch:
+            draining = asyncio.create_task(host.scheduler.drain())
+            await asyncio.sleep(0.01)
+            assert not draining.done()
+    finally:
+        release.set()
+        await sending
+        host.core.release("dispatch-race")
+        if draining is not None:
+            await asyncio.wait_for(draining, 2)
+
+
+async def test_failed_dispatch_does_not_leave_a_running_registration(host, monkeypatch):
+    start_execution = host.sessions.start_execution
+
+    def refused_start(*args, **kwargs):
+        raise PersistentAgentError("dispatch refused", code="CONFLICT")
+
+    monkeypatch.setattr(host.sessions, "start_execution", refused_start)
+    with pytest.raises(PersistentAgentError, match="dispatch refused"):
+        await host.send("retry-dispatch")
+    assert host.scheduler.running == []
+    monkeypatch.setattr(host.sessions, "start_execution", start_execution)
+    host.core.release("retry-dispatch")
+    accepted = await host.send("retry-dispatch")
+    await host.scheduler.drain()
+    assert host.status(accepted) == ("ended", "completed")
+
+
+@pytest.mark.parametrize("reader", ["request", "history"])
+async def test_status_read_finishing_during_query_is_not_reported_interrupted(host, monkeypatch, reader):
+    accepted = await host.send("finish-race")
+    await settle(lambda: "finish-race" in host.core.started)
+    snapshot_read = threading.Event()
+    release = threading.Event()
+    method = "get_request" if reader == "request" else "session_requests"
+    read = getattr(host.sessions, method)
+
+    def stale_read(*args, **kwargs):
+        snapshot = read(*args, **kwargs)
+        if not snapshot_read.is_set():
+            snapshot_read.set()
+            if not release.wait(5):
+                raise TimeoutError("status test was not released")
+        return snapshot
+
+    monkeypatch.setattr(host.sessions, method, stale_read)
+    if reader == "request":
+        query = asyncio.create_task(host.manager.request_view(NS, accepted.record.request_id))
+    else:
+        query = asyncio.create_task(host.manager.conversation_requests(NS, "mate_dev", ConversationRef.web("conv-1")))
+    try:
+        await settle(snapshot_read.is_set)
+        host.core.release("finish-race")
+        await host.scheduler.drain()
+    finally:
+        release.set()
+    result = await query
+    view = result if reader == "request" else result[0]
+    assert view.state.status == "ended"
+    assert view.state.outcome == "completed"
+    assert view.running is False
+
+
+async def test_a_genuinely_orphaned_dispatch_is_still_reported_not_running(host):
+    session = host.session()
+    accepted, _ = host.sessions.accept_request(
+        session,
+        snapshot=host.service.snapshot(NS, "mate_dev", "v1"),
+        source_ref="orphaned-dispatch",
+        access=ACCESS,
+        request_input=core.RequestInput(kind="scheduled", text="interrupted", reply_target="conv-1"),
+        received_at=NOW,
+    )
+    host.sessions.start_execution(NS, accepted.record.request_id, now=NOW)
+    view = await host.manager.request_view(NS, accepted.record.request_id)
+    assert view.state.status == "dispatched"
+    assert view.running is False

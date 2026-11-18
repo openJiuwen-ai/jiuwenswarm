@@ -15,8 +15,9 @@ import sys
 from types import SimpleNamespace
 from typing import Any
 
+from e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
+
 from jiuwenswarm.common.config import resolve_env_vars
-from jiuwenswarm.common.e2a.constants import E2A_AUTH_SESSION_PARAM_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.gateway_adapter.base import GatewayAdapter, build_error_response
@@ -173,6 +174,23 @@ class ConfigAdapter(GatewayAdapter):
     })
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
+        if request.req_method in {ReqMethod.CONFIG_SET, ReqMethod.CONFIG_SAVE_ALL}:
+            from jiuwenswarm.common.config import get_config_raw
+            from jiuwenswarm.common.multimodal_models import CAPABILITIES, MultimodalError
+            from jiuwenswarm.common.multimodal_projection import FIELDS
+
+            params = request.params or {}
+            updates = params.get("config", {}) if request.req_method == ReqMethod.CONFIG_SAVE_ALL else params
+            managed_suffixes = {"model", "enabled", *FIELDS.keys()}
+            affected = []
+            if isinstance(updates, dict):
+                for tool in CAPABILITIES:
+                    if any(f"{tool}_{suffix}" in updates for suffix in managed_suffixes):
+                        affected.append(tool)
+            if affected and get_config_raw().get("multimodal") is not None:
+                error = MultimodalError("MM_LEGACY_WRITE_UNSUPPORTED", {"affected_tools": affected})
+                return AgentResponse(request_id=request.request_id, channel_id=request.channel_id, ok=False,
+                                     payload=error.payload, metadata=request.metadata)
         if request.req_method == ReqMethod.CONFIG_MOA_STATUS:
             from jiuwenswarm.common.config import get_config
             from jiuwenswarm.server.runtime.moa_runtime import moa_status

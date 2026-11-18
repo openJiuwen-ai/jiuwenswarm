@@ -619,7 +619,9 @@ def _covered_standalone_session_summaries(
         matched_coverage = coverage_by_summary_id.get(summary.session_summary_id)
         if matched_coverage is None:
             continue
-        context_scope, summary_config_version, item = matched_coverage
+        # Coverage stamps this run's summarizer config; reused summaries keep
+        # prior provenance. Match identity only, not config equality.
+        context_scope, _coverage_config_version, item = matched_coverage
         expected_item = {
             "session_id": summary.session_id,
             "session_summary_id": summary.session_summary_id,
@@ -641,8 +643,6 @@ def _covered_standalone_session_summaries(
         if row.get("slate_id") != summary.context_scope:
             continue
         if summary.context_scope != context_scope:
-            continue
-        if summary.summary_config_version != summary_config_version:
             continue
         if not summary.session_summary_id.startswith(prefix):
             continue

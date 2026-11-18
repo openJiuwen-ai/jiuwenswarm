@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Search adapters for topic recommendation: OpenJiuwen native search and Ark web search."""
+"""Search adapters for topic recommendation (OpenJiuwen native free search)."""
 
 from __future__ import annotations
 
@@ -10,18 +10,18 @@ import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
 import aiohttp
-from openai import APIStatusError
-
 from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
     ArkBackgroundConfig,
 )
 
 OPENJIUWEN_NATIVE_SEARCH_PROVIDER_ID = "openjiuwen-native-free-search"
+# Serving identity while no web-search lane is usable. Host-evidence and hot-list
+# pools still generate under it; enabling a real lane changes the compatibility key.
+UNCONFIGURED_SEARCH_PROVIDER_ID = "search-unconfigured"
 OPENJIUWEN_NATIVE_SEARCH_RECEIPT_VERSION = (
     "topic-starter-v6-openjiuwen-native-free-search-v1"
 )
@@ -291,6 +291,28 @@ def _native_factory(values: Mapping[str, str]) -> OpenJiuwenNativeSearch:
     return build_openjiuwen_native_search(environ=values)
 
 
+def _env_flag_enabled(values: Mapping[str, str], name: str) -> bool:
+    return str(values.get(name) or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+        "enabled",
+    }
+
+
+def topic_web_search_engines_enabled(
+    *,
+    environ: Mapping[str, str] | None = None,
+) -> bool:
+    """Whether at least one free-search engine toggle can enrich web candidates."""
+
+    values = os.environ if environ is None else environ
+    return _env_flag_enabled(values, "FREE_SEARCH_DDG_ENABLED") or _env_flag_enabled(
+        values, "FREE_SEARCH_BING_ENABLED"
+    )
+
+
 def selected_topic_search_provider_id(
     *,
     environ: Mapping[str, str] | None = None,
@@ -327,342 +349,12 @@ def build_topic_search_provider(
     selected_topic_search_provider_id(environ=values)
     return native_factory(values)
 
+
+# Legacy receipt identities kept for reading older pools. Generate uses the
+# OpenJiuwen native free-search lane above; the former Ark Responses web-search
+# client was removed as dead production code.
 ARK_WEB_SEARCH_PROVIDER_ID = "ark-responses-web-search"
 ARK_WEB_SEARCH_RECEIPT_VERSION = "topic-starter-v6-ark-responses-web-search-v1"
 ARK_WEB_SEARCH_ENTITLEMENT_RECEIPT_VERSION = (
     "topic-starter-v6-ark-responses-web-search-entitlement-v1"
 )
-_ENTITLEMENT_RECEIPT_FIELDS = frozenset(
-    {
-        "receipt_version",
-        "provider_id",
-        "actual_model",
-        "operation",
-        "tool_type",
-        "provider_error_code",
-        "http_status",
-        "provider_request_id",
-        "observed_at",
-    }
-)
-_SEARCH_INSTRUCTIONS = (
-    "Call web_search exactly once. Use the user input verbatim as the search "
-    "action query. Return a concise answer with URL citations."
-)
-
-
-@dataclass(frozen=True, slots=True)
-class ArkWebSearchResult:
-    engine: str
-    rows: tuple[dict[str, str], ...]
-    receipt: dict[str, Any]
-
-
-class ArkWebSearchContractError(ValueError):
-    """One stable fail-closed reason from the host-owned response parser."""
-
-    def __init__(self, reason: str) -> None:
-        self.reason = reason
-        super().__init__(reason)
-
-
-class ArkWebSearchEntitlementError(RuntimeError):
-    """Redacted evidence that the real provider rejected the Web Search tool."""
-
-    def __init__(self, receipt: Mapping[str, Any]) -> None:
-        self.receipt = dict(receipt)
-        super().__init__("ark_web_search_entitlement_blocked")
-
-
-def _provider_error_code(exc: APIStatusError) -> str | None:
-    body = exc.body
-    if not isinstance(body, Mapping):
-        return None
-    nested = body.get("error")
-    error = nested if isinstance(nested, Mapping) else body
-    code = error.get("code")
-    return code if isinstance(code, str) else None
-
-
-def _tool_not_open_receipt(
-    exc: APIStatusError,
-    *,
-    actual_model: str,
-) -> dict[str, Any] | None:
-    request_id = exc.request_id
-    if _provider_error_code(exc) != "ToolNotOpen":
-        return None
-    if not 400 <= exc.status_code < 500:
-        return None
-    if not isinstance(request_id, str):
-        return None
-    if not request_id.strip():
-        return None
-    return {
-        "receipt_version": ARK_WEB_SEARCH_ENTITLEMENT_RECEIPT_VERSION,
-        "provider_id": ARK_WEB_SEARCH_PROVIDER_ID,
-        "actual_model": actual_model,
-        "operation": "responses.create",
-        "tool_type": "web_search",
-        "provider_error_code": "ToolNotOpen",
-        "http_status": exc.status_code,
-        "provider_request_id": request_id.strip(),
-        "observed_at": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-def _default_client_factory(**kwargs: Any) -> Any:
-    from openai import AsyncOpenAI
-
-    return AsyncOpenAI(**kwargs)
-
-
-def _response_mapping(response: Any) -> Mapping[str, Any]:
-    if isinstance(response, Mapping):
-        return response
-    model_dump = getattr(response, "model_dump", None)
-    if not callable(model_dump):
-        raise ArkWebSearchContractError("response_metadata_mismatch")
-    payload = model_dump(exclude_none=True)
-    if not isinstance(payload, Mapping):
-        raise ArkWebSearchContractError("response_metadata_mismatch")
-    return payload
-
-
-def _nonnegative_integer(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if not isinstance(value, int):
-        return None
-    if value < 0:
-        return None
-    return value
-
-
-def _required_text(value: Any, *, reason: str) -> str:
-    if not isinstance(value, str) or not value.strip():
-        raise ArkWebSearchContractError(reason)
-    return value.strip()
-
-
-def _parse_usage(payload: Mapping[str, Any]) -> dict[str, Any]:
-    usage = payload.get("usage")
-    if not isinstance(usage, Mapping):
-        raise ArkWebSearchContractError("response_metadata_mismatch")
-    tool_usage = usage.get("tool_usage")
-    if not isinstance(tool_usage, Mapping):
-        raise ArkWebSearchContractError("response_metadata_mismatch")
-    web_search_count = _nonnegative_integer(tool_usage.get("web_search"))
-    if web_search_count is None or web_search_count < 1:
-        raise ArkWebSearchContractError("response_metadata_mismatch")
-    receipt: dict[str, Any] = {
-        "tool_usage": {"web_search": web_search_count},
-    }
-    for field in ("input_tokens", "output_tokens", "total_tokens"):
-        count = _nonnegative_integer(usage.get(field))
-        if count is not None:
-            receipt[field] = count
-    return {
-        field: receipt[field]
-        for field in ("input_tokens", "output_tokens", "total_tokens", "tool_usage")
-        if field in receipt
-    }
-
-
-def _parse_url_citations(
-    output: list[Any],
-    *,
-    max_results: int,
-) -> tuple[dict[str, str], ...]:
-    rows: list[dict[str, str]] = []
-    seen_urls: set[str] = set()
-    for item in output:
-        if not isinstance(item, Mapping) or item.get("type") != "message":
-            continue
-        if item.get("status") != "completed":
-            raise ArkWebSearchContractError("response_metadata_mismatch")
-        content = item.get("content")
-        if not isinstance(content, list):
-            raise ArkWebSearchContractError("missing_url_citation")
-        for content_item in content:
-            if not isinstance(content_item, Mapping):
-                raise ArkWebSearchContractError("missing_url_citation")
-            annotations = content_item.get("annotations")
-            if annotations is None:
-                continue
-            if not isinstance(annotations, list):
-                raise ArkWebSearchContractError("url_citation_contract_failed")
-            for annotation in annotations:
-                if not isinstance(annotation, Mapping):
-                    raise ArkWebSearchContractError(
-                        "url_citation_contract_failed"
-                    )
-                if annotation.get("type") != "url_citation":
-                    continue
-                url = _required_text(
-                    annotation.get("url"),
-                    reason="url_citation_contract_failed",
-                )
-                parsed_url = urlparse(url)
-                if parsed_url.scheme not in {"http", "https"} or not parsed_url.hostname:
-                    raise ArkWebSearchContractError(
-                        "url_citation_contract_failed"
-                    )
-                row = {"url": url}
-                for field in (
-                    "title",
-                    "summary",
-                    "site_name",
-                    "publish_time",
-                    "freshness_info",
-                ):
-                    if field not in annotation:
-                        continue
-                    row[field] = _required_text(
-                        annotation[field],
-                        reason="url_citation_contract_failed",
-                    )
-                if url not in seen_urls:
-                    seen_urls.add(url)
-                    rows.append(row)
-    if not rows:
-        raise ArkWebSearchContractError("missing_url_citation")
-    return tuple(rows[:max_results])
-
-
-def _parse_response(
-    response: Any,
-    *,
-    expected_model: str,
-    query: str,
-    max_results: int,
-) -> ArkWebSearchResult:
-    payload = _response_mapping(response)
-    response_id = payload.get("id")
-    _rejected = (
-        not isinstance(response_id, str)
-        or not response_id
-        or payload.get("object") != "response"
-        or payload.get("status") != "completed"
-        or payload.get("model") != expected_model
-    )
-    if (
-        _rejected
-    ):
-        raise ArkWebSearchContractError("response_metadata_mismatch")
-    output = payload.get("output")
-    if not isinstance(output, list):
-        raise ArkWebSearchContractError("response_metadata_mismatch")
-    search_calls = [
-        item
-        for item in output
-        if isinstance(item, Mapping) and item.get("type") == "web_search_call"
-    ]
-    if not search_calls:
-        raise ArkWebSearchContractError("missing_web_search_call")
-    if len(search_calls) != 1:
-        raise ArkWebSearchContractError("multiple_web_search_calls")
-    search_call = search_calls[0]
-    call_id = search_call.get("id")
-    action = search_call.get("action")
-    _rejected2 = (
-        not isinstance(call_id, str)
-        or not call_id
-        or search_call.get("status") != "completed"
-        or not isinstance(action, Mapping)
-        or action.get("type") != "search"
-    )
-    if (
-        _rejected2
-    ):
-        raise ArkWebSearchContractError("web_search_call_metadata_mismatch")
-    action_query = action.get("query")
-    if action_query != query:
-        raise ArkWebSearchContractError("search_query_mismatch")
-    usage = _parse_usage(payload)
-    rows = _parse_url_citations(output, max_results=max_results)
-    receipt = {
-        "receipt_version": ARK_WEB_SEARCH_RECEIPT_VERSION,
-        "provider_id": ARK_WEB_SEARCH_PROVIDER_ID,
-        "provider_response_id": response_id,
-        "response_object": "response",
-        "response_status": "completed",
-        "actual_model": expected_model,
-        "web_search_call_id": call_id,
-        "action": {"type": "search", "query": query},
-        "usage": usage,
-        "result_count": len(rows),
-    }
-    return ArkWebSearchResult(
-        engine=ARK_WEB_SEARCH_PROVIDER_ID,
-        rows=rows,
-        receipt=receipt,
-    )
-
-
-class ArkResponsesWebSearch:
-    """One config-bound async Responses Web Search provider."""
-
-    provider_id = ARK_WEB_SEARCH_PROVIDER_ID
-
-    def __init__(
-        self,
-        config: ArkBackgroundConfig,
-        *,
-        client_factory: Callable[..., Any] = _default_client_factory,
-    ) -> None:
-        self._config = config
-        self._client = client_factory(api_key=config.api_key, base_url=config.base_url)
-        self._concurrency = asyncio.Semaphore(5)
-        self.invocation_receipts: list[dict[str, Any]] = []
-
-    async def aclose(self) -> None:
-        await self._client.close()
-
-    async def __call__(
-        self,
-        query: str,
-        max_results: int,
-        timeout_seconds: int,
-    ) -> ArkWebSearchResult:
-        if not isinstance(query, str) or not query.strip():
-            raise ArkWebSearchContractError("search_request_contract_failed")
-        if not 1 <= max_results <= 50 or timeout_seconds <= 0:
-            raise ArkWebSearchContractError("search_request_contract_failed")
-        request = {
-            "model": self._config.model,
-            "input": query,
-            "instructions": _SEARCH_INSTRUCTIONS,
-            "tools": [
-                {"type": "web_search", "max_keyword": 1, "limit": max_results}
-            ],
-            "tool_choice": "required",
-            "max_tool_calls": 1,
-            "store": False,
-            "temperature": self._config.effective_temperature,
-            "top_p": self._config.effective_top_p,
-        }
-        async with self._concurrency:
-            try:
-                response = await asyncio.wait_for(
-                    self._client.responses.create(**request),
-                    timeout=timeout_seconds,
-                )
-            except APIStatusError as exc:
-                receipt = _tool_not_open_receipt(
-                    exc,
-                    actual_model=self._config.model,
-                )
-                if receipt is None:
-                    raise
-                raise ArkWebSearchEntitlementError(receipt) from None
-        result = _parse_response(
-            response,
-            expected_model=self._config.expected_model or self._config.model,
-            query=query,
-            max_results=max_results,
-        )
-        self.invocation_receipts.append(result.receipt)
-        return result
-
-

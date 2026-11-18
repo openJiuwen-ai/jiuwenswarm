@@ -16,6 +16,7 @@ import {
 import { shouldDiscoverCronActiveSessions } from '../../features/cron/cronActiveSessionDiscovery';
 import type { AgentMode, ProjectInfo, Session, WorkMode } from '../../types';
 import {
+  formatSessionTime,
   getProjectNewLabel,
   getSessionActivityAt,
   getSessionIndicator,
@@ -149,20 +150,6 @@ export function getProcessingTransitions(
   return { snapshot, completedInBackground };
 }
 
-export function formatRelativeTime(
-  activityAt: number,
-  now: number,
-  language: string,
-  translate: (key: string, options?: Record<string, unknown>) => string,
-): string {
-  const elapsed = Math.max(0, now - activityAt);
-  if (elapsed < 60_000) return translate('time.justNow');
-  if (elapsed < 3_600_000) return translate('time.minutesAgo', { count: Math.floor(elapsed / 60_000) });
-  if (elapsed < 86_400_000) return translate('time.hoursAgo', { count: Math.floor(elapsed / 3_600_000) });
-  if (elapsed < 604_800_000) return translate('time.daysAgo', { count: Math.floor(elapsed / 86_400_000) });
-  return new Date(activityAt).toLocaleDateString(language, { month: 'short', day: 'numeric' });
-}
-
 function getSessionTitle(session: Session, fallback: string): string {
   const raw = session.display_title?.trim() || session.title?.trim() || fallback;
   return toDisplaySessionTitle(raw) || fallback;
@@ -268,7 +255,7 @@ function ConversationListItem({
         title={getTaskStatusLabel(indicator, t)}
         data-testid="multi-session-conversation-list-item-status-read"
       >
-        <span>{formatRelativeTime(getSessionActivityAt(session), now, i18n.language, t)}</span>
+        <span>{formatSessionTime(getSessionActivityAt(session), now, i18n.language, t)}</span>
       </span>
     );
   }

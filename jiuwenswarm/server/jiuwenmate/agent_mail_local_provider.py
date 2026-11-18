@@ -102,7 +102,7 @@ def _default_runner(
     args: list[str], *, env: dict[str, str], input_text: str | None, timeout: float | None, cwd: str
 ):
     return subprocess.run(
-        args, input=input_text, capture_output=True, text=True, env=env, cwd=cwd, timeout=timeout, check=False
+        args, input=input_text, capture_output=True, encoding='utf-8', env=env, cwd=cwd, timeout=timeout, check=False
     )
 
 

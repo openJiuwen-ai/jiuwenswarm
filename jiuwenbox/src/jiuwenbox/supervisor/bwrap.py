@@ -513,13 +513,31 @@ class BwrapConfig:
             else:
                 args.extend(["--tmpfs", path])
 
-        # read-only binds
-        for src, dst in ro_binds:
-            args.extend(["--ro-bind", src, dst])
+        # All binds are emitted in one global stable sort by destination path
+        # depth (shallowest first). In a mount tree a strict descendant always
+        # has a greater depth than its ancestors, so depth order IS a
+        # topological order of the bind tree: every bind is emitted after all
+        # of its ancestors, and under bwrap's later-overrides-earlier semantics
+        # no mount is ever shadowed by an ancestor — regardless of the order
+        # producers appended the entries (policy bind_mounts vs runtime-added
+        # backing / lifecycle binds).
+        # Ties (equal depth, e.g. the same dst bound ro then rw) keep ro
+        # before rw so the same-path ro -> rw -> --remount-ro belt-and-
+        # suspenders path and the read-only-root-with-rw-children override
+        # contract keep working; Python's sort is stable, so entries at equal
+        # depth keep their declaration order.
+        all_binds: list[tuple[str, str, int]] = [
+            (src, dst, 0) for src, dst in ro_binds
+        ] + [
+            (src, dst, 1) for src, dst in rw_binds
+        ]
+        all_binds.sort(key=lambda item: (_path_depth(item[1]), item[2]))
 
-        # read-write binds
-        for src, dst in rw_binds:
-            args.extend(["--bind", src, dst])
+        for src, dst, kind in all_binds:
+            if kind == 0:
+                args.extend(["--ro-bind", src, dst])
+            else:
+                args.extend(["--bind", src, dst])
 
         for src, dst in self.device_binds:
             args.extend(["--dev-bind", src, dst])

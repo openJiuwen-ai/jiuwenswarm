@@ -112,7 +112,15 @@ ISOLATED_AUTO_REVIEWER_PROMPT = (
     "write-only restriction does not require manual review of every read. "
     "Host validation of the exact permission card and version remains authoritative; "
     "natural-language confirmation does not create a reusable grant. "
-    "Deterministic Host policy remains authoritative. You cannot "
+    "Deterministic Host policy remains authoritative. An ordinary ASK policy_reason, "
+    "such as 'Approval required for bash', explains why Host requested this review; "
+    "it is not by itself a separate human-confirmation prerequisite. When allow_once "
+    "is listed in request.allowed_outcomes, assess the trusted user intent, complete "
+    "action, scope, side effects, and unmet prerequisites together. A high risk_tier "
+    "or the shell tool category alone does not create a human-confirmation "
+    "prerequisite or establish authorization. Applicable trusted-user confirmation "
+    "prerequisites, no_auto_allow_reason, and Host restrictions on allowed_outcomes "
+    "still apply; unresolved material risk requires manual or deny. You cannot "
     "call tools, request permissions, mutate config, create grants, rewrite "
     "commands, or broaden scope. Return exactly one raw JSON object, with no "
     "Markdown, code fences, or explanatory text. Return only outcome, "
@@ -699,7 +707,7 @@ class AutoReviewer:
             )
 
         reason_code = _sanitize_reason_code(payload["reason_code"])
-        reason_summary = _sanitize_reason_summary(payload["rationale"])
+        reason_summary = payload["rationale"]
         if (
             outcome == ReviewerOutcome.MANUAL
             and OPTIONAL_REVIEWER_FIELDS.intersection(payload)
@@ -713,10 +721,8 @@ class AutoReviewer:
             manual_reason_code = _sanitize_reason_code(
                 payload.get("manual_reason_code") or reason_code
             )
-            manual_reason_summary = _sanitize_reason_summary(
-                payload.get("manual_reason_summary") or reason_summary
-            )
-            user_review_hint = _sanitize_reason_summary(
+            manual_reason_summary = payload.get("manual_reason_summary") or reason_summary
+            user_review_hint = (
                 payload.get("user_review_hint")
                 or "Review the request manually before approving it."
             )

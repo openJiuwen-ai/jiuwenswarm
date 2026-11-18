@@ -8,6 +8,7 @@ import { useSettingsFormDialogClose } from '../../services/useSettingsFormDialog
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
 import { ModelNameField } from '../models/ModelNameField';
 import { ModelProviderSelect } from '../models/ModelProviderSelect';
+import { ModelConfigSaveCancelled, type ModelConfigDialogExtension } from './modelConfigDialogExtension';
 import {
   CUSTOM_VENDOR_SELECTION,
   findVendorPreset,
@@ -18,6 +19,7 @@ import {
   catalogProtocols,
   credentialsOptional,
   defaultGeneration,
+  GENERATION_SLOT_VENDORS,
   generationApiBase,
   generationModelOptions,
   generationProviderName,
@@ -39,12 +41,11 @@ const EMPTY_VENDOR_CATALOG: VendorPresetMap = {
   custom_api: [],
 };
 
-/** 视频/图像生成配置弹窗里"API"分组只保留有生成目录的厂商。其余厂商没有可用的
- *  视频/图像生成模型，放出来只会诱导用户选到一个填不出正确模型名的死路。已保存的
+/** 生成配置弹窗里"API"分组只保留该槽位有生成目录的厂商（GENERATION_SLOT_VENDORS）。其余
+ *  厂商没有可用的生成模型，放出来只会诱导用户选到一个填不出正确模型名的死路。已保存的
  *  旧配置仍然用完整的 catalog（见下方 preset/findStoredPreset）正常回显，这里只是
  *  收窄下拉本身能新选到的选项。百炼和 vLLM-Omni 的目录在 design 侧，不能被上游
  *  只含 OpenRouter / 火山引擎 / MiniMax 的白名单滤掉。 */
-const ALLOWED_API_VENDORS = new Set(['openrouter', 'volcengine', 'minimax', 'alibaba', 'vllm-omni']);
 
 const OPENAI_PROTOCOL = 'openai';
 
@@ -138,6 +139,8 @@ export function GenerationModelConfigDialog({
   enableOnSave,
   save,
   onClose,
+  extension,
+  slots,
 }: {
   slot: GenerationSlot;
   titleKey: string;
@@ -145,6 +148,8 @@ export function GenerationModelConfigDialog({
   enableOnSave: boolean;
   save: SaveConfig;
   onClose: () => void;
+  extension?: ModelConfigDialogExtension;
+  slots?: readonly GenerationSlot[];
 }) {
   const { t } = useTranslation();
   const { isConnected, request } = useSettingsServices();
@@ -152,8 +157,11 @@ export function GenerationModelConfigDialog({
   const form = useForm<GenerationDraft>({ initialValues });
   useFormState(form);
   const values = form.getValues();
+  useEffect(() => {
+    if (extension?.fieldErrors) form.setErrors(extension.fieldErrors);
+  }, [extension?.fieldErrors, form]);
   const [catalog, setCatalog] = useState<VendorPresetMap>(EMPTY_VENDOR_CATALOG);
-  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogLoading, setCatalogLoading] = useState(isConnected);
   const [catalogError, setCatalogError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [saveError, setSaveError] = useState('');
@@ -167,8 +175,11 @@ export function GenerationModelConfigDialog({
   // 完整的 catalog，不然已保存的旧配置（provider 是被收窄掉的厂商）编辑时会
   // 回显失败。
   const pickerCatalog = useMemo<VendorPresetMap>(
-    () => ({ ...catalog, custom_api: catalog.custom_api.filter((preset) => ALLOWED_API_VENDORS.has(preset.vendor_key)) }),
-    [catalog],
+    () => ({
+      ...catalog,
+      custom_api: catalog.custom_api.filter((preset) => GENERATION_SLOT_VENDORS[slot].includes(preset.vendor_key)),
+    }),
+    [catalog, slot],
   );
   const closeBlocked = submitting;
   const { discardConfirmationOpen, requestClose, cancelDiscard, confirmDiscard } = useSettingsFormDialogClose({
@@ -176,7 +187,12 @@ export function GenerationModelConfigDialog({
     form,
     closeBlocked,
     onClose,
+    additionalChanges: extension?.dirty,
   });
+  const draftChange = extension?.onDraftChange;
+  useEffect(() => {
+    draftChange?.(buildUpdates(slot, values, catalog));
+  }, [draftChange, values, catalog, slot]);
 
   const preset = findVendorPreset(catalog, values.vendor_selection);
   const custom = values.vendor_selection === CUSTOM_VENDOR_SELECTION;
@@ -190,7 +206,8 @@ export function GenerationModelConfigDialog({
   const catalogAll = custom;
   const catalogApplies = catalogAll || vendor !== undefined;
   const arkSelection = vendor === 'modelark' && preset?.vendor_key === 'volcengine' && preset.plan === 'custom_api';
-  const fetchKey = JSON.stringify([slot, values.vendor_selection, apiBase, values.api_key.trim()]);
+  const activeSlots = slots?.length ? slots : [slot];
+  const fetchKey = JSON.stringify([activeSlots, values.vendor_selection, apiBase, values.api_key.trim()]);
 
   const fetchGenerationModels = async () => {
     const current = form.getValues();
@@ -198,7 +215,7 @@ export function GenerationModelConfigDialog({
     if (!isConnected || selected?.vendor_key !== 'volcengine' || selected.plan !== 'custom_api') return;
     const base = current.api_base.trim();
     const key = current.api_key.trim();
-    const identity = JSON.stringify([slot, current.vendor_selection, base, key]);
+    const identity = JSON.stringify([activeSlots, current.vendor_selection, base, key]);
     if (!key) {
       setFetchStatus({ key: identity, text: t('settingsPanel.models.fetchReasons.apiKeyRequired') });
       return;
@@ -208,16 +225,17 @@ export function GenerationModelConfigDialog({
     setFetchingKey(identity);
     setFetchStatus({ key: identity, text: t('settingsPanel.models.fetchModelsLoading') });
     try {
-      const result = await request<VendorFetchModelsResult>(
+      const results = await Promise.all(activeSlots.map((item) => request<VendorFetchModelsResult>(
         'vendors.fetch_models',
-        { vendor_key: 'volcengine', plan: 'custom_api', api_key: key, api_base: base, modality: slot === 'visual_gen' ? 'image' : 'video' },
+        { vendor_key: 'volcengine', plan: 'custom_api', api_key: key, api_base: base, modality: item === 'visual_gen' ? 'image' : 'video' },
         { timeoutMs: 30_000 },
-      );
+      )));
       if (currentRequestId !== fetchRequestId.current) return;
-      if (result.source !== 'remote' || !Array.isArray(result.models) || !result.models.every((name) => typeof name === 'string')) {
-        throw new Error(result.reason || t('settingsPanel.models.fetchModelsInvalidResponse'));
+      const invalid = results.find((result) => result.source !== 'remote' || !Array.isArray(result.models) || !result.models.every((name) => typeof name === 'string'));
+      if (invalid) {
+        throw new Error(invalid.reason || t('settingsPanel.models.fetchModelsInvalidResponse'));
       }
-      const models = Array.from(new Set(result.models.map((name) => name.trim()).filter(Boolean)));
+      const models = Array.from(new Set(results.flatMap((result) => result.models).map((name) => name.trim()).filter(Boolean)));
       setFetchedModels({ key: identity, models });
       setFetchStatus({ key: identity, text: t('settingsPanel.models.fetchGenerationModelsRemote', { count: models.length }) });
     } catch (error) {
@@ -281,6 +299,7 @@ export function GenerationModelConfigDialog({
   }, [pickerCatalog, config, form, slot]);
 
   const updateVendor = (selection: string) => {
+    const previousModelName = form.getValues().model_name;
     if (selection === CUSTOM_VENDOR_SELECTION) {
       form.setValues({
         vendor_selection: selection,
@@ -289,6 +308,7 @@ export function GenerationModelConfigDialog({
         model_name: '',
         protocol: defaultGeneration(slot, undefined).protocol,
       });
+      extension?.onModelNameCommit('', previousModelName);
       form.clearValidate(['vendor_selection', 'api_base', 'api_key', 'model_name', 'protocol']);
       return;
     }
@@ -299,13 +319,15 @@ export function GenerationModelConfigDialog({
     }
     const nextVendor = generationVendor(nextPreset.vendor_key, nextPreset.api_base);
     const defaults = defaultGeneration(slot, nextVendor);
+    const modelName = nextVendor === 'modelark' ? '' : defaults.model;
     form.setValues({
       vendor_selection: selection,
       api_base: generationApiBase(nextPreset.vendor_key, nextPreset.api_base),
       api_key: '',
       protocol: nextVendor ? defaults.protocol : OPENAI_PROTOCOL,
-      model_name: nextVendor === 'modelark' ? '' : defaults.model,
+      model_name: modelName,
     });
+    extension?.onModelNameCommit(modelName, previousModelName);
     form.clearValidate(['vendor_selection', 'api_base', 'api_key', 'model_name', 'protocol']);
   };
 
@@ -313,14 +335,14 @@ export function GenerationModelConfigDialog({
   const openAIOnly = !custom && Boolean(values.vendor_selection) && vendor === undefined;
   const protocolOptions = openAIOnly
     ? [{ value: OPENAI_PROTOCOL, label: t('settingsPanel.models.protocols.openai') }]
-    : withCurrentOption(catalogProtocols(slot, vendor, catalogAll), values.protocol).map((value) => ({
+    : withCurrentOption([...new Set((slots ?? [slot]).flatMap((item) => catalogProtocols(item, vendor, catalogAll)))], values.protocol).map((value) => ({
         value,
         label: value,
       }));
   const modelOptions = arkSelection
     ? withCurrentOption(fetchedModels?.key === fetchKey ? fetchedModels.models : [], values.model_name)
     : catalogApplies
-      ? generationModelOptions(slot, vendor, catalogAll, values.protocol, values.model_name)
+      ? [...new Set((slots ?? [slot]).flatMap((item) => generationModelOptions(item, vendor, catalogAll, values.protocol, values.model_name)))]
       : [];
 
   const optionalCredentials = credentialsOptional(values.protocol);
@@ -363,6 +385,7 @@ export function GenerationModelConfigDialog({
           value={String(value ?? '')}
           protocol="openai"
           catalog={pickerCatalog}
+          loading={catalogLoading}
           includeOpenAIAccount={false}
           groups={['custom_api', 'other']}
           disabled={fieldDisabled}
@@ -382,7 +405,9 @@ export function GenerationModelConfigDialog({
         // 协议就是模型所属的家族：换了协议，当前模型如果不属于这个家族，就换成这个家族的第一个模型。
         const current = form.getValues().model_name.trim();
         if (catalogApplies && modelProtocol(slot, vendor, catalogAll, current) !== protocol) {
-          form.setFieldValue('model_name', generationModelOptions(slot, vendor, catalogAll, protocol, '')[0] ?? '');
+          const nextModelName = activeSlots.flatMap((item) => generationModelOptions(item, vendor, catalogAll, protocol, ''))[0] ?? '';
+          form.setFieldValue('model_name', nextModelName);
+          extension?.onModelNameCommit(nextModelName);
         }
       },
     },
@@ -417,6 +442,7 @@ export function GenerationModelConfigDialog({
       label: t('settingsPanel.models.model'),
       component: 'custom',
       required: !optionalCredentials,
+      onBlur: (_modelName, nextValues) => extension?.onModelNameCommit(nextValues.model_name),
       render: ({ id, value, error, disabled: fieldDisabled, onChange, onBlur }) => (
         <ModelNameField
           id={id}
@@ -438,7 +464,7 @@ export function GenerationModelConfigDialog({
           onChange={(model) => {
             onChange(model);
             // 选了别的家族的模型，协议跟着切过去（协议下拉里会带上这个值）。
-            const family = modelProtocol(slot, vendor, catalogAll, model);
+            const family = activeSlots.map((item) => modelProtocol(item, vendor, catalogAll, model)).find(Boolean);
             if (family && family !== form.getValues().protocol) form.setFieldValue('protocol', family);
           }}
           onBlur={onBlur}
@@ -460,6 +486,7 @@ export function GenerationModelConfigDialog({
       await save(buildUpdates(slot, result.values, catalog), titleKey);
       onClose();
     } catch (error) {
+      if (error instanceof ModelConfigSaveCancelled) return;
       setSaveError(error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'));
     } finally {
       setSubmitting(false);
@@ -481,11 +508,7 @@ export function GenerationModelConfigDialog({
         onConfirm={() => void confirm()}
         onCancel={requestClose}
       >
-        {catalogLoading ? (
-          <div className="settings-model-dialog__catalog-status" role="status" aria-live="polite">
-            {t('settingsPanel.models.catalogLoadingCustomAvailable')}
-          </div>
-        ) : null}
+        {extension?.render(closeBlocked)}
         {catalogError ? (
           <div className="settings-model-dialog__catalog-status settings-model-dialog__catalog-status--error" role="alert">
             <span>
@@ -512,6 +535,7 @@ export function GenerationModelConfigDialog({
           }}
           items={formItems}
         />
+        {extension?.renderDisplayName(closeBlocked)}
         {saveError ? (
           <div className="settings-page__error" role="alert" data-testid="settings-agent-config-dialog-error">
             {saveError}

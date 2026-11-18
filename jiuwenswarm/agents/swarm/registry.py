@@ -47,6 +47,7 @@ from openjiuwen.agent_teams.schema.build_context import register_build_context_f
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 from jiuwenswarm.agents.swarm import group_chat as _group_chat  # noqa: F401 -- registers tool providers
 from jiuwenswarm.agents.swarm import group_execution as _group_execution  # noqa: F401 -- registers task providers
+from jiuwenswarm.agents.swarm import group_org_lifecycle as _group_org_lifecycle  # noqa: F401 -- registers org policy
 from jiuwenswarm.agents.swarm.providers import (
     builtin_rails as _builtin_rails,
     code_rails as _code_rails,
@@ -106,6 +107,7 @@ TEAM_WORKSPACE_REPORT_PATH = _member_rails.TEAM_WORKSPACE_REPORT_PATH
 ORGANIZATION_AVAILABILITY = _member_rails.ORGANIZATION_AVAILABILITY
 ORGANIZATION_MODEL = _member_rails.ORGANIZATION_MODEL
 ORGANIZATION_OWNER_INBOX = _member_rails.ORGANIZATION_OWNER_INBOX
+OPENCODE_SESSION = _member_rails.OPENCODE_SESSION
 CONTEXT_PROCESSOR = _member_rails.CONTEXT_PROCESSOR
 MODEL_ANOMALY_DETECTION = _member_rails.MODEL_ANOMALY_DETECTION
 PLUGIN_RAILS = _member_rails.PLUGIN_RAILS

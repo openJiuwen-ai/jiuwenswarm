@@ -7,6 +7,20 @@ from __future__ import annotations
 from typing import Any
 
 
+_LENGTH_REQUIREMENTS = (
+    "\n\nLength requirements: use the original user request in root_task as the authority. "
+    "Keep approximate length approximate: 'about 500 words' or '约500字' is a rough scope target. "
+    "Do not invent percentage tolerances, strict ranges, per-section quotas, or a required count report. "
+    "If a generated summary_task or outline added those restrictions to an approximate user request, "
+    "follow the original approximation instead. Preserve explicit user limits such as '不超过500字' "
+    "and user-specified per-section counts; do not relax them. Include the user's original length wording "
+    "in every outline and assignment. For approximate length, draft to the intended scale without enumerating "
+    "characters or repeatedly counting and rewriting in reasoning. For an explicit hard limit, draft "
+    "first, then use a counting tool with the user's counting convention, make a focused correction "
+    "if needed, and recheck when necessary. Do not repeatedly trial-write or hand-count in reasoning. "
+)
+
+
 def _summary_agent_spec(source: Any, *, system_prompt: str) -> Any:
     """Keep model, language and a finite budget while dropping user-team capabilities."""
     from openjiuwen.harness.schema.deep_agent_spec import DeepAgentSpec, WorkspaceSpec
@@ -71,13 +85,17 @@ def build_summary_team_spec(
         "criteria; facts must come only from bound sources. When a source output already contains the needed "
         "text, use that text. Read a file only when that bound source explicitly cites it and the summary needs "
         "its content. Do not list directories or open files from earlier runs. "
-        "For a single short text deliverable, when the user did not ask for code, multiple files, or a long "
-        "research document, write the final text yourself from those bound sources, check it once against the "
-        "request, and call org_summary_complete. Do not send that short text to source-integrator or "
+        "For a single short text deliverable, including a short report saved as one Markdown or text file, "
+        "when the bound sources suffice and have no disagreement that would change the conclusion, "
+        "write the final text yourself from those bound sources, check it once against the request, "
+        "write the requested final file in the summary directory below if needed, and call "
+        "org_summary_complete. A request to save a short report as one file alone does not require "
+        "teammate delegation. Do not send that short text to source-integrator or "
         "delivery-drafter. "
         "Use source-integrator and delivery-drafter only when the bound sources contain a disagreement that "
-        "would change the conclusion, or the user asked for a file, code, or a multi-part specialist "
-        "deliverable. Send that assignment once, by an internal Team message. When source-integrator returns "
+        "would change the conclusion, or the deliverable needs code, multiple files, a long research "
+        "document, complex file formatting, or multi-part specialist work. Send that assignment once, "
+        "by an internal Team message. When source-integrator returns "
         "an outline, send it to delivery-drafter with one internal Team message. The outline contains only the "
         "structure the draft needs, source attribution for each part, and disagreements that would change the "
         "conclusion. Do not add research, risk lists, or verification items the user did not request. "
@@ -128,10 +146,14 @@ def build_summary_team_spec(
         "copy it unchanged into that directory; source paths can remain in the delivery description. Set "
         "result_type to the actual delivered format. If no final file is required, return the full text in "
         "the message and do not invent a path. Do not modify source-Team artifacts or create tasks. "
-        "Perform at most one format check and one focused correction; do not repeatedly generate counting "
+        "Perform one format check and one focused correction; an explicit hard length limit may need "
+        "a count recheck after correction as described below. Do not repeatedly generate counting "
         "scripts. Call claim_task only when view_task shows an internal task assigned to you. If no internal "
         "task is assigned to you, do not call claim_task. A file write alone is not delivery."
     )
+    leader_prompt += _LENGTH_REQUIREMENTS
+    integrator_prompt += _LENGTH_REQUIREMENTS
+    drafter_prompt += _LENGTH_REQUIREMENTS
     metadata = {
         "summary_team": True,
         "organization_id": organization_id,

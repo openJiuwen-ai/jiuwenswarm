@@ -75,6 +75,7 @@ test('an already bound assistant keeps the configuration dialog open', async () 
     assert.ok(calls.some(([method, params]) => method === 'channel.welink.login_start' && params.account === ''));
     assert.equal(document.querySelector('[data-testid="jiuwenmate-welink-switch-account"]'), null);
     assert.ok(document.querySelector('[data-testid="jiuwenmate-welink-qr"]'));
+    assert.match(document.body.textContent, /jiuwenmate.im.welinkScanReminder/);
     assert.equal(document.querySelector('[data-testid="jiuwenmate-welink-assistant-account"]'), null);
   } finally {
     await act(async () => root.unmount());

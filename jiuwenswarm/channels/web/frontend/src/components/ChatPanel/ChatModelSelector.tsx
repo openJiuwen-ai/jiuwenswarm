@@ -18,7 +18,7 @@ import {
   useSessionStore,
 } from '../../stores/sessionStore';
 import type { ModelSelection } from '../../types';
-import ModelPicker from '../ModelPicker';
+import ModelPicker, { type ModelPickerPresentation } from '../ModelPicker';
 import { isEnterprise } from '../../edition';
 import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
@@ -36,12 +36,22 @@ function sameModelSelection(left: ModelSelection | null, right: ModelSelection |
 
 export default function ChatModelSelector({
   disabled: disabledByParent = false,
+  locked = false,
+  lockedTitle,
   sessionId,
   includeModelGroups: modelGroupsOverride,
   testIdPrefix = 'chat-panel-model-selector',
   allowModelGroups = true,
+  pickerPresentation,
+  showWhenEmpty = false,
 }: {
   disabled?: boolean;
+  /** Blocks picking another model while keeping the deleted-model fallback
+   * running. Lifted while the current selection is unavailable so the user can
+   * pick a working model again. */
+  locked?: boolean;
+  /** Tooltip shown while the selector is locked. */
+  lockedTitle?: string;
   /** Session this selector edits. Surfaces that own a session (the design
    * canvas) pass it explicitly: `activeSessionId` follows the app route and can
    * point at another conversation while the surface stays mounted (#5394). */
@@ -49,6 +59,8 @@ export default function ChatModelSelector({
   allowModelGroups?: boolean;
   includeModelGroups?: boolean;
   testIdPrefix?: string;
+  pickerPresentation?: ModelPickerPresentation;
+  showWhenEmpty?: boolean;
 }): JSX.Element | null {
   const disabled = disabledByParent || isEnterprise();
   const { t } = useTranslation();
@@ -140,22 +152,24 @@ export default function ChatModelSelector({
     ?? selectionFromModel(selected)
     ?? null;
   const catalogPending = isModelCatalogPending(models, modelGroups);
-  const healedSelection = selectedModelSelection
+  const selectionUnavailable = Boolean(selectedModelSelection)
     && !catalogPending
-    && !isModelSelectionAvailable(selectedModelSelection, models, selectableGroups)
+    && !isModelSelectionAvailable(selectedModelSelection, models, selectableGroups);
+  const healedSelection = selectedModelSelection && selectionUnavailable
     ? resolveAvailableModelSelection(selectedModelSelection, models, selectableGroups)
     : inferredSelection;
+  const pickLocked = locked && !selectionUnavailable;
   const pickerSelection =
     singleAgent && collaborationEnabled && healedSelection?.type === 'model_group'
       ? { type: 'model_group' as const, id: healedSelection.id }
       : healedSelection;
   const hasSelectableGroup =
     includeModelGroups && selectableGroups.some((group) => group.enabled !== false && Boolean(group.model_group_id));
-  if (!selected && !pickerSelection && models.length === 0 && !hasSelectableGroup && !singleAgent) return null;
+  if (!showWhenEmpty && !selected && !pickerSelection && models.length === 0 && !hasSelectableGroup && !singleAgent) return null;
 
   const persistSelection = async (next: ModelSelection) => {
     if (selectedChildTeam) return;
-    if (!boundSessionId || disabled || useChatStore.getState().getRuntime(boundSessionId)?.isProcessing) return;
+    if (!boundSessionId || disabled || pickLocked || useChatStore.getState().getRuntime(boundSessionId)?.isProcessing) return;
     setSelectionError('');
     setSelectedModelSelection(boundSessionId, next);
     if (boundSessionId === NEW_CONVERSATION_ID) return;
@@ -172,8 +186,10 @@ export default function ChatModelSelector({
   };
 
   return (
-    <div className="chat-model-selector" data-testid={`${testIdPrefix}-wrap`}>
+    <div className="chat-model-selector" data-testid={`${testIdPrefix}-wrap`}
+      title={pickLocked ? lockedTitle : undefined} data-locked={pickLocked || undefined}>
       <ModelPicker
+        {...pickerPresentation}
         testIdPrefix={testIdPrefix}
         value={selectedChildTeam?.execution_model_name ?? selected?.model_name ?? selectedModelName}
         selection={selectedChildTeam?.execution_model_selection ?? pickerSelection}
@@ -181,15 +197,15 @@ export default function ChatModelSelector({
         unavailableSelectionLabel={groupBlocked ? t('chat.modelSelector.selectOrdinaryModel') : undefined}
         onChange={(modelName) => {
           if (selectedChildTeam) return;
-          if (!boundSessionId || disabled || useChatStore.getState().getRuntime(boundSessionId)?.isProcessing) return;
+          if (!boundSessionId || disabled || pickLocked || useChatStore.getState().getRuntime(boundSessionId)?.isProcessing) return;
           setSelectionError('');
           setSelectedModelName(boundSessionId, modelName);
         }}
         onSelectionChange={(next) => {
           void persistSelection(next);
         }}
-        disabled={disabled || Boolean(selectedChildTeam)}
-        onAddModel={disabled ? undefined : openModelSettings}
+        disabled={disabled || pickLocked || Boolean(selectedChildTeam)}
+        onAddModel={disabled || pickLocked ? undefined : openModelSettings}
       />
       {selectionError ? (
         <div className="chat-model-selector__error" role="alert" data-testid={`${testIdPrefix}-error`}>

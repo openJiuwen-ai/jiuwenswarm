@@ -494,9 +494,10 @@ async def test_pack_describe_retains_local_defaults_when_identity_check_fails(tm
         "---\nname: demo-pack\nkind: skillpack\nskills: [member-a, member-b]\n"
         "description: Local description\n---\nbody\n"
     )
-    monkeypatch.setenv("SKILLPACK_PRODUCTIZATION_ENABLED", "true")
-    monkeypatch.setenv("SKILLPACK_HUB_DEPLOYMENT_SCOPE", "isolated")
-    monkeypatch.setenv("SKILLPACK_HUB_TRANSPORT_PROFILE", "legacy_skill_v1")
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {"symphony": {"evolution": {"flow": {"enabled": True}}}},
+    )
     server = AssetPublishAPI(
         tmp_path / "state", resolver=lambda kind, local_id: root,
         hub_url="https://example.invalid", skillpack_hub=UnavailableHub(),

@@ -319,7 +319,10 @@ export function WelinkOauthDialog({ configId, onSkip, onBound }: WelinkOauthDial
     >
       <div className="jiuwenmate-im-dialog__panel">
         <strong>{title}</strong>
-        <small>{hint}</small>
+        <small>
+          {hint}
+          {pending && !error && (showCliQr || showAssistantQr) ? <> {t('jiuwenmate.im.welinkScanReminder')}</> : null}
+        </small>
         {showCliQr ? (
           <span className="jiuwenmate-im-dialog__platform">
             <img className="jiuwenmate-welink-logo" src={welinkIcon} alt="" aria-hidden />

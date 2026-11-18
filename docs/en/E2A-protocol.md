@@ -1,6 +1,6 @@
 # E2A (Everything-to-Agent) Protocol
 
-> **Implementation**: `jiuwenswarm/common/e2a/` (`models.py`, `adapters.py`, `constants.py`, `__init__.py`). **Version**: `E2A_PROTOCOL_VERSION` (default `1.0`). **On conflict**: treat the dataclass fields in `models.py` as the source of truth and update this document accordingly. Requests: `E2AEnvelope`; responses: `E2AResponse`.  
+> **Implementation**: `e2a/` (`models.py`, `adapters.py`, `constants.py`, `__init__.py`). **Version**: `E2A_PROTOCOL_VERSION` (default `1.0`). **On conflict**: treat the dataclass fields in `models.py` as the source of truth and update this document accordingly. Requests: `E2AEnvelope`; responses: `E2AResponse`.  
 > **中文版**：[../zh/E2A-protocol.md](../zh/E2A-protocol.md)
 
 ---
@@ -11,10 +11,10 @@
 |----------|------|
 | **docs/zh/E2A-protocol.md** | Same specification in Chinese |
 | **docs/en/E2A-protocol.md** (this file) | Normative description, pitfalls, examples (English) |
-| `jiuwenswarm/common/e2a/models.py` | Request `E2AEnvelope`, response `E2AResponse`, nested types; `from_dict` / `to_dict` |
-| `jiuwenswarm/common/e2a/constants.py` | **`E2A_SOURCE_PROTOCOL_*`**, **`E2A_RESPONSE_KINDS`**, **`E2A_RESPONSE_STATUS_*`**, ACP method names and SessionUpdate strings (runtime: use tuples in code) |
-| `jiuwenswarm/common/e2a/adapters.py` | ACP / A2A → E2A; E2A → ACP JSON-RPC; **`E2AResponse` → ACP / A2A projections** (§8) |
-| `jiuwenswarm/common/e2a/__init__.py` | Public exports |
+| `e2a/models.py` | Request `E2AEnvelope`, response `E2AResponse`, nested types; `from_dict` / `to_dict` |
+| `e2a/constants.py` | **`E2A_SOURCE_PROTOCOL_*`**, **`E2A_RESPONSE_KINDS`**, **`E2A_RESPONSE_STATUS_*`**, ACP method names and SessionUpdate strings (runtime: use tuples in code) |
+| `e2a/adapters.py` | ACP / A2A → E2A; E2A → ACP JSON-RPC; **`E2AResponse` → ACP / A2A projections** (§8) |
+| `e2a/__init__.py` | Public exports |
 
 ---
 
@@ -103,6 +103,8 @@ Hand-built defaults use `source_protocol` = `e2a`. Legacy `binding` migrates to 
 | `session_update_kind` | For ACP `session/update` bridge; values match `constants.ACP_SESSION_UPDATE_KINDS` |
 | `expected_output_modes` | A2A `acceptedOutputModes` |
 
+At the Gateway-facing WebSocket ingress, AgentServer converts an explicitly supplied method to its own `ReqMethod`. Unknown or non-string methods receive a final error response with `payload.code` set to `METHOD_NOT_FOUND`. Internal requests without a method retain their existing path.
+
 **Common `params` keys** (extend as needed; names below cooperate with ACP bridging):
 
 | Key | Purpose |
@@ -135,7 +137,7 @@ Hand-built defaults use `source_protocol` = `e2a`. Legacy `binding` migrates to 
 
 ## 6. ACP strings in `constants.py` (bridge reference)
 
-For ACP bridging and doc cross-check only; **at runtime** use tuples in `jiuwenswarm.common.e2a.constants`:
+For ACP bridging and doc cross-check only; **at runtime** use tuples in `e2a.constants`:
 
 - **`ACP_CLIENT_TO_AGENT_METHODS`**: client → Agent JSON-RPC method names
 - **`ACP_AGENT_TO_CLIENT_METHODS`**, **`ACP_NOTIFICATION_NAMES`**: downstream / notifications
@@ -148,7 +150,7 @@ For ACP bridging and doc cross-check only; **at runtime** use tuples in `jiuwens
 
 ## 7. `merge_params_to_acp_prompt`
 
-Python: `jiuwenswarm.common.e2a.merge_params_to_acp_prompt(envelope)`.
+Python: `e2a.merge_params_to_acp_prompt(envelope)`.
 
 If and only if **`method == "session/prompt"`**:
 
@@ -460,7 +462,7 @@ as cancellation rather than being classified as a `chat.error`.
 
 ---
 
-*Maintained in sync with `jiuwenswarm/common/e2a/models.py` (`E2AEnvelope`, `E2AResponse`).*
+*Maintained in sync with `e2a/models.py` (`E2AEnvelope`, `E2AResponse`).*
 
 ## Changelog
 
@@ -495,3 +497,53 @@ empty `items` and an error message, without a local Gateway fallback. Existing S
 cold-cache and background-refresh semantics remain in place. The pinned
 `openjiuwen-protocol` package defines `hub.expert_packages.catalog`; no application-side
 enum registration is required.
+
+## History payload references and chunk retrieval
+
+Large tool results retain a short preview and may include `payload_refs`. Each reference contains `sha256`, `bytes`, `media_type`, and a host path. Clients retrieve content by session and digest. Previously stored prompt references remain readable through the same interface.
+
+`text/plain` identifies an original string; `application/json` identifies the complete structured value. `raw_output_truncated=true` means the inline preview was reduced; a corresponding `payload_refs` entry provides the complete artifact. If artifact storage fails, tool events still carry bounded previews without unavailable references, and the failure is logged. Existing small results and inline history keep their semantics.
+
+Use a unary `history.get` request with these `params`:
+
+```json
+{"session_id":"web_example","artifact_sha256":"<64 lowercase SHA-256 hex characters>","offset":0,"max_bytes":65536}
+```
+
+The response payload contains `content`, `offset`, `next_offset`, `eof`, `bytes`, and `sha256`. The session is taken from `params.session_id`, falling back to the request envelope's `session_id`. Offsets are UTF-8 byte positions and must align with character boundaries; each read is limited to 64 KiB. Continue from the returned `next_offset` until `eof=true`. Digests are resolved within the selected session; arbitrary file paths are not accepted. Invalid digests, ranges, encoding boundaries, or missing artifacts produce `HISTORY_ARTIFACT_FAILED`.
+
+Omitting `artifact_sha256` preserves existing history paging/streaming behavior. The E2A envelope and protocol version are unchanged.
+
+Legacy `page_idx` paging scans history in blocks and retains only the requested page, preserving newest-first order and exact `total_pages`. Old JSON arrays are also streamed. Each scan is limited to 8 GiB / 120 seconds, and the retained page to 16 MiB; giant diagnostic fields are not loaded in full. Budget or allocation failures return an explicit `HISTORY_RESTORE_LIMIT`; replacement or truncation returns `HISTORY_RESTORE_CHANGED`, rather than a successful empty history.
+
+Legacy context recovery retains its scan budget. Time spent waiting for model compression between recovery batches does not consume scanning time; actual disk reads and parsing remain time-limited.
+
+Legacy page reads preserve `event_payload`, `usage`, and `session_usage` for tool replay and usage summaries. These fields remain subject to semantic-field and page budgets; context recovery keeps its separate diagnostic projection.
+
+Each page uses a committed byte-length boundary. Concurrent appends become visible to later page requests; file replacement or truncation returns a history-change error. Page scans allow history writes to continue, and both unary and streamed history queries keep the Front event loop responsive.
+
+When the SDK emits usage first, the adapter retains at most one usage event until call-end. Missing call-end events drain at the next call, answer, or stream completion.
+
+When an output consumer is cancelled or closed, pending usage is saved to the session audit. Normally delivered usage follows the existing history writer.
+
+Externalized tool results retain known rich-display fields (`skill_tree`, `beam_search`, `planned_graph`, `graph_status`, and `graph_build`) within the existing 1 MiB raw-output budget; MCP Apps keep their existing projection. Complete originals remain in `payload_refs`. Live delivery and history replay preserve these references in the current product session, including forked sessions.
+
+For Gateway routes that forward history cursors, clients may request `history.get` with `cursor: "history-artifact:v1:<sha256>:<offset>"` and `limit: 1`. The response contains one `history.artifact` record with the same chunk fields as unary artifact retrieval, followed by the normal history done frame. Each cursor request reads at most 8 KiB on a UTF-8 boundary. Invalid or missing artifacts return `HISTORY_ARTIFACT_FAILED`; no arbitrary file path is accepted. Ordinary history subscribers ignore these artifact cursors. The unary `artifact_sha256` interface remains available.
+
+Web loads originals only on request, retains one window of at most 64 KiB locally, and offers previous/next parts. Closing the view or changing its session/reference aborts pending reads and releases the displayed original; full originals are not copied into the chat store.
+
+## Model call status and incremental history
+
+`chat.llm_call_start` and `chat.llm_call_end` record the model call lifecycle with
+member and role attribution. Start events are durable even with empty content.
+Each call start assigns `llm_start_ts` to associate its start and usage events.
+
+Session history appends new messages and events. Main-agent and sub-agent call
+events omit the input prompt and its artifact reference. User messages, tool calls,
+tool results and replies are persisted through their respective events. Clients must
+accept an absent `prompt` and degrade the full-input details view accordingly.
+
+`chat.usage_metadata` continues to report input, output and cache tokens, costs and
+latencies. Context occupancy uses `context.usage`, and cumulative usage uses the
+existing session usage snapshot. Readers continue to accept older records with
+`prompt` fields.

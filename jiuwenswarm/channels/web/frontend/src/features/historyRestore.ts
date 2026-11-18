@@ -7,7 +7,6 @@ import { describeChatError } from './free-models/chatError';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
 import { parseTimestampToMs, timestampMsToIso } from '../utils/timestamp';
 import { extractAutomation } from '../utils/heartbeatAutomation';
-import { proactiveAssistantMessageId } from '../utils/proactiveRecommendation';
 import {
   crossSessionAssistantMessageId,
   crossSessionUserMessageId,
@@ -22,6 +21,7 @@ import {
   isGoalCompletedContent,
 } from '../components/GoalBar/goalCompletedMessage';
 import { HistoryRecordReassembler } from './historyRecordReassembler';
+import { stripMentionAppendix } from './designer/designerMentions';
 import { expertTeamId } from './teamOrganization/conversation';
 import { isTeamOrganizationUiEnabled } from './teamOrganization/featureConfig';
 import { readAgentTemplateName } from './agentIdentity';
@@ -30,6 +30,8 @@ import {
   isTeamLeaderContextUsageSnapshot,
   parseContextUsageSnapshot,
 } from './contextUsage/contextUsageModel';
+import { isEnterprise } from '../edition';
+import { isTeamAgentMode } from './planMode/wireMode';
 
 export { HistoryRecordReassembler };
 
@@ -56,6 +58,7 @@ const ALLOWED_ASSISTANT_EVENT_TYPES = new Set([
   'chat.subtask_update',
   'chat.ask_user_question',
   'chat.ask_user_answer',
+  'chat.ask_user_closed',
   'chat.error',
   'team.message',
   'team.member',
@@ -480,7 +483,7 @@ export interface HistoryAnsweredQuestionReplayItem {
 }
 
 type HistoryTimelineEntry =
-  | { kind: 'message'; message: Message }
+  | { kind: 'message'; message: Message; terminalError?: true }
   | { kind: 'tool_call'; at: string; payload: Record<string, unknown> }
   | { kind: 'tool_result'; at: string; payload: Record<string, unknown> }
   | { kind: 'usage_summary'; at: string; usage: UsageSummary; tokenUsageSnapshot: SessionTokenUsageSnapshot | null }
@@ -495,7 +498,8 @@ type HistoryTimelineEntry =
   | { kind: 'subagent_update'; at: string; payload: Record<string, unknown> }
   | { kind: 'subagent_message'; at: string; payload: Record<string, unknown> }
   | { kind: 'subagent_activity'; at: string; payload: Record<string, unknown> }
-  | { kind: 'pending_question'; at: string; payload: AskUserQuestionPayload }
+  | { kind: 'pending_question'; at: string; payload: AskUserQuestionPayload; forkedFromSessionId?: string }
+  | { kind: 'ask_user_closed'; at: string; questionIds?: string[] }
   | { kind: 'answered_question'; at: string; payload: { request_id: string; answers: UserAnswer[] } };
 
 /** 历史回放出的压缩汇总：boundary 记录计数，metadata 拼 tooltip 明细行 */
@@ -509,6 +513,9 @@ interface BeginHistoryRestoreOptions {
   subagentId?: string;
   /** Continue initial restore past batches with no restorable content. */
   requestNextBatch: (cursor: string) => Promise<unknown>;
+  /** Validate recovery against the live turn before publishing any history data. */
+  shouldApply?: () => boolean;
+  onDiscard?: () => void;
   onReady: (messages: Message[], cursor: HistoryCursorMeta) => void;
   /** 与消息同一时间线顺序，用于恢复 ToolGroupDisplay */
   onToolReplay?: (items: HistoryToolReplayItem[]) => void;
@@ -720,7 +727,9 @@ function safeTimestampMs(value: unknown): number {
 }
 
 function isTeamModeRecord(record: Record<string, unknown>): boolean {
-  return typeof record.mode === 'string' && record.mode.trim().toLowerCase() === 'team';
+  const mode = typeof record.mode === 'string' ? record.mode.trim().toLowerCase() : '';
+  if (!isEnterprise()) return mode === 'team';
+  return isTeamAgentMode(mode);
 }
 
 function isTeamTeammateMessageRecord(record: Record<string, unknown>): boolean {
@@ -1138,7 +1147,8 @@ function parseSessionHistoryTimelineEntry(
         id,
         role: 'user',
         outputOrder: readOutputOrder(record) ?? readOutputOrder(eventPayload),
-        content,
+        // A design "@" mention carries a leader-only appendix; show the user's own text.
+        content: stripMentionAppendix(content),
         timestamp: at,
         ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
         ...(mediaItems.length > 0 ? { mediaItems } : {}),
@@ -1174,6 +1184,34 @@ function parseSessionHistoryTimelineEntry(
         ? 'subagent_activity'
         : 'subagent_message';
     return { kind, at: replay.at, payload: replay.payload };
+  }
+
+  if (eventType === 'chat.notice') {
+    const noticePayload = buildEventPayloadForRecord(record);
+    const noticeType = pickFirstString(noticePayload, ['notice_type', 'type'])
+      ?? pickFirstString(record, ['notice_type', 'type'])
+      ?? '';
+    if (
+      noticeType !== 'requested_team_size'
+      && noticeType !== 'team_quota'
+      && noticeType !== 'team_teammate_quota'
+    ) {
+      return null;
+    }
+    const noticeContent = pickFirstString(noticePayload, ['content', 'message', 'text'])
+      ?? (typeof record.content === 'string' ? record.content : '');
+    if (!noticeContent.trim()) return null;
+    const noticeId = pickFirstString(record, ['id', 'message_id'])
+      ?? `notice-${noticeType}-${sessionId}-${at}`;
+    return {
+      kind: 'message',
+      message: {
+        id: noticeId,
+        role: 'system',
+        content: noticeContent,
+        timestamp: at,
+      },
+    };
   }
 
   if (!ALLOWED_ASSISTANT_EVENT_TYPES.has(eventType)) {
@@ -1236,6 +1274,7 @@ function parseSessionHistoryTimelineEntry(
     );
     return {
       kind: 'message',
+      terminalError: true,
       message: {
         id: restoredId,
         role: 'system',
@@ -1297,23 +1336,16 @@ function parseSessionHistoryTimelineEntry(
         },
       };
     }
-    // 主动推荐消息：从历史记录还原 source/proactive_type，使刷新后仍按
-    // ProactiveRecommendationCard 渲染（否则会退化为普通白色气泡）。
-    const histSource = typeof payload.source === 'string' ? payload.source : '';
-    const isProactiveRecommendation = histSource === 'proactive_recommendation';
-    const histProactiveType = typeof payload.proactive_type === 'string' ? payload.proactive_type : '';
-    const agentTemplateName = isProactiveRecommendation
-      ? undefined
-      : readAgentTemplateName(payload) ?? readAgentTemplateName(record);
-    // 刷新后历史里的 proactive 消息也需带 proactiveRecId，否则赞/踩按钮在历史消息上不出现。
-    const histProactiveRecId = typeof payload.proactive_rec_id === 'string' ? payload.proactive_rec_id : '';
+    // Scheduled proactive recommendation history is no longer restored into the chat UI.
+    if (isProactiveRecommendationRecord(record) || isProactiveRecommendationRecord(payload)) {
+      return null;
+    }
+    const agentTemplateName = readAgentTemplateName(payload) ?? readAgentTemplateName(record);
     const assistantCrossSession =
       extractCrossSessionMessage(payload) ?? extractCrossSessionMessage(record);
     const id = assistantCrossSession
       ? crossSessionAssistantMessageId(record.request_id, assistantCrossSession.messageId)
-      : isProactiveRecommendation && histProactiveRecId
-        ? proactiveAssistantMessageId(histProactiveRecId)
-        : restoredId;
+      : restoredId;
     // completed_at：收尾时刻（耗时）；timestamp 已是气泡出现/首包时刻（排序）
     const recordCompletedAtMs = parseTimestampToMs(record.completed_at);
     const completedAtMs = Number.isFinite(recordCompletedAtMs)
@@ -1339,12 +1371,7 @@ function parseSessionHistoryTimelineEntry(
           ? { keepExpanded: true }
           : {}),
         ...(completedAt ? { completedAt, outputReplayUntil: completedAtMs } : {}),
-        ...(isProactiveRecommendation ? { isProactiveRecommendation } : {}),
-        ...(isProactiveRecommendation && histProactiveType
-          ? { proactiveType: histProactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' }
-          : {}),
         ...(agentTemplateName ? { agentTemplateName } : {}),
-        ...(isProactiveRecommendation && histProactiveRecId ? { proactiveRecId: histProactiveRecId } : {}),
         ...(assistantCrossSession ? { crossSession: assistantCrossSession } : {}),
         // §9：Heartbeat 自动轮的 assistant 消息同样带 metadata.automation 落盘，恢复时读回。
         // 优先读 payload（event_payload 已提升），再回退到 record 顶层。
@@ -1440,12 +1467,15 @@ function parseSessionHistoryTimelineEntry(
     };
   }
 
-  // 问题澄清对话框（chat.ask_user_question）落盘的是问题列表（含完整 options）。
-  // 历史恢复时把 questions 重组为 AskUserQuestionPayload 作为 pending_question 条目。
-  // 在 materializeHistoryTimeline 里：若能按 request_id 配对到 chat.ask_user_answer，
-  // 渲染成带答案的 qa.summary 回显卡；否则渲染成 answers 为空的只读 qa.summary 卡片
-  // （不弹实时交互框——web 重连后后端不重发挂起中断，弹框 + resume 会报
-  // "session has no active execution"，见下方未配对分支）。
+  if (eventType === 'chat.ask_user_closed') {
+    const ids = payload.question_request_ids;
+    const questionIds = Array.isArray(ids)
+      ? ids.filter((id): id is string => typeof id === 'string' && Boolean(id))
+      : undefined;
+    return { kind: 'ask_user_closed', at, questionIds };
+  }
+
+  // History stores the original question and its options for display or resume.
   if (eventType === 'chat.ask_user_question') {
     // Permission approvals share this event but are not clarification questions.
     if (payload.source === 'permission_interrupt') {
@@ -1499,18 +1529,22 @@ function parseSessionHistoryTimelineEntry(
       request_id: requestId,
       questions,
       source: typeof payload.source === 'string' ? payload.source : undefined,
+      ...(typeof payload.interrupt_id === 'string' && payload.interrupt_id.trim()
+        ? { interruptId: payload.interrupt_id }
+        : {}),
     };
     return {
       kind: 'pending_question',
       at,
       payload: pendingPayload,
+      ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
     };
   }
 
   // 问题澄清答案（chat.ask_user_answer）落盘的是 answers 数组（含 question /
   // selected_options / custom_input），request_id 与对应 chat.ask_user_question 一致。
   // 历史恢复时在 materializeHistoryTimeline 里按 request_id 与 pending_question 配对：
-  // 配对成功的渲染成带答案的 qa.summary 回显卡，未配对的 pending_question 才弹框。
+  // 配对成功的渲染成带答案的 qa.summary 回显卡。
   if (eventType === 'chat.ask_user_answer') {
     const requestId =
       (typeof payload.request_id === 'string' ? payload.request_id : '') ||
@@ -1778,14 +1812,7 @@ function buildAnsweredQaSummaryMessage(
   };
 }
 
-/**
- * 历史恢复出的「未答」问题澄清对话框——渲染成只读 qa.summary 卡片
- * （QaSummaryCard 在 answers 为空时展示「—」），不弹实时交互框。
- *
- * 见 materializeHistoryTimeline 里 pending_question 未配对分支的说明：
- * 后端 execution handle 在页面刷新后不可靠，弹框 + resume 会报
- * "session has no active execution"，所以只读展示。
- */
+/** Render an unanswered question as a summary in read-only or earlier history. */
 function buildUnansweredQaSummaryMessage(
   at: string,
   pending: AskUserQuestionPayload,
@@ -1801,17 +1828,53 @@ function buildUnansweredQaSummaryMessage(
     role: 'assistant',
     content: buildQaSummaryContent({ title: i18n.t('qaSummary.title'), items }),
     timestamp: at,
+    unansweredQuestion: { requestId: pending.request_id, source: pending.source },
   };
+}
+
+function findResumableAskUserRequest(entries: HistoryTimelineEntry[]): string | undefined {
+  const finishedToolCalls = new Set<string>();
+  // chat.final can also follow a question that is still waiting for an answer.
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.kind === 'message' && (entry.message.role === 'user' || entry.terminalError)) {
+      break;
+    }
+    if (entry.kind === 'answered_question') {
+      break;
+    }
+    if (entry.kind === 'ask_user_closed') {
+      if (entry.questionIds === undefined) break;
+      for (const id of entry.questionIds) finishedToolCalls.add(id);
+    }
+    if (entry.kind === 'tool_result') {
+      const result = normalizeToolResultPayload(entry.payload);
+      if (result.toolCallId && !result.pending) {
+        finishedToolCalls.add(result.toolCallId);
+      }
+    }
+    if (entry.kind === 'pending_question') {
+      const { request_id, source } = entry.payload;
+      if (source === 'ask_user_interrupt' && !entry.forkedFromSessionId && !finishedToolCalls.has(request_id)) {
+        return request_id;
+      }
+      break;
+    }
+  }
+  return undefined;
 }
 
 /** 将 history 条目折叠成消息/工具/思考，供 restore / page / 文件预览共用。入口统一升序。 */
 function materializeHistoryTimeline(
-  rawEntries: HistoryTimelineEntry[]
+  rawEntries: HistoryTimelineEntry[],
+  restorePendingAskUser = false,
 ): MaterializedHistoryTimeline {
   // restore 用 unshift 倒序入列；sink / 折叠依赖时间升序，这里统一排一次。
   const sortedEntries = [...rawEntries].sort(
     (a, b) => safeTimestampMs(entryTimestamp(a)) - safeTimestampMs(entryTimestamp(b))
   );
+  // Inspect the original order, before unanswered summaries are moved to the turn's end.
+  const resumableAskUserId = restorePendingAskUser ? findResumableAskUserRequest(sortedEntries) : undefined;
   const entries = sinkUnansweredQuestionsToTurnEnd(
     sinkGoalCompletionCardsToTurnEnd(sortedEntries),
   );
@@ -1826,45 +1889,36 @@ function materializeHistoryTimeline(
   const pendingQuestionReplay: HistoryPendingQuestionReplayItem[] = [];
   const answeredQuestionReplay: HistoryAnsweredQuestionReplayItem[] = [];
 
-  // 先扫一遍收集已答问题，供 pending_question / answered_question 配对：
-  // 已答的渲染成带答案的 qa.summary 回显卡（进 messages）；
-  // 未答的也渲染成 qa.summary 卡片（answers 为空），不弹实时交互框（见下方分支）。
-  const answeredByRequestId = new Map<string, UserAnswer[]>();
+  const answeredRequestIds = new Set<string>();
   // pending_question 的 payload（问题原文+选项），按 request_id 索引——
   // 已答的 qa.summary 卡改在 answered_question 条目处 push（用答案时间定位），
   // 但卡内容需要问题+答案合并，故需在此预扫一遍把问题 payload 存起来。
   const pendingQuestionByRequestId = new Map<string, AskUserQuestionPayload>();
   for (const e of entries) {
     if (e.kind === 'answered_question') {
-      answeredByRequestId.set(e.payload.request_id, e.payload.answers);
+      answeredRequestIds.add(e.payload.request_id);
     } else if (e.kind === 'pending_question') {
       pendingQuestionByRequestId.set(e.payload.request_id, e.payload);
     }
   }
 
   for (const e of entries) {
+    if (e.kind === 'ask_user_closed') continue;
     if (e.kind === 'message') {
       messages.push(e.message);
       continue;
     }
     if (e.kind === 'pending_question') {
-      const answers = answeredByRequestId.get(e.payload.request_id);
-      if (answers) {
-        // 已答：不在问题出现位置 push qa.summary 卡——改由下方 answered_question
-        // 条目处 push（用答案提交时间定位，与实时回显位置一致：实时回显的 qa.summary
-        // 卡在用户点确认那一刻追加到列表末尾，而非问题出现时刻）。这里直接跳过。
-      } else {
-        // 未答：不再弹实时交互框。
-        // web 通道重连后后端不会重新派发挂起的 chat.ask_user_question（_on_connect
-        // 只发 connection.ack，session.get_metadata 也不含 pending interaction），
-        // 原 execution handle 在刷新/重启后已不可靠——用户点确认会发 chat.send resume，
-        // 后端找不到 WAITING_FOR_CONTROL 的 parent 而抛 "session has no active execution"。
-        // 改成只读 qa.summary 回显卡（answers 为空，QaSummaryCard 渲染「—」），
-        // 让用户看到曾经被问过什么，但不提供无法兑现的确认按钮。
-        const unansweredMessage = buildUnansweredQaSummaryMessage(e.at, e.payload);
-        if (unansweredMessage) {
-          messages.push(unansweredMessage);
-        }
+      if (answeredRequestIds.has(e.payload.request_id)) {
+        continue;
+      }
+      if (e.payload.request_id === resumableAskUserId) {
+        pendingQuestionReplay.push({ at: e.at, payload: e.payload });
+        continue;
+      }
+      const unansweredMessage = buildUnansweredQaSummaryMessage(e.at, e.payload);
+      if (unansweredMessage) {
+        messages.push(unansweredMessage);
       }
       continue;
     }
@@ -2340,6 +2394,7 @@ function readHistoryCursorMeta(
 
 export function beginHistoryRestore(options: BeginHistoryRestoreOptions): HistoryRestoreHandle {
   const requestKey = makeHistoryRestoreKey(options.sessionId, options.subagentId);
+  const restorePendingAskUser = isEnterprise() && !options.subagentId && Boolean(options.onPendingQuestionReplay);
   const releaseLiveEvents = webClient.suspendSessionEvents(options.sessionId);
   replaceActiveHistoryRequest(requestKey);
 
@@ -2499,7 +2554,7 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
       tokenUsageSnapshot: historyTokenUsage,
       pendingQuestionReplay,
       answeredQuestionReplay,
-    } = materializeHistoryTimeline(entries);
+    } = materializeHistoryTimeline(entries, restorePendingAskUser && requestCursor === null);
     const tokenUsageSnapshot = completionTokenUsage ?? historyTokenUsage;
     const latestContextUsage = selectLatestContextUsagePayload(contextUsageReplay);
 
@@ -2534,6 +2589,10 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     stopListening();
 
     try {
+      if (options.shouldApply && !options.shouldApply()) {
+        options.onDiscard?.();
+        return;
+      }
       if (tokenUsageSnapshot) {
         options.onSessionTokenUsage?.(tokenUsageSnapshot);
       }

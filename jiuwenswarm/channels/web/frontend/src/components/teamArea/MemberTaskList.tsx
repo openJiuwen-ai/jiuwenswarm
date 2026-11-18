@@ -34,7 +34,7 @@ export function MemberTaskListBar({
       data-testid="team-area-member-task-bar-toggle"
     >
       <div className="flex min-w-0 items-center gap-6">
-        <span className="text-sm font-semibold text-text">{t('team.memberTasks')}</span>
+        <span className="shrink-0 text-sm font-semibold text-text">{t('team.memberTasks')}</span>
         {latestTask && (
           <div className="flex min-w-0 items-center gap-2">
             <StatusIcon status={latestTask.status as TaskStatus} />

@@ -12,6 +12,7 @@ from jiuwenswarm.server.runtime import team_organization_history as history
 
 @pytest.fixture(autouse=True)
 def organization_switch(monkeypatch):
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     monkeypatch.setattr(history, "get_config", lambda: {"experimental": {"team_organization_ui_enabled": True}})
 
 
@@ -111,3 +112,25 @@ def test_history_uses_legacy_snapshot_or_current_database(monkeypatch, tmp_path,
     monkeypatch.setattr(history, "get_shared_db", Mock(return_value=object()))
     history._history_database({"team_template_snapshot": snapshot}, "owner")
     resolver.assert_called_once_with(snapshot)
+
+
+def test_enterprise_history_ignores_missing_sqlite_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setenv("GATEWAY_DB_TYPE", "mariadb")
+    monkeypatch.setenv("GATEWAY_DB_HOST", "db.internal")
+    monkeypatch.setenv("GATEWAY_DB_PORT", "3306")
+    monkeypatch.setenv("GATEWAY_DB_USER", "root")
+    monkeypatch.setenv("GATEWAY_DB_PASSWORD", "secret")
+    monkeypatch.setenv("GATEWAY_DB_NAME", "gw")
+    missing = tmp_path / "missing.db"
+    resolver = Mock(side_effect=AssertionError("sqlite path"))
+    monkeypatch.setattr(history, "resolve_team_sqlite_db_path", resolver)
+    monkeypatch.setattr(history, "get_team_entity_store", lambda: SimpleNamespace(get=lambda _: None))
+    shared = Mock(return_value=object())
+    monkeypatch.setattr(history, "get_shared_db", shared)
+    history._history_database({"team_template_snapshot": {"storage": {"type": "sqlite"}}}, "owner")
+    resolver.assert_not_called()
+    assert not missing.exists()
+    config = shared.call_args.args[0]
+    assert config.db_type == "mysql"
+    assert config.connection_string.startswith("mysql+aiomysql://")

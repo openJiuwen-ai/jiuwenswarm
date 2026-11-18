@@ -24,7 +24,7 @@ import { ExecutionCard } from './ExecutionCard';
 import { GroupFilePreviewPanel, GroupFileRow, groupFileTarget, type GroupFile } from './GroupFileRow';
 import { InteractionPrompt } from '../../components/InteractionSlot/InteractionPrompt';
 import '../../components/InteractionSlot/InteractionSlot.css';
-import { FINISHED_EXECUTIONS, groupSessionSentIds, executionResult, mentionExecutionPhase, pendingMentionReplies, type PendingMentionReply, updateAttachments, isBackgroundRefreshTimeout, mergeExecutions, mergeMessages, selectedMentions } from './state';
+import { FINISHED_EXECUTIONS, filterGroupMembers, groupModelLocked, groupSessionSentIds, executionResult, groupTimeline, matchesMemberQuery, mentionExecutionPhase, pendingMentionReplies, type PendingMentionReply, renameAttachment, updateAttachments, isBackgroundRefreshTimeout, mergeExecutions, mergeMessages, selectedMentions } from './state';
 import './groupChat.css';
 
 function Attachment({ file, onPreview }: { file: GroupFile; onPreview: (file: GroupFile) => void }) {
@@ -66,6 +66,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   const [questions, setQuestions] = useState<GroupQuestion[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [fileError, setFileError] = useState('');
   const [refreshError, setRefreshError] = useState('');
   const [addingMembers, setAddingMembers] = useState(false);
   const [panel, setPanel] = useState<'members' | 'files' | null>('members');
@@ -112,6 +113,18 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
       mentionOptions.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
     }
   }, [mentionMenu, mentionIndex]);
+  const mentionToggle = useRef<HTMLButtonElement>(null);
+  // Clicking anywhere outside the menu closes it; the @ button keeps its own toggle.
+  useEffect(() => {
+    if (!mentionMenu) return undefined;
+    const close = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && (mentionOptions.current?.contains(target) || mentionToggle.current?.contains(target))) return;
+      setMentionMenu(false);
+    };
+    document.addEventListener('pointerdown', close);
+    return () => document.removeEventListener('pointerdown', close);
+  }, [mentionMenu]);
   const [sending, setSending] = useState(false);
   const [modelReady, setModelReady] = useState(false);
   const [fileAction, setFileAction] = useState<{ kind: 'rename' | 'delete'; path: string; name: string } | null>(null);
@@ -273,11 +286,13 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
         if (typeof payload.execution_id === 'string' && typeof payload.revision === 'number') {
           setExecutions((current) => mergeExecutions(current, [payload as unknown as GroupExecution]));
         }
+      } else if (payload.event_type === 'group.route.updated' || event.event === 'group.route.updated') {
+        void refresh();
       } else if (payload.event_type === 'group.member.added' || event.event === 'group.member.added') {
         void refresh();
       }
     };
-    const stops = ['group.message', 'group.execution.created', 'group.execution.updated',
+    const stops = ['group.route.updated', 'group.message', 'group.execution.created', 'group.execution.updated',
       'chat.ask_user_question', 'chat.ask_user_answer', 'group.member.added', 'team.runtime_ready', 'team.group_message.accepted', 'chat.final', 'chat.error', 'team.error', 'team.interact.failed'].map((name) => webClient.on(name, onEvent));
     const stopState = webClient.onStateChange((state) => {
       setConnected(state === 'ready');
@@ -394,27 +409,43 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   }
 
   function openFileAction(kind: 'rename' | 'delete', path: string, currentName: string) {
-    setError(''); setFileName(currentName); setFileAction({ kind, path, name: currentName });
+    setError(''); setFileError(''); setFileName(currentName); setFileAction({ kind, path, name: currentName });
   }
 
   async function submitFileAction() {
     if (!groupId || !fileAction || fileBusy) return;
     const nextName = fileAction.kind === 'rename' ? fileName.trim() : null;
-    if (fileAction.kind === 'rename' && (!nextName || nextName === fileAction.name)) {
+    const diskName = fileAction.path.split(/[\\/]/).pop();
+    const nameUnchanged = nextName === fileAction.name && nextName === diskName;
+    if (fileAction.kind === 'rename' && (!nextName || nameUnchanged)) {
       setFileAction(null);
       return;
     }
     setFileBusy(true);
+    setFileError('');
     try {
+      let nextPath = fileAction.path;
       if (nextName === null) await groupChatClient.deleteFile(groupId, fileAction.path);
-      else await groupChatClient.renameFile(groupId, fileAction.path, nextName);
+      else nextPath = (await groupChatClient.renameFile(groupId, fileAction.path, nextName)).path;
       if (!alive.current) return;
-      setMessages((current) => updateAttachments(current, fileAction.path, nextName));
-      setExecutions((current) => updateAttachments(current, fileAction.path, nextName));
+      setMessages((current) => updateAttachments(current, fileAction.path, nextName, nextPath));
+      setExecutions((current) => updateAttachments(current, fileAction.path, nextName, nextPath));
       setPreview((current) => current?.path !== fileAction.path ? current
-        : nextName === null ? null : { ...current, name: nextName });
+        : nextName === null ? null : renameAttachment(current, nextName, nextPath));
       setFileAction(null);
-    } catch (reason) { report(reason); }
+    } catch (reason) {
+      if (fileAction.kind === 'rename') {
+        const code = (reason as { code?: string })?.code;
+        const messages: Record<string, string> = {
+          FILE_EXISTS: t('groupChat.renameFileExists'),
+          NOT_FOUND: t('groupChat.renameFileMissing'),
+          PERMISSION_DENIED: t('groupChat.renameFilePermission'),
+          FILE_RENAME_FORBIDDEN: t('groupChat.renameFileForbidden'),
+        };
+        const detail = messages[code ?? ''] || (reason instanceof Error ? reason.message : String(reason));
+        if (alive.current) setFileError(t('groupChat.renameFileFailed', { reason: detail }));
+      } else report(reason);
+    }
     finally { if (alive.current) setFileBusy(false); }
   }
 
@@ -445,14 +476,10 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   for (const execution of executions) {
     for (const file of execution.attachments ?? []) files.set(getFileIdentityKey(file), file);
   }
-  const timeline = [
-    ...messages.map((message) => ({ id: message.message_id, at: message.timestamp, message, execution: null })),
-    ...executions.map((execution) => ({ id: execution.execution_id, at: execution.created_at * 1000, message: null, execution })),
-  ].sort((a, b) => a.at - b.at || a.id.localeCompare(b.id));
+  const timeline = groupTimeline(messages, executions);
 
-  const visibleMembers = group?.members.filter((member) => `${member.display_name ?? ''} ${member.member_name}`
-    .toLocaleLowerCase().includes(memberQuery.trim().toLocaleLowerCase())) ?? [];
-  const showSelf = !memberQuery.trim() || t('groupChat.you').includes(memberQuery.trim());
+  const visibleMembers = filterGroupMembers(group?.members ?? [], memberQuery);
+  const showSelf = matchesMemberQuery(t('groupChat.you'), memberQuery);
   const memberAvatar = (member: string) => <TeamMemberAvatar member={member} className="group-chat-assignee-avatar" alt="" />;
   const agentCount = group?.members.length ?? 0;
 
@@ -460,8 +487,9 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
   // 消息下方独立挂「弹动三点」占位气泡（文案随成员当前执行阶段实时变化），谁回复谁的占位消失，
   // 多条提问互不顶替。本页面发出的消息立即占位（切换会话保留）；被 @ 成员有未完成执行时也占位，
   // 刷新后据服务端执行恢复；乐观 pending 阶段不弹。
+  const modelLocked = groupModelLocked(messages, executions, olderOffset > 0);
   const pendingMentionsByMessage = group
-    ? pendingMentionReplies(messages, executions, group.members, sessionSentIds)
+    ? pendingMentionReplies(messages, executions, group.members, sessionSentIds, group.organization_routes)
     : new Map<string, PendingMentionReply[]>();
 
   return <section className="group-chat-workspace has-conversation" data-testid="group-chat-workspace">
@@ -525,9 +553,9 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
                 </small>}
                 {(item.message.attachments ?? []).map((file, index) => <Attachment key={index} file={file} onPreview={setPreview} />)}
               </article>
-              {(pendingMentionsByMessage.get(item.id) ?? []).map(({ memberName, execution }) => {
+              {(pendingMentionsByMessage.get(item.id) ?? []).map(({ memberName, execution, organization, route }) => {
                 const member = group.members.find((item2) => item2.member_name === memberName);
-                const phase = mentionExecutionPhase(execution);
+                const phase = mentionExecutionPhase(execution, organization, route);
                 const phaseLabel = phase.key === 'executing' && phase.total
                   ? t('groupChat.mentionPhase.executingProgress', { completed: phase.completed ?? 0, total: phase.total })
                   : t(`groupChat.mentionPhase.${phase.key}`);
@@ -539,7 +567,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
                     <strong>{member?.display_name || memberName}</strong>
                   </header>
                   <div className="group-chat-mention-pending__bubble">
-                    <span className="group-chat-mention-pending__dots" aria-hidden="true"><i /><i /><i /></span>
+                    {route?.status !== 'failed' && <span className="group-chat-mention-pending__dots" aria-hidden="true"><i /><i /><i /></span>}
                     <span className="group-chat-mention-pending__stack">
                       <span>{phaseLabel}</span>
                     </span>
@@ -602,14 +630,15 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
               </button>)}
             </div>}
             <footer>
-              <button type="button" className="group-chat-icon-button" disabled={sending} onClick={() => {
+              <button ref={mentionToggle} type="button" className="group-chat-icon-button" disabled={sending} onClick={() => {
                 setMentionIndex(0); setMentionMenu(!mentionMenu); textarea.current?.focus();
               }}
                 aria-label={t('groupChat.mention')} title={t('groupChat.mention')} aria-expanded={mentionMenu}
                 data-testid="group-chat-mention"><AtSign size={17} /></button>
               <span className="group-chat-muted" data-testid="group-chat-send-hint">{t('groupChat.sendHint')}</span>
               {modelReady && <ChatModelSelector sessionId={groupId} includeModelGroups={false}
-                disabled={sending || !connected} testIdPrefix="group-chat-model" />}
+                disabled={sending || !connected} locked={modelLocked} lockedTitle={t('groupChat.modelLocked')}
+                testIdPrefix="group-chat-model" />}
               <button type="submit" className="group-chat-send" disabled={!input.trim() || sending || !connected || !modelReady}
                 aria-label={t('groupChat.send')} data-testid="group-chat-send"><Send size={16} /></button>
             </footer>
@@ -657,11 +686,13 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
           </h3>
           {group.description && <p data-testid="group-chat-info-description">{group.description}</p>}
         </div>
-        <div className="group-chat-panel-heading"><h3 data-testid="group-chat-members-title">{t('groupChat.members')}</h3>
+        <div className="group-chat-panel-heading"><h3 data-testid="group-chat-members-title">
+          {t('groupChat.members')} ({agentCount + 1})
+        </h3>
           <span>
             <button type="button" className="group-chat-icon-button" onClick={() => setAddingMembers(true)}
               aria-label={t('groupChat.addMembers')} title={t('groupChat.addMembers')}
-              disabled={group.members.length >= 10} data-testid="group-chat-add-members"><Plus size={18} /></button>
+              data-testid="group-chat-add-members"><Plus size={18} /></button>
             <button type="button" className="group-chat-icon-button" aria-label={t('groupChat.searchMembers')}
               title={t('groupChat.searchMembers')} aria-pressed={memberSearch} onClick={() => {
                 setMemberSearch(!memberSearch); setMemberQuery('');
@@ -720,7 +751,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
     }} />}
     <Dialog open={fileAction?.kind === 'rename'} titleId="group-chat-file-rename-title" className="group-chat-small-dialog"
       closeDisabled={fileBusy} onCancel={() => setFileAction(null)}>
-      {error && <p role="alert" className="group-chat-error" data-testid="group-chat-file-rename-error">{error}</p>}
+      {fileError && <p role="alert" className="group-chat-error" data-testid="group-chat-file-rename-error">{fileError}</p>}
       <form data-testid="group-chat-file-rename-form" onSubmit={(event) => { event.preventDefault(); void submitFileAction(); }}>
         <h2 id="group-chat-file-rename-title">{t('groupChat.renameFile')}</h2>
         <label>{t('groupChat.fileName')}<input value={fileName} maxLength={255} disabled={fileBusy} autoFocus

@@ -73,6 +73,27 @@ def test_single_rerun_allows_uploaded_handler_upstream():
     assert 'label="n_down"' in script
 
 
+def _music_graph():
+    return normalize_execution_graph({
+        "schema_version": "designer-execution-graph.v1",
+        "graph_id": "g_music_upstream",
+        "project_id": "ut",
+        "nodes": [
+            {"id": "n_music", "type": "audio", "label": "BGM",
+             "config": {"prompt": "warm piano", "role": "music", "pipeline": "music",
+                        "delegate": "agent"}},
+            {"id": "n_down", "type": "text", "label": "down",
+             "config": {"prompt": "d", "pipeline": "brief"}},
+        ],
+        "edges": [{"id": "e1", "source": "n_music", "target": "n_down"}],
+    })
+
+
+def test_single_rerun_waits_for_an_unproduced_music_upstream():
+    with pytest.raises(ValueError, match="upstream not ready: n_music"):
+        GraphScriptCompiler().compile(_music_graph(), {}, node_ids=["n_down"])
+
+
 def test_cascade_rerun_refuses_when_upstream_failed():
     run_outputs = {"n_up": {"status": "failed", "text": None, "error": "boom"}}
     with pytest.raises(ValueError, match="upstream not ready: n_up"):

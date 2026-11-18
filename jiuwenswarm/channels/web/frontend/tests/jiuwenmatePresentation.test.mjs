@@ -39,7 +39,7 @@ test('templates follow the eight designed roles with their category art', () => 
     ['英语表达教练', '系统架构工程师', '基本面研究员', '连载故事策划', '个人理财专家', '案件整理顾问', '视频分镜师', '研究写作顾问'],
   );
   assert.equal(new Set(JIUWENMATE_TEMPLATES.map((item) => item.category)).size, JIUWENMATE_TEMPLATES.length);
-  assert.ok(JIUWENMATE_TEMPLATES.every((item) => item.persona.trim().length > 0 && item.skills.length === 3));
+  assert.ok(JIUWENMATE_TEMPLATES.every((item) => item.persona.trim().length > 0 && item.coreAbilities.length === 3 && item.skills.length === 0));
   assert.ok(JIUWENMATE_TEMPLATES.every((item) => item.tools.length === 0 && item.rails.length === 0 && item.mcps.length === 0));
   assert.ok(JIUWENMATE_TEMPLATES.every((item) => item.capabilities.connectors.length === 0 && item.capabilities.plugins.length === 0));
 });
@@ -185,6 +185,101 @@ test('private chat composer reflects the saved employee permission profile', () 
   assert.match(markup, /智能审批/);
   assert.doesNotMatch(markup, />Auto</);
   assert.doesNotMatch(markup, /jiuwenmate-composer__usage/);
+});
+
+test('private chat uses explicit vendor icons for OpenAI-compatible models', () => {
+  for (const vendorKey of ['deepseek', 'kimi']) {
+    const markup = renderToStaticMarkup(React.createElement(ConversationComposer, {
+      value: '', onChange() {}, permissionProfile: 'default',
+      modelCatalog: { models: [{ id: 'friendly-name#0', label: 'My model', provider: 'OpenAI', vendorKey }],
+        defaultModelId: '', defaultModelLabel: '' },
+      modelId: 'friendly-name#0',
+    }));
+    const dom = new JSDOM(markup);
+    assert.equal(dom.window.document.querySelector('[data-testid="model-provider-icon"]').getAttribute('src'),
+      `test-${vendorKey}.svg`);
+    dom.window.close();
+  }
+});
+
+test('an employee without a configured model shows the setup state instead of a default model', () => {
+  const markup = renderToStaticMarkup(React.createElement(ConversationComposer, {
+    value: '',
+    onChange() {},
+    permissionProfile: 'default',
+    onPermissionProfileChange() {},
+    modelCatalog: { models: [], defaultModelId: '', defaultModelLabel: '' },
+    modelId: '',
+    modelPending: true,
+  }));
+
+  assert.match(markup, /尚未配置模型/);
+  assert.doesNotMatch(markup, />默认模型</);
+  assert.doesNotMatch(markup, /待生效/);
+});
+
+test('the private chat model control selects an employee model and locks while saving', async () => {
+  const dom = new JSDOM('<!doctype html><div id="root"></div>', { url: 'http://localhost' });
+  const previous = { window: globalThis.window, document: globalThis.document,
+    actEnvironment: globalThis.IS_REACT_ACT_ENVIRONMENT };
+  globalThis.window = dom.window;
+  globalThis.document = dom.window.document;
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  const root = createRoot(dom.window.document.getElementById('root'));
+  const changes = [];
+  const render = (modelId, modelSaving = false, modelPending = false) => React.createElement(ConversationComposer, {
+    value: '', onChange() {}, permissionProfile: 'default', modelId, modelSaving, modelPending,
+    onModelChange: (id) => changes.push(id),
+    modelCatalog: { models: [{ id: 'deepseek#0', label: 'DeepSeek', provider: 'OpenAI', vendorKey: 'deepseek' },
+      { id: 'kimi#1', label: 'Kimi', provider: 'OpenAI', vendorKey: 'kimi' }], defaultModelId: 'deepseek#0', defaultModelLabel: 'DeepSeek' },
+  });
+  try {
+    await act(async () => root.render(render('deepseek#0')));
+    const trigger = () => dom.window.document.querySelector('[data-testid="jiuwenmate-composer-model"]');
+    await act(async () => trigger().click());
+    const menu = dom.window.document.querySelector('[data-testid="jiuwenmate-composer-model-menu"]');
+    assert.ok(menu.classList.contains('model-select__menu'));
+    assert.equal(trigger().querySelector('[data-testid="model-provider-icon"]').getAttribute('src'), 'test-deepseek.svg');
+    for (const [id, icon] of [['deepseek#0', 'test-deepseek.svg'], ['kimi#1', 'test-kimi.svg']]) {
+      assert.equal(menu.querySelector(`[data-variant="${id}"] [data-testid="model-provider-icon"]`).getAttribute('src'), icon);
+    }
+    assert.doesNotMatch(menu.textContent, /已配置模型/);
+    assert.doesNotMatch(menu.textContent, /限时免费|免费模型/);
+    const option = [...dom.window.document.querySelectorAll('[data-testid="jiuwenmate-composer-model-option"]')].find((item) => item.textContent.includes('Kimi'));
+    assert.ok(option);
+    await act(async () => option.click());
+    assert.deepEqual(changes, ['kimi#1']);
+    await act(async () => root.render(render('deepseek#0', true)));
+    assert.equal(trigger().disabled, true);
+    assert.match(trigger().textContent, /DeepSeek/);
+    await act(async () => root.render(render('kimi#1')));
+    assert.match(trigger().textContent, /Kimi/);
+    assert.equal(trigger().querySelector('[data-testid="model-provider-icon"]').getAttribute('src'), 'test-kimi.svg');
+    await act(async () => root.render(render('kimi#1', false, true)));
+    assert.match(trigger().textContent, /待生效/);
+    await act(async () => trigger().click());
+    const retry = [...dom.window.document.querySelectorAll('[data-testid="jiuwenmate-composer-model-option"]')].find((item) => item.textContent.includes('Kimi'));
+    await act(async () => retry.click());
+    assert.deepEqual(changes, ['kimi#1', 'kimi#1']);
+    let settingsOpened = 0;
+    await act(async () => root.render(React.createElement(ConversationComposer, {
+      value: '', onChange() {}, permissionProfile: 'default', modelId: '',
+      modelCatalog: { models: [], defaultModelId: '', defaultModelLabel: '' },
+      onModelChange() {}, onOpenModelSettings: () => { settingsOpened += 1; },
+    })));
+    await act(async () => trigger().click());
+    const emptyMenu = dom.window.document.querySelector('[data-testid="jiuwenmate-composer-model-menu"]');
+    assert.match(emptyMenu.textContent, /尚未配置模型/);
+    assert.doesNotMatch(emptyMenu.textContent, /限时免费|免费模型/);
+    await act(async () => emptyMenu.querySelector('[data-testid="jiuwenmate-composer-model-add"]').click());
+    assert.equal(settingsOpened, 1);
+  } finally {
+    await act(async () => root.unmount());
+    dom.window.close();
+    globalThis.window = previous.window;
+    globalThis.document = previous.document;
+    globalThis.IS_REACT_ACT_ENVIRONMENT = previous.actEnvironment;
+  }
 });
 
 test('private chat composer can change the employee permission profile', async () => {

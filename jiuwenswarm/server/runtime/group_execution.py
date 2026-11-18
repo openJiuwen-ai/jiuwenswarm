@@ -113,6 +113,10 @@ class GroupExecutions:
         status: str,
         phase: str,
         message_id: str | None = None,
+        organization_stage: str | None = None,
+        organization_plan_id: str | None = None,
+        organization_run_id: str | None = None,
+        only_if_missing: bool = False,
     ) -> dict:
         """Write one organization card. Re-entry updates that record and never posts."""
         if not isinstance(execution_id, str) or not execution_id:
@@ -122,6 +126,12 @@ class GroupExecutions:
         async with group_lock(self.group_id):
             records = self.read()
             current = records.get(execution_id)
+            plan = next((p for p in (read_group(self.group_id) or {}).get("organization_plans", [])
+                         if p.get("plan_id") == organization_plan_id), {})
+            if plan.get("cleanup_status") or (plan.get("run_id") and plan["run_id"] != organization_run_id):
+                return copy.deepcopy(current or {})
+            if only_if_missing and current is not None:
+                return copy.deepcopy(current)
             if (
                 current is not None
                 and current["status"] in TERMINAL
@@ -145,6 +155,9 @@ class GroupExecutions:
                 "task": task,
                 "status": status,
                 "phase": phase,
+                "organization_stage": organization_stage,
+                "organization_plan_id": organization_plan_id,
+                "organization_run_id": organization_run_id,
                 "progress": {
                     "completed": sum(value == "completed" for value in tasks.values()),
                     "total": len(tasks),
@@ -164,7 +177,7 @@ class GroupExecutions:
                     None if created else current.get("message_id")
                 ),
             }
-            fields = ("status", "phase", "tasks", "task_details", "message_id", "title")
+            fields = ("status", "phase", "organization_stage", "tasks", "task_details", "message_id", "title")
             if not created and all(current.get(key) == record[key] for key in fields):
                 return copy.deepcopy(current)
             records[execution_id] = record
@@ -183,13 +196,25 @@ class GroupExecutions:
 
     async def reconcile(self) -> None:
         """Release orphaned executions without rerunning work or disturbing live owners."""
+        from jiuwenswarm.agents.swarm.group_org_recovery import reconcile_group, close_card
+
+        await reconcile_group(self.group_id)
         changed = []
         async with group_lock(self.group_id):
             records = self.read()
+            group = read_group(self.group_id) or {}
+            plans = {plan["plan_id"]: plan for plan in group.get("organization_plans", [])}
             for record in records.values():
                 # Organization progress is written by the run itself. A mismatched
                 # writer process must not freeze the card while that run continues.
                 if record.get("execution_kind") == "organization":
+                    # An early card can outlive a failed startup before the Owner
+                    # background exists. Reconcile only its explicit plan binding.
+                    plan = plans.get(record.get("organization_plan_id"), {})
+                    if record["status"] != "completed" and plan.get("status") in {"failed", "expired"}:
+                        status = "interrupted" if plan.get("runtime_interrupted") else "failed"
+                        if close_card(record, status):
+                            changed.append(copy.deepcopy(record))
                     continue
                 if record["status"] in TERMINAL:
                     continue
@@ -385,6 +410,8 @@ class GroupExecutions:
                 return copy.deepcopy(record)
             if all(record.get(key) == value for key, value in changes.items()):
                 return copy.deepcopy(record)
+            if "attachments" in changes and record.get("attachments") != changes["attachments"]:
+                record["attachments_published_at"] = time.time()
             record.update(changes)
             record["revision"] += 1
             record["updated_at"] = time.time()
@@ -631,6 +658,7 @@ async def project_group_stream_event(session_id: str, event: dict) -> dict | Non
 
         message["attachments"] = group_files.apply_file_overrides(
             message.get("attachments", []), group.get("file_overrides") or {},
+            group_files.attachment_record_time(message),
         )
         correlation = correlate_public_reply(session_id, message)
         return {

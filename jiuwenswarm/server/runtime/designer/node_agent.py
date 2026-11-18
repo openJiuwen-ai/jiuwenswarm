@@ -696,7 +696,7 @@ def build_node_user_query(node: DesignerGraphNode, ctx: NodeExecutionContext) ->
         "LOCKS (must keep in every tool prompt before image/video calls): "
         "obey PRODUCTION LOCK BIBLE + costume_lock, positioning_lock, language_lock, "
         "speech_line, occupancy, spatial_lock, and character specs — never invent "
-        "new faces/wardrobe/architecture. Every clip uses character sheets plus the "
+        "new faces/clothing/architecture. Every clip uses character sheets plus the "
         "scene specs, and keeps the film STYLE LOCK.\n"
         "SAME-SCENE PROMPT GATE: the video prompt MUST agree with THIS storyboard shot "
         "(action/camera/speech). Continue from structured continuity "
@@ -1109,11 +1109,8 @@ class DesignerGraphToolkit:
         )
         from jiuwenswarm.common.schema.designer_graph import node_clip_index
         from jiuwenswarm.server.runtime.designer.pipeline.clip_last_frame_handoff import (
-            extract_last_frame,
-            resolve_gated_last_frame_chain_off_loop,
             scrub_restated_speech,
-            stamp_last_frame_onto_next_clips,
-            stamp_scene_last_frame_chain,
+            stamp_speech_onto_next_clips,
         )
 
         self.refresh_canvas()
@@ -1138,10 +1135,6 @@ class DesignerGraphToolkit:
         )
         image_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
         ref_paths = [p for p in refs if p.is_file() and p.suffix.lower() in image_suffixes]
-        scene_chain = await resolve_gated_last_frame_chain_off_loop(cfg, self.ctx)
-        if scene_chain:
-            cfg = stamp_scene_last_frame_chain(cfg, scene_chain)
-            node["config"] = cfg
         ref_files = [str(p) for p in ref_paths]
 
         # Agent writes P2 (continuation). Structured prompt is fallback / lock scaffold.
@@ -1386,28 +1379,40 @@ class DesignerGraphToolkit:
         except Exception:  # noqa: BLE001
             logger.debug("call_video_model wan-prompt stamp failed", exc_info=True)
         try:
-            frame_out = path.with_name(f"{path.stem}_lastframe.jpg")
-            extracted = await run_off_loop(extract_last_frame, path, frame_out)
-            if extracted is not None:
-                stamp_last_frame_onto_next_clips(
-                    graph,
-                    completed_clip_id=str(node.get("id") or ""),
-                    last_frame_path=str(extracted),
-                    clip_index=clip_index,
-                    speech_line=str(
-                        cfg.get("speech_line") or cfg.get("previous_clip_speech") or ""
-                    ),
-                )
-                cfg["last_frame_path"] = str(extracted)
-                node["config"] = cfg
+            stamp_speech_onto_next_clips(
+                graph,
+                completed_clip_id=str(node.get("id") or ""),
+                clip_index=clip_index,
+                speech_line=str(
+                    cfg.get("speech_line") or cfg.get("previous_clip_speech") or ""
+                ),
+            )
         except Exception:  # noqa: BLE001
-            logger.debug("call_video_model last-frame stamp failed", exc_info=True)
+            logger.debug("call_video_model speech handoff stamp failed", exc_info=True)
         self.completed = NodeResult(
             output_ref=file_output_ref(path, kind="video", mime_type="video/mp4"),
             output_refs=[file_output_ref(path, kind="video", mime_type="video/mp4")],
             message="call_video_model" + ("_audio" if want_audio else ""),
         )
         return f"video_ready uri={path.resolve().as_uri()} path={path} audio={want_audio}"
+
+    async def call_music_model(self, *, instructions: str = "") -> str:
+        """One instrumental BGM bed for the whole film; silence plus a warning on failure."""
+        from jiuwenswarm.server.runtime.designer.handlers.audio_nodes import (
+            is_silent_music_placeholder,
+            render_bgm,
+        )
+
+        node = _node_from_ctx(self.ctx)
+        beat = asyncio.create_task(_heartbeat_while(self.ctx, "call_music_model", "BGM generation running"))
+        try:
+            result = await render_bgm(node, self.ctx, instructions=str(instructions or ""))
+        finally:
+            beat.cancel()
+        self.completed = result
+        ref = result.output_ref or {}
+        state = "music_placeholder" if is_silent_music_placeholder(ref.get("label")) else "music_ready"
+        return f"{state} uri={ref.get('uri') or ''} message={result.message}"
 
     async def ffmpeg_compose(self, *, prompt: str = "") -> str:
         """Run the compose handler for this node (ffmpeg assemble)."""
@@ -1694,6 +1699,12 @@ def build_designer_tools(toolkit: DesignerGraphToolkit) -> list[Any]:
             first_frame=str(payload.get("first_frame") or payload.get("firstFrame") or ""),
         )
 
+    async def call_music_model(**kwargs: Any) -> str:
+        payload = _payload(**kwargs)
+        return await toolkit.call_music_model(
+            instructions=str(payload.get("instructions") or payload.get("prompt") or ""),
+        )
+
     async def ffmpeg_compose(**kwargs: Any) -> str:
         payload = _payload(**kwargs)
         return await toolkit.ffmpeg_compose(prompt=str(payload.get("prompt") or ""))
@@ -1851,7 +1862,8 @@ def build_designer_tools(toolkit: DesignerGraphToolkit) -> list[Any]:
                 (
                     "Generate a clip via the configured video model. "
                     "Positive story form only: The scene is as in Image N. "
-                    "<Name> from Image k, wearing <wardrobe>, <placement>, is <action>. "
+                    "<Name> from Image k, wearing <clothing>, <placement>. State this "
+                    "shot's action verbatim — never glue it onto an auxiliary verb. "
                     "Name only on_screen / partial cast; omit exited cast until returned. "
                     "Same-setting continue cue only — do not paste prior Wan text. "
                     "Speaker says: \"<this shot's line>\". One camera move. One look phrase. "
@@ -1865,7 +1877,7 @@ def build_designer_tools(toolkit: DesignerGraphToolkit) -> list[Any]:
                             "type": "string",
                             "description": (
                                 "Concise positive story-form prompt. Present cast only "
-                                "from Image k with wardrobe, placement, action; scene as "
+                                "from Image k with clothing, placement, action; scene as "
                                 "in Image N; this shot's line. No forbid / do-not / "
                                 "examples. " + video_tool_hint
                             ),
@@ -1881,6 +1893,39 @@ def build_designer_tools(toolkit: DesignerGraphToolkit) -> list[Any]:
                 },
                 call_video_model,
                 properties={"resilience": {"timeout_s": video_tool_timeout_seconds()}},
+            )
+        )
+    if "call_music_model" in wanted:
+        from jiuwenswarm.server.runtime.designer.music_generation import music_tool_timeout_seconds
+
+        tools.append(
+            make_tool(
+                "call_music_model",
+                (
+                    "Generate the ONE instrumental BGM bed for the whole concatenated film. "
+                    "The user's own music words, the film-wide bgm_lock and a timed cue sheet "
+                    "(film length, BPM chosen so the clip cuts land on bar lines, setup/rise/"
+                    "climax/release sections at the clip cuts) are merged in for you, vocals are "
+                    "always off, and compose re-times the result onto the edit. Call once; the "
+                    "node completes with the audio file (or a silent placeholder plus a warning "
+                    "when the music backend fails)."
+                ),
+                {
+                    "type": "object",
+                    "properties": {
+                        "instructions": {
+                            "type": "string",
+                            "description": (
+                                "Concrete English sound spec expanding the user's style words: "
+                                "genre, lead and supporting instruments, key, texture, how the "
+                                "energy builds. No lyrics, no timestamps, no negations."
+                            ),
+                        },
+                    },
+                    "required": ["instructions"],
+                },
+                call_music_model,
+                properties={"resilience": {"timeout_s": music_tool_timeout_seconds()}},
             )
         )
     if "ffmpeg_compose" in wanted:

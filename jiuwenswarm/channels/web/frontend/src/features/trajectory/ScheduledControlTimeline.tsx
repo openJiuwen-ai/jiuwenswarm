@@ -11,6 +11,7 @@ import type {
   ScheduledTask,
   TeamControlModel,
 } from './teamControlTimeline';
+import { noReviewMessageKey } from './scheduledTrajectoryLanes';
 import css from './ScheduledControlTimeline.module.css';
 
 export interface ScheduledControlTimelineProps {
@@ -114,7 +115,7 @@ function eventText(event: ScheduledControlEvent, t: TFunction): string {
 
 function markerClass(event: ScheduledControlEvent): string {
   if (event.kind === 'revision') return css.markerRevision;
-  if (event.kind === 'verified') return css.markerVerified;
+  if (event.kind === 'verified' || event.kind === 'completed') return css.markerVerified;
   if (event.kind !== 'vote') return css.markerEvent;
   if (event.decision?.kind === 'pass') return css.markerPass;
   if (event.decision?.kind === 'fail') return css.markerFail;
@@ -177,7 +178,7 @@ function TaskDetail({
       <div className={css.detailScroll}>
         <div className={css.rounds}>
           {rounds.length === 0 ? (
-            <span className={css.muted}>{t('trajectory.team.schedule.noReviews')}</span>
+            <span className={css.muted}>{t(noReviewMessageKey(task.phase, task.reviews.length))}</span>
           ) : rounds.map(([round, reviews]) => (
             <div
               className={css.round}

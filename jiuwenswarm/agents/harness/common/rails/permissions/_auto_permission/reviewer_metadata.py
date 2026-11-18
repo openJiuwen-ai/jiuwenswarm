@@ -45,6 +45,11 @@ _DISPLAY_MESSAGES = {
         "用户已通过人工审批允许此操作。",
         "The user allowed this operation through manual approval.",
     ),
+    "manual_allow_once_remember_unavailable": (
+        "本次已允许，但未能记住授权；后续调用仍按当前权限规则评审。",
+        "Allowed this invocation, but the permission was not remembered. "
+        "Future calls follow the current permission rules.",
+    ),
     "manual_required": (
         "当前权限证据不足以自动批准，请人工核对工具参数和风险。",
         "Current permission evidence is insufficient for automatic approval; review "
@@ -155,6 +160,25 @@ def _text(
     )
 
 
+def _reason_text(
+    metadata: Mapping[str, object],
+    *keys: str,
+    default: str = "",
+) -> str:
+    """Keep the complete final reason; audit applies its own redaction.
+
+    Upstream reviewer payload validation requires non-empty string reasons.
+    Unlike _text, skip non-string and empty values without string coercion,
+    trying keys in order and returning default when none match. Preserve the
+    selected text without redaction or truncation.
+    """
+    for key in keys:
+        value = metadata.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return default
+
+
 def _reviewer_status(metadata: Mapping[str, object]) -> str:
     status = _text(metadata, "final_reviewer_status", "reviewer_status")
     if status:
@@ -178,7 +202,9 @@ def _host_display_reason(
     reason_code = _text(metadata, "manual_reason_code", "reviewer_reason_code", default=reason)
     fallback = _text(metadata, "fallback_reason", "reviewer_fallback_reason")
     source = _text(metadata, "decision_source")
-    if reason_code in {"execution_provider_contract_unverified", "user_rejected"}:
+    if reason_code in {
+        "execution_provider_contract_unverified", "user_rejected", "manual_allow_once_remember_unavailable",
+    }:
         key = reason_code
     elif status == "timed_out" or fallback == "reviewer_timeout":
         key = "reviewer_timeout"
@@ -256,12 +282,11 @@ def _reviewer_ui_metadata(
     evidence = (
         host_summary
         if downgraded_allow
-        else _text(
+        else _reason_text(
             merged,
             "evidence_summary",
             "reviewer_reason_summary",
             default=reason,
-            max_length=_REVIEWER_UI_TEXT_MAX_LENGTH,
         )
         if natural_language
         else _host_display_reason(
@@ -315,12 +340,11 @@ def _reviewer_ui_metadata(
         merged["manual_reason_summary"] = (
             host_summary
             if downgraded_allow
-            else _text(
+            else _reason_text(
                 merged,
                 "manual_reason_summary",
                 "reviewer_reason_summary",
                 default=reason,
-                max_length=_REVIEWER_UI_TEXT_MAX_LENGTH,
             )
             if natural_language
             else evidence

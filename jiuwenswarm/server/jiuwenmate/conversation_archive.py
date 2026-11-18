@@ -22,6 +22,9 @@ from jiuwenswarm.server.jiuwenmate.sqlite_store import private_dir
 # The Swarm group record keeps this many newest messages. Older rows are deleted.
 _RETAINED_MESSAGES = 5000
 _RICH_TEXT_MENTION = re.compile(r"@[^\s@]+")
+_DINGTALK_STRONG = re.compile(r"(?<![\\*])\*\*(?=\S)([^*\n]+?)(?<=\S)\*\*(?!\*)")
+_DINGTALK_BULLET = re.compile(r"(?m)^[ \t]*(?:[-+*][ \t]+|•[ \t]*)")
+_DINGTALK_HEADING = re.compile(r"(?m)^[ ]{0,3}#{1,6}[ \t]+")
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS archive_info (
     singleton INTEGER PRIMARY KEY CHECK(singleton=1), namespace_id TEXT NOT NULL, group_id TEXT NOT NULL,
@@ -43,6 +46,28 @@ def _restored_rich_text_mention(previous: str, current: str) -> bool:
         return False
     without_mentions = _RICH_TEXT_MENTION.sub("", current)
     return " ".join(without_mentions.split()) == " ".join(previous.split())
+
+
+def _dingtalk_echo_keys(text: str, *, markdown: bool) -> set[str]:
+    """Project simple Markdown into DWS display text without erasing content.
+
+    DWS can insert spaces at strong-text node boundaries and render lists as bullets.
+    Code, escaping, links and HTML retain exact matching only on the receipt side.
+    """
+    keys = {text}
+    if markdown:
+        if (any(char in text for char in ('`', '\\', '[', ']', '<', '>'))
+                or re.search(r'(?m)^(?: {4}| {0,3}\t| {0,3}~{3,})', text)):
+            return keys
+    visible = _DINGTALK_BULLET.sub('', text)
+    if markdown:
+        visible = _DINGTALK_HEADING.sub('', visible)
+        for separator in ('', ' '):
+            plain = _DINGTALK_STRONG.sub(lambda match: separator + match.group(1) + separator, visible)
+            keys.add(' '.join(plain.split()))
+    else:
+        keys.add(' '.join(visible.split()))
+    return {key for key in keys if key.strip()}
 
 
 @dataclass(frozen=True)
@@ -196,16 +221,23 @@ class ConversationArchive:
             for row in conn.execute('SELECT message_id,payload,source_ref FROM messages'):
                 item = GroupMessage.model_validate_json(row['payload'])
                 non_agent_or_abnormal = item.sender_kind != "agent" or item.status != "normal"
-                if non_agent_or_abnormal or not item.text or item.attachment_refs:
+                if non_agent_or_abnormal or not item.text or not item.text.strip():
+                    continue
+                if item.attachment_refs:
                     continue
                 if row['source_ref'].startswith('delivery:') and item.sender_id in bot_senders:
                     receipts.append((row, item))
                 elif row['source_ref'].startswith('dingtalk:message:'):
-                    echoes.setdefault((item.sender_id, item.text), []).append((row, item))
+                    for text_key in _dingtalk_echo_keys(item.text, markdown=False):
+                        echoes.setdefault((item.sender_id, text_key), []).append((row, item))
             candidates, echo_counts = [], {}
             for row, receipt in receipts:
-                matches = [pair for pair in echoes.get((bot_senders[receipt.sender_id], receipt.text), ())
-                           if abs((pair[1].received_at - receipt.received_at).total_seconds()) <= 10]
+                by_message_id = {}
+                for text_key in _dingtalk_echo_keys(receipt.text, markdown=True):
+                    for pair in echoes.get((bot_senders[receipt.sender_id], text_key), ()):
+                        if abs((pair[1].received_at - receipt.received_at).total_seconds()) <= 10:
+                            by_message_id[pair[0]['message_id']] = pair
+                matches = list(by_message_id.values())
                 candidates.append((row, receipt, matches))
                 for echo_row, _ in matches:
                     echo_counts[echo_row['message_id']] = echo_counts.get(echo_row['message_id'], 0) + 1

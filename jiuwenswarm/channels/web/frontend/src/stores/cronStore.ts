@@ -35,6 +35,8 @@ export function isWebChannelJob(targets?: string): boolean {
 }
 
 const CRON_UNREAD_KEY = 'jiuwenswarm_cron_unread';
+let cronSessionsRequestId = 0;
+const pendingCronSessionRequests = new Map<string, number>();
 
 interface CronState {
   runUpdates: Record<string, CronRunUpdate & { firstSeenAt: number }>;
@@ -192,38 +194,38 @@ export const useCronStore = create<CronState>((set, get) => ({
   },
 
   loadCronSessions: async (projectId: string, cronId: string) => {
+    const requestId = ++cronSessionsRequestId;
+    pendingCronSessionRequests.set(cronId, requestId);
+    const isCurrent = () => pendingCronSessionRequests.get(cronId) === requestId;
     set((state) => ({
       cronSessionsLoading: { ...state.cronSessionsLoading, [cronId]: true },
     }));
     try {
       const payload = await projectRegistryClient.getCronSessions(projectId, cronId);
+      if (!isCurrent()) return;
       set((state) => ({
         cronSessions: {
           ...state.cronSessions,
           [cronId]: payload.sessions || [],
         },
-        cronSessionsLoading: { ...state.cronSessionsLoading, [cronId]: false },
       }));
     } catch {
-      set((state) => ({
-        cronSessionsLoading: { ...state.cronSessionsLoading, [cronId]: false },
-      }));
+      // Retain the last successful list on a transient query failure.
+    } finally {
+      if (isCurrent()) {
+        pendingCronSessionRequests.delete(cronId);
+        set((state) => ({
+          cronSessionsLoading: { ...state.cronSessionsLoading, [cronId]: false },
+        }));
+      }
     }
   },
 
 }));
 
-// 系统自动维护的 cron job id（与后端 proactive_cron_sync.PROACTIVE_JOB_ID、
-// CronPanel/index.tsx 的 PROACTIVE_AUTO_JOB_ID 一致）。这类 job 由配置开关自动创建/删除，
-// 不创建会话、不给推送的会话打 cron_id——所以"触发的会话"列表恒空，在会话侧栏是个空壳。
-// 从会话侧栏隐藏它（Cron 面板里仍可见可编辑 cron 表达式/时区），避免空壳 item 碍眼。
-const SYSTEM_AUTO_JOB_IDS = new Set(['proactive-tick-auto']);
-
-/** 按项目过滤定时任务；系统自动维护 job 不进会话侧栏。 */
+/** 按项目过滤定时任务。 */
 export function filterJobsForProject(jobs: SidebarCronJob[], projectId: string): SidebarCronJob[] {
-  const filtered = jobs.filter(
-    (job) => jobBelongsToProject(job.project_id, projectId) && !SYSTEM_AUTO_JOB_IDS.has(job.id),
-  );
+  const filtered = jobs.filter((job) => jobBelongsToProject(job.project_id, projectId));
   return filtered.sort((a, b) => {
     const au = typeof a.updated_at === 'number' ? a.updated_at : 0;
     const bu = typeof b.updated_at === 'number' ? b.updated_at : 0;

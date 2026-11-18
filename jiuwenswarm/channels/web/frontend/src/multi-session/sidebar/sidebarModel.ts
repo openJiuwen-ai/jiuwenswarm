@@ -21,11 +21,15 @@ type SessionLike = {
 
 function normalizeActivityTime(value: number | string | undefined): number | null {
   if (typeof value === 'number') {
-    return value < 1e11 ? value * 1000 : value;
+    // 0 / 负数 / NaN 都表示"没有有效时间"，不能当作合法时刻参与排序与展示。
+    // 早先用 `?? Date.now()` 兜底，会让这类会话被伪装成"刚刚"并顶到列表最前。
+    if (!Number.isFinite(value) || value <= 0) return null;
+    const milliseconds = value < 1e11 ? value * 1000 : value;
+    return Number.isFinite(milliseconds) && milliseconds > 0 ? milliseconds : null;
   }
   if (typeof value === 'string') {
     const parsed = Date.parse(value);
-    return Number.isNaN(parsed) ? null : parsed;
+    return Number.isNaN(parsed) || parsed <= 0 ? null : parsed;
   }
   return null;
 }
@@ -35,7 +39,36 @@ export function getSessionActivityAt(session: Pick<SessionLike, 'last_user_messa
     ?? normalizeActivityTime(session.last_message_at)
     ?? normalizeActivityTime(session.updated_at)
     ?? normalizeActivityTime(session.created_at)
-    ?? Date.now();
+    // 与 stores/workspaceStore.ts 的同名函数保持一致：无法确定时间时返回 0，
+    // 由排序与展示两侧各自处理"未知时间"，避免同一会话在两处排序结果相反。
+    ?? 0;
+}
+
+/**
+ * 侧栏会话时间文案。
+ *
+ * - 未来时间戳（时钟漂移）按"刚刚"处理；
+ * - 7 天内用相对时间；
+ * - 7 天以上显示月日，跨年时补上年份，避免「1月5日」无法区分年份；
+ * - 完全无法确定时间时返回空串，不臆造"刚刚"。
+ */
+export function formatSessionTime(
+  activityAt: number,
+  now: number,
+  language: string,
+  translate: Translate,
+): string {
+  if (!Number.isFinite(activityAt) || activityAt <= 0) return '';
+  const elapsed = Math.max(0, now - activityAt);
+  if (elapsed < 60_000) return translate('time.justNow');
+  if (elapsed < 3_600_000) return translate('time.minutesAgo', { count: Math.floor(elapsed / 60_000) });
+  if (elapsed < 86_400_000) return translate('time.hoursAgo', { count: Math.floor(elapsed / 3_600_000) });
+  if (elapsed < 604_800_000) return translate('time.daysAgo', { count: Math.floor(elapsed / 86_400_000) });
+  const activityDate = new Date(activityAt);
+  const sameYear = activityDate.getFullYear() === new Date(now).getFullYear();
+  return activityDate.toLocaleDateString(language, sameYear
+    ? { month: 'short', day: 'numeric' }
+    : { year: 'numeric', month: 'short', day: 'numeric' });
 }
 
 export function getSessionIndicator(

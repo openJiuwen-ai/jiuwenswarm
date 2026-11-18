@@ -25,16 +25,16 @@ import {
   stageViews,
   suggestionParts,
   suggestionsState,
-  truncateText,
   type ArtifactSuggestionItem,
   type StageView,
   type StageViewStatus,
 } from './diagnosisView';
 import { FillButton } from './DiagnosisFillButton';
 import { RewardSummary } from './DiagnosisReward';
-import { Findings, FoldableItem } from './DiagnosisFindings';
+import { Findings } from './DiagnosisFindings';
+import { DiagnosisSummaryTree } from './DiagnosisSummaryTree';
 import { DiagnosisStatusIcon } from './DiagnosisStatusIcon';
-import { ClampedMarkdown, PlainFold, WholeMarkdown } from './DiagnosisText';
+import { ClampedMarkdown, WholeMarkdown } from './DiagnosisText';
 import type { DiagnosisSession } from './useDiagnosisSession';
 import css from './DiagnosisSubpage.module.css';
 
@@ -48,6 +48,11 @@ export interface DiagnosisSubpageProps {
   onFocusFinding: (findingId: string | null) => void;
   /** Leave the diagnosis view once a suggestion has been written into the composer. */
   onComposerFilled?: () => void;
+  /**
+   * Trajectory records inside this diagnosis, using the same count as the
+   * header and the selection bar. Null until the lanes are loaded.
+   */
+  nodeCount?: number | null;
 }
 
 export const DiagnosisSubpage = memo(function DiagnosisSubpage({
@@ -56,6 +61,7 @@ export const DiagnosisSubpage = memo(function DiagnosisSubpage({
   focusedFindingId,
   onFocusFinding,
   onComposerFilled,
+  nodeCount = null,
 }: DiagnosisSubpageProps) {
   const { t } = useTranslation();
   const { record, notice, summaries, fillComposer } = session;
@@ -97,6 +103,7 @@ export const DiagnosisSubpage = memo(function DiagnosisSubpage({
             focusedFindingId={focusedFindingId}
             onFocusFinding={onFocusFinding}
             onFill={fillAndReturn}
+            nodeCount={nodeCount}
           />
         )}
       </div>
@@ -111,6 +118,7 @@ interface RecordCardsProps {
   focusedFindingId: string | null;
   onFocusFinding: (findingId: string | null) => void;
   onFill: (text: string) => void;
+  nodeCount: number | null;
 }
 
 function Card({ title, action, testId, className, children }: {
@@ -159,13 +167,14 @@ function RecordCards({
   focusedFindingId,
   onFocusFinding,
   onFill,
+  nodeCount,
 }: RecordCardsProps) {
   const { t } = useTranslation();
   const running = isRunning(record);
   const target = useMemo(() => diagnosisTarget(record), [record]);
   const labelOf = (subjectId: string) => subjectLabels.get(subjectId) ?? subjectId;
   const note = record.input.user_note?.trim() ?? '';
-  const trajectorySummary = truncateText(record.trajectory_summary ?? record.task_description ?? '', 500);
+  const trajectorySummary = record.trajectory_summary ?? record.task_description ?? '';
   const reward = asRewardPayload(record.reward);
   const skills = skillJudges(record);
   const experience = experienceJudge(record);
@@ -256,10 +265,10 @@ function RecordCards({
             </div>
           ))
         )}
-        {record.input.resolved_span_count > 0 ? (
+        {nodeCount !== null && nodeCount > 0 ? (
           <p className={css.line} data-testid="trajectory-diagnosis-object-spans">
             <span className={css.lineLabel}>{t('trajectory.diagnosis.objectSteps')}</span>
-            {t('trajectory.diagnosis.objectStepsCount', { count: record.input.resolved_span_count })}
+            {t('trajectory.diagnosis.objectStepsCount', { count: nodeCount })}
           </p>
         ) : null}
         {note === '' ? null : (
@@ -327,6 +336,7 @@ function RecordCards({
           {record.error === undefined ? null : (
             <p className={`${css.hint} ${css.errorText}`} role="alert">{record.error.message}</p>
           )}
+          <DiagnosisSummaryTree record={record} subjectLabels={subjectLabels} />
           {reward !== null ? <RewardSummary reward={reward} /> : null}
           {/* Findings stream in under the evaluation once scoring has landed. */}
           <Findings
@@ -335,18 +345,6 @@ function RecordCards({
             focusedFindingId={focusedFindingId}
             onFocusFinding={onFocusFinding}
           />
-          {trajectorySummary === '' ? null : (
-            <FoldableItem
-              title={t('trajectory.diagnosis.objectSummary')}
-              className={css.summaryBlock}
-              testId="trajectory-diagnosis-task"
-              toggleTestId="trajectory-diagnosis-summary-toggle"
-            >
-              <div className={css.itemBody}>
-                <PlainFold text={trajectorySummary} />
-              </div>
-            </FoldableItem>
-          )}
           {running && !showDetails ? (
             <p className={css.hint} data-testid="trajectory-diagnosis-details-pending">
               {t('trajectory.diagnosis.detailsPending')}

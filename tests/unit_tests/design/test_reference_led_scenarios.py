@@ -243,6 +243,20 @@ def test_reference_led_canvas_is_titled_by_the_story_not_the_prompt() -> None:
     assert build(prompt)["title"] == "设计项目"
 
 
+def test_reference_led_graph_gets_a_bgm_node_when_music_is_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.designer.capabilities.detect_audio_backends",
+        lambda: {"can_speech": False, "can_music": True, "can_video_audio": False, "video_audio_model": ""},
+    )
+    analysis = _base_analysis([_slot([ROLE_PRODUCT], binding="verbatim")], characters=[], scenes=[])
+    analysis["audio"] = {"policy": "optional_music", "include_music": True}
+    graph = build_smart_video_graph(project_id="proj_bgm", prompt="product spot", analysis=analysis)
+    assert _pipeline(_node(graph, "n_music")) == "music"
+    edges = {(edge["source"], edge["target"]) for edge in graph["edges"]}
+    assert {("n_brief", "n_music"), ("n_music", "n_compose")} <= edges
+    assert "n_music" in _node(graph, "n_compose")["config"]["inputs"]
+
+
 
 
 # --- Fix 1: character verbatim skips the character specs ---------------------

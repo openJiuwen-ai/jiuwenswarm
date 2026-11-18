@@ -35,7 +35,7 @@ popd
 
 echo.
 echo [3/3] Running PyInstaller...
-call uv run --with-requirements scripts/computer-use-requirements.txt pyinstaller scripts\jiuwenswarm.spec --noconfirm
+call uv run pyinstaller scripts\jiuwenswarm.spec --noconfirm
 if errorlevel 1 exit /b 1
 
 echo.

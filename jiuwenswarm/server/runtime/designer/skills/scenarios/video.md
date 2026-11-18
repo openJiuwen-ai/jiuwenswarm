@@ -18,9 +18,9 @@ Compose a short cinematic pipeline: Brief → Character (**character_specs**) �
 7. Default path is **clip** agents only — no separate frame/keyframe leaf in the graph.
 
 ## Consistency
-- **character_consistency**: face, body type, wardrobe locks from **character_specs**.
+- **character_consistency**: face, body type, clothing locks from **character_specs**.
 - **scene_consistency**: geography, light, props from **scene_specs**.
-- **shot_consistency**: clip-to-clip continuity (blocking, last-frame handoff, speech anti-repeat) within the same setting.
+- **shot_consistency**: clip-to-clip continuity (blocking, speech anti-repeat) within the same setting.
 
 ## Audio policy
 - Do not create audio, speech, TTS, music, or BGM nodes.

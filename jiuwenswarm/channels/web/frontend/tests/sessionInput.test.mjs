@@ -212,6 +212,86 @@ function addOriginalUser(c, content = 'original question') {
   }));
 }
 
+test('a restored unanswered question renders only when no live prompt owns it', async (context) => {
+  const c = await mount(context);
+  try {
+    const pending = {
+      request_id: 'skillpack-history-6520', source: 'ask_user_interrupt',
+      questions: [{ question: 'Choose a SkillPack', header: 'SkillPack', options: [{ label: 'Use pack' }] }],
+    };
+    const messages = parseHistoryJsonFileToPreviewMessages([{
+      ...pending, id: 'ask-6520', role: 'assistant', event_type: 'chat.ask_user_question', timestamp: 1,
+    }], c.sid);
+    await act(async () => c.store.replaceHistoryMessages(c.sid, messages));
+    assert.ok(document.querySelector('[data-testid="interaction-slot-qa-summary"]'));
+    c.receive('chat.ask_user_question', pending);
+    await c.flush();
+    assert.equal(document.querySelector('[data-testid="interaction-slot-qa-summary"]'), null);
+    assert.equal(c.runtime().pendingQuestions[0].request_id, pending.request_id);
+    await act(async () => {
+      c.store.setActiveSessionId('another-conversation');
+    });
+    await act(async () => {
+      c.store.setActiveSessionId(c.sid);
+      c.store.replaceHistoryMessages(c.sid, messages);
+    });
+    assert.equal(document.querySelector('[data-testid="interaction-slot-qa-summary"]'), null);
+    assert.equal(c.runtime().pendingQuestions[0].request_id, pending.request_id);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('terminal forwarding error settles the current stream without sending queued input', async (context) => {
+  const c = await mount(context);
+  try {
+    const queued = c.queue('keep this queued');
+    c.receive('chat.error', {
+      request_id: 'original', code: 'GATEWAY_FORWARD_FAILED',
+      error: 'Gateway forwarding queue is full', is_complete: true, cron_session_stream: true,
+    });
+    assert.equal(c.runtime().isProcessing, false);
+    assert.equal(c.runtime().isThinking, false);
+    assert.equal(c.runtime().currentStreamId, null);
+    assert.ok(c.runtime().messages.every(message => !message.isStreaming));
+    assert.equal(c.runtime().executionError, 'Gateway forwarding queue is full');
+    assert.ok(c.runtime().taskQueue.some(task => task.id === queued));
+    assert.equal(c.requests().length, 0);
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('late forwarding error cannot stop a newer request', async (context) => {
+  const c = await mount(context);
+  try {
+    c.receive('chat.processing_status', { is_processing: true, request_id: 'newer', execution_id: 'new-execution' });
+    c.receive('chat.error', {
+      request_id: 'original', code: 'GATEWAY_FORWARD_FAILED',
+      error: 'Gateway forwarding queue is full', is_complete: true, execution_id: 'old-execution',
+    });
+    assert.equal(c.runtime().isProcessing, true);
+    assert.equal(c.runtime().executionError, null);
+    assert.equal(c.runtime().error, null);
+    assert.equal(c.runtime().activeExecutionId, 'new-execution');
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('nonterminal forwarding error does not settle the execution', async (context) => {
+  const c = await mount(context);
+  try {
+    c.receive('chat.error', {
+      request_id: 'original', code: 'GATEWAY_FORWARD_FAILED',
+      error: 'Gateway forwarding queue is full', is_complete: false,
+    });
+    assert.equal(c.runtime().isProcessing, true);
+  } finally {
+    await c.dispose();
+  }
+});
+
 test('MoA control resume wire frames display while the original execution remains active', async (context) => {
   const c = await mount(context);
   const frames = JSON.parse(readFileSync(new URL('./fixtures/moaControlResume.json', import.meta.url), 'utf8'));

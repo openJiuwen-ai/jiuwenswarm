@@ -1,3 +1,4 @@
+import { useAdaptiveTooltip } from '../../../hooks/useAdaptiveTooltip';
 import { useTranslation } from 'react-i18next';
 import { formatSlashDate, type JiuwenMateYearHeatmap } from '../officeState';
 
@@ -28,6 +29,7 @@ export function HeatmapLegend() {
 
 export function ActivityHeatmap({ heatmap, hoveredCellId, onHover }: ActivityHeatmapProps) {
   const { t } = useTranslation();
+  const { tooltip, handlers } = useAdaptiveTooltip({ placement: 'top', multiline: true });
   const columns = heatmap.weeks.length;
   return (
     <div className="jiuwenmate-heatmap-frame" style={{ ['--jiuwenmate-heatmap-columns' as string]: columns }}>
@@ -45,8 +47,8 @@ export function ActivityHeatmap({ heatmap, hoveredCellId, onHover }: ActivityHea
           ))}
         </div>
         <div className="jiuwenmate-heatmap" data-testid="jiuwenmate-activity-heatmap" data-variant="year">
-          {heatmap.weeks.map((week, column) =>
-            week.map((cell, row) => {
+          {heatmap.weeks.map((week) =>
+            week.map((cell) => {
               if (!cell.inRange) return <span key={cell.id} className="jiuwenmate-heatmap__cell jiuwenmate-heatmap__cell--blank" />;
               const hovered = hoveredCellId === cell.id;
               return (
@@ -59,32 +61,22 @@ export function ActivityHeatmap({ heatmap, hoveredCellId, onHover }: ActivityHea
                   data-variant={cell.id}
                   aria-label={formatSlashDate(cell.date)}
                   aria-pressed={hovered}
-                  onMouseEnter={() => onHover(cell.id)}
-                  onMouseLeave={() => onHover(null)}
-                  onFocus={() => onHover(cell.id)}
-                  onBlur={() => onHover(null)}
-                >
-                  {hovered ? (
-                    <span
-                      className="jiuwenmate-heatmap__tooltip"
-                      role="tooltip"
-                      data-testid="jiuwenmate-heatmap-tooltip"
-                      data-edge={column > columns - 8 ? 'end' : row < 2 ? 'below' : undefined}
-                    >
-                      <strong>{formatSlashDate(cell.date)}</strong>
-                      <span>
-                        {t('jiuwenmate.office.tooltipTasks', { count: cell.tasks })}
-                        <i />
-                        {t('jiuwenmate.office.tooltipHours', { hours: cell.hours })}
-                      </span>
-                    </span>
-                  ) : null}
-                </button>
+                  data-tooltip={[
+                    formatSlashDate(cell.date),
+                    t('jiuwenmate.office.tooltipTasks', { count: cell.tasks }),
+                    t('jiuwenmate.office.tooltipHours', { hours: cell.hours }),
+                  ].join('\n')}
+                  onMouseEnter={(event) => { onHover(cell.id); handlers.onMouseEnter(event); }}
+                  onMouseLeave={() => { onHover(null); handlers.onMouseLeave(); }}
+                  onFocus={(event) => { onHover(cell.id); handlers.onFocus(event); }}
+                  onBlur={() => { onHover(null); handlers.onBlur(); }}
+                />
               );
             }),
           )}
         </div>
       </div>
+      {tooltip}
     </div>
   );
 }

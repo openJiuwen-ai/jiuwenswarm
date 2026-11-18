@@ -43,11 +43,12 @@ _VLLM_OMNI = ImageModelCapacity(resolutions=("0.5K", "1K", "1.5K", "2K"), defaul
 
 def image_capacity_for(model_id: str, backend: str | None) -> ImageModelCapacity:
     """Tiers for a configured image model on its backend."""
-    from jiuwenswarm.agents.harness.common.tools.gen_toolkits import VLLM_OMNI
+    from jiuwenswarm.agents.harness.common.tools.gen_toolkits import OPENROUTER, VLLM_OMNI
 
     if backend == VLLM_OMNI:
         return _VLLM_OMNI
-    if backend is None:
+    # OpenRouter takes an aspect ratio, not pixel sizes, so tiers would have no effect.
+    if backend is None or backend == OPENROUTER:
         return _ONE_K
     key = re.sub(r"[^a-z0-9]+", "", (model_id or "").lower())
     if "qwenimage30" in key or key.startswith("image01"):

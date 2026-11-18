@@ -195,7 +195,7 @@ test('a pick counts an OTel span only when start and end are both covered', () =
   assert.equal(selectedNodeCount(axis, exactly, false) > DIAGNOSIS_NODE_LIMIT, false);
 });
 
-test('full-scope selected count matches the header span total from raw intervals', () => {
+test('full-scope selected count matches the header node total from raw intervals', () => {
   const lanes = [
     {
       subjectId: 'main',

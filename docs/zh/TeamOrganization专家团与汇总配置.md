@@ -108,6 +108,17 @@ JiuwenSwarm 通过现有专家团安装登记和包解析入口发现可用模�
 
 手动创建的专家团默认位于用户工作区下 `.agent_teams/agent_groups/local/<实际包ID>/`；包 ID 由创建流程生成，不必与显示名称一致。随仓库提供的广场资源包安装到 `.agent_teams/agent_groups/built_in/<包ID>/`，不能把所有已安装模板都视为 local 包；具体目录由安装来源和包解析入口决定。设置了 `JIUWENSWARM_DATA_DIR` 时使用对应工作区。已创建的 Team 使用装配时的模板快照，改动模板或原始专家后不要假定已有运行实例自动更新，测试应新建会话。
 
+### 1.4 专家团头像加载
+
+专家团列表和详情中的本地头像通过签名 `/file-api/download` 地址独立加载，不将图片
+Base64 内容嵌入列表响应。专家团及成员的 PNG、JPEG、GIF、WebP 文件和对应 Data URL
+使用相同方式处理；已有 HTTP(S) 头像地址保持不变。缺失、越界或格式不支持的本地头像
+使用界面默认头像；本地 SVG 不通过同源下载接口展示，以避免将其作为活动文档开放。
+
+图片副本按内容摘要保存在当前用户或租户工作区的 `.cache/package-avatars/`，重复图片复用
+同一文件，不修改安装包。图片访问复用已有文件下载通道，部署时须保证 `/file-api/download`
+可达；无需提高 WebSocket 消息上限。
+
 ## 二、专家 Team 配置继承
 
 专家 Team 使用 AgentGroup 中的 Leader、预置成员、技能、提示词和 capabilities，同时从当前 JiuwenSwarm Team 配置继承运行底座，包括：

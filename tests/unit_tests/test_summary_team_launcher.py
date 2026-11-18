@@ -260,8 +260,8 @@ def test_summary_team_spec_uses_inprocess_transport(monkeypatch):
     assert "Set result_type to the actual delivered format" in drafter_prompt
 
 
-def test_summary_leader_writes_short_text_without_the_two_teammates(monkeypatch):
-    """A single short text stays with the leader; teammates are only for a complex deliverable."""
+def test_summary_leader_writes_short_text_or_one_file_without_the_two_teammates(monkeypatch):
+    """Saving short text as one file does not trigger the specialist workflow."""
     prompts = _summary_prompts(monkeypatch)
     leader = prompts["leader"]
 
@@ -269,7 +269,28 @@ def test_summary_leader_writes_short_text_without_the_two_teammates(monkeypatch)
     assert "check it once against the request" in leader
     assert "Do not send that short text to source-integrator or delivery-drafter" in leader
     assert "only when the bound sources contain a disagreement" in leader
-    assert "or the user asked for a file, code, or a multi-part specialist deliverable" in leader
+    assert "including a short report saved as one Markdown or text file" in leader
+    assert "write the requested final file in the summary directory" in leader
+    assert "one file alone does not require teammate delegation" in leader
+    assert "code, multiple files, a long research document, complex file formatting" in leader
+    assert "or the user asked for a file, code" not in leader
+
+
+def test_summary_roles_preserve_original_approximate_and_hard_length_requirements(monkeypatch):
+    """All instantiated roles keep user constraints through each delegation boundary."""
+    prompts = _summary_prompts(monkeypatch)
+
+    for prompt in prompts.values():
+        assert "original user request in root_task as the authority" in prompt
+        assert "'约500字' is a rough scope target" in prompt
+        assert "Do not invent percentage tolerances, strict ranges, per-section quotas" in prompt
+        assert "follow the original approximation instead" in prompt
+        assert "Preserve explicit user limits such as '不超过500字'" in prompt
+        assert "user-specified per-section counts; do not relax them" in prompt
+        assert "Include the user's original length wording in every outline and assignment" in prompt
+        assert "then use a counting tool" in prompt
+        assert "recheck when necessary" in prompt
+        assert "Do not repeatedly trial-write or hand-count in reasoning" in prompt
 
 
 def test_summary_prompts_read_a_cited_source_file_only(monkeypatch):

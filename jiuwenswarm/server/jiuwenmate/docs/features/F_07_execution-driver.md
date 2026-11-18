@@ -218,4 +218,8 @@ sequenceDiagram
 
 ## 10. 设计演进与修订
 
+- 2026-11-03（用户确认，代码和定向验证完成）：每次执行通过已有 `system_prompt_addendum` 注入实际运行主机的 OS / Shell 能力，复用 `shell_environment.get_shell_capabilities` 的有界探测和缓存以及中英文渲染，不挂载包含其他会话状态的整套通用 RuntimePromptRail。说明 `bash` 是工具名、`auto` 不是 Bash 保证、命令语法须与显式 `shell_type` 一致。消息渠道和用户客户端不决定命令环境；Windows、macOS 和 Linux 分别按宿主能力提示。不改变发布快照、配置指纹、执行 Shell 的选择逻辑和业务审批。
+
 - 2026-10-14：JM-10 私聊子范围为 `AgentManager` 增加 `create_default`、私聊入口与请求视图，并完成 AgentServer 启停接线（见 [F_10_02](F_10_02_web-private-chat.md)）；本文的调度与执行设计不变。
+
+- 2026-11-03 验证：`test_persistent_shell_environment.py`、`test_shell_environment.py`、`test_session_scheduler.py` 共 59 项通过；覆盖 Windows/macOS/Linux 中英文提示、探测未确认时的保守提示、现有有界探测缓存和连续请求按执行注入。主机为 Windows，macOS/Linux 通过模拟平台分支验证，未执行对应实机或真实模型联调。旧发布配置无需重发；代码加载需要重启 Worker。未修改执行 Shell 的选择、权限或跨群审批。

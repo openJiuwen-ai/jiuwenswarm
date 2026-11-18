@@ -46,7 +46,10 @@ export function ImAuthorizeDialog({ onSkip, onConfirm, created = true, fixed, in
         robotCode: fixed?.platform === 'dingtalk' && !robotCodeEdited ? undefined : robotCode.trim(),
       });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      const code = cause && typeof cause === 'object' && 'code' in cause ? cause.code : undefined;
+      setError(code === 'CHANNEL_ALREADY_BOUND'
+        ? t('jiuwenmate.im.channelAlreadyBound')
+        : cause instanceof Error ? cause.message : String(cause));
     } finally {
       setSaving(false);
     }

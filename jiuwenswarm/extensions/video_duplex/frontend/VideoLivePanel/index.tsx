@@ -824,7 +824,6 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     }
 
     setError('');
-    const pickerStartedAt = Date.now();
     const captureStartedAt = performance.now();
     const captureId = `screen-${Date.now()}`;
     let captureStage = 'getDisplayMedia';
@@ -894,11 +893,11 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
           return 'unsupported';
         }
         setError(SCREEN_SHARE_NO_PERMISSION_NOTICE);
-      } else if (screenError instanceof DOMException && (screenError.name === 'NotAllowedError' || screenError.name === 'AbortError')) {
-        // Browsers reject a cancelled picker with NotAllowedError; Electron's
-        // display-media handler denies with AbortError.
-        setError(Date.now() - pickerStartedAt >= SCREEN_PICKER_TIMEOUT_MS ? SCREEN_PICKER_TIMEOUT_ERROR : '已取消选择屏幕');
-      } else if (allowUnsupported && isScreenCaptureUnsupported(screenError)) {
+      } else if ((errorType === 'NotAllowedError' || errorType === 'AbortError')
+        && elapsedMs >= SCREEN_PICKER_TIMEOUT_MS) {
+        setError(SCREEN_PICKER_TIMEOUT_ERROR);
+      } else if (errorType !== 'NotAllowedError' && errorType !== 'AbortError'
+        && allowUnsupported && isScreenCaptureUnsupported(screenError)) {
         return 'unsupported';
       } else {
         setError(message);
@@ -1111,7 +1110,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                   search_session_id: searchSessionId,
                   frame_data_url: framesRef.current.at(-1)?.data_url || '',
                 },
-                { timeoutMs: call.name === 'jiuwen_queue_manage' ? 0 : 10_000 },
+                { timeoutMs: 0 },
               )
                 .then((action) => {
                   reportRealtimeEvent('qwen_tool_call_receipt', {
@@ -1148,7 +1147,10 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                   reportRealtimeEvent('qwen_tool_call_receipt', {
                     name: call.name, call_id: call.callId, decision: 'rejected', message,
                   });
-                  setError(describeDuplexError(duplexErrorDetail(`工具调用失败：${message}`, { stage: 'tool_receipt', name: call.name, call_id: call.callId }), 'task'));
+                  // Missing form fields are recoverable through the model's follow-up question.
+                  if (call.name !== 'jiuwen_form_answer' || message !== 'Answer every observed question exactly once') {
+                    setError(describeDuplexError(duplexErrorDetail(`工具调用失败：${message}`, { stage: 'tool_receipt', name: call.name, call_id: call.callId }), 'task'));
+                  }
                   session.enqueueOperationResult(call.callId, { state: 'rejected', error: message });
                 });
             },

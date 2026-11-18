@@ -18,12 +18,34 @@ ORG = bootstrap.organization_id_for_session(SESSION)
 
 
 @pytest.fixture(autouse=True)
-def _clear_bound_turns():
+def _clear_bound_turns(monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.agents.swarm import group_route
+
+    monkeypatch.setattr(group_route, "_path", lambda _: tmp_path / "routes.json")
+    monkeypatch.setattr(group_route, "publish", AsyncMock())
     yield
     bootstrap._member_turns.clear()
     bootstrap._deferred_direct.clear()
     bootstrap._proxy_tools.clear()
     bootstrap._accepted_plans.clear()
+    bootstrap._open_organization_turns.clear()
+    bootstrap._organization_run_attempts.clear()
+
+
+async def _accept_organization_plan(session_id, group_input):
+    """Lifecycle tests below start after the Owner's task decision."""
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.agents.swarm import group_route
+
+    item = await group_route.record_candidate(session_id, mentions=group_input["mentions"],
+                                             body=group_input["body"], plan_id=group_input["client_message_id"])
+    if item is None:
+        return None
+    backend = SimpleNamespace(member_name=item["owner_member"],
+                              message_manager=SimpleNamespace(send_message=AsyncMock(return_value="wake")))
+    await group_route.activate(session_id, item["plan_id"], backend)
+    return item["plan_id"]
 
 
 MEMBERS = [
@@ -179,6 +201,16 @@ def test_owner_prompt_lets_the_model_choose_an_unnamed_aggregation_mode():
     assert "Write only the requested deliverable" in prompt
     assert "org_create_and_invite_expert_team" in reminder
     assert "requested deliverable" in reminder
+
+
+def test_owner_preserves_user_length_requirements_when_creating_summary_tasks():
+    prompt = bootstrap._OWNER_PROMPT_SUFFIX
+    assert "Keep approximate length approximate" in prompt
+    assert "'约500字' does not authorize percentage tolerances" in prompt
+    assert "Do not add these as acceptance criteria" in prompt
+    assert "Preserve explicit user limits such as '不超过500字'" in prompt
+    assert "user-specified per-section counts" in prompt
+    assert "into org_create_summary_execution without tightening them" in prompt
 
 
 @pytest.mark.asyncio
@@ -792,7 +824,7 @@ async def test_reused_instance_takes_the_current_owner_role():
     assert harness.system_prompt_builder.names == []
 
 
-def test_a_new_organization_drops_the_previous_member_list(monkeypatch):
+def test_a_new_organization_preserves_and_scopes_previous_members(monkeypatch):
     group = _MemoryGroup(
         monkeypatch,
         organization_id="gorg-old",
@@ -811,9 +843,10 @@ def test_a_new_organization_drops_the_previous_member_list(monkeypatch):
             "id": "business-planning",
         },
     )
-    assert [item["member_name"] for item in group.state["organization_teams"]] == [
+    assert [item["member_name"] for item in group_service.group_organization_teams(SESSION, "gorg-new")] == [
         "business"
     ]
+    assert {item["member_name"] for item in group_service.group_organization_teams(SESSION, "gorg-old")} == {"business", "insight"}
     assert group.state["organization_id"] == "gorg-new"
 
 
@@ -1342,7 +1375,7 @@ async def test_early_bind_failure_keeps_the_overlapping_plan_pending(monkeypatch
     monkeypatch.setattr(bootstrap, "_set_member_instance_silence", _quiet)
     monkeypatch.setattr(bootstrap, "_block_template_expert_creation", _quiet)
     monkeypatch.setattr(group_service, "upsert_group_organization_team", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(group_service, "group_organization_teams", lambda _session_id: [])
+    monkeypatch.setattr(group_service, "group_organization_teams", lambda _session_id, _organization_id=None: [])
 
     result = await bootstrap._run_organization_member_once(
         backend=SimpleNamespace(member_name="business"),
@@ -1705,6 +1738,266 @@ def _install_card_store(monkeypatch) -> _CardStore:
 
 
 @pytest.mark.asyncio
+async def test_organization_card_title_progresses_with_its_root(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    _MemoryGroup(monkeypatch)
+    store = _install_card_store(monkeypatch)
+    plan = _stale_plan()
+    plan["body"] = "@商业策划 @小红书 原始请求"
+    root = SimpleNamespace(
+        task_id=bootstrap._root_task_id(plan["plan_id"]),
+        title="Swarm group request", description="", parent_task_id=None,
+    )
+    foreign_root = SimpleNamespace(
+        task_id="another-root", title="其他请求的标题", parent_task_id=None,
+    )
+    pool = SimpleNamespace(list_tasks=AsyncMock(return_value=[foreign_root]))
+
+    async def publish(task_pool=None, status="running"):
+        await bootstrap.publish_organization_card(
+            session_id=SESSION, plan=plan, organization_id=ORG,
+            team_id="owner", task_pool=task_pool, status=status,
+        )
+        fields = store.calls[-1][1]
+        assert fields["task"] == plan["body"]
+        assert len(store.records) == 1
+        return fields["title"]
+
+    assert await publish() == plan["body"]
+    assert await publish(pool) == plan["body"]
+    pool.list_tasks.return_value = [root, foreign_root]
+    assert await publish(pool) == plan["body"]
+    root.description = "团队创建与招募方案\n交付要求"
+    assert await publish(pool) == root.description
+    root.title = "十人团队商业可行性评估"
+    assert await publish(pool) == root.title
+    # A missing snapshot during cleanup must not revert the resolved heading.
+    assert await publish() == root.title
+    pool.list_tasks.return_value = []
+    assert await publish(pool) == root.title
+    pool.list_tasks.return_value = [root]
+    root.output_abstract = "最终报告正文，不是任务标题"
+    assert await publish(pool, status="completed") == root.title
+
+
+@pytest.mark.asyncio
+async def test_early_card_only_after_multi_team_owner_acceptance(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _record_group_organization_plan
+
+    group = _MemoryGroup(monkeypatch)
+    store = _install_card_store(monkeypatch)
+    for mentions in [["writer"], ["business"], ["writer", "business"], ["writer", "business", "insight"]]:
+        await _record_group_organization_plan(SESSION, {"mentions": mentions, "body": "Task", "client_message_id": "ordinary"})
+        assert not store.calls
+    request = {"mentions": ["business", "insight"], "body": "Task", "client_message_id": "org"}
+    await _record_group_organization_plan(SESSION, request)
+    assert not store.calls
+    assert not group.state.get("organization_plans")
+    await _accept_organization_plan(SESSION, request)
+    assert len(store.calls) == 1
+    assert store.calls[0][1]["organization_stage"] == "starting"
+    assert store.calls[0][1]["only_if_missing"] is True
+
+
+@pytest.mark.asyncio
+async def test_unstarted_round_closes_and_live_rounds_stay(monkeypatch):
+    _record_group_organization_plan = _accept_organization_plan
+
+    _MemoryGroup(monkeypatch)
+    store = _install_card_store(monkeypatch)
+    await _record_group_organization_plan(
+        SESSION, {"mentions": ["business", "insight"], "body": "Task", "client_message_id": "org"},
+    )
+    plan_id = "org"
+    bootstrap.note_organization_turn_started(SESSION, "business", plan_id)
+    bootstrap.note_organization_turn_started(SESSION, "insight", plan_id)
+    await bootstrap.finish_organization_member_turn(SESSION, "business")
+    assert bootstrap._plan_record(SESSION, plan_id)["status"] == "pending"
+    await bootstrap.finish_organization_member_turn(SESSION, "insight")
+    assert bootstrap._plan_record(SESSION, plan_id)["status"] == "failed"
+    assert store.calls[-1][1]["status"] == "failed"
+    assert store.calls[-1][1]["phase"] == "failed"
+    assert store.calls[-1][1]["organization_stage"] is None
+
+    await _record_group_organization_plan(
+        SESSION, {"mentions": ["business", "insight"], "body": "Live", "client_message_id": "live"},
+    )
+    hold = asyncio.create_task(asyncio.Event().wait())
+    bootstrap._owner_runs[(SESSION, "live")] = hold
+    bootstrap.note_organization_turn_started(SESSION, "business", "live")
+    bootstrap.note_organization_turn_started(SESSION, "insight", "live")
+    await bootstrap.finish_organization_member_turn(SESSION, "business")
+    await bootstrap.finish_organization_member_turn(SESSION, "insight")
+    assert bootstrap._plan_record(SESSION, "live")["status"] == "pending"
+    hold.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await hold
+    bootstrap._owner_runs.pop((SESSION, "live"), None)
+
+    await _record_group_organization_plan(
+        SESSION, {"mentions": ["business", "insight"], "body": "Queued", "client_message_id": "queued"},
+    )
+    queued = asyncio.create_task(asyncio.Event().wait())
+    bootstrap._queued_plans[(SESSION, "queued", "business")] = queued
+    bootstrap.note_organization_turn_started(SESSION, "business", "queued")
+    bootstrap.note_organization_turn_started(SESSION, "insight", "queued")
+    await bootstrap.finish_organization_member_turn(SESSION, "business")
+    await bootstrap.finish_organization_member_turn(SESSION, "insight")
+    assert bootstrap._plan_record(SESSION, "queued")["status"] == "pending"
+    assert "queued" in bootstrap._member_turns[(SESSION, "business")]
+    queued.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await queued
+    bootstrap._queued_plans.pop((SESSION, "queued", "business"), None)
+
+    await _record_group_organization_plan(
+        SESSION, {"mentions": ["business", "insight"], "body": "Retry", "client_message_id": "retry"},
+    )
+    bootstrap.note_organization_turn_started(SESSION, "business", "retry")
+    bootstrap.note_organization_run_attempt(SESSION, "business", "retry")
+    # An attempt protects a live turn, but does not promise a future retry.
+    assert not bootstrap._unstarted_plan_can_close(SESSION, "retry")
+    await bootstrap.finish_organization_member_turn(SESSION, "business")
+    assert not bootstrap._plan_has_run_attempt(SESSION, "retry")
+    # Earlier live/queued plans still block this request independently of attempts.
+    await bootstrap.fail_unstarted_organization_round(SESSION, "retry")
+    assert bootstrap._plan_record(SESSION, "retry")["status"] == "pending"
+
+
+@pytest.mark.asyncio
+async def test_failed_recording_round_closes_before_proxy_turns(monkeypatch):
+    from jiuwenswarm.agents.swarm.group_org_bootstrap import fail_unstarted_organization_round
+    _record_group_organization_plan = _accept_organization_plan
+
+    _MemoryGroup(monkeypatch)
+    store = _install_card_store(monkeypatch)
+    await _record_group_organization_plan(
+        SESSION, {"mentions": ["business", "insight"], "body": "Task", "client_message_id": "org"},
+    )
+    bootstrap.note_organization_turn_started(SESSION, "business", "org")
+    await fail_unstarted_organization_round(SESSION, "org")
+    assert bootstrap._plan_record(SESSION, "org")["status"] == "pending"
+    bootstrap._open_organization_turns.clear()
+    await fail_unstarted_organization_round(SESSION, "org")
+    assert bootstrap._plan_record(SESSION, "org")["status"] == "failed"
+    assert store.calls[-1][1]["status"] == "failed"
+    assert store.calls[-1][1]["phase"] == "failed"
+    assert bootstrap.peek_member_turn(SESSION, "business") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("task_type,status,expected", [
+    ("work", "OPEN", "processing"),
+    ("work", "CLAIMED", "executing"),
+    ("organization.summary", "IN_PROGRESS", "summarizing"),
+])
+async def test_organization_stage_follows_real_tasks(monkeypatch, task_type, status, expected):
+    from unittest.mock import AsyncMock
+
+    plan = _stale_plan()
+    _MemoryGroup(monkeypatch)
+    store = _install_card_store(monkeypatch)
+    task = SimpleNamespace(task_id="child", task_type=task_type, status=status,
+                           parent_task_id=bootstrap._root_task_id(plan["plan_id"]),
+                           root_task_id=bootstrap._root_task_id(plan["plan_id"]))
+    listed = [task]
+    if task_type == "organization.summary":
+        listed.append(SimpleNamespace(
+            task_id="source", task_type="work", status="COMPLETED", created_at=1,
+            parent_task_id=bootstrap._root_task_id(plan["plan_id"]),
+        ))
+    pool = SimpleNamespace(
+        list_tasks=AsyncMock(return_value=listed),
+        get_task_review=AsyncMock(return_value=SimpleNamespace(review_status="ACCEPTED")),
+    )
+    await bootstrap.publish_organization_card(session_id=SESSION, plan=plan, organization_id=ORG,
+                                               team_id="owner", task_pool=pool)
+    assert store.calls[-1][1]["organization_stage"] == expected
+    pool.list_tasks.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source_status,review_status", [
+    ("OPEN", None),
+    ("IN_PROGRESS", None),
+    ("COMPLETED", None),
+    ("COMPLETED", "PENDING"),
+    ("COMPLETED", "REJECTED"),
+    ("COMPLETED", "NEEDS_REVISION"),
+    ("IN_PROGRESS", "ACCEPTED"),
+])
+async def test_summary_card_waits_for_all_three_sources_to_be_accepted(
+    monkeypatch, source_status, review_status,
+):
+    from unittest.mock import AsyncMock
+
+    _MemoryGroup(monkeypatch)
+    store = _install_card_store(monkeypatch)
+    plan = _stale_plan()
+    root_id = bootstrap._root_task_id(plan["plan_id"])
+    sources = [SimpleNamespace(
+        task_id=f"source-{index}", parent_task_id=root_id, root_task_id=root_id,
+        title=f"Expert {index}", task_type=None, status="COMPLETED", created_at=index,
+    ) for index in range(3)]
+    sources[-1].status = source_status
+    summary = SimpleNamespace(
+        task_id="org-summary-early", parent_task_id=None, root_task_id=root_id,
+        title="Report", task_type="organization.summary", status="WAITING_SOURCES",
+        created_at=4,
+    )
+    reviews = {task.task_id: SimpleNamespace(review_status="ACCEPTED") for task in sources}
+    reviews[sources[-1].task_id] = SimpleNamespace(review_status=review_status)
+    pool = SimpleNamespace(
+        list_tasks=AsyncMock(return_value=[*sources, summary]),
+        get_task_review=AsyncMock(side_effect=lambda task_id: reviews.get(task_id)),
+    )
+
+    async def publish():
+        await bootstrap.publish_organization_card(
+            session_id=SESSION, plan=plan, organization_id=ORG,
+            team_id="owner", task_pool=pool,
+        )
+        return store.calls[-1][1]
+
+    fields = await publish()
+    assert len(fields["tasks"]) == 3
+    assert summary.task_id not in fields["tasks"]
+    assert summary.task_id not in fields["task_details"]
+    assert fields["organization_stage"] == "executing"
+    assert summary.status == "WAITING_SOURCES"
+
+    sources[-1].status = "COMPLETED"
+    reviews[sources[-1].task_id].review_status = "ACCEPTED"
+    summary.status = "IN_PROGRESS"
+    fields = await publish()
+    assert list(fields["tasks"]) == [task.task_id for task in sources] + [summary.task_id]
+    assert fields["organization_stage"] == "summarizing"
+    assert fields["task_details"][summary.task_id]["member_id"] == "Summary Team"
+
+    summary.status = "COMPLETED"
+    fields = await publish()
+    assert all(status == "completed" for status in fields["tasks"].values())
+
+    pool.list_tasks.return_value = [summary]
+    fields = await publish()
+    assert fields["tasks"] == {}
+    assert fields["task_details"] == {}
+    assert fields["organization_stage"] == "processing"
+
+
+@pytest.mark.asyncio
+async def test_card_write_failure_does_not_block_proxy_launch(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    _MemoryGroup(monkeypatch)
+    store = _install_card_store(monkeypatch)
+    store.upsert_organization_card = AsyncMock(side_effect=RuntimeError("card unavailable"))
+    await bootstrap.publish_pending_organization_card(SESSION, {**_stale_plan(), "status": "pending"})
+    store.upsert_organization_card.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_organization_card_rows_follow_expert_children_only(monkeypatch):
     plan = _stale_plan()
     root_id = bootstrap._root_task_id(plan["plan_id"])
@@ -1777,21 +2070,30 @@ async def test_organization_card_rows_follow_expert_children_only(monkeypatch):
     rows, details = await bootstrap._organization_rows(
         SESSION, plan, _Pool(), fail_unfinished=False
     )
-    assert list(rows) == ["child-business", "child-insight", "org-summary-1"]
+    assert list(rows) == ["child-business", "child-insight"]
     assert rows["child-business"] == "completed"
     assert rows["child-insight"] == "in_progress"
-    assert rows["org-summary-1"] == "in_progress"
+    assert "org-summary-1" not in details
     assert details["child-business"]["title"] == "用户价值及第一版功能范围"
     assert details["child-business"]["member_id"] == "商业策划专家团"
     assert details["child-insight"]["title"] == "技术路线及主要风险"
     assert details["child-insight"]["member_id"] == "技术洞察专家团"
-    assert details["org-summary-1"]["title"] == "可行性报告汇总"
-    assert details["org-summary-1"]["member_id"] == "Summary Team"
     failed_rows, _failed_details = await bootstrap._organization_rows(
         SESSION, plan, _Pool(), fail_unfinished=True
     )
     assert failed_rows["child-business"] == "completed"
     assert failed_rows["child-insight"] == "failed"
+    assert "org-summary-1" not in failed_rows
+
+    claimed.status = "COMPLETED"
+    reviews["child-insight"] = SimpleNamespace(review_status="ACCEPTED")
+    rows, details = await bootstrap._organization_rows(
+        SESSION, plan, _Pool(), fail_unfinished=False
+    )
+    assert list(rows) == ["child-business", "child-insight", "org-summary-1"]
+    assert rows["org-summary-1"] == "in_progress"
+    assert details["org-summary-1"]["title"] == "可行性报告汇总"
+    assert details["org-summary-1"]["member_id"] == "Summary Team"
 
     store = _install_card_store(monkeypatch)
     await bootstrap.publish_organization_card(
@@ -1808,6 +2110,8 @@ async def test_organization_card_rows_follow_expert_children_only(monkeypatch):
     assert fields["owner_member"] == "business"
     assert fields["root_task_id"] == root_id
     assert fields["task_details"]["child-business"]["title"] == "用户价值及第一版功能范围"
+    claimed.status = "CLAIMED"
+    reviews.pop("child-insight")
     await bootstrap.publish_organization_card(
         session_id=SESSION,
         plan=plan,
@@ -1990,7 +2294,8 @@ async def test_hierarchical_summary_row_names_the_owner_team(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_accepted_repair_opens_the_hierarchical_summary_row(monkeypatch):
+@pytest.mark.parametrize("mode", ["HIERARCHICAL", "SUMMARY_TEAM"])
+async def test_accepted_repair_opens_the_summary_row(monkeypatch, mode):
     plan = _stale_plan()
     root_id = bootstrap._root_task_id(plan["plan_id"])
     root = SimpleNamespace(
@@ -2003,7 +2308,7 @@ async def test_accepted_repair_opens_the_hierarchical_summary_row(monkeypatch):
         created_at=1,
         assignment=SimpleNamespace(team_id="org-expert-business"),
         aggregation=SimpleNamespace(
-            mode="HIERARCHICAL",
+            mode=mode,
             controller_team_id="org-expert-business",
         ),
         output_context=SimpleNamespace(description="10人团队内部知识问答助手 · 可行性报告（简）"),
@@ -2029,10 +2334,19 @@ async def test_accepted_repair_opens_the_hierarchical_summary_row(monkeypatch):
         metadata={"repairs_task_id": "child-tech"},
     )
     reviews = {"child-tech": SimpleNamespace(review_status="NEEDS_REVISION")}
+    listed = [root, original, repair]
+    summary_id = root_id
+    if mode == "SUMMARY_TEAM":
+        summary_id = "org-summary-repair"
+        listed.append(SimpleNamespace(
+            task_id=summary_id, parent_task_id=None, root_task_id=root_id,
+            title="汇总：联合调研", status="COMPLETED", task_type="organization.summary",
+            created_at=4, assignment=SimpleNamespace(team_id="org-summary"),
+        ))
 
     class _Pool:
         async def list_tasks(self, **_kwargs):
-            return [root, original, repair]
+            return listed
 
         async def get_task_review(self, task_id):
             return reviews.get(task_id)
@@ -2048,6 +2362,7 @@ async def test_accepted_repair_opens_the_hierarchical_summary_row(monkeypatch):
         SESSION, plan, _Pool(), fail_unfinished=False
     )
     assert root_id not in hidden
+    assert summary_id not in hidden
     assert hidden["child-tech"] == "failed"
 
     repair.status = "COMPLETED"
@@ -2057,9 +2372,11 @@ async def test_accepted_repair_opens_the_hierarchical_summary_row(monkeypatch):
     )
     assert rows["child-tech"] == "failed"
     assert rows["repair-tech"] == "completed"
-    assert rows[root_id] == "completed"
-    assert details[root_id]["title"] == "汇总：联合调研"
-    assert details[root_id]["member_id"] == "商业策划专家团"
+    assert rows[summary_id] == "completed"
+    assert details[summary_id]["title"] == "汇总：联合调研"
+    assert details[summary_id]["member_id"] == (
+        "商业策划专家团" if mode == "HIERARCHICAL" else "Summary Team"
+    )
 
 
 @pytest.mark.asyncio
@@ -2543,7 +2860,7 @@ async def test_queued_plan_ensures_a_member_that_skipped_run_team(monkeypatch):
     monkeypatch.setattr(bootstrap, "_block_template_expert_creation", _block)
     monkeypatch.setattr(group_service, "upsert_group_organization_team", _upsert)
     monkeypatch.setattr(
-        group_service, "group_organization_teams", lambda _session_id: list(teams)
+        group_service, "group_organization_teams", lambda _session_id, _organization_id=None: list(teams)
     )
 
     await bootstrap._ensure_mentioned_member_instances(
@@ -3902,3 +4219,127 @@ async def test_organization_record_uses_a_short_name_and_reads_back(tmp_path):
         assert saved["organization_id"] == "org-1"
     finally:
         reset_task_openjiuwen_home(home)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("attempted", [False, True])
+async def test_question_keeps_org_turn_until_answered(monkeypatch, attempted):
+    from jiuwenswarm.agents.swarm import group_execution as policy
+    from jiuwenswarm.server.runtime import group_questions
+    _record_group_organization_plan = _accept_organization_plan
+
+    group = _MemoryGroup(monkeypatch)
+    store = _install_card_store(monkeypatch)
+    monkeypatch.setattr(policy, "read_group", lambda _: group.state)
+    monkeypatch.setattr(policy, "GroupExecutions", lambda _: SimpleNamespace(active=lambda _: None))
+    waiting = {"business"}
+    monkeypatch.setattr(group_questions, "GroupQuestions", lambda _: SimpleNamespace(
+        pending=lambda name: ["question"] if name in waiting else [],
+    ))
+    await _record_group_organization_plan(
+        SESSION, {"mentions": ["business", "insight"], "body": "Task", "client_message_id": "question"},
+    )
+    for name in ["business", "insight"]:
+        bootstrap.note_organization_turn_started(SESSION, name, "question")
+    if attempted:
+        bootstrap.note_organization_run_attempt(SESSION, "business", "question")
+    rail = policy.GroupTaskPolicyRail(SimpleNamespace(session_id=SESSION, member_name="business"))
+    await rail.after_invoke(SimpleNamespace())
+    await bootstrap.finish_organization_member_turn(SESSION, "insight")
+    assert bootstrap._plan_record(SESSION, "question")["status"] == "pending"
+    assert bootstrap._plan_has_open_turn(SESSION, "question")
+    assert bootstrap.peek_member_turn(SESSION, "business") == "question"
+    waiting.clear()
+    await rail.after_invoke(SimpleNamespace())
+    assert bootstrap._plan_record(SESSION, "question")["status"] == "failed"
+    assert store.calls[-1][1]["status"] == "failed"
+    assert not bootstrap._plan_has_run_attempt(SESSION, "question")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("members", [("business", "insight"), ("insight", "business")])
+async def test_failed_attempts_close_after_last_turn_without_stranded_bindings(monkeypatch, members):
+    _record_group_organization_plan = _accept_organization_plan
+
+    _MemoryGroup(monkeypatch)
+    store = _install_card_store(monkeypatch)
+    await _record_group_organization_plan(
+        SESSION, {"mentions": list(members), "body": "Task", "client_message_id": "failed"},
+    )
+    for name in members:
+        bootstrap.note_organization_turn_started(SESSION, name, "failed")
+        bootstrap.note_organization_run_attempt(SESSION, name, "failed")
+        bootstrap.claim_organization_plan(SESSION, "failed", name)
+        bootstrap.release_organization_plan_claim(SESSION, "failed", name)
+    await bootstrap.finish_organization_member_turn(SESSION, members[0])
+    assert bootstrap._plan_record(SESSION, "failed")["status"] == "pending"
+    assert bootstrap.peek_member_turn(SESSION, members[0]) is None
+    await bootstrap.finish_organization_member_turn(SESSION, members[1])
+    assert bootstrap._plan_record(SESSION, "failed")["status"] == "failed"
+    assert store.calls[-1][1]["status"] == "failed"
+    assert not bootstrap._plan_has_run_attempt(SESSION, "failed")
+    assert bootstrap.peek_member_turn(SESSION, members[1]) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("protection", [None, "accepted", "open", "queued"])
+async def test_cancel_during_initial_card_publish_cleans_only_unstarted_plan(monkeypatch, tmp_path, protection):
+    from jiuwenswarm.server.runtime.agent_adapter import team_helpers
+
+    _MemoryGroup(monkeypatch)
+    monkeypatch.setattr(group_execution, "group_path", lambda _: tmp_path / "group.json")
+    store = group_execution.GroupExecutions(SESSION)
+    records = {}
+    monkeypatch.setattr(store, "read", lambda: dict(records))
+    monkeypatch.setattr(store, "save", lambda value: records.update(value))
+    monkeypatch.setattr(group_execution, "GroupExecutions", lambda _: store)
+    publishing = asyncio.Event()
+    events = []
+
+    async def publish(snapshot, event):
+        if event == "created":
+            publishing.set()
+            await asyncio.Event().wait()
+        events.append((snapshot, event))
+
+    monkeypatch.setattr(store, "publish", publish)
+    recorded = None
+
+    async def record():
+        nonlocal recorded
+        recorded = await _accept_organization_plan(
+            SESSION, {"mentions": ["business", "insight"], "body": "Task", "client_message_id": "cancel"},
+        )
+
+    task = asyncio.create_task(record())
+    queued = None
+    try:
+        await asyncio.wait_for(publishing.wait(), 5)
+        if protection == "accepted":
+            bootstrap.claim_organization_plan(SESSION, "cancel", "business")
+        elif protection == "open":
+            bootstrap.note_organization_turn_started(SESSION, "business", "cancel")
+        elif protection == "queued":
+            queued = asyncio.create_task(asyncio.Event().wait())
+            bootstrap._queued_plans[(SESSION, "cancel", "business")] = queued
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.gather(*list(team_helpers._organization_close_tasks))
+        assert recorded is None
+        card = records[bootstrap.organization_execution_id(SESSION, "cancel")]
+        if protection is None:
+            assert bootstrap._plan_record(SESSION, "cancel")["status"] == "failed"
+            assert card["status"] == "failed" and card["organization_stage"] is None
+            assert events[-1][0]["status"] == "failed"
+            assert all(bootstrap.peek_member_turn(SESSION, name) is None for name in ["business", "insight"])
+        else:
+            assert bootstrap._plan_record(SESSION, "cancel")["status"] == "pending"
+            assert card["status"] == "running"
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        if queued is not None:
+            queued.cancel()
+            await asyncio.gather(queued, return_exceptions=True)
+            bootstrap._queued_plans.pop((SESSION, "cancel", "business"), None)

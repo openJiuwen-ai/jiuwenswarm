@@ -10,6 +10,7 @@ import { useSettingsServices } from '../../services/SettingsServicesProvider';
 import { OpenAIAccountSettings, useOpenAIAccountController } from './OpenAIAccountField';
 import { ModelNameField } from './ModelNameField';
 import { ModelProviderSelect } from './ModelProviderSelect';
+import { getPresetApiBasePlaceholder } from './modelVendorLabels';
 import {
   CUSTOM_VENDOR_SELECTION,
   OPENAI_ACCOUNT_SELECTION,
@@ -90,10 +91,12 @@ export function ModelDialog({
   const [submitting, setSubmitting] = useState(false);
   const [testing, setTesting] = useState(false);
   const [fetching, setFetching] = useState(false);
-  const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const [modelOptions, setModelOptions] = useState<string[]>(() =>
+    normalizeModelOptions(findVendorPreset(catalog, initialValues.vendor_selection)?.model_options ?? []),
+  );
   const [fetchStatus, setFetchStatus] = useState(() => {
     const preset = findVendorPreset(catalog, initialValues.vendor_selection);
-    const options: string[] = [];
+    const options = normalizeModelOptions(preset?.model_options ?? []);
     const statusKey = getPresetStatusKey(preset, initialValues.api_key, options);
     return statusKey ? t(statusKey) : '';
   });
@@ -123,7 +126,7 @@ export function ModelDialog({
   const account = values.vendor_selection === OPENAI_ACCOUNT_SELECTION;
   const preset = findVendorPreset(catalog, values.vendor_selection);
   const custom = values.vendor_selection === CUSTOM_VENDOR_SELECTION;
-  const reasoning = values.vendor_selection
+  const reasoning = values.vendor_selection && !custom
     ? resolveModelReasoning(catalog, preset, values.model_name, values.protocol)
     : null;
   const applyModelDraft = useCallback(
@@ -197,7 +200,7 @@ export function ModelDialog({
     aliasSyncedFromModelName.current = rebasedValues.model_name;
     catalogBaseline.current = next;
     const nextPreset = findVendorPreset(catalog, next.vendor_selection);
-    const nextOptions: string[] = [];
+    const nextOptions = normalizeModelOptions(nextPreset?.model_options ?? []);
     setModelOptions(nextOptions);
     setFetchStatus(describePresetStatus(nextPreset, next.api_key, nextOptions));
   }, [applyModelDraft, catalog, form, model, t]);
@@ -227,8 +230,8 @@ export function ModelDialog({
     let next = applyVendorSelection(current, selection, catalog);
     const previousModelName = current.model_name.trim();
     const previousSync = aliasSyncedFromModelName.current.trim();
-    // Vendor switch clears model_name; keep display-name auto-follow by clearing a
-    // previously synced alias, otherwise the old name blocks sync after the next select.
+    // Keep an auto-generated display name aligned with the preset default model;
+    // manual display names remain unchanged across provider switches.
     if (!next.model_name.trim()) {
       const alias = current.alias.trim();
       if (!alias || alias === previousModelName || alias === previousSync) {
@@ -236,10 +239,14 @@ export function ModelDialog({
       }
       aliasSyncedFromModelName.current = '';
     } else {
-      aliasSyncedFromModelName.current = next.model_name;
+      const alias = current.alias.trim();
+      if (!alias || alias === previousModelName || alias === previousSync) {
+        next = { ...next, alias: next.model_name };
+      }
+      aliasSyncedFromModelName.current = next.model_name.trim();
     }
     const nextPreset = findVendorPreset(catalog, selection);
-    const nextOptions: string[] = [];
+    const nextOptions = normalizeModelOptions(nextPreset?.model_options ?? []);
     applyModelDraft(next);
     form.clearValidate(['api_key', 'model_name', 'alias']);
     setModelOptions(nextOptions);
@@ -301,8 +308,8 @@ export function ModelDialog({
     const currentPreset = findVendorPreset(catalog, currentValues.vendor_selection);
     if (!currentPreset || fetching) return;
     if (!currentPreset.models_endpoint || (currentPreset.models_needs_key && !currentValues.api_key.trim())) {
-      updateModelOptions([]);
-      setFetchStatus(describePresetStatus(currentPreset, currentValues.api_key, []));
+      const nextOptions = updateModelOptions(currentPreset.model_options);
+      setFetchStatus(describePresetStatus(currentPreset, currentValues.api_key, nextOptions));
       return;
     }
     const currentRequestId = ++fetchRequestId.current;
@@ -351,8 +358,8 @@ export function ModelDialog({
     const currentPreset = findVendorPreset(catalog, currentValues.vendor_selection);
     if (!currentPreset) return;
     if (!currentPreset.models_endpoint || (currentPreset.models_needs_key && !currentValues.api_key.trim())) {
-      updateModelOptions([]);
-      setFetchStatus(describePresetStatus(currentPreset, currentValues.api_key, []));
+      const nextOptions = updateModelOptions(currentPreset.model_options);
+      setFetchStatus(describePresetStatus(currentPreset, currentValues.api_key, nextOptions));
       return;
     }
     const fetchKey = getModelFetchKey(currentPreset, currentValues.api_key);
@@ -409,17 +416,29 @@ export function ModelDialog({
       options: protocolOptions,
       onChange: (value) => updateProtocol(value as ModelProtocol),
     });
-    if (custom) {
+    if (custom || !preset?.api_base) {
       formItems.push({
         name: 'api_base',
         label: t('settingsPanel.fields.api_base.title'),
         component: 'input',
         required: true,
-        placeholder: t('settingsPanel.fields.api_base.placeholder'),
+        placeholder: preset
+          ? getPresetApiBasePlaceholder(preset.vendor_key, t)
+          : t('settingsPanel.fields.api_base.placeholder'),
         onChange: () => {
+          form.setFieldValue('kv_cache_affinity', false);
           connectionChanged.current = true;
           invalidateConnectionState();
         },
+      });
+    }
+    if (custom && values.protocol === 'openai') {
+      formItems.push({
+        name: 'kv_cache_affinity',
+        label: t('settingsPanel.models.affinityCapability'),
+        component: 'switch',
+        switchLabel: t('settingsPanel.models.affinityCapability'),
+        description: t('settingsPanel.models.affinityCapabilityDescription'),
       });
     }
     formItems.push({
@@ -451,7 +470,7 @@ export function ModelDialog({
     helpTips: t('settingsPanel.models.modelIdHint'),
     onChange: (_modelName, nextValues) => {
       invalidateConnectionState();
-      applyModelDraft(nextValues);
+      applyModelDraft({ ...nextValues, kv_cache_affinity: false });
     },
     onBlur: (_modelName, nextValues) => {
       const previous = aliasSyncedFromModelName.current;
@@ -499,7 +518,7 @@ export function ModelDialog({
                   : 'config.openaiAccount.needLoginForModel',
               )
             : preset
-              ? t(getPresetStatusKey(preset, values.api_key, []) ?? 'settingsPanel.models.noModelResults')
+              ? t(getPresetStatusKey(preset, values.api_key, modelOptions) ?? 'settingsPanel.models.noModelResults')
               : t('settingsPanel.models.noModelResults')
         }
         onOpen={account ? () => undefined : openModelList}

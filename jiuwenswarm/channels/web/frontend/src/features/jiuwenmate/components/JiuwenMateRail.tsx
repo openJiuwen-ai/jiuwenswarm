@@ -1,7 +1,7 @@
-import { Box, House, Layers2, LayoutGrid, MessageCirclePlus, Puzzle, Settings2, Zap, type LucideIcon } from 'lucide-react';
+import { Box, House, LayoutGrid, MessageCirclePlus, Puzzle, Settings2, Zap, type LucideIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import logo from '../../../assets/jiuwenmate/icons/logo.svg';
-import { JIUWENMATE_PUBLIC_PAGES } from '../publicNav';
+import { visibleJiuwenMatePublicPages } from '../publicNav';
 import type { JiuwenMateExistingPage } from '../types';
 import { JiuwenMateModeSwitch } from './JiuwenMateModeSwitch';
 
@@ -10,6 +10,7 @@ export type JiuwenMateRailView = 'messages' | 'office';
 interface JiuwenMateRailProps {
   activeView: JiuwenMateRailView;
   activePublicLabel: string | null;
+  hiddenPages?: readonly JiuwenMateExistingPage[];
   onViewChange: (view: JiuwenMateRailView) => void;
   onOpenExistingPage: (nav: JiuwenMateExistingPage, labelKey: string) => void;
   onExit: () => void;
@@ -25,13 +26,13 @@ const existingIcons: Record<string, LucideIcon> = {
   'jiuwenmate.nav.assets': Box,
   'jiuwenmate.nav.skills': Zap,
   'jiuwenmate.nav.extensions': Puzzle,
-  'jiuwenmate.nav.knowledge': Layers2,
   'jiuwenmate.nav.settings': Settings2,
 };
 
 export function JiuwenMateRail({
   activeView,
   activePublicLabel,
+  hiddenPages = [],
   onViewChange,
   onOpenExistingPage,
   onExit,
@@ -59,7 +60,7 @@ export function JiuwenMateRail({
             </button>
           );
         })}
-        {JIUWENMATE_PUBLIC_PAGES.map((item) => {
+        {visibleJiuwenMatePublicPages(hiddenPages).map((item) => {
           const Icon = existingIcons[item.labelKey];
           return (
             <button

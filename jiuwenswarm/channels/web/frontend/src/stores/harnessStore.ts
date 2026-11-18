@@ -118,9 +118,6 @@ interface HarnessRuntime {
 interface HarnessState {
   runtimes: Record<string, HarnessRuntime>;
 
-  /** App-wide notification, deliberately separate from session-bound harness state. */
-  proactiveNotificationMessage: string | null;
-
   // Runtime management
   ensureRuntime: (sessionId: string) => HarnessRuntime;
   getRuntime: (sessionId: string | null) => HarnessRuntime | undefined;
@@ -144,7 +141,6 @@ interface HarnessState {
   }) => void;
   setActivateInteraction: (sessionId: string, state: ActivateInteractionState | null) => void;
   reset: (sessionId: string) => void;
-  setProactiveNotification: (message: string | null) => void;
 }
 
 /**
@@ -222,7 +218,6 @@ function createEmptyRuntime(): HarnessRuntime {
 
 export const useHarnessStore = create<HarnessState>((set, get) => ({
   runtimes: {},
-  proactiveNotificationMessage: null,
 
   ensureRuntime: (sessionId) => {
     const existing = get().runtimes[sessionId];
@@ -544,7 +539,4 @@ export const useHarnessStore = create<HarnessState>((set, get) => ({
     });
   },
 
-  setProactiveNotification: (message) => {
-    set({ proactiveNotificationMessage: message });
-  },
 }));

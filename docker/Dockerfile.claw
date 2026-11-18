@@ -4,7 +4,8 @@ FROM ${BASE_IMAGE}
 ARG AGENT_RUNTIME_REPOS=https://gitcode.com/openJiuwen/agent-runtime.git
 ARG AGENT_RUNTIME_BRANCH=develop
 ARG AGENT_CORE_REPOS=https://gitcode.com/openJiuwen/agent-core.git
-ARG AGENT_CORE_BRANCH=develop
+# agent-core 用 commit 钉死，不跟踪分支
+ARG AGENT_CORE_COMMIT=f3f8f576164cc405c046e43079c8ad00ee17f0c4
 ARG PIP_EXTRA_ARGS="-i https://mirrors.aliyun.com/pypi/simple/"
 
 # uid/gid 固定 1000：与部署侧 CLAW_USER/CLAW_GROUP/CLAW_FS_GROUP(=1000) 及
@@ -21,7 +22,7 @@ COPY --chown=app:app . /app/jiuwenswarm/
 RUN sed -i '/openjiuwen_runtime_foundation/d' pyproject.toml
 
 # 删除主依赖中的 openjiuwen（仅首次出现，保留 harmony 组与 extras 引用），
-# 改由 AGENT_CORE_REPOS/AGENT_CORE_BRANCH 构建参数安装
+# 改由 AGENT_CORE_REPOS/AGENT_CORE_COMMIT 构建参数安装
 RUN sed -i '0,/"openjiuwen @ git+/{/"openjiuwen @ git+/d;}' pyproject.toml
 
 RUN if [ -f jiuwenswarm/extensions/runtime_management_extension/pyproject.toml ]; then \
@@ -30,7 +31,7 @@ RUN if [ -f jiuwenswarm/extensions/runtime_management_extension/pyproject.toml ]
 
 RUN uv pip install --system \
     -e . \
-    git+${AGENT_CORE_REPOS}@${AGENT_CORE_BRANCH} \
+    git+${AGENT_CORE_REPOS}@${AGENT_CORE_COMMIT} \
     git+${AGENT_RUNTIME_REPOS}@${AGENT_RUNTIME_BRANCH}#subdirectory=foundation \
     git+${AGENT_RUNTIME_REPOS}@${AGENT_RUNTIME_BRANCH}#subdirectory=management \
     "rich>=13.7.0" \

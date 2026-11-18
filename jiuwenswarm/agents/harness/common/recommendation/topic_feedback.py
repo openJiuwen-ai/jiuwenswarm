@@ -68,10 +68,10 @@ def record_v5_interaction(
     request_id: str = "",
     client_payload: dict[str, Any] | None = None,
 ) -> bool:
-    """Record click/negative feedback after an exact immutable-card join."""
+    """Record a click after an exact immutable-card join."""
 
     del client_payload  # Client-authored text is never an attribution source.
-    if event_type not in {"topic_click", "not_interested"}:
+    if event_type != "topic_click":
         return False
     card = find_exact_pool_card(
         store,
@@ -110,31 +110,7 @@ def record_v5_interaction(
         for existing in _existing_items
     ):
         return False
-    if event_type == "topic_click":
-        return store.record_event(event)
-
-    previous = load_latest_history_state(store)
-    state = json.loads(json.dumps(previous)) if previous else empty_history_state()
-    sidecar = state.setdefault("memory_sidecar", {})
-    preferences = list(sidecar.get("negative_preferences") or [])
-    source_ids = list(card.get("source_memory_unit_ids") or [])
-    preference = {
-        "direction": str(card.get("intent") or ""),
-        "source_id": str(source_ids[0]) if source_ids else "",
-        "aliases": _deduplicated([card.get("title"), card.get("prompt")]),
-        "anchors": _deduplicated(
-            [card.get("identity_anchor"), *(card.get("context_anchors") or [])]
-        ),
-    }
-    if preference not in preferences:
-        preferences.append(preference)
-    sidecar["negative_preferences"] = preferences
-    sidecar.setdefault("explicit_corrections", [])
-    sidecar["negative_preference_version"] = int(
-        sidecar.get("negative_preference_version") or 0
-    ) + 1
-    save_history_state(store, state, events=[event], now=created_at)
-    return True
+    return store.record_event(event)
 
 
 def record_v5_exposure(
@@ -255,18 +231,16 @@ def build_feedback_context(
 
     identifiers = _deduplicated(list(interest_summary_ids))
     counts = {
-        identifier: {"exposure_days": 0, "clicks": 0, "not_interested": 0}
+        identifier: {"exposure_days": 0, "clicks": 0}
         for identifier in identifiers
     }
     exposure_days: dict[str, set[str]] = {identifier: set() for identifier in identifiers}
     positive: list[dict[str, Any]] = []
-    negative: list[dict[str, Any]] = []
     slate_signals: list[dict[str, str]] = []
     events = []
     for event_type in (
         "dynamic_exposure",
         "topic_click",
-        "not_interested",
         "post_exposure_direct",
     ):
         events.extend(
@@ -293,7 +267,7 @@ def build_feedback_context(
                 if identifier in exposure_days:
                     exposure_days[identifier].add(local_day)
             continue
-        if event_type in {"topic_click", "not_interested"}:
+        if event_type == "topic_click":
             identifier = str(payload.get("interest_summary_id") or "")
             exemplar = {
                 "interest_summary_id": identifier or None,
@@ -303,14 +277,9 @@ def build_feedback_context(
                 "intent": payload.get("intent"),
                 "observed_at": float(event.get("created_at") or 0.0),
             }
-            if event_type == "topic_click":
-                if identifier in counts:
-                    counts[identifier]["clicks"] += 1
-                positive.append(exemplar)
-            else:
-                if identifier in counts:
-                    counts[identifier]["not_interested"] += 1
-                negative.append(exemplar)
+            if identifier in counts:
+                counts[identifier]["clicks"] += 1
+            positive.append(exemplar)
             continue
         if event_type == "post_exposure_direct":
             slate_signals.append(
@@ -324,6 +293,6 @@ def build_feedback_context(
     return {
         "feedback_counts": counts,
         "positive_exemplars": positive,
-        "negative_exemplars": negative,
+        "negative_exemplars": [],
         "slate_signals": slate_signals,
     }

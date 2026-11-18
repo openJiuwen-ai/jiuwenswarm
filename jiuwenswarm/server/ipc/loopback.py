@@ -18,6 +18,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+from jiuwenswarm.server.ipc.io_loop import ipc_io
 from jiuwenswarm.server.ipc.protocol import HEADER, IpcError, decode_frame
 from jiuwenswarm.server.ipc.session import FRONT_LOOPBACK
 from jiuwenswarm.server.ipc.stream import IpcConnection, StreamConnection
@@ -132,6 +133,7 @@ class FrontLoopbackListener:
         self._closed = False
         self._auth_limit_logged = False
 
+    @ipc_io
     async def start(self, *, code_identity: str, data_scope: str) -> None:
         if self._closed or self._accepted is not None:
             raise RuntimeError("runtime_ipc=front_loopback stage=listen listener already consumed")
@@ -199,6 +201,7 @@ class FrontLoopbackListener:
             if not adopted:
                 await conn.close()
 
+    @ipc_io
     async def accept(self) -> IpcConnection:
         if self._accepted is None:
             raise RuntimeError("runtime_ipc=front_loopback stage=accept listener not started")
@@ -210,6 +213,7 @@ class FrontLoopbackListener:
         self._delivered = True
         return conn
 
+    @ipc_io
     async def close(self) -> None:
         self._closed = True
         self._parameters = None
@@ -241,6 +245,7 @@ class FrontConnectSessionSource:
         self._parameters: LoopbackParameters | None = parameters
         self._conn: StreamConnection | None = None
 
+    @ipc_io
     async def start(self) -> None:
         parameters, self._parameters = self._parameters, None
         if parameters is None:
@@ -263,12 +268,14 @@ class FrontConnectSessionSource:
             raise
         logger.info("runtime_ipc=front_loopback stage=connected generation=%s", self.generation)
 
+    @ipc_io
     async def accept(self) -> IpcConnection:
         conn, self._conn = self._conn, None
         if conn is None:
             raise ConnectionError("runtime_ipc=front_loopback stage=accept source already consumed")
         return conn
 
+    @ipc_io
     async def close(self) -> None:
         self._parameters = None
         if self._conn is not None:

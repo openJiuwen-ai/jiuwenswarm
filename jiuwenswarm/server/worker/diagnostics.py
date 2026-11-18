@@ -7,9 +7,11 @@ from __future__ import annotations
 import faulthandler
 import os
 import time
+from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
 from jiuwenswarm.server.ipc.protocol import KIND_HEARTBEAT
+from jiuwenswarm.server.worker.stall_context import BusinessTracker
 
 _STALL_DUMP_TIMEOUT = 25.0  # Before the Supervisor's 30-second health deadline.
 _enabled = False
@@ -53,6 +55,25 @@ class LoopBeat:
 
     def __init__(self) -> None:
         self._last = time.monotonic()
+        self._tracker: BusinessTracker | None = None
+
+    def enable_tracking(self) -> None:
+        self._tracker = BusinessTracker()
+
+    def close_tracking(self) -> None:
+        if self._tracker is not None:
+            self._tracker.close()
+
+    def activity(self, metadata: dict[str, str]) -> AbstractContextManager[None]:
+        return self._tracker.activity(metadata) if self._tracker is not None else nullcontext()
+
+    def stall_context(self) -> dict[str, Any] | None:
+        if self._tracker is None:
+            return None
+        try:
+            return self._tracker.snapshot()
+        except Exception:  # noqa: BLE001 - attribution must never stop heartbeats
+            return {"operation": "unavailable"}
 
     def beat(self) -> None:
         self._last = time.monotonic()
@@ -62,9 +83,11 @@ class LoopBeat:
         return max(0.0, time.monotonic() - self._last)
 
 
-def heartbeat_reply(beat_age: float | None) -> dict[str, Any]:
+def heartbeat_reply(beat_age: float | None, *, stall_context: dict[str, Any] | None = None) -> dict[str, Any]:
     """Build one heartbeat pong. ``loop_beat_age`` is omitted for legacy pongs."""
     reply: dict[str, Any] = {"kind": KIND_HEARTBEAT, "pid": os.getpid()}
     if beat_age is not None:
         reply["loop_beat_age"] = round(beat_age, 3)
+    if stall_context is not None:
+        reply["loop_stall"] = stall_context
     return reply

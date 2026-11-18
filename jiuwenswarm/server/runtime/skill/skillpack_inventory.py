@@ -69,6 +69,21 @@ def skillpack_inventory_snapshot(
             except (SkillPackValidationError, OSError):
                 record.update(enabled=False, blocked_members=[{"name": child.name, "reason": "invalid"}])
         records.append(record)
+    # A confirmed Pack authorizes only its root and declared members. Keep the
+    # global revision for inventory consumers, but do not let unrelated edits
+    # revoke an in-flight Pack. Derive every closure before adding revisions so
+    # the result cannot depend on directory iteration order.
+    by_id = {record["id"]: record for record in records}
+    validation_revisions = {
+        record["id"]: hashlib.sha256(json.dumps(
+            [by_id[name] for name in sorted({record["id"], *record["members"]}) if name in by_id],
+            ensure_ascii=False, sort_keys=True,
+        ).encode("utf-8")).hexdigest()
+        for record in records if record["skill_type"] == "skillpack"
+    }
+    for record in records:
+        if record["id"] in validation_revisions:
+            record["validation_revision"] = validation_revisions[record["id"]]
     revision = hashlib.sha256(
         json.dumps(records, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()

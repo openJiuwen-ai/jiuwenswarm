@@ -17,7 +17,7 @@ interface ModelLabelProps {
 export function ModelLabel({ catalog, modelId }: ModelLabelProps) {
   const { t } = useTranslation();
   const model = findModel(catalog, modelId);
-  const label = model?.label || modelId || catalog.defaultModelLabel || t('jiuwenmate.create.defaultModel');
+  const label = model?.label || modelId || catalog.defaultModelLabel || t('settingsPanel.models.empty');
   const searchable = `${model?.provider ?? ''} ${label}`;
   const icon = MODEL_ICONS.find((item) => item.pattern.test(searchable))?.icon;
   return (

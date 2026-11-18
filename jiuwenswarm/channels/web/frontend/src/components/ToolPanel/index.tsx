@@ -14,9 +14,11 @@ import { OrganizationTeamsList } from '../teamArea/OrganizationTeamsList';
 import { useSessionArtifacts, useSessionArtifactsCount } from '../ArtifactsPanel';
 import { useTaskPlanningMetrics } from '../teamArea';
 import { ExpandedPanel } from '../teamArea/ExpandedPanel';
+import { isEnterprise } from '../../edition';
 import { loadTeamHistoryPanelState } from '../../features/teamHistoryPanelRestore';
 import { restoreOrganizationGroupHistory } from '../../features/teamOrganization/groupHistory';
 import { mergeTaskTimeline } from '../teamArea/groupChatTimeline';
+import { mergeEnterpriseTeamTasks } from '../../stores/teamSliceApply';
 import { TaskPlanningPanel } from '../teamArea/TaskPlanningPanel';
 import { TeamMembersPanel } from '../teamArea/TeamMembersPanel';
 import { CompactTaskList } from '../teamArea/CompactTaskList';
@@ -179,7 +181,7 @@ export function ToolPanel({
   const [teamPlanningExpanded, setTeamPlanningExpanded] = useState(false);
   const [teamMembersExpanded, setTeamMembersExpanded] = useState(false);
   const [artifactsExpanded, setArtifactsExpanded] = useState(false);
-  const { completedTasks: teamCompletedTasks, teamTasks, totalTasks: teamTotalTasks } = useTaskPlanningMetrics();
+  const { teamTasks } = useTaskPlanningMetrics();
   const artifactsCount = useSessionArtifactsCount();
   const sessionAssetCount = useSessionAssetsStore(selectSessionAssets(activeSessionId)).length;
   const subagentCount = useSubagentStore(state => Object.keys(state.runtimes[resolvedSessionId]?.subagentsById ?? {}).length);
@@ -334,7 +336,10 @@ export function ToolPanel({
     () => [...applicationPlanningTasks, ...teamTasks],
     [applicationPlanningTasks, teamTasks],
   );
-  const applicationCompleted = applicationPlanningTasks.filter((task) => task.status === 'completed').length;
+  const teamCompletedTasks = useMemo(
+    () => teamTasks.filter((task) => task.status === 'completed').length,
+    [teamTasks],
+  );
   const todoCompletedTasks = planningTasks.filter((task) => task.status === 'completed').length;
   const hydratedTeamHistorySessionRef = useRef<string | null>(null);
   const loadingTeamHistorySessionRef = useRef<string | null>(null);
@@ -429,10 +434,22 @@ export function ToolPanel({
         // a prior optimistic upsert). Always setTeamTasks — including [] — so
         // an empty restore actually clears those orphans instead of leaving
         // the previous store contents untouched.
-        const restoredTaskIds = new Set(historyState.tasks.map(task => task.task_id));
-        const liveTasksForMerge = (current?.teamTasks ?? []).filter(task => restoredTaskIds.has(task.task_id));
-        const mergedTasks = mergeById(historyState.tasks, liveTasksForMerge, task => task.task_id);
-        setTeamTasks(sessionId, mergedTasks);
+        if (isEnterprise()) {
+          const liveTasks = current?.teamTasks ?? [];
+          const noMembers = mergedMembers.length === 0 && (current?.teamMembers ?? []).length === 0;
+          if (historyState.tasks.length === 0) {
+            if (noMembers) {
+              setTeamTasks(sessionId, []);
+            }
+          } else {
+            setTeamTasks(sessionId, mergeEnterpriseTeamTasks(liveTasks, historyState.tasks));
+          }
+        } else {
+          const restoredTaskIds = new Set(historyState.tasks.map(task => task.task_id));
+          const liveTasksForMerge = (current?.teamTasks ?? []).filter(task => restoredTaskIds.has(task.task_id));
+          const mergedTasks = mergeById(historyState.tasks, liveTasksForMerge, task => task.task_id);
+          setTeamTasks(sessionId, mergedTasks);
+        }
 
         // 同一次调用在两条路径下的 id 不同（实时 stableEventId vs 历史恢复
         // hist-*），按 id 合并会留下两张卡片；调用/结果改按 (member, kind,
@@ -568,9 +585,10 @@ export function ToolPanel({
                 <TaskPlanningPanel
                   variant="expanded"
                   tasks={teamPlanningTasks}
+                  metricTasks={teamTasks}
                   members={teamMembers}
-                  totalTasks={teamTotalTasks + applicationPlanningTasks.length}
-                  completedTasks={teamCompletedTasks + applicationCompleted}
+                  totalTasks={teamTasks.length}
+                  completedTasks={teamCompletedTasks}
                   statusIconAtEnd
                 />
               ) : (
@@ -597,8 +615,9 @@ export function ToolPanel({
   const planningProps = isTeam
     ? {
         tasks: teamPlanningTasks,
-        totalTasks: teamTotalTasks + applicationPlanningTasks.length,
-        completedTasks: teamCompletedTasks + applicationCompleted,
+        metricTasks: teamTasks,
+        totalTasks: teamTasks.length,
+        completedTasks: teamCompletedTasks,
         expanded: teamPlanningExpanded,
       }
     : {
