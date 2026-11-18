@@ -171,11 +171,9 @@ def _normalize_bounded_int(
         return default
     if isinstance(raw_value, bool):
         raise ValueError(f"{field_name} must be an integer, got bool.")
-    try:
-        parsed = int(raw_value)
-    except (TypeError, ValueError):
+    if not isinstance(raw_value, int):
         return default
-    return max(minimum, min(parsed, maximum))
+    return max(minimum, min(raw_value, maximum))
 
 
 def _normalize_request(inputs: dict[str, Any]) -> ParseTestFailureRequest:
@@ -378,7 +376,7 @@ def _split_exc_text(text: str) -> tuple[str, str]:
     match = _EXC_HDR_RE.match(cleaned)
     if match:
         exc_name = match.group("exc")
-        if exc_name not in {"assert", "where", "and", "or", "not"}:
+        if exc_name not in {"assert", "where", "and", "or", "not", "in"}:
             return exc_name, match.group("msg").strip()
     if cleaned.startswith("assert "):
         return "AssertionError", cleaned
@@ -1095,6 +1093,9 @@ def _render_result(result: ParsedTestResult, req: ParseTestFailureRequest) -> st
         f"Status: {result.status}",
         f"Summary: {result.summary_line}",
     ]
+    if result.counts:
+        counts_str = " ".join(f"{k}={v}" for k, v in sorted(result.counts.items()))
+        header.append(f"Counts: {counts_str}")
     if result.filtered_noise_lines > 0:
         header.append(f"Noise filtered: {result.filtered_noise_lines} lines")
     sections = ["\n".join(header)]
