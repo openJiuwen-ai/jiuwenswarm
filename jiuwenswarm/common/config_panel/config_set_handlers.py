@@ -43,6 +43,7 @@ from jiuwenswarm.common.config import (
     DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED,
     DEFAULT_TEAM_TASK_VERIFICATION_ENABLED,
     EXTERNAL_CLI_AGENTS_CONFIG_PATH,
+    EXTERNAL_CLI_DISABLED_MODES_CONFIG_PATH,
     SWARMFLOW_BUDGET_CONFIG_PATH,
     SWARMFLOW_ENABLED_CONFIG_PATH,
     SWARMFLOW_WORKTREE_CONFIG_PATH,
@@ -61,6 +62,7 @@ from jiuwenswarm.common.config import (
     update_default_model_provider_in_config,
     update_enable_free_models_in_config,
     update_external_cli_agents_in_config,
+    update_external_cli_disabled_modes_in_config,
     update_external_cli_path_histories_in_config,
     update_kv_cache_affinity_enabled_in_config,
     update_memory_forbidden_description_in_config,
@@ -1252,6 +1254,47 @@ def external_cli_path_histories_from_switches(raw: dict[str, Any], params: dict[
     return merged
 
 
+def external_cli_disabled_modes_from_switches(raw: dict[str, Any], params: dict[str, Any]) -> dict[str, str]:
+    """Track each disabled agent's last explicit built-in/custom mode.
+
+    Disabled agents are dropped from ``external_cli_agents`` and the config
+    read would otherwise always report ``use_builtin=false`` for them, so
+    re-enabling could silently restore a stale custom path instead of the
+    built-in CLI the user last chose. Agents whose keys are absent from this
+    save keep their persisted record verbatim; enabling an agent clears its
+    record because the list entry carries the mode again.
+
+    Args:
+        raw: The pre-save config snapshot.
+        params: The flattened settings params of this save.
+
+    Returns:
+        ``cli_agent`` to ``"true"``/``"false"`` (its ``use_builtin`` switch
+        while disabled). An empty mapping removes the whole key.
+    """
+    current = flatten_external_cli_agents_for_config_panel(raw)
+    persisted = get_nested_config_value(raw, EXTERNAL_CLI_DISABLED_MODES_CONFIG_PATH, {})
+    merged: dict[str, str] = {}
+    if isinstance(persisted, dict):
+        for name, mode in persisted.items():
+            key = str(name).strip()
+            if key and mode in {"true", "false"}:
+                merged[key] = mode
+    for cli_agent in external_cli_agent_kinds():
+        touched = any(
+            key.startswith(f"external_cli_agent_{cli_agent}_") and not key.endswith("_path_histories")
+            for key in params
+        )
+        if not touched:
+            continue
+        enabled, use_builtin, _ = external_cli_agent_effective_state(cli_agent, current, params)
+        if enabled:
+            merged.pop(cli_agent, None)
+        else:
+            merged[cli_agent] = "true" if use_builtin else "false"
+    return merged
+
+
 def newly_enabled_external_cli_agents(raw: dict[str, Any], external_cli_agents: list[dict[str, Any]]) -> list[str]:
     """Return the kinds enabled by this save: absent before it, present after."""
     persisted = get_nested_config_value(raw, EXTERNAL_CLI_AGENTS_CONFIG_PATH, [])
@@ -1630,6 +1673,9 @@ def apply_config_payload(
                     )
                     update_external_cli_path_histories_in_config(
                         external_cli_path_histories_from_switches(raw, params)
+                    )
+                    update_external_cli_disabled_modes_in_config(
+                        external_cli_disabled_modes_from_switches(raw, params)
                     )
                     refresh_external_cli_builtin_models(
                         external_cli_agents,

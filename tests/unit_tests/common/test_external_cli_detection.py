@@ -42,3 +42,47 @@ def test_saving_rejects_another_agents_executable(tmp_path, monkeypatch, agent, 
     with pytest.raises(ValueError, match="cli_path is not available"):
         handlers.external_cli_agents_from_switches(raw, params)
     assert raw["modes"]["team"]["jiuwen_team"]["external_cli_agents"] == []
+
+
+def test_disabled_modes_record_the_mode_at_disable_time():
+    raw = {"modes": {"team": {"jiuwen_team": {"external_cli_agents": []}}}}
+    # 本地路径模式下禁用：记录自定义模式，重开时恢复本地路径
+    disable_local = {
+        "external_cli_agent_claude_enabled": "false",
+        "external_cli_agent_claude_use_builtin": "false",
+        "external_cli_agent_claude_cli_path": "/local/claude",
+    }
+    assert handlers.external_cli_disabled_modes_from_switches(raw, disable_local) == {"claude": "false"}
+    # 内置模式下禁用：记录内置模式，重开时恢复内置而不是被历史回退拉回
+    # 旧的本地路径（!10561 检视）
+    disable_builtin = {
+        "external_cli_agent_claude_enabled": "false",
+        "external_cli_agent_claude_use_builtin": "true",
+        "external_cli_agent_claude_cli_path": "",
+    }
+    assert handlers.external_cli_disabled_modes_from_switches(raw, disable_builtin) == {"claude": "true"}
+    # 重新启用：记录清除（列表条目重新承载模式）
+    enable_builtin = {
+        "external_cli_agent_claude_enabled": "true",
+        "external_cli_agent_claude_use_builtin": "true",
+        "external_cli_agent_claude_cli_path": "",
+    }
+    assert handlers.external_cli_disabled_modes_from_switches(raw, enable_builtin) == {}
+
+
+def test_disabled_modes_keep_untouched_agents_and_survive_history_only_saves():
+    raw = {"modes": {"team": {"jiuwen_team": {
+        "external_cli_disabled_modes": {"claude": "true", "codex": "false"},
+    }}}}
+    # 只写路径历史的清理保存：记录原样保留
+    history_only = {"external_cli_agent_codex_path_histories": "[]"}
+    assert handlers.external_cli_disabled_modes_from_switches(raw, history_only) == {
+        "claude": "true",
+        "codex": "false",
+    }
+    # 未触碰的 agent 保留既有记录，触碰的 agent 按本次保存刷新
+    touch_codex = {"external_cli_agent_codex_enabled": "false"}
+    assert handlers.external_cli_disabled_modes_from_switches(raw, touch_codex) == {
+        "claude": "true",
+        "codex": "false",
+    }

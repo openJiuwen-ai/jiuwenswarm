@@ -411,10 +411,13 @@ function ExternalCliSettings({
         // custom path must still join the local history.
         if (!oldPath || oldPath === newPath) continue;
         const historyKey = externalCliKey(agent, 'path_histories');
-        const history = parseExternalCliPathHistories(savedValues[historyKey]);
-        if (history.includes(oldPath)) continue;
+        // 禁用写入（updates 已带 historyKey，含本次捕获的保留路径）时以其为
+        // 基础追加 oldPath——historyPatch 若仍按 savedValues 旧快照整组覆盖，
+        // 会把同一次保存里新捕获的保留路径抹掉（!10561 检视）。
+        const base = parseExternalCliPathHistories(updates[historyKey] ?? savedValues[historyKey]);
+        if (base.includes(oldPath)) continue;
         historyPatch[historyKey] = JSON.stringify(
-          [...history, oldPath].slice(-EXTERNAL_CLI_PATH_HISTORY_LIMIT),
+          [...base, oldPath].slice(-EXTERNAL_CLI_PATH_HISTORY_LIMIT),
         );
       }
       for (const [key, value] of Object.entries(historyPatch)) {

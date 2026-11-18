@@ -693,9 +693,16 @@ export function ExternalCliAgentsSection({
       // 都没有才回退内置 CLI——关闭再打开不得静默改用内置（#6753 问题二）。
       const historyPaths = parseExternalCliPathHistories(
         draftValues[externalCliKey(cliAgent, 'path_histories')],
-      ).slice().reverse();
+      ).reverse();
       for (const candidate of historyPaths) {
-        const historyProbe = await onDetect?.(cliAgent, candidate, false);
+        // 单条历史探测失败（传输错误等）视为不可用，继续下一条，
+        // 不得中断整个启用流程丢掉内置回退（!10561 检视）。
+        let historyProbe: ExternalCliDetectResult | undefined;
+        try {
+          historyProbe = await onDetect?.(cliAgent, candidate, false);
+        } catch {
+          continue;
+        }
         if (historyProbe?.path && isInstalledStatus(historyProbe)) {
           return { enabled: true, useBuiltin: false, cliPath: historyProbe.path };
         }

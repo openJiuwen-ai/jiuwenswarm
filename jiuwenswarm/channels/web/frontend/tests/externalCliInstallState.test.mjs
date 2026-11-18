@@ -366,7 +366,8 @@ test('a saved cli_path change appends the previous path to the local history', (
   assert.match(settingsSource, /const EXTERNAL_CLI_PATH_HISTORY_LIMIT = 10;/);
   assert.match(settingsSource, /if \(!oldPath \|\| oldPath === newPath\) continue;/);
   assert.match(settingsSource, /historyPatch\[historyKey\] = JSON\.stringify\(/);
-  assert.match(settingsSource, /\[\.\.\.history, oldPath\]\.slice\(-EXTERNAL_CLI_PATH_HISTORY_LIMIT\)/);
+  assert.match(settingsSource, /parseExternalCliPathHistories\(updates\[historyKey\] \?\? savedValues\[historyKey\]\)/);
+  assert.match(settingsSource, /\[\.\.\.base, oldPath\]\.slice\(-EXTERNAL_CLI_PATH_HISTORY_LIMIT\)/);
   // The mirrored history reaches savedValues, draftValues, and the config store.
   assert.match(settingsSource, /for \(const \[key, value\] of Object\.entries\(historyPatch\)\) \{\s*next\[key\] = value;\s*\}/);
 });
@@ -876,6 +877,36 @@ test('re-enable restores the local path from histories written in the same sessi
     assert.equal(last[1].enabled, true, '重开应恢复启用');
     assert.equal(last[1].useBuiltin, false, '过期闭包会把重开回退成内置 CLI');
     assert.equal(last[1].cliPath, '/local/claude', '重开应恢复本地路径');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('re-enable after disabling from built-in mode restores the built-in CLI', async () => {
+  // !10561 检视（P2-①）：本地路径 → 切内置 → 关闭 → 重开，必须恢复用户
+  // 上次显式选择的内置 CLI，而不是被历史回退拉回旧的本地路径。后端新增
+  // 禁用前模式记录，回显对禁用 agent 携带 use_builtin=true，重开据此直
+  // 接回内置，历史回退不越权。
+  const initial = {
+    external_cli_agent_claude_enabled: 'false',
+    external_cli_agent_claude_use_builtin: 'true',
+    external_cli_agent_claude_cli_path: '',
+    // 历史里仍留着切换内置时被替换的本地路径（文件存在、探测可用）
+    external_cli_agent_claude_path_histories: JSON.stringify(['/local/claude']),
+  };
+  const onDetect = async (agent, path) => ({
+    cli_agent: agent,
+    status: path === '/local/claude' ? 'ok' : 'missing',
+    path: path === '/local/claude' ? '/local/claude' : '',
+    message: path === '/local/claude' ? '' : 'not found',
+  });
+  const env = await mountCliSection(initial, onDetect, { persistedValues: initial });
+  try {
+    await env.click('[data-testid="settings-panel-external-cli-agent-install-btn"][data-variant="claude"]');
+    const last = env.commits.at(-1);
+    assert.equal(last[1].enabled, true, '重开应恢复启用');
+    assert.equal(last[1].useBuiltin, true, '重开应恢复用户上次显式选择的内置 CLI');
+    assert.equal(last[1].cliPath, '', '内置模式不落自定义路径');
   } finally {
     env.cleanup();
   }

@@ -85,6 +85,25 @@ def test_external_cli_read_defaults_disabled_with_incomplete_config(registry: Pa
     assert flat["external_cli_agent_codex_cli_path"] == ""
 
 
+def test_external_cli_read_keeps_last_explicit_mode_for_disabled_agents(registry: Path) -> None:
+    raw = {
+        "modes": {"team": {"jiuwen_team": {
+            "external_cli_disabled_modes": {"claude": "true", "codex": "false", "unknown": "bogus"},
+        }}},
+    }
+
+    flat = flatten_external_cli_agents_for_config_panel(raw)
+
+    # 禁用 agent 已从列表移除，但禁用前最后一次显式选择内置 CLI 的模式必须
+    # 保留——否则重新启用会被历史回退拉回旧的本地路径（!10561 检视）。
+    assert flat["external_cli_agent_claude_enabled"] == "false"
+    assert flat["external_cli_agent_claude_use_builtin"] == "true"
+    assert flat["external_cli_agent_claude_cli_path"] == ""
+    assert flat["external_cli_agent_codex_use_builtin"] == "false"
+    # 非法记录值不生效，保持既有默认
+    assert "external_cli_agent_unknown_enabled" not in flat
+
+
 @pytest.mark.asyncio
 async def test_front_panel_observes_current_custom_agent_registry(
     registry: Path, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
