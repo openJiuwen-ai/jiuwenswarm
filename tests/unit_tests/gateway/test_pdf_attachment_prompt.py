@@ -108,17 +108,22 @@ def test_eight_uploaded_pdfs_keep_references_without_binary_content(
     assert "%PDF-" not in enriched
     assert "endstream" not in enriched
     assert "\ufffd" not in enriched
+    for index in range(8):
+        assert f"Gateway PDF body {index}" not in enriched
 
 
-def test_read_pdf_is_discoverable_and_reads_uploaded_document(tmp_path: Path) -> None:
+def test_read_pdf_is_discoverable() -> None:
+    assert read_pdf.card.name == "read_pdf"
+    assert "pdf_path" in read_pdf.card.input_params["properties"]
+    assert "read_pdf" in BUILTIN_TOOL_DISCOVERY
+
+
+def test_read_pdf_reads_uploaded_document(tmp_path: Path) -> None:
     pytest.importorskip("pdfplumber")
     path = tmp_path / "readable.pdf"
     path.write_bytes(_build_pdf("E2E6122 readable body"))
     items = _upload_documents([path])
 
-    assert read_pdf.card.name == "read_pdf"
-    assert "pdf_path" in read_pdf.card.input_params["properties"]
-    assert "read_pdf" in BUILTIN_TOOL_DISCOVERY
     result = _read_pdf_sync(ReadPdfRequest(pdf_path=items[0]["path"], pages=(1,)))
     assert "E2E6122 readable body" in result
 
@@ -197,3 +202,4 @@ async def test_chat_send_preserves_pdf_references_in_query_and_content(
     assert "%PDF-" not in params
     assert "endstream" not in params
     assert "\ufffd" not in params
+    assert "E2E6122 dispatch body" not in params
