@@ -218,3 +218,15 @@ def test_permission_sets_lowercase_names_and_respect_exclude(tmp_path: Path) -> 
     )
     sets = discover_permission_sets(tmp_path, exclude=frozenset({"existing_tool"}))
     assert sets["path_write"] == frozenset({"mixed_case"})
+
+def test_files_without_marker_are_skipped_and_category_without_description_is_added(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "plain_tools.py").write_text("def plain():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "cat_tools.py").write_text(
+        "BUILTIN_TOOL_SPECS = ({'name': 'cat_tool', 'category_path': 'cat-new'},)\n",
+        encoding="utf-8",
+    )
+    assert [s.name for s in discover_builtin_tool_specs(tmp_path)] == ["cat_tool"]
+    merged = merge_discovered_categories((), _DummyCategory, tmp_path)
+    assert merged[0].path == "cat-new" and merged[0].tools == ("cat_tool",)

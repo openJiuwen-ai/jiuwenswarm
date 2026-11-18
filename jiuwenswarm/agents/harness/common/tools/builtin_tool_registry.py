@@ -47,7 +47,12 @@ _DISCOVERED_CACHE: dict[Path, tuple[BuiltinToolSpec, ...]] = {}
 
 
 def register_builtin_tool_spec(spec: BuiltinToolSpec) -> None:
-    """Register one ``BuiltinToolSpec`` programmatically."""
+    """Register one ``BuiltinToolSpec`` programmatically.
+
+    Note: this only affects ``discover_builtin_tool_specs``; the import-time snapshot
+    tables (lazy exports, discovery metadata, categories, permission sets) are not
+    refreshed. It is intended for tests.
+    """
     if not spec.name or not spec.module:
         raise ValueError("BuiltinToolSpec requires non-empty name and module")
     if spec.permission_scope not in VALID_PERMISSION_SCOPES:
@@ -133,6 +138,8 @@ def _eval_spec_node(node: ast.AST, default_module: str) -> BuiltinToolSpec | Non
 def _extract_specs_from_file(py_file: Path, default_module: str) -> list[BuiltinToolSpec]:
     try:
         source = py_file.read_text(encoding="utf-8")
+        if "BUILTIN_TOOL_SPECS" not in source:
+            return []
         tree = ast.parse(source, filename=str(py_file))
     except (OSError, SyntaxError, UnicodeDecodeError):
         return []
@@ -216,6 +223,11 @@ def merge_discovered_categories(
                     tools=(*existing.tools, spec.name),
                 )
         else:
+            if not (spec.category_description or spec.display_en):
+                logger.warning(
+                    "[builtin_tool_registry] Category %r declared without description",
+                    spec.category_path,
+                )
             desc_zh = spec.category_description or spec.display_en or spec.category_path
             desc_en = spec.category_description_en or spec.display_en or desc_zh
             by_path[spec.category_path] = category_cls(
