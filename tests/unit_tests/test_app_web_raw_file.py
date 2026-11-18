@@ -144,6 +144,10 @@ def test_raw_file_declares_charset_for_text_artifacts(tmp_path):
     split_utf8.write_bytes((b"A" * 65535) + "中文".encode("utf-8"))
     incomplete_utf8 = docs_dir / "不完整结尾.txt"
     incomplete_utf8.write_bytes(b"text\xc2")
+    incomplete_chinese = docs_dir / "写入中.txt"
+    incomplete_chinese.write_bytes(
+        "中文正文\n".encode("utf-8") + (b"A" * 65536) + b"\xe4\xb8"
+    )
 
     class Handler(_SpaStaticHandler):
         project_root = tmp_path
@@ -177,7 +181,8 @@ def test_raw_file_declares_charset_for_text_artifacts(tmp_path):
         assert content_type(jsonl) == "application/x-ndjson; charset=utf-8"
         assert content_type(csv) == "text/csv; charset=utf-8"
         assert content_type(split_utf8) == "text/plain; charset=utf-8"
-        assert content_type(incomplete_utf8) == "text/plain; charset=gb18030"
+        assert content_type(incomplete_utf8) == "text/plain; charset=utf-8"
+        assert content_type(incomplete_chinese) == "text/plain; charset=utf-8"
     finally:
         server.shutdown()
         thread.join()

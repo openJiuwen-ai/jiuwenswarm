@@ -556,7 +556,7 @@ def test_verified_single_user_download_fallback_keeps_range_support(
     def _unexpected_proxy(*_args, **_kwargs):
         raise AssertionError("legacy local download must not proxy to the WS port")
 
-    monkeypatch.setattr(_SpaStaticHandler, "_proxy_file_download", _unexpected_proxy)
+    monkeypatch.setattr(_DownloadHandlerStub, "_proxy_file_download", _unexpected_proxy)
     handler = _DownloadHandlerStub(command="GET")
     handler.headers["Range"] = "bytes=0-5"
 
@@ -574,8 +574,9 @@ def test_verified_single_user_download_fallback_keeps_range_support(
         ("事件.jsonl", '{"message":"中文"}\n'.encode("utf-8"), "application/x-ndjson; charset=utf-8"),
         ("日志.log", "中文日志\n".encode("utf-8"), "text/plain; charset=utf-8"),
         ("数据.csv", "列,值\n中文,1\n".encode("utf-8"), "text/csv; charset=utf-8"),
+        ("写入中.md", "中文正文\n".encode("utf-8") + b"\xe4\xb8", "text/markdown; charset=utf-8"),
     ],
-    ids=["utf8-markdown", "long-gbk-markdown", "jsonl", "log", "csv"],
+    ids=["utf8-markdown", "long-gbk-markdown", "jsonl", "log", "csv", "incomplete-utf8"],
 )
 def test_local_download_declares_charset_for_text_artifacts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -603,7 +604,7 @@ def test_local_download_declares_charset_for_text_artifacts(
     def _unexpected_proxy(*_args, **_kwargs):
         raise AssertionError("a verified local artifact must not be proxied")
 
-    monkeypatch.setattr(_SpaStaticHandler, "_proxy_file_download", _unexpected_proxy)
+    monkeypatch.setattr(_DownloadHandlerStub, "_proxy_file_download", _unexpected_proxy)
     handler = _DownloadHandlerStub(command="GET")
 
     _SpaStaticHandler._handle_file_download(
