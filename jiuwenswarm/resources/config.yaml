@@ -719,12 +719,8 @@ react:
       - exit_plan_mode              # reminder 指示模型调 enter_plan_mode，但懒加载把它滤进
                                     # deferred，模型反复探测无进展触发 agent_ras 熔断 OA.05000060
     # 模型白名单（空=全部启用），对模型名做子串匹配，大小写不敏感；未命中的模型全部工具直接可见。
-    # 懒加载依赖模型读懂 tools_search → invoke_tool，加入新模型前需先验证。
-    enable_for_models:
-      - glm
-      - deepseek
-      - kimi
-      - openpangu
+    # 懒加载依赖模型读懂 tools_search → invoke_tool；收窄为白名单时需逐个模型验证该链路。
+    enable_for_models: []
     subagents:                      # 子 agent 延迟加载配置
       enabled: false                # 子 agent 总开关，默认关闭
       inherit_parent_eager_tools: true  # 继承父 agent 的 eager 列表
