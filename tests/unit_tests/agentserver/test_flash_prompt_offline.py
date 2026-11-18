@@ -6,41 +6,22 @@
 （v2 = safety/response/tools/todo/subagent 域），与落盘 golden 快照逐级比对，
 锁定任何上游内容或 flash 改写逻辑的漂移。
 
-CI 下 ``agent_shield`` 已安装，``offline.assemble`` 直接可 import；本地缺 ``agent_shield``
-时，在 import 前打两个叶模块桩（``openjiuwen.harness.rails.base.DeepAgentRail`` + flash 包
-namespace），它们仅作基类/包占位，不影响离线组装结果。
+导入隔离见 :mod:`flash_offline_stub`：本地缺 ``agent_shield`` 时由公共入口在 import
+flash 子模块之前打桩，CI 装了依赖时为空操作。
 """
 
 from __future__ import annotations
 
-import importlib.util
 import json
-import os
-import sys
-import types
 from pathlib import Path
 
 import pytest
 
-# ── 本地开发 import 桩（CI 有 agent_shield 时自动跳过）──────────────────────
-if importlib.util.find_spec("agent_shield") is None:
-    if "openjiuwen.harness.rails.base" not in sys.modules:
-        _rails_base = types.ModuleType("openjiuwen.harness.rails.base")
-        _rails_base.DeepAgentRail = type("DeepAgentRail", (), {})
-        sys.modules["openjiuwen.harness.rails.base"] = _rails_base
+from flash_offline_stub import install_offline_import_stubs
 
-    _flash_dir = str(
-        Path(__file__).resolve().parents[3]
-        / "jiuwenswarm" / "agents" / "harness" / "flash"
-    )
-    for _name, _path in (
-        ("jiuwenswarm.agents.harness.flash", [_flash_dir]),
-        ("jiuwenswarm.agents.harness.flash.rails", [os.path.join(_flash_dir, "rails")]),
-    ):
-        if _name not in sys.modules:
-            _pkg = types.ModuleType(_name)
-            _pkg.__path__ = _path
-            sys.modules[_name] = _pkg
+# 必须在 import 任何 flash 子模块之前执行：flash 包 ``__init__`` 会 eager import
+# rails，缺 agent_shield 时直接拉起 openjiuwen.harness.security 而断链。
+install_offline_import_stubs()
 
 from jiuwenswarm.agents.harness.flash.prompt.offline import (  # noqa: E402
     LANGUAGES,

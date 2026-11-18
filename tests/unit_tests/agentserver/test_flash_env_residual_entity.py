@@ -8,7 +8,13 @@ env@1000 重复的平台/Shell/命令差异表；锚点全缺时原样返回（�
 
 from __future__ import annotations
 
-from jiuwenswarm.agents.harness.flash.prompt.content.persona import (
+from flash_offline_stub import install_offline_import_stubs
+
+# 必须在 import flash 子模块之前执行：flash 包 ``__init__`` 会 eager import
+# rails，缺 agent_shield 时直接拉起 openjiuwen.harness.security 而断链。
+install_offline_import_stubs()
+
+from jiuwenswarm.agents.harness.flash.prompt.content.persona import (  # noqa: E402
     _ENV_RESIDUAL_TITLE_CN,
     _ENV_RESIDUAL_TITLE_EN,
     _build_env_residual_entity,
