@@ -358,6 +358,17 @@ async def _team_list_entries(session_id: str, channel_id: str) -> list[dict[str,
                 source="metadata",
             )
 
+    from jiuwenswarm.server.runtime.team_organization_history import load_persisted_organization
+    from jiuwenswarm.server.runtime.team_organization_identity_store import load_organization_team_identity
+
+    persisted = await load_persisted_organization(session_id) if session_id else None
+    if persisted is not None:
+        _, organization = persisted
+        for leader in organization.leaders:
+            identity = await asyncio.to_thread(load_organization_team_identity, leader.team_id)
+            _upsert(leader.team_id, state="configured", organization_id=organization.organization_id,
+                    leader_id=leader.leader_id, **identity)
+
     for entry in entries.values():
         entry["is_owner"] = bool(metadata_team_name and entry["team_id"] == metadata_team_name)
         if not entry.get("organization_id"):

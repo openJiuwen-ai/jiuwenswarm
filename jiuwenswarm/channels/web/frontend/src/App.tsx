@@ -3522,11 +3522,17 @@ function AppContent({
         createParams.previous_mode = previousSession.mode;
       }
       if (runtimeSettings.selectedModelName) createParams.model_name = runtimeSettings.selectedModelName;
+      if (pendingRuntime?.selectedModelSelection) createParams.model_selection = pendingRuntime.selectedModelSelection;
       if (workContext.project_id) createParams.project_id = workContext.project_id;
       if (workContext.project_dir) createParams.project_dir = workContext.project_dir;
 
       const created = await createConversationSession(request, createParams);
       const newSid = created.session_id;
+      const pendingInput = useChatStore.getState().getRuntime(NEW_CONVERSATION_ID);
+      if (pendingInput?.inputValue) {
+        useChatStore.getState().setInputValue(newSid, pendingInput.inputValue, pendingInput.inputSkillPositions);
+        useChatStore.getState().setInputValue(NEW_CONVERSATION_ID, '');
+      }
       const createdSession = registerCreatedConversation(
         newSid,
         { ...runtimeSettings, persistSession: created.persist_session },

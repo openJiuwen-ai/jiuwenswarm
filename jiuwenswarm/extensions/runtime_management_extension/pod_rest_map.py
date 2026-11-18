@@ -119,6 +119,7 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("team.snapshot", "GET", "/sessions/{session_id}/team/snapshot"),
     ("team.list", "GET", "/sessions/{session_id}/teams"),
     ("org.snapshot", "GET", "/sessions/{session_id}/organization/snapshot"),
+    ("org.expert_teams.add", "POST", "/sessions/{session_id}/organization/expert-teams"),
     ("a4p.config.get", "GET", "/a4p/config"),
     ("a4p.config.update", "PUT", "/a4p/config"),
     ("team.members.get", "GET", "/sessions/{session_id}/team/members"),
