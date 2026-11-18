@@ -3947,7 +3947,7 @@ zmq = [
 [[package]]
 name = "openjiuwen-computeruse"
 version = "0.0.1"
-source = { git = "https://gitcode.com/openJiuwen/computer-use.git?rev=55d7c3a39986873704b720345d1a225ce8c8815f#55d7c3a39986873704b720345d1a225ce8c8815f" }
+source = { git = "https://gitcode.com/openJiuwen/computer-use.git?rev=77ef66ab4505ae0faf2cade7f7622e5500420e2c#77ef66ab4505ae0faf2cade7f7622e5500420e2c" }
 dependencies = [
     { name = "pillow" },
     { name = "regex" },
@@ -7462,7 +7462,7 @@ requires-dist = [
     { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'" },
     { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'" },
     { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'" },
-    { name = "openjiuwen-computeruse", git = "https://gitcode.com/openJiuwen/computer-use.git?rev=55d7c3a39986873704b720345d1a225ce8c8815f" },
+    { name = "openjiuwen-computeruse", git = "https://gitcode.com/openJiuwen/computer-use.git?rev=77ef66ab4505ae0faf2cade7f7622e5500420e2c" },
     { name = "openjiuwen-protocol", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-protocol&rev=267c077fa832b25f7f64a913461c2124353bc911" },
     { name = "openjiuwen-runtime-foundation", git = "https://gitcode.com/openJiuwen/agent-runtime.git?subdirectory=foundation&branch=develop" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },
