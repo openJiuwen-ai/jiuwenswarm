@@ -1254,23 +1254,32 @@ def external_cli_path_histories_from_switches(raw: dict[str, Any], params: dict[
     return merged
 
 
-def external_cli_disabled_modes_from_switches(raw: dict[str, Any], params: dict[str, Any]) -> dict[str, str]:
+def external_cli_disabled_modes_from_switches(
+    raw: dict[str, Any],
+    params: dict[str, Any],
+    external_cli_agents: list[dict[str, Any]],
+) -> dict[str, str]:
     """Track each disabled agent's last explicit built-in/custom mode.
 
     Disabled agents are dropped from ``external_cli_agents`` and the config
     read would otherwise always report ``use_builtin=false`` for them, so
     re-enabling could silently restore a stale custom path instead of the
     built-in CLI the user last chose. Agents whose keys are absent from this
-    save keep their persisted record verbatim; enabling an agent clears its
-    record because the list entry carries the mode again.
+    save keep their persisted record verbatim; an agent that actually lands
+    in the saved list clears its record because the entry carries the mode
+    again. An agent kept OUT of the list even though its keys say enabled
+    (one-click install deferred while dependencies are prepared) refreshes
+    its record instead — the flatten must not report it back in custom mode.
 
     Args:
         raw: The pre-save config snapshot.
         params: The flattened settings params of this save.
+        external_cli_agents: The list this save is about to persist, after
+            the dependency-install deferral filtering.
 
     Returns:
         ``cli_agent`` to ``"true"``/``"false"`` (its ``use_builtin`` switch
-        while disabled). An empty mapping removes the whole key.
+        while absent from the list). An empty mapping removes the whole key.
     """
     current = flatten_external_cli_agents_for_config_panel(raw)
     persisted = get_nested_config_value(raw, EXTERNAL_CLI_DISABLED_MODES_CONFIG_PATH, {})
@@ -1287,8 +1296,12 @@ def external_cli_disabled_modes_from_switches(raw: dict[str, Any], params: dict[
         )
         if not touched:
             continue
-        enabled, use_builtin, _ = external_cli_agent_effective_state(cli_agent, current, params)
-        if enabled:
+        _, use_builtin, _ = external_cli_agent_effective_state(cli_agent, current, params)
+        in_final_list = any(
+            isinstance(item, dict) and str(item.get("cli_agent") or "").strip() == cli_agent
+            for item in (external_cli_agents or [])
+        )
+        if in_final_list:
             merged.pop(cli_agent, None)
         else:
             merged[cli_agent] = "true" if use_builtin else "false"
@@ -1675,7 +1688,7 @@ def apply_config_payload(
                         external_cli_path_histories_from_switches(raw, params)
                     )
                     update_external_cli_disabled_modes_in_config(
-                        external_cli_disabled_modes_from_switches(raw, params)
+                        external_cli_disabled_modes_from_switches(raw, params, external_cli_agents)
                     )
                     refresh_external_cli_builtin_models(
                         external_cli_agents,

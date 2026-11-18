@@ -3075,6 +3075,14 @@ def replace_teams_in_config(front_payload: dict[str, Any]) -> None:
             histories = existing_teams["jiuwen_team"].get("external_cli_path_histories")
             if histories:
                 default_team["external_cli_path_histories"] = histories
+    # Same as path histories: the team-editor payload carries no disabled-mode
+    # records, and a plain replace would silently wipe them — a disabled
+    # agent would then flatten back to custom mode on re-enable (!10561 检视).
+    if isinstance(default_team, dict) and "external_cli_disabled_modes" not in default_team:
+        if isinstance(existing_teams, dict) and isinstance(existing_teams.get("jiuwen_team"), dict):
+            disabled_modes = existing_teams["jiuwen_team"].get("external_cli_disabled_modes")
+            if disabled_modes:
+                default_team["external_cli_disabled_modes"] = disabled_modes
     data["modes"]["team"] = team_mapping
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 

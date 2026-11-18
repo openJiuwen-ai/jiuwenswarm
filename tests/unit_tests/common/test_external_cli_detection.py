@@ -52,7 +52,7 @@ def test_disabled_modes_record_the_mode_at_disable_time():
         "external_cli_agent_claude_use_builtin": "false",
         "external_cli_agent_claude_cli_path": "/local/claude",
     }
-    assert handlers.external_cli_disabled_modes_from_switches(raw, disable_local) == {"claude": "false"}
+    assert handlers.external_cli_disabled_modes_from_switches(raw, disable_local, []) == {"claude": "false"}
     # 内置模式下禁用：记录内置模式，重开时恢复内置而不是被历史回退拉回
     # 旧的本地路径（!10561 检视）
     disable_builtin = {
@@ -60,14 +60,30 @@ def test_disabled_modes_record_the_mode_at_disable_time():
         "external_cli_agent_claude_use_builtin": "true",
         "external_cli_agent_claude_cli_path": "",
     }
-    assert handlers.external_cli_disabled_modes_from_switches(raw, disable_builtin) == {"claude": "true"}
-    # 重新启用：记录清除（列表条目重新承载模式）
+    assert handlers.external_cli_disabled_modes_from_switches(raw, disable_builtin, []) == {"claude": "true"}
+    # 重新启用且 agent 真正落盘进列表：记录清除（列表条目重新承载模式）
     enable_builtin = {
         "external_cli_agent_claude_enabled": "true",
         "external_cli_agent_claude_use_builtin": "true",
         "external_cli_agent_claude_cli_path": "",
     }
-    assert handlers.external_cli_disabled_modes_from_switches(raw, enable_builtin) == {}
+    assert handlers.external_cli_disabled_modes_from_switches(
+        raw, enable_builtin, [{"cli_agent": "claude"}]
+    ) == {}
+
+
+def test_disabled_modes_refresh_when_install_deferral_keeps_the_agent_out_of_the_list():
+    """一键安装触发依赖准备时 agent 被剔除出列表，但 keys 仍是启用态——
+    记录必须按本次保存的模式刷新而不是被清除，否则重新读取后卡片从内置
+    退回自定义空态（!10561 第二轮检视）。"""
+    raw = {"modes": {"team": {"jiuwen_team": {"external_cli_agents": []}}}}
+    enable_builtin = {
+        "external_cli_agent_claude_enabled": "true",
+        "external_cli_agent_claude_use_builtin": "true",
+        "external_cli_agent_claude_cli_path": "",
+    }
+    # 列表为空（依赖安装待完成把 agent 剔除）：记录按本次模式刷新
+    assert handlers.external_cli_disabled_modes_from_switches(raw, enable_builtin, []) == {"claude": "true"}
 
 
 def test_disabled_modes_keep_untouched_agents_and_survive_history_only_saves():
@@ -76,13 +92,13 @@ def test_disabled_modes_keep_untouched_agents_and_survive_history_only_saves():
     }}}}
     # 只写路径历史的清理保存：记录原样保留
     history_only = {"external_cli_agent_codex_path_histories": "[]"}
-    assert handlers.external_cli_disabled_modes_from_switches(raw, history_only) == {
+    assert handlers.external_cli_disabled_modes_from_switches(raw, history_only, []) == {
         "claude": "true",
         "codex": "false",
     }
     # 未触碰的 agent 保留既有记录，触碰的 agent 按本次保存刷新
     touch_codex = {"external_cli_agent_codex_enabled": "false"}
-    assert handlers.external_cli_disabled_modes_from_switches(raw, touch_codex) == {
+    assert handlers.external_cli_disabled_modes_from_switches(raw, touch_codex, []) == {
         "claude": "true",
         "codex": "false",
     }

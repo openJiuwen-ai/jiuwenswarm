@@ -39,6 +39,7 @@ from jiuwenswarm.common.config import (
     resolve_sandbox_enabled,
     resolve_env_vars,
     update_external_cli_agents_in_config,
+    update_external_cli_disabled_modes_in_config,
     update_external_cli_path_histories_in_config,
     update_sandbox_runtime,
     update_permissions_profile_in_config,
@@ -473,6 +474,54 @@ def test_external_cli_path_histories_keep_the_latest_window(
     histories = saved["modes"]["team"]["jiuwen_team"]["external_cli_path_histories"]
     # The replaced path joined at the tail and must survive the cap.
     assert histories["codex"] == [*full_history[1:], "/just-replaced/codex"]
+
+
+def test_update_external_cli_disabled_modes_writes_and_clears(
+    monkeypatch: pytest.MonkeyPatch,
+    temp_config_file: Path,
+) -> None:
+    """The record keeps only valid agent names and true/false values; an
+    empty mapping removes the whole key."""
+    _write_team_config(temp_config_file, [])
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", temp_config_file)
+
+    update_external_cli_disabled_modes_in_config({"claude": "true", "bogus": "maybe"})
+    saved = yaml.safe_load(temp_config_file.read_text(encoding="utf-8"))
+    modes = saved["modes"]["team"]["jiuwen_team"]["external_cli_disabled_modes"]
+    assert modes == {"claude": "true"}
+
+    update_external_cli_disabled_modes_in_config({})
+    saved = yaml.safe_load(temp_config_file.read_text(encoding="utf-8"))
+    assert "external_cli_disabled_modes" not in saved["modes"]["team"]["jiuwen_team"]
+
+
+def test_replace_teams_in_config_carries_over_external_cli_disabled_modes(
+    monkeypatch: pytest.MonkeyPatch,
+    temp_config_file: Path,
+) -> None:
+    """The team-editor payload carries no disabled-mode records; a plain
+    replace must not silently wipe them (!10561 第二轮检视)."""
+    temp_config_file.write_text(
+        """
+modes:
+  team:
+    jiuwen_team:
+      external_cli_agents: []
+      external_cli_path_histories:
+        claude: ["/old/claude"]
+      external_cli_disabled_modes:
+        claude: "true"
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr("jiuwenswarm.common.config.CONFIG_YAML_PATH", temp_config_file)
+
+    replace_teams_in_config(TestTeamModesConfig._front_payload(["jiuwen_team"]))
+
+    saved = yaml.safe_load(temp_config_file.read_text(encoding="utf-8"))
+    jiuwen_team = saved["modes"]["team"]["jiuwen_team"]
+    assert jiuwen_team["external_cli_disabled_modes"] == {"claude": "true"}
+    assert jiuwen_team["external_cli_path_histories"]["claude"] == ["/old/claude"]
 
 
 def test_prune_external_cli_path_histories_removes_only_the_intersection(

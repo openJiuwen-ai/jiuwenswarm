@@ -688,6 +688,34 @@ def test_refresh_external_cli_state_sidecar_mirrors_config(tmp_path, monkeypatch
     assert mirrored["agents"] == [{"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}]
 
 
+def test_prepare_workspace_restores_disabled_modes_from_sidecar(tmp_path, monkeypatch):
+    """数据目录被整体删除后，禁用 agent 的模式记录也随旁路恢复——否则恢复后
+    禁用卡片一律退回自定义空态，重开被历史回退拉回旧路径（!10561 第二轮检视）。"""
+    import json as json_lib
+    import yaml
+
+    sidecar = tmp_path / "outside" / "external_cli_state.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(
+        json_lib.dumps({
+            "agents": [],
+            "histories": {},
+            "transport": None,
+            "disabled_modes": {"claude": "true"},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda *a, **k: sidecar)
+
+    workspace_dir = tmp_path / ".jiuwenswarm"
+    utils.prepare_workspace(overwrite=False, preferred_language="en", workspace_dir=workspace_dir)
+
+    restored = yaml.safe_load((workspace_dir / "config" / "config.yaml").read_text(encoding="utf-8"))
+    team = restored["modes"]["team"]["jiuwen_team"]
+    assert team["external_cli_disabled_modes"] == {"claude": "true"}
+    assert not team.get("external_cli_agents")
+
+
 def test_refresh_external_cli_state_sidecar_keeps_sidecar_on_read_failure(tmp_path, monkeypatch):
     """config.yaml 读取失败时跳过旁路刷新：瞬时读失败不得把恢复备份覆盖成空态。"""
     config_dir = tmp_path / ".jiuwenswarm" / "config"
