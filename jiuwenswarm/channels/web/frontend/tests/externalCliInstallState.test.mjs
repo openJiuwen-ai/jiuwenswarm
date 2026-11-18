@@ -661,6 +661,108 @@ test('the detection hint distinguishes PATH lookup from executable validation', 
   assert.match(section, /await commit\(cliAgent, \{\s+enabled: false,\s+useBuiltin: persistedValues\[useBuiltinKey\] === 'true',/);
 });
 
+test('a confirmed miss on the persisted path auto-disables the agent', async () => {
+  // 手动检测确认持久化路径缺失 → 自动落闸：提交 enabled=false 且保留
+  // 持久化的模式/路径，未安装徽标与开关状态保持一致（!10406 检视）。
+  // 检测按钮仅在 installed && enabled 的路径行上渲染，桩需先返回可用
+  // 状态让按钮挂载，点击时再返回缺失。
+  const initial = {
+    external_cli_agent_codex_enabled: 'true',
+    external_cli_agent_codex_use_builtin: 'false',
+    external_cli_agent_codex_cli_path: '/local/codex',
+  };
+  let available = true;
+  const env = await mountCliSection(initial, async (agent, cliPath) => ({
+    cli_agent: agent,
+    status: available ? 'warning' : 'missing',
+    path: available ? (cliPath || '/local/codex') : '',
+    version: available ? '0.163.0' : '',
+  }), { persistedValues: initial });
+  try {
+    await env.click('[data-testid="settings-panel-external-cli-agent-detect-btn"][data-variant="codex"]');
+    available = false;
+    await env.click('[data-testid="settings-panel-external-cli-agent-detect-btn"][data-variant="codex"]');
+    assert.deepEqual(env.commits.at(-1), ['codex', {
+      enabled: false, useBuiltin: false, cliPath: '/local/codex',
+    }]);
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('switching to a local path keeps the built-in CLI path in the dropdown', async () => {
+  // 场景：内置已安装（内置模式），切换/保存为本地可用地址后，下拉框里的
+  // 内置路径应仍然保留（#6647 修复的行为不回归）。
+  const initial = {
+    external_cli_agent_claude_enabled: 'false',
+    external_cli_agent_claude_use_builtin: 'true',
+    external_cli_agent_claude_cli_path: '',
+  };
+  const BUILTIN = '/bundled/claude';
+  const onDetect = async (agent, path) => ({
+    cli_agent: agent,
+    status: 'ok',
+    path: path || BUILTIN,
+    builtin_path: BUILTIN,
+  });
+  const env = await mountCliSection(initial, onDetect);
+  try {
+    // 切到本地路径草稿并点开关启用 → 提交本地路径
+    await env.render({
+      ...initial,
+      external_cli_agent_claude_use_builtin: 'false',
+      external_cli_agent_claude_cli_path: '/local/claude',
+    });
+    await env.click('[data-testid="settings-panel-external-cli-agent-enable-switch"][data-variant="claude"]');
+    assert.deepEqual(env.commits.at(-1), ['claude', {
+      enabled: true, useBuiltin: false, cliPath: '/local/claude',
+    }]);
+    // 配置回显（真实流程由 persistUpdates + 配置刷新同步草稿）
+    await env.render({
+      ...initial,
+      external_cli_agent_claude_enabled: 'true',
+      external_cli_agent_claude_use_builtin: 'false',
+      external_cli_agent_claude_cli_path: '/local/claude',
+    });
+    // 保存后打开下拉：内置路径应仍在选项中
+    const select = '[data-testid="settings-panel-external-cli-agent-cli-path-select"][data-variant="claude"]';
+    await env.click(select);
+    const optionTexts = [...document.querySelectorAll('[role="option"]')].map((item) => item.textContent);
+    assert.ok(optionTexts.some((t) => t.includes(BUILTIN)), '内置路径应仍在下拉选项中（#6647）');
+    assert.ok(optionTexts.some((t) => t.includes('/local/claude')), '本地路径也应在选项中');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('DIAG1: initial state shows the one-click install entry', async () => {
+  // #6753 问题一：三方 agent 初始化状态应有一键安装入口
+  const initial = {
+    external_cli_agent_claude_enabled: 'false',
+    external_cli_agent_claude_use_builtin: 'false',
+    external_cli_agent_claude_cli_path: '',
+  };
+  const env = await mountCliSection(initial, async (agent, path) => ({
+    cli_agent: agent,
+    status: 'missing',
+    path: '',
+    message: 'not found',
+  }));
+  try {
+    // 初始状态（探测尚未落结果）：一键安装横幅应可见
+    let banner = document.querySelector('[data-testid="settings-panel-external-cli-agent-install-hint"][data-variant="claude"]');
+    console.error('[DIAG-A1] initial banner:', !!banner);
+    assert.ok(banner, '初始状态应有一键安装入口');
+    // 探测确认缺失后：横幅仍应可见（未安装 → 禁用）
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 500)));
+    banner = document.querySelector('[data-testid="settings-panel-external-cli-agent-install-hint"][data-variant="claude"]');
+    console.error('[DIAG-A2] after-missing-probe banner:', !!banner);
+    assert.ok(banner, '探测确认缺失后一键安装入口应保留');
+  } finally {
+    env.cleanup();
+  }
+});
+
 test('DIAG2: disable then re-enable keeps the local path', async () => {
   // #6753 问题二：本地路径配置后，关闭开关再打开，路径不得变回内置 CLI
   const initial = {
