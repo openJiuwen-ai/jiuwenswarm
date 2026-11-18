@@ -913,6 +913,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interrupt_state_machine import (
 from jiuwenswarm.gateway.cron import CronTargetChannel
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.server.runtime import session_prepare_tracker
 from jiuwenswarm.server.runtime.skill.skill_prebuilt import (
     SkillPrebuiltSynchronizer,
     is_skill_prebuilt_tenant,
@@ -996,6 +997,30 @@ def _resolve_artifact_dir(path: str) -> str:
     return resolved
 
 
+def _is_prepare_tracked_chat(request: AgentRequest | None) -> bool:
+    return (
+        getattr(request, "channel_id", None) == "officeclaw"
+        and getattr(request, "req_method", None) == ReqMethod.CHAT_SEND
+    )
+
+
+def _log_prepared_session_result(sid: str, *, reloaded: bool, wait_ms: float) -> None:
+    entry = session_prepare_tracker.take(sid) or {}
+    join_wait_ms = entry.get("join_wait_ms")
+    if reloaded:
+        result = "hit_reloaded"
+    elif join_wait_ms is not None:
+        result = "joined"
+    else:
+        result = "hit"
+    logger.info(
+        "[session.prepare] chat result=%s session_id=%s wait_ms=%.0f",
+        result,
+        sid,
+        wait_ms + (join_wait_ms or 0.0),
+    )
+
+
 class JiuWenSwarmDeepAdapter:
 
     # auto_harness / agent_ws_server 通过 getattr(类, ...) 查找，拆分后需挂回类属性。
@@ -1030,6 +1055,9 @@ class JiuWenSwarmDeepAdapter:
     SESSION_ADAPTER_IDLE_TTL_SEC = _session_adapter_idle_ttl_default()
     SESSION_ADAPTER_EVICT_BATCH_SIZE = 3
     SESSION_ADAPTER_RELOAD_RETRY_INTERVAL_SEC = 30.0
+    # session.prepare 建好后一直没等到对话的实例，到点按空闲淘汰同款守卫回收。
+    PREPARED_SESSION_UNUSED_TTL_SEC = 600.0
+    PREPARED_SESSION_RECLAIM_RETRY_SEC = 60.0
     _RUNTIME_STATE_WRITE_LIMIT = threading.BoundedSemaphore(2)
 
     """Deep SDK 适配器，实现 AgentAdapter 协议.
@@ -1327,6 +1355,9 @@ class JiuWenSwarmDeepAdapter:
         self._session_adapter_config_version: int = 0
         self._session_adapter_versions: dict[str, int] = {}
         self._session_adapter_reload_failures: dict[str, tuple[int, float]] = {}
+        self._prepared_unused_session_timers: dict[str, asyncio.TimerHandle] = {}
+        self._prepared_session_background_tasks: set[asyncio.Task] = set()
+        self._prepared_reloading_session_ids: set[str] = set()
         # Skill allow-list stamp for enterprise prebuilt tenants: install bumps
         # the root version; existing session adapters catch up lazily on the
         # next turn (see ``_refresh_session_skills_if_stale``). No fan-out push.
@@ -1623,6 +1654,114 @@ class JiuWenSwarmDeepAdapter:
             awaiting = self._sessions_awaiting_tool_permission
         return awaiting
 
+    def _prepared_session_timers(self) -> dict[str, asyncio.TimerHandle]:
+        """Root-only: session.prepare instances not yet used by a chat -> reclaim timer."""
+        timers = getattr(self, "_prepared_unused_session_timers", None)
+        if not isinstance(timers, dict):
+            timers = self._prepared_unused_session_timers = {}
+        return timers
+
+    def _prepared_session_tasks(self) -> set[asyncio.Task]:
+        tasks = getattr(self, "_prepared_session_background_tasks", None)
+        if not isinstance(tasks, set):
+            tasks = self._prepared_session_background_tasks = set()
+        return tasks
+
+    def _spawn_prepared_session_task(self, coro: Any, name: str) -> None:
+        task = asyncio.create_task(coro, name=name)
+        tasks = self._prepared_session_tasks()
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+    def _schedule_prepared_session_reclaim(self, sid: str, delay: float) -> None:
+        timers = self._prepared_session_timers()
+        previous = timers.get(sid)
+        if previous is not None:
+            previous.cancel()
+        timers[sid] = asyncio.get_running_loop().call_later(
+            delay, self._on_prepared_session_expired, sid,
+        )
+
+    def _mark_prepared_session_unused(self, sid: str) -> None:
+        self._schedule_prepared_session_reclaim(sid, self.PREPARED_SESSION_UNUSED_TTL_SEC)
+
+    def _forget_prepared_session(self, sid: str) -> bool:
+        handle = self._prepared_session_timers().pop(sid, None)
+        if handle is not None:
+            handle.cancel()
+        return handle is not None
+
+    def is_prepared_session_unused(self, session_id: str | None) -> bool:
+        return _session_adapter_key(session_id) in self._prepared_session_timers()
+
+    def _on_prepared_session_expired(self, sid: str) -> None:
+        # 登记保留到回收成功：守卫不满足就重试，期间被对话取用仍按首次取用记命中结果。
+        if sid not in self._prepared_session_timers():
+            return
+        self._spawn_prepared_session_task(
+            self._reclaim_unused_prepared_session(sid),
+            name=f"prepared-session-reclaim-{sid}",
+        )
+
+    async def _reclaim_unused_prepared_session(self, sid: str) -> None:
+        if not self.is_prepared_session_unused(sid):
+            return
+        adapter = self._session_adapters.get(sid)
+        if adapter is None:
+            self._forget_prepared_session(sid)
+            return
+        lock = self._session_adapter_locks.get(sid)
+        lock_busy = lock is not None and (lock.locked() or _session_adapter_lock_has_waiters(lock))
+        busy = (
+            sid in self.ensure_sessions_awaiting_tool_permission()
+            or lock_busy
+            or _session_has_live_subagent_runtime(adapter, sid)
+        )
+        if not busy and await self.cleanup_session_adapter(sid):
+            self._forget_prepared_session(sid)
+            session_prepare_tracker.mark(sid, "reclaimed")
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] unused prepared session reclaimed: session_id=%s",
+                sid,
+            )
+            return
+        if self.is_prepared_session_unused(sid):
+            self._schedule_prepared_session_reclaim(sid, self.PREPARED_SESSION_RECLAIM_RETRY_SEC)
+
+    def _prepared_reloading_sessions(self) -> set[str]:
+        reloading = getattr(self, "_prepared_reloading_session_ids", None)
+        if not isinstance(reloading, set):
+            reloading = self._prepared_reloading_session_ids = set()
+        return reloading
+
+    def _reload_prepared_sessions_in_background(self) -> None:
+        for sid in list(self._prepared_session_timers()):
+            self._prepared_reloading_sessions().add(sid)
+            self._spawn_prepared_session_task(
+                self._reload_prepared_session(sid),
+                name=f"prepared-session-reload-{sid}",
+            )
+
+    async def _reload_prepared_session(self, sid: str) -> None:
+        lock = self._session_adapter_locks.setdefault(sid, asyncio.Lock())
+        try:
+            async with lock:
+                adapter = self._session_adapters.get(sid)
+                if adapter is None or not self.is_prepared_session_unused(sid):
+                    return
+                started = time.monotonic()
+                await self._reload_session_adapter_if_stale(sid, adapter)
+                # 后台失败不占用重试冷却：对话取用时照常再懒重载一次。
+                self._session_adapter_reload_failures.pop(sid, None)
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] prepared session reloaded: session_id=%s "
+                    "duration_ms=%.0f",
+                    sid,
+                    (time.monotonic() - started) * 1000,
+                )
+        finally:
+            self._prepared_reloading_sessions().discard(sid)
+
     def _get_cached_session_adapter(self, session_id: str | None) -> "JiuWenSwarmDeepAdapter | None":
         sid = _session_adapter_key(session_id)
         return self._session_adapters.get(sid)
@@ -1652,6 +1791,7 @@ class JiuWenSwarmDeepAdapter:
         adapter = self._session_adapters.pop(session_id, None)
         if remove_lock:
             self._session_adapter_locks.pop(session_id, None)
+        self._forget_prepared_session(session_id)
         self._session_adapter_last_used.pop(session_id, None)
         self._session_adapter_versions.pop(session_id, None)
         self._session_adapter_reload_failures.pop(session_id, None)
@@ -1687,6 +1827,7 @@ class JiuWenSwarmDeepAdapter:
                 len(self._session_adapters),
                 self._session_adapter_config_version,
             )
+        self._reload_prepared_sessions_in_background()
 
     async def _reload_session_adapter_if_stale(
         self,
@@ -2067,6 +2208,8 @@ class JiuWenSwarmDeepAdapter:
 
         sid = _session_adapter_key(session_id)
         lock = self._session_adapter_locks.setdefault(sid, asyncio.Lock())
+        lock_requested_at = time.monotonic()
+        background_reloading = sid in self._prepared_reloading_sessions()
         async with lock:
             existing = self._session_adapters.get(sid)
             requested_resource_id = _enterprise_resource_id_from_request(request)
@@ -2097,9 +2240,24 @@ class JiuWenSwarmDeepAdapter:
                 )
                 existing = None
             if existing is not None:
+                # 准备实例第一次被取用即转为普通会话实例，作废未使用回收。
+                was_prepared = self._forget_prepared_session(sid)
+                stale = (
+                    self._session_adapter_versions.get(sid, 0)
+                    < self._session_adapter_config_version
+                )
                 await self._reload_session_adapter_if_stale(sid, existing)
                 await self._refresh_session_skills_if_stale(sid, existing)
                 self._touch_session_adapter(sid)
+                # 别的请求先取用过时只作废回收；命中结果留给第一条对话来记。
+                if _is_prepare_tracked_chat(request) and (
+                    was_prepared or session_prepare_tracker.is_built(sid)
+                ):
+                    _log_prepared_session_result(
+                        sid,
+                        reloaded=background_reloading or stale,
+                        wait_ms=(time.monotonic() - lock_requested_at) * 1000,
+                    )
                 return existing
 
             # Capture before create_instance awaits: a concurrent install may bump
@@ -2174,6 +2332,12 @@ class JiuWenSwarmDeepAdapter:
                 (interaction_ready_at - instance_ready_at) * 1000,
                 (time.monotonic() - create_started_at) * 1000,
             )
+            if _is_prepare_tracked_chat(request):
+                logger.info(
+                    "[session.prepare] chat result=miss reason=%s session_id=%s",
+                    session_prepare_tracker.miss_reason(session_prepare_tracker.take(sid)),
+                    sid,
+                )
             return adapter
 
 
@@ -11553,9 +11717,23 @@ class JiuWenSwarmDeepAdapter:
         channel_id: str,
         mode: str,
         project_dir: str | None = None,
+        request: AgentRequest | None = None,
     ) -> None:
         """Create a session child and apply stable runtime state without input."""
-        adapter = await self._get_or_create_session_adapter(session_id)
+        # 只有 session.prepare 带 request：它新建的实例超过 PREPARED_SESSION_UNUSED_TTL_SEC 没被对话取用就回收。
+        sid = _session_adapter_key(session_id)
+        track_unused = (
+            request is not None
+            and not self._is_session_scoped_adapter
+            and sid not in self._session_adapters
+        )
+        adapter = await self._get_or_create_session_adapter(session_id, request=request)
+        # 对话先到并已取走该会话：不再配置，免得覆盖它那一轮的运行时状态。
+        if request is not None and not session_prepare_tracker.is_built(sid):
+            return
+        # 建好即登记、不等 configure：其间被取用会经取用路径撤销登记并记命中结果。
+        if track_unused and self._session_adapters.get(sid) is adapter:
+            self._mark_prepared_session_unused(sid)
         await adapter.configure_session_runtime(
             session_id=session_id,
             channel_id=channel_id,
@@ -12525,6 +12703,9 @@ class JiuWenSwarmDeepAdapter:
                         "[JiuWenSwarmDeepAdapter] session adapter cleanup failed: %s",
                         exc,
                     )
+            for handle in self._prepared_session_timers().values():
+                handle.cancel()
+            self._prepared_session_timers().clear()
             self._session_adapters.clear()
             self._session_adapter_locks.clear()
             self._session_adapter_last_used.clear()

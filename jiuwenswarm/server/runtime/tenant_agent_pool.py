@@ -4,7 +4,8 @@ import asyncio
 import logging
 import os
 import time
-from collections.abc import Hashable, Iterable
+from collections.abc import Awaitable, Callable, Hashable, Iterable
+from functools import partial
 from typing import Any, ClassVar
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
@@ -36,6 +37,7 @@ from jiuwenswarm.server.runtime.sync_agents_configs import (
     materialize_sync_env,
     validate_sync_payload,
 )
+from jiuwenswarm.server.runtime import session_prepare_tracker
 from jiuwenswarm.server.runtime.tenant_catalog_registry import TenantCatalogRegistry
 from jiuwenswarm.agents.harness.common.rails.skill_credential_injection_rail import (
     coalesce_config_skill_envs,
@@ -1354,6 +1356,10 @@ class TenantAgentPool:
             await self._refresh_agent_manager_cache(cache_key, agent_manager)
 
     _session_prewarm_tasks: ClassVar[dict[str, asyncio.Task[None]]] = {}
+    SESSION_PREPARE_MAX_QUEUED: ClassVar[int] = 8
+    SESSION_PREPARE_BUILD_WAIT_SEC: ClassVar[float] = 60.0
+    _session_prepare_queue: ClassVar[dict[str, Callable[[], bool]]] = {}
+    _session_prepare_worker: ClassVar[asyncio.Task[None] | None] = None
 
     async def wait_for_session_prewarm(self, session_id: str | None) -> None:
         """Wait for a session.create background prewarm before chat routing.
@@ -1367,12 +1373,19 @@ class TenantAgentPool:
         sid = str(session_id or "").strip()
         if not sid:
             return
+        # 还在排队的 session.prepare 直接移出：请求现在就建，不等它轮到。
+        if TenantAgentPool._session_prepare_queue.pop(sid, None) is not None:
+            session_prepare_tracker.mark(sid, "dropped")
+            logger.info("[PERF] session prepare dropped from queue by request: session_id=%s", sid)
+        # A session.create prewarm for the same session may already be running; still join it.
         task = self._session_prewarm_tasks.get(sid)
         if task is None or task.done():
             return
+        started = time.monotonic()
         # ``asyncio.wait`` joins without propagating the prewarm task's
         # exception.  Cancellation of the waiting chat request still propagates.
         await asyncio.wait({task})
+        session_prepare_tracker.mark_joined(sid, (time.monotonic() - started) * 1000)
 
     async def prewarm_session_in_background(
         self,
@@ -1400,19 +1413,120 @@ class TenantAgentPool:
             return
         if not session_id:
             return
+        self._schedule_session_prewarm(
+            request=request,
+            session_id=str(session_id),
+            channel_id=channel_id,
+            mode=mode,
+            adapter_mode=adapter_mode,
+            project_dir=project_dir,
+        )
 
-        sid = str(session_id)
-        existing_task = self._session_prewarm_tasks.get(sid)
-        if existing_task is not None and not existing_task.done():
+    @staticmethod
+    def session_prepare_enabled() -> bool:
+        """``JIUWENSWARM_SESSION_PREPARE=0`` turns session.prepare into a no-op."""
+        raw = os.environ.get("JIUWENSWARM_SESSION_PREPARE", "1")
+        return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+
+    def session_prewarm_running(self, session_id: str | None) -> bool:
+        task = self._session_prewarm_tasks.get(str(session_id or "").strip())
+        return task is not None and not task.done()
+
+    def prepare_session_in_background(
+        self,
+        *,
+        request: AgentRequest,
+        mode: str,
+        adapter_mode: str,
+        project_dir: str | None,
+        before_build: Callable[[], Awaitable[None]] | None = None,
+    ) -> str:
+        """Queue a session.prepare build; returns scheduled / already_running / queue_full."""
+        # 与 session.create 预热不同：请求身份（thread id、租户上下文）会带到会话实例，和对话建出来的一致。
+        sid = str(request.session_id or "").strip()
+        queue = TenantAgentPool._session_prepare_queue
+        if self.session_prewarm_running(sid) or sid in queue:
+            return "already_running"
+        if len(queue) >= self.SESSION_PREPARE_MAX_QUEUED:
+            session_prepare_tracker.mark(sid, "queue_full")
+            logger.info("[PERF] session prepare queue full: session_id=%s queued=%d", sid, len(queue))
+            return "queue_full"
+        session_prepare_tracker.mark(sid, "queued")
+        queue[sid] = partial(
+            self._schedule_session_prewarm,
+            request=request,
+            session_id=sid,
+            channel_id=request.channel_id or "default",
+            mode=mode,
+            adapter_mode=adapter_mode,
+            project_dir=project_dir,
+            session_request=request,
+            before_build=before_build,
+            source="session.prepare",
+        )
+        worker = TenantAgentPool._session_prepare_worker
+        if worker is None or worker.done():
+            TenantAgentPool._session_prepare_worker = asyncio.create_task(
+                self._drain_session_prepare_queue(), name="session-prepare-worker",
+            )
+        return "scheduled"
+
+    async def _drain_session_prepare_queue(self) -> None:
+        queue = TenantAgentPool._session_prepare_queue
+        try:
+            while queue:
+                sid = next(iter(queue))
+                start = queue.pop(sid)
+                # False: a session.create prewarm took this session meanwhile.
+                if not start():
+                    continue
+                task = self._session_prewarm_tasks.get(sid)
+                if task is None:
+                    continue
+                # 只限 worker 等多久，不取消构建：一个卡住的构建不能让后面的准备永远轮不到。
+                _, pending = await asyncio.wait({task}, timeout=self.SESSION_PREPARE_BUILD_WAIT_SEC)
+                if pending:
+                    logger.warning(
+                        "[PERF] session prepare build still running after %.0fs, starting next: session_id=%s",
+                        self.SESSION_PREPARE_BUILD_WAIT_SEC,
+                        sid,
+                    )
+        finally:
+            if TenantAgentPool._session_prepare_worker is asyncio.current_task():
+                TenantAgentPool._session_prepare_worker = None
+
+    def _schedule_session_prewarm(
+        self,
+        *,
+        request: AgentRequest,
+        session_id: str,
+        channel_id: str,
+        mode: str,
+        adapter_mode: str | None,
+        project_dir: str | None,
+        session_request: AgentRequest | None = None,
+        before_build: Callable[[], Awaitable[None]] | None = None,
+        source: str = "session.create",
+    ) -> bool:
+        sid = session_id
+        if not sid:
+            return False
+        if self.session_prewarm_running(sid):
             logger.debug(
                 "[PERF] session prewarm already running: session_id=%s",
                 sid,
             )
-            return
+            return False
+        tracked = session_request is not None
 
         async def _run() -> None:
             started = time.monotonic()
+            if tracked and not session_prepare_tracker.advance(sid, "building"):
+                logger.info("[PERF] session prepare skipped, chat came first: session_id=%s", sid)
+                return
             try:
+                if before_build is not None:
+                    await before_build()
                 agent_id, service_id, workspace_key = self.extract_ids(request)
                 agent_id, service_id = self.resolve_control_rpc_tenant(
                     request, agent_id, service_id
@@ -1432,40 +1546,54 @@ class TenantAgentPool:
                     session_id=session_id,
                 )
                 if agent is None:
+                    if tracked:
+                        session_prepare_tracker.mark(sid, "failed")
                     return
+                prepare_kwargs: dict[str, Any] = {}
+                if session_request is not None:
+                    prepare_kwargs["request"] = session_request
                 await agent.prepare_session(
-                    session_id=session_id,
+                    session_id=sid,
                     channel_id=channel_id or "default",
                     mode=mode,
                     adapter_mode=selected_adapter_mode,
                     project_dir=project_dir,
+                    **prepare_kwargs,
                 )
+                if tracked:
+                    session_prepare_tracker.advance(sid, "ready")
                 logger.info(
-                    "[PERF] session prewarm completed: session_id=%s duration_ms=%.0f",
-                    session_id,
+                    "[PERF] session prewarm completed: session_id=%s source=%s "
+                    "duration_ms=%.0f",
+                    sid,
+                    source,
                     (time.monotonic() - started) * 1000,
                 )
             except Exception as exc:  # noqa: BLE001 - 预热失败不阻塞业务
                 # 注:CancelledError 为 BaseException(py3.8+),不会被此处捕获,自然穿透
+                if tracked:
+                    session_prepare_tracker.mark(sid, "failed")
                 logger.warning(
-                    "[PERF] session prewarm failed: session_id=%s error=%s",
-                    session_id,
+                    "[PERF] session prewarm failed: session_id=%s source=%s error=%s",
+                    sid,
+                    source,
                     exc,
                 )
 
         try:
             task = asyncio.create_task(_run(), name=f"session-prewarm-{sid}")
-            self._session_prewarm_tasks[sid] = task
-
-            def _discard_session_prewarm(
-                completed: asyncio.Task[None], *, key: str = sid,
-            ) -> None:
-                if self._session_prewarm_tasks.get(key) is completed:
-                    self._session_prewarm_tasks.pop(key, None)
-
-            task.add_done_callback(_discard_session_prewarm)
         except RuntimeError:  # 无运行 loop(理论不可达)静默放弃
-            pass
+            return False
+        self._session_prewarm_tasks[sid] = task
+
+        def _discard_session_prewarm(
+            completed: asyncio.Task[None], *, key: str = sid,
+        ) -> None:
+            if self._session_prewarm_tasks.get(key) is completed:
+                self._session_prewarm_tasks.pop(key, None)
+
+        task.add_done_callback(_discard_session_prewarm)
+        return True
 
     async def process_message_stream(
             self, request: AgentRequest

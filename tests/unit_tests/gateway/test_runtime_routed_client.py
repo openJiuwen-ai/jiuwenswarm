@@ -60,6 +60,14 @@ identity_from_envelope = _routed_mod.identity_from_envelope
 
 
 @pytest.fixture(autouse=True)
+def reset_sse_test_process_shutdown(monkeypatch):
+    # sse-starlette keeps this process-global flag after an earlier test's Uvicorn server exits.
+    from sse_starlette.sse import AppStatus
+
+    monkeypatch.setattr(AppStatus, "should_exit", False)
+
+
+@pytest.fixture(autouse=True)
 def agent_resources(monkeypatch):
     from unittest.mock import AsyncMock
     auth = _load("agent_authorization")
