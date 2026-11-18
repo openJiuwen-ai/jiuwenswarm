@@ -566,6 +566,56 @@ def test_verified_single_user_download_fallback_keeps_range_support(
     assert handler.wfile.getvalue() == b"legacy"
 
 
+@pytest.mark.parametrize(
+    "file_name,content,expected_content_type",
+    [
+        ("快速排序算法介绍.md", "# 快速排序算法介绍\n".encode("utf-8"), "text/markdown; charset=utf-8"),
+        ("历史说明.md", (b"A" * 65536) + "中文".encode("gbk"), "text/markdown; charset=gb18030"),
+        ("事件.jsonl", '{"message":"中文"}\n'.encode("utf-8"), "application/x-ndjson; charset=utf-8"),
+        ("日志.log", "中文日志\n".encode("utf-8"), "text/plain; charset=utf-8"),
+        ("数据.csv", "列,值\n中文,1\n".encode("utf-8"), "text/csv; charset=utf-8"),
+    ],
+    ids=["utf8-markdown", "long-gbk-markdown", "jsonl", "log", "csv"],
+)
+def test_local_download_declares_charset_for_text_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    file_name: str, content: bytes, expected_content_type: str,
+) -> None:
+    """The desktop built-in browser navigates this URL directly.
+
+    A text artifact served without ``charset`` is decoded with the browser
+    default and renders as mojibake (issue #5435).
+    """
+    # Sealed assets have no extension; the token retains the original name.
+    file_path = tmp_path / "sealed-object"
+    file_path.write_bytes(content)
+    monkeypatch.setattr(
+        web_file_download,
+        "validate_file_download_token",
+        lambda _token, **_kwargs: {
+            "path": str(file_path), "kind": "verified_asset_v1", "name": file_name,
+        },
+    )
+    monkeypatch.setattr(
+        app_web.mimetypes, "guess_type", lambda _name: ("application/octet-stream", None)
+    )
+
+    def _unexpected_proxy(*_args, **_kwargs):
+        raise AssertionError("a verified local artifact must not be proxied")
+
+    monkeypatch.setattr(_SpaStaticHandler, "_proxy_file_download", _unexpected_proxy)
+    handler = _DownloadHandlerStub(command="GET")
+
+    _SpaStaticHandler._handle_file_download(
+        handler, {"token": "signed-token", "inline": "1"}
+    )
+
+    assert handler.status == 200
+    assert handler.response_headers["Content-Type"] == expected_content_type
+    assert handler.response_headers["Content-Disposition"].startswith("inline;")
+    assert handler.wfile.getvalue() == content
+
+
 def test_verified_agentos_token_uses_bridge_when_gateway_cannot_see_user_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
