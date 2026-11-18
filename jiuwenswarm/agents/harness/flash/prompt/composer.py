@@ -31,6 +31,10 @@ _DOMAIN_PRODUCED_NAMES: dict[str, tuple[str, ...]] = {
     "tools": _TOOLS_PRODUCED_NAMES,
 }
 
+# verify-only 下工具门控域的段名：todo/subagent 的装配取决于工具是否在位，与默认上下文
+# 可能不一致，其 drift 属预期、记 debug（其余域 drift 记 warning）。
+_GATED_VERIFY_SECTIONS: frozenset[str] = frozenset({"todo", "task_tool"})
+
 
 # 可安全走声明式接管（declarative takeover）的域：必须同时满足
 # (1) 在 ``_domain_rails`` 内（composer 自有纯文本 rail，接管 = 跳过该 rail 改由注册表 replace）；
@@ -306,30 +310,38 @@ class FlashPromptComposerRail(DeepAgentRail):
             )
             return
 
-        drift: list[str] = []
+        hard_drift: list[str] = []
+        gated_drift: list[str] = []
         for section in expected:
+            target = gated_drift if section.name in _GATED_VERIFY_SECTIONS else hard_drift
             actual = self._get_section(builder, section.name)
             if actual is None:
-                drift.append(f"{section.name}: missing (expect priority={section.priority})")
+                target.append(f"{section.name}: missing (expect priority={section.priority})")
                 continue
             actual_priority = getattr(actual, "priority", None)
             if actual_priority != section.priority:
-                drift.append(
+                target.append(
                     f"{section.name}: priority {actual_priority} != {section.priority}"
                 )
             actual_text = self._extract_content(actual, builder)
             expected_text = self._extract_content(section, builder)
             if actual_text != expected_text:
-                drift.append(
+                target.append(
                     f"{section.name}: text drift ({len(actual_text)} vs {len(expected_text)} chars)"
                 )
 
-        if drift:
+        if hard_drift:
             logger.warning(
                 "[FlashPromptComposerRail] declarative reconcile drift:\n%s",
-                "\n".join(drift),
+                "\n".join(hard_drift),
             )
-        else:
+        if gated_drift:
+            # 工具门控域（todo/subagent）drift 属预期，降 debug（评审 docstring 一致性）。
+            logger.debug(
+                "[FlashPromptComposerRail] declarative reconcile gated drift:\n%s",
+                "\n".join(gated_drift),
+            )
+        if not hard_drift and not gated_drift:
             logger.debug("[FlashPromptComposerRail] declarative reconcile matches builder")
 
     @staticmethod
