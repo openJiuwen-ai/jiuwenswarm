@@ -23,6 +23,7 @@ generated: true
 | [jiuwenswarm/agents/harness/common/tools/cron](#module-jiuwenswarm-agents-harness-common-tools-cron) |
 | [jiuwenswarm/agents/harness/team](#module-jiuwenswarm-agents-harness-team) |
 | [jiuwenswarm/agents/swarm](#module-jiuwenswarm-agents-swarm) |
+| [jiuwenswarm/channels/desktop](#module-jiuwenswarm-channels-desktop) |
 | [jiuwenswarm/channels/tui](#module-jiuwenswarm-channels-tui) |
 | [jiuwenswarm/channels/web](#module-jiuwenswarm-channels-web) |
 | [jiuwenswarm/channels/web/frontend](#module-jiuwenswarm-channels-web-frontend) |
@@ -120,6 +121,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261106_1132_organization-round-cleanup](jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
+
+<a id="module-jiuwenswarm-channels-desktop"></a>
+
+## jiuwenswarm/channels/desktop
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261115_1912_desktop-resident-worker-shutdown-race](jiuwenswarm/B_20261115_1912_desktop-resident-worker-shutdown-race.md) | B | 桌面端关闭竞速导致常驻 Worker 优雅收尾必现失败 | CharlesWang2030 | 无独立 D：依据真实运行日志（7/7 必现）与源码调用链定位，无独立设计文档；修复为进程生命周期收尾汇合点补齐与子进程降级兜底。 |
 
 <a id="module-jiuwenswarm-channels-tui"></a>
 
@@ -248,6 +257,7 @@ generated: true
 |---|---|---|---|---|
 | [B_20261107_1505_6226-forwarding-replay](jiuwenswarm/server/supervisor/B_20261107_1505_6226-forwarding-replay.md) | B | 历史回放触发转发队列溢出及前端计时不收尾 | kdgmpw | 无独立 D：对现有有界转发及前端终态处理的小范围修复，无独立设计。 |
 | [B_20261110_1042_issue6191-ipc-recovery](jiuwenswarm/server/ipc/B_20261110_1042_issue6191-ipc-recovery.md) | B | IPC 突发积压与降级就绪重连导致 Runtime 失败 | 刘瑜 | 无独立 D：对现有有界 IPC 和 Runtime 恢复状态机的小范围修复，无独立设计。 |
+| [B_20261115_1912_desktop-resident-worker-shutdown-race](jiuwenswarm/B_20261115_1912_desktop-resident-worker-shutdown-race.md) | B | 桌面端关闭竞速导致常驻 Worker 优雅收尾必现失败 | CharlesWang2030 | 无独立 D：依据真实运行日志（7/7 必现）与源码调用链定位，无独立设计文档；修复为进程生命周期收尾汇合点补齐与子进程降级兜底。 |
 
 <a id="module-jiuwenswarm-server-worker"></a>
 

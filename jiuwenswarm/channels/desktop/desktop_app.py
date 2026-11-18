@@ -1306,6 +1306,10 @@ class DesktopRuntime:
         self._blob_save_lock = threading.Lock()
         self._blob_save_transfers: dict[str, _BlobSaveTransfer] = {}
         self._is_shutting_down = False
+        # Signalled when shutdown() finishes; main() waits for it before
+        # returning so interpreter finalization cannot disable the thread
+        # pools while the webview closed-event thread is still draining.
+        self._shutdown_complete = threading.Event()
         self._update_shutdown_receipt: Path | None = None
         self._allow_window_close = False
         self._tray_icon = None
@@ -3294,7 +3298,25 @@ nohup {q_executable} >/dev/null 2>&1 &
             self._is_shutting_down = True
             self._startup_cancelled.set()
             processes = list(self.processes.values())
+        try:
+            self._shutdown_once(processes)
+        finally:
+            self._shutdown_complete.set()
 
+    def wait_for_shutdown(self, timeout: float) -> bool:
+        """Wait until shutdown() has finished.
+
+        Returns immediately when shutdown was never started. main() calls
+        this before returning: the webview closed-event handler runs on a
+        pywebview-spawned thread, and once interpreter finalization shuts
+        the thread pools down, every executor submission inside the
+        graceful shutdown path fails.
+        """
+        if not self._is_shutting_down:
+            return True
+        return self._shutdown_complete.wait(max(.001, timeout))
+
+    def _shutdown_once(self, processes: list[subprocess.Popen[bytes]]) -> None:
         self._abort_all_blob_saves()
         shutdown_ok = True
         deadline = time.monotonic() + 30.0
@@ -3310,7 +3332,10 @@ nohup {q_executable} >/dev/null 2>&1 &
 
         # A previous launch may own a resident Worker even before this
         # application's first service is registered. Final exit owns both.
-        from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
+        from jiuwenswarm.server.supervisor.shutdown import (
+            shutdown_application_worker,
+            shutdown_resident_worker,
+        )
         try:
             result = asyncio.run(shutdown_resident_worker(timeout=max(.001, deadline - time.monotonic()),
                 include_legacy=True))
@@ -3318,8 +3343,27 @@ nohup {q_executable} >/dev/null 2>&1 &
                 shutdown_ok = False
                 logger.error("[desktop] resident Worker final shutdown incomplete: %s", result)
         except Exception:
-            shutdown_ok = False
+            # The closed-event handler thread may race interpreter
+            # finalization; once the global thread-pool shutdown flag is set,
+            # every executor submission in the in-process path fails.
+            # Fall back to the isolated lifecycle subprocess, which is
+            # immune to the interpreter state.
             logger.exception("[desktop] resident Worker final shutdown incomplete")
+            try:
+                # get_user_workspace_dir 已在模块顶部导入, 此处直接复用,
+                # 避免在局部作用域重复 import 覆盖外部标识符 (G.VAR.03)。
+                if shutdown_application_worker(
+                    workspace=Path(get_user_workspace_dir()),
+                    timeout=max(.001, deadline - time.monotonic()),
+                ):
+                    logger.warning(
+                        "[desktop] resident Worker shutdown recovered via lifecycle subprocess")
+                else:
+                    shutdown_ok = False
+            except Exception:
+                shutdown_ok = False
+                logger.exception(
+                    "[desktop] resident Worker subprocess fallback shutdown incomplete")
 
         while time.monotonic() < deadline:
             if all(process.poll() is not None for process in processes):
@@ -3856,6 +3900,11 @@ def main() -> None:
         )
     finally:
         runtime.shutdown()
+        # The closed-event handler runs on a pywebview-spawned thread; join
+        # it before main() returns, otherwise interpreter finalization shuts
+        # the thread pools down mid-shutdown and the resident Worker drain
+        # never completes.
+        runtime.wait_for_shutdown(timeout=40.0)
 
 
 if __name__ == "__main__":
