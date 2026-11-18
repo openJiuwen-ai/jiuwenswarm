@@ -11,6 +11,7 @@ semantics the host relies on.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from types import SimpleNamespace
 from typing import Any
 
@@ -1111,7 +1112,6 @@ def test_only_a_game_carries_a_design_suggestion() -> None:
 
 def test_improvement_flag_matches_the_core_that_is_installed() -> None:
     from openjiuwen.agent_evolving.attribution import run_diagnosis
-    import inspect
 
     flag = _improvement_kwargs()
     if "generate_improvements" in inspect.signature(run_diagnosis).parameters:
