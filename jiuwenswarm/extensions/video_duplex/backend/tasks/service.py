@@ -15,7 +15,6 @@ from .errors import QueueVersionConflict, TaskRevisionConflict
 from .diagnostics import trace_task, task_state
 
 TERMINAL = {"completed", "failed", "cancelled"}
-RECONCILE_INTERVAL = 5
 logger = logging.getLogger(__name__)
 
 
@@ -58,8 +57,6 @@ class TaskService:
         self.cancellations = {}
         self.reconciles = set()
         self.reconciling = set()
-        self.reconciled_requests = set()
-        self.reconcile_monitor = None
         self.notifications = {}
         self.pending_notifications = {}
         # Core sessions where a user still has to answer a card (#5486). A task
@@ -102,7 +99,7 @@ class TaskService:
                             status="unknown",
                             error="Execution ownership lost; tools were not replayed",
                         )
-                        if task.get("interaction"):
+                        if task.get("interaction") and task["interaction"].get("state") != "pending":
                             task["interaction"]["state"] = "expired"
                         for change in task["changes"]:
                             if change["state"] == "claimed":
@@ -138,46 +135,62 @@ class TaskService:
         work.add_done_callback(self.reconciles.discard)
         work.add_done_callback(lambda _: self.reconciling.discard(task["id"]))
 
-    async def _monitor_unknown_tasks(self):
-        """Wait for readiness, then observe local settlement without repeated queries."""
-        while not self.closed:
-            await asyncio.sleep(RECONCILE_INTERVAL)
-            try:
-                with self.store.transaction() as db:
-                    tasks = self.store.rows(db)
-            except Exception:
-                logger.warning("Task reconciliation scan failed; retrying next sweep", exc_info=True)
-                continue
-            self._prune_reconciliation(tasks)
-            for task in tasks:
-                if (task["owner"], task["session"]) not in self.active_scopes:
-                    continue
-                if task["status"] in TERMINAL:
-                    continue
-                stopping_without_worker = (
-                    task["status"] == "cancelling" and task.get("output_closed")
-                    and task["id"] not in self.workers
-                )
-                if task["status"] == "unknown" or task.get("recovery_observer") or stopping_without_worker:
-                    self._spawn_reconcile(task)
-
     def _prune_reconciliation(self, tasks):
         # Terminal records reject reconciliation before consulting this cache.
-        # Keep unresolved requests so a failed persistence write cannot query Core twice.
+        # Keep confirmed receipts until their task update is durable.
         active = {t["request_id"] for t in tasks if t["status"] not in TERMINAL}
-        self.reconciled_requests.intersection_update(active)
         prune = getattr(self.executor, "prune_reconciliation", None)
         if prune is not None:
             prune(active)
 
     async def _reconcile(self, task, *, stopped=False):
-        """Query a ready Core once per execution, then only observe its settlement."""
+        """Observe native settlement and reconcile while its receipt is missing."""
         task = self.store.read(task["id"])
         if task["status"] in TERMINAL:
             return
-        if task["status"] not in {"unknown", "cancelling"} and not task.get("recovery_observer"):
+        if task["status"] not in {"unknown", "cancelling", "waiting_user"} and not task.get("recovery_observer"):
             return
         stopped = stopped or task.get("cancellation_requested", False) or task.get("execution_cancelled", False)
+        interaction = task.get("interaction") or {}
+        card_query = getattr(self.executor, "interaction_state", None)
+        if not stopped and interaction.get("state") == "pending" and card_query is not None:
+            try:
+                card = await card_query(task)
+            except Exception:
+                logger.warning("Task card lookup failed for %s; retaining pending state", task["id"],
+                               exc_info=True)
+                return
+            state = card.get("card_state")
+            if state not in {"pending", "applied", "ended"}:
+                return
+
+            def observe_card(current):
+                current_card = current.get("interaction") or {}
+                if (current["request_id"] != task["request_id"]
+                        or current["status"] not in {"unknown", "waiting_user"}
+                        or current_card.get("id") != interaction.get("id")):
+                    return
+                if current_card.get("state") != "pending":
+                    return
+                if card.get("card_binding"):
+                    current_card["card_binding"] = card["card_binding"]
+                if state == "pending":
+                    current.update(status="waiting_user", recovery_observer=False, error="")
+                else:
+                    current_card["state"] = "expired"
+                    current.update(status="unknown", recovery_observer=True)
+            task = self.store.update(task["id"], observe_card)
+            if (task["status"] not in {"unknown", "waiting_user"} or task.get("cancellation_requested")
+                    or (task.get("interaction") or {}).get("state") != (
+                        "pending" if state == "pending" else "expired"
+                    )):
+                return
+            if state == "pending":
+                await self._notify(task)
+                return
+            self.pending_interrupts.discard(task["core_session_id"])
+        elif task["status"] == "waiting_user":
+            return
         local_settled = task.get("execution_settled") and task.get("output_closed")
         if local_settled:
             # Do not race a still-owned observer writing the actual final result.
@@ -190,27 +203,19 @@ class TaskService:
                        "completed" if result is not None else "unknown",
                        "result": result, "settled": True}
         else:
-            if task["request_id"] in self.reconciled_requests:
-                if task.get("recovery_observer") and task["status"] == "unknown":
-                    task = self.store.update(task["id"], lambda t: t.update(
-                        status="cancelling" if stopped else "running",
-                    ) if t["status"] == "unknown" else None)
-                    await self._notify(task)
-                return
             ready = getattr(self.executor, "reconciliation_ready", None)
             if ready is not None and not await ready():
                 return
-            self.reconciled_requests.add(task["request_id"])
             try:
                 reconcile = getattr(self.executor, "reconcile", None)
                 if reconcile is not None:
                     outcome = await reconcile(task)
                 else:
-                    gone = await self.executor.cancel(task, probe=True)
-                    outcome = {"status": "unknown" if gone else "running", "settled": gone}
-            except Exception as exc:
+                    return
+            except Exception:
                 logger.warning("Task reconciliation failed for %s", task["id"], exc_info=True)
-                outcome = {"status": "failed", "error": "无法核对执行结果: " + str(exc)[:500]}
+                # Query failure says nothing about the original execution's lifecycle.
+                return
         status = outcome.get("status")
         if status == "running":
             def observe(current):
@@ -239,7 +244,7 @@ class TaskService:
                     current.update(execution_settled=True, execution_cancelled=final_status == "cancelled")
             task = self.store.update(task["id"], finish)
         await self._notify(task)
-        self.interrupt_settled()
+        self.kick()
 
     def interrupt_settled(self, core_session_id=None):
         """A card was answered or a turn ended: probe held sessions again, then dispatch."""
@@ -247,20 +252,42 @@ class TaskService:
             self.pending_interrupts.clear()
         else:
             self.pending_interrupts.discard(core_session_id)
+        with self.store.transaction() as db:
+            waiting = []
+            for task in self.store.rows(db):
+                if task["status"] not in {"waiting_user", "unknown"} and not task.get("recovery_observer"):
+                    continue
+                if core_session_id is not None and task["core_session_id"] != core_session_id:
+                    continue
+                if (task["owner"], task["session"]) not in self.active_scopes or task["id"] in self.workers:
+                    continue
+                waiting.append(task)
+        for task in waiting:
+            self._spawn_reconcile(task)
+        self.kick()
+
+    async def refresh(self, owner, session):
+        """Reconcile native cards on reconnect or an explicit queue query."""
+        self.start(owner, session)
+        with self.store.transaction() as db:
+            tasks = self.store.rows(db, owner, session)
+        for task in tasks:
+            if task["id"] in self.workers and task.get("execution_bound") and not task.get("execution_settled"):
+                try:
+                    refresh = getattr(self.executor, "refresh_execution", None)
+                    if refresh is not None:
+                        await refresh(task)
+                except Exception:
+                    logger.warning("Task settlement lookup failed for %s", task["id"], exc_info=True)
+            elif task["status"] in {"waiting_user", "unknown"} or task.get("recovery_observer"):
+                await self._reconcile(task)
+        for task in tasks:
+            self.pending_interrupts.discard(task["core_session_id"])
         self.kick()
 
     def kick(self):
         if self.closed or not self.started:
             return
-        if self.reconcile_monitor is None or self.reconcile_monitor.done():
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-            if loop is not None:
-                self.reconcile_monitor = loop.create_task(
-                    self._monitor_unknown_tasks(), name="managed-task-reconcile-monitor",
-                )
         with self.store.transaction() as db:
             tasks = self.store.rows(db)
         self._prune_reconciliation(tasks)
@@ -368,7 +395,7 @@ class TaskService:
                 # Nothing ran; probing again now would only loop until the card settles.
                 self.kick()
             else:
-                self.interrupt_settled()
+                self.kick()
 
     @staticmethod
     def _new(owner, session, instruction, request, *, parent=None):
@@ -668,14 +695,19 @@ class TaskService:
         # Without a worker (e.g. after restart) nothing else closes the output.
         while task["id"] in self.workers and not self.store.read(task["id"])["output_closed"]:
             await asyncio.sleep(0.05)
-        task = self.store.update(
-            task["id"],
-            lambda t: (
+
+        def finish_cancel(t):
+            if t["request_id"] != task["request_id"] or t["status"] != "cancelling":
+                return
+            result = t.get("observed_result")
+            if result is None:
+                result = t.get("result")
+            if result is not None and not t["execution_cancelled"]:
+                t.update(status="completed", result=result, error="")
+            else:
                 t.update(status="cancelled", error="")
-                if t["status"] == "cancelling"
-                else None
-            ),
-        )
+
+        task = self.store.update(task["id"], finish_cancel)
         await self._notify(task)
         self.interrupt_settled()
 
@@ -949,9 +981,9 @@ class TaskService:
             try:
                 held = await probe(queued)
             except Exception:
-                # Core still refuses a live card itself; an unreachable probe must not stall the queue.
+                # An unavailable probe cannot authorize new work into a possible live card.
                 logger.warning("Pending interrupt probe failed for %s", task_id, exc_info=True)
-                held = False
+                held = True
             if held:
                 self.pending_interrupts.add(queued["core_session_id"])
                 self._publish(queued)
@@ -1135,7 +1167,6 @@ class TaskService:
             *self.cancellations.values(),
             *self.notifications.values(),
             *self.reconciles,
-            *([self.reconcile_monitor] if self.reconcile_monitor is not None else []),
         ]
         for worker in pending:
             worker.cancel()
@@ -1144,6 +1175,5 @@ class TaskService:
         if close_executor is not None:
             await close_executor()
         self.pending_notifications.clear()
-        self.reconciled_requests.clear()
         if self.started:
             self.lease.release()

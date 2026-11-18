@@ -70,7 +70,7 @@
     "test:video-duplex": "node ../../../extensions/video_duplex/tests/frontend/testSupport.mjs",
     "test:joyai-workflow": "node --test ../../../extensions/video_duplex/tests/frontend/joyaiVoice.test.mjs ../../../extensions/video_duplex/tests/frontend/joyaiProvider.test.mjs",
     "test:task-full-duplex": "node --test tests/taskFullDuplex.test.mjs tests/taskDuplexLifecycle.test.mjs tests/applicationTaskControls.test.mjs tests/voiceTaskPanel.test.mjs tests/designerDuplex.test.mjs tests/designerConversation.test.mjs",
-    "test:qwen-barge-in": "node --test ../../../extensions/video_duplex/tests/frontend/disconnectNotice.test.mjs ../../../extensions/video_duplex/tests/frontend/taskFullDuplexRuntimeStore.test.mjs ../../../extensions/video_duplex/tests/frontend/replyLanguage.test.mjs ../../../extensions/video_duplex/tests/frontend/realtimeDuplex.test.mjs ../../../extensions/video_duplex/tests/frontend/speechDetection.test.mjs",
+    "test:qwen-barge-in": "node --test ../../../extensions/video_duplex/tests/frontend/disconnectNotice.test.mjs ../../../extensions/video_duplex/tests/frontend/replyLanguage.test.mjs ../../../extensions/video_duplex/tests/frontend/realtimeDuplex.test.mjs ../../../extensions/video_duplex/tests/frontend/speechDetection.test.mjs",
     "test:i18n-locales": "node --test tests/i18nLocales.test.mjs",
     "test:auth-store": "node --test tests/authStore.test.mjs",
     "test:workspace-store": "node --test tests/workspaceStore.test.mjs",
