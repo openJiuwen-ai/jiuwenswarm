@@ -1343,16 +1343,21 @@ def _read_cached_page_record(
         markdown = page_path.read_text(encoding="utf-8")
     except OSError:
         return None
+    try:
+        status_code = int(item.get("status_code", 200))
+        depth = int(item.get("depth", 0))
+    except (ValueError, TypeError):
+        return None
     return _FetchedPage(
         url=str(item.get("url") or ""),
-        status_code=int(item.get("status_code", 200)),
+        status_code=status_code,
         content_type=str(item.get("content_type") or "text/html"),
         title=str(item.get("title") or ""),
         markdown=markdown,
         headings=tuple(str(h) for h in (item.get("headings") or ())),
         summary=str(item.get("summary") or ""),
         links=(),
-        depth=int(item.get("depth", 0)),
+        depth=depth,
         truncated_by_bytes=bool(item.get("truncated_by_bytes", False)),
     )
 
