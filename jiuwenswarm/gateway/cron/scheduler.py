@@ -1905,6 +1905,32 @@ class CronSchedulerService:
                 channel_id, job.id, state.run_id,
             )
 
+    @staticmethod
+    def _final_deliver_files_payload(state: CronRunState) -> list[dict[str, Any]]:
+        """最终 chat.final 附带的本轮产物清单（供桌面转 ReportConversations artifacts）。
+
+        与独立 chat.file 帧同源（state.deliver_files）；只带可序列化的本地路径与
+        基础信息，下载令牌由桌面按需上传 OSMS 后生成，避免把本机地址/令牌透传到
+        跨端上报链路。
+        """
+        out: list[dict[str, Any]] = []
+        for item in state.deliver_files:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path") or item.get("source_path") or "").strip()
+            if not path or not os.path.isfile(path):
+                continue
+            entry: dict[str, Any] = {"path": path, "source_path": path}
+            name = str(item.get("name") or "").strip() or os.path.basename(path)
+            if name:
+                entry["name"] = name
+            for key in ("size", "mime_type", "artifact_id"):
+                value = item.get(key)
+                if value not in (None, ""):
+                    entry[key] = value
+            out.append(entry)
+        return out
+
     async def _push_to_targets(self, job: CronJob, state: CronRunState, *, text: str, is_placeholder: bool) -> None:
         logger.info(
             "[Cron] push_to_targets job=%s run_id=%s channel=%s is_placeholder=%s text_len=%d status=%s",
@@ -1941,6 +1967,13 @@ class CronSchedulerService:
                 ),
             },
         }
+        # 终帧附带本轮产物：桌面据此在关闭上报链之前完成上传/审核并写入
+        # ReportConversations.artifacts。独立 chat.file 帧保留，兼容本地卡片与
+        # 其它 Web/TUI 客户端；占位帧不带文件。
+        if not is_placeholder and state.deliver_files:
+            final_files = self._final_deliver_files_payload(state)
+            if final_files:
+                payload_extra["files"] = final_files
         channel_id = (job.targets or "").strip()
         if not channel_id:
             # targets 为空：占位/真实结果/push_update 补发均会在此静默丢失。
