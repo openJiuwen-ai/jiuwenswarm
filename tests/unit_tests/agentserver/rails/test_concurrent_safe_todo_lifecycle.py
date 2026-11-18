@@ -413,3 +413,62 @@ async def test_close_keeps_entries_while_another_rail_still_bound(tmp_path, monk
     assert sorted(removed) == sorted(first_ids)
     assert all(rid not in registry for rid in first_ids)
 
+
+def _make_cleanup_adapter():
+    """构造仅含 cleanup() 所需状态/桩的 adapter（检视回归：rail 缺失时的清理）。"""
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
+    adapter = object.__new__(interface_deep.JiuWenSwarmDeepAdapter)
+    adapter._is_session_scoped_adapter = True
+    adapter._parent_session_id = "sess-x"
+    adapter._memory_reindex_task = None
+    adapter._instance = None
+    adapter.stop_interaction = AsyncMock()
+    adapter._cancel_evolution_watchers = AsyncMock()
+    adapter._sync_personal_context_rail = AsyncMock()
+    adapter._release_session_agent_callbacks = AsyncMock()
+    adapter._release_sys_operations = Mock()
+    adapter._close_a2x_client = AsyncMock()
+    adapter._forget_skill_sleep_session = Mock()
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_adapter_cleanup_runs_session_cleanups_without_task_planning_rail(monkeypatch):
+    """检视回归：_task_planning_rail 为 None（code 模式/import 失败）时，
+    else 分支的既有清理不得被 rail close 的条件块吞掉。"""
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    import jiuwenswarm.agents.harness.common.tools.send_file_to_user as send_file_mod
+
+    adapter = _make_cleanup_adapter()
+    sent = Mock()
+    monkeypatch.setattr(send_file_mod, "clear_sent_files_for_session", sent)
+    skill_state = Mock()
+    monkeypatch.setattr(interface_deep, "clear_session_skill_state", skill_state)
+
+    await adapter.cleanup()
+
+    sent.assert_called_once_with("sess-x")
+    skill_state.assert_called_once_with("sess-x", local_only=True)
+    adapter._forget_skill_sleep_session.assert_called_once_with("sess-x")
+
+
+@pytest.mark.asyncio
+async def test_adapter_cleanup_calls_rail_close_and_still_runs_session_cleanups(monkeypatch):
+    """rail 存在时：close 被调用，且既有清理不被条件块吞掉。"""
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+    import jiuwenswarm.agents.harness.common.tools.send_file_to_user as send_file_mod
+
+    adapter = _make_cleanup_adapter()
+    rail_close = Mock()
+    adapter._task_planning_rail = SimpleNamespace(close=rail_close)
+    sent = Mock()
+    monkeypatch.setattr(send_file_mod, "clear_sent_files_for_session", sent)
+    skill_state = Mock()
+    monkeypatch.setattr(interface_deep, "clear_session_skill_state", skill_state)
+
+    await adapter.cleanup()
+
+    rail_close.assert_called_once()
+    sent.assert_called_once_with("sess-x")
+    skill_state.assert_called_once_with("sess-x", local_only=True)
