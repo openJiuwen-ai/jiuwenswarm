@@ -403,3 +403,15 @@ def test_a2ui_repair_prompt_respects_channel():
         channel="officeclaw",
     )
     assert "outermost structured UI MUST be wrapped in a Card" in oc_repair
+
+
+def test_a2ui_prompt_bold_space_rule_present_cn_en():
+    # CJK 标点结尾的加粗紧跟正文时 markdown-it 不成对（flanking 规则），
+    # 提示词必须引导闭合 ** 后留空格；中英两版同步（缺一即失败）。
+    en = build_a2ui_autonomy_instruction("en")
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "[Text-bold]" in en
+    assert "one space MUST come after the closing **" in en
+    assert "[文本加粗]" in zh
+    assert "闭合 ** 后必须留一个空格" in zh
