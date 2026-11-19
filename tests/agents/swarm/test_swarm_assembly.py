@@ -199,7 +199,8 @@ _TEAM_SHARED_RAIL_NAMES: frozenset[str] = frozenset(
         registry.TEAM_SKILL_STORAGE_POLICY,
         registry.TEAM_SKILL_LIBRARY_RELOAD,
         registry.RESPONSE_PROMPT,
-        registry.SYS_OPERATION,
+        registry.TEAM_ACCEL_PROMPT,
+        registry.TEAM_ACCEL_SYS,
         registry.STREAM_EVENT,
         registry.SECURITY,
         registry.HEARTBEAT,
@@ -215,6 +216,7 @@ _TEAM_SHARED_RAIL_NAMES: frozenset[str] = frozenset(
         registry.A2A_OUTBOUND_TOOLKIT,
         registry.REQUEST_SCOPED_MCP_TOOLS,
         registry.MEMBER_SKILL_TOOLKIT,
+        registry.TEAM_PROGRESSIVE_TOOL,
         registry.DISABLED_TOOLS,
     }
 )
@@ -556,7 +558,7 @@ def test_build_member_capability_specs_rail_names(
 
     assert _TEAM_SHARED_RAIL_NAMES <= rail_names
     assert extra_rails <= rail_names
-    assert len(_TEAM_SHARED_RAIL_NAMES) == 23
+    assert len(_TEAM_SHARED_RAIL_NAMES) == 25
     # core.team.skill_use is always appended for Leader+Teammate same track (M2).
     assert TEAM_SKILL_USE in rail_names
     assert rail_names == expected | {TEAM_SKILL_USE}
@@ -1920,11 +1922,12 @@ _EXPECTED_CODE_RAIL_NAMES_LEADER: frozenset[str] = frozenset(
     {
         registry.CODE_RUNTIME_PROMPT,
         registry.RESPONSE_PROMPT,
+        registry.TEAM_ACCEL_PROMPT,
         registry.STREAM_EVENT,
         registry.SECURITY,
         registry.CODE_LSP,
         registry.CODE_PROJECT_MEMORY,
-        registry.SYS_OPERATION,
+        registry.TEAM_ACCEL_SYS,
         registry.CODE_CODING_MEMORY,
         registry.CODE_AGENT_MODE,
         registry.STRUCTURED_ASK_USER,

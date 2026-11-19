@@ -800,6 +800,8 @@ react:
     message_summary_offloader_config:
       protected_tool_names: ["read_file", "read_pdf", "skill_tool"]  # 这些工具的输出保持原文，不卸载
       add_message_threshold_ratio: 0.1      # 新增工具消息超过上下文窗口容量的该比例时，立即卸载
+      # 绝对 token 上限；入栈立刻卸的最终阈值 = min(窗口×ratio, 本值)。1M×0.1=100K，与 8K 取小 → 8K tok
+      add_message_abs_token_threshold: 8000
       ttl_seconds: 300                      # 距上次模型请求空闲超过该秒数后，才允许做 TTL（闲时）卸载
       ttl_context_occupancy_ratio: 0.5      # 上下文占用超过该比例时，才允许做 TTL 卸载
       ttl_message_threshold_ratio: 0.05     # TTL 卸载时，单条工具消息超过窗口容量的该比例才被处理

@@ -17,7 +17,6 @@ from openjiuwen.extensions.observability.demand import (
     get_trajectory_span_processor,
 )
 from openjiuwen.harness.rails import (
-    SysOperationRail,
     HeartbeatRail,
     SecurityRail,
     EvolutionInterruptRail,
@@ -36,6 +35,10 @@ from jiuwenswarm.agents.harness.common.rails.context_overflow_recovery_rail impo
     ContextOverflowRecoveryRail,
 )
 from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
+from jiuwenswarm.agents.harness.team.accel.accel_prompt_rail import AccelPromptRail
+from jiuwenswarm.agents.harness.team.accel.accel_sys_operation_rail import (
+    AccelSysOperationRail,
+)
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import RuntimePromptRail
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
 from jiuwenswarm.agents.harness.team.rails.team_admission_rail import (
@@ -87,6 +90,8 @@ class TeamWorkspaceInfo:
 RAIL_WHITELIST = frozenset({
     "RuntimePromptRail",
     "ResponsePromptRail",
+    "AccelPromptRail",
+    "AccelSysOperationRail",
     "JiuSwarmStreamEventRail",
     "TaskPlanningRail",
     "SecurityRail",
@@ -203,11 +208,16 @@ def build_member_rails(
         logger.warning("[TeamRuntime] ResponsePromptRail failed: %s", exc)
 
     try:
-        rail = SysOperationRail()
-        rails_list.append(rail)
-        logger.info("[TeamRuntime] FileSystemRail created")
+        rails_list.append(AccelPromptRail(role=role))
+        logger.info("[TeamRuntime] AccelPromptRail created role=%s", role)
     except Exception as exc:
-        logger.warning("[TeamRuntime] FileSystemRail failed: %s", exc)
+        logger.warning("[TeamRuntime] AccelPromptRail failed: %s", exc)
+
+    try:
+        rails_list.append(AccelSysOperationRail())
+        logger.info("[TeamRuntime] AccelSysOperationRail created")
+    except Exception as exc:
+        logger.warning("[TeamRuntime] AccelSysOperationRail failed: %s", exc)
 
     try:
         rail = JiuSwarmStreamEventRail(

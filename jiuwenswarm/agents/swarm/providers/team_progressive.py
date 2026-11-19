@@ -44,12 +44,15 @@ TEAM_PROGRESSIVE_TOOL = "swarm.team_progressive_tool"
 
 # Shared eager names for every team role. Order is schema order; do not reorder
 # from ability_manager.list(). Meta tools stay first so mid-task swaps cannot
-# break LLM prefix cache. verify_task / shutdown_member / todo_* stay deferred.
+# break LLM prefix cache. powershell / memory_get / shutdown_member / todo_*
+# stay deferred (bash covers shell; memory_search stays for recall; writes via
+# tools_search). verify_task is eager so board completion stays on the hot path.
 TEAM_SHARED_EAGER_TOOLS: tuple[str, ...] = (
     "tools_search",
     "invoke_tool",
     "send_message",
     "view_task",
+    "verify_task",
     "read_file",
     "write_file",
     "edit_file",
@@ -60,8 +63,6 @@ TEAM_SHARED_EAGER_TOOLS: tuple[str, ...] = (
     "workspace_meta",
     "skill_tool",
     "memory_search",
-    "memory_get",
-    "powershell",
     "send_file_to_user",
     "web_search",
     "fetch_webpage",
