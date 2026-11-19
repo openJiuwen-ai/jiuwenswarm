@@ -55,10 +55,10 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
                  auth_client: AgentOSAuthenticator | None = None) -> None:
         self._config = config
         host = urlsplit(config.ingress_url).hostname
-        self._local_web_ingress = host == 'localhost'
-        if host and not self._local_web_ingress:
+        self._local_ingress = host == 'localhost'
+        if host and not self._local_ingress:
             try:
-                self._local_web_ingress = ipaddress.ip_address(host).is_loopback
+                self._local_ingress = ipaddress.ip_address(host).is_loopback
             except ValueError:
                 pass
         self._control = control_client or AdxControlClient(config)
@@ -159,7 +159,7 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
             if available:
                 return await self._control._ready_sandbox_info(available[0])
         return await self._control.create_sandbox(
-            builtin=builtin, web_port=web_port if self._local_web_ingress else None, **kwargs)
+            builtin=builtin, web_port=web_port if self._local_ingress else None, **kwargs)
 
     def set_channel_manager(self, channel_manager) -> None:
         super().set_channel_manager(channel_manager)
@@ -214,10 +214,10 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
                           f'/agent/{protocol}', urlencode({'target': target, 'port': port}), ''))
 
     def _agent_ws_url(self, instance_id: str, agent_port: int) -> str:
-        return self._agent_url(instance_id, agent_port, 'ws')
+        return self._port_url(instance_id, agent_port, 'ws')
 
-    def _web_url(self, instance_id: str, agent_port: int, protocol: str) -> str:
-        if not self._local_web_ingress:
+    def _port_url(self, instance_id: str, agent_port: int, protocol: str) -> str:
+        if not self._local_ingress:
             return self._agent_url(instance_id, agent_port, protocol)
         origin = urlsplit(self._config.ingress_url)
         scheme = ('wss' if origin.scheme == 'https' else 'ws') if protocol == 'ws' else origin.scheme
@@ -225,10 +225,10 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
         return urlunsplit((scheme, origin.netloc, path, '', ''))
 
     def _agent_http_url(self, instance_id: str, agent_port: int) -> str:
-        return self._web_url(instance_id, agent_port, 'http')
+        return self._port_url(instance_id, agent_port, 'http')
 
     def _agent_web_ws_url(self, instance_id: str, agent_port: int) -> str:
-        return self._web_url(instance_id, agent_port, 'ws')
+        return self._agent_ws_url(instance_id, agent_port)
 
     async def _connect_ws_until_ready(self, *, instance_id: str, agent_port: int,
                                       user_id: str = '', session_id: str = '', agent_type: str = ''):

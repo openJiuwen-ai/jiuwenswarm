@@ -81,12 +81,11 @@ def test_builtin_local_rootfs_is_already_resolved_in_the_launch_configuration(mo
 def test_explicit_http_origin_controls_business_http_and_websocket_schemes(monkeypatch):
     config = _config(monkeypatch, ingress_url='http://127.0.0.1:8080')
     router = AdxRouterClient(config)
-    assert urlsplit(router._agent_ws_url('test-alice+jiuwenswarm', 18092)).scheme == 'ws'
+    assert router._agent_ws_url('test-alice+jiuwenswarm', 18092) == 'ws://127.0.0.1:8080/test-alice%2Bjiuwenswarm/18092'
     assert router._agent_http_url('test-alice+third', 18092) == 'http://127.0.0.1:8080/test-alice%2Bthird/18092'
     assert router._agent_web_ws_url('test-alice+third', 18092) == 'ws://127.0.0.1:8080/test-alice%2Bthird/18092'
-    assert urlsplit(router._agent_ws_url('test-alice+jiuwenswarm', 18092)).path == '/agent/ws'
     secure = AdxRouterClient(_config(monkeypatch))
-    assert urlsplit(secure._agent_ws_url('test-alice+jiuwenswarm', 18092)).scheme == 'wss'
+    assert secure._agent_ws_url('test-alice+jiuwenswarm', 18092).startswith('wss://adx.example/agent/ws?')
     assert urlsplit(secure._agent_http_url('test-alice+third', 18092)).path == '/agent/http'
 
 
