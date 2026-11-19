@@ -15,7 +15,7 @@ from urllib.parse import quote, urljoin
 
 import httpx
 
-from jiuwenswarm.extensions.agentos.agentos_router.adx.config import AdxRouterConfig
+from jiuwenswarm.extensions.agentos.agentos_router.adx.config import AdxRouterConfig, validate_local_rootfs
 from jiuwenswarm.extensions.agentos.agentos_router.backend import (
     SandboxInfo, AgentApiError, AgentTimeoutError,
     AGENT_GENERATION_ENV, AgentNotFoundError, AgentNotVisibleError,
@@ -222,9 +222,12 @@ class AdxControlClient:
         return runtime_spec.get('sandbox_type') or self.config.runtime_class
 
     def _creation_body(self, namespace: str, name: str, workspace: str, runtime_spec: dict,
-                       env_vars: dict | None, mounts: list | None, *, builtin: bool | None = None) -> dict:
+                       env_vars: dict | None, mounts: list | None, *, builtin: bool | None = None,
+                       web_port: int | None = None) -> dict:
         spec = copy.deepcopy(runtime_spec)
         rootfs = spec.get('rootfs') or {}
+        if not isinstance(rootfs, dict):
+            raise ValueError('launch-spec rootfs must be a mapping')
         image = rootfs.get('imageurl') or rootfs.get('image_url')
         if builtin is None:
             builtin = name.endswith('+jiuwenswarm') and image == 'jiuwenswarm-agent-runtime:latest'
@@ -236,15 +239,15 @@ class AdxControlClient:
                 'env': dict(env_vars or {}),
                 'mounts': [{'type': 'bind', 'host_path': workspace, 'target': self.config.workspace_target,
                             'options': ['rbind', 'rw']}]}
-        if image:
-            if runtime_class in ('runc', 'runsc') and self.config.local_images is not None:
-                template = self.config.local_images.get(image)
-                if not template:
-                    raise ValueError(f'Image {image} has no prepared local rootfs; offline deployment must prepare it first')
-                body['rootfs'] = {'type': 'template', 'name': template, 'runtime': runtime_class}
-            else:
-                body['rootfs'] = {'type': 'image', 'imageurl': image, 'runtime': runtime_class}
+        local_rootfs = rootfs if rootfs.get('type') == 'local' else None
+        if builtin and self.config.builtin_launch:
+            local_rootfs = self.config.builtin_launch.get('rootfs', local_rootfs)
+        if image and local_rootfs is None:
+            body['rootfs'] = {'type': 'image', 'imageurl': image, 'runtime': runtime_class}
             body['inheritEntrypoint'] = True
+        if local_rootfs is not None:
+            validate_local_rootfs(local_rootfs, 'Agent launch specification')
+            body['rootfs'] = {'type': 'local', 'path': local_rootfs['path'], 'runtime': runtime_class}
         if runtime_class == 'runsc':
             timeout = self.agent_idle_timeout_seconds
             if not math.isfinite(timeout):
@@ -293,6 +296,10 @@ class AdxControlClient:
                 action = probe.get('tcpSocket') or probe.get('httpGet')
                 if action and 'port' in action:
                     ports.append(str(action['port']))
+        if not builtin and web_port is not None:
+            ports.append(str(web_port))
+            # The Gateway uses the loopback listener after business authentication.
+            body['dataPlane'] = {'portForwardSecurityMode': 'tls'}
         body['ports'] = sorted(set(ports))
         if builtin and self.config.builtin_launch:
             launch = self.config.builtin_launch
@@ -309,7 +316,8 @@ class AdxControlClient:
                 body['mounts'][0]['options'] = ['rbind', *options]
             body['process'] = copy.deepcopy(launch['process'])
             body['mounts'].extend(copy.deepcopy(launch.get('mounts', [])))
-            body['env'].update(copy.deepcopy(launch.get('env', {})))
+            body['env'] = {**copy.deepcopy(launch.get('image_env', {})), **body['env'],
+                           **copy.deepcopy(launch.get('env', {}))}
             if 'network' in launch:
                 from jiuwenswarm.extensions.agentos.agentos_router.adx.network import agent_policy, http_policy, workspace_model_origins
                 network = launch['network']
@@ -327,6 +335,8 @@ class AdxControlClient:
             # Both Supervisor and runsc AgentServers execute authenticated tool
             # SDK calls. Never put this credential into custom agents or tools.
             body['env']['JIUWENSWARM_ADX_API_TOKEN'] = self.config.token
+        if local_rootfs is not None and not body.get('process', {}).get('commands'):
+            raise ValueError('Local Agent rootfs requires process commands in its launch specification')
         return body
 
     async def ensure_builtin_network(self, instance: str, workspace: str) -> None:
@@ -363,7 +373,8 @@ class AdxControlClient:
 
     async def create_sandbox(self, *, namespace: str, name: str, workspace: str, runtime_spec: dict,
                              env_vars: dict | None = None, mounts: list | None = None,
-                             trace_id: str | None = None, builtin: bool | None = None) -> SandboxInfo:
+                             trace_id: str | None = None, builtin: bool | None = None,
+                             web_port: int | None = None) -> SandboxInfo:
         trace_id = _resolve_trace_id(trace_id)
         instance = f'{namespace}-{name}'
         existing = await self._lookup(instance, trace_id=trace_id)
@@ -382,7 +393,8 @@ class AdxControlClient:
             self._creates.pop(instance, None)
             self._confirmed_creates.discard(instance)
             self._terminal_creates.discard(instance)
-        body = self._creation_body(namespace, name, workspace, runtime_spec, env_vars, mounts, builtin=builtin)
+        body = self._creation_body(namespace, name, workspace, runtime_spec, env_vars, mounts,
+                                   builtin=builtin, web_port=web_port)
         digest = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         operation, original_digest = self._creates.setdefault(instance, ('create-' + uuid.uuid4().hex, digest))
         if digest != original_digest:

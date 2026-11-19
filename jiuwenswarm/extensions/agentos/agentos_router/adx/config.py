@@ -23,7 +23,6 @@ class AdxRouterConfig:
     tenant: str
     token: str = field(repr=False)
     router: RouterConfig = field(repr=False)
-    local_images: dict[str, str] | None = field(default=None, repr=False)
     builtin_image: str | None = None
     runtime_class: str = 'runc'
     workspace_target: str = '/home/agentos'
@@ -63,14 +62,25 @@ def normalize_restart_policy(value: object, *, field_name: str = 'gateway.adx.re
     return dict(value)
 
 
+def validate_local_rootfs(value: dict, source: str) -> None:
+    if not isinstance(value, dict) or value.get('type') != 'local':
+        raise ValueError(f'{source}.rootfs requires type=local and an absolute node path')
+    path = value.get('path')
+    if not isinstance(path, str) or not path.startswith('/'):
+        raise ValueError(f'{source}.rootfs.path must be an absolute node path')
+    if (any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in path)
+            or any(part in ('.', '..') for part in path.split('/'))):
+        raise ValueError(f'{source}.rootfs.path cannot contain traversal or control characters')
+
+
 def load_router_config(config: dict) -> AdxRouterConfig:
     settings = (config.get('gateway') or {}).get('adx') or {}
     if not isinstance(settings, dict) or settings.keys() - {
         'ingress_url', 'tenant', 'token_env', 'builtin_image', 'runtime_class', 'workspace_target',
         'connect_timeout_seconds', 'ssh_user', 'ssh_known_hosts', 'restart_policy',
-        'builtin_process_from_image', 'builtin_launch', 'local_images',
-        # Accepted for upgrades; initialization is owned by Enterprise.
-        'workspace_config_template',
+        'builtin_process_from_image', 'builtin_launch',
+        # Accepted for upgrades; image preparation is owned by the launch-spec writer.
+        'local_images', 'workspace_config_template',
     }:
         raise ValueError('gateway.adx contains invalid settings')
     url = settings.get('ingress_url', '')
@@ -93,11 +103,6 @@ def load_router_config(config: dict) -> AdxRouterConfig:
     if not math.isfinite(timeout) or not 0 < timeout <= 86400:
         raise ValueError('gateway.adx.connect_timeout_seconds must be in (0, 86400]')
     tenant = _text_setting(settings, 'tenant')
-    local_images = settings.get('local_images')
-    if local_images is not None and (not isinstance(local_images, dict) or any(
-            not isinstance(key, str) or not isinstance(value, str) or not value
-            for key, value in local_images.items())):
-        raise ValueError('gateway.adx.local_images must map image references to registered local rootfs names')
     builtin_image = settings.get('builtin_image')
     if builtin_image not in (None, ''):
         builtin_image = _text_setting(settings, 'builtin_image')
@@ -109,10 +114,12 @@ def load_router_config(config: dict) -> AdxRouterConfig:
     builtin_launch = settings.get('builtin_launch')
     if builtin_launch is not None:
         if not isinstance(builtin_launch, dict) or set(builtin_launch) - {
-                'process', 'mounts', 'env', 'network', 'workspace_mount_options'}:
+                'process', 'rootfs', 'mounts', 'env', 'image_env', 'network', 'workspace_mount_options'}:
             raise ValueError('gateway.adx.builtin_launch contains invalid settings')
         if not isinstance(builtin_launch.get('process'), dict) or not builtin_launch['process'].get('commands'):
             raise ValueError('gateway.adx.builtin_launch requires process.commands')
+        if 'rootfs' in builtin_launch:
+            validate_local_rootfs(builtin_launch['rootfs'], 'gateway.adx.builtin_launch')
         if 'network' in builtin_launch:
             from jiuwenswarm.extensions.agentos.agentos_router.adx.network import network_profile
             network = builtin_launch['network']
@@ -135,7 +142,7 @@ def load_router_config(config: dict) -> AdxRouterConfig:
     return AdxRouterConfig(
         ingress_url=url.rstrip('/'), tenant=tenant, token=token,
         router=load_agentos_config(config, tool_sandbox_defaults=tool_defaults),
-        local_images=local_images, builtin_image=builtin_image, runtime_class=runtime_class,
+        builtin_image=builtin_image, runtime_class=runtime_class,
         builtin_process_from_image=builtin_process_from_image, builtin_launch=builtin_launch,
         workspace_target=workspace_target, connect_timeout_seconds=timeout, ssh_user=ssh_user,
         ssh_known_hosts=ssh_known_hosts, restart_policy=restart_policy,

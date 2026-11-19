@@ -379,7 +379,7 @@ def _build_agentos_workspace_mounts() -> tuple[list[dict[str, Any]], str]:
 def _build_adx_extra_params() -> dict[str, Any]:
     """Carry the existing tool configuration and workspace mapping into ADX."""
     endpoint = get_sandbox_endpoint()
-    keys = ("image", "rootfs_template", "runtime", "cpu", "cpu_limit", "memory", "mem_limit",
+    keys = ("image", "rootfs", "runtime", "cpu", "cpu_limit", "memory", "mem_limit",
             "idle_timeout", "user", "group", "network", "connection", "env", "create_timeout",
             "schedule_timeout", "endpoint_file", "restart_policy")
     extra = {key: endpoint[key] for key in keys if key in endpoint}

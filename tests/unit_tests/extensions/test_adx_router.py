@@ -39,13 +39,54 @@ def _config(monkeypatch, *, sandbox=None, **overrides):
     }, 'sandbox': sandbox})
 
 
+def test_legacy_image_catalog_does_not_rewrite_the_registry_launch_spec(monkeypatch):
+    config = _config(monkeypatch, runtime_class='supervisor', local_images={'third:v1': {
+        'path': '/unrelated/rootfs', 'env': {'VALUE': 'image'},
+        'process': {'commands': [['/unrelated/agent']], 'cwd': '/unrelated', 'user': '1001:1002'},
+    }})
+    client = AdxControlClient(config)
+    spec = {'sandbox_type': 'runsc', 'rootfs': {'imageurl': 'third:v1'},
+            'cmds': [['/declared/agent']], 'code_path': '/work'}
+    body = client._creation_body('test', 'alice+third', '/users/alice', spec,
+                                 {'VALUE': 'request'}, None, builtin=False)
+    assert body['rootfs'] == {'type': 'image', 'imageurl': 'third:v1', 'runtime': 'runsc'}
+    assert body['env'] == {'VALUE': 'request'}
+    assert body['process'] == {'commands': [['/declared/agent']], 'cwd': '/work'}
+    assert body['inheritEntrypoint'] is True
+
+
+def test_explicit_local_launch_spec_uses_existing_process_configuration(monkeypatch):
+    client = AdxControlClient(_config(monkeypatch))
+    spec = {'sandbox_type': 'runsc', 'rootfs': {'type': 'local', 'path': '/node/rootfs', 'readonly': True, 'user': '1001:1002'},
+            'cmds': [['/app/agent']], 'code_path': '/app'}
+    body = client._creation_body('test', 'alice+third', '/users/alice', spec, {'IMAGE_VALUE': 'writer'}, None, builtin=False)
+    assert body['rootfs'] == {'type': 'local', 'path': '/node/rootfs', 'runtime': 'runsc'}
+    assert body['process'] == {'commands': [['/app/agent']], 'cwd': '/app', 'user': '1001:1002'}
+    assert body['env'] == {'IMAGE_VALUE': 'writer'}
+    assert not body.get('inheritEntrypoint', False)
+
+
+def test_builtin_local_rootfs_is_already_resolved_in_the_launch_configuration(monkeypatch):
+    launch = {'rootfs': {'type': 'local', 'path': '/prepared/agent/rootfs', 'readonly': False},
+              'process': {'commands': [['/opt/python/bin/python', '-m', 'agentserver']]},
+              'env': {'IMAGE_VALUE': 'deployment'}}
+    client = AdxControlClient(_config(monkeypatch, runtime_class='runsc', builtin_launch=launch))
+    body = client._creation_body('test', 'alice+jiuwenswarm', '/users/alice', {}, {}, None, builtin=True)
+    assert body['rootfs'] == {'type': 'local', 'path': '/prepared/agent/rootfs', 'runtime': 'runsc'}
+    assert body['process'] == launch['process']
+    assert body['env']['IMAGE_VALUE'] == 'deployment'
+    assert 'inheritEntrypoint' not in body
+
+
 def test_explicit_http_origin_controls_business_http_and_websocket_schemes(monkeypatch):
     config = _config(monkeypatch, ingress_url='http://127.0.0.1:8080')
     router = AdxRouterClient(config)
-    assert urlsplit(router._agent_ws_url('test-alice+jiuwenswarm', 18092)).scheme == 'ws'
-    assert urlsplit(router._agent_http_url('test-alice+jiuwenswarm', 18092)).scheme == 'http'
+    assert router._agent_ws_url('test-alice+jiuwenswarm', 18092) == 'ws://127.0.0.1:8080/test-alice%2Bjiuwenswarm/18092'
+    assert router._agent_http_url('test-alice+third', 18092) == 'http://127.0.0.1:8080/test-alice%2Bthird/18092'
+    assert router._agent_web_ws_url('test-alice+third', 18092) == 'ws://127.0.0.1:8080/test-alice%2Bthird/18092'
     secure = AdxRouterClient(_config(monkeypatch))
-    assert urlsplit(secure._agent_ws_url('test-alice+jiuwenswarm', 18092)).scheme == 'wss'
+    assert secure._agent_ws_url('test-alice+jiuwenswarm', 18092).startswith('wss://adx.example/agent/ws?')
+    assert urlsplit(secure._agent_http_url('test-alice+third', 18092)).path == '/agent/http'
 
 
 class EnvironmentAPI:
@@ -465,7 +506,6 @@ async def test_registry_launch_spec_selects_custom_runtime_and_rootfs(
     image = 'registry.example/third:2'
     router, _clients = _router(_config(monkeypatch, runtime_class=default_runtime,
         builtin_image='registry.example/builtin:1',
-        local_images={image: local_template} if local_template else None,
         builtin_launch={'process': {'commands': [['/opt/python/bin/python', '-m', 'agentserver']]},
                         'mounts': [{'type': 'bind', 'host_path': '/opt/python',
                                     'target': '/opt/python', 'options': ['ro']}]},
@@ -475,6 +515,9 @@ async def test_registry_launch_spec_selects_custom_runtime_and_rootfs(
             'probes': {'startup': {'tcpSocket': {'port': 8080}, 'failureThreshold': 3}}}
     if declared_runtime:
         spec['sandbox_type'] = declared_runtime
+    if local_template and (declared_runtime or default_runtime) == 'runsc':
+        spec['rootfs'].update(type='local', path='/node/objects/' + local_template + '/rootfs')
+        spec['rootfs'].pop('imageurl')
     router._registry.get_image_info = AsyncMock(return_value=ImageInfo(
         image_name='third', image_uri='registry.example/third:2',
         metadata={'runtime_spec': spec, 'env_vars': {'MODEL_ENDPOINT': 'http://model/v1'}}))
@@ -486,7 +529,8 @@ async def test_registry_launch_spec_selects_custom_runtime_and_rootfs(
         assert body['name'] == 'alice+third-' + runtime.info.agent_id[:12]
         selected_runtime = declared_runtime or default_runtime
         if local_template and selected_runtime == 'runsc':
-            assert body['rootfs'] == {'type': 'template', 'name': local_template, 'runtime': selected_runtime}
+            assert body['rootfs'] == {'type': 'local', 'path': '/node/objects/' + local_template + '/rootfs',
+                                      'runtime': selected_runtime}
         else:
             assert body['rootfs'] == {'type': 'image', 'imageurl': image, 'runtime': selected_runtime}
         assert ('idleTimeoutSeconds' in body) == (selected_runtime == 'runsc')
@@ -502,9 +546,38 @@ async def test_registry_launch_spec_selects_custom_runtime_and_rootfs(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('origin,native', [
+    ('http://127.0.0.1:8080', True),
+    ('https://adx.example', False),
+])
+async def test_registered_web_port_selects_native_forwarding_policy(monkeypatch, origin, native):
+    from jiuwenswarm.extensions.agentos.agentos_router.registry_client import ImageInfo
+
+    router, _ = _router(_config(monkeypatch, ingress_url=origin))
+    router._registry.get_image_info = AsyncMock(return_value=ImageInfo(
+        image_name='third', image_uri='third:1', metadata={
+            'runtime_spec': {'rootfs': {'imageurl': 'third:1'},
+                             'probes': {'startup': {'tcpSocket': {'port': 18092}}}},
+            'access_mode': [{'name': 'web', 'port': '18100'}],
+        }))
+    await router.connect('')
+    try:
+        await router._agent_manager.get_or_create_agent('alice', 'third', creator=router._create_agent)
+        body, = router.test_api.creates
+        if native:
+            assert body['dataPlane'] == {'portForwardSecurityMode': 'tls'}
+            assert body['ports'] == ['18092', '18100']
+        else:
+            assert 'dataPlane' not in body
+            assert body['ports'] == ['18092']
+    finally:
+        await router.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_supervisor_builtin_keeps_its_binding_with_custom_local_images(monkeypatch):
     router, _ = _router(_config(monkeypatch, runtime_class='supervisor',
-        builtin_image='agentos-supervisor:v1', local_images={'dsh:1': 'local-dsh'}))
+        builtin_image='agentos-supervisor:v1', local_images={'dsh:1': {'path': '/node/local-dsh/rootfs'}}))
     await router.connect('')
     try:
         assert (await router.send_request(_request())).ok
@@ -639,7 +712,7 @@ async def test_config_request_retains_adx_warmup_failure(monkeypatch):
 async def test_gateway_workspace_image_is_not_a_new_user_default(monkeypatch, default_image):
     router, _ = _router(_config(monkeypatch))
     sandbox = {"type": "adx-environment", "runtime": "runsc", "image": "workspace:v1",
-        "rootfs_template": "local-workspace", "local_images": {
+        "rootfs": {"type": "local", "path": "/objects/workspace/rootfs"}, "local_images": {
             "workspace:v1": "local-workspace", "tools:v1": "local-default"}}
     if default_image:
         sandbox["deployment_image"] = default_image
@@ -893,3 +966,54 @@ def test_builtin_ignores_legacy_workspace_template_setting(monkeypatch, runtime)
     body = control._creation_body('test', 'new-user', '/workspace', {}, None, None, builtin=True)
     assert 'JIUWENSWARM_AGENTOS_CONFIG_TEMPLATE' not in body['env']
     assert all(not mount['target'].startswith('/run/agentos/workspace-config') for mount in body['mounts'])
+
+
+@pytest.mark.parametrize("rootfs", [{}, {"type": "local"}, {"type": "local", "path": "relative"},
+    {"type": "image", "path": "/node/rootfs"}])
+def test_builtin_local_rootfs_is_validated_at_config_load(monkeypatch, rootfs):
+    with pytest.raises(ValueError, match="rootfs"):
+        _config(monkeypatch, builtin_launch={"rootfs": rootfs, "process": {"commands": [["/app/server"]]}})
+
+
+def test_registered_local_rootfs_errors_are_readable(monkeypatch):
+    control = AdxControlClient(_config(monkeypatch))
+    with pytest.raises(ValueError, match="rootfs"):
+        control._creation_body("ns", "agent", "/workspace", {"rootfs": {"type": "local"}}, {}, [], builtin=False)
+
+
+def test_image_environment_literals_survive_actual_config_loading(tmp_path, monkeypatch):
+    from jiuwenswarm.common import config
+
+    monkeypatch.setenv("REVIEW_HOST_VALUE", "host-value")
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "")
+    literals = {"LITERAL": "${REVIEW_HOST_VALUE}", "DEFAULT": "${MISSING_IMAGE_VALUE:-image-default}"}
+    raw = {
+        "sandbox": {
+            "type": "adx-environment",
+            "url": "https://worker.example",
+            "image_env": literals,
+            "env": {"USER": "${REVIEW_HOST_VALUE}", "LITERAL": "user-value"},
+        },
+        "gateway": {"adx": {"builtin_launch": {
+            "rootfs": {"type": "local", "path": "/prepared/agent/rootfs"},
+            "process": {"commands": [["/app/agentserver"]]},
+            "image_env": literals,
+            "env": {"USER": "${REVIEW_HOST_VALUE}", "DEFAULT": "configured-value"},
+        }}},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(json.dumps(raw), encoding="utf-8")
+    monkeypatch.setattr(config, "get_config_file", lambda: config_path)
+    resolved = config.get_config()
+    assert config.get_sandbox_endpoint()["env"] == {**literals, "LITERAL": "user-value", "USER": "host-value"}
+    assert "image_env" not in resolved["sandbox"]
+    launch = resolved["gateway"]["adx"]["builtin_launch"]
+    assert "image_env" not in launch
+    control = AdxControlClient(_config(monkeypatch, runtime_class="runsc", builtin_launch=launch))
+    body = control._creation_body("test", "builtin", "/workspace", {}, {"USER": "request", "REQUEST": "keep"},
+                                  None, builtin=True)
+    assert body["env"]["LITERAL"] == literals["LITERAL"]
+    assert body["env"]["DEFAULT"] == "configured-value"
+    assert body["env"]["USER"] == "host-value"
+    assert body["env"]["REQUEST"] == "keep"
+    assert json.loads(config_path.read_text(encoding="utf-8")) == raw

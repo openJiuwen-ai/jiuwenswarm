@@ -73,7 +73,7 @@ if str(_CONFIG_MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(_CONFIG_MODULE_DIR))
 
 
-def resolve_env_vars(value: Any) -> Any:
+def resolve_env_vars(value: Any, *, _path: tuple[str | None, ...] = ()) -> Any:
     """递归解析配置中的环境变量替换语法 ${VAR:-default}.
 
     Args:
@@ -129,12 +129,22 @@ def resolve_env_vars(value: Any) -> Any:
         ) or "server_id_scope" in value
         if is_mcp_server_entry:
             return {
-                k: (v if k in mcp_credential_keys else resolve_env_vars(v))
+                k: (v if k in mcp_credential_keys else resolve_env_vars(v, _path=(*_path, k)))
                 for k, v in value.items()
             }
-        return {k: resolve_env_vars(v) for k, v in value.items()}
+        if _path in (("sandbox",), ("gateway", "adx", "builtin_launch")) and "image_env" in value:
+            image_env = value["image_env"]
+            if not isinstance(image_env, dict) or any(not isinstance(k, str) or not isinstance(v, str)
+                                                      for k, v in image_env.items()):
+                raise ValueError("image_env must contain literal string environment values")
+            resolved = {
+                k: resolve_env_vars(v, _path=(*_path, k)) for k, v in value.items() if k != "image_env"
+            }
+            resolved["env"] = {**image_env, **(resolved.get("env") or {})}
+            return resolved
+        return {k: resolve_env_vars(v, _path=(*_path, k)) for k, v in value.items()}
     elif isinstance(value, list):
-        return [resolve_env_vars(item) for item in value]
+        return [resolve_env_vars(item, _path=(*_path, None)) for item in value]
     else:
         return value
 
@@ -4215,7 +4225,7 @@ def get_sandbox_endpoint() -> dict[str, Any]:
         "policy_file": str(sandbox.get("policy_file") or "").strip(),
     }
     if sandbox_type == "adx-environment":
-        for key in ("image", "rootfs_template", "runtime", "workdir", "mounts", "cpu", "cpu_limit",
+        for key in ("image", "rootfs", "runtime", "workdir", "mounts", "cpu", "cpu_limit",
                     "memory", "mem_limit", "idle_timeout", "user", "group", "network", "connection",
                     "env", "create_timeout", "schedule_timeout", "endpoint_file", "restart_policy"):
             if key in sandbox:

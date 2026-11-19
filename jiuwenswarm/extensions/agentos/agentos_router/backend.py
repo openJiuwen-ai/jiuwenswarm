@@ -154,6 +154,9 @@ class AgentMount(TypedDict, total=False):
 class AgentRootfsSpec(TypedDict, total=False):
     """Inline ``runtime_spec.rootfs`` for POST Environment API."""
 
+    type: str
+    path: str
+    readonly: bool
     imageurl: str
     user: str
     ports: list[str]
