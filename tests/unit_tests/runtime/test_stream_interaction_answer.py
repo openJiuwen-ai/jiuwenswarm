@@ -876,7 +876,6 @@ async def test_real_facade_control_wrapper_closes_retained_adapter_stream(
         _session_manager=SimpleNamespace(get_session_id=Mock(return_value=SESSION_ID)),
         _build_inputs_async=AsyncMock(return_value=({}, "", False)),
         _persist_ask_user_answer_history=AsyncMock(),
-        _persist_control_chunk_to_history=AsyncMock(),
         reconcile_session_mcp=AsyncMock(),
         _persist_control_chunk_to_history=AsyncMock(),
         _persist_pending_final_text_control=AsyncMock(),

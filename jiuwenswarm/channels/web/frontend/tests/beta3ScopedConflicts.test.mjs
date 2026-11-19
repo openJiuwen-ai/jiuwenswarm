@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import test from 'node:test';
 import { transform } from 'esbuild';
 
-const read = (path) => fs.readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8');
+const read = (path) => fs.readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
 function between(source, start, end) {
   const first = source.indexOf(start);
   const last = source.indexOf(end, first + start.length);
@@ -17,7 +17,7 @@ async function compile(source) {
 
 const app = read('App.tsx');
 const send = between(app, 'const handleSendMessage = useCallback(',
-  ', [disposeInFlightHistoryHandles, mode, navigate, request, sendMessage, setGoalObjective, t]);');
+  ', [disposeInFlightHistoryHandles, mode, navigate, request, route.kind, sendMessage, setGoalObjective, t]);');
 const dependencies = [
   'sessionIdRef', 'sendMessage', 'useSessionStore', 'useWorkspaceStore', 'useChatStore',
   'NEW_CONVERSATION_ID', 'isEnterprise', 'route', 'isConversationModelGroupBlocked',
@@ -70,37 +70,45 @@ function sendFixture({ accepted = true, sessionId = 'session-1', design = false 
   return { fn, sent, restored, refreshed, processing, projectReads, creatingSessionRef };
 }
 
-test('existing conversation preserves beta3 boolean success and workspace refresh', async () => {
+test('existing conversation returns its accepted session identity and refreshes the workspace', async () => {
   const fixture = sendFixture();
-  assert.equal(await fixture.fn('hello'), true);
-  assert.deepEqual(fixture.sent, [['hello', 'session-1', undefined]]);
+  assert.equal(await fixture.fn('hello'), 'session-1');
+  assert.deepEqual(fixture.sent, [['hello', 'session-1', undefined, undefined, undefined]]);
   assert.deepEqual(fixture.refreshed, ['session-1']);
 });
 
-test('rejected send returns false and restores the unsent input', async () => {
+test('rejected send returns no accepted session and restores the unsent input', async () => {
   const fixture = sendFixture({ accepted: false });
-  assert.equal(await fixture.fn('keep this draft'), false);
+  assert.equal(await fixture.fn('keep this draft'), undefined);
   assert.deepEqual(fixture.restored, [['session-1', 'keep this draft']]);
   assert.deepEqual(fixture.refreshed, []);
 });
 
 for (const accepted of [true, false]) {
-  test(`queued send retains its explicit options and reports acceptance=${accepted}`, async () => {
+  test(`queued send retains its explicit options when the backend acceptance is ${accepted}`, async () => {
     const fixture = sendFixture({ accepted });
     const options = { queuedTaskId: '' };
-    assert.equal(await fixture.fn('queued', undefined, options), accepted);
+    assert.equal(await fixture.fn('queued', undefined, options), undefined);
     assert.deepEqual(fixture.sent, [['queued', 'session-1', undefined, options]]);
     assert.deepEqual(fixture.refreshed, []);
   });
 }
 
-test('design creation refreshes each project list once and preserves the boolean receipt', async () => {
+test('design creation refreshes each project list once and preserves its existing completion contract', async () => {
   const fixture = sendFixture({ sessionId: 'new', design: true });
-  assert.equal(await fixture.fn('draw a poster'), true);
+  assert.equal(await fixture.fn('draw a poster'), undefined);
   assert.deepEqual(fixture.projectReads, ['projects', 'project-1']);
   assert.deepEqual(fixture.sent, []);
   assert.equal(fixture.creatingSessionRef.current, false);
   assert.deepEqual(fixture.processing, [['new', true], ['new', false]]);
+});
+
+test('ordinary conversation sends preserve the develop input provenance', async () => {
+  const fixture = sendFixture();
+  const provenance = { input_origin: 'prompt_suggestion', assistance_origin: 'prompt_suggestion',
+    prompt_suggestion: { suggestion_id: 'suggestion-1', edited: false } };
+  assert.equal(await fixture.fn('hello', undefined, provenance), 'session-1');
+  assert.deepEqual(fixture.sent, [['hello', 'session-1', undefined, undefined, provenance]]);
 });
 
 const messageItem = read('components/ChatPanel/MessageItem.tsx');

@@ -857,7 +857,10 @@ async def test_deep_code_profile_keeps_a_bound_workspace_snapshot(tmp_path, monk
     monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "en")
     monkeypatch.setattr(adapter, "_resolve_prompt_channel", lambda sid: "web")
     monkeypatch.setattr(adapter, "_schedule_runtime_state_write", lambda **kw: None)
-    monkeypatch.setattr(adapter, "_sync_a4p_tools_for_runtime", lambda *args: None)
+    monkeypatch.setattr(
+        adapter, "_sync_a4p_tools_for_runtime",
+        lambda config, channel_id, session_id, *, request_id: None,
+    )
     monkeypatch.setattr(adapter, "_update_rails_for_mode", AsyncMock())
     monkeypatch.setattr(adapter, "_set_user_interaction_enabled", AsyncMock())
     monkeypatch.setattr(adapter, "_update_tools_for_mode", AsyncMock())

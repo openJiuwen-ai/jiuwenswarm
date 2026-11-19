@@ -15,6 +15,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from email.message import Message
 from pathlib import Path
 from typing import Any, Iterator, Mapping
 
@@ -32,6 +33,24 @@ _DATA_DIR_ENV = "EXTENSION_DATA_DIR"
 _RESTART_SIGNAL_PATH_ENV = "JIUWENSWARM_RECOVERY_RESTART_SIGNAL_PATH"
 _INSTALL_DIR_DEFAULT = "extension_pkgs"
 _DATA_DIR_DEFAULT = "extension"
+
+
+def is_local_recovery_request(headers: Message, server_port: int) -> bool:
+    """Require the recovery server's loopback authority and same-origin browser requests."""
+    hosts = headers.get_all("Host", [])
+    if len(hosts) != 1:
+        return False
+    authority = hosts[0].strip().lower()
+    allowed = {f"127.0.0.1:{server_port}", f"localhost:{server_port}", f"[::1]:{server_port}"}
+    if server_port == 80:
+        allowed.update({"127.0.0.1", "localhost", "[::1]"})
+    if authority not in allowed:
+        return False
+    origins = headers.get_all("Origin", [])
+    expected_origin = f"http://{authority}"
+    if server_port == 80:
+        expected_origin = expected_origin.removesuffix(":80")
+    return not origins or (len(origins) == 1 and origins[0].lower() == expected_origin)
 
 
 class RecoveryRecordNotFound(LookupError):

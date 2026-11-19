@@ -783,7 +783,7 @@ async def test_synchronous_queue_writer_keeps_its_existing_behavior(history_host
 
 @pytest.mark.asyncio
 async def test_existing_history_append_rpc_uses_policy_and_returns_committed_data(history_host):
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+    from e2a.wire_codec import parse_agent_server_wire_unary
     from jiuwenswarm.common.schema.agent import AgentRequest
     from jiuwenswarm.common.schema.message import ReqMethod
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
@@ -815,7 +815,7 @@ async def test_existing_history_append_rpc_uses_policy_and_returns_committed_dat
 
 @pytest.mark.asyncio
 async def test_history_rpc_uses_host_directories_instead_of_supplied_paths(history_host, tmp_path):
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+    from e2a.wire_codec import parse_agent_server_wire_unary
     from jiuwenswarm.common.schema.agent import AgentRequest
     from jiuwenswarm.common.schema.message import ReqMethod
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer

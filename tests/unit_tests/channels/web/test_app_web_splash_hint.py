@@ -10,8 +10,8 @@ from http.server import ThreadingHTTPServer
 
 from jiuwenswarm.channels.web import app_web
 from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
-from jiuwenswarm.gateway.extensions_v2.config import GatewayExtensionConfig, load_gateway_config
-from jiuwenswarm.gateway.extensions_v2.splash_hint import installed_splash_providers
+from agent_gateway.extensions_v2.config import GatewayExtensionConfig, load_gateway_config
+from agent_gateway.extensions_v2.splash_hint import installed_splash_providers
 
 
 def _install(root, package_id, items, *, versioned=True, domain="gateway"):
@@ -54,7 +54,7 @@ def test_the_hint_uses_the_gateway_configuration(tmp_path, monkeypatch):
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path))
     install_dir = load_gateway_config({}).install_dir
     seen = []
-    monkeypatch.setattr("jiuwenswarm.gateway.extensions_v2.splash_hint.load_gateway_config",
+    monkeypatch.setattr("agent_gateway.extensions_v2.splash_hint.load_gateway_config",
                         lambda: seen.append(True) or GatewayExtensionConfig(install_dir=tmp_path / "custom"))
     _install(tmp_path / "custom", "test.splash", [_slot("application.splash")])
     assert app_web._splash_candidates() is True and seen == [True]

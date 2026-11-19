@@ -15,7 +15,7 @@ from typing import Callable, Iterator
 
 from openjiuwen.core.events import SessionContext
 
-from jiuwenswarm.common.protocol_ids import is_valid_session_id
+from agent_gateway.common.protocol_ids import is_valid_session_id
 from jiuwenswarm.server.runtime.session.model_selection_store import (
     SESSION_MODEL_INFO_KEY,
     capture_runtime_model_info,

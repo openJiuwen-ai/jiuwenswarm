@@ -8,3 +8,6 @@
 插件菜单未指定排序位置时，追加到已有菜单之后。旧插件声明 `after: "extensions"` 时，按缺失排序锚点的规则追加，菜单及配置项仍可正常显示。
 
 开发声明与位置规则见 [S_18 插件设置 location 规约](../../jiuwenswarm/extensions_v2/docs/specs/S_18_settings-location.md)。
+
+“系统插件还原”可将已安装插件的启用状态恢复到选定记录，并重启 AgentServer、其所属 Worker 和 Gateway；正在处理的任务会中断。
+还原页独立监听本机回环地址，主服务异常时仍可使用。它不会恢复已卸载的包，也不会撤销插件产生的文件或网络副作用。

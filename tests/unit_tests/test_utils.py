@@ -500,9 +500,16 @@ def test_prepare_workspace_does_not_copy_legacy_heartbeat_template(
 
 def test_prepare_workspace_copies_rsi_program_dataset_creator(
     tmp_path: Path,
+    monkeypatch,
 ) -> None:
     """Initial workspace preparation includes the new built-in skill."""
     workspace_dir = tmp_path / ".jiuwenswarm"
+    if os.name == "nt":
+        source = utils.get_builtin_skills_dir()
+        if not str(source).startswith("\\\\?\\"):
+            source = Path("\\\\?\\" + str(source.resolve()))
+        workspace_dir = Path("\\\\?\\" + str(workspace_dir.resolve()))
+        monkeypatch.setattr(utils, "get_builtin_skills_dir", lambda: source)
 
     utils.prepare_workspace(
         overwrite=False,
@@ -1101,7 +1108,7 @@ class TestCleanupStaleOpenjiuwenDescs:
             "agent_gateway/app_gateway.py",
         ),
     )
-    def test_startup_entrypoints_clean_before_openjiuwen_import(relative_path):
+    def test_startup_entrypoints_clean_before_openjiuwen_import(relative_path, monkeypatch):
         root = Path(__file__).resolve().parents[2]
         if relative_path.startswith("agent_gateway/"):
             import agent_gateway
@@ -1112,7 +1119,21 @@ class TestCleanupStaleOpenjiuwenDescs:
         else:
             source_path = root / relative_path
         source = source_path.read_text(encoding="utf-8")
-        cleanup_call = source.index("cleanup_stale_openjiuwen_descs()")
+        if relative_path.startswith("agent_gateway/"):
+            from agent_gateway.common import paths
+            from agent_gateway.startup import bootstrap
+
+            stages = []
+            monkeypatch.setenv("JIUWENSWARM_RUNTIME_WORKSPACE_READY", "0")
+            monkeypatch.setattr(paths, "cleanup_stale_openjiuwen_descs", lambda: stages.append("cleanup"))
+            monkeypatch.setattr(paths, "prepare_runtime_workspace",
+                                lambda *, cleanup_stale_descs: stages.append(("prepare", cleanup_stale_descs)))
+            bootstrap.prepare_group_workspace(stages.append)
+            assert stages == ["cleanup", ("prepare", False), "runtime_workspace_ready"]
+            cleanup_call = source.index("prepare_group_workspace(_mark_startup_import_phase)")
+            assert cleanup_call < source.index("from agent_gateway.channel_manager.base import BaseWebChannel")
+        else:
+            cleanup_call = source.index("cleanup_stale_openjiuwen_descs()")
 
         # 只约束 openjiuwen SDK 本体：清理针对的是 SDK 会读取的过期描述文件。
         # ``openjiuwen_protocol`` 是独立的纯协议包，不读取 workspace 描述文件，

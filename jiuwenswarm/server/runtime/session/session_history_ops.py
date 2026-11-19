@@ -13,7 +13,7 @@ import re
 import time
 from typing import Any
 
-from jiuwenswarm.common.protocol_ids import is_valid_session_id
+from agent_gateway.common.protocol_ids import is_valid_session_id
 from jiuwenswarm.server.runtime.session import lifecycle
 from jiuwenswarm.server.runtime.session.session_history import (
     HistoryAppendConflict,

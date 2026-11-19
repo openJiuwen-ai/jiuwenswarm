@@ -7,12 +7,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
 from openjiuwen.core.events import ExtensionEventBus
 
 from jiuwenswarm.extensions_v2 import bootstrap
+from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.extensions_v2.session_authorization.service import AuthorizationCaller, SessionAuthorizationService
 from jiuwenswarm.extensions_v2.session_compaction.service import SessionCompactionService
 from jiuwenswarm.extensions_v2.config import (
@@ -269,8 +269,5 @@ def _workspace_locator(server: Any) -> Any:
     return locate if callable(locate) else None
 
 
-def _host_version() -> str | None:
-    try:
-        return version("jiuwenswarm")
-    except PackageNotFoundError:
-        return None
+def _host_version() -> str:
+    return get_runtime_version()

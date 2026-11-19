@@ -10,8 +10,8 @@ import math
 
 from openjiuwen.core.context_engine.usage import ContextUsageSnapshot
 
-from jiuwenswarm.common.protocol_ids import is_valid_session_id
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_ORIGIN
+from agent_gateway.common.protocol_ids import is_valid_session_id
+from agent_gateway.common.session_message import SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.server.runtime.session.session_history import read_committed_main_history
 
 SESSION_USAGE_INFO_KEY = "session_usage_info"

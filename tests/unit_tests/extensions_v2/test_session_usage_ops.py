@@ -14,7 +14,7 @@ import pytest
 from openjiuwen.core.events import Event, SessionContext
 
 from jiuwenswarm.common import utils
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_ORIGIN
+from agent_gateway.common.session_message import SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.extensions_v2 import assembly
 from jiuwenswarm.extensions_v2.event_types import context_usage
 from jiuwenswarm.extensions_v2.handler_ops.session_ops import session_turns, session_usage

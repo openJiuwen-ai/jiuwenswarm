@@ -4,12 +4,26 @@
       {
         "digest": "7ce7e37f34ead53a642a4801a5b64d2b3c68d9d0ddcd61aacdeddf78174853d6",
         "revision": "079f09d91efc3442f5200a38595d21b8a5251207"
+      },
+      {
+        "digest": "e32a45f2d17854ed0dd8d90774c1bfd99a35d72167eb31a4c0c497076af07fa9",
+        "revision": "4b1b4fcff703578308871a5828d338b90797c05d"
       }
     ],
     "skill_display.md": [
       {
         "digest": "c3157b7ed7b53abeec9b60915591eb0fded5be08143dfcdb8c490e255ef47b6f",
         "revision": "079f09d91efc3442f5200a38595d21b8a5251207"
+      },
+      {
+        "digest": "f3e477c034d4bb49a1d35c9c69842799ebe204d1cc10d7af9aa35e26bd296b84",
+        "revision": "4b1b4fcff703578308871a5828d338b90797c05d"
+      }
+    ],
+    "references/catalog.md": [
+      {
+        "digest": "d34e3f20fc5bdcb8e7f758fb1634cfb4223135f8b1dc96a5d9a6976f90bc3385",
+        "revision": "4b1b4fcff703578308871a5828d338b90797c05d"
       }
     ]
   },

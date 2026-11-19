@@ -25,7 +25,7 @@ from openjiuwen.core.events import (
     SessionContext,
 )
 
-from jiuwenswarm.common.protocol_ids import is_valid_session_id
+from agent_gateway.common.protocol_ids import is_valid_session_id
 from jiuwenswarm.extensions_v2.event_types.session_queries import SESSION_QUERY_EVENTS
 from jiuwenswarm.extensions_v2.handler_ops.session_queries import session_query_method
 from jiuwenswarm.server.runtime.session.model_selection_store import (

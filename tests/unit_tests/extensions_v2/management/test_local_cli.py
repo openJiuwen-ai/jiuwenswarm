@@ -317,6 +317,33 @@ async def test_subprocess_uses_inherited_context_and_utf8(archive: Path, tmp_pat
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["extension", "presentation"])
+async def test_management_cli_help_stays_on_stdout(tmp_path: Path, command: str) -> None:
+    environment = dict(os.environ, PYTHONPATH=str(ROOT), PYTHONDONTWRITEBYTECODE="1")
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-B", "-m", "jiuwenswarm.channels.cli.main", command, "--help",
+        cwd=tmp_path, env=environment, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await asyncio.wait_for(process.communicate(), 20)
+    assert process.returncode == 0, stderr.decode("utf-8", errors="replace")
+    assert "usage:" in stdout.decode("utf-8")
+    assert stderr == b""
+
+
+@pytest.mark.asyncio
+async def test_presentation_subprocess_keeps_missing_host_response_as_json(tmp_path: Path) -> None:
+    environment = dict(os.environ, PYTHONPATH=str(ROOT), PYTHONDONTWRITEBYTECODE="1")
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-B", "-m", "jiuwenswarm.channels.cli.main", "presentation", "query", "--json",
+        cwd=tmp_path, env=environment, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await asyncio.wait_for(process.communicate(), 20)
+    result = json.loads(stdout.decode("utf-8"))
+    assert process.returncode == 2, stderr.decode("utf-8", errors="replace")
+    assert result["error"]["code"] == "HOST_UNAVAILABLE"
+
+
+@pytest.mark.asyncio
 async def test_no_context_is_reported_without_port_search(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("AGENT_SERVER_PORT")
     monkeypatch.delenv("AGENT_PORT", raising=False)
@@ -355,7 +382,8 @@ def test_frozen_entry_dispatches_before_single_instance_lock(
     monkeypatch.setattr(sys, "argv", ["workswarm", "extension", "query", "--json"])
     monkeypatch.setattr(sys, "frozen", frozen, raising=False)
     namespace = {"sys": sys, "_pop_flag": lambda flag: False, "_ensure_stdio": lambda: None,
-                 "_DESKTOP_INSTALL_EXTERNAL_CLI": "install-cli", "_DESKTOP_RESET_EXTERNAL_CLI_CONFIG": "reset-cli"}
+                 "_DESKTOP_INSTALL_EXTERNAL_CLI": "install-cli", "_DESKTOP_RESET_EXTERNAL_CLI_CONFIG": "reset-cli",
+                 "_DESKTOP_REMOVE_OFFICE_ADDINS": "remove-office-addins"}
     exec(compile(ast.Module(body=[function], type_ignores=[]), "frozen_dispatch", "exec"), namespace)
     assert namespace["_dispatch"]() == 3
     assert calls == [["query", "--json"]]

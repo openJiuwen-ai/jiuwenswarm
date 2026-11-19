@@ -1374,6 +1374,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
     def _handle_system_plugin_recovery_endpoint(self) -> None:
         """Return the private loopback page URL without using extension services."""
+        from jiuwenswarm.common.system_plugin_recovery import is_local_recovery_request
+
+        if not is_local_recovery_request(self.headers, self.server.server_address[1]):
+            self._write_json(403, {"error": "forbidden"})
+            return
         if self._check_desktop_access():
             return
         if not self.desktop_token and not _is_loopback_address(self.client_address[0]):

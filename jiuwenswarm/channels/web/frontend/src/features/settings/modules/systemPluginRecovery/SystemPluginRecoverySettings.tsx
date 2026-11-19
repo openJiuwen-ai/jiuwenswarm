@@ -2,10 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import { CircleAlert, Loader2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useOptionalWebUIAppContext } from '../../../webui/react/WebUIProvider';
+import { chatRoutePath } from '../../../../multi-session/routing/route';
 import './SystemPluginRecoverySettings.css';
 
 const RECOVERY_ROUTE = '/system-plugin-recovery';
-const ENDPOINT_PATH = `${RECOVERY_ROUTE}/endpoint`;
 const MAX_ENDPOINT_ATTEMPTS = 10;
 const ENDPOINT_RETRY_DELAY_MS = 500;
 const RECOVERY_HEIGHT_MESSAGE = 'jiuwenswarm.system-plugin-recovery.height';
@@ -47,8 +47,9 @@ function recoveryPageUrl(value: unknown, locale: string): string | null {
 }
 
 function navigateToRecoveryRoute(): void {
-  if (window.location.pathname === RECOVERY_ROUTE) return;
-  window.history.pushState(null, '', RECOVERY_ROUTE);
+  const routePath = chatRoutePath({ kind: 'system-plugin-recovery' });
+  if (window.location.pathname === routePath) return;
+  window.history.pushState(null, '', routePath);
   window.dispatchEvent(new PopStateEvent('popstate'));
 }
 
@@ -119,13 +120,14 @@ export function SystemPluginRecoverySettings() {
 
   useEffect(() => {
     navigateToRecoveryRoute();
-    if (window.location.pathname !== RECOVERY_ROUTE) return undefined;
+    const routePath = chatRoutePath({ kind: 'system-plugin-recovery' });
+    if (window.location.pathname !== routePath) return undefined;
 
     let cancelled = false;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     const loadEndpoint = async (attempt: number) => {
       try {
-        const response = await fetch(ENDPOINT_PATH, {
+        const response = await fetch(`${routePath}/endpoint`, {
           cache: 'no-store',
           credentials: 'same-origin',
         });

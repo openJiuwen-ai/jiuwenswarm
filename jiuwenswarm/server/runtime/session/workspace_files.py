@@ -16,7 +16,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from jiuwenswarm.common.file_download_token import build_verified_asset_download_info
-from jiuwenswarm.common.mode_matrix import deprecate_mode, is_single_agent_mode, is_team_mode
+from agent_gateway.common.mode_matrix import deprecate_mode, is_single_agent_mode, is_team_mode
 from jiuwenswarm.common.projectless_workspace import get_registered_projectless_task_root
 from jiuwenswarm.common.runtime_workspace import RuntimeWorkspacePaths
 from jiuwenswarm.common.verified_download_assets import get_verified_download_asset_owner
