@@ -441,6 +441,7 @@ async def test_todo_missing_modify_action_fails_without_skipping_sibling(
 
     result, message = results[0]
     assert result["success"] is False
+    assert "[INVALID_ARGUMENT]" in message.content
     assert "'modify_action' is required" in message.content
     assert "PERMISSION_DENIED" not in message.content
     modify.assert_not_awaited()
@@ -453,6 +454,7 @@ async def test_todo_missing_modify_action_fails_without_skipping_sibling(
     ]
     event = next(event for event in events if event["tool_call_id"] == "call-1")
     assert event["success"] is False
+    assert event["result"].startswith("[ERROR]: [INVALID_ARGUMENT]")
     assert "'modify_action' is required" in event["result"]
 
 

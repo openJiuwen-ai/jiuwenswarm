@@ -73,7 +73,7 @@ init 建四个 openjiuwen 引擎实例（create/list/get/modify，共享**单个
 权限面 `project_operations("todo", args)`：先校验 `action ∈ {create, list, get, modify}`（非法 raise），产出引擎名操作 `todo_{action}`；modify 再校验 `modify_action ∈ {update, append, delete, cancel, insert_before, insert_after}` 并产出 `todo_modify`，同时**追加历史 fallback 名**——append/insert_* → `todo_insert`，delete/cancel → `todo_remove`，update 且含 completed 条目 → `todo_complete`。旧权限配置（`config.yaml` 三份、前端 `AvatarPermEditor` 五历史名）与新统一名都能匹配。
 
 **N12 参数错误以结构化失败返回**
-统一 todo 工具与权限投影共用 action、modify_action 和 update/append 的数组校验。工具本体返回带纠正提示的 `ToolOutput(success=False)`。权限投影捕获该校验抛出的 `TodoArgumentError` 后停止本次调用，以现有工具结果字段返回 `status=error`、`success=false` 和具体参数错误。外层明确 DENY 时保留权限拒绝。已知参数错误不生成审批，修正后作为新调用检查外层及子操作权限。FlashTodoRail 忽略明确失败结果，不为它登记待办推进或收尾。
+统一 todo 工具与权限投影共用 action、modify_action 和 update/append 的数组校验。工具本体返回带纠正提示的 `ToolOutput(success=False)`。权限投影捕获该校验抛出的 `TodoArgumentError` 后停止本次调用，以现有工具结果字段返回 `status=error`、`success=false` 和具体参数错误。展示文本使用 `[ERROR]:` 前缀，使工具卡可识别失败，且保留后面的 `[INVALID_ARGUMENT]` 和字段提示。外层明确 DENY 时保留权限拒绝。已知参数错误不生成审批，修正后作为新调用检查外层及子操作权限。FlashTodoRail 忽略明确失败结果，不为它登记待办推进或收尾。
 
 modify 的 update/append 必须提供 `todos` 数组，单项修改也使用数组；顶层 id/status 不替代它。工具描述和 schema 的条目属性说明该形状，运行时缺数组时返回正确示例，不调用引擎。仅对“多个进行中任务”校验错误，补充可读取的当前进行中 ID 和未提交说明；不自动改状态，其他引擎异常沿原路径传播。字段及权限投影规则保持既有约定。
 

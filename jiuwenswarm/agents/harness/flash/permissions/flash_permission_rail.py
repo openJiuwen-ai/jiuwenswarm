@@ -144,7 +144,13 @@ class FlashPermissionRail(SkillTurboPermissionRail):
                 self._resolve_session_id(ctx), tool_call.id, result.reason,
             )
             return RejectResult(
-                tool_result={"status": "error", "success": False, "error": result.reason},
+                tool_result={
+                    "status": "error",
+                    "success": False,
+                    "error": result.reason,
+                    # Existing tool cards use the rendered detail to identify failures.
+                    "display": f"[ERROR]: {result.reason}",
+                },
                 tool_message=ToolMessage(content=result.reason, tool_call_id=tool_call.id),
             )
         return self.reject(tool_result=permission_message)
