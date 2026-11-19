@@ -91,6 +91,14 @@ class ChatSendParams(TypedDict, total=False):
     model_ref: NotRequired[str]
     """模型唯一身份引用；由 relay 下发，优先于 model_name。"""
 
+    selected_context_window_tokens: NotRequired[int]
+    """卡片当前选用的上下文窗口（token 正整数）。
+
+    OfficeAce 卡片档位经 chat.send 下发；合法时优先生效为压缩分母。
+    缺省时回退 catalog ``models.defaults[].context_window_tokens``，再否则内置表→200000。
+    禁止写入 ``model_config_obj``（会进入厂商请求）。
+    """
+
     request_id: NotRequired[str]
     """请求 ID（interrupt resume / 问答回复场景关联）。"""
 
