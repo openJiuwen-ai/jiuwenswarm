@@ -12830,6 +12830,20 @@ class JiuWenSwarmDeepAdapter:
                 )
             clear_session_skill_state(str(self._parent_session_id or "").strip(), local_only=True)
             self._forget_skill_sleep_session(str(self._parent_session_id or "").strip())
+        # 任务规划 rail 的 todo 工具按实例唯一 id 注册在进程级 resource_mgr，
+        # purge 的 owner 后缀模式覆盖不到；随 adapter 生命周期逐条注销，
+        # 否则残留工具经 sys_operation 钉住整棵会话对象图（每会话 ~100KB）。
+        # 对两种 adapter 形态都执行，且不影响上方 else 分支的既有清理。
+        task_planning_rail = getattr(self, "_task_planning_rail", None)
+        rail_close = getattr(task_planning_rail, "close", None)
+        if callable(rail_close):
+            try:
+                rail_close()
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] task planning rail deregister failed: %s",
+                    exc,
+                )
         try:
             await self._sync_personal_context_rail("cleanup")
         except BaseException as exc:  # noqa: BLE001
