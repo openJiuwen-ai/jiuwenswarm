@@ -102,16 +102,17 @@ class SkillPackRouter:
         # A TTL/stat cache would miss changes made outside SkillManager.
         #
         # An unrelated skill install/uninstall holds the shared inventory lock
-        # for a short while. If our scan loses that race it would otherwise be
+        # for a short while. If our scan loses that race the lock acquire times
+        # out (filelock.Timeout is a TimeoutError), which would otherwise be
         # treated as a SkillPack state change and stop a confirmed task (#6788).
-        # Retry once after a brief wait: transient lock contention resolves,
-        # while a genuine pack/member change is still caught by the revision
-        # comparison in the callers.
+        # Retry once after a brief wait only for that transient contention.
+        # Genuine read errors (OSError) must still surface to callers so a real
+        # inventory failure is not silently masked by a second scan.
         try:
             return await asyncio.to_thread(
                 self.manager().skillpack_inventory_snapshot, lock_timeout=5
             )
-        except Exception:
+        except TimeoutError:
             await asyncio.sleep(0.3)
             return await asyncio.to_thread(
                 self.manager().skillpack_inventory_snapshot, lock_timeout=5
