@@ -1,9 +1,10 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""网页通道出站脱敏。个人版和企业版共用这条路径，不按版本分叉。
+"""敏感信息脱敏。个人版和企业版共用，不按版本分叉。
 
 开关和正则在 config.yaml 的 sensitive_mask。开关关闭时原文直出。
-只改发给网页的副本，不改历史文件，也不改送给模型的上下文。
+开启后作用于各通道展示副本（网页出站文本、权限审批文案等），
+不改历史文件，也不改送给模型的上下文。
 """
 
 from __future__ import annotations
@@ -157,6 +158,23 @@ def _mask_string(text: str, patterns: list[str], mask_complete: Any) -> str:
     except re.error:
         logger.warning("[sensitive_mask] 替换失败，本段原文直出", exc_info=True)
         return text
+
+
+def mask_permission_question(text: str) -> str:
+    """对定稿后的权限审批文案做一次整段脱敏。
+
+    复用 ``sensitive_mask`` 开关与 rules；关闭、无规则或库未安装时原文返回。
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    patterns = _active_patterns()
+    if not patterns:
+        return text
+    loaded = _load_mask_types()
+    if loaded is None:
+        return text
+    _, mask_complete = loaded
+    return _mask_string(text, patterns, mask_complete)
 
 
 def _mask_value(value: Any, patterns: list[str], mask_complete: Any, depth: int = 0) -> Any:
