@@ -525,11 +525,15 @@ def test_prepare_workspace_restores_external_cli_agents_from_sidecar(tmp_path, m
     import json as json_lib
     import yaml
 
+    valid_cli = tmp_path / "tools" / "claude.exe"
+    valid_cli.parent.mkdir(parents=True)
+    valid_cli.write_text("stub", encoding="utf-8")
+
     sidecar = tmp_path / "outside" / "external_cli_state.json"
     sidecar.parent.mkdir(parents=True)
     sidecar.write_text(
         json_lib.dumps({
-            "agents": [{"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}],
+            "agents": [{"cli_agent": "claude", "cli_path": str(valid_cli)}],
             "histories": {"claude": ["D:/tools/claude-old.exe"]},
             "transport": {"type": "hybrid", "params": {"external_publish_url": "http://hub"}},
         }),
@@ -548,7 +552,7 @@ def test_prepare_workspace_restores_external_cli_agents_from_sidecar(tmp_path, m
     restored = yaml.safe_load((workspace_dir / "config" / "config.yaml").read_text(encoding="utf-8"))
     team = restored["modes"]["team"]["jiuwen_team"]
     assert team["external_cli_agents"] == [
-        {"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}
+        {"cli_agent": "claude", "cli_path": str(valid_cli)}
     ]
     assert team["external_cli_path_histories"]["claude"] == ["D:/tools/claude-old.exe"]
     assert team["external_transport"] == {
@@ -622,15 +626,24 @@ def test_refresh_external_cli_state_sidecar_mirrors_config(tmp_path, monkeypatch
 
 def test_prepare_workspace_force_reset_restores_sidecar_agents(tmp_path, monkeypatch):
     """init -f 强制重置同样从旁路恢复三方 agent 状态且保留旁路文件
-    （2026-11-19 语义调整：init 一律保留已安装/已开启状态，不再清旁路）。"""
+    （2026-11-19 语义调整：init 一律保留已安装/已开启状态，不再清旁路）。
+    指向已删除安装的条目（cli_path 不存在）被剔除（AI 检视 !10636）。"""
     import json as json_lib
     import yaml
+
+    valid_cli = tmp_path / "tools" / "claude.exe"
+    valid_cli.parent.mkdir(parents=True)
+    valid_cli.write_text("stub", encoding="utf-8")
+    missing_cli = tmp_path / "tools" / "missing.exe"
 
     sidecar = tmp_path / "outside" / "external_cli_state.json"
     sidecar.parent.mkdir(parents=True)
     sidecar.write_text(
         json_lib.dumps({
-            "agents": [{"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}],
+            "agents": [
+                {"cli_agent": "claude", "cli_path": str(valid_cli)},
+                {"cli_agent": "codex", "cli_path": str(missing_cli)},
+            ],
             "histories": {"claude": ["D:/tools/claude-old.exe"]},
         }),
         encoding="utf-8",
@@ -662,7 +675,7 @@ def test_prepare_workspace_force_reset_restores_sidecar_agents(tmp_path, monkeyp
     restored = yaml.safe_load((config_dir / "config.yaml").read_text(encoding="utf-8"))
     team = restored["modes"]["team"]["jiuwen_team"]
     assert team["external_cli_agents"] == [
-        {"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}
+        {"cli_agent": "claude", "cli_path": str(valid_cli)}
     ]
     assert team["external_cli_path_histories"]["claude"] == ["D:/tools/claude-old.exe"]
 

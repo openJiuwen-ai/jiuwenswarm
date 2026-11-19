@@ -1270,6 +1270,28 @@ def _read_external_cli_state_sidecar(workspace_dir: Path) -> Optional[dict[str, 
         return None
 
 
+def _filter_restorable_external_cli_state(state: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """按 cli_path 存在性校验旁路恢复条目（AI 检视 !10636）。
+
+    指向已删除安装的条目被丢弃，避免 init -f 重置后出现
+    "agent 已开启但路径不存在"；cli_path 为空（内置托管模式）的
+    条目保留；全部失效时返回 None（落回模板默认）。
+    """
+    agents = state.get("agents") if isinstance(state, dict) else None
+    if not isinstance(agents, list):
+        return None
+    kept = []
+    for item in agents:
+        if not isinstance(item, dict):
+            continue
+        cli_path = str(item.get("cli_path") or "").strip()
+        if not cli_path or Path(cli_path).is_file():
+            kept.append(item)
+    if not kept:
+        return None
+    return {**state, "agents": kept}
+
+
 def prepare_workspace(
     overwrite: bool = True,
     preferred_language: Optional[str] = None,
@@ -1310,6 +1332,10 @@ def prepare_workspace(
         # 时自然落到模板默认；要彻底重置三方 agent，在 UI 里关闭对应 agent 并
         # 保存，旁路即同步为空态，后续 init 恢复为空）。
         pre_restore_state = _read_external_cli_state_sidecar(workspace_dir)
+        if pre_restore_state is not None:
+            # 强制重置/全新初始化都校验恢复条目：cli_path 已删除的安装被丢弃，
+            # 避免 init -f 后"agent 已开启但路径不存在"（AI 检视 !10636）。
+            pre_restore_state = _filter_restorable_external_cli_state(pre_restore_state)
         with TrackCopyDiff(
             dest=config_yaml_dest,
             is_file=True,
@@ -1853,6 +1879,10 @@ def init_user_workspace(
                 f"entire {workspace_dir} will be deleted for clean initialization."
             )
             print("[jiuwenswarm-init] WARNING: This will delete all historical configuration and memory information.")
+            print(
+                "[jiuwenswarm-init] NOTE: External CLI agent state is restored from the state sidecar; "
+                "entries whose CLI path no longer exists are dropped."
+            )
             print("[jiuwenswarm-init] This action cannot be undone.")
             if _is_interactive():
                 confirmation = input(
