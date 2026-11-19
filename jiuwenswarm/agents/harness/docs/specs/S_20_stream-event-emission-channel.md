@@ -47,6 +47,10 @@
 - **N9（发射跳过名单）**：`before_tool_call` 对 `skill_acceleration_exec` 且 `RESUME_USER_INPUT_KEY` 非空（resume 重放）跳过 `_emit_tool_call` / `_emit_tool_update`；`is_todo_close_nudge(tc)` 同跳。`after_tool_call` 对 deepresearch_execute 的 TIE 结果、todo close nudge 提前 return。这些跳过是防重复事件（resume 侧已发过 / nudge 是内部机制）。
 - **N10（装配失败降级为 None 不抛）**：`_build_stream_event_rail`（deep @9620）try/except——构建失败记 warning 返回 None，adapter 以 `_stream_event_rail is None` 分支继续运行（无流式事件但功能不瘫）。
 
+## 阶段加速交付接缝
+
+SkillTurbo的新模式在现有工具/文本事件中使用可选turbo_context、turbo_delivery，adapter解析保留任务、外层/子调用和文件归属；不新增事件类型。目录加载和交付总结实际SDK顺序、Flash收尾约束由 `jiuwenswarm/server/runtime/skill_turbo/docs/specs/S_12_model-disclosure-and-delivery.md` 维护；实现/测试记录见同模块F_09。
+
 ## 接口契约
 
 ### agent-core 侧（`core/session/stream/`）

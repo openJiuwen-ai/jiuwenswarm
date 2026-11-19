@@ -7,12 +7,14 @@
 | 类型 | spec |
 | 编号 / slug | S_01 / execution-pipeline |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`（主战场：agent.py / executor.py / skill_turbo_tools.py；environment.py / planner.py 仅涉执行链一侧） |
-| 最近一次修订日期 | 2026-11-03 |
+| 最近一次修订日期 | 2026-11-16 |
 | 关联 feature | [[F_02]]（回调槽 12→11 / resume 横幅不再抑制）；[[F_04]]（inputs 注入 python_cmd） |
 
 > 代码定位约定：本文一律用"文件 + 方法名"定位；随附行号必然随代码演进漂移，以方法名为准。
 
 ## 范围与边界
+
+同技能批次在第七步接入，完整静态校验、逐段owner、步骤force、审阅组合、segment.batch断点及调用ID隔离以 [[S_13]] 为准；legacy协议不扩大。
 
 ### 本规约管什么
 
@@ -42,18 +44,18 @@ SkillTurbo 技能加速引擎的**端到端执行循环**与其上的**执行状
 
 任意时刻，执行管线必须满足下列 15 条断言：
 
-1. **N1 请求隔离**：每次 `skill_acceleration_exec` 调用新建 SkillTurbo / SkillTurboEnvironment / SkillTurboExecutor 三实例；实例属性不跨请求。唯一跨实例共享状态是 environment 的 3 个类级缓存（`_scan_cache` / `_external_scan_cache` / `_tool_info_last_export`）。
+1. **N1 请求隔离**：每次 `skill_acceleration_exec` 调用新建 SkillTurbo / SkillTurboEnvironment / SkillTurboExecutor 三实例；实例业务状态不跨请求。environment 缓存、同源展示缓存及会话级租约/写锁在单进程共享；跨段业务状态的权威是隔离 checkpointer 台账，见 [[S_10]]。
 2. **N2 外部覆盖内置**：`_scan_external_turbo_skills` 注册晚于 `_scan_skills_dir`；同名 Skill 外部版本胜出（environment.py `_load`）。
 3. **N3 plan_code 形态唯一**：executor 只接受 `from {allowed_prefix}xxx import root` 单条 import 形态（validator 与 `_safe_import` 前缀白名单双重强制）；root 必须是 PlanNode 实例。细节见 [[S_03]]。
-4. **N4 AbortError 全链不吞**：rail → use_tool → PlanNode.run/run_stream → `_execute_node_stream` → `execute_plan_stream` → SkillTurbo.run_stream → adapter，每一层都有显式 re-raise 分支；任何一层不得把 AbortError 转 node_error / chat.error / complete。传播详表见 [[S_06]]。
+4. **N4 AbortError 全链不吞**：rail → use_tool → PlanNode.run/run_stream → `_execute_node_stream` → `execute_plan_stream` → SkillTurbo.run_stream → adapter，每一层都有显式 re-raise 分支；任何一层不得把 AbortError 转 node_error / chat.error / complete。唯一例外是普通段 can_pause=false，在段门面终止并返回 failed，禁止 fallback 和暂停信号；见 [[S_11]]。传播详表见 [[S_06]]。
 5. **N5 resume 重放三跳过**：completed stage 跳真实执行（after 回调仍收集产物）；completed / in_progress stage 跳重复 task.start；in_progress stage 抑制开始横幅。task_id 按 display name / index 对齐复用，不新发 UUID。
-6. **N6 产物继承 hash 门禁**：`_inherit_node_artifacts_for_replay` 仅当持久化 `plan_code_hash` 与当前重放 plan_code 哈希一致才继承；无哈希的旧记录视为匹配（fail-open）。
-7. **N7 checkpointer 键隔离**：resume_ctx / node_artifacts 的所有持久化读写经 `set_skill_turbo_id` 使用 `{card.id}__skill_turbo` 隔离键，与 DeepAgent 主链路键空间分离。
+6. **N6 产物继承 hash 门禁**：legacy `_inherit_node_artifacts_for_replay` 仅当持久化 `plan_code_hash` 与当前重放哈希一致才继承；无哈希旧记录的 fail-open 仅适用于 legacy。新段桶严格匹配 namespace 和非空 hash，不能继承旧格式记录。
+7. **N7 checkpointer 键隔离**：resume_ctx / node_artifacts / skill_ledger 持久化使用 `{card.id}__skill_turbo`，与 DeepAgent 主链路分离。新段状态缺身份明确拒绝；台账不接管 resume_ctx。
 8. **N8 session_id 稳定性**：中断与恢复两侧必须解析到同一 session_id（inputs.session_id 优先，conversation_id 回退）；不一致时断点按随机 UUID 落库、恢复必然 miss（executor 仅 warning，不 fail-fast）。
 9. **N9 工具按全局 tool_id 现取 + ContextVar 路由**：`get_tool_function` 每次从 `Runner.resource_mgr` 现取实例（并发下后注册者覆盖是已知行为）；携带 session 语义的工具（send_file_to_user）必须走请求级 ContextVar 解析，不得依赖实例字段。
 10. **N10 交付真话契约**：p10 `delivery_status=="failed"` 时工具层必须返回 `success=False`；无 P10 骨架且无 `send_file_status=="sent"` 确认时，交付文案只能是中性提示，不得宣称文件已发送。
 11. **N11 workspace_base 显式性**：`inputs["workspace_base"]` 只能来自 `request_metadata["output_dir"]`，且仅当其非空时设置；缺失时不设置、无任何 agent workspace 兜底。
-12. **N12 缓存 mtime 失效**：environment 类级扫描缓存 key 含 max .py mtime；mtime 计算失败返回 0.0 等价于禁用缓存强制重扫。
+12. **N12 缓存失效**：内置扫描保留 max .py mtime 与失败禁用缓存语义；外部扫描使用有序 roots、逐文件元数据及 TTL，不将 JSON stat 压进 max 值，见 [[S_02]]。
 13. **N13 确定性 tool_call_id**：同一次执行内相同顺序的 `(tool_name, canonical_args)` 调用产生相同 id 序列（`_setup_execution_context` 每次重置 `_tool_call_counter`）；request_id 混入 hash，故 resume 跨请求时精确命中必然失效，由 name+idx 回退命中兜底——回退命中是预期路径，不是降级路径。
 14. **N14 task_states 读取统一入口**：所有 task_states 运行期读取必须走 `_live_task_states()`（实例 holder 优先，回退 ContextVar）；新增读取点不得直接读 ContextVar。
 15. **N15 终态收口双轨制**：executor 只负责 `plan.finished` + `complete` 两类终帧；`chat.final` / `chat.invocation_paused` 归 adapter。AbortError 分支（E8）executor 不发任何终态帧。
@@ -302,6 +304,8 @@ pending ──_before_subplan_execute──▶ in_progress ──_after_subplan_
 15. 改 Environment 装配 → 外部覆盖内置顺序（N2）与缓存 mtime 失效（N12）不得破坏。
 
 ## 与其它 spec 的关系
+
+跨段状态/数据检查统一见 [[S_10]]：首次身份创建及重跑前失效须可靠持久化确认；普通完成保存失败仅告警。普通段经 [[S_11]] 的 SegmentContext 接入执行、暂停前持久化和 finally，三处均使用同一 namespace。输入装配与后置验证不自行执行 PlanNode。
 
 | Spec | 关系 |
 |---|---|

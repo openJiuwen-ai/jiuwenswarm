@@ -12,6 +12,13 @@
 
 ## 范围 / 边界
 
+同技能批次在第七步接入，完整静态校验、逐段owner、步骤force、审阅组合、segment.batch断点及调用ID隔离以 [[S_13]] 为准；legacy协议不扩大。
+
+
+阶段事件可选turbo_context、总结可选turbo_delivery携带对应任务/调用/文件归属；adapter重建帧时保留。pending及真实SDK顺序见 [[S_12]]，不新增前端事件类型。
+
+普通段仍使用既有事件映射、task 槽位及外层 todo 抑制策略。与 legacy 的例外见 [[S_11]]：chat.error 被消费为段错误，payload=None 的 complete 不结束父流；根结果在 JSON 序列化前捕获，handoff/artifact 内部键不得进入显示；中间段不附整任务停止提示。can_pause=false 在暂停信号外发前终止，正常 can_pause 的卡片仍由原 harness 单一路径产生。delivery_confirmed 仅从当前 holder 的真实 send_file_status=sent owner 派生，不按文件存在或业务 ok 推断，也不硬编码节点名。
+
 ### 本规约管什么
 
 executor / rails 产出的**事件类型全集、发射顺序约束、流式缓冲、tool 层转发协议与前端契约**：
@@ -132,7 +139,7 @@ StreamEventRail.after_tool_call 把 skill_acceleration_exec 的 tool_result 改�
 
 1. **P10 交付节点**（ppt 技能 delivery.py）把纯模板骨架（零 LLM、通道内确定性产出）写入 `artifact_holder["p10_delivery"]["delivery_summary"]`。
 2. **tool 层** `_wrap_skill_turbo_result` 成功分支把骨架挂到 `_pending_ppt_delivery_summary` ContextVar——**不进 tool_result 正文、不在流水线中途 chat.delta**：中途无 task_id 会与过程尾同桶，且早于 tool_result 会被上层前端 pptTurboSummary 收集窗口清空。
-3. **DeliverySummaryRail**（priority=90，晚于 StreamEventRail 的 80）在外层 tool_result 之后：`take_pending_ppt_delivery_summary()` 取走并清空 → `startswith(DELIVERY_SUMMARY_START)` 校验（标记常量经动态包 `skill_turbo_codes_ppt.ppt.delivery_summary` 引用，ppt 技能不在场时短路）→ `write_stream(OutputSchema(type="llm_output", payload={"content": summary}))`。
+3. **DeliverySummaryRail**（priority=79，晚于 StreamEventRail 的 80）在外层 tool_result 之后：`take_pending_ppt_delivery_summary()` 取走并清空 → `startswith(DELIVERY_SUMMARY_START)` 校验（标记常量经动态包 `skill_turbo_codes_ppt.ppt.delivery_summary` 引用，ppt 技能不在场时短路）→ `write_stream(OutputSchema(type="llm_output", payload={"content": summary}))`。
 
 防御：HITL / 审批中断（`_is_tool_interrupt`）→ `clear_pending_ppt_delivery_summary()` 不发成功骨架；session None → 清 pending 跳过；emit 异常仅 debug 日志。HITL 续跑无外层工具循环，由 `visible_ppt_turbo_finish_text` 直接返回骨架或中性短句。
 
@@ -213,7 +220,7 @@ call_llm / stream_llm
 |---|---|---|
 | `chat.tool_call(pending_approval)` + `chat.tool_update` + `chat.ask_user_question` | harness `__interaction__` 转换（外层 tool_call_id 对齐） | HITL 三件套前两帧 |
 | `chat.invocation_paused` | adapter 流末 `hitl_pending_stream`（is_complete=True） | 暂停终结帧；gateway 转 is_final=False in_progress |
-| `llm_output`（交付总结） | DeliverySummaryRail（priority=90，外层 tool_result 之后） | 交付骨架唯一出口 |
+| `llm_output`（交付总结） | DeliverySummaryRail（priority=79，外层 tool_result 之后） | 交付骨架唯一出口 |
 
 ### gateway_normalize 帧语义对照
 
@@ -395,7 +402,7 @@ task_states 快照恢复（复用 task_id）→ 恢复首段发 task.update 快�
 | 改缓冲 | 围栏保护三规则（粘连 / 拆分 / last_emitted）+ 首 chunk 立即发 + 五个 flush 时机 |
 | 改 task 事件 | FIFO / OOB 归属（仅 task.update 可 OOB）+ 外层 todo 抑制 + deferred 顺序（横幅先行、complete 后置）+ resume 复用 task_id |
 | 改槽位登记簿（task_slot_guard）| 两侧键口径必须一致（turbo 侧 `_parent_session_slot_key` vs rail 侧 `session.get_session_id()`）+ 登记时机（仅转发分支放行非终态快照）+ 注销时机（终态快照进流后 / 外层快照进流后，**不得预测式注销**）+ AbortError 暂停不清算 + 上限淘汰行为 + 登记簿为单进程内存态（多 worker / 进程重启登记丢失、清算不生效，见 [[B_03]] 已知边界） |
-| 改交付时序 | 三方契约（P10 写 holder / tool 挂 ContextVar / rail priority=90 晚于 tool_result）+ HITL / 审批中断不发骨架分支 |
+| 改交付时序 | 三方契约（P10 写 holder / tool 挂 ContextVar / rail priority=79 晚于 tool_result）+ HITL / 审批中断不发骨架分支 |
 | 改 stream_source_id | 三层透传核对（引擎注入 / gateway / 上层前端分桶），任一环丢失即并发交错 |
 | 改 OOB 推送 | send_push 送达数语义（0 ≠ 成功）+ 仅幂等全量快照可 OOB 的边界 |
 | 改 usage 事件 | 失败轮不发送 + resume 改写 usage_metadata 口径 |
