@@ -30,6 +30,7 @@ from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support impor
 )
 
 from jiuwenswarm.common.asr_client import AsrError
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.video_duplex.backend import (
     joyai_action_helper,
     joyai_provider,
@@ -270,7 +271,7 @@ async def test_full_duplex_conversation_events_append_visible_session_history(mo
     records = []
 
     async def capture(_client, method, params, session_id, _owner, **_kwargs):
-        assert method.value == "video.conversation.append"
+        assert method is ReqMethod.VIDEO_CONVERSATION_APPEND
         records.append({"session_id": session_id, **params})
         return {}
 
