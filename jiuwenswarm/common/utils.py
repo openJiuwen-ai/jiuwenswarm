@@ -1288,12 +1288,16 @@ def _filter_restorable_external_cli_state(state: dict[str, Any]) -> Optional[dic
     if not isinstance(agents, list):
         return None
     kept = []
+    dropped = []
     for item in agents:
         if isinstance(item, str):
             if item.strip():
                 kept.append(item)
+            else:
+                dropped.append(item)
             continue
         if not isinstance(item, dict):
+            dropped.append(item)
             continue
         cli_path = str(item.get("cli_path") or "").strip()
         if not cli_path:
@@ -1309,6 +1313,18 @@ def _filter_restorable_external_cli_state(state: dict[str, Any]) -> Optional[dic
             continue
         if candidate.is_file():
             kept.append(item)
+        else:
+            dropped.append(item)
+    if dropped:
+        # 剔除不静默：init 输出/日志明确列出被剔除的条目（AI 检视 !10636）。
+        logger.warning(
+            "init 恢复：剔除 cli_path 已失效的三方 agent 条目（旁路保留原始备份）: %s",
+            [
+                (str(d.get("cli_agent") or d), str(d.get("cli_path") or ""))
+                for d in dropped
+                if isinstance(d, dict)
+            ],
+        )
     if not kept:
         return None
     return {**state, "agents": kept}

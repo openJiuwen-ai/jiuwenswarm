@@ -627,8 +627,7 @@ def test_refresh_external_cli_state_sidecar_mirrors_config(tmp_path, monkeypatch
 def test_prepare_workspace_force_reset_restores_sidecar_agents(tmp_path, monkeypatch):
     """init -f 强制重置同样从旁路恢复三方 agent 状态且保留旁路文件
     （2026-11-19 语义调整：init 一律保留已安装/已开启状态，不再清旁路）。
-    指向已删除安装的条目（路径根可达且文件不存在）被剔除；盘符/共享
-    暂不可达的条目保留（AI 检视 !10636）。"""
+    指向已删除安装的条目（路径根可达且文件不存在）被剔除（AI 检视 !10636）。"""
     import json as json_lib
     import yaml
 
@@ -636,7 +635,6 @@ def test_prepare_workspace_force_reset_restores_sidecar_agents(tmp_path, monkeyp
     valid_cli.parent.mkdir(parents=True)
     valid_cli.write_text("stub", encoding="utf-8")
     missing_cli = tmp_path / "tools" / "missing.exe"
-    offline_cli = "Q:/tools/claude.exe"
 
     sidecar = tmp_path / "outside" / "external_cli_state.json"
     sidecar.parent.mkdir(parents=True)
@@ -645,7 +643,6 @@ def test_prepare_workspace_force_reset_restores_sidecar_agents(tmp_path, monkeyp
             "agents": [
                 {"cli_agent": "claude", "cli_path": str(valid_cli)},
                 {"cli_agent": "codex", "cli_path": str(missing_cli)},
-                {"cli_agent": "codex", "cli_path": offline_cli},
             ],
             "histories": {"claude": ["D:/tools/claude-old.exe"]},
         }),
@@ -678,10 +675,44 @@ def test_prepare_workspace_force_reset_restores_sidecar_agents(tmp_path, monkeyp
     restored = yaml.safe_load((config_dir / "config.yaml").read_text(encoding="utf-8"))
     team = restored["modes"]["team"]["jiuwen_team"]
     assert team["external_cli_agents"] == [
-        {"cli_agent": "claude", "cli_path": str(valid_cli)},
-        {"cli_agent": "codex", "cli_path": offline_cli},
+        {"cli_agent": "claude", "cli_path": str(valid_cli)}
     ]
     assert team["external_cli_path_histories"]["claude"] == ["D:/tools/claude-old.exe"]
+
+
+def test_prepare_workspace_force_reset_keeps_offline_drive_entries(tmp_path, monkeypatch):
+    """盘符/共享暂不可达（路径根不可达）的条目视为暂时不可用，保留不剔除。
+    盘符语义仅 Windows，非 Windows 平台跳过（AI 检视 !10636）。"""
+    import json as json_lib
+    import os
+    import yaml
+
+    offline_cli = "Q:/tools/claude.exe"
+
+    sidecar = tmp_path / "outside" / "external_cli_state.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(
+        json_lib.dumps({
+            "agents": [{"cli_agent": "claude", "cli_path": offline_cli}],
+            "histories": {},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda *a, **k: sidecar)
+
+    workspace_dir = tmp_path / ".jiuwenswarm"
+
+    utils.prepare_workspace(
+        overwrite=True,
+        preferred_language="en",
+        workspace_dir=workspace_dir,
+    )
+
+    restored = yaml.safe_load((workspace_dir / "config" / "config.yaml").read_text(encoding="utf-8"))
+    team = restored["modes"]["team"]["jiuwen_team"]
+    assert team["external_cli_agents"] == [
+        {"cli_agent": "claude", "cli_path": offline_cli}
+    ]
 
 
 def test_sidecar_refreshes_through_the_config_write_exit(tmp_path, monkeypatch):
