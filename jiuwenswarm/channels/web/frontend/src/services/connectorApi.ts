@@ -84,6 +84,7 @@ function fromRawSummary(raw: RawConnectorSummary): ConnectorSummary {
 interface RawConnectorTool {
   name: string;
   description: string;
+  description_i18n?: Partial<Record<'zh' | 'en', string>>;
 }
 
 interface RawConnectorDetail extends RawConnectorSummary {
@@ -92,6 +93,8 @@ interface RawConnectorDetail extends RawConnectorSummary {
   cli_spec_present?: boolean;
   bundled_skills: string[];
   skills: RawConnectorTool[];
+  show_skills?: boolean;
+  gmail_proxy_port?: string;
   tools: RawConnectorTool[];
   transport?: 'stdio' | 'sse' | 'streamable-http';
   command?: string;
@@ -110,7 +113,13 @@ function fromRawDetail(raw: RawConnectorDetail): ConnectorDetail {
     cliSpecPresent: raw.cli_spec_present,
     bundledSkills: raw.bundled_skills,
     skills: raw.skills ?? [],
-    tools: raw.tools ?? [],
+    showSkills: raw.show_skills !== false,
+    gmailProxyPort: raw.gmail_proxy_port,
+    tools: (raw.tools ?? []).map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      descriptionI18n: tool.description_i18n,
+    })),
     transport: raw.transport,
     command: raw.command,
     args: raw.args,
@@ -134,6 +143,8 @@ interface RawConnectResponse {
   server_id_scope?: string;
   credentials_required?: boolean;
   required_tokens?: string[];
+  optional_values?: Record<string, string>;
+  gmail_network_retry?: boolean;
   credential_kind?: ConnectorConnectResponse['credentialKind'];
   title?: string;
   description?: string;
@@ -166,6 +177,8 @@ function fromRawConnect(raw: RawConnectResponse): ConnectorConnectResponse {
     serverIdScope: raw.server_id_scope,
     credentialsRequired: raw.credentials_required,
     requiredTokens: raw.required_tokens,
+    optionalValues: raw.optional_values,
+    gmailNetworkRetry: raw.gmail_network_retry,
     credentialKind: raw.credential_kind,
     title: raw.title,
     description: raw.description,
@@ -244,7 +257,9 @@ export const connectorApi = {
     return fromRawConnect(payload);
   },
   startOAuth: async (name: string): Promise<ConnectorConnectResponse> => {
-    const callbackUrl = window.location.origin;
+    const callback = new URL(window.location.origin);
+    if (callback.hostname === 'localhost') callback.hostname = '127.0.0.1';
+    const callbackUrl = callback.origin;
     const payload = await webRequest<RawConnectResponse>(
       'mcp.oauth.start',
       { name, callback_url: callbackUrl },

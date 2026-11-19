@@ -15,6 +15,7 @@ import { MarketCard } from './MarketCard';
 import { MyMarketCard } from './MyMarketCard';
 import { ConnectTokenModal } from './ConnectTokenModal';
 import { CliAuthModal } from './CliAuthModal';
+import { ConfirmDialog } from './ConfirmDialog';
 import type { ConnectorConnectResponse, ConnectorSummary } from '../../types/connector';
 import {
   deriveCardState,
@@ -116,6 +117,7 @@ export function MarketplacePage({
     response: ConnectorConnectResponse;
   } | null>(null);
   const [authTarget, setAuthTarget] = useState<{ name: string; response: ConnectorConnectResponse } | null>(null);
+  const [unbindTarget, setUnbindTarget] = useState<ConnectorSummary | null>(null);
 
   // connectors：合并视图，按 name 查找/枚举全部已知 MCP 用（mcpCardStates、handleConnectorQuickAdd
   // 的 .find）；builtinConnectors/myConnectors：后端已经按 filter 分好的两份原始列表，"MCP广场"/
@@ -125,6 +127,7 @@ export function MarketplacePage({
   const builtinConnectors = useConnectorStore((s) => s.builtinConnectors);
   const myConnectors = useConnectorStore((s) => s.myConnectors);
   const connectAction = useConnectorStore((s) => s.connect);
+  const disconnectAction = useConnectorStore((s) => s.disconnect);
   const installConnector = useConnectorStore((s) => s.installPackage);
   const busyMap = useConnectorStore((s) => s.busyMap);
   const connectorIsLoading = useConnectorStore((s) => s.isLoading);
@@ -705,6 +708,7 @@ export function MarketplacePage({
                     onQuickAdd={() => handleConnectorQuickAdd(connector.id)}
                     quickAction={mcpInstalled ? 'connect' : 'install'}
                     onUse={onUse ? () => onUse?.({ kind: 'mcp', id: connector.runtimePackageName }) : undefined}
+                    onUnbind={connector.runtimePackageName === 'gmail' ? () => setUnbindTarget(connector) : undefined}
                   />
                 );
               })
@@ -768,6 +772,20 @@ export function MarketplacePage({
         </div>
       </div>
 
+      {unbindTarget && (
+        <ConfirmDialog
+          title={t('connectorMarket.confirmUnbind.title', { name: unbindTarget.displayName })}
+          message={t('connectorMarket.confirmUnbind.message')}
+          confirmLabel={t('connectorMarket.card.unbind')}
+          busy={Boolean(busyMap[unbindTarget.runtimePackageName])}
+          onCancel={() => setUnbindTarget(null)}
+          onConfirm={() => {
+            const name = unbindTarget.runtimePackageName;
+            if (useConnectorStore.getState().busyMap[name]) return;
+            void disconnectAction(name).finally(() => setUnbindTarget(null));
+          }}
+        />
+      )}
       {tokenTarget && (
         <ConnectTokenModal
           name={tokenTarget.name}

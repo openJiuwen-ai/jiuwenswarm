@@ -23,6 +23,7 @@ interface MarketCardProps {
   onUse?: () => void;
   /** 错误态红点的提示文案；不传为"连接失败"。 */
   errorLabel?: string;
+  onUnbind?: () => void;
 }
 
 export function MarketCard({
@@ -40,6 +41,7 @@ export function MarketCard({
   actionDisabled = false,
   onUse,
   errorLabel,
+  onUnbind,
 }: MarketCardProps) {
   const { t } = useTranslation();
   const { tooltip: errorTooltip, handlers: errorTooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
@@ -85,6 +87,22 @@ export function MarketCard({
       >
         {state === 'error' ? t('connectorMarket.card.retry') : t(`connectorMarket.card.${quickAction}`)}
       </button>
+    );
+  }
+
+  if (state === 'connected' && onUnbind) {
+    actionSlot = (
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          className="connector-market-card-install"
+          data-testid="connector-market-card-unbind"
+          onClick={(event) => { event.stopPropagation(); onUnbind(); }}
+        >
+          {t('connectorMarket.card.unbind')}
+        </button>
+        {actionSlot}
+      </div>
     );
   }
 

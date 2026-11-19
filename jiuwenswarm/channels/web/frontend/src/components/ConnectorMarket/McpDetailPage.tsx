@@ -8,6 +8,7 @@ import { Unlink2, Trash2, Wrench, Terminal, AlertCircle, Info, ExternalLink, Pen
 // "卸载"（彻底删除，见 mcp.delete_custom），配图标也要换成垃圾桶——Unlink2 是"解绑"语义的图标，
 // 用在"删除"上不对，见下方按钮渲染处的 icon 条件。
 import { useConnectorStore } from '../../stores/connectorStore';
+import { connectorApi } from '../../services/connectorApi';
 import { DetailPromptChip, DetailSection, EntityHeader, PageCard } from '../ui';
 import { ConnectTokenModal } from './ConnectTokenModal';
 import { CliAuthModal } from './CliAuthModal';
@@ -94,7 +95,8 @@ interface McpDetailPageProps {
 // 详情页可达性也变了：新方案要求"已安装+未连接"这个中间态也能打开详情页（展示断联 banner），
 // 不再是旧版"不是 connected 就整个拒绝进入"，见 mcpState.ts deriveMcpAvailability。
 export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: McpDetailPageProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const toolLanguage = (i18n.resolvedLanguage || i18n.language).startsWith('zh') ? 'zh' : 'en';
   const connector = useConnectorStore((s) => s.connectors.find((c) => c.id === name || c.runtimePackageName === name));
   // Cache by the runtime name used by connect/disconnect and detail invalidation.
   const runtimeName = connector?.runtimePackageName ?? name;
@@ -115,6 +117,31 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   const [authTarget, setAuthTarget] = useState<ConnectorConnectResponse | null>(null);
   const [confirmUnbind, setConfirmUnbind] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [proxyDraft, setProxyDraft] = useState<string | null>(null);
+  const [proxySaving, setProxySaving] = useState(false);
+  const [proxyMessage, setProxyMessage] = useState('');
+  const [proxyError, setProxyError] = useState(false);
+  const proxyPort = proxyDraft ?? detail?.gmailProxyPort ?? '';
+
+  async function saveGmailProxy() {
+    const port = proxyPort.trim();
+    const invalid = port !== '' && (!/^[0-9]{1,5}$/.test(port) || Number(port) < 1 || Number(port) > 65535);
+    setProxyError(invalid);
+    setProxyMessage(invalid ? 'invalid' : '');
+    if (invalid) return;
+    setProxySaving(true);
+    try {
+      const value = port ? String(Number(port)) : '';
+      await connectorApi.saveCredentials(runtimeName, { GMAIL_PROXY_PORT: value });
+      setProxyDraft(value);
+      setProxyMessage('saved');
+    } catch {
+      setProxyError(true);
+      setProxyMessage('failed');
+    } finally {
+      setProxySaving(false);
+    }
+  }
   const confirmActionRef = useRef(false);
 
   // 卡片统一状态机（见 mcpState.ts）。busy 用 busyMap[name]。
@@ -508,7 +535,39 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
           </DetailSection>
         )}
 
-        {installed && skills && skills.length > 0 && (
+        {installed && detail?.gmailProxyPort !== undefined && (
+          <DetailSection title={t('connectorMarket.gmailProxy.label')} titleTestId="connector-market-gmail-proxy-title">
+            <form
+              onSubmit={(event) => { event.preventDefault(); void saveGmailProxy(); }}
+              className="flex flex-wrap items-center gap-2 text-[13px]"
+            >
+              <input
+                aria-label={t('connectorMarket.gmailProxy.label')}
+                value={proxyPort}
+                inputMode="numeric"
+                onChange={(event) => { setProxyDraft(event.target.value); setProxyMessage(''); }}
+                className="h-8 w-28 rounded border border-border bg-card px-2 text-text"
+                data-testid="connector-market-gmail-proxy-port"
+              />
+              <button
+                type="submit"
+                disabled={proxySaving}
+                className="h-8 rounded border border-border px-3 text-text disabled:opacity-50"
+                data-testid="connector-market-gmail-proxy-save"
+              >
+                {t('connectorMarket.gmailProxy.save')}
+              </button>
+              <p className="w-full text-text-muted">{t('connectorMarket.gmailProxy.hint')}</p>
+              {proxyMessage && (
+                <p role={proxyError ? 'alert' : 'status'} className={proxyError ? 'w-full text-danger' : 'w-full text-text-muted'}>
+                  {t(`connectorMarket.gmailProxy.${proxyMessage}`)}
+                </p>
+              )}
+            </form>
+          </DetailSection>
+        )}
+
+        {installed && detail?.showSkills !== false && skills && skills.length > 0 && (
           <DetailSection
             titleTestId="connector-market-mcp-detail-skills-title"
             title={t('connectorMarket.detail.sections.skills')}
@@ -549,7 +608,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
                   key={tool.name}
                   avatar={<IconAvatar icon={<Wrench size={21} />} />}
                   title={tool.name}
-                  description={tool.description}
+                  description={tool.descriptionI18n?.[toolLanguage] || tool.description}
                   testId="connector-market-mcp-detail-tool"
                   variant={tool.name}
                 />

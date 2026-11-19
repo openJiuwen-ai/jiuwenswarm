@@ -683,20 +683,32 @@ async def test_native_front_control_queries_do_not_load_runtime_dependencies(tmp
     env.pop("JIUWENSWARM_RUNTIME_SOCKET", None)
     env.pop("JIUWENSWARM_RUNTIME_STUB", None)
     port = free_port()
-    with (tmp_path / "front.log").open("wb") as log:
+    front_log = tmp_path / "front.log"
+    with front_log.open("wb") as log:
         process = subprocess.Popen([sys.executable, "-m", "jiuwenswarm.server.app_agentserver", "--port", str(port)],
                                    cwd=root, env=env, stdout=log, stderr=log)
         ws = None
         try:
-            for _ in range(400):
-                try:
-                    ws = await connect(f"ws://127.0.0.1:{port}")
-                    acknowledgement = json.loads(await ws.recv())
-                    assert acknowledgement.get("event") == "connection.ack"
-                    break
-                except OSError:
-                    await asyncio.sleep(.01)
-            assert ws is not None
+            try:
+                async with asyncio.timeout(30):
+                    while process.poll() is None:
+                        try:
+                            ws = await connect(f"ws://127.0.0.1:{port}")
+                        except OSError:
+                            await asyncio.sleep(0.05)
+                            continue
+                        acknowledgement = json.loads(await ws.recv())
+                        assert acknowledgement.get("event") == "connection.ack"
+                        break
+            except TimeoutError:
+                pytest.fail(
+                    "Agent front did not become ready:\n"
+                    + front_log.read_text(encoding="utf-8", errors="replace")[-6000:]
+                )
+            assert ws is not None, (
+                f"Agent front exited before becoming ready (exit={process.poll()}):\n"
+                + front_log.read_text(encoding="utf-8", errors="replace")[-6000:]
+            )
             for method, params in (("session.list", {}), ("project.list", {}), ("config.get", {}),
                                    ("history.get", {"session_id": "acceptance-0", "page_idx": 1})):
                 await ws.send(json.dumps({"request_id": method, "channel_id": "web", "req_method": method,

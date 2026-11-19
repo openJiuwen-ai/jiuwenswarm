@@ -1,0 +1,8 @@
+gcp-oauth.keys.json
+client_secret*.json
+credentials*.json
+token*.json
+!token-schema.json
+.env
+.env.*
+node_modules/

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "gmail": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@artymclabin/gmail-mcp@1.2.4"],
+      "timeout": 120,
+      "env": {"GMAIL_OAUTH_PATH": "${GMAIL_OAUTH_PATH}"}
+    }
+  }
+}

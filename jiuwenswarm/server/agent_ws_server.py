@@ -11718,7 +11718,11 @@ class AgentWebSocketServer:
         self, name: str, *, max_attempts: int = 200, delay: float = 1.0
     ) -> dict[str, Any]:
         """Poll locally stored OAuth credentials until the loopback callback lands."""
-        from jiuwenswarm.server.runtime.mcp.oauth_flow import load_oauth_credentials
+        from jiuwenswarm.server.runtime.mcp.oauth_flow import (
+            gmail_authorization_ready,
+            is_gmail_host_oauth,
+            load_oauth_credentials,
+        )
         from jiuwenswarm.server.runtime.mcp.registry import (
             complete_host_oauth_auth,
             was_connect_cancelled,
@@ -11728,8 +11732,11 @@ class AgentWebSocketServer:
             if was_connect_cancelled(name):
                 logger.info("[mcp] host OAuth '%s' cancelled by user", name)
                 return {"type": "cancelled", "name": name}
-            credentials = await asyncio.to_thread(load_oauth_credentials, name)
-            if credentials is not None:
+            if is_gmail_host_oauth(name):
+                authorized = await asyncio.to_thread(gmail_authorization_ready, name)
+            else:
+                authorized = await asyncio.to_thread(load_oauth_credentials, name) is not None
+            if authorized:
                 item = await asyncio.to_thread(complete_host_oauth_auth, name)
                 probe_ok, _reason = await self._agent_manager.probe_mcp_live_connection(name)
                 if not probe_ok:

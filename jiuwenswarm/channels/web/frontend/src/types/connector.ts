@@ -73,6 +73,7 @@ export interface ConnectorUninstallResponse {
 export interface ConnectorTool {
   name: string;
   description: string;
+  descriptionI18n?: Partial<Record<'zh' | 'en', string>>;
 }
 
 export interface ConnectorSkill {
@@ -87,6 +88,8 @@ export interface ConnectorDetail extends ConnectorSummary {
   bundledSkills: string[];
   // mcp.show 一次性带回，不再需要单独的 connector.list_tools 请求。
   skills: ConnectorSkill[];
+  showSkills?: boolean;
+  gmailProxyPort?: string;
   tools: ConnectorTool[];
   // 自定义 MCP 编辑回填字段，仅 source==='customize' 时有意义（env/headers 原样明文返回）。
   transport?: 'stdio' | 'sse' | 'streamable-http';
@@ -130,6 +133,8 @@ export interface ConnectorConnectResponse {
   // credentials_required 分支专属字段
   credentialsRequired?: boolean;
   requiredTokens?: string[];
+  optionalValues?: Record<string, string>;
+  gmailNetworkRetry?: boolean;
   credentialKind?: 'token' | 'oauth';
   title?: string;
   description?: string;

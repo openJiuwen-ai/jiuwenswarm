@@ -68,11 +68,13 @@ test('host OAuth 分支有启动守卫，同一弹窗不会重复发起 mcp.oaut
 });
 
 test('startOAuth 只把 loopback origin 传给后端，不带路径', async () => {
-  const apiSource = (await import('node:fs/promises')).readFile(
+  const apiSource = await (await import('node:fs/promises')).readFile(
     fileURLToPath(new URL('src/services/connectorApi.ts', root)),
     'utf8',
   );
-  assert.match(await apiSource, /const callbackUrl = window\.location\.origin;/);
+  assert.match(apiSource, /new URL\(window\.location\.origin\)/);
+  assert.match(apiSource, /if \(callback\.hostname === 'localhost'\) callback\.hostname = '127\.0\.0\.1'/);
+  assert.match(apiSource, /const callbackUrl = callback\.origin;/);
 });
 
 function installDom() {

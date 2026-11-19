@@ -7,6 +7,7 @@ import type { ConnectorConnectResponse } from '../../types/connector';
 import { getSkillAvatar } from '../../utils/skillAvatar';
 import { Input } from '../ui/Input/Input';
 import { EntityAvatar } from './EntityAvatar';
+import { CliAuthModal } from './CliAuthModal';
 import logoIcon from '/logo.svg';
 
 interface ConnectTokenModalProps {
@@ -26,16 +27,20 @@ interface ConnectTokenModalProps {
 // 2026-08-10 按新接口文档 §5.3.2 补齐富文案：per-token 的 label/placeholder/type(text|password)/
 // description，外加弹窗级别的 title/description/doc_url/doc_label。旧版只用 token key 当 label、
 // 通用 placeholder、没有密码框、没有外部文档链接——不是接口不兼容，是没利用上后端已经给的字段。
-export function ConnectTokenModal({ name, displayName, iconUrl, response, onCancel, onConnected }: ConnectTokenModalProps) {
+export function ConnectTokenModal({ name, displayName, iconUrl, response: initial, onCancel, onConnected }: ConnectTokenModalProps) {
   const { t } = useTranslation();
-  const [tokens, setTokens] = useState<Record<string, string>>({});
+  const [response, setResponse] = useState(initial);
+  const [tokens, setTokens] = useState<Record<string, string>>(initial.optionalValues ?? {});
   const [connecting, setConnecting] = useState(false);
   const [authorizing, setAuthorizing] = useState(false);
+  const [authStep, setAuthStep] = useState<ConnectorConnectResponse | null>(null);
+  const [pathRejected, setPathRejected] = useState(false);
   const saveCredentialsAndConnect = useConnectorStore((s) => s.saveCredentialsAndConnect);
 
   const requiredTokens = response.requiredTokens ?? [];
   const fields = response.fields ?? {};
-  const allFilled = requiredTokens.length > 0 && requiredTokens.every((key) => (tokens[key] ?? '').trim());
+  const fieldKeys = [...new Set([...requiredTokens, ...Object.keys(response.optionalValues ?? {})])];
+  const allFilled = fieldKeys.length > 0 && requiredTokens.every((key) => (tokens[key] ?? '').trim());
   const avatar = getSkillAvatar(displayName);
 
   // 一键授权（仅桌面端）：连接器声明了隐式授权能力（oauthDocUrl 指向含当前授权链接的
@@ -58,11 +63,17 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
     && captureOAuthToken && requiredTokens.length > 0);
 
   async function submitTokens(nextTokens: Record<string, string>) {
+    setPathRejected(false);
     setConnecting(true);
     const result = await saveCredentialsAndConnect(name, nextTokens);
     setConnecting(false);
     if (result?.type === 'connected') {
       onConnected();
+    } else if (result?.type === 'auth_required') {
+      setAuthStep(result);
+    } else if (result?.credentialsRequired) {
+      setResponse(result);
+      setPathRejected(!result.gmailNetworkRetry);
     } else {
       // 失败（含请求超时，result 为 null）或非预期的 type：这个弹窗只处理纯 token 提交，没有
       // 续接下一步的分支，留在原地只会让用户对着一个已经点不出效果的"连接"按钮干等——真实的
@@ -120,6 +131,10 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
   // createPortal 到 document.body：见文件头注释——这个弹窗本就设计成 body 下的兄弟节点，且从
   // 详情页里弹出时若留在 `.detail-body` 内会被 index.css 的 `.detail-body > *` 限宽规则压窄遮罩
   // （bug 2026091001-001），挂到 body 下同时解决这两点。
+  if (authStep) {
+    return <CliAuthModal name={name} initial={authStep} onCancel={onCancel} onConnected={onConnected} />;
+  }
+
   return createPortal(
     <div data-connector-auth-modal="true" data-testid="connector-market-token-modal" className="fixed inset-0 z-[10100] flex items-center justify-center bg-overlay-cron-dialog">
       <div className="relative w-[400px] rounded-2xl bg-card p-6 shadow-xl">
@@ -146,12 +161,21 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
         <h2 className="mb-1 text-center text-[16px] font-semibold text-text">
           {response.title ?? t('connectorMarket.tokenModal.title', { name: displayName })}
         </h2>
-        {response.description && (
+        {response.gmailNetworkRetry ? (
+          <p role="alert" className="mb-4 text-[12px] text-text-muted" data-testid="connector-market-gmail-proxy-retry">
+            {t('connectorMarket.gmailProxy.networkRetry')}
+          </p>
+        ) : response.description && (
           <p className="mb-4 text-center text-[12px] leading-[18px] text-text-muted">{response.description}</p>
         )}
-        {!response.description && <div className="mb-4" />}
+        {!response.description && !response.gmailNetworkRetry && <div className="mb-4" />}
+        {pathRejected && (
+          <p role="alert" className="mb-3 text-[12px] text-danger">
+            {t('connectorMarket.gmailProxy.invalidCredentialPath')}
+          </p>
+        )}
 
-        {requiredTokens.map((key) => {
+        {fieldKeys.map((key) => {
           const field = fields[key];
           return (
             <div key={key} className="mb-4">
@@ -162,7 +186,9 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
                 autoComplete={field?.type === 'password' ? 'new-password' : 'off'}
                 value={tokens[key] ?? ''}
                 onChange={(next) => setTokens((prev) => ({ ...prev, [key]: next }))}
-                placeholder={field?.placeholder ?? t('connectorMarket.tokenModal.placeholder', { name: displayName })}
+                placeholder={key === 'GMAIL_OAUTH_PATH' || key === 'GMAIL_PROXY_PORT'
+                  ? undefined
+                  : field?.placeholder ?? t('connectorMarket.tokenModal.placeholder', { name: displayName })}
                 data-testid="connector-market-token-modal-field"
                 data-variant={key}
               />

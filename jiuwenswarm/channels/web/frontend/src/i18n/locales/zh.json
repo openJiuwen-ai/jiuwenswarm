@@ -5641,6 +5641,16 @@
       "pluginInstalled": "插件安装成功。",
       "pluginUninstalled": "插件卸载成功。"
     },
+    "gmailProxy": {
+      "networkRetry": "暂时无法连接 Google。若本机开了代理，请填写 HTTP 或混合端口后重试。留空也可以重试。",
+      "label": "本机代理端口（选填）",
+      "hint": "可以留空。填写 HTTP 或混合端口后，仅在无法直连 Google 时使用。",
+      "invalid": "请输入 1 到 65535 之间的端口号，或留空。",
+      "save": "保存",
+      "saved": "已保存。若 Gmail 已连接，重启 JiuwenSwarm 后生效。",
+      "failed": "保存失败，请稍后重试。",
+      "invalidCredentialPath": "无法读取此文件。请检查路径，并选择从 Google Cloud 下载的桌面应用 OAuth JSON。"
+    },
     "tokenModal": {
       "title": "连接 {{name}}",
       "placeholder": "粘贴你的{{name}}API Key",

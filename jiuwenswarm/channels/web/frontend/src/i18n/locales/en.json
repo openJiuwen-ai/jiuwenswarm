@@ -5644,6 +5644,16 @@
       "pluginInstalled": "Plugin installed successfully.",
       "pluginUninstalled": "Plugin uninstalled successfully."
     },
+    "gmailProxy": {
+      "networkRetry": "Google could not be reached. If you use a local proxy, enter its HTTP or mixed port and try again. You can also retry with the field blank.",
+      "label": "Local proxy port (optional)",
+      "hint": "Optional. If you enter an HTTP or mixed proxy port, it is used only when Google cannot be reached directly.",
+      "invalid": "Enter a port between 1 and 65535 or leave it blank.",
+      "save": "Save",
+      "saved": "Saved. If Gmail is connected, restart JiuwenSwarm to apply the change.",
+      "failed": "Could not save. Please try again.",
+      "invalidCredentialPath": "Could not read the file. Select the Desktop app OAuth JSON downloaded from Google Cloud."
+    },
     "tokenModal": {
       "title": "Connect {{name}}",
       "placeholder": "Paste your {{name}} API Key",

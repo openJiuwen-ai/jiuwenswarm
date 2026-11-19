@@ -47,6 +47,7 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
     promise: Promise<ConnectorConnectResponse | null>;
   } | null>(null);
   const [retrySeq, setRetrySeq] = useState(0);
+  const [hostAuthUrl, setHostAuthUrl] = useState<string>();
 
   // Host OAuth connectors (Canva) return an explicit backend sentinel; only then
   // do we call mcp.oauth.start to fetch the real authorize URL.
@@ -79,6 +80,7 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
           return null;
         }
         authUrl = response.authUrl;
+        setHostAuthUrl(authUrl);
         stepIndex = response.stepIndex ?? 0;
       }
 
@@ -125,11 +127,12 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
   }, [currentAuthUrl, currentStepIndex, name, retrySeq, round, isHostOAuth, startOAuth, waitAuth]);
 
   function handleManualOpen() {
-    if (step.authUrl) window.open(step.authUrl, '_blank', 'noopener,noreferrer');
+    if (displayedAuthUrl) window.open(displayedAuthUrl, '_blank', 'noopener,noreferrer');
   }
 
   function handleRetry() {
     setJustAdvanced(false);
+    setHostAuthUrl(undefined);
     setRetrySeq((v) => v + 1);
   }
 
@@ -142,7 +145,8 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
 
   const stepsTotal = step.stepsTotal ?? 1;
   const stepIndex = (step.stepIndex ?? 0) + 1;
-  const hasUrl = !!step.authUrl;
+  const displayedAuthUrl = isHostOAuth ? hostAuthUrl : step.authUrl;
+  const hasUrl = !!displayedAuthUrl;
 
   // z-[10100] + data-connector-auth-modal：同 ConnectTokenModal.tsx 头部注释——这个弹窗可能从
   // "+"扩展面板（zIndex:9999）里弹出，必须盖在它上面；data 属性供 InputArea.tsx/

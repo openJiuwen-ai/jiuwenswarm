@@ -380,6 +380,9 @@ def _build_detail(
     summary = _build_summary(name, package, meta, connected_names, connecting_names)
     mcp_spec = _mask_mcp_spec(package.server_config or {})
     cli_present = package.integration_type == "cli"
+    presentation = package.raw.get("presentation", {})
+    if not isinstance(presentation, dict):
+        presentation = {}
     # skills: full {name, description} list (bundled_skills is just names).
     # tools: tools currently registered for a connected MCP. 
     skills = get_mcp_skills(name)
@@ -394,8 +397,12 @@ def _build_detail(
         "cli_spec_present": cli_present,
         "bundled_skills": _bundled_skill_names(package),
         "skills": skills,
+        "show_skills": presentation.get("show_skills") is not False,
         "tools": get_mcp_tools(name),
     }
+    from jiuwenswarm.server.runtime.mcp import gmail_oauth
+    if gmail_oauth.is_gmail_oauth_package(package):
+        detail["gmail_proxy_port"] = gmail_oauth.configured_proxy_port(name) or ""
     return detail
 
 
@@ -633,7 +640,8 @@ def get_mcp_tools(name: str) -> list[dict[str, Any]]:
     Reads from the live ToolMgr's registered servers (no remote reconnect) so
     it is safe to call synchronously from ``mcp.show``. Returns ``[]`` when
     the MCP is not connected, has no MCP server (CLI/skill-only), or the
-    ToolMgr is unavailable (cold start). Each tool: ``{name, description}``.
+    ToolMgr is unavailable (cold start). Each tool retains ``name`` and
+    ``description``; optional ``description_i18n`` is UI-only package metadata.
     """
     n = str(name or "").strip()
     if not n:
@@ -644,6 +652,11 @@ def get_mcp_tools(name: str) -> list[dict[str, Any]]:
         if resource_registry is None:
             return []
         tool_mgr = resource_registry.tool()
+        package = _resolve_package(n)
+        presentation = package.raw.get("presentation", {}) if package is not None else {}
+        descriptions = presentation.get("tool_descriptions", {}) if isinstance(presentation, dict) else {}
+        if not isinstance(descriptions, dict):
+            descriptions = {}
         server_ids = list(tool_mgr.get_mcp_server_ids(n))
         if not server_ids:
             # Fallback: match by server_name when no server_id resolves.
@@ -661,7 +674,17 @@ def get_mcp_tools(name: str) -> list[dict[str, Any]]:
                 if card.name in seen:
                     continue
                 seen.add(card.name)
-                tools.append({"name": card.name, "description": card.description or ""})
+                item = {"name": card.name, "description": card.description or ""}
+                localized = descriptions.get(card.name)
+                if isinstance(localized, dict):
+                    translated = {
+                        language: localized[language].strip()
+                        for language in ("zh", "en")
+                        if isinstance(localized.get(language), str) and localized[language].strip()
+                    }
+                    if translated:
+                        item["description_i18n"] = translated
+                tools.append(item)
         return tools
     except Exception as exc:  # noqa: BLE001
         logger.debug("[mcp.registry] get_mcp_tools '%s' failed: %s", n, exc)
@@ -675,6 +698,14 @@ def _marketplace_mcp_cfg(name: str) -> dict[str, Any] | None:
     if package is None or not package.server_config:
         return None
     config = dict(package.server_config)
+    from jiuwenswarm.server.runtime.mcp import gmail_oauth
+    if gmail_oauth.is_gmail_oauth_package(package):
+        client, tokens = gmail_oauth.paths(name)
+        config["env"] = gmail_oauth.apply_proxy_env({
+            **(config.get("env") or {}),
+            "GMAIL_OAUTH_PATH": str(client),
+            "GMAIL_CREDENTIALS_PATH": str(tokens),
+        }, gmail_oauth.configured_proxy_port(name))
     if package.credentials_type == "oauth" and package.integration_type == "remote-mcp":
         # OAuth belongs to the host; distributable packages need no token field.
         headers = dict(config["headers"]) if isinstance(config.get("headers"), dict) else {}
@@ -913,6 +944,38 @@ def connect_mcp(name: str, *, install_only: bool = False) -> dict[str, Any]:
                 "installed_skills": skills,
                 "mcp_entry": None,
             }
+        from jiuwenswarm.server.runtime.mcp import gmail_oauth
+        if gmail_oauth.is_gmail_oauth_package(package):
+            from jiuwenswarm.server.runtime.mcp.credential import build_credentials_prompt
+
+            client, token_path = gmail_oauth.paths(n)
+            proxy_port = gmail_oauth.configured_proxy_port(n)
+            try:
+                gmail_oauth.read_client(client)
+            except ValueError:
+                prompt = build_credentials_prompt(n, [gmail_oauth.CLIENT_PATH_KEY, gmail_oauth.PROXY_PORT_KEY])
+                prompt["required_tokens"] = [gmail_oauth.CLIENT_PATH_KEY]
+                prompt["optional_values"] = {
+                    gmail_oauth.PROXY_PORT_KEY: proxy_port or "",
+                }
+                return {"name": n, "integration_type": itype, **prompt}
+            try:
+                authorized = gmail_oauth.has_valid_authorization(client, token_path, proxy_port=proxy_port)
+            except gmail_oauth.GmailNetworkError:
+                prompt = build_credentials_prompt(n, [gmail_oauth.PROXY_PORT_KEY])
+                prompt["required_tokens"] = []
+                prompt["optional_values"] = {gmail_oauth.PROXY_PORT_KEY: proxy_port or ""}
+                prompt["gmail_network_retry"] = True
+                prompt.pop("doc_url", None)
+                prompt.pop("doc_label", None)
+                return {"name": n, "integration_type": itype, **prompt}
+            if not authorized:
+                return {
+                    "name": n, "integration_type": itype, "auth_required": True,
+                    "auth_pending": True, "host_oauth": True,
+                    "step_index": 0, "steps_total": 1, "credential_kind": "oauth",
+                }
+            entry["env"] = gmail_oauth.stdio_proxy_env(entry.get("env") or {})
         # Host-managed OAuth (Canva): return the auth_required sentinel before
         # writing any server entry. mcp.wait_auth holds the request while the
         # user completes the browser flow; only token completion registers it.
@@ -1379,6 +1442,10 @@ def complete_host_oauth_auth(name: str) -> dict[str, Any]:
     entry = build_config_entry(n)
     if entry is None:
         raise ValueError(f"mcp '{n}' has no usable mcp.json")
+    from jiuwenswarm.server.runtime.mcp import gmail_oauth
+
+    if gmail_oauth.is_gmail_oauth_package(package):
+        entry["env"] = gmail_oauth.stdio_proxy_env(entry.get("env") or {})
     skills = _install_bundled_skills_safe(n)
     from jiuwenswarm.server.runtime.mcp.state_store import (
         upsert_mcp_record,
@@ -1457,7 +1524,16 @@ def disconnect_mcp(name: str) -> dict[str, Any]:
     # stored token must not linger on disk (reconnect re-prompts for it).
     # CLI unauth above clears the CLI-managed OAuth login state, which is a
     # separate credential store from these static ${VAR} tokens.
-    _wipe_stored_credentials(n)
+    from jiuwenswarm.server.runtime.mcp import gmail_oauth
+    if gmail_oauth.is_gmail_oauth_package(package):
+        from jiuwenswarm.server.runtime.mcp.credential import CredentialStore
+
+        port = gmail_oauth.configured_proxy_port(n)
+        _wipe_stored_credentials(n)
+        if port is not None:
+            CredentialStore().save_token(n, gmail_oauth.PROXY_PORT_KEY, port)
+    else:
+        _wipe_stored_credentials(n)
     removed = remove_mcp_record(n)
     return removed if removed is not None else {"name": n, "removed": False}
 
@@ -1592,12 +1668,30 @@ def save_mcp_credentials(name: str, tokens: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("mcp name is required")
     if not isinstance(tokens, dict) or not tokens:
         raise ValueError("tokens (non-empty dict) is required")
+    from jiuwenswarm.server.runtime.mcp import gmail_oauth
+    port_key = gmail_oauth.PROXY_PORT_KEY
+    gmail_proxy_update = port_key in tokens and gmail_oauth.is_gmail_oauth_package(_resolve_package(n))
+    if gmail_proxy_update:
+        value = tokens.get(port_key)
+        port = gmail_oauth.parse_proxy_port("" if value is None else str(value))
+        tokens = {**tokens, port_key: port}
+        from jiuwenswarm.server.runtime.mcp.state_store import get_mcp_record, upsert_mcp_record
+
+        record = get_mcp_record(n)
+        if record and record.get("state") == "connecting":
+            raise ValueError("Wait for the current Gmail connection attempt to finish before changing the proxy.")
     store = CredentialStore()
     for key, value in tokens.items():
         if value is None:
             continue
         store.save_token(n, str(key), str(value))
-    return {"name": n, "saved_keys": sorted(str(k) for k in tokens.keys() if tokens[k] is not None)}
+    if gmail_proxy_update and record and record.get("state") == "connected":
+        env = gmail_oauth.apply_proxy_env(record.get("env") or {}, port)
+        env = gmail_oauth.stdio_proxy_env(env)
+        current = get_mcp_record(n)
+        if current == record:
+            upsert_mcp_record(n, {"env": env}, state="connected")
+    return {"name": n, "saved_keys": sorted(str(k) for k, value in tokens.items() if value is not None)}
 
 __all__ = [
     "list_marketplace_mcps",

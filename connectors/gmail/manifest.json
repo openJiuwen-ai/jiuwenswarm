@@ -1,0 +1,92 @@
+{
+  "version": "1.0.2",
+  "package_type": "mcp",
+  "id": "gmail",
+  "name": "Gmail",
+  "description": "在 JiuwenSwarm 里搜索、读取和发送 Gmail 邮件。准备好 Google Cloud 下载的桌面应用客户端 JSON，点击「连接」后按提示填写路径并授权。",
+  "display_name": {
+    "zh": "Gmail",
+    "en": "Gmail"
+  },
+  "display_description": {
+    "zh": "在 JiuwenSwarm 里搜索、读取和发送 Gmail 邮件。安装 Node.js 后，准备 Google Cloud 下载的桌面应用客户端 JSON，再按页面提示连接。",
+    "en": "Search, read, and send Gmail from JiuwenSwarm. Install Node.js, download a Desktop app client JSON from Google Cloud, and follow the connection prompts."
+  },
+  "integration": {
+    "type": "stdio-mcp",
+    "file": "mcp.json"
+  },
+  "icon": "icon.png",
+  "credentials": {
+    "type": "token",
+    "file": "token-schema.json"
+  },
+  "presentation": {
+    "show_skills": false,
+    "tool_descriptions": {
+      "search_emails": {
+        "zh": "按发件人、主题或时间搜索邮件，返回摘要和邮件 ID。",
+        "en": "Find messages by sender, subject, date, or other Gmail search criteria."
+      },
+      "read_email": {
+        "zh": "按邮件 ID 读取指定邮件，查看正文、收发件人和附件信息。",
+        "en": "Open a message by ID to see its body, sender, recipients, and attachment details."
+      },
+      "send_email": {
+        "zh": "按指定的收件地址、主题和正文发送邮件，可以附上文件。",
+        "en": "Send a message to the specified recipients, with a subject, body, and optional attachments."
+      },
+      "reply_all": {
+        "zh": "在原来的邮件会话里回复发件人和其他收件人。",
+        "en": "Reply to the sender and other recipients in the same thread."
+      },
+      "send_draft": {
+        "zh": "按草稿 ID 发送已经写好的草稿。",
+        "en": "Send an existing draft by ID."
+      },
+      "download_attachment": {
+        "zh": "把指定邮件的附件保存到本机。",
+        "en": "Save an attachment from a message to a local file."
+      },
+      "download_email": {
+        "zh": "把邮件导出为 JSON、EML、文本或 HTML 文件。",
+        "en": "Export a message as a JSON, EML, text, or HTML file."
+      },
+      "list_email_labels": {
+        "zh": "查看 Gmail 自带的标签和你创建的标签。",
+        "en": "List Gmail's built-in labels and the labels you created."
+      },
+      "get_thread": {
+        "zh": "读取同一个邮件会话中的多封邮件。",
+        "en": "Read the messages in a Gmail thread."
+      },
+      "list_inbox_threads": {
+        "zh": "查看收件箱里的邮件会话和摘要。",
+        "en": "List inbox threads and their summaries."
+      },
+      "get_inbox_with_threads": {
+        "zh": "查看收件箱里的邮件会话及其中的邮件内容。",
+        "en": "List inbox threads with the messages they contain."
+      }
+    }
+  },
+  "skills": [
+    {
+      "dir": "skills/gmail-guide",
+      "mode": "all"
+    }
+  ],
+  "category": "办公与生产力",
+  "examples": {
+    "zh": [
+      "用 Gmail 搜索最近 7 天的邮件，最多列出 3 封的主题。",
+      "读取刚才搜索结果里的第一封邮件，用一句话概括正文。",
+      "给我指定的测试邮箱发一封邮件，主题是「连接器测试」，正文是「这是一封测试邮件」。"
+    ],
+    "en": [
+      "Use Gmail to find up to three messages from the last seven days and list their subjects.",
+      "Read the first message from that search and summarize it in one sentence.",
+      "Send a message to my test email address with the subject “Connector test” and the body “This is a test message.”"
+    ]
+  }
+}

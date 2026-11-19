@@ -1,0 +1,29 @@
+{
+  "title": "连接 Gmail",
+  "title_en": "Connect Gmail",
+  "description": "在 Google Cloud 创建「桌面应用」客户端并下载 JSON。填写文件路径后，按提示到 Google 选择账号并授权。",
+  "description_en": "Create a Desktop app client in Google Cloud and download its JSON. Enter the file path, then choose your account and grant access in Google.",
+  "docUrl": "https://console.cloud.google.com/auth/clients",
+  "docLabel": "打开 Google Cloud 客户端页面",
+  "docLabel_en": "Open the Google Cloud Clients page",
+  "fields": [
+    {
+      "key": "GMAIL_OAUTH_PATH",
+      "label": "客户端 JSON 文件路径",
+      "label_en": "Client JSON file path",
+      "type": "text",
+      "required": true,
+      "description": "填写下载文件的完整路径，例如从盘符开始的 Windows 文件路径。",
+      "description_en": "Enter the full path to the downloaded file on the computer running JiuwenSwarm."
+    },
+    {
+      "key": "GMAIL_PROXY_PORT",
+      "label": "本机代理端口（选填）",
+      "label_en": "Local proxy port (optional)",
+      "type": "text",
+      "required": false,
+      "description": "能直接访问 Google 就留空。需要代理时，只填代理软件的 HTTP 或混合端口数字。",
+      "description_en": "Leave this blank if Google is reachable directly. If you need a proxy, enter only its HTTP or mixed port number."
+    }
+  ]
+}

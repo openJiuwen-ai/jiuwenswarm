@@ -2650,6 +2650,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if self._dispatch_office_addins(parsed):
             return
+        if parsed.path == "/mcp/oauth/callback":
+            self._handle_mcp_oauth_callback(parsed.query)
+            return
         if parsed.path == "/oauth/hub/callback":
             from jiuwenswarm.channels.web.hub_oauth import complete
 
@@ -2689,6 +2692,29 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self._dispatch_proxy():
             return
         super().do_GET()
+
+    def _handle_mcp_oauth_callback(self, raw_query: str) -> None:
+        from jiuwenswarm.server.runtime.mcp.oauth_flow import complete_oauth_flow
+
+        try:
+            query = {key: values[0] for key, values in parse_qs(raw_query, max_num_fields=20).items()}
+            success = complete_oauth_flow(query)
+        except Exception as exc:
+            self.logger.warning("MCP OAuth callback failed (%s)", type(exc).__name__)
+            success = False
+        message = (
+            "Authorization complete. Return to JiuwenSwarm. / 授权完成，请返回 JiuwenSwarm。"
+            if success else
+            "Authorization failed. Return to JiuwenSwarm and retry. / 授权失败，请返回 JiuwenSwarm 重试。"
+        )
+        body = message.encode("utf-8")
+        self.send_response(200 if success else 400)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_POST(self) -> None:  # noqa: N802
         if self._dispatch_enterprise():
@@ -2791,6 +2817,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         self.logger.error("%s - %s", self.address_string(), self._redact_desktop_token(format % args))
 
     def _redact_desktop_token(self, message: str) -> str:
+        message = re.sub(r"(/mcp/oauth/callback)\?[^\s\"]*", r"\1?[REDACTED]", message)
         message = re.sub(r"([?&]dt=)[^&\s\"#]*", r"\1[REDACTED]", message)
         message = re.sub(r"([?&]oauth_session=)[^&\s\"#]*", r"\1[REDACTED]", message)
         if self.desktop_token:

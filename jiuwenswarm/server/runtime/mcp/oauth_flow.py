@@ -274,19 +274,21 @@ class OAuthFlowManager:
     def _store(self) -> CredentialStore:
         return CredentialStore(workspace_dir=self._workspace_dir)
 
-    def _client(self) -> httpx.Client:
+    def _client(self, *, proxy: str | None = None, trust_env: bool = True) -> httpx.Client:
         if self._client_factory is not None:
             return self._client_factory()
         return httpx.Client(
             timeout=_HTTP_TIMEOUT_S,
             headers={"Accept": "application/json", "User-Agent": "JiuwenSwarm/1.0"},
-            trust_env=True,
+            trust_env=trust_env,
+            proxy=proxy,
         )
 
     def _prune_locked(self) -> None:
         now = self._time_fn()
         for key, flow in list(self._flows.items()):
-            if now - flow.created_at > _FLOW_TTL_S or flow.status in {"complete", "failed"}:
+            finished_host_flow = flow.status in {"complete", "failed"} and not flow.provider.get("local_gmail")
+            if now - flow.created_at > _FLOW_TTL_S or finished_host_flow:
                 del self._flows[key]
 
     @staticmethod
@@ -303,11 +305,43 @@ class OAuthFlowManager:
             raise McpOAuthError("MCP name is required")
         _host, port = _parse_callback_url(callback_url)
 
-        provider = self._provider(n)
         flow_id = secrets.token_urlsafe(24)
         state = secrets.token_urlsafe(32)
         verifier, challenge = _make_pkce()
         redirect_uri = f"http://127.0.0.1:{port}/mcp/oauth/callback"
+        if is_gmail_host_oauth(n):
+            from jiuwenswarm.server.runtime.mcp import gmail_oauth
+
+            client_path, token_path = gmail_oauth.paths(n)
+            client_id, _ = gmail_oauth.read_client(client_path)
+            query = urlencode({
+                "response_type": "code", "client_id": client_id,
+                "redirect_uri": redirect_uri, "scope": " ".join(gmail_oauth.SCOPES),
+                "state": state, "code_challenge": challenge, "code_challenge_method": "S256",
+                "access_type": "offline", "prompt": "consent select_account",
+            })
+            flow = OAuthFlow(
+                name=n, provider={"local_gmail": True}, metadata={},
+                client_id=client_id, redirect_uri=redirect_uri, state=state,
+                code_verifier=verifier, created_at=self._time_fn(),
+                result={"client_path": str(client_path), "token_path": str(token_path)},
+            )
+            with self._lock:
+                self._load_flows()
+                self._prune_locked()
+                for key, prior in list(self._flows.items()):
+                    if prior.name == n and prior.provider.get("local_gmail"):
+                        if prior.status == "processing":
+                            raise McpOAuthError("Gmail authorization is already being processed.")
+                        del self._flows[key]
+                self._flows[flow_id] = flow
+                self._save_flows()
+            return {
+                "auth_required": True,
+                "auth_url": f"https://accounts.google.com/o/oauth2/v2/auth?{query}",
+                "flow": flow_id, "redirect_uri": redirect_uri,
+            }
+        provider = self._provider(n)
         if n == "canva":
             redirect_uri = "http://127.0.0.1:19000/mcp/oauth/callback"
 
@@ -402,8 +436,20 @@ class OAuthFlowManager:
             flow = self._flows.get(flow_id)
             if flow is not None:
                 flow.status = "failed"
-            self._flows.pop(flow_id, None)
+            if flow is None or not flow.provider.get("local_gmail"):
+                self._flows.pop(flow_id, None)
             self._save_flows()
+
+    def gmail_authorization_ready(self, name: str) -> bool:
+        with self._lock:
+            self._load_flows()
+            self._prune_locked()
+            for flow in self._flows.values():
+                if flow.name == name and flow.provider.get("local_gmail"):
+                    if flow.status == "failed":
+                        raise McpOAuthError("Google authorization did not finish. Check the browser result and retry.")
+                    return flow.status == "complete"
+        return False
 
     def complete(self, query: dict[str, Any]) -> bool:
         """Validate the callback and exchange the authorization code for tokens."""
@@ -441,12 +487,42 @@ class OAuthFlowManager:
             "client_id": flow.client_id,
             "code_verifier": flow.code_verifier,
         }
+        local_gmail = flow.provider.get("local_gmail") is True
         try:
-            with self._client() as client:
-                response = client.post(str(flow.metadata["token_endpoint"]), data=form)
+            proxy = None
+            direct = False
+            if local_gmail:
+                from jiuwenswarm.server.runtime.mcp import gmail_oauth
+                from jiuwenswarm.server.runtime.mcp.registry import was_connect_cancelled
+
+                client_path, token_path = gmail_oauth.paths(flow.name)
+                if (
+                    not is_gmail_host_oauth(flow.name)
+                    or was_connect_cancelled(flow.name)
+                    or flow.result != {"client_path": str(client_path), "token_path": str(token_path)}
+                ):
+                    raise McpOAuthError("Gmail authorization was cancelled or the configuration changed.")
+                client_id, secret = gmail_oauth.read_client(client_path)
+                if client_id != flow.client_id:
+                    raise McpOAuthError("The Gmail OAuth client has changed. Connect again.")
+                form["client_secret"] = secret
+                token_url = gmail_oauth.TOKEN_URL
+                proxy, direct = gmail_oauth.oauth_proxy(gmail_oauth.configured_proxy_port(flow.name))
+            else:
+                token_url = str(flow.metadata["token_endpoint"])
+            with self._client(proxy=proxy, trust_env=not direct) as client:
+                response = client.post(token_url, data=form)
                 if response.status_code != 200:
                     raise McpOAuthError(f"OAuth token exchange failed ({response.status_code})")
                 body = _get_json(response)
+            if local_gmail:
+                if not body.get("access_token") or not body.get("refresh_token") or not set(gmail_oauth.SCOPES) <= set(
+                    str(body.get("scope", "")).split()
+                ):
+                    raise McpOAuthError("Google did not grant Gmail read and send access. Authorize both permissions.")
+                if was_connect_cancelled(flow.name):
+                    raise McpOAuthError("Gmail authorization was cancelled.")
+                gmail_oauth.write_tokens(token_path, body)
         except Exception:
             self._fail_flow(flow_id)
             raise
@@ -454,6 +530,12 @@ class OAuthFlowManager:
         if not access_token:
             self._fail_flow(flow_id)
             raise McpOAuthError("OAuth token response is missing access_token")
+
+        if local_gmail:
+            with self._lock:
+                flow.status = "complete"
+                self._save_flows()
+            return True
 
         store = self._store()
         store.save_token(flow.name, "OAUTH_CLIENT_ID", flow.client_id)
@@ -482,11 +564,22 @@ def complete_oauth_flow(query: dict[str, Any]) -> bool:
     return _manager.complete(query)
 
 
+def gmail_authorization_ready(name: str) -> bool:
+    return _manager.gmail_authorization_ready(name)
+
+
 def is_host_oauth_mcp(name: str) -> bool:
     from jiuwenswarm.server.runtime.mcp.registry import _resolve_package
 
     package = _resolve_package(name)
-    return package is not None and package.credentials_type == "oauth"
+    return (package is not None and package.credentials_type == "oauth") or is_gmail_host_oauth(name)
+
+
+def is_gmail_host_oauth(name: str) -> bool:
+    from jiuwenswarm.server.runtime.mcp.gmail_oauth import is_gmail_oauth_package
+    from jiuwenswarm.server.runtime.mcp.registry import _resolve_package
+
+    return is_gmail_oauth_package(_resolve_package(name))
 
 
 __all__ = [
