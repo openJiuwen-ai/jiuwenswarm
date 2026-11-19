@@ -386,7 +386,7 @@ class SkillRetrievalToolkit:
         tool, = self.runtime.retrieval.get_tools()
         tool.card.description = (
             "Before starting work that needs independent review, distinct domain or platform expertise, "
-            "or separate deliverables that can be developed in parallel, call this tool with type=expert "
+            'or separate deliverables that can be developed in parallel, call this tool with type=["expert"] '
             "to find relevant installed experts. Search even if no expert was named. "
             "Use one focused query per role or workstream. "
             f"{tool.card.description} "

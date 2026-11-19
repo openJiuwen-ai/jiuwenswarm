@@ -471,13 +471,13 @@ class SkillRetrievalPromptRail(DeepAgentRail):
                     (
                         "No available Skills."
                         if complete
-                        else f"No examples shown. Use {CAPABILITY_SEARCH_TOOL_NAME} to find installed Skills."
+                        else f'No examples shown. Find installed Skills with {CAPABILITY_SEARCH_TOOL_NAME} (type=["skill"]).'
                     )
                     if english
                     else (
                         "当前没有可用 Skill。"
                         if complete
-                        else f"未展示示例，可使用 {CAPABILITY_SEARCH_TOOL_NAME} 检索已安装 Skill。"
+                        else f'未展示示例，可使用 {CAPABILITY_SEARCH_TOOL_NAME} 的 type=["skill"] 检索已安装 Skill。'
                     ),
                 ]
             )

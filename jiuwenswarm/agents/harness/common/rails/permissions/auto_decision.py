@@ -409,14 +409,23 @@ def _tool_catalogue_args_valid(args: Mapping[str, Any]) -> bool:
     return operation.strip().lower() != "get_schema" or bool(args.get("tool", "").strip() or tools)
 
 
+def is_skill_only_search(selector: Any) -> bool:
+    """Only an explicit Skill selection can use the local catalog permission."""
+    # pylint: disable=huawei-unidiomatic-typecheck
+    if type(selector) is list or type(selector) is tuple:
+        if len(selector) != 1:
+            return False
+        selector = selector[0]
+    return type(selector) is str and selector == "skill"
+
+
 def _skill_catalogue_args_valid(args: Mapping[str, Any]) -> bool:
     """Authorize only the local Skill branch of capability_search."""
     # pylint: disable=huawei-unidiomatic-typecheck
     if not args.keys() <= {"type", "operation", "category", "query", "cursor", "top_k"}:
         return False
-    kind = args.get("type", "skill")
     operation = args.get("operation", "search")
-    if not _bounded_text(kind, 5) or kind != "skill":
+    if not is_skill_only_search(args.get("type")):
         return False
     if not _bounded_text(operation, 6) or operation not in ("list", "search"):
         return False

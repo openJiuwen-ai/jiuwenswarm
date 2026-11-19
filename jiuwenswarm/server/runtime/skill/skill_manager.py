@@ -2788,7 +2788,7 @@ class SkillManager:
             "unsupported": True,
             "tree_supported": False,
             "nodes": [],
-            "detail": "Browse the Skill taxonomy with capability_search and operation=list.",
+            "detail": 'Browse the Skill taxonomy with capability_search, type=["skill"] and operation=list.',
         }
 
     async def handle_skills_graph_build(self, params: dict) -> dict:

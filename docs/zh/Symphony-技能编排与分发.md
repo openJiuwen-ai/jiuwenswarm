@@ -59,7 +59,7 @@ Symphony（技能交响乐）是 JiuwenSwarm 面向海量已安装技能提供�
   ↓
 智能体读取会话技能清单
   ↓
-通过 capability_search 的 type=skill 列出分类或搜索技能
+通过 capability_search 的 type=["skill"] 列出分类或搜索技能
   ↓
 发现候选技能
   ↓
@@ -82,7 +82,7 @@ Discovery 提供 `capability_search`。技能检索开关控制分类树的构�
 
 | 工具 | 作用 | 使用时机 |
 |------|------|----------|
-| `capability_search` | `type` 可选 `skill`（默认）、`expert` 或 `mcp`。三种类型都支持最多八条查询、`operation=list`、按分类搜索和游标翻页。连接器使用 `type=mcp`，同一服务下汇总当前会话可用的工具和随包 Skill。 | 按任务找能力或所属服务。需要独立审查、领域或平台专长，或有可并行完成的独立交付物时，先用 `type=expert` 查找已安装专家。 |
+| `capability_search` | 省略 `type` 会同时查询 Skill、专家和 MCP 服务。传 `"type": ["expert", "mcp"]` 可只查后两类。所选类型共享最多八条查询、分类范围、整页 `top_k` 和一个续页游标，也可用 `operation=list` 浏览。连接器归入 MCP，按服务汇总当前可用的工具和随包 Skill。 | 按任务找能力或所属服务。如果只需要已安装专家，例如安排独立审查，可传 `"type": ["expert"]`。 |
 
 当技能检索找到相关技能后，智能体会根据技能名称和描述缩小候选范围；如果后续需要编排，这些候选技能会作为生成技能链的参考。
 

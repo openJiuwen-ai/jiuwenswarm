@@ -29,7 +29,9 @@ from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import _CronTools
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronTools
 from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools.timestamp_tool import convert_timestamp_to_utc8_time
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_binding import matches_bound_method, resolve_tool_binding
-from jiuwenswarm.agents.harness.common.rails.permissions.auto_decision import tool_search_args_valid
+from jiuwenswarm.agents.harness.common.rails.permissions.auto_decision import (
+    is_skill_only_search, tool_search_args_valid,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.models import ToolInvocation
 
 # LocalFunction exposes no public callable-identity API; pin the executable, not its name.
@@ -193,7 +195,7 @@ def _session_observation_binding(invocation, session_id: str, agent) -> bool:
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import SkillRetrievalToolkit
 
         # Host callbacks for other catalogs follow the ordinary permission route.
-        if invocation.tool_args.get("type", "skill") != "skill":
+        if not is_skill_only_search(invocation.tool_args.get("type")):
             return False
         rail = _owned_rail(agent, SkillRetrievalPromptRail)
         if rail is None:

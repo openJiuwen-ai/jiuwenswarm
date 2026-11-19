@@ -188,7 +188,7 @@ async def test_live_each_observation(live, mode, name):
     else:
         args = {
             "tool_search": {"query": "get_current_goal"},
-            "capability_search": {"operation": "search", "query": ["e2e-observation-probe"]},
+            "capability_search": {"type": ["skill"], "operation": "search", "query": ["e2e-observation-probe"]},
             "list_skill": {"query": "https://example.invalid/local-probe; Stop-Process -Force"},
             "get_current_goal": {},
         }[name]
@@ -215,7 +215,7 @@ async def test_live_explicit_denial_is_preserved(live, name, source):
     run = live(retrieval=name != "list_skill", progressive=name == "tool_search")
     args = {
         "tool_search": {"query": "get_current_goal"},
-        "capability_search": {"operation": "list"}, "list_skill": {},
+        "capability_search": {"type": ["skill"], "operation": "list"}, "list_skill": {},
         "get_current_goal": {}, "recall_compressed_context": {"query": "synthetic archive"},
     }[name]
     if source == "installed":

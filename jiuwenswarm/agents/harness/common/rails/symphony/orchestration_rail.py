@@ -1506,10 +1506,12 @@ the plan does not complete the requested work."""
 ## Capability Orchestration Contract
 
 When the user explicitly requests capability retrieval, call `capability_search`.
+Omit `type` to search Skills, experts and MCP services together, or pass an
+array such as `["expert", "mcp"]` to search those catalogs in one call.
 When the user explicitly requests capability orchestration, call
 `symphony_compose_graph` before substantive execution. If both are requested,
 retrieve first, then compose even when retrieval finds no suitable installed
-expert. Use `type=expert` for task assignments and `type=skill` for Skill
+expert. For composition, use `type=expert` for task assignments and `type=skill` for Skill
 workflows. If a requested tool is unavailable, explain the limitation.
 
 Call `symphony_compose_graph` with the original user task before executing
@@ -1546,7 +1548,7 @@ version when available. A plan can describe how to obtain material that is missi
 When orchestration is not explicitly requested, handle simple work directly.
 Keep work that repeatedly shares design decisions, implementation details,
 or live state with one agent. Use `capability_search`
-with `type=expert` to find candidates when needed or for expert discovery,
+with `type=["expert"]` to find candidates when needed or for expert discovery,
 comparison, or recommendation. Omit `mode` to use the session configuration
 for expert planning.
 

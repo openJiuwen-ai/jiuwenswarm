@@ -141,7 +141,12 @@ async def test_capability_search_uses_installed_experts_and_live_mcp_permissions
         adapter._get_or_create_skill_retrieval_toolkit = lambda: toolkit
         search, = adapter._create_skill_retrieval_tools()
         assert search.card.name == "capability_search"
-        assert search.card.input_params["properties"]["type"]["enum"] == ["skill", "expert", "mcp"]
+        selector = search.card.input_params["properties"]["type"]
+        assert selector["type"] == "array" and selector["items"]["enum"] == ["skill", "expert", "mcp"]
+        combined = await search.invoke({"query": ["invoice", "customer ledger"]})
+        assert {(hit["type"], hit["id"]) for hit in combined["matches"]} >= {
+            ("skill", "invoice"), ("expert", "invoice"), ("mcp", "office-suite"),
+        }
         skill = await search.invoke({"query": "invoice", "type": "skill"})
         assert skill.detailed_output["observed_skill_ids"] == ["invoice"]
         experts = await search.invoke({"query": "invoice", "type": "expert"})
@@ -152,7 +157,8 @@ async def test_capability_search_uses_installed_experts_and_live_mcp_permissions
         assert matches[0]["actions"][0]["id"] == card.name
         root = await search.invoke({"type": "mcp", "operation": "list"})
         assert [(c["category"], c["count"]) for c in root["categories"]] == [("Collaboration", 1)]
-        scoped = await search.invoke({"type": "mcp", "category": "Collaboration", "query": ["customer ledger", "roster"]})
+        scoped = await search.invoke({"type": ["expert", "mcp"], "category": "Collaboration",
+                                      "query": ["customer ledger", "roster"]})
         service, = scoped["matches"]
         assert service["id"] == "office-suite" and service["category"] == "Collaboration"
         assert {(a["type"], a["id"]) for a in service["actions"]} == {("tool", card.name), ("skill", "roster")}

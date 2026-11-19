@@ -41,7 +41,7 @@ from tests.unit_tests.agentserver.permissions.test_auto_permission_pipeline impo
 
 CASES = [
     ("tool_search", {"query": "get_current_goal"}),
-    ("capability_search", {"operation": "search", "query": ["python"]}),
+    ("capability_search", {"type": ["skill"], "operation": "search", "query": ["python"]}),
     ("list_skill", {"query": "python"}),
     ("get_current_goal", {}),
     ("recall_compressed_context", {"query": "previous result", "memory_id": "archive-1"}),
@@ -128,12 +128,14 @@ async def test_current_owned_observation_bypasses_reviewer_and_manual(tmp_path, 
     assert len(policy.calls) == 1 and reviewer.requests == [] and base.calls == []
 
 
+@pytest.mark.parametrize(("selection", "trusted"), [
+    ({}, False), ({"type": ["skill"]}, True), ({"type": "skill"}, True),
+    ({"type": ["expert", "skill"]}, False), ({"type": ["mcp"]}, False),
+])
 @pytest.mark.asyncio
-async def test_unified_search_keeps_the_fast_path_on_the_skill_branch(installed):
-    env = await installed("capability_search", {"type": "skill", "query": "python"})
-    assert _trusted(env)
-    other = await installed("capability_search", {"type": "mcp", "query": "python"})
-    assert not _trusted(other)
+async def test_unified_search_keeps_the_fast_path_on_the_skill_branch(installed, selection, trusted):
+    env = await installed("capability_search", {**selection, "query": "python"})
+    assert _trusted(env) is trusted
 
 
 @pytest.mark.parametrize(("name", "args"), CASES)
@@ -169,7 +171,7 @@ async def test_unverified_observations_stay_manual(tmp_path, installed, monkeypa
     elif name == "tool_search":
         monkeypatch.setattr(env.rail, "_build_tool_schema", lambda *a: "rebound")
     elif name == "capability_search":
-        monkeypatch.setattr(env.tool._func.__self__, "_execute", lambda *a: "rebound")
+        monkeypatch.setattr(env.tool._func.__self__, "_read_page", lambda *a: "rebound")
     elif name == "list_skill":
         monkeypatch.setattr(env.rail, "get_skills_for_session", lambda *a: [])
     elif name == "get_current_goal":
@@ -231,7 +233,7 @@ async def test_observation_rejects_rebound_session_dependencies(installed, monke
     name = "list_skill" if defect.startswith("getter") else "get_current_goal" if defect.startswith("store") else "recall_compressed_context"
     if defect.startswith("directory"):
         name = "capability_search"
-    env = await installed(name, {})
+    env = await installed(name, {"type": ["skill"], "operation": "list"} if name == "capability_search" else {})
     assert _trusted(env)
     if defect == "directory_factory":
         monkeypatch.setattr(env.tool._func.__self__, "get_tools", lambda: [env.tool])
@@ -263,8 +265,9 @@ VALID_ARGUMENTS = [
     ("tool_search", {"operation": "get_schema", "tools": ["powershell"]}),
     ("tool_search", {"call_goal": "discover", "query": ["close application"]}),
     ("tool_search", {"operation": "search", "query": "close application", "cursor": "old"}),
-    ("capability_search", {"operation": "list"}), ("capability_search", {"operation": "search", "query": "python"}),
-    ("capability_search", {"cursor": "next"}),
+    ("capability_search", {"type": ["skill"], "operation": "list"}),
+    ("capability_search", {"type": ["skill"], "operation": "search", "query": "python"}),
+    ("capability_search", {"type": ["skill"], "cursor": "next"}),
     ("capability_search", {"type": "skill", "operation": "list", "top_k": 5}),
     ("list_skill", {}), ("list_skill", {"query": ""}), ("get_current_goal", {}),
     ("recall_compressed_context", {"query": "context"}),
@@ -275,16 +278,19 @@ INVALID_ARGUMENTS = [
     ("tool_search", {"operation": "list", "arguments": {}}),
     ("tool_search", {"query": [1]}), ("tool_search", {"tools": "powershell"}),
     ("tool_search", {"query": "x" * 4097}),
-    ("capability_search", {"operation": "read", "skills": ["python"]}),
-    ("capability_search", {"operation": "list", "paths": ["/tmp"]}),
-    ("capability_search", {"operation": "list", "limit": 1}),
-    ("capability_search", {"operation": "list", "top_k": 51}),
-    ("capability_search", {"cursor": "next", "top_k": 5}),
-    ("capability_search", {"operation": "list", "pipeline": True}),
-    ("capability_search", {"operation": "search", "query": []}),
-    ("capability_search", {"operation": "search", "query": ["x"] * 9}),
-    ("capability_search", {"operation": "search", "query": ["x" * 513]}),
-    ("capability_search", {"operation": "list", "cursor": "x" * 129}),
+    ("capability_search", {"operation": "list"}), ("capability_search", {"cursor": "next"}),
+    ("capability_search", {"type": ["skill", "expert"], "query": ["python"]}),
+    ("capability_search", {"type": [], "operation": "list"}),
+    ("capability_search", {"type": ["skill"], "operation": "read", "skills": ["python"]}),
+    ("capability_search", {"type": ["skill"], "operation": "list", "paths": ["/tmp"]}),
+    ("capability_search", {"type": ["skill"], "operation": "list", "limit": 1}),
+    ("capability_search", {"type": ["skill"], "operation": "list", "top_k": 51}),
+    ("capability_search", {"type": ["skill"], "cursor": "next", "top_k": 5}),
+    ("capability_search", {"type": ["skill"], "operation": "list", "pipeline": True}),
+    ("capability_search", {"type": ["skill"], "operation": "search", "query": []}),
+    ("capability_search", {"type": ["skill"], "operation": "search", "query": ["x"] * 9}),
+    ("capability_search", {"type": ["skill"], "operation": "search", "query": ["x" * 513]}),
+    ("capability_search", {"type": ["skill"], "operation": "list", "cursor": "x" * 129}),
     ("list_skill", {"query": None}), ("list_skill", {"query": "x" * 4097}),
     ("list_skill", {"query": "x", "model": "other"}), ("get_current_goal", {"session_id": "other"}),
     ("recall_compressed_context", {"query": ""}), ("recall_compressed_context", {"query": "x" * 4097}),
@@ -318,7 +324,9 @@ async def test_invalid_observation_arguments_stay_manual(tmp_path, installed, na
 @pytest.mark.parametrize("query", ["https://example.com/old-page", "file:///etc/passwd; Stop-Process -Force"])
 @pytest.mark.asyncio
 async def test_local_observation_query_is_inert_text(tmp_path, installed, name, query):
-    args = {"query": [query], "operation": "search"} if name == "capability_search" else {"query": query}
+    args = {"query": query}
+    if name == "capability_search":
+        args = {"type": ["skill"], "query": [query], "operation": "search"}
     env = await installed(name, args)
     auto, _, reviewer, base = _rail(tmp_path, PolicyEvaluation(level="ask", reason="configured"))
     auto.init(env.owner)

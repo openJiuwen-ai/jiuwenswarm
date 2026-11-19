@@ -59,7 +59,7 @@ User sends a task
   v
 The agent reads the session skill inventory
   v
-capability_search with type=skill lists categories or finds relevant skills
+capability_search with type=["skill"] lists categories or finds relevant skills
   v
 Candidate skills are found
   v
@@ -82,7 +82,7 @@ Discovery exposes `capability_search`. Skill Retrieval controls whether the taxo
 
 | Tool | What it does | When to use |
 |------|--------------|-------------|
-| `capability_search` | Choose `type=skill` (default), `expert`, or `mcp`. All three support up to eight queries, `operation=list`, category-scoped search, and cursor pagination. MCP groups session-visible tools and bundled Skills by service. | Find a capability or its service. Search with `type=expert` before work that needs independent review, domain or platform expertise, or separate deliverables that can be developed in parallel. |
+| `capability_search` | Omit `type` to search Skills, experts and MCP services together. Pass `"type": ["expert", "mcp"]` to select a subset. The selected catalogs share up to eight queries, a category scope, one `top_k` limit per page and one cursor. Use `operation=list` to browse. MCP groups session-visible tools and bundled Skills by service. | Find a capability or its service. To look up installed experts for an independent review or specialist assignment, pass `"type": ["expert"]`. |
 
 After Skill Retrieval finds relevant skills, the agent narrows the candidate set by skill name and description. If orchestration is needed later, those candidates help guide skill-chain generation.
 
