@@ -11708,6 +11708,7 @@ class JiuWenSwarmDeepAdapter:
                     config,
                     agent_name=getattr(self, "_agent_name", None),
                     sdk_media_globals=sdk_media_globals,
+                    shared_document_root=True,
                 )
                 if rail is not None:
                     logger.info(
@@ -14497,6 +14498,8 @@ class JiuWenSwarmDeepAdapter:
             await self._try_init_a2x_client(config_base, reload=True)
             self._sync_a2x_runtime_state()
         self._agent_name = self._instance_overrides.get("agent_name", config.get("agent_name", "main_agent"))
+        if self._session_instance_agent_definition is not None:
+            self._agent_name = self._session_instance_agent_definition["name"]
         agent_card = AgentCard(name=self._agent_name, id=_AGENT_CARD_ID)
         self._sync_multimodal_tools_for_runtime()
         self._sync_paid_search_tool_for_runtime()
@@ -23158,7 +23161,7 @@ class JiuWenSwarmDeepAdapter:
                 if is_jiuwen_builtin_memory(config):
                     sdk_media_globals = self._jiuwen_memory_media_globals(config)
                     new_embed_fp = jiuwen_builtin_config_fingerprint(
-                        config, sdk_media_globals=sdk_media_globals,
+                        config, agent_name=self._agent_name, sdk_media_globals=sdk_media_globals,
                     )
                 previous_embed_fp = self._memory_embedding_fingerprint
                 if self._memory_rail is not None:
