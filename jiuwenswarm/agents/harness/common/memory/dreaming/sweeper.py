@@ -483,8 +483,8 @@ class Sweeper:
                 text = f.read_text(encoding="utf-8", errors="replace")
                 m = re.search(r'^name:\s*(.+)$', text, re.MULTILINE)
                 lines.append(f"- {m.group(1).strip()}" if m else f"- {f.stem}")
-            except Exception:
-                logger.warning("[dreaming] failed to read consolidated file %s: %s", f, exc_info=True)
+            except Exception as exc:
+                logger.warning("[dreaming] failed to read consolidated file %s: %s", f, exc, exc_info=True)
                 continue
         return "\n".join(lines) if lines else empty_label
 
@@ -590,8 +590,8 @@ class Sweeper:
                 raw = path.read_text(encoding="utf-8")
                 data = json.loads(raw) if raw.strip() else {}
                 return data if isinstance(data, dict) else {}
-        except Exception:
-            logger.warning("[dreaming] failed to load checkpoint %s: %s", path, exc_info=True)
+        except Exception as exc:
+            logger.warning("[dreaming] failed to load checkpoint %s: %s", path, exc, exc_info=True)
             pass
         return {}
 
