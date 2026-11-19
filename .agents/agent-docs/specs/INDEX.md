@@ -61,7 +61,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [S_01_observation-projection](jiuwenswarm/agents/harness/common/rsi/S_01_observation-projection.md) | S | RSI 进度、报告与前端终态投影 | l_x_d | jiuwenswarm/agents/harness/common/rsi, jiuwenswarm/channels/web/frontend/src/features/rsi | jiuwenswarm/agents/harness/common/rsi/artifact_adapter.py, jiuwenswarm/agents/harness/common/rsi/paper_workspace_provider.py, jiuwenswarm/agents/harness/common/rsi/services.py, jiuwenswarm/channels/web/frontend/src/features/rsi/rsiStore.ts, jiuwenswarm/channels/web/frontend/src/features/rsi/components/RsiResultSummary.tsx | — |
+| [S_01_observation-projection](jiuwenswarm/agents/harness/common/rsi/S_01_observation-projection.md) | S | RSI 进度、报告与前端终态投影 | l_x_d | jiuwenswarm/agents/harness/common/rsi, jiuwenswarm/channels/web/frontend/src/features/rsi | jiuwenswarm/agents/harness/common/rsi/artifact_adapter.py, jiuwenswarm/agents/harness/common/rsi/services.py, jiuwenswarm/channels/web/frontend/src/features/rsi/rsiStore.ts, jiuwenswarm/channels/web/frontend/src/features/rsi/components/RsiResultSummary.tsx | — |
 
 <a id="module-5"></a>
 
@@ -88,7 +88,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [S_01_observation-projection](jiuwenswarm/agents/harness/common/rsi/S_01_observation-projection.md) | S | RSI 进度、报告与前端终态投影 | l_x_d | jiuwenswarm/agents/harness/common/rsi, jiuwenswarm/channels/web/frontend/src/features/rsi | jiuwenswarm/agents/harness/common/rsi/artifact_adapter.py, jiuwenswarm/agents/harness/common/rsi/paper_workspace_provider.py, jiuwenswarm/agents/harness/common/rsi/services.py, jiuwenswarm/channels/web/frontend/src/features/rsi/rsiStore.ts, jiuwenswarm/channels/web/frontend/src/features/rsi/components/RsiResultSummary.tsx | — |
+| [S_01_observation-projection](jiuwenswarm/agents/harness/common/rsi/S_01_observation-projection.md) | S | RSI 进度、报告与前端终态投影 | l_x_d | jiuwenswarm/agents/harness/common/rsi, jiuwenswarm/channels/web/frontend/src/features/rsi | jiuwenswarm/agents/harness/common/rsi/artifact_adapter.py, jiuwenswarm/agents/harness/common/rsi/services.py, jiuwenswarm/channels/web/frontend/src/features/rsi/rsiStore.ts, jiuwenswarm/channels/web/frontend/src/features/rsi/components/RsiResultSummary.tsx | — |
 
 <a id="module-8"></a>
 
