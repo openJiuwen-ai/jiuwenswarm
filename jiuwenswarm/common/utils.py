@@ -41,7 +41,7 @@ import shutil
 import socket
 import time
 from collections import OrderedDict
-from collections.abc import Hashable
+from collections.abc import Awaitable, Callable, Hashable
 from pathlib import Path
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Optional
@@ -4004,16 +4004,21 @@ class AsyncLRUCache:
     """带可选过期时间与容量上限的 LRU 缓存（异步并发安全）.
 
     ``max_size=None`` / ``ttl_seconds=None`` 表示不启用对应限制。
+
+    ``on_evict`` 在容量上限、TTL 过期，以及 ``put`` 用另一个对象覆盖同一键时回调，
+    且发生在释放内部锁之后。显式 ``remove`` / ``clear`` / ``pop`` / ``put_if_absent`` 不触发。
     """
 
     def __init__(
         self,
         max_size: int | None = None,
         ttl_seconds: int | None = None,
+        on_evict: Callable[[Hashable, Any], Awaitable[None] | None] | None = None,
     ) -> None:
         self._cache: OrderedDict[Hashable, tuple[Any, float]] = OrderedDict()
         self._max_size = max_size
         self._ttl = ttl_seconds
+        self._on_evict = on_evict
         self._lock = asyncio.Lock()
 
     def _is_expired(self, timestamp: float) -> bool:
@@ -4021,11 +4026,25 @@ class AsyncLRUCache:
             return False
         return time.time() - timestamp > self._ttl
 
+    async def _notify_evicted(self, evicted: list[tuple[Hashable, Any]]) -> None:
+        if not evicted or self._on_evict is None:
+            return
+        for key, value in evicted:
+            try:
+                result = self._on_evict(key, value)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "[AsyncLRUCache] on_evict failed for key=%s", key
+                )
+
     async def get(self, key: Hashable) -> Any | None:
         """获取缓存值，如果不存在或已过期则返回 None.
 
         命中时会刷新访问时间（滑动过期：自最后一次 get/put 起算 ttl）。
         """
+        evicted: list[tuple[Hashable, Any]] = []
         async with self._lock:
             if key not in self._cache:
                 return None
@@ -4033,23 +4052,44 @@ class AsyncLRUCache:
             value, timestamp = self._cache[key]
             if self._is_expired(timestamp):
                 self._cache.pop(key, None)
-                return None
+                evicted.append((key, value))
+                value = None
+            else:
+                # 刷新访问时间并移动到末尾（最近使用）
+                self._cache[key] = (value, time.time())
+                self._cache.move_to_end(key)
 
-            # 刷新访问时间并移动到末尾（最近使用）
-            self._cache[key] = (value, time.time())
-            self._cache.move_to_end(key)
-            return value
+        await self._notify_evicted(evicted)
+        return value
 
     async def put(self, key: Hashable, value: Any) -> None:
         """存入缓存值，如果超过容量则淘汰最久未使用的."""
+        evicted: list[tuple[Hashable, Any]] = []
         async with self._lock:
             if key in self._cache:
-                self._cache.pop(key)
+                old_value, _old_ts = self._cache.pop(key)
+                if old_value is not value:
+                    evicted.append((key, old_value))
             elif self._max_size is not None and len(self._cache) >= self._max_size:
                 # 淘汰最久未使用的（头部）
-                self._cache.popitem(last=False)
+                evicted_key, (evicted_value, _ts) = self._cache.popitem(last=False)
+                evicted.append((evicted_key, evicted_value))
 
             self._cache[key] = (value, time.time())
+
+        await self._notify_evicted(evicted)
+
+    async def put_if_absent(self, key: Hashable, value: Any) -> bool:
+        """键空缺时写入并刷新时间戳。不淘汰其它项，不触发 ``on_evict``。
+
+        在途实例被 TTL/容量摘下后放回缓存时使用，避免覆盖并发创建的新实例。
+        """
+        async with self._lock:
+            if key in self._cache:
+                return False
+            self._cache[key] = (value, time.time())
+            self._cache.move_to_end(key)
+            return True
 
     async def touch_if_same(self, key: Hashable, value: Any) -> bool:
         """若 key 存在且缓存值与 value 为同一对象，则刷新访问时间.
@@ -4070,12 +4110,20 @@ class AsyncLRUCache:
             return True
 
     async def remove(self, key: Hashable) -> None:
-        """删除缓存项."""
+        """删除缓存项（不触发 ``on_evict``）."""
         async with self._lock:
             self._cache.pop(key, None)
 
+    async def pop(self, key: Hashable) -> Any | None:
+        """删除并返回缓存值（不触发 ``on_evict``；不存在则返回 None）."""
+        async with self._lock:
+            entry = self._cache.pop(key, None)
+            if entry is None:
+                return None
+            return entry[0]
+
     async def clear(self) -> None:
-        """清空缓存."""
+        """清空缓存（不触发 ``on_evict``）."""
         async with self._lock:
             self._cache.clear()
 
@@ -4095,6 +4143,7 @@ class AsyncLRUCache:
         return values
 
     async def keys(self) -> list[Hashable]:
+        evicted: list[tuple[Hashable, Any]] = []
         async with self._lock:
             if self._ttl is not None:
                 expired_keys = [
@@ -4103,7 +4152,11 @@ class AsyncLRUCache:
                     if self._is_expired(timestamp)
                 ]
                 for key in expired_keys:
-                    del self._cache[key]
+                    value, _ts = self._cache.pop(key)
+                    evicted.append((key, value))
+
+        await self._notify_evicted(evicted)
+        async with self._lock:
             return list(self._cache.keys())
 
 

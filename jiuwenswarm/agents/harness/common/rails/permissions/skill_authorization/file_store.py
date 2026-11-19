@@ -160,6 +160,18 @@ def _open_at(directory: int | Path, name: str, flags: int, mode: int = 0o600) ->
     return os.open(target, flags, mode)
 
 
+def _describe_target(target: Path) -> str:
+    """best-effort 属性摘要（只读位 / 可写位），诊断用。"""
+    try:
+        st = target.stat()
+    except OSError as exc:
+        return f"stat-errno={exc.errno}"
+    if os.name == "nt":
+        attrs = getattr(st, "st_file_attributes", 0)
+        return f"readonly={bool(attrs & 0x1)} reparse={bool(attrs & 0x400)}"
+    return f"writable={bool(st.st_mode & 0o200)}"
+
+
 @contextmanager
 def _locked_directory(directory: Path, *, create: bool = False) -> Iterator[int | Path]:
     # Keep only locks for in-flight operations, never grants or session state.
@@ -208,11 +220,25 @@ def _locked_directory_fd(
     # directory from being removed while the transaction holds the handle.
     with _open_directory(directory) as directory_fd:
         locked = False
-        lock_fd = _open_at(
-            directory_fd,
-            "state.lock",
-            os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
-        )
+        try:
+            lock_fd = _open_at(
+                directory_fd,
+                "state.lock",
+                os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0),
+            )
+        except OSError as exc:
+            # 可诊断性：锁文件打不开时记录 errno/属性，便于区分
+            # ACL 拒绝 / 只读属性 / 路径替换等磁盘诱因。
+            logger.warning(
+                "[skill_authorization] state.lock open failed dir=%s errno=%s "
+                "winerror=%s dir[%s] lock[%s]",
+                directory,
+                exc.errno,
+                getattr(exc, "winerror", None),
+                _describe_target(directory),
+                _describe_target(directory / "state.lock"),
+            )
+            raise
         with os.fdopen(lock_fd, "a+b") as lock_file:
             deadline = time.monotonic() + _LOCK_TIMEOUT
             try:

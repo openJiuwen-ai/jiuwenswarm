@@ -29,6 +29,18 @@ class TeamBindingStoreError(ValueError):
         self.code = code
 
 
+class TeamSessionBindingError(TeamBindingStoreError):
+    """A rejected session recovery, with a safe wire-facing classification."""
+
+    def __init__(self, message: str, *, code: str, reason: str) -> None:
+        super().__init__(message, code=code)
+        self.reason = reason
+
+    @property
+    def payload(self) -> dict[str, str]:
+        return {"error": str(self), "code": self.code, "reason": self.reason}
+
+
 @dataclass(frozen=True)
 class TeamBinding:
     team_name: str
@@ -94,6 +106,19 @@ def _replace_bound_sessions(
     )
 
 
+def _is_valid_binding_record(key: str, value: dict[str, Any]) -> bool:
+    session_ids = value.get("session_ids", [])
+    if not isinstance(session_ids, list):
+        return False
+    for session_id in session_ids:
+        if not isinstance(session_id, str) or not session_id.strip():
+            return False
+    if not str(value.get("template_id") or "").strip():
+        return False
+    team_name = value.get("team_name")
+    return not team_name or team_name == key
+
+
 def validate_team_name(team_name: str) -> str:
     normalized = str(team_name or "").strip()
     if not normalized:
@@ -129,25 +154,32 @@ class TeamBindingStore:
         with self._lock:
             return self._read_unlocked().get(normalized)
 
-    def find_by_session(self, session_id: str) -> TeamBinding | None:
+    def find_by_session(self, session_id: str, *, require_unique: bool = False) -> TeamBinding | None:
         """Return the binding that owns ``session_id``, or ``None``.
 
         ``bind_session`` keeps a session in at most one team's ``session_ids``
         (re-binding evicts it from the previous team), so normally at most one
         binding matches. Hand-edited stores are tolerated by preferring the
-        most recently updated hit.
+        most recently updated hit, unless ``require_unique`` requests strict
+        structure validation and rejection of ambiguous ownership.
         """
         normalized = str(session_id or "").strip()
         if not normalized:
             return None
         with self._lock:
+            data = self._read_session_bindings_unlocked() if require_unique else self._read_unlocked()
             hits = [
                 binding
-                for binding in self._read_unlocked().values()
+                for binding in data.values()
                 if normalized in binding.session_ids
             ]
         if not hits:
             return None
+        if require_unique and len(hits) != 1:
+            raise TeamSessionBindingError(
+                "Session has more than one team binding.",
+                code="CONFLICT", reason="TEAM_SESSION_BINDING_AMBIGUOUS",
+            )
         return max(hits, key=lambda item: item.updated_at)
 
     def create(
@@ -186,7 +218,7 @@ class TeamBindingStore:
             self._write_unlocked(data)
             return binding
 
-    def bind_session(self, *, team_name: str, session_id: str) -> TeamBinding:
+    def bind_session(self, *, team_name: str, session_id: str, allow_rebind: bool = True) -> TeamBinding:
         normalized_name = str(team_name or "").strip()
         normalized_session = str(session_id or "").strip()
         if not normalized_name:
@@ -195,10 +227,19 @@ class TeamBindingStore:
             raise TeamBindingStoreError("session_id is required", code="BAD_REQUEST")
 
         with self._lock:
-            data = self._read_unlocked()
+            data = self._read_unlocked() if allow_rebind else self._read_session_bindings_unlocked()
             binding = data.get(normalized_name)
             if binding is None:
                 raise TeamBindingStoreError("team binding not found", code="NOT_FOUND")
+
+            if not allow_rebind and any(
+                name != normalized_name and normalized_session in candidate.session_ids
+                for name, candidate in data.items()
+            ):
+                raise TeamSessionBindingError(
+                    "Session is already bound to another team; create a new conversation to change teams.",
+                    code="CONFLICT", reason="TEAM_SESSION_BINDING_CONFLICT",
+                )
 
             now = time.time()
             changed = False
@@ -279,7 +320,18 @@ class TeamBindingStore:
                 self._write_unlocked(data)
             return existed
 
-    def _read_unlocked(self) -> dict[str, TeamBinding]:
+    def _read_session_bindings_unlocked(self) -> dict[str, TeamBinding]:
+        """Keep strict binding read failures classified across session entrypoints."""
+        try:
+            return self._read_unlocked(strict=True)
+        except TeamSessionBindingError:
+            raise
+        except TeamBindingStoreError as exc:
+            raise TeamSessionBindingError(
+                str(exc), code=exc.code, reason="TEAM_SESSION_BINDING_READ_FAILED",
+            ) from exc
+
+    def _read_unlocked(self, *, strict: bool = False) -> dict[str, TeamBinding]:
         if not self._path.exists():
             return {}
         try:
@@ -290,13 +342,24 @@ class TeamBindingStore:
                 code="INTERNAL_ERROR",
             ) from exc
         items = raw.get("teams", raw) if isinstance(raw, dict) else {}
+        if strict and (not isinstance(raw, dict) or not isinstance(items, dict)):
+            raise TeamBindingStoreError("Invalid team binding store structure.", code="INTERNAL_ERROR")
         if not isinstance(items, dict):
             return {}
         result: dict[str, TeamBinding] = {}
         for key, value in items.items():
             if not isinstance(value, dict):
+                if strict:
+                    raise TeamBindingStoreError("Invalid team binding record.", code="INTERNAL_ERROR")
                 continue
-            binding = TeamBinding.from_dict(value)
+            if strict and not _is_valid_binding_record(key, value):
+                raise TeamBindingStoreError("Invalid team binding record.", code="INTERNAL_ERROR")
+            try:
+                binding = TeamBinding.from_dict(value)
+            except (ValueError, TypeError, OverflowError) as exc:
+                if not strict:
+                    raise
+                raise TeamBindingStoreError("Invalid team binding record.", code="INTERNAL_ERROR") from exc
             if not binding.team_name:
                 binding = TeamBinding.from_dict({**value, "team_name": key})
             if binding.team_name:

@@ -135,6 +135,7 @@ agent-core（姊妹实现归档 — 改 core 代码读那边）：
 | 配置 | 消费点 | 语义摘要 |
 |---|---|---|
 | `enabled` | deep `_update_agent_rails` / team `get_context_engine_enabled` | ProcessorRail 总开关（见双默认漂移） |
+| `enable_tiktoken_counter` | ContextEngineConfig | 精确 token 计数；词表不可用时 core 回退字符估算 |
 | `enable_reload` | `_deep_agent_context_engine_config` → core `ContextProcessorRail` | core 仅记录并注入 reload prompt 段；`ContextMessageBuffer.reload` 可用但无 core 内调用方，`[[HANDLE]]` 实际触发由调用方/模型按提示完成 |
 | `compression_recall_config` | ContextEngineConfig + 压缩器 | 归档分块 + `[[COMPRESSION_RECALL]]` |
 | `*_compressor_config` / `message_summary_offloader_config` | `_build_context_processor_rail` | 各 processor 阈值与行为 |

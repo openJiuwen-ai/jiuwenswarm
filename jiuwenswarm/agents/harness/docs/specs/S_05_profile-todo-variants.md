@@ -4,7 +4,7 @@
 |---|---|
 | Spec ID | S_05 |
 | 状态 | 当前实现的真实描述（含未装配遗留的登记） |
-| 修订日期 | 2026-11-17 |
+| 修订日期 | 2026-11-18 |
 | 关联模块 | `jiuwenswarm/agents/harness/code/rails/code_task_planning_rail.py`（code 侧装配 rail，~290 行）<br>`jiuwenswarm/agents/harness/code/tools/code_todo_tools.py`（四子类，115 行）<br>`jiuwenswarm/agents/harness/code/prompt/code_todo_tool_prompts.py`（CC 对齐描述与 schema，174 行）<br>`jiuwenswarm/agents/harness/flash/tools/flash_todo.py`（UnifiedTodoTool 4 合 1，222 行）<br>`jiuwenswarm/agents/harness/flash/rails/flash_todo_rail.py`（flash 侧挂载 rail，310 行）<br>`jiuwenswarm/agents/harness/flash/permissions/tool_policy_projection.py`（统一名权限投影，~95-126）<br>`jiuwenswarm/agents/harness/common/tools/todo_compat.py`（openjiuwen 兼容 shim + 持久提醒，404 行）<br>`jiuwenswarm/agents/harness/common/tools/todo_resume.py`（持久提醒 / 代际 token / 续跑词汇层，476 行）<br>`jiuwenswarm/agents/harness/common/tools/user_todo_tool.py`（用户个人待办，400 行）<br>`jiuwenswarm/agents/harness/common/tools/todo_toolkits.py`（markdown 行式工具链，**未装配遗留**，367 行） |
 | 装配点 | code：`server/runtime/agent_adapter/interface_code.py` `_build_code_task_planning_rail()`（~885）+ `agents/swarm/providers/code_rails.py`（~434，swarm 编排路径）<br>flash：`server/runtime/agent_adapter/interface_flash.py` `_build_task_planning_rail()`（~994，替换 stock `TaskPlanningRail` 的 4→1 位点）<br>compat：`interface_deep.py` 模块级 `install_todo_modify_compat_patch()`（~744，import 时执行，详见 [[S_01]]）<br>user_todos：`interface_code.py` 工具构建映射 `"user_todos" → _build_user_todos_tool`（~309/~1593）+ `agents/swarm/providers/tools.py` `build_user_todos`（~565）+ `resources/config*.yaml` 三份的工具清单 |
 | 消费点 | 前端 `channels/web/frontend/src/utils/toolProtocol.ts`（工具名白名单 + `todo_` 前缀兜底）、`AvatarPermEditor.tsx`（权限编辑器列五个历史名）、subagent 展示层（`includes('todo')` 宽匹配） |
@@ -51,6 +51,8 @@
 **N6 UnifiedTodoTool 必须是 Tool 子类**
 不能做成 LocalFunction：`invoke` 需要接收 `session` kwarg 并透传给四个引擎（todo.json 按 session 键控）；LocalFunction 没有 session 通道，会静默写错 / 读错 session 的文件。模块 docstring 登记了这条硬约束。
 
+create 的 tasks 项要求非空 content，id 可选：模型提供时保留，省略时沿用 Core 生成 ID 的兼容行为。推荐稳定 ID 的提示不应升级为拒绝旧调用的必填约束；后续增量修改仍使用实际持久化的 ID。
+
 **N7 统一名 `todo` 与 `todo_` 前缀钩子的共生约束**
 `_UNIFIED_TODO_NAME = "todo"`（不带前缀）。外层 task-loop 钩子（TaskExecutionRail 系）按 `todo_` 前缀识别 todo 调用，统一名**有意绕过**这些钩子；同时 flash 前端的 todo 刷新链路工具名常量已包含 `todo`（docstring 登记）。改动统一名或拆回四工具，必须同步核对这些前缀判定与前端常量，否则外层钩子会静默漏判 / 误判。前端 `toolProtocol.ts` 的内联协议清洗白名单列五个**历史名**（todo_create/complete/insert/remove/list）+ `todo_` 前缀兜底（review 意见：新增 `todo_*` 工具无需同步白名单）。
 
@@ -60,6 +62,8 @@
 430正文由Flash本仓中英文常量提供，运行时与离线注册表共用，明确活动计划继续/追加使用todo(action=modify)，显式替换使用plan_action=new/rebuild；不再从SDK正文做工具名或整句替换。正文迁移不撤销创建保护，也不改变取消回执和版本事件配对。
 
 拒答后的取消更新优先使用修改引擎返回的提交快照，不重新读取另一并发提交。默认 legacy 保持原字段与展示；显式 versioned 时连同该快照的 todo_meta 发送，无法确认快照时不发送无版本替代包。提交结果标记 unknown 的异常不得转换成“校验拒绝、未提交”提示。
+
+深适配器将 `todo.updated` 的 OutputSchema 转为出站事件时，保留生产方已提供的可选 todo_meta；转换器不重新读取快照或生成版本，legacy 输入不增加该字段。
 
 直接继承 `DeepAgentRail`（priority=90，替换旧的 `ConcurrentSafeTaskPlanningRail`）：**不做 TaskPlan 同步、不实现 after_task_iteration**——TaskPlan 同步与推进提醒在 flash 有意丢弃；但 **close nudge（[[S_03]] 机制）已接入**：构造 `TodoCloseGate(_UNIFIED_TODO_NAME)`（@60），before_invoke 重置 gate → before_model_call `_close_gate.arm` → after_model_call `_close_gate.attach`（文本收尾被替换为一次内部 todo 调用）→ before_tool_call 拦截 nudge 工具调用并注入消息 → after_tool_call 加载 in_progress 条目。挂载面 = init 建引擎并注册统一工具、before/after_model_call 提示注入与 nudge 装挂、before/after_tool_call nudge 拦截与加载、uninit 反注册。
 
@@ -72,8 +76,8 @@ init 建四个 openjiuwen 引擎实例（create/list/get/modify，共享**单个
 **N11 权限投影三段式：统一名 → 引擎名 → 历史 fallback 名**
 权限面 `project_operations("todo", args)`：先校验 `action ∈ {create, list, get, modify}`（非法 raise），产出引擎名操作 `todo_{action}`；modify 再校验 `modify_action ∈ {update, append, delete, cancel, insert_before, insert_after}` 并产出 `todo_modify`，同时**追加历史 fallback 名**——append/insert_* → `todo_insert`，delete/cancel → `todo_remove`，update 且含 completed 条目 → `todo_complete`。旧权限配置（`config.yaml` 三份、前端 `AvatarPermEditor` 五历史名）与新统一名都能匹配。
 
-**N12 参数错误返回结构化 ToolOutput，不 raise**
-未知 action、get 缺 id 等参数错误返回带错误文案的 ToolOutput——flash 工具面约定（与 `flash_read_tool` / `flash_glob_tool` 的"整包一次性产出、不走增量流式"同族）。权限投影层（N11）的非法值才 raise（那是调用方 bug，不是模型输入）。
+**N12 参数错误以结构化失败返回**
+统一 todo 工具与权限投影共用 action、modify_action 和 update/append 的数组校验。工具本体返回带纠正提示的 `ToolOutput(success=False)`。权限投影捕获该校验抛出的 `TodoArgumentError` 后停止本次调用，以现有工具结果字段返回 `status=error`、`success=false` 和具体参数错误。展示文本使用 `[ERROR]:` 前缀，使工具卡可识别失败，且保留后面的 `[INVALID_ARGUMENT]` 和字段提示。外层明确 DENY 时保留权限拒绝。已知参数错误不生成审批，修正后作为新调用检查外层及子操作权限。FlashTodoRail 忽略明确失败结果，不为它登记待办推进或收尾。
 
 modify 的 update/append 必须提供 `todos` 数组，单项修改也使用数组；顶层 id/status 不替代它。工具描述和 schema 的条目属性说明该形状，运行时缺数组时返回正确示例，不调用引擎。仅对“多个进行中任务”校验错误，补充可读取的当前进行中 ID 和未提交说明；不自动改状态，其他引擎异常沿原路径传播。字段及权限投影规则保持既有约定。
 
@@ -163,7 +167,7 @@ adapter 构建时 `set_global_workspace_dir` + `set_global_channel_id`（cron �
 
 ## 6. 异常分支
 
-- **E1** flash 统一工具参数错误 → 结构化 ToolOutput 错误文案（N12）；权限投影层非法 action / modify_action → raise ValueError（调用方 bug）
+- **E1** Flash todo 的已知参数错误 → 执行前结构化拒绝或工具本体 `ToolOutput(success=False)`（N12）。未识别的投影异常沿用权限失败处理。
 - **E2** `FlashTodoRail.init` 缺 ability_manager / workspace / sys_operation → warning + return（rail 空转，不炸 agent）；注册统一工具失败 → warning，engines 已建但不暴露
 - **E3** `CodeTaskPlanningRail.init` add_ability 异常 → warning，已注册工具保留
 - **E4** `user_todos` 模块不可导入 → info + 返回 None（工具缺失不阻断）

@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_05 / overflow-recovery |
 | 关联模块 | agents/harness/common/rails/context_overflow_recovery_rail.py + deep/adapter_statics.py 构建 / interface_deep 注册 |
-| 最近一次修订日期 | 2026-11-09 |
+| 最近一次修订日期 | 2026-11-18 |
 | 关联 feature | 暂无（初版建档） |
 
 ## 范围 / 边界
@@ -28,7 +28,7 @@
 ## 不变量
 
 - **N1（检测三分支）**：`_is_context_overflow_error` 判定顺序——**413** 直接成立；**400 且** 消息含 overflow 关键词；**status 缺失** 且含关键词。ModelArts 变体有两条路径：组合模式（`Error code: 400` + `ModelArts.81001` + 关键词）与纯文本 `input token limit is N`（关键词 `input token limit`，limit 由 `_parse_token_limits` 解析）。Good：参数错误 400 无关键词不触发。Bad：所有 400 触发 compact。
-- **N2（force_compact GET 触发）**：恢复动作对 `FullCompactProcessor` 调 `set_force_compact(True)`；可选 `threshold_override = limit * RECOVERY_THRESHOLD_RATIO`（**0.85**）；随后 `ctx.request_retry()` 重入 LLM。processor 缺失时仍 retry 但记录 warning（见实现）。**limit 解析优先级**：显式窗口（`context._context_window_tokens` / 配置）→ 模型窗口表 → 配置；解析不到真实窗口时放弃主动预压缩，不用 core 的 200000 默认值误触发。
+- **N2（force_compact GET 触发）**：恢复动作对 `FullCompactProcessor` 调 `set_force_compact(True)`；可选 `threshold_override = limit * RECOVERY_THRESHOLD_RATIO`（**0.85**）；随后 `ctx.request_retry()` 重入 LLM。processor 缺失时仍 retry 但记录 warning（见实现）。**limit 解析优先级**：显式窗口（`context._context_window_tokens` / 配置）→ 模型窗口表 → 默认窗口（agent-core `DEFAULT_CONTEXT_MAX_TOKENS` = **200000**）。未知模型**不得静默跳过**，按默认窗口兜底并打 warning：漏登记窗口表的新模型否则会在长会话中失去全部预压缩保护。是否压得动由 FullCompact 自身的阈值判断决定（压不到 `threshold_override` 时拒绝替换），rail 层不重复做预算判断。
 - **N3（熔断）**：连续溢出次数 **>** `max_recovery_attempts` 时 `_circuit_break`：写 `OutputSchema(type="error")`，`payload.error_type="context_overflow_circuit_break"`，message 建议 `/compact` 或新会话；**熔断事件发送成功后计数归零**，正常成功也由 `after_model_call` 清零。
 - **N4（Priority）**：`priority = 100`，保证 `on_model_exception` 早于 priority 85 的 context 工程 rail 与 80 的 StreamEventRail（见类 docstring）。
 - **N5（构造默认值 vs 产品）**：类 `__init__` 默认 `max_recovery_attempts=2`；**deep adapter** `_build_context_overflow_recovery_rail` 使用 **3**。文档以 adapter 装配为准；单测覆盖 adapter 行为。
@@ -73,7 +73,7 @@
 
 ```
 before_model_call（每个 invoke 至多一次，ctx.extra["_context_overflow_proactive_done"] 幂等）
-  → _resolve_model_context_limit（显式窗口 → 模型窗口表 → 配置）
+  → _resolve_model_context_limit（显式窗口 → 配置 → 模型窗口表 → 默认 200000，未知模型 warning）
   → _last_prompt_tokens（最近一条消息 usage；dict/Pydantic/dataclass 兼容，input_tokens → prompt_tokens → total_tokens）
   → used ≥ limit × PROACTIVE_TRIGGER_RATIO(0.90) → set_force_compact(threshold_override = limit × 0.85)
 ```
@@ -108,6 +108,7 @@ interface_flash：_FLASH_RAIL_KEEP 保留 _context_overflow_recovery_rail 与 _l
 ## 修改检查单
 
 - 改关键词表或 413/400 逻辑 → `test_code_adapter_context_overflow_recovery_rail.py` + 本 spec N1。
+- 改限值解析（默认窗口兜底 / 未知模型 warning）→ `test_context_overflow_recovery_rail.py` + 本 spec N2。
 - 改 RECOVERY_THRESHOLD_RATIO / PROACTIVE_TRIGGER_RATIO 或 override 解析 → 同步 config.yaml FullCompact 注释（0.85 自适应说明）与本 spec。
 - 改熔断 error_type 或文案 → 前端/CLI 消费方 grep + 本 spec 接口表。
 - 在 deep/code/flash 之外新增模式装配 rail → 更新 [[S_06]] 模式表。

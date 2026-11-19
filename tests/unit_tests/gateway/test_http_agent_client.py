@@ -1401,3 +1401,22 @@ async def test_three_sessions_continue_independently_while_bob_first_stream_wait
             assert not client._inflight_stream_ids
         finally:
             await client.disconnect()
+
+
+def test_assemble_skills_list_serializes_bool_query_as_lower_literals():
+    env = e2a_from_agent_fields(
+        request_id="r-skills",
+        channel_id="web",
+        session_id="s-skills",
+        req_method=ReqMethod.SKILLS_LIST,
+        params={"with_installed": False, "refresh_marketplaces": True, "limit": 0},
+        is_stream=False,
+    )
+    assembled = assemble_rest_request(env, base_url="http://127.0.0.1:8766")
+    assert assembled.verb == "GET"
+    # bool 必须以小写字面量往返：``str(False)`` 产出的 ``"False"`` 会被
+    # AgentServer handler 侧 ``bool("False")`` 判真，显式 false 被当 true（#5441）。
+    assert assembled.query["with_installed"] == "false"
+    assert assembled.query["refresh_marketplaces"] == "true"
+    # 数字保持原样字符串，由 AgentServer 端 collect_params 还原为 int。
+    assert assembled.query["limit"] == "0"

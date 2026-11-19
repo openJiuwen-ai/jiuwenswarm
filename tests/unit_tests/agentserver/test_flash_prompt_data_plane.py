@@ -74,8 +74,8 @@ _SAFETY_SECTION_NAMES = {
 }
 
 _GOLDEN_OWNED_HASH = {
-    "cn": "262865cd3856a3e10b95f35b5eccecfe6c71468f26f9966625e114955a0ba817",
-    "en": "91b99cc24b853a5a8659cfe48a1f943d03decef3470d1ba214dd43ffcc4efb25",
+    "cn": "ffd10fae579388094305bebb9c6010468a28fc688d5c3ec2617d4f61bd90693c",
+    "en": "ddf6f5b0e505de53ba38d6c53be9913f6eeca4a7c559f477fd8d6327670f6485",
 }
 
 

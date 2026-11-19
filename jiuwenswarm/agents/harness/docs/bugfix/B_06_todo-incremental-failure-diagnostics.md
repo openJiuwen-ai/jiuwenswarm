@@ -56,3 +56,11 @@ Core 文件锁取消清理覆盖实际释放、内存标记与通知，并等待
 工具 provider 返回 None 时，不能再通过返回对象的 guard 判断 Flash；provider 抛异常时也不能把旧 Flash worker 的绑定当成普通请求的当前策略。现通过既有内部上下文传递宿主是否要求 Todo 归属，Flash 启动前拒绝缺失目标，普通研究仍跳过保存并继续。三条上下文装配路径均传递该标记，不新增模型或 E2A 字段。
 
 序列化异常测试改为局部替换 TodoStore 的 json 引用，取消对 Core 私有序列化函数的依赖；用例验证原文件未发布，不再将其宣称为实际临时文件清理覆盖。相关 455 项本地回归通过，原始失败与验证边界见 Checkpoint 下 `review-rnd1/jiuwen-review-fixes/`；官方 Core 合入及依赖锁更新仍须单独闭合。
+
+## 2026-11-17：取消事件出站与创建参数兼容补齐
+
+拒答 Rail 已携带取消回执的 todo_meta，但深适配器的 todo.updated 分支重建字典时丢弃该字段。现仅透传已有的可选值，不重新读文件，不改变默认 legacy。公共 stream_utils 的实际 dotted-event 分支本来就保留字段，因此未修改该模块。回归将取消事件延伸到真实 OutputSchema、深适配器解析及 E2A 编解码；额外覆盖无 meta、null 和异常 payload 的原兼容行为。
+
+创建工具卡曾把任务 id 新增为必填，与 Core 缺省生成 ID 的能力冲突。现 required 仅保留 content，仍保留 id 属性和推荐稳定 ID 的描述，不改写入引擎、计划保护或增量行为。中英文用例从真实工具卡校验进入统一工具与 Core 引擎，并独立读取文件验证生成/保留 ID。
+
+此次使用官方锁定的 Core 源码及 security 源码进行进程级验证，未修改依赖锁或共享环境。相关 11 文件共 357 项本地回归通过；历史、租户、模式、事件及并发增量用例包含在内。原始证据与四项代码改动记录见工程根 `Debug/FEATBIND-flash-todo-update/iteration-2/`；未执行浏览器、Windows、远端沙箱或全量 CI。

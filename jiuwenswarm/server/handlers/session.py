@@ -8,6 +8,7 @@ import asyncio
 import logging
 import math
 import shutil
+from dataclasses import replace
 from typing import Any
 from weakref import WeakValueDictionary
 
@@ -15,10 +16,13 @@ from jiuwenswarm.common.e2a.wire_codec import (
     encode_agent_chunk_for_wire,
     encode_agent_response_for_wire,
 )
+from jiuwenswarm.common.mode_matrix import NEW_AGENT_WORK_NORMAL
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.todo_snapshot import FrontendTodos, project_todo_snapshot
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.handlers._shared import (
+    _SESSION_PREVIOUS_MODE_KEY,
     _background_session_kvc_tasks,
     _sessions_dir_for_request,
     _is_team_metadata_mode,
@@ -26,6 +30,7 @@ from jiuwenswarm.server.handlers._shared import (
     _log_background_session_kvc_failure,
     _plan_active_sessions,
     _plan_exited_sessions,
+    resolve_request_runtime_mode,
     send_error_wire,
 )
 from jiuwenswarm.server.runtime.session.session_history import (
@@ -95,11 +100,34 @@ async def _todo_snapshot_for_history(ctx: RequestContext, session_id: str) -> Fr
             channel = metadata.get("channel_id") or channel
             agent = manager.get_agent_for_session_nowait(channel_id=channel, session_id=session_id)
             if agent is None:
-                mode = metadata.get("adapter_mode") or metadata.get("work_mode")
-                if mode not in ("agent", "code", "flash"):
+                adapter_mode = str(metadata.get("adapter_mode") or "").strip().lower()
+                stored_mode = str(metadata.get("mode") or "").strip().lower()
+                if stored_mode in {"", "unknown"}:
+                    stored_mode = adapter_mode
+                if not stored_mode:
+                    return None
+                # 在副本上按聊天入口解析宿主策略，不执行聊天或改写历史请求。
+                work_mode = metadata.get("work_mode")
+                if stored_mode.startswith(("code.", "team")) or stored_mode == "code":
+                    work_mode = None
+                resolved = resolve_request_runtime_mode(replace(
+                    ctx.request, channel_id=channel, session_id=session_id,
+                    req_method=ReqMethod.CHAT_SEND,
+                    params={"mode": stored_mode, "work_mode": work_mode,
+                            _SESSION_PREVIOUS_MODE_KEY: metadata.get("mode")},
+                ))
+                mode = "agent" if resolved.manager_mode == "auto_harness" else resolved.manager_mode
+                if (
+                    adapter_mode == "flash"
+                    and resolved.canonical_mode in {"agent", NEW_AGENT_WORK_NORMAL}
+                    and resolved.work_mode == "work"
+                ):
+                    mode = "flash"
+                if mode not in ("agent", "code", "flash", "team"):
                     return None
                 agent = await manager.get_agent(
-                    channel_id=channel, mode=mode, project_dir=metadata.get("project_dir"), request=ctx.request,
+                    channel_id=channel, mode=mode, sub_mode=resolved.sub_mode,
+                    project_dir=metadata.get("project_dir"), session_id=session_id, request=ctx.request,
                 )
         adapter = ctx.services.resolve_adapter(agent)
         reader = getattr(adapter, "read_todo_snapshot", None)

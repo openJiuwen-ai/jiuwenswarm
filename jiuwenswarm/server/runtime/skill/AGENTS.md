@@ -100,7 +100,7 @@ agents/harness/common/tools/               ← 本模块管辖（2 文件）
 1. **SkillManager 是技能状态唯一真相源**（[[S_02]] N1/N6）。账本一律临时文件 + `os.replace` + fsync 原子写；**落盘与落账必须在同一事务内**——只动盘不动账 = 对账时状态漂移。任何 rail / tool 层不得另建安装状态副本。
 2. **core 只认目录，swarm 管目录内容**（[[S_01]] N2）。agent-core 原语不感知账本；swarm 对 skills 目录的每次变更（安装 / 卸载 / 预置同步 / builtin 清理）必须同步落账并触发 `SkillUseRail` 刷新或 Agent 重载。
 3. **fail-closed 三处**（[[S_01]] N3）：工作区不可用即抛 `SkillWorkspaceUnavailable`（无 fallback）；下载白名单空即拒绝下载；产物验证（SHA-256 / HMAC）任一失败即拒绝安装。**不得为"可用性"放宽任何一处**。
-4. **状态即文件 + AbortError**（[[S_05]] N2）。活跃状态与 Grant 走 `FileSkillGrantStore` 会话文件（portalocker + 原子写），无进程内缓存；存储不可用抛 `AbortError` 中止本轮——任何"带旧状态继续"的兜底都是违规。default 会话只读不收养（[[S_05]] N3）。任务终止（interrupt cancel/abort / 合规停用）熔断 main scope 拦截迟到回调；新 skill_tool 激活只能在**激活持久化的同一事务内**解除熔断（[[S_05]] N9）。
+4. **状态即文件 + 双路径失败语义**（[[S_05]] N2）。活跃状态与 Grant 走 `FileSkillGrantStore` 会话文件（portalocker + 原子写），无进程内缓存；存储不可用按写入路径分类——**授权关键路径**（激活 / 切换 / 完成 / 复活）抛 `SkillStateUnavailable`（`AbortError`）中止本轮；**纯记账路径**（过期计数 / 显式清理）降级放行：mark degraded 后 `get_session_active_skill` 短路返回 None，凭据窗口关闭，**不带旧凭据继续**（fail-safe：少授权）。绕过 degraded 短路直接读盘取旧 active_skill 的"带旧状态继续"兜底仍是违规。default 会话只读不收养（[[S_05]] N3）。任务终止（interrupt cancel/abort / 合规停用）熔断 main scope 拦截迟到回调；新 skill_tool 激活只能在**激活持久化的同一事务内**解除熔断（[[S_05]] N9）。
 5. **单激活凭据语义**（[[S_05]] N1）。同一时刻只注入一个技能的凭据；跨技能执行硬拦（显式自带凭据的逃生口下**停注** active 凭据）；多技能复合命令指引拆分。改 SKILL_GATE 前先读 [[S_05]] 执行位判定的已知漏拦面声明。
 6. **授权不可继承**（[[S_05]] N4）。子代理授权仅 main scope 父 Context 可装配；swarm `SkillAuthorizationRail` 以类属性 `inherit_to_subagents = False` 在代码层强制；scope 恒绑「主会话 + 子 scope」；子代理审批恒落 local Grant；生命周期 finally 清 scope。审批卡必须带 index 的 `OutputSchema`。
 7. **热重载原位更新**（[[S_05]] N6）。技能链 rail 热重载一律 `update_*` 原位更新、不重建实例（重建会脱离 rail 注册链并丢动态加载技能）；`skill_envs` 空占位不清空已有凭据目录。

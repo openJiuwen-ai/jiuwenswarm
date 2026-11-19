@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_09 / mcp-integration |
 | 关联模块 | jiuwenswarm/common/{mcp_config, mcp_server_registry, mcp_call_timeout_patch, mcp_tool_list_refresh_patch}.py |
-| 最近一次修订日期 | 2026-11-11 |
+| 最近一次修订日期 | 2026-11-18 |
 | 关联 feature | F_01_deepresearch-mcp-delegation.md、F_03_mcp-registration-decoupled-from-chat.md |
 
 ## 范围 / 边界
@@ -45,6 +45,12 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
   `headers` 别名）。
 - **N3 超时与缓存**：调用 / 发现超时默认 300s；schema 缓存 env
   `JIUWENSWARM_MCP_SCHEMA_CACHE`（bundle 指纹作 key）。
+  sse / streamable-http 传输共享一个 SSL 上下文：timeout 补丁的 connect 包装先在工作线程里
+  用 `httpx.create_ssl_context()` 构建一次，按 (`SSL_CERT_FILE`, `SSL_CERT_DIR`) 缓存。
+  SDK 工厂包装在调用方未指定 `httpx_client_factory`、未按位置传参、SDK 签名接受该参数，
+  且缓存已就绪时，才注入与 `create_mcp_http_client` 同口径、只多传 `verify` 的工厂。
+  任一条件不满足或构建失败，都回到 SDK 默认路径。事件循环上不得同步加载 CA：
+  Windows 上单次可达秒级，周期扫描会让整个 AgentServer 停摆。
 - **N4 OfficeClaw 身份 pin**：启动身份经 `OFFICE_CLAW_MCP_COMMAND / ARGS_JSON / CWD`
   + env key 白名单锁定；allowlist 经 ContextVar + 共享 ability_manager 双通道跨 task
   传递。
@@ -69,6 +75,14 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
   call_tool/list_tools 的内部取消（等待者无 cancel 请求）在所属任务清理成功后
   最多重连重试一次；再次内部取消映射为普通工具错误。清理失败不得当作成功重试，
   调用或清理期间的真实外部取消继续传播。
+  池化 worker 的 owner 被取消从来不是调用者的取消：SDK 的 task group 进入在 owner
+  内，transport 子任务崩溃（如 POST 收到非 2xx 后 raise_for_status）取消的是 owner
+  本身（`cancelling()>0`，上面的单次 I/O 判定会视作外部取消）。owner 收到取消时，
+  一律向在途及排队调用者映射为 `McpWorkerStoppedError`（无 `close_reason` 时文案为
+  "transport cancelled internally"），owner 本身继续传播取消；请求级工具 invoke 据此
+  走既有的一次重建重试。`shutdown_pooled_mcp_worker` 只在关闭方自身被取消时传播
+  取消；owner 已以取消结束而关闭方未被取消时视为已停止，不得把 owner 的取消冒给
+  关闭方（否则重建重试本身会变成裸取消）。
   建连/调用用 `asyncio.timeout`
   保持任务归属；`wait_for` 仅可用于完整生命周期或不持有上下文的单次 I/O。
   超时/死会话先 await disconnect 再重置状态，禁止延迟跨任务 aclose；False 必须报错。
@@ -270,6 +284,13 @@ mcp_tool_list_refresh_patch.py ┘ 唯一装配点：interface_deep.DeepAdapter.
 - 改 patch 目标（上游 SDK 升级）→ 属性名常量表（N8 G.CLS.11）同步 +
   `inspect` 确认新签名 + 两个 patch 测试文件回归 + 列出全部同构包装点逐个确认。
 - 自建 remote MCP client → **必须补 `_jws_call_timeout` 印章**（N7 契约耦合）。
+- 改 `_run_mcp_worker` / `shutdown_pooled_mcp_worker` 的取消分支 → 用真实 AnyIO task
+  group 子任务崩溃（取消 owner 本身）回归：调用者拿到普通错误且 `cancelling()==0`，
+  请求级工具重建一次后成功（N7）。只 mock 一个 CancelledError 不会取消 owner，覆盖不到。
+- 升级 mcp / httpx → 跑共享 SSL 工厂的防漂移测试（与 `create_mcp_http_client` 的 timeout /
+  headers / follow_redirects / trust_env / auth 一致）；SDK 工厂签名变了要核对注入条件（N3）。
+  用内存传输、预算很小的测试 fixture 需预置 `_mcp_ssl_contexts`，否则首个建连要在线程里真实
+  加载 CA。
 - 改扫描节奏 / 池 TTL → env 覆盖路径回归（N5/N6 的四个 env）。
 - 扩 stdio 白名单 → 安全评审（N2 是 fail-closed 边界，[[S_01]] 铁律 6）。
 - 改 OfficeClaw 启动身份 → pin 字段（N4）+ env 白名单同步；注册面多放行的键在

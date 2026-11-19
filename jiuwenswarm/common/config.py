@@ -588,6 +588,11 @@ def get_evolution_signal_trigger_enabled(
     return fallback
 
 
+def get_team_evolution_signal_trigger_enabled(config: dict[str, Any] | None) -> bool:
+    """Leader signal scans historically default on, independently of member signal_trigger."""
+    return _get_evolution_config(config).get("team_signal_trigger") is not False
+
+
 def get_passive_skill_evolution_triggers(
     config: dict[str, Any] | None,
 ) -> dict[str, bool]:

@@ -229,15 +229,47 @@ async def test_history_reads_owner_backend_without_falling_back_to_host(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_cold_history_resolves_persisted_owner_without_new_request_fields(tmp_path, monkeypatch, _history):
+@pytest.mark.parametrize(("stored", "flash_enabled", "expected"), [
+    ({"mode": "agent", "work_mode": "work"}, False, ("agent", None)),
+    ({"mode": "agent", "work_mode": "work"}, True, ("flash", None)),
+    ({"mode": "agent", "work_mode": "code"}, True, ("code", "normal")),
+    ({"mode": "flash", "work_mode": "work"}, False, ("flash", None)),
+    ({"adapter_mode": "flash"}, False, ("flash", None)),
+    ({"mode": "agent", "work_mode": "work", "adapter_mode": "flash"}, False, ("flash", None)),
+    ({"mode": "agent.work.normal", "work_mode": "work", "adapter_mode": "flash"}, False, ("flash", None)),
+    ({"mode": "code.normal", "work_mode": "work"}, False, ("code", "normal")),
+    ({"mode": "agent.code.normal", "work_mode": "code"}, True, ("code", "normal")),
+    ({"mode": "agent.plan", "work_mode": "code", "channel_id": "web"}, True, ("code", "plan")),
+    ({"mode": "unknown", "adapter_mode": "flash", "work_mode": "work"}, False, ("flash", None)),
+    ({"mode": " UNKNOWN ", "adapter_mode": "code", "work_mode": "work"}, True, ("code", "normal")),
+    ({"mode": None, "adapter_mode": "flash"}, False, ("flash", None)),
+    ({"mode": "", "adapter_mode": "code"}, False, ("code", "normal")),
+    ({"mode": "   ", "adapter_mode": "flash"}, False, ("flash", None)),
+    ({"mode": "team", "adapter_mode": "agent", "work_mode": "work"}, True, ("team", None)),
+    ({"mode": "team.work.normal", "adapter_mode": "agent", "work_mode": "work"}, True, ("team", None)),
+    ({"mode": "code.team", "adapter_mode": "code", "work_mode": "code"}, True, ("code", "team")),
+    ({"mode": "agent", "adapter_mode": "agent", "work_mode": "work", "channel_id": "officeclaw"},
+     True, ("agent", None)),
+    ({"mode": "agent", "adapter_mode": "agent", "work_mode": "work"}, True, ("flash", None)),
+    ({"mode": "agent.work.plan", "adapter_mode": "flash", "work_mode": "work", "channel_id": "officeclaw"},
+     True, ("agent", "plan")),
+    ({"mode": "auto_harness", "adapter_mode": "agent", "work_mode": "work"}, True, ("agent", None)),
+    ({"mode": "unknown", "work_mode": "work"}, False, None),
+])
+async def test_cold_history_resolves_persisted_owner_without_new_request_fields(
+    tmp_path, monkeypatch, _history, stored, flash_enabled, expected,
+):
     from unittest.mock import AsyncMock
     from openjiuwen.harness.tools.todo_store import decode_snapshot
-    from jiuwenswarm.server.runtime.session import session_metadata
+    from jiuwenswarm.server.handlers import _shared
 
     monkeypatch.setattr(session_handlers, "_sessions_dir_for_request", lambda _request: tmp_path)
-    monkeypatch.setattr(session_metadata, "get_session_metadata", lambda *_args, **_kwargs: {
-        "adapter_mode": "flash", "channel_id": "original-channel", "project_dir": "/owned/project",
-    })
+    monkeypatch.setattr(_shared, "get_config", lambda: {"flash": {"enabled": flash_enabled}})
+    monkeypatch.setattr(_shared, "_plan_active_sessions", set())
+    metadata_path = tmp_path / "web_todo_1/metadata.json"
+    metadata_path.parent.mkdir()
+    channel = stored.get("channel_id", "original-channel")
+    metadata_path.write_text(json.dumps({**stored, "channel_id": channel, "project_dir": "/owned/project"}))
     owner = object()
     create = AsyncMock(return_value=owner)
     manager = SimpleNamespace(get_agent_for_session_nowait=lambda **_kwargs: None, get_agent=create)
@@ -246,11 +278,118 @@ async def test_cold_history_resolves_persisted_owner_without_new_request_fields(
     ctx = RequestContext(ctx.request, sink, "test", SimpleNamespace(
         agent_manager=manager, resolve_adapter=lambda agent: SimpleNamespace(read_todo_snapshot=reader),
     ))
+    original_params = dict(ctx.request.params)
+    original_method = ctx.request.req_method
     await session_handlers.handle_history_get_stream(ctx)
-    create.assert_awaited_once_with(channel_id="original-channel", mode="flash", project_dir="/owned/project",
-                                    request=ctx.request)
+    assert ctx.request.params == original_params
+    assert ctx.request.req_method == original_method
+    assert ctx.request.resolved_adapter_mode is None
+    if expected is None:
+        create.assert_not_awaited()
+        reader.assert_not_awaited()
+        assert all(frame["payload"]["event_type"] != "todo.updated" for frame in sink.sent)
+        return
+    mode, sub_mode = expected
+    create.assert_awaited_once_with(channel_id=channel, mode=mode, sub_mode=sub_mode,
+                                    project_dir="/owned/project", session_id="web_todo_1", request=ctx.request)
     reader.assert_awaited_once_with("web_todo_1", request=ctx.request)
     assert any(frame["payload"]["event_type"] == "todo.updated" for frame in sink.sent)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stored_mode,adapter_mode,chat_mode,expected_mode,expected_sub,channel,flash_enabled", [
+    ("agent", "agent", "agent", "agent", None, "web", False),
+    ("code", "code", "code", "code", "normal", "web", False),
+    ("flash", "flash", "flash", "flash", None, "web", False),
+    ("team", "agent", "team", "team", None, "web", False),
+    ("agent", "agent", "agent", "agent", None, "officeclaw", True),
+    ("flash", "flash", "flash", "flash", None, "officeclaw", True),
+    ("agent.work.plan", "flash", "flash", "agent", "plan", "officeclaw", True),
+    ("auto_harness", "agent", "auto_harness", "agent", None, "web", True),
+])
+@pytest.mark.parametrize("project_dir", [None, "/owned/project"])
+@pytest.mark.parametrize("consumer_mode", ["legacy", "versioned"])
+async def test_cold_history_and_chat_share_owner_and_current_generation(
+    monkeypatch, _history, stored_mode, adapter_mode, chat_mode, expected_mode, expected_sub,
+    channel, flash_enabled, project_dir, consumer_mode,
+):
+    import asyncio
+    from unittest.mock import AsyncMock
+    from openjiuwen.harness.tools.todo_store import decode_snapshot
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.server.handlers import _default, _shared
+    from jiuwenswarm.server.runtime.agent_manager import AgentManager
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    monkeypatch.setattr(_shared, "get_config", lambda: {"flash": {"enabled": flash_enabled}})
+    cold_plan_state = set()
+    monkeypatch.setattr(_shared, "_plan_active_sessions", cold_plan_state)
+    monkeypatch.setattr(_default, "_plan_active_sessions", cold_plan_state)
+    monkeypatch.setattr(session_metadata, "get_session_metadata", lambda *_args, **_kwargs: {
+        "mode": stored_mode, "adapter_mode": adapter_mode,
+        "work_mode": "code" if adapter_mode == "code" else "work",
+        "channel_id": channel, "project_dir": project_dir,
+    })
+    manager = object.__new__(AgentManager)
+    manager.agents = {}
+    manager.wait_for_session_prewarm = AsyncMock()
+    monkeypatch.setattr(manager, "_borrow_agent", lambda agent: agent)
+    monkeypatch.setattr(manager, "_get_agent_create_lock", lambda *_args: asyncio.Lock())
+
+    async def create(channel, _mode, _config, _sub_mode, *, cache_key):
+        adapter = SimpleNamespace(_session_adapters={}, generation="old")
+
+        async def read(session_id, *, request=None):
+            adapter._session_adapters.setdefault(session_id, object())
+            return decode_snapshot({"plan_id": "P", "revision": 1, "todos": [
+                {"id": "old", "content": "Previous task", "status": "pending", "generation_token": "old"},
+                {"id": "A", "content": "Current task", "status": "pending", "generation_token": "current"},
+            ]}), adapter.generation
+
+        adapter.read_todo_snapshot = read
+        agent = SimpleNamespace(_adapter=adapter, manager_mode=_mode)
+        manager.agents.setdefault(channel, {})[cache_key] = agent
+        return agent
+
+    monkeypatch.setattr(manager, "_create_agent", create)
+    ctx, sink = _context(1)
+    ctx.request.channel_id = channel
+    ctx = RequestContext(ctx.request, sink, "test", SimpleNamespace(
+        agent_manager=manager, resolve_adapter=lambda agent: agent._adapter,
+        tenant_pool=lambda: SimpleNamespace(get_agent_manager=AsyncMock(return_value=manager)),
+    ))
+    original_params = dict(ctx.request.params)
+    original_method = ctx.request.req_method
+    token = TODO_SNAPSHOT_MODE.set(consumer_mode)
+    try:
+        await session_handlers.handle_history_get_stream(ctx)
+        updates = [frame["payload"] for frame in sink.sent if frame["payload"]["event_type"] == "todo.updated"]
+        assert len(updates) == 1
+        assert [row["id"] for row in updates[0]["todos"]] == (
+            ["old"] if consumer_mode == "legacy" else ["old", "A"]
+        )
+        assert ("todo_meta" in updates[0]) == (consumer_mode == "versioned")
+        first_owner = manager.get_agent_for_session_nowait(channel_id=channel, session_id="web_todo_1")
+        chat_request = AgentRequest(
+            request_id="continue", channel_id=channel, session_id="web_todo_1", req_method=ReqMethod.CHAT_SEND,
+            params={"mode": chat_mode, "query": "continue"},
+        )
+        _, sub_mode, chat_owner = await _default._prepare_code_mode_chat_turn(
+            ctx, chat_request, channel, sync_metadata=False,
+        )
+        assert sub_mode == expected_sub
+        assert chat_owner.manager_mode == expected_mode
+        assert first_owner is chat_owner
+        chat_owner._adapter.generation = "current"
+        await session_handlers.handle_history_get_stream(ctx)
+    finally:
+        TODO_SNAPSHOT_MODE.reset(token)
+    assert len(manager.agents[channel]) == 1
+    assert [row["id"] for row in sink.consumer_tasks] == (
+        ["A"] if consumer_mode == "legacy" else ["old", "A"]
+    )
+    assert ctx.request.params == original_params
+    assert ctx.request.req_method == original_method
 
 
 @pytest.mark.asyncio

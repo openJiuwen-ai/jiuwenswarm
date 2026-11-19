@@ -445,6 +445,64 @@ async def test_team_skill_library_reload_rail_builds_for_global_library(
     assert str(rail._global_skills_dir) == str(global_skills_dir)
 
 
+@pytest.mark.asyncio
+async def test_legacy_team_shared_skill_link_refresh_alias_builds(
+    tmp_path: Path,
+) -> None:
+    """Pre-1.8.1 checkpoint rail name still resolves after soft-link migration.
+
+    OfficeAce upgrades fail recover_from_session when persisted member specs
+    still reference ``swarm.team_shared_skill_link_refresh``. The alias must
+    build the modern library-reload rail from live context.
+    """
+    register_swarm_providers()
+    global_skills_dir = tmp_path / "agent" / "jiuwenclaw_workspace" / "skills"
+    global_skills_dir.mkdir(parents=True)
+    fake_ctx = SwarmBuildContext(
+        language="cn",
+        session_id="session-legacy-1",
+        channel="officeclaw",
+        global_skills_dir=str(global_skills_dir),
+    )
+
+    legacy = RailSpec(
+        type=registry.LEGACY_TEAM_SHARED_SKILL_LINK_REFRESH,
+        # Old Soft-link era params must be ignored without failing build.
+        params={"team_skills_dir": str(tmp_path / "team" / "skills")},
+    ).build(language="cn", context=fake_ctx)
+    modern = RailSpec(type=registry.TEAM_SKILL_LIBRARY_RELOAD).build(
+        language="cn",
+        context=fake_ctx,
+    )
+    assert legacy is not None
+    assert modern is not None
+    assert type(legacy) is type(modern)
+    assert str(legacy._global_skills_dir) == str(global_skills_dir)
+
+
+def test_deep_agent_spec_with_legacy_skill_link_refresh_resolves(
+    tmp_path: Path,
+) -> None:
+    """Persisted DeepAgentSpec.rails containing the legacy name still resolve."""
+    register_swarm_providers()
+    global_skills_dir = tmp_path / "skills"
+    global_skills_dir.mkdir(parents=True)
+    fake_ctx = SwarmBuildContext(
+        language="cn",
+        session_id="session-legacy-2",
+        channel="officeclaw",
+        global_skills_dir=str(global_skills_dir),
+    )
+    spec = DeepAgentSpec(
+        rails=[
+            RailSpec(type=registry.LEGACY_TEAM_SHARED_SKILL_LINK_REFRESH),
+            RailSpec(type=registry.TEAM_SKILL_LIBRARY_RELOAD),
+        ]
+    )
+    parts = spec.resolve_parts(context=fake_ctx)
+    assert parts is not None
+
+
 def test_unknown_swarm_rail_type_raises() -> None:
     """An unregistered ``swarm.*`` rail type surfaces a clear ``ValueError``."""
     register_swarm_providers()
@@ -1624,9 +1682,39 @@ def test_team_skill_evolution_provider_passes_review_runtime(
         language="cn",
     )
     rail = built[1]
-    assert "signal_trigger" not in rail.kwargs
+    assert rail.kwargs["signal_trigger"] is True
     assert rail.kwargs["auto_save"] is auto_save
     assert rail.kwargs["review_trigger"] is True
+
+
+@pytest.mark.parametrize("mode", ["team", "code.team"])
+@pytest.mark.parametrize("enterprise", [False, True])
+@pytest.mark.asyncio
+async def test_leader_policy_reaches_the_mounted_rail(tmp_path, monkeypatch, mode, enterprise):
+    from jiuwenswarm.agents.swarm.config_specs import build_member_capability_specs
+
+    # A personal user's existing signal_trigger=false affects teammates only.
+    evolution = {"signal_trigger": False, "review_trigger": False}
+    if enterprise:
+        evolution["team_signal_trigger"] = False
+    config = {"react": {"evolution": evolution}}
+    specs, _ = build_member_capability_specs(config, mode, "leader")
+    params = next(spec.params for spec in specs if spec.type == registry.TEAM_SKILL_EVOLUTION)
+    monkeypatch.setattr(evolution_rails, "_build_evolution_llm_from", lambda _: (None, "offline"))
+    ctx = SwarmBuildContext(role="leader", global_skills_dir=str(tmp_path), config=config)
+    # A recovered spec written before signal_trigger was added uses the active build context.
+    for supplied in (params, {k: v for k, v in params.items() if k != "signal_trigger"}):
+        built = evolution_rails.build_team_skill_evolution_rail(supplied, ctx)
+        leader = next(rail for rail in built if isinstance(rail, evolution_rails.SwarmTeamSkillEvolutionRail))
+        assert leader.signal_trigger is (not enterprise)
+        assert leader.review_trigger is False
+        capture = SimpleNamespace(session_id="s", member_id="leader", team_id="team")
+        monkeypatch.setattr(leader, "_resolve_capture", lambda **kwargs: capture)
+        read_trajectory = MagicMock(return_value=object())
+
+        monkeypatch.setattr(leader, "get_trajectory", read_trajectory)
+        assert await leader.notify_team_completed() is (not enterprise)
+        assert read_trajectory.call_count == int(not enterprise)
 
 
 def test_swarm_team_skill_evolution_registration_retries_deferred_watcher(

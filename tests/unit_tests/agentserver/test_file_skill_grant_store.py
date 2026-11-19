@@ -863,3 +863,58 @@ def test_atomic_revive_main_drops_breaker_and_persists_activation(stores):
     assert b.get_active_skill_state("session") == {
         "active_skill": "huawei-cloud-skill-submit"
     }
+
+
+def test_lock_open_failure_logs_diagnostics(stores, monkeypatch):
+    """state.lock 打不开时必须记录 errno/winerror/路径/属性。
+
+    锁文件打开失败可能由 ACL 拒绝、只读属性、句柄占用等多种磁盘
+    原因导致，仅一句 OSError 文本无法归因。
+
+    日志断言用挂在 file_store.logger 上的自定义 Handler：caplog 的
+    捕获 handler 挂在 root logger 上，一旦进程内祖先 logger 被设过
+    propagate=False（如导入 app_agentserver / setup_logging 后），
+    caplog.records 恒为空，产生顺序相关的假失败（PR #10399 检视意见，
+    同 test_extra_tools_env.py 的 _make_log_capture 结论）。
+    """
+    import logging as _logging
+
+    from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization import (
+        file_store,
+    )
+
+    class _Capture:
+        def __init__(self) -> None:
+            self.records = []
+
+        def add_record(self, record):
+            self.records.append(record)
+
+        @property
+        def text(self):
+            return "\n".join(record.getMessage() for record in self.records)
+
+    a, _b = stores
+    real_open_at = file_store._open_at
+
+    def fail_lock_open(directory, name, flags, mode=0o600):
+        if name == "state.lock" and (flags & os.O_CREAT):
+            exc = PermissionError(13, "Permission denied", "state.lock")
+            exc.winerror = 5
+            raise exc
+        return real_open_at(directory, name, flags, mode)
+
+    monkeypatch.setattr(file_store, "_open_at", fail_lock_open)
+    capture = _Capture()
+    handler = _logging.Handler()
+    handler.emit = capture.add_record
+    file_store.logger.addHandler(handler)
+    try:
+        with pytest.raises(PermissionError):
+            a.update_active_skill_state("session", lambda _: None)
+    finally:
+        file_store.logger.removeHandler(handler)
+    joined = capture.text
+    assert "state.lock open failed" in joined
+    assert "errno=13" in joined
+    assert "winerror=5" in joined

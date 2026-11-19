@@ -1,5 +1,6 @@
 import type { WebConnectionState, WebError, WsEvent, WsResponse } from '../../types';
 import { getWsBase } from '../../utils/env';
+import { isEnterprise } from '../../edition';
 
 type EventHandler = (event: WsEvent) => void;
 type StateHandler = (state: WebConnectionState) => void;
@@ -55,6 +56,9 @@ class GitWatchClient {
   }
 
   async connect(): Promise<void> {
+    if (isEnterprise()) {
+      throw this.createError('Git WebSocket is unavailable in enterprise edition', 'UNSUPPORTED');
+    }
     if (this.ws?.readyState === WebSocket.OPEN) return;
     if (this.connectPromise) return this.connectPromise;
 

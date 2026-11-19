@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_05 / agent-skill-rails |
 | 关联模块 | jiuwenswarm/agents/harness/common/rails/skill_*.py + subagent_skill_authorization_rail.py + rails/permissions/skill_authorization/（file_store + runtime） |
-| 最近一次修订日期 | 2026-10-21 |
-| 关联 feature | 暂无（初版建档） |
+| 最近一次修订日期 | 2026-11-17 |
+| 关联 feature | B_02_skill-state-storage-failure-degradation.md（bugfix 归档：存储失败双路径语义） |
 
 ## 范围 / 边界
 
@@ -38,13 +38,15 @@ rail 回调框架按 **priority 数值大者先执行**。技能链装配点与�
 
 状态载体：`_SkillSessionState`（active_skill / source_session / invokes_since_skill_tool），持久化在 `FileSkillGrantStore` 会话文件的 `doc["active_skill"]`（portalocker + 原子写，**无内存缓存**——每次读写走文件，多适配器 / 多进程一致）。
 
+降级注册表：`_DEGRADED_SESSIONS`（进程级 set）——纯记账路径存储失败时 mark；解除出口：写成功自动 clear、显式清理成功 clear、适配器淘汰 / teardown（`clear_session_skill_state(local_only=True)`）**条件 clear**——空 / 非法 id（不可能拥有会话文件）、会话目录已删、或读成功且无 active_skill 时清除；盘上仍留有旧 active_skill 或无法确认（读失败 / 非 dict 脏数据 / `_shared_store` 构造失败）时**保留护栏**并记诊断日志。该分支整体（含 `_shared_store` 构造与目录预检）置于单一 `except Exception` 兜底内，**绝不抛异常**——它运行在适配器淘汰 / teardown 链上，逃逸异常会跳过 `_forget_skill_sleep_session` 等后续清理步骤（「写坏读好」失效面下磁盘读出的就是旧 active_skill，degraded 是唯一防线——重激活首轮若为 HITL resume 或 `stale_invoke_limit <= 0` 则无记账写、不会重新 mark，无条件清除会让凭据注入读到旧 active_skill）。`get_session_active_skill` 对 degraded 会话**短路返回 None**（先于读盘），凭据注入等全部消费方因此读不到 active_skill，凭据窗口关闭（fail-safe：少授权）。
+
 会话 id 解析（`resolve_skill_session_id`）：preset → `inputs.conversation_id` → `ctx.session` → extra（`__jiuwenswarm_session_id__`，与 StreamEventRail 共享）→ contextvar → `"default"`。**真实状态绝不落 `default` 名下**（`_shared_store` 对 default 会话返回 None；凭据注入读取时"只读查询、不收养 default 孤儿"——防跨会话凭据泄漏）。
 
 写入（`after_tool_call`）：
 - `skill_tool` 成功且**非目录列举**（tool_msg metadata `is_directory_listing` 为假）→ `active_skill = skill_name`，计数清零；与旧值不同则记录 switch。
 - `skill_complete` → **仅当名字匹配**当前 active 时 reset；不匹配只告警不清空（防状态挂死无从排查）。
 
-清空四路径：① `skill_complete`（名字匹配）② 切换到另一技能 ③ 会话删除 / teardown（`clear_session_skill_state`）④ **过期兜底**：连续 `stale_invoke_limit`（`react.skill_stale_invoke_limit`，默认 5）轮 invoke 无 skill_tool 调用 → 下一轮 `before_invoke` 清空。兜底存在的原因：模型对 skill_complete 遵从性不可靠，防止"遗忘的技能占着凭据注入窗口一整场会话"。**HITL 恢复轮**（permission / confirm / ask_user interrupt 来源，经 `_CHAT_SEND_SOURCE_EXTRA_KEY` 识别）不递增计数。
+清空四路径：① `skill_complete`（名字匹配）② 切换到另一技能 ③ 会话删除 / teardown（`clear_session_skill_state`）④ **过期兜底**：连续 `stale_invoke_limit`（`react.skill_stale_invoke_limit`，默认 5）轮 invoke 无 skill_tool 调用 → 下一轮 `before_invoke` 清空（④与③的写入走非严格路径，存储失败降级放行，见失败语义）。兜底存在的原因：模型对 skill_complete 遵从性不可靠，防止"遗忘的技能占着凭据注入窗口一整场会话"。**HITL 恢复轮**（permission / confirm / ask_user interrupt 来源，经 `_CHAT_SEND_SOURCE_EXTRA_KEY` 识别）不递增计数。
 
 **main 熔断与延迟复活**（任务取消防护）：
 
@@ -54,7 +56,7 @@ rail 回调框架按 **priority 数值大者先执行**。技能链装配点与�
 - `after_tool_call`：激活校验（非目录列举、有 skill_name）通过后，**复活标记匹配同一 tool_call_id** 才置 `revive_main=True`，经 `update_active_skill_state(..., revive_main=True)` 在**同一事务内**持久化激活并 `revive_scope` 解除 main 熔断——不存在"熔断已解除而激活未落盘"或"激活已落盘而熔断未解除"的中间态。完成类更新（active_skill=None）**永不复活**；标记值绑定 tool_call_id，防 Agent 循环复用 ctx.extra 时残留标记误伤后续调用。
 - 已知残留（代码注释声明）：本调用成功完成后、after 派发前的微窗口内发生第二次 cancel（revoke 重写熔断），标记匹配仍会持久化本技能。
 
-失败语义：会话目录不存在时拒绝写（迟到回调不能复活已删除会话）；存储异常抛 `AbortError` 中止本轮（**不带旧状态继续跑**）。
+失败语义（双路径）：会话目录不存在时拒绝写（迟到回调不能复活已删除会话）。存储异常按写入路径分类——**授权关键路径**（skill_tool 激活 / 切换 / skill_complete / 复活事务）抛 `SkillStateUnavailable`（`AbortError` 子类，`error_code="skill_state_unavailable"`）中止本轮：失败的切换 / 完成不能假装已生效；**纯记账路径**（`before_invoke` 过期计数、`clear_session_skill_state` 显式清理）降级放行：mark degraded 后继续本轮。降级的安全等价前提：`get_session_active_skill` 对 degraded 会话短路返回 None，凭据注入等全部消费方读不到 active_skill——**不带旧凭据继续**（fail-safe：少授权），写成功自动解除 degraded。
 
 ## SkillCredentialInjectionRail — 凭据注入 + SKILL_GATE
 
@@ -154,7 +156,7 @@ swarm 子类只做四件事：
 ## 不变量
 
 - **N1（单激活凭据语义）**：同一时刻只注入一个技能的凭据；跨技能执行硬拦（除非显式自带凭据的逃生口，且此时停注 active 凭据）；多技能复合命令指引拆分。
-- **N2（状态即文件 + AbortError）**：active 状态与 Grant 走 `FileSkillGrantStore` 会话文件，无进程内缓存；存储不可用抛 `AbortError` 中止本轮——**任何"带旧状态继续"的兜底都是违规**。
+- **N2（状态即文件 + 双路径失败语义）**：active 状态与 Grant 走 `FileSkillGrantStore` 会话文件，无进程内缓存；存储不可用按写入路径分类——授权关键路径（激活 / 切换 / 完成 / 复活）抛 `SkillStateUnavailable`（`AbortError`）中止本轮，纯记账路径（过期计数 / 显式清理）降级放行（mark degraded + 读侧短路）。两条路径共享同一安全目标：**任何情况下不得使用未清理的旧授权注入凭据**——降级路径以 `get_session_active_skill` 对 degraded 会话短路返回 None 达成（凭据窗口关闭），而非以中止本轮达成；绕过 degraded 短路直接读盘取旧 active_skill 的"带旧状态继续"兜底仍是违规。
 - **N3（default 会话隔离）**：真实状态绝不落 `default` 名下；default 会话读取一律"只读 / 不收养"。
 - **N4（授权不可继承）**：子代理授权仅 main scope 父 Context 可装配；scope 恒绑主会话 + 子 scope；子 Agent 审批恒落 local Grant；生命周期 finally 清 scope。
 - **N5（usage ≠ load）**：只有工作工具成功调用才计数；任务内去重；HITL 暂停跨 invoke 存活；放弃任务下轮补计。
@@ -167,6 +169,7 @@ swarm 子类只做四件事：
 
 - 改 SKILL_GATE / 执行位判定 → 必须跑：跨技能执行拦截、多技能拆分指引、逃生口停注、引号内分隔符不拆、`2>&1` 不拆、解释器 flag 跳过、`..` 穿越不误判。
 - 改活跃状态生命周期 → 核对四条清空路径 + HITL 恢复轮不计数 + default 会话隔离。
+- 改存储失败语义 / degraded 机制 → 必须核对：授权路径仍 strict（`SkillStateUnavailable` 不回退）、`get_session_active_skill` 短路先于读盘、写成功 / 显式清理成功解除 degraded、适配器淘汰（local_only）**仅在盘上 state 确认干净时**解除（盘上留旧 active_skill 或无法确认必须保留护栏 + 诊断日志，且该分支对非法 session id / 脏数据**绝不抛异常**）、`clear_session_skill_state` 降级不抛、诊断日志带 `[SkillStateUnavailable]` 标记与 errno/winerror 详情。
 - 改熔断 / 复活路径（N9）→ 必须覆盖：迟到回调无标记仍被 operate 的 pop 守卫拦截、listing / 被拒调用不解熔断、复活标记 tool_call_id 匹配（含 Agent 循环复用 ctx.extra 的残留场景）、成功后微窗口二次 cancel 的已知残留。
 - 改授权链 → core 骨架 / swarm 子类 / subagent 三层的模板钩子语义不得漂移；审批卡必须带 index 的 OutputSchema。
 - 改热重载 → 保持 N6 原位更新；新增 rail 需实现 update_* 方法或在 `_reconcile_*` 注册。

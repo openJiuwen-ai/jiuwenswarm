@@ -27,6 +27,7 @@ from jiuwenswarm.server.handlers import permissions as permissions_handlers
 from jiuwenswarm.server.handlers import sandbox as sandbox_handlers
 from jiuwenswarm.server.handlers import schedule as schedule_handlers
 from jiuwenswarm.server.handlers import session as session_handlers
+from jiuwenswarm.server.handlers import session_prepare as session_prepare_handlers
 from jiuwenswarm.server.handlers import team as team_handlers
 from jiuwenswarm.server.handlers import steering as steering_handlers
 from jiuwenswarm.server.handlers import workspace as workspace_handlers
@@ -78,6 +79,7 @@ HANDLERS: dict[ReqMethod, HandlerSpec] = {
     # 见该模块说明。
     ReqMethod.INITIALIZE: HandlerSpec(fn=bootstrap_handlers.handle_initialize),
     ReqMethod.SESSION_CREATE: HandlerSpec(fn=bootstrap_handlers.handle_session_create),
+    ReqMethod.SESSION_PREPARE: HandlerSpec(fn=session_prepare_handlers.handle_session_prepare),
     ReqMethod.SESSION_FORK: HandlerSpec(fn=bootstrap_handlers.handle_session_fork),
     ReqMethod.ACP_TOOL_RESPONSE: HandlerSpec(fn=bootstrap_handlers.handle_acp_tool_response),
     # --- 会话 ---

@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_02 / prewarm-and-warm-pool |
 | 关联模块 | `jiuwenswarm/server/runtime/agent_warm_pool.py`、`prewarm.py`、`mem_reclaimer.py`、`agent_manager.py`（facade 段）、`tenant_agent_pool.py`（session prewarm 段） |
-| 最近一次修订日期 | 2026-10-21 |
-| 关联 feature | 暂无 |
+| 最近一次修订日期 | 2026-11-17 |
+| 关联 feature | F_02_session-prepare.md |
 
 ## 范围 / 边界
 
@@ -20,8 +20,9 @@
    （speculative 预建 DeepAgent + prepare_session，等 chat 来 claim）。
 2. **启动三阶段预热**（prewarm.py）：进程启动时 import / checkpointer / 临时
    DeepAgent query 的端到端首因开销消除。
-3. **session.create 后台预热**（TenantAgentPool.prewarm_session_in_background）
-   与 **mem_reclaimer**（周期内存回收）。
+3. **session.create 后台预热**（TenantAgentPool.prewarm_session_in_background）、
+   **session.prepare 会话准备**（TenantAgentPool.prepare_session_in_background，
+   Relay 在首条消息路由后按 chat.send 的身份提前构建）与 **mem_reclaimer**（周期内存回收）。
 
 ### 本规约不管什么
 
@@ -40,6 +41,8 @@
   - 层2 session.create 预热：env `JIUWENSWARM_SESSION_CREATE_PREWARM`，默认开，
     `=0` 关闭（tenant_agent_pool.prewarm_session_in_background）。
   - 层3 启动预热：`app_agentserver` 启动即跑，无开关（企业版跳过阶段3）。
+  - session.prepare：env `JIUWENSWARM_SESSION_PREPARE`，默认开，`=0` 时应答
+    `disabled`（`TenantAgentPool.session_prepare_enabled`），与层2 互不影响。
 - **N2 openjiuwen 注册表互斥**：工具 / 资源注册在进程全局 manager，speculative
   与前台 DeepAgent 构建绝不并发触碰——AgentWarmPool 用 `_initialization_lock` +
   `begin_foreground` 取消全部后台任务后才让前台构建（`_prepare` 内先
@@ -74,6 +77,47 @@
   或非数字即不启用）；后台 daemon 线程 `gc.collect()` + `malloc_trim(0)`，回收
   失败不终止线程。背景：会话 adapter 循环引用图需攒 ~70k 净存活才触发 gen2，
   高并发轮换下 RSS 只升不降。
+- **N10 session.prepare 与 chat 同路由、只读**：模式解析与工作目录只走
+  `handlers/_default.py` 的 `resolve_chat_turn_routing` / `resolve_readonly_project_dir`
+  （chat.send 的同一函数，不写 metadata.json；未带工作目录时构建实例仍按现有逻辑建默认工作区
+  `projects/<session_id>`）；`_uses_explicit_officeclaw_mode`
+  必须认 `SESSION_PREPARE`，否则准备按全局 Flash 开关解析、与 chat 静默不一致。
+  只接受解析结果为 agent / flash 且无子模式的请求。工作目录与 chat 同口径：请求值按该模式
+  是否退回旧字段（`cwd` / `workspace_dir` / `trusted_dirs`）解析，会话已锁定的值优先
+  （`prefer_locked=True`）；只读 RPC 复用同一函数但保持请求值优先，且沿用调用方已算好的
+  请求值，不重复解析。解析出的生效目录回写到本次请求的 `params` / `metadata`（只改内存里的
+  请求对象，不落盘），与 chat 轮一致：后台构建拿到的请求值和传入的 `project_dir` 是同一个。
+- **N11 准备按请求身份构建**：`prepare_session(request=...)` 在门面层绑定
+  `_bind_tenant_request_context(request)`，并把 request 传进
+  `_get_or_create_session_adapter`（线程 ID、企业请求身份），与 chat 建出的实例一致。
+  session.create 预热不传 request，行为不变。
+- **N12 准备与预热共用任务表**：session.prepare 与 session.create 预热同用
+  `_session_prewarm_tasks`，同一会话至多一个在途任务（排队中或构建中再来一个应答
+  `already_running`）；chat 经现有 `wait_for_session_prewarm` 加入，不重复构建。在途任务
+  覆盖 `prepare_session` 全程（含 `configure_session_runtime`），消息处理的入口都先等它结束
+  再取实例，所以准备的配置与对话轮的 `_update_runtime_config` 不会并发作用在同一实例上。
+  反过来对话先到（已过等待、正在建实例）时，对话建完会取走追踪器里该会话的记录：还没开始的
+  准备任务整个跳过，已在等会话锁的准备拿到实例后不再 `configure_session_runtime`、不登记回收。
+- **N13 准备队列**：session.prepare 全进程同时构建 1 个（单 worker
+  `_drain_session_prepare_queue`），排队上限 `SESSION_PREPARE_MAX_QUEUED = 8`，超出应答
+  `queue_full`。worker 等一个构建最多 `SESSION_PREPARE_BUILD_WAIT_SEC = 60` 秒，超时只记 warning、
+  转去启动下一个，不取消该构建（卡住的构建不能让后面的准备永远轮不到）。`wait_for_session_prewarm` 遇到该会话还在排队的准备就移出队列（请求自己构建，
+  不排在别的准备后面），之后照常检查并加入同会话在途的构建。session.create 预热不进队列。
+- **N14 未使用回收**：准备新建的会话实例一建好（`configure_session_runtime` 之前）就登记在根
+  适配器 `_prepared_unused_session_timers`，`PREPARED_SESSION_UNUSED_TTL_SEC = 600` 秒后按
+  `_evict_idle_session_adapters` 同款守卫（不在等待工具审批、会话锁未持有且无人等待、无存活
+  子代理）调用 `cleanup_session_adapter`。登记保留到回收成功：守卫不满足或清理未成功时每
+  `PREPARED_SESSION_RECLAIM_RETRY_SEC = 60` 秒重试，期间被对话取用仍按首次取用记命中结果。
+  非对话请求先取用时只作废回收，命中结果留给第一条对话（按追踪器里的 building / ready 判定）。
+  被 `_get_or_create_session_adapter` 取用一次即撤销登记，转为普通会话实例。
+  `_drop_session_adapter_cache_entry` 与根 `cleanup` 同步撤销计时器。
+- **N15 配置同步后后台热更新**：`_mark_session_adapters_stale_for_reload` 之后，对仍未使用
+  的准备实例在后台持 `_session_adapter_locks[sid]` 执行 `_reload_session_adapter_if_stale`；
+  chat 到达时在同一把锁上等它完成。后台失败不登记重试冷却，chat 取用时照常懒重载。
+- **N16 命中日志**：`session_prepare_tracker`（进程内，上限 1024）记录准备各步状态与 chat 的
+  加入等待；officeclaw chat.send 第一次取得会话实例时，`_get_or_create_session_adapter` 记一条
+  `[session.prepare] chat result=hit|joined|hit_reloaded wait_ms=` 或 `result=miss reason=`，
+  同一会话只记一次（准备实例靠作废回收计时器判定首次取用，新建实例只建一次）。
 
 ## 接口契约
 
@@ -84,6 +128,10 @@
 | `AgentWarmPool.claim(key) -> WarmClaim(session_id, prewarm_hit, prewarm_status)` | status ∈ {"ready", "warming", "bypassed"} |
 | `warmup_import_and_checkpointer()` / `warmup_deep_agent_query(...)` | 启动预热阶段入口（prewarm.py）；`run_startup_warmup` 为向后兼容保留 |
 | `prewarm_session_in_background(*, request, session_id, ...)` | session.create 后台预热；不写对话历史、不含 LLM 轮次 |
+| `prepare_session_in_background(*, request, mode, adapter_mode, project_dir, before_build) -> str` | session.prepare 入队；返回 `scheduled` / `already_running` / `queue_full`（N13） |
+| `JiuWenSwarmDeepAdapter.is_prepared_session_unused(session_id)` | 准备实例是否尚未被对话取用（N14） |
+| `session_prewarm_running(session_id) -> bool` / `session_prepare_enabled()` | 在途判定 / 准备开关 |
+| `handlers/session_prepare.handle_session_prepare(ctx)` | 立即应答 `{session_id, accepted, status}`；status ∈ scheduled / already_running（accepted）、already_ready / queue_full / mode_not_supported / unknown_agent / disabled（不受理）；`INVALID_PARAMS` / `invalid_tenant_id` 为错误应答 |
 | `mem_reclaimer.setup()` | app_agentserver 启动时调用，幂等无害 |
 
 ## 数据结构
@@ -105,11 +153,20 @@
   清 marker。
 - **P3 前台抢占**：`begin_foreground`（取消后台任务）→ chat 正常建 agent →
   `end_foreground` → cooldown 后恢复泵。
-- **P4 启动预热**：`warmup_import_and_checkpointer`（阶段1/2）→ 独立
+- **P4 启动预热**：`warmup_import_and_checkpointer`（阶段 0/0.5/1/2；阶段 0.5 在后台
+  线程预热 tiktoken 词表并把 `TIKTOKEN_CACHE_DIR` 钉到 `{root}/cache/tiktoken`，
+  仅在 `react.context_engine_config.enable_tiktoken_counter` 开启时生效）→ 独立
   `create_task(warmup_deep_agent_query)`（阶段3：建临时 agent → 发一条
   chat.send → cleanup）。
 - **P5 session.create 预热**：`prewarm_session_in_background` → `extract_ids` →
   `manager.get_agent` → `agent.prepare_session`；失败仅 warning 不阻塞业务。
+- **P6 session.prepare**：`handle_session_prepare` → 参数校验 → 开关 →
+  `require_officeclaw_agent`（未登记 → unknown_agent）→ `resolve_chat_turn_routing`
+  （N10）→ 在途 / `find_agent_for_session_nowait` 已有 → 入队（N13）→ 应答 → worker
+  逐个 `_schedule_session_prewarm`：`ensure_interface_deep_and_checkpointer` → P5 同一
+  get_agent → `prepare_session(request=...)`（N11）→ 新建的实例登记未使用回收（N14）。
+- **P7 配置同步**：根 `reload_agent_config` → `_fan_out_reload_to_session_adapters` →
+  `_mark_session_adapters_stale_for_reload` → `_reload_prepared_sessions_in_background`（N15）。
 
 ## 修改检查单
 
@@ -118,3 +175,10 @@
   cache_key 语义（[[S_01]] N1）。
 - 动企业版预热开关（N1 层1）→ 必须先解决预热路径的请求 identity（metadata.routing）。
 - 改启动预热阶段划分 → 保 N8 承载分离：兜底 await 只等快阶段。
+- 改 chat 的模式 / 工作目录解析（`_prepare_code_mode_chat_turn`）→ 改动须落在
+  `resolve_chat_turn_routing` 内，并跑 session.prepare 与 chat 的选型等价用例（N10）。
+- 改 chat 建会话实例时绑定的上下文（门面 `process_message_stream`）→ 同步
+  `JiuWenSwarm.prepare_session` 的 request 分支（N11）。
+- 新增会话实例的移除路径 → 确认经过 `_drop_session_adapter_cache_entry`，否则
+  未使用回收计时器残留（N14）。改空闲淘汰守卫 → 同步 `_reclaim_unused_prepared_session`。
+- 新增调用 `wait_for_session_prewarm` 的请求类型 → 它会把同会话排队中的准备移出队列（N13）。

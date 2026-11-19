@@ -48,6 +48,7 @@ from jiuwenswarm.common.config import (
     get_evolution_auto_save_enabled,
     get_evolution_review_trigger_enabled,
     get_passive_skill_evolution_triggers,
+    get_team_evolution_signal_trigger_enabled,
     get_skill_create_enabled,
 )
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
@@ -304,6 +305,7 @@ def build_member_rails(
                 trajectory_span_processor=get_trajectory_span_processor(),
                 member_role=role,
                 auto_save=evolution_auto_save,
+                signal_trigger=get_team_evolution_signal_trigger_enabled(config),
                 review_trigger=evolution_review_trigger,
                 team_id=team_id,
                 disabled_skills=merge_evolution_disabled_skills(

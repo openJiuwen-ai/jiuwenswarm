@@ -1,5 +1,5 @@
 ---
-description: Agent 运行时域说明书——给修改/检视本域代码的 AI 助手与工程师：域定位与统一术语、模块地图（顶层 23 模块 + 9 子目录）、对仓内其它域的公开入口、从 4 份 spec 提炼的架构铁律、与 openjiuwen 仓的接缝、测试命令与设计归档指引。
+description: Agent 运行时域说明书——给修改/检视本域代码的 AI 助手与工程师：域定位与统一术语、模块地图（顶层 24 模块 + 9 子目录）、对仓内其它域的公开入口、从 4 份 spec 提炼的架构铁律、与 openjiuwen 仓的接缝、测试命令与设计归档指引。
 ---
 
 # Agent 运行时（server/runtime）
@@ -9,7 +9,7 @@ Agent 运行时域：负责 agent 实例的**装配、缓存、借用、预热�
 流式事件送回 gateway。本目录是 jiuwenswarm 仓与 agent-core 仓（openjiuwen 包）
 之间全部调用流的必经之路。
 
-**范围**：顶层 23 个 .py（~9,821 行）+ `agent_adapter/`、`a2ui/`、`workspace/`、
+**范围**：顶层 24 个 .py（~9,890 行）+ `agent_adapter/`、`a2ui/`、`workspace/`、
 `debug_trace/`、`enterprise_config/`、`docs/` 子目录。`server/runtime/` 物理上还
 装着另外三个模块——`session/`（会话持久化）、`skill/`（技能管理）、`skill_turbo/`
 （技能加速引擎）——它们与本文覆盖的 Agent 运行时**平级**，划分依据是模块边界而非
@@ -21,7 +21,7 @@ Agent 运行时域：负责 agent 实例的**装配、缓存、借用、预热�
 
 ## 模块地图
 
-### 顶层模块（23 个，~9,821 行）
+### 顶层模块（24 个，~9,890 行）
 
 | 文件 | 行数 | 职责 |
 |---|---|---|
@@ -48,6 +48,7 @@ Agent 运行时域：负责 agent 实例的**装配、缓存、借用、预热�
 | [mem_reclaimer.py](mem_reclaimer.py) | 81 | 周期 gc.collect + malloc_trim（默认关，`JIUWENSWARM_GC_RECLAIM_INTERVAL`） |
 | [context_read_patch.py](context_read_patch.py) | 78 | 人设文件读锁 patch（仅企业版） |
 | [session_owner_routing.py](session_owner_routing.py) | 23 | 控制续跑绑定到已验证 session owner |
+| [session_prepare_tracker.py](session_prepare_tracker.py) | 69 | session.prepare 各会话状态，供命中日志判定（[[S_02]] N16） |
 
 ### 子目录
 

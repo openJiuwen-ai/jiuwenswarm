@@ -69,9 +69,11 @@ JiuWenSwarm 门面实例的缓存 / 借用 / 退休 / 重建**。即：
   `workspace_{key}/`；企业版 AgentManager 的 `agent_id` 是 `f"{aid}_{sid}"`
   复合形式，而 env 命名空间仍用原始 `(env_service_id, env_agent_id)`——两套 id
   语义不可混用。
-- **N7 LRU 不设容量与 TTL 上限**（默认 `cache_max_size=None`）：防止 ask_user
-  长阻塞期间 AgentManager 被误淘汰。请求结束后 `_refresh_agent_manager_cache`
-  touch 时间戳；给 cache 加上限前先想清楚 HITL 暂停会不会被中途逐出。
+- **N7 LRU 限额按版本**：个人版默认不设容量/TTL；企业版读
+  `AGENT_POOL_MAX_SIZE` / `AGENT_POOL_TTL`（默认 `100` / `600`，`<=0` 表示不限）。
+  自动淘汰：`is_working()` 为真则放回缓存不 `cleanup`；空闲才 `cleanup`，不停
+  `AgentCronRegistry`，也不摘掉仍被持有的 per-key 锁。catalog remove 仍走完整清理链
+  （含 cron）。请求结束 `_refresh_agent_manager_cache` touch。
 - **N8 catalog 同步三分支**：`sync_agents_configs` 以 `revision` 幂等去重、
   `content_hash` 判 unchanged、动作只允许 removed / added / updated；
   **added 失败必须回滚 `_evict_manager_cache`**。evict 连带清理

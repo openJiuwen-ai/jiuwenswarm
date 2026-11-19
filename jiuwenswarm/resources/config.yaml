@@ -9,8 +9,9 @@ config:
 # 前端显示语言：zh（中文）/ en（英文），与 Web 界面语言切换同步
 preferred_language: zh
 
-# 网页回答脱敏。enabled 默认关闭，关闭时 rules 不生效，原文直出。
-# 只替换网页上看到的回答、思考、工具结果和历史回放，不改历史文件。
+# 敏感信息脱敏。enabled 默认关闭，关闭时 rules 不生效，原文直出。
+# 开启后对各通道展示副本生效（网页回答/思考/工具结果/历史回放，以及权限审批文案等），
+# 不改历史文件，也不改送给模型的上下文。
 # pattern 要能匹配敏感内容本身。命中的那一段换成等长星号。
 sensitive_mask:
   enabled: false
@@ -25,6 +26,9 @@ sensitive_mask:
       pattern: '(?:sk|rk|pk|ak)-[A-Za-z0-9]{8,}'
     - title: Token
       pattern: 'eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}'
+    # http(s)://user:password@host，掩 user:password（HTTP_PROXY / HTTPS_PROXY 等）
+    - title: URL 密码
+      pattern: '(?<=://)[^@/\s]+:[^@/\s]+(?=@)'
 
 # Web 首次模型配置引导；用户确认完成后会自动关闭，可通过侧栏问号再次打开
 setup_guide:
@@ -719,10 +723,8 @@ react:
       - exit_plan_mode              # reminder 指示模型调 enter_plan_mode，但懒加载把它滤进
                                     # deferred，模型反复探测无进展触发 agent_ras 熔断 OA.05000060
     # 模型白名单（空=全部启用），对模型名做子串匹配，大小写不敏感；未命中的模型全部工具直接可见。
-    # 懒加载依赖模型读懂 tools_search → invoke_tool，加入新模型前需先验证。
-    enable_for_models:
-      - glm
-      - deepseek
+    # 懒加载依赖模型读懂 tools_search → invoke_tool；收窄为白名单时需逐个模型验证该链路。
+    enable_for_models: []
     subagents:                      # 子 agent 延迟加载配置
       enabled: false                # 子 agent 总开关，默认关闭
       inherit_parent_eager_tools: true  # 继承父 agent 的 eager 列表
@@ -778,10 +780,11 @@ react:
     enable_reload: true    # 卸载重载：开启后模型可通过 [[HANDLE:xxx]] 标记把已卸载的大消息原文拉回上下文
 
     enable_context_debug: false     # 上下文压缩 debug 模式：开启后各处理器在阈值判断、片段切分、压缩重试、 前后对比等每个阶段落盘 JSONL 记录，便于排查压缩问题。关闭时零开销。默认关闭
-    # 精确 token 计数（tiktoken BPE）：false 时用字符估算，但图片块已按像素视觉 token
-    # 计价（不会把 base64 当文本算）。true 时文本走 BPE、图片仍按像素；首次加载可能
-    # 需要下载词表（agent-core 有后台预热）。默认关闭。
-    # enable_tiktoken_counter: false
+    # 精确 token 计数（tiktoken BPE）：文本走 BPE、图片仍按像素计价；false 则用字符估算，
+    # 对中文/JSON 低估约 25%~44%，会让压缩阈值失效。
+    # 启动阶段后台预热词表（缓存落到 {root}/cache/tiktoken），避免落到首个会话；
+    # 词表不可用（离线且无缓存）时 agent-core 自动回退字符估算，不阻断会话创建。
+    enable_tiktoken_counter: true
     # debug 记录目录；留空则按环境变量 OPENJIUWEN_CONTEXT_DEBUG_DIR，
     # 再缺省落到 {workspace}/context/{session_id}_context/context_debug/
     # context_debug_dir:
@@ -1598,6 +1601,9 @@ permissions:
         exec: ask
   external_directory:
     '*': ask
+  # Present in template so user yaml approval_overrides survive deep-merge
+  # (keys only in user config are dropped as "deprecated").
+  approval_overrides: []
 browser:
   # chrome_path can be a string or per-OS map.
   # Example:
@@ -1854,7 +1860,7 @@ modes:
 
       # Process-wide Team LLM admission (especially when enable_swarmflow is false).
       # max_concurrent_llm_calls: concurrent member LLM calls across the process.
-      #   null/omitted → 4 when swarmflow off, 0 (disabled) when swarmflow on
+      #   null/omitted → 15 when swarmflow off, 0 (disabled) when swarmflow on
       #   0            → disable this rail
       #   N>0          → hard ceiling (queues excess callers)
       resource_admission:

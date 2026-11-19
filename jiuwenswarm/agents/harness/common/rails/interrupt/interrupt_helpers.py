@@ -629,6 +629,27 @@ def build_permission_rail(
         logger.info("[InterruptHelpers] Permission system is disabled, returning None")
         return None
 
+    # 权限系统启用即注册转发类 meta-tool 展开契约（幂等）：invoke_tool 等转发
+    # 器的外层判定展开到内层真实调用，堵住外层 defaults 放行携带内层命令穿透
+    # 的绕过路径（issue #6499）。S_17 装配点契约的一部分。
+    # 注册（含 agent_shield 依赖漂移导致的 ImportError）不冒泡——按 fail-open
+    # 装配契约（S_17 铁律 34，与 docstring「构造失败 warning + None」同一语义）
+    # 告警并降级为仅外层判定，权限 rail 照常构建；注册动作不在此处让 agent
+    # 装配整体失败。import 一并纳入保护：符号缺失时等价注册失败，而非函数顶部
+    # 未保护的 ImportError（正是 CI 旧 pin 下的崩溃形态）。
+    try:
+        from jiuwenswarm.agents.harness.common.rails.permissions.permission_runtime import (
+            install_meta_tool_expanders,
+        )
+
+        install_meta_tool_expanders()
+    except Exception:
+        logger.warning(
+            "[InterruptHelpers] meta-tool expander registration failed; "
+            "forwarded tools fall back to outer-name-only judgment",
+            exc_info=True,
+        )
+
     def _collect_optional_tool_tags(cfg: dict[str, Any]) -> list[str]:
         # openjiuwen PermissionInterruptRail 会拦截所有工具；
         # 这里的 tool_names 仅作为标签展示/日志辅助（尽量覆盖 tools + rules 声明）。
@@ -1618,6 +1639,16 @@ def extract_question_from_interaction(payload: Any) -> dict | None:
                 question = _rewrite_option_label_hint(question)
             elif is_enterprise():
                 question = _strip_permanent_remember_hint(question)
+            try:
+                from jiuwenswarm.gateway.channel_manager.web.sensitive_mask import (
+                    mask_permission_question,
+                )
+
+                question = mask_permission_question(question)
+            except Exception as exc:
+                logger.warning(
+                    "[InterruptHelpers] mask_permission_question failed: %s", exc
+                )
 
     return {
         "question": question,

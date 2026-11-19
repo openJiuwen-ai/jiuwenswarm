@@ -16,15 +16,18 @@ from weakref import WeakValueDictionary
 from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
 
 from jiuwenswarm.agents.harness.team import get_team_manager
+from jiuwenswarm.agents.harness.team.team_manager import peek_team_manager
 from jiuwenswarm.common.config import get_config, get_default_models
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.local_env_config import (
     apply_env_overrides_to_active,
     apply_env_removals,
+    bind_agent_env_ns,
     bind_task_env_overlay,
     build_effective_env_overlay,
     promote_staged_env,
     replace_active_env,
+    reset_agent_env_ns,
     reset_task_env_overlay,
     seal_env_mapping,
     stage_env_overrides,
@@ -136,6 +139,41 @@ def _make_agent_cache_key(mode: str | None, sub_mode: str | None, project_dir: s
     return f"{mode_key}:{sub_mode_key}:{project_key}"
 
 
+_SESSION_AGENT_MAX_LIVE_ENV = "JIUWENSWARM_SESSION_AGENT_MAX_LIVE"
+
+
+def _session_agent_max_live_default() -> int:
+    """Cap on live projectless per-session top-level agents (default 50); ``0`` disables.
+
+    Only keys whose cache key embeds ``:session:`` are counted, so shared
+    project agents (a project_dir is set) are never evicted by this cap.
+    Override via ``JIUWENSWARM_SESSION_AGENT_MAX_LIVE`` at process start.
+    Non-numeric or negative values warn and fall back to the default so a bad
+    deploy cannot disable the cap accidentally.
+    """
+    default = 50
+    raw = os.environ.get(_SESSION_AGENT_MAX_LIVE_ENV)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        logger.warning(
+            "[AgentManager] ignoring non-numeric %s=%s",
+            _SESSION_AGENT_MAX_LIVE_ENV,
+            raw,
+        )
+        return default
+    if value < 0:
+        logger.warning(
+            "[AgentManager] ignoring negative %s=%s",
+            _SESSION_AGENT_MAX_LIVE_ENV,
+            raw,
+        )
+        return default
+    return value
+
+
 def _build_acp_agent_config(extra_config: dict[str, Any] | None = None) -> dict[str, Any]:
     """Return the dedicated ACP agent profile config.
 
@@ -212,6 +250,11 @@ class AgentManager:
     - "default": 默认通道
     """
 
+    # 类级兜底：测试可用 object.__new__ 绕过 __init__ 构造实例（见
+    # test_facade_mode_compatibility 的 fixture），此类实例视为未启用驱逐。
+    # 真实实例由 __init__ 用环境变量解析结果覆盖。
+    _session_agent_max_live = 0
+
     def __init__(
         self,
         *,
@@ -285,6 +328,10 @@ class AgentManager:
         # disconnect cleanup cannot tear it down in that gap.
         self._agent_borrowers: dict[int, set[asyncio.Task]] = {}
         self._agent_pins: dict[int, int] = {}
+        # LRU bookkeeping for the per-session agent cap (see
+        # _evict_lru_session_agents_if_over_cap).  Keyed by id(agent).
+        self._agent_last_used: dict[int, float] = {}
+        self._session_agent_max_live = _session_agent_max_live_default()
         self._pending_tui_retirements: set[int] = set()
         self._retirement_tasks: dict[int, asyncio.Task] = {}
         self._agent_create_locks: WeakValueDictionary[
@@ -384,6 +431,10 @@ class AgentManager:
         if task is None:
             return agent
         agent_id = id(agent)
+        # 未跑 __init__ 的实例（object.__new__ 构造的测试替身）不记账。
+        last_used = getattr(self, "_agent_last_used", None)
+        if last_used is not None:
+            last_used[agent_id] = time.monotonic()
         borrowers = self._agent_borrowers.setdefault(agent_id, set())
         if task in borrowers:
             return agent
@@ -552,6 +603,7 @@ class AgentManager:
         create_params = None
         if isinstance(channel_params, dict):
             create_params = channel_params.pop(cache_key, None)
+        self._agent_last_used.pop(agent_id, None)
         self._pending_tui_retirements.discard(agent_id)
         try:
             await agent.cleanup()
@@ -567,6 +619,9 @@ class AgentManager:
                     self._agent_create_params.setdefault("tui", {})[
                         cache_key
                     ] = create_params
+                # 与另两处回插（LRU 驱逐、cleanup_session_runtime）一致：
+                # 补当前时刻时间戳，缺省 0.0 会让失败实例插队到最旧。
+                self._agent_last_used[agent_id] = time.monotonic()
             raise
         else:
             logger.info(
@@ -767,6 +822,7 @@ class AgentManager:
             if "acp" in self.agents:
                 logger.info("[AgentManager] Resetting ACP agent")
                 for agent in self.agents.get("acp", {}).values():
+                    self._agent_last_used.pop(id(agent), None)
                     if hasattr(agent, "cleanup"):
                         try:
                             await agent.cleanup()
@@ -788,6 +844,101 @@ class AgentManager:
                     await agent.cancel_inflight_work(reason)
                 except Exception:
                     logger.exception("[AgentManager] cancel_inflight_work failed")
+
+    async def _evict_lru_session_agents_if_over_cap(
+        self,
+        channel_key: str,
+        *,
+        skip_cache_key: str | None = None,
+    ) -> None:
+        """Evict least-recently-used idle per-session agents once the pool exceeds the cap.
+
+        Projectless ``web`` sessions get one top-level agent per session (cache
+        key ``...:session:<sid>``); a session-create churn that never deletes
+        sessions otherwise accumulates these agents without bound. When the live
+        count exceeds the cap, evict the least recently borrowed idle ones —
+        skipping pinned or borrowed agents and sessions awaiting tool permission —
+        until the count drops back to the cap. Mirrors the projectless-session
+        retirement in ``cleanup_session_runtime``.
+        """
+        cap = self._session_agent_max_live
+        if cap <= 0:
+            return
+        channel_agents = self.agents.get(channel_key)
+        if not isinstance(channel_agents, dict):
+            return
+
+        def _session_key_count() -> int:
+            return sum(1 for key in channel_agents if ":session:" in key)
+
+        if _session_key_count() <= cap:
+            return
+
+        current = asyncio.current_task()
+        ordered = sorted(
+            (key for key in channel_agents if ":session:" in key),
+            key=lambda key: self._agent_last_used.get(id(channel_agents[key]), 0.0),
+        )
+        for cache_key in ordered:
+            if _session_key_count() <= cap:
+                break
+            if cache_key == skip_cache_key:
+                continue
+            agent = channel_agents.get(cache_key)
+            if agent is None:
+                continue
+            if self._agent_pins.get(id(agent), 0):
+                continue
+            if self._has_agent_borrowers(agent, exclude=current):
+                continue
+            sid = cache_key.rsplit(":session:", 1)[-1]
+            adapter = getattr(agent, "_adapter", None) or agent
+            awaiting = getattr(adapter, "_sessions_awaiting_tool_permission", None)
+            if isinstance(awaiting, (set, frozenset)) and sid in awaiting:
+                continue
+            channel_agents.pop(cache_key, None)
+            create_params = self._agent_create_params.get(channel_key, {}).pop(
+                cache_key, None
+            )
+            self._agent_last_used.pop(id(agent), None)
+            try:
+                await agent.cleanup()
+                logger.info(
+                    "[AgentManager] LRU session agent evicted over cap: "
+                    "channel_id=%s cache_key=%s live=%d cap=%d",
+                    channel_key,
+                    cache_key,
+                    _session_key_count(),
+                    cap,
+                )
+            except Exception:
+                # 驱逐不持创建锁，cleanup 挂起期间同 session 可能已并发重建
+                # 新 Agent：键被占用时丢弃失败实例，绝不覆盖（对齐
+                # _retire_tui_agent_if_idle_locked 的既有防护）。
+                if cache_key not in channel_agents:
+                    channel_agents[cache_key] = agent
+                    channel_params = self._agent_create_params.setdefault(
+                        channel_key, {}
+                    )
+                    if create_params is not None and cache_key not in channel_params:
+                        channel_params[cache_key] = create_params
+                    # 回插时间戳记为当前时刻：缺省会按 0.0 排到最旧，被每个
+                    # 超额请求反复选中重试。
+                    self._agent_last_used[id(agent)] = time.monotonic()
+                else:
+                    logger.warning(
+                        "[AgentManager] LRU session agent cleanup failed; "
+                        "keeping concurrently rebuilt agent: "
+                        "channel_id=%s cache_key=%s",
+                        channel_key,
+                        cache_key,
+                    )
+                logger.exception(
+                    "[AgentManager] LRU session agent cleanup failed: "
+                    "channel_id=%s cache_key=%s",
+                    channel_key,
+                    cache_key,
+                )
 
     async def cleanup_session_runtime(self, *, channel_id: str = "", session_id: str) -> bool:
         """Release in-memory runtime for one session across existing channel agents.
@@ -866,12 +1017,23 @@ class AgentManager:
                 ):
                     channel_agents.pop(cache_key, None)
                     create_params = self._agent_create_params.get(channel_key, {}).pop(cache_key, None)
+                    # 与 _evict_lru_session_agents_if_over_cap 保持一致：移除
+                    # agent 的所有路径都要清掉 LRU 时间戳，否则 stale 条目随
+                    # 会话删除累积，且 id() 复用会让新 agent 继承旧时间戳。
+                    self._agent_last_used.pop(id(agent), None)
                     try:
                         await agent.cleanup()
                     except Exception:
-                        channel_agents[cache_key] = agent
-                        if create_params is not None:
-                            self._agent_create_params.setdefault(channel_key, {})[cache_key] = create_params
+                        # 与 LRU 驱逐回插同样的并发防护：cleanup 挂起期间
+                        # 同 session 可能已重建新 Agent，键被占用时不覆盖。
+                        if cache_key not in channel_agents:
+                            channel_agents[cache_key] = agent
+                            channel_params = self._agent_create_params.setdefault(
+                                channel_key, {}
+                            )
+                            if create_params is not None and cache_key not in channel_params:
+                                channel_params[cache_key] = create_params
+                            self._agent_last_used[id(agent)] = time.monotonic()
                         failed_agents += 1
                         logger.exception(
                             "[AgentManager] projectless session agent cleanup failed: "
@@ -1084,6 +1246,13 @@ class AgentManager:
         # 无项目目录的会话有独立任务路径；Agent/rail/prompt builder 不能跨会话复用。
         if not project_key and mode_key in {"agent", "code"} and session_id:
             cache_key = f"{cache_key}:session:{session_id}"
+        # Enforce the live per-session agent cap before growing the pool. Runs
+        # before the per-key create lock so eviction never holds a create lock,
+        # and skips the requested key so a cache hit cannot evict itself.
+        await self._evict_lru_session_agents_if_over_cap(
+            channel_key,
+            skip_cache_key=cache_key,
+        )
         channel_agents = self.agents.get(channel_key, {})
         if cache_key in channel_agents:
             return self._borrow_agent(channel_agents[cache_key])
@@ -1664,9 +1833,10 @@ class AgentManager:
                                 "error": str(exc),
                             }
                         )
+                ns_token = bind_agent_env_ns(self.env_service_id, self.env_agent_id)
                 try:
                     team_config = effective_config if isinstance(effective_config, dict) else get_config()
-                    await get_team_manager(channel_id).update_evolution_config(team_config)
+                    await get_team_manager(channel_id).update_evolution_config(team_config, session_id=target_session)
                 except Exception as exc:
                     reload_completed = False
                     logger.warning(
@@ -1674,6 +1844,8 @@ class AgentManager:
                         channel_id,
                         exc,
                     )
+                finally:
+                    reset_agent_env_ns(ns_token)
                 logger.info(f"channel {channel_id} reload agent config success.")
             idle = not self.is_working()
             if idle:
@@ -1719,6 +1891,21 @@ class AgentManager:
         )
 
         aggregate = ReloadAggregateResult()
+        # Catalog sync bypasses reload_agents_config. A pooled team can outlive its adapter.
+        team_manager = peek_team_manager()
+        if team_manager is not None:
+            ns_token = bind_agent_env_ns(self.env_service_id, self.env_agent_id)
+            try:
+                team_manager.update_leader_evolution_triggers(config, catalog_sync=True)
+            except Exception as exc:
+                logger.warning(
+                    "[AgentManager] team evolution policy sync failed: service=%s agent=%s error=%s",
+                    self.env_service_id, self.env_agent_id, exc,
+                )
+                aggregate.failed.append({"session": "", "error": f"Team evolution policy sync failed: {exc}"})
+            finally:
+                reset_agent_env_ns(ns_token)
+
         for channel_id, channel_agents in self.agents.items():
             if not isinstance(channel_agents, dict):
                 continue
@@ -1873,6 +2060,8 @@ class AgentManager:
                         mode_key,
                         exc,
                     )
+        for agent in agents.values():
+            self._agent_last_used.pop(id(agent), None)
         del self.agents[channel_key]
         self._agent_create_params.pop(channel_key, None)
         logger.info(

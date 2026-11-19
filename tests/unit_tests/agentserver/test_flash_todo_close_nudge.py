@@ -98,6 +98,18 @@ def _todo_ctx(session: _FakeSession, action: str, call_id: str = "call-todo") ->
     )
 
 
+@pytest.mark.asyncio
+async def test_failed_modify_does_not_enroll_open_tasks_for_close_nudge():
+    rail, _ = _rail({"existing": TodoStatus.IN_PROGRESS})
+    ctx = _todo_ctx(_FakeSession(), "modify")
+    ctx.inputs.tool_result = {"status": "error", "success": False, "error": "Missing modify_action"}
+
+    await rail.after_tool_call(ctx)
+
+    assert not rail._open_todos
+    assert not rail._unfinished_todos
+
+
 def _refusal_usage(**overrides) -> UsageMetadata:
     usage = {
         "output_tokens": 47,
@@ -251,7 +263,10 @@ async def test_canned_refusal_replaces_the_answer_body_and_stops() -> None:
 async def test_refusal_publishes_committed_snapshot_without_rereading(mode):
     from unittest.mock import AsyncMock
     from openjiuwen.harness.tools.todo_store import TodoResult, decode_snapshot
+    from jiuwenswarm.common.e2a.wire_codec import encode_agent_chunk_for_wire, parse_agent_server_wire_chunk
+    from jiuwenswarm.common.schema.agent import AgentResponseChunk
     from jiuwenswarm.common.todo_snapshot import TODO_SNAPSHOT_MODE
+    from jiuwenswarm.server.runtime.agent_adapter.deep.stream_parse import _parse_stream_chunk
 
     rail, engine = _rail({"collect": TodoStatus.IN_PROGRESS, "script": TodoStatus.PENDING})
     snapshot = decode_snapshot({"plan_id": "P", "revision": 5, "todos": [
@@ -264,12 +279,19 @@ async def test_refusal_publishes_committed_snapshot_without_rereading(mode):
     rail._open_todos = [("collect", {"content": "collect"})]
     engine.error = AssertionError("Must use the cancellation receipt, not a later read")
     session = _FakeSession()
+    session.write_stream = AsyncMock(wraps=session.write_stream)
     token = TODO_SNAPSHOT_MODE.set(mode)
     try:
         await rail._close_open_task_segment(session)
     finally:
         TODO_SNAPSHOT_MODE.reset(token)
     payload = next(payload for event, payload in zip(session.events, session.payloads) if event == "todo.updated")
+    schema = next(call.args[0] for call in session.write_stream.await_args_list if call.args[0].type == "todo.updated")
+    parsed = _parse_stream_chunk(schema)
+    wire = encode_agent_chunk_for_wire(AgentResponseChunk(
+        request_id="refusal", channel_id="web", payload=parsed,
+    ), response_id="refusal", sequence=0)
+    assert parse_agent_server_wire_chunk(wire).payload == {"event_type": "todo.updated", **payload}
     assert [row["id"] for row in payload["todos"]] == ["script"]
     if mode == "versioned":
         assert payload["todo_meta"] == {"plan_id": "P", "revision": 5}

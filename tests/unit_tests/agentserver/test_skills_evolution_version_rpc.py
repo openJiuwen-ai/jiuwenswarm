@@ -311,7 +311,8 @@ def test_build_rebuild_llm_direct_prompt_has_no_write_file_tools():
     blob = f"{system}\n{user}".lower()
     assert "write_file" not in blob
     assert "skill-creator" not in blob
-    assert "Current SKILL.md:" in user
+    assert "Current SKILL.md" in user
+    assert "Experience action rules" in user
     assert "---\nname: demo\n---" in user
 
 

@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Hashable, Iterable
+import os
+import time
+from collections.abc import Awaitable, Callable, Hashable, Iterable
+from functools import partial
 from typing import Any, ClassVar
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
@@ -34,6 +37,7 @@ from jiuwenswarm.server.runtime.sync_agents_configs import (
     materialize_sync_env,
     validate_sync_payload,
 )
+from jiuwenswarm.server.runtime import session_prepare_tracker
 from jiuwenswarm.server.runtime.tenant_catalog_registry import TenantCatalogRegistry
 from jiuwenswarm.agents.harness.common.rails.skill_credential_injection_rail import (
     coalesce_config_skill_envs,
@@ -65,6 +69,72 @@ def filter_cached_agent_managers(values: Iterable[Any]) -> list[Any]:
     return managers
 
 
+# 企业版池默认上限；可用 AGENT_POOL_MAX_SIZE / AGENT_POOL_TTL 覆盖。
+# 设为 0 或负数表示不限制（与个人版一致）。
+_ENTERPRISE_POOL_MAX_SIZE_DEFAULT = 100
+_ENTERPRISE_POOL_TTL_DEFAULT = 600
+
+
+def _parse_agent_pool_limit_env(name: str, default: int) -> int | None:
+    """Parse a pool limit env var.
+
+    Returns ``None`` for unlimited (empty / non-positive). Invalid values fall
+    back to ``default``.
+    """
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    text = str(raw).strip()
+    if not text:
+        return None
+    try:
+        value = int(text)
+    except ValueError:
+        logger.warning(
+            "[TenantAgentPool] invalid %s=%r, fallback to %s",
+            name,
+            raw,
+            default,
+        )
+        return default
+    if value <= 0:
+        return None
+    return value
+
+
+def resolve_agent_pool_cache_limits(
+    *,
+    cache_max_size: int | None = None,
+    cache_ttl: int | None = None,
+    enterprise: bool | None = None,
+) -> tuple[int | None, int | None]:
+    """Resolve AgentManager LRU limits for the current edition.
+
+    Personal edition keeps unlimited cache unless the caller passes explicit
+    limits. Enterprise edition defaults to env-backed caps.
+    """
+    if enterprise is None:
+        enterprise = is_enterprise()
+    if not enterprise:
+        return cache_max_size, cache_ttl
+
+    max_size = (
+        cache_max_size
+        if cache_max_size is not None
+        else _parse_agent_pool_limit_env(
+            "AGENT_POOL_MAX_SIZE", _ENTERPRISE_POOL_MAX_SIZE_DEFAULT
+        )
+    )
+    ttl = (
+        cache_ttl
+        if cache_ttl is not None
+        else _parse_agent_pool_limit_env(
+            "AGENT_POOL_TTL", _ENTERPRISE_POOL_TTL_DEFAULT
+        )
+    )
+    return max_size, ttl
+
+
 class TenantAgentPool:
     """多租户 AgentManager 管理器（单例）.
 
@@ -82,10 +152,15 @@ class TenantAgentPool:
         cache_ttl: int | None = None,
     ) -> None:
         # LRU 缓存: key=(agent_id, service_id, workspace_key), value=AgentManager 实例
-        # 默认 None：不限制容量与 TTL，避免长阻塞（如 ask_user_question）期间误淘汰 AgentManager
+        # 个人版默认不限制；企业版用 AGENT_POOL_MAX_SIZE / AGENT_POOL_TTL（默认 100 / 600s）
+        resolved_max_size, resolved_ttl = resolve_agent_pool_cache_limits(
+            cache_max_size=cache_max_size,
+            cache_ttl=cache_ttl,
+        )
         self._agent_wrappers = AsyncLRUCache(
-            max_size=cache_max_size,
-            ttl_seconds=cache_ttl,
+            max_size=resolved_max_size,
+            ttl_seconds=resolved_ttl,
+            on_evict=self._on_agent_wrapper_evicted,
         )
         self._locks: dict[Hashable, asyncio.Lock] = {}
         self._lock_loops: dict[Hashable, asyncio.AbstractEventLoop] = {}
@@ -94,6 +169,12 @@ class TenantAgentPool:
         self._last_sync_revision: dict[str, str] = {}
 
         self._last_reload_trace_id: str | None = None
+        if is_enterprise():
+            logger.info(
+                "[TenantAgentPool] enterprise cache limits: max_size=%s ttl_seconds=%s",
+                resolved_max_size,
+                resolved_ttl,
+            )
 
     @classmethod
     def get_instance(cls) -> "TenantAgentPool":
@@ -502,7 +583,6 @@ class TenantAgentPool:
                 # 等模板（prepare_workspace 只初始化默认租户；幂等，已存在跳过）。
                 seed_tenant_agent_workspace(agent_dir_path)
 
-                import os
                 # 企业版：stable string instance id (legacy "aid_sid" form).
                 agent_runtime = is_enterprise()
                 manager_agent_id = (
@@ -535,12 +615,10 @@ class TenantAgentPool:
 
                 await self._agent_wrappers.put(cache_key, agent_manager)
 
+                # keys() 会触发过期淘汰和 cleanup，放在全局锁外，避免占住其它租户创建。
+                active_keys = set(await self._agent_wrappers.keys())
                 async with self._global_lock:
-                    active_keys = await self._agent_wrappers.keys()
-                    stale_locks = [k for k in self._locks if k not in active_keys]
-                    for stale_key in stale_locks:
-                        del self._locks[stale_key]
-                        self._lock_loops.pop(stale_key, None)
+                    self._drop_stale_locks(active_keys)
 
                 logger.info(
                     "[TenantAgentPool] AgentManager 实例创建完成: agent_id=%s, service_id=%s, workspace_key=%s path=%s",
@@ -582,28 +660,98 @@ class TenantAgentPool:
         wk = (workspace_key or "").strip() or "default"
         return (agent_id, service_id, wk)
 
-    async def _evict_manager_cache(
-            self, agent_id: str, service_id: str, workspace_key: str = "default",
+    def _drop_stale_locks(self, active_keys: set[Hashable]) -> None:
+        """回收缓存中已不存在、且当前无人持有的 per-key 锁。"""
+        stale_keys = [key for key in self._locks if key not in active_keys]
+        for stale_key in stale_keys:
+            lock = self._locks.get(stale_key)
+            if lock is not None and (
+                lock.locked() or getattr(lock, "_waiters", None)
+            ):
+                continue
+            self._locks.pop(stale_key, None)
+            self._lock_loops.pop(stale_key, None)
+
+    @staticmethod
+    def _manager_is_working(agent_manager: Any) -> bool:
+        """无法判断时按正在执行处理，避免把在途请求 cleanup 掉。"""
+        checker = getattr(agent_manager, "is_working", None)
+        if not callable(checker):
+            return False
+        try:
+            return bool(checker())
+        except Exception:
+            logger.warning(
+                "[TenantAgentPool] is_working failed; keep AgentManager",
+                exc_info=True,
+            )
+            return True
+
+    async def _on_agent_wrapper_evicted(self, cache_key: Hashable, agent_manager: Any) -> None:
+        """容量 / TTL 自动淘汰。在途实例放回缓存；空闲实例清理但不停 cron。"""
+        if self._manager_is_working(agent_manager):
+            restored = await self._agent_wrappers.put_if_absent(cache_key, agent_manager)
+            logger.info(
+                "[TenantAgentPool] skip auto-evict, AgentManager is working: key=%s restored=%s",
+                cache_key,
+                restored,
+            )
+            return
+
+        logger.info(
+            "[TenantAgentPool] AgentManager auto-evicted from cache: key=%s",
+            cache_key,
+        )
+        await self._dispose_evicted_manager(
+            cache_key,
+            agent_manager,
+            stop_cron=False,
+            release_locks=False,
+        )
+
+    async def _dispose_evicted_manager(
+            self,
+            cache_key: Hashable,
+            agent_manager: Any,
+            *,
+            stop_cron: bool,
+            release_locks: bool,
     ) -> None:
-        cache_key = self._build_cache_key(agent_id, service_id, workspace_key)
-        agent_manager = await self._agent_wrappers.get(cache_key)
+        """Cleanup an AgentManager already removed from the LRU cache.
+
+        ``stop_cron`` / ``release_locks`` 仅用于租户下线。空闲淘汰保留调度器和
+        仍可能被持有的 per-key 锁。
+        """
         if agent_manager is not None:
             try:
                 await agent_manager.cleanup()
             except Exception as exc:
                 logger.warning(
-                    "[TenantAgentPool] cleanup before evict failed for %s: %s",
+                    "[TenantAgentPool] cleanup after evict failed for %s: %s",
                     cache_key,
                     exc,
                 )
-        await self._agent_wrappers.remove(cache_key)
-        self._locks.pop(cache_key, None)
-        self._lock_loops.pop(cache_key, None)
+
+        if release_locks:
+            self._locks.pop(cache_key, None)
+            self._lock_loops.pop(cache_key, None)
+
+        agent_id: str | None = None
+        service_id: str | None = None
+        workspace_key = "default"
+        if isinstance(cache_key, tuple) and len(cache_key) >= 2:
+            agent_id = str(cache_key[0]) if cache_key[0] is not None else None
+            service_id = str(cache_key[1]) if cache_key[1] is not None else None
+            if len(cache_key) >= 3 and cache_key[2]:
+                workspace_key = str(cache_key[2])
+
+        if not agent_id or not service_id:
+            return
 
         try:
             from jiuwenswarm.agents.harness.common.plugins.rail_manager import RailManagerPool
 
-            RailManagerPool.remove(service_id, agent_id)
+            RailManagerPool.remove(service_id, agent_id, workspace_key)
         except Exception as exc:
             logger.warning(
                 "[TenantAgentPool] RailManagerPool.remove failed for %s: %s",
@@ -628,6 +776,9 @@ class TenantAgentPool:
                 exc,
             )
 
+        if not stop_cron:
+            return
+
         try:
             from jiuwenswarm.server.runtime.cron_local_runtime import AgentCronRegistry
 
@@ -638,6 +789,19 @@ class TenantAgentPool:
                 cache_key,
                 exc,
             )
+
+    async def _evict_manager_cache(
+            self, agent_id: str, service_id: str, workspace_key: str = "default",
+    ) -> None:
+        cache_key = self._build_cache_key(agent_id, service_id, workspace_key)
+        # Explicit pop: no TTL refresh, no on_evict (dispose below owns cleanup).
+        agent_manager = await self._agent_wrappers.pop(cache_key)
+        await self._dispose_evicted_manager(
+            cache_key,
+            agent_manager,
+            stop_cron=True,
+            release_locks=True,
+        )
 
     async def warmup_tenant(
         self,
@@ -1192,6 +1356,10 @@ class TenantAgentPool:
             await self._refresh_agent_manager_cache(cache_key, agent_manager)
 
     _session_prewarm_tasks: ClassVar[dict[str, asyncio.Task[None]]] = {}
+    SESSION_PREPARE_MAX_QUEUED: ClassVar[int] = 8
+    SESSION_PREPARE_BUILD_WAIT_SEC: ClassVar[float] = 60.0
+    _session_prepare_queue: ClassVar[dict[str, Callable[[], bool]]] = {}
+    _session_prepare_worker: ClassVar[asyncio.Task[None] | None] = None
 
     async def wait_for_session_prewarm(self, session_id: str | None) -> None:
         """Wait for a session.create background prewarm before chat routing.
@@ -1205,12 +1373,19 @@ class TenantAgentPool:
         sid = str(session_id or "").strip()
         if not sid:
             return
+        # 还在排队的 session.prepare 直接移出：请求现在就建，不等它轮到。
+        if TenantAgentPool._session_prepare_queue.pop(sid, None) is not None:
+            session_prepare_tracker.mark(sid, "dropped")
+            logger.info("[PERF] session prepare dropped from queue by request: session_id=%s", sid)
+        # A session.create prewarm for the same session may already be running; still join it.
         task = self._session_prewarm_tasks.get(sid)
         if task is None or task.done():
             return
+        started = time.monotonic()
         # ``asyncio.wait`` joins without propagating the prewarm task's
         # exception.  Cancellation of the waiting chat request still propagates.
         await asyncio.wait({task})
+        session_prepare_tracker.mark_joined(sid, (time.monotonic() - started) * 1000)
 
     async def prewarm_session_in_background(
         self,
@@ -1232,28 +1407,126 @@ class TenantAgentPool:
         chat 并发安全(最坏退化为基线时延)。
         env ``JIUWENSWARM_SESSION_CREATE_PREWARM=0`` 可关闭。
         """
-        import os
-        import time
-
         if str(
             os.environ.get("JIUWENSWARM_SESSION_CREATE_PREWARM", "1")
         ).strip().lower() in {"0", "false", "no", "off"}:
             return
         if not session_id:
             return
+        self._schedule_session_prewarm(
+            request=request,
+            session_id=str(session_id),
+            channel_id=channel_id,
+            mode=mode,
+            adapter_mode=adapter_mode,
+            project_dir=project_dir,
+        )
 
-        sid = str(session_id)
-        existing_task = self._session_prewarm_tasks.get(sid)
-        if existing_task is not None and not existing_task.done():
+    @staticmethod
+    def session_prepare_enabled() -> bool:
+        """``JIUWENSWARM_SESSION_PREPARE=0`` turns session.prepare into a no-op."""
+        raw = os.environ.get("JIUWENSWARM_SESSION_PREPARE", "1")
+        return str(raw).strip().lower() not in {"0", "false", "no", "off"}
+
+    def session_prewarm_running(self, session_id: str | None) -> bool:
+        task = self._session_prewarm_tasks.get(str(session_id or "").strip())
+        return task is not None and not task.done()
+
+    def prepare_session_in_background(
+        self,
+        *,
+        request: AgentRequest,
+        mode: str,
+        adapter_mode: str,
+        project_dir: str | None,
+        before_build: Callable[[], Awaitable[None]] | None = None,
+    ) -> str:
+        """Queue a session.prepare build; returns scheduled / already_running / queue_full."""
+        # 与 session.create 预热不同：请求身份（thread id、租户上下文）会带到会话实例，和对话建出来的一致。
+        sid = str(request.session_id or "").strip()
+        queue = TenantAgentPool._session_prepare_queue
+        if self.session_prewarm_running(sid) or sid in queue:
+            return "already_running"
+        if len(queue) >= self.SESSION_PREPARE_MAX_QUEUED:
+            session_prepare_tracker.mark(sid, "queue_full")
+            logger.info("[PERF] session prepare queue full: session_id=%s queued=%d", sid, len(queue))
+            return "queue_full"
+        session_prepare_tracker.mark(sid, "queued")
+        queue[sid] = partial(
+            self._schedule_session_prewarm,
+            request=request,
+            session_id=sid,
+            channel_id=request.channel_id or "default",
+            mode=mode,
+            adapter_mode=adapter_mode,
+            project_dir=project_dir,
+            session_request=request,
+            before_build=before_build,
+            source="session.prepare",
+        )
+        worker = TenantAgentPool._session_prepare_worker
+        if worker is None or worker.done():
+            TenantAgentPool._session_prepare_worker = asyncio.create_task(
+                self._drain_session_prepare_queue(), name="session-prepare-worker",
+            )
+        return "scheduled"
+
+    async def _drain_session_prepare_queue(self) -> None:
+        queue = TenantAgentPool._session_prepare_queue
+        try:
+            while queue:
+                sid = next(iter(queue))
+                start = queue.pop(sid)
+                # False: a session.create prewarm took this session meanwhile.
+                if not start():
+                    continue
+                task = self._session_prewarm_tasks.get(sid)
+                if task is None:
+                    continue
+                # 只限 worker 等多久，不取消构建：一个卡住的构建不能让后面的准备永远轮不到。
+                _, pending = await asyncio.wait({task}, timeout=self.SESSION_PREPARE_BUILD_WAIT_SEC)
+                if pending:
+                    logger.warning(
+                        "[PERF] session prepare build still running after %.0fs, starting next: session_id=%s",
+                        self.SESSION_PREPARE_BUILD_WAIT_SEC,
+                        sid,
+                    )
+        finally:
+            if TenantAgentPool._session_prepare_worker is asyncio.current_task():
+                TenantAgentPool._session_prepare_worker = None
+
+    def _schedule_session_prewarm(
+        self,
+        *,
+        request: AgentRequest,
+        session_id: str,
+        channel_id: str,
+        mode: str,
+        adapter_mode: str | None,
+        project_dir: str | None,
+        session_request: AgentRequest | None = None,
+        before_build: Callable[[], Awaitable[None]] | None = None,
+        source: str = "session.create",
+    ) -> bool:
+        sid = session_id
+        if not sid:
+            return False
+        if self.session_prewarm_running(sid):
             logger.debug(
                 "[PERF] session prewarm already running: session_id=%s",
                 sid,
             )
-            return
+            return False
+        tracked = session_request is not None
 
         async def _run() -> None:
             started = time.monotonic()
+            if tracked and not session_prepare_tracker.advance(sid, "building"):
+                logger.info("[PERF] session prepare skipped, chat came first: session_id=%s", sid)
+                return
             try:
+                if before_build is not None:
+                    await before_build()
                 agent_id, service_id, workspace_key = self.extract_ids(request)
                 agent_id, service_id = self.resolve_control_rpc_tenant(
                     request, agent_id, service_id
@@ -1273,40 +1546,54 @@ class TenantAgentPool:
                     session_id=session_id,
                 )
                 if agent is None:
+                    if tracked:
+                        session_prepare_tracker.mark(sid, "failed")
                     return
+                prepare_kwargs: dict[str, Any] = {}
+                if session_request is not None:
+                    prepare_kwargs["request"] = session_request
                 await agent.prepare_session(
-                    session_id=session_id,
+                    session_id=sid,
                     channel_id=channel_id or "default",
                     mode=mode,
                     adapter_mode=selected_adapter_mode,
                     project_dir=project_dir,
+                    **prepare_kwargs,
                 )
+                if tracked:
+                    session_prepare_tracker.advance(sid, "ready")
                 logger.info(
-                    "[PERF] session prewarm completed: session_id=%s duration_ms=%.0f",
-                    session_id,
+                    "[PERF] session prewarm completed: session_id=%s source=%s "
+                    "duration_ms=%.0f",
+                    sid,
+                    source,
                     (time.monotonic() - started) * 1000,
                 )
             except Exception as exc:  # noqa: BLE001 - 预热失败不阻塞业务
                 # 注:CancelledError 为 BaseException(py3.8+),不会被此处捕获,自然穿透
+                if tracked:
+                    session_prepare_tracker.mark(sid, "failed")
                 logger.warning(
-                    "[PERF] session prewarm failed: session_id=%s error=%s",
-                    session_id,
+                    "[PERF] session prewarm failed: session_id=%s source=%s error=%s",
+                    sid,
+                    source,
                     exc,
                 )
 
         try:
             task = asyncio.create_task(_run(), name=f"session-prewarm-{sid}")
-            self._session_prewarm_tasks[sid] = task
-
-            def _discard_session_prewarm(
-                completed: asyncio.Task[None], *, key: str = sid,
-            ) -> None:
-                if self._session_prewarm_tasks.get(key) is completed:
-                    self._session_prewarm_tasks.pop(key, None)
-
-            task.add_done_callback(_discard_session_prewarm)
         except RuntimeError:  # 无运行 loop(理论不可达)静默放弃
-            pass
+            return False
+        self._session_prewarm_tasks[sid] = task
+
+        def _discard_session_prewarm(
+            completed: asyncio.Task[None], *, key: str = sid,
+        ) -> None:
+            if self._session_prewarm_tasks.get(key) is completed:
+                self._session_prewarm_tasks.pop(key, None)
+
+        task.add_done_callback(_discard_session_prewarm)
+        return True
 
     async def process_message_stream(
             self, request: AgentRequest
