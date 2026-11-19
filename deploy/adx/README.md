@@ -5,13 +5,11 @@ AgentOS 多用户使用 develop 的运行标识、数据面热同步、Conch 与
 
 ## 简介
 
-openYuanrong 是一个 Serverless 分布式计算引擎，旨在为分布式应用提供高性能运行和集群资源的高效利用。基于此引擎，我们打造了 JiuwenSwarm 分布式一键部署方案。
-
-基于 openYuanrong 进程部署模式，对 JiuwenSwarm 进行函数化部署，并以进程方式部署 gateway，无需 K8s 集群，适合快速体验和轻量级部署场景。
+本目录使用已部署的 ADX 管理 AgentServer，保留 JiuwenSwarm 的安装、Gateway/Web 启停、`--hosts` 和 SSH/SCP 流程。脚本不安装 ADX 集群，也不注册函数。
 
 ## 前置要求
 
-- **openyuanrong 已正常安装部署**：执行本脚本前，需确保 openyuanrong 已在所有目标主机上安装并启动，集群处于正常运行状态。
+- **ADX 已正常安装部署**：HTTP Ingress 可达，租户凭据、AgentServer 镜像和运行时已准备。
 - 操作系统：Linux
 - 系统架构：amd64 或 arm64
 - 硬件资源：单机最低配置为 16 核 CPU 及 32GB 内存
@@ -51,46 +49,47 @@ vim .env.custom
 
 | 变量                  | 说明                                                                                               | 默认值    |
 | ------------------- | ------------------------------------------------------------------------------------------------ | ------ |
-| `CLUSTER_HOSTS`     | 目标主机 IP 列表，逗号分隔。第一个 IP 为 yr master 节点，其余为 agent 节点。也可通过命令行 `--hosts` 参数指定，命令行优先级更高。不设置时默认使用本机 IP | `""`   |
-| `YR_PYTHON_VERSION` | Python 版本，用于远程安装 jiuwenswarm 依赖（当前仅支持3.11）                                                       | `3.11` |
+| `CLUSTER_HOSTS`     | 目标主机 IP 列表，逗号分隔。第一个 IP 为 Gateway/Web 主机，其余为应用安装主机。也可通过命令行 `--hosts` 参数指定，命令行优先级更高。不设置时默认使用本机 IP | `""`   |
+| `PYTHON_VERSION` | Python 版本，用于远程安装 jiuwenswarm 依赖（当前仅支持3.11）                                                       | `3.11` |
 
 #### jiuwenswarm 配置
 
 | 变量                        | 说明                                                                                                           | 默认值  |
 | ------------------------- | ------------------------------------------------------------------------------------------------------------ | ---- |
-| `YR_FUNC_CODE_DIR`        | jiuwenswarm 函数代码目录（远程主机上的路径）。留空则自动从远程主机 pip 安装路径推断：`$(pip show workswarm\|jiuwenswarm Location)/jiuwenswarm/extensions`（0.2.8 起发行包名为 workswarm，旧包为 jiuwenswarm） | `""` |
 | `JIUWENSWARM_PACKAGE_URL` | jiuwenswarm 安装包 URL（远程主机未安装 jiuwenswarm 时使用此 URL 进行 pip 安装）。如果远程主机已安装 jiuwenswarm，此配置不需要设置                   | `""` |
 
-#### 函数服务配置
+#### ADX 连接配置
 
-| 变量                   | 说明                          | 默认值              |
-| -------------------- | --------------------------- |------------------|
-| `FUNC_SVC_NAME`      | 函数服务名称                      | `0@jiuwen@swarm` |
-| `MGR_CPU`            | 单实例 CPU 限制（单位：毫核，300=0.3 核） | `300`            |
-| `MGR_MEMORY`         | 单实例内存限制（单位：Mi）              | `600`            |
-| `MGR_MIN_INSTANCE`   | 服务最小实例数                     | `1`              |
-| `MGR_MAX_INSTANCE`   | 服务最大实例数                     | `10`             |
-| `MGR_CONCURRENT_NUM` | 服务并发处理数量/最大并发数              | `10`             |
+| 变量 | 说明 | 默认值 |
+| --- | --- | --- |
+| `ADX_INGRESS_URL` | 已部署的 ADX HTTP(S) Ingress 地址 | 必填 |
+| `ADX_TENANT` | 租户名 | `agentos` |
+| `ADX_TOKEN` | 对应租户的访问凭据 | 必填 |
+| `ADX_AGENTSERVER_IMAGE` | 已在 ADX 准备好的 AgentServer 镜像标识 | `agentos-supervisor:v1` |
+| `ADX_AGENTSERVER_RUNTIME` | AgentServer 运行时 | `supervisor` |
+
+原 `FUNC_SVC_NAME`、`FUNCTION_ID`、`YR_FUNC_CODE_DIR`、`MGR_*` 和
+`SANDBOX_TYPE` 属于已移除的函数注册配置；`GATEWAY_CONCURRENCY` 和
+`GATEWAY_INVOKE_TIMEOUT` 属于旧函数调用协议。AgentServer 的资源仍由
+`AGENTOS_BUILTIN_AGENT_CPU` / `AGENTOS_BUILTIN_AGENT_MEMORY` 和管理面控制，
+不应把旧函数资源直接映射到 AgentServer。安装器的旧 `YR_PYTHON_VERSION`
+会作为 `PYTHON_VERSION` 的兼容输入；显式新值优先。
 
 #### Gateway 配置
 
 | 变量                          | 说明                                                                                                 | 默认值                 |
 | --------------------------- | -------------------------------------------------------------------------------------------------- | ------------------- |
 | `JIUWENSWARM_INSTANCE_NAME` | jiuwenswarm 实例名（留空则使用默认路径 `~/.jiuwenswarm`）。指定实例名后配置目录变为 `~/.jiuwenswarm-instances/<实例名>`          | `""`                |
-| `GATEWAY_CONCURRENCY`       | 网关同时向后端发送的最大并发请求数                                                                                  | `1`                 |
-| `GATEWAY_INVOKE_TIMEOUT`    | 网关调用后端接口的超时时间（秒）                                                                                   | `60`                |
 | `GATEWAY_SESSION_MAP_SCOPE` | SessionMap 会话映射策略。可选值：`per_chat_bot`（同聊天窗口+机器人共享会话）、`per_chat_bot_user`（按用户维度隔离会话）                 | `per_chat_bot_user` |
 | `EXTENSION_DIRS`            | 扩展包搜索目录（远程主机上的路径，多个目录用分号 `;` 分隔）。留空则自动从 jiuwenswarm 安装路径推断：`<pip_location>/jiuwenswarm/extensions` | `""`                |
 
 #### Gateway 独立部署配置
 
-以下配置仅在单独部署 gateway 时需要手动设置。如果先部署 jiuwenswarm 再部署 gateway，这些值会自动获取，无需手动设置。
+以下配置用于 Gateway/Web 的部署主机选择。ADX 地址和凭据来自上面的连接配置，不从历史函数 ID 或 Frontend 地址推断。
 
 | 变量               | 说明                                              | 默认值  |
 | ---------------- | ----------------------------------------------- | ---- |
 | `MASTER_NODE_IP` | Master 节点 IP（单独部署 gateway 时需要指定）                | `""` |
-| `FRONTEND_PORT`  | 元戎 Frontend 端口（单独部署 gateway 时需要指定，默认 8888）      | `""` |
-| `FUNCTION_ID`    | 函数 ID（单独部署 gateway 时需要指定，由 jiuwenswarm 注册函数后返回） | `""` |
 
 #### 大模型接口配置
 
@@ -114,19 +113,19 @@ vim .env.custom
 ### 一键部署
 
 ```
-# 部署所有模块（jiuwenswarm + gateway），默认本机
+# 部署所有模块（jiuwenswarm + gateway + web），默认本机
 ./deploy.sh up
 
 # 指定主机部署所有模块
 ./deploy.sh up --hosts 192.168.1.1
 
-# 仅部署 jiuwenswarm 模块（安装jiuwenswarm + 函数注册）
+# 仅部署 jiuwenswarm 模块（安装 jiuwenswarm）
 ./deploy.sh up jiuwenswarm --hosts 192.168.1.1
 
-# 仅部署 gateway 模块（需先部署 jiuwenswarm 或在 .env.custom 中配置 FUNCTION_ID 等参数）
+# 仅部署 gateway 模块（需先安装 jiuwenswarm，并配置 ADX 连接参数）
 ./deploy.sh up gateway --hosts 192.168.1.1
 
-# 多机部署（第一个IP为yr master，其余为agent）
+# 多机部署（第一个 IP 为 Gateway/Web 主机，其余为应用安装主机）
 ./deploy.sh up --hosts 192.168.1.1,192.168.1.2,192.168.1.3
 ```
 
@@ -190,17 +189,18 @@ vim .env.custom
 基础用法（无模块参数）：
 
 ```
-./deploy.sh up --hosts 192.168.1.1       # 部署所有模块（jiuwenswarm + gateway）
+./deploy.sh up --hosts 192.168.1.1       # 部署所有模块（jiuwenswarm + gateway + web）
 ./deploy.sh down --hosts 192.168.1.1     # 卸载所有模块
 ./deploy.sh restart --hosts 192.168.1.1  # 重启所有模块
 ```
 
 ### 模块列表（选填）
 
-部署工具支持对以下两个独立模块进行精细化管理：
+部署工具支持对以下三个独立模块进行精细化管理：
 
-- `jiuwenswarm`：在所有 host 上安装 jiuwenswarm + 在 yr master 节点注册函数
+- `jiuwenswarm`：在所有 host 上安装 jiuwenswarm
 - `gateway`：jiuwenswarm Gateway 服务（进程模式）
+- `web`：静态 Web 服务，代理业务请求到 Gateway
 
 单模块操作示例：
 
@@ -209,11 +209,11 @@ vim .env.custom
 ./deploy.sh [操作命令] gateway --hosts 192.168.1.1       # 仅操作 gateway 模块
 ```
 
-当未指定模块参数时，默认按 `jiuwenswarm → gateway` 顺序依次部署两个模块。
+当未指定模块参数时，默认按 `jiuwenswarm → gateway → web` 顺序依次部署三个模块。
 
 ### 配置参数（选填）
 
-- `--hosts`：指定集群主机 IP 列表，逗号分隔。第一个 IP 为 yr master 节点，其余为 agent 节点。也可在 `.env.custom` 中通过 `CLUSTER_HOSTS` 配置，命令行参数优先级更高。不指定时默认使用本机 IP
+- `--hosts`：指定集群主机 IP 列表，逗号分隔。第一个 IP 为 Gateway/Web 主机，其余为应用安装主机。也可在 `.env.custom` 中通过 `CLUSTER_HOSTS` 配置，命令行参数优先级更高。不指定时默认使用本机 IP
 - `-h, --help`：显示帮助信息
 
 参数使用示例：
@@ -228,11 +228,11 @@ vim .env.custom
 
 ## 重要约束
 
-- **前置条件**：执行 deploy.sh 前需确保 openyuanrong 已在所有目标主机上正常安装并启动
-- **jiuwenswarm 模块**：在所有 host 上安装 jiuwenswarm，但函数注册只在 yr master 节点（第一个 IP）执行
-- **gateway 模块**：依赖 jiuwenswarm 模块部署后产生的 `FUNCTION_ID`、`FRONTEND_PORT` 等参数。如果单独部署 gateway，需在 `.env.custom` 中手动配置这些参数
-- **部署顺序**：同时部署时，jiuwenswarm 先于 gateway 部署；卸载时，gateway 先于 jiuwenswarm 卸载
-- **down jiuwenswarm**：仅删除 yr master 上注册的函数元信息，不卸载 jiuwenswarm pip 包、不停止 openyuanrong 集群
+- **前置条件**：先部署 ADX，再安装应用和启动 Gateway/Web。
+- **jiuwenswarm 模块**：通过原有本机/SSH 安装流程在指定 hosts 安装应用，不注册函数。
+- **gateway 模块**：需配置可达的 ADX Ingress 和有效租户凭据。
+- **部署顺序**：同时部署时按 `jiuwenswarm → gateway → web` 启动，停止时逆序。
+- **down jiuwenswarm**：不卸载 pip 包，也不停止 ADX 集群；包卸载由 AgentOS 的 uninstall 负责。
 
 ## Gateway 实例配置
 
@@ -242,3 +242,15 @@ vim .env.custom
 - 设置实例名（如 `JIUWENSWARM_INSTANCE_NAME=prod`）：gateway 使用实例路径 `~/.jiuwenswarm-instances/prod/config/config.yaml`
 
 实例名配置后，`jiuwenswarm-init` 和 `jiuwenswarm-gateway` 命令会自动通过 `JIUWENSWARM_DATA_DIR` 环境变量指向对应的实例目录。
+
+## AgentOS 发布包升级
+
+发布包使用 `SWARM_SETTINGS` 加载 OS 的 `agentos_handler.sh`。
+Enterprise 在启动服务前运行 `configure.py configure`，从部署 settings 和凭据文件生成
+Gateway 的 ADX YAML / service dotenv，迁移已有用户 YAML/.env，并准备新用户模板。
+旧用户无需自行新增 ADX 地址或 token；保留业务模型、有效工具资源、身份和挂载配置。
+
+独立运行本目录脚本时，没有 Enterprise 的部署 settings 与凭据文件，需在 `.env.custom`
+显式提供 ADX 连接参数。历史函数 ID/Frontend 地址不能替代 ADX 的租户凭据。
+两种入口均沿用 `up/down/restart`；目录名从 `deploy/yuanrong` 改为 `deploy/adx`，
+AgentOS Server 内安装路径仍为 `deploy/jiuwenswarm/`。

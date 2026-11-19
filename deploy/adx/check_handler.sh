@@ -34,19 +34,19 @@ get_local_ip() {
     echo "127.0.0.1"
 }
 
-# yuanrong systemd 模式（agentos.sh up 默认路径）以 scripts/config.py local-ip 作为
+# ADX 部署模式（agentos.sh up 默认路径）以 scripts/config.py local-ip 作为
 # values.host_ip（Python get_local_ip：UDP 出口探测 → hostname 解析 → 127.0.0.1）。
 # config.py 不可用（python 缺失 / ~/.agentos/deploy/config.yaml 缺失）时降级 bash get_local_ip。
-_yr_consistent_local_ip() {
+_deployment_local_ip() {
     local cfg_py="${SCRIPT_DIR}/../scripts/config.py"
-    local py yr_ip=""
+    local py node_ip=""
     if [ -f "${cfg_py}" ]; then
-        py=$(command -v "python${DEPLOY_VARS["YR_PYTHON_VERSION"]:-3.11}" 2>/dev/null \
+        py=$(command -v "python${DEPLOY_VARS["PYTHON_VERSION"]:-3.11}" 2>/dev/null \
             || command -v python3 2>/dev/null || true)
         if [ -n "${py}" ]; then
-            yr_ip=$("${py}" "${cfg_py}" local-ip 2>/dev/null | tr -d '\r' | head -n 1)
-            if [ -n "${yr_ip}" ]; then
-                echo "${yr_ip}"
+            node_ip=$("${py}" "${cfg_py}" local-ip 2>/dev/null | tr -d '\r' | head -n 1)
+            if [ -n "${node_ip}" ]; then
+                echo "${node_ip}"
                 return 0
             fi
         fi
@@ -60,7 +60,7 @@ _yr_consistent_local_ip() {
 _ingress_vip() {
     local config_file="${HOME:-/root}/.agentos/deploy/config.yaml"
     [ -f "${config_file}" ] || return 1
-    local py="python${DEPLOY_VARS["YR_PYTHON_VERSION"]:-3.11}" vip=""
+    local py="python${DEPLOY_VARS["PYTHON_VERSION"]:-3.11}" vip=""
     if command -v "${py}" >/dev/null 2>&1 && "${py}" -c 'import yaml' >/dev/null 2>&1; then
         vip=$("${py}" -c '
 import sys, yaml
@@ -83,7 +83,7 @@ _cluster_nodes() {
     local key="${1:?key is required}"
     local config_file="${HOME:-/root}/.agentos/deploy/config.yaml"
     [ -f "${config_file}" ] || return 1
-    local py="python${DEPLOY_VARS["YR_PYTHON_VERSION"]:-3.11}" nodes=""
+    local py="python${DEPLOY_VARS["PYTHON_VERSION"]:-3.11}" nodes=""
     if command -v "${py}" >/dev/null 2>&1 && "${py}" -c 'import yaml' >/dev/null 2>&1; then
         nodes=$("${py}" -c '
 import sys, yaml
@@ -147,9 +147,9 @@ check_jiuwenswarm_up_dependency() {
     local hosts_str="${DEPLOY_VARS["CLUSTER_HOSTS"]}"
 
     if [ -z "${hosts_str}" ]; then
-        hosts_str=$(_yr_consistent_local_ip)
+        hosts_str=$(_deployment_local_ip)
         DEPLOY_VARS["CLUSTER_HOSTS"]="${hosts_str}"
-        warning "CLUSTER_HOSTS not set, using yuanrong-consistent local IP: ${hosts_str}"
+        warning "CLUSTER_HOSTS not set, using ADX-consistent local IP: ${hosts_str}"
     fi
 
     IFS=',' read -ra HOST_LIST <<< "${hosts_str}"
@@ -158,21 +158,17 @@ check_jiuwenswarm_up_dependency() {
     fi
 
     info "CLUSTER_HOSTS validated: ${hosts_str} (${#HOST_LIST[@]} host(s))"
-    info "Note: yuanrong is assumed to be already deployed on all hosts"
+    info "Note: ADX is assumed to be already deployed on all hosts"
 }
 
 check_gateway_up_dependency() {
     if [ -z "${DEPLOY_VARS["MASTER_NODE_IP"]:-}" ]; then
         local local_ip
-        local_ip=$(_yr_consistent_local_ip)
+        local_ip=$(_deployment_local_ip)
         DEPLOY_VARS["MASTER_NODE_IP"]="${local_ip}"
-        info "MASTER_NODE_IP defaulted (yuanrong-consistent local IP): ${local_ip}"
+        info "MASTER_NODE_IP defaulted (ADX-consistent local IP): ${local_ip}"
     fi
 
-    if [ -z "${DEPLOY_VARS["FRONTEND_PORT"]:-}" ]; then
-        DEPLOY_VARS["FRONTEND_PORT"]="8888"
-        warning "FRONTEND_PORT not set, using default: 8888"
-    fi
 
     if [ -z "${DEPLOY_VARS["REGISTRY_PORT"]:-}" ]; then
         DEPLOY_VARS["REGISTRY_PORT"]="4003"
@@ -226,10 +222,10 @@ check_gateway_up_dependency() {
     fi
 
     # ETCD_ENDPOINTS 留空时从 config.yaml etcd_nodes 拼 http://ip:32379,...
-    # 端口与 agentos etcd.sh / scripts/config.py 的 client port 一致（YR_ETCD_CLIENT_PORT）。
+    # 端口与 agentos etcd.sh / scripts/config.py 的 client port 一致（ETCD_CLIENT_PORT）。
     # 不写回 .env.custom，与 GATEWAY_HOST 相同：文件留空，启动时填 DEPLOY_VARS 再渲染模板。
     if [ -z "${DEPLOY_VARS["ETCD_ENDPOINTS"]:-}" ]; then
-        local etcd_port="${YR_ETCD_CLIENT_PORT:-32379}"
+        local etcd_port="${ETCD_CLIENT_PORT:-32379}"
         local etcd_nodes etcd_endpoints="" node
         etcd_nodes=$(_etcd_nodes || true)
         for node in ${etcd_nodes}; do
@@ -257,8 +253,11 @@ check_gateway_up_dependency() {
         warning "AGENTOS_AUTH_TIMEOUT not set, using default: 10"
     fi
 
-    if [ -z "${DEPLOY_VARS["FUNCTION_ID"]:-}" ]; then
-        error "FUNCTION_ID is not set. Please deploy jiuwenswarm first or set FUNCTION_ID in .env.custom."
+    if [ -z "${DEPLOY_VARS["ADX_INGRESS_URL"]:-}" ]; then
+        error "ADX_INGRESS_URL is required; configure the deployed ADX HTTP ingress origin"
+    fi
+    if [ -z "${DEPLOY_VARS["ADX_TOKEN"]:-}" ]; then
+        error "ADX_TOKEN is required for the Gateway HTTP client"
     fi
 }
 
@@ -275,7 +274,7 @@ check_web_up_dependency() {
     fi
 
     # web 静态服务器监听端口,默认 5173(app_web.py 的 FRONTEND_PORT 默认值)。
-    # 注意:此处用独立变量 WEB_STATIC_PORT, 不复用 FRONTEND_PORT(后者已指 yuanrong frontend 8888)。
+    # 注意:此处用独立变量 WEB_STATIC_PORT, 不复用 远端沙箱控制端口。
     if [ -z "${DEPLOY_VARS["WEB_STATIC_PORT"]:-}" ]; then
         DEPLOY_VARS["WEB_STATIC_PORT"]="5173"
         warning "WEB_STATIC_PORT not set, using default: 5173"

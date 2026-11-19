@@ -13,7 +13,7 @@ gateway_get_config_dir() {
     fi
 }
 
-# yuanrong 部署固定使用 /root；若目标机 JIUWENSWARM_HOME（或 $HOME）不是 /root 则提示，
+# ADX 部署固定使用 /root；若目标机 JIUWENSWARM_HOME（或 $HOME）不是 /root 则提示，
 # 调用方应强制以 JIUWENSWARM_HOME=/root 覆盖拉起。
 gateway_check_jiuwenswarm_home() {
     local host="$1"
@@ -48,20 +48,15 @@ gateway_compute_extension_dirs() {
     fi
 
     local master_host
-    master_host=$(get_local_ip)   # gateway 在本机（ingress master）运行，EXTENSION_DIRS 取本机 jiuwenswarm 安装位置
-    local python_version="${DEPLOY_VARS["YR_PYTHON_VERSION"]}"
-
-    local dist_name jiuwenswarm_location=""
-    dist_name=$(jiuwenswarm_dist_name "${master_host}")
-    if [ -n "${dist_name}" ]; then
-        jiuwenswarm_location=$(exec_on_host "${master_host}" "python${python_version} -m pip show ${dist_name} 2>/dev/null | grep -i '^Location:' | awk '{print \$2}'" | tr -d '\r') || true
-    fi
-
-    if [ -n "${jiuwenswarm_location}" ]; then
-        DEPLOY_VARS["EXTENSION_DIRS"]="${jiuwenswarm_location}/jiuwenswarm/extensions"
-        info "EXTENSION_DIRS inferred from jiuwenswarm (${dist_name}) install on ${master_host}: ${DEPLOY_VARS["EXTENSION_DIRS"]}"
+    master_host=$(get_local_ip)
+    local python_version="${DEPLOY_VARS["PYTHON_VERSION"]}"
+    local gateway_location=""
+    gateway_location=$(exec_on_host "${master_host}" "python${python_version} -m pip show agent-gateway 2>/dev/null | grep -i '^Location:' | awk '{print \$2}'" | tr -d '\r') || true
+    if [ -n "${gateway_location}" ]; then
+        DEPLOY_VARS["EXTENSION_DIRS"]="${gateway_location}/agent_gateway/extensions"
+        info "EXTENSION_DIRS inferred from agent-gateway on ${master_host}: ${DEPLOY_VARS["EXTENSION_DIRS"]}"
     else
-        warning "Could not infer EXTENSION_DIRS: jiuwenswarm/workswarm not found on ${master_host}. You may set EXTENSION_DIRS in .env.custom manually."
+        warning "Could not infer EXTENSION_DIRS: agent-gateway not found on ${master_host}. You may set EXTENSION_DIRS in .env.custom manually."
     fi
 }
 
@@ -97,6 +92,8 @@ gateway_service_name() {
     fi
 }
 
+gateway_data_directory() { dirname "$(gateway_get_config_dir)"; }
+
 # systemd 模式启动：生成 unit + drop-in（覆盖 User + 环境变量），daemon-reload，restart，健康检查
 gateway_start_systemd() {
     local master_host="$1"
@@ -105,7 +102,7 @@ gateway_start_systemd() {
     local gw_host="${DEPLOY_VARS["GATEWAY_HOST"]:-0.0.0.0}"
     local gw_port="${DEPLOY_VARS["GATEWAY_PORT"]:-19001}"
     local web_port="${DEPLOY_VARS["WEB_PORT"]:-19000}"
-    local python_version="${DEPLOY_VARS["YR_PYTHON_VERSION"]}"
+    local python_version="${DEPLOY_VARS["PYTHON_VERSION"]}"
 
     local svc_name
     svc_name=$(gateway_service_name)
@@ -188,7 +185,7 @@ Environment=JIUWENSWARM_HOME=/root"
     fi
     if [ -n "${instance_name}" ]; then
         dropin_content="${dropin_content}
-Environment=JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name}"
+Environment=JIUWENSWARM_DATA_DIR=$(gateway_data_directory)"
     fi
 
     # 确保 gateway 日志目录存在且运行用户可写（服务以 root 运行，通常天然可写）
@@ -260,7 +257,7 @@ gateway_start_nohup() {
 
     local start_cmd="${home_prefix}${log_dir_prefix}nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
     if [ -n "${instance_name}" ]; then
-        start_cmd="${home_prefix}JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name} ${log_dir_prefix}nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
+        start_cmd="${home_prefix}JIUWENSWARM_DATA_DIR=$(gateway_data_directory) ${log_dir_prefix}nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
     fi
 
     info "Starting jiuwenswarm-gateway on ${master_host} (nohup)..."
@@ -338,7 +335,7 @@ gateway_holds_vip() {
 }
 
 # 带重试的端口就绪检查：网关部署前的前置端口检查改为轮询等待组件就绪，
-# 避免 yuanrong/注册中心 systemd 已 active 但端口尚未监听时单次探测误报失败（如 frontend 8888 绑定滞后）。
+# 避免 ADX/注册中心 systemd 已 active 但端口尚未监听时单次探测误报失败（如 ADX ingress 绑定滞后）。
 gateway_wait_port() {
     local host="$1" port="$2" retry=0
     while [ ${retry} -lt ${GATEWAY_MAX_RETRY} ]; do
@@ -385,11 +382,8 @@ gateway_deploy_process() {
     # 非持有者不会启动 gateway/registry（启动由 ExecStartPre 判定 VIP 归属），
     # 且探测 VIP 会落到 SSH 分支、依赖节点间免密，缺失时反而误报失败，故跳过。
     if gateway_holds_vip; then
-        # yuanrong/注册中心 systemd 已 active 但组件端口可能仍需数秒才就绪，
+        # ADX/注册中心 systemd 已 active 但组件端口可能仍需数秒才就绪，
         # 单次探测会命中竞态窗口而误报失败，故等待 GATEWAY_MAX_RETRY 次（每次间隔 2s）。
-        if ! gateway_wait_port "${DEPLOY_VARS["MASTER_NODE_IP"]}" "${DEPLOY_VARS["FRONTEND_PORT"]}"; then
-            error "yuanrong frontend not reachable on ${DEPLOY_VARS["MASTER_NODE_IP"]}:${DEPLOY_VARS["FRONTEND_PORT"]} after ${GATEWAY_MAX_RETRY} retries; ensure yuanrong is up before jiuwenswarm"
-        fi
         if ! gateway_wait_port "${DEPLOY_VARS["INGRESS_VIP"]}" "${DEPLOY_VARS["REGISTRY_PORT"]}"; then
             error "AgentRegistry not reachable on ${DEPLOY_VARS["INGRESS_VIP"]}:${DEPLOY_VARS["REGISTRY_PORT"]} after ${GATEWAY_MAX_RETRY} retries; ensure 'agent-gateway' is up before jiuwenswarm"
         fi
@@ -411,7 +405,7 @@ gateway_deploy_process() {
 
     local init_cmd="${home_prefix}jiuwenswarm-init -f </dev/null"
     if [ -n "${instance_name}" ]; then
-        init_cmd="${home_prefix}JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name} jiuwenswarm-init -f </dev/null"
+        init_cmd="${home_prefix}JIUWENSWARM_DATA_DIR=$(gateway_data_directory) jiuwenswarm-init -f </dev/null"
     fi
 
     info "Running jiuwenswarm-init on ${master_host}..."
@@ -450,7 +444,7 @@ gateway_stop_nohup() {
     local master_host="$1"
     local instance_name="${DEPLOY_VARS["JIUWENSWARM_INSTANCE_NAME"]:-}"
     if [ -n "${instance_name}" ]; then
-        exec_on_host "${master_host}" "pkill -f 'JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name}.*[j]iuwenswarm-gateway' || true"
+        exec_on_host "${master_host}" "pkill -f 'JIUWENSWARM_DATA_DIR=$(gateway_data_directory).*[j]iuwenswarm-gateway' || true"
     else
         exec_on_host "${master_host}" "pkill -f '[j]iuwenswarm-gateway' || true"
     fi

@@ -59,9 +59,18 @@ process_restart() {
 
 main() {
     read_env_from_file "${CUSTOM_ENV_FILE}" "DEPLOY_VARS"
+    # Preserve the interpreter selected by an existing installer configuration.
+    if [ -n "${DEPLOY_VARS[YR_PYTHON_VERSION]:-}" ] \
+        && ! grep -qE '^PYTHON_VERSION=' "${CUSTOM_ENV_FILE}"; then
+        DEPLOY_VARS[PYTHON_VERSION]="${DEPLOY_VARS[YR_PYTHON_VERSION]}"
+    fi
     parse_args "$@"
     check_dependency
     process_${CMD}
 }
+
+if [ -n "${SWARM_SETTINGS:-}" ]; then
+    source "${SCRIPT_DIR}/agentos_handler.sh"
+fi
 
 main "$@"
