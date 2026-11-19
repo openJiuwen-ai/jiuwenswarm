@@ -100,7 +100,7 @@ async def test_capability_search_uses_installed_experts_and_live_mcp_permissions
     package = McpPackageManifest(
         root=tmp_path, package_id="office-suite", version="1", name="Office", description="Collaboration suite",
         integration_type="remote-mcp", integration_file=None, credentials_type="none", credentials_file=None,
-        icon_file=None, skill_dirs=(), server_name="office", server_config=None, raw={},
+        icon_file=None, skill_dirs=(), server_name="office", server_config=None, raw={"category": "Collaboration"},
     )
     monkeypatch.setattr(registry, "list_local_packages", lambda: [package])
     monkeypatch.setattr(common_config, "get_config_yaml_mcp_servers", lambda: [])
@@ -150,6 +150,12 @@ async def test_capability_search_uses_installed_experts_and_live_mcp_permissions
         matches = (await search.invoke({"query": "customer ledger", "type": "mcp"}))["matches"]
         assert [(hit["type"], hit["id"], hit["matched_on"]) for hit in matches] == [("mcp", "office-suite", "action")]
         assert matches[0]["actions"][0]["id"] == card.name
+        root = await search.invoke({"type": "mcp", "operation": "list"})
+        assert [(c["category"], c["count"]) for c in root["categories"]] == [("Collaboration", 1)]
+        scoped = await search.invoke({"type": "mcp", "category": "Collaboration", "query": ["customer ledger", "roster"]})
+        service, = scoped["matches"]
+        assert service["id"] == "office-suite" and service["category"] == "Collaboration"
+        assert {(a["type"], a["id"]) for a in service["actions"]} == {("tool", card.name), ("skill", "roster")}
         service, = (await search.invoke({"query": "Collaboration suite", "type": "mcp"}))["matches"]
         assert {(a["type"], a["id"]) for a in service["actions"]} == {("tool", card.name), ("skill", "roster")}
 
@@ -167,6 +173,9 @@ async def test_capability_search_uses_installed_experts_and_live_mcp_permissions
         visible_skills.add("roster")
         state["mcp"].clear()
         assert (await search.invoke({"query": "office", "type": "mcp"}))["matches"] == []
+        assert await search.invoke({"type": "mcp", "operation": "list"}) == {
+            "matches": [], "categories": [], "next_cursor": None,
+        }
     finally:
         await toolkit.aclose()
         await runtime.cancel()

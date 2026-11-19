@@ -14,6 +14,7 @@ from openjiuwen.core.foundation.tool import Tool
 from openjiuwen.symphony import SymphonyRuntime
 from openjiuwen.symphony.config import RetrievalConfig
 from openjiuwen.symphony.discovery import (
+    CapabilityCandidate,
     SkillFS,
     SkillIndexSnapshot,
     SkillPromptBranch,
@@ -265,7 +266,7 @@ class SkillRetrievalToolkit:
             session_scope=session_scope, capability_directories=skill_directories,
             visible_capability_ids=visible_skill_names, disabled_capability_ids=disabled_skills,
             source_by_id=source_by_name, config=flat_config,
-            search_catalog=self._search_catalog, expert_candidates=self._expert_candidates,
+            catalog_candidates=self._catalog_candidates,
         )
         flat_snapshot = self._environment.prompt_snapshot(refresh=False)
         baseline = restored_snapshot or flat_snapshot
@@ -287,7 +288,7 @@ class SkillRetrievalToolkit:
                 session_scope=session_scope, capability_directories=skill_directories,
                 visible_capability_ids=visible_skill_names, disabled_capability_ids=disabled_skills,
                 source_by_id=source_by_name, config=self._settings, pin_index_revision=True,
-                search_catalog=self._search_catalog, expert_candidates=self._expert_candidates, **pinned,
+                catalog_candidates=self._catalog_candidates, **pinned,
             )
         self._frozen_prompt_snapshot = restored_snapshot or self._environment.prompt_snapshot(refresh=False)
         restored_cards = frozen_profile.get("selection_cards") if frozen_profile is not None else None
@@ -393,16 +394,13 @@ class SkillRetrievalToolkit:
         )
         return [tool]
 
-    async def _search_catalog(self, kind: str, query: str, top_k: int) -> dict[str, Any]:
-        from jiuwenswarm.runtime.symphony.capabilities import search_catalog
+    async def _catalog_candidates(self, kind: str) -> tuple[CapabilityCandidate, ...]:
+        from jiuwenswarm.runtime.symphony.capabilities import expert_candidates, mcp_candidates
 
+        if kind == "expert":
+            return await expert_candidates(self._config)
         manager = self._ability_manager() if self._ability_manager is not None else None
-        return await search_catalog(self._config, self._environment, manager, kind, query, top_k)
-
-    async def _expert_candidates(self):
-        from jiuwenswarm.runtime.symphony.capabilities import expert_candidates
-
-        return await expert_candidates(self._config)
+        return await mcp_candidates(self._config, self._environment, manager)
 
     def _start_background_index_build(self) -> None:
         from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service

@@ -19,7 +19,7 @@ from openjiuwen.symphony import (
     capability_content_hash,
 )
 from openjiuwen.symphony.discovery import (
-    CapabilityAction, CapabilityCandidate, SkillFS, read_fingerprints, search_capabilities,
+    CapabilityAction, CapabilityCandidate, SkillFS, read_fingerprints,
 )
 
 from jiuwenswarm.common.mcp_package_manifest import McpPackageManifest
@@ -109,8 +109,10 @@ def _package_descriptor(package: McpPackageManifest, service_description: str) -
     description = "\n".join(_localized_texts(
         package.raw.get("display_description"), package.description, service_description,
     ))
+    category = package.raw.get("category")
     return _describe(
         "mcp", package.package_id, names[0] if names else package.package_id, description,
+        classification=category.strip() if isinstance(category, str) else "",
         metadata={"aliases": list(names), "version": package.version},
     )
 
@@ -242,22 +244,20 @@ def service_candidates(
     )
 
 
-async def search_catalog(
+async def mcp_candidates(
     config: SymphonyConfig, environment: SkillFS, manager: AbilityManager | None,
-    kind: str, query: str, top_k: int,
-) -> dict[str, Any]:
-    """Search MCP services that expose actions in this session."""
-    if kind != "mcp" or manager is None:
-        return {"matches": []}
+) -> tuple[CapabilityCandidate, ...]:
+    """Supply services and actions visible to the current session."""
+    if manager is None:
+        return ()
     can_expand = manager.get("tool_search") is not None
     tools = tuple((server, card) for server, card in manager.registered_mcp_tool_cards()
                   if can_expand or card.exposure != ToolExposure.DEFERRED)
 
-    def rank():
-        candidates = service_candidates(tools, environment)
-        return {"matches": search_capabilities(_enrich(config, kind, candidates), query, top_k=top_k)}
+    def load():
+        return _enrich(config, "mcp", service_candidates(tools, environment))
 
-    return await asyncio.to_thread(rank)
+    return await asyncio.to_thread(load)
 
 
 def _enrich(config: SymphonyConfig, kind: str, candidates: tuple[CapabilityCandidate, ...]) -> tuple[CapabilityCandidate, ...]:
