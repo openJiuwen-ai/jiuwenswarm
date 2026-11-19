@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from contextvars import ContextVar
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -131,19 +132,27 @@ def _child_with_context(child, messages):
     return child
 
 
-# SQLAlchemy wraps the driver error with a "(sqlite3.OperationalError) ..." prefix and
-# inlines the failing statement, matching the [182505] texts seen in production logs.
-_PERSIST_FAILURE = (
-    "Subagent execution failed: (sqlite3.OperationalError) disk I/O error "
-    "[SQL: INSERT INTO kv_store (\"key\", value) VALUES (?, ?)]"
-)
+def _persist_failure() -> Exception:
+    """与生产一致的存储层异常形态：SQLite 驱动直抛。"""
+    return sqlite3.OperationalError("disk I/O error")
+
+
+def _sqlalchemy_persist_failure(blob: str = "") -> Exception:
+    """SQLAlchemy 包装形态：message 内联 SQL 与绑定参数，.orig 是驱动异常。"""
+    from sqlalchemy.exc import OperationalError as SAOperationalError
+
+    return SAOperationalError(
+        "INSERT INTO kv_store",
+        [("agent_state_blobs", blob)],
+        sqlite3.OperationalError("disk I/O error"),
+    )
 
 
 @pytest.mark.parametrize("task_loop", [False, True])
 async def test_checkpoint_save_failure_recovers_final_answer_with_degraded_note(
     debug_capture, task_loop,
 ):
-    run = AsyncMock(side_effect=RuntimeError(_PERSIST_FAILURE))
+    run = AsyncMock(side_effect=_persist_failure())
     child = child_for(run, task_loop=task_loop)
     _child_with_context(child, [
         SimpleNamespace(role="user", content="generate the report file"),
@@ -158,6 +167,15 @@ async def test_checkpoint_save_failure_recovers_final_answer_with_degraded_note(
         await dispatch(child)
 
 
+async def test_sqlalchemy_wrapped_persist_failure_recovers_answer(debug_capture):
+    run = AsyncMock(side_effect=_sqlalchemy_persist_failure())
+    child = child_for(run)
+    _child_with_context(child, [_assistant("TASK-01 done")])
+    result = await dispatch(child)
+    assert result.success is True
+    assert "checkpoint_degraded" in result.data["output"]
+
+
 @pytest.mark.parametrize("messages", [
     [_assistant("reading inputs", tool_calls=[{"id": "t1", "name": "write_file"}])],
     [],
@@ -165,7 +183,7 @@ async def test_checkpoint_save_failure_recovers_final_answer_with_degraded_note(
 async def test_checkpoint_save_failure_without_final_answer_is_progress_unknown(
     debug_capture, messages,
 ):
-    run = AsyncMock(side_effect=RuntimeError(_PERSIST_FAILURE))
+    run = AsyncMock(side_effect=_persist_failure())
     child = child_for(run)
     _child_with_context(child, messages)
     with pytest.raises(BaseError, match="subagent_progress_unknown") as error:
@@ -178,7 +196,7 @@ async def test_checkpoint_save_failure_without_final_answer_is_progress_unknown(
 
 
 async def test_checkpoint_save_failure_without_context_engine_is_progress_unknown(debug_capture):
-    run = AsyncMock(side_effect=RuntimeError(_PERSIST_FAILURE))
+    run = AsyncMock(side_effect=_persist_failure())
     child = child_for(run)
     with pytest.raises(BaseError, match="subagent_progress_unknown"):
         await dispatch(child)
@@ -192,17 +210,72 @@ async def test_non_persistence_failure_never_recovers_answer(debug_capture):
         await dispatch(child)
 
 
-async def test_recovered_degraded_note_truncates_huge_persist_error(debug_capture):
-    blob_params = "x" * 5000
+async def test_sqlite_text_in_business_error_is_not_degraded(debug_capture):
+    # 业务异常文本恰好携带 "(sqlite3." 字样时不得按存储层降级（文本嗅探误判回归钉）。
     run = AsyncMock(side_effect=RuntimeError(
-        f"(sqlite3.OperationalError) disk I/O error [parameters: ('agent_state_blobs', '{blob_params}')]"
+        "tool output mentioned (sqlite3.OperationalError) disk I/O error in its result text"
     ))
+    child = child_for(run)
+    _child_with_context(child, [_assistant("TASK-01 done")])
+    with pytest.raises(BaseError, match="in its result text"):
+        await dispatch(child)
+
+
+async def test_cancelled_error_with_sqlite_context_is_never_swallowed(debug_capture):
+    async def run(*args, **kwargs):
+        try:
+            raise _persist_failure()
+        except sqlite3.OperationalError:
+            raise asyncio.CancelledError()
+
+    child = child_for(run)
+    _child_with_context(child, [_assistant("TASK-01 done")])
+    # 取消契约：CancelledError 即使 __context__ 挂着 sqlite 错误也必须原样重抛。
+    with pytest.raises(asyncio.CancelledError):
+        await dispatch(child)
+
+
+async def test_recovery_stops_at_current_turn_user_boundary(debug_capture):
+    run = AsyncMock(side_effect=_persist_failure())
+    child = child_for(run)
+    # 本轮还没有任何 assistant 消息：不得越过本轮 user 输入取上一轮旧回答当成本次交付。
+    _child_with_context(child, [
+        _assistant("stale answer from the previous turn"),
+        SimpleNamespace(role="user", content="new task of this turn"),
+    ])
+    with pytest.raises(BaseError, match="subagent_progress_unknown"):
+        await dispatch(child)
+
+
+async def test_degraded_note_strips_sql_and_params(debug_capture):
+    run = AsyncMock(side_effect=_sqlalchemy_persist_failure(blob="x" * 5000))
     child = child_for(run)
     _child_with_context(child, [_assistant("TASK-01 done")])
     result = await dispatch(child)
     assert result.success is True
-    assert len(result.data["output"]) < 2000
+    # 模型可见文本只保异常类型与简短原因：SQL 语句与绑定参数原文不外泄。
+    assert "INSERT INTO kv_store" not in result.data["output"]
     assert "x" * 5000 not in result.data["output"]
+    assert "disk I/O error" in result.data["output"]
+    assert len(result.data["output"]) < 2000
+
+
+def test_recovery_uses_real_deep_agent_property_path():
+    from openjiuwen.core.single_agent.schema.agent_card import AgentCard
+    from openjiuwen.harness.deep_agent import DeepAgent
+
+    from jiuwenswarm.agents.harness.common.tools.subagent_executor.execution_timeout import (
+        _recover_last_assistant_text,
+    )
+
+    # 真实 DeepAgent 的公开 react_agent property → context_engine 属性链防漂移钉。
+    child = DeepAgent(AgentCard(id="recover-child", name="child"))
+    child._react_agent = SimpleNamespace(context_engine=SimpleNamespace(
+        get_context=lambda session_id: SimpleNamespace(
+            get_messages=lambda: [_assistant("final answer")],
+        ),
+    ))
+    assert _recover_last_assistant_text(child, "recover-sid") == "final answer"
 
 
 async def test_debug_error_chunk_is_not_reduced_to_empty_success(debug_capture):

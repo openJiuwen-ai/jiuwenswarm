@@ -36,11 +36,11 @@ _MAX_ITERATIONS_REASON = (
     "Files it already wrote remain in the workspace; inspect them before retrying or redoing the work."
 )
 # SQLAlchemy wraps driver errors as "(sqlite3.OperationalError) ..." and inlines the
-# failing statement — that prefix is how a checkpoint-save failure reaches this boundary.
-_PERSISTENCE_DB_PREFIX = "(sqlite3."
+# failing statement — storage failures reach this boundary as sqlite3.Error or as a
+# SQLAlchemy DBAPIError whose ``.orig`` is one; detection is type-based, never text-based.
 # 业务执行与进度保存不是同一事务：checkpoint 在子代理每步执行前后落盘，存储层故障
 # 不代表业务失败。错误消息可能内嵌大对象参数（生产日志见 51 万字符 blob），进结果
-# 文本前必须截断。
+# 文本前必须脱敏截断。
 _MAX_REASON_CHARS = 400
 _CHECKPOINT_DEGRADED_NOTE = (
     "\n\n[checkpoint_degraded] The subagent's progress checkpoint failed to save "
@@ -119,21 +119,40 @@ def _observe_cleanup(task: asyncio.Task[Any]) -> None:
     task.add_done_callback(finished)
 
 
+def _is_sqlite_storage_error(exc: BaseException) -> bool:
+    """只认异常类型：sqlite3 驱动直抛，或 SQLAlchemy DBAPIError 的 ``.orig``。
+
+    不做消息文本嗅探——业务异常（工具结果文本、``subagent_failed`` 原因）可能恰好
+    携带 "(sqlite3." 字样，按文本判定会把业务失败误送进降级分支。
+    """
+    if isinstance(exc, sqlite3.Error):
+        return True
+    return isinstance(getattr(exc, "orig", None), sqlite3.Error)
+
+
+def _storage_error_summary(exc: BaseException) -> str:
+    """模型可见摘要：保异常类型与简短原因，截掉 SQL 语句与绑定参数原文。
+
+    checkpoint 库存的是会话/状态 blob，SQLAlchemy 错误串会内联它们（生产日志见
+    51 万字符参数）；这段原文只留在异常链与日志里，不进父代理可见结果。
+    """
+    text = str(exc).split("[SQL:", 1)[0].strip()
+    if not text:
+        return type(exc).__name__
+    return text[:_MAX_REASON_CHARS]
+
+
 def _persistence_failure_reason(exc: BaseException) -> str | None:
     """Return bounded storage-error text when *exc* is a checkpoint-save failure.
 
-    沿异常链识别 sqlite3 错误（驱动直抛或 SQLAlchemy "(sqlite3.OperationalError)"
-    包装）。只有存储层故障才进入降级分支：工具与业务异常本就不会以 sqlite3 错误
-    的形态穿出子代理，误判面收窄到基础设施层。
+    沿异常链做类型判定，命中即返回脱敏摘要；只有存储层故障才进入降级分支。
     """
     seen: set[int] = set()
     current: BaseException | None = exc
-    prefix = _PERSISTENCE_DB_PREFIX.lower()
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        text = str(current)
-        if isinstance(current, sqlite3.Error) or prefix in text.lower():
-            return text[:_MAX_REASON_CHARS]
+        if _is_sqlite_storage_error(current):
+            return _storage_error_summary(current)
         current = current.__cause__ or current.__context__
     return None
 
@@ -181,6 +200,10 @@ def _recover_last_assistant_text(child: Any, session_id: str) -> str | None:
                 role = getattr(message, "role", None)
                 tool_calls = getattr(message, "tool_calls", None)
                 content = getattr(message, "content", None)
+            if role == "user":
+                # 本轮边界：越过 user 会把上一轮（或父会话兜底场景）的旧回答当成
+                # 本次交付，恰是要消除的「结果与执行状态不一致」的反向形态。
+                return None
             if role != "assistant":
                 continue
             if tool_calls:
@@ -271,7 +294,13 @@ async def run_subagent_with_timeout(
         state.unavailable = True
         deadline = isinstance(exc, _CompletionDeadline)
         # 先回收再取消：回收是纯内存读，且任何内部失败都会被吞掉，不得影响取消时序。
-        degraded = None if deadline else _persistence_failure_reason(exc)
+        # 取消不进降级判定：CancelledError 的 __context__ 可能挂着 sqlite 错误，
+        # 命中会把取消吞成 answer 返回，破坏取消必须重抛的契约。
+        degraded = (
+            None
+            if deadline or isinstance(exc, asyncio.CancelledError)
+            else _persistence_failure_reason(exc)
+        )
         recovered = None if degraded is None else _recover_last_assistant_text(child, session_id)
         cleanup = await _cancel_and_observe(child, task, session_id)
         if deadline:
