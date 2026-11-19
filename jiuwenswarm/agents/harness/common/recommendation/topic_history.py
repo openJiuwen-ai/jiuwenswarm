@@ -4055,7 +4055,10 @@ class TopicHistoryEngine:
             },
         )
         try:
-            stored = save_history_state(self.store, state, events=[success_event], now=now)
+            stored = await asyncio.to_thread(
+                save_history_state,
+                self.store, state, events=[success_event], now=now,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[TopicHistory] memory commit failed: %s", exc)
             return "persist_failed", "memory_persist_failed"
@@ -4207,13 +4210,17 @@ class TopicHistoryEngine:
         v5 gate and stops before the legacy Planner/Expert stages; the default
         call remains the frozen v4 path.
         """
-        previous = load_latest_history_state(self.store)
+        previous = await asyncio.to_thread(load_latest_history_state, self.store)
         state = json.loads(json.dumps(previous)) if previous else empty_history_state()
         state["schema_version"] = _V4_SCHEMA_VERSION
         state["policy_id"] = _V4_POLICY_ID
 
         records_by_session = await asyncio.to_thread(self.records_loader)
-        injected_request_ids, legacy_prompts = self._intervention_projection()
+        # The projection decodes the whole event ledger, the deepest read this
+        # refresh makes; keep it off the worker loop with the snapshot read.
+        injected_request_ids, legacy_prompts = await asyncio.to_thread(
+            self._intervention_projection,
+        )
         rescan = rescan_history(
             state.get("history_ledger"),
             records_by_session,
@@ -4306,8 +4313,9 @@ class TopicHistoryEngine:
                     )
                 )
             try:
-                state = save_history_state(
-                    self.store, state, events=mapping_events, now=self.now()
+                state = await asyncio.to_thread(
+                    save_history_state,
+                    self.store, state, events=mapping_events, now=self.now(),
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[TopicHistory] mapping commit failed: %s", exc)

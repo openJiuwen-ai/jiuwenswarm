@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
@@ -365,7 +366,8 @@ class ArkSpecificInterestMatcher:
             later,
             provider_config=self._config.safe_provenance(),
         )
-        cached = self._cached_label(
+        cached = await asyncio.to_thread(
+            self._cached_label,
             earlier,
             later,
             request_id=request_id,
@@ -373,7 +375,8 @@ class ArkSpecificInterestMatcher:
         if cached is not None:
             return cached
 
-        operation_id = self._record_attempt(
+        operation_id = await asyncio.to_thread(
+            self._record_attempt,
             earlier,
             later,
             request_id=request_id,
@@ -428,7 +431,8 @@ class ArkSpecificInterestMatcher:
             "provider_config": self._config.safe_provenance(),
             "provider_receipt": provider_receipt,
         }
-        recorded = self._store.record_event(
+        recorded = await asyncio.to_thread(
+            self._store.record_event,
             {
                 "session_id": later.session_id,
                 "slate_id": request_id,
@@ -439,10 +443,11 @@ class ArkSpecificInterestMatcher:
                 "propensity_reason": "not_applicable",
                 "payload": payload,
                 "created_at": time.time(),
-            }
+            },
         )
         if not recorded:
-            cached = self._cached_label(
+            cached = await asyncio.to_thread(
+                self._cached_label,
                 earlier,
                 later,
                 request_id=request_id,

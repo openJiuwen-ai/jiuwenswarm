@@ -5228,8 +5228,10 @@ class TopicPipeline:
             return _empty_result(
                 trigger_key, trigger_origin, "generation_input_contract_failed"
             )
-        feedback = InterestFeedback.load(
-            self.store, snapshot.state, context_scope=context_scope, project_id=project_id, now=self._now(),
+        feedback = await asyncio.to_thread(
+            InterestFeedback.load,
+            self.store, snapshot.state,
+            context_scope=context_scope, project_id=project_id, now=self._now(),
         )
         scoped_negative_version = 0
         state_receipt = snapshot.state_maintenance_receipt
@@ -5403,7 +5405,9 @@ class TopicPipeline:
                     config=config,
                     invoke_stage=invoke_stage,
                 )
-                self._persist_session_summary_batch(latest_summary_batch)
+                await asyncio.to_thread(
+                    self._persist_session_summary_batch, latest_summary_batch,
+                )
             result = await self._generate_prepared(
                 snapshot=snapshot,
                 feedback=feedback,
@@ -5519,8 +5523,12 @@ class TopicPipeline:
                     "payload": abstention_receipt,
                     "created_at": float(abstention_receipt.get("decision_time", 0.0)),
                 }
-                if not self.store.record_event(abstention_event):
-                    existing = self.store.query_events(
+                recorded = await asyncio.to_thread(
+                    self.store.record_event, abstention_event,
+                )
+                if not recorded:
+                    existing = await asyncio.to_thread(
+                        self.store.query_events,
                         event_type="rid_abstention",
                         topic_id=abstention_event["topic_id"],
                         policy_id=POLICY_ID,
@@ -5641,8 +5649,10 @@ class TopicPipeline:
         ):
             return failed("generation_input_version_mismatch")
         snapshot = replace(snapshot, input_snapshot_id=str(predecessor["generation_input_snapshot_id"]))
-        feedback = InterestFeedback.load(
-            self.store, snapshot.state, context_scope=GLOBAL_NEW_CHAT_SCOPE, project_id=None, now=self._now(),
+        feedback = await asyncio.to_thread(
+            InterestFeedback.load,
+            self.store, snapshot.state,
+            context_scope=GLOBAL_NEW_CHAT_SCOPE, project_id=None, now=self._now(),
         )
         summaries = [
             SessionSummaryArtifact.from_payload(item)
@@ -5698,7 +5708,8 @@ class TopicPipeline:
             )
             [score] = utility.scores
             rejection = None if score.admitted else "news_utility_rejected"
-            self._record_quality_decision(
+            await asyncio.to_thread(
+                self._record_quality_decision,
                 snapshot, utility, utility_request_id=utility.receipt.request_id, diversity_scores=(),
                 selected_candidate_ids=[score.candidate_id] if score.admitted else [],
                 failure_reason=rejection,
@@ -5944,7 +5955,8 @@ class TopicPipeline:
                 "summary_provider_version": provider_version,
                 "summary_config_version": summary_config_version,
             }
-            cached = self._load_reusable_session_summary(
+            cached = await asyncio.to_thread(
+                self._load_reusable_session_summary,
                 summary_id=summary_id,
                 session_id=session_id,
                 context_scope=snapshot.context_scope,
@@ -6284,7 +6296,9 @@ class TopicPipeline:
                 summary_batch = await self._summarize_sessions(
                     snapshot, config=config, invoke_stage=owned_stage_invoker,
                 )
-                self._persist_session_summaries(summary_batch.artifacts)
+                await asyncio.to_thread(
+                    self._persist_session_summaries, summary_batch.artifacts,
+                )
         except TerminalGenerationRejection as exc:
             return exc.reason
         except Exception:  # noqa: BLE001 - the scope's generation summarizes what is still missing
@@ -6596,7 +6610,8 @@ class TopicPipeline:
         """
 
         receipts = getattr(invoke_stage, "invocation_receipts", None)
-        rows = self.store.query_events(
+        rows = await asyncio.to_thread(
+            self.store.query_events,
             event_type=RID_DECISION_EVENT_TYPE,
             slate_id=context_scope,
             policy_id=POLICY_ID,
@@ -9209,7 +9224,8 @@ class TopicPipeline:
                 news_rejection = "news_utility_rejected"
         news_lead_id = news_id if news_plan is not None and news_rejection is None else None
         if not regular:
-            self._record_quality_decision(
+            await asyncio.to_thread(
+                self._record_quality_decision,
                 snapshot, utility, utility_request_id=utility_receipt.request_id,
                 diversity_scores=(), selected_candidate_ids=(),
                 failure_reason="" if news_lead_id else "no_feasible_complete_list",
@@ -9256,7 +9272,8 @@ class TopicPipeline:
                     context_scope=snapshot.context_scope, leading_cards=leading_cards,
                 ),
             )
-        self._record_quality_decision(
+        await asyncio.to_thread(
+            self._record_quality_decision,
             snapshot, utility, utility_request_id=utility_receipt.request_id,
             diversity_scores=diversity.pairwise_scores,
             selected_candidate_ids=result.preferred_list, failure_reason=result.failure_reason,
@@ -9351,7 +9368,7 @@ class TopicPipeline:
                 return str(payload["manifest_id"])
         return None
 
-    def _assemble_result(
+    async def _assemble_result(
         self,
         *,
         selected_ids: Sequence[str],
@@ -9565,7 +9582,8 @@ class TopicPipeline:
                 dict(invocation) for invocation in component_invocations
             ],
             "generation_config_version": trigger_key["generation_config_version"],
-            "supersedes_manifest_id": self._latest_scope_manifest_id(
+            "supersedes_manifest_id": await asyncio.to_thread(
+                self._latest_scope_manifest_id,
                 snapshot.context_scope,
                 work_mode=trigger_key.get("work_mode"),
             ),
@@ -9770,7 +9788,7 @@ class TopicPipeline:
             )
         except TerminalGenerationRejection:
             return None
-        return self._assemble_result(
+        return await self._assemble_result(
             selected_ids=[news_lead_id],
             plans=grounding_batch.plans,
             selection=selection,
@@ -10117,7 +10135,7 @@ class TopicPipeline:
                         # cards still make a pool; the short trigger is not consumed
                         # and stays pending for the next pool.
                         interest_selection["short_trigger_delta_event_ids"] = []
-                return self._assemble_result(
+                return await self._assemble_result(
                     selected_ids=selected_ids,
                     plans=grounded,
                     selection=selection,
