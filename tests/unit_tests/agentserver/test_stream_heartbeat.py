@@ -358,6 +358,9 @@ async def test_backpressured_probe_requires_a_fresh_business_round_trip(case, tr
         if case == "duplicate":
             await worker.send(done)
             assert await front.recv() == done
+            # The original matching completion is valid recent evidence. Only
+            # the duplicate arriving after this new cutoff must be rejected.
+            since = time.monotonic()
 
         owner = front._loop if isinstance(front, stream.StreamConnection) else asyncio.get_running_loop()
         await stream.on_loop(owner, front._write_lock.acquire())

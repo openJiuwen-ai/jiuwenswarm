@@ -72,10 +72,12 @@ class IpcConnection:
         self._write_waiters: dict[object, float] = {}
         self._stats_lock = threading.Lock()
         self._recent_requests: OrderedDict[tuple[int, str], float] = OrderedDict()
+        self._recent_completions: OrderedDict[tuple[int, str], tuple[float, float]] = OrderedDict()
+        self._last_delivered_rx = 0.0
         self._probe_lock = asyncio.Lock()
         self._probe_write: asyncio.Task[None] | None = None
         self._native_probe_write: asyncio.Task[None] | None = None
-        self._probe_observer: Callable[[dict[str, Any], float | None], None] | None = None
+        self._probe_observer: Callable[[dict[str, Any], float | None, float], None] | None = None
         self._heartbeat_responder: Callable[[dict[str, Any]], None] | None = None
 
     def set_heartbeat_responder(
@@ -94,21 +96,44 @@ class IpcConnection:
         generation, dispatch_id = message.get("generation"), message.get("dispatch_id")
         if type(generation) is int and isinstance(dispatch_id, str) and 0 < len(dispatch_id) <= 128:
             with self._stats_lock:
+                self._recent_completions.pop((generation, dispatch_id), None)
                 self._recent_requests.setdefault((generation, dispatch_id), issued_at)
                 if len(self._recent_requests) > _PROBE_REQUEST_HISTORY:
                     self._recent_requests.popitem(last=False)
 
-    def _record_frame(self, message: dict[str, Any]) -> None:
-        self._last_rx = time.monotonic()
+    @property
+    def last_received_at(self) -> float:
+        """Decode time of the frame returned by the most recent successful recv."""
+        return self._last_delivered_rx
+
+    def _record_frame(self, message: dict[str, Any]) -> float:
+        received_at = self._last_rx = time.monotonic()
         issued_at = None
         if message.get("kind") == KIND_REQUEST_DONE:
             generation, dispatch_id = message.get("generation"), message.get("dispatch_id")
             if type(generation) is int and isinstance(dispatch_id, str):
                 with self._stats_lock:
                     issued_at = self._recent_requests.pop((generation, dispatch_id), None)
+                    if issued_at is not None:
+                        self._recent_completions[(generation, dispatch_id)] = (issued_at, received_at)
+                        if len(self._recent_completions) > _PROBE_REQUEST_HISTORY:
+                            self._recent_completions.popitem(last=False)
         observer = self._probe_observer
         if observer is not None:
-            observer(message, issued_at)
+            observer(message, issued_at, received_at)
+        return received_at
+
+    def _recent_business_reply(self, request_since: float | None, generation: int | None) -> HeartbeatProbeResult | None:
+        if request_since is None or type(generation) is not int:
+            return None
+        with self._stats_lock:
+            for (peer, dispatch_id), (issued_at, received_at) in reversed(self._recent_completions.items()):
+                if peer == generation and issued_at >= request_since:
+                    # Retain correlation metadata only, never business payloads.
+                    return HeartbeatProbeResult("business_reply", received_at, {
+                        "kind": KIND_REQUEST_DONE, "generation": peer, "dispatch_id": dispatch_id,
+                    })
+        return None
 
     async def probe_heartbeat(
         self, timeout: float, *, correlated: bool,
@@ -140,9 +165,9 @@ class IpcConnection:
         reply = asyncio.Event()
         result: HeartbeatProbeResult | None = None
 
-        def observe(message: dict[str, Any], issued_at: float | None) -> None:
+        def observe(message: dict[str, Any], issued_at: float | None, received_at: float) -> None:
             nonlocal result
-            if strong_reply() or not started <= self._last_rx <= write_deadline:
+            if strong_reply() or not started <= received_at <= write_deadline:
                 return
             fresh_request = issued_at is not None and request_since is not None and issued_at >= request_since
             legacy_pong = not correlated and "probe_id" not in message
@@ -154,7 +179,7 @@ class IpcConnection:
                 state = "received"
             else:
                 return
-            result = HeartbeatProbeResult(state, self._last_rx, message)
+            result = HeartbeatProbeResult(state, received_at, message)
             loop.call_soon_threadsafe(reply.set)
 
         def strong_reply() -> bool:
@@ -167,6 +192,11 @@ class IpcConnection:
                 return HeartbeatProbeResult("connection_closed")
             if result is not None and result.received_at <= deadline:
                 if fallback != "write_timeout" or strong_reply():
+                    if result.state == "business_reply" and result.frame is not None:
+                        with self._stats_lock:
+                            self._recent_completions.pop(
+                                (result.frame.get("generation"), result.frame.get("dispatch_id")), None,
+                            )
                     return result
             return HeartbeatProbeResult(fallback)
 
@@ -190,6 +220,13 @@ class IpcConnection:
         self._probe_observer = observe
         send = None
         try:
+            # The I/O reader may finish a post-resume request before the Front
+            # registers this observer. That verified round trip is still fresh.
+            cached = self._recent_business_reply(request_since, generation)
+            if cached is not None and not strong_reply():
+                result = cached
+            if strong_reply():
+                return outcome("write_timeout")
             # A confirmed business reply can arrive while a native probe write is
             # blocked. Keep at most one such write alive on this physical connection.
             previous = self._probe_write
@@ -299,7 +336,7 @@ class StreamConnection(IpcConnection):
         self._write_lock = asyncio.Lock()
         self._closed = False
         self._loop = asyncio.get_running_loop()
-        self._pending: deque[tuple[dict[str, Any], int]] = deque()
+        self._pending: deque[tuple[dict[str, Any], int, float]] = deque()
         self._pending_bytes = 0
         self._pending_ready = asyncio.Event()
         self._pending_space = asyncio.Event()
@@ -351,9 +388,10 @@ class StreamConnection(IpcConnection):
                     if self._closed:
                         raise ConnectionError("ipc connection is closed")
                     if self._pending:
-                        result, size = self._pending.popleft()
+                        result, size, received_at = self._pending.popleft()
                         self._pending_bytes -= size
                         self._pending_space.set()
+                        self._last_delivered_rx = received_at
                         return result
                     if self._reader_error is not None:
                         raise self._reader_error
@@ -367,7 +405,7 @@ class StreamConnection(IpcConnection):
         try:
             while not self._closed:
                 message = await self._recv_frame()
-                self._record_frame(message)
+                received_at = self._record_frame(message)
                 responder = self._heartbeat_responder
                 if responder is not None and message.get("kind") == KIND_HEARTBEAT:
                     responder(message)
@@ -378,7 +416,7 @@ class StreamConnection(IpcConnection):
                     await self._wait_for_receive_space(size, message)
                 if self._closed:
                     return
-                self._pending.append((message, size))
+                self._pending.append((message, size, received_at))
                 self._pending_bytes += size
                 self._pending_ready.set()
         except Exception as exc:  # noqa: BLE001 - recv owns transport/protocol errors
@@ -473,7 +511,7 @@ class PipeConnection(IpcConnection):
         self._receive_lock = asyncio.Lock()
         self._receive_mutex = threading.Lock()
         self._receive_space = threading.Condition(self._receive_mutex)
-        self._pending: deque[tuple[dict[str, Any], int]] = deque()
+        self._pending: deque[tuple[dict[str, Any], int, float]] = deque()
         self._pending_bytes = 0
         self._reader_started = False
         self._reader_error: Exception | None = None
@@ -538,7 +576,7 @@ class PipeConnection(IpcConnection):
                         return
                     frame = self._conn.recv_bytes(maxlength=MAX_FRAME_BYTES + HEADER.size)
                 message = self._decode_pipe_frame(frame)
-                self._record_frame(message)
+                received_at = self._record_frame(message)
                 responder = self._heartbeat_responder
                 if responder is not None and message.get("kind") == KIND_HEARTBEAT:
                     responder(message)
@@ -562,7 +600,7 @@ class PipeConnection(IpcConnection):
                             _PIPE_PENDING_MESSAGES, _PIPE_PENDING_BYTES,
                         )
                         raise IpcError("ipc business receive backlog exceeded")
-                    self._pending.append((message, len(frame)))
+                    self._pending.append((message, len(frame), received_at))
                     self._pending_bytes += len(frame)
                 self._notify_reader()
         except Exception as exc:  # noqa: BLE001 - deliver native and protocol errors to recv
@@ -601,9 +639,10 @@ class PipeConnection(IpcConnection):
                 if self._closed:
                     raise ConnectionError("ipc connection is closed")
                 if self._pending:
-                    message, size = self._pending.popleft()
+                    message, size, received_at = self._pending.popleft()
                     self._pending_bytes -= size
                     self._receive_space.notify()
+                    self._last_delivered_rx = received_at
                     return message
                 if self._reader_error is not None:
                     raise self._reader_error

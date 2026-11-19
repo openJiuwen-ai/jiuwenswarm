@@ -146,7 +146,7 @@ def _history_snapshot_is_current(
 def _legacy_limit_source_is_current(source: LegacyLimitSource) -> bool:
     cursor = source.cursor
     try:
-        with lc.resource_lock("session", source.session_id):
+        with lc.resource_lock("session", source.session_id, blocking=False):
             lc.guard(source.session_id)
             state = lc.state("session", source.session_id)
             return (
@@ -162,9 +162,11 @@ def _legacy_limit_source_is_current(source: LegacyLimitSource) -> bool:
 def _has_recovery_prefix(session_id: str, boundary: str) -> bool:
     """Check if a restore might be needed without materializing history payloads."""
     try:
-        if not history_exists(session_id):
-            return False
-        with lc.resource_lock("session", session_id):
+        # This speculative check runs before recovery admission. A busy lock
+        # must defer to the admitted reader, never occupy the shared executor.
+        with lc.resource_lock("session", session_id, blocking=False):
+            if not history_exists(session_id):
+                return False
             lc.guard(session_id)
             path = get_read_history_path(session_id)
             return _path_has_recovery_prefix(path, session_id, boundary, path.stat().st_size)
