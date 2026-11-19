@@ -12,7 +12,7 @@ import re
 import shutil
 from collections.abc import Callable
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlparse
 
 from openjiuwen.core.common.logging import logger
 from openjiuwen.core.foundation.tool import McpServerConfig
@@ -332,6 +332,17 @@ async def preflight_mcp_server_reachable(
         query_params = {str(k): str(v) for k, v in query_params.items()}
     else:
         query_params = None
+    # httpx `params` REPLACES the URL's own query string: passing the default
+    # empty {} auth_query_params silently strips "?appId=..." from server_path,
+    # and a non-empty one drops the URL-side params on the floor (issue #6836).
+    # Merge both sides instead — auth params win on key clashes.
+    if query_params is not None or "?" in url:
+        base_url, _, existing_query = url.partition("?")
+        merged: dict[str, str] = dict(parse_qsl(existing_query, keep_blank_values=True))
+        if query_params:
+            merged.update(query_params)
+        url = base_url
+        query_params = merged or None
 
     # Body must mirror the mcp SDK's initialize exactly: some gateways (e.g.
     # GitHub Copilot) return a body-format 400 before auth, masking a real 401.
