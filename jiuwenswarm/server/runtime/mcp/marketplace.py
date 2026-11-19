@@ -221,13 +221,13 @@ async def list_mcps_with_hub(
             for item in remote_items
             if hub_asset_matches_visible_query(item, normalized_query)
         ]
-    pending = [
-        item
-        for item in remote_items
-        if item.package_name
-        and item.asset_id not in installed_asset_ids
-        and item.package_name not in cards
-    ]
+    pending: list[Any] = []
+    for item in remote_items:
+        if not item.package_name:
+            continue
+        if item.asset_id in installed_asset_ids or item.package_name in cards:
+            continue
+        pending.append(item)
     if pending:
         # Thumbnail caching writes files; keep it off the event loop.
         remote_cards = await asyncio.to_thread(
