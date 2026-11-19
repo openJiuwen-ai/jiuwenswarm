@@ -68,6 +68,23 @@ export function selectionAfterPick(
   return readGenerationSelection({ ...current, [slot]: modelId }, models);
 }
 
+/** Slots that a reload started at ``reloadStartedEpoch`` must not overwrite.
+
+A write may finish (and drop its pending mark) before a previously issued
+``config.get`` resolves; any pick made after that reload started still has
+to keep the current UI value.
+*/
+export function slotsToKeepOnReload(
+  pendingSlots: Iterable<DesignGenerationSlot>,
+  lastPickEpoch: ReadonlyMap<DesignGenerationSlot, number>,
+  reloadStartedEpoch: number,
+): DesignGenerationSlot[] {
+  const pending = new Set(pendingSlots);
+  return DESIGN_GENERATION_SLOTS.filter(
+    (slot) => pending.has(slot) || (lastPickEpoch.get(slot) ?? 0) > reloadStartedEpoch,
+  );
+}
+
 /** Keep in-flight picks when a later config reload would otherwise overwrite them. */
 export function selectionForReload(
   saved: DesignGenerationSelection,
