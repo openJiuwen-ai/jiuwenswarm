@@ -294,10 +294,11 @@ _CURRENT_ROW = b'{"role":"user","request_id":"now","content":"input"}'
     (".json", b"\xef\xbb\xbf [ \t ]\n", "bypass"),
     (".jsonl", b"\xef\xbb\xbf" + _CURRENT_ROW + b"\n", "bypass"),
     (".json", b"[\n" + _CURRENT_ROW + b"\n]\n", "bypass"),
-    (".jsonl", b"\xef\xbb\xbf", "failed"),
+    (".jsonl", b"\xef\xbb\xbf", "changed"),
     (".jsonl", b"\xef\xbb\xbf \r\n" + _CURRENT_ROW + b"\n", "failed"),
     (".jsonl", _CURRENT_ROW.replace(b',"content"', b',\n"content"'), "failed"),
-    (".jsonl", _CURRENT_ROW + b"\n{broken", "failed"),
+    (".jsonl", _CURRENT_ROW + b"\n{broken", "changed"),
+    (".jsonl", _CURRENT_ROW + b"\n{broken\n", "failed"),
     (".jsonl", b'{"role":[],"request_id":"now"}\n', "failed"),
     (".json", b"[" + _CURRENT_ROW + b"]trailing garbage", "failed"),
     (".json", b"[]trailing garbage", "failed"),
@@ -315,13 +316,17 @@ async def test_empty_prefix_must_agree_with_authoritative_reader(stored_history,
         return read(*args, **kwargs)
 
     monkeypatch.setattr(service, "read_history_replay", counted_read)
-    if outcome == "failed":
+    expected_error = {
+        "changed": "HISTORY_RESTORE_CHANGED",
+        "failed": "HISTORY_RESTORE_FAILED",
+    }.get(outcome)
+    if expected_error is not None:
         with pytest.raises(service.HistoryReplayError) as reference:
             read(stored.sid, before_request_id="now")
         with pytest.raises(service.HistoryReplayError) as restored:
             await service.warmup_session_context(deep_agent=stored.deep_agent, session_id=stored.sid,
                                                  history_before_request_id="now")
-        assert reference.value.code == restored.value.code == "HISTORY_RESTORE_FAILED"
+        assert reference.value.code == restored.value.code == expected_error
     else:
         read(stored.sid, before_request_id="now")
         assert not await service.warmup_session_context(deep_agent=stored.deep_agent, session_id=stored.sid,
@@ -391,11 +396,15 @@ async def test_busy_lifecycle_fence_does_not_hold_a_speculative_reader_slot(stor
 
 
 @pytest.mark.asyncio
-async def test_bad_speculative_prefix_is_rechecked_by_the_admitted_restore(stored_history):
+@pytest.mark.parametrize("tail, expected_error", [
+    pytest.param(b"{incomplete", "HISTORY_RESTORE_CHANGED", id="unterminated-tail"),
+    pytest.param(b"{broken\n", "HISTORY_RESTORE_FAILED", id="malformed-line"),
+])
+async def test_bad_speculative_prefix_is_rechecked_by_the_admitted_restore(stored_history, tail, expected_error):
     stored = stored_history
-    (stored.folder / "history.jsonl").write_bytes(b'{"role":"user","request_id":"old"}\n{incomplete')
+    (stored.folder / "history.jsonl").write_bytes(b'{"role":"user","request_id":"old"}\n' + tail)
     assert service.prefetch_session_history(stored.sid, history_before_request_id="current") is None
     with pytest.raises(history_replay.HistoryReplayError) as failed:
         await service.warmup_session_context(deep_agent=stored.deep_agent, session_id=stored.sid,
                                              history_before_request_id="current")
-    assert failed.value.code == "HISTORY_RESTORE_FAILED"
+    assert failed.value.code == expected_error
