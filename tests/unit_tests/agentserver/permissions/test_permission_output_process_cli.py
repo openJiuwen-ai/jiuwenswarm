@@ -333,6 +333,7 @@ async def test_cli_real_runtime_wait_is_cancellable_without_approval(cli_host, m
     def observe_timeout(delay):
         nonlocal deadline
         scope = original_timeout(delay)
+        # run_machine creates its global deadline before executing the request.
         if deadline is None and asyncio.current_task() is run.task:
             deadline = scope
         return scope
