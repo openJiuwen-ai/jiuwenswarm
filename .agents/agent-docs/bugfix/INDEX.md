@@ -19,7 +19,6 @@ generated: true
 | [gateway/channel_manager/web](#module-gateway-channel_manager-web) |
 | [jiuwenswarm](#module-jiuwenswarm) |
 | [jiuwenswarm/agents/harness/code/rails/heartbeat](#module-jiuwenswarm-agents-harness-code-rails-heartbeat) |
-| [jiuwenswarm/agents/harness/common](#module-jiuwenswarm-agents-harness-common) |
 | [jiuwenswarm/agents/harness/common/rails](#module-jiuwenswarm-agents-harness-common-rails) |
 | [jiuwenswarm/agents/harness/common/rsi](#module-jiuwenswarm-agents-harness-common-rsi) |
 | [jiuwenswarm/agents/harness/common/tools/cron](#module-jiuwenswarm-agents-harness-common-tools-cron) |
@@ -42,7 +41,6 @@ generated: true
 | [jiuwenswarm/server/ipc](#module-jiuwenswarm-server-ipc) |
 | [jiuwenswarm/server/runtime](#module-jiuwenswarm-server-runtime) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-jiuwenswarm-server-runtime-agent_adapter) |
-| [jiuwenswarm/server/runtime/session](#module-jiuwenswarm-server-runtime-session) |
 | [jiuwenswarm/server/runtime/skill](#module-jiuwenswarm-server-runtime-skill) |
 | [jiuwenswarm/server/supervisor](#module-jiuwenswarm-server-supervisor) |
 | [jiuwenswarm/server/worker](#module-jiuwenswarm-server-worker) |
@@ -97,14 +95,6 @@ generated: true
 |---|---|---|---|---|
 | [B_20261027_1553_reminder-tool-routing](jiuwenswarm/agents/harness/common/tools/cron/B_20261027_1553_reminder-tool-routing.md) | B | Code 模式中文提醒错误路由到 heartbeat | MengHan18 | 无独立 D：针对 Issue 5615 的局部工具选路缺陷修复，无独立设计。 |
 
-<a id="module-jiuwenswarm-agents-harness-common"></a>
-
-## jiuwenswarm/agents/harness/common
-
-| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
-|---|---|---|---|---|
-| [B_20261119_1816_recovery-review-boundaries](jiuwenswarm/server/B_20261119_1816_recovery-review-boundaries.md) | B | Worker 恢复的收包新鲜度、前置锁、取消登记和历史终态边界 | 刘瑜 | 无独立 D：对既有恢复契约的缺陷修复，未建立独立设计。 |
-
 <a id="module-jiuwenswarm-agents-harness-common-rails"></a>
 
 ## jiuwenswarm/agents/harness/common/rails
@@ -120,7 +110,6 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261114_1302_terminal-metrics-and-model-errors](jiuwenswarm/agents/harness/common/rsi/B_20261114_1302_terminal-metrics-and-model-errors.md) | B | RSI 终态统计、侧栏运行态和论文模型错误修复 | l_x_d | 无独立 D：按用户确认修复现有行为及 Issue 6558、6539、6532，无独立设计。 |
-| [B_20261119_1104_paper-snapshot-restart](jiuwenswarm/agents/harness/common/rsi/B_20261119_1104_paper-snapshot-restart.md) | B | 论文优化历史快照的重启恢复 | l_x_d | 无独立 D：按确认的重启恢复用例修复既有行为，无独立设计。 |
 
 <a id="module-jiuwenswarm-agents-harness-common-tools-cron"></a>
 
@@ -288,7 +277,6 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261110_1042_issue6191-ipc-recovery](jiuwenswarm/server/ipc/B_20261110_1042_issue6191-ipc-recovery.md) | B | IPC 突发积压与降级就绪重连导致 Runtime 失败 | 刘瑜 | 无独立 D：对现有有界 IPC 和 Runtime 恢复状态机的小范围修复，无独立设计。 |
-| [B_20261119_1816_recovery-review-boundaries](jiuwenswarm/server/B_20261119_1816_recovery-review-boundaries.md) | B | Worker 恢复的收包新鲜度、前置锁、取消登记和历史终态边界 | 刘瑜 | 无独立 D：对既有恢复契约的缺陷修复，未建立独立设计。 |
 
 <a id="module-jiuwenswarm-server-runtime"></a>
 
@@ -310,14 +298,6 @@ generated: true
 | [B_20261031_1053_atomgit-review](jiuwenswarm/server/B_20261031_1053_atomgit-review.md) | B | PR 9317 AtomGit 取消、补丁兼容与注销恢复修复 | xinyang_bali | 无独立 D：根据机器人检视修复现有资源生命周期和可选补丁边界，不引入独立方案。 |
 | [B_20261106_1132_organization-round-cleanup](jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
 
-<a id="module-jiuwenswarm-server-runtime-session"></a>
-
-## jiuwenswarm/server/runtime/session
-
-| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
-|---|---|---|---|---|
-| [B_20261119_1816_recovery-review-boundaries](jiuwenswarm/server/B_20261119_1816_recovery-review-boundaries.md) | B | Worker 恢复的收包新鲜度、前置锁、取消登记和历史终态边界 | 刘瑜 | 无独立 D：对既有恢复契约的缺陷修复，未建立独立设计。 |
-
 <a id="module-jiuwenswarm-server-runtime-skill"></a>
 
 ## jiuwenswarm/server/runtime/skill
@@ -336,7 +316,6 @@ generated: true
 |---|---|---|---|---|
 | [B_20261107_1505_6226-forwarding-replay](jiuwenswarm/server/supervisor/B_20261107_1505_6226-forwarding-replay.md) | B | 历史回放触发转发队列溢出及前端计时不收尾 | kdgmpw | 无独立 D：对现有有界转发及前端终态处理的小范围修复，无独立设计。 |
 | [B_20261110_1042_issue6191-ipc-recovery](jiuwenswarm/server/ipc/B_20261110_1042_issue6191-ipc-recovery.md) | B | IPC 突发积压与降级就绪重连导致 Runtime 失败 | 刘瑜 | 无独立 D：对现有有界 IPC 和 Runtime 恢复状态机的小范围修复，无独立设计。 |
-| [B_20261119_1816_recovery-review-boundaries](jiuwenswarm/server/B_20261119_1816_recovery-review-boundaries.md) | B | Worker 恢复的收包新鲜度、前置锁、取消登记和历史终态边界 | 刘瑜 | 无独立 D：对既有恢复契约的缺陷修复，未建立独立设计。 |
 
 <a id="module-jiuwenswarm-server-worker"></a>
 
