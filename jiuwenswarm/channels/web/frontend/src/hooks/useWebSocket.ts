@@ -4056,6 +4056,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               // （见问题3：目标完成后队列消息没有紧接着发出去）。已经排空过则是空操作，不会重复发送。
               drainTaskQueueIfIdle(sessionId);
               useChatStore.getState().setThinking(sessionId, false);
+              // 终态兜底收口思考段（已闭合为幂等空操作）：processing_status(false)
+              // 丢帧时这里是唯一的收尾信号，漏收口思考块会一直转圈。
+              useChatStore.getState().closeReasoning(sessionId, {
+                atMs: eventTimestampMs(payload),
+              });
             }
           } else {
             useChatStore.getState().setThinking(sessionId, false);
@@ -5271,6 +5276,13 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (shouldDropDuplicatedEvent('chat.error', payload)) return;
         useChatStore.getState().clearMoaStatus(sessionId);
         useChatStore.getState().setThinking(sessionId, false);
+        // 错误是本轮终态，思考段必须在此封口：MessageList 以 !closed 判定
+        // 「思考中…」，GATEWAY_FORWARD_FAILED 等转发错误可能永远等不到
+        // processing_status(false)，漏收口会让思考块一直转圈到下次发消息。
+        // 已闭合时为幂等空操作（与 processing_status 兜底分支同一口径）。
+        useChatStore.getState().closeReasoning(sessionId, {
+          atMs: eventTimestampMs(payload),
+        });
         // 任何 chat.error 都应解除历史加载态：faas 侧 history.get 流超时
         // （旧 session runtime 过 TTL 被回收、init 超时）只回发 chat.error
         // 而非结束帧，若不清 isLoadingHistory 会永久吞掉后续
@@ -6196,6 +6208,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         useChatStore.getState().setExecutionError(sessionId, null);
         useChatStore.getState().setProcessing(sessionId, false);
         useChatStore.getState().setThinking(sessionId, false);
+        // 会话终态兜底收口思考段（已闭合为幂等空操作）：错误路径可能没有
+        // 后续 processing_status(false)，漏收口思考块会一直转圈。
+        useChatStore.getState().closeReasoning(sessionId, {
+          atMs: eventTimestampMs(payload),
+        });
         useHarnessStore.getState().setHarnessRunning(sessionId, false);
       }),
     ];
