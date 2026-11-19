@@ -206,6 +206,28 @@ async def _child_of_a_hung_command(tmp_path, stop, *, launcher_waits=True):
         "the stand-in never started its child; the check below would prove nothing"
     )
     child = int(pidfile.read_text())
+    import psutil
+
+    # Recorded before the stop. A busy CI worker can reuse this pid within the
+    # following second; a new process with the same pid is not the child.
+    try:
+        child_started = psutil.Process(child).create_time()
+    except psutil.NoSuchProcess:
+        child_started = None
+
+    def same_child_still_running() -> bool:
+        if child_started is None:
+            return False
+        try:
+            proc = psutil.Process(child)
+        except psutil.NoSuchProcess:
+            return False
+        if proc.create_time() != child_started:
+            return False
+        # A killed child can linger briefly as a zombie until its new parent
+        # reaps it; that is not running.
+        return proc.status() != psutil.STATUS_ZOMBIE
+
     if stop.get("cancel"):
         task.cancel()
     # Each stop has its own outcome, and the two must not be confused: a timeout
@@ -218,17 +240,12 @@ async def _child_of_a_hung_command(tmp_path, stop, *, launcher_waits=True):
         with pytest.raises(ProviderError) as caught:
             await task
         assert caught.value.kind == "transport"
-    import psutil
-
-    # A killed child can linger briefly as a zombie until its new parent reaps it;
-    # that is not running.
     for _ in range(50):
-        try:
-            if psutil.Process(child).status() == psutil.STATUS_ZOMBIE:
-                return False
-        except psutil.NoSuchProcess:
+        if not same_child_still_running():
             return False
         await asyncio.sleep(0.02)
+    if not same_child_still_running():
+        return False
     try:
         os.kill(child, 9)
     except ProcessLookupError:
