@@ -680,8 +680,16 @@ export function ExternalCliAgentsSection({
       useBuiltin: boolean,
       cliPath: string,
     ): Promise<ExternalCliAgentChoice> => {
+      // 最近一次选择（关闭时保留在草稿里的选择）先探测校验：仍已安装才沿用；
+      // 已卸载/路径不存在则落到下方 PATH 扫描，取第一个可用的
+      // （AI 检视 !10636 跟进：重开不再无条件沿用失效的旧选择）。
       if (useBuiltin || cliPath.trim()) {
-        return { enabled: true, useBuiltin, cliPath: useBuiltin ? '' : cliPath.trim() };
+        const lastProbe = EXTERNAL_CLI_AGENT_KINDS.includes(cliAgent)
+          ? await onDetect?.(cliAgent, useBuiltin ? '' : cliPath.trim(), useBuiltin)
+          : undefined;
+        if (lastProbe && isInstalledStatus(lastProbe)) {
+          return { enabled: true, useBuiltin, cliPath: useBuiltin ? '' : cliPath.trim() };
+        }
       }
       const probe = EXTERNAL_CLI_AGENT_KINDS.includes(cliAgent)
         ? await onDetect?.(cliAgent, '', false)
@@ -689,8 +697,8 @@ export function ExternalCliAgentsSection({
       if (probe?.path && isInstalledStatus(probe)) {
         return { enabled: true, useBuiltin: false, cliPath: probe.path };
       }
-      // 未配置路径且 PATH 无可执行文件：先试路径历史里最近可用的本地路径，
-      // 都没有才回退内置 CLI——关闭再打开不得静默改用内置（#6753 问题二）。
+      // PATH 上没有可用的：再试路径历史里最近可用的本地路径，最后回退内置——
+      // 关闭再打开不得静默改用内置（#6753 问题二）。
       const historyPaths = parseExternalCliPathHistories(
         draftValues[externalCliKey(cliAgent, 'path_histories')],
       ).slice().reverse();
