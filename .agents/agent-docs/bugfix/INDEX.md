@@ -103,6 +103,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261114_1302_terminal-metrics-and-model-errors](jiuwenswarm/agents/harness/common/rsi/B_20261114_1302_terminal-metrics-and-model-errors.md) | B | RSI 终态统计、侧栏运行态和论文模型错误修复 | l_x_d | jiuwenswarm/agents/harness/common/rsi, jiuwenswarm/channels/web/frontend/src/features/rsi | jiuwenswarm/agents/harness/common/rsi/services.py, jiuwenswarm/agents/harness/common/rsi/artifact_adapter.py, jiuwenswarm/channels/web/frontend/src/features/rsi/rsiStore.ts | 无独立 D：按用户确认修复现有行为及 Issue 6558、6539、6532，无独立设计。 |
+| [B_20261119_1104_paper-snapshot-restart](jiuwenswarm/agents/harness/common/rsi/B_20261119_1104_paper-snapshot-restart.md) | B | 论文优化历史快照的重启恢复 | l_x_d | jiuwenswarm/agents/harness/common/rsi | jiuwenswarm/agents/harness/common/rsi/paper_workspace_provider.py, jiuwenswarm/agents/harness/common/rsi/provider_factory.py, tests/unit_tests/rsi/test_provider_snapshot_restart.py | 无独立 D：按确认的重启恢复用例修复既有行为，无独立设计。 |
 
 <a id="module-8"></a>
 
