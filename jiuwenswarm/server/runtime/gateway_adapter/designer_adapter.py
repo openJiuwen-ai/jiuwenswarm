@@ -1163,8 +1163,12 @@ def _save_graph(params: dict[str, Any]) -> tuple[dict[str, Any] | None, str | No
     raw_graph = params.get("graph")
     if not isinstance(raw_graph, dict):
         return None, "graph is required", "BAD_REQUEST"
+    layout_only = params.get("layout_only") is True
     try:
         graph = normalize_execution_graph(raw_graph)
+        if layout_only:
+            saved = _store.save_graph(graph, layout_only=True)
+            return {"graph": dict(saved)}, None, None
         # The server-minted run id must survive client saves: the canvas's
         # in-memory graph predates the first trigger's mint, so its save
         # would wipe team_design_run_id and the next trigger would mint a
