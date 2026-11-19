@@ -299,7 +299,11 @@ def _build_skill_retrieval_prompt_rail(
     if not is_skill_retrieval_enabled(context.config):
         return None
     SkillRetrievalPromptInput.resolve(params, context)
-    toolkit = skill_retrieval_toolkit_for_context(context)
+    try:
+        toolkit = skill_retrieval_toolkit_for_context(context)
+    except ValueError as exc:
+        logger.warning("[swarm.skill_retrieval_prompt] construction failed: %s", exc)
+        return None
     session_scope = toolkit.session_scope
     return SkillRetrievalPromptRail(
         toolkit=toolkit,

@@ -12,7 +12,6 @@ from openjiuwen.harness.rails import SkillUseRail
 from openjiuwen.harness.rails.base import DeepAgentRail
 
 from openjiuwen.symphony.discovery import (
-    DiscoverySettings,
     SkillFS,
     SkillPromptBranch,
     SkillPromptEntry,
@@ -23,7 +22,7 @@ from openjiuwen.symphony.discovery import (
 
 from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
     SkillRetrievalToolkit,
-    build_discovery_settings,
+    build_model_discovery_settings,
     is_skill_retrieval_enabled,
 )
 
@@ -63,27 +62,22 @@ class SkillRetrievalPromptRail(DeepAgentRail):
         toolkit: SkillRetrievalToolkit | None = None,
         session_scope: str = "default",
         incremental_notice_max_chars: int | None = None,
-        discovery_settings: DiscoverySettings | None = None,
         environment: SkillFS | None = None,
         config_base: dict[str, Any] | None = None,
     ) -> None:
         super().__init__()
-        settings = (
-            discovery_settings
-            or (toolkit.settings if toolkit is not None else None)
-            or build_discovery_settings(config_base)
-        )
+        settings = toolkit.settings if toolkit is not None else build_model_discovery_settings(config_base)
         notice_max_chars = (
             incremental_notice_max_chars
             if incremental_notice_max_chars is not None
-            else settings.incremental_notice_max_chars
+            else settings.output.incremental_notice_max_chars
         )
         if notice_max_chars <= 0:
             raise ValueError("incremental_notice_max_chars must be positive")
         self._session_scope = session_scope
         self._source_toolkit = toolkit
         self._incremental_notice_max_chars = notice_max_chars
-        self._discovery_settings = settings
+        self._candidate_budget_tokens = settings.prompt.candidate_budget_tokens
         self._prompt_skillfs: SkillFS | None = environment or (
             toolkit.environment if toolkit is not None else None
         )
@@ -139,6 +133,8 @@ class SkillRetrievalPromptRail(DeepAgentRail):
         self.system_prompt_builder = None
         self.attachment_manager = None
         self._prompt_skillfs = None
+        if self._source_toolkit is not None:
+            self._source_toolkit.close()
         self._source_toolkit = None
         self._frozen_prompt_snapshot = None
         self._agent = None
@@ -423,7 +419,7 @@ class SkillRetrievalPromptRail(DeepAgentRail):
             total_count=0,
             entries=(),
             estimated_candidate_tokens=0,
-            candidate_budget_tokens=(self._discovery_settings.candidate_budget_tokens),
+            candidate_budget_tokens=self._candidate_budget_tokens,
             index_state="missing",
         )
 

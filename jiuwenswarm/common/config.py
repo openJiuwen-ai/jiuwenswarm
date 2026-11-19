@@ -320,6 +320,9 @@ def get_config():
             except (ValueError, TypeError):
                 logger.warning("Ignoring malformed AgentOS %s deployment config", section)
 
+    if "symphony" in config_base:
+        from jiuwenswarm.common.symphony_config import load_symphony_config
+        load_symphony_config(config_base)
     return apply_runtime_model_config(config_base)
 
 
@@ -383,24 +386,9 @@ def get_skill_evolution_enabled(config: dict[str, Any] | None) -> bool:
 def get_symphony_evolution_enabled(config: dict[str, Any] | None) -> bool:
     """Read the persisted Discover SkillPack setting without deployment overrides."""
 
-    from jiuwenswarm.common.symphony_config import (
-        resolve_symphony_evolution_enabled,
-    )
-
-    if not isinstance(config, dict):
-        return False
-    symphony = config.get("symphony")
-    if not isinstance(symphony, dict):
-        symphony = {}
-    evolution = symphony.get("evolution")
-    if not isinstance(evolution, dict):
-        evolution = {}
-    # enabled 位于 evolution.flow 下；旧配置（evolution.enabled）向后兼容
-    flow = evolution.get("flow")
-    flow_enabled = flow.get("enabled") if isinstance(flow, dict) else None
-    if flow_enabled is None:
-        flow_enabled = evolution.get("enabled")
-    return resolve_symphony_evolution_enabled(flow_enabled)
+    from jiuwenswarm.common.symphony_config import load_symphony_config
+    resolved = load_symphony_config(config or {})
+    return resolved.orchestration.experience.enabled
 
 
 def coerce_config_bool(value: Any, default: bool) -> bool:
@@ -1025,19 +1013,23 @@ def update_symphony_in_config(updates: dict[str, Any]) -> None:
         data["symphony"] = {}
     symphony = data["symphony"]
     _merge_config_dict(symphony, updates)
+    from jiuwenswarm.common.symphony_config import load_symphony_config
+    load_symphony_config(data)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def update_skill_retrieval_in_config(updates: dict[str, Any]) -> None:
-    """更新 symphony.skill_retrieval 配置段并写回。"""
+    """更新 symphony.retrieval 配置段并写回。"""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "symphony" not in data or data["symphony"] is None:
         data["symphony"] = {}
     symphony = data["symphony"]
-    if "skill_retrieval" not in symphony or symphony["skill_retrieval"] is None:
-        symphony["skill_retrieval"] = {}
-    section = symphony["skill_retrieval"]
+    if "retrieval" not in symphony or symphony["retrieval"] is None:
+        symphony["retrieval"] = {}
+    section = symphony["retrieval"]
     _merge_config_dict(section, updates)
+    from jiuwenswarm.common.symphony_config import load_symphony_config
+    load_symphony_config(data)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 

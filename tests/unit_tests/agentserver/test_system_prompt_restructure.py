@@ -286,7 +286,7 @@ async def test_symphony_orchestration_rail_respects_config_snapshot():
         extra={},
     )
     enabled_rail = SymphonyOrchestrationRail(
-        config_base={"symphony": {"enabled": True}},
+        config_base={"symphony": {"orchestration": {"enabled": True}}},
     )
     enabled_rail.init(enabled_agent)
     await enabled_rail.before_model_call(enabled_ctx)
@@ -302,7 +302,7 @@ async def test_symphony_orchestration_rail_respects_config_snapshot():
         extra={},
     )
     disabled_rail = SymphonyOrchestrationRail(
-        config_base={"symphony": {"enabled": False}},
+        config_base={"symphony": {"orchestration": {"enabled": False}}},
     )
     disabled_rail.init(disabled_agent)
     await disabled_rail.before_model_call(disabled_ctx)
@@ -321,7 +321,7 @@ async def test_symphony_orchestration_rail_injects_when_tool_visible(
 ):
     monkeypatch.setattr(
         "jiuwenswarm.common.symphony_config.load_symphony_config",
-        lambda: SimpleNamespace(enabled=True),
+        lambda: SimpleNamespace(orchestration=SimpleNamespace(enabled=True)),
     )
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
@@ -419,7 +419,7 @@ async def test_symphony_timeout_is_terminal_manual_build_result(
 
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.tools.symphony_toolkits.load_symphony_config",
-        lambda config=None: SimpleNamespace(enabled=True),
+        lambda config=None: SimpleNamespace(orchestration=SimpleNamespace(enabled=True)),
     )
     monkeypatch.setattr(
         SymphonyToolkit,
@@ -464,7 +464,7 @@ async def test_symphony_graph_preparing_is_terminal_for_current_round():
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
     rail = SymphonyOrchestrationRail(
-        config_base={"symphony": {"enabled": True}},
+        config_base={"symphony": {"orchestration": {"enabled": True}}},
     )
     rail.init(agent)
     invocation_extra: dict = {}
@@ -611,7 +611,7 @@ async def test_symphony_timeout_removes_graph_tools_and_orchestration_prompt():
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
     rail = SymphonyOrchestrationRail(
-        config_base={"symphony": {"enabled": True}},
+        config_base={"symphony": {"orchestration": {"enabled": True}}},
     )
     rail.init(agent)
     ctx = AgentCallbackContext(
@@ -786,7 +786,7 @@ async def test_symphony_orchestration_rail_clears_when_unavailable(
 ):
     monkeypatch.setattr(
         "jiuwenswarm.common.symphony_config.load_symphony_config",
-        lambda: SimpleNamespace(enabled=True),
+        lambda: SimpleNamespace(orchestration=SimpleNamespace(enabled=True)),
     )
     builder = SystemPromptBuilder(language="cn")
     builder.add_section(
@@ -817,7 +817,7 @@ async def test_symphony_orchestration_rail_clears_when_disabled(
 ):
     monkeypatch.setattr(
         "jiuwenswarm.common.symphony_config.load_symphony_config",
-        lambda: SimpleNamespace(enabled=False),
+        lambda: SimpleNamespace(orchestration=SimpleNamespace(enabled=False)),
     )
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
@@ -865,9 +865,9 @@ def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
     monkeypatch.setattr(interface_module.Runner, "resource_mgr", fake_resource)
     monkeypatch.setattr(interface_module, "SymphonyToolkit", FakeSymphonyToolkit)
 
-    adapter._sync_symphony_tools_for_runtime({"symphony": {"enabled": True}})
+    adapter._sync_symphony_tools_for_runtime({"symphony": {"orchestration": {"enabled": True}}})
 
-    assert seen_configs == [{"symphony": {"enabled": True}}]
+    assert seen_configs == [{"symphony": {"orchestration": {"enabled": True}}}]
     assert adapter._symphony_tools_registered is True
     assert [card.name for card in adapter._tool_cards] == [
         "symphony_read_graph",
@@ -882,11 +882,11 @@ def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
     assert fake_instance.ability_manager.added == fake_resource.added
     registered_tools = list(adapter._symphony_tools)
 
-    # Reload re-evaluates the desired group because discovery can change while
-    # Symphony stays enabled. Existing objects and registrations remain stable.
-    adapter._sync_symphony_tools_for_runtime({"symphony": {"enabled": True}})
+    # Re-applying the same enabled snapshot is idempotent. Code cold start and
+    # reload both use this path, so neither cards nor registrations may grow.
+    adapter._sync_symphony_tools_for_runtime({"symphony": {"orchestration": {"enabled": True}}})
 
-    assert seen_configs == [{"symphony": {"enabled": True}}, {"symphony": {"enabled": True}}]
+    assert seen_configs == [{"symphony": {"orchestration": {"enabled": True}}}] * 2
     assert all(current is previous for current, previous in zip(adapter._symphony_tools, registered_tools))
     assert len(adapter._tool_cards) == 3
     assert fake_resource.added == [
@@ -896,7 +896,7 @@ def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
     ]
     assert fake_instance.ability_manager.added == fake_resource.added
 
-    adapter._sync_symphony_tools_for_runtime({"symphony": {"enabled": False}})
+    adapter._sync_symphony_tools_for_runtime({"symphony": {"orchestration": {"enabled": False}}})
 
     assert adapter._symphony_tools == []
     assert adapter._symphony_tools_registered is False
@@ -928,7 +928,7 @@ async def test_symphony_tool_model_is_isolated_from_interleaved_adapter_requests
 ):
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.tools.symphony_toolkits.load_symphony_config",
-        lambda config=None: SimpleNamespace(enabled=True),
+        lambda config=None: SimpleNamespace(orchestration=SimpleNamespace(enabled=True)),
     )
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
 
@@ -2167,7 +2167,10 @@ def test_skill_retrieval_prompt_counts_as_skills_without_double_counting(languag
 
     builder = SystemPromptBuilder(language=language)
     builder.add_section(PromptSection(name="identity", content={language: "Core rules."}, priority=10))
-    rail = SkillRetrievalPromptRail(config_base={"symphony": {"skill_retrieval": {"enabled": True}}})
+    rail = SkillRetrievalPromptRail(config_base={"symphony": {
+        "retrieval": {"enabled": True, "prompt": {"context_window_tokens": 4000}},
+    }})
+    assert rail._prompt_snapshot().candidate_budget_tokens == 40
     rail.system_prompt_builder = builder
     rail._add_prompt_builder_section(language, "Use demo Skill.")
     sections = ReActAgent._context_usage_prompt_sections(SimpleNamespace(prompt_builder=builder))
@@ -2212,7 +2215,9 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
     )
 
     toolkit = SkillRetrievalToolkit(
-        skill_directories=[], artifact_root=tmp_path / "skillfs"
+        skill_directories=[], config_base={"symphony": {
+            "retrieval": {"enabled": True}, "storage": {"artifact_root": str(tmp_path / "skillfs")},
+        }}
     )
     rail = SkillRetrievalPromptRail(toolkit=toolkit)
     rail.init(agent)
@@ -2321,7 +2326,9 @@ async def test_skill_retrieval_prompt_clears_section_when_disabled(
         extra={},
     )
     toolkit = SkillRetrievalToolkit(
-        skill_directories=[], artifact_root=tmp_path / "skillfs"
+        skill_directories=[], config_base={"symphony": {
+            "retrieval": {"enabled": True}, "storage": {"artifact_root": str(tmp_path / "skillfs")},
+        }}
     )
     rail = SkillRetrievalPromptRail(toolkit=toolkit)
     rail.init(agent)
@@ -2347,10 +2354,6 @@ def test_resolve_skill_mode_accepts_all_and_auto_list(monkeypatch):
 
 
 def test_deep_adapter_skill_retrieval_prompt_uses_live_toolkit(monkeypatch, tmp_path):
-    monkeypatch.setenv(
-        "SYMPHONY_SKILL_RETRIEVAL_ROOT",
-        str(tmp_path / "skillfs-artifacts"),
-    )
     skill_dir = tmp_path / "alpha"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text(
@@ -2379,6 +2382,11 @@ def test_deep_adapter_skill_retrieval_prompt_uses_live_toolkit(monkeypatch, tmp_
     manager = FakeManager()
     adapter = _TestableJiuWenSwarmDeepAdapter()
     adapter.set_skill_manager(manager)
+    adapter._config_base_cache = {"symphony": {
+        "capability": {"sources": [{"type": "skill", "root": str(tmp_path)}]},
+        "retrieval": {"enabled": True},
+        "storage": {"artifact_root": str(tmp_path / "skillfs-artifacts")},
+    }}
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.agent_adapter.interface_deep.is_skill_retrieval_enabled",
         lambda *_args: True,
@@ -2398,9 +2406,10 @@ def test_deep_adapter_skill_retrieval_prompt_uses_live_toolkit(monkeypatch, tmp_
     toolkit = captured["toolkit"]
     assert isinstance(toolkit, SkillRetrievalToolkit)
     assert [record.worker_id for record in toolkit.current_records()] == ["alpha"]
-    manager.persisted_disabled.append("alpha")
+    (tmp_path / "skills_state.json").write_text(
+        '{"skill_configs": {"alpha": {"enabled": false}}}', encoding="utf-8",
+    )
     assert toolkit.current_records() == ()
-    assert manager.reload_count >= 2
 
 
 @pytest.mark.asyncio
@@ -2455,7 +2464,7 @@ def test_code_adapter_skill_retrieval_sync_freezes_spec_snapshot():
         adapter._skill_retrieval_tools_enabled_for_runtime(
             {
                 "modes": {"code": {"tools": ["skill_toolkit"]}},
-                "symphony": {"skill_retrieval": {"enabled": True}},
+                "symphony": {"retrieval": {"enabled": True}},
             }
         )
         is False
@@ -2465,7 +2474,7 @@ def test_code_adapter_skill_retrieval_sync_freezes_spec_snapshot():
         adapter._skill_retrieval_tools_enabled_for_runtime(
             {
                 "modes": {"code": {"tools": ["skill_toolkit", "skill_retrieval"]}},
-                "symphony": {"skill_retrieval": {"enabled": True}},
+                "symphony": {"retrieval": {"enabled": True}},
             }
         )
         is True
@@ -2476,7 +2485,7 @@ def test_code_adapter_skill_retrieval_sync_freezes_spec_snapshot():
                 "modes": {
                     "code": {"tools": ["skill_toolkit", "skill_retrieval"]}
                 },
-                "symphony": {"skill_retrieval": {"enabled": False}},
+                "symphony": {"retrieval": {"enabled": False}},
             }
         )
         is False
@@ -2487,7 +2496,7 @@ def test_code_adapter_skill_retrieval_sync_freezes_spec_snapshot():
                 "modes": {
                     "code": {"tools": ["skill_toolkit", "skill_retrieval"]}
                 },
-                "symphony": {"skill_retrieval": {"enabled": True}},
+                "symphony": {"retrieval": {"enabled": True}},
             }
         )
         is True
@@ -2497,7 +2506,7 @@ def test_code_adapter_skill_retrieval_sync_freezes_spec_snapshot():
         adapter._skill_retrieval_tools_enabled_for_runtime(
             {
                 "modes": {"code": {"tools": ["skill_retrieval"]}},
-                "symphony": {"skill_retrieval": {"enabled": False}},
+                "symphony": {"retrieval": {"enabled": False}},
             }
         )
         is False

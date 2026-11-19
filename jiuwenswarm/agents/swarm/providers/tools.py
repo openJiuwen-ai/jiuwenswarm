@@ -58,7 +58,6 @@ from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
     SkillRetrievalToolkit,
     build_model_discovery_settings,
     is_skill_retrieval_enabled,
-    skill_sources_from_manager,
 )
 from jiuwenswarm.agents.harness.common.tools.skill_toolkits import SkillToolkit
 from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit
@@ -392,16 +391,17 @@ def skill_retrieval_toolkit_for_context(
         or getattr(ctx, "role", None)
         or "member"
     )
-    source_manager = SkillManager()
+    from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import skill_sources_from_directories
     toolkit = SkillRetrievalToolkit(
         skill_directories=lambda: [str(_skill_library_dir(ctx))],
-        disabled_skills=load_execution_disabled_skills,
+        disabled_skills=lambda: load_execution_disabled_skills(skills_dir=_skill_library_dir(ctx)),
         visible_skill_names=lambda: visible_skill_names_for_list_skill(ctx),
-        source_by_name=lambda: skill_sources_from_manager(source_manager),
+        source_by_name=lambda: skill_sources_from_directories([_skill_library_dir(ctx)]),
         session_scope=(
             f"{ctx.session_id or 'default'}:{ctx.team_id or 'team'}:{member_scope}"
         ),
         config_base=ctx.config,
+        model=(getattr(ctx, "extras", None) or {}).get("_parent_model"),
         settings=build_model_discovery_settings(
             ctx.config,
             model=(getattr(ctx, "extras", None) or {}).get("_parent_model"),
@@ -620,7 +620,7 @@ def build_xiaoyi_phone(params: dict[str, Any], ctx: SwarmBuildContext) -> list[A
 @harness_element(
     kind=ElementKind.TOOL,
     name=SYMPHONY_TOOLKIT,
-    description="Symphony planning tools (leader only, gated by symphony.enabled).",
+    description="Symphony planning tools (leader only, gated by symphony.orchestration.enabled).",
 )
 def build_symphony_toolkit(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
     """Build Symphony tools for the leader; teammates get no tools."""
