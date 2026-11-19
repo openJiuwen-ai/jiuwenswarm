@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { loadCallback } from './loadProductionCallback.mjs';
 
 globalThis.window = globalThis;
 globalThis.window.location = { protocol: 'http:', host: 'localhost:18180' };
@@ -326,6 +327,139 @@ test('a fresh page subscribes to the execution discovered in session metadata', 
   }
 });
 
+async function beginMetadataRecovery(client, sessionId, options) {
+  const socket = FakeWebSocket.instance;
+  const result = client.request('session.get_metadata', { session_id: sessionId }, options);
+  await Promise.resolve();
+  const query = socket.lastRequest;
+  const sessionDetails = { session_id: sessionId, title: 'Original metadata', mode: 'team' };
+  socket.receive({
+    type: 'res', id: query.id, ok: true,
+    payload: {
+      ...sessionDetails, status: 'processing', is_processing: true,
+      runtime: { worker_instance: 'worker', cursor: 6892, is_processing: true },
+    },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(client.isRecoveringExecution(sessionId), true);
+  return { socket, result, sessionDetails, recovery: socket.sentRequests.find((item) => item.params?.runtime_resume) };
+}
+
+test('metadata returns the complete recovery response when the Team finishes during recovery', async () => {
+  const client = new webClient.constructor();
+  const sessionId = 'team-completes-during-recovery';
+  const store = useChatStore.getState();
+  store.ensureRuntime(sessionId);
+  store.setProcessing(sessionId, true);
+  const offStatus = client.on('chat.processing_status', ({ payload }) => {
+    store.setProcessing(sessionId, payload.is_processing);
+  });
+  await client.connect();
+  try {
+    const { socket, result, recovery } = await beginMetadataRecovery(client, sessionId);
+    socket.receive({
+      type: 'event', event: 'chat.processing_status',
+      payload: {
+        session_id: sessionId, is_processing: false, is_complete: true,
+        runtime_event: { worker_instance: 'worker', sequence: 6896 },
+      },
+    });
+    const completed = {
+      title: 'Updated metadata', status: 'idle', is_processing: false,
+      runtime: { worker_instance: 'worker', cursor: 6896, is_processing: false },
+    };
+    socket.receive({ type: 'res', id: recovery.id, ok: true, payload: completed });
+
+    const metadata = await result;
+    // App also applies the state in the response it awaited.
+    store.setProcessing(sessionId, metadata.is_processing);
+    assert.equal(store.getRuntime(sessionId).foregroundIsProcessing, false);
+    assert.deepEqual(metadata, completed);
+    assert.deepEqual(socket.sentRequests.map(({ method }) => method), ['session.get_metadata', 'session.get_metadata']);
+  } finally {
+    offStatus();
+    store.removeRuntime(sessionId);
+    await client.disconnect();
+  }
+});
+
+for (const failure of ['INTERNAL_ERROR', 'REQUEST_TIMEOUT', 'WS_CLOSED', 'WS_DISCONNECTED']) {
+  test(`session details remain available when recovery fails with ${failure}`, async () => {
+    const client = new webClient.constructor();
+    await client.connect();
+    try {
+      const { socket, result, recovery, sessionDetails } = await beginMetadataRecovery(client, `recover-${failure}`);
+      if (failure === 'WS_CLOSED') {
+        await client.disconnect();
+      } else if (failure === 'WS_DISCONNECTED') {
+        socket.close(1006);
+      } else {
+        socket.receive({ type: 'res', id: recovery.id, ok: false, code: failure, error: 'Recovery failed' });
+      }
+      assert.deepEqual(await result, sessionDetails);
+    } finally {
+      await client.disconnect();
+    }
+  });
+}
+
+test('metadata still rejects when the first request fails', async () => {
+  const client = new webClient.constructor();
+  await client.connect();
+  try {
+    const result = client.request('session.get_metadata', { session_id: 'missing-session' });
+    await Promise.resolve();
+    const socket = FakeWebSocket.instance;
+    socket.receive({ type: 'res', id: socket.lastRequest.id, ok: false, code: 'NOT_FOUND' });
+    await assert.rejects(result, { code: 'NOT_FOUND' });
+    assert.equal(socket.sentRequests.length, 1);
+  } finally {
+    await client.disconnect();
+  }
+});
+
+test('cancelling a metadata caller leaves another caller on the same recovery request', async () => {
+  const client = new webClient.constructor();
+  const sessionId = 'shared-recovery';
+  const controller = new AbortController();
+  await client.connect();
+  try {
+    const first = await beginMetadataRecovery(client, sessionId, { signal: controller.signal });
+    const second = await beginMetadataRecovery(client, sessionId);
+    const results = Promise.allSettled([first.result, second.result]);
+    controller.abort();
+    const completed = { status: 'idle', is_processing: false, runtime: { is_processing: false } };
+    first.socket.receive({ type: 'res', id: first.recovery.id, ok: true, payload: completed });
+    assert.deepEqual(await results, [
+      { status: 'fulfilled', value: first.sessionDetails },
+      { status: 'fulfilled', value: completed },
+    ]);
+    assert.equal(first.socket.sentRequests.filter((item) => item.params?.runtime_resume).length, 1);
+  } finally {
+    await client.disconnect();
+  }
+});
+
+test('the page only marks a session missing when metadata reports NOT_FOUND', async () => {
+  const sessionId = 'metadata-error-session';
+  const missing = [];
+  let code = 'WS_DISCONNECTED';
+  const refresh = loadCallback('App.tsx', 'fetchSessionMetadata', {
+    organizationOwnerStateRevision: () => 0,
+    useChatStore,
+    sessionIdRef: { current: sessionId },
+    setMissingSessionId: (id) => missing.push(id),
+    request: async () => { throw Object.assign(new Error(code), { code }); },
+    console: { warn() {} },
+  });
+
+  assert.equal(await refresh(sessionId), null);
+  assert.deepEqual(missing, []);
+  code = 'NOT_FOUND';
+  assert.equal(await refresh(sessionId), null);
+  assert.deepEqual(missing, [sessionId]);
+});
+
 test('pending reconnect recovery preserves processing and retries only the original cursor with a bound', async () => {
   const fresh = new webClient.constructor();
   await fresh.connect();
@@ -469,6 +603,7 @@ test('an idle recovery response cannot settle a newer locally started turn', asy
     await fresh.connect();
     const request = FakeWebSocket.instance.lastRequest;
     assert.equal(request.params.runtime_resume.after, 9);
+    const { result, sessionDetails } = await beginMetadataRecovery(fresh, sessionId);
     store.setProcessing(sessionId, true, { newTurn: true });
     FakeWebSocket.instance.receive({
       type: 'res',
@@ -476,7 +611,7 @@ test('an idle recovery response cannot settle a newer locally started turn', asy
       ok: true,
       payload: { runtime: { is_processing: false } },
     });
-    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(await result, sessionDetails);
     assert.deepEqual(statuses, []);
     assert.equal(store.getRuntime(sessionId).foregroundIsProcessing, true);
   } finally {
@@ -514,7 +649,8 @@ test('fresh metadata pending recovery reaches the later running snapshot without
     );
   };
   try {
-    await fresh.request('session.get_metadata', { session_id: 'fresh-pending' });
+    const metadata = await fresh.request('session.get_metadata', { session_id: 'fresh-pending' });
+    assert.equal(metadata.runtime.cursor, 2048);
     assert.equal(processing, true);
     assert.equal(snapshots.length, 2);
     assert.equal(snapshots[0].recovery_pending, true);

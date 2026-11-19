@@ -124,9 +124,6 @@ export function MediaModelConfigDialog({
   const form = useForm<MediaModelDraft>({ initialValues });
   useFormState(form);
   const values = form.getValues();
-  useEffect(() => {
-    if (extension?.fieldErrors) form.setErrors(extension.fieldErrors);
-  }, [extension?.fieldErrors, form]);
   const [catalog, setCatalog] = useState<VendorPresetMap>(EMPTY_VENDOR_CATALOG);
   const [catalogLoading, setCatalogLoading] = useState(isConnected);
   const [catalogError, setCatalogError] = useState('');
@@ -486,13 +483,14 @@ export function MediaModelConfigDialog({
   };
 
   const confirm = async () => {
+    setSaveError('');
+    const metadataValid = extension?.validate() ?? true;
     if (Object.keys(errors).length) {
       form.validate();
       return;
     }
     const result = form.validate();
-    if (!result.valid) return;
-    setSaveError('');
+    if (!result.valid || !metadataValid) return;
     setValidationFailure(null);
     if (!probeBeforeSave) {
       await persist(result.values);

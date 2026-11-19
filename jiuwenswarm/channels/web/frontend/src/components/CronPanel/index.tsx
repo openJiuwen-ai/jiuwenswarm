@@ -39,7 +39,6 @@ function showCronError(message: string, duration = CRON_ERROR_DURATION_SECONDS) 
     id: 'cron-error',
     content: message,
     variant: 'error',
-    wide: true,
     testId: 'cron-error-toast',
     duration,
   });
