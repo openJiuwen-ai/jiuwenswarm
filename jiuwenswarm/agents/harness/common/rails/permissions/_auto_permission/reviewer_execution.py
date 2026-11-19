@@ -227,6 +227,10 @@ class AutoPermissionReviewerExecutionMixin:
             no_auto_allow_reason=route.no_auto_allow_reason,
             original_user_intent=original_user_intent,
             domain_route=domain_route,
+            session_write_evidence=(
+                self.session_artifact_paths.evidence(facts, root_session_id=session_id)
+                if self.session_artifact_paths is not None else ()
+            ),
         )
         assessment = await self.auto_reviewer.assess(request)
         audit_extra = {

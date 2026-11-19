@@ -304,6 +304,7 @@ def _visible_review_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]:
         "path_targets",
         "path_targets_incomplete",
         "reviewable_payload",
+        "session_write_evidence",
         "user_intent",
     }
     return {
@@ -323,6 +324,7 @@ def build_reviewer_action_view(
     no_auto_allow_reason: str,
     original_user_intent: OriginalUserIntentEvidence | None,
     domain_route: DecisionRoute | None,
+    session_write_evidence: tuple[dict[str, str | bool], ...] = (),
 ) -> ReviewerActionView:
     """Project one bounded current-call view without Host identity or raw args."""
 
@@ -358,6 +360,8 @@ def build_reviewer_action_view(
             "reason": domain_route.reason,
             "source": domain_route.source,
         }
+    if session_write_evidence:
+        review_evidence["session_write_evidence"] = list(session_write_evidence)
     payload_error = _complete_payload_evidence(facts, review_evidence)
     if payload_error:
         allowed_outcomes = tuple(value for value in allowed_outcomes if value != "allow_once")
@@ -384,6 +388,8 @@ def _complete_payload_evidence(facts: ToolDecisionFacts, evidence: dict[str, Any
             evidence["reviewable_payload"] = {}
             return "reviewer_payload_missing"
     bounded = {"reviewable_payload": payload, "user_intent": evidence["user_intent"]}
+    if "session_write_evidence" in evidence:
+        bounded["session_write_evidence"] = evidence.pop("session_write_evidence")
     try:
         encoded = json.dumps(bounded, ensure_ascii=False, allow_nan=False).encode("utf-8")
         if len(encoded) > AUTO_REVIEW_PAYLOAD_MAX_BYTES:
