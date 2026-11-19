@@ -14,6 +14,13 @@ from jiuwenswarm.agents.harness.common.tool_progress_context import (
 )
 from jiuwenswarm.common.symphony_config import load_symphony_config
 from jiuwenswarm.runtime.symphony.adapter import normalize_candidate_ids
+from jiuwenswarm.runtime.symphony.planning_inputs import (
+    PLANNING_INPUTS_ATTR,
+    PLANNING_INPUTS_SCHEMA,
+    annotate_unavailable_inputs,
+    prepare_planning_inputs,
+    supports_planning_inputs,
+)
 if TYPE_CHECKING:
     from jiuwenswarm.runtime.symphony.service import SwarmSymphonyService
 from jiuwenswarm.runtime.symphony.llm import LLMConfig, current_request_llm_config
@@ -34,7 +41,7 @@ def _coerce_compose_inputs(inputs: Any) -> Any:
     if not isinstance(inputs, dict):
         return inputs
     normalized_inputs = dict(inputs)
-    for key in ("candidate_ids", "candidate_skill_ids"):
+    for key in ("candidate_ids", "candidate_skill_ids", "inputs"):
         value = inputs.get(key)
         if not isinstance(value, str):
             continue
@@ -48,8 +55,26 @@ def _coerce_compose_inputs(inputs: Any) -> Any:
 
 
 class _ComposeGraphLocalFunction(LocalFunction):
+    accepts_tool_callback_context = True
+
     async def invoke(self, inputs: Any, **kwargs: Any) -> Any:
-        return await super().invoke(_coerce_compose_inputs(inputs), **kwargs)
+        args = _coerce_compose_inputs(inputs)
+        if not isinstance(args, dict) or "inputs" not in args:
+            return await super().invoke(args, **kwargs)
+        if not supports_planning_inputs():
+            return {"success": False, "reason": "planning_inputs_unsupported", "detail": (
+                "The installed Core does not support named planning inputs."
+            )}
+        try:
+            available, unavailable = await asyncio.to_thread(prepare_planning_inputs, args["inputs"])
+        except ValueError as exc:
+            return {"success": False, "reason": "invalid_planning_inputs", "detail": str(exc)}
+        args["inputs"] = available
+        result = await super().invoke(args, **kwargs)
+        context = kwargs.get("_tool_callback_context")
+        if context is not None:
+            setattr(context, PLANNING_INPUTS_ATTR, tuple(available))
+        return annotate_unavailable_inputs(result, unavailable)
 
 
 class SymphonyToolkit:
@@ -294,6 +319,7 @@ class SymphonyToolkit:
         *,
         type: str = "skill",
         candidate_ids: list[str] | None = None,
+        inputs: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         if not self.is_enabled():
             return self._compact_plan_payload(
@@ -308,6 +334,8 @@ class SymphonyToolkit:
             "candidate_skill_ids": normalize_candidate_ids(candidate_skill_ids),
             "progress": current_tool_progress(),
         }
+        if inputs:
+            kwargs["inputs"] = inputs
         llm_kwargs, error = self._llm_config_kwargs("plan")
         if error is not None:
             return self._compact_plan_payload(error)
@@ -377,16 +405,23 @@ class SymphonyToolkit:
                 "symphony_compose_graph",
                 (
                     "Use type=expert to plan assignments for installed experts and task-scoped inline roles "
-                    "that benefit from parallel exploration, context isolation, specialist roles, "
-                    "or independent verification. Use type=skill for Skill workflows. "
+                    "when work splits into two or more independent tasks, or benefits from parallel exploration, "
+                    "context isolation, specialist roles, or independent verification. "
+                    "Prior retrieval and matching installed experts are optional; the plan may use only inline roles. "
+                    "Call this tool when the user explicitly requests capability orchestration. "
+                    "Use type=skill for Skill workflows. "
                     "Pass shortlisted exact installed IDs for the selected type "
                     "in candidate_ids, or omit it when no candidate is known. Use "
                     "discovery metadata directly; do not call skill_tool, read_file, or read "
-                    "any SKILL.md before composing a Skill workflow. Ask for any missing inputs "
-                    "reported by the plan. For a ready Skill plan, choose one currently executable Skill, "
+                    "any SKILL.md before composing a Skill workflow. For a Skill plan with needs_input, "
+                    "ask for the reported inputs. For a ready Skill plan, choose one currently executable Skill, "
                     "read only that Skill's SKILL.md immediately before executing it, and do "
-                    "not preload all selected Skill instructions. A ready expert plan describes task assignments "
-                    "and deliverable handoffs. Discovery, comparison, "
+                    "not preload all selected Skill instructions. When the user requests completed work, "
+                    "execute a ready expert plan through task_tool(plan_id, node_id) in dependency order "
+                    "when plan dispatch is available. Trust completed node outputs and integrate them; "
+                    "do not replace the plan with your own implementation. Present without executing only "
+                    "for planning-only requests or Plan mode; report unavailable dispatch. Expert missing_inputs "
+                    "are advisory; resolve concrete blockers while continuing unaffected branches. Discovery, comparison, "
                     "and recommendation alone do not require this tool. "
                     "If it returns graph_build_timeout or manual_graph_build, do not retry "
                     "graph tools in the same round."
@@ -429,6 +464,7 @@ class SymphonyToolkit:
                             "items": {"type": "string"},
                             "description": "Legacy alias for candidate_ids when type=skill. Supply only one field.",
                         },
+                        **({"inputs": PLANNING_INPUTS_SCHEMA} if supports_planning_inputs() else {}),
                     },
                     "required": ["query", "type"],
                 },

@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from graphlib import TopologicalSorter
 from typing import Any
@@ -40,6 +40,7 @@ class ExpertTask:
     expert_id: str | None
     inputs: dict[str, str]
     outputs: dict[str, str]
+    external_input_names: tuple[str, ...] = ()
 
     @classmethod
     def from_node(cls, node: dict[str, Any]) -> ExpertTask:
@@ -56,9 +57,20 @@ class ExpertTask:
         outputs = _ports(metadata["outputs"])
         if not outputs:
             raise ValueError("Expert tasks must declare outputs")
-        return cls(_text(metadata["task"]), role, description, expert_id, _ports(metadata["inputs"]), outputs)
+        external_inputs = metadata.get("external_inputs", [])
+        if not isinstance(external_inputs, list):
+            raise ValueError("Expert task external inputs must be an array of names")
+        return cls(
+            _text(metadata["task"]), role, description, expert_id, _ports(metadata["inputs"]), outputs,
+            tuple(dict.fromkeys(_text(name) for name in external_inputs)),
+        )
 
-    def query(self, request: str, inputs: dict[str, Any]) -> str:
+    def query(
+        self,
+        request: str,
+        inputs: dict[str, Any],
+        external_inputs: dict[str, dict[str, str]],
+    ) -> str:
         assignment = {
             "user_request": request,
             "inputs": inputs,
@@ -67,6 +79,8 @@ class ExpertTask:
             "task": self.task,
             "outputs": list(self.outputs.values()),
         }
+        if external_inputs:
+            assignment["external_inputs"] = external_inputs
         return "Complete the assigned task described below.\n\n" + json.dumps(assignment, ensure_ascii=False)
 
     def read_outputs(self, output: object) -> dict[str, Any]:
@@ -109,10 +123,17 @@ class ExpertTaskPlan:
     incoming: dict[str, list[_Handoff]]
     downstream: dict[str, set[str]]
     results: dict[str, dict[str, Any]] = field(default_factory=dict)
+    planning_inputs: dict[str, dict[str, str]] = field(default_factory=dict)
 
     @classmethod
-    def from_result(cls, result: Mapping[str, Any], request: str) -> ExpertTaskPlan | None:
-        """Read a graph returned by the composer, independently of tool arguments."""
+    def from_result(
+        cls,
+        result: Mapping[str, Any],
+        request: str,
+        *,
+        planning_inputs: Sequence[dict[str, str]] = (),
+    ) -> ExpertTaskPlan | None:
+        """Read the composer's graph and attach its host-validated inputs."""
         try:
             graph = result["planned_graph"]["graph"]
             metadata = graph["metadata"]
@@ -141,7 +162,10 @@ class ExpertTaskPlan:
                 downstream[source].add(target)
                 order.add(target, source)
             order.prepare()
-            return cls(_text(graph["id"]), request, nodes, incoming, downstream)
+            return cls(
+                _text(graph["id"]), request, nodes, incoming, downstream,
+                planning_inputs={item["name"]: dict(item) for item in planning_inputs},
+            )
         except (AttributeError, KeyError, TypeError, ValueError):
             return None
 
@@ -167,6 +191,15 @@ class ExpertTaskPlan:
         for edge in self.incoming[node_id]:
             inputs.setdefault(edge.input, []).append(self.results[edge.source]["outputs"][edge.output])
         return {name: values[0] if len(values) == 1 else values for name, values in inputs.items()}
+
+    def query_for(self, node_id: str) -> str:
+        node = self.nodes[node_id]
+        external_inputs = {
+            name: self.planning_inputs[name]
+            for name in node.external_input_names
+            if name in self.planning_inputs
+        }
+        return node.query(self.request, self.inputs_for(node_id), external_inputs)
 
     def finish(self, node_id: str, result: dict[str, Any]) -> None:
         self.results[node_id] = result

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -6,6 +7,7 @@ import pytest
 from openjiuwen.core.common.exception.errors import ValidationError
 from openjiuwen.core.foundation.tool import ToolExposure
 from openjiuwen.core.single_agent.ability_manager import AbilityManager
+from openjiuwen.core.sys_operation.cwd import init_cwd
 
 from jiuwenswarm.agents.harness.common.tool_progress_context import (
     bind_tool_progress,
@@ -16,6 +18,7 @@ from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import (
 )
 from jiuwenswarm.runtime.symphony.service import SwarmSymphonyService
 from jiuwenswarm.runtime.symphony.llm import LLMConfig
+from jiuwenswarm.runtime.symphony.planning_inputs import supports_planning_inputs
 
 
 def _minimal_planned_graph(status="ready"):
@@ -243,6 +246,48 @@ async def test_compose_tool_rejects_non_array_candidate_strings(candidate_skill_
                 "candidate_skill_ids": candidate_skill_ids,
             }
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not supports_planning_inputs(), reason="Requires Core planning inputs support")
+async def test_compose_reports_unavailable_workspace_files_by_name_without_blocking(tmp_path):
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    facts = workspace / "facts.md"
+    facts.write_text("Product data", encoding="utf-8")
+    outside = tmp_path / "outside.md"
+    outside.write_text("Outside the project", encoding="utf-8")
+    escape = workspace / "escape.md"
+    try:
+        escape.symlink_to(outside)
+    except (NotImplementedError, OSError):
+        escape = outside
+    init_cwd(str(workspace), workspace=str(workspace))
+    calls = []
+
+    async def handler(query, **kwargs):
+        calls.append(kwargs["inputs"])
+        graph = _minimal_planned_graph()
+        graph["graph"]["metadata"]["plan_kind"] = "expert_tasks"
+        return {"success": True, "planned_graph": graph}
+
+    compose = SymphonyToolkit(SimpleNamespace(plan=handler)).get_tools()[-1]
+    result = await compose.invoke({
+        "query": "Plan a launch",
+        "type": "expert",
+        "inputs": json.dumps([
+            {"name": "facts", "kind": "file", "value": facts.name},
+            {"name": "price", "kind": "file", "value": "missing.md"},
+            {"name": "external", "kind": "file", "value": str(escape)},
+        ]),
+    })
+
+    assert calls == [[{"name": "facts", "kind": "file", "value": str(facts.resolve())}]]
+    graph = result["planned_graph"]["graph"]
+    assert graph["metadata"]["status"] == "ready"
+    assert graph["nodes"]
+    assert [hint["name"] for hint in graph["metadata"]["missing_inputs"]] == ["price", "external"]
+    assert str(outside) not in json.dumps(result)
 
 
 @pytest.mark.asyncio

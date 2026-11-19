@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 from pathlib import Path
@@ -27,12 +28,15 @@ from openjiuwen.core.runner import Runner
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.harness import create_deep_agent
 from openjiuwen.harness.rails import AskUserRail, SkillUseRail
+from openjiuwen.symphony import OrchestrationConfig, OrchestrationService, SymphonyGraphEngine
 
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
 from jiuwenswarm.agents.harness.common.rails.symphony import task_tool as task_tool_module
 from jiuwenswarm.agents.harness.common.rails.symphony.expert_task_plan import ExpertTaskPlan
 from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit
 from jiuwenswarm.agents.harness.team.experts import catalog
+from jiuwenswarm.runtime.symphony.planning_inputs import supports_planning_inputs
+from jiuwenswarm.runtime.symphony.service import SwarmSymphonyService
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.server.runtime.session.session_history import flush_history_writes, load_history_records
 from jiuwenswarm.server.wire_truncate import split_history_record_for_stream
@@ -147,7 +151,7 @@ def _install_experts(tmp_path: Path, monkeypatch) -> dict[str, Path]:
     return receipts
 
 
-def _chat_agent(tmp_path, monkeypatch, plan, reply, *, extra_rails=(), persistent=True):
+def _chat_agent(tmp_path, monkeypatch, plan, reply, *, extra_rails=(), persistent=True, service=None):
     async def compose(query, **kwargs):
         assert query and kwargs["capability_type"] == "expert"
         return plan(query) if callable(plan) else plan
@@ -155,12 +159,13 @@ def _chat_agent(tmp_path, monkeypatch, plan, reply, *, extra_rails=(), persisten
     adapter = JiuWenSwarmDeepAdapter()
     config = {**_CONFIG, "react": {"subagent_runtime": {"enabled": persistent}}}
     adapter._config_base_cache = config
-    toolkit = SymphonyToolkit(service=SimpleNamespace(plan=compose), llm_config_provider=lambda: None)
+    toolkit = SymphonyToolkit(service=service or SimpleNamespace(plan=compose), llm_config_provider=lambda: None)
     monkeypatch.setattr(toolkit, "is_enabled", lambda config=None: True)
     compose_tool = next(tool for tool in toolkit.get_tools(config) if tool.card.name == "symphony_compose_graph")
-    assert set(compose_tool.card.input_params["properties"]) == {
-        "query", "type", "mode", "candidate_ids", "candidate_skill_ids",
-    }
+    properties = {"query", "type", "mode", "candidate_ids", "candidate_skill_ids"}
+    if supports_planning_inputs():
+        properties.add("inputs")
+    assert set(compose_tool.card.input_params["properties"]) == properties
     subagent_rail = adapter._build_subagent_rail(config)
     skill_rail = SkillUseRail(skills_dir=str(tmp_path / "skills"), include_tools=False, skill_mode="all")
     return create_deep_agent(
@@ -187,6 +192,139 @@ def _chat_input(query):
 
 def _tool_results(messages):
     return {message.tool_call_id: message.content for message in messages if isinstance(message, ToolMessage)}
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not supports_planning_inputs(), reason="Requires Core planning inputs support")
+@pytest.mark.parametrize("availability", ["complete", "no-price", "no-attachments"])
+async def test_three_platform_launch_compose_and_dispatch(tmp_path, monkeypatch, availability):
+    query = "根据事实表写小红书首发笔记、公众号活动稿和 B 站脚本，再独立审查。可以查阅平台公开规则。"
+    source_text = "T1 有三个亮度档。"
+    facts = tmp_path / "product-facts.md"
+    facts.write_text(source_text, encoding="utf-8")
+    materials = []
+    if availability != "no-attachments":
+        materials.append({"name": "product_facts", "kind": "file", "value": facts.name})
+    if availability == "complete":
+        materials.append({"name": "approved_price", "kind": "text", "value": "199 元"})
+    names = {item["name"] for item in materials}
+    drafts = {"xhs": "xhs_draft", "wechat": "wechat_draft", "bilibili": "bilibili_script"}
+    missing = [
+        {"name": name, "kind": kind, "description": description}
+        for name, kind, description in (
+            ("product_facts", "file", "产品事实表"),
+            ("approved_price", "text", "已批准的活动价"),
+        )
+        if name not in names
+    ]
+    calls = []
+    started = []
+    plan_id = ""
+
+    async def plan_from_model(messages, **_kwargs):
+        payload = json.loads(messages[-1]["content"])
+        calls.append(payload)
+        assert payload["query"] == query
+        assert payload["inputs"] == [
+            {**item, "value": str(facts.resolve())} if item["kind"] == "file" else item for item in materials
+        ]
+        system_prompt = messages[0]["content"]
+        assert 'Treat "may consult"' in system_prompt
+        if not materials and len(calls) == 1:
+            return SimpleNamespace(content=json.dumps({"status": "needs_input", "missing_inputs": missing}))
+        if not materials:
+            assert "Return a conditional task graph" in system_prompt
+        tasks = []
+        for task, output in {**drafts, "audit": "review"}.items():
+            metadata = _node(task, output)["metadata"]
+            metadata["external_inputs"] = ["product_facts"]
+            if task in {"wechat", "audit"}:
+                metadata["external_inputs"].append("approved_price")
+            if task == "audit":
+                metadata["inputs"] = [{"name": name, "type": "text"} for name in drafts.values()]
+            tasks.append({"id": task, "title": task, **metadata})
+        handoffs = [
+            {"source": task, "target": "audit", "source_output": name, "target_input": name}
+            for task, name in drafts.items()
+        ]
+        return SimpleNamespace(content=json.dumps({
+            "status": "ready", "tasks": tasks, "handoffs": handoffs, "missing_inputs": missing,
+        }))
+
+    core = OrchestrationService(
+        graph_artifact_root=tmp_path / "graph",
+        capability_provider=[],
+        model=SimpleNamespace(invoke=plan_from_model),
+        config=OrchestrationConfig(enabled=True),
+    )
+    host = SwarmSymphonyService()
+    host_config = SimpleNamespace(
+        capability=SimpleNamespace(sources=[]), orchestration=core.config,
+    )
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.get_config", lambda: {})
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: host_config)
+    monkeypatch.setattr(host, "_runtime_for", lambda _config: SimpleNamespace(orchestration=SymphonyGraphEngine(core)))
+
+    async def reply(messages, _tools):
+        nonlocal plan_id
+        user_input = next(msg.content for msg in reversed(messages) if isinstance(msg, UserMessage))
+        results = _tool_results(messages)
+        if user_input.startswith("Complete the assigned task"):
+            assignment = json.loads(user_input.split("\n\n", 1)[1])
+            task = assignment["task"]
+            external = assignment["external_inputs"]
+            assert external["product_facts"]["value"] == str(facts.resolve())
+            assert ("approved_price" in external) == (task in {"wechat", "audit"})
+            read_call_id = f"read-facts-{task}"
+            if read_call_id not in results:
+                return _reply("", (read_call_id, "read_file", {"file_path": external["product_facts"]["value"]}))
+            assert source_text in results[read_call_id]
+            started.append(task)
+            if task == "audit":
+                assert assignment["inputs"] == {name: f"draft from {platform}" for platform, name in drafts.items()}
+                return _reply('{"outputs":{"review":"checked"}}')
+            return _reply(json.dumps({"outputs": {drafts[task]: f"draft from {task}"}}))
+        if user_input == "试用上一轮计划":
+            if "old-plan" not in results:
+                return _reply("", _task_call("task-1", call_id="old-plan", plan_id=plan_id))
+            assert json.loads(results["old-plan"])["status"] == "rejected"
+            return _reply("上一轮的图已失效")
+        if "compose" not in results:
+            args = {"type": "expert", "query": user_input}
+            if materials:
+                args["inputs"] = materials
+            return _reply("", ("compose", "symphony_compose_graph", args))
+        graph = ast.literal_eval(results["compose"])["planned_graph"]["graph"]
+        plan_id = graph["id"]
+        assert graph["metadata"]["status"] == "ready"
+        assert graph["metadata"]["missing_inputs"] == missing
+        assert list(graph["nodes"]) == ["task-1", "task-2", "task-3", "task-4"]
+        if availability == "no-attachments":
+            return _reply("先展示分工")
+        if "early-audit" not in results:
+            return _reply("", _task_call("task-4", call_id="early-audit", plan_id=plan_id))
+        assert json.loads(results["early-audit"])["status"] == "waiting"
+        chosen = ["task-1", "task-2", "task-3"] if availability == "complete" else ["task-1", "task-3"]
+        pending = [_task_call(node, plan_id=plan_id) for node in chosen if f"dispatch-{node}" not in results]
+        if pending:
+            return _reply("", *pending)
+        dispatched = {node: json.loads(results[f"dispatch-{node}"]) for node in chosen}
+        assert all(result["status"] == "completed" for result in dispatched.values()), dispatched
+        if availability == "complete" and "dispatch-task-4" not in results:
+            return _reply("", _task_call("task-4", plan_id=plan_id))
+        return _reply("交付当前结果")
+
+    agent = _chat_agent(tmp_path, monkeypatch, None, reply, service=host)
+    inputs = _chat_input(query)
+    result = await agent.invoke(inputs)
+    assert result["output"] == ("先展示分工" if availability == "no-attachments" else "交付当前结果")
+    if availability == "complete":
+        assert set(started) == {"xhs", "wechat", "bilibili", "audit"}
+        assert started[-1] == "audit"
+        assert (await agent.invoke({**inputs, "query": "试用上一轮计划"}))["output"] == "上一轮的图已失效"
+    else:
+        assert set(started) == ({"xhs", "bilibili"} if availability == "no-price" else set())
+    assert len(calls) == (2 if availability == "no-attachments" else 1)
 
 
 @pytest.mark.asyncio

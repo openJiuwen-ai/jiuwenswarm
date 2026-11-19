@@ -96,13 +96,21 @@ After Skill Retrieval finds relevant skills, the agent narrows the candidate set
 
 The agent can call `symphony_compose_graph` directly when progressive tool loading is enabled.
 
+With a Core version that supports named planning inputs, the optional `inputs` list passes material already available to either planner. Each entry has a unique `name`, a `kind` of `text` or `file`, a string `value`, and an optional `description`. A file value is a readable workspace path. The main agent can pass a fact sheet by reference so a delegated node can read it using its workspace tools.
+
 Skill Orchestration builds a skill chain from the original task, retrieved candidate skills, and their connectable relationships. If the result says no suitable skill is available, install the required skill from the **Skills** page, refresh the skill graph, and compose again.
 
-The agent can plan expert assignments when parallel exploration, context isolation, specialist roles, or independent verification would help. With `type=expert`, one task plan can assign work to installed experts from the published expert layer and to temporary inline roles. The planner follows the session's mode and can define inline roles for work without a suitable installed expert. Each node represents a task, and the tool result records each deliverable and its destination input. The Web flowchart draws one arrow per directed dependency, which can carry multiple deliverables.
+The agent can plan expert assignments when work can be split into two or more independent tasks with clear scopes, inputs, and deliverables, or when parallel exploration, context isolation, specialist roles, or independent verification would help. With `type=expert`, one task plan can assign work to installed experts from the published expert layer and to temporary inline roles. Prior retrieval and a matching installed expert are optional: the plan may consist entirely of inline roles. The planner follows the session's mode. Each node represents a task, and the tool result records each deliverable and its destination input. The Web flowchart draws one arrow per directed dependency, which can carry multiple deliverables.
 
-In single-agent work sessions, `symphony_compose_graph` returns the DAG before delegation begins. For a request to perform the work, the main agent calls `task_tool` with the plan ID and node ID of each ready task in the same turn. Inline roles run as temporary general-purpose agents. Installed native experts run with their template's persona, skills, and tools. Up to five independent nodes can run in parallel. Swarm passes completed outputs to dependent tasks and reports failed or blocked nodes to the main agent. Requests to see only the plan display the DAG.
+When the user explicitly requests capability retrieval or orchestration, the agent is instructed to call the corresponding tool. If both are requested, it retrieves first and then composes; finding no suitable installed expert does not prevent expert planning. If the user requires a particular installed expert that is unavailable, the agent reports that limitation instead of silently replacing it with an inline role.
 
-Each subagent card shows its node's `task` text. The subagent receives the original request, the node task, and upstream outputs when it runs.
+An expert plan can include a valid DAG and notes about missing material. The `ready` status means the graph passed structural validation. In a single-agent work session, a request to complete the task requires the main agent to dispatch applicable plan nodes through `task_tool` with the plan ID and node ID, then dispatch downstream nodes as their dependencies complete. The main agent must not treat the plan as a reference and take over its assignments. Planning-only requests and Plan mode show the plan without executing it. Missing material is advisory: the agent obtains genuine prerequisites, continues unaffected branches, and reports concrete blockers. If plan dispatch is unavailable, it explains the limitation.
+
+The main agent trusts completed expert and inline-role outputs by default and uses them for downstream tasks and final delivery. It coordinates the work, checks acceptance criteria, and integrates the results. Independent verification follows the plan's review node. A concrete error, missing deliverable, conflicting evidence, or failed acceptance criterion calls for a targeted check or correction that preserves valid results. Speculation about quality, consistency, or execution time does not justify redoing the experts' work.
+
+Inline roles run as temporary general-purpose agents. Installed native experts run with their template's persona, skills, and tools. Up to five independent nodes can run in parallel. Swarm passes completed outputs to dependent tasks and reports failed or blocked nodes to the main agent.
+
+Each subagent card shows its node's `task` text. A running node receives the original request, its task, the supplied material it references, and upstream outputs.
 
 Cards for installed experts show the package's display name and avatar. The name follows the interface language and falls back to the package name. An unavailable avatar falls back to the default illustration. History for new runs shows the name and avatar captured at dispatch.
 
@@ -264,6 +272,10 @@ After seeing the route, you can respond in one of these ways:
 - **Plan only**: stop after the orchestration result and use it as a skill-combination suggestion.
 
 > **Tip:** Skill Orchestration only uses currently installed skills and available configuration. If the result says no suitable skill is available, install the required skill first, then refresh or rebuild the skill graph and try again.
+
+#### Inspect expert assignments
+
+In expert orchestration, open the subagent details to see the task, requirements, deliverables, and acceptance criteria for that node. Each deliverable uses the name and format declared in the task graph. The subagent checks its work against the acceptance criteria before submitting it.
 
 ---
 

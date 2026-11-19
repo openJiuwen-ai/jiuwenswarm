@@ -899,6 +899,7 @@ def test_production_uses_only_stable_openjiuwen_symphony_imports():
         "GraphArtifactStore",
         "IONameVocabulary",
         "OrchestrationConfig",
+        "PlanningInput",
         "ScanResult",
         "SkillFolderScanner",
         "SourceSnapshot",

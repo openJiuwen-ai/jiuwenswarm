@@ -35,6 +35,7 @@ from jiuwenswarm.runtime.symphony.llm import (
     bind_request_llm_config,
     reset_request_llm_config,
 )
+from jiuwenswarm.runtime.symphony.planning_inputs import PLANNING_INPUTS_ATTR
 from .expert_task_plan import ExpertTaskPlan, TASK_PLAN_PROVIDER
 from .skillpack_route import COMPOSE_CHOICE, PackRoute, SkillPackRouter, direct_route_mode
 
@@ -123,6 +124,7 @@ class _SymphonyInvokeState:
     original_query: str
     capability_type: str = "skill"
     candidate_ids: list[str] | None = None
+    planning_inputs: tuple[dict[str, str], ...] = ()
     answers: list[str] = field(default_factory=list)
     awaiting_input: bool = False
     pending_recompose: bool = False
@@ -664,6 +666,8 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         args.pop("candidate_ids", None)
         if state.candidate_ids is not None:
             args["candidate_ids"] = list(state.candidate_ids)
+        if state.planning_inputs:
+            args.setdefault("inputs", list(state.planning_inputs))
         ctx.inputs.tool_args = args
         if ctx.inputs.tool_call is not None:
             ctx.inputs.tool_call.arguments = args
@@ -676,10 +680,12 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             return
         result = ctx.inputs.tool_result
         status, _ = self._planned_graph_status(result)
+        planning_inputs = getattr(ctx, PLANNING_INPUTS_ATTR, ())
         if status == "needs_input":
             args = self._tool_args(ctx.inputs)
             state.capability_type = str(args.get("type") or "skill")
             state.candidate_ids = normalize_candidate_ids(args.get("candidate_ids", args.get("candidate_skill_ids")))
+            state.planning_inputs = planning_inputs
             state.awaiting_input = True
             state.pending_recompose = False
             state.expert_plans.clear()
@@ -695,7 +701,7 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             and status == "ready"
         ):
             query = self._resume_query(state) if state.answers else state.original_query
-            plan = ExpertTaskPlan.from_result(result, query)
+            plan = ExpertTaskPlan.from_result(result, query, planning_inputs=planning_inputs)
             if plan is not None:
                 state.expert_plans.setdefault(plan.id, plan)
 
@@ -1463,22 +1469,48 @@ that shortlist or retry `needs_input` in this loop.
             else ""
         )
         expert_guidance = (
-            """For a `ready` graph with `metadata.plan_kind=expert_tasks`, present the plan when the user asks only
-for planning or a diagram. For a request to perform the work, start the assignments
-in the same turn. Call `task_tool` once per executable node with only `plan_id`
-(the returned graph.id) and `node_id` (a key in graph.nodes). Batch up to five
-independent ready nodes in one set of tool calls. A node is ready once all its
-incoming tasks have completed. The tool transfers their named outputs.
-Continue calling `task_tool` as dependencies complete. Skip failed or blocked
-branches and continue independent ones. Use the node results to complete the user's
-request and report any work the plan could not deliver."""
+            """For a `ready` graph with `metadata.plan_kind=expert_tasks`, show the plan without executing
+only when the user asks solely for planning or a diagram, or the session is in
+Plan mode. When the user asks you to complete the task, execute the plan in this
+turn. Dispatch its applicable nodes in dependency order; do not treat the plan
+as reference material and perform their assigned work yourself.
+
+Call `task_tool` with only `plan_id` (the returned graph.id) and `node_id`
+(a key in graph.nodes). Batch up to five independent runnable nodes in one set
+of tool calls. Wait for their results, then dispatch downstream nodes once all
+their incoming tasks have completed. The tool transfers named outputs. Follow
+the tasks' stated conditions. Advisory `missing_inputs` do not cancel execution:
+obtain genuine prerequisites and continue unaffected branches. If a node cannot
+run or fails, report the concrete blocker and address that affected scope.
+
+Trust completed expert and inline-role results by default. Use their returned
+outputs and artifacts directly for downstream tasks and the final delivery.
+Your role is coordination, acceptance checks, and integration. Do not duplicate
+assigned work, independently recompute all results, or rewrite valid deliverables
+because you speculate about quality, consistency, or execution time. Use the
+plan's review node for independent verification. Only a concrete error, missing
+deliverable, conflicting evidence, or failed acceptance criterion justifies a
+targeted check or correction; preserve the valid results.
+
+Executing a ready expert plan for the requested work does not require a separate
+request to use subagents. The restrictions on optional `subagent_spawn` delegation do not
+prevent these `task_tool(plan_id, node_id)` calls or waiting for dependencies."""
             if expert_task_dispatch
             else """Use the expert plan to describe the task assignments and deliverable handoffs
 it supports. Installed expert nodes reference existing experts, and inline
-nodes describe roles for this plan. Present a ready result as a plan."""
+nodes describe roles for this plan. This session does not expose expert-plan
+dispatch. If the user asks for execution, explain that limitation; presenting
+the plan does not complete the requested work."""
         )
         return f"""
 ## Capability Orchestration Contract
+
+When the user explicitly requests capability retrieval, call `capability_search`.
+When the user explicitly requests capability orchestration, call
+`symphony_compose_graph` before substantive execution. If both are requested,
+retrieve first, then compose even when retrieval finds no suitable installed
+expert. Use `type=expert` for task assignments and `type=skill` for Skill
+workflows. If a requested tool is unavailable, explain the limitation.
 
 Call `symphony_compose_graph` with the original user task before executing
 Skills or answering when the user explicitly requests combining or
@@ -1489,11 +1521,21 @@ Skill IDs are sufficient evidence. Pass `type=skill` for this workflow.
 Before starting work, assess whether a separate expert assignment would help.
 If any of the following benefits is clear and you can define the assignment's
 scope and needed context, call `symphony_compose_graph` with the original user
-task and `type=expert`. One expert can take a focused assignment while you
-handle the rest.
+task and `type=expert`. Copy the full user-authored task text verbatim into
+`query`, including all checklist items, constraints, deliverable formats, and
+optional steps with their conditions. One expert can take a focused assignment
+while you handle the rest.
+
+When the compose tool offers `inputs`, pass known facts, confirmed answers,
+and readable workspace file references separately for Skill and expert planning.
+Use the name to identify each item. Pass file references with their purpose or
+version when available. A plan can describe how to obtain material that is missing.
 
 - Parallel exploration: investigate independent regions, sources, or topics
   separately for broader coverage. Combine findings when the task calls for it.
+- Independent tasks: split work into two or more tasks that can be completed
+  independently, each with a clear scope, needed inputs, and deliverable.
+  Two independent tasks are sufficient to use expert orchestration.
 - Context isolation: have an expert filter extensive records, logs, or documents
   and return relevant findings, evidence references, and open questions.
 - Specialist roles: split work that needs distinct tools, domain knowledge, or
@@ -1501,16 +1543,25 @@ handle the rest.
 - Independent verification: give a verifier the artifact, acceptance criteria,
   and tools needed to check facts, compliance, or black-box behavior.
 
-Handle simple work directly. Keep work that repeatedly shares design decisions,
-implementation details, or live state with one agent. Use `capability_search`
+When orchestration is not explicitly requested, handle simple work directly.
+Keep work that repeatedly shares design decisions, implementation details,
+or live state with one agent. Use `capability_search`
 with `type=expert` to find candidates when needed or for expert discovery,
 comparison, or recommendation. Omit `mode` to use the session configuration
 for expert planning.
+
+Expert orchestration does not require prior retrieval or a matching installed
+expert. The planner can use task-scoped inline roles for unmatched work, and
+the entire plan may use inline roles. When no suitable candidate is known,
+omit `candidate_ids` and still compose with `type=expert`. Do not invent expert
+IDs. If the user requires a particular installed expert that is unavailable,
+report that limitation rather than silently substituting an inline role.
 
 {expert_guidance}
 If the result is `no_plan` or covers only part of the task, handle the uncovered
 work through the normal task flow.
 
+When the user has not explicitly requested orchestration:
 Do not call `symphony_compose_graph` for single Skill use, inspection, or
 question, a simple single-Skill command, pure search, listing, comparison, or
 recommendation, or when the user merely mentions a Skill or 技能. Capability
@@ -1525,7 +1576,7 @@ Follow the returned `planned_graph` status, nodes, and edges. For a `ready`
 Skill plan, continue without requesting plan confirmation. Execute one
 currently executable Skill at a time and read
 its SKILL.md only immediately before use. Do not preload Skill instructions.
-For `needs_input`, ask the user for the listed inputs before continuing.
+For a Skill plan with status `needs_input`, ask the user for the listed inputs before continuing.
 For `needs_input` or `no_plan`, do not read Skills merely for orchestration.
 
 If either graph tool returns `graph_build_timeout` or `manual_graph_build`, do

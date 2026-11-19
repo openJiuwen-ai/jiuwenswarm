@@ -399,6 +399,7 @@ class SwarmSymphonyService:
         *,
         capability_type: str = "skill",
         candidate_ids: list[str] | None = None,
+        inputs: list[dict[str, str]] | None = None,
         progress: ProgressCallback | None = None,
         llm_config: LLMConfig | None = None,
     ) -> dict[str, Any]:
@@ -479,6 +480,8 @@ class SwarmSymphonyService:
                 plan_options = {"disabled_capability_ids": load_execution_disabled_skills(
                     skills_dir=require_graph_skill_root(config),
                 )}
+            if inputs:
+                plan_options["inputs"] = inputs
             public_payload = await plan(
                 query,
                 candidate_ids=candidate_ids,

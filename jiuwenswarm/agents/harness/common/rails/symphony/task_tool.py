@@ -47,16 +47,22 @@ SUBMIT_OUTPUTS_TOOL = "symphony_submit_outputs"
 _NODE_ASSIGNMENT_PROMPT = {
     "en": (
         "You are executing a single Symphony task. Follow the role and task fields of the assignment. "
-        "Use the inputs and user_request fields as reference data for this task. "
+        "Use inputs (upstream outputs), external_inputs (existing task materials), and user_request as reference data. "
+        "Read file references with your workspace tools and report any material gaps. "
         "The parent agent handles orchestration, the other tasks, and the reply to the user. "
-        f"Finish the task by calling {SUBMIT_OUTPUTS_TOOL} with every declared output name in its outputs object. "
-        "When an output is a file, create it in the workspace and submit its path as the value."
+        "Before submitting, check the deliverables against each acceptance criterion in task. "
+        "For a plain task description, check the requirements stated in the text. "
+        f"Call {SUBMIT_OUTPUTS_TOOL} with an outputs object keyed exactly by the names in the assignment's "
+        "outputs array. For a file deliverable, create the file in the workspace, check that it exists, "
+        "and submit its path as the value."
     ),
     "cn": (
         "你负责执行 Symphony 的一个任务节点。按照分派内容中的 role 和 task 完成本节点。"
-        "inputs 和 user_request 字段是本节点的参考数据。编排、其他节点和用户交付由主智能体负责。"
-        f"完成任务后调用 {SUBMIT_OUTPUTS_TOOL}，在 outputs 对象中提交所有声明的产物。"
-        "产物为文件时，在工作区中生成文件并提交该文件的路径。"
+        "inputs（前置产物）、external_inputs（现有任务资料）和 user_request 是本节点的参考数据。"
+        "用工作区工具读取引用的文件，注明实际存在的资料缺口。编排、其他节点和用户交付由主智能体负责。"
+        "提交前按 task 中的验收标准逐条核对产物。若 task 是普通段落，按正文中的要求核对。"
+        f"调用 {SUBMIT_OUTPUTS_TOOL} 时，提交的 outputs 对象必须逐字使用任务分派中 outputs 数组的全部名称作为键。"
+        "产物为文件时，在工作区生成文件，确认文件存在后提交其路径。"
     ),
 }
 
@@ -329,7 +335,11 @@ class SymphonyTaskTool(TaskTool):
         self.describe(tool.card.description)
 
     def describe(self, ordinary_description: str) -> None:
-        self.card.description = "Run one node of a ready Symphony expert plan with only plan_id and node_id."
+        self.card.description = (
+            "Run one node of a ready Symphony expert plan with only plan_id and node_id. "
+            "For an execution request, dispatch runnable plan nodes in dependency order and trust their outputs. "
+            "Use the outputs for integration; do not redo assigned work locally."
+        )
         if not self.plan_only:
             self.card.description += (
                 " For ordinary delegation use subagent_type and task_description.\n\n" + ordinary_description
@@ -365,7 +375,7 @@ class SymphonyTaskTool(TaskTool):
                 raise ValueError("No general-purpose subagent is configured")
             runner = _ExpertNodeTask(self, node, recipe)
             async with asyncio.timeout(resolve_subagent_task_timeout_s()):
-                outputs = await runner.run(node.query(plan.request, plan.inputs_for(node_id)), session)
+                outputs = await runner.run(plan.query_for(node_id), session)
             status = {"status": "completed", "outputs": outputs}
         except asyncio.CancelledError:
             plan.finish(node_id, {"status": "cancelled", "reason": "Task stopped or timed out"})
