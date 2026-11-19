@@ -1055,6 +1055,19 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                     ])
         elif interrupt is None and not is_interrupt_result:
             await self._emit_tool_result(session, tc, ctx.inputs.tool_result)
+        # 权限引擎判定（allow/deny）在工具结果时刻经会话通道下发（见 interrupt_helpers）。
+        decisions = ctx.extra.get("_jiuwenswarm_permission_decisions")
+        if isinstance(decisions, dict):
+            info = decisions.pop(tc_id, None)
+            if isinstance(info, dict):
+                await self._emit_permission_decision(
+                    session,
+                    tool_name=str(info.get("tool_name", "")),
+                    tool_call_id=str(info.get("tool_call_id", "") or tc_id),
+                    decision=str(info.get("decision", "")),
+                    matched_rule=str(info.get("matched_rule", "")),
+                    reason=str(info.get("reason", "")),
+                )
         self._symphony_stream_handler.request_force_finish(
             ctx,
             tc,
@@ -1304,6 +1317,42 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             return True
         except Exception:
             logger.debug("ask_user question emit failed", exc_info=True)
+            return False
+
+    @staticmethod
+    async def _emit_permission_decision(
+        session: Session,
+        *,
+        tool_name: str = "",
+        tool_call_id: str = "",
+        decision: str = "",
+        matched_rule: str = "",
+        reason: str = "",
+    ) -> bool:
+        """把权限引擎自身的 allow/deny 判定作为 ``chat.permission_decision`` 事件下发客户端。
+
+        ASK 仍走中断 / ``chat.ask_user_question``；这里只发引擎直接给出的 allow / deny，
+        用于让客户端观测自动权限判定（不含用户决策）。
+        """
+        if decision not in ("allow", "deny"):
+            return False
+        try:
+            await session.write_stream(
+                OutputSchema(
+                    type="chat.permission_decision",
+                    index=0,
+                    payload={
+                        "tool_name": str(tool_name or ""),
+                        "tool_call_id": str(tool_call_id or ""),
+                        "decision": decision,
+                        "matched_rule": str(matched_rule or ""),
+                        "reason": str(reason or ""),
+                    },
+                )
+            )
+            return True
+        except Exception:
+            logger.debug("permission decision emit failed", exc_info=True)
             return False
 
     @staticmethod

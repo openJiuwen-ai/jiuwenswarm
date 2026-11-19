@@ -632,6 +632,70 @@ def build_permission_rail(
                 return await active[0].on_permission_evaluated(request)
             return None
 
+        def _stash_permission_decision(request, decision, matched_rule, reason):
+            """暂存一次 allow/deny 判定（key = tool_call_id），供 after_tool_call 下发。"""
+            if decision not in ("allow", "deny"):
+                return
+            ctx = getattr(request, "ctx", None)
+            extra = getattr(ctx, "extra", None)
+            if not isinstance(extra, dict):
+                return
+            store = extra.setdefault("_jiuwenswarm_permission_decisions", {})
+            if not isinstance(store, dict):
+                return
+            tool_call = getattr(request, "tool_call", None)
+            store[str(getattr(tool_call, "id", "") or "")] = {
+                "tool_name": getattr(tool_call, "name", "") or "",
+                "tool_call_id": str(getattr(tool_call, "id", "") or ""),
+                "decision": decision,
+                "matched_rule": str(matched_rule or ""),
+                "reason": str(reason or ""),
+            }
+
+        async def _forward_permission_decision(request):
+            """引擎自身的 allow/deny 判定 → 暂存，由 ``stream_event_rail.after_tool_call``
+            在工具结果时刻经会话通道下发（permission rail 的 before_tool_call 阶段
+            ``write_stream`` 未进入 consumer 读取窗口，直接发会丢事件）。
+
+            只处理 allow/deny（ask 仍走中断 / ask_user_question），且只观察、不改变判定。
+            """
+            result = getattr(request, "result", None)
+            level = getattr(result, "permission", None)
+            decision = str(getattr(level, "value", level) or "")
+            _stash_permission_decision(
+                request,
+                decision,
+                getattr(result, "matched_rule", ""),
+                getattr(result, "reason", ""),
+            )
+
+        async def _on_permission_decision(request):
+            """始终接线的判定钩子：保留原 behavior/云授权，再把判定转发给客户端。"""
+            external = None
+            if behavior_enabled:
+                try:
+                    external = await _behavior_evaluated(request)
+                except Exception:
+                    logger.warning("[InterruptHelpers] behavior evaluated failed", exc_info=True)
+            try:
+                await _forward_permission_decision(request)
+            except Exception:
+                logger.warning(
+                    "[InterruptHelpers] forward permission decision failed", exc_info=True
+                )
+            # 引擎未判定（undetermined）时，云端授权 / 行为风控的判定同样下发
+            try:
+                ext_level = getattr(external, "permission", None)
+                _stash_permission_decision(
+                    request,
+                    str(getattr(ext_level, "value", ext_level) or ""),
+                    getattr(external, "matched_rule", ""),
+                    getattr(external, "reason", ""),
+                )
+            except Exception:
+                pass
+            return external
+
         host = ToolPermissionHost(
             get_permissions_snapshot=_get_permissions_snapshot,
             persist_allow_rule=_persist_allow_rule,
@@ -644,7 +708,7 @@ def build_permission_rail(
             permission_yaml_path=get_config_file(),
             request_permission_confirmation=_request_permission_confirmation,
             permission_scene_hook=_permission_scene_hook,
-            on_permission_evaluated=_behavior_evaluated if behavior_enabled else None,
+            on_permission_evaluated=_on_permission_decision,
         )
 
         permission_rail = PermissionInterruptRail(
