@@ -2499,17 +2499,20 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             handle_custom_agent_upload_http,
         )
 
+        length = self._parse_content_length()
         # Custom agents install into this machine's user workspace, which a
         # routed multi-user AgentServer does not share.
         if _uses_agentos_routing():
+            self._discard_request_body(length)
             self._write_json(503, {"error": "custom agents are not supported in AgentOS mode"})
             return
-        if self._parse_content_length() > MAX_CUSTOM_AGENT_UPLOAD_BYTES:
+        if length > MAX_CUSTOM_AGENT_UPLOAD_BYTES:
+            self._discard_request_body(length)
             self._write_json(413, {"error": "upload too large"})
             return
         status, payload = handle_custom_agent_upload_http(
             content_type=self.headers.get("Content-Type", ""),
-            body=self._read_request_body(),
+            body=self.rfile.read(length) if length > 0 else b"",
         )
         self._write_json(status, payload)
 
