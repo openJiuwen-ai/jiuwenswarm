@@ -33,7 +33,12 @@ from jiuwenswarm.dotenv_early import parse_dotenv_early
 parse_dotenv_early("jiuwenswarm-start")
 
 # --- Now safe to import jiuwenswarm modules ---
-from jiuwenswarm.common.utils import get_env_file, get_root_dir, get_user_workspace_dir, is_package_installation
+from jiuwenswarm.common.utils import (
+    get_env_file,
+    get_root_dir,
+    get_user_workspace_dir,
+    is_package_installation,
+)
 from jiuwenswarm.common.process_supervision import application_shutdown, terminate_service_tree
 from jiuwenswarm.instance_manager import (
     InstanceConfig,

@@ -18,6 +18,7 @@ from jiuwenswarm.server.runtime.marketplace.hub_package_downloader import (
     HubPackageDownloader,
 )
 from jiuwenswarm.server.runtime.marketplace.hub_asset_port import (
+    HubAssetDetail,
     HubAssetPort,
     HubAssetQuery,
     HubDownloadRequest,
@@ -40,6 +41,8 @@ PackageConflictValidator = Callable[[str], None]
 PackageIdResolver = Callable[[str, str], str]
 PackageCommittedHook = Callable[[HubInstallRecord], None]
 PackageRollbackHook = Callable[[str], None]
+# Maps (extracted root, Hub package name) to the single directory to install.
+PackageRootLocator = Callable[[Path, str], Path]
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +63,17 @@ class HubPackageInstallResult:
     package_id: str
     destination: Path
     record: HubInstallRecord
+    detail: HubAssetDetail | None = None
 
 
-def _find_package_root(extracted: Path, kind: HubAssetKind) -> Path:
+def _find_package_root(
+    extracted: Path,
+    kind: HubAssetKind,
+    package_name: str = "",
+    locator: PackageRootLocator | None = None,
+) -> Path:
+    if locator is not None:
+        return locator(extracted, package_name)
     candidates = sorted({path.parent for path in extracted.rglob("manifest.json")})
     if kind == "agent_group":
         candidates = [
@@ -91,7 +102,7 @@ async def install_hub_asset_package(
     kind: HubAssetKind,
     asset_id: str,
     destination_root: Path,
-    state_store: HubInstallStateStore,
+    state_store: HubInstallStateStore | None = None,
     package_name_validator: PackageNameValidator,
     package_validator: PackageValidator,
     package_id_resolver: PackageIdResolver | None = None,
@@ -100,13 +111,18 @@ async def install_hub_asset_package(
     on_rollback: PackageRollbackHook | None = None,
     hub_port: HubAssetPort | None = None,
     downloader: HubPackageExtractor | None = None,
+    version: str = "",
+    expected_sha256: str = "",
+    package_root_locator: PackageRootLocator | None = None,
 ) -> HubPackageInstallResult:
     """Resolve, validate, download, atomically commit, and record one Hub package."""
     asset = str(asset_id or "").strip()
     if not asset:
         raise ValueError(f"Hub {kind} asset id is required")
     port = hub_port or create_default_hub_asset_port()
-    detail = await port.query_asset(HubAssetQuery(kind=kind, asset_id=asset))
+    detail = await port.query_asset(
+        HubAssetQuery(kind=kind, asset_id=asset, version=str(version or "").strip())
+    )
     if detail.kind != kind:
         raise ValueError(f"Hub {kind} package type mismatch")
     if detail.asset_id != asset:
@@ -125,7 +141,7 @@ async def install_hub_asset_package(
         )
     if conflict_validator is not None:
         conflict_validator(package_id)
-    owner = state_store.get_by_package_id(package_id)
+    owner = state_store.get_by_package_id(package_id) if state_store is not None else None
     if owner is not None and owner.asset_id != asset:
         raise ValueError(
             f"Hub {kind} package id {package_id!r} is owned by another Hub asset"
@@ -145,6 +161,12 @@ async def install_hub_asset_package(
         raise ValueError(
             f"Hub {kind} artifact version mismatch: expected "
             f"{detail.version!r}, got {artifact.version!r}"
+        )
+    expected = str(expected_sha256 or "").strip().lower()
+    if expected and artifact.checksum_sha256.lower() != expected:
+        raise ValueError(
+            f"Hub {kind} artifact changed: expected checksum {expected!r}, "
+            f"got {artifact.checksum_sha256.lower()!r}"
         )
     if artifact.package_name != package_id:
         # An aliased install still ships the Hub package name inside the archive;
@@ -167,7 +189,9 @@ async def install_hub_asset_package(
     with tempfile.TemporaryDirectory(prefix=f"jiuwenswarm_hub_{kind}_") as temp:
         extracted = Path(temp)
         await package_downloader.download_and_extract(artifact, extracted)
-        package_root = _find_package_root(extracted, kind)
+        package_root = _find_package_root(
+            extracted, kind, hub_package_id, package_root_locator
+        )
         _assert_no_symlinks(package_root)
 
         staging_parent = Path(
@@ -190,15 +214,17 @@ async def install_hub_asset_package(
         installed_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     )
     try:
-        state_store.upsert(record)
+        if state_store is not None:
+            state_store.upsert(record)
         if on_committed is not None:
             on_committed(record)
     except Exception:
         shutil.rmtree(destination, ignore_errors=True)
-        try:
-            state_store.remove(asset)
-        except Exception:
-            logger.exception("Failed to remove Hub install state during rollback")
+        if state_store is not None:
+            try:
+                state_store.remove(asset)
+            except Exception:
+                logger.exception("Failed to remove Hub install state during rollback")
         if on_rollback is not None:
             try:
                 on_rollback(package_id)
@@ -209,6 +235,7 @@ async def install_hub_asset_package(
         package_id=package_id,
         destination=destination,
         record=record,
+        detail=detail,
     )
 
 

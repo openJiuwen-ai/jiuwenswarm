@@ -24,6 +24,7 @@ generated: true
 | [jiuwenswarm/agents/harness/common/tools/cron](#module-jiuwenswarm-agents-harness-common-tools-cron) |
 | [jiuwenswarm/agents/harness/team](#module-jiuwenswarm-agents-harness-team) |
 | [jiuwenswarm/agents/swarm](#module-jiuwenswarm-agents-swarm) |
+| [jiuwenswarm/channels/desktop](#module-jiuwenswarm-channels-desktop) |
 | [jiuwenswarm/channels/tui](#module-jiuwenswarm-channels-tui) |
 | [jiuwenswarm/channels/web](#module-jiuwenswarm-channels-web) |
 | [jiuwenswarm/channels/web/frontend](#module-jiuwenswarm-channels-web-frontend) |
@@ -137,6 +138,14 @@ generated: true
 |---|---|---|---|---|
 | [B_20261106_1132_organization-round-cleanup](jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
 
+<a id="module-jiuwenswarm-channels-desktop"></a>
+
+## jiuwenswarm/channels/desktop
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261119_1416_builtin-extension-discovery](jiuwenswarm/extensions/app_market/B_20261119_1416_builtin-extension-discovery.md) | B | 本地默认启动未加载 Swarm 内置扩展导致 app_market RPC 不可用 | kdgmpw | 无独立 D：本次为本地启动装配缺陷修复，依据现有应用市场扩展契约与 Gateway 扩展加载实现，无独立设计。 |
+
 <a id="module-jiuwenswarm-channels-tui"></a>
 
 ## jiuwenswarm/channels/tui
@@ -218,6 +227,7 @@ generated: true
 | [B_20261103_1636_builtin-catalog-upgrade](jiuwenswarm/server/runtime/skill/builtin-catalog-upgrade.md) | B | 旧内置技能未归一与应用市场入口不明显 | kdgmpw | [D-20261103-1123-builtin-skill-catalog](../designs/active/D-20261103-1123-builtin-skill-catalog/design.md) |
 | [B_20261112_1716_affinity-status-read](jiuwenswarm/server/control/B_20261112_1716_affinity-status-read.md) | B | 控制面遗漏亲和状态导致开关与说明不一致 | MengHan18 | 无独立 D：修复 F_20261110_2026_affinity-settings 的读入口遗漏及用户反馈的开启交互。 |
 | [B_20261112_2025_permission-profile-refresh](jiuwenswarm/server/B_20261112_2025_permission-profile-refresh.md) | B | 刷新后智能审批档位错误回显为默认权限 | nypdmax | 无独立 D：补齐既有 config.get/config.set 权限档位回显契约，无独立设计；审批决策与持久化格式不变。 |
+| [B_20261119_1416_builtin-extension-discovery](jiuwenswarm/extensions/app_market/B_20261119_1416_builtin-extension-discovery.md) | B | 本地默认启动未加载 Swarm 内置扩展导致 app_market RPC 不可用 | kdgmpw | 无独立 D：本次为本地启动装配缺陷修复，依据现有应用市场扩展契约与 Gateway 扩展加载实现，无独立设计。 |
 
 <a id="module-jiuwenswarm-common-config_panel"></a>
 
@@ -237,6 +247,7 @@ generated: true
 | [B_20261105_0941_app-stop-graceful-and-page-close](jiuwenswarm/extensions/app_market/app-stop-graceful-and-page-close.md) | B | 应用市场停止强杀跳过应用清理与页面关闭无感知 | kdgmpw | 无独立 D：修复依据既有契约（app-builder SKILL.md 的"应用负责优雅退出和会话清理、市场只终止进程"与扩展 README 的运行描述），无独立 D；新增契约已固化为 specs/jiuwenswarm/extensions/app_market/S_02_app-market-stop-and-page-lifecycle.md。 |
 | [B_20261105_1130_stale-page-cache-port-reuse](jiuwenswarm/extensions/app_market/stale-page-cache-port-reuse.md) | B | 端口复用后启动新应用显示上一个应用的缓存页面 | kdgmpw | 无独立 D：依据页面容器契约（specs/jiuwenswarm/channels/desktop/S_01_app-market-browser-containers.md 与 specs/jiuwenswarm/extensions/app_market/S_02_app-market-stop-and-page-lifecycle.md）；缓存约束已补入 S_02 不变量与应用开发技能，无独立 D。 |
 | [B_20261105_1459_web-url-host-403](jiuwenswarm/extensions/app_market/web-url-host-403.md) | B | Web 应用入口 403：静态服务未放行应用专属 localhost 主机 | kdgmpw | 无独立 D：依据 S_02_app-market-stop-and-page-lifecycle 的 Web 入口与来源隔离契约；本次修复使实现重新满足既有契约，无独立 D。 |
+| [B_20261119_1416_builtin-extension-discovery](jiuwenswarm/extensions/app_market/B_20261119_1416_builtin-extension-discovery.md) | B | 本地默认启动未加载 Swarm 内置扩展导致 app_market RPC 不可用 | kdgmpw | 无独立 D：本次为本地启动装配缺陷修复，依据现有应用市场扩展契约与 Gateway 扩展加载实现，无独立设计。 |
 
 <a id="module-jiuwenswarm-resources-agent-workspace-skills"></a>
 

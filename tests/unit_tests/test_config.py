@@ -211,15 +211,22 @@ def test_config_refreshes_same_version_build_date_and_preserves_user_values(tmp_
 @pytest.mark.parametrize(
     ("team", "extensions", "expected_dir"),
     [
-        pytest.param({}, None, "${EXTENSION_DIRS:-jiuwenswarm/extensions}", id="local-default"),
+        pytest.param({}, None, "${EXTENSION_DIRS:-};jiuwenswarm/extensions", id="local-default"),
         pytest.param(
             {"runtime": {"mode": "local"}, "transport": {"type": "inprocess"}},
             None,
-            "${EXTENSION_DIRS:-jiuwenswarm/extensions}",
+            "${EXTENSION_DIRS:-};jiuwenswarm/extensions",
             id="explicit-local",
         ),
         pytest.param({}, {"extension_dirs": ""}, "", id="explicit-empty"),
         pytest.param({}, {"extension_dirs": "${EXTENSION_DIRS:-}"}, "${EXTENSION_DIRS:-}", id="legacy-empty"),
+        pytest.param(
+            {},
+            {"extension_dirs": "${EXTENSION_DIRS:-jiuwenswarm/extensions}"},
+            "${EXTENSION_DIRS:-};jiuwenswarm/extensions",
+            id="legacy-local-default",
+        ),
+        pytest.param({}, {"extension_dirs": "D:/custom/ext"}, "D:/custom/ext", id="explicit-directory"),
         pytest.param({"runtime": {"mode": "distributed"}}, None, None, id="distributed-mode"),
         pytest.param({"transport": {"type": "pyzmq"}}, None, None, id="distributed-transport"),
         pytest.param({"transport": {"type": "${DUPLEX_TEST_TRANSPORT:-inprocess}"}}, None, None, id="env-transport"),

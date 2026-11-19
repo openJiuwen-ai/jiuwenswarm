@@ -55,6 +55,7 @@ from jiuwenswarm.common.utils import (
     get_config_dir,
     get_infra_data_dir,
     get_logs_dir,
+    prepare_local_gateway_config,
     prepare_runtime_workspace,
     wait_for_pid_exit,
     wait_for_tcp_port,
@@ -562,6 +563,8 @@ def _build_child_env(
 ) -> dict[str, str]:
     env = os.environ.copy()
     env[DESKTOP_ENV_FLAG] = "1"
+    if name == "gateway":
+        prepare_local_gateway_config(env)
     # 桌面锁定: 仅 web 静态服务的对话页面入口需要校验 token,
     # 其他子进程不注入, API/WS 保持原有访问规则。
     if desktop_token and name == "web":

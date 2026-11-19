@@ -51,6 +51,7 @@ generated: true
 | [jiuwenswarm/server/jiuwenmate](#module-jiuwenswarm-server-jiuwenmate) |
 | [jiuwenswarm/server/runtime](#module-jiuwenswarm-server-runtime) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-jiuwenswarm-server-runtime-agent_adapter) |
+| [jiuwenswarm/server/runtime/marketplace](#module-jiuwenswarm-server-runtime-marketplace) |
 | [jiuwenswarm/server/runtime/session](#module-jiuwenswarm-server-runtime-session) |
 | [jiuwenswarm/server/runtime/skill](#module-jiuwenswarm-server-runtime-skill) |
 | [scripts](#module-scripts) |
@@ -214,6 +215,7 @@ generated: true
 | [F_20261103_1149_builtin-skill-catalog](builtin-skill-catalog.md) | F | 内置能力总目录实施记录 | kdgmpw | [D-20261103-1123-builtin-skill-catalog](../designs/active/D-20261103-1123-builtin-skill-catalog/design.md) |
 | [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 | [F_20261117_1752_colleague-swarmchat](F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
+| [F_20261119_1039_app-hub](F_20261119_1039_app-hub.md) | F | Hub 应用分发与本地安装实施 | kdgmpw | 无独立 D：设计输入为仓库外部的《App Hub 应用资产方案设计》与《App Hub 双仓实施方案》，未在 .agents/agent-docs/designs 建立 D 记录。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-features-settings"></a>
 
@@ -271,6 +273,7 @@ generated: true
 |---|---|---|---|---|
 | [F_20261103_1106_app-market-containers-and-editing](app-market-implementation.md) | F | 应用市场浏览器容器与编辑会话 | default | 无独立 D：用户明确授权初步本地实现，无独立设计文档。 |
 | [F_20261103_1501_app-role-session](app-role-session.md) | F | 保留基础系统提示的轻量 NPC 会话 | kdgmpw | [D-20261103-1444-app-role-session](../designs/active/D-20261103-1444-app-role-session/design.md) |
+| [F_20261119_1039_app-hub](F_20261119_1039_app-hub.md) | F | Hub 应用分发与本地安装实施 | kdgmpw | 无独立 D：设计输入为仓库外部的《App Hub 应用资产方案设计》与《App Hub 双仓实施方案》，未在 .agents/agent-docs/designs 建立 D 记录。 |
 
 <a id="module-jiuwenswarm-extensions-sdk"></a>
 
@@ -391,6 +394,14 @@ generated: true
 | [F_20261104_1225_npc-team-member-sessions](F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](../designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
 | [F_20261110_1438_opencode-go-provider](F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 | [F_20261111_1755_team-leader-goal](F_20261111_1755_team-leader-goal.md) | F | 调度模式领导目标驱动设置实施与验证 | alan_cheng | [D-20261111-1722-team-goal-config](../designs/active/D-20261111-1722-team-goal-config/design.md) |
+
+<a id="module-jiuwenswarm-server-runtime-marketplace"></a>
+
+## jiuwenswarm/server/runtime/marketplace
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F_20261119_1039_app-hub](F_20261119_1039_app-hub.md) | F | Hub 应用分发与本地安装实施 | kdgmpw | 无独立 D：设计输入为仓库外部的《App Hub 应用资产方案设计》与《App Hub 双仓实施方案》，未在 .agents/agent-docs/designs 建立 D 记录。 |
 
 <a id="module-jiuwenswarm-server-runtime-session"></a>
 

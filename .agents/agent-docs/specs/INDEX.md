@@ -43,6 +43,7 @@ generated: true
 | [jiuwenswarm/server/jiuwenmate](#module-jiuwenswarm-server-jiuwenmate) |
 | [jiuwenswarm/server/runtime](#module-jiuwenswarm-server-runtime) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-jiuwenswarm-server-runtime-agent_adapter) |
+| [jiuwenswarm/server/runtime/marketplace](#module-jiuwenswarm-server-runtime-marketplace) |
 | [jiuwenswarm/server/runtime/session](#module-jiuwenswarm-server-runtime-session) |
 | [jiuwenswarm/server/runtime/skill](#module-jiuwenswarm-server-runtime-skill) |
 | [scripts](#module-scripts) |
@@ -151,6 +152,7 @@ generated: true
 | [S_02_app-market-stop-and-page-lifecycle](jiuwenswarm/extensions/app_market/app-market-lifecycle.md) | S | 应用停止协议与页面联动 | kdgmpw | — |
 | [S_02_colleague-swarmchat](jiuwenswarm/server/runtime/S_02_colleague-swarmchat.md) | S | SwarmChat AI 同事接入契约 | weichenhao | — |
 | [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
+| [S_03_app-hub-distribution](jiuwenswarm/extensions/app_market/S_03_app-hub-distribution.md) | S | Hub 应用分发与本地安装契约 | kdgmpw | — |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-components-AppMarketPanel"></a>
 
@@ -211,6 +213,7 @@ generated: true
 |---|---|---|---|---|
 | [S_01_app-session-project](jiuwenswarm/extensions/app_market/app-session-project.md) | S | 应用角色会话的项目归属 | kdgmpw | — |
 | [S_02_app-market-stop-and-page-lifecycle](jiuwenswarm/extensions/app_market/app-market-lifecycle.md) | S | 应用停止协议与页面联动 | kdgmpw | — |
+| [S_03_app-hub-distribution](jiuwenswarm/extensions/app_market/S_03_app-hub-distribution.md) | S | Hub 应用分发与本地安装契约 | kdgmpw | — |
 
 <a id="module-jiuwenswarm-extensions-sdk"></a>
 
@@ -300,6 +303,14 @@ generated: true
 | [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 | [S_03_native-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | — |
 | [S_04_coding-document-memory](jiuwenswarm/server/runtime/agent_adapter/S_04_coding-document-memory.md) | S | Coding 文档记忆接入契约 | Wang Tao | — |
+
+<a id="module-jiuwenswarm-server-runtime-marketplace"></a>
+
+## jiuwenswarm/server/runtime/marketplace
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_03_app-hub-distribution](jiuwenswarm/extensions/app_market/S_03_app-hub-distribution.md) | S | Hub 应用分发与本地安装契约 | kdgmpw | — |
 
 <a id="module-jiuwenswarm-server-runtime-session"></a>
 

@@ -1,11 +1,17 @@
 """Persistent app editor association and routed Core failure boundaries."""
 import asyncio
+from pathlib import Path
 
 import pytest
 from jiuwenswarm.common.schema.message import ReqMethod
 
 from jiuwenswarm.extensions.app_market.editor_sessions import AppEditorSessions, EditorSessionError
 from jiuwenswarm.extensions.app_market.manager import AppMarketManager
+
+
+def page_dir(manager, app_id):
+    manifest = manager._service._storage.load_manifest(app_id)
+    return Path(manifest.work_dir).resolve()
 
 
 @pytest.fixture
@@ -17,18 +23,36 @@ def editor(tmp_path):
     return manager, page, app["app_id"]
 
 
-def core(calls, sessions):
+def core(calls, sessions, projects=None):
+    projects = projects if projects is not None else [{"project_id": "2048", "work_mode": "code", "project_dir": "/tmp/source"}]
+
     async def request(method, params):
         calls.append((method, params))
         if method == ReqMethod.SESSION_GET_METADATA:
             session = sessions.get(params["session_id"])
             return (True, session) if session else (False, {"code": "NOT_FOUND"})
         if method == ReqMethod.PROJECT_LIST:
-            return True, {"projects": [{"project_id": "2048", "work_mode": "code"}]}
+            return True, {"projects": list(projects)}
+        if method == ReqMethod.PROJECT_GIT_STATUS:
+            return True, {"repo": {"is_git": True}}
+        if method == ReqMethod.PROJECT_RESTORE:
+            for project in projects:
+                if project.get("project_id") == params.get("project_id"):
+                    project["hidden"] = False
+            return True, {"project": next(p for p in projects if p.get("project_id") == params.get("project_id"))}
+        if method == ReqMethod.PROJECT_CREATE:
+            project = {
+                "project_id": f"proj-{len(projects) + 1}",
+                "project_dir": params["project_dir"],
+                "work_mode": params["work_mode"],
+                "name": params["name"],
+            }
+            projects.append(project)
+            return True, {"project": project}
         if method == ReqMethod.SESSION_CREATE:
             await asyncio.sleep(0)
             sid = f"edit-{len(sessions)}"
-            sessions[sid] = {"project_id": params["project_id"], "work_mode": params["work_mode"], "title": params["title"]}
+            sessions[sid] = {"project_id": params["project_id"], "work_mode": params["work_mode"], "title": params.get("title", "")}
             return True, {"session_id": sid}
         raise AssertionError(method)
     return request
@@ -57,7 +81,9 @@ def test_editor_is_shared_across_concurrent_clicks_restart_and_republish(editor)
     restarted = AppMarketManager(str(manager._service._storage.data_dir))
     del sessions["source"]  # Restoring an editor does not depend on the original session.
     third = asyncio.run(AppEditorSessions(restarted._service._storage).open(app_id, "alice", request, {}))
-    assert third == second
+    assert third["created"] is False
+    assert third["session"] == second["session"]
+    assert third["project_id"] == second["project_id"]
     assert len([m for m, _ in calls if m == ReqMethod.SESSION_CREATE]) == 1
 
 
@@ -84,20 +110,42 @@ def test_deleted_binding_is_replaced_but_transient_failure_is_not(editor):
 
 
 @pytest.mark.parametrize("reason", ["wrong-owner", "missing-source", "hidden-project", "missing-project"])
-def test_invalid_source_or_owner_never_creates_a_session(editor, reason):
+def test_source_project_fallbacks_and_owner_boundary(editor, reason):
     manager, _, app_id = editor
     calls = []
     sessions = {} if reason == "missing-source" else {"source": {"project_id": "2048", "work_mode": "code"}}
-    base_request = core(calls, sessions)
+    projects = [{"project_id": "2048", "work_mode": "code", "project_dir": "/tmp/source"}]
+    if reason == "hidden-project":
+        projects[0]["hidden"] = True
+    elif reason == "missing-project":
+        projects = []
+    base_request = core(calls, sessions, projects)
 
-    async def request(method, params):
-        if method == ReqMethod.PROJECT_LIST and reason in {"hidden-project", "missing-project"}:
-            return True, {"projects": [{"project_id": "2048", "hidden": True}] if reason == "hidden-project" else []}
-        return await base_request(method, params)
+    if reason == "wrong-owner":
+        with pytest.raises(EditorSessionError):
+            asyncio.run(
+                AppEditorSessions(manager._service._storage).open(
+                    app_id, "bob", base_request, {}
+                )
+            )
+        assert not any(m == ReqMethod.SESSION_CREATE for m, _ in calls)
+        return
 
-    with pytest.raises(EditorSessionError):
-        asyncio.run(AppEditorSessions(manager._service._storage).open(app_id, "bob" if reason == "wrong-owner" else "alice", request, {}))
-    assert not any(m == ReqMethod.SESSION_CREATE for m, _ in calls)
+    result = asyncio.run(
+        AppEditorSessions(manager._service._storage).open(app_id, "alice", base_request, {})
+    )
+    assert result["created"] is True
+    assert result["project_id"]
+    manifest = manager._service._storage.load_manifest(app_id)
+    assert manifest.project_id == result["project_id"]
+    assert manifest.project_dir == result["project_dir"]
+    # Hidden source projects are restored and reused; projects that are truly
+    # missing fall back to a project rooted at the app directory.
+    if reason == "hidden-project":
+        assert manifest.project_dir == "/tmp/source"
+        assert any(m == ReqMethod.PROJECT_RESTORE for m, _ in calls)
+    else:
+        assert manifest.project_dir == str(page_dir(manager, app_id))
 
 
 def test_delete_during_creation_cannot_resurrect_app(editor):
@@ -115,3 +163,59 @@ def test_delete_during_creation_cannot_resurrect_app(editor):
         asyncio.run(AppEditorSessions(manager._service._storage).open(app_id, "alice", request, {"title": "Edit"}))
     assert exc.value.code == "CONFLICT"
     assert manager._service._storage.load_manifest(app_id) is None
+
+
+def _git_init_request(calls, sessions, project_dir):
+    projects = [{"project_id": "2048", "work_mode": "code", "project_dir": str(project_dir)}]
+    sessions["source"] = {"project_id": "2048", "work_mode": "code"}
+
+    async def request(method, params):
+        calls.append((method, params))
+        if method == ReqMethod.SESSION_GET_METADATA:
+            return True, sessions["source"]
+        if method == ReqMethod.PROJECT_LIST:
+            return True, {"projects": projects}
+        if method == ReqMethod.PROJECT_GIT_STATUS:
+            return False, {"error": "not a git repository", "code": "NOT_GIT_REPOSITORY"}
+        if method == ReqMethod.PROJECT_GIT_INIT:
+            return True, {"repo": {"is_git": True}}
+        if method == ReqMethod.SESSION_CREATE:
+            sessions["edit-1"] = {
+                "project_id": params["project_id"],
+                "work_mode": params["work_mode"],
+            }
+            return True, {"session_id": "edit-1"}
+        raise AssertionError(method)
+
+    return request
+
+
+def test_editor_initializes_git_when_project_has_no_repository(editor, tmp_path):
+    manager, _page, app_id = editor
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    calls, sessions = [], {}
+    request = _git_init_request(calls, sessions, source_dir)
+
+    result = asyncio.run(
+        AppEditorSessions(manager._service._storage).open(app_id, "alice", request, {})
+    )
+
+    assert result["git_available"] is True
+    assert result["git_initialized"] is True
+    assert [method for method, _ in calls].count(ReqMethod.PROJECT_GIT_INIT) == 1
+    # The app reuses the user's source project here; never write into it.
+    assert not (source_dir / ".gitignore").exists()
+
+
+def test_editor_writes_gitignore_only_for_app_owned_project(editor, tmp_path):
+    manager, _page, app_id = editor
+    calls, sessions = [], {}
+    request = _git_init_request(calls, sessions, tmp_path)
+
+    result = asyncio.run(
+        AppEditorSessions(manager._service._storage).open(app_id, "alice", request, {})
+    )
+
+    assert result["git_initialized"] is True
+    assert (tmp_path / ".gitignore").is_file()

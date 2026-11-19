@@ -2,7 +2,6 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import React, { act } from 'react';
-import { createRoot } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
 import i18next from 'i18next';
 import { initReactI18next } from 'react-i18next';
@@ -13,6 +12,7 @@ Object.assign(globalThis, {
   document: dom.window.document,
   localStorage: dom.window.localStorage,
   sessionStorage: dom.window.sessionStorage,
+  Event: dom.window.Event,
   CustomEvent: dom.window.CustomEvent,
   MutationObserver: dom.window.MutationObserver,
   ResizeObserver: class { observe() {} disconnect() {} },
@@ -20,6 +20,7 @@ Object.assign(globalThis, {
   requestAnimationFrame: (fn) => setTimeout(fn, 0),
   cancelAnimationFrame: clearTimeout,
 });
+const { createRoot } = await import('react-dom/client');
 window.requestAnimationFrame = globalThis.requestAnimationFrame;
 window.cancelAnimationFrame = globalThis.cancelAnimationFrame;
 const resources = JSON.parse(readFileSync(new URL('../src/i18n/locales/en.json', import.meta.url)));
@@ -116,7 +117,108 @@ async function mount(handler, props = {}) {
   };
 }
 
+for (const desktop of [false, true]) {
+  test(`${desktop ? 'Electron' : 'Web'} installs from the second market page using the default directory`, async () => {
+    if (desktop) window.jiuwenDesktop = { isElectron: true };
+    const ctx = await mount((method, params) => {
+      if (method === 'app_market.market_list') {
+        const id = `app-${params.page}`;
+        return { total: 51, items: [{ asset_id: id, display_name: id, public_latest_version: '1', tags: [] }] };
+      }
+      if (method === 'app_market.market_detail') return { asset_id: params.asset_id, version: '1', checksum_sha256: 'a'.repeat(64) };
+      if (method === 'app_market.install_dir_default') return { path: '/workspace/apps' };
+      if (method === 'app_market.install') return { job_id: 'install-job' };
+      if (method === 'app_market.install_status') return { state: 'done', phase: 'done' };
+      return response(method);
+    });
+    try {
+      await click(document.querySelector('button[data-variant="market"]'));
+      await click(find('common-pagination-next'));
+      await click(find('app-market-install'));
+      assert.equal(find('app-market-install-dir-input').value, '/workspace/apps');
+      await click(find('app-market-install-dir').querySelector('button:last-child'));
+      assert.deepEqual(ctx.calls.find(call => call.method === 'app_market.install')?.params, {
+        asset_id: 'app-2', version: '1', install_dir: '/workspace/apps', expected_sha256: 'a'.repeat(64),
+      });
+    } finally {
+      await ctx.close();
+      delete window.jiuwenDesktop;
+    }
+  });
+}
+
+test('market reinstalls when the registered directory is missing', async () => {
+  const ctx = await mount((method, params) => {
+    if (method === 'app_market.market_list') {
+      return {
+        total: 1,
+        items: [{
+          asset_id: 'app-stale', display_name: 'Stale', public_latest_version: '1', tags: [],
+          installed: true, installed_version: '1', installed_app_id: 'hub-app-stale',
+          work_dir_missing: true,
+        }],
+      };
+    }
+    if (method === 'app_market.market_detail') {
+      return {
+        asset_id: 'app-stale', version: '1', checksum_sha256: 'a'.repeat(64),
+        installed: true, installed_app_id: 'hub-app-stale', installed_work_dir_missing: true,
+      };
+    }
+    if (method === 'app_market.delete') return { deleted: true };
+    if (method === 'app_market.install_dir_default') return { path: '/workspace/apps' };
+    if (method === 'app_market.install') return { job_id: 'install-job' };
+    if (method === 'app_market.install_status') return { state: 'done', phase: 'done' };
+    return response(method);
+  });
+  try {
+    await click(document.querySelector('button[data-variant="market"]'));
+    assert.equal(find('app-market-install').textContent.trim(), i18next.t('appMarket.reinstall'));
+    await click(find('app-market-install'));
+    await click(find('app-market-install-dir').querySelector('button:last-child'));
+    const methods = ctx.calls.map(call => call.method);
+    const deleted = methods.indexOf('app_market.delete');
+    const installed = methods.indexOf('app_market.install');
+    assert.ok(deleted >= 0, 'stale registration is removed');
+    assert.ok(installed > deleted, 'install runs after deregistration');
+    assert.equal(
+      ctx.calls.find(call => call.method === 'app_market.delete')?.params.app_id,
+      'hub-app-stale',
+    );
+    assert.equal(
+      ctx.calls.find(call => call.method === 'app_market.install')?.params.asset_id,
+      'app-stale',
+    );
+  } finally {
+    await ctx.close();
+  }
+});
+
 const response = (method, instances = []) => (method === 'app_market.list' ? { apps: [app] } : { instances });
+
+test('uninstall removes the Hub app card and reports incomplete local cleanup', async () => {
+  const directory = '/workspace/apps/gomoku';
+  const ctx = await mount(method => {
+    if (method === 'app_market.list') return { apps: [{ ...app, source: 'hub' }] };
+    if (method === 'app_market.uninstall') {
+      return { cleanup_warning: 'Application files are locked', work_dir: directory };
+    }
+    return response(method);
+  });
+  try {
+    await click(card('gomoku').querySelector('[data-testid="app-market-delete"]'));
+    assert.equal(card('gomoku'), null);
+    assert.deepEqual(ctx.calls.find(call => call.method === 'app_market.uninstall')?.params, {
+      app_id: 'gomoku', remove_files: true,
+    });
+    assert.equal(
+      document.querySelector('[role="status"]').textContent,
+      i18next.t('appMarket.uninstallCleanupWarning', { directory }),
+    );
+  } finally {
+    await ctx.close();
+  }
+});
 
 // 应用市场已是侧边栏一级入口（AppMarketPage）：页头 + 市场面板的独立页面，
 // 不再经由扩展页 tab 承载（MarketplacePage 的 'app' tab 已移除）。
@@ -1050,7 +1152,7 @@ function firstEditHarness(request) {
   const requests = { current: new Map() };
   const handler = editHandler({
     pendingAppEditsRef: requests, creatingSessionRef: { current: false }, sessionIdRef: sidRef,
-    request, useChatStore,
+    request, useChatStore, toast: { open: () => {} },
     useSessionStore: { getState: () => ({ getModelSelectionPayload: () => ({}), setAppMarketPreview: () => {} }) },
     t: (key, params) => `${key}:${params?.entryPath ?? ''}`,
     closeSidebarPeek: () => {},

@@ -46,6 +46,21 @@ def _string_tuple(payload: dict[str, Any], key: str) -> tuple[str, ...]:
     )
 
 
+def _optional_int(payload: dict[str, Any], key: str) -> int | None:
+    value = payload.get(key)
+    if isinstance(value, bool) or value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_bool(payload: dict[str, Any], key: str) -> bool | None:
+    value = payload.get(key)
+    return value if isinstance(value, bool) else None
+
+
 @dataclass(frozen=True, slots=True)
 class HubCatalogItem:
     asset_id: str
@@ -112,6 +127,13 @@ class HubVersionDetail:
     preview_url: str = ""
     # Published package profile (capabilities/quick inputs/persona); absent on old versions.
     package_profile: dict[str, Any] | None = None
+    # App distribution metadata; absent for other asset kinds.
+    file_size: int | None = None
+    source_size: int | None = None
+    requires_project: bool | None = None
+    permissions: tuple[str, ...] = ()
+    has_server_script: bool | None = None
+    checksum_sha256: str = ""
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "HubVersionDetail":
@@ -134,6 +156,12 @@ class HubVersionDetail:
             changelog=_optional_string(payload, "changelog"),
             preview_url=_optional_string(payload, "preview_url"),
             package_profile=profile if isinstance(profile, dict) else None,
+            file_size=_optional_int(payload, "file_size"),
+            source_size=_optional_int(payload, "source_size"),
+            requires_project=_optional_bool(payload, "requires_project"),
+            permissions=_string_tuple(payload, "permissions"),
+            has_server_script=_optional_bool(payload, "has_server_script"),
+            checksum_sha256=_optional_string(payload, "checksum_sha256").lower(),
         )
 
 
@@ -146,6 +174,7 @@ class HubArtifact:
     checksum_sha256: str
     asset_type: str = ""
     name: str = ""
+    file_size: int | None = None
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "HubArtifact":
@@ -157,6 +186,7 @@ class HubArtifact:
             checksum_sha256=_optional_string(payload, "checksum_sha256").lower(),
             asset_type=_optional_string(payload, "asset_type"),
             name=_optional_string(payload, "name"),
+            file_size=_optional_int(payload, "file_size"),
         )
 
 

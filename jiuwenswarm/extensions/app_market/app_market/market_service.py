@@ -16,6 +16,22 @@ from .status_manager import StatusManager
 from .skill_adapter import SkillAdapter
 
 
+_HUB_RUNTIME_ENV_KEYS = frozenset({
+    "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT",
+    "HOME", "USERPROFILE", "TMP", "TEMP", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+    # Windows shells, Python and Node resolve temp/profile paths from these.
+    "APPDATA", "LOCALAPPDATA", "PROGRAMDATA", "SYSTEMDRIVE", "HOMEDRIVE", "HOMEPATH",
+    "USERNAME", "USERDOMAIN", "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+    "PROCESSOR_IDENTIFIER", "OS",
+})
+
+
+def _application_env(manifest: AppManifest | None, app_id: str = "") -> dict[str, str]:
+    if (manifest.source == "hub" if manifest is not None else app_id.startswith("hub-")):
+        return {key: value for key, value in os.environ.items() if key.upper() in _HUB_RUNTIME_ENV_KEYS}
+    return dict(os.environ)
+
+
 def _pull_status_confirms(status: InstanceStatus | None, instance: AppInstance) -> bool:
     """pull 模式返回的状态必须匹配实例身份且处于 running 态。"""
     if status is None or status.instance_id != instance.instance_id:
@@ -52,6 +68,7 @@ class MarketService:
         self._gateway_web_port: int | None = None
         self._gateway_host: str | None = None
         self._app_host = "127.0.0.1"
+        self.allow_hub_code = True
 
     def configure_gateway(self, gateway_port=None, web_port=None, gateway_host=None, app_host="127.0.0.1"):
         """Record the addresses injected by the running WorkSwarm instance.
@@ -84,6 +101,22 @@ class MarketService:
             "WORKSWARM_GATEWAY_API_URL": f"ws://{self._gateway_host}:{self._gateway_web_port}/ws",
         }
 
+    @staticmethod
+    def _project_env(manifest: AppManifest | None) -> dict[str, str]:
+        """Explicit application project context for the running app.
+
+        Hub apps have no source session, so they receive their own project
+        identity; apps without a bound project get empty values instead of
+        inheriting an unrelated process environment.
+        """
+        project_id = (manifest.project_id if manifest else "") or ""
+        project_dir = (manifest.project_dir if manifest else "") or ""
+        return {
+            "WORKSWARM_APP_PROJECT_ID": project_id,
+            "WORKSWARM_APP_PROJECT_DIR": project_dir,
+            "WORKSWARM_APP_WORK_MODE": (manifest.project_work_mode if manifest and project_id else ""),
+        }
+
     # ── 应用发布 ──────────────────────────────────────────
 
     async def publish_app(self, app_dir: str, options: dict) -> AppManifest | None:
@@ -100,6 +133,23 @@ class MarketService:
             if existing and existing.owner_id == manifest.owner_id:
                 manifest.editor_session_id = existing.editor_session_id
                 manifest.editor_create_token = existing.editor_create_token
+                # Republishing/updating the same app must not silently drop its
+                # distribution provenance or project binding.
+                for field in (
+                    "source",
+                    "hub_asset_id",
+                    "hub_url",
+                    "artifact_sha256",
+                    "project_id",
+                    "project_dir",
+                    "project_work_mode",
+                ):
+                    if not getattr(manifest, field, "") and getattr(existing, field, ""):
+                        setattr(manifest, field, getattr(existing, field))
+                if "requires_project" not in options:
+                    manifest.requires_project = existing.requires_project
+            if not manifest.source:
+                manifest.source = "local"
             self._storage.save_manifest(manifest.app_id, manifest)
             self._logger.info("应用已上架: %s v%s", manifest.app_id, manifest.version)
             return manifest
@@ -132,11 +182,29 @@ class MarketService:
 
             if manifest.owner_id and manifest.owner_id != owner_id:
                 raise PermissionError("Application belongs to another user")
+            if manifest.source == "hub":
+                if not self._skill_adapter.has_generated_static_start(manifest):
+                    raise RuntimeError("Hub application start script must match the market template")
+                if not self.allow_hub_code and (Path(manifest.work_dir) / "scripts/app_server.py").is_file():
+                    raise RuntimeError("Running Hub server scripts is disabled for this deployment")
+            if manifest.requires_project:
+                project_dir = (manifest.project_dir or "").strip()
+                project_id = (manifest.project_id or "").strip()
+                if not project_id or not manifest.project_work_mode:
+                    raise RuntimeError(
+                        "app_project_unavailable: application declares requires_project "
+                        "but its project binding is missing"
+                    )
+                if not project_dir or not Path(project_dir).is_dir():
+                    raise RuntimeError(
+                        "app_project_unavailable: application declares requires_project "
+                        "but its project binding is missing"
+                    )
             # Starting an already running app should be idempotent. Reuse the
             # existing instance so opening the market card twice cannot create
             # duplicate static servers and duplicate AI sessions.
             for existing in self._storage.list_instances(app_id):
-                if not owner_id or existing.owner_id != owner_id or existing.state != "running":
+                if existing.owner_id != owner_id or existing.state != "running":
                     continue
                 if existing.pid and self._supervisor.is_alive(existing.pid):
                     return existing
@@ -145,11 +213,16 @@ class MarketService:
             # Legacy local registrations bind to the admitted WebChannel owner.
             manifest.owner_id = owner_id
             entry = Path(manifest.work_dir) / (manifest.page_entry_path or "index.html")
-            if entry.is_file() and "WorkSwarmApp" in entry.read_text(encoding="utf-8", errors="replace"):
+            if (
+                manifest.source != "hub"
+                and entry.is_file()
+                and "WorkSwarmApp" in entry.read_text(encoding="utf-8", errors="replace")
+            ):
                 if "ai" not in manifest.permissions:
                     manifest.permissions.append("ai")
             self._storage.save_manifest(app_id, manifest)
-            self._skill_adapter.upgrade_static_scripts(manifest)
+            if manifest.source != "hub":
+                self._skill_adapter.upgrade_static_scripts(manifest)
             instance_id = str(uuid.uuid4())
             port = self._port_manager.allocate(instance_id, manifest.default_port)
             if port == 0:
@@ -172,7 +245,7 @@ class MarketService:
             )
 
             # 构建环境变量
-            env = dict(os.environ)
+            env = _application_env(manifest)
             for key in (
                 "WORKSWARM_GATEWAY_HOST", "WORKSWARM_GATEWAY_PORT",
                 "WORKSWARM_GATEWAY_URL", "WORKSWARM_GATEWAY_WEB_PORT",
@@ -181,6 +254,7 @@ class MarketService:
                 env.pop(key, None)
             env.update(self._gateway_env())
             env["WORKSWARM_SOURCE_SESSION"] = manifest.source_session or ""
+            env.update(self._project_env(manifest))
             env["WORKSWARM_APP_HOST"] = self._app_host
             env["WORKSWARM_APP_PORT"] = str(port)
             env["PORT"] = str(port)
@@ -423,6 +497,9 @@ class MarketService:
             return False
 
     def _stop_script(self, manifest: AppManifest) -> str | None:
+        if manifest.source == "hub":
+            # Use graceful shutdown or the supervised process tree for Hub apps.
+            return None
         pk = platform_key()
         script = manifest.stop_script.get(pk) or manifest.stop_script.get("default")
         if script and manifest.run_type == "static":
@@ -439,7 +516,8 @@ class MarketService:
         return script
 
     def _instance_env(self, instance: AppInstance) -> dict[str, str]:
-        env = dict(os.environ)
+        manifest = self._storage.load_manifest(instance.app_id)
+        env = _application_env(manifest, instance.app_id)
         for key in (
             "WORKSWARM_GATEWAY_HOST", "WORKSWARM_GATEWAY_PORT",
             "WORKSWARM_GATEWAY_URL", "WORKSWARM_GATEWAY_WEB_PORT",
@@ -447,8 +525,8 @@ class MarketService:
         ):
             env.pop(key, None)
         env.update(self._gateway_env())
-        manifest = self._storage.load_manifest(instance.app_id)
         env["WORKSWARM_SOURCE_SESSION"] = (manifest.source_session or "") if manifest else ""
+        env.update(self._project_env(manifest))
         env["WORKSWARM_APP_HOST"] = self._app_host
         env["WORKSWARM_APP_PORT"] = str(instance.port)
         env["PORT"] = str(instance.port)

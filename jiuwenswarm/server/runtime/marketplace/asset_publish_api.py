@@ -16,6 +16,11 @@ import yaml
 
 from openjiuwen.core.extension.versions import parse_version
 
+from jiuwenswarm.common.utils import get_user_workspace_dir
+from jiuwenswarm.enterprise.edition import is_enterprise
+from jiuwenswarm.extensions.app_market.app_market.models import AppManifest
+from jiuwenswarm.extensions.app_market.app_market.storage import APP_MARKET_DIRNAME, MarketStorage
+
 from .asset_package_builder import PackageBuildError
 from .asset_publish_adapters import PublishValidationError
 from .asset_publish_models import PublishIdentity
@@ -23,6 +28,8 @@ from .asset_publish_service import AssetPublishService
 from .asset_publish_store import PublishStore, PublishStoreError
 from .hub_client import HubClient, HubProtocolError
 from .hub_publish_client import PublishAuth
+
+_PUBLISH_KINDS = {"skill", "skillpack", "agent_template", "agent_group", "plugin", "mcp", "system_plugin", "app"}
 
 
 class PublishAPIError(ValueError):
@@ -129,7 +136,54 @@ def _version_key(path: Path) -> tuple[int, int, int, str]:
     return (version.major, version.minor, version.patch, path.name)
 
 
+def _resolve_local_app(local_id: str, owner_id: str) -> AppManifest:
+    if not owner_id and is_enterprise():
+        raise PublishAPIError("RESOURCE_NOT_FOUND")
+    storage = MarketStorage(str(get_user_workspace_dir() / APP_MARKET_DIRNAME))
+    manifest = storage.load_manifest(local_id)
+    if (
+        manifest is None
+        or manifest.app_id != local_id
+        or manifest.owner_id != owner_id
+    ):
+        raise PublishAPIError("RESOURCE_NOT_FOUND")
+    if (
+        manifest.source != "local"
+        or not manifest.work_dir
+        or not Path(manifest.work_dir).is_dir()
+    ):
+        raise PublishAPIError("RESOURCE_NOT_FOUND")
+    if storage.contains_hub_install(Path(manifest.work_dir)):
+        raise PublishAPIError("APP_CONVERT_REQUIRED")
+    return manifest
+
+
+def _app_defaults(app: AppManifest) -> dict:
+    from jiuwenswarm.extensions.app_market.hub_install import AppInstallError, validate_package_name
+    from jiuwenswarm.extensions.app_market.manager import get_app_description
+
+    try:
+        name = validate_package_name(app.name)
+    except AppInstallError:
+        name = re.sub(r"[^a-z0-9]+", "-", app.name.lower()).strip("-")[:64].rstrip("-")
+        try:
+            name = validate_package_name(name)
+        except AppInstallError:
+            name = f"app-{hashlib.sha256(app.app_id.encode()).hexdigest()[:12]}"
+    return {
+        "asset_name": name,
+        "version": app.version if isinstance(app.version, str) else "",
+        "display_name": app.name,
+        "description": get_app_description(app),
+        "tags": [],
+        "visibility": "public",
+        "requires_project": app.requires_project,
+    }
+
+
 def _defaults(kind: str, local_id: str, source) -> dict:
+    if isinstance(source, AppManifest):
+        return _app_defaults(source)
     if isinstance(source, Path):
         if source.is_symlink():
             raise PublishAPIError("UNSAFE_PATH")
@@ -298,6 +352,11 @@ class AssetPublishAPI:
         await self.service.close()
         self.store.close()
 
+    def _resolve(self, kind: str, local_id: str, gateway_user: str):
+        if kind == "app":
+            return _resolve_local_app(local_id, str(gateway_user or ""))
+        return self._resolver(kind, local_id)
+
     async def call(self, method: str, params: dict, *, gateway_user: str) -> dict:
         forbidden_fields = (
             "path", "scope", "workspace", "hub_url", "market_url", "publisher_id", "user_id"
@@ -306,11 +365,11 @@ class AssetPublishAPI:
             raise PublishAPIError("INVALID_PARAMETERS")
         if method == "local_status":
             kind, local_id = params.get("kind"), _safe_id(params.get("local_id"))
-            if kind not in {"skill", "skillpack", "agent_template", "agent_group", "plugin", "mcp", "system_plugin"}:
+            if not isinstance(kind, str) or kind not in _PUBLISH_KINDS:
                 raise PublishAPIError("INVALID_KIND")
             # Workspace access remains enforced by the Web/Gateway route and local
             # resolver. This read-only summary never grants Hub account access.
-            self._resolver(kind, local_id)
+            self._resolve(kind, local_id, gateway_user)
             return {"state": self.store.local_status(kind, local_id)}
         # Local defaults use workspace access; account records still require Hub auth.
         auth_data = params.get("auth")
@@ -357,12 +416,11 @@ class AssetPublishAPI:
                 return self.skillpacks.status(scope, operation_id)
             if method in {"describe", "prepare", "records"}:
                 kind, local_id = params.get("kind"), _safe_id(params.get("local_id"))
-                supported_kinds = {
-                    "skill", "skillpack", "agent_template", "agent_group", "plugin", "mcp", "system_plugin",
-                }
-                if kind not in supported_kinds:
+                if not isinstance(kind, str) or kind not in _PUBLISH_KINDS:
                     raise PublishAPIError("INVALID_KIND")
                 if method == "records":
+                    if kind == "app":
+                        self._resolve(kind, local_id, gateway_user)
                     return {
                         "records": (
                             self.skillpacks.records(scope, local_id)
@@ -371,7 +429,7 @@ class AssetPublishAPI:
                         ),
                         "identity_verified": False,
                     }
-                source = self._resolver(kind, local_id)
+                source = self._resolve(kind, local_id, gateway_user)
                 if method == "describe":
                     capability_errors = list(identity_errors)
                     if pack_request:
@@ -398,7 +456,7 @@ class AssetPublishAPI:
                 metadata = params.get("metadata")
                 if not isinstance(metadata, dict):
                     raise PublishAPIError("INVALID_METADATA")
-                if set(metadata) - {
+                allowed_fields = {
                     "asset_name",
                     "version",
                     "display_name",
@@ -407,7 +465,10 @@ class AssetPublishAPI:
                     "version_desc",
                     "visibility",
                     "dependency_sources",
-                }:
+                }
+                if kind == "app":
+                    allowed_fields.add("requires_project")
+                if set(metadata) - allowed_fields:
                     raise PublishAPIError("INVALID_METADATA")
                 identity = PublishIdentity(
                     kind,
@@ -425,19 +486,19 @@ class AssetPublishAPI:
                         scope, publisher_id, local_id, identity, pack_metadata,
                         auth=auth, member_record_scope=member_record_scope,
                     )
-                prepared = await self.service.prepare(
-                    scope,
-                    local_id,
-                    identity,
-                    {
-                        **{
-                            k: v
-                            for k, v in metadata.items()
-                            if k not in {"asset_name", "version"}
-                        },
-                        "force": force,
-                    },
-                )
+                package_metadata = {
+                    k: v for k, v in metadata.items() if k not in {"asset_name", "version"}
+                }
+                package_metadata["force"] = force
+                if isinstance(source, AppManifest):
+                    package_metadata.setdefault("requires_project", source.requires_project)
+                    package_metadata["app_entry"] = source.page_entry_path or "index.html"
+                    package_metadata["app_permissions"] = source.permissions
+                    prepared = await self.service.prepare_snapshot(
+                        scope, local_id, identity, package_metadata, Path(source.work_dir),
+                    )
+                else:
+                    prepared = await self.service.prepare(scope, local_id, identity, package_metadata)
                 version_conflict = not force and any(
                     record.get("package_name") == identity.package_name
                     and record.get("version") == identity.version
