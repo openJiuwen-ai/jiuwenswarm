@@ -709,7 +709,25 @@ class CronTools:
         if "mode" in normalized_patch:
             normalized_patch["mode"] = normalize_cron_job_mode(normalized_patch.get("mode"))
         if "model_name" in normalized_patch:
-            normalized_patch["model_name"] = resolve_agent_cron_model(normalized_patch.get("model_name"))
+            requested_model = str(normalized_patch.get("model_name") or "").strip()
+            normalized_patch["model_name"] = resolve_agent_cron_model(requested_model)
+            if "model_selection" not in normalized_patch:
+                from jiuwenswarm.enterprise import is_enterprise
+
+                if not is_enterprise():
+                    from jiuwenswarm.common.model_catalog import ModelCatalog
+
+                    matches = [
+                        model for model in ModelCatalog().list_public_models()
+                        if requested_model and requested_model in {model["model_name"], model["alias"]}
+                    ]
+                    if len(matches) > 1:
+                        raise ValueError("ambiguous model name; select a unique alias or model_selection")
+                    # Aliases can share a canonical name. Preserve the target ID
+                    # rather than letting an equal name retain the previous ID.
+                    normalized_patch["model_selection"] = (
+                        {"type": "model", "id": matches[0]["model_id"]} if matches else None
+                    )
         if "mcp" in normalized_patch:
             # 显式传 null/[] 归 None（清除选择）；元素不规范的非列表值同样归 None。
             normalized_patch["mcp"] = normalize_cron_job_mcp(normalized_patch.get("mcp"))

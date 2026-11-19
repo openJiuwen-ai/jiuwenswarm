@@ -157,12 +157,19 @@ class _CronToolsCronBackend(CronToolBackend):
             if raw_selection is not None:
                 from agent_gateway.common.model_selection import ModelSelection
 
-                selection = ModelSelection.model_validate(raw_selection)
-                out = dict(payload)
-                out["model_selection"] = selection.model_dump()
-                if inherited:
-                    out["model_name"] = inherited
-                return out
+                try:
+                    selection = ModelSelection.model_validate(raw_selection)
+                except ValueError:
+                    logger.warning(
+                        "[CronRuntimeBridge] invalid session model selection; "
+                        "trying legacy model inheritance: session=%s", session_id,
+                    )
+                else:
+                    out = dict(payload)
+                    out["model_selection"] = selection.model_dump()
+                    if inherited:
+                        out["model_name"] = inherited
+                    return out
             if not inherited:
                 return payload
             from jiuwenswarm.enterprise import is_enterprise
