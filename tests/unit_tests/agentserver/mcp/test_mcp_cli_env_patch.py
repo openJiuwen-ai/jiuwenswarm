@@ -196,6 +196,30 @@ class TestProxy:
             await proxy.execute_cmd("gitcode repo list")
         assert inner.commands == ["true; export GITCODE_TOKEN=stored; gitcode repo list"]
 
+    async def test_non_identifier_credential_key_is_skipped(self) -> None:
+        """Keys come from a package's token-schema.json (marketplace data);
+        only plain shell identifiers may reach the command text."""
+        inner = _FakeShell()
+        proxy = cli_env_patch._CliEnvShellOperation(inner)
+        with (
+            patch(
+                "jiuwenswarm.server.runtime.mcp.cli_sandbox.sandbox_shell_prefix",
+                return_value="",
+            ),
+            patch.object(
+                cli_env_patch, "_credential_env",
+                return_value={
+                    "GITCODE_TOKEN": "ok",
+                    "BAD; touch /tmp/pwned #": "x",
+                    "TOKEN-KEY": "y",
+                    "": "z",
+                },
+            ),
+        ):
+            await proxy.execute_cmd("gitcode repo list")
+
+        assert inner.commands == ["true; export GITCODE_TOKEN=ok; gitcode repo list"]
+
     async def test_caller_environment_is_passed_through(self) -> None:
         """The proxy only prefixes the command; it no longer rewrites env."""
         inner = _FakeShell()
