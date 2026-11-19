@@ -252,7 +252,7 @@ async def test_mixed_taxonomy_build_and_discovery_use_installed_manifest_paths(t
         assert profile["pinned_index_revision"] == profile["expert_index_snapshot"]["fingerprint"]
         restored = SkillRetrievalToolkit(skill_directories=[skills], config_base=config, frozen_profile=profile)
         try:
-            assert (await restored.session.capability_search(type="expert", operation="list"))["categories"] == [category]
+            assert (await restored.runtime.retrieval.search(type="expert", operation="list"))["categories"] == [category]
         finally:
             await restored.aclose()
 
@@ -364,11 +364,12 @@ async def test_global_build_excludes_session_overlay_and_session_revision_stays_
         assert toolkit.auto_build_result["success"]
         assert toolkit.settings.prompt.context_window_tokens == 200
         assert toolkit.candidate_budget_tokens == 2
-        assert toolkit.session.environment is toolkit.environment
+        tool, = toolkit.get_tools()
+        assert tool.is_bound_to(toolkit.runtime.retrieval, toolkit.environment, toolkit.session_scope)
         original_snapshot = toolkit.frozen_prompt_snapshot
         assert toolkit.session_profile()["pinned_index_revision"] == ""
         state = await finished(runtime)
-        assert state["status"] == "success", state
+        assert state["status"] == "success", state.get("error") or state
         assert state["fresh"]
         assert len(host_model.calls) == 1 and host_model.loops == [asyncio.get_running_loop()]
         assert model.calls == []
@@ -384,7 +385,7 @@ async def test_global_build_excludes_session_overlay_and_session_revision_stays_
         assert toolkit.current_records()[0].source == "installed-local"
         disabled.add("session-only")
         assert set(toolkit.environment.selection_cards()) == {"alpha"}
-        result = await toolkit.session.capability_search(operation="search", query="Session only")
+        result = await toolkit.runtime.retrieval.search(operation="search", query="Session only")
         assert "session-only" not in str(result)
         profile = toolkit.session_profile()
         assert is_valid_skill_retrieval_session_profile(profile)
@@ -393,7 +394,7 @@ async def test_global_build_excludes_session_overlay_and_session_revision_stays_
         if new_toolkit is not None:
             await new_toolkit.aclose()
     with pytest.raises(RuntimeError, match="closed"):
-        await toolkit.session.capability_search(operation="list")
+        await toolkit.runtime.retrieval.search(operation="list")
     assert not model.closed and not host_model.closed
 
 
@@ -592,7 +593,7 @@ async def test_adapter_disabled_tools_are_closed_and_joined_during_cleanup(tmp_p
     adapter._sync_skill_retrieval_tools_for_runtime(config)
     assert adapter._skill_retrieval_toolkit is None
     with pytest.raises(RuntimeError, match="closed"):
-        await toolkit.session.capability_search(operation="list")
+        await toolkit.runtime.retrieval.search(operation="list")
     await adapter.cleanup()
     assert toolkit._close_task.done()
     assert adapter._retired_skill_retrieval_toolkits == []

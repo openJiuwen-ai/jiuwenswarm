@@ -2477,24 +2477,23 @@ class SkillManager:
             runtime = SymphonyRuntime(None, policy)
             try:
                 flat_config = settings.model_copy(update={"use_existing_index": False})
-                all_session = runtime.retrieval.create_session(config=flat_config)
-                all_count = len(all_session.records())
-                session = runtime.retrieval.create_session(
+                all_count = len(runtime.retrieval.bind_search(config=flat_config).records())
+                directory = runtime.retrieval.bind_search(
                     config=flat_config,
                     disabled_capability_ids=lambda: disabled_skills_from_directories(roots),
                     source_by_id=lambda: skill_sources_from_directories(roots),
                 )
-                visible_documents = session.records()
+                visible_documents = directory.records()
                 installed_enabled_count = len(visible_documents)
-                snapshot = session.environment.prompt_snapshot(refresh=False)
+                snapshot = directory.prompt_snapshot(refresh=False)
                 candidate_scale = "small" if snapshot.all_candidates_included else "large"
                 if candidate_scale == "large" and settings.use_existing_index:
-                    session = runtime.retrieval.create_session(
+                    directory = runtime.retrieval.bind_search(
                         config=settings,
                         disabled_capability_ids=lambda: disabled_skills_from_directories(roots),
                         source_by_id=lambda: skill_sources_from_directories(roots),
                     )
-                artifact = session.environment.artifact
+                artifact = directory.artifact
             finally:
                 await runtime.aclose()
         else:
@@ -2767,7 +2766,7 @@ class SkillManager:
             source_by_name=lambda: skill_sources_from_directories(roots),
         )
         try:
-            result = await toolkit.session.capability_search(query=query, type="skill", top_k=10)
+            result = await toolkit.runtime.retrieval.search(query=query, type="skill", top_k=10)
         finally:
             await toolkit.aclose()
         diagnostics = dict(result.detailed_output)

@@ -169,7 +169,7 @@ async def test_unverified_observations_stay_manual(tmp_path, installed, monkeypa
     elif name == "tool_search":
         monkeypatch.setattr(env.rail, "_build_tool_schema", lambda *a: "rebound")
     elif name == "capability_search":
-        monkeypatch.setattr(env.rail._source_toolkit.session, "_execute", lambda *a: "rebound")
+        monkeypatch.setattr(env.tool._func.__self__, "_execute", lambda *a: "rebound")
     elif name == "list_skill":
         monkeypatch.setattr(env.rail, "get_skills_for_session", lambda *a: [])
     elif name == "get_current_goal":
@@ -234,7 +234,7 @@ async def test_observation_rejects_rebound_session_dependencies(installed, monke
     env = await installed(name, {})
     assert _trusted(env)
     if defect == "directory_factory":
-        monkeypatch.setattr(env.rail._source_toolkit.session, "get_tools", lambda: [env.tool])
+        monkeypatch.setattr(env.tool._func.__self__, "get_tools", lambda: [env.tool])
     elif defect == "directory_subclass":
         class ChangedDirectoryTool(type(env.tool)):
             pass

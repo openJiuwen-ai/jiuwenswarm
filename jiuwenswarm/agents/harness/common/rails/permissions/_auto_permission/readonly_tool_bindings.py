@@ -20,7 +20,7 @@ from openjiuwen.harness.rails.context_engineer.context_processor_rail import Con
 from openjiuwen.harness.tools.skills.list_skill import ListSkillTool
 from openjiuwen.harness.tools.goal import GetCurrentGoalTool
 from openjiuwen.harness.tools import compression_recall
-from openjiuwen.symphony import DiscoverySession
+from openjiuwen.symphony.discovery import CapabilitySearchTool
 from jiuwenswarm.common.tool_display import extract_call_goal
 from jiuwenswarm.agents.harness.code.rails.heartbeat.runtime import HeartbeatRailRuntime
 from jiuwenswarm.agents.harness.code.rails.heartbeat.tools import HeartbeatRuntimeBridge
@@ -201,16 +201,9 @@ def _session_observation_binding(invocation, session_id: str, agent) -> bool:
         wrapper = rail._source_toolkit
         if type(wrapper) is not SkillRetrievalToolkit or wrapper._session_scope != session_id:
             return False
-        toolkit = wrapper.session
-        if not _methods_match(
-            toolkit, DiscoverySession, ("get_tools", "capability_search", "_execute", "_continue"),
-        ):
-            return False
-        # The verified public factory supplies the concrete SDK executor without a private-module import.
-        reference, = DiscoverySession.get_tools(toolkit)
         binding = _resolve_owned_readonly_tool(
-            invocation, agent, tool_type=type(reference), rail_type=SkillRetrievalPromptRail,
-            invoke_func=type(reference).invoke,
+            invocation, agent, tool_type=CapabilitySearchTool, rail_type=SkillRetrievalPromptRail,
+            invoke_func=CapabilitySearchTool.invoke,
         )
         if binding is None:
             return False
@@ -218,10 +211,7 @@ def _session_observation_binding(invocation, session_id: str, agent) -> bool:
         return bool(
             rail._agent in (agent, callback_agent) and rail._session_scope == session_id
             and rail._prompt_skillfs is wrapper._environment
-            and toolkit._environment is wrapper._environment and not toolkit._closed
-            and matches_bound_method(
-                tool._func, expected_owner=toolkit, expected_func=DiscoverySession.capability_search,
-            )
+            and CapabilitySearchTool.is_bound_to(tool, wrapper.runtime.retrieval, wrapper._environment, session_id)
         )
     if name == "list_skill":
         binding = _resolve_owned_readonly_tool(

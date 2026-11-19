@@ -74,7 +74,7 @@ class SkillTaxonomyRuntime:
             if previous is not None:
                 await previous.runtime.aclose()
             # Only the configured collection is publishable. Session overlays
-            # belong exclusively to retrieval.create_session().
+            # belong exclusively to the Runtime's search binding.
             result = await job.runtime.retrieval.build(
                 force=force, progress=progress, disabled_capability_ids=self._disabled,
                 source_by_id=self._sources,

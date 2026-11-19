@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from openjiuwen.core.foundation.tool import Tool
-from openjiuwen.symphony import DiscoverySession, SymphonyRuntime
+from openjiuwen.symphony import SymphonyRuntime
 from openjiuwen.symphony.config import RetrievalConfig
 from openjiuwen.symphony.discovery import (
     SkillFS,
@@ -231,7 +231,7 @@ def disabled_skills_from_directories(directories: Sequence[Path]) -> list[str]:
 
 
 class SkillRetrievalToolkit:
-    """Share one Core DiscoverySession between capability search and the Skill prompt."""
+    """Bind the agent's Runtime search and Skill prompt to the same capability view."""
 
     def __init__(self, *, skill_directories: SkillDirectoriesProvider,
                  disabled_skills: DisabledSkillsProvider = None, source_by_name: SkillSourcesProvider = None,
@@ -261,13 +261,13 @@ class SkillRetrievalToolkit:
             restored_index = SkillIndexSnapshot.from_dict(frozen_profile["index_snapshot"])
         self._index_enabled = self._config.retrieval.enabled and configured.use_existing_index
         flat_config = configured.model_copy(update={"use_existing_index": False})
-        self._probe_session = self._runtime.retrieval.create_session(
+        self._environment = self.runtime.retrieval.bind_search(
             session_scope=session_scope, capability_directories=skill_directories,
             visible_capability_ids=visible_skill_names, disabled_capability_ids=disabled_skills,
             source_by_id=source_by_name, config=flat_config,
             search_catalog=self._search_catalog, expert_candidates=self._expert_candidates,
         )
-        flat_snapshot = self._probe_session.environment.prompt_snapshot(refresh=False)
+        flat_snapshot = self._environment.prompt_snapshot(refresh=False)
         baseline = restored_snapshot or flat_snapshot
         self._candidate_scale = "small" if baseline.all_candidates_included else "large"
         self._estimated_candidate_tokens = baseline.estimated_candidate_tokens
@@ -280,18 +280,15 @@ class SkillRetrievalToolkit:
                 pinned["pinned_index_snapshot"] = restored_index
                 pinned["pinned_expert_index_snapshot"] = (
                     frozen_profile.get("expert_index_snapshot")
-                    if frozen_profile.get("expert_taxonomy_root") == str(self._runtime.retrieval.artifact_root)
+                    if frozen_profile.get("expert_taxonomy_root") == str(self.runtime.retrieval.artifact_root)
                     else None
                 )
-            self._session = self._runtime.retrieval.create_session(
+            self._environment = self.runtime.retrieval.bind_search(
                 session_scope=session_scope, capability_directories=skill_directories,
                 visible_capability_ids=visible_skill_names, disabled_capability_ids=disabled_skills,
                 source_by_id=source_by_name, config=self._settings, pin_index_revision=True,
                 search_catalog=self._search_catalog, expert_candidates=self._expert_candidates, **pinned,
             )
-        else:
-            self._session = self._probe_session
-        self._environment = self._session.environment
         self._frozen_prompt_snapshot = restored_snapshot or self._environment.prompt_snapshot(refresh=False)
         restored_cards = frozen_profile.get("selection_cards") if frozen_profile is not None else None
         self._frozen_selection_cards = (
@@ -307,8 +304,8 @@ class SkillRetrievalToolkit:
             self._start_background_index_build()
 
     @property
-    def session(self) -> DiscoverySession:
-        return self._session
+    def runtime(self) -> SymphonyRuntime:
+        return self._runtime
 
     @property
     def environment(self) -> SkillFS:
@@ -373,19 +370,19 @@ class SkillRetrievalToolkit:
             "index_snapshot": pinned.to_dict() if pinned is not None else None,
         }
         if self._has_expert_sources:
-            expert = self._session.pinned_expert_index_snapshot
-            profile["expert_taxonomy_root"] = str(self._runtime.retrieval.artifact_root)
+            expert = self._environment.pinned_expert_index_snapshot
+            profile["expert_taxonomy_root"] = str(self.runtime.retrieval.artifact_root)
             profile["expert_index_snapshot"] = expert.to_dict() if expert is not None else None
         return profile
 
     def current_records(self) -> tuple[SkillRecord, ...]:
-        return self._session.records()
+        return self._environment.records()
 
     def bind_ability_manager(self, provider: Callable[[], Any]) -> None:
         self._ability_manager = provider
 
     def get_tools(self) -> list[Tool]:
-        tool, = self._session.get_tools()
+        tool, = self.runtime.retrieval.get_tools()
         tool.card.description = (
             "Before starting work that needs independent review, distinct domain or platform expertise, "
             "or separate deliverables that can be developed in parallel, call this tool with type=expert "
@@ -442,13 +439,12 @@ class SkillRetrievalToolkit:
         if self._closed:
             return
         self._closed = True
-        self._session.close()
-        self._probe_session.close()
+        self.runtime.retrieval.close_search()
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        self._close_task = loop.create_task(self._runtime.aclose(), name="symphony-discovery-close")
+        self._close_task = loop.create_task(self.runtime.aclose(), name="symphony-discovery-close")
         self._close_task.add_done_callback(self._consume_close)
 
     @staticmethod
@@ -464,7 +460,7 @@ class SkillRetrievalToolkit:
         if self._close_task is not None:
             await asyncio.shield(self._close_task)
         else:
-            await self._runtime.aclose()
+            await self.runtime.aclose()
 
 
 def resolve_skill_retrieval_strategy(

@@ -122,7 +122,7 @@ symphony:
         assert toolkit.index_enabled
         assert toolkit.candidate_budget_tokens == 10
         assert {record.worker_id for record in toolkit.current_records()} == {"extract", "summarize"}
-        found = await toolkit.session.capability_search(operation="search", query="documents")
+        found = await toolkit.runtime.retrieval.search(operation="search", query="documents")
         assert "extract" in str(found) or "summarize" in str(found)
         calls_before_plan = len(default_model.calls)
         planned = await service.plan("Extract and summarize the document", candidate_skill_ids=["extract", "summarize"],
