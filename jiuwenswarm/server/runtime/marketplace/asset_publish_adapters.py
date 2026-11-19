@@ -47,7 +47,7 @@ def _json(path):
     return value
 
 
-def _path(root, value, field, directory=False):
+def _path(root, value, field, directory=False, any_type=False):
     _text(value, field)
     relative = Path(value)
     invalid_root = relative.is_absolute() or bool(PureWindowsPath(value).drive)
@@ -62,7 +62,13 @@ def _path(root, value, field, directory=False):
         candidate /= part
         if candidate.is_symlink():
             _fail("INVALID_REFERENCE", field, "Symbolic links are not allowed")
-    if not (candidate.is_dir() if directory else candidate.is_file()):
+    if any_type:
+        # Markdown links may point at a directory (for example ``[docs](docs/)``);
+        # only require that the target exists inside the package.
+        exists = candidate.exists()
+    else:
+        exists = candidate.is_dir() if directory else candidate.is_file()
+    if not exists:
         _fail("MISSING_REFERENCE", field, "A declared file or directory is missing")
     return candidate
 
@@ -232,7 +238,7 @@ def _check_config(value, key=""):
             )
 
 
-def _skill(root, identity, metadata):
+def _skill(root, identity, metadata, *, allow_pack=False):
     path = _path(root, "SKILL.md", "SKILL.md")
     try:
         raw = path.read_text(encoding="utf-8")
@@ -244,6 +250,8 @@ def _skill(root, identity, metadata):
         _fail(field="SKILL.md", message="Invalid skill frontmatter")
     if not isinstance(front, dict):
         _fail(field="SKILL.md")
+    if str(front.get("kind", "")).strip().casefold() == "skillpack" and not allow_pack:
+        _fail("SKILLPACK_REQUIRES_COORDINATOR", "kind", "Use the SkillPack publishing plan")
     _text(front.get("name"), "name")
     _text(front.get("description"), "description")
     if front.get("kind") == "team-skill" or metadata.get("skill_type") == "teamskills":
@@ -270,7 +278,7 @@ def _skill(root, identity, metadata):
             continue
         relative = unquote(target.split("#", 1)[0])
         if relative:
-            _path(root, relative, "SKILL.md.references")
+            _path(root, relative, "SKILL.md.references", any_type=True)
     changes = []
     for key, value in {
         "name": identity.package_name,
@@ -285,7 +293,7 @@ def _skill(root, identity, metadata):
             front[key] = value
             changes.append("SKILL.md." + key)
     _text(front["description"], "description")
-    tags = front.get("tags", ["teamskills"])
+    tags = front.get("tags", [] if allow_pack else ["teamskills"])
     if isinstance(tags, str):
         tags = [tags]
     if not isinstance(tags, list) or any(not isinstance(tag, str) for tag in tags):
@@ -306,6 +314,23 @@ def _skill(root, identity, metadata):
         encoding="utf-8",
     )
     return {"normalizations": changes, "dependencies": [], "wrapper": wrapper}
+
+
+def _skillpack(root: Path, identity: PublishIdentity, metadata: dict) -> dict:
+    """Validate a thin Pack independently of the ordinary Skill adapter."""
+    from ..skill.skillpack import load_skillpack
+    from ..skill.skillpack_lock import load_skillpack_lock, SKILLPACK_HUB_TAG
+
+    load_skillpack(root)
+    if any(path.name not in {"SKILL.md", "skillpack.lock.json"} for path in root.iterdir()):
+        _fail("PACK_MUST_BE_THIN", message="SkillPack archives contain only the root document and lock")
+    details = _skill(root, identity, metadata, allow_pack=True)
+    lock = load_skillpack_lock(root, identity.version)
+    tags = details["wrapper"]["metadata"]["tags"]
+    if SKILLPACK_HUB_TAG not in tags:
+        tags.append(SKILLPACK_HUB_TAG)
+    details["dependencies"] = lock.to_dict()["members"]
+    return details
 
 
 def _agent_group(root: Path, identity: PublishIdentity, metadata: dict) -> dict:
@@ -399,6 +424,8 @@ def normalize_and_validate(
         _fail(field="package_name", message="Publish name must be a machine identifier")
     if identity.kind == "skill":
         return _skill(root, identity, metadata)
+    if identity.kind == "skillpack":
+        return _skillpack(root, identity, metadata)
     if identity.kind == "agent_group":
         return _agent_group(root, identity, metadata)
     if len(list(root.rglob("manifest.json"))) != 1:

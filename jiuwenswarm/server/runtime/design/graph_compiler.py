@@ -38,6 +38,7 @@ from typing import Any
 
 from jiuwenswarm.common.schema.designer_graph import (
     NODE_TYPE_TEXT,
+    PIPELINE_MUSIC,
     DesignerExecutionGraph,
     node_agent_template,
     node_pipeline,
@@ -307,10 +308,12 @@ class GraphScriptCompiler:
             # are always inline-able literals.
             not_ready: list[str] = []
             for nid in scope.difference(forced):
-                if (
-                    node_uses_agent_runtime(nodes_by_id[nid])
-                    and _frozen_text(run_outputs.get(nid)) is None
-                ):
+                node = nodes_by_id[nid]
+                generates = (
+                    node_uses_agent_runtime(node)
+                    or node_pipeline(node) == PIPELINE_MUSIC
+                )
+                if generates and _frozen_text(run_outputs.get(nid)) is None:
                     not_ready.append(nid)
             not_ready.sort()
             if not_ready:

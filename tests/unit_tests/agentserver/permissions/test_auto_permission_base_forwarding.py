@@ -9,6 +9,11 @@ from openjiuwen.core.single_agent.rail.base import (
     AgentCallbackContext,
     ToolCallInputs,
 )
+from openjiuwen.core.foundation.llm import AssistantMessage
+from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall
+from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
+from openjiuwen.core.single_agent.interrupt.state import ToolInterruptEntry, ToolInterruptionState
+from openjiuwen.harness.persistent_agent.schema.session_record import decode_interruption, encode_interruption
 
 from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.models import (
     ToolInvocation,
@@ -51,6 +56,41 @@ def test_auto_manual_marker_is_trusted_request_metadata_only() -> None:
     assert request.metadata["auto_permission_manual"] is True
     assert request.auto_confirm_key == ""
     assert getattr(request, "auto_permission_manual", None) is None
+
+
+def test_manual_approval_interrupt_round_trips_through_persistent_session_state() -> None:
+    invocation = _invocation()
+    request = _Bridge(SimpleNamespace(_get_auto_confirm_key=lambda _tool_call: "bash"))._build_runtime_interrupt_request(
+        invocation,
+        {
+            "status": "interrupt",
+            "metadata": {
+                "auto_permission_manual": True,
+                "final_reviewer_status": "manual",
+            },
+        },
+    )
+    tool_call = ToolCall(id="tool-call-1", type="function", name="bash", arguments="{}")
+    state = ToolInterruptionState(
+        ai_message=AssistantMessage(content="Checking access", tool_calls=[tool_call]),
+        iteration=1,
+        original_query="Read a file",
+        interrupted_tools={
+            "tool-call-1": ToolInterruptEntry(
+                tool_call=tool_call,
+                interrupt_requests={"tool-call-1:0": request},
+            ),
+        },
+        auto_confirm_mapping={"tool-call-1:0": "bash"},
+    )
+
+    restored = decode_interruption(encode_interruption(state))
+    restored_request = restored.interrupted_tools["tool-call-1"].interrupt_requests["tool-call-1:0"]
+
+    assert type(request) is InterruptRequest
+    assert type(restored_request) is InterruptRequest
+    assert restored_request.metadata["auto_permission_manual"] is True
+    assert restored_request.metadata["final_reviewer_status"] == "manual"
 
 
 def test_native_manual_interrupt_keeps_core_auto_confirm_key() -> None:

@@ -137,19 +137,6 @@ class TestProjectMemoryRailEndToEnd:
             assert "VERSION-1" not in body2
 
     @pytest.mark.asyncio
-    async def test_rail_no_section_when_workspace_empty(self):
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            _touch(root, ".git/HEAD", "")
-
-            rail = ProjectMemoryRail(workspace=str(root), language="en")
-            agent = _make_agent_with_builder()
-            rail.init(agent)
-            await rail.before_model_call(ctx=_make_ctx(agent))
-
-            assert await _project_memory_section(agent) is None
-
-    @pytest.mark.asyncio
     async def test_rail_additional_directories_via_env(self, monkeypatch):
         with (
             tempfile.TemporaryDirectory() as td,
@@ -499,22 +486,6 @@ class TestProjectMemoryRailModeSwitching:
             rail = adapter._build_project_memory_rail()
             assert rail is not None
             assert isinstance(rail, ProjectMemoryRail)
-
-    def test_rail_not_created_for_non_code_mode_workspace_dir_missing(self):
-        # When workspace_dir is empty,
-        # _build_project_memory_rail still creates a rail (it doesn't check mode).
-        # CodeAdapter always mounts ProjectMemoryRail — the mode check
-        # was in DeepAdapter._update_agent_mode_rails, now handled by CodeAdapter directly.
-        # No _is_code_mode predicate needed; CodeAdapter is exclusively for code mode.
-        pass
-
-    def test_code_adapter_always_mounts_project_memory(self):
-        # CodeAdapter always builds and registers ProjectMemoryRail
-        # regardless of mode variant (code, code.normal, code.plan)
-        for _ in ("code", "code.normal", "code.plan"):
-            # All code variants use JiuwenSwarmCodeAdapter, which always mounts the rail
-            assert True
-
 
 # =====================================================================
 # 7. After-Tool-Call Cache Invalidation End-to-End

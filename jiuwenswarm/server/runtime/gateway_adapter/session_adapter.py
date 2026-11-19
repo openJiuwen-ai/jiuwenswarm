@@ -28,10 +28,13 @@ import logging
 import time
 from typing import Final
 
+from agent_gateway.common.work_mode import SUPPORTED_WORK_MODES
+
+from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.sqlite_config import workspace_sqlite_journal_mode
 from jiuwenswarm.common.utils import get_agent_root_dir
-from gateway.common.work_mode import SUPPORTED_WORK_MODES
 from jiuwenswarm.server.runtime.gateway_adapter.base import (
     GatewayAdapter,
     build_error_response,
@@ -454,7 +457,7 @@ class SessionAdapter(GatewayAdapter):
             return build_error_response(
                 request, "session_id is required", code="BAD_REQUEST"
             )
-        from gateway.common.mode_matrix import is_team_mode
+        from agent_gateway.common.mode_matrix import is_team_mode
         from jiuwenswarm.server.runtime.offline_session_cleanup import (
             delete_offline_session,
         )
@@ -471,6 +474,36 @@ class SessionAdapter(GatewayAdapter):
                 or {}
             )
             if is_team_mode(metadata.get("mode")):
+                from jiuwenswarm.enterprise.edition import is_enterprise
+
+                if is_enterprise():
+                    try:
+                        from jiuwenswarm.enterprise.team.handlers import (
+                            request_identity,
+                        )
+                        from jiuwenswarm.enterprise.team.session_cleanup import (
+                            purge_team_for_deleted_session,
+                        )
+
+                        identity = request_identity(request)
+                        owner = identity.user_id or str(request.user_id or "").strip()
+                        from jiuwenswarm.infrastructure.db.team_store_actor import (
+                            run_team_store,
+                        )
+
+                        await run_team_store(
+                            purge_team_for_deleted_session,
+                            session_id=target,
+                            owner_user_id=owner,
+                            require_owner=True,
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.warning(
+                            "[SessionAdapter] enterprise offline team purge failed: "
+                            "session_id=%s",
+                            target,
+                            exc_info=True,
+                        )
                 return build_error_response(
                     request,
                     "team session delete requires agent server",
@@ -497,7 +530,8 @@ class SessionAdapter(GatewayAdapter):
         # secondary, best-effort cleanup and must not rewrite that result.
         try:
             mailbox = SessionMessageStore(
-                get_agent_root_dir() / "session_messages.sqlite3"
+                get_agent_root_dir() / "session_messages.sqlite3",
+                journal_mode=workspace_sqlite_journal_mode(get_config()) or "WAL",
             )
             if mailbox.exists():
                 records = await asyncio.to_thread(

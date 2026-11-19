@@ -242,6 +242,9 @@ class UserHookRail(DeepAgentRail):
         # The framework fires AFTER_TOOL_CALL even when PreToolUse skipped it.
         if "_hook_feedback" in ctx.extra:
             return
+        # A paused call (an approval, a client tool) fires it again once it resumes and ends.
+        if getattr(ctx, "is_paused", False):
+            return
         tool_name = ctx.inputs.tool_name or ""
 
         hook_configs = self._config.match(

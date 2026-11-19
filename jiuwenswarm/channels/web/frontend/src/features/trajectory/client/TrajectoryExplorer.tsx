@@ -8,6 +8,7 @@ import type {
   TrajectoryRequest, TrajectorySnapshot, TrajectoryTurnModel,
 } from '../trajectory/model.ts'
 import { trajectoryRecordId } from '../trajectory/record.ts'
+import type { SharedTurnAxisRange } from '../diagnosis/diagnosisTimeSelection.ts'
 import {
   resolveTimelineMode,
   trajectoryTimelineFocusIndexes,
@@ -106,7 +107,16 @@ export interface TrajectoryExplorerProps {
   sharedTimeDomain?: TrajectoryTimeRange | null
   /** Maps this lane's span times onto `sharedTimeDomain`. */
   mapSharedTime?: (time: number) => number
-  /** Left-drag selects. The wheel still zooms when a shared viewport is controlled. */
+  /**
+   * Shared `user_turn` ranges from the leader / main agent, already on the
+   * shared axis. Every diagnosis lane reuses these so member swimlanes pad the
+   * same junctions as the shared time axis.
+   */
+  userTurnGapRanges?: readonly SharedTurnAxisRange[]
+  /**
+   * When true, left-drag paints a brush instead of panning. Wheel zoom still
+   * works if `onSharedViewportChange` controls the shared window.
+   */
   lockTimelineViewport?: boolean
   /** With a locked viewport, clicking an Input block still selects its range. */
   spanSelectsRange?: boolean
@@ -235,6 +245,7 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
   onTimelineRangeChange,
   sharedTimeDomain = null,
   mapSharedTime,
+  userTurnGapRanges,
   lockTimelineViewport = false,
   spanSelectsRange = false,
   clickSelectsRecord = false,
@@ -536,6 +547,7 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
             onRangeChange={setTimelineRange}
             sharedDomain={sharedTimeDomain}
             {...(mapSharedTime === undefined ? {} : { mapTime: mapSharedTime })}
+            {...(userTurnGapRanges === undefined ? {} : { userTurnGapRanges })}
             lockViewport={lockTimelineViewport}
             spanSelectsRange={spanSelectsRange}
             clickSelectsRecord={clickSelectsRecord}

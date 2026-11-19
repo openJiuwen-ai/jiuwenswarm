@@ -1,14 +1,32 @@
-import { LoaderCircle, PanelRight, X } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { FileText, Film, Image as ImageIcon, LoaderCircle, Music, PanelRight, Square, X } from 'lucide-react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ChangeEvent,
+  type KeyboardEvent,
+} from 'react';
 import { useTranslation } from 'react-i18next';
 import SendPlaneIcon from '../../../assets/send_plane.svg?react';
-import { ModelProviderIcon } from '../../../components/ModelProviderIcon';
 import { MessageList } from '../../../components/ChatPanel/MessageList';
 import { InlineQuestionCard } from '../../../components/ChatPanel/InlineQuestionCard';
 import { InteractionSlot } from '../../../components/InteractionSlot';
+import { isImeCompositionKey } from '../../../components/ChatPanel/imeComposition';
 import { webClient } from '../../../services/webClient';
+import { ApplicationPluginTaskInputActions } from '../../../applicationPlugins/ApplicationPluginOutlet';
+import { SETTINGS_CONFIG_CHANGED_EVENT } from '../../settings/services/settingsContract';
+import { DESIGN_GENERATION_CHANGED_EVENT } from '../useDesignerModelConfiguration';
+import { requestSettingsModule } from '../../settings/settingsNavigation';
+import { toast } from '../../../components/ui';
 import { useChatStore } from '../../../stores/chatStore';
-import { resolveChatModelSelection, useSessionStore } from '../../../stores/sessionStore';
+import { isModelCatalogPending, useSessionStore } from '../../../stores/sessionStore';
+import {
+  getDesignModelGate,
+  subscribeDesignModelGate,
+} from '../designSessionModelRestore';
 import { buildConversationModelPayload } from '../../../multi-session/state/conversationModelSelection';
 import type { Message, UserAnswer } from '../../../types';
 import {
@@ -17,9 +35,22 @@ import {
   composeDesignerSession,
   sendDesignerLeaderMessage,
 } from '../designerEntry';
+import { findDesignModelsProblem } from '../designModelsReadiness';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
+import { designerChatStopControl, isDesignerChatStoppable, isDesignerModelMenuLocked } from '../designerGraphLock';
+import { useDesignerRunStore } from '../designerRunStore';
 import { useDesignerStore } from '../designerStore';
 import { useDesignerUiStore } from '../designerUiStore';
+import { designerAssetPreviewUrl } from '../designerAssetUrl';
+import {
+  collectMentionedNodes,
+  detectMentionQuery,
+  filterMentionOptions,
+  insertMention,
+  isPreviewableMention,
+  mentionOptions,
+} from '../designerMentions';
+import DesignerModelSelector from './DesignerModelSelector';
 import {
   DESIGNER_REF_LIMITS,
   designerReferenceKindFromMime,
@@ -96,6 +127,14 @@ function ReferenceChips({
   );
 }
 
+/** Stand-in thumbnail for an "@" option with no image preview. */
+function MentionKindIcon({ type }: { type: string }) {
+  if (type === 'video') return <Film size={14} />;
+  if (type === 'audio') return <Music size={14} />;
+  if (type === 'image') return <ImageIcon size={14} />;
+  return <FileText size={14} />;
+}
+
 const EMPTY_MESSAGES: Message[] = [];
 
 export function DesignerChatPanel() {
@@ -108,6 +147,17 @@ export function DesignerChatPanel() {
   const isProcessing = useChatStore((state) =>
     sessionId ? state.runtimes[sessionId]?.isProcessing ?? false : false,
   );
+  const runIsRunning = useDesignerRunStore((state) => state.isRunning);
+  const runStatus = useDesignerRunStore((state) => state.run?.status ?? null);
+  const runTriggerSource = useDesignerRunStore((state) => state.run?.metadata?.trigger_source ?? null);
+  const leaderRunActive = runIsRunning && runTriggerSource === 'leader';
+  // After chat.final, isProcessing is false while the leader-triggered canvas
+  // autorun continues. Keep the stop control for that phase too.
+  const canStop = isDesignerChatStoppable({
+    isProcessing,
+    isRunning: runIsRunning,
+    triggerSource: runTriggerSource,
+  });
   const toggleChatSidebar = useDesignerUiStore((state) => state.toggleChatSidebar);
   const bodyRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -115,26 +165,136 @@ export function DesignerChatPanel() {
   const [attachments, setAttachments] = useState<ComposerDraft[]>([]);
   const [attachError, setAttachError] = useState('');
   const [sending, setSending] = useState(false);
-  const activeSessionId = useChatStore((state) => state.activeSessionId);
-  // The canvas session owns the model the leader runs with; the binding above
-  // makes activeSessionId agree, but the graph's session id wins if they diverge.
-  const modelSessionId = sessionId ?? activeSessionId ?? '';
-  const chatAvailableModels = useSessionStore((state) => state.chatAvailableModels);
-  const selectedModelName = useSessionStore(
-    (state) => state.runtimes[modelSessionId]?.selectedModelName ?? null,
+  const [stopPending, setStopPending] = useState(false);
+  const stopControl = designerChatStopControl({ canStop, stopPending });
+  const [atMenu, setAtMenu] = useState<{ start: number; query: string; index: number } | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Safari can fire compositionend before the keydown that confirms a candidate.
+  const composingRef = useRef(false);
+  // Same window as the clickable stop control, plus a canvas rerun that keeps
+  // its own toolbar and never swaps the chat send button.
+  const modelMenuLocked = isDesignerModelMenuLocked({ stopControl, runStatus });
+  const stopRequestedRef = useRef(false);
+  // The canvas owns exactly one session: read and write the model against that
+  // session id. `activeSessionId` follows the app route and can point at
+  // another conversation while this panel stays mounted (#5394, #8995).
+  const selectedModelName = useSessionStore((state) =>
+    sessionId ? state.runtimes[sessionId]?.selectedModelName ?? null : null,
   );
-  const selectedModelSelection = useSessionStore(
-    (state) => state.runtimes[modelSessionId]?.selectedModelSelection ?? null,
+  const selectedModelSelection = useSessionStore((state) =>
+    sessionId ? state.runtimes[sessionId]?.selectedModelSelection ?? null : null,
   );
-  const defaultModelName = useSessionStore((state) => state.defaultModelName);
-  const selectedModel = useMemo(
-    () => resolveChatModelSelection(chatAvailableModels, selectedModelName, defaultModelName),
-    [chatAvailableModels, defaultModelName, selectedModelName],
+  const setChatModel = useDesignerStore((state) => state.setChatModel);
+  const availableModelCount = useSessionStore((state) => state.chatAvailableModels.length);
+  const selectedModelId = selectedModelSelection?.type === 'model' ? selectedModelSelection.id : undefined;
+  const designModelGate = useSyncExternalStore(
+    subscribeDesignModelGate,
+    getDesignModelGate,
+    getDesignModelGate,
   );
-  const modelLabel = selectedModel?.alias || selectedModel?.model_name || '';
+  // The director chain resolves its preferred model from graph metadata,
+  // and leader rounds run on the session selection: keep both in sync so a pick
+  // made here takes effect on the next round instead of only relabelling the UI.
+  // A shared model_name is not enough; the stable id distinguishes custom rows.
+  // Hold the write until a direct design URL has restored that id. Filling the
+  // name from the catalogue afterwards must use the same id, not the first row.
+  useEffect(() => {
+    if (!sessionId) return;
+    const gate = getDesignModelGate();
+    if (gate?.sessionId === sessionId && gate.status !== 'ready') return;
+    let modelName = selectedModelName ?? '';
+    let modelId = selectedModelId;
+    if (modelId && !modelName) {
+      const store = useSessionStore.getState();
+      if (isModelCatalogPending(store.chatAvailableModels, store.availableModelGroups)) return;
+      store.setSelectedModelSelection(sessionId, { type: 'model', id: modelId });
+      const restored = store.getRuntime(sessionId);
+      modelName = restored?.selectedModelName ?? '';
+      modelId = restored?.selectedModelSelection?.type === 'model'
+        ? restored.selectedModelSelection.id
+        : modelId;
+    }
+    if (!modelName) return;
+    setChatModel(modelName, modelId);
+  }, [availableModelCount, designModelGate, selectedModelId, selectedModelName, sessionId, setChatModel]);
 
-  const chatBusy = isProcessing || sending;
+  const composerBusy = isProcessing || sending;
+  const chatBusy = composerBusy || leaderRunActive;
   const canSend = Boolean(draft.trim() || attachments.length > 0);
+  const ensureDuplexSession = useCallback(async () => {
+    if (!sessionId || !domainGraph?.graph_id || isDesignerPreviewGraph(domainGraph)) return null;
+    try {
+      await useDesignerStore.getState().flushSave();
+      bindDesignerChatSession(sessionId);
+      return sessionId;
+    } catch (error) {
+      setAttachError(error instanceof Error ? error.message : t('designer.loadErrorFallback'));
+      return null;
+    }
+  }, [sessionId, domainGraph, t]);
+
+  // Design has no model switch: a missing chat model means no leader round can
+  // run at all, so warn here instead of failing only after the user sends
+  // (#5266). Re-checked when the model catalog size changes or a config change
+  // is pushed, since generation-slot switches never change the catalog.
+  const [blockedProblem, setBlockedProblem] = useState('');
+  const [configRevision, setConfigRevision] = useState(0);
+  useEffect(() => {
+    const onConfigChanged = () => setConfigRevision((value) => value + 1);
+    window.addEventListener(SETTINGS_CONFIG_CHANGED_EVENT, onConfigChanged);
+    window.addEventListener(DESIGN_GENERATION_CHANGED_EVENT, onConfigChanged);
+    return () => {
+      window.removeEventListener(SETTINGS_CONFIG_CHANGED_EVENT, onConfigChanged);
+      window.removeEventListener(DESIGN_GENERATION_CHANGED_EVENT, onConfigChanged);
+    };
+  }, []);
+  useEffect(() => {
+    if (!sessionId) {
+      setBlockedProblem('');
+      return;
+    }
+    let cancelled = false;
+    void findDesignModelsProblem().then((problem) => {
+      if (!cancelled) setBlockedProblem(problem ?? '');
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, availableModelCount, configRevision, selectedModelName]);
+
+  // "@" offers the canvas nodes by label; mentioned nodes preview above the input.
+  const allMentionOptions = useMemo(() => mentionOptions(domainGraph), [domainGraph]);
+  const atCandidates = useMemo(
+    () => (atMenu ? filterMentionOptions(allMentionOptions, atMenu.query) : []),
+    [allMentionOptions, atMenu],
+  );
+  const draftMentions = useMemo(
+    () => collectMentionedNodes(domainGraph, draft).filter(isPreviewableMention),
+    [domainGraph, draft],
+  );
+
+  const chooseMention = useCallback(
+    (label: string) => {
+      if (!atMenu) return;
+      const next = insertMention(draft, atMenu, label);
+      setDraft(next.value);
+      setAtMenu(null);
+      requestAnimationFrame(() => {
+        const el = textareaRef.current;
+        if (!el) return;
+        el.focus();
+        el.setSelectionRange(next.caret, next.caret);
+      });
+    },
+    [atMenu, draft],
+  );
+
+  const onDraftChange = useCallback((event: ChangeEvent<HTMLTextAreaElement>) => {
+    const { value } = event.target;
+    setDraft(value);
+    const token = detectMentionQuery(value, event.target.selectionStart ?? value.length, allMentionOptions);
+    setAtMenu(token ? { ...token, index: 0 } : null);
+  }, [allMentionOptions]);
 
   useEffect(() => {
     const el = bodyRef.current;
@@ -145,6 +305,15 @@ export function DesignerChatPanel() {
   useEffect(() => {
     if (sessionId) bindDesignerChatSession(sessionId);
   }, [sessionId]);
+
+  useEffect(() => {
+    if (canStop) return;
+    if (stopRequestedRef.current) {
+      stopRequestedRef.current = false;
+      useDesignerRunStore.getState().applyLeaderActivity(null);
+    }
+    setStopPending(false);
+  }, [canStop]);
 
   const limitError = useCallback(
     (kind: DesignerReferenceKind) => {
@@ -200,6 +369,17 @@ export function DesignerChatPanel() {
   const handleSend = useCallback(() => {
     const content = draft.trim();
     if ((!content && attachments.length === 0) || chatBusy) return;
+    // Same gate as the landing page: a round needs the chat model and both
+    // generation slots, so refuse loudly instead of failing mid-run (#5266).
+    if (blockedProblem) {
+      toast.open({ content: blockedProblem, variant: 'error' });
+      return;
+    }
+    // One execution runs at a time, so one message may change one referenced node.
+    if (collectMentionedNodes(domainGraph, content).length > 1) {
+      toast.open({ content: t('designer.chat.multipleMentions'), variant: 'error' });
+      return;
+    }
     setSending(true);
     const files = attachments.map((item) => item.file);
     void filesToBootstrapReferences(files)
@@ -244,13 +424,52 @@ export function DesignerChatPanel() {
       .finally(() => {
         setSending(false);
       });
-  }, [attachments, chatBusy, domainGraph, draft, sessionId, t]);
+  }, [attachments, blockedProblem, chatBusy, domainGraph, draft, selectedModelName, sessionId, t]);
+
+  const handleStop = useCallback(() => {
+    if (!sessionId || stopPending) return;
+    setAttachError('');
+    setStopPending(true);
+    stopRequestedRef.current = true;
+    const runStore = useDesignerRunStore.getState();
+    const cancelLeaderRun =
+      runStore.isRunning && runStore.run?.metadata?.trigger_source === 'leader';
+    const interruptChat = Boolean(
+      useChatStore.getState().getRuntime(sessionId)?.isProcessing,
+    );
+    // Cancel the canvas autorun first: pausing the leader alone can kill its
+    // trigger task without unwinding the run. Skip chat.interrupt when the
+    // leader turn already finished and only child nodes are still running.
+    void (cancelLeaderRun ? runStore.cancel(domainGraph) : Promise.resolve())
+      .then(() => {
+        if (!interruptChat) return undefined;
+        return webClient.request('chat.interrupt', {
+          session_id: sessionId,
+          intent: 'pause',
+          mode: DESIGNER_TEAM_MODE,
+        });
+      })
+      .catch(() => {
+        stopRequestedRef.current = false;
+        setStopPending(false);
+        setAttachError(t('designer.chat.stopError'));
+      });
+  }, [domainGraph, sessionId, stopPending, t]);
 
   const handleUserAnswer = useCallback(
     async (requestId: string, answers: UserAnswer[], source?: string): Promise<boolean> => {
       if (!sessionId) return false;
       const pendingQuestion = useChatStore.getState().getRuntime(sessionId)?.pendingQuestions[0];
+      const interruptId =
+        pendingQuestion?.request_id === requestId ? pendingQuestion.interruptId : undefined;
       try {
+        if (pendingQuestion?.duplexJobId && pendingQuestion.request_id === requestId) {
+          await webClient.request('video.search.answer', {
+            session_id: sessionId, job_id: pendingQuestion.duplexJobId, request_id: requestId, answers,
+          });
+          useChatStore.getState().consumePendingQuestion(sessionId, pendingQuestion);
+          return true;
+        }
         await webClient.request('chat.send', {
           session_id: sessionId,
           query: '',
@@ -263,6 +482,7 @@ export function DesignerChatPanel() {
             selectedModelSelection,
           }),
           ...(source ? { source } : {}),
+          ...(interruptId ? { interrupt_id: interruptId } : {}),
         });
         if (pendingQuestion) {
           useChatStore.getState().consumePendingQuestion(sessionId, pendingQuestion);
@@ -277,12 +497,35 @@ export function DesignerChatPanel() {
 
   const onKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      // While an IME is composing, Enter/Tab confirm a candidate, the arrows move
+      // through candidates and Escape cancels: none of them is meant for the
+      // "@" menu or for sending (Firefox and some WebKit report key "Enter" here).
+      if (isImeCompositionKey(event.nativeEvent, composingRef.current)) return;
+      if (atMenu && atCandidates.length > 0) {
+        const count = atCandidates.length;
+        if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+          event.preventDefault();
+          const step = event.key === 'ArrowDown' ? 1 : -1;
+          setAtMenu((cur) => (cur ? { ...cur, index: (cur.index + step + count) % count } : cur));
+          return;
+        }
+        if (event.key === 'Enter' || event.key === 'Tab') {
+          event.preventDefault();
+          chooseMention(atCandidates[Math.min(atMenu.index, count - 1)].label);
+          return;
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          setAtMenu(null);
+          return;
+        }
+      }
       if (event.key === 'Enter' && !event.shiftKey) {
         event.preventDefault();
         handleSend();
       }
     },
-    [handleSend],
+    [atCandidates, atMenu, chooseMention, handleSend],
   );
 
   return (
@@ -329,6 +572,15 @@ export function DesignerChatPanel() {
             removeLabel={t('designer.chat.removeAttachment')}
           />
         ) : null}
+        {draftMentions.length > 0 ? (
+          <ReferenceChips
+            items={draftMentions.map((item) => ({
+              kind: item.type === 'video' ? 'video' : 'image',
+              filename: item.label,
+              previewUrl: item.type === 'image' ? designerAssetPreviewUrl(item.uri) : null,
+            }))}
+          />
+        ) : null}
         {attachError ? (
           <p className="designer-chat-panel__attach-error" data-testid="designer-chat-panel-attach-error">
             {attachError}
@@ -346,55 +598,145 @@ export function DesignerChatPanel() {
             event.target.value = '';
           }}
         />
+        {/* The leader cannot run without a chat model: warn before the user
+            types, and point straight at the Settings page (#5266). */}
+        {blockedProblem ? (
+          <div
+            className="designer-chat-panel__model-warning"
+            role="status"
+            data-testid="designer-chat-model-warning"
+          >
+            <span className="designer-chat-panel__model-warning-text">{blockedProblem}</span>
+            <button
+              type="button"
+              className="designer-chat-panel__model-warning-action"
+              onClick={() => requestSettingsModule('models', 'multimodal')}
+              data-testid="designer-chat-model-warning-action"
+            >
+              {t('designer.models.openModelSettings')}
+            </button>
+          </div>
+        ) : null}
         {/* Canvas chat sidebar: hide attach control; landing prompt keeps its own attach UI. */}
         <div className="designer-chat-panel__composer-box">
+          {atMenu && atCandidates.length > 0 ? (
+            <ul className="designer-chat-panel__at-menu" role="listbox" data-testid="designer-chat-panel-at-menu">
+              {atCandidates.map((item, index) => {
+                const preview = item.type === 'image' ? designerAssetPreviewUrl(item.uri) : null;
+                return (
+                  <li key={item.nodeId} role="option" aria-selected={index === atMenu.index}>
+                    <button
+                      type="button"
+                      className={index === atMenu.index ? 'is-active' : ''}
+                      data-testid="designer-chat-panel-at-option"
+                      data-node-id={item.nodeId}
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        chooseMention(item.label);
+                      }}
+                    >
+                      <span className="designer-chat-panel__at-thumb" data-kind={item.type} aria-hidden>
+                        {preview ? <img src={preview} alt="" /> : <MentionKindIcon type={item.type} />}
+                      </span>
+                      <span className="designer-chat-panel__at-label" title={item.label}>
+                        {item.label}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          ) : null}
           <textarea
+            ref={textareaRef}
             className="designer-chat-panel__input"
             placeholder={t('designer.chat.inputPlaceholder')}
             value={draft}
-            disabled={chatBusy}
+            disabled={sending}
             data-testid="designer-chat-panel-input"
-            onChange={(event) => setDraft(event.target.value)}
+            onChange={onDraftChange}
             onKeyDown={onKeyDown}
+            onBlur={() => setAtMenu(null)}
+            onCompositionStart={() => {
+              composingRef.current = true;
+            }}
+            onCompositionEnd={() => {
+              composingRef.current = false;
+            }}
           />
           <div className="designer-chat-panel__composer-actions">
-            {modelLabel ? (
-              <span
-                className="designer-chat-panel__model"
-                title={modelLabel}
-                data-testid="designer-chat-panel-model"
-              >
-                {selectedModel ? (
-                  <span className="designer-chat-panel__model-icon" aria-hidden>
-                    <ModelProviderIcon model={selectedModel} />
-                  </span>
-                ) : null}
-                <span className="designer-chat-panel__model-label">{modelLabel}</span>
-              </span>
+            {sessionId ? (
+              <DesignerModelSelector sessionId={sessionId} readOnly disabled={modelMenuLocked} />
             ) : null}
-            <button
-              type="button"
-              className="designer-chat-panel__send"
-              disabled={chatBusy || !canSend}
-              onClick={handleSend}
-              aria-label={chatBusy ? t('designer.chat.running') : t('designer.chat.send')}
-              aria-busy={chatBusy}
-              title={chatBusy ? t('designer.chat.running') : undefined}
-              data-testid="designer-chat-panel-send"
-              data-variant={chatBusy ? 'running' : 'idle'}
-            >
-              {/* A leader round can run for minutes (graph autorun); the button
-                  must read as "working", never as the idle send plane (#5410). */}
-              {chatBusy ? (
-                <LoaderCircle
-                  className="designer-chat-panel__send-spinner animate-spin"
-                  size={18}
-                  aria-hidden
-                />
-              ) : (
-                <SendPlaneIcon className="designer-chat-panel__send-icon" aria-hidden />
-              )}
-            </button>
+            <ApplicationPluginTaskInputActions
+              eligible={
+                Boolean(sessionId && domainGraph?.graph_id && !isDesignerPreviewGraph(domainGraph)) &&
+                !chatBusy && attachments.length === 0
+              }
+              hasTextDraft={Boolean(draft.trim())}
+              sessionId={sessionId}
+              ensureSession={ensureDuplexSession}
+              labels={{
+                start: t('chat.taskFullDuplexStart'),
+                starting: t('chat.taskFullDuplexStarting'),
+                stop: t('chat.taskFullDuplexStop'),
+              }}
+              fallback={
+                stopControl === 'stopping' ? (
+                  <button
+                    type="button"
+                    className="designer-chat-panel__send"
+                    disabled
+                    aria-busy
+                    aria-label={t('designer.chat.stopping')}
+                    title={t('designer.chat.stopping')}
+                    data-testid="designer-chat-panel-stop"
+                    data-variant="running"
+                  >
+                    <LoaderCircle
+                      className="designer-chat-panel__send-spinner animate-spin"
+                      size={18}
+                      aria-hidden
+                    />
+                  </button>
+                ) : stopControl === 'stop' ? (
+                  <button
+                    type="button"
+                    className="designer-chat-panel__send"
+                    onClick={handleStop}
+                    aria-label={t('designer.chat.stop')}
+                    title={t('designer.chat.stop')}
+                    data-testid="designer-chat-panel-stop"
+                  >
+                    <Square className="designer-chat-panel__stop-icon" fill="currentColor" aria-hidden />
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="designer-chat-panel__send"
+                    disabled={chatBusy || !canSend}
+                    onClick={handleSend}
+                    aria-label={chatBusy ? t('designer.chat.running') : t('designer.chat.send')}
+                    aria-busy={chatBusy}
+                    title={blockedProblem || (chatBusy ? t('designer.chat.running') : undefined)}
+                    data-testid="designer-chat-panel-send"
+                    data-variant={chatBusy ? 'running' : 'idle'}
+                  >
+                    {/* A leader round can run for minutes (graph autorun); the button
+                        must read as "working", never as the idle send plane (#5410). */}
+                    {chatBusy ? (
+                      <LoaderCircle
+                        className="designer-chat-panel__send-spinner animate-spin"
+                        size={18}
+                        aria-hidden
+                      />
+                    ) : (
+                      <SendPlaneIcon className="designer-chat-panel__send-icon" aria-hidden />
+                    )}
+                  </button>
+                )
+              }
+            />
           </div>
         </div>
       </div>

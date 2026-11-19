@@ -51,6 +51,9 @@ def _install_organization_progress_publisher(org_runtime: Any) -> None:
 
     async def publish_progress(session_id: str, root_team_id: str, progress: dict[str, Any]) -> None:
         """Push a factual Root Leader milestone without exposing model reasoning."""
+        from jiuwenswarm.server.runtime.group_execution import project_organization_progress
+
+        await project_organization_progress(session_id, root_team_id, progress)
         phase = str(progress.get("phase") or "organization_progress")
         await relay.push_expert_payload(
             {

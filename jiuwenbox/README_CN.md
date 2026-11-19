@@ -292,7 +292,7 @@ ls /tmp/jiuwenbox-logs
 | `files` | 沙箱生命周期内由服务端创建并 bind 进沙箱的空文件。格式与 `directories` 类似，支持可选 `permissions`。 |
 | `read_only` | 沙箱内可见路径的只读授权列表；本身不会挂载宿主机路径，需配合 `bind_mounts` / `directories` 让路径存在。 |
 | `read_write` | 沙箱内可见路径的读写授权列表；需通过 `directories` 或 `bind_mounts` 让路径实际存在。 |
-| `bind_mounts` | 显式宿主机到沙箱的 bind mount，每项包含 `host_path`、`sandbox_path`、`mode`（`ro` / `rw`）。`host_path` 不能为字面量 `"*"`。 |
+| `bind_mounts` | 显式宿主机到沙箱的 bind mount，每项包含 `host_path`、`sandbox_path`、`mode`（`ro` / `rw`）。`host_path` 不能为字面量 `"*"`。当前宿主机上不存在或无法解析（含悬空软链接）的条目会记录 WARNING 并跳过，不再导致沙箱启动失败；因此可按跨发行版布局保留默认列表。 |
 | `bind_root_entries` | 将 `host_root` 下**第一层**子项逐个 bind 到 `sandbox_path/{name}`。支持 `mode`、`include_hidden`（默认排除 `.` 开头项）、`exclude`（fnmatch glob）。适合批量挂载 `/usr` 等目录的直接子项。 |
 | `device` | 通过 `bwrap --dev-bind` 暴露到沙箱内的设备节点，每项包含 `host_path` 和 `sandbox_path`。 |
 

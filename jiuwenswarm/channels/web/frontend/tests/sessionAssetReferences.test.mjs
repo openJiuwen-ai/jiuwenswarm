@@ -115,6 +115,30 @@ test('never overrides a displayName that is already present', () => {
   assert.equal(resolved.displayName, 'kept');
 });
 
+test('two messages that attached the same path each keep their OWN asset name, matched by client_id', () => {
+  // Same path, two separate attach actions (each its own draft/client_id) -- the
+  // backend gives each its own distinctly-named asset (session_assets.py no longer
+  // dedupes uploads by path). Resolving purely by path would make BOTH messages
+  // show whichever asset is iterated last ("1-1" for both), silently renaming the
+  // first message's chip whenever a second attach of the same file happens later
+  // in the SAME live session (no reload needed to see it).
+  const path = 'C:\\Users\\Administrator\\Desktop\\1.json';
+  const firstMessageItem = { type: 'document', filename: '1.json', path, clientId: 'draft-A' };
+  const secondMessageItem = { type: 'document', filename: '1.json', path, clientId: 'draft-B' };
+  const assets = [
+    { asset_id: 'asset_1', name: '1', kind: 'document', path, source: 'upload', created_at: 0, client_id: 'draft-A' },
+    { asset_id: 'asset_2', name: '1-1', kind: 'document', path, source: 'upload', created_at: 1, client_id: 'draft-B' },
+  ];
+  const [firstResolved, secondResolved] = resolveAssetDisplayNames([firstMessageItem, secondMessageItem], assets);
+  assert.equal(firstResolved.displayName, '1', 'the first message must keep showing its OWN asset\'s name');
+  assert.equal(secondResolved.displayName, '1-1');
+});
+
+test('falls back to the path guess when an item has no client_id (older message, no idempotency key)', () => {
+  const [resolved] = resolveAssetDisplayNames([SERUM_HISTORY_ITEM], [SERUM_ASSET]);
+  assert.equal(resolved.displayName, 'serum');
+});
+
 test('resolves several attachments and leaves unmatched ones untouched', () => {
   const other = { type: 'image', filename: 'plain.png', path: 'C:\\files\\plain.png' };
   const out = resolveAssetDisplayNames([SERUM_HISTORY_ITEM, other], [SERUM_ASSET]);

@@ -122,6 +122,7 @@ export class SessionManager {
     answers: unknown[],
     source: string,
     mode: string,
+    interruptId = '',
   ): boolean {
     const sid = this._sessionId;
     if (!sid) return false;
@@ -131,6 +132,7 @@ export class SessionManager {
       answers,
       source,
       mode,
+      ...(interruptId ? { interrupt_id: interruptId } : {}),
     }, this.channelId);
     msg.id = requestId;
     return this.ws.send(msg);
@@ -153,8 +155,8 @@ export class SessionManager {
   }
 
   /** Enable/disable a skill */
-  async toggleSkill(skillId: string, enabled: boolean): Promise<void> {
-    await this.request('skills.toggle', { skill_id: skillId, enabled });
+  async toggleSkill(name: string, enabled: boolean): Promise<Record<string, unknown>> {
+    return this.request('skills.toggle', { name, enabled });
   }
 
   /** Delete a session */

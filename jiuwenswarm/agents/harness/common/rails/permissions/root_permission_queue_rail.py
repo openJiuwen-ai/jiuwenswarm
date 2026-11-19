@@ -12,7 +12,7 @@ from typing import Any
 
 from openjiuwen.core.runner.callback import AbortError
 from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptException
-from openjiuwen.core.single_agent.interrupt.state import RESUME_USER_INPUT_KEY
+from openjiuwen.core.single_agent.interrupt.state import RESUME_INTERRUPT_ANSWERS_KEY, RESUME_USER_INPUT_KEY
 from openjiuwen.core.single_agent.rail.base import (
     AgentCallbackContext,
     AgentRail,
@@ -429,9 +429,19 @@ class RootPermissionCompletionRail(AgentRail):
 
 
 def _resume_input(ctx: AgentCallbackContext, tool_call_id: str) -> Any:
+    """The answer this resume gives the call, however the host addressed it.
+
+    The interrupt handler attributes an answer sent by interrupt id or by tool
+    call id to the call; an answer carried over from an earlier round is not
+    this resume's. Without an attribution, read the raw resume input.
+    """
     extra = getattr(ctx, "extra", None)
     if not isinstance(extra, Mapping):
         return _UNBOUND
+    fresh = [answer for answer in extra.get(RESUME_INTERRUPT_ANSWERS_KEY, {}).get(tool_call_id, {}).values()
+             if not answer.carried]
+    if fresh:
+        return fresh[-1].value
     for name in (ROOT_PERMISSION_QUEUE_USER_INPUT_KEY, RESUME_USER_INPUT_KEY):
         if name not in extra:
             continue

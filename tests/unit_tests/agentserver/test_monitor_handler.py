@@ -300,6 +300,7 @@ async def test_get_team_snapshot_filters_leader_member() -> None:
                 "cli_agent": None,
             }
         ],
+        "departed_members": [],
         "tasks": [
             {
                 "task_id": "task-1",
@@ -313,6 +314,28 @@ async def test_get_team_snapshot_filters_leader_member() -> None:
         ],
         "team_id": "team-1",
     }
+
+
+@pytest.mark.anyio
+async def test_get_team_snapshot_moves_shut_down_members_to_departed() -> None:
+    handler = TeamMonitorHandler(
+        _FakeMonitor(
+            members=[
+                _FakeMember("worker-1"),
+                _FakeMember("retired", display_name="Retired", status="shut_down"),
+                _FakeMember("sleeper", status="dormant"),
+                _FakeMember("leaving", status="shutdown_requested"),
+            ],
+            leader_member_name=None,
+        ),
+        "sess-retired",
+    )
+
+    snapshot = await handler.get_team_snapshot()
+
+    assert snapshot is not None
+    assert [m["member_id"] for m in snapshot["members"]] == ["worker-1", "sleeper", "leaving"]
+    assert [(m["member_id"], m["name"]) for m in snapshot["departed_members"]] == [("retired", "Retired")]
 
 
 @pytest.mark.anyio
@@ -348,6 +371,7 @@ async def test_get_team_snapshot_keeps_members_when_team_info_unavailable() -> N
                 "cli_agent": None,
             },
         ],
+        "departed_members": [],
         "tasks": [],
         "team_id": "team-1",
     }
@@ -1095,7 +1119,7 @@ def test_task_body_event_types_contains_only_created_and_updated() -> None:
 #
 # ``get_team_snapshot`` feeds BOTH the ``team.task.status_snapshot`` live
 # broadcast (emitted by ``_broadcast_team_state_snapshot``) AND the
-# ``team.snapshot`` RPC (served by ``agent_ws_server._handle_team_snapshot``).
+# ``team.snapshot`` RPC (served by ``handle_team_snapshot``).
 # So applying truncation here covers both exits (design D4).
 # =====================================================================
 
@@ -1218,13 +1242,18 @@ async def test_get_team_snapshot_from_db_requires_session_and_team() -> None:
 
 @pytest.mark.anyio
 async def test_get_team_snapshot_from_db_reads_tasks_with_truncation() -> None:
-    """When monitor is down, bind session_id and read tasks/members from team.db."""
-    from pathlib import Path
+    """When monitor is down, bind session_id and read tasks/members from the runtime DB.
+
+    Departed (``shut_down``) members stay out of the restored roster; dormant
+    ones stay in.
+    """
     from unittest.mock import patch
 
     long_title = "T" * (_TASK_TEXT_LIMIT + 20)
     member = _FakeMember("worker-1", display_name="Worker")
     leader = _FakeMember("team-leader", role="leader")
+    retired = _FakeMember("retired", status="shut_down")
+    sleeper = _FakeMember("sleeper", status="dormant")
     task = _FakeTask(
         task_id="uuid-1",
         title=long_title,
@@ -1240,7 +1269,7 @@ async def test_get_team_snapshot_from_db_reads_tasks_with_truncation() -> None:
     class _FakeSharedDb:
         def __init__(self) -> None:
             self.member = SimpleNamespace(
-                get_team_members=AsyncMock(return_value=[leader, member])
+                get_team_members=AsyncMock(return_value=[leader, member, retired, sleeper])
             )
             self.task = SimpleNamespace(
                 get_team_tasks=AsyncMock(return_value=[task])
@@ -1251,26 +1280,32 @@ async def test_get_team_snapshot_from_db_reads_tasks_with_truncation() -> None:
             self.initialize = AsyncMock()
             self.create_cur_session_tables = AsyncMock()
 
+    from openjiuwen.agent_teams.tools.database.config import DatabaseConfig
+
     shared = _FakeSharedDb()
     bound: list[str] = []
+    opened: list[object] = []
+    runtime_db = DatabaseConfig(
+        db_type="mysql",
+        connection_string="mysql+aiomysql://root:pw@db.internal:3306/gw",
+    )
 
     def _fake_set_session_id(sid: str):
         bound.append(sid)
         return "token"
 
+    def _open(config):
+        opened.append(config)
+        return shared
+
     with (
         patch(
-            "jiuwenswarm.agents.harness.team.config_loader.resolve_team_sqlite_db_path",
-            return_value=Path("/tmp/team.db"),
+            "jiuwenswarm.agents.harness.team.config_loader.resolve_team_runtime_database_config",
+            return_value=runtime_db,
         ),
-        patch("jiuwenswarm.common.config.get_config", return_value={}),
         patch(
             "openjiuwen.agent_teams.spawn.shared_resources.get_shared_db",
-            return_value=shared,
-        ),
-        patch(
-            "openjiuwen.agent_teams.tools.database.config.DatabaseConfig",
-            return_value=SimpleNamespace(),
+            side_effect=_open,
         ),
         patch(
             "openjiuwen.agent_teams.context.set_session_id",
@@ -1286,11 +1321,14 @@ async def test_get_team_snapshot_from_db_reads_tasks_with_truncation() -> None:
         )
 
     assert snapshot is not None
+    assert opened == [runtime_db]
+    assert opened[0].db_type == "mysql"
     assert bound == ["sess-19f8"]
     shared.initialize.assert_awaited()
     shared.create_cur_session_tables.assert_awaited()
     assert snapshot["team_id"] == "team-sess-1"
-    assert [m["member_id"] for m in snapshot["members"]] == ["worker-1"]
+    assert [m["member_id"] for m in snapshot["members"]] == ["worker-1", "sleeper"]
+    assert [m["member_id"] for m in snapshot["departed_members"]] == ["retired"]
     assert len(snapshot["tasks"]) == 1
     out = snapshot["tasks"][0]
     assert out["task_id"] == "uuid-1"
@@ -1300,6 +1338,45 @@ async def test_get_team_snapshot_from_db_reads_tasks_with_truncation() -> None:
     assert out["title"].startswith("T" * _TASK_TEXT_LIMIT)
     assert out["content"] == "body"
     assert "content_truncated" not in out
+
+
+@pytest.mark.anyio
+async def test_get_member_list_from_db_uses_runtime_database_config() -> None:
+    from unittest.mock import patch
+
+    from openjiuwen.agent_teams.tools.database.config import DatabaseConfig
+
+    member = _FakeMember("worker-1", display_name="Worker")
+    runtime_db = DatabaseConfig(
+        db_type="postgresql",
+        connection_string="postgresql+asyncpg://postgres:pw@db.internal:5432/gw",
+    )
+    shared = SimpleNamespace(
+        initialize=AsyncMock(),
+        member=SimpleNamespace(get_team_members=AsyncMock(return_value=[member])),
+        team=SimpleNamespace(get_team=AsyncMock(return_value=None)),
+    )
+    opened: list[object] = []
+
+    def _open(config):
+        opened.append(config)
+        return shared
+
+    with (
+        patch(
+            "jiuwenswarm.agents.harness.team.config_loader.resolve_team_runtime_database_config",
+            return_value=runtime_db,
+        ),
+        patch(
+            "openjiuwen.agent_teams.spawn.shared_resources.get_shared_db",
+            side_effect=_open,
+        ),
+    ):
+        listed = await TeamMonitorHandler.get_member_list_from_db("team-1")
+
+    assert opened == [runtime_db]
+    assert listed is not None
+    assert listed[0]["member_id"] == "worker-1"
 
 
 class _EndingMonitor:

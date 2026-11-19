@@ -111,9 +111,10 @@ async def test_after_tool_call_skips_tool_result_when_interrupted_via_exception(
 
     await rail.after_tool_call(ctx)
 
-    # 无 tool_result chunk；ask_user 的中断问题卡片仍然要发。
+    # 无 tool_result chunk；ask_user 的问题卡片由本轮中断的 __interaction__ 投影发出
+    # （此时 agent-core 才分配 interrupt_id），rail 这里不再提前发。
     assert "tool_result" not in _chunk_types(session)
-    assert "chat.ask_user_question" in _chunk_types(session)
+    assert "chat.ask_user_question" not in _chunk_types(session)
 
 
 @pytest.mark.asyncio

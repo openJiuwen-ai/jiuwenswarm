@@ -46,6 +46,8 @@ from openjiuwen.agent_teams.schema.build_context import register_build_context_f
 
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 from jiuwenswarm.agents.swarm import group_chat as _group_chat  # noqa: F401 -- registers tool providers
+from jiuwenswarm.agents.swarm import group_execution as _group_execution  # noqa: F401 -- registers task providers
+from jiuwenswarm.agents.swarm import group_org_lifecycle as _group_org_lifecycle  # noqa: F401 -- registers org policy
 from jiuwenswarm.agents.swarm.providers import (
     builtin_rails as _builtin_rails,
     code_rails as _code_rails,
@@ -62,6 +64,15 @@ from jiuwenswarm.common.config import get_config
 
 # Re-exported provider name constants for config_specs to reference by symbol.
 # Swarm-owned tools (each self-gated by config + whitelist-filtered).
+GROUP_RUN_TEAM = _group_chat.RUN_TEAM
+GROUP_COMPLETE_TEAM_RUN = _group_chat.COMPLETE_RUN
+GROUP_MEMBER_TEMPLATE = _group_chat.GROUP_MEMBER_TEMPLATE
+GROUP_PRIVATE_TASK_POLICY = _group_chat.PRIVATE_TASK_POLICY
+GROUP_BEGIN_TEAM_TASK = _group_chat.BEGIN_TEAM_TASK
+GROUP_START_TASK = _group_execution.START_TASK
+GROUP_TASK_POLICY = _group_execution.TASK_POLICY
+GROUP_ASK_USER = _group_execution.GROUP_ASK_USER
+
 SKILL_TOOLKIT = _tools.SKILL_TOOLKIT
 SKILL_RETRIEVAL = _tools.SKILL_RETRIEVAL
 USER_TODOS = _tools.USER_TODOS
@@ -79,6 +90,8 @@ DESIGNER_SURFACE_SANITIZER = _design_rails.DESIGNER_SURFACE_SANITIZER
 CRON_TOOLS = _runtime_tools.CRON_TOOLS
 SEND_FILE = _runtime_tools.SEND_FILE
 SESSION_MESSAGING_TOOLS = _runtime_tools.SESSION_MESSAGING_TOOLS
+ORGANIZATION_MODEL_TOOLS = _runtime_tools.ORGANIZATION_MODEL_TOOLS
+ORGANIZATION_OWNER_INBOX_TOOLS = _runtime_tools.ORGANIZATION_OWNER_INBOX_TOOLS
 MEMBER_SKILL_TOOLKIT = _skills.MEMBER_SKILL_TOOLKIT
 # Generic tools provided + registered by openjiuwen (referenced by bare name).
 WEB_SEARCH = _OJ_WEB_SEARCH
@@ -92,6 +105,9 @@ TEAM_SKILL_STORAGE_POLICY = _member_rails.TEAM_SKILL_STORAGE_POLICY
 TEAM_SKILL_LIBRARY_RELOAD = _member_rails.TEAM_SKILL_LIBRARY_RELOAD
 TEAM_WORKSPACE_REPORT_PATH = _member_rails.TEAM_WORKSPACE_REPORT_PATH
 ORGANIZATION_AVAILABILITY = _member_rails.ORGANIZATION_AVAILABILITY
+ORGANIZATION_MODEL = _member_rails.ORGANIZATION_MODEL
+ORGANIZATION_OWNER_INBOX = _member_rails.ORGANIZATION_OWNER_INBOX
+OPENCODE_SESSION = _member_rails.OPENCODE_SESSION
 CONTEXT_PROCESSOR = _member_rails.CONTEXT_PROCESSOR
 MODEL_ANOMALY_DETECTION = _member_rails.MODEL_ANOMALY_DETECTION
 PLUGIN_RAILS = _member_rails.PLUGIN_RAILS
@@ -197,6 +213,15 @@ def register_swarm_providers() -> None:
 
 
 __all__ = [
+    "GROUP_RUN_TEAM",
+    "GROUP_COMPLETE_TEAM_RUN",
+    "GROUP_MEMBER_TEMPLATE",
+    "GROUP_PRIVATE_TASK_POLICY",
+    "GROUP_BEGIN_TEAM_TASK",
+    "GROUP_START_TASK",
+    "GROUP_TASK_POLICY",
+    "GROUP_ASK_USER",
+
     "PERSONAL_CONTEXT",
     "register_swarm_providers",
     "SKILL_TOOLKIT",
@@ -216,6 +241,10 @@ __all__ = [
     "CRON_TOOLS",
     "SEND_FILE",
     "SESSION_MESSAGING_TOOLS",
+    "ORGANIZATION_MODEL_TOOLS",
+    "ORGANIZATION_OWNER_INBOX_TOOLS",
+    "ORGANIZATION_OWNER_INBOX",
+    "ORGANIZATION_MODEL",
     "MEMBER_SKILL_TOOLKIT",
     "RUNTIME_PROMPT",
     "TEAM_SKILL_STORAGE_POLICY",

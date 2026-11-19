@@ -110,6 +110,10 @@ type DesignerStore = {
   flushSave: () => Promise<void>;
   /** Server-validated canvas video / image settings; rejects with the server message. */
   patchMediaSettings: (patch: DesignerMediaSettingsPatch) => Promise<void>;
+  /** Stamp the chat model the design pipeline (leader + director chain) must
+   * use. The canvas model switcher writes here so a mid-session change takes
+   * effect on the next leader round (#5394). */
+  setChatModel: (modelName: string, modelId?: string | null) => void;
   reset: () => void;
 };
 
@@ -635,6 +639,39 @@ export const useDesignerStore = create<DesignerStore>((set, get) => ({
     saveTimer = setTimeout(() => {
       void get().flushSave();
     }, SAVE_DEBOUNCE_MS);
+  },
+
+  setChatModel: (modelName, modelId) => {
+    const graph = get().domainGraph;
+    const name = String(modelName || '').trim();
+    if (!graph || !name || get().bootstrapInProgress || isDesignerPreviewGraph(graph)) return;
+    const metadata = { ...(graph.metadata ?? {}) };
+    const currentId = String(metadata.model_id || '').trim();
+    // Omit modelId to keep a stable id already stored on the graph. An explicit
+    // null clears it. A shared model_name must not skip writing a different id.
+    const nextId = modelId === undefined ? currentId : String(modelId || '').trim();
+    if (String(metadata.model_name || '').trim() === name && currentId === nextId) return;
+    if (nextId) metadata.model_id = nextId;
+    else delete metadata.model_id;
+    metadata.model_name = name;
+    // A full-graph save already in flight carries the previous model name and
+    // its response would clobber this pick. Drop that response and save again
+    // once the new name is live, so the server does not keep the stale
+    // snapshot either (same guard as `patchMediaSettings`).
+    const saveInFlight = get().saveStatus === 'saving';
+    saveSeq += 1;
+    set({
+      domainGraph: {
+        ...graph,
+        updated_at: Date.now(),
+        metadata,
+      },
+    });
+    if (saveInFlight) {
+      void get().flushSave();
+    } else {
+      get().scheduleSave();
+    }
   },
 
   flushSave: async () => {

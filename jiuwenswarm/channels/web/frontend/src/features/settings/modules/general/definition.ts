@@ -1,6 +1,7 @@
 import { settingsNavigationIcons } from '../../../../assets/settings';
 import type { SettingsModuleDefinition } from '../../registry/types';
 import { ConnectionStatusSetting } from './GeneralSettings';
+import { TopicModelConfiguration, TopicModelSummary } from './TopicModelSettings';
 
 export const generalModule: SettingsModuleDefinition = {
   id: 'general',
@@ -21,6 +22,12 @@ export const generalModule: SettingsModuleDefinition = {
           ],
         },
         { id: 'connection-status', component: 'custom', render: ConnectionStatusSetting },
+        {
+          id: 'topic-recommendation-enabled', component: 'switch', key: 'topic_recommendation_enabled', source: 'config',
+          rowClassName: 'settings-agent-media__row',
+          configure: TopicModelConfiguration,
+          subItems: { show: 'always', disabled: 'never', items: [{ id: 'topic-model', component: 'custom', render: TopicModelSummary }] },
+        },
       ],
     },
   ],

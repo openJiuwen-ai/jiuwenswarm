@@ -25,38 +25,37 @@ from openjiuwen.agent_teams.paths import (
 )
 from openjiuwen.agent_teams.runtime import RunActionKind
 from openjiuwen.agent_teams.runtime.background_task_controller import BackgroundTaskController
-from openjiuwen.agent_teams.schema.status import MemberStatus
 from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.agent_teams.monitor import TeamMonitor, TeamStreamLogger
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.common.logging import server_logger, team_logger
 from openjiuwen.core.session.agent_team import create_agent_team_session
 from openjiuwen.harness import DeepAgent
-
-from jiuwenswarm.server.runtime.session.history_io import (
-    run_history_io, run_stream_parser, stream_chunk_writes_history,
-)
-
-from jiuwenswarm.agents.harness.team import TeamManager, get_team_manager
-from jiuwenswarm.agents.harness.team.team_manager import TEAM_EVENT_QUEUE_MAXSIZE
-from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
-    SessionMessagingRoute,
-    session_messaging_route_context,
-    with_session_messaging_route,
-)
-from jiuwenswarm.common.log_preview import DEFAULT_PREVIEW_MAX_CHARS, preview_text
-from gateway.common.mode_matrix import NEW_TEAM_DESIGN
-from jiuwenswarm.common.utils import get_agent_skills_dir, mask_sensitive
-from jiuwenswarm.common.config import get_config, get_skill_evolution_enabled
-from jiuwenswarm.common.chat_final import FINAL_MODE_PATCH_SEGMENT
-from gateway.common.session_message import with_cross_session_history_metadata
-from gateway.common.cron_team_completion import (
+from agent_gateway.common.mode_matrix import NEW_TEAM_DESIGN
+from agent_gateway.common.session_message import with_cross_session_history_metadata
+from agent_gateway.common.cron_team_completion import (
     _cron_solo_harness_end_pending,
     _drain_cron_delegation_grace_events,
     apply_cron_team_round_event,
     cron_team_round_should_end,
     new_cron_team_round_state,
 )
+
+from jiuwenswarm.server.runtime.session.history_io import (
+    run_history_io, run_stream_parser, stream_chunk_writes_history,
+)
+from jiuwenswarm.agents.harness.team import TeamManager, get_team_manager
+from jiuwenswarm.agents.harness.team.team_manager import TEAM_EVENT_QUEUE_MAXSIZE
+from jiuwenswarm.agents.harness.team.member_status import is_departed_member
+from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
+    SessionMessagingRoute,
+    session_messaging_route_context,
+    with_session_messaging_route,
+)
+from jiuwenswarm.common.log_preview import DEFAULT_PREVIEW_MAX_CHARS, preview_text
+from jiuwenswarm.common.utils import get_agent_skills_dir, mask_sensitive
+from jiuwenswarm.common.config import get_config, get_skill_evolution_enabled
+from jiuwenswarm.common.chat_final import FINAL_MODE_PATCH_SEGMENT
 from jiuwenswarm.agents.harness.team.handlers.base_monitor_handler import (
     BaseMonitorHandler,
     monitor_team_agent,
@@ -151,6 +150,12 @@ _TEAM_HEARTBEAT_SERVICE: ContextVar[Any | None] = ContextVar(
     "team_heartbeat_service",
     default=None,
 )
+# The team stream runs in a child task. create_task copies this context, so
+# runtime_ready can see the request that started the round.
+_TEAM_STREAM_REQUEST: ContextVar[Any | None] = ContextVar(
+    "team_stream_request",
+    default=None,
+)
 
 
 def bind_team_heartbeat_service(service: Any | None) -> Token[Any | None]:
@@ -216,6 +221,26 @@ def _safe_team_path_segment(value: str, fallback: str = "_") -> str:
     normalized = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip())
     normalized = normalized.strip("._-")
     return normalized[:96] or fallback
+
+
+def _bound_agent_group_denial(session_id: str) -> str | None:
+    """已绑定的专家团不在本次展开里时，返回拒绝原因。
+
+    没有绑定、或本次展开仍包含该专家团时返回 None。个人版展开判断直接放行。
+    """
+    metadata = get_session_metadata(session_id, cache_bust=True)
+    if not isinstance(metadata, dict):
+        return None
+    name = str(metadata.get("agent_group_name") or "").strip()
+    if not name:
+        return None
+    from jiuwenswarm.enterprise.capabilities.experts.request_packages import require_allowed
+
+    try:
+        require_allowed("agent_group", name)
+    except ValueError as exc:
+        return str(exc)
+    return None
 
 
 def _resolve_agent_group_selection(
@@ -403,6 +428,15 @@ async def _apply_team_skill_selection(
 def _team_hide_teammate_enabled() -> bool:
     """Return whether non-leader teammate frames should be filtered out in team mode."""
     return os.environ.get(_HIDE_TEAMMATE_ENV_KEY, "").strip().lower() == "true"
+
+
+def _is_teammate_permission_card(parsed: dict[str, Any] | None) -> bool:
+    """Return whether a parsed frame is a user-visible teammate permission card."""
+    return (
+        isinstance(parsed, dict)
+        and parsed.get("event_type") == "chat.ask_user_question"
+        and parsed.get("source") == "permission_interrupt"
+    )
 
 _INTERACT_REASON_ERROR_MAP: dict[str, str] = {
     "not_active": "Team is initializing, please try again later",
@@ -860,7 +894,13 @@ async def _prepare_first_team_request(
                 },
                 is_complete=False,
             ),
-            _team_processing_done_chunk(request_id, channel_id, session_id),
+            _team_processing_done_chunk(
+                request_id,
+                channel_id,
+                session_id,
+                original_event="chat.error",
+                reason="no_active_team_runtime",
+            ),
             AgentResponseChunk(
                 request_id=request_id,
                 channel_id=channel_id,
@@ -1022,9 +1062,11 @@ def _normalize_recovered_runs(
     changed = False
     for run in runs.values():
         if not run.is_terminal:
-            if run.status != "paused":
-                run.status = "paused"
-                changed = True
+            # Park the whole run through pause semantics, not the run-level
+            # status alone: the run's running phases and agents follow it to
+            # paused, so a parked run card never carries a phase still
+            # spinning as running under it.
+            changed = run.pause_if_running() or changed
             if not run.recovered:
                 run.recovered = True
                 changed = True
@@ -1196,7 +1238,17 @@ def persist_session_team_dispatch_mode(session_id: str, dispatch_mode: str) -> N
         )
         return
     metadata[_SESSION_TEAM_DISPATCH_MODE_KEY] = dispatch_mode
-    _enqueue_write(session_id, metadata)
+    # Synchronous, single-field merge. The queued whole-file write this used to
+    # be raced the runtime worker's round-end snapshot: another process could
+    # land a whole-file replace between our pre-read and the queue flush, and
+    # whichever wrote last erased the other's key. Merging only the owned key
+    # under the cross-process write locks keeps both sides' fields alive.
+    _enqueue_write(
+        session_id,
+        metadata,
+        sync_write=True,
+        merge_fields=frozenset({_SESSION_TEAM_DISPATCH_MODE_KEY}),
+    )
 
 
 def _resolve_session_team_dispatch_mode(
@@ -1242,7 +1294,15 @@ def persist_session_team_bootstrap_mode(session_id: str, bootstrap_mode: str) ->
         )
         return
     metadata[_SESSION_TEAM_BOOTSTRAP_MODE_KEY] = bootstrap_mode
-    _enqueue_write(session_id, metadata)
+    # Same sync single-field merge as persist_session_team_dispatch_mode: the
+    # queued whole-file write raced concurrent writers and could erase (or be
+    # erased by) their keys.
+    _enqueue_write(
+        session_id,
+        metadata,
+        sync_write=True,
+        merge_fields=frozenset({_SESSION_TEAM_BOOTSTRAP_MODE_KEY}),
+    )
 
 
 def _resolve_session_team_bootstrap_mode(
@@ -1388,6 +1448,14 @@ def _inject_swarmflow_context(
     through the launch plane (``resume_id + script_path``). Returns ``turn``
     unchanged when there is nothing to inject or the text is not a plain
     string (A2UI / InteractiveInput keep their own payload).
+
+    Handling rules gate every resume through an ask_user popup (skipped only
+    when the user's message already names the action) and branch by
+    attribution: a run whose executor (the member that last hosted it) is an
+    online member is handed back to that member via send_message so the member
+    resumes it itself — narration and completion land on whoever executes the
+    resume, so the executor stays the executor instead of the leader relaying
+    results for it.
     """
     eligible = [
         r for r in runs.values()
@@ -1401,7 +1469,13 @@ def _inject_swarmflow_context(
     ]
     for r in eligible:
         script = r.script_path or r.script or ""
-        lines.append(f"- run_id: {r.id}  脚本: {script}")
+        # The run says who last hosted it so the leader knows whose work it is
+        # about to resume; runs without team context stay unannotated,
+        # mirroring the frontend badge contract (no badge without executor).
+        head = f"- run_id: {r.id}  脚本: {script}"
+        if r.executor:
+            head += f"  最近执行者: {r.executor}"
+        lines.append(head)
         # Two resume planes, keyed on the ticket — not on the request shape:
         # a team pause pops the handler so the next chat.send looks like a
         # cold start, yet the controller still holds the ticket in-process and
@@ -1419,16 +1493,27 @@ def _inject_swarmflow_context(
         # stop works on both planes: the tool announces stopped itself when the
         # controller no longer holds the ticket (cold start), no journal seal.
         lines.append(f'  停止调用: swarmflow(resume_id="{r.id}", action="stop")')
-    # The tree-view buttons are greyed while the team sleeps,
-    # so the leader is the only control path: act on an explicit request,
-    # otherwise ask — coarse first, per-run only on demand, so N runs never
-    # overflow ask_user's 2-4 options per question.
+    # The tree-view buttons are greyed while the team sleeps, so the leader is
+    # the only control path: popup first (only a request that already names
+    # the action skips it — a bare「继续」does not), then the run's executor
+    # decides who executes the resume. The member that resumes gets the
+    # narration and the completion, so handing the resume back to an online
+    # executor keeps the run's results with that member instead of the
+    # leader collecting and relaying them.
     lines.extend([
         "处理规则：",
-        "- 若用户本条消息已明确要求恢复或停止某个（或全部）工作流，直接执行对应调用，不要询问。",
-        "- 否则先调用 ask_user 单题：「已暂停的工作流如何处理？」选项「全部恢复 / 全部停止 / "
-        "逐个选择 / 暂不处理」。选「逐个选择」再按每个工作流各出一题（恢复 / 停止 / 暂不处理）。"
-        "「暂不处理」保持暂停，不要自行恢复。",
+        "1. 用户本条消息已明确要求恢复或停止某个（或全部）工作流时，直接执行对应调用，不要询问；"
+        "「继续」这类泛泛表述不算明确要求，走第 2 步。",
+        "2. 未明确时，先调用 ask_user 单题：「已暂停的工作流如何处理？」"
+        "选项「全部恢复 / 全部停止 / 暂不处理」。「暂不处理」保持暂停，不要自行恢复。",
+        "3. 恢复时逐个 run 按最近执行者决定谁来执行：",
+        "   - 最近执行者是当前在线的团队成员：你不要自己调用 swarmflow——用 send_message 把该 run 的"
+        " run_id 和恢复调用发给该成员（如：你执行的工作流已暂停，请你自己调用"
+        ' swarmflow(resume_id="...") 恢复），由它自己恢复。过程叙述与完成结果会注入实际执行恢复的一方，'
+        "转交后由该成员自己收到结果并汇报。",
+        "   - 最近执行者是你自己，或该成员已不在团队：直接执行该 run 的恢复调用；"
+        "完成后结果注入你的对话，由你向用户汇报。",
+        "4. 停止时，直接执行对应 run 的停止调用。",
     ])
     lines.append(_ADVISORY_MARK[1])
     return turn.with_text("\n".join(lines) + "\n\n" + turn.text)
@@ -1486,7 +1571,14 @@ def _group_chat_input(request: Any, text: Any) -> dict | None:
     raw = params.get("query")
     if not isinstance(raw, dict) or raw.get("type") != "group_chat":
         if params.get("type") != "group_chat":
-            return None
+            session_id = getattr(request, "session_id", None)
+            if not session_id:
+                return None
+            metadata = get_session_metadata(session_id, enable_writeback=False) or {}
+            if metadata.get("type") != "group_chat":
+                return None
+            if params.get("type") is not None:
+                raise ValueError("a group session requires group_chat input")
         raw = params
     mentions = raw.get("mentions", [])
     if not isinstance(mentions, list):
@@ -1515,6 +1607,74 @@ def _group_chat_input(request: Any, text: Any) -> dict | None:
     if any(not isinstance(item, dict) for item in attachments):
         raise ValueError("Group attachments must contain JSON objects")
     return payload
+
+
+async def _record_group_organization_plan(session_id: str, group_input: dict) -> str | None:
+    """Record coordination state without changing the message or its mentions."""
+    plan = None
+    try:
+        from jiuwenswarm.agents.swarm.group_route import record_candidate
+
+        plan = await record_candidate(
+            session_id,
+            mentions=list(group_input["mentions"]),
+            body=str(group_input.get("body") or ""),
+            plan_id=str(group_input["client_message_id"]),
+        )
+        logger.info(
+            "[TeamHelpers] group organization plan candidate session_id=%s "
+            "mentions=%s recorded=%s",
+            session_id,
+            group_input["mentions"],
+            bool(plan),
+        )
+        if plan is None:
+            return None
+        return str(plan.get("plan_id") or "") or None
+    except asyncio.CancelledError:
+        # The caller does not own the plan ID until this coroutine returns.
+        # Cover cancellation after persistence but before card publication ends.
+        if plan is not None:
+            _schedule_unstarted_organization_close(session_id, str(plan.get("plan_id") or ""))
+        raise
+    except Exception:
+        logger.exception(
+            "[TeamHelpers] group organization plan failed session_id=%s",
+            session_id,
+        )
+        return None
+
+
+async def _abandon_unstarted_organization_plan(session_id: str, plan_id: str | None) -> None:
+    """Close an early card when this round fails before any proxy turn starts."""
+    if not plan_id:
+        return
+    try:
+        from jiuwenswarm.agents.swarm.group_org_bootstrap import fail_unstarted_organization_round
+
+        await fail_unstarted_organization_round(session_id, plan_id)
+    except Exception:
+        logger.exception(
+            "[TeamHelpers] unstarted organization close failed session_id=%s plan_id=%s",
+            session_id,
+            plan_id,
+        )
+
+
+_organization_close_tasks: set[asyncio.Task] = set()
+
+
+def _schedule_unstarted_organization_close(session_id: str, plan_id: str | None) -> None:
+    """Keep cancellation from dropping the close of a plan that never started."""
+    if not plan_id:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(_abandon_unstarted_organization_plan(session_id, plan_id))
+    _organization_close_tasks.add(task)
+    task.add_done_callback(_organization_close_tasks.discard)
 
 
 def _deliverable(turn: UserTurn, text: Any) -> Any:
@@ -1774,6 +1934,22 @@ def _is_heartbeat_request(request: Any) -> bool:
     return isinstance(automation, dict) and automation.get("kind") == "heartbeat"
 
 
+def _is_group_heartbeat_request(request: Any) -> bool:
+    """Whether ``request`` is a heartbeat firing inside a group chat session.
+
+    The heartbeat prompt is the leader's own scheduled instruction, not a
+    public message: it must reach the leader privately instead of being
+    posted into the group conversation as the user.
+    """
+    if not _is_heartbeat_request(request):
+        return False
+    session_id = getattr(request, "session_id", None)
+    if not session_id:
+        return False
+    metadata = get_session_metadata(session_id, enable_writeback=False) or {}
+    return metadata.get("type") == "group_chat"
+
+
 async def _wait_for_bounded_team_round_events(
     *,
     request_queue: asyncio.Queue,
@@ -1781,13 +1957,14 @@ async def _wait_for_bounded_team_round_events(
     request_id: str,
     channel_id: str | None,
     session_id: str,
+    require_terminal: bool = False,
 ) -> AsyncIterator[dict[str, Any]]:
-    """Yield events until one Cron or Heartbeat Team round is complete."""
+    """Yield events until one bounded Team round is complete."""
     while True:
         try:
             event = await asyncio.wait_for(request_queue.get(), timeout=0.1)
         except asyncio.TimeoutError:
-            if cron_team_round_should_end(round_state):
+            if not require_terminal and cron_team_round_should_end(round_state):
                 break
             # Fallback: if the underlying team stream task has ended, no more
             # events will arrive.  Break so the agent stream can finalise and
@@ -1831,6 +2008,8 @@ async def _wait_for_bounded_team_round_events(
             and event.get("is_complete") is True
         ):
             break
+        if require_terminal:
+            continue
         apply_cron_team_round_event(round_state, event)
         if cron_team_round_should_end(round_state):
             if _cron_solo_harness_end_pending(round_state):
@@ -1863,12 +2042,13 @@ async def _finish_cron_team_stream_after_delegation_grace(
     channel_id: str | None,
     session_id: str,
     round_id: Any,
+    expected_completion: dict[str, Any] | None = None,
 ) -> None:
     """Wait briefly after a solo harness final before ending the cron team stream."""
     await asyncio.sleep(_CRON_DELEGATION_GRACE_SECONDS)
     resolved_channel_id = _resolve_channel_id(channel_id)
     completion = get_team_manager(channel_id).get_cron_completion(session_id)
-    if completion is None:
+    if completion is None or (expected_completion is not None and completion is not expected_completion):
         return
     if completion.get("tasks_ever_created"):
         completion["finish_scheduled"] = False
@@ -1876,40 +2056,29 @@ async def _finish_cron_team_stream_after_delegation_grace(
     if not cron_team_round_should_end(completion):
         completion["finish_scheduled"] = False
         return
-    await _finish_cron_team_stream_after_round(channel_id, session_id, round_id)
+    await _finish_cron_team_stream_after_round(channel_id, session_id, round_id, completion)
 
 
 async def _finish_cron_team_stream_after_round(
     channel_id: str | None,
     session_id: str,
     round_id: Any,
+    expected_completion: dict[str, Any] | None = None,
 ) -> None:
     """Cancel the background team stream once cron SwarmFlow + leader report are done."""
     resolved_channel_id = _resolve_channel_id(channel_id)
     team_manager = get_team_manager(channel_id)
     try:
-        stream_task = team_manager.pop_stream_task(session_id)
-        if stream_task is not None and not stream_task.done():
-            stream_task.cancel()
-            try:
-                await stream_task
-            except asyncio.CancelledError:
-                pass
-        await _broadcast_event(
-            channel_id,
-            session_id,
-            {
-                "event_type": "chat.processing_status",
-                "session_id": session_id,
-                "rid": round_id,
-                "is_processing": False,
-                "is_complete": True,
-            },
-        )
+        completion = expected_completion or team_manager.get_cron_completion(session_id)
+        if completion is None:
+            return
+        await team_manager.finish_cron_stream(session_id, completion, round_id)
         logger.info(
-            "[TeamHelpers] cron team stream finished early: channel_id=%s session_id=%s",
+            "[TeamHelpers] cron team stream finished early: source=cron_round_finished "
+            "is_processing=False channel_id=%s session_id=%s round_id=%s",
             resolved_channel_id,
             session_id,
+            round_id,
         )
     except Exception as exc:
         logger.warning(
@@ -1918,7 +2087,15 @@ async def _finish_cron_team_stream_after_round(
             session_id,
             exc,
         )
-    finally:
+
+
+def _release_cron_waiter_completion(team_manager: Any, session_id: str, request_id: str) -> None:
+    """Leave a scheduled finisher's ownership fence intact after its waiter exits."""
+    completion = team_manager.get_cron_completion(session_id)
+    if (
+        completion is not None and completion.get("request_id") == request_id
+        and not completion.get("finish_scheduled")
+    ):
         team_manager.pop_cron_completion(session_id)
 
 
@@ -1930,13 +2107,16 @@ def _try_finish_cron_team_stream(
     """End persistent team streams for cron once workflow completes and leader reports."""
     team_manager = get_team_manager(channel_id)
     waiters = team_manager.get_waiters(session_id)
-    if not any(_is_cron_request_id(request_id) for request_id, _ in waiters):
+    cron_request_id = next((rid for rid, _ in waiters if _is_cron_request_id(rid)), None)
+    if cron_request_id is None:
         return
 
     completion = team_manager.setdefault_cron_completion(
         session_id,
         {
             **new_cron_team_round_state(),
+            **team_manager.cron_completion_owner(session_id, cron_request_id),
+            "channel_id": _resolve_channel_id(channel_id),
             "round_id": None,
             "finish_scheduled": False,
         },
@@ -1954,6 +2134,7 @@ def _try_finish_cron_team_stream(
                     channel_id,
                     session_id,
                     round_id,
+                    completion,
                 ),
                 name=f"cron-team-grace-{session_id}",
             )
@@ -1963,6 +2144,7 @@ def _try_finish_cron_team_stream(
                 channel_id,
                 session_id,
                 round_id,
+                completion,
             ),
             name=f"cron-team-finish-{session_id}",
         )
@@ -2051,7 +2233,12 @@ async def _broadcast_team_state_snapshot(
         if get_wf_handler is not None:
             wf_handler = get_wf_handler(session_id)
             if wf_handler is not None:
-                db_member_ids = {m.get("member_id", "") for m in snapshot.get("members", [])}
+                # Departed members keep their DB row too, so their ids stay
+                # reserved even though they are off the roster.
+                db_member_ids = {
+                    m.get("member_id", "")
+                    for m in (*snapshot.get("members", []), *snapshot.get("departed_members", []))
+                }
                 # Iterative loops reuse an agent id across phases of one run;
                 # like the live path's session-wide spawned_members, each
                 # mirrored member is emitted exactly once per replay.
@@ -2182,8 +2369,7 @@ async def _announce_team_roster(
         fresh: list[dict[str, Any]] = []
         for member in members:
             candidate_id = str(member.get("member_id") or "").strip()
-            member_status = str(member.get("status") or "").strip().lower()
-            if member_status == MemberStatus.SHUTDOWN.value:
+            if is_departed_member(member.get("status")):
                 continue
             if not candidate_id or candidate_id in announced_members:
                 continue
@@ -2324,12 +2510,433 @@ def _tag_team_output_origin(parsed: dict[str, Any], team_name: str) -> dict[str,
     return parsed
 
 
+async def _current_pool_team_agent(team_name: str) -> Any | None:
+    """Return the TeamAgent currently owned by Runner for ``team_name``."""
+    try:
+        from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+        from jiuwenswarm.agents.harness.team.team_manager import (
+            _runner_team_runtime_manager,
+        )
+
+        runtime = _runner_team_runtime_manager(GLOBAL_RUNNER)
+        entry = await runtime.pool.get(team_name)
+        return getattr(entry, "agent", None) if entry is not None else None
+    except Exception:
+        logger.debug(
+            "[TeamHelpers] resolve pool team agent failed: team_name=%s",
+            team_name,
+            exc_info=True,
+        )
+        return None
+
+
+def _record_session_team_occupancy(
+    *,
+    request: Any | None,
+    session_id: str,
+    runtime_team_name: str,
+) -> None:
+    """Count a chat-created team against the user's team quota.
+
+    ``team.create`` already reserves a lease. A team that becomes ready from
+    the chat path only writes ``team_name`` onto the session, so the user's
+    used count would stay 0 while the team exists.
+    """
+    if request is None or not str(runtime_team_name or "").strip():
+        return
+    try:
+        from jiuwenswarm.enterprise.team.handlers import (
+            ensure_session_team_occupancy,
+            request_identity,
+        )
+        from jiuwenswarm.enterprise.team.quota import TeamQuotaExceeded
+
+        if not request_identity(request).user_id:
+            return
+        metadata = get_session_metadata(session_id)
+        template_id = str(metadata.get("team_template_id") or "").strip()
+        ensure_session_team_occupancy(
+            request,
+            session_id=session_id,
+            team_name=str(runtime_team_name).strip(),
+            template_id=template_id,
+        )
+    except TeamQuotaExceeded:
+        logger.warning(
+            "[TeamHelpers] session team exceeds quota: session_id=%s team_name=%s",
+            session_id,
+            runtime_team_name,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("[TeamHelpers] session team occupancy record failed", exc_info=True)
+
+
+def _enterprise_prereserve_team_slot(
+    request: Any,
+    session_id: str,
+) -> tuple[str | None, Any]:
+    """Reserve one team slot before an enterprise chat creates a team.
+
+    Returns ``(user_message, lease)``. A message means the create must stop.
+    Personal edition never calls this. An existing session entity is left alone.
+    """
+    from jiuwenswarm.enterprise.team.handlers import request_identity
+    from jiuwenswarm.enterprise.team.quota import (
+        TeamQuotaExceeded,
+        get_team_quota_service,
+        team_quota_user_message,
+    )
+
+    identity = request_identity(request)
+    if not identity.user_id:
+        return None, None
+    try:
+        # Entity lookup and the reservation are one MySQL call.
+        lease = get_team_quota_service().reserve_team_create(
+            identity,
+            session_id,
+            on_existing="skip",
+        )
+    except TeamQuotaExceeded as exc:
+        return team_quota_user_message(exc), None
+    if getattr(lease, "noop", False):
+        return None, None
+    return None, lease
+
+
+def _release_uncommitted_team_create(lease: Any) -> None:
+    """Return a chat-path reservation that never became a committed team."""
+    if lease is None or getattr(lease, "noop", False):
+        return
+    key = str(getattr(lease, "idempotency_key", "") or "")
+    prefix = "session:"
+    if not key.startswith(prefix):
+        return
+    from jiuwenswarm.enterprise.team.quota import (
+        STATUS_RESERVED,
+        get_team_quota_service,
+    )
+
+    from jiuwenswarm.infrastructure.db.team_store_actor import use_shared_team_store
+
+    quota = get_team_quota_service()
+    if use_shared_team_store():
+        quota.release_reserved_create(key[len(prefix):])
+        return
+    row = quota.peek_team_create_lease(key[len(prefix):])
+    if row is None or row.get("status") != STATUS_RESERVED:
+        return
+    quota.release_lease(lease)
+
+
+async def _release_team_create_off_loop(lease: Any) -> None:
+    """Release a chat reservation without blocking the HTTP event loop."""
+    from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
+
+    await run_team_store(_release_uncommitted_team_create, lease)
+
+
+def _release_uncommitted_session_team_create(session_id: str) -> None:
+    """Release a chat reservation that is still reserved when its stream ends."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        return
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    if not is_enterprise():
+        return
+    from jiuwenswarm.enterprise.team.quota import get_team_quota_service
+
+    get_team_quota_service().release_reserved_create(sid)
+
+
+async def _release_stream_team_create(session_id: str) -> None:
+    from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
+
+    await run_team_store(_release_uncommitted_session_team_create, session_id)
+
+
+def _hold_uncommitted_team_create(session_id: str) -> None:
+    """Keep a still-reserved chat lease occupying while its stream is alive."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        return
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    if not is_enterprise():
+        return
+    from jiuwenswarm.enterprise.team.quota import get_team_quota_service
+
+    get_team_quota_service().hold_reserved_create(sid)
+
+
+async def _hold_team_create_off_loop(session_id: str) -> None:
+    from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
+
+    await run_team_store(_hold_uncommitted_team_create, session_id)
+
+
+async def _refresh_team_create_hold(session_id: str) -> None:
+    """Refresh a held team-create reservation until this stream task ends.
+
+    The first wait is the full interval. A committed lease matches no row.
+    """
+    from jiuwenswarm.enterprise.team.quota import HOLD_REFRESH_INTERVAL_SEC
+
+    while True:
+        await asyncio.sleep(HOLD_REFRESH_INTERVAL_SEC)
+        try:
+            await _hold_team_create_off_loop(session_id)
+        except Exception:
+            logger.debug(
+                "[TeamHelpers] team-create hold refresh failed: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+
+
+async def _apply_enterprise_runtime_ready_hooks(
+    *,
+    channel_id: str | None,
+    session_id: str,
+    runtime_team_name: str,
+    parsed: dict[str, Any],
+    request: Any | None = None,
+) -> None:
+    """Attach the teammate quota guard and back-fill team identity on ready."""
+    from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
+
+    await run_team_store(
+        _record_session_team_occupancy,
+        request=request,
+        session_id=session_id,
+        runtime_team_name=runtime_team_name,
+    )
+    team_agent = await _current_pool_team_agent(runtime_team_name)
+    try:
+        from jiuwenswarm.enterprise.team.member_limits import attach_teammate_limit_guard
+
+        if team_agent is not None:
+            team_id = ""
+            owner = None
+            try:
+                from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
+                from jiuwenswarm.enterprise.team.control_store import get_team_control_store
+
+                def _entity_for_session() -> Any:
+                    return get_team_control_store().get_entity_by_session(session_id)
+
+                entity = await run_team_store(_entity_for_session)
+                if entity is not None:
+                    team_id = entity.team_id
+                    owner = entity.owner
+            except Exception:  # noqa: BLE001
+                team_id = ""
+            attach_teammate_limit_guard(
+                team_agent,
+                team_id=team_id,
+                owner=owner,
+                on_quota_exceeded=lambda **kwargs: _emit_teammate_quota_notice(
+                    channel_id, session_id, **kwargs
+                ),
+            )
+            if team_id:
+                try:
+                    from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
+                    from jiuwenswarm.enterprise.team.quota import get_team_quota_service
+
+                    backend = getattr(team_agent, "team_backend", None)
+                    leader_name = str(getattr(backend, "leader_member_name", "") or "")
+                    names: list[str] = []
+                    if backend is not None and getattr(backend, "db", None) is not None:
+                        roster = await backend.db.member.get_member_roster(backend.team_name)
+                        names = [
+                            str(name)
+                            for name, _display, _status in roster
+                            if str(name) and str(name) != leader_name
+                        ]
+                    await run_team_store(
+                        get_team_quota_service().reconcile_local_roster,
+                        team_id,
+                        names,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug("[TeamHelpers] teammate quota roster reconcile failed", exc_info=True)
+    except Exception:  # noqa: BLE001
+        logger.debug("[TeamHelpers] teammate limit guard attach failed", exc_info=True)
+
+    try:
+        from jiuwenswarm.enterprise.team.membership import materialize_pending_memberships
+
+        await materialize_pending_memberships(
+            runtime_team_name=runtime_team_name,
+            session_id=session_id,
+            channel_id=channel_id,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("[TeamHelpers] materialize pending memberships failed", exc_info=True)
+
+    try:
+        from jiuwenswarm.enterprise.team.control_bridge import entity_payload
+        from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
+
+        entity = await run_team_store(
+            entity_payload,
+            session_id=session_id,
+            team_name=runtime_team_name,
+        )
+        if entity:
+            parsed.setdefault("team_id", entity.get("team_id"))
+            parsed.setdefault(
+                "owner",
+                {
+                    "user_id": entity.get("owner_user_id", ""),
+                    "group_id": entity.get("owner_group_id", ""),
+                    "bot_id": entity.get("owner_bot_id", ""),
+                },
+            )
+            parsed.setdefault("team_status", entity.get("status"))
+    except Exception:  # noqa: BLE001
+        logger.debug("[TeamHelpers] runtime_ready entity enrich failed", exc_info=True)
+
+
+def _emit_teammate_quota_notice(
+    channel_id: str | None,
+    session_id: str,
+    *,
+    used: int,
+    limit: int,
+    member_name: str = "",
+    **_kwargs: Any,
+) -> None:
+    """Show one user-facing teammate-quota notice per round."""
+    from jiuwenswarm.enterprise.team.member_limits import teammate_quota_user_message
+
+    tm = get_team_manager(channel_id)
+    claim = getattr(tm, "claim_teammate_quota_notice", None)
+    if callable(claim) and not claim(session_id):
+        return
+    content = teammate_quota_user_message(limit)
+    event = {
+        "event_type": "chat.notice",
+        "notice_type": "team_teammate_quota",
+        "session_id": session_id,
+        "content": content,
+        "message": content,
+        "quota": {"kind": "teammate_spawn", "used": int(used), "limit": int(limit)},
+        "blocked_name": str(member_name or ""),
+    }
+    try:
+        asyncio.get_running_loop().create_task(
+            _broadcast_event(channel_id, session_id, event)
+        )
+    except RuntimeError:
+        logger.debug("[TeamHelpers] teammate quota notice has no running loop")
+    try:
+        append_history_record(
+            session_id=session_id,
+            request_id=f"team-teammate-quota-{session_id}",
+            channel_id=_resolve_channel_id(channel_id),
+            role="assistant",
+            content=content,
+            timestamp=time.time(),
+            event_type="chat.notice",
+            extra=dict(event),
+            mode="team",
+        )
+    except Exception:
+        logger.debug(
+            "[TeamHelpers] persist teammate quota notice failed: session_id=%s",
+            session_id,
+            exc_info=True,
+        )
+
+
+def _persist_team_notice(
+    channel_id: str | None,
+    session_id: str,
+    *,
+    request_id: str,
+    content: str,
+    event: dict[str, Any],
+) -> None:
+    """Keep a team refusal in session history so a refresh still shows it."""
+    try:
+        append_history_record(
+            session_id=session_id,
+            request_id=request_id,
+            channel_id=_resolve_channel_id(channel_id),
+            role="assistant",
+            content=content,
+            timestamp=time.time(),
+            event_type="chat.notice",
+            extra=dict(event),
+            mode="team",
+        )
+    except Exception:
+        logger.debug(
+            "[TeamHelpers] persist team notice failed: session_id=%s",
+            session_id,
+            exc_info=True,
+        )
+
+
+def _redact_teammate_quota_tool_result(parsed: dict[str, Any]) -> dict[str, Any]:
+    """Keep the quota sentence on the notice only."""
+    if parsed.get("event_type") != "chat.tool_result":
+        return parsed
+    keys = ("result", "raw_output", "summary", "content", "error", "rendered_result")
+    blob = "\n".join(str(parsed.get(key) or "") for key in keys)
+    if "TEAM_MEMBER_QUOTA_EXCEEDED" not in blob and "人数已满" not in blob:
+        return parsed
+    redacted = dict(parsed)
+    for key in keys:
+        value = redacted.get(key)
+        if isinstance(value, str) and (
+            "TEAM_MEMBER_QUOTA_EXCEEDED" in value or "人数已满" in value
+        ):
+            redacted[key] = "TEAM_MEMBER_QUOTA_EXCEEDED"
+    return redacted
+
+
+def _explicit_team_size_refusal(
+    request: Any,
+    query_text: str,
+    config_base: dict[str, Any] | None,
+) -> tuple[str, dict[str, Any]] | None:
+    """Refuse an original sentence that already states a whole-team size over the cap."""
+    text = str(query_text or "").strip()
+    if not text:
+        return None
+    from jiuwenswarm.enterprise.team.member_limits import (
+        requested_team_size_over_limit,
+        requested_team_size_user_message,
+        whole_team_member_limit,
+    )
+    from jiuwenswarm.enterprise.team.quota import KIND_REQUESTED_TEAM_SIZE
+
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    limit, default = whole_team_member_limit(request, config_base)
+    requested = requested_team_size_over_limit(text, limit, enterprise=is_enterprise())
+    if requested is None:
+        return None
+    content = requested_team_size_user_message(requested, limit)
+    return content, {
+        "kind": KIND_REQUESTED_TEAM_SIZE,
+        "used": requested,
+        "limit": limit,
+        "default": default,
+    }
+
+
 def _truncate_team_tool_result_event(parsed: dict[str, Any]) -> dict[str, Any]:
     """Trim large team tool result fields before forwarding them to clients."""
     if parsed.get("event_type") != "chat.tool_result":
         return parsed
 
-    next_event = dict(parsed)
+    next_event = _redact_teammate_quota_tool_result(dict(parsed))
     truncated = False
     original_size = 0
     for key in ("result", "rendered_result", "raw_output"):
@@ -2352,7 +2959,14 @@ def _is_duplicate_ask_user_question(
     parsed: dict[str, Any],
     emitted_request_ids: set[str],
 ) -> bool:
+    """Drop an immediate replay of the same ask.
+
+    Any other frame ends that burst. A permission card kept waiting after a
+    sibling runs is written again with the original tool_call_id, and that
+    refresh has to reach the client.
+    """
     if parsed.get("event_type") != "chat.ask_user_question":
+        emitted_request_ids.clear()
         return False
     request_id = str(parsed.get("request_id") or "").strip()
     if not request_id:
@@ -2363,11 +2977,48 @@ def _is_duplicate_ask_user_question(
     return False
 
 
+def _quiet_round_status_payload(
+    session_id: str,
+    round_id: str,
+    **extra: Any,
+) -> dict[str, Any]:
+    """End-of-round lamp frame. Enterprise keeps the SSE open with ``idle``.
+
+    A frame without ``idle`` still means the stream itself has finished.
+    Personal payloads stay unchanged.
+    """
+    payload: dict[str, Any] = {
+        "event_type": "chat.processing_status",
+        "session_id": session_id,
+        "rid": round_id,
+        "is_processing": False,
+        "is_complete": True,
+    }
+    payload.update(extra)
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    if is_enterprise():
+        payload["idle"] = True
+    return payload
+
+
 def _team_processing_done_chunk(
     request_id: str,
     channel_id: str | None,
     session_id: str,
+    *,
+    original_event: str = "team.processing_done",
+    reason: str = "",
 ) -> AgentResponseChunk:
+    logger.info(
+        "[TeamProcessingStatus] generated: source=processing_done_chunk channel_id=%s "
+        "session_id=%s request_id=%s original_event=%s reason=%s is_processing=False is_complete=True",
+        channel_id,
+        session_id,
+        request_id,
+        original_event,
+        reason,
+    )
     return AgentResponseChunk(
         request_id=request_id,
         channel_id=channel_id,
@@ -2757,9 +3408,11 @@ async def _start_team_stream_round(
     team_leader_identity: dict[str, Any] | None = None,
     generation: int | None = None,
     attach_waiter: bool = True,
+    request_scoped_waiter: bool = False,
     run_context: object | None = None,
     cross_session_marker: dict[str, Any] | None = None,
     interrupt_input: Any | None = None,
+    request: Any | None = None,
 ) -> asyncio.Queue | None:
     """Start a team stream round and register its waiter queue."""
     # Sync team observability with current config before streaming.
@@ -2777,8 +3430,10 @@ async def _start_team_stream_round(
         # second one would duplicate every event to the frontend and double
         # the admission ownership. Exclusive (Heartbeat) waiters keep their
         # takeover semantics and are not blocked by an existing waiter.
+        # Request-scoped consumers also need their own terminal receipt; the
+        # page's persistent subscription cannot settle their managed tasks.
         already_attached = team_manager.has_interactive_waiter(session_id)
-        if exclusive_waiter or not already_attached:
+        if exclusive_waiter or request_scoped_waiter or not already_attached:
             request_queue = _new_team_event_queue()
             _add_team_waiter(
                 team_manager,
@@ -2812,17 +3467,21 @@ async def _start_team_stream_round(
     stream_kwargs["round_request_id"] = request_id
     if cross_session_marker is not None:
         stream_kwargs["cross_session_marker"] = cross_session_marker
-    stream = _consume_stream_with_query(
-        channel_id,
-        session_id,
-        team_spec,
-        query,
-        generation=generation,
-        run_context=run_context,
-        interrupt_input=interrupt_input,
-        **stream_kwargs,
-    )
-    stream_task = asyncio.create_task(stream)
+    request_token = _TEAM_STREAM_REQUEST.set(request)
+    try:
+        stream = _consume_stream_with_query(
+            channel_id,
+            session_id,
+            team_spec,
+            query,
+            generation=generation,
+            run_context=run_context,
+            interrupt_input=interrupt_input,
+            **stream_kwargs,
+        )
+        stream_task = asyncio.create_task(stream)
+    finally:
+        _TEAM_STREAM_REQUEST.reset(request_token)
     _register_team_stream_task(
         team_manager,
         session_id,
@@ -2837,6 +3496,35 @@ async def process_team_message_stream(
     inputs: dict[str, Any],
     deep_agent: DeepAgent,
 ) -> AsyncIterator[AgentResponseChunk]:
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.design_execution import bind_design_voice_task
+
+    async with bind_design_voice_task(request, inputs):
+        async with aclosing(_process_team_message_stream_with_design(request, inputs, deep_agent)) as stream:
+            async for chunk in stream:
+                if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "chat.processing_status":
+                    is_terminal_status = (
+                        chunk.payload.get("is_processing") is False
+                        and chunk.payload.get("is_complete") is True
+                    )
+                    logger.log(
+                        logging.INFO if is_terminal_status else logging.DEBUG,
+                        "[TeamProcessingStatus] handoff_to_adapter: session_id=%s request_id=%s "
+                        "channel_id=%s round_id=%s is_processing=%s is_complete=%s",
+                        request.session_id,
+                        chunk.request_id,
+                        chunk.channel_id,
+                        chunk.payload.get("rid"),
+                        chunk.payload.get("is_processing"),
+                        chunk.payload.get("is_complete"),
+                    )
+                yield chunk
+
+
+async def _process_team_message_stream_with_design(
+    request: Any,
+    inputs: dict[str, Any],
+    deep_agent: DeepAgent,
+) -> AsyncIterator[AgentResponseChunk]:
     """Hold the session startup lock until registration, never while streaming.
 
     ``team.design`` sessions bind their execution context here (graph,
@@ -2845,13 +3533,34 @@ async def process_team_message_stream(
     the standard team pipeline.
     """
     design_bindings = await _bind_design_round_if_needed(request)
+    npc_team = (getattr(request, "trusted_runtime_binding", None) or {}).get("app_role_team") is True
     try:
         async with aclosing(_process_team_message_stream_locked(
             request, inputs, deep_agent
         )) as stream:
             async for chunk in stream:
+                if npc_team and chunk.payload and chunk.payload.get("event_type") not in {
+                    "chat.final", "chat.error", "chat.processing_status", "chat.input_received",
+                }:
+                    continue
                 if design_bindings is not None:
                     _push_design_tool_activity(request, chunk)
+                if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "chat.processing_status":
+                    is_terminal_status = (
+                        chunk.payload.get("is_processing") is False
+                        and chunk.payload.get("is_complete") is True
+                    )
+                    logger.log(
+                        logging.INFO if is_terminal_status else logging.DEBUG,
+                        "[TeamProcessingStatus] handoff_to_adapter: session_id=%s request_id=%s "
+                        "channel_id=%s round_id=%s is_processing=%s is_complete=%s",
+                        request.session_id,
+                        chunk.request_id,
+                        chunk.channel_id,
+                        chunk.payload.get("rid"),
+                        chunk.payload.get("is_processing"),
+                        chunk.payload.get("is_complete"),
+                    )
                 yield chunk
     finally:
         if design_bindings is not None:
@@ -2943,16 +3652,35 @@ async def _process_team_message_stream_locked(
     sanitized_metadata = dict(request_metadata)
     sanitized_metadata.pop(TEAM_EXECUTION_CONTEXT_METADATA_KEY, None)
     request = replace(request, metadata=sanitized_metadata)
+    wait_for_stop = getattr(team_manager, "wait_for_request_stop", None)
+    if callable(wait_for_stop):
+        # Wait before marking this input in-flight: the old producer's cleanup
+        # must finish before the new turn chooses or activates a runtime.
+        await wait_for_stop(session_id)
     # 归档闸门：Team 回合从进入适配器起即算「运行中」，直到本轮 round 终止
     # （round 之前的 spec 组装 / 运行时激活等准备阶段也要覆盖）。
     begin_request = getattr(team_manager, "begin_request", None)
     end_request = getattr(team_manager, "end_request", None)
     if callable(begin_request):
         begin_request(session_id, request_id, generation=generation)
+    execution_ids = []
+    submitted = False
+    delivery_error = False
     try:
         startup_lock = team_manager.get_startup_lock(session_id)
         async with AsyncExitStack() as startup:
             await startup.enter_async_context(startup_lock)
+            params = request.params if isinstance(request.params, dict) else {}
+            if params.get("intent") == "task":
+                from jiuwenswarm.server.runtime.group_service import GroupService, read_group
+
+                if read_group(session_id) is not None:
+                    # Creation belongs to the admitted runtime path, not the WebSocket preflight.
+                    records = await GroupService(None).prepare_task(
+                        session_id, params, user_id=str(getattr(request, "user_id", "") or ""),
+                        channel_id=request.channel_id or "default", request_id=request_id,
+                    )
+                    execution_ids = [record["execution_id"] for record in records]
             async with aclosing(_process_team_message_stream(
                 request,
                 inputs,
@@ -2965,11 +3693,36 @@ async def _process_team_message_stream_locked(
                     # Early replies (validation errors, slash commands) also end
                     # startup ownership before handing control to the caller.
                     await startup.aclose()
+                    payload = chunk.payload if isinstance(chunk.payload, dict) else {}
+                    chunk_event_type = payload.get("event_type")
+                    accepted_events = {
+                        "team.group_message.accepted", "team.input.accepted", "chat.processing_status_deferred",
+                    }
+                    if chunk_event_type in accepted_events:
+                        submitted = True
+                    if execution_ids and chunk_event_type == "team.group_message.accepted":
+                        from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+
+                        await GroupExecutions(session_id).accept_delivery(params.get("client_message_id") or request_id)
+                    if chunk_event_type in {"chat.error", "team.error", "team.interact.failed"}:
+                        delivery_error = True
                     yield chunk
+    except Exception:
+        delivery_error = True
+        raise
     finally:
-        # 兜底：提前返回（校验失败/斜杠命令）也要解除运行中标记。
-        if callable(end_request):
-            end_request(session_id, request_id, generation=generation)
+        try:
+            background_owned = False
+            if execution_ids and not delivery_error and not submitted:
+                background_owned = _has_team_stream_task(team_manager, session_id, generation=generation)
+            if execution_ids and (delivery_error or not (submitted or background_owned)):
+                from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+
+                await GroupExecutions(session_id).fail_pending(execution_ids, "delivery_failed")
+        finally:
+            # Always release request ownership, including failed delivery cleanup.
+            if callable(end_request):
+                end_request(session_id, request_id, generation=generation)
 
 
 async def _process_team_message_stream(
@@ -3024,6 +3777,16 @@ async def _process_team_message_stream(
             yield chunk
         return
 
+    denial = _bound_agent_group_denial(session_id)
+    if denial:
+        yield AgentResponseChunk(
+            request_id=rid,
+            channel_id=channel_id,
+            payload={"event_type": "chat.error", "error": denial},
+            is_complete=True,
+        )
+        return
+
     language = _resolve_request_language(request)
     # ``query`` stays the user's own words for the whole function — directive
     # stripping, ``$member`` routing and slash commands all parse it. Every
@@ -3031,16 +3794,29 @@ async def _process_team_message_stream(
     # the leader receives exactly the envelope a single agent would.
     turn = _resolve_user_turn(inputs, channel_id=channel_id, language=language)
     query = turn.text
+    private_group_heartbeat = _is_group_heartbeat_request(request)
+    npc_team = (getattr(request, "trusted_runtime_binding", None) or {}).get("app_role_team") is True
     try:
-        group_input = _group_chat_input(request, query)
+        if npc_team:
+            if not isinstance(query, str) or not query.strip():
+                raise ValueError("NPC Team requires a non-empty player message")
+            if (request_params or {}).get("type") == "group_chat":
+                raise ValueError("NPC Team accepts player input only through its leader")
+            # A literal prefix keeps @/$/# routing and slash commands out of player text.
+            query = f"Player input:\n{query}"
+            turn = turn.with_text(query)
+        group_input = None if (private_group_heartbeat or npc_team) else _group_chat_input(request, query)
     except ValueError as exc:
         yield AgentResponseChunk(
             request_id=rid, channel_id=channel_id,
             payload={"event_type": "chat.error", "error": str(exc)}, is_complete=True,
         )
         return
+    recorded_organization_plan_id = None
     if group_input is not None:
         query = group_input
+        if len(group_input["mentions"]) > 1:
+            recorded_organization_plan_id = await _record_group_organization_plan(session_id, group_input)
     query_text = query if isinstance(query, str) else ""
     try:
         from jiuwenswarm.agents.harness.team.remote_member_bootstrap import (
@@ -3080,7 +3856,13 @@ async def _process_team_message_stream(
         if has_execution_context
         else _is_cron_request_id(rid)
     )
-    is_bounded_round = is_heartbeat_request or is_cron_request
+    is_design_task = (
+        channel_id == "video_tool"
+        and (request.params or {}).get("mode") == "team.design"
+        and bool((request.params or {}).get("managed_task_binding"))
+    )
+    is_bounded_user_request = is_cron_request or is_design_task
+    is_bounded_round = is_heartbeat_request or is_bounded_user_request
     admission = getattr(heartbeat_service, "admission", None)
     # A cross-Session turn is executed by the mailbox worker, which already
     # holds this turn's ``session_message_run_id`` admission. Taking the
@@ -3088,7 +3870,7 @@ async def _process_team_message_stream(
     # i.e. wait for this very turn to finish (it is released only after the
     # stream ends), a self-deadlock. ``_begin_team_round`` routes such turns
     # through the mailbox-scoped admission instead.
-    from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+    from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
     request_params = getattr(request, "params", None)
     cross_session_marker = (
@@ -3105,6 +3887,7 @@ async def _process_team_message_stream(
     cron_user_admitted = False
     round_submitted = False
     event_stream_cancelled = False
+    enterprise_create_lease: Any = None
 
     async def _complete_user_submission(*, accepted: bool) -> None:
         nonlocal user_admitted
@@ -3178,7 +3961,7 @@ async def _process_team_message_stream(
             if admission is not None:
                 _ensure_interactive_round(terminal_armed=is_first_request)
             return
-        if is_cron_request and admission is not None:
+        if is_bounded_user_request and admission is not None:
             await admission.begin_bounded_team_user(session_id)
             cron_user_admitted = True
         try:
@@ -3217,7 +4000,7 @@ async def _process_team_message_stream(
                     generation=generation,
                 )
             return
-        if is_cron_request:
+        if is_bounded_user_request:
             if not accepted:
                 await _release_team_round(
                     team_manager,
@@ -3269,6 +4052,24 @@ async def _process_team_message_stream(
         if preparation.recovered_runtime:
             is_first_request = False
             await startup.aclose()
+        elif private_group_heartbeat:
+            # A cold start would build the runtime from a team-mode input and
+            # lose the group conversation mode; the next group message starts
+            # it properly, so this heartbeat round is skipped.
+            logger.warning(
+                "[TeamHelpers] group heartbeat skipped without a live runtime: "
+                "channel_id=%s session_id=%s request_id=%s",
+                _resolve_channel_id(channel_id),
+                session_id,
+                rid,
+            )
+            yield AgentResponseChunk(
+                request_id=rid,
+                channel_id=channel_id,
+                payload=None,
+                is_complete=True,
+            )
+            return
         else:
             query = preparation.query
             interrupt_input = preparation.interrupt_input
@@ -3276,7 +4077,90 @@ async def _process_team_message_stream(
             hide_dm = preparation.hide_dm
             debug = preparation.debug
 
+    if is_first_request:
+        from jiuwenswarm.enterprise.edition import is_enterprise
+
+        # 超员拒绝只属于企业版。个人版不解析人数，也不为取上限打开配额服务。
+        if is_enterprise():
+            from jiuwenswarm.enterprise.team.quota import QUOTA_EXCEEDED
+
+            size_refusal = _explicit_team_size_refusal(request, query_text, get_config())
+        else:
+            size_refusal = None
+        if size_refusal is not None:
+            content, quota = size_refusal
+            event = {
+                "event_type": "chat.notice",
+                "notice_type": "requested_team_size",
+                "session_id": session_id,
+                "content": content,
+                "message": content,
+                "code": QUOTA_EXCEEDED,
+                "quota": quota,
+            }
+            _persist_team_notice(
+                channel_id,
+                session_id,
+                request_id=f"team-size-{rid}",
+                content=content,
+                event=event,
+            )
+            yield AgentResponseChunk(
+                request_id=rid,
+                channel_id=channel_id,
+                payload=event,
+                is_complete=True,
+            )
+            return
+
+    enterprise_create_lease = None
+    stream_kept_lease = False
     try:
+        if is_first_request:
+            from jiuwenswarm.enterprise.edition import is_enterprise
+
+            if is_enterprise():
+                from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
+
+                notice, enterprise_create_lease = await run_team_store(
+                    _enterprise_prereserve_team_slot,
+                    request,
+                    session_id,
+                )
+                if notice:
+                    from jiuwenswarm.enterprise.team.quota import QUOTA_EXCEEDED
+
+                    event = {
+                        "event_type": "chat.notice",
+                        "notice_type": "team_quota",
+                        "session_id": session_id,
+                        "content": notice,
+                        "message": notice,
+                        "code": QUOTA_EXCEEDED,
+                    }
+                    _persist_team_notice(
+                        channel_id,
+                        session_id,
+                        request_id=f"team-quota-{rid}",
+                        content=notice,
+                        event=event,
+                    )
+                    yield AgentResponseChunk(
+                        request_id=rid,
+                        channel_id=channel_id,
+                        payload=event,
+                        is_complete=True,
+                    )
+                    return
+                if isinstance(query, str) and query.strip():
+                    from jiuwenswarm.enterprise.team.member_limits import (
+                        enterprise_recruit_constraint,
+                    )
+
+                    note = enterprise_recruit_constraint(query_text or query)
+                    if note:
+                        query = f"{query.rstrip()}\n\n{note}"
+                        query_text = query
         request_metadata = dict(request.metadata or {})
         if group_input is not None:
             from jiuwenswarm.agents.swarm.group_chat import resolve_group_members
@@ -3294,7 +4178,8 @@ async def _process_team_message_stream(
         #   - 消息中无 @ → $member_name body（不自动拼接 @team_leader，
         #     HumanAgent 可直接与自己扮演的 agent 对话，如 $reviewer-1 看一下当前有哪些任务）
         member_name = str(request_metadata.get("member_name") or "").strip()
-        if member_name and query_text and not query_text.startswith("$"):
+        direct_member_message = bool(member_name and query_text and not query_text.startswith("$"))
+        if not npc_team and direct_member_message:
             query = f"${member_name} {query_text}"
             query_text = query if isinstance(query, str) else str(query)
             logger.info(
@@ -3402,7 +4287,7 @@ async def _process_team_message_stream(
         # caller-supplied compiled payload with runtime credentials is never
         # accepted).
         if model_selection is not None:
-            from gateway.common.model_selection import ModelSelection as SwarmModelSelection
+            from agent_gateway.common.model_selection import ModelSelection as SwarmModelSelection
             model_selection = SwarmModelSelection.model_validate(model_selection).model_dump()
             if get_session_metadata(session_id, cache_bust=True).get("cron_id"):
                 from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
@@ -3434,7 +4319,7 @@ async def _process_team_message_stream(
                     stored.model_dump(exclude_none=True) if stored is not None else None
                 )
             if isinstance(stored_selection, dict):
-                from gateway.common.model_selection import ModelSelection as SwarmModelSelection
+                from agent_gateway.common.model_selection import ModelSelection as SwarmModelSelection
                 from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
 
                 selected = SwarmModelSelection.model_validate(stored_selection)
@@ -3444,9 +4329,17 @@ async def _process_team_message_stream(
         # no pre-built parent DeepAgent required.
         # 会话级 swarmflow 配置：请求 params > metadata > config.yaml；
         # worktree 跟随 project_dir（选了项目目录即隔离可用，未选即关闭）
+        # 与单 agent 使用同一份已解析配置。企业版模型在 Gateway 模板里，
+        # AgentServer 的 config.yaml 只有 ${MODEL_PROVIDER} 占位；不套用模板时
+        # 集群会把空 provider 交给 ModelClientConfig，报 181000。
+        from jiuwenswarm.enterprise.config.config_provider import resolve_agent_config
+
+        team_runtime_config = (
+            await resolve_agent_config(get_config(), request=request)
+        ).config
         swarmflow_config = _resolve_session_swarmflow_config(
             params_obj if isinstance(params_obj, dict) else None,
-            get_config(),
+            team_runtime_config,
             session_id=session_id,
             project_dir=inputs.get("project_dir") or request_metadata.get("project_dir"),
         )
@@ -3476,13 +4369,22 @@ async def _process_team_message_stream(
             dispatch_mode=team_dispatch_mode,
             bootstrap_mode=team_bootstrap_mode,
             model_selection=runtime_model_selection,
+            config_base=team_runtime_config,
         )
-        if group_input is not None and request_metadata.get("group_members") is not None:
+        from jiuwenswarm.server.runtime.session.execution_settings import prepare_session_execution
+
+        await prepare_session_execution(
+            session_id,
+            team_spec,
+            params_obj.get("execution_settings") if isinstance(params_obj, dict) else None,
+        )
+        if group_input is not None:
             update_session_metadata(session_id=session_id,
-                group_members=request_metadata["group_members"],
+                conversation_type="group_chat",
+                group_members=request_metadata.get("group_members"),
                 touch_last_message_at=False, sync_write=True)
         if isinstance(model_selection, dict) and model_selection.get("type") and model_selection.get("id"):
-            from gateway.common.model_selection import ModelSelection as SwarmModelSelection
+            from agent_gateway.common.model_selection import ModelSelection as SwarmModelSelection
             from jiuwenswarm.server.runtime.session.model_selection_store import (
                 get_session_model_selection,
                 set_session_model_selection,
@@ -3568,7 +4470,14 @@ async def _process_team_message_stream(
                 session_id, preflight_exc,
             )
     except Exception as exc:
-        logger.exception("[TeamHelpers] TeamAgent create failed: %s", exc)
+        logger.exception(
+            "[TeamHelpers] TeamAgent create failed: source=team_create_failed is_processing=False "
+            "channel_id=%s session_id=%s request_id=%s error=%s",
+            channel_id,
+            session_id,
+            rid,
+            exc,
+        )
         # Resolver/compiler failures can originate in provider configuration;
         # never put credentials or authorization headers into a user-visible
         # Team error payload.
@@ -3615,6 +4524,7 @@ async def _process_team_message_stream(
             payload=None,
             is_complete=True,
         )
+        await _release_team_create_off_loop(enterprise_create_lease)
         return
 
     team_name = team_spec.team_name
@@ -3648,13 +4558,20 @@ async def _process_team_message_stream(
                     payload=chunk,
                     is_complete=False,
                 )
-            yield _team_processing_done_chunk(rid, channel_id, session_id)
+            yield _team_processing_done_chunk(
+                rid,
+                channel_id,
+                session_id,
+                original_event="chat.ask_user_question",
+                reason="slash_command_approval",
+            )
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=channel_id,
                 payload={"event_type": "chat.done"},
                 is_complete=True,
             )
+            await _release_team_create_off_loop(enterprise_create_lease)
             return
 
         prompt = str(slash_result.get("followup_prompt", "") or "").strip()
@@ -3684,13 +4601,20 @@ async def _process_team_message_stream(
                 payload=payload,
                 is_complete=False,
             )
-            yield _team_processing_done_chunk(rid, channel_id, session_id)
+            yield _team_processing_done_chunk(
+                rid,
+                channel_id,
+                session_id,
+                original_event=payload["event_type"],
+                reason="slash_command_result",
+            )
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=channel_id,
                 payload=None,
                 is_complete=True,
             )
+            await _release_team_create_off_loop(enterprise_create_lease)
             return
 
     try:
@@ -3720,7 +4644,23 @@ async def _process_team_message_stream(
                     and not has_interactive_waiter(session_id)
                 )
             )
-            if is_bounded_round or needs_interactive_waiter:
+            from jiuwenswarm.enterprise.edition import is_enterprise
+            from jiuwenswarm.enterprise.team.session_live import (
+                ensure_team_session_live,
+            )
+
+            # 企业版团队正文走会话订阅。这一次 chat.send 只提交，不换等待者。
+            if (
+                is_enterprise()
+                and not is_bounded_round
+                and not is_heartbeat_request
+            ):
+                await ensure_team_session_live(
+                    team_manager,
+                    session_id,
+                    _resolve_channel_id(channel_id),
+                )
+            elif is_bounded_round or needs_interactive_waiter:
                 request_queue = _new_team_event_queue()
                 _add_team_waiter(
                     team_manager,
@@ -3731,6 +4671,12 @@ async def _process_team_message_stream(
                     generation=generation,
                 )
             if query:
+                if is_enterprise() and isinstance(query, str) and query.strip():
+                    note_new_user_content = getattr(
+                        team_manager, "note_new_user_content", None
+                    )
+                    if callable(note_new_user_content):
+                        note_new_user_content(session_id)
                 # Follow-up rounds carry their own attachments and context, so
                 # they are rendered exactly like the first one.
                 # 暂停后恢复裁决：仅把 paused run 清单前缀注入路由到 leader 的
@@ -3744,6 +4690,12 @@ async def _process_team_message_stream(
                     )
                     query = turn.text if isinstance(turn.text, str) else query
                 followup_payload = _deliverable(turn, query)
+                if private_group_heartbeat:
+                    from openjiuwen.agent_teams.interaction.payload import GodViewMessage
+
+                    # Private leader wake: bypasses the group mode lock and
+                    # never enters the public conversation.
+                    followup_payload = GodViewMessage(body=followup_payload)
                 await _begin_team_round()
                 success, reason = await _interact_with_team_context(
                     team_manager,
@@ -3751,6 +4703,17 @@ async def _process_team_message_stream(
                     followup_payload,
                     run_context=run_context,
                 )
+                if not success and reason == "interrupt_already_resolved":
+                    # The in-flight round already consumed this permission card.
+                    # Closing it is the admission; a send error would be false.
+                    logger.info(
+                        "[TeamHelpers] permission answer already resolved by the in-flight round: "
+                        "channel_id=%s session_id=%s",
+                        _resolve_channel_id(channel_id),
+                        session_id,
+                    )
+                    success = True
+                    reason = None
                 if not success:
                     logger.warning(
                         "[TeamHelpers] interact failed: channel_id=%s session_id=%s reason=%s query=%s",
@@ -3895,7 +4858,12 @@ async def _process_team_message_stream(
                             rid,
                             generation=generation,
                         )
-                        yield _team_processing_done_chunk(rid, channel_id, session_id)
+                        yield _team_processing_done_chunk(
+                            rid,
+                            channel_id,
+                            session_id,
+                            original_event="team.group_message.accepted",
+                        )
                         yield AgentResponseChunk(
                             request_id=rid, channel_id=channel_id, payload=None, is_complete=True,
                         )
@@ -3916,6 +4884,7 @@ async def _process_team_message_stream(
                             request_id=rid,
                             channel_id=channel_id,
                             session_id=session_id,
+                            require_terminal=is_design_task,
                         ):
                             _cron_agent_ref, _cron_meta = _build_team_event_chunk_meta(event)
                             yield AgentResponseChunk(
@@ -4000,6 +4969,19 @@ async def _process_team_message_stream(
                     controller=get_background_task_controller(session_id),
                 )
                 query = turn.text if isinstance(turn.text, str) else query
+            from jiuwenswarm.enterprise.edition import is_enterprise
+            from jiuwenswarm.enterprise.team.session_live import (
+                ensure_team_session_live,
+                stop_team_session_live,
+            )
+
+            session_live_queue = None
+            if is_enterprise() and not is_bounded_round and not is_heartbeat_request:
+                session_live_queue = await ensure_team_session_live(
+                    team_manager,
+                    session_id,
+                    _resolve_channel_id(channel_id),
+                )
             try:
                 request_queue = await _start_team_stream_round(
                     channel_id=channel_id,
@@ -4013,7 +4995,11 @@ async def _process_team_message_stream(
                     debug=debug,
                     source=first_request_source,
                     exclusive_waiter=is_heartbeat_request,
-                    request_queue=request_queue,
+                    request_queue=(
+                        session_live_queue
+                        if session_live_queue is not None
+                        else request_queue
+                    ),
                     team_leader_identity=team_leader_identity,
                     generation=generation,
                     attach_waiter=(
@@ -4021,11 +5007,13 @@ async def _process_team_message_stream(
                         if has_execution_context
                         else True
                     ),
+                    request_scoped_waiter=is_bounded_user_request,
                     run_context=run_context,
                     cross_session_marker=(
                         cross_session_marker if isinstance(cross_session_marker, dict) else None
                     ),
                     interrupt_input=interrupt_input,
+                    request=request,
                 )
             except BaseException:
                 _remove_team_waiter(
@@ -4034,11 +5022,44 @@ async def _process_team_message_stream(
                     rid,
                     generation=generation,
                 )
+                if (
+                    session_live_queue is not None
+                    and not _has_team_stream_task(
+                        team_manager,
+                        session_id,
+                        generation=generation,
+                    )
+                ):
+                    await stop_team_session_live(session_id)
                 team_manager.clear_pending_runtime(session_id)
                 await _finish_round_submission(accepted=False)
                 raise
             await startup.aclose()
             await _finish_round_submission(accepted=True)
+            if enterprise_create_lease is not None:
+                # 流任务已经接过这次建队。预留跟着流走，这次 HTTP 结束不再释放。
+                stream_kept_lease = True
+                await _hold_team_create_off_loop(session_id)
+            if session_live_queue is not None:
+                # 提交已经进 runner。拆掉这次 HTTP 对队列的引用，
+                # finally 才不会把会话等待者一起摘掉。
+                request_queue = None
+                yield AgentResponseChunk(
+                    request_id=rid,
+                    channel_id=channel_id,
+                    payload={
+                        "event_type": "chat.processing_status_deferred",
+                        "session_id": session_id,
+                    },
+                    is_complete=False,
+                )
+                yield AgentResponseChunk(
+                    request_id=rid,
+                    channel_id=channel_id,
+                    payload=None,
+                    is_complete=True,
+                )
+                return
 
             if request_queue is None:
                 yield AgentResponseChunk(
@@ -4081,6 +5102,7 @@ async def _process_team_message_stream(
                     request_id=rid,
                     channel_id=channel_id,
                     session_id=session_id,
+                    require_terminal=is_design_task,
                 ):
                     _cron_agent_ref, _cron_meta = _build_team_event_chunk_meta(event)
                     yield AgentResponseChunk(
@@ -4094,6 +5116,7 @@ async def _process_team_message_stream(
             else:
                 # while 循环：仅 first-request 使用，依赖 stream_task 生命周期。
                 # follow-up 已在上方 return，不再进入此循环。
+                # 企业版交互请求已经在上面交回短的接受结果。
                 while _has_team_stream_task(
                     team_manager,
                     session_id,
@@ -4119,7 +5142,12 @@ async def _process_team_message_stream(
                                     "client_message_id",
                                 )
                                 if identity == group_input["client_message_id"]:
-                                    yield _team_processing_done_chunk(rid, channel_id, session_id)
+                                    yield _team_processing_done_chunk(
+                                        rid,
+                                        channel_id,
+                                        session_id,
+                                        original_event="team.group_message.accepted",
+                                    )
                                     yield AgentResponseChunk(
                                         request_id=rid, channel_id=channel_id, payload=None, is_complete=True,
                                     )
@@ -4172,6 +5200,7 @@ async def _process_team_message_stream(
                         )
         except asyncio.CancelledError:
             event_stream_cancelled = True
+            _schedule_unstarted_organization_close(session_id, recorded_organization_plan_id)
             logger.info(
                 "[TeamHelpers] event stream cancelled: channel_id=%s session_id=%s request_id=%s",
                 _resolve_channel_id(channel_id),
@@ -4180,6 +5209,7 @@ async def _process_team_message_stream(
             )
             raise
         except Exception as exc:
+            await _abandon_unstarted_organization_plan(session_id, recorded_organization_plan_id)
             logger.exception(
                 "[TeamHelpers] event stream failed: channel_id=%s session_id=%s error=%s",
                 _resolve_channel_id(channel_id),
@@ -4209,8 +5239,11 @@ async def _process_team_message_stream(
         )
     except asyncio.CancelledError:
         event_stream_cancelled = True
+        _schedule_unstarted_organization_close(session_id, recorded_organization_plan_id)
         raise
     finally:
+        if not stream_kept_lease:
+            await _release_team_create_off_loop(enterprise_create_lease)
         if request_queue is not None:
             _remove_team_waiter(
                 team_manager,
@@ -4219,7 +5252,7 @@ async def _process_team_message_stream(
                 generation=generation,
             )
             if _is_cron_request_id(rid):
-                team_manager.pop_cron_completion(session_id)
+                _release_cron_waiter_completion(team_manager, session_id, rid)
             if not team_manager.has_waiters(session_id):
                 logger.info(
                     "[TeamHelpers] cleared waiter set: session_id=%s",
@@ -4367,6 +5400,13 @@ async def _consume_stream_with_query(
     # only emits what is new. See _announce_team_roster.
     announced_members: set[str] = set()
     roster_team_name = str(getattr(team_spec, "team_name", "") or "")
+    npc_team = (getattr(team_spec, "metadata", None) or {}).get("app_role_team") is True
+    npc_titles = {
+        member.member_name: member.display_name for member in team_spec.predefined_members
+    } if npc_team else {}
+    npc_expected_speakers = {team_spec.leader.member_name, *npc_titles} if npc_team else set()
+    npc_spoken: set[str] = set()
+    npc_turn_id = str(round_request_id or "")
     lg: TeamStreamLogger | None = None
     stream_cancelled = False
     # History writer for frames that no waiter receives: the durable pipeline
@@ -4384,7 +5424,34 @@ async def _consume_stream_with_query(
 
     async def _deliver(event: dict[str, Any]) -> None:
         """Broadcast one event and persist it when no waiter received it."""
-        nonlocal writer
+        nonlocal writer, npc_turn_id
+        context = _ACTIVE_ROUND_HISTORY_CONTEXT.get(session_id)
+        if npc_team and event.get("event_type") in {"chat.final", "chat.processing_status"}:
+            turn_id = context.request_id if context is not None else npc_turn_id
+            if turn_id != npc_turn_id:
+                npc_turn_id = turn_id
+                npc_spoken.clear()
+            if npc_turn_id:
+                event["turn_request_id"] = npc_turn_id
+            speaker = event.get("member_name")
+            if event["event_type"] == "chat.final" and event.get("content") and speaker in npc_expected_speakers:
+                npc_spoken.add(speaker)
+            if event.get("is_processing") is False:
+                event["npc_missing_members"] = sorted(npc_expected_speakers - npc_spoken)
+        if event.get("event_type") == "chat.final" or (
+            event.get("event_type") == "chat.processing_status"
+            and event.get("is_processing") is False
+        ):
+            try:
+                from jiuwenswarm.server.runtime.session.session_token_usage import (
+                    get_session_token_usage,
+                )
+
+                usage = await asyncio.to_thread(get_session_token_usage, session_id)
+                if usage["revision"] > 0:
+                    event = {**event, "session_usage": usage}
+            except Exception:
+                logger.warning("[TeamHelpers] cumulative session usage unavailable", exc_info=True)
         delivered = await _broadcast_event(channel_id, session_id, event)
         if writer is None:
             return
@@ -4392,7 +5459,6 @@ async def _consume_stream_with_query(
             if delivered:
                 await writer.handover(event)
                 return
-            context = _ACTIVE_ROUND_HISTORY_CONTEXT.get(session_id)
             if (
                 context is not None
                 and writer.request_id != context.request_id
@@ -4418,9 +5484,15 @@ async def _consume_stream_with_query(
                 exc_info=True,
             )
 
+    hold_refresh_task: asyncio.Task | None = None
     try:
+        hold_refresh_task = asyncio.create_task(
+            _refresh_team_create_hold(session_id),
+            name="team-create-hold-refresh",
+        )
         logger.info(
-            "[TeamHelpers] stream started: channel_id=%s session_id=%s round_id=%s",
+            "[TeamHelpers] stream started: source=stream_started is_processing=True "
+            "channel_id=%s session_id=%s round_id=%s",
             _resolve_channel_id(channel_id),
             session_id,
             round_id,
@@ -4475,7 +5547,7 @@ async def _consume_stream_with_query(
             """Report a failed interrupt-resume wait to the frontend."""
             nonlocal terminal_broadcasted
             logger.warning(
-                "[TeamHelpers] interrupt resume wait failed: "
+                "[TeamHelpers] interrupt resume wait failed: source=resume_wait_failed is_processing=False "
                 "channel_id=%s session_id=%s error=%s",
                 _resolve_channel_id(channel_id),
                 session_id,
@@ -4580,9 +5652,13 @@ async def _consume_stream_with_query(
                     run_context=run_context,
                 )
                 if not result:
+                    # Busy and unavailable mean this answer was not admitted.
+                    # The runtime does not re-ask, so the frontend must see a
+                    # terminal error and keep the card retryable.
                     reason = str(getattr(result, "reason", None) or "interrupt_resume_rejected")
                     logger.warning(
                         "[TeamHelpers] interrupt resume interact rejected: "
+                        "original_event=team.recovered is_processing=False "
                         "channel_id=%s session_id=%s reason=%s",
                         _resolve_channel_id(channel_id),
                         session_id,
@@ -4640,14 +5716,38 @@ async def _consume_stream_with_query(
                         session_id, getattr(chunk, "role", None), getattr(chunk, "type", None),
                     )
                 continue
-            # Optional: filter out all non-leader frames so the frontend only
-            # sees leader output. Leader-level control events
-            # (team.runtime_ready / team.completed) are kept because
-            # _is_leader_output returns True.
-            if _team_hide_teammate_enabled() and not is_leader:
-                continue
+            # Optional: filter out non-leader frames so the frontend only sees
+            # leader output. Parse first: a teammate permission card is the
+            # one non-leader frame that must still reach the user. Leader
+            # control events stay because _is_leader_output returns True.
+            # NPC Team sessions need every member's final speech, so they skip
+            # the teammate filter entirely.
             parsed = await run_stream_parser(parse_stream_chunk, chunk)
+            hide_teammate = (
+                _team_hide_teammate_enabled()
+                and not is_leader
+                and not _is_teammate_permission_card(parsed)
+            )
+            if not npc_team and hide_teammate:
+                continue
             if parsed is not None:
+                if (
+                    parsed.get("event_type") == "chat.error"
+                    and parsed.get("code") == "SWARMFLOW_SESSION_BUDGET_EXHAUSTED"
+                ):
+                    # 预算耗尽的 chat.error 只在会话里没有 swarmflow run 时才发；
+                    # 有 run（无论运行中还是已终态）时，预算耗尽由 run 自身的终态体现，
+                    # 丢弃这条，避免它提前触发 is_processing=false。
+                    tm = get_team_manager(channel_id)
+                    wf_handler = tm.get_workflow_handler(session_id)
+                    if wf_handler is not None and wf_handler.get_run_states():
+                        logger.info(
+                            "[TeamHelpers] budget-exhausted chat.error ignored "
+                            "(swarmflow run present): channel_id=%s session_id=%s",
+                            _resolve_channel_id(channel_id),
+                            session_id,
+                        )
+                        continue
                 # Time to first token: the first frame actually produced by a
                 # model (reasoning counts — on a thinking model it comes first).
                 if first_model_output_at is None and parsed.get("event_type") in _MODEL_OUTPUT_EVENT_TYPES:
@@ -4669,10 +5769,13 @@ async def _consume_stream_with_query(
                     continue
                 if _is_duplicate_ask_user_question(parsed, emitted_ask_user_request_ids):
                     continue
-                # Skip non-leader __interaction__ (permission ASK) — approval
-                # is routed internally via the leader; only leader
-                # interactions are forwarded to the frontend.
-                if not is_leader and parsed.get("event_type") == "chat.ask_user_question":
+                # Teammate questions stay off the frontend, except the user
+                # permission card, which keeps the member identity.
+                if (
+                    not is_leader
+                    and parsed.get("event_type") == "chat.ask_user_question"
+                    and parsed.get("source") != "permission_interrupt"
+                ):
                     continue
                 parsed["rid"] = round_id
                 # 标注来源 team，让前端能把这一帧分流到对应 team 的对话视图。
@@ -4725,6 +5828,13 @@ async def _consume_stream_with_query(
                         session_id,
                         source="runtime_ready",
                     )
+                    await _apply_enterprise_runtime_ready_hooks(
+                        channel_id=channel_id,
+                        session_id=session_id,
+                        runtime_team_name=ready_team_name,
+                        parsed=parsed,
+                        request=_TEAM_STREAM_REQUEST.get(),
+                    )
                     # A resumed team brings its whole roster back with it and
                     # emits no member event for anyone who is merely persisted,
                     # so announce here as well as after the roster tools.
@@ -4743,6 +5853,7 @@ async def _consume_stream_with_query(
                     )
                     logger.warning(
                         "[TeamHelpers] initial team interact failed: "
+                        "original_event=team.interact.failed is_processing=False "
                         "channel_id=%s session_id=%s reason=%s",
                         _resolve_channel_id(channel_id),
                         session_id,
@@ -4772,21 +5883,21 @@ async def _consume_stream_with_query(
                     # Team completed this round — broadcast a single
                     # round-complete signal that also carries team stats.
                     logger.info(
-                        "[TeamHelpers] team is completed: channel_id=%s session_id=%s member_count=%s",
+                        "[TeamHelpers] team is completed: original_event=team.completed is_processing=False "
+                        "channel_id=%s session_id=%s member_count=%s request_id=%s round_id=%s",
                         _resolve_channel_id(channel_id),
                         session_id,
                         parsed.get("member_count"),
+                        round_request_id,
+                        round_id,
                     )
                     await _deliver(
-                        {
-                            "event_type": "chat.processing_status",
-                            "session_id": session_id,
-                            "rid": round_id,
-                            "is_processing": False,
-                            "is_complete": True,
-                            "member_count": parsed.get("member_count"),
-                            "task_count": parsed.get("task_count"),
-                        },
+                        _quiet_round_status_payload(
+                            session_id,
+                            round_id,
+                            member_count=parsed.get("member_count"),
+                            task_count=parsed.get("task_count"),
+                        ),
                     )
                     terminal_broadcasted = True
                     await _finalize_org_bound_team_after_idle(
@@ -4825,20 +5936,20 @@ async def _consume_stream_with_query(
                     # the difference (stream still open) is invisible to them,
                     # and later output re-opens the running state on its own.
                     logger.info(
-                        "[TeamHelpers] team went idle: channel_id=%s session_id=%s member_count=%s",
+                        "[TeamHelpers] team went idle: original_event=team.idle is_processing=False "
+                        "channel_id=%s session_id=%s member_count=%s request_id=%s round_id=%s",
                         _resolve_channel_id(channel_id),
                         session_id,
                         parsed.get("member_count"),
+                        round_request_id,
+                        round_id,
                     )
                     await _deliver(
-                        {
-                            "event_type": "chat.processing_status",
-                            "session_id": session_id,
-                            "rid": round_id,
-                            "is_processing": False,
-                            "is_complete": True,
-                            "member_count": parsed.get("member_count"),
-                        },
+                        _quiet_round_status_payload(
+                            session_id,
+                            round_id,
+                            member_count=parsed.get("member_count"),
+                        ),
                     )
                     terminal_broadcasted = True
                     # Do not finalize here: the leader stream stays open after
@@ -4872,6 +5983,16 @@ async def _consume_stream_with_query(
                                 "rid": round_id,
                             },
                         )
+                        logger.info(
+                            "[TeamProcessingStatus] generated: original_event=chat.error channel_id=%s "
+                            "session_id=%s request_id=%s team_id=%s round_id=%s "
+                            "is_processing=False is_complete=True",
+                            _resolve_channel_id(channel_id),
+                            session_id,
+                            round_request_id,
+                            roster_team_name,
+                            round_id,
+                        )
                         await _deliver(
                             {
                                 "event_type": "chat.processing_status",
@@ -4884,6 +6005,16 @@ async def _consume_stream_with_query(
                         terminal_broadcasted = True
                     continue
                 if parsed.get("event_type") == "chat.final":
+                    if npc_team:
+                        speaker = str(getattr(chunk, "source_member", None) or "")
+                        if is_leader:
+                            speaker = team_spec.leader.member_name
+                            parsed["display_name"] = team_spec.leader.display_name
+                        elif speaker in npc_titles:
+                            parsed["display_name"] = npc_titles[speaker]
+                        else:
+                            continue
+                        parsed["member_name"] = speaker
                     # A persistent Team stream may emit several leader finals
                     # within one real round.  They are result content, not a
                     # lifecycle boundary.  Only team.completed/team.idle,
@@ -4893,6 +6024,19 @@ async def _consume_stream_with_query(
                     # next round's waiter and ownership.
                     await _deliver(parsed)
                     continue
+                if parsed.get("event_type") == "chat.processing_status":
+                    is_terminal_status = parsed.get("is_processing") is False and parsed.get("is_complete") is True
+                    logger.log(
+                        logging.INFO if is_terminal_status else logging.DEBUG,
+                        "[TeamProcessingStatus] runner_frame: original_event=%s session_id=%s "
+                        "request_id=%s round_id=%s is_processing=%s is_complete=%s",
+                        getattr(chunk, "type", None),
+                        session_id,
+                        round_request_id,
+                        round_id,
+                        parsed.get("is_processing"),
+                        parsed.get("is_complete"),
+                    )
                 await _deliver(parsed)
 
         # If stream ended without any chunks, broadcast an error event
@@ -4936,7 +6080,7 @@ async def _consume_stream_with_query(
             await _deliver(
                 {
                     "event_type": "chat.error",
-                    "error": str(exc),
+                    "error": mask_sensitive(str(exc)),
                     "session_id": session_id,
                 },
             )
@@ -4973,7 +6117,8 @@ async def _consume_stream_with_query(
                         },
                     )
                     logger.info(
-                        "[TeamHelpers] team finally completed: channel_id=%s session_id=%s round_id=%s",
+                        "[TeamHelpers] team finally completed: source=stream_finally is_processing=False "
+                        "channel_id=%s session_id=%s round_id=%s",
                         _resolve_channel_id(channel_id),
                         session_id,
                         round_id,
@@ -5019,6 +6164,20 @@ async def _consume_stream_with_query(
                 session_id,
                 generation=generation,
             )
+            if hold_refresh_task is not None:
+                hold_refresh_task.cancel()
+                try:
+                    await hold_refresh_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            try:
+                await _release_stream_team_create(session_id)
+            except Exception:
+                logger.debug(
+                    "[TeamHelpers] stream end team-create release failed: session_id=%s",
+                    session_id,
+                    exc_info=True,
+                )
 
 
 async def _consume_monitor_events(
@@ -5433,6 +6592,10 @@ def _detect_human_waiting_prompts(
                         "correlation_id": correlation_id,
                         "agent_id": agent_id,
                         "agent_name": agent_name,
+                        # Run attribution for the popup: executor member name
+                        # (None = no team context) + the run's META name.
+                        "executor": wf.get("executor"),
+                        "workflow_name": wf.get("name"),
                     },
                 })
             elif agent_status != "waiting_for_human" and member_key in seen_human_waiting:
@@ -5462,7 +6625,10 @@ async def _consume_workflow_events(
         spawned_members=workflow_handler.spawned_members,
         seen_activity=workflow_handler.seen_activity,
     )
-    seen_human_waiting: set[str] = set()
+    # Handler-scoped like the four above: a pause cancels this loop and the
+    # resume relaunch re-broadcasts the waiting state — a per-loop table would
+    # re-pop the same ask_user_question.
+    seen_human_waiting = workflow_handler.seen_human_waiting
     try:
         logger.info(
             "[TeamHelpers] workflow event loop started: channel_id=%s session_id=%s is_tui=%s",
@@ -5495,18 +6661,6 @@ async def _consume_workflow_events(
             # broadcast_event 用它走 gateway server-push 兜底投递。
             await _broadcast_event(channel_id, session_id, event)
 
-            if not is_tui and wf.get("budget_exhausted_scope") == "session":
-                await _broadcast_event(
-                    channel_id,
-                    session_id,
-                    {
-                        "event_type": "chat.error",
-                        "session_id": session_id,
-                        "code": "SWARMFLOW_SESSION_BUDGET_EXHAUSTED",
-                        "error": "Session budget exhausted",
-                    },
-                )
-
             # The idle guard may be holding a swallowed team.idle for this
             # session. A pause / stop takes the run out of the active set
             # without waking the leader, so nothing else will re-emit idle:
@@ -5523,8 +6677,11 @@ async def _consume_workflow_events(
                 if held is not None:
                     logger.info(
                         "[TeamHelpers] releasing held team.idle (no active run): "
-                        "channel_id=%s session_id=%s",
+                        "original_event=workflow.updated is_processing=False workflow_status=%s "
+                        "channel_id=%s session_id=%s round_id=%s",
+                        wf_status,
                         _resolve_channel_id(channel_id), session_id,
+                        held.get("rid"),
                     )
                     await _broadcast_event(
                         channel_id,
@@ -5556,7 +6713,15 @@ async def _consume_workflow_events(
                 await _broadcast_event(channel_id, session_id, team_ev)
 
             # ── 非 TUI: 检测 waiting_for_human → chat.ask_user_question ──
-            for human_ev in _detect_human_waiting_prompts(wf, session_id, seen_human_waiting):
+            # Attribution rides only the top-level (started/paused) deltas by
+            # convention; the human-waiting agent change arrives as a phase
+            # delta without it, so enrich from the run state for the popup.
+            run_state = run_states.get(str(wf.get("id") or ""))
+            human_wf = (
+                {**wf, "executor": run_state.executor}
+                if run_state is not None else wf
+            )
+            for human_ev in _detect_human_waiting_prompts(human_wf, session_id, seen_human_waiting):
                 await _broadcast_event(channel_id, session_id, human_ev)
 
             # ── 终态处理 ──

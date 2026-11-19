@@ -10,6 +10,7 @@ import logging
 import time
 import uuid
 from contextvars import ContextVar
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import replace
 from typing import Any
@@ -37,9 +38,9 @@ class ConnHolder:
         self.generation = 0
         self.last_readiness: dict[str, Any] | None = None
 
-    def open_session(self, conn: IpcConnection) -> int:
+    def open_session(self, conn: IpcConnection, *, generation: int | None = None) -> int:
         """Bind a new supervisor connection and return its generation."""
-        self.generation += 1
+        self.generation = self.generation + 1 if generation is None else generation
         self.conn = conn
         return self.generation
 
@@ -86,10 +87,11 @@ class WorkerGatewayBridge:
         # Streams belong to the execution, not to the connection on which it
         # began. Unary replies retain delivery semantics for session transactions.
         metadata = payload.get("metadata") or {}
-        from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+        from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 
         stream = bool(payload.get("is_stream") or payload.get("is_complete") is not None)
-        critical = bool(dispatch_id) and not stream and not metadata.get(E2A_WIRE_SERVER_PUSH_KEY)
+        replayable = stream or bool(metadata.get(E2A_WIRE_SERVER_PUSH_KEY))
+        critical = bool(dispatch_id) and not replayable
         wire_id = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future() if critical else None
         try:
@@ -97,8 +99,14 @@ class WorkerGatewayBridge:
                 generation = self._holder.generation
                 if critical and _REQUEST_GENERATION.get() not in {None, generation}:
                     raise ConnectionError("response delivery connection was replaced")
-                if stream or metadata.get(E2A_WIRE_SERVER_PUSH_KEY):
+                if replayable:
                     frame = self.events.append(payload, dispatch_id)
+                    record = self.events.records.get(frame["dispatch_id"])
+                    if (record is not None and record.request.is_stream
+                            and record.delivery_generation not in {None, generation}):
+                        # Keep replayable output behind this dispatch's journal
+                        # cursor. Critical replies must retain delivery ACKs.
+                        return
                 else:
                     frame = {"request_id": request_id, "dispatch_id": dispatch_id, "payload": payload}
                 conn = self._holder.conn
@@ -145,10 +153,13 @@ class WorkerGatewayBridge:
             if future is not None and not future.done():
                 future.set_result(False)
 
-    async def replay(self, frames: list[dict[str, Any]], generation: int) -> None:
+    async def replay(self, frames: list[dict[str, Any]], generation: int,
+                     include: Callable[[dict[str, Any]], bool] | None = None) -> None:
         for index, frame in enumerate(frames):
             if self._holder.generation != generation or self._holder.conn is None:
                 return
+            if include is not None and not include(frame):
+                continue
             frame["payload"]["metadata"]["runtime_event"]["replayed"] = True
             await self._holder.conn.send({**frame, "kind": KIND_WIRE,
                                          "generation": generation, "replayed": True})

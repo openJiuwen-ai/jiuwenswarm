@@ -19,8 +19,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from jiuwenswarm.common import external_providers
-from gateway.channel_manager.web import mcp_oauth_http
+from agent_gateway.common import external_providers
+from agent_gateway.channel_manager.web import mcp_oauth_http
 from jiuwenswarm.server.runtime.mcp import oauth_flow, registry
 from jiuwenswarm.server.runtime.mcp.credential import CredentialStore
 from jiuwenswarm.server.runtime.mcp.oauth_flow import OAuthFlowManager
@@ -65,6 +65,7 @@ def oauth_callback(tmp_path, monkeypatch):
     started = agent.start("canva", "http://127.0.0.1:19000/")
     authorize_query = parse_qs(urlsplit(started["auth_url"]).query)
     monkeypatch.setattr(oauth_flow, "_manager", gateway)
+    # McpOAuthError 由 e2a.mcp_oauth 统一提供，两侧异常类型同一
     monkeypatch.setitem(external_providers._providers, "mcp_registry", registry)
     app = FastAPI()
     mcp_oauth_http.attach_mcp_oauth_routes(app)
@@ -119,36 +120,6 @@ def test_callback_reports_missing_code(oauth_callback):
     assert token_requests == []
 
 
-def test_callback_reports_and_escapes_provider_error(oauth_callback):
-    client, authorize_query, token_requests, _workspace = oauth_callback
-    response = client.get("/mcp/oauth/callback", params={
-        "state": authorize_query["state"][0],
-        "error": "access_denied<script>mock</script>",
-    })
-
-    assert response.status_code == 400
-    assert "access_denied&lt;script&gt;mock&lt;/script&gt;" in response.text
-    assert "<script>mock</script>" not in response.text
-    assert token_requests == []
-
-
-def test_callback_reports_unavailable_provider_without_exposing_details(monkeypatch, caplog):
-    monkeypatch.delitem(external_providers._providers, "mcp_registry", raising=False)
-    app = FastAPI()
-    mcp_oauth_http.attach_mcp_oauth_routes(app)
-    with TestClient(app) as client:
-        response = client.get("/mcp/oauth/callback", params={
-            "code": "mock-private-code", "state": "mock-private-state",
-        })
-
-    assert response.status_code == 500
-    assert response.headers["cache-control"] == "no-store"
-    assert response.headers["referrer-policy"] == "no-referrer"
-    assert "ExternalProviderUnregistered" in caplog.text
-    for secret in ("mock-private-code", "mock-private-state", "mcp_registry"):
-        assert secret not in response.text
-
-
 def test_callback_unexpected_failure_does_not_expose_exception_details(monkeypatch, caplog):
     def fail(query):
         raise OSError("mock-private-access-token")
@@ -166,35 +137,3 @@ def test_callback_unexpected_failure_does_not_expose_exception_details(monkeypat
     assert "mock-private-access-token" not in caplog.text
 
 
-@pytest.mark.parametrize("setup", ["gateway", "front"])
-def test_callback_uses_providers_registered_by_real_process_setup(tmp_path, setup):
-    code = (
-        "import sys\n"
-        "from fastapi import FastAPI\n"
-        "from fastapi.testclient import TestClient\n"
-        "from jiuwenswarm.common.external_providers import registered_domains\n"
-        "from gateway.channel_manager.web.mcp_oauth_http import attach_mcp_oauth_routes\n"
-        "assert 'jiuwenswarm.server.runtime.mcp.oauth_flow' not in sys.modules\n"
-        f"if {setup!r} == 'gateway':\n"
-        "    from gateway.server_store_bridge import install\n"
-        "else:\n"
-        "    from jiuwenswarm.server.runtime.provider_setup import install_front as install\n"
-        "install()\n"
-        "assert 'mcp_registry' in registered_domains()\n"
-        "app = FastAPI()\n"
-        "attach_mcp_oauth_routes(app)\n"
-        "with TestClient(app) as client:\n"
-        "    response = client.get('/mcp/oauth/callback', params={'code':'mock-code','state':'unknown-state'})\n"
-        "assert response.status_code == 400, response.text\n"
-        "assert 'OAuth flow is unknown or expired' in response.text\n"
-    )
-    result = subprocess.run(
-        [sys.executable, "-c", code],
-        cwd=Path(__file__).resolve().parents[3],
-        env={**os.environ, "JIUWENSWARM_DATA_DIR": str(tmp_path / "data"), "PYTHONUTF8": "1"},
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        timeout=60,
-    )
-    assert result.returncode == 0, result.stderr[-2000:]

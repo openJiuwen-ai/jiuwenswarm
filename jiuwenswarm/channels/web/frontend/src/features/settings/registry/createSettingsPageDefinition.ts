@@ -25,6 +25,10 @@ function flattenItems(items: readonly SettingItemDefinition[]): SettingItemDefin
 
 function validateItem(module: SettingsModuleDefinition, sectionId: string, item: SettingItemDefinition): void {
   assertId('Item', item.id);
+  if (item.source !== undefined && !isSettingsSource(item.source)) {
+    throw new Error(`Item ${module.id}/${sectionId}/${item.id} has unsupported settings source: ${String(item.source)}`);
+  }
+  const source = item.source ?? module.source;
   const component = (item as { component?: unknown }).component;
   if (component !== 'switch' && component !== 'select' && component !== 'input' && component !== 'custom') {
     throw new Error(`Item ${module.id}/${sectionId}/${item.id} has unsupported component: ${String(component)}`);
@@ -33,18 +37,18 @@ function validateItem(module: SettingsModuleDefinition, sectionId: string, item:
     if (!item.render) throw new Error(`Item ${module.id}/${sectionId}/${item.id} is missing a custom component`);
     return;
   }
-  if (!module.source) {
+  if (!source) {
     throw new Error(`Item ${module.id}/${sectionId}/${item.id} requires a module settings source`);
   }
   assertId('Setting key', item.key);
-  if (!isSettingsSourceKey(module.source, item.key)) {
-    throw new Error(`Setting key ${item.key} does not belong to source ${module.source}`);
+  if (!isSettingsSourceKey(source, item.key)) {
+    throw new Error(`Setting key ${item.key} does not belong to source ${source}`);
   }
-  if (!isSettingsSourceComponent(module.source, item.key, item.component)) {
-    throw new Error(`Component ${item.component} is not compatible with ${module.source} setting ${item.key}`);
+  if (!isSettingsSourceComponent(source, item.key, item.component)) {
+    throw new Error(`Component ${item.component} is not compatible with ${source} setting ${item.key}`);
   }
   if (item.component === 'select') {
-    if (item.options.length === 0) throw new Error(`Select item ${module.id}/${sectionId}/${item.id} has no options`);
+    if (item.options.length === 0 && !item.optionsFromSource) throw new Error(`Select item ${module.id}/${sectionId}/${item.id} has no options`);
     const values = item.options.map((option) => `${typeof option.value}:${String(option.value)}`);
     assertUnique(`option in select item ${module.id}/${sectionId}/${item.id}`, values);
     for (const option of item.options) {
@@ -68,7 +72,7 @@ function validateItem(module: SettingsModuleDefinition, sectionId: string, item:
     if (item.subItems.items.length === 0) {
       throw new Error(`Switch item ${module.id}/${sectionId}/${item.id} has empty subItems`);
     }
-    for (const subItem of item.subItems.items) validateItem(module, sectionId, subItem);
+    for (const subItem of item.subItems.items) validateItem({ ...module, source }, sectionId, subItem);
   }
 }
 
@@ -120,6 +124,9 @@ export function validateSettingsI18n(definition: SettingsPageDefinition, hasKey:
       keys.push(settingItemI18nKey(item, 'title'), settingItemI18nKey(item, 'description'));
       if (item.component === 'input') keys.push(settingItemI18nKey(item, 'placeholder'));
       if (item.component === 'select') keys.push(...item.options.map((option) => option.labelKey));
+      if (item.component === 'switch' && item.availableWhen) {
+        keys.push(settingItemI18nKey(item, 'unavailableDescription'));
+      }
     }
   }
   for (const key of keys) {

@@ -12,6 +12,7 @@ from typing import Any
 from openjiuwen.core.common.constants.constant import INTERACTION
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.session.stream.base import OutputSchema
+from openjiuwen.core.single_agent.interrupt.response import InterruptKind
 from openjiuwen.harness.resources import RuntimeSpec, read_agent_template_card
 from openjiuwen.harness_protocol import (
     HarnessCapability,
@@ -42,6 +43,7 @@ from jiuwenswarm.server.runtime.session.session_metadata import (
     get_session_metadata,
     update_session_metadata,
 )
+from jiuwenswarm.server.runtime.session.history_io import run_stream_parser
 
 logger = logging.getLogger(__name__)
 _BINDING_LOCK = threading.RLock()
@@ -758,10 +760,13 @@ def _project_external_user_input(chunk: OutputSchema) -> dict[str, Any] | None:
         "request_id": request_id,
         "questions": _external_ask_questions(value),
         "source": "ask_user_interrupt",
+        # The harness IO adapter accepts InteractiveInput.answer() under the request id.
+        "interrupt_id": request_id,
+        "kind": InterruptKind.ASK_USER,
     }
 
 
-def _parse_external_chunk(chunk: OutputSchema, *, has_streamed_answer: bool) -> dict[str, Any] | None:
+async def _parse_external_chunk(chunk: OutputSchema, *, has_streamed_answer: bool) -> dict[str, Any] | None:
     projected = _project_external_user_input(chunk)
     if projected is not None:
         return projected
@@ -769,7 +774,8 @@ def _parse_external_chunk(chunk: OutputSchema, *, has_streamed_answer: bool) -> 
         JiuWenSwarmDeepAdapter,
     )
 
-    return JiuWenSwarmDeepAdapter.parse_stream_chunk(
+    return await run_stream_parser(
+        JiuWenSwarmDeepAdapter.parse_stream_chunk,
         chunk,
         has_streamed_content=has_streamed_answer,
     )
@@ -903,7 +909,7 @@ async def process_external_harness_stream(
                     )
                 return
 
-            parsed = _parse_external_chunk(
+            parsed = await _parse_external_chunk(
                 chunk,
                 has_streamed_answer=has_streamed_answer,
             )

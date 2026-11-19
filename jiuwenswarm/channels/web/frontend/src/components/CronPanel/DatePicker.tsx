@@ -7,9 +7,13 @@ interface DatePickerProps {
   value: string; // "YYYY-MM-DD"，空字符串表示未选择
   onChange: (v: string) => void;
   placeholder?: string;
+  /** 输入框的可访问名称；没有可见 label 关联时必须传入。 */
+  ariaLabel?: string;
   className?: string;
   /** 最早可选日期 "YYYY-MM-DD"（含），早于它的日期禁用点选、手动输入也会被拒绝；不传则不限制。 */
   minDate?: string;
+  /** 最晚可选日期 "YYYY-MM-DD"（含），晚于它的日期禁用点选、手动输入也会被拒绝；不传则不限制。 */
+  maxDate?: string;
 }
 
 function buildMonthList(centerYear: number, centerMonth: number): { year: number; month: number }[] {
@@ -33,9 +37,18 @@ function parseFlexibleDate(raw: string): string | null {
 
 const WEEKDAY_KEYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
-export default function DatePicker({ value, onChange, placeholder, className = 'flex-1 min-w-0', minDate }: DatePickerProps) {
+// Calendar dates are not UTC instants; ISO string parsing can shift the day west of UTC.
+function calendarDate(value: string): Date {
+  const [year, month, day] = value.split('-').map(Number);
+  return new Date(year, month - 1, day);
+}
+
+export default function DatePicker({ value, onChange, placeholder, ariaLabel, className = 'flex-1 min-w-0', minDate, maxDate }: DatePickerProps) {
+  const outOfRange = (date: string) => Boolean((minDate && date < minDate) || (maxDate && date > maxDate));
   const { t } = useTranslation();
-  const initial = value ? new Date(value) : new Date();
+  // minDate is the caller's "today" in the schedule timezone, which may be in another month.
+  const anchorDate = value || minDate;
+  const initial = anchorDate ? calendarDate(anchorDate) : new Date();
   const [open, setOpen] = useState(false);
   const [panelView, setPanelView] = useState<'day' | 'year'>('day');
   const [cursor, setCursor] = useState({ year: initial.getFullYear(), month: initial.getMonth() });
@@ -51,11 +64,19 @@ export default function DatePicker({ value, onChange, placeholder, className = '
     setText(value);
   }, [value]);
 
+  useEffect(() => {
+    const anchor = value || minDate;
+    if (anchor) {
+      const date = calendarDate(anchor);
+      setCursor({ year: date.getFullYear(), month: date.getMonth() });
+    }
+  }, [value, minDate]);
+
   function commitText(raw: string) {
     const parsed = parseFlexibleDate(raw);
-    if (parsed && !(minDate && parsed < minDate)) {
+    if (parsed && !outOfRange(parsed)) {
       onChange(parsed);
-      const d = new Date(parsed);
+      const d = calendarDate(parsed);
       setCursor({ year: d.getFullYear(), month: d.getMonth() });
       setText(parsed);
     } else {
@@ -68,7 +89,7 @@ export default function DatePicker({ value, onChange, placeholder, className = '
   const daysInMonth = new Date(cursor.year, cursor.month + 1, 0).getDate();
   const cells: (number | null)[] = [...Array(startWeekday).fill(null), ...Array.from({ length: daysInMonth }, (_, i) => i + 1)];
 
-  const selectedDate = value ? new Date(value) : null;
+  const selectedDate = value ? calendarDate(value) : null;
   const monthList = buildMonthList(cursor.year, cursor.month);
 
   function pick(day: number) {
@@ -89,13 +110,15 @@ export default function DatePicker({ value, onChange, placeholder, className = '
   }
 
   return (
-    <div className={`relative ${className}`} ref={rootRef}>
+    <div className={`relative ${className}`} ref={rootRef} data-testid="cron-date-picker">
       <div
         className="flex w-full items-center gap-1.5 rounded-md border-input bg-card px-3 py-1.5 text-sm"
         onClick={() => setOpen(true)}
       >
         <input
           type="text"
+          data-testid="cron-date-picker-input"
+          aria-label={ariaLabel}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onFocus={() => setOpen(true)}
@@ -163,6 +186,7 @@ export default function DatePicker({ value, onChange, placeholder, className = '
               <button
                 type="button"
                 onClick={openYearPicker}
+                data-testid="cron-date-picker-month-header"
                 className="rounded px-2 py-1 text-base font-medium text-text hover:bg-bg-hover"
               >
                 {t('cron.datePicker.yearMonthHeader', { year: cursor.year, month: cursor.month + 1 })}
@@ -200,12 +224,14 @@ export default function DatePicker({ value, onChange, placeholder, className = '
                   selectedDate.getMonth() === cursor.month &&
                   selectedDate.getDate() === day;
                 const cellDateStr = `${cursor.year}-${String(cursor.month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-                const disabled = Boolean(minDate && cellDateStr < minDate);
+                const disabled = outOfRange(cellDateStr);
                 return (
                   <button
                     key={idx}
                     type="button"
                     disabled={disabled}
+                    data-testid="cron-date-picker-day"
+                    data-variant={cellDateStr}
                     onClick={() => pick(day)}
                     className={`h-9 w-9 rounded-full text-sm transition-colors ${
                       disabled

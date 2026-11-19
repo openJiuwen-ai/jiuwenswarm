@@ -6,6 +6,9 @@ import { ownerTeamId } from './ownerIdentity';
 import { useTeamOrganizationUiEnabled } from './featureConfig';
 
 const activeRequests = new Map<string, Map<string, string>>();
+const stoppedOwners = new Set<string>();
+const pendingOwnerStops = new Set<string>();
+const ownerStateRevisions = new Map<string, number>();
 const listeners = new Set<() => void>();
 let revision = 0;
 
@@ -41,7 +44,7 @@ function publish(key: string): void {
 }
 
 export function expertProcessingSnapshot(): { revision: number; keys: string[] } {
-  return { revision, keys: [...activeRequests.keys()] };
+  return { revision, keys: [...new Set([...activeRequests.keys(), ...stoppedOwners])] };
 }
 
 export function replaceExpertRequests(key: string, requestIds: string[]): void {
@@ -57,11 +60,35 @@ export function organizationProcessingRevision(): number {
 }
 
 export function isOrganizationProcessing(sessionId: string): boolean {
+  if (stoppedOwners.has(sessionId)) return false;
   for (const [key, requests] of activeRequests) {
     if (key !== sessionId && !key.startsWith(`${sessionId}::`)) continue;
     if ([...requests.values()].some((source) => source !== 'org_expert_direct')) return true;
   }
   return false;
+}
+
+export function isOrganizationOwnerStopped(sessionId: string): boolean {
+  return stoppedOwners.has(sessionId);
+}
+
+export function organizationOwnerStateRevision(sessionId: string): number {
+  return ownerStateRevisions.get(sessionId) ?? 0;
+}
+
+export function setOrganizationOwnerStopped(sessionId: string, stopped: boolean, pending = false): void {
+  ownerStateRevisions.set(sessionId, organizationOwnerStateRevision(sessionId) + 1);
+  if (pending) pendingOwnerStops.add(sessionId);
+  else pendingOwnerStops.delete(sessionId);
+  if (stopped) {
+    stoppedOwners.add(sessionId);
+    // Keep in-flight Owner rounds until acknowledgement so a rejected stop can restore them.
+    if (!pending) activeRequests.delete(sessionId);
+    useChatStore.getState().setProcessing(sessionId, false);
+  } else {
+    stoppedOwners.delete(sessionId);
+  }
+  publish(sessionId);
 }
 
 function subscribe(listener: () => void): () => void {
@@ -79,7 +106,7 @@ export function useOrganizationProcessing(sessionId: string | null): boolean {
 }
 
 export function startExpertRequest(key: string, requestId: string, source = 'org_expert_direct'): void {
-  if (!requestId) return;
+  if (!requestId || stoppedOwners.has(key)) return;
   const requests = activeRequests.get(key) ?? new Map<string, string>();
   requests.set(requestId, source);
   activeRequests.set(key, requests);
@@ -115,10 +142,19 @@ export function reconcileOrganizationRequests(
   requests: OrganizationRequest[],
   expectedRevision: number,
   expertRequests?: ExpertRequest[],
+  ownerStopped?: boolean,
 ): void {
   if (revision !== expectedRevision) return;
+  if (ownerStopped !== undefined && !pendingOwnerStops.has(sessionId)) {
+    if (stoppedOwners.has(sessionId) !== ownerStopped) {
+      ownerStateRevisions.set(sessionId, organizationOwnerStateRevision(sessionId) + 1);
+    }
+    if (ownerStopped) stoppedOwners.add(sessionId);
+    else stoppedOwners.delete(sessionId);
+  }
   const resolvedOwner = ownerId || ownerTeamId(sessionId);
   const keys = new Set([...activeRequests.keys()].filter((key) => key === sessionId || key.startsWith(`${sessionId}::`)));
+  if (ownerStopped !== undefined) keys.add(sessionId);
   const incoming = new Map<string, Map<string, string>>();
   if (!Array.isArray(expertRequests)) {
     // An organization-only snapshot cannot declare direct expert requests idle.
@@ -134,6 +170,7 @@ export function reconcileOrganizationRequests(
   for (const request of [...directRequests, ...requests]) {
     if (!request.team_id || !request.request_id || !request.source?.startsWith('org_')) continue;
     const key = request.team_id === resolvedOwner ? sessionId : `${sessionId}::${request.team_id}`;
+    if (key === sessionId && stoppedOwners.has(sessionId)) continue;
     const rounds = incoming.get(key) ?? new Map<string, string>();
     rounds.set(request.request_id, request.source);
     incoming.set(key, rounds);
@@ -149,5 +186,8 @@ export function reconcileOrganizationRequests(
 }
 
 export function clearOrganizationRequests(sessionId: string): void {
+  ownerStateRevisions.set(sessionId, organizationOwnerStateRevision(sessionId) + 1);
+  pendingOwnerStops.delete(sessionId);
+  stoppedOwners.delete(sessionId);
   reconcileOrganizationRequests(sessionId, undefined, [], revision, []);
 }

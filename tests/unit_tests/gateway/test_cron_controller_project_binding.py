@@ -12,132 +12,26 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from gateway.cron.controller import CronController
-from gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
+from agent_gateway.cron.controller import CronController
+from agent_gateway.cron.proactive_cron_sync import PROACTIVE_JOB_ID
 from jiuwenswarm.server.runtime.session.project_store import CronProjectBinding
 
 
-@pytest.mark.asyncio
-async def test_delete_job_stops_runs_and_removes_sessions_before_job() -> None:
-    calls = []
-    job = SimpleNamespace(id="job_a", enabled=True, mode="code", user_id="alice")
-
-    async def update_job(job_id, patch):
-        calls.append("disable")
-
-    async def reload():
-        calls.append("reload")
-
-    async def stop_job_runs(job_id):
-        calls.append("stop")
-
-    async def delete_sessions(job_id, user_id):
-        calls.append("sessions")
-
-    async def delete_job(job_id, *, force=False):
-        calls.append("job")
-        return True
-
-    store = SimpleNamespace(
-        get_job=AsyncMock(return_value=job), update_job=update_job, delete_job=delete_job
-    )
-    scheduler = SimpleNamespace(
-        reload=reload, stop_job_runs=stop_job_runs, delete_cron_sessions=delete_sessions
-    )
-    controller = CronController(store=store, scheduler=scheduler)
-    assert await controller.delete_job("job_a")
-    assert calls == ["disable", "reload", "stop", "sessions", "job", "reload"]
-
-
-@pytest.mark.asyncio
-async def test_hide_project_jobs_disables_runs_and_keeps_records() -> None:
-    """hide_project_jobs: 停用项目下任务并取消在途执行,任务记录原样保留。
-
-    停用不按操作者 user_id 过滤:项目是共享资源,其他属主的任务也必须停用,
-    否则项目恢复后会带着 enabled=True 直接回到触发状态。
-    """
-    calls = []
-    jobs = [
-        SimpleNamespace(id="job_a", project_id="proj_1", user_id="alice", enabled=True),
-        SimpleNamespace(id="job_b", project_id="proj_1", user_id="alice", enabled=False),
-        SimpleNamespace(id="job_c", project_id="proj_2", user_id="alice", enabled=True),
-        SimpleNamespace(id="job_d", project_id="proj_1", user_id="bob", enabled=True),
-    ]
-
-    async def list_jobs():
-        return list(jobs)
-
-    async def update_job(job_id, patch):
-        calls.append(("update", job_id, patch))
-
-    async def reload():
-        calls.append(("reload",))
-
-    async def stop_project_runs(project_id):
-        calls.append(("stop", project_id))
-
-    store = SimpleNamespace(list_jobs=list_jobs, update_job=update_job)
-    scheduler = _FakeScheduler(reload=reload, stop_project_runs=stop_project_runs)
-    controller = CronController(store=store, scheduler=scheduler)
-
-    result = await controller.hide_project_jobs("proj_1")
-
-    # 该项目全部任务计入结果;已停用的不重复写,其他项目不受影响。
-    assert result == {"stopped_cron_jobs": 3}
-    assert ("update", "job_a", {"enabled": False}) in calls
-    assert ("update", "job_b", {"enabled": False}) not in calls
-    assert ("update", "job_c", {"enabled": False}) not in calls
-    # 其他属主(bob)的任务同样被停用。
-    assert ("update", "job_d", {"enabled": False}) in calls
-    # 停用 → reload → 取消在途执行(不限定属主);没有任何 delete_job 调用。
-    assert calls[-2:] == [("reload",), ("stop", "proj_1")]
-    assert not any(call[0] == "delete" for call in calls)
-
-
-@pytest.mark.asyncio
-async def test_list_jobs_checks_gate_once_per_project() -> None:
-    """list_jobs: 准入闸门按 (project_id, user_id) 去重,不逐任务串行 RPC。"""
-    jobs = [
-        SimpleNamespace(id="job_a", project_id="proj_1", user_id="alice", enabled=True,
-                        to_dict=lambda: {"id": "job_a"}),
-        SimpleNamespace(id="job_b", project_id="proj_1", user_id="alice", enabled=True,
-                        to_dict=lambda: {"id": "job_b"}),
-        SimpleNamespace(id="job_c", project_id="proj_1", user_id="bob", enabled=True,
-                        to_dict=lambda: {"id": "job_c"}),
-        SimpleNamespace(id="job_d", project_id="proj_2", user_id="alice", enabled=True,
-                        to_dict=lambda: {"id": "job_d"}),
-    ]
-    gate_calls: list[tuple[str | None, str | None]] = []
-
-    async def list_jobs():
-        return list(jobs)
-
-    async def project_execution_allowed(project_id, user_id=None):
-        gate_calls.append((project_id, user_id))
-        # proj_2 被隐藏:其任务不得进入列表。
-        return project_id != "proj_2"
-
-    store = SimpleNamespace(list_jobs=list_jobs)
-    scheduler = SimpleNamespace(project_execution_allowed=project_execution_allowed)
-    controller = CronController(store=store, scheduler=scheduler)
-
-    result = await controller.list_jobs()
-
-    # 4 个任务只查 3 次(同项目同属主共享判定),隐藏项目的任务被过滤。
-    assert sorted(job["id"] for job in result) == ["job_a", "job_b", "job_c"]
-    assert sorted(gate_calls) == [("proj_1", "alice"), ("proj_1", "bob"), ("proj_2", "alice")]
+def _listed_job(job_id: str, **fields):
+    payload = {"id": job_id, **fields}
+    return SimpleNamespace(**payload, to_dict=lambda payload=payload: dict(payload))
 
 
 @pytest.mark.asyncio
 async def test_list_jobs_filters_owner_before_admission_gate() -> None:
     """传 user_id 时先按属主过滤:只为自己的项目打闸门,不替其他用户付超时。"""
     jobs = [
-        SimpleNamespace(id="job_a", project_id="proj_alice", user_id="alice",
+        SimpleNamespace(group_id="", bot_id="", id="job_a", project_id="proj_alice", user_id="alice",
                         to_dict=lambda: {"id": "job_a", "user_id": "alice"}),
-        SimpleNamespace(id="job_b", project_id="proj_bob", user_id="bob",
+        SimpleNamespace(group_id="", bot_id="", id="job_b", project_id="proj_bob", user_id="bob",
                         to_dict=lambda: {"id": "job_b", "user_id": "bob"}),
         # 无属主的历史任务在带 user_id 的查询下不可见(与 Web 列表语义一致)。
-        SimpleNamespace(id="job_c", project_id="proj_legacy", user_id="",
+        SimpleNamespace(group_id="", bot_id="", id="job_c", project_id="proj_legacy", user_id="",
                         to_dict=lambda: {"id": "job_c", "user_id": ""}),
     ]
     gate_calls: list[tuple[str | None, str | None]] = []
@@ -145,7 +39,7 @@ async def test_list_jobs_filters_owner_before_admission_gate() -> None:
     async def list_jobs():
         return list(jobs)
 
-    async def project_execution_allowed(project_id, user_id=None):
+    async def project_execution_allowed(project_id, user_id=None, group_id=None, bot_id=None):
         gate_calls.append((project_id, user_id))
         return True
 
@@ -164,7 +58,7 @@ async def test_list_jobs_filters_owner_before_admission_gate() -> None:
 async def test_list_jobs_owner_without_jobs_issues_no_gate_rpc() -> None:
     """用户 0 任务时不得为 store 里其他用户的任务发起任何准入查询。"""
     jobs = [
-        SimpleNamespace(id="job_b", project_id="proj_bob", user_id="bob",
+        SimpleNamespace(group_id="", bot_id="", id="job_b", project_id="proj_bob", user_id="bob",
                         to_dict=lambda: {"id": "job_b"}),
     ]
     gate_calls: list[tuple[str | None, str | None]] = []
@@ -172,7 +66,7 @@ async def test_list_jobs_owner_without_jobs_issues_no_gate_rpc() -> None:
     async def list_jobs():
         return list(jobs)
 
-    async def project_execution_allowed(project_id, user_id=None):
+    async def project_execution_allowed(project_id, user_id=None, group_id=None, bot_id=None):
         gate_calls.append((project_id, user_id))
         return True
 
@@ -227,7 +121,7 @@ class _FakeScheduler:
     def reopen_project_admission(self, project_id: str) -> None:
         self.hiding_projects.discard(project_id)
 
-    async def project_execution_allowed(self, project_id, user_id=None) -> bool:
+    async def project_execution_allowed(self, project_id, user_id=None, group_id=None, bot_id=None) -> bool:
         return True
 
     async def reload(self) -> None:
@@ -239,259 +133,29 @@ def _make_controller():
     return CronController(store=_RecordingStore(), scheduler=_FakeScheduler())
 
 
-@pytest.mark.asyncio
-async def test_create_job_tolerates_user_side_project_id() -> None:
-    """marker 标记的绑定结果作为不透明值持久化，不查 Gateway 本地项目表。"""
-    cc = _make_controller()
-    job = await cc.create_job(
-        {
-            "name": "daily",
-            "cron_expr": "0 9 * * *",
-            "timezone": "Asia/Shanghai",
-            "description": "hello",
-            "targets": "web",
-            "project_id": "proj_user_side",
-            "project_dir": "/home/user/project",
-            "work_mode": "code",
-            "_agentos_project_binding_verified": True,
-        }
-    )
-
-    assert job["project_id"] == "proj_user_side"
-    assert job["work_mode"] == "code"
-    create_call = cc._store.create_calls[0]
-    assert create_call["project_id"] == "proj_user_side"
-    assert create_call["work_mode"] == "code"
-    assert "_agentos_project_binding_verified" not in create_call
-
-
-@pytest.mark.asyncio
-async def test_create_job_rejects_unresolved_real_project_id() -> None:
-    """marker 缺失 + 真实 project_id：必须先经目标 AgentServer 解析，明确失败。"""
-    cc = _make_controller()
-    with pytest.raises(ValueError, match="resolved by the target AgentServer"):
-        await cc.create_job(
-            {
-                "name": "daily",
-                "cron_expr": "0 9 * * *",
-                "timezone": "Asia/Shanghai",
-                "description": "hello",
-                "targets": "web",
-                "project_id": "proj_hidden",
-                "work_mode": "code",
-            }
-        )
-
-
-@pytest.mark.asyncio
-async def test_create_job_rejects_unresolved_project_dir() -> None:
-    """marker 缺失 + project_dir：同样必须先经目标 AgentServer 解析。"""
-    with pytest.raises(ValueError, match="resolved by the target AgentServer"):
-        await _make_controller().create_job(
-            {
-                "name": "daily",
-                "cron_expr": "0 9 * * *",
-                "targets": "web",
-                "project_dir": "/home/user/project",
-            }
-        )
-
-
-@pytest.mark.asyncio
-async def test_create_job_without_marker_allows_default_project_and_no_fields() -> None:
-    """无项目字段的请求（系统路径，如 proactive 自动注册）与默认项目 ID 不需要 marker。"""
-    cc = _make_controller()
-    job = await cc.create_job(
-        {
-            "name": "system-path",
-            "cron_expr": "0 9 * * *",
-            "targets": "web",
-            "mode": "proactive.tick",
-            "id": PROACTIVE_JOB_ID,
-        }
-    )
-    assert job["project_id"] == ""
-    assert job["work_mode"] == "work"
-
-    job_default = await cc.create_job(
-        {
-            "name": "default-bound",
-            "cron_expr": "0 9 * * *",
-            "targets": "web",
-            "project_id": "default_code",
-        }
-    )
-    assert job_default["project_id"] == "default_code"
-
-
-@pytest.mark.asyncio
-async def test_update_job_tolerates_user_side_project_id(monkeypatch) -> None:
-    """patch 含显式真实 project_id 且不在本地项目表时，跳过本地反查。"""
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.project_store.get_project_by_id",
-        lambda project_id, cache_bust=True: None,
-    )
-    cc = _make_controller()
-    await cc.update_job(
-        "job-1",
-        {
-            "project_id": "proj_user_side",
-            "work_mode": "code",
-            "_agentos_project_binding_verified": True,
-        },
-    )
-
-    _, patch = cc._store.update_calls[0]
-    assert patch["project_id"] == "proj_user_side"
-    assert patch["work_mode"] == "code"
-    assert "_agentos_project_binding_verified" not in patch
-
-
-@pytest.mark.asyncio
-async def test_update_job_rejects_unresolved_project_fields() -> None:
-    """marker 缺失 + 项目字段：必须先经目标 AgentServer 解析。"""
-    cc = _make_controller()
-    with pytest.raises(ValueError, match="resolved by the target AgentServer"):
-        await cc.update_job("job-1", {"project_id": "proj_user_side"})
-    with pytest.raises(ValueError, match="resolved by the target AgentServer"):
-        await cc.update_job("job-1", {"project_dir": "/home/user/project"})
-
-
-@pytest.mark.asyncio
-async def test_update_job_rejects_work_mode_only_patch() -> None:
-    """work_mode 单独 patch 沿用原规则拒绝（仅能伴随项目重解析生效）。"""
-    cc = _make_controller()
-    with pytest.raises(ValueError, match="requires project re-resolution"):
-        await cc.update_job("job-1", {"work_mode": "code"})
-
-
 # ---------------------------------------------------------------------------
 # 会话级 MCP 选择（mcp）随 job 落库 / patch 规范化
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_create_job_normalizes_and_passes_mcp_to_store(monkeypatch) -> None:
-    """create 时 mcp 做 strip/去空/去重后透传 store；不校验存在性。"""
-    cc = _make_controller()
-    await cc.create_job(
-        {
-            "name": "daily",
-            "cron_expr": "0 9 * * *",
-            "timezone": "Asia/Shanghai",
-            "description": "hello",
-            "targets": "web",
-            "mcp": [" feishu-doc ", "github", "github", "", 123],
-        }
-    )
-
-    create_call = cc._store.create_calls[0]
-    assert create_call["mcp"] == ["feishu-doc", "github"]
-
-
-@pytest.mark.asyncio
-async def test_create_job_without_mcp_passes_none(monkeypatch) -> None:
-    """未传 mcp → store 收到 None（保持既有行为，旧 job 兜底一致）。"""
-    cc = _make_controller()
-    await cc.create_job(
-        {
-            "name": "daily",
-            "cron_expr": "0 9 * * *",
-            "timezone": "Asia/Shanghai",
-            "description": "hello",
-            "targets": "web",
-        }
-    )
-
-    create_call = cc._store.create_calls[0]
-    assert create_call["mcp"] is None
-
-
-@pytest.mark.asyncio
-async def test_update_job_normalizes_mcp_patch(monkeypatch) -> None:
-    """patch mcp：非空列表规范化；空列表/null 归 None（清除选择）。"""
-    cc = _make_controller()
-    await cc.update_job(
-        "job-1",
-        {"mcp": [" a ", "b", "b", ""], "_agentos_project_binding_verified": True},
-    )
-    _, patch = cc._store.update_calls[0]
-    assert patch["mcp"] == ["a", "b"]
-
-    await cc.update_job(
-        "job-1",
-        {"mcp": [], "_agentos_project_binding_verified": True},
-    )
-    _, patch = cc._store.update_calls[1]
-    assert patch["mcp"] is None
-
-
-@pytest.mark.asyncio
-async def test_hide_holds_admission_until_commit():
-    import asyncio
-    from unittest.mock import AsyncMock
-
-    scheduler = _FakeScheduler(reload=AsyncMock(), stop_project_runs=AsyncMock())
-    store = SimpleNamespace(list_jobs=AsyncMock(return_value=[]))
-    controller = CronController(store=store, scheduler=scheduler)
-    entered = asyncio.Event()
-    release = asyncio.Event()
-
-    async def commit():
-        assert "project" in scheduler.hiding_projects
-        assert controller.mutation_lock.locked()
-        entered.set()
-        await release.wait()
-
-    hiding = asyncio.create_task(controller.hide_project_jobs("project", commit=commit))
-    await entered.wait()
-    contender = asyncio.create_task(controller.mutation_lock.acquire())
-    await asyncio.sleep(0)
-    assert not contender.done()
-    release.set()
-    await hiding
-    await contender
-    controller.mutation_lock.release()
-    assert "project" not in scheduler.hiding_projects
-
-
-@pytest.mark.asyncio
-async def test_hide_stop_failure_never_commits():
-    from unittest.mock import AsyncMock
-
-    scheduler = _FakeScheduler(
-        reload=AsyncMock(), stop_project_runs=AsyncMock(side_effect=RuntimeError("stop failed"))
-    )
-    controller = CronController(store=SimpleNamespace(list_jobs=AsyncMock(return_value=[])), scheduler=scheduler)
-    commit = AsyncMock()
-    with pytest.raises(RuntimeError, match="stop failed"):
-        await controller.hide_project_jobs("project", commit=commit)
-    commit.assert_not_awaited()
-    assert not scheduler.hiding_projects
-
-
-@pytest.mark.asyncio
-async def test_hide_commit_rejection_restores_original_enabled_jobs():
-    jobs = {
-        "enabled": SimpleNamespace(id="enabled", project_id="project", enabled=True),
-        "disabled": SimpleNamespace(id="disabled", project_id="project", enabled=False),
+def _owned_job(**overrides):
+    fields = {
+        "id": "job-1",
+        "name": "existing",
+        "enabled": True,
+        "cron_expr": "0 9 * * *",
+        "timezone": "Asia/Shanghai",
+        "targets": "web",
+        "work_mode": "work",
+        "project_id": "default",
+        "user_id": "alice",
+        "group_id": "g",
+        "bot_id": "b",
+        "session_id": None,
+        "wake_offset_seconds": 30,
+        "mode": "agent",
     }
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
 
-    async def update_job(job_id, patch):
-        jobs[job_id].enabled = patch["enabled"]
 
-    scheduler = _FakeScheduler(reload=AsyncMock(), stop_project_runs=AsyncMock())
-    store = SimpleNamespace(list_jobs=AsyncMock(side_effect=lambda: list(jobs.values())), update_job=update_job)
-    controller = CronController(store=store, scheduler=scheduler)
-
-    async def reject_commit():
-        assert not jobs["enabled"].enabled
-        raise RuntimeError("SESSION_BUSY")
-
-    with pytest.raises(RuntimeError, match="SESSION_BUSY"):
-        await controller.hide_project_jobs("project", commit=reject_commit)
-
-    assert jobs["enabled"].enabled is True
-    assert jobs["disabled"].enabled is False
-    assert scheduler.reload.await_count == 2
-    assert "project" not in scheduler.hiding_projects

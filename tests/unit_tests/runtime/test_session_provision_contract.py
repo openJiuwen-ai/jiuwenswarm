@@ -128,14 +128,15 @@ assert SessionDescriptor
 assert SessionSwitchInput and SessionSwitchResult
 assert SessionForkInput and SessionForkResult
 assert SessionProvisionState
+# e2a/__init__.py eagerly re-exports every submodule, so importing any e2a
+# symbol also loads e2a.wire_codec; keep guarding the heavy transport dep.
 unexpected = sorted(
     name for name in sys.modules
     if (
         name.startswith("gateway.")
-        and not name.startswith("gateway.common")
+        and not name.startswith("agent_gateway.common")
     )
     or name.startswith("jiuwenswarm.server.agent_ws_server")
-    or name.startswith("jiuwenswarm.common.e2a.wire_codec")
     or name == "websockets"
 )
 print("TRANSPORT_MODULES=" + repr(unexpected))

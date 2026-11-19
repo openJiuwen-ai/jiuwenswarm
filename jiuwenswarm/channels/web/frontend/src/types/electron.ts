@@ -56,6 +56,11 @@ export interface ElectronBubbleAnchorRect {
 }
 
 export interface JiuwenElectronDesktopApi {
+  openMarketApp?: (appId: string, url: string, title: string, embedded?: boolean) => Promise<boolean>;
+  closeMarketApp?: (appId: string) => Promise<boolean>;
+  setMarketAppViewport?: (appId: string, bounds: ElectronBrowserBounds | null, focus?: boolean) => Promise<boolean>;
+  reloadMarketApp?: (appId: string) => Promise<boolean>;
+  getMarketAppResources?: () => Promise<import('./appMarketResources').MarketResources>;
   readonly isElectron: true;
   readonly apiBase?: string;
   readonly wsBase?: string;
@@ -77,6 +82,7 @@ export interface JiuwenElectronDesktopApi {
   onShareImageExportProgress: (callback: (progress: ElectronShareImageExportProgress) => void) => () => void;
   downloadFile: (url: string, filename: string) => Promise<boolean | { ok: boolean; cancelled?: boolean }>;
   installUpdate: (installerPath: string) => Promise<boolean>;
+  openAppLink: (url: string) => Promise<boolean>;
   saveDataUrl: (dataUrl: string, filename: string) => Promise<{ ok: boolean; cancelled?: boolean }>;
   beginBlobSave: (
     filename: string,

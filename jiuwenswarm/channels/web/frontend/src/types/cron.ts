@@ -1,4 +1,20 @@
-import type { AgentMode } from './index';
+import type { AgentMode, ModelSelection } from './index';
+
+export interface CronRunUpdate {
+  event_id: string;
+  revision: number;
+  job_id: string;
+  job_name?: string;
+  run_id: string;
+  session_id?: string | null;
+  status: 'pending' | 'running' | 'awaiting_approval' | 'succeeded' | 'failed';
+  phase: 'started' | 'paused' | 'finished' | 'reminder';
+  mode: string;
+  project_id: string;
+  notify: boolean;
+  timestamp: number;
+  error?: string;
+}
 
 /** 后端 cron.job.* 系列 RPC 实际收发的字段，对齐 gateway/cron/models.py 的 CronJob.to_dict() */
 export interface CronJobDTO {
@@ -19,8 +35,14 @@ export interface CronJobDTO {
   delete_after_run?: boolean;
   timeout_seconds?: number;
   project_id: string;
+  work_mode?: 'work' | 'code';
   last_session_id?: string;
+  /** 正在执行的会话（企业版 list 挂载，供前端订 live） */
+  active_session_id?: string;
   model_name?: string;
+  // 稳定模型选择（对齐后端 CronJob.model_selection）；有值时执行侧按它定位模型，
+  // model_name 仅作展示/旧链路兜底——目录里出现重名模型时仅靠名字反查会失败
+  model_selection?: ModelSelection | null;
 }
 
 /** UI 层展示用结构，来自 CronJobDTO 派生（见 cronJobToUI） */
@@ -28,9 +50,11 @@ export interface CronTaskUI {
   id: string;
   name: string;
   projectId: string;
+  workMode?: 'work' | 'code';
   projectName: string | null;
   description: string;
   modelName: string | null;
+  modelSelection: ModelSelection | null;
   /** 执行模式：单Agent('agent')/集群('team')，从后端 mode 归一而来，见 CronPanel/index.tsx cronJobToUI */
   mode: AgentMode;
   cronExpr: string;

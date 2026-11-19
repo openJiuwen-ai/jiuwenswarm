@@ -8,17 +8,20 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from gateway.extensions.agentos.agentos_router.agent_manager import (
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.web.web_channel_app import build_web_channel_app
+from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from agent_gateway.extensions.agentos.agentos_router.agent_manager import (
     AgentManager,
     AgentRuntime,
 )
-from gateway.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
-from jiuwenswarm.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
-from gateway.extensions.auth.credential_authenticator import AuthContext, AuthResult
-from jiuwenswarm.extensions.yuanrong_frontend_client import AgentFileDownloadChunk, SandboxInfo
-from gateway.channel_manager.base import RobotMessageRouter
-from gateway.channel_manager.web.web_channel_app import build_web_channel_app
-from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from agent_gateway.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
+from agent_gateway.extensions.agentos.agentos_router.router_client import AgentOSRouterClient
+from agent_gateway.extensions.auth.credential_authenticator import AuthContext, AuthResult
+from agent_gateway.extensions.yuanrong_frontend_client import (
+    AgentFileDownloadChunk,
+    SandboxInfo,
+)
 
 
 class _FakeRegistry:
@@ -219,7 +222,14 @@ async def test_file_api_iam_rejects_user_id_mismatch() -> None:
 
 
 @pytest.mark.asyncio
-async def test_file_api_iam_accepts_username_as_user_id() -> None:
+@pytest.mark.parametrize(
+    "request_params",
+    [
+        pytest.param({"dir": "/home/agentos", "user_id": "admin"}, id="username-as-user-id"),
+        pytest.param({"dir": "/home/agentos"}, id="without-request-user-id"),
+    ],
+)
+async def test_file_api_iam_resolves_username_as_user_id(request_params: dict) -> None:
     router = _make_router()
     router.list_container_files = AsyncMock(return_value=[])  # type: ignore[method-assign]
     _enable_auth(
@@ -231,7 +241,7 @@ async def test_file_api_iam_accepts_username_as_user_id() -> None:
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.get(
             "/file-api/list-files",
-            params={"dir": "/home/agentos", "user_id": "admin"},
+            params=request_params,
             headers={"Authorization": "Bearer iam-tok"},
         )
     assert resp.status_code == 200
@@ -272,26 +282,6 @@ async def test_file_api_iam_rejects_body_user_id_mismatch() -> None:
     assert resp.status_code == 403
     assert resp.json()["code"] == "USER_MISMATCH"
     router.upload_container_file.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_file_api_iam_ok_without_request_user_id() -> None:
-    router = _make_router()
-    router.list_container_files = AsyncMock(return_value=[])  # type: ignore[method-assign]
-    _enable_auth(
-        router,
-        AuthResult(success=True, user_id="iam-user", extensions={"username": "admin"}),
-    )
-    app = _file_api_app(router)
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.get(
-            "/file-api/list-files",
-            params={"dir": "/home/agentos"},
-            headers={"Authorization": "Bearer iam-tok"},
-        )
-    assert resp.status_code == 200
-    assert router.list_container_files.await_args.kwargs["user_id"] == "admin"
 
 
 @pytest.mark.asyncio

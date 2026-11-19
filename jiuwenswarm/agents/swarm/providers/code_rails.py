@@ -32,13 +32,13 @@ from openjiuwen.agent_teams.harness.manifest import (
     param_field,
 )
 from openjiuwen.harness.prompts import resolve_language
-
-from jiuwenswarm.agents.swarm.context import SwarmBuildContext
-from gateway.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     is_code_profile_mode,
     is_team_mode,
     is_team_plan_mode,
 )
+
+from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 
 logger = logging.getLogger(__name__)
@@ -511,7 +511,7 @@ def build_code_task_planning(params: dict[str, Any], ctx: SwarmBuildContext) -> 
     try:
         from jiuwenswarm.agents.harness.code.rails import CodeTaskPlanningRail
 
-        return CodeTaskPlanningRail()
+        return CodeTaskPlanningRail(enable_task_reminders=params.get("enable_task_reminders", True))
     except Exception as exc:
         logger.warning("[swarm.code_task_planning] create failed: %s", exc)
         return None

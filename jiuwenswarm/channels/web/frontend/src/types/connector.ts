@@ -42,7 +42,6 @@ export interface ConnectorSummary {
   runtimePackageName: string;
   hubAssetId?: string;
   displayName: string;
-  searchNames?: string[];
   // mcp.list 现在直接下发简介（backend-requests.md 需求14已解决），恒为 string，不再是可选缺省。
   description: string;
   category: string;

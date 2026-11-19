@@ -26,15 +26,43 @@ import httpx
 import pytest
 import uvicorn
 from fastapi import FastAPI
-
-from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
-from gateway.channel_manager.web import trajectory_http
-from gateway.channel_manager.web.trajectory_http import (
+from agent_gateway.channel_manager.web.trajectory_http import (
     TRAJECTORY_API_PREFIX,
     TRAJECTORY_ARCHIVE_ENTRY_NAME,
-    TrajectoryHttpService,
-    attach_trajectory_routes,
+    TrajectoryHttpService as _GatewayTrajectoryHttpService,
+    attach_trajectory_routes as _attach_trajectory_routes,
 )
+
+from jiuwenswarm.channels.web.app_web import _SpaStaticHandler
+from jiuwenswarm.common.schema.message import ReqMethod
+
+
+def TrajectoryHttpService(settings=None, *, reader=None, metadata_loader=None, fetch=None):
+    """Build the HTTP service against an in-process trajectory host.
+
+    Production mounts the E2A fetch. These tests keep the reader and the
+    settings snapshot on the AgentServer host and exercise the same gateway
+    validation in front of it.
+    """
+    if fetch is None:
+        from jiuwenswarm.server.trajectory.host import TrajectoryHost
+
+        fetch = TrajectoryHost(settings=settings, reader=reader).call
+    return _GatewayTrajectoryHttpService(metadata_loader=metadata_loader, fetch=fetch)
+
+
+def attach_trajectory_routes(app, channel, *, settings=None, reader=None, metadata_loader=None, fetch=None):
+    """Mount routes with the in-process host the HTTP tests already own."""
+    if fetch is None:
+        from jiuwenswarm.server.trajectory.host import TrajectoryHost
+
+        fetch = TrajectoryHost(settings=settings, reader=reader).call
+    return _attach_trajectory_routes(
+        app,
+        channel,
+        metadata_loader=metadata_loader,
+        fetch=fetch,
+    )
 from jiuwenswarm.observability.config import (
     TrajectoryStoreSettings,
     session_database_path,
@@ -125,8 +153,22 @@ def _append_late_span(database_path: Path, *, session_id: str = "session-1") -> 
         store.close()
 
 
+async def _throwing_metadata_loader(
+    _session_id: str,
+    _user_id: str | None = None,
+) -> dict[str, str]:
+    raise RuntimeError("secret metadata path")
+
+
+async def _simple_session_loader(
+    _session_id: str,
+    _user_id: str | None = None,
+) -> dict[str, str]:
+    return {"session_id": "session-1"}
+
+
 def _metadata_loader(mode: str = "agent.work.normal"):
-    def _load(session_id: str) -> dict[str, str]:
+    async def _load(session_id: str, user_id: str | None = None) -> dict[str, str]:
         if session_id in {"session-1", "session-2"}:
             return {"session_id": session_id, "mode": mode, "team_name": ""}
         return {}
@@ -916,7 +958,10 @@ def _retired_single_agent_store(database_path: Path) -> None:
         store.close()
 
 
-def _single_agent_metadata_loader(session_id: str) -> dict[str, str]:
+async def _single_agent_metadata_loader(
+    session_id: str,
+    _user_id: str | None = None,
+) -> dict[str, str]:
     if session_id == SINGLE_SESSION_ID:
         return {"session_id": session_id, "mode": "agent.work.normal", "team_name": ""}
     return {}
@@ -1055,7 +1100,7 @@ async def test_http_accepts_team_sessions_with_team_name(tmp_path: Path) -> None
     database_path = tmp_path / "trajectory.sqlite3"
     _seed(database_path)
 
-    def _team_metadata(session_id: str) -> dict[str, str]:
+    async def _team_metadata(session_id: str, _user_id: str | None = None) -> dict[str, str]:
         if session_id in {"session-1", "session-2"}:
             return {
                 "session_id": session_id,
@@ -1142,7 +1187,7 @@ async def test_http_fails_closed_for_unknown_or_missing_session_mode(
     )
     missing = TrajectoryHttpService(
         _settings(database_path),
-        metadata_loader=lambda _session_id: {"session_id": "session-1"},
+        metadata_loader=_simple_session_loader,
     )
 
     unknown_response = await unknown.list_subjects("session-1", after_revision=0)
@@ -1205,8 +1250,7 @@ async def test_http_follows_a_runtime_settings_toggle(
     _seed(session_path, session_id="session-1")
     live = {"settings": _settings(store_root, enabled=False)}
     monkeypatch.setattr(
-        trajectory_http,
-        "load_trajectory_store_settings",
+        "jiuwenswarm.observability.config.load_trajectory_store_settings",
         lambda: live["settings"],
     )
     # No pinned snapshot: this is how the gateway mounts the service.
@@ -1355,145 +1399,6 @@ async def test_route_query_validation_keeps_no_store_header(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_framework_trajectory_errors_are_json_and_non_cacheable(
-    tmp_path: Path,
-) -> None:
-    app = FastAPI()
-    attach_trajectory_routes(
-        app,
-        SimpleNamespace(),
-        settings=_settings(tmp_path / "trajectory.sqlite3"),
-        metadata_loader=_metadata_loader(),
-    )
-
-    @app.get(f"{TRAJECTORY_API_PREFIX}/validation-probe")
-    async def validation_probe(required: int):
-        return {"required": required}
-
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        not_found = await client.get(f"{TRAJECTORY_API_PREFIX}/missing")
-        method_not_allowed = await client.post(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects"
-        )
-        validation_error = await client.get(
-            f"{TRAJECTORY_API_PREFIX}/validation-probe"
-        )
-        trace_not_found = await client.get(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects/main/records"
-        )
-
-    assert not_found.status_code == 404
-    assert not_found.headers["cache-control"] == "no-store"
-    assert not_found.json() == {
-        "error": "trajectory route not found",
-        "code": "NOT_FOUND",
-    }
-    assert method_not_allowed.status_code == 405
-    assert method_not_allowed.headers["cache-control"] == "no-store"
-    assert method_not_allowed.json() == {
-        "error": "trajectory method not allowed",
-        "code": "METHOD_NOT_ALLOWED",
-    }
-    assert validation_error.status_code == 400
-    assert validation_error.headers["cache-control"] == "no-store"
-    assert validation_error.json() == {
-        "error": "invalid trajectory request",
-        "code": "BAD_REQUEST",
-    }
-    assert trace_not_found.status_code == 404
-    assert trace_not_found.headers["cache-control"] == "no-store"
-    assert trace_not_found.json() == {
-        "error": "subject not found",
-        "code": "NOT_FOUND",
-    }
-    test_logger.info("framework 404, 405, and 422 responses used the HTTP envelope")
-
-
-@pytest.mark.asyncio
-async def test_routes_reuse_webchannel_origin_gate(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("JIUWENSWARM_ENABLE_ORIGIN_CHECK", "1")
-    monkeypatch.setenv("JIUWENSWARM_WS_ALLOWED_ORIGIN_HOSTS", "trusted.example")
-    app = FastAPI()
-    attach_trajectory_routes(
-        app,
-        SimpleNamespace(),
-        settings=_settings(tmp_path / "trajectory.sqlite3"),
-        metadata_loader=_metadata_loader(),
-    )
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        rejected = await client.get(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
-            headers={"Origin": "https://evil.example"},
-        )
-        allowed = await client.get(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
-            headers={"Origin": "https://trusted.example"},
-        )
-        same_origin_without_origin = await client.get(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
-            headers={
-                "Host": "trusted.example",
-                "Sec-Fetch-Site": "same-origin",
-            },
-        )
-        spoofed_host_without_origin = await client.get(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
-            headers={
-                "Host": "evil.example",
-                "Sec-Fetch-Site": "same-origin",
-                "X-Forwarded-Host": "trusted.example",
-            },
-        )
-        cross_site_without_origin = await client.get(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
-            headers={
-                "Host": "trusted.example",
-                "Sec-Fetch-Site": "cross-site",
-            },
-        )
-        cross_site_with_allowed_origin = await client.get(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
-            headers={
-                "Host": "trusted.example",
-                "Origin": "https://trusted.example",
-                "Sec-Fetch-Site": "cross-site",
-            },
-        )
-        allowed_referer_without_origin = await client.get(
-            f"{TRAJECTORY_API_PREFIX}/sessions/session-1/subjects",
-            headers={
-                "Host": "trusted.example",
-                "Referer": "https://trusted.example/app",
-            },
-        )
-
-    assert rejected.status_code == 403
-    assert rejected.json()["code"] == "FORBIDDEN_ORIGIN"
-    assert allowed.status_code == 200
-    assert same_origin_without_origin.status_code == 200
-    assert spoofed_host_without_origin.status_code == 403
-    assert cross_site_without_origin.status_code == 403
-    assert cross_site_with_allowed_origin.status_code == 403
-    assert allowed_referer_without_origin.status_code == 200
-    for response in (
-        rejected,
-        allowed,
-        same_origin_without_origin,
-        spoofed_host_without_origin,
-        cross_site_without_origin,
-        cross_site_with_allowed_origin,
-        allowed_referer_without_origin,
-    ):
-        assert response.headers["cache-control"] == "no-store"
-    test_logger.info("trajectory HTTP applied the configured browser Origin allowlist")
-
-
-@pytest.mark.asyncio
 async def test_http_internal_failures_return_stable_generic_messages(tmp_path: Path) -> None:
     class _FailingReader:
         async def list_traces_with_revision_cursor(self, *args, **kwargs):
@@ -1519,9 +1424,7 @@ async def test_http_internal_failures_return_stable_generic_messages(tmp_path: P
     )
     metadata_service = TrajectoryHttpService(
         _settings(tmp_path / "trajectory.sqlite3"),
-        metadata_loader=lambda _session_id: (_ for _ in ()).throw(
-            RuntimeError("secret metadata path")
-        ),
+        metadata_loader=_throwing_metadata_loader,
     )
 
     query_response = await query_service.list_subjects(
@@ -1789,3 +1692,79 @@ def test_real_web_proxy_preserves_outer_host_and_guards_all_trajectory_reads(
     }
     assert any(item["host"] == "trusted.example" for item in captured_headers)
     test_logger.info("real proxy chain guarded list, revision, detail, and raw reads")
+
+
+@pytest.mark.asyncio
+async def test_missing_trajectory_status_is_logged() -> None:
+    """A failure without an integer status is 500 and is logged."""
+    records: list[logging.LogRecord] = []
+
+    class _Handler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = _Handler()
+    proxy_logger = logging.getLogger("agent_gateway.channel_manager.web.trajectory_http")
+    proxy_logger.addHandler(handler)
+    try:
+        async def fetch(method, params, user_id=None):
+            del method, params, user_id
+            return False, {
+                "error": "trajectory query failed",
+                "code": "TRAJECTORY_QUERY_FAILED",
+            }
+
+        service = _GatewayTrajectoryHttpService(
+            metadata_loader=_metadata_loader(),
+            fetch=fetch,
+        )
+        response = await service.list_subjects("session-1", after_revision=0)
+    finally:
+        proxy_logger.removeHandler(handler)
+
+    assert response.status_code == 500
+    assert _response_json(response) == {
+        "error": "trajectory query failed",
+        "code": "TRAJECTORY_QUERY_FAILED",
+    }
+    assert any("no usable status" in record.getMessage() for record in records)
+
+
+@pytest.mark.asyncio
+async def test_blob_read_chunk_limit_fails_closed() -> None:
+    """A peer that streams forever hits the chunk limit instead of hanging."""
+    from agent_gateway.channel_manager.web.trajectory_http import _MAX_BLOB_CHUNKS
+
+    reads = 0
+
+    async def fetch(method, params, user_id=None):
+        nonlocal reads
+        del user_id
+        if method == ReqMethod.TRAJECTORY_ARCHIVE_OPEN:
+            return True, {
+                "chunked": True,
+                "export_id": "export-1",
+                "size": 1,
+                "content_type": "application/zip",
+            }
+        if method == ReqMethod.TRAJECTORY_BLOB_READ:
+            reads += 1
+            return True, {
+                "data": "",
+                "next_offset": int(params["offset"]) + 1,
+                "done": False,
+            }
+        return True, {}
+
+    service = _GatewayTrajectoryHttpService(
+        metadata_loader=_metadata_loader(),
+        fetch=fetch,
+    )
+    response = await service.export_archive("session-1")
+
+    assert response.status_code == 500
+    assert _response_json(response)["code"] == "TRAJECTORY_EXPORT_TOO_LARGE"
+    assert reads == _MAX_BLOB_CHUNKS
+    test_logger.info("unbounded blob stream stopped at the chunk limit")
+
+

@@ -37,7 +37,7 @@ The skill graph is the relationship graph used by orchestration. Each node repre
 
 #### Improve orchestration from actual usage
 
-When **Dynamic Graph** is enabled, Symphony uses the outcomes of completed tasks to improve skill-combination suggestions for later related tasks. Turning it off returns orchestration to the static graph without deleting accumulated data.
+When **Dynamic Graph** is enabled, Core Symphony Observation collects execution evidence and produces runtime graph snapshots. Flow distills successful skill combinations that meet its thresholds into candidate skill packages. JiuwenSwarm reviews and installs a candidate after user confirmation. Turning the switch off returns orchestration to the static graph without deleting accumulated data.
 
 #### What problem does it solve?
 
@@ -412,7 +412,8 @@ symphony:
     min_edge_confidence: 0.5
 
   evolution:
-    enabled: true
+    flow:
+      enabled: true
 
   orchestration:
     mode: fast
@@ -513,3 +514,67 @@ This is an easy distinction to miss: building the skill graph is not composing a
 - [Configuration](Configuration.md)
 - [Agent Team](AgentTeam.md)
 - [Chinese: Symphony](../zh/Symphony-技能编排与分发.md)
+
+## SkillPack: compatible Hub publication
+
+Use a WorkSwarm version that supports SkillPack and enable the existing Discover SkillPack setting under Settings → Experimental Features. Publish an existing thin SkillPack from its detail page. Its members must be independent ordinary Skills, not SwarmSkills or nested Packs.
+
+New publications always use the ordinary Skill channel. `SKILLPACK_HUB_TRANSPORT_PROFILE` and `SKILLPACK_HUB_DEPLOYMENT_SCOPE` are no longer required or used to control new publications. Historical operations retain their recorded protocol. Enabling the feature does not publish anything automatically; user confirmation and Hub review still apply.
+
+One preflight lists each member as reuse, publish first, or blocked. User confirmation starts independent member uploads and review waiting, followed by Pack publication. A failed Pack does not delete successfully published members. Reopening the panel resumes status queries; changed local content requires a new preflight and confirmation.
+
+The thin ZIP contains the existing `plugin.yaml` wrapper, root instructions and `skillpack.lock.json`, not member sources. The ordered lock records exact Hub asset IDs, versions and original ZIP SHA-256 digests. Consumers must support this lock and independently download members from the same Hub; an ordinary single-Skill installer is not sufficient. The publisher/installer contract test checks the generated archive with the shared installer, without enabling the marketplace installation entry point by itself.
+
+Three consecutive Hub check failures stop automatic polling. After connectivity recovers, explicitly retry the confirmed operation with the same upload IDs. Normal moderation waiting does not count as a network failure. Polling backs off to 30 seconds without repeatedly querying approved members; the full member closure is checked before uploading the Pack and before completion. Expired authorization or an unconfirmed upload outcome stops automatic progress until the user addresses the cause and retries the same operation.
+
+Local simulated tests do not establish real Hub moderation, model or desktop acceptance. Record those separately. Disabling discovery stops new Pack publication; it does not unpublish existing assets or interrupt an already-confirmed publication.
+
+### Development boundaries
+
+`openjiuwen.symphony` owns retrieval, fingerprint extraction, graph orchestration, and evolution algorithms. JiuwenSwarm owns model configuration and usage, build status, Web/RPC, runtime tools, and skill-package installation. Configuration parsing lives in `jiuwenswarm/common/symphony_config.py`. Deployments require an openjiuwen version with the corresponding public interfaces. Removing unused SDK leftovers does not change persistent graph directories or user configuration paths.
+
+## SkillPack: distillation, reuse and installation
+
+A SkillPack is a composite Skill executed by one Agent. Its root `SKILL.md` describes an ordered workflow over independent ordinary Skills. SwarmSkills and nested SkillPacks are not supported members.
+
+### Enable
+
+The existing Discover SkillPack setting under Settings → Experimental Features controls distillation, confirmed reuse, installation and publication. Its persisted key is `symphony.evolution.flow.enabled`; no separate Symphony switch is required. Legacy `SKILLPACK_PRODUCTIZATION_ENABLED`, `SKILLPACK_DIRECT_ROUTE_MODE` and `skillpack.direct_route_mode` no longer override this setting.
+
+Disabling discovery stops new automatic work, distillation, installation and publication. Installed Packs remain manageable and can still be selected explicitly for safe execution. Already-confirmed execution, installation and publication continue. Per-Pack enablement, member reference protection and existing permissions still apply.
+
+### Use
+
+Ask the Agent to distill a completed multi-Skill workflow. `skillpack_distill` reads persisted real execution evidence and produces a candidate. Installation requires confirmation after inspecting the members and instructions.
+
+Automatic discovery checks currently installed Packs. A Pack with the same complete members and directed execution chain suppresses duplicate creation offers across sessions and restarts, even when disabled. A different execution order remains a different combination. Explicit distillation requests, installation confirmation and execution validation are unchanged.
+
+If a Skill or SkillPack with the same name already exists when creating a Pack, the UI reports the failure and keeps the confirmation card. Existing content is not overwritten. Choose not to create it now, or resolve the name conflict and retry; retries still validate current members and execution evidence. WebSocket and HTTP confirmation both wait for the final result; an acceptance ACK alone does not complete creation. HTTP uses the Gateway’s opt-in final-answer response. Timeouts or a connection loss leave the card available and prompt you to check My Skills before retrying.
+
+Installed Packs appear in My Skills and the existing task Skill picker with a SkillPack label. Member changes affect Pack availability. A complete query match offers a confirmation or a choice of Packs before bypassing Symphony composition. Partial or uncertain matches continue through the existing path. Explicitly picking one Pack confirms the selection; mixed selections require a choice. Existing side-effect permissions remain in force. Failure after member execution does not automatically restart composition.
+
+Choosing normal composition, skipping or cancelling the reuse question declines the Pack for the current request and continues normal task handling without repeatedly asking. A new message in the same conversation is assessed independently; it does not inherit the previous task's confirmation or blocked state.
+
+Automatic matching has a 60-second total deadline. A timeout means no decision was obtained, not a negative match. Ordinary task handling continues, but the ordinary `skill_tool` entry returns only a read-only summary for an unconfirmed Pack, not its execution instructions. Timeout details are logged by the backend and are not separately shown in the conversation UI.
+
+Unconfirmed reads identify the actual target directory in `skill_tool`'s current session view, including external Skills and restored sessions. They read only the target root document, without blocking ordinary Skills on unrelated inventory scans or locks, or granting access from stale type caches. An unreadable or unclassifiable target is rejected conservatively; confirmed Pack execution retains live inventory and member validation.
+
+If a confirmed Pack's state changes or validation fails during execution, the request returns a deterministic stop message. It does not ask the model to continue with an empty tool list or automatically restart composition.
+
+### Install and manage
+
+The thin ZIP contains the existing `plugin.yaml` wrapper, root instructions and `skillpack.lock.json`. It does not contain member sources. The lock records ordered Hub asset IDs, exact versions and original ZIP SHA-256 digests. Missing members are downloaded independently from the same Hub.
+
+Installation first displays a plan. Reuse requires matching provenance, version, archive digest and unchanged local content. Name conflicts and local edits block installation. All packages are validated before committing the inventory and `.archive` snapshots. Failures restore directories and registration state; startup recovers interrupted commits before loading Skills.
+
+If the plan expires or the local inventory changes before confirmation, the latest plan is shown once more and requires a fresh confirmation. Integrity failures are not retried automatically. Inventory contention asks the user to retry later without exposing internal lock paths.
+
+Uninstalling a Pack keeps its members. Uninstalling a Skill referenced by an installed Pack is blocked and lists its referring Packs.
+
+### Operations
+
+Corrupt journals, changed directory ownership or missing backups stop inventory loading with the retained transaction path. Recovery evidence is not deleted to force startup. Preserve the affected files and reconcile directory markers and state backups before retrying recovery; do not expose a partially installed inventory.
+
+Plans and transaction journals live in the current skills directory under `.skillpack/`. Per-Skill Hub provenance is stored in `.archive/hub-provenance.json`; neither is published. Disabling the product switch stops new distillation and Pack installation. Direct routing has a separate switch.
+
+Deploy the matching agent-core and JiuwenSwarm changes together. The dependency and lockfile pin official commit `4dbaa84ca568af3f181da4f9cd26b713a5b73039`, which includes Core !3457. Local simulated tests do not establish real Hub review, real model or desktop platform acceptance; record those separately.

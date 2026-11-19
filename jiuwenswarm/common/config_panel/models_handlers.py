@@ -30,27 +30,32 @@ from openjiuwen.core.foundation.llm.utils.provider_utils import is_openai_accoun
 from jiuwenswarm.common.auth.model_catalog import is_login_model
 from jiuwenswarm.common.config import (
     _ensure_model_business_ids,
+    _merge_config_dict,
+    resolve_env_vars,
     _normalize_legacy_model_nulls,
     _recover_existing_model_fields,
     get_config,
     get_config_raw,
     get_available_models,
     get_default_models,
+    public_api_key,
+    raw_api_keys_by_model_id,
     update_default_models_in_config,
-    update_kv_cache_affinity_enabled_in_config,
 )
+from jiuwenswarm.common.credentials.resolver import is_reference, resolve_credential_ref
 from jiuwenswarm.common.context_window import (
     DEFAULT_CONTEXT_WINDOW_TOKENS,
     parse_positive_int,
 )
 from jiuwenswarm.common.kv_cache_affinity_config import (
-    default_model_client_config_from_entries,
-    has_kv_cache_affinity_capability,
-    is_affinity_enabled,
+    prepare_model_affinity_update,
+    get_affinity_status,
 )
 from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.model_config_validation import probe_model_connection, raise_if_invalid
+from jiuwenswarm.common.model_error_messages import user_facing_model_error
 from jiuwenswarm.common.model_errors import ModelSelectionError
+from jiuwenswarm.common.opencode_go import SCOPE_PROBE, inject_session_header
 from jiuwenswarm.common.reasoning_config import (
     effective_endpoint_profile,
     validate_reasoning_level_for_model,
@@ -152,7 +157,8 @@ def resolve_model_config_obj_for_validate(
     按 ``model_name`` 或 ``alias`` 匹配 ``models.defaults`` 中的条目，
     返回该条目的 ``model_config_obj``；找不到或读取失败时 fallback 到
     空字典（让模型使用自身默认参数，避免 ``temperature=0`` 对部分
-    模型不兼容）。前端传入的 ``reasoning_level`` 可覆盖配置值。
+    模型不兼容）。前端传入的 ``reasoning_level`` 和 ``max_tokens`` 可覆盖
+    配置值；显式 ``max_tokens=null`` 表示在探测时清除已保存的输出限制。
     """
     model_config_obj: dict[str, Any] = {}
     try:
@@ -204,7 +210,170 @@ def resolve_model_config_obj_for_validate(
         )
     if "reasoning_level" in params:
         model_config_obj["reasoning_level"] = params.get("reasoning_level")
+    if "max_tokens" in params:
+        if params.get("max_tokens") is None:
+            model_config_obj.pop("max_tokens", None)
+        else:
+            model_config_obj["max_tokens"] = params.get("max_tokens")
     return model_config_obj
+
+
+def resolve_persisted_mcc_for_validate(model_name: str) -> dict[str, Any]:
+    """从热更新后的配置中查找对应模型的 ``model_client_config``。
+
+    与 :func:`resolve_model_config_obj_for_validate` 同一查找口径
+    （``model_name`` 或 ``alias`` 匹配 ``models.defaults``，返回深拷贝），
+    但取条目的 mcc 段。``custom_headers`` / ``ssl_cert`` 等配置页未暴露的
+    write-only 字段只在持久化条目中存在，探测（「测试连接」）以它们为基线
+    才能与保存后的对话路径走同一份配置；找不到或读取失败时返回空 dict，
+    探测退化为仅表单字段（历史行为）。
+    """
+    import copy as _copy
+
+    try:
+        _cfg = get_config()
+        _models = get_default_models(_cfg)
+        for entry in _models:
+            if not isinstance(entry, dict):
+                continue
+            mcc = entry.get("model_client_config")
+            if not isinstance(mcc, dict):
+                continue
+            entry_model_name = str(mcc.get("model_name", "")).strip()
+            entry_alias = str(entry.get("alias", "")).strip()
+            if entry_model_name == model_name or entry_alias == model_name:
+                logger.info(
+                    "[config.validate_model] loaded persisted model_client_config "
+                    "for '%s' (matched_by=%s)",
+                    model_name,
+                    "model_name" if entry_model_name == model_name else "alias",
+                )
+                return _copy.deepcopy(mcc)
+        logger.info(
+            "[config.validate_model] no persisted model_client_config found for '%s'",
+            model_name,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[config.validate_model] failed to read persisted model_client_config, "
+            "using draft fields only. %s",
+            exc,
+        )
+    return {}
+
+
+def resolve_validate_endpoint_profile(
+    params: dict[str, Any],
+    persisted_mcc: dict[str, Any],
+    api_base: str,
+) -> str | None:
+    """解析「测试连接」的端点方言：草稿 → host 推断 → 持久化条目兜底。
+
+    持久化兜底与保存合并（``_merge_models_for_replace_all``）同口径：
+    条目切到 Anthropic 协议或换用其他供应商预设时，保存会丢弃旧方言，
+    探测也不得回退；其余情况表单未携带方言即视为保留持久化值（编辑表单
+    不暴露该字段，缺失不代表清空）。``vendor_key`` 由前端透传；旧版
+    payload 不带该字段时按"未变更"处理会误用旧方言，因此优先信任
+    payload 与持久化的显式比较。
+    """
+    explicit = params.get("endpoint_profile")
+    profile = effective_endpoint_profile(api_base, explicit)
+    if profile:
+        return profile
+    if normalize_provider_value(str(params.get("model_provider") or "")) == "Anthropic":
+        return None
+    if (params.get("vendor_key") or "") != (persisted_mcc.get("vendor_key") or ""):
+        return None
+    return str(persisted_mcc.get("endpoint_profile") or "") or None
+
+
+def _redact_probe_error(message: str, api_key: str) -> str:
+    """Remove the probe API key from a user-visible error message.
+
+    FR-003 forbids credentials in error messages; some SDKs echo the request
+    key inside transport errors, so the key is replaced before responding.
+
+    Args:
+        message: Raw exception text.
+        api_key: The probe credential to redact.
+
+    Returns:
+        The trimmed message with every key occurrence replaced by ``***``.
+    """
+    text = str(message or "").strip()
+    key = str(api_key or "").strip()
+    if not text or not key:
+        return text
+    return text.replace(key, "***")
+
+
+def build_probe_model_client_config(
+    model_provider: str,
+    api_key: str,
+    api_base: str,
+    *,
+    endpoint_profile: str = "",
+    verify_ssl: bool | None = None,
+    vendor_key: str = "",
+    persisted_mcc: dict[str, Any] | None = None,
+) -> ModelClientConfig:
+    """构造探测用 ``ModelClientConfig``：持久化条目为基线，表单草稿值覆盖。
+
+    对话路径（``interface_deep.build_model_from_entry``）把持久化 mcc 整包传给
+    core，``custom_headers`` 等字段自然生效；探测此前只拼表单可见字段，导致
+    依赖请求头鉴权的网关「对话正常、测试 401」。此函数让探测与对话共享
+    同一份持久化配置：表单字段（用户正在编辑的草稿）始终权威覆盖，探测
+    预算（client_id / timeout / max_retries）最后固定，不被条目的
+    ``timeout: 1800`` 等运行值污染。
+
+    ``verify_ssl`` 为 None 表示表单未提交该项：保留基线值，基线也没有时
+    用 False（探测历史默认，而非 core 的 True——自签证书网关的探测结论
+    不因本次修复翻转）。基线含非法字段类型时构造失败，退化为仅表单字段
+    （历史行为）并告警，不让脏配置打断探测。
+    """
+
+    def _assemble(persisted: dict[str, Any] | None) -> ModelClientConfig:
+        probe_fields: dict[str, Any] = dict(persisted or {})
+        probe_fields.pop("model_name", None)
+        effective_vendor = str(
+            vendor_key or probe_fields.get("vendor_key") or ""
+        ).strip()
+        if effective_vendor:
+            probe_fields["vendor_key"] = effective_vendor
+        else:
+            probe_fields.pop("vendor_key", None)
+        probe_fields.update(
+            {
+                "client_id": "config-validate",
+                "client_provider": model_provider,
+                "api_key": api_key,
+                "api_base": api_base,
+                "timeout": 25.0,
+                "max_retries": 0,
+            }
+        )
+        if endpoint_profile:
+            probe_fields["endpoint_profile"] = endpoint_profile
+        elif "endpoint_profile" in probe_fields:
+            del probe_fields["endpoint_profile"]
+        if verify_ssl is not None:
+            probe_fields["verify_ssl"] = verify_ssl
+        elif "verify_ssl" not in probe_fields:
+            probe_fields["verify_ssl"] = False
+        # OpenCode Go needs a stable, dialog-independent session header; the
+        # probe always uses the fixed probe scope and never a conversation id.
+        inject_session_header(probe_fields, SCOPE_PROBE)
+        return ModelClientConfig(**probe_fields)
+
+    try:
+        return _assemble(persisted_mcc)
+    except Exception:
+        logger.warning(
+            "[config.validate_model] persisted model_client_config rejected by "
+            "ModelClientConfig (invalid field types); probing with draft fields only",
+            exc_info=True,
+        )
+        return _assemble(None)
 
 
 def _merge_models_for_replace_all(
@@ -283,26 +452,37 @@ def _merge_models_for_replace_all(
                 new_mcc["timeout"] = item["timeout"]
             if not _values_match(item["alias"], (resolved_entry or {}).get("alias")):
                 new_entry["alias"] = item["alias"]
-            # vendor_key + plan: persist the exact provider selection identity
-            # into model_client_config (or clear it).
-            if item.get("vendor_key"):
-                new_mcc["vendor_key"] = item["vendor_key"]
-            else:
-                new_mcc.pop("vendor_key", None)
-            if item.get("plan"):
-                new_mcc["plan"] = item["plan"]
-            else:
-                new_mcc.pop("plan", None)
+            previous_vendor = str(new_mcc.get("vendor_key") or new_entry.get("vendor_key") or "")
+            for key in ("vendor_key", "plan"):
+                if key not in item:
+                    continue
+                if item[key]:
+                    new_mcc[key] = item[key]
+                else:
+                    new_mcc.pop(key, None)
+                    new_entry.pop(key, None)
             # endpoint_profile: OpenAI 协议端点方言(deepseek/openrouter/dashscope/...)。
-            # 前端透传则落库；不传则清掉(避免残留旧方言)。Anthropic 协议时此字段被 core 忽略。
+            # 编辑表单不暴露该字段(Anthropic 协议下 core 忽略)，payload 缺失不等于
+            # 用户要求清空：仅当切到 Anthropic 协议或换用其他供应商预设时丢弃持久化
+            # 值，否则保留(与 TUI 保存路径同口径)，避免静默刷掉手写 YAML 的方言。
+            # payload 显式值/保存时 host 推断值始终优先落库。
             if item.get("endpoint_profile"):
                 new_mcc["endpoint_profile"] = item["endpoint_profile"]
-            else:
+            elif (
+                normalize_provider_value(str(item.get("model_provider") or "")) == "Anthropic"
+                or ("vendor_key" in item and (item["vendor_key"] or "") != previous_vendor)
+            ):
                 new_mcc.pop("endpoint_profile", None)
             new_entry["is_default"] = item["is_default"]
-            # api_key: resolved holds the decrypted plaintext shown to the frontend.
-            # Unchanged → keep raw (placeholder or ciphertext); changed → encrypt new value.
-            if item.get("api_key_provided", True) and not _values_match(item["api_key"], resolved_mcc.get("api_key")):
+            # api_key: resolved holds the value shown to the frontend.
+            # exec: references are stored verbatim: the
+            # panel echoes the reference back, and a reference is neither
+            # plaintext (would be encrypted, corrupting it) nor ciphertext.
+            # Unchanged → keep raw (placeholder/ciphertext/reference);
+            # changed → encrypt new plaintext value.
+            if is_reference(str(item["api_key"] or "")):
+                new_mcc["api_key"] = item["api_key"]
+            elif item.get("api_key_provided", True) and not _values_match(item["api_key"], resolved_mcc.get("api_key")):
                 new_mcc["api_key"] = (
                     crypto.encrypt(item["api_key"]) if (item["api_key"] and crypto) else item["api_key"]
                 )
@@ -312,7 +492,9 @@ def _merge_models_for_replace_all(
                 "model_client_config": {
                     "api_base": item["api_base"],
                     "api_key": (
-                        crypto.encrypt(item["api_key"]) if (item["api_key"] and crypto) else item["api_key"]
+                        item["api_key"]
+                        if is_reference(str(item["api_key"] or ""))
+                        else (crypto.encrypt(item["api_key"]) if (item["api_key"] and crypto) else item["api_key"])
                     ),
                     "model_name": item["model_name"],
                     "client_provider": item["model_provider"],
@@ -339,6 +521,16 @@ def _merge_models_for_replace_all(
                 "alias": item["alias"],
             }
 
+        patch_client = {}
+        if item.get("extensions") is not None:
+            if not isinstance(item["extensions"], dict):
+                raise ConfigPanelBadRequest("model extensions must be an object")
+            patch_client["extensions"] = item["extensions"]
+            _merge_config_dict(new_entry["model_client_config"], patch_client)
+        try:
+            prepare_model_affinity_update(new_entry, raw_entry or {}, {"model_client_config": patch_client})
+        except ValueError as exc:
+            raise ConfigPanelBadRequest(str(exc)) from exc
         out.append(new_entry)
     return out
 
@@ -439,7 +631,7 @@ def build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]
         vendor_key = str(item.get("vendor_key") or "").strip() or None
         plan = str(item.get("plan") or "").strip() or None
         if plan:
-            from gateway.common.model_vendor_registry import PlanKind
+            from agent_gateway.common.model_vendor_registry import PlanKind
 
             try:
                 plan = PlanKind(plan).value
@@ -469,7 +661,8 @@ def build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]
                 )
             aliases_seen[alias] = idx
 
-        parsed.append({
+        parsed_item = {
+            "extensions": item.get("extensions"),
             "model_id": item.get("model_id"),
             "model_name": model_name,
             "api_base": api_base,
@@ -485,21 +678,17 @@ def build_models_defaults_from_frontend(raw_models: Any) -> list[dict[str, Any]]
             "context_window_tokens": context_window_tokens,
             "context_window_tokens_provided": context_window_tokens_provided,
             "origin_index": origin_index,
-            # vendor_key is an opaque hint
-            # selector; not validated (the selector only ever emits keys
-            # present in gateway.common.model_vendor_registry). It is
-            # persisted so the UI can match a configured entry back to its
-            # preset for icon display / re-selection. Not required.
-            "vendor_key": vendor_key,
-            # plan is the other half of the provider-selection identity.
-            # Older entries may have vendor_key only; do not infer a plan.
-            "plan": plan,
             # endpoint_profile: OpenAI 协议端点方言(deepseek/openrouter/dashscope/...);
             # opaque passthrough, not validated. Anthropic 协议时 core 忽略此字段。
             # 前端未传时按 api_base host 推断已知自建网关方言(如 vllm)并落库,
             # 否则该类端点的思考开关只会发官方 thinking.type 而被网关忽略。
             "endpoint_profile": effective_endpoint_profile(api_base, item.get("endpoint_profile")),
-        })
+        }
+        if "vendor_key" in item:
+            parsed_item["vendor_key"] = vendor_key
+        if "plan" in item:
+            parsed_item["plan"] = plan
+        parsed.append(parsed_item)
 
     # alias 与其他条目的 model_name 冲突校验
     for i, p in enumerate(parsed):
@@ -562,13 +751,37 @@ async def config_validate_model_handler(
         return
     api_base = str(params.get("api_base") or "").strip()
     api_key = str(params.get("api_key") or "").strip()
+    # An exec: reference echoed from the stored entry resolves before probing:
+    # the raw reference is not a usable key, so
+    # probing it would always 401 while runtime chat works. probe=True
+    # bypasses the failed backoff (explicit user retry intent); a failed
+    # resolve degrades to "" and the probe reports an auth error, matching
+    # what runtime chat would do with the same broken reference.
+    # to_thread: the resolve may run a subprocess for up to 30s — that must
+    # never sit on the event loop with every WebSocket connection waiting.
+    original_api_key = api_key
+    if is_reference(api_key):
+        api_key = await asyncio.to_thread(
+            resolve_credential_ref,
+            api_key, field_path="models.*.model_client_config.api_key", probe=True,
+        )
     model = str(params.get("model") or "").strip()
     model_provider = normalize_provider_value(str(params.get("model_provider") or ""))
     needs_api_key = not is_openai_account_provider(model_provider)
     if not all([api_base, model, model_provider]) or (needs_api_key and not api_key):
+        # A reference that resolved to empty is a *broken reference*, not a
+        # missing field — say so, or the user thinks their api_key vanished.
+        if is_reference(original_api_key) and not api_key:
+            error = (
+                f"the exec: reference in api_key failed to resolve "
+                f"(command: {original_api_key[len('exec:'):].strip() or '<empty>'}); "
+                f"check the secret-manager command"
+            )
+        else:
+            error = "api_base, model, model_provider, and api_key for non-OAuth providers are required"
         await channel.send_response(
             ws, req_id, ok=False,
-            error="api_base, model, model_provider, and api_key for non-OAuth providers are required",
+            error=error,
             code="BAD_REQUEST",
         )
         return
@@ -582,10 +795,16 @@ async def config_validate_model_handler(
         return
     api_base = api_base.rstrip("/")
 
-    verify_ssl = bool(params.get("verify_ssl", False))
-    # 未显式传方言时按 api_base host 推断已知自建网关(如 vllm)，
-    # 保证"测试连接"与保存后的真实运行走同一条 core 路由。
-    endpoint_profile = effective_endpoint_profile(api_base, params.get("endpoint_profile"))
+    verify_ssl: bool | None = None
+    if "verify_ssl" in params:
+        verify_ssl = bool(params.get("verify_ssl"))
+    # 探测以持久化条目为基线：custom_headers / ssl_cert 等配置页未暴露的
+    # write-only 字段随条目进入探测请求，与保存后的对话路径同口径。
+    persisted_mcc = resolve_persisted_mcc_for_validate(model)
+    # 方言解析：草稿优先；未显式传时按 api_base host 推断已知自建网关(如
+    # vllm)；仍未命中且保存会保留持久化值时回退条目方言——保证"测试连接"
+    # 与保存后的真实运行走同一条 core 路由。
+    endpoint_profile = resolve_validate_endpoint_profile(params, persisted_mcc, api_base)
 
     model_config_obj = resolve_model_config_obj_for_validate(model, params)
 
@@ -606,21 +825,21 @@ async def config_validate_model_handler(
         model,
         model_request_config.model_dump(),
     )
-    model_client_config = ModelClientConfig(
-        client_id="config-validate",
-        client_provider=model_provider,
+    model_client_config = build_probe_model_client_config(
+        model_provider,
+        api_key,
+        api_base,
         endpoint_profile=endpoint_profile,
-        api_key=api_key,
-        api_base=api_base,
-        timeout=25.0,
-        max_retries=0,
         verify_ssl=verify_ssl,
+        vendor_key=str(params.get("vendor_key") or persisted_mcc.get("vendor_key") or ""),
+        persisted_mcc=persisted_mcc,
     )
     # Anthropic-compatible endpoints that send thinking.budget_tokens
     # require max_tokens > budget. Use the actual budget core would emit
     # (effort-mapped or explicit), not a stale 1024 default: many wires
     # (qwen38_anthropic, dashscope_budget) no longer pin 1024, while
     # anthropic_manual maps high → 16384.
+    thinking_budget: int | None = None
     try:
         from openjiuwen.core.foundation.llm.reasoning import resolve_reasoning_plan
 
@@ -633,12 +852,38 @@ async def config_validate_model_handler(
         if isinstance(_thinking, dict):
             _budget = _thinking.get("budget_tokens")
             if isinstance(_budget, int) and _budget > 0:
+                thinking_budget = _budget
                 supremum_max_tokens = max(supremum_max_tokens, _budget + 16)
     except Exception:  # noqa: BLE001
         logger.debug(
             "[config.validate_model] skip budget floor from reasoning plan",
             exc_info=True,
         )
+    # Only a saved or draft value is a user-configured output limit. Core can
+    # derive max_tokens while constructing the request, and that inferred
+    # value must not turn a connection probe into a configuration error.
+    configured_max_tokens = model_config_obj.get("max_tokens")
+    is_anthropic_provider = model_provider.lower() == "anthropic"
+    has_configured_max_tokens = isinstance(configured_max_tokens, int) and not isinstance(
+        configured_max_tokens, bool
+    )
+    has_invalid_thinking_limit = (
+        has_configured_max_tokens
+        and thinking_budget is not None
+        and configured_max_tokens <= thinking_budget
+    )
+    if is_anthropic_provider and has_invalid_thinking_limit:
+        await channel.send_response(
+            ws,
+            req_id,
+            ok=False,
+            error=(
+                "Anthropic max_tokens must be greater than thinking.budget_tokens "
+                f"(max_tokens={configured_max_tokens}, thinking.budget_tokens={thinking_budget})."
+            ),
+            code="BAD_REQUEST",
+        )
+        return
     llm = Model(model_config=model_request_config, model_client_config=model_client_config)
 
     try:
@@ -648,10 +893,12 @@ async def config_validate_model_handler(
             log_context="config.validate_model",
         )
     except Exception as exc:  # noqa: BLE001
+        # 原始异常（[181001] ... APIStatusError ...）只留在日志里；回给用户的是
+        # 能直接照做的提示，例如账户欠费时明确提示去充值，而不是一串内部报错。
         logger.warning("[config.validate_model] LLM probe failed: %s", exc)
         await channel.send_response(
             ws, req_id, ok=False,
-            error=str(exc).strip() or "LLM request failed",
+            error=_redact_probe_error(user_facing_model_error(exc, api_base=api_base), api_key),
             code="LLM_ERROR",
         )
         return
@@ -694,6 +941,10 @@ async def models_list_handler(
             models = await asyncio.to_thread(get_default_models, config)
         else:
             models = await asyncio.to_thread(get_available_models, config, auth_session)
+        # 回显 api_key：raw map 仅收 exec: 引用条目（引用原文），其余形态
+        # （明文/${VAR}/密文）回落解析链路值——与现状显示一致；${VAR} 原样
+        # 下发会让 replace_all 把占位符判成"已修改"而加密损坏。
+        raw_keys = await asyncio.to_thread(raw_api_keys_by_model_id)
         result = []
         active_model = ""
         for idx, entry in enumerate(models):
@@ -713,7 +964,14 @@ async def models_list_handler(
                 "model_name": model_name,
                 "api_base": str(mcc.get("api_base") or ""),
                 # 保持旧设置页的编辑/测试/保存协议；登录模型凭据不可下发。
-                "api_key": "" if is_login_model(entry) else str(mcc.get("api_key") or ""),
+                # get_config() 已把 exec: 引用替换为解析后明文，引用条目回显
+                # raw 原文（否则明文进浏览器且一次保存就把引用改写成明文）；
+                # 其余形态回落解析值（与现状一致，见 raw_api_keys_by_model_id）。
+                "api_key": (
+                    ""
+                    if is_login_model(entry)
+                    else raw_keys.get(str(entry.get("model_id") or ""), str(mcc.get("api_key") or ""))
+                ),
                 "has_api_key": bool(mcc.get("api_key")),
                 "model_provider": str(mcc.get("client_provider") or ""),
                 "temperature": mco.get("temperature"),
@@ -731,6 +989,7 @@ async def models_list_handler(
                 "vendor_key": mcc.get("vendor_key") or entry.get("vendor_key") or "",
                 "plan": mcc.get("plan") or entry.get("plan") or "",
                 "endpoint_profile": mcc.get("endpoint_profile") or "",
+                "extensions": mcc.get("extensions") or {},
             }
             # An empty template entry is not a configured model yet; do
             # not surface a synthetic context window until the user saves
@@ -740,6 +999,9 @@ async def models_list_handler(
                     parse_positive_int(mco.get("context_window"))
                     or DEFAULT_CONTEXT_WINDOW_TOKENS
                 )
+            max_tokens = parse_positive_int(mco.get("max_tokens"))
+            if max_tokens is not None:
+                result_entry["max_tokens"] = max_tokens
             if is_login_model(entry):
                 # 登录送的模型：前端据此置灰编辑
                 result_entry.update(source=entry.get("source"), read_only=True)
@@ -794,14 +1056,8 @@ async def models_replace_all_handler(
         await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
         return
     try:
+        before = get_affinity_status(resolve_env_vars(get_config_raw()))
         new_models = build_models_defaults_from_frontend(params.get("models"))
-        if (
-            is_affinity_enabled(get_config_raw())
-            and not has_kv_cache_affinity_capability(
-                default_model_client_config_from_entries(new_models)
-            )
-        ):
-            update_kv_cache_affinity_enabled_in_config(False)
         # Replace only defaults inside a complete candidate so stable IDs,
         # AgentOS entries and model groups are validated and preserved.
         candidate_models = dict((get_config_raw().get("models") or {}))
@@ -812,14 +1068,23 @@ async def models_replace_all_handler(
         raise_if_invalid(candidate_models)
         update_default_models_in_config(candidate_models["defaults"], cron_references_checked=True)
 
+        status = get_affinity_status(resolve_env_vars(get_config_raw()))
+        auto_disabled = before["requested_enabled"] and not status["requested_enabled"]
+        changed_keys = ["models.defaults"]
+        if auto_disabled:
+            changed_keys.append("kv_cache_affinity_enabled")
         applied_without_restart = await _apply_models_change(
-            on_config_saved, agent_client, changed_keys=["models.defaults"], force=True
+            on_config_saved, agent_client, changed_keys=changed_keys, force=True
         )
 
-        await channel.send_response(ws, req_id, ok=True, payload={
+        payload = {
             "count": len(new_models),
             "applied_without_restart": applied_without_restart,
-        })
+        }
+        if auto_disabled:
+            payload["kv_cache_affinity_auto_disabled"] = True
+            payload["kv_cache_affinity_status"] = status
+        await channel.send_response(ws, req_id, ok=True, payload=payload)
     except ConfigPanelBadRequest as exc:
         await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
     except ModelSelectionError as exc:

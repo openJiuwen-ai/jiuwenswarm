@@ -647,7 +647,7 @@ export function createTeamSkillsCommand(): SlashCommand {
         usage:
           "/teamskills config [--market-url <url>] [--token <user_token>] [--system-token <system_token>] [--allowed-download-hosts <h1,h2,...>]",
         example:
-          "/teamskills config --market-url https://teamskills.openjiuwen.com --token <TOKEN> --allowed-download-hosts 127.0.0.1,localhost",
+          "/teamskills config --market-url https://swarmskills.openjiuwen.com --token <TOKEN> --allowed-download-hosts 127.0.0.1,localhost",
         kind: CommandKind.BUILT_IN,
         takesArgs: true,
         action: async (ctx, args) => {
@@ -698,7 +698,7 @@ export function createTeamSkillsCommand(): SlashCommand {
         usage:
           "/teamskills publish <path> [--file <zip>] --version <x.y.z> [--id <skill_id>] [--token <t>|--system-token <t>] [--market-url <url>] [--force] [--version-desc <text>]",
         example:
-          "/teamskills publish ./demo-skill --version 1.0.0 --token <TOKEN> --market-url https://teamskills.openjiuwen.com",
+          "/teamskills publish ./demo-skill --version 1.0.0 --token <TOKEN> --market-url https://swarmskills.openjiuwen.com",
         kind: CommandKind.BUILT_IN,
         takesArgs: true,
         action: async (ctx, args) => {
@@ -760,7 +760,7 @@ export function createTeamSkillsCommand(): SlashCommand {
         usage:
           "/teamskills delete <skill_id> [--version <x.y.z|all>] [--token <t>|--system-token <t>] [--market-url <url>]",
         example:
-          "/teamskills delete sk-123 --version 1.0.0 --token <TOKEN> --market-url https://teamskills.openjiuwen.com",
+          "/teamskills delete sk-123 --version 1.0.0 --token <TOKEN> --market-url https://swarmskills.openjiuwen.com",
         kind: CommandKind.BUILT_IN,
         takesArgs: true,
         action: async (ctx, args) => {

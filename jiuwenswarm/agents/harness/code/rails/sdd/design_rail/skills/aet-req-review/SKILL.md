@@ -28,8 +28,10 @@ metadata:
 
 ### [R1] SubAgent Gate
 
-- Validate input completeness by confirming path existence ONLY — DO NOT read the content.
-- Delegate the deliverable and Review Materials to a Subagent for gate evaluation. Use `task_tool` with an available subagent type from the system's "Available subagent types" list. (Reference the prompt template in <example>).
+- Validate input completeness by confirming the deliverable path exists. The methodology frame above carries the resolved absolute path and an `Exists:` flag — trust it and hand that absolute path to the Subagent. Do NOT shell out to `test -f` / `[[ -f ]]` to check it: those are not portable to Windows PowerShell, and the failing probe aborts the gate.
+- If the frame reports `Exists: no`, stop and ask the user for the correct path — do not start the gate against a missing deliverable.
+- DO NOT read the content yourself.
+- Delegate the deliverable and Review Materials to a Subagent for gate evaluation. Use the subagent call the system prompt prescribes: call `subagent_spawn` with a `subagent_type` from the system's "Available subagent types" list, then `subagent_wait` in the same turn. Use the synchronous `task_tool` only when the system prompt says the registered subagent tool is `task_tool` — `task_tool` accepts only the synchronous subagent types, and `explore_agent` is not one of them, so calling `task_tool` with it is rejected before the gate starts. (Reference the prompt template in <example>).
 - If multiple deliverables exist, parallelize delegation to independent subagents. Final routing decisions MUST follow the worst-case result principle.
 
 ### [R2] Deliverable Revision (via Subagent)
@@ -50,14 +52,44 @@ metadata:
   - List of issues found (with severity and location)
   - Revisions applied (what was fixed)
   - Final score if applicable
-- After outputting the review results as content, call `ask_user` with ONLY the confirmation question.
+- After outputting the review results as content, call `ask_user` with a **structured** question — the confirmation must be a choice, never a free-text box. A free-text confirmation lets the user "confirm" with an empty input, which the transport cannot carry, and the gate then re-asks the same question forever.
+
+  ```json
+  {
+    "query": "文档审查完成，是否需要修改？",
+    "questions": [{
+      "question": "是否需要修改？如有其他意见请说明，无需修改请直接确认。",
+      "header": "审查结论确认",
+      "options": [
+        {"label": "无需修改，进入下一阶段"},
+        {"label": "需要修改（请补充具体意见）"},
+        {"label": "Other"}
+      ]
+    }]
+  }
+  ```
+
+- The `Other` option is the frontend's free-text slot (rendered as 「其他（自定义输入）」): picking it opens an input box for the concrete modification request. Keep the literal label `Other`.
+- NEVER merge the review summary into the question text: the summary is visible content, the question carries only the confirmation. Keep the option labels free of the words 返工 / 拒绝 / rework — the rail treats them as a rework request.
 - If the user requests modifications:
   - Apply the requested revisions to the deliverable in-place.
   - Ensure document-wide consistency for all chain impacts.
 - If the user approves (no modifications needed):
   - Proceed directly to [R4].
 
-> ask_user query: "是否需要修改？如有其他意见请说明，无需修改请直接确认。"
+#### Empty Submission / Skip / Cancel Semantics
+
+These three user actions all mean "no modification requested". Treat them identically and go straight to [R4]:
+
+| User action | Answer text you receive | Action |
+|---|---|---|
+| Selects "无需修改，进入下一阶段" | the option label | Proceed to [R4] |
+| Selects "Other" and types the modification request | the typed text | Apply the revision, then follow the User Gate below |
+| Clicks 「跳过」 (skip) | `用户已跳过此题，未选择任何选项。` | Proceed to [R4] |
+| Clicks 「取消」 (cancel) | `用户已取消本次问答，未作答。` | Proceed to [R4] |
+
+- NEVER call `ask_user` again after an empty submission, a skip or a cancel: re-asking after an empty submission stalls the flow — the user has already signalled "no modifications".
+- Treat the answer as modification feedback ONLY when the user picked "需要修改（请补充具体意见）" or typed a request into the "Other" box. If they picked the modification option without any detail, ask once for the details; if that follow-up comes back empty, skipped or cancelled, treat it as no modification and go to [R4].
 
 ### [R4] End & Advance
 
@@ -94,6 +126,7 @@ You are an authoritative Quality Assurance Reviewer. Your objective is to rigoro
 <constraint>
 
 - NEVER fabricate content — all deliverable text must strictly trace back to Skill methodology or user input.
+- **Never re-ask**: an empty, skipped or cancelled answer IS an answer — it means "no modifications". Re-asking the same question deadlocks the gate and the flow never reaches the next stage.
 - **Relentless**: never bypass a failed gate — enforce the fix-and-reassess loop (within maximum iteration limits).
 - Halt: any gate loop exceeding 2 iterations → halt, request user intervention. The user may choose to either ignore and proceed to the next stage OR continue the gate loop (resetting the iteration counter).
 - ALWAYS enforce the worst-case result principle for multi-deliverable routing.
@@ -136,7 +169,7 @@ You are an authoritative Quality Assurance Reviewer. Your objective is to rigoro
 
 ### User Gate
 
-- IF R3 user makes ZERO modifications THEN proceed directly to R4.
+- IF R3 user makes ZERO modifications — including an empty confirmation, a 「跳过」 (skip) or a 「取消」 (cancel) — THEN proceed directly to R4. NEVER re-ask the same question.
 - IF R3 user MAKES modifications THEN optionally re-gate (ask user: "是否需要复审？" with options ["需要复审", "跳过复审"]).
   - IF "需要复审" THEN return to R1 for re-gate.
   - IF "跳过复审" THEN proceed to R4.

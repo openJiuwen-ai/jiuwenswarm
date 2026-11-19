@@ -368,8 +368,7 @@ async def test_closing_consumer_cancels_producer_blocked_on_full_queue(
     first = await anext(stream)
     assert first.payload["event_type"] == "chat.delta"
     await asyncio.wait_for(stream.aclose(), timeout=1.0)
-
-    assert producer_finished.is_set()
+    await asyncio.wait_for(producer_finished.wait(), timeout=3.0)
 
 
 @pytest.mark.asyncio

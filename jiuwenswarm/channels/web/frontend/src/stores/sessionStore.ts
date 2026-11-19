@@ -14,6 +14,7 @@ import {
   isTeamLeaderContextUsageSnapshot,
   parseContextUsageSnapshot,
 } from '../features/contextUsage/contextUsageModel';
+import { parseSessionTokenUsageSnapshot } from '../types/sessionTokenUsage';
 import {
   Session,
   AgentMode,
@@ -24,14 +25,9 @@ import {
   ContextCompressionRuntime,
   ContextCompressionSummary,
   ContextUsageSnapshot,
+  SessionTokenUsageSnapshot,
   TeamMemberContextCompressionState,
 } from '../types';
-import {
-  createTaskProgressBaseline,
-  mergeTaskProgressBaseline,
-  registerConfirmedTaskCreation,
-  type TaskProgressBaseline,
-} from '../features/teamTaskProgressBaseline';
 import type {
   AgentGroupIdentity,
   AgentGroupSelectionIntent,
@@ -63,6 +59,7 @@ import { normalizeTeamGroupIdentity } from '../features/teamGroupIdentity';
 const MODE_STORAGE_KEY = 'jiuwenclaw_mode';
 const MODEL_STORAGE_KEY = 'jiuwenclaw_selected_model';
 const MODEL_SELECTION_STORAGE_KEY = 'jiuwenclaw_last_model_selection';
+const LEGACY_MODEL_STORAGE_KEY = 'jiuwenclaw_last_legacy_model';
 const AGENT_SELECTION_STORAGE_KEY = 'jiuwenclaw_agent_selection';
 const AGENT_GROUP_SELECTION_STORAGE_KEY = 'jiuwenclaw_agent_group_selection';
 const TRANSIENT_NEW_CONVERSATION_ID = 'new';
@@ -93,9 +90,25 @@ function loadLastModelSelection(): ModelSelection | null {
   }
 }
 
+function loadLastLegacyModelName(): string | null {
+  if (typeof localStorage === 'undefined') return null;
+  try { return localStorage.getItem(LEGACY_MODEL_STORAGE_KEY)?.trim() || null; } catch { return null; }
+}
+
+function cacheLastLegacyModelName(name: string): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    localStorage.setItem(LEGACY_MODEL_STORAGE_KEY, name);
+    localStorage.removeItem(MODEL_SELECTION_STORAGE_KEY);
+  } catch { /* noop */ }
+}
+
 export function cacheLastModelSelection(selection: ModelSelection): void {
   if (typeof localStorage === 'undefined') return;
-  try { localStorage.setItem(MODEL_SELECTION_STORAGE_KEY, JSON.stringify(selection)); } catch { /* noop */ }
+  try {
+    localStorage.setItem(MODEL_SELECTION_STORAGE_KEY, JSON.stringify(selection));
+    localStorage.removeItem(LEGACY_MODEL_STORAGE_KEY);
+  } catch { /* noop */ }
 }
 
 /** New chats restore the last stable selection, then fall back default-group -> custom -> free -> empty. */
@@ -140,6 +153,16 @@ export function resolveAvailableModelSelection(
   return resolveNewConversationModelSelection(models, groups, selection);
 }
 
+/**
+ * True while models.list / groups have not arrived yet.
+ * An empty catalog must not be treated as “selection deleted” (#5860): refresh during
+ * goal execution often restores metadata before the catalog, and clearing then falls
+ * back to the default model.
+ */
+export function isModelCatalogPending(models: ModelEntry[], groups: ModelGroup[]): boolean {
+  return models.length === 0 && groups.length === 0;
+}
+
 export function isModelSelectionAvailable(
   selection: ModelSelection | null,
   models: ModelEntry[],
@@ -178,6 +201,15 @@ function restoreNewConversationSelection(
   // Catalog refresh can briefly omit groups; keep the draft group until the user
   // changes it. Historical sessions heal via ChatModelSelector / session restore.
   if (runtime.selectedModelSelection?.type === 'model_group') return runtime;
+  const legacyName = loadLastLegacyModelName();
+  const legacyModel = models.find((model) => model.model_name === legacyName);
+  if (legacyName && (legacyModel || models.length === 0)) {
+    return {
+      ...runtime,
+      selectedModelName: legacyName,
+      selectedModelSelection: legacyModel?.model_id ? { type: 'model', id: legacyModel.model_id } : null,
+    };
+  }
   const cached = loadLastModelSelection();
   const selection = isModelSelectionAvailable(cached, models, groups)
     ? cached
@@ -501,10 +533,6 @@ export interface TeamTaskEvent {
   content?: string;
   /** Swarmflow run that produced this task (absent on plain team tasks). */
   workflow_run_id?: string;
-  /** Run paused: the board's time-eased progress must hold, not creep or reset. */
-  progress_frozen?: boolean;
-  /** Wall-clock at which progress_frozen flipped true (the easing clock stops here). */
-  progress_frozen_at?: number;
   // Truncation observability flags — backend may set these on team.task.created/
   // updated events when the title/content exceeded the wire limit. Purely
   // passthrough: the store does not render a badge; the inline marker
@@ -537,10 +565,6 @@ export interface TeamTask {
   files?: string[];
   /** Swarmflow run that produced this task (absent on plain team tasks). */
   workflow_run_id?: string;
-  /** Run paused: the board's time-eased progress must hold, not creep or reset. */
-  progress_frozen?: boolean;
-  /** Wall-clock at which progress_frozen flipped true (the easing clock stops here). */
-  progress_frozen_at?: number;
   // Truncation observability flags — set by the backend on team.task.created/
   // updated events when title/content exceeded the wire limit. Carried through
   // the normalize/upsert pipeline; a status-only event MUST NOT reset these
@@ -625,11 +649,18 @@ export interface TeamMemberExecutionEvent {
   }>;
 }
 
+export interface AppMarketPreview {
+  appId: string;
+  name: string;
+  instanceId: string;
+}
+
 /**
  * 单个 session 的运行态。
  * 原 B 类全局字段全部迁移到这里，按 session 隔离。
  */
 export interface SessionRuntime {
+  appMarketPreview?: AppMarketPreview;
   mode: AgentMode;
   selectedModelName: string | null;
   /** Stable `{type,id}` selection; preferred over model_name for runtime/session APIs. */
@@ -638,12 +669,14 @@ export interface SessionRuntime {
   /** 新会话草稿值；真实 Session 创建后由后端 metadata 的权威值覆盖。 */
   persistSession: boolean;
   contextUsageSnapshot: ContextUsageSnapshot | null;
+  tokenUsageSnapshot: SessionTokenUsageSnapshot | null;
   teamTaskEvents: TeamTaskEvent[];
   /** 子话题时间线用的任务流转事件（逐条追加，不按 task 合并）。 */
   teamTaskTimeline: TeamTaskTimelineEntry[];
   teamTasks: TeamTask[];
-  teamTaskProgressBaseline: TaskProgressBaseline;
   teamMembers: TeamMember[];
+  /** 已离队（shut_down）成员目录：不在名册上，只供任务卡片等按 member_id 查名字 / 头像。 */
+  teamDepartedMembers: TeamMember[];
   teamConnectionPresentation: TeamConnectionPresentation | null;
   teamLeaderMemberIds: string[];
   teamHumanShareCommands: HumanShareCommand[];
@@ -680,6 +713,11 @@ export interface SessionRuntime {
   /** 本会话 swarmflow token 上限（留空=不限） */
   swarmflowBudget: number | null;
   /**
+   * 本会话 team 成员是否使用独立 Git 身份（会话级，code 模式随 chat.send 下发）。
+   * undefined = 用户未拨过：不随请求发送，后端沿用已提交的会话设置。
+   */
+  independentGitIdentity?: boolean;
+  /**
    * 本会话团队的任务调度模式（会话级，随 chat.send 下发并持久化到会话 metadata）。
    * undefined = 用户未拨过：开关默认关闭（自主模式）。团队建好后不可再改。
    */
@@ -691,13 +729,29 @@ export interface SessionRuntime {
   teamBootstrapMode?: TeamBootstrapMode;
   /** SwarmFlow 工作流运行列表（树视图渲染） */
   workflowRuns: WorkflowRun[];
+  /** Cosmetic task estimates, scoped to this conversation and never persisted. */
+  taskProgressEstimates: Record<string, number>;
+}
+
+function retainTaskProgressEstimates(runtime: SessionRuntime, tasks: TeamTask[]): Record<string, number> {
+  const removed = new Set(runtime.teamTasks.map((task) => task.task_id));
+  for (const task of tasks) {
+    if (task.status === 'completed' || task.status === 'cancelled') removed.add(task.task_id);
+    else removed.delete(task.task_id);
+  }
+  const estimates = runtime.taskProgressEstimates ?? {};
+  if (!Object.keys(estimates).some((id) => removed.has(id))) return estimates;
+  return Object.fromEntries(Object.entries(estimates).filter(([id]) => !removed.has(id)));
 }
 
 function createEmptyRuntime(
-  sessionId?: string,
+  sessionId: string,
   availableModels: ModelEntry[] = [],
   availableModelGroups: ModelGroup[] = [],
 ): SessionRuntime {
+  const legacyName = sessionId === TRANSIENT_NEW_CONVERSATION_ID ? loadLastLegacyModelName() : null;
+  const legacyModel = availableModels.find((model) => model.model_name === legacyName);
+  const restoreLegacyName = Boolean(legacyName && (legacyModel || availableModels.length === 0));
   const restoredSelection = sessionId === TRANSIENT_NEW_CONVERSATION_ID
     ? resolveNewConversationModelSelection(availableModels, availableModelGroups, loadLastModelSelection())
     : null;
@@ -705,17 +759,22 @@ function createEmptyRuntime(
     ? availableModels.find((model) => model.model_id === restoredSelection.id)
     : null;
   return {
-    mode: loadModeFromStorage(),
-    selectedModelName: restoredModel?.model_name ?? null,
-    selectedModelSelection: restoredSelection,
+    // Only the new-conversation draft inherits the last selected mode.
+    // Existing Sessions restore their own mode from backend metadata.
+    mode: sessionId === TRANSIENT_NEW_CONVERSATION_ID ? loadModeFromStorage() : DEFAULT_MODE,
+    selectedModelName: restoreLegacyName ? legacyName : restoredModel?.model_name ?? null,
+    selectedModelSelection: restoreLegacyName
+      ? legacyModel?.model_id ? { type: 'model', id: legacyModel.model_id } : null
+      : restoredSelection,
     projectDirectory: null,
     persistSession: false,
     contextUsageSnapshot: null,
+    tokenUsageSnapshot: null,
     teamTaskEvents: [],
     teamTaskTimeline: [],
     teamTasks: [],
-    teamTaskProgressBaseline: createTaskProgressBaseline(),
     teamMembers: [],
+    teamDepartedMembers: [],
     teamConnectionPresentation: sessionId ? loadTeamConnectionPresentation(sessionId) : null,
     teamLeaderMemberIds: [],
     teamHumanShareCommands: [],
@@ -736,6 +795,7 @@ function createEmptyRuntime(
     enableSwarmflow: false,
     swarmflowBudget: null,
     workflowRuns: [],
+    taskProgressEstimates: {},
   };
 }
 
@@ -747,6 +807,8 @@ interface SessionState {
   availableTools: string[];
   memoryUsage: MemoryUsage;
   availableModels: ModelEntry[];
+  /** A successful catalog snapshot has arrived, including an empty catalog. */
+  modelsLoaded: boolean;
   /** All configured models available to the chat picker, including non-default connections. */
   chatAvailableModels: ModelEntry[];
   /** models.list 返回的模型组目录，供选择器与设置页共用 */
@@ -774,6 +836,7 @@ interface SessionState {
   setConnected: (connected: boolean) => void;
   setAvailableTools: (tools: string[]) => void;
   receiveContextUsage: (payload: unknown) => void;
+  receiveSessionTokenUsage: (payload: unknown) => void;
   setMemoryUsage: (memoryUsage: Partial<MemoryUsage> | null) => void;
   setAvailableModels: (models: ModelEntry[], activeModel?: string) => void;
   setAvailableModelGroups: (groups: ModelGroup[]) => void;
@@ -791,11 +854,13 @@ interface SessionState {
   setTeamTaskTimeline: (sessionId: string, entries: TeamTaskTimelineEntry[]) => void;
   appendTeamTaskTimeline: (sessionId: string, entries: TeamTaskTimelineEntry[]) => void;
   setTeamTasks: (sessionId: string, tasks: TeamTask[]) => void;
-  registerConfirmedTeamTaskCreation: (sessionId: string, taskId: string) => void;
-  mergeTeamTaskProgressBaseline: (sessionId: string, baseline: TaskProgressBaseline) => void;
+  setTaskProgressEstimates: (sessionId: string, estimates: Record<string, number>) => void;
   upsertTeamTask: (sessionId: string, task: TeamTaskUpsert) => void;
   updateTeamTask: (sessionId: string, taskId: string, patch: Partial<TeamTask>) => void;
   setTeamMembers: (sessionId: string, members: TeamMember[]) => void;
+  setTeamDepartedMembers: (sessionId: string, members: TeamMember[]) => void;
+  /** 成员离队时把它的身份记进离队目录（同 member_id 覆盖）。 */
+  rememberDepartedTeamMember: (sessionId: string, member: TeamMember) => void;
   setTeamConnectionPresentation: (sessionId: string, presentation: TeamConnectionPresentation | null) => void;
   clearTeamConnectionPresentation: (sessionId: string, memberId?: string) => void;
   setTeamLeaderMemberIds: (sessionId: string, memberIds: string[]) => void;
@@ -808,6 +873,7 @@ interface SessionState {
   clearSelectedSkills: (sessionId: string) => void;
   /** 设置/清除会话级元数据（skill-creator 统一入口等场景） */
   setSessionMetadata: (sessionId: string, metadata: Record<string, unknown> | null) => void;
+  setAppMarketPreview: (sessionId: string, preview: AppMarketPreview | undefined) => void;
   /** 输入栏智能体选择：选择、清空或恢复为不修改 */
   setAgentSelectionIntent: (sessionId: string, intent: AgentSelectionIntent) => void;
   clearAgentSelectionIntent: (sessionId: string, expectedIntent?: AgentSelectionIntent) => void;
@@ -861,6 +927,7 @@ interface SessionState {
   applyWorkflowUpdate: (sessionId: string, workflow: WorkflowRun) => void;
   /** 设置/关闭用户配置 enableSwarmflow 与预算 swarmflowBudget（配置态，非视图态） */
   setSwarmflowActive: (sessionId: string, active: boolean, budget?: number | null) => void;
+  setIndependentGitIdentity: (sessionId: string, enabled: boolean) => void;
   /** 设置本会话团队的任务调度模式（显式值，随 chat.send 下发并持久化到会话 metadata） */
   setTeamDispatchMode: (sessionId: string, mode: TeamDispatchMode) => void;
   /** 设置本会话团队的建队方式（调度模式子开关；显式值，随 chat.send 下发并持久化到会话 metadata） */
@@ -891,6 +958,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     usedPercent: null,
   },
   availableModels: [],
+  modelsLoaded: false,
   chatAvailableModels: [],
   availableModelGroups: [],
   defaultModelName: null,
@@ -1172,6 +1240,27 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
+  receiveSessionTokenUsage: (payload) => {
+    const snapshot = parseSessionTokenUsageSnapshot(payload);
+    if (!snapshot) return;
+    set((state) => {
+      const runtime = state.runtimes[snapshot.session_id];
+      if (!runtime) return state;
+      if (
+        runtime.tokenUsageSnapshot
+        && runtime.tokenUsageSnapshot.revision >= snapshot.revision
+      ) {
+        return state;
+      }
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [snapshot.session_id]: { ...runtime, tokenUsageSnapshot: snapshot },
+        },
+      };
+    });
+  },
+
   setMemoryUsage: (memoryUsage) => {
     if (!memoryUsage) {
       set({
@@ -1268,6 +1357,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
+  setTaskProgressEstimates: (sessionId, estimates) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const previous = runtime.taskProgressEstimates ?? {};
+      if (Object.keys(previous).length === Object.keys(estimates).length &&
+        Object.entries(estimates).every(([id, value]) => previous[id] === value)) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, taskProgressEstimates: estimates },
+        },
+      };
+    });
+  },
+
   setTeamTasks: (sessionId, tasks) => {
     set((state) => {
       const runtime = state.runtimes[sessionId];
@@ -1278,47 +1383,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           [sessionId]: {
             ...runtime,
             teamTasks: tasks,
-            teamTaskProgressBaseline: tasks.length === 0
-              ? createTaskProgressBaseline()
-              : runtime.teamTaskProgressBaseline,
-          },
-        },
-      };
-    });
-  },
-
-  registerConfirmedTeamTaskCreation: (sessionId, taskId) => {
-    set((state) => {
-      const runtime = state.runtimes[sessionId];
-      if (!runtime) return state;
-      const baseline = registerConfirmedTaskCreation(
-        runtime.teamTasks,
-        runtime.teamTaskProgressBaseline,
-        taskId
-      );
-      if (baseline === runtime.teamTaskProgressBaseline) return state;
-      return {
-        runtimes: {
-          ...state.runtimes,
-          [sessionId]: { ...runtime, teamTaskProgressBaseline: baseline },
-        },
-      };
-    });
-  },
-
-  mergeTeamTaskProgressBaseline: (sessionId, restoredBaseline) => {
-    set((state) => {
-      const runtime = state.runtimes[sessionId];
-      if (!runtime) return state;
-      return {
-        runtimes: {
-          ...state.runtimes,
-          [sessionId]: {
-            ...runtime,
-            teamTaskProgressBaseline: mergeTaskProgressBaseline(
-              runtime.teamTaskProgressBaseline,
-              restoredBaseline
-            ),
+            taskProgressEstimates: retainTaskProgressEstimates(runtime, tasks),
           },
         },
       };
@@ -1335,18 +1400,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (existingIndex >= 0) {
         const existing = runtime.teamTasks[existingIndex];
         const updatedTasks = [...runtime.teamTasks];
-        // The board's visual progress is eased from `timestamp` (task start).
-        // A later status event must not restart that clock — pause → resume
-        // would otherwise drop the bar back to 10%.
-        const frozen = task.progress_frozen ?? existing.progress_frozen;
+        // `timestamp` is the task's start time; later status events keep it.
         updatedTasks[existingIndex] = {
           ...existing,
           ...task,
           timestamp: existing.timestamp ?? task.timestamp,
-          progress_frozen: frozen,
-          progress_frozen_at: frozen
-            ? (existing.progress_frozen ? existing.progress_frozen_at : task.timestamp)
-            : undefined,
           // An event without an explicit status (e.g. a content-only update)
           // must not reset the task; keep the existing status.
           status: task.status ?? existing.status,
@@ -1367,7 +1425,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         return {
           runtimes: {
             ...state.runtimes,
-            [sessionId]: { ...runtime, teamTasks: updatedTasks },
+            [sessionId]: {
+              ...runtime,
+              teamTasks: updatedTasks,
+              taskProgressEstimates: retainTaskProgressEstimates(runtime, updatedTasks),
+            },
           },
         };
       }
@@ -1375,15 +1437,19 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // leaving an empty title. Fall back to a placeholder built from the
       // task_id tail so the card is not rendered with a bare empty title
       // (matches the precedent in features/teamHistoryPanelRestore.ts upsertTask).
+      const tasks: TeamTask[] = [{
+        ...task,
+        status: task.status ?? 'pending',
+        title: task.title ?? `任务 ${String(task.task_id || '').slice(-6)}`,
+      }, ...runtime.teamTasks];
       return {
-       runtimes: {
+        runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, teamTasks: [{
-            ...task,
-            status: task.status ?? 'pending',
-            title: task.title ?? `任务 ${String(task.task_id || '').slice(-6)}`,
-          }, ...runtime.teamTasks],
-      },
+          [sessionId]: {
+            ...runtime,
+            teamTasks: tasks,
+            taskProgressEstimates: retainTaskProgressEstimates(runtime, tasks),
+          },
         },
       };
     });
@@ -1413,7 +1479,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, teamTasks: updatedTasks },
+          [sessionId]: {
+            ...runtime,
+            teamTasks: updatedTasks,
+            taskProgressEstimates: retainTaskProgressEstimates(runtime, updatedTasks),
+          },
         },
       };
     });
@@ -1435,6 +1505,33 @@ export const useSessionStore = create<SessionState>((set, get) => ({
             teamMembers: members,
             teamMemberContextCompression: nextCompression,
           },
+        },
+      };
+    });
+  },
+
+  setTeamDepartedMembers: (sessionId, members) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, teamDepartedMembers: members },
+        },
+      };
+    });
+  },
+
+  rememberDepartedTeamMember: (sessionId, member) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const others = (runtime.teamDepartedMembers ?? []).filter((item) => item.member_id !== member.member_id);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, teamDepartedMembers: [...others, member] },
         },
       };
     });
@@ -1517,7 +1614,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const normalized = skill.trim();
     if (!normalized) return;
     set((state) => {
-      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime();
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
       if (
         isAgentGroupSelected(
           runtime.mode,
@@ -1563,6 +1660,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           [sessionId]: { ...runtime, selectedSkills: [] },
         },
       };
+    });
+  },
+
+  setAppMarketPreview: (sessionId, preview) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      return { runtimes: { ...state.runtimes, [sessionId]: { ...runtime, appMarketPreview: preview } } };
     });
   },
 
@@ -1716,7 +1821,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const normalized = pluginId.trim();
     if (!normalized) return;
     set((state) => {
-      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime();
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
       if (runtime.enabledPlugins.includes(normalized)) return state;
       return {
         runtimes: {
@@ -1768,7 +1873,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const normalized = mcpName.trim();
     if (!normalized) return;
     set((state) => {
-      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime();
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
       if (runtime.enabledMcps.includes(normalized)) return state;
       return {
         runtimes: {
@@ -2125,7 +2230,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   applyWorkflowUpdate: (sessionId, workflow) => {
     set((state) => {
-      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime();
+      const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
       return {
         runtimes: {
           ...state.runtimes,
@@ -2204,6 +2309,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
+  setIndependentGitIdentity: (sessionId, enabled) => {
+    set((state) => {
+      const rt = state.runtimes[sessionId];
+      if (!rt) return state;
+      return { runtimes: { ...state.runtimes, [sessionId]: { ...rt, independentGitIdentity: enabled } } };
+    });
+  },
+
   setTeamDispatchMode: (sessionId, mode) => {
     set((state) => {
       const rt = state.runtimes[sessionId];
@@ -2257,7 +2370,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           state.availableModelGroups,
         );
       }
-      return { availableModels: models, chatAvailableModels: chatModels, defaultModelName: selected, runtimes };
+      return {
+        availableModels: models,
+        modelsLoaded: true,
+        chatAvailableModels: chatModels,
+        defaultModelName: selected,
+        runtimes,
+      };
     });
   },
 
@@ -2282,20 +2401,21 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   },
 
   setSelectedModelName: (sessionId, name) => {
-    // 注意：这里只更新当次会话的内存态，不再写 MODEL_STORAGE_KEY——
-    // 该 key 专门保存后端配置的默认模型（见 setAvailableModels），
-    // 用户手动切模型不应污染"默认模型"这个标记，否则新建会话会继承到"最后用过的模型"。
+    const currentState = get();
+    if (!currentState.runtimes[sessionId]) return;
+    const model = name
+      ? currentState.availableModels.find((entry) => entry.model_name === name)
+        ?? currentState.chatAvailableModels.find((entry) => entry.model_name === name)
+      : null;
+    const selectionFromName: ModelSelection | null =
+      model?.model_id && model.model_id.trim()
+        ? { type: 'model', id: model.model_id.trim() }
+        : null;
+    // Historical restores and runtime updates must not change the next chat's cache.
+    // MODEL_STORAGE_KEY remains reserved for the configured backend default.
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
-      const model = name
-        ? state.availableModels.find((entry) => entry.model_name === name)
-          ?? state.chatAvailableModels.find((entry) => entry.model_name === name)
-        : null;
-      const selectionFromName: ModelSelection | null =
-        model?.model_id && model.model_id.trim()
-          ? { type: 'model', id: model.model_id.trim() }
-          : null;
       return {
         runtimes: {
           ...state.runtimes,
@@ -2313,13 +2433,17 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         },
       };
     });
+    if (sessionId === TRANSIENT_NEW_CONVERSATION_ID && model && name) {
+      if (!selectionFromName) cacheLastLegacyModelName(name);
+      else if (loadLastLegacyModelName()) cacheLastModelSelection(selectionFromName);
+    }
   },
 
   setSelectedModelSelection: (sessionId, selection) => {
+    if (!get().runtimes[sessionId]) return;
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
-      if (selection) cacheLastModelSelection(selection);
       let selectedModelName = runtime.selectedModelName;
       if (selection?.type === 'model') {
         const model = state.availableModels.find((entry) => entry.model_id === selection.id)
@@ -2339,5 +2463,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         },
       };
     });
+    if (sessionId === TRANSIENT_NEW_CONVERSATION_ID && selection) cacheLastModelSelection(selection);
   },
 }));

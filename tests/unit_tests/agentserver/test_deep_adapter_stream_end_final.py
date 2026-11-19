@@ -16,6 +16,8 @@ import pytest
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
+pytestmark = pytest.mark.asyncio
+
 
 def _adapter_ready(monkeypatch: pytest.MonkeyPatch) -> JiuWenSwarmDeepAdapter:
     adapter = JiuWenSwarmDeepAdapter()
@@ -142,6 +144,93 @@ async def test_dropped_empty_answer_synthesizes_final_with_delta_text(monkeypatc
     assert finals[0]["content"] == "好的，没问题"
 
 
+async def test_llm_status_without_prompt_keeps_call_timing_and_token_usage(monkeypatch):
+    events = await _run_stream(_adapter_ready(monkeypatch), [
+        SimpleNamespace(type="llm_call_start", payload={"member_name": "worker", "role": "assistant"}),
+        _usage_chunk(output_tokens=4),
+        SimpleNamespace(type="llm_call_end", payload={}),
+        SimpleNamespace(type="answer", payload={
+            "output": {"output": "done"}, "result_type": "answer",
+        }),
+    ])
+    start = next(event for event in events if event.get("event_type") == "chat.llm_call_start")
+    usage = next(event for event in events if event.get("event_type") == "chat.usage_metadata")
+    summary = next(event for event in events if event.get("event_type") == "chat.usage_summary")
+    assert start["llm_start_ts"] > 0
+    assert usage["llm_start_ts"] == start["llm_start_ts"]
+    assert start["member_name"] == "worker"
+    assert usage["metadata"]["usage_metadata"] == {
+        "input_tokens": 10, "output_tokens": 4, "total_tokens": 14,
+    }
+    assert summary["usage"]["input_tokens"] == 10
+    assert summary["usage"]["output_tokens"] == 4
+
+
+@pytest.mark.asyncio
+async def test_usage_summary_includes_cumulative_session_snapshot_when_total_is_absent(monkeypatch):
+    from jiuwenswarm.server.runtime.session import session_token_usage
+
+    snapshot = {
+        "schema_version": 1,
+        "revision": 4,
+        "session_id": "sess-stream-end-final",
+        "main": {
+            "input_tokens": 40,
+            "output_tokens": 8,
+            "input_calls": 2,
+            "output_calls": 2,
+            "calls_total": 2,
+        },
+        "others": {
+            "input_tokens": 12,
+            "output_tokens": 3,
+            "input_calls": 1,
+            "output_calls": 1,
+            "calls_total": 1,
+        },
+    }
+    monkeypatch.setattr(session_token_usage, "get_session_token_usage", lambda _session_id: snapshot)
+    adapter = _adapter_ready(monkeypatch)
+    events = await _run_stream(adapter, [
+        SimpleNamespace(type="llm_usage", payload={"usage_metadata": {
+            "input_tokens": 10,
+            "output_tokens": 4,
+        }}),
+        SimpleNamespace(type="answer", payload={
+            "output": {"output": "done"},
+            "result_type": "answer",
+        }),
+    ])
+
+    summaries = [event for event in events if event.get("event_type") == "chat.usage_summary"]
+    assert len(summaries) == 1
+    assert summaries[0]["usage"]["input_tokens"] == 10
+    assert summaries[0]["usage"]["output_tokens"] == 4
+    assert summaries[0]["session_usage"] == snapshot
+
+
+@pytest.mark.asyncio
+async def test_cumulative_usage_is_delivered_when_provider_did_not_report_turn_usage(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.session import session_history
+    from jiuwenswarm.server.runtime.session.session_token_usage import SessionTokenUsageLedger
+
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    ledger = SessionTokenUsageLedger(tmp_path / "sess-stream-end-final", "sess-stream-end-final")
+    ledger.record("unreported-call", "main", None, None)
+    events = await _run_stream(_adapter_ready(monkeypatch), [
+        SimpleNamespace(type="answer", payload={
+            "output": {"output": "done"},
+            "result_type": "answer",
+        }),
+    ])
+
+    summaries = [event for event in events if event.get("event_type") == "chat.usage_summary"]
+    assert len(summaries) == 1
+    assert summaries[0]["session_usage"]["main"]["calls_total"] == 1
+    assert summaries[0]["session_usage"]["main"]["input_tokens"] is None
+    assert "usage" not in summaries[0]
+
+
 
 async def test_chunked_answer_synthesizes_final_with_delta_text(monkeypatch):
     """chunked answer 被降级为 delta：合成 final 聚合全部可见文本。"""
@@ -220,3 +309,60 @@ async def test_real_terminal_final_not_duplicated(monkeypatch):
     finals = [e for e in events if e.get("event_type") == "chat.final"]
     assert len(finals) == 1
     assert finals[0]["content"] == "正常回答"
+
+
+async def test_background_subagent_status_includes_latest_session_usage(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.session import session_history
+    from jiuwenswarm.server.runtime.session.session_token_usage import SessionTokenUsageLedger
+
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    ledger = SessionTokenUsageLedger(tmp_path / "background_usage", "background_usage")
+    ledger.record("main-call", "main", 100, 20)
+    projection = {
+        "subagent_id": "child-background",
+        "parent_session_id": "background_usage",
+        "status": "running",
+    }
+    initial = JiuWenSwarmDeepAdapter.project_subagent_updated_for_web(projection)
+    ledger.record("later-child-call", "others", 70, 30)
+    final = JiuWenSwarmDeepAdapter.project_subagent_updated_for_web({**projection, "status": "completed"})
+    assert initial["event_type"] == final["event_type"] == "chat.subtask_update"
+    assert initial["session_usage"]["revision"] == 1
+    assert final["session_usage"]["revision"] == 2
+    assert final["session_usage"]["others"]["input_tokens"] == 70
+
+
+async def test_pause_on_tool_call_records_one_final_per_text_segment(monkeypatch):
+    """先说一句再调客户端工具、本轮在中断处结束：历史里这段文字只落一条 final。
+
+    历史层在 chat.tool_call 处把攒下的正文写成 final；合成 final 只补当前分段，
+    不能再把工具前那段带出来，否则历史出现两条相同的 final。
+    """
+    from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
+    from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
+
+    adapter = _adapter_ready(monkeypatch)
+    _install_stream(adapter, [
+        SimpleNamespace(type="llm_output", payload={"content": "我先读取。"}),
+        _usage_chunk(),
+        SimpleNamespace(type="tool_call", payload={"tool_call": {
+            "name": "read_presentation_context", "arguments": "{}", "tool_call_id": "c1",
+        }}),
+    ])
+    facade = JiuWenSwarm()
+    recorded = []
+    monkeypatch.setattr(facade, "_adapter", adapter)
+    monkeypatch.setattr(facade, "_sdk_name", "harness")
+    monkeypatch.setattr(interface_module, "append_history_record", lambda **kwargs: recorded.append(kwargs))
+    monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
+    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _cfg: "off")
+    monkeypatch.setattr(interface_module, "build_user_prompt", lambda q, **_kwargs: q)
+
+    async for _chunk in facade.process_message_stream(_chat_request()):
+        pass
+
+    finals = [
+        r["content"] for r in recorded
+        if r.get("event_type") == "chat.final" and str(r.get("content") or "").strip()
+    ]
+    assert finals == ["我先读取。"]

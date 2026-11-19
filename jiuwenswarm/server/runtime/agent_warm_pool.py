@@ -15,11 +15,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from jiuwenswarm.common.utils import get_agent_sessions_dir
-from gateway.common.work_mode import (
+from agent_gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_PROJECT_ID_WORK,
 )
+
+from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.server.runtime.session import project_store
 
 if TYPE_CHECKING:

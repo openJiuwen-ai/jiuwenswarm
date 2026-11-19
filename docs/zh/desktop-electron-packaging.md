@@ -76,7 +76,7 @@ Electron 启动时 `findAvailablePorts()` 按组扫描（最多 20 组），整�
        node_modules/           ← 内置 @playwright/mcp 运行时（见 §5）
      backend/                  ← PyInstaller COLLECT 产物（workswarm.exe + _internal）
    ```
-6. Inno Setup `scripts/installer-electron.iss`：版本与后端 exe 名经 `/DMyAppVersion=` / `/DBackendExecutableName=` 传入（`#ifndef` 兜底）；`PrivilegesRequired=lowest` per-user 安装、`AppMutex` 四互斥体（运行中拒绝安装/卸载，同 installer.iss）、卸载执行 `--desktop-reset-external-cli-config` 并清理 `{app}\resources`（FrontendOnly 无后端，跳过该步）
+6. Inno Setup `scripts/installer-electron.iss`：版本与后端 exe 名经 `/DMyAppVersion=` / `/DBackendExecutableName=` 传入（`#ifndef` 兜底）；`PrivilegesRequired=lowest` per-user 安装、`AppMutex` 四互斥体（运行中拒绝安装/卸载，同 installer.iss）、卸载执行 `--desktop-reset-external-cli-config` 并清理 `{app}\resources`（FrontendOnly 无后端，跳过该步）。编译器优先 Inno Setup 7（支持扩展长度路径，不受 `MAX_PATH` 限制），未安装时回退 Inno Setup 6；两者都缺失时复用 `scripts/build-inno-setup.psm1` 中带 SHA-256 校验的流程安装 7.1.1。仅回退到 6 时，脚本在压缩前扫描 `dist/<应用名>-Electron`：路径超过 `MAX_PATH`（260 字符）直接报错并提示安装 7 或改用更短的构建目录；`-SkipInstaller` 目录包不触发该检查。
 
 版本号硬编码位置已全部消除：ps1/iss/组装 package.json 均来自 `build_config.py`（即 pyproject.toml）。
 
@@ -135,12 +135,13 @@ app.whenReady
 JIUWENSWARM_DESKTOP=1  JIUWENSWARM_ELECTRON=1
 WEB_PORT=<gatewayApi>  GATEWAY_PORT=<gatewayInternal>
 AGENT_SERVER_PORT=AGENT_PORT=<agentServer>  FRONTEND_PORT=<frontend>
+OFFICE_TLS_PORT=<officeTls>（Office 加载项任务窗格的 HTTPS 监听端口）
 JIUWENSWARM_RUNTIME_WORKSPACE_READY=1
 删除 AGENT_SERVER_URL（防 .env 里的陈旧 URL 绕过重映射端口）
 ```
 
 Python 侧配合（均已实现并有测试）：
-- `jiuwenswarm/dotenv_early.py`：`JIUWENSWARM_ELECTRON=1` 时额外保留 `DESKTOP_BROWSER_PRESERVED_ENV_KEYS`（BROWSER_DRIVER / PLAYWRIGHT_MCP_* 等），dotenv 不覆盖 Electron 注入的精确 target 绑定
+- `gateway/dotenv_early.py`（gateway 子进程）与 `jiuwenswarm/dotenv_early.py`（AgentServer 等母仓进程）：`JIUWENSWARM_ELECTRON=1` 时额外保留 `DESKTOP_BROWSER_PRESERVED_ENV_KEYS`（BROWSER_DRIVER / PLAYWRIGHT_MCP_* 等），dotenv 不覆盖 Electron 注入的精确 target 绑定。两份加载器独立演进；缺实例 `.env` 时仍只由母仓那份创建
 - `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py`：检测到 `PLAYWRIGHT_MCP_TARGET_ID` 时走 Electron 分支，不还原 headless 参数、不改写 JSON argv
 
 ### 服务管理
@@ -204,13 +205,19 @@ CDP 端点仅回环但**无认证**，本机任意进程理论上可连接并控
 - preload 暴露 `window.jiuwenDesktop`（browser.* / desktop.* IPC，全部 `trustedSender` 校验），同时保留 `window.pywebview.api` 兼容层
 - `DesktopBrowserPane`（`src/components/DesktopBrowserPane/`）：工具栏 + 地址栏 + 视口；`ResizeObserver` + `zoom-changed` 重算 bounds，主进程按 `zoomFactor` 换算 CSS px → DIP 后 setBounds
 - **模态遮挡规避**：原生 WebContentsView 永远盖在页面 DOM 之上（z-index 无效）；pane 监听到 `role="dialog"[aria-modal="true"]` 弹窗挂载时临时隐藏视图，关闭后恢复显示（`browser:set-visible` 的 focus=false 不抢主窗口焦点）
-- **tab 显示条件**（重要）：`isElectron && (useBrowserAgentActivity(sessionId) || useDesktopBrowserTabFlags(sessionId).requested) && !closed`
+- **tab 显示条件**（重要）：`isElectron && !headless && (useBrowserAgentActivity(sessionId) || useDesktopBrowserTabFlags(sessionId).requested) && !closed`
   - 单 agent 模式：subagentStore 中出现 `subagent_type === 'browser_agent'` 的子代理（spawn 即算，含历史恢复）
-  - team 模式：`teamMemberExecutionEvents` 中出现过 `browser_*` 工具调用（team 的浏览器子代理挂在成员内部，不进主会话 subagentStore）
+  - team 模式：Electron 实际创建过当前会话的成员面板；外部 Chrome 工具事件不生成内置空白面板
   - 或本会话点开过 .html/.md 聊天文件（`openFileInDesktopBrowser`，按会话持久化于 localStorage）；页签右上 close.svg 显式关闭后隐藏（`closeDesktopBrowserTab`）
   - 信号实现在 `src/features/browserAgentActivity.ts` 与 `src/features/desktopBrowserFile.ts`；web 端短路，走原逻辑
-- **每会话隔离**：browser.* IPC 全部携带 sessionId，主进程按会话维护独立 WebContentsView（独立 partition）；状态广播带 sessionId，pane 只响应当前会话
-- 自动展开：每会话仅一次（`App.tsx` 的 ref 门控），用户手动收起后不再强制弹回；team 模式不抢 tab
+- **每会话隔离**：browser.* IPC 携带会话或成员 panelId，主进程维护独立 WebContentsView；使用共享 `persist:jiuwenswarm-browser` partition 保留登录态，页面导航和显示独立
+- **关闭与新任务**：关闭只隐藏页签和原生视图，不关闭页面或 MCP。新的 MCP 任务绑定使面板从 idle 变为 busy 时，`useDesktopBrowserAutoOpen` 清除当前会话的 `closed`，并展开、选中 Browser 页签（单 Agent 和团队模式均适用）。同一 busy 状态的重复通知、导航和历史恢复不会反复弹出；后台会话不抢当前会话的面板
+- **初始化与异常**：按会话读取一次 busy 基线；IPC 返回前仅暂存不同的忙闲状态，再与基线对照，其他会话的事件不会使本会话基线失效。晚到响应不能覆盖用户刚执行的关闭；期间已完成的新任务不展开。活动基线读取失败时，首次观察仅作基线，后续新任务仍可触发展开；面板自身列表读取失败则告警并回退到默认会话页面，不永久留白，也不覆盖较新事件选中的成员页面
+- **无头模式**：不展示页签、也不自动展开。无头启动且仍在运行的任务切回前台后可以显示；已经结束的隐藏任务不会事后弹出
+- **页面复用**：面板挂载先读取已有页面，优先显示活跃成员；不先创建空白主页面。用户已选定页面后，普通通知不抢选中页；恢复显示不触发浏览器/MCP 重启、刷新或清理 Cookie
+- English: Closing a pane hides it without closing its page or MCP connection. A new headed task reopens the current conversation's Browser tab and expands its panel. Repeated busy notifications do not undo a manual close; background conversations do not steal the active panel. Headless tasks remain hidden. Reopening selects an existing active page and preserves page state and login data without restarting the browser or MCP
+- English: Each session establishes its own activity baseline before classifying buffered busy transitions. Late replies cannot undo a manual close or reveal a task that already finished. A failed activity read uses the first observation as its baseline; a failed pane-list read logs a warning and falls back to the session page unless a newer event already selected a member page
+- 回归：前端 `npm run test:browser-reopen`；真实 Electron/MCP 测试 `tests/electron/browser_integration.cjs` 使用独立临时 profile 和本地测试网页，不访问用户登录资料
 - tab 状态持久化：`singleAgentPanelState.ts` 与 `teamPanelStateNormalize.ts` 的合法 tab 集合均已含 `'browser'`
 - Electron 下前端跳过 IAM 鉴权探测（`AppWithAuth` 直接 `noIam`）
 - 地址栏导航非法 URL → 主进程 reject → 前端 catch 后恢复地址栏
@@ -320,7 +327,7 @@ uv run pytest tests/unit/deep_agent/test_browser_subagent_integration.py -q  # i
 
 ## 9. 已知遗留（按优先级）
 
-1. **macOS 构建与更新**：沿用 `build-electron-exe.sh` 入口。本地构建使用 `NOSIGN=1 bash scripts/build-electron-exe.sh`，正式签名、公证使用 `NOTARIZE=1 bash scripts/build-electron-exe.sh`。构建前解析 Node ≥22.12.0 并统一工具链；`NODE_DIR` 可指定运行时，否则自动下载。正式产物沿用 `build_config.py` 定义的 `<显示名>-<版本>-macos.dmg`，测试模式使用 `electron-test` / `electron-frontend-test` 专用名称。正式 macOS Release 只发布一个 ARM64 Electron DMG；x86_64 仅用于本地验证，不上传至正式 Release。保留后端原有选包策略，不阻止 pywebview 客户端选择首版 Electron。Electron 安装 helper 校验新包架构、签名和 Gatekeeper，暂存后退出 Electron、等待后端及端口释放、替换并重启；替换或启动命令失败回滚旧包。挂载卷内启动或测试包不支持自动更新，应先安装至可写目录。日志位于 `<数据目录>/logs/electron-update.log`。公共打包不包含信息收集协议及日活接入。
+1. **macOS 构建与更新**：沿用 `build-electron-exe.sh` 入口。本地构建使用 `NOSIGN=1 bash scripts/build-electron-exe.sh`，正式签名、公证使用 `NOTARIZE=1 bash scripts/build-electron-exe.sh`。构建前解析 Node ≥22.12.0 并统一工具链；`NODE_DIR` 可指定运行时，否则自动下载。正式产物沿用 `build_config.py` 定义的 `<显示名>-<版本>-macos.dmg`，测试模式使用 `electron-test` / `electron-frontend-test` 专用名称。当前 macOS 仅提供 ARM64 Electron DMG，不支持 Intel（x86_64）Mac 包，也不提供 Universal 包；构建和验收使用 Apple Silicon Mac 的原生 arm64 环境。保留后端原有选包策略，不阻止 pywebview 客户端选择首版 Electron。Electron 安装 helper 校验新包架构、签名和 Gatekeeper，暂存后退出 Electron、等待后端及端口释放、替换并重启；替换或启动命令失败回滚旧包。挂载卷内启动或测试包不支持自动更新，应先安装至可写目录。日志位于 `<数据目录>/logs/electron-update.log`。公共打包不包含信息收集协议及日活接入。
    旧 pywebview 的 macOS helper 整体替换 App，不依赖新 App 的 UI 框架。需分别用实际支持的旧客户端验收 pywebview → Electron，以及 Electron → Electron；签名、公证、ARM64、BrowserAgent 和完整升级仍需产物验收。
 2. **CDP 无认证**：已声明为已接受风险（§5）。
 3. **Windows 强杀关闭**：与 Python 桌面一致；gateway 单例锁需依赖 PID 存活检查自愈。
@@ -347,7 +354,8 @@ uv run pytest tests/unit/deep_agent/test_browser_subagent_integration.py -q  # i
 | `gateway/__init__.py` | PEP 562 惰性导出（启动性能关键不变量，见 §7；勿加回急切导入，有测试保护） |
 | `tests/unit_tests/gateway/test_gateway_lazy_exports.py` | gateway 惰性导出 + app_web 轻导入不变量 |
 | `tests/unit_tests/channels/web/test_web_static_cache_headers.py` | 静态资源 Cache-Control 头行为 |
-| `jiuwenswarm/dotenv_early.py` | env 保留键（Electron browser 键集） |
+| `gateway/dotenv_early.py` | gateway 子进程的 env 保留键（Electron browser 键集）；只加载已有 `.env` |
+| `jiuwenswarm/dotenv_early.py` | 母仓进程的 env 保留键；缺实例 `.env` 时仍由它创建 |
 | `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py` | `_sync_browser_runtime_environment` electron 分支 |
 | `src/components/DesktopBrowserPane/` | 前端浏览器面板 |
 | `src/features/browserAgentActivity.ts` | "浏览器 Agent 已调用"信号 hook |

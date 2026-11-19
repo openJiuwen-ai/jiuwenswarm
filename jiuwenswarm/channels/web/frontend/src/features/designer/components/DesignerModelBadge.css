@@ -1,0 +1,15 @@
+/* Read-only model name on the design surface: plain text, never a control.
+   Design runs on the Settings > Agent model, so there is nothing to open or
+   switch here: no pill, border or caret that would read as a dropdown. */
+.designer-model-badge {
+  display: inline-block;
+  max-width: 160px;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+}

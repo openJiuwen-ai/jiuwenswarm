@@ -30,7 +30,12 @@ export type ModelValidationPayload = {
   model: string;
   model_provider: string;
   reasoning_level: string | undefined;
+  /** Output limit from the unsaved draft; null explicitly tests the unlimited setting. */
+  max_tokens?: number | null;
   endpoint_profile?: string;
+  /** 供应商预设标识（与模型条目同源，仅透传）。缺失表示自定义供应商；
+   *  后端据此判断探测是否应回退持久化 endpoint_profile（与保存合并同口径）。 */
+  vendor_key?: string;
 };
 
 const envField = (
@@ -130,6 +135,13 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('visual_gen_protocol', 'agent', 'text', 'VISUAL_GEN_PROTOCOL'),
   envField('visual_gen_context_window_tokens', 'agent', 'text', 'VISUAL_GEN_CONTEXT_WINDOW_TOKENS'),
   envField('visual_gen_enabled', 'agent', 'boolean', 'VISUAL_GEN_ENABLED'),
+  // Music generation - Design mode BGM slot (call_music_model).
+  envField('music_gen_api_base', 'experimental', 'text', 'MUSIC_GEN_API_BASE'),
+  envField('music_gen_api_key', 'experimental', 'text', 'MUSIC_GEN_API_KEY'),
+  envField('music_gen_model', 'experimental', 'text', 'MUSIC_GEN_MODEL_NAME'),
+  envField('music_gen_provider', 'experimental', 'text', 'MUSIC_GEN_PROVIDER'),
+  envField('music_gen_protocol', 'experimental', 'text', 'MUSIC_GEN_PROTOCOL'),
+  envField('music_gen_enabled', 'experimental', 'boolean', 'MUSIC_GEN_ENABLED'),
 
   yamlField('permissions_enabled', 'security', 'boolean', 'permissions.enabled'),
 
@@ -149,6 +161,7 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
 
   yamlField('a2ui_enabled', 'experimental', 'boolean', 'a2ui.enabled'),
   yamlField('rsi_enabled', 'experimental', 'boolean', 'rsi.enabled'),
+  yamlField('cua_agent_enabled', 'experimental', 'boolean', 'react.subagents.cua_agent.enabled'),
   yamlField('trajectory_ui_enabled', 'experimental', 'boolean', 'trajectory_ui.enabled'),
   yamlField('progressive_tool_optimize', 'experimental', 'boolean', 'progressive_tool_optimize'),
   yamlField('trajectory_ui_diagnosis_enabled', 'experimental', 'boolean', 'trajectory_ui.diagnosis_enabled'),
@@ -166,6 +179,18 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
     'experimental',
     'boolean',
     'modes.team.jiuwen_team.enable_member_messaging',
+  ),
+  yamlField(
+    'team_member_subtasks_enabled',
+    'experimental',
+    'boolean',
+    'modes.team.jiuwen_team.max_subtask_depth',
+  ),
+  yamlField(
+    'team_code_todo_reminder_disabled',
+    'experimental',
+    'boolean',
+    'modes.team.jiuwen_team.disable_code_todo_reminder',
   ),
   yamlField('task_full_duplex_enabled', 'experimental', 'boolean', 'experimental.task_full_duplex_enabled'),
   yamlField('task_asr_enabled', 'experimental', 'boolean', 'experimental.task_asr_enabled'),
@@ -193,6 +218,12 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   ),
   yamlField('external_cli_agent_claude_cli_path', 'experimental', 'text', 'modes.team.jiuwen_team.external_cli_agents'),
   yamlField(
+    'external_cli_agent_claude_path_histories',
+    'experimental',
+    'text',
+    'modes.team.jiuwen_team.external_cli_path_histories',
+  ),
+  yamlField(
     'external_cli_agent_codex_enabled',
     'experimental',
     'boolean',
@@ -205,21 +236,14 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
     'modes.team.jiuwen_team.external_cli_agents',
   ),
   yamlField('external_cli_agent_codex_cli_path', 'experimental', 'text', 'modes.team.jiuwen_team.external_cli_agents'),
+  yamlField(
+    'external_cli_agent_codex_path_histories',
+    'experimental',
+    'text',
+    'modes.team.jiuwen_team.external_cli_path_histories',
+  ),
   yamlField('topic_recommendation_enabled', 'recommendation', 'boolean', 'recommendation.topic_enabled'),
   yamlField('prompt_suggestion_enabled', 'recommendation', 'boolean', 'recommendation.prompt_enabled'),
-  yamlField('proactive_recommendation_enabled', 'experimental', 'boolean', 'proactive_recommendation.enabled'),
-  yamlField(
-    'proactive_recommendation_max_recommend_per_day',
-    'experimental',
-    'integer',
-    'proactive_recommendation.max_recommend_per_day',
-  ),
-  yamlField(
-    'proactive_recommendation_max_rounds_per_tick',
-    'experimental',
-    'integer',
-    'proactive_recommendation.max_rounds_per_tick',
-  ),
 ] as const;
 
 export const SETTINGS_CONFIG_FIELD_BY_KEY = new Map(SETTINGS_CONFIG_FIELDS.map((field) => [field.key, field] as const));
@@ -251,6 +275,12 @@ export const OPENAI_ACCOUNT_RPC = {
 } as const;
 
 export const OPEN_SOURCE_SETTINGS_REQUEST_METHODS = [
+  'multimodal.models.list',
+  'multimodal.models.get',
+  'multimodal.models.upsert',
+  'multimodal.models.delete',
+  'multimodal.tools.update',
+  'multimodal.config.apply',
   'config.get',
   'config.save_all',
   'config.validate_model',
@@ -307,14 +337,23 @@ export function normalizePermissionsMode(value: unknown): PermissionsMode | unde
 }
 
 // Switches of uploaded custom agents: `external_cli_agent_<name>_<suffix>`.
-const CUSTOM_EXTERNAL_CLI_KEY_PATTERN = /^external_cli_agent_[a-z0-9][a-z0-9_-]*_(enabled|use_builtin|cli_path)$/;
+const CUSTOM_EXTERNAL_CLI_KEY_PATTERN =
+  /^external_cli_agent_[a-z0-9][a-z0-9_-]*_(enabled|use_builtin|cli_path|path_histories)$/;
 
 function settingsConfigField(key: string): ConfigFieldContract | undefined {
   const field = SETTINGS_CONFIG_FIELD_BY_KEY.get(key);
   if (field) return field;
   const match = CUSTOM_EXTERNAL_CLI_KEY_PATTERN.exec(key);
   if (!match) return undefined;
-  return yamlField(key, 'experimental', match[1] === 'cli_path' ? 'text' : 'boolean', 'modes.team.jiuwen_team.external_cli_agents');
+  const suffix = match[1];
+  return yamlField(
+    key,
+    'experimental',
+    suffix === 'cli_path' || suffix === 'path_histories' ? 'text' : 'boolean',
+    suffix === 'path_histories'
+      ? 'modes.team.jiuwen_team.external_cli_path_histories'
+      : 'modes.team.jiuwen_team.external_cli_agents',
+  );
 }
 
 export function normalizeSettingsConfigUpdates(updates: Record<string, string>): Record<string, string> {
@@ -335,7 +374,9 @@ export function buildModelValidationPayload(model: ModelEntry): ModelValidationP
     model_provider: model.model_provider,
     reasoning_level: model.reasoning_level,
   };
+  if (model.max_tokens !== undefined) payload.max_tokens = model.max_tokens;
   if (model.endpoint_profile) payload.endpoint_profile = model.endpoint_profile;
+  if (model.vendor_key) payload.vendor_key = model.vendor_key;
   return payload;
 }
 

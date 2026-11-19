@@ -44,6 +44,11 @@ _A4P_MANAGEMENT_METHODS: frozenset[ReqMethod] = frozenset(
 
 _CONFIG_LOCK = asyncio.Lock()
 _CONFIG_FIELDS = frozenset({"enabled"})
+# 企业版北向 HTTP 会把 X-User-Id / X-Group-Id / X-Bot-Id 等并进 params；
+# 这些是租户路由身份，不是 A4P 业务字段，字段白名单校验前先剥掉。
+_HTTP_ROUTING_PARAM_KEYS = frozenset(
+    {"user_id", "group_id", "bot_id", "gateway_id"}
+)
 
 
 async def _dispatch_config(request: AgentRequest) -> AgentResponse:
@@ -100,7 +105,19 @@ def _err(request: AgentRequest, message: str, *, code: str = "BAD_REQUEST") -> A
     )
 
 
+def _business_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Drop enterprise HTTP tenant-routing keys before A4P field checks."""
+    return {
+        key: value
+        for key, value in params.items()
+        if key not in _HTTP_ROUTING_PARAM_KEYS
+    }
+
+
 async def dispatch_a4p_request(request: AgentRequest) -> AgentResponse:
+    # 洗净后写回 request.params，避免 _dispatch_config 等仍读到企业租户字段。
+    if isinstance(request.params, dict):
+        request.params = _business_params(request.params)
     params = request.params if isinstance(request.params, dict) else {}
     method = request.req_method
 
@@ -114,7 +131,10 @@ async def dispatch_a4p_request(request: AgentRequest) -> AgentResponse:
             )
         return await _dispatch_config(request)
 
-    enabled = is_a4p_enabled()
+    session_id = str(
+        params.get("session_id") or getattr(request, "session_id", "") or ""
+    ).strip()
+    enabled = is_a4p_enabled(session_id=session_id)
     if not enabled and method == ReqMethod.A4P_AUTHORIZATION_PENDING:
         return _ok(request, {"ok": True, "pending": None})
     if not enabled and method not in _A4P_MANAGEMENT_METHODS:

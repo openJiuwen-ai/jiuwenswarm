@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,24 +17,24 @@ from openjiuwen.agent_evolving.trajectory.spans import attributes_from_map
 from openjiuwen.extensions.observability import semconv
 from openjiuwen.harness.rails.evolution import (
     SymphonyEdgeDecision,
-    SymphonyGraphEvolutionInput,
     SymphonyGraphEvolutionRail,
     TeamSymphonyGraphEvolutionRail,
+    PublishedCapabilitySnapshotProvider,
     build_symphony_edge_candidates,
     build_symphony_execution_graph,
     project_symphony_execution_fragments,
 )
 from openjiuwen.symphony.flow import SkillPackAdapter, SkillPackNotInstallableError
+from agent_gateway.channel_manager.web.app_web_handlers import (
+    _FORWARD_NO_LOCAL_HANDLER_METHODS,
+    _FORWARD_REQ_METHODS,
+)
 
 from jiuwenswarm.common.host_services import (
     install_runtime_push_handler,
     restore_runtime_push_handler,
 )
 from jiuwenswarm.common.schema.message import ReqMethod
-from gateway.channel_manager.web.app_web_handlers import (
-    _FORWARD_NO_LOCAL_HANDLER_METHODS,
-    _FORWARD_REQ_METHODS,
-)
 from jiuwenswarm.server.runtime.agent_adapter.interface import _SKILL_ROUTES
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
@@ -46,17 +45,18 @@ from jiuwenswarm.server.runtime.skill.skill_manager import (
     SkillRpcError,
 )
 from jiuwenswarm.server.runtime.skill.skillpack import load_skillpack
-from jiuwenswarm.symphony.config import symphony_config_from_dict
-from jiuwenswarm.symphony.experience import (
-    _SwarmOtelTruncationCompatMixin,
-    _SwarmSymphonyGraphEvolutionRail,
-    _SwarmTeamSymphonyGraphEvolutionRail,
+from jiuwenswarm.common.symphony_config import symphony_config_from_dict
+from jiuwenswarm.runtime.symphony.experience import (
     _build_graph_evolution_rail,
-    _core_compatible_truncation_trajectory,
-    PublishedCapabilitySnapshotProvider,
 )
-from jiuwenswarm.symphony.llm import LLMConfig
-from jiuwenswarm.symphony.service import (
+from jiuwenswarm.runtime.symphony.skillpack_candidates import (
+    CandidateEvidenceScope,
+    CandidateScopeStore,
+    candidate_request_id,
+    member_snapshot,
+)
+from jiuwenswarm.runtime.symphony.llm import LLMConfig
+from jiuwenswarm.runtime.symphony.service import (
     SwarmSymphonyService,
     _candidate_question,
     experience_request_id,
@@ -109,21 +109,44 @@ def _enable_evolution_config(monkeypatch, tmp_path: Path):
     config = symphony_config_from_dict(
         {
             "enabled": True,
-            "paths": {"graph_dir": str(tmp_path / "graph")},
+            "paths": {"graph_dir": str(tmp_path / "graph"), "skills_root": str(tmp_path / "skills")},
             "evolution": {"enabled": True},
         }
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config", lambda: config
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config
     )
     return config
 
 
 def _install_service(monkeypatch, flow):
+    from jiuwenswarm.runtime.symphony.service import load_symphony_config
+
+    config = load_symphony_config()
+    _write_member_skills(config.paths.skills_root.parent)
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.trusted_session_user", lambda _session: "")
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda: [])
+    scope = CandidateEvidenceScope.resolve("session-1", "", "current_session", None)
+    reviewed = flow.review_and_prepare_install.return_value.package or {}
+    CandidateScopeStore(flow.store.root).grant(_scoped_request_id(), {
+        "session_id": "session-1", "members": ["search", "writer"],
+        "package_id": reviewed.get("package_id", "server-package"),
+        "integrity": reviewed.get("integrity", "sha256:server"),
+        "member_snapshot": member_snapshot(config.paths.skills_root, ["search", "writer"], []),
+        "evidence_scope": scope.to_dict(), "evidence_scope_key": scope.key,
+        "evidence_trace_ids": ["server-trace"],
+    })
     service = SwarmSymphonyService()
     service._runtime = SimpleNamespace(flow_engine=flow)
     monkeypatch.setattr(service, "runtime", lambda: service._runtime)
+    monkeypatch.setattr(service, "_runtime_for", lambda _config: service._runtime)
+    monkeypatch.setattr(service, "_skillpack_candidate_flow", AsyncMock(return_value=flow))
     return service
+
+
+def _scoped_request_id():
+    scope = CandidateEvidenceScope.resolve("session-1", "", "current_session", None)
+    return candidate_request_id("recipe-1", 2, "session-1", scope.key)
 
 
 def _review_flow(tmp_path, *, package=None, verdict="approved", artifact=None):
@@ -133,10 +156,12 @@ def _review_flow(tmp_path, *, package=None, verdict="approved", artifact=None):
     return SimpleNamespace(
         store=SimpleNamespace(
             root=tmp_path,
+            contains_evidence=lambda _traces: True,
             artifact_dir=lambda package_id, target_kind: (
                 tmp_path / "packages" / package_id / target_kind
             ),
         ),
+        start=AsyncMock(return_value=()),
         review_and_prepare_install=AsyncMock(
             return_value=SimpleNamespace(
                 verdict=verdict,
@@ -152,7 +177,7 @@ def _review_flow(tmp_path, *, package=None, verdict="approved", artifact=None):
 
 def _server_package(monkeypatch, package_id, integrity="sha256:value"):
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.CapabilityPackager.verify_package_integrity",
+        "jiuwenswarm.runtime.symphony.service.CapabilityPackager.verify_package_integrity",
         lambda _package: True,
     )
     return {
@@ -164,8 +189,8 @@ def _server_package(monkeypatch, package_id, integrity="sha256:value"):
                 "applicability": {"task_description": "先检索再生成报告"},
                 "combination_structure": {
                     "nodes": {
-                        "search": {"metadata": {"capability_type": "skill"}},
-                        "writer": {"metadata": {"capability_type": "skill"}},
+                        "search": {"metadata": {"capability_type": "skill", "skill_type": "skill"}},
+                        "writer": {"metadata": {"capability_type": "skill", "skill_type": "skill"}},
                     },
                     "edges": [
                         {
@@ -224,17 +249,17 @@ def _reject_install_manager(message):
 
 
 def _patch_runtime_construction(monkeypatch, flow, runtime, model):
-    monkeypatch.setattr("jiuwenswarm.symphony.service.SymphonyFlowEngine", flow)
-    monkeypatch.setattr("jiuwenswarm.symphony.service.SymphonyRuntime", runtime)
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.SymphonyFlowEngine", flow)
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.SymphonyRuntime", runtime)
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.model_from_config", lambda _: model
+        "jiuwenswarm.runtime.symphony.service.model_from_config", lambda _: model
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.model_response_observer_from_config",
+        "jiuwenswarm.runtime.symphony.service.model_response_observer_from_config",
         lambda _: None,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.LLMConfig.from_default_model",
+        "jiuwenswarm.runtime.symphony.service.LLMConfig.from_default_model",
         lambda: LLMConfig(model="default"),
     )
 
@@ -254,7 +279,7 @@ def rail_capture(monkeypatch):
         submit_evolution_and_notify=submit,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.get_swarm_symphony_service", lambda: service
+        "jiuwenswarm.runtime.symphony.service.get_swarm_symphony_service", lambda: service
     )
 
     def rail_factory(**kwargs):
@@ -263,7 +288,7 @@ def rail_capture(monkeypatch):
 
     def install(name):
         monkeypatch.setattr(
-            f"jiuwenswarm.symphony.experience._Swarm{name}", rail_factory
+            f"jiuwenswarm.runtime.symphony.experience.{name}", rail_factory
         )
         return captured, submissions
 
@@ -299,8 +324,8 @@ def test_target_adapter_adds_installable_frontmatter(tmp_path: Path) -> None:
                 "applicability": {"task_description": "先检索再生成报告"},
                 "combination_structure": {
                     "nodes": {
-                        "search": {"metadata": {"capability_type": "skill"}},
-                        "writer": {"metadata": {"capability_type": "skill"}},
+                        "search": {"metadata": {"capability_type": "skill", "skill_type": "skill"}},
+                        "writer": {"metadata": {"capability_type": "skill", "skill_type": "skill"}},
                     },
                     "edges": [
                         {
@@ -367,7 +392,7 @@ def test_target_adapter_rejects_branch_and_loop_structures(
     package = _server_package(monkeypatch, "cap-graph")
     nodes = package["materials"]["recipe"]["combination_structure"]["nodes"]
     if any(edge["target"] == "reviewer" for edge in edges):
-        nodes["reviewer"] = {"metadata": {"capability_type": "skill"}}
+        nodes["reviewer"] = {"metadata": {"capability_type": "skill", "skill_type": "skill"}}
     package["materials"]["recipe"]["combination_structure"]["edges"] = edges
 
     with pytest.raises(SkillPackNotInstallableError):
@@ -414,258 +439,14 @@ def _otlp_span(
     }
 
 
-def _trajectory(*spans: dict) -> Trajectory:
-    payload_spans = list(spans)
-    if payload_spans:
-        payload_spans[0].pop("parentSpanId", None)
-    return Trajectory.from_otlp(
-        {
-            "resourceSpans": [
-                {
-                    "resource": {
-                        "attributes": attributes_from_map(
-                            {
-                                TRAJECTORY_ID: "trajectory-compat",
-                                SESSION_ID: "session-compat",
-                            }
-                        )
-                    },
-                    "scopeSpans": [{"scope": {"name": "test"}, "spans": payload_spans}],
-                }
-            ]
-        }
-    )
-
-
-def test_otel_truncation_normalization_is_strict_and_non_mutating() -> None:
-    current = '{"success": true...<OTel attribute truncated: 16270 chars omitted>'
-    historical = '{"success": true...<truncated 5 chars>'
-    tool_span = _otlp_span(
-        "tool.skill_tool",
-        2,
-        skill="travel-guide-generator",
-        arguments='[{"skill_name": "travel-guide-generator"}...<OTel attribute truncated: 7 chars omitted>',
-        result=current,
-        authoritative=True,
-    )
-    non_target = "note ...<OTel attribute truncated: 9 chars omitted>"
-    tool_span["attributes"].extend(attributes_from_map({"custom.note": non_target}))
-    trajectory = _trajectory(
-        _otlp_span("agent.main", 1),
-        tool_span,
-    )
-    original = trajectory.to_otlp()
-
-    normalized = _core_compatible_truncation_trajectory(trajectory)
-    normalized_payload = normalized.to_otlp()
-    result_attributes = normalized_payload["resourceSpans"][0]["scopeSpans"][0][
-        "spans"
-    ][1]["attributes"]
-    normalized_result = next(
-        item["value"]["stringValue"]
-        for item in result_attributes
-        if item["key"] == semconv.GEN_AI_TOOL_CALL_RESULT
-    )
-    normalized_arguments = next(
-        item["value"]["stringValue"]
-        for item in result_attributes
-        if item["key"] == semconv.GEN_AI_TOOL_CALL_ARGUMENTS
-    )
-    normalized_non_target = next(
-        item["value"]["stringValue"]
-        for item in result_attributes
-        if item["key"] == "custom.note"
-    )
-
-    assert normalized_result == '{"success": true...<truncated 16270 chars>'
-    assert (
-        normalized_arguments
-        == '[{"skill_name": "travel-guide-generator"}...<truncated 7 chars>'
-    )
-    assert normalized_non_target == non_target
-    assert trajectory.to_otlp() == original
-    historical_trajectory = _trajectory(
-        _otlp_span("agent.main", 1),
-        _otlp_span("tool.skill_tool", 2, skill="x", result=historical),
-    )
-    assert (
-        _core_compatible_truncation_trajectory(historical_trajectory)
-        is historical_trajectory
-    )
-
-
-@pytest.mark.parametrize(
-    "value",
-    [
-        "prefix ...<OTel attribute truncated: 0 chars omitted>",
-        "prefix ...<OTel attribute truncated: 12 chars omitted> suffix",
-        "prefix ...<OTel attribute truncated: 12 chars omitted",
-        "prefix <OTel attribute truncated: 12 chars omitted>",
-        "prefix ...<OTel attribute truncated: 12 chars omitted>\n",
-    ],
-)
-def test_otel_truncation_normalization_rejects_lookalikes(value: str) -> None:
-    trajectory = _trajectory(
-        _otlp_span("agent.main", 1),
-        _otlp_span("tool.skill_tool", 2, skill="x", result=value, authoritative=True),
-    )
-
-    assert _core_compatible_truncation_trajectory(trajectory) is trajectory
-
-
-@pytest.mark.parametrize(
-    "rail_type",
-    [SymphonyGraphEvolutionRail, TeamSymphonyGraphEvolutionRail],
-)
-def test_compatibility_layer_locks_pinned_core_protected_signatures(rail_type) -> None:
-    assert tuple(inspect.signature(rail_type._capture_quality_issues).parameters) == (
-        "trajectory",
-    )
-    assert tuple(inspect.signature(rail_type._prepare_evolution_input).parameters) == (
-        "self",
-        "trajectory",
-        "ctx",
-    )
-
-
-def test_swarm_rail_accepts_otel_truncation_but_keeps_malformed_json_flag() -> None:
-    rail = object.__new__(_SwarmSymphonyGraphEvolutionRail)
-    accepted = _trajectory(
-        _otlp_span("agent.main", 1),
-        _otlp_span(
-            "tool.skill_tool",
-            2,
-            skill="travel-guide-generator",
-            result='{"success": true...<OTel attribute truncated: 20 chars omitted>',
-            authoritative=True,
-        ),
-    )
-    malformed = _trajectory(
-        _otlp_span("agent.main", 1),
-        _otlp_span("tool.skill_tool", 2, skill="broken", result='{"success": true'),
-    )
-
-    assert rail._capture_quality_issues(accepted) == ()
-    assert {issue["code"] for issue in rail._capture_quality_issues(malformed)} == {
-        "tool_payload_json_error"
-    }
-
-
-@pytest.mark.asyncio
-async def test_prepare_reprojects_authoritative_otel_truncated_skill_chain() -> None:
-    current = '{"success": true, "data": {"large": "value...<OTel attribute truncated: 123 chars omitted>'
-    trajectory = _trajectory(
-        _otlp_span("agent.main", 1),
-        _otlp_span("tool.skill_tool", 2, skill="weather"),
-        _otlp_span(
-            "tool.skill_tool",
-            3,
-            skill="travel-guide-generator",
-            result=current,
-            authoritative=True,
-        ),
-    )
-    continuities = ((0, trajectory),)
-    initial_fragments = project_symphony_execution_fragments(continuities)
-    prepared = SymphonyGraphEvolutionInput(
-        trajectory=trajectory,
-        messages=(),
-        execution_fragments=initial_fragments,
-        execution_continuities=continuities,
-        capture_mode="agent",
-    )
-
-    class BaseRail:
-        async def _prepare_evolution_input(self, trajectory, ctx):
-            del trajectory, ctx
-            return prepared
-
-    class CompatRail(_SwarmOtelTruncationCompatMixin, BaseRail):
-        pass
-
-    repaired = await CompatRail()._prepare_evolution_input(trajectory, object())
-    assert repaired is not None
-    assert [fragment.capability_name for fragment in repaired.execution_fragments] == [
-        "weather",
-        "travel-guide-generator",
-    ]
-    candidates = build_symphony_edge_candidates(
-        repaired.execution_fragments,
-        repaired.execution_continuities,
-    )
-    assert [
-        (
-            candidate.source_fragment.capability_name,
-            candidate.target_fragment.capability_name,
-        )
-        for candidate in candidates
-    ] == [("weather", "travel-guide-generator")]
-
-
-@pytest.mark.parametrize(
-    ("authoritative", "status", "result"),
-    [
-        (
-            False,
-            "STATUS_CODE_OK",
-            '{"success": true...<OTel attribute truncated: 10 chars omitted>',
-        ),
-        (
-            True,
-            "STATUS_CODE_ERROR",
-            '{"success": true...<OTel attribute truncated: 10 chars omitted>',
-        ),
-        (
-            True,
-            "STATUS_CODE_OK",
-            '{"data": {}...<OTel attribute truncated: 10 chars omitted>',
-        ),
-    ],
-)
-def test_normalization_does_not_relax_skill_success_contract(
-    authoritative: bool,
-    status: str,
-    result: str,
-) -> None:
-    trajectory = _trajectory(
-        _otlp_span("agent.main", 1),
-        _otlp_span(
-            "tool.skill_tool",
-            2,
-            skill="untrusted",
-            result=result,
-            authoritative=authoritative,
-            status=status,
-        ),
-    )
-
-    fragments = project_symphony_execution_fragments(
-        ((0, _core_compatible_truncation_trajectory(trajectory)),)
-    )
-    assert not [
-        fragment for fragment in fragments if fragment.capability_type == "skill"
-    ]
-
-
-def test_swarm_graph_rail_types_bind_core_compatibility_layer() -> None:
-    assert issubclass(
-        _SwarmSymphonyGraphEvolutionRail,
-        _SwarmOtelTruncationCompatMixin,
-    )
-    assert issubclass(
-        _SwarmTeamSymphonyGraphEvolutionRail,
-        _SwarmOtelTruncationCompatMixin,
-    )
-
-
 @pytest.mark.parametrize(
     ("capture_mode", "expected_type"),
     [
-        ("agent", _SwarmSymphonyGraphEvolutionRail),
-        ("team", _SwarmTeamSymphonyGraphEvolutionRail),
+        ("agent", SymphonyGraphEvolutionRail),
+        ("team", TeamSymphonyGraphEvolutionRail),
     ],
 )
-def test_graph_rail_factory_installs_real_swarm_compat_type(
+def test_graph_rail_factory_installs_public_core_rail(
     monkeypatch,
     tmp_path: Path,
     capture_mode: str,
@@ -677,7 +458,7 @@ def test_graph_rail_factory_installs_real_swarm_compat_type(
         submit_evolution_and_notify=AsyncMock(),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.get_swarm_symphony_service",
+        "jiuwenswarm.runtime.symphony.service.get_swarm_symphony_service",
         lambda: service,
     )
 
@@ -731,17 +512,13 @@ def test_published_capability_snapshot_builds_nonempty_execution_edge(
             ],
         },
     ]
-    (graph_dir / "graph.json").write_text(
-        json.dumps(
-            {
-                "capabilities": capabilities,
-            }
-        ),
-        encoding="utf-8",
-    )
-    (graph_dir / "fingerprint.json").write_text(
-        json.dumps({"fingerprints": capabilities}),
-        encoding="utf-8",
+    core_symphony.GraphArtifactStore(graph_dir).publish(
+        {
+            "schema_version": "1.0",
+            "generated_at": "2026-10-26T00:00:00Z",
+            "capabilities": capabilities,
+        },
+        version="published-test",
     )
     spans = [
         _otlp_span("agent.main", 1),
@@ -832,35 +609,35 @@ def test_published_capability_snapshot_rejects_invalid_contracts(
 ) -> None:
     graph_dir = tmp_path / "graph"
     graph_dir.mkdir()
-    (graph_dir / "graph.json").write_text(
-        json.dumps(
-            {
-                "capabilities": [
-                    {
-                        "capability_id": "missing-version",
-                        "capability_type": "skill",
-                        "name": "missing-version",
-                    },
-                    {
-                        "capability_id": "invalid-port",
-                        "capability_type": "skill",
-                        "name": "invalid-port",
-                        "version": "1.0.0",
-                        "inputs": [
-                            {"name": "query", "type": "text", "required": "yes"}
-                        ],
-                    },
-                    {
-                        "capability_id": "valid",
-                        "capability_type": "skill",
-                        "name": "valid",
-                        "version": "1.0.0",
-                        "inputs": [{"name": "query", "type": "text", "required": True}],
-                    },
-                ]
-            }
-        ),
-        encoding="utf-8",
+    core_symphony.GraphArtifactStore(graph_dir).publish(
+        {
+            "schema_version": "1.0",
+            "generated_at": "2026-10-26T00:00:00Z",
+            "capabilities": [
+                {
+                    "capability_id": "missing-version",
+                    "capability_type": "skill",
+                    "name": "missing-version",
+                },
+                {
+                    "capability_id": "invalid-port",
+                    "capability_type": "skill",
+                    "name": "invalid-port",
+                    "version": "1.0.0",
+                    "inputs": [
+                        {"name": "query", "type": "text", "required": "yes"}
+                    ],
+                },
+                {
+                    "capability_id": "valid",
+                    "capability_type": "skill",
+                    "name": "valid",
+                    "version": "1.0.0",
+                    "inputs": [{"name": "query", "type": "text", "required": True}],
+                },
+            ]
+        },
+        version="published-test",
     )
 
     identities = PublishedCapabilitySnapshotProvider(graph_dir).snapshot_capabilities()
@@ -899,9 +676,9 @@ def test_explicit_flow_enabled_false_skips_core_flow(monkeypatch, tmp_path: Path
 
     _patch_runtime_construction(monkeypatch, Flow, Runtime, model)
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.LLMPackageReviewAgent", ReviewAgent
+        "jiuwenswarm.runtime.symphony.service.LLMPackageReviewAgent", ReviewAgent
     )
-    monkeypatch.setattr("jiuwenswarm.symphony.service.PackageReviewGate", Gate)
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.PackageReviewGate", Gate)
     runtime = service._runtime_for(config)
 
     assert runtime is service._runtime
@@ -945,9 +722,9 @@ def test_core_flow_uses_success_count_config_and_ignores_legacy_switch(
 
     _patch_runtime_construction(monkeypatch, Flow, Runtime, model)
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.LLMPackageReviewAgent", ReviewAgent
+        "jiuwenswarm.runtime.symphony.service.LLMPackageReviewAgent", ReviewAgent
     )
-    monkeypatch.setattr("jiuwenswarm.symphony.service.PackageReviewGate", Gate)
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.PackageReviewGate", Gate)
     runtime = service._runtime_for(config)
 
     assert runtime is service._runtime
@@ -956,19 +733,8 @@ def test_core_flow_uses_success_count_config_and_ignores_legacy_switch(
     assert created["flow_root"] == tmp_path / "flow"
     assert created["llm_client"] is model
     flow_config = created["config"]
-    accepted = inspect.signature(type(flow_config)).parameters
-    if "min_successes" in accepted:
-        assert flow_config.min_successes == 6
-    else:
-        assert flow_config.min_successes_candidate == 6
-        assert flow_config.min_successes_verified == 6
-    if "min_pack_success_rate" in accepted:
-        assert flow_config.min_pack_success_rate == config.evolution.flow.min_pack_success_rate
-    elif "min_pack_success_rate_verified" in accepted:
-        assert (
-            flow_config.min_pack_success_rate_verified
-            == config.evolution.flow.min_pack_success_rate
-        )
+    assert flow_config.min_successes == 6
+    assert flow_config.min_pack_success_rate == config.evolution.flow.min_pack_success_rate
     assert isinstance(created["skill_adapter"], SkillPackAdapter)
     assert isinstance(created["runtime"]["flow_engine"], Flow)
 
@@ -1047,10 +813,8 @@ async def test_partial_run_does_not_deliver_recovered_candidate(
     finally:
         restore_runtime_push_handler(push, previous)
 
-    assert len(pushes) == 1
-    assert pushes[0]["payload"]["request_id"] == experience_request_id(
-        candidate.recipe_id, candidate.version
-    )
+    # Recovery alone does not establish ownership for this successful session.
+    assert pushes == []
     assert service._recovered_candidates == ()
 
 
@@ -1144,7 +908,7 @@ async def test_deferred_candidate_is_offered_by_a_later_successful_run(
 
 
 @pytest.mark.asyncio
-async def test_deferred_candidate_can_be_listed_and_requested_again(
+async def test_legacy_candidate_endpoints_require_scoped_confirmation(
     monkeypatch, tmp_path: Path
 ) -> None:
     _enable_evolution_config(monkeypatch, tmp_path)
@@ -1185,9 +949,10 @@ async def test_deferred_candidate_can_be_listed_and_requested_again(
     finally:
         restore_runtime_push_handler(push, previous)
 
-    assert listed["candidates"][0]["recipe_id"] == "recipe-1"
-    assert requested["success"] is True
-    assert pushes[0]["payload"]["event_type"] == "chat.ask_user_question"
+    assert listed["reason"] == "scoped_skillpack_tool_required"
+    assert listed["candidates"] == []
+    assert requested["reason"] == "scoped_skillpack_tool_required"
+    assert pushes == []
 
 
 @pytest.mark.asyncio
@@ -1227,7 +992,7 @@ async def test_later_keeps_candidate_without_preparing_install() -> None:
 
     service = SimpleNamespace(defer_candidate=Mock())
     with patch(
-        "jiuwenswarm.symphony.service.get_swarm_symphony_service",
+        "jiuwenswarm.runtime.symphony.service.get_swarm_symphony_service",
         return_value=service,
     ):
         result = await adapter._handle_symphony_experience_answer(
@@ -1250,7 +1015,7 @@ async def test_web_transport_project_dir_does_not_reject_later_answer(
     request_id = experience_request_id("recipe-1", 2)
     service = SimpleNamespace(defer_candidate=Mock())
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.get_swarm_symphony_service",
+        "jiuwenswarm.runtime.symphony.service.get_swarm_symphony_service",
         lambda: service,
     )
 
@@ -1293,11 +1058,12 @@ async def test_install_requires_approved_server_artifact(
             calls.append(Path(artifact_dir))
             return {"success": True, "skill": {"name": "combo"}}
 
-    request_id = experience_request_id("recipe-1", 2)
+    request_id = _scoped_request_id()
     receipt = await service.install_candidate(
         request_id=request_id,
         recipe_id="recipe-1",
         recipe_version=2,
+        session_id="session-1",
         package_id=None,
         integrity=None,
         skill_manager=Manager(),
@@ -1306,6 +1072,7 @@ async def test_install_requires_approved_server_artifact(
         request_id=request_id,
         recipe_id="recipe-1",
         recipe_version=2,
+        session_id="session-1",
         package_id="cap-123",
         integrity="sha256:value",
         skill_manager=Manager(),
@@ -1327,6 +1094,7 @@ async def test_install_requires_approved_server_artifact(
         request_id=request_id,
         recipe_id="recipe-1",
         recipe_version=2,
+        session_id="session-1",
         package_id="cap-123",
         integrity="sha256:value",
         skill_manager=Manager(),
@@ -1342,7 +1110,7 @@ async def test_receipt_write_crash_recovers_installed_skill_after_restart(
 ) -> None:
     _enable_evolution_config(monkeypatch, tmp_path)
     package = _server_package(monkeypatch, "cap-crash")
-    from jiuwenswarm.symphony import service as service_module
+    from jiuwenswarm.runtime.symphony import service as service_module
 
     real_save = service_module._save_install_receipt
     first = _install_service(monkeypatch, _review_flow(tmp_path, package=package))
@@ -1354,13 +1122,14 @@ async def test_receipt_write_crash_recovers_installed_skill_after_restart(
         "_save_install_receipt",
         lambda *args, **kwargs: (_ for _ in ()).throw(OSError("receipt crash")),
     )
-    request_id = experience_request_id("recipe-1", 2)
+    request_id = _scoped_request_id()
 
     with pytest.raises(OSError, match="receipt crash"):
         await first.install_candidate(
             request_id=request_id,
             recipe_id="recipe-1",
             recipe_version=2,
+            session_id="session-1",
             package_id=None,
             integrity=None,
             skill_manager=manager,
@@ -1379,6 +1148,7 @@ async def test_receipt_write_crash_recovers_installed_skill_after_restart(
         request_id=request_id,
         recipe_id="recipe-1",
         recipe_version=2,
+        session_id="session-1",
         package_id=None,
         integrity=None,
         skill_manager=restarted_manager,
@@ -1402,17 +1172,19 @@ async def test_non_approved_review_can_be_retried(
     manager = _reject_install_manager("non-approved package must not be installed")
 
     result = await service.install_candidate(
-        request_id=experience_request_id("recipe-1", 2),
+        request_id=_scoped_request_id(),
         recipe_id="recipe-1",
         recipe_version=2,
+        session_id="session-1",
         package_id=None,
         integrity=None,
         skill_manager=manager,
     )
     duplicate = await service.install_candidate(
-        request_id=experience_request_id("recipe-1", 2),
+        request_id=_scoped_request_id(),
         recipe_id="recipe-1",
         recipe_version=2,
+        session_id="session-1",
         package_id=None,
         integrity=None,
         skill_manager=manager,
@@ -1421,9 +1193,10 @@ async def test_non_approved_review_can_be_retried(
     restarted_flow = _review_flow(tmp_path, verdict=verdict)
     restarted = _install_service(monkeypatch, restarted_flow)
     persisted = await restarted.install_candidate(
-        request_id=experience_request_id("recipe-1", 2),
+        request_id=_scoped_request_id(),
         recipe_id="recipe-1",
         recipe_version=2,
+        session_id="session-1",
         package_id=None,
         integrity=None,
         skill_manager=manager,
@@ -1445,7 +1218,7 @@ async def test_legacy_failed_receipt_is_ignored_and_overwritten(
     package = _server_package(monkeypatch, "cap-retry")
     flow = _review_flow(tmp_path, package=package)
     service = _install_service(monkeypatch, flow)
-    request_id = experience_request_id("recipe-1", 2)
+    request_id = _scoped_request_id()
     receipt_dir = tmp_path / "install_receipts"
     receipt_dir.mkdir()
     (receipt_dir / f"{request_id}.json").write_text(
@@ -1464,6 +1237,7 @@ async def test_legacy_failed_receipt_is_ignored_and_overwritten(
         request_id=request_id,
         recipe_id="recipe-1",
         recipe_version=2,
+        session_id="session-1",
         package_id=None,
         integrity=None,
         skill_manager=manager,
@@ -1478,7 +1252,7 @@ async def test_legacy_failed_receipt_is_ignored_and_overwritten(
 
 
 @pytest.mark.asyncio
-async def test_client_package_credentials_must_match_server_package(
+async def test_saved_package_credentials_must_match_server_package(
     monkeypatch, tmp_path: Path
 ) -> None:
     _enable_evolution_config(monkeypatch, tmp_path)
@@ -1490,10 +1264,16 @@ async def test_client_package_credentials_must_match_server_package(
         monkeypatch, _review_flow(tmp_path, package=package, artifact=artifact)
     )
 
+    store = CandidateScopeStore(tmp_path)
+    approval = store.approval(_scoped_request_id())
+    approval["package_id"] = "changed-after-confirmation"
+    store.grant(_scoped_request_id(), approval)
+
     result = await service.install_candidate(
-        request_id=experience_request_id("recipe-1", 2),
+        request_id=_scoped_request_id(),
         recipe_id="recipe-1",
         recipe_version=2,
+        session_id="session-1",
         package_id="client-package",
         integrity="sha256:client",
         skill_manager=_reject_install_manager(
@@ -1548,9 +1328,10 @@ def test_skill_manager_does_not_install_pack_with_missing_member(
 
     assert exc.value.code == ERROR_SKILL_INVALID_PACKAGE
     assert not (workspace / "skills" / "missing-member-pack").exists()
+    assert "请检查缺失或无效成员 writer" in str(exc.value)
 
 
-def test_skill_manager_installs_pack_with_disabled_member_as_unavailable(
+def test_skill_manager_rejects_pack_with_disabled_member(
     tmp_path: Path,
     allow_macos_pytest_temp_sources,
 ) -> None:
@@ -1562,17 +1343,16 @@ def test_skill_manager_installs_pack_with_disabled_member_as_unavailable(
     manager = SkillManager(workspace_dir=str(workspace))
     manager.set_skill_enabled("search", False)
 
-    result = manager.install_symphony_skill_artifact(
-        artifact,
-        expected_root=root,
-        package_id="cap-disabled",
-        integrity="sha256:value",
-    )
-
-    assert result["success"] is True
-    assert result["skill"]["skill_type"] == "skillpack"
-    assert manager.get_skill_enabled("disabled-member-pack") is True
-    assert "disabled-member-pack" in manager.list_execution_disabled_skills()
+    with pytest.raises(SkillRpcError) as exc:
+        manager.install_symphony_skill_artifact(
+            artifact,
+            expected_root=root,
+            package_id="cap-disabled",
+            integrity="sha256:value",
+        )
+    assert exc.value.code == ERROR_SKILL_INVALID_PACKAGE
+    assert not (workspace / "skills" / "disabled-member-pack").exists()
+    assert "请先启用成员 search，再重新确认安装" in str(exc.value)
 
 
 @pytest.mark.asyncio
@@ -1590,9 +1370,10 @@ async def test_install_candidate_reports_missing_member_as_not_installable(
     manager = SkillManager(workspace_dir=str(workspace))
 
     result = await service.install_candidate(
-        request_id=experience_request_id("recipe-1", 2),
+        request_id=_scoped_request_id(),
         recipe_id="recipe-1",
         recipe_version=2,
+        session_id="session-1",
         package_id=None,
         integrity=None,
         skill_manager=manager,
@@ -1699,7 +1480,7 @@ def test_team_graph_rail_provider_skips_members(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_core_graph_plan_does_not_load_legacy_overlay(
+async def test_core_graph_plan_uses_runtime_graph_snapshot(
     monkeypatch, tmp_path: Path
 ) -> None:
     config = symphony_config_from_dict(
@@ -1729,15 +1510,11 @@ async def test_core_graph_plan_does_not_load_legacy_overlay(
         service, "graph_status", lambda: _async_value({"success": True, "exists": True})
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config",
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config",
         lambda: config,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.evolution.service.load_dynamic_overlay",
-        lambda _path: pytest.fail("legacy overlay must not be loaded"),
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.get_config",
+        "jiuwenswarm.runtime.symphony.service.get_config",
         lambda: {"preferred_language": "zh"},
     )
 
@@ -1760,7 +1537,7 @@ async def test_evolution_disabled_gates_flow_service_operations(
     )
     service = SwarmSymphonyService()
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config", lambda: config
+        "jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config
     )
     monkeypatch.setattr(
         service,
@@ -1840,7 +1617,7 @@ async def test_agent_server_symphony_recovery_is_fail_soft(monkeypatch) -> None:
             raise OSError("flow store unavailable")
 
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.get_swarm_symphony_service",
+        "jiuwenswarm.runtime.symphony.service.get_swarm_symphony_service",
         lambda: Service(),
     )
 
@@ -2068,11 +1845,11 @@ async def test_team_leader_rail_forwards_team_capture(
     )
     captured, submissions = rail_capture("TeamSymphonyGraphEvolutionRail")
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.llm.LLMConfig.from_default_model",
+        "jiuwenswarm.runtime.symphony.llm.LLMConfig.from_default_model",
         lambda: object(),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.adapter.model_from_config",
+        "jiuwenswarm.runtime.symphony.adapter.model_from_config",
         lambda _config: "model",
     )
 
@@ -2122,7 +1899,7 @@ async def test_approved_answer_refreshes_skills_and_static_graph(monkeypatch) ->
 
     adapter.refresh_skill_rails = refresh
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.get_swarm_symphony_service",
+        "jiuwenswarm.runtime.symphony.service.get_swarm_symphony_service",
         lambda: Service(),
     )
     monkeypatch.setattr(
@@ -2160,7 +1937,7 @@ async def test_replayed_install_receipt_does_not_refresh(monkeypatch) -> None:
 
     adapter.refresh_skill_rails = unexpected_refresh
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.get_swarm_symphony_service",
+        "jiuwenswarm.runtime.symphony.service.get_swarm_symphony_service",
         lambda: Service(),
     )
 
@@ -2172,6 +1949,27 @@ async def test_replayed_install_receipt_does_not_refresh(monkeypatch) -> None:
 
     assert result["installed"] is True
     assert result["replayed"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["skill_already_exists", "install_failed", "members_changed_reconfirm"])
+async def test_failed_install_answer_keeps_confirmation_unresolved(monkeypatch, reason) -> None:
+    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+    adapter._skill_manager = object()
+    adapter.refresh_skill_rails = AsyncMock()
+    service = SimpleNamespace(install_candidate=AsyncMock(return_value={"installed": False, "reason": reason}))
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.get_swarm_symphony_service", lambda: service)
+
+    result = await adapter._handle_symphony_experience_answer(
+        experience_request_id("recipe-1", 2),
+        [{"selected_options": ["安装"]}],
+        {"evolution_meta": {"recipe_id": "recipe-1", "recipe_version": 2}},
+        session_id="session-1",
+    )
+
+    assert result == {"accepted": False, "resolved": False, "installed": False, "reason": reason}
+    adapter.refresh_skill_rails.assert_not_awaited()
+    assert service.install_candidate.call_args.kwargs["session_id"] == "session-1"
 
 
 @pytest.mark.asyncio
@@ -2196,7 +1994,7 @@ async def test_installed_receipt_survives_all_refresh_failures(monkeypatch) -> N
 
     adapter.refresh_skill_rails = fail_agent_refresh
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.get_swarm_symphony_service",
+        "jiuwenswarm.runtime.symphony.service.get_swarm_symphony_service",
         lambda: Service(),
     )
     monkeypatch.setattr(

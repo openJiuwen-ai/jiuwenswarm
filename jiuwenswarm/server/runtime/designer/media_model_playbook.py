@@ -205,8 +205,42 @@ _PHOTOREAL_STYLE_WORDS = (
 )
 
 
+# ``look`` is the only style field rendered into user-visible prompts; the rest are agent-facing locks.
+_STYLE_LOOK_ZH = {
+    STYLE_LOCK_DEFAULT["look"]: "卡通动画长片画风，扁平造型，柔和渲染，圆润形体，所有设定图与镜头保持一致",
+    (
+        "cartoonish animated feature look (卡通画风), flat shapes, soft rendering, "
+        "rounded forms, coherent across every spec sheet and clip"
+    ): "卡通画风，扁平造型，柔和渲染，圆润形体，每张设定图与每个镜头保持一致",
+    "watercolor illustration with soft washes and visible paper texture": "水彩插画，柔和晕染，可见纸张纹理",
+    "oil-painted artwork with visible brush texture and painterly lighting": "油画质感，可见笔触纹理与绘画式光影",
+    "ink-wash illustration with expressive lines and controlled tonal washes": "水墨画风，线条写意，墨色浓淡有度",
+    "pixel-art animation with deliberate pixel shapes and a stable limited palette": "像素动画，像素造型清晰，配色稳定且有限",
+    "clay-animation look with tactile rounded models and soft handcrafted lighting": "黏土动画质感，圆润的手工模型，柔和的手作光影",
+    "paper-cut illustration with layered shapes and handcrafted edges": "剪纸插画，层叠造型，手工裁切边缘",
+    "photoreal cinematic — continuous color grade; never cartoon restyle": "写实电影质感，全片调色连贯统一",
+}
+
+
+def is_default_style_look(look: Any) -> bool:
+    """True when ``look`` is the product default (no style cue in the brief), in either language."""
+    default = STYLE_LOCK_DEFAULT["look"]
+    return look in (default, _STYLE_LOOK_ZH[default])
+
+
 def default_style_lock(prompt: str = "", scene_desc: str = "") -> dict[str, str]:
     """Infer the brief's film-wide style; unspecified briefs default to cartoonish."""
+    from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
+        current_content_language,
+    )
+
+    lock = _infer_style_lock(prompt, scene_desc)
+    if current_content_language() == "zh":
+        lock["look"] = _STYLE_LOOK_ZH.get(lock.get("look", ""), lock.get("look", ""))
+    return lock
+
+
+def _infer_style_lock(prompt: str, scene_desc: str) -> dict[str, str]:
     lock = dict(STYLE_LOCK_DEFAULT)
     blob = f"{prompt} {scene_desc}".lower()
     # Explicit artistic media must survive instead of being collapsed into either
@@ -272,7 +306,7 @@ def default_style_lock(prompt: str = "", scene_desc: str = "") -> dict[str, str]
     elif any(k in blob for k in _PHOTOREAL_STYLE_WORDS):
         lock["look"] = "photoreal cinematic — continuous color grade; never cartoon restyle"
         lock["lens"] = "35mm cinematic, soft background when close; no comic/grid UI"
-        lock["palette"] = "match scene color temperature and wardrobe dyes across shots"
+        lock["palette"] = "match scene color temperature and clothing dyes across shots"
         lock["medium"] = "photoreal_cinematic"
     return {k: str(v)[:280] for k, v in lock.items()}
 
@@ -288,6 +322,13 @@ _VISUAL_STYLE_HEADING_RE = re.compile(
 )
 
 
+def authored_visual_style(text: str) -> str:
+    """The Visual Style wording the Brief wrote, verbatim; '' when it states none."""
+    body = str(text or "").strip()
+    match = _VISUAL_STYLE_HEADING_RE.search(body) or _VISUAL_STYLE_LINE_RE.search(body)
+    return match.group(1).strip().strip("*").strip()[:280] if match else ""
+
+
 def style_lock_from_brief(
     text: str,
     *,
@@ -301,7 +342,7 @@ def style_lock_from_brief(
         inferred = default_style_lock(authored)
         # Preserve uncommon authored media that are more specific than our small
         # canonical vocabulary.
-        if inferred.get("look") == STYLE_LOCK_DEFAULT.get("look") and not any(
+        if is_default_style_look(inferred.get("look")) and not any(
             cue in authored.lower()
             for cue in ("cartoon", "animation", "animated", "卡通", "动画", "扁平", "圆润")
         ):
@@ -328,6 +369,53 @@ def ensure_visual_style_statement(
     return (body + f"\n\n## Visual Style\n\n{look}\n").strip()
 
 
+def ensure_audio_statement(
+    text: str,
+    audio_plan: dict[str, Any] | None,
+) -> str:
+    """State the audio plan deterministically, replacing any promised score.
+
+    The brief is the artifact the user reads, so it must not promise a score
+    that no backend can render while the clips stay unscored.
+    """
+    body = str(text or "").rstrip()
+    plan = audio_plan if isinstance(audio_plan, dict) else {}
+    if not plan:
+        return body
+    speech = plan.get("speech") if isinstance(plan.get("speech"), dict) else {}
+    sfx = plan.get("sfx") if isinstance(plan.get("sfx"), dict) else {}
+    music = plan.get("music") if isinstance(plan.get("music"), dict) else {}
+    lines: list[str] = []
+    if speech.get("include", True):
+        lines.append(f"- Speech: {speech.get('kind') or 'dialogue'} in the locked language.")
+    else:
+        lines.append("- Speech: none (the user asked for silence or mime).")
+    sfx_note = str(sfx.get("notes") or "").strip()
+    lines.append(
+        "- Diegetic sound: room tone and action sound only."
+        if not sfx_note
+        else f"- Diegetic sound: {sfx_note}"
+    )
+    if music.get("requested") and music.get("supported"):
+        lines.append("- Music: one film-level score, mixed after the clips are joined.")
+    elif music.get("requested"):
+        lines.append(
+            "- Music: **not supported in this build** — no music backend is configured, "
+            "so the film carries narration/dialogue and diegetic sound only (no score)."
+        )
+    elif speech.get("include", True):
+        lines.append("- Music: none; the clips carry dialogue and diegetic sound only.")
+    else:
+        lines.append("- Music: none; the clips carry diegetic sound only.")
+    block = "## Audio\n\n" + "\n".join(lines)
+    marker = "## Audio"
+    if marker in body:
+        head, _, tail = body.partition(marker)
+        rest = tail.split("\n## ", 1)
+        body = head.rstrip() + ("\n\n## " + rest[1] if len(rest) > 1 else "")
+    return (body.rstrip() + "\n\n" + block + "\n").strip()
+
+
 def synchronize_graph_style_from_brief(
     graph: dict[str, Any],
     text: str,
@@ -352,7 +440,7 @@ def synchronize_graph_style_from_brief(
     # Never let a later authored artifact contradict an explicit user medium.
     # For prompts without a recognized style cue, Brief/Storyboard remains the
     # authority and may carry a richer Director inference.
-    if user_style.get("look") != STYLE_LOCK_DEFAULT.get("look"):
+    if not is_default_style_look(user_style.get("look")):
         style = user_style
     else:
         style = style_lock_from_brief(text, fallback=existing)
@@ -517,12 +605,12 @@ def wan3_clip_prompt_prefix(
     return (
         f"{layer}"
         f"[Composition]: {camera or 'cinematic shot'}; move={move}. "
-        "If the camera moves, keep landmark L/R anchors stable every beat.\n"
+        "If the camera moves, keep landmark L/R anchors stable in every shot.\n"
         f"{ref_line}\n"
         f"[Positioning]: {positions}. Objects: {objects}. 180-degree rule; Fixed L/R anchors.\n"
         f"[Motion]: {motion}\n"
         f"[Speech/Audio]: {speech}\n"
-        f"[Action beat]: {action}\n"
+        f"[Action]: {action}\n"
         + (f"[Locks]: {locks_line}\n" if locks_line else "")
         + f"[Style]: {style_line}."
     )
@@ -607,7 +695,7 @@ def format_image_ref_bindings(bindings: list[dict[str, Any]] | None) -> str:
         if role == "first_frame":
             lines.append(
                 f"Image {idx} is the FIRST-FRAME reference — animate THIS exact image; "
-                "preserve its art style, faces, wardrobe, architecture, and lighting."
+                "preserve its art style, faces, clothing, architecture, and lighting."
             )
         elif role == "prior_clip":
             lines.append(
@@ -618,7 +706,9 @@ def format_image_ref_bindings(bindings: list[dict[str, Any]] | None) -> str:
             who = name or "this cast member"
             lines.append(
                 f"Image {idx} is the sole identity/costume reference for {who} "
-                "(use face/hair/body/wardrobe only; ignore any backdrop in that sheet)."
+                "(use face/hair/body/clothing only; a sheet may show this one person from "
+                "front, side, and back with a head close-up — draw them once; ignore any "
+                "backdrop in that sheet)."
             )
         elif role == "environment":
             lines.append(

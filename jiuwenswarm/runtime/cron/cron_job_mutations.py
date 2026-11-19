@@ -8,7 +8,7 @@ import uuid
 from dataclasses import replace
 from typing import Any
 
-from gateway.common.work_mode import (
+from agent_gateway.common.work_mode import (
     DEFAULT_TUI_WORK_MODE,
     DEFAULT_WEB_WORK_MODE,
     normalize_work_mode,
@@ -16,6 +16,7 @@ from gateway.common.work_mode import (
 from jiuwenswarm.runtime.cron.models import (
     CRON_JOB_DEFAULT_MODE,
     CronJob,
+    normalize_tenant_id,
     normalize_cron_job_mcp,
     normalize_cron_job_mode,
     normalize_cron_job_timeout_seconds,
@@ -23,21 +24,20 @@ from jiuwenswarm.runtime.cron.models import (
 
 logger = logging.getLogger(__name__)
 
-# proactive.tick 是由 proactive_cron_sync 自动注册、由 config 开关驱动的任务。
-# 其 name/enabled/description/wake_offset/targets/mode 均由系统/配置侧维护，
-# update 时只允许改调度本身（cron_expr/timezone）；expired/updated_at 由调度器/内部写。
+# Kept for gateway package / historical imports; no special mutation guards remain.
 _PROACTIVE_TICK_MODE = "proactive.tick"
-_PROACTIVE_UPDATE_ALLOWED_KEYS: frozenset[str] = frozenset(
-    {"cron_expr", "timezone", "expired", "updated_at"}
+# 创建时写定的身份。修改补丁里如果再带这些字段，直接丢掉，不能改掉。
+_STICKY_IDENTITY_FIELDS = frozenset(
+    {"group_id", "bot_id", "user_id", "job_id", "created_at"}
 )
 
 
-class _ProactiveJobProtected(RuntimeError):
-    """proactive.tick job 受保护，禁止手动 删除/toggle/改非调度字段 时抛出。
-
-    所有删除路径（web handler / TUI /cron / 自然语言 cron 工具）共用 store 层，
-    在此抛出可统一拦截，避免 config 开关与 cron store 不一致。
-    """
+def strip_sticky_identity_fields(patch: dict[str, Any]) -> dict[str, Any]:
+    """从修改补丁里去掉创建时就定死的身份字段。"""
+    cleaned = dict(patch or {})
+    for key in _STICKY_IDENTITY_FIELDS:
+        cleaned.pop(key, None)
+    return cleaned
 
 
 def sort_cron_jobs(jobs: list[CronJob]) -> list[CronJob]:
@@ -55,8 +55,7 @@ def job_dict_needs_work_mode(item: dict[str, Any]) -> bool:
 def infer_work_mode_from_targets(job_item: dict[str, Any]) -> str:
     """按 job 的 targets.channel_id 推断 work_mode(迁移兜底)。
 
-    当 project_id 反查失败(默认项目/不存在/list_projects 失败)时,按 targets 的
-    channel_id 推断:
+    按 targets 的 channel_id 推断:
       - 含 tui 通道 → "code"(TUI 创建的 job 通常为 code 模式)
       - 其他 → "work"(Web/IM 等创建的 job 通常为 work 模式)
     """
@@ -75,37 +74,13 @@ def infer_work_mode_from_targets(job_item: dict[str, Any]) -> str:
     return DEFAULT_WEB_WORK_MODE
 
 
-_cron_project_lister: Any = None
+def resolve_cron_job_work_mode(item: dict[str, Any]) -> str:
+    """A3g：work_mode 迁移仅按 targets 通道启发式推断。
 
-
-def set_cron_project_lister(list_projects: Any) -> None:
-    """Gateway 注入自己的项目表读取函数，避免 runtime 引用 gateway。"""
-    global _cron_project_lister
-    _cron_project_lister = list_projects
-
-
-def build_cron_project_lookup() -> dict[str, str]:
-    """构建 project_id → work_mode 映射,供 cron job 惰性迁移推断 work_mode。"""
-    try:
-        list_projects = _cron_project_lister
-        if list_projects is None:
-            from jiuwenswarm.server.runtime.session.project_store import list_projects
-
-        return {
-            p.project_id: p.work_mode
-            for p in list_projects(include_hidden=True, cache_bust=True)
-            if p.project_id
-        }
-    except Exception:
-        return {}
-
-
-def resolve_cron_job_work_mode(
-    item: dict[str, Any], id_to_work_mode: dict[str, str]
-) -> str:
-    pid = str(item.get("project_id") or "").strip()
-    if pid and pid in id_to_work_mode:
-        return id_to_work_mode[pid]
+    原先经 project lister 查项目表推断精确 work_mode 的路径已删除（项目表的
+    权威在目标 AgentServer；迁移是一次性动作且结果落盘持久，存量部署早已
+    完成迁移）。企业版统一身份模型不依赖本机 project_store 反查。
+    """
     return infer_work_mode_from_targets(item)
 
 
@@ -118,12 +93,11 @@ def migrate_work_mode_on_items(jobs_raw: list[Any]) -> tuple[list[Any], bool]:
             break
     if not needs_migration:
         return jobs_raw, False
-    id_to_work_mode = build_cron_project_lookup()
     changed = False
     for item in jobs_raw:
         if not isinstance(item, dict) or not job_dict_needs_work_mode(item):
             continue
-        item["work_mode"] = resolve_cron_job_work_mode(item, id_to_work_mode)
+        item["work_mode"] = resolve_cron_job_work_mode(item)
         changed = True
     return jobs_raw, changed
 
@@ -169,9 +143,13 @@ def build_new_cron_job(
     app_id: str = "",
     work_mode: str = DEFAULT_WEB_WORK_MODE,
     user_id: str = "",
+    group_id: str = "",
+    bot_id: str = "",
     credential_ref: str = "",
 ) -> CronJob:
     """Construct and validate a ``CronJob`` without persisting it."""
+    if (model_selection or {}).get("type") == "model_group":
+        raise ValueError("Scheduled tasks only support a single model")
     now = time.time()
     sid = (
         str(session_id).strip()
@@ -226,42 +204,20 @@ def build_new_cron_job(
         mcp=normalize_cron_job_mcp(mcp),
         app_id=str(app_id or "").strip(),
         work_mode=normalize_work_mode(work_mode, default=DEFAULT_WEB_WORK_MODE),
-        user_id=str(user_id or "").strip(),
+        user_id=normalize_tenant_id(user_id),
+        group_id=normalize_tenant_id(group_id),
+        bot_id=normalize_tenant_id(bot_id),
         credential_ref=str(credential_ref or "").strip(),
     )
     CronJob.from_dict(job.to_dict())
     return job
 
 
-def filter_proactive_update_patch(existing: CronJob, patch: dict[str, Any]) -> dict[str, Any]:
-    if str(getattr(existing, "mode", "") or "").strip().lower() != _PROACTIVE_TICK_MODE:
-        return patch
-    dropped = [k for k in patch if k not in _PROACTIVE_UPDATE_ALLOWED_KEYS]
-    if dropped:
-        logger.warning(
-            "[CronStore] reject proactive.tick update fields on job=%s: %s (only %s allowed)",
-            existing.id,
-            ", ".join(dropped),
-            ", ".join(sorted(_PROACTIVE_UPDATE_ALLOWED_KEYS)),
-        )
-        return {k: v for k, v in patch.items() if k in _PROACTIVE_UPDATE_ALLOWED_KEYS}
-    return patch
-
-
-def ensure_proactive_deletable(existing: CronJob | None, *, force: bool) -> None:
-    if force or existing is None:
-        return
-    if str(getattr(existing, "mode", "") or "").strip().lower() == _PROACTIVE_TICK_MODE:
-        raise _ProactiveJobProtected(
-            "主动推荐定时任务由设置→主动推荐开关控制，不能删除；请到设置关闭开关。"
-        )
-
-
 def apply_cron_job_patch(existing: CronJob, patch: dict[str, Any]) -> CronJob:
     if "_expected_legacy_model_name" in patch:
         if existing.model_selection is not None or existing.model_name != patch["_expected_legacy_model_name"]:
             return existing
-    patch = filter_proactive_update_patch(existing, dict(patch or {}))
+    patch = strip_sticky_identity_fields(patch)
     updated = existing
     if "name" in patch:
         updated = replace(updated, name=str(patch.get("name") or "").strip())
@@ -356,8 +312,10 @@ def apply_cron_job_patch(existing: CronJob, patch: dict[str, Any]) -> CronJob:
         if raw_selection is None:
             updated = replace(updated, model_selection=None)
         else:
-            from gateway.common.model_selection import ModelSelection
+            from agent_gateway.common.model_selection import ModelSelection
             selection = ModelSelection.model_validate(raw_selection)
+            if selection.type != "model":
+                raise ValueError("Scheduled tasks only support a single model")
             from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver
             ModelSelectionResolver().resolve(selection)
             updated = replace(updated, model_selection=selection.model_dump())

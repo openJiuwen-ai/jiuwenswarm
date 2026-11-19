@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from jiuwenswarm.symphony.service import SwarmSymphonyService
+from jiuwenswarm.runtime.symphony.service import SwarmSymphonyService
 
 
 class Flow:
@@ -71,11 +71,11 @@ async def test_cancelled_caller_keeps_shared_recovery_running():
 
 
 @pytest.mark.asyncio
-async def test_background_recovery_candidates_reach_first_successful_submission(monkeypatch):
+async def test_background_recovery_does_not_offer_unowned_candidates(monkeypatch):
     service, flow = SwarmSymphonyService(), Flow()
     runtime = service._runtime = runtime_for(flow)
     config = SimpleNamespace(enabled=True, evolution=SimpleNamespace(flow=SimpleNamespace(enabled=True)))
-    monkeypatch.setattr("jiuwenswarm.symphony.service.load_symphony_config", lambda: config)
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config)
     monkeypatch.setattr(service, "_runtime_for", lambda _config: runtime)
     notify = AsyncMock()
     monkeypatch.setattr(service, "_notify_candidate", notify)
@@ -87,7 +87,7 @@ async def test_background_recovery_candidates_reach_first_successful_submission(
     flow.release.set()
     await asyncio.gather(recovery, submission)
     assert flow.calls == 1
-    notify.assert_awaited_once_with(flow.candidate, session_id="original-session", channel_id="web")
+    notify.assert_not_awaited()
     assert service._recovered_candidates == ()
     await service.close()
 
@@ -163,7 +163,7 @@ async def test_cancelled_close_waiter_keeps_single_owned_drain():
 
 def test_importing_toolkit_does_not_load_symphony_service(tmp_path):
     root = Path(__file__).resolve().parents[3]
-    script = "import sys; from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit; assert 'jiuwenswarm.symphony.service' not in sys.modules; assert SymphonyToolkit().get_tools({'symphony': {'enabled': False}}) == []; assert 'jiuwenswarm.symphony.service' not in sys.modules; print('lazy-service-boundary-ok')"
+    script = "import sys; from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit; assert 'jiuwenswarm.runtime.symphony.service' not in sys.modules; assert SymphonyToolkit().get_tools({'symphony': {'enabled': False}}) == []; assert 'jiuwenswarm.runtime.symphony.service' not in sys.modules; print('lazy-service-boundary-ok')"
     env = {**os.environ, "PYTHONPATH": str(root), "JIUWENSWARM_DATA_DIR": str(tmp_path / "data"),
            "JIUWENSWARM_HOME": str(tmp_path / "home")}
     output = subprocess.check_output([sys.executable, "-c", script], cwd=root, env=env,

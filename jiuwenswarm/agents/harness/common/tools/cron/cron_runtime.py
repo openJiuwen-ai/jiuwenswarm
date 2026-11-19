@@ -21,6 +21,7 @@ from jiuwenswarm.runtime.cron.models import (
 )
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronToolRoute, CronTools
 from jiuwenswarm.common.schema.message import Message, ReqMethod
+from jiuwenswarm.common.scheduled_task_policy import is_scheduled_task_supported
 from jiuwenswarm.common.utils import logger
 from jiuwenswarm.common.host_services import send_runtime_wake
 
@@ -103,6 +104,14 @@ class _CronToolsCronBackend(CronToolBackend):
         # 发起会话的用户路由键：AgentOS 下由 CronToolContext.user_id 透传
         # （deep adapter 从 E2A 请求 user_id 注入），供 job 归属创建者。
         user_id = str(getattr(context, "user_id", "") or "").strip()
+        # 企业版群/机器人：与 Gateway 一致，读顶层 user_id + metadata.routing。
+        from jiuwenswarm.common.request_identity import web_routing_identity
+
+        identity = web_routing_identity(metadata)
+        if not user_id:
+            user_id = str(identity.get("user_id") or "").strip()
+        group_id = str(identity.get("group_id") or "").strip()
+        bot_id = str(identity.get("bot_id") or "").strip()
         return CronToolRoute(
             request_id=request_id,
             channel_id=channel_id,
@@ -114,6 +123,8 @@ class _CronToolsCronBackend(CronToolBackend):
             model_name=model_name,
             app_id=app_id,
             user_id=user_id,
+            group_id=group_id,
+            bot_id=bot_id,
         )
 
     @staticmethod
@@ -145,11 +156,17 @@ class _CronToolsCronBackend(CronToolBackend):
             inherited = str(meta.get("model") or "").strip()
             if not inherited:
                 return payload
-            from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import (
-                resolve_agent_cron_model,
-            )
+            from jiuwenswarm.enterprise import is_enterprise
 
-            canonical = resolve_agent_cron_model(inherited)
+            # 企业版不在本机核对：名单在 Gateway 企业库。这里只把会话模型带上。
+            if is_enterprise():
+                canonical = inherited
+            else:
+                from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import (
+                    resolve_agent_cron_model,
+                )
+
+                canonical = resolve_agent_cron_model(inherited)
             if canonical:
                 out = dict(payload)
                 out["model_name"] = canonical
@@ -347,6 +364,11 @@ class _CronToolsCronBackend(CronToolBackend):
     async def run_now(self, job_id: str) -> str:
         run_result = await self._with_route(None, self._cron_tools.run_now(job_id))
         if isinstance(run_result, dict):
+            # CronTools 的 ack 形状是 {"action": ..., "data": {"run_id": ...}}；
+            # 顶层 run_id 仅兼容旧实现，未拿到 ack（data 为 None）时保持空串。
+            data = run_result.get("data")
+            if isinstance(data, dict):
+                return str(data.get("run_id") or run_result.get("run_id") or "")
             return str(run_result.get("run_id") or "")
         return str(run_result or "")
 
@@ -467,11 +489,14 @@ def _extract_legacy_params(
             at_raw = str(schedule.get("at") or "").strip()
             if at_raw:
                 try:
-                    from jiuwenswarm.runtime.cron.cron_expr import iso_to_seven_field_cron
-                    cron_expr = iso_to_seven_field_cron(at_raw, timezone=timezone)
+                    from jiuwenswarm.runtime.cron.cron_expr import iso_to_one_shot_cron
+                    # A DST fall-back instant may come back evaluated in UTC;
+                    # then the job must carry that timezone, not the local one.
+                    cron_expr, timezone = iso_to_one_shot_cron(at_raw, timezone=timezone)
                     logger.info(
-                        "[CronRuntimeBridge] _extract_legacy_params: converted kind=at '%s' to cron_expr='%s'",
-                        at_raw, cron_expr,
+                        "[CronRuntimeBridge] _extract_legacy_params: converted kind=at '%s' "
+                        "to cron_expr='%s' timezone='%s'",
+                        at_raw, cron_expr, timezone,
                     )
                 except Exception as conv_exc:
                     raise ValueError(
@@ -976,6 +1001,10 @@ class CronRuntimeBridge:
     def __init__(self) -> None:
         self._backend_override: CronToolBackend | None = None
         self._resolved_backend: CronToolBackend | None = None
+        # 后台调度器启动 Task 的强引用集合：CPython 对未引用 Task 只持弱引用，
+        # 不持有会被 GC 提前回收（"Task was destroyed but it is pending"），
+        # 调度器未完成启动、定时任务到点无人调度。完成后经 done 回调移除，不泄漏。
+        self._scheduler_start_tasks: set[asyncio.Task] = set()
 
     def set_backend(self, backend: CronToolBackend | None) -> None:
         self._backend_override = backend
@@ -997,18 +1026,39 @@ class CronRuntimeBridge:
         backend = self.get_backend()
         if backend is None:
             return
-        
+
         if not isinstance(backend, _CronToolsCronBackend):
             return
-        
+
         try:
             loop = asyncio.get_event_loop()
             if loop.is_running():
-                asyncio.create_task(backend.ensure_scheduler_started())
+                task = asyncio.create_task(
+                    self._start_scheduler_guarded(backend.ensure_scheduler_started())
+                )
+                # 持有强引用直到完成，避免被 GC 提前回收。
+                self._scheduler_start_tasks.add(task)
+                task.add_done_callback(self._scheduler_start_tasks.discard)
             else:
                 loop.run_until_complete(backend.ensure_scheduler_started())
         except Exception as exc:
             logger.warning("[CronRuntimeBridge] Failed to start scheduler: %s", exc)
+
+    @staticmethod
+    async def _start_scheduler_guarded(coro: Any) -> None:
+        """运行后台调度器启动协程并记录其内部异常。
+
+        asyncio.create_task 外层的 try/except 只能捕获创建 Task 的同步异常；
+        协程内部异常若不在此捕获，只会变成 "Task exception was never retrieved"，
+        调用方（build_tools）完全无感知，表现为静默失败。
+        """
+        try:
+            await coro
+        except Exception:
+            logger.warning(
+                "[CronRuntimeBridge] Background scheduler start failed",
+                exc_info=True,
+            )
 
     def build_tools(
         self,
@@ -1053,7 +1103,11 @@ class CronRuntimeBridge:
         tools = create_cron_tools(
             effective_backend,
             context=context,
-            target_channels=[channel.value for channel in CronTargetChannel],
+            target_channels=[
+                channel.value
+                for channel in CronTargetChannel
+                if is_scheduled_task_supported(channel.value)
+            ],
             default_target_channel=None,
             agent_id=agent_id,
             language=language,

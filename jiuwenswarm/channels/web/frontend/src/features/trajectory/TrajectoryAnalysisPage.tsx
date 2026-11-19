@@ -1,6 +1,6 @@
 /** Trajectory analysis page: the trajectory and its diagnosis as two sub-pages of one session view. */
 
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { ChevronLeft } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useChatStore } from '../../stores/chatStore';
@@ -15,6 +15,7 @@ import {
   type DiagnosisSelectionState,
 } from './diagnosis/diagnosisSelection';
 import { canSubmitDiagnosis, highlightKeysOf } from './diagnosis/diagnosisState';
+import { unixNanoToMs } from './diagnosis/diagnosisView';
 import { DiagnosisRecordSelect } from './diagnosis/DiagnosisRecordSelect';
 import { DiagnosisSelectionBar } from './diagnosis/DiagnosisSelectionBar';
 import { DiagnosisSubpage } from './diagnosis/DiagnosisSubpage';
@@ -29,6 +30,7 @@ import {
   type TrajectoryPanelSubject,
   type TrajectoryPanelSummary,
 } from './TrajectoryPanel';
+import { trajectoryComposerPolicy, type TrajectoryComposerPolicy } from './trajectoryLayout';
 import css from './TrajectoryAnalysisPage.module.css';
 
 export type TrajectoryAnalysisSubpage = 'trajectory' | 'diagnosis';
@@ -40,6 +42,13 @@ export interface TrajectoryAnalysisPageProps {
   sessionId: string;
   /** Leave the page and return to the conversation. */
   onBack: () => void;
+  /**
+   * The docked composer follows the sub-page: closed and not reopenable while
+   * a range is being chosen or the diagnosis sub-page is showing.
+   */
+  onComposerPolicyChange?: (policy: TrajectoryComposerPolicy) => void;
+  /** Return to the conversation after a suggestion is written into the composer. */
+  onComposerFilled?: () => void;
 }
 
 interface FocusedCause {
@@ -52,6 +61,8 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
   mode = 'agent',
   sessionId,
   onBack,
+  onComposerPolicyChange,
+  onComposerFilled,
 }: TrajectoryAnalysisPageProps) {
   const { t } = useTranslation();
   const [subpage, setSubpage] = useState<TrajectoryAnalysisSubpage>('trajectory');
@@ -114,10 +125,15 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
     setNote('');
     setEmptyNodesHint(false);
   }, []);
+  const replayActive = archiveActions?.replayActive === true;
   // A hidden page is not a place to keep an unsent pick.
   useEffect(() => {
     if (!active) exitSelection();
   }, [active, exitSelection]);
+  // Imported archives are read-only replays; leave selection mode as soon as one opens.
+  useEffect(() => {
+    if (replayActive) exitSelection();
+  }, [exitSelection, replayActive]);
   useEffect(() => {
     if (!selecting) return undefined;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -129,6 +145,13 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [exitSelection, selecting]);
+
+  useLayoutEffect(() => {
+    onComposerPolicyChange?.(active ? trajectoryComposerPolicy(subpage, selecting) : 'available');
+  }, [active, onComposerPolicyChange, selecting, subpage]);
+  useLayoutEffect(() => () => {
+    onComposerPolicyChange?.('available');
+  }, [onComposerPolicyChange]);
 
   const enterSelection = useCallback(() => {
     dismissNotice();
@@ -159,6 +182,26 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
     () => selectedNodeCount(selectionState, diagnosisLanes, fullScope),
     [diagnosisLanes, fullScope, selectionState],
   );
+  const diagnosedNodeCount = useMemo(() => {
+    const current = session.record;
+    if (current === null || diagnosisLanes.length === 0) return null;
+    if (current.scope_kind === 'full') {
+      return diagnosisLanes.reduce((sum, lane) => sum + lane.intervals.length, 0);
+    }
+    const laneRanges = new Map<string, { startMs: number; endMs: number }>();
+    for (const range of current.input.resolved_ranges ?? []) {
+      const startMs = unixNanoToMs(range.start_unix_nano);
+      const endMs = unixNanoToMs(range.end_unix_nano);
+      if (startMs === null || endMs === null || endMs < startMs) continue;
+      laneRanges.set(range.subject_id, { startMs, endMs });
+    }
+    return selectedNodeCount({
+      mode: 'lanes',
+      axisRange: null,
+      laneRanges,
+      excluded: new Set(),
+    }, diagnosisLanes, false);
+  }, [diagnosisLanes, session.record]);
   const nodeLimitExceeded = selectedNodes > DIAGNOSIS_NODE_LIMIT;
   if (emptyNodesHint && (selectedNodes > 0 || fullScope)) setEmptyNodesHint(false);
   const canStart = canSubmitDiagnosis({
@@ -194,7 +237,8 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
   }, [record]);
 
   let diagnoseBlockedReason: string | null = null;
-  if (session.running) diagnoseBlockedReason = t('trajectory.analysis.selection.running');
+  if (replayActive) diagnoseBlockedReason = t('trajectory.analysis.selection.replay');
+  else if (session.running) diagnoseBlockedReason = t('trajectory.analysis.selection.running');
   else if (!timelineAvailable) diagnoseBlockedReason = t('trajectory.analysis.selection.noData');
 
   const tabs: ReadonlyArray<{ id: TrajectoryAnalysisSubpage; label: string }> = [
@@ -225,7 +269,20 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
         <h2 className={css.title}>{t('trajectory.diagnosis.entry')}</h2>
         {summary === null ? null : (
           <span className={css.summary} data-testid="trajectory-analysis-summary">
-            {t('trajectory.analysis.summary', { agents: summary.agents, nodes: summary.nodes })}
+            {summary.team === undefined
+              ? t('trajectory.analysis.summary', {
+                agents: summary.agents,
+                spans: summary.spans,
+                nodes: summary.nodes,
+              })
+              : t('trajectory.analysis.teamSummary', {
+                members: summary.team.members,
+                completed: summary.team.completedTasks,
+                tasks: summary.team.tasks,
+                reviews: summary.team.reviewRuns,
+                spans: summary.spans,
+                nodes: summary.nodes,
+              })}
           </span>
         )}
         <span className={css.spacer} />
@@ -308,7 +365,13 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
           onDiagnosisNodesChange={setDiagnosisLanes}
           onTimelineAvailableChange={setTimelineAvailable}
           {...(focused === null ? {} : { highlightStepKeys: focused.keys })}
-          {...(selecting ? { selection: { state: selectionState, onChange: setSelectionState } } : {})}
+          {...(selecting
+            ? {
+              selection: { state: selectionState, onChange: setSelectionState },
+              fullScopeSelection: fullScope,
+              onFullScopeChange: setFullScope,
+            }
+            : {})}
         />
       </div>
       <div
@@ -322,6 +385,8 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
           subjectLabels={subjectLabels}
           focusedFindingId={focused?.causeId ?? null}
           onFocusFinding={focusCause}
+          onComposerFilled={onComposerFilled ?? onBack}
+          nodeCount={diagnosedNodeCount}
         />
       </div>
       {selecting ? (
@@ -330,16 +395,11 @@ export const TrajectoryAnalysisPage = memo(function TrajectoryAnalysisPage({
           fullScopeBlocked={busy}
           onFullScopeChange={(value) => {
             setFullScope(value);
-            if (value) {
-              setSelectionState(current => ({
-                ...EMPTY_DIAGNOSIS_SELECTION,
-                excluded: current.excluded,
-              }));
-            }
+            if (value) setSelectionState(EMPTY_DIAGNOSIS_SELECTION);
           }}
           note={note}
           onNoteChange={setNote}
-          pickedAgents={pickedAgents}
+          pickedAgents={fullScope ? subjectChoices.length : pickedAgents}
           pickedNodes={selectedNodes}
           lastTurnNotice={coversMainLastTurn ? t('trajectory.analysis.selection.lastTurn') : null}
           nodeLimitNotice={nodeLimitExceeded

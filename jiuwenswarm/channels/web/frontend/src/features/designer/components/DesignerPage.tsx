@@ -1,4 +1,4 @@
-import { LayoutPanelTop, Loader2, MapPinned, PanelLeft, Route, RouteOff } from 'lucide-react';
+import { Loader2, PanelLeft } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import chatOrbIcon from '../../../assets/designer/xiaoyi-app-icon.png';
@@ -9,6 +9,12 @@ import { bindDesignerRuntime, useDesignerRunStore } from '../designerRunStore';
 import { isDesignerModerationError } from '../designerRunView';
 import { DESIGNER_UPLOAD_TOO_LARGE } from '../designerAssetUrl';
 import { isDesignerPreviewGraph } from '../designerBootstrapGraph';
+import {
+  ArrangeNodesIcon,
+  HideEdgesIcon,
+  MinimapIcon,
+  ShowEdgesIcon,
+} from '../designerIcons';
 import { bindDesignerExclusivePlayback } from '../designerMediaPlayback';
 import { useDesignerGraphEditingLocked } from '../useDesignerGraphEditingLocked';
 import { useDesignerStore } from '../designerStore';
@@ -261,7 +267,7 @@ export function DesignerPage({
               disabled={!canvasInteractive}
               onClick={toggleEdges}
             >
-              {edgesVisible ? <Route size={18} aria-hidden /> : <RouteOff size={18} aria-hidden />}
+              {edgesVisible ? <ShowEdgesIcon aria-hidden /> : <HideEdgesIcon aria-hidden />}
             </button>
             <button
               type="button"
@@ -272,7 +278,7 @@ export function DesignerPage({
               disabled={!canvasInteractive || editingLocked || !domainGraph?.nodes.length}
               onClick={requestAutoLayout}
             >
-              <LayoutPanelTop size={18} aria-hidden />
+              <ArrangeNodesIcon aria-hidden />
             </button>
             <button
               type="button"
@@ -284,7 +290,7 @@ export function DesignerPage({
               disabled={!canvasInteractive}
               onClick={toggleMinimap}
             >
-              <MapPinned size={18} aria-hidden />
+              <MinimapIcon aria-hidden />
             </button>
             <button
               type="button"

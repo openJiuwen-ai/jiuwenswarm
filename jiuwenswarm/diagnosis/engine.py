@@ -32,8 +32,10 @@ EngineEventKind = Literal[
     "stage_started",
     "output_delta",
     "stage_finished",
+    "reward",
     "reward_failure_causes",
     "evolution_judge",
+    "trajectory_summary",
 ]
 
 
@@ -41,6 +43,8 @@ EngineEventKind = Literal[
 class EngineEvent:
     """One progress notification produced by an engine.
 
+    ``reward`` carries the artifact evaluation as soon as diagnosis has it, so
+    the host can show that card before attribution streams findings.
     ``reward_failure_causes`` and ``evolution_judge`` events carry the whole
     list known so far; the host replaces its table with it, so an engine can
     report findings while the stage is still running.
@@ -50,11 +54,13 @@ class EngineEvent:
     kind: EngineEventKind
     title: str | None = None
     text_delta: str | None = None
-    status: Literal["completed", "failed", "skipped"] | None = None
+    status: Literal["completed", "degraded", "failed", "skipped"] | None = None
     summary: str | None = None
     skip_reason: str | None = None
+    reward: dict[str, Any] | None = None
     reward_failure_causes: list[RewardFailureCause] | None = None
     evolution_judge: list[EvolutionJudge] | None = None
+    summary_tree: dict[str, Any] | None = None
 
 
 EmitFn = Callable[[EngineEvent], Awaitable[None]]
@@ -112,6 +118,7 @@ class EngineResult:
     artifact_improvement: str | None = None
     error: DiagnosisError | None = None
     reward: dict[str, Any] | None = None
+    summary_tree: dict[str, Any] | None = None
 
 
 class DiagnosisEngine(Protocol):

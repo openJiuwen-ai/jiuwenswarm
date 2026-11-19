@@ -1,6 +1,9 @@
 import type { ModelEntry, VendorPresetMap } from '../../../../types';
-import { parseContextWindowTokens } from './contextWindow';
+import { formatContextWindowTokens, parseContextWindowTokens } from './contextWindow';
+import { getAnthropicOutputTokenCap, parseOutputTokens } from './outputTokens';
 import { CUSTOM_VENDOR_SELECTION, OPENAI_ACCOUNT_SELECTION, findVendorPreset, type ModelDraft } from './modelAdapters';
+import { getEditableModels } from './modelListOperations';
+import { getModelDisplayName } from './modelPresentation';
 import { isReasoningLevelSupported, resolveModelReasoning } from './modelReasoning';
 
 export type ModelDraftErrors = Partial<Record<keyof ModelDraft, string>>;
@@ -50,6 +53,20 @@ export function validateModelDraft(
   if (parseContextWindowTokens(value.context_window_tokens) === null) {
     errors.context_window_tokens = t('settingsPanel.models.validation.contextWindowInvalid');
   }
+  const hasOutputLimit = String(value.max_tokens ?? '').trim().length > 0;
+  const outputTokens = parseOutputTokens(value.max_tokens);
+  const outputTokenCap = value.protocol === 'anthropic'
+    ? getAnthropicOutputTokenCap(value.model_name)
+    : undefined;
+  if (value.protocol === 'anthropic' && !hasOutputLimit) {
+    errors.max_tokens = t('settingsPanel.models.validation.outputTokensRequired');
+  } else if (hasOutputLimit && outputTokens === null) {
+    errors.max_tokens = t('settingsPanel.models.validation.outputTokensInvalid');
+  } else if (outputTokenCap !== undefined && outputTokens !== null && outputTokens > outputTokenCap) {
+    errors.max_tokens = t('settingsPanel.models.validation.outputTokensExceedsModelLimit', {
+      limit: formatContextWindowTokens(outputTokenCap),
+    });
+  }
   const account = value.vendor_selection === OPENAI_ACCOUNT_SELECTION;
   const preset = findVendorPreset(catalog, value.vendor_selection);
 
@@ -81,7 +98,9 @@ export function validateModelDraft(
     else if (!apiKey && !hasUnchangedApiKey) errors.api_key = t('config.modelList.apiKeyRequired');
   }
 
-  const reasoning = resolveModelReasoning(catalog, preset, modelName, value.protocol);
+  const reasoning = value.vendor_selection === CUSTOM_VENDOR_SELECTION
+    ? null
+    : resolveModelReasoning(catalog, preset, modelName, value.protocol);
   if (!catalog.reasoning) {
     errors.reasoning_level = t('settingsPanel.models.validation.reasoningUnavailable');
   } else if (reasoning && !isReasoningLevelSupported(value.reasoning_level, reasoning)) {
@@ -91,15 +110,18 @@ export function validateModelDraft(
   }
 
   const identity = normalizeEditingIdentity(editingSelf);
-  const others = models.filter((model) => model.is_agentos !== true && !isEditingSelf(model, identity));
-  // Uniqueness is among explicit display names (alias) only. Empty-alias historical
-  // rows still fall back to model_name in the UI, but must not block editing peers that
-  // share the same model_name when the draft alias was only seeded from model_name.
-  if (alias && !errors.alias && others.some((model) => model.alias?.trim() === alias)) {
+  // Only compare against editable catalog rows. Free/login runtime-granted models are
+  // hidden from Settings; colliding with their model_name would block users with no UI
+  // way to resolve the conflict (#5808 review).
+  const others = getEditableModels(models).filter((model) => !isEditingSelf(model, identity));
+  // Display-name uniqueness matches what the UI shows (alias || model_name). Model ID
+  // itself is not uniqueness-checked and may collide with another row's display name.
+  if (
+    alias &&
+    !errors.alias &&
+    others.some((model) => getModelDisplayName(model).trim() === alias)
+  ) {
     errors.alias = t('settingsPanel.models.validation.aliasConflict');
-  }
-  if (!errors.model_name && others.some((model) => model.alias?.trim() === modelName)) {
-    errors.model_name = t('settingsPanel.models.validation.modelNameConflict');
   }
 
   return errors;

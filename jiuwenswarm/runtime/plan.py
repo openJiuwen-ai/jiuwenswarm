@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from weakref import WeakValueDictionary
 
-from gateway.common.mode_matrix import is_plan_mode
+from agent_gateway.common.mode_matrix import is_plan_mode
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     PLAN_MODE_EXITED_EVENT_TYPE,
     PLAN_REMINDER_ORIGINAL_QUERY_KEY,
@@ -265,7 +265,9 @@ class PlanModeController:
     ) -> list[dict[str, Any]]:
         """Detect an exit_plan_mode transition performed by a tool."""
         session_id = request.session_id
-        if not session_id:
+        # Inspection requests can finish before the first chat enters plan
+        # mode. Their snapshot cannot establish that a tool exited it.
+        if not session_id or not self.should_sync(request):
             return []
         resolved = resolve_request_runtime_mode(request)
         if isinstance(request.params, dict):

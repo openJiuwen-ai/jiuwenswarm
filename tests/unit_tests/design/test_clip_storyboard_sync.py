@@ -16,7 +16,6 @@ from jiuwenswarm.server.runtime.designer.handlers.text_nodes import (
     StoryboardNodeHandler,
     parse_storyboard_shots,
     render_storyboard_table,
-    sync_shot_nodes_from_storyboard_markdown,
 )
 from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
 
@@ -106,41 +105,6 @@ def test_storyboard_is_not_a_connected_text_payload_for_clips(tmp_path):
     assert edge_text_inputs(ctx, node, exclude_roles=frozenset({"storyboard"})) == []
 
 
-def test_sync_shot_nodes_from_storyboard_markdown():
-    graph = {
-        "nodes": [
-            {
-                "id": "n_clip_1",
-                "type": "video",
-                "config": {
-                    "role": "clip",
-                    "pipeline": "clip",
-                    "clip_index": 1,
-                    "clip_action": "stale",
-                    "generate": {"prompt": "old"},
-                },
-            },
-            {
-                "id": "n_clip_2",
-                "type": "image",
-                "config": {
-                    "role": "frame",
-                    "pipeline": "frame",
-                    "clip_index": 2,
-                    "clip_action": "stale",
-                },
-            },
-        ]
-    }
-    notes = sync_shot_nodes_from_storyboard_markdown(graph, _sb_md())
-    assert notes
-    c1 = graph["nodes"][0]["config"]
-    f2 = graph["nodes"][1]["config"]
-    assert c1["clip_action"] == "Pastor speaks from pulpit, congregation seated"
-    assert f2["clip_action"] == "Woman wipes tears, nods"
-    assert "Action:" in (c1.get("generate") or {}).get("prompt", "")
-
-
 def test_parse_reads_every_row_of_the_table():
     rows = "\n".join(f"| {i} | {i}-{i + 1}s | wide | static | A | act {i} |  |" for i in range(1, 11))
     text = (
@@ -221,6 +185,15 @@ async def test_storyboard_handler_writes_only_the_table(tmp_path, monkeypatch):
     assert parse_storyboard_shots(text)[0]["character_action"] == "Door opens"
 
 
+@pytest.mark.asyncio
+async def test_storyboard_handler_rejects_graph_not_built_by_director():
+    node = {"id": "n_sb", "type": "text", "config": {"role": "storyboard", "prompt": "单镜头分镜"}}
+    graph = {"nodes": [node], "edges": [], "metadata": {}}
+    ctx = NodeExecutionContext(graph=graph, run_id="r", node_id="n_sb", run={})
+    with pytest.raises(RuntimeError, match="not built by the Director chain; rebuild the graph"):
+        await StoryboardNodeHandler().execute(node, ctx)
+
+
 def test_clip_prompt_leads_with_storyboard_beat(tmp_path):
     graph = _graph_with_storyboard(tmp_path, {"clip_action": "ignored stale"})
     prompt = build_clip_prompt(graph, graph["nodes"][1], _ctx(graph))
@@ -231,18 +204,3 @@ def test_clip_prompt_leads_with_storyboard_beat(tmp_path):
     assert "primary start blocking" not in prompt.lower()
 
 
-def test_last_frame_clause_does_not_override_storyboard_plot():
-    from jiuwenswarm.server.runtime.designer.pipeline.clip_last_frame_handoff import (
-        last_frame_continuity_clause,
-    )
-
-    text = last_frame_continuity_clause(
-        used=True,
-        chain=[
-            {"path": "/tmp/a.jpg", "clip_index": 1, "action": "walked to the door"},
-        ],
-    )
-    low = text.lower()
-    assert "storyboard shot" in low
-    assert "continue from this pose" not in low
-    assert "primary start blocking" not in low

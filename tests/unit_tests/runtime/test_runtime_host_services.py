@@ -1,8 +1,81 @@
 from __future__ import annotations
 
+import asyncio
 import pytest
 
 from jiuwenswarm.common import host_services
+
+
+@pytest.mark.asyncio
+async def test_request_push_is_concurrent_and_restores_resident_host():
+    calls = []
+    host_services.install_runtime_push_handler(lambda message: calls.append("host"))
+
+    async def request(name):
+        message = {"request_id": name}
+        with host_services.scoped_runtime_push_handler(
+            message, lambda message: calls.append(name)
+        ):
+            await asyncio.sleep(0)
+            assert await host_services.send_runtime_push(message)
+
+    await asyncio.gather(request("one"), request("two"))
+    assert await host_services.send_runtime_push({})
+    assert calls == ["one", "two", "host"]
+
+
+@pytest.mark.asyncio
+async def test_scoped_false_falls_back_to_host_push() -> None:
+    """HTTP 聊天 scoped 只认 chat.file 时，cron 等推送应回退到进程级 send_push。"""
+    calls: list[str] = []
+
+    async def host(_message: dict) -> bool:
+        calls.append("host")
+        return True
+
+    async def scoped_reject(_message: dict) -> bool:
+        calls.append("scoped")
+        return False
+
+    host_services.install_runtime_push_handler(host)
+    message = {"request_id": "cron-1", "channel_id": "web", "session_id": "s"}
+    with host_services.scoped_runtime_push_handler(message, scoped_reject):
+        assert await host_services.send_runtime_push(message) is True
+    assert calls == ["scoped", "host"]
+
+
+@pytest.mark.asyncio
+async def test_reused_sdk_task_finds_current_route_without_cross_tenant_delivery():
+    calls = []
+    queue = asyncio.Queue()
+
+    async def sdk_worker():
+        message = await queue.get()
+        return await host_services.send_runtime_push(message)
+
+    # SDK task exists before the second HTTP request binds its delivery port.
+    worker = asyncio.create_task(sdk_worker())
+    message = {
+        "request_id": "r2",
+        "session_id": "s",
+        "channel_id": "web",
+        "metadata": {"user_id": "u", "routing": {"group_id": "g", "bot_id": "b"}},
+    }
+    with host_services.scoped_runtime_push_handler(
+        message, lambda message: calls.append(message)
+    ):
+        await queue.put(message)
+        assert await worker
+        other = {
+            **message,
+            "metadata": {
+                "user_id": "other",
+                "routing": {"group_id": "g", "bot_id": "b"},
+            },
+        }
+        assert not await host_services.send_runtime_push(other)
+    assert calls == [message]
+    assert not await host_services.send_runtime_push(message)
 
 
 @pytest.fixture(autouse=True)

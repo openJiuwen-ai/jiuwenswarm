@@ -7,6 +7,10 @@ from enum import Enum
 from typing import Any
 
 
+_STEER_IMAGE_FIELDS = frozenset({"type", "path", "filename", "mime_type", "size_bytes"})
+_STEER_IMAGE_MIME_TYPES = frozenset({"image/png", "image/jpeg", "image/webp", "image/gif"})
+
+
 class SessionInputMode(str, Enum):
     STEER = "steer"
     FOLLOW_UP = "follow_up"
@@ -55,19 +59,40 @@ def resolve_session_input_mode(params: Any) -> SessionInputMode | None:
         return None
 
 
+def validate_steer_image_references(params: Mapping[str, Any]) -> list[Mapping[str, Any]]:
+    """Validate the reference-only wire shape without touching the filesystem."""
+    for key in ("images", "image_files", "files", "attachments", "audio_files", "video_files"):
+        if params.get(key):
+            raise ValueError("steering accepts uploaded image references only; send other attachments as a queued task")
+    raw_items = params.get("media_items")
+    if raw_items is None:
+        return []
+    if not isinstance(raw_items, list):
+        raise ValueError("steer media_items must be a list of uploaded image references")
+    for item in raw_items:
+        if not isinstance(item, Mapping) or set(item) - _STEER_IMAGE_FIELDS:
+            raise ValueError("steer images require uploaded file references without inline data")
+        if item.get("type") != "image":
+            raise ValueError("steering accepts uploaded images only")
+        for key in ("path", "filename", "mime_type"):
+            if not isinstance(item.get(key), str) or not item[key].strip():
+                raise ValueError(f"steer image {key} must be a non-empty string")
+        if item["mime_type"] not in _STEER_IMAGE_MIME_TYPES:
+            raise ValueError("unsupported steer image MIME type")
+    return raw_items
+
+
 def validate_session_input(params: Mapping[str, Any]) -> None:
+    mode = resolve_session_input_mode(params)
     if "expected_execution_id" in params:
         target = params["expected_execution_id"]
         if not isinstance(target, str) or not target.strip():
             raise ValueError("expected_execution_id must be a non-empty string")
-        if resolve_session_input_mode(params) is not SessionInputMode.STEER:
+        if mode is not SessionInputMode.STEER:
             raise ValueError("expected_execution_id requires steer mode")
+    image_references = validate_steer_image_references(params) if mode is SessionInputMode.STEER else []
     query = params.get("query")
+    if image_references and (query is None or isinstance(query, str)):
+        return
     if not isinstance(query, str) or not query.strip():
         raise ValueError("session input requires non-empty text")
-    # The locked SDK's active steering queue carries text only. Never
-    # acknowledge an attachment which that queue would silently discard.
-    if resolve_session_input_mode(params) is SessionInputMode.STEER:
-        for key in ("images", "image_files", "files", "attachments", "audio_files", "video_files"):
-            if params.get(key):
-                raise ValueError("steering supports text only; send attachments as a queued task")

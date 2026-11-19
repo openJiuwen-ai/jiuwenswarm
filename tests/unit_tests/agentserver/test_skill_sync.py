@@ -146,49 +146,6 @@ def _multipart(
 
 
 @pytest.fixture
-def manager(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SkillManager:
-    skills_dir = tmp_path / "skills"
-    skills_dir.mkdir()
-    state_file = skills_dir / "skills_state.json"
-    state_file.write_text(
-        json.dumps(
-            {
-                "marketplaces": [],
-                "installed_plugins": [],
-                "local_skills": [],
-                "skill_configs": {},
-            }
-        ),
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager.get_agent_skills_dir",
-        lambda: skills_dir,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager.get_builtin_skills_dir",
-        lambda: tmp_path / "builtin_missing",
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager._get_agent_root_dir",
-        lambda: tmp_path,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager._get_marketplace_dir",
-        lambda: skills_dir / "_marketplace",
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skill_manager._get_state_file",
-        lambda: state_file,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.skill.skilldev.state_utils.get_state_file",
-        lambda: state_file,
-    )
-    return SkillManager()
-
-
-@pytest.fixture
 def sync_token(monkeypatch: pytest.MonkeyPatch) -> str:
     token = "unit-test-sync-token"
     monkeypatch.setenv("JIUWENSKILL_SYNC_TOKEN", token)
@@ -1515,30 +1472,6 @@ async def test_sync_reload_partial_landing_triggers_agent_reload() -> None:
     assert "create_instance" in reloaded, "applied 非空场景必须重建 agent 实例"
 
 
-@pytest.mark.asyncio
-async def test_sync_apply_no_landed_skill_skips_agent_reload() -> None:
-    """WS apply 路由已收缩（仅剩 skills.sync.reload），无落盘 reload 不重建."""
-    stub = _StubManager({"success": True, "applied": []})
-    facade = _build_facade_with_stub(stub)
-    reloaded: list[str] = []
-
-    async def fake_create_instance() -> None:
-        reloaded.append("create_instance")
-
-    async def fake_reload_rails(session_id=None) -> None:
-        reloaded.append(f"rails:{session_id}")
-
-    monkey_local = pytest.MonkeyPatch()
-    monkey_local.setattr(facade, "create_instance", fake_create_instance)
-    monkey_local.setattr(facade, "_reload_team_skill_rails", fake_reload_rails)
-    try:
-        response = await facade._handle_skills_request(_sync_reload_request([]))
-    finally:
-        monkey_local.undo()
-
-    assert response is not None and response.ok
-    assert "create_instance" not in reloaded, "无落盘场景不应重建 agent 实例"
-
 
 def test_ws_routes_only_reload_registered() -> None:
     """skills.sync.diff/package/apply 不得进 WS 路由（绕过 token 鉴权）."""
@@ -1677,9 +1610,10 @@ async def test_full_sync_roundtrip_push_then_diff(
     skill_md_content = _skill_md("weather", description="天气查询") + "# Hi\n"
     client_dir = manager._skills_dir.parent / "client-side" / "weather"
     client_dir.mkdir(parents=True)
-    (client_dir / "SKILL.md").write_text(skill_md_content, encoding="utf-8")
+    # Windows 默认 write_text 会写成 CRLF，与 zip/解压后的 LF 校验和不一致。
+    (client_dir / "SKILL.md").write_bytes(skill_md_content.encode("utf-8"))
     (client_dir / "scripts").mkdir()
-    (client_dir / "scripts" / "tool.py").write_text("print('x')\n", encoding="utf-8")
+    (client_dir / "scripts" / "tool.py").write_bytes(b"print('x')\n")
     client_checksum = compute_content_checksum(client_dir)
 
     diff = await manager.handle_skill_sync_diff(

@@ -253,7 +253,7 @@ def main() -> None:
         gateway_args.extend(["--dotenv", args.dotenv])
 
     gateway_proc = start_service(
-        "gateway.app_gateway",
+        "agent_gateway.app_gateway",
         gateway_args,
         "gateway",
     )

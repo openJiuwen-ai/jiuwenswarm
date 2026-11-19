@@ -46,23 +46,18 @@
   outline: none;
 }
 
-.notice,
 .warning {
   margin: 0;
   border-radius: 0.375rem;
   padding: 0.375rem 0.625rem;
   font-size: 0.75rem;
   line-height: 1.25rem;
-}
-
-.notice {
-  background: var(--color-feedback-info-subtle);
-  color: var(--color-feedback-info);
-}
-
-.warning {
   background: var(--color-feedback-warning-subtle);
   color: var(--color-feedback-warning);
+}
+
+.lastTurnInline {
+  color: var(--color-feedback-info);
 }
 
 .actions {

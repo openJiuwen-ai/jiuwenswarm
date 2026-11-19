@@ -16,7 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
+from agent_gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.gateway_adapter import (
@@ -35,6 +35,14 @@ from jiuwenswarm.server.runtime.gateway_adapter.base import (
 from jiuwenswarm.server.runtime.harmonyos.harmonyos_project import (
     HarmonyOSProjectError,
 )
+
+
+@pytest.fixture(autouse=True)
+def register_config_dependencies(monkeypatch):
+    from jiuwenswarm.common import external_providers
+    from jiuwenswarm.server.runtime.a2ui import integration
+
+    monkeypatch.setitem(external_providers._providers, "a2ui", integration)
 
 
 def _request(
@@ -200,9 +208,21 @@ async def test_im_file_persist_concurrent_same_name_does_not_clobber(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reference_only,current_content,expected_content",
+    [
+        (False, b"longer current original content", b"approved-content"),
+        (True, b"longer current original content", b"longer current original content"),
+        (True, b"x", b"x"),
+        (True, b"", b""),
+    ],
+)
 async def test_workspace_verified_download_revalidates_every_bounded_chunk(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    reference_only: bool,
+    current_content: bytes,
+    expected_content: bytes,
 ) -> None:
     from jiuwenswarm.agents.harness.common.tools.verified_download_assets import (
         VerifiedDownloadAssetOwner,
@@ -220,7 +240,8 @@ async def test_workspace_verified_download_revalidates_every_bounded_chunk(
     asset = owner.stage(
         source,
         file_name=source.name,
-        expires_at=10_000_000_000,
+        expires_at=0 if reference_only else 10_000_000_000,
+        reference_only=reference_only,
     )
     manager = WebFileDownloadManager("s" * 32, asset_owner=owner)
     monkeypatch.setattr(WebFileDownloadManager, "_instance", manager)
@@ -230,6 +251,7 @@ async def test_workspace_verified_download_revalidates_every_bounded_chunk(
         session_id="current-session",
     )
     adapter = WorkspaceFileAdapter()
+    source.write_bytes(current_content)
 
     first = await adapter.handle(
         _request(
@@ -238,9 +260,22 @@ async def test_workspace_verified_download_revalidates_every_bounded_chunk(
         )
     )
     assert first.ok is True
-    assert base64.b64decode(first.payload["data_base64"]) == b"approved"
+    assert base64.b64decode(first.payload["data_base64"]) == expected_content[:8]
     assert first.payload["name"] == source.name
-    assert first.payload["size"] == len(b"approved-content")
+    assert first.payload["size"] == len(expected_content)
+    tail = await adapter.handle(_request(
+        ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK,
+        {"token": token, "offset": max(0, len(expected_content) - 3), "limit": 8},
+    ))
+    assert tail.ok
+    assert base64.b64decode(tail.payload["data_base64"]) == expected_content[-3:]
+    assert tail.payload["eof"] is True
+    past_end = await adapter.handle(_request(
+        ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK,
+        {"token": token, "offset": len(expected_content) + 1, "limit": 8},
+    ))
+    assert not past_end.ok
+    assert past_end.payload["code"] == "BAD_REQUEST"
 
     owner.revoke(asset)
     rejected = await adapter.handle(
@@ -251,6 +286,7 @@ async def test_workspace_verified_download_revalidates_every_bounded_chunk(
     )
     assert rejected.ok is False
     assert rejected.payload["code"] == "FORBIDDEN"
+    assert source.read_bytes() == current_content
 
 
 @pytest.mark.asyncio
@@ -291,6 +327,14 @@ def patched_sessions(monkeypatch: pytest.MonkeyPatch):
 
 
 class TestSessionAdapter:
+    @pytest.fixture(autouse=True)
+    def checkpoint_store(self, monkeypatch):
+        """Session cleanup owns its checkpoint state, including the real release hook."""
+        from openjiuwen.core.session.checkpointer import CheckpointerFactory
+        from openjiuwen.core.session.checkpointer.inmemory import InMemoryCheckpointer
+
+        monkeypatch.setattr(CheckpointerFactory, "_default_checkpointer", InMemoryCheckpointer())
+
     async def test_history_list_turns_is_handled_as_session_rpc(self, monkeypatch) -> None:
         from jiuwenswarm.agents.harness.common import session_ops_service
 
@@ -405,9 +449,15 @@ class TestSessionAdapter:
 
     async def test_get_metadata(self, monkeypatch) -> None:
         """session.get_metadata：OK 返回 metadata；不存在返回 NOT_FOUND（与 Web fallback 语义一致）。"""
+        captured: dict[str, object] = {}
+
+        def _read(sid, cache_bust=False, *, enable_writeback=True):
+            captured["enable_writeback"] = enable_writeback
+            return {"session_id": sid, "mode": "agent", "model": "m1"}
+
         monkeypatch.setattr(
             "jiuwenswarm.server.control.repositories.session_repository.get_session_metadata",
-            lambda sid, cache_bust=False: {"session_id": sid, "mode": "agent", "model": "m1"},
+            _read,
         )
         resp = await SessionAdapter().handle(
             _request(ReqMethod.SESSION_GET_METADATA, {"session_id": "sess-1"})
@@ -415,10 +465,25 @@ class TestSessionAdapter:
         assert resp.ok is True
         assert resp.payload["session_id"] == "sess-1"
         assert resp.payload["model"] == "m1"
+        # 缺省保持既有调用方（web/TUI/video_duplex）的原行为：允许推断写盘
+        assert captured["enable_writeback"] is True
+
+        # gateway 远端读声明的只读语义随参数透传，不得静默升级为可写
+        resp = await SessionAdapter().handle(
+            _request(
+                ReqMethod.SESSION_GET_METADATA,
+                {"session_id": "sess-1", "enable_writeback": False},
+            )
+        )
+        assert resp.ok is True
+        assert captured["enable_writeback"] is False
+
+        def _empty(sid, cache_bust=False, *, enable_writeback=True):
+            return {}
 
         monkeypatch.setattr(
             "jiuwenswarm.server.control.repositories.session_repository.get_session_metadata",
-            lambda sid, cache_bust=False: {},
+            _empty,
         )
         resp = await SessionAdapter().handle(
             _request(ReqMethod.SESSION_GET_METADATA, {"session_id": "missing"})
@@ -515,6 +580,7 @@ class TestSessionAdapter:
         """
         evict_calls: list[dict] = []
         metadata_reads: list[bool] = []
+        monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
         monkeypatch.setattr(
             "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
             lambda sid, cache_bust=False: (
@@ -532,6 +598,38 @@ class TestSessionAdapter:
         assert resp.payload["code"] == "AGENT_UNAVAILABLE"
         assert evict_calls == []
         assert metadata_reads == [True]
+
+    async def test_enterprise_offline_team_delete_purges_by_session(self, monkeypatch) -> None:
+        purged: list[dict] = []
+        monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+        monkeypatch.setenv("GATEWAY_DB_TYPE", "mysql")
+        monkeypatch.setenv("GATEWAY_DB_HOST", "127.0.0.1")
+        monkeypatch.setenv("GATEWAY_DB_PORT", "3306")
+        monkeypatch.setenv("GATEWAY_DB_USER", "team")
+        monkeypatch.setenv("GATEWAY_DB_PASSWORD", "team")
+        monkeypatch.setenv("GATEWAY_DB_NAME", "team")
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+            lambda sid, cache_bust=False: {"mode": "team"},
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.enterprise.team.session_cleanup.purge_team_for_deleted_session",
+            lambda **kwargs: purged.append(kwargs),
+        )
+        resp = await SessionAdapter().handle(
+            _request(
+                ReqMethod.SESSION_DELETE,
+                {"session_id": "sess-team-1", "user_id": "user-1"},
+                user_id="user-1",
+            )
+        )
+        assert resp.ok is False
+        assert resp.payload["code"] == "AGENT_UNAVAILABLE"
+        assert purged == [{
+            "session_id": "sess-team-1",
+            "owner_user_id": "user-1",
+            "require_owner": True,
+        }]
 
     async def test_session_delete_missing_offline_returns_runtime_result_without_evict(
         self, monkeypatch, tmp_path,
@@ -602,6 +700,9 @@ class TestSessionAdapter:
         )
 
         class _Session:
+            async def release(self):
+                return True
+
             async def release_kvc(self):
                 evict_calls.append(
                     {
@@ -671,6 +772,9 @@ class TestSessionAdapter:
         )
 
         class _Session:
+            async def release(self):
+                return True
+
             async def release_kvc(self):
                 return True
 
@@ -707,6 +811,9 @@ class TestSessionAdapter:
         )
 
         class _Session:
+            async def release(self):
+                return True
+
             async def release_kvc(self):
                 return True
 
@@ -1335,6 +1442,7 @@ async def test_config_adapter_keeps_browser_config_in_agentserver_directory(monk
         "chrome_path": "/agent/chrome", "headless": False, "decision_mode": "llm",
         "decision_provider": "typesafe", "jev_key_configured": False,
         "decision_model": "jev-1.13.0", "decision_api_base": "https://api.typesafe.ai/v1",
+        "decision_display_name": "",
     }
     assert updates == [{"chrome_path": "/agent/new-chrome", "headless": True}]
     assert changed.metadata["config_changed"] is True
@@ -1365,6 +1473,7 @@ async def test_config_adapter_resolves_platform_browser_path_for_runtime_restart
         "jev_key_configured": False,
         "decision_model": "jev-1.13.0",
         "decision_api_base": "https://api.typesafe.ai/v1",
+        "decision_display_name": "",
     }
 
 
@@ -1514,10 +1623,12 @@ def test_saving_decision_fields_keeps_the_rest_of_the_jev_settings(tmp_path, mon
         encoding="utf-8",
     )
     monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", path)
-    config_module.update_browser_decision_in_config({"mode": "hybrid"})
+    config_module.update_browser_decision_in_config({"mode": "hybrid", "display_name": "My Jev"})
     saved = path.read_text(encoding="utf-8")
     assert "mode: hybrid" in saved and "provider: openrouter" in saved
     assert "min_confidence: 0.55" in saved and "headless: false" in saved
+    assert "display_name: My Jev" in saved
+
 
 
 def test_jev_provider_defaults_match_openjiuwen() -> None:
@@ -1592,6 +1703,7 @@ async def test_custom_jev_model_and_endpoint_round_trip_through_front(monkeypatc
     changed = await adapter.handle(_set(
         decision_provider="custom", decision_model="jev-preview",
         decision_api_base="https://jev.example.test/v1",
+        decision_display_name="Custom Jev",
     ))
     assert changed.ok
     # Simulate a Front process whose environment predates Runtime's credential write.
@@ -1601,6 +1713,8 @@ async def test_custom_jev_model_and_endpoint_round_trip_through_front(monkeypatc
     assert reopened.payload["decision_provider"] == "custom"
     assert reopened.payload["decision_model"] == "jev-preview"
     assert reopened.payload["decision_api_base"] == "https://jev.example.test/v1"
+    assert reopened.payload["decision_display_name"] == "Custom Jev"
+    assert current["browser"]["decision"]["display_name"] == "Custom Jev"
     assert reopened.payload["jev_key_configured"] is True
     assert "synthetic-custom-key" not in repr(reopened.payload)
     keys = await config_service.handle_config_request(_request(ReqMethod.CONFIG_GET))

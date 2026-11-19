@@ -8,7 +8,7 @@ export function ChannelLogo({
 }: {
   channelId: SettingsChannelId;
   label: string;
-  variant?: 'account' | 'dialog';
+  variant?: 'account' | 'channel' | 'dialog';
 }) {
   return (
     <img

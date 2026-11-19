@@ -3,11 +3,68 @@
 import json
 import logging
 import re
+import subprocess
 import sys
 
 import pytest
 
 from jiuwenswarm.common import utils
+
+
+@pytest.mark.parametrize("prefix", ["{invalid", "{'python': 1}", "[TopLogprob", "[{'python': 1}", "[[TopLogprob"])
+def test_invalid_json_prefix_skips_decoder(prefix: str, monkeypatch):
+    def unexpected_decode(*args):
+        raise AssertionError("Invalid prefixes must not reach the JSON decoder")
+
+    monkeypatch.setattr(json.JSONDecoder, "raw_decode", unexpected_decode)
+    assert utils._sanitize_log_text(prefix) == prefix
+
+
+@pytest.mark.parametrize("depth", [1, 63, 64, 65])
+def test_nested_json_prefix_preserves_values_and_secrets(depth: int):
+    value = {"api_key": "nested-local-secret", "metric": 0.12345678901234568}
+    text = "[ \n" * depth + json.dumps(value) + "]" * depth
+
+    result = json.loads(utils._sanitize_log_text(text))
+
+    for _ in range(depth):
+        result = result[0]
+    assert result == {"api_key": utils._masked_with_fp("nested-local-secret"), "metric": value["metric"]}
+
+
+def test_prefix_lookahead_stops_after_64_containers():
+    assert utils._has_possible_json_container_prefix("[" * 64 + "TopLogprob", 0) is False
+    assert utils._has_possible_json_container_prefix("[" * 65 + "TopLogprob", 0) is True
+
+
+@pytest.mark.parametrize("text", ["[]", "{}", "[true, false, null]", "[NaN, Infinity, -Infinity]", '[{"value": []}]'])
+def test_prefix_check_preserves_decoder_supported_values(text: str):
+    assert utils._sanitize_log_text(text) == json.dumps(json.loads(text), separators=(",", ":"))
+
+
+@pytest.mark.parametrize("prefix", ['[true broken ', '[null broken ', '[1 broken ', '["broken" nope ', '{"broken": nope '])
+def test_legal_first_token_still_uses_decoder_and_recovers(prefix: str):
+    secret = "recovered-local-secret"
+    sanitized = utils._sanitize_log_text(prefix + json.dumps({"api_key": secret}) + " 完整末尾")
+    assert secret not in sanitized
+    assert sanitized.endswith(" 完整末尾")
+    assert utils._masked_with_fp(secret) in sanitized
+
+
+def test_large_sdk_representation_finishes_within_deadline():
+    # Run separately so the deadline also catches a blocked sanitizer worker.
+    script = r'''
+from jiuwenswarm.common import utils
+fragment = "TopLogprob(token='piece', bytes=[65, 66], logprob=-0.12345678901234568, top_logprobs=[TopLogprob(bytes=[67, 68])]), metadata=[{'value': 1}], "
+text = "content=[" + fragment * 18000 + "] complete-tail"
+assert 2_400_000 < len(text) < 2_700_000
+result = utils._sanitize_log_text(text)
+assert result.count("bytes=[65,66]") == 18000
+assert result.count("bytes=[67,68]") == 18000
+assert result.count("logprob=-0.12345678901234568") == 18000
+assert result.endswith("] complete-tail")
+'''
+    subprocess.run([sys.executable, "-c", script], check=True, timeout=10, capture_output=True, text=True)
 
 
 @pytest.mark.parametrize("fragment_count", [1100, 10000])
@@ -127,7 +184,7 @@ def test_real_sdk_logprobs_representation_preserves_all_fragments(outer_event: b
     if outer_event:
         message = json.dumps({"event": "model_end", "output": message, "tail": "外层完整末尾"})
 
-    sanitized = utils._sanitize_log_text(message)
+    sanitized = utils.mask_sensitive(message)
 
     if outer_event:
         event = json.loads(sanitized)
@@ -205,9 +262,31 @@ def test_source_record_factory_omits_oversized_sdk_payload_and_restores_state():
             "log_payload_omitted": True,
             "original_characters": len(message),
             "character_limit": 64 * 1024,
+            "byte_limit": 64 * 1024,
         }
         assert secret not in record.getMessage()
     finally:
         logging.setLogRecordFactory(factory)
         utils._source_record_masking_installed = installed
         utils._source_masking_failures = failures
+
+@pytest.mark.parametrize("multibyte", [False, True])
+def test_record_size_boundary_is_utf8_bytes(multibyte):
+    secret = "boundary-private-key"
+    def payload(padding):
+        return json.dumps({"api_key": secret, "data": padding}, ensure_ascii=False)
+
+    space = 64 * 1024 - len(payload("").encode("utf-8"))
+    padding = "x" * space if not multibyte else "中" * (space // 3) + "x" * (space % 3)
+    at_limit = payload(padding)
+    over_limit = payload(padding + "!")
+    assert len(at_limit.encode("utf-8")) == 64 * 1024
+    assert len(over_limit.encode("utf-8")) == 64 * 1024 + 1
+    assert json.loads(utils._sanitize_record_text(at_limit)) == {
+        "api_key": utils._masked_with_fp(secret), "data": padding,
+    }
+    summary = json.loads(utils._sanitize_record_text(over_limit))
+    assert summary["log_payload_omitted"] and "api_key" not in summary and "data" not in summary
+    assert json.loads(utils.mask_sensitive(over_limit)) == {
+        "api_key": utils._masked_with_fp(secret), "data": padding + "!",
+    }

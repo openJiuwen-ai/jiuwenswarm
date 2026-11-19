@@ -1,0 +1,50 @@
+/* 外观设置面板样式：预览区使用当前生效的 CSS 变量（--font-* / --font-size-*），
+   以便如实反映用户配置的界面字体、字号与代码字体；颜色仅使用语义主题变量。 */
+
+.appearance-panel__custom {
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px 16px 40px;
+}
+
+.appearance-panel__custom-hint {
+  margin: 0;
+  color: var(--color-settings-text-secondary);
+  font-size: var(--font-size-xs);
+  line-height: 18px;
+}
+
+.appearance-panel__preview {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border-top: 1px solid var(--color-settings-border);
+  border-bottom: 1px solid var(--color-settings-border);
+}
+
+.appearance-panel__preview-label {
+  color: var(--color-settings-text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  line-height: 20px;
+}
+
+.appearance-panel__preview-body {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-family: var(--font-body);
+  font-size: var(--font-size-base);
+  line-height: 22px;
+}
+
+.appearance-panel__preview-code {
+  padding: 8px 12px;
+  border: 1px solid var(--color-settings-border);
+  border-radius: var(--radius-md, 8px);
+  color: var(--color-text-primary);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-sm);
+  line-height: 20px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

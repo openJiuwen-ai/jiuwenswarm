@@ -1,6 +1,7 @@
-import { ChevronDown } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { ChevronUp, Plus } from 'lucide-react';
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
+import { requestSettingsModule } from '../../../settings/settingsNavigation';
 import { designerGraphClient } from '../../designerGraphClient';
 import { DESIGNER_ASPECT_RATIO_ICONS } from '../../designerIcons';
 import {
@@ -13,7 +14,10 @@ import {
 import { useDesignerGraphEditingLocked } from '../../useDesignerGraphEditingLocked';
 import { useDesignerRunStore } from '../../designerRunStore';
 import { useDesignerStore } from '../../designerStore';
+import { useDesignerModelConfiguration, DESIGN_GENERATION_CHANGED_EVENT } from '../../useDesignerModelConfiguration';
+import DesignGenerationModelList from '../DesignGenerationModelList';
 import type { DesignerMediaCapabilities, DesignerMediaSettingsPatch } from '../../executionGraphTypes';
+import type { DesignGenerationSlot } from '../../designerModelConfiguration';
 
 type DesignerMediaSettingsMenuProps = {
   nodeId: string;
@@ -62,9 +66,15 @@ function ChoiceGroup({ label, options, value, disabled, testId, onSelect, showAs
   );
 }
 
+function clampDuration(raw: string, min: number, max: number): number | null {
+  const parsed = Number.parseInt(raw.trim(), 10);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.min(max, Math.max(min, parsed));
+}
+
 /**
  * Composer-row controls: a summary button that opens the canvas-wide ratio / resolution
- * (plus this video node's own length), and the read-only model name.
+ * (plus this video node's own length), and an upward menu for this node's modality.
  */
 export function DesignerMediaSettingsMenu({ nodeId, nodeType }: DesignerMediaSettingsMenuProps) {
   const { t } = useTranslation();
@@ -83,7 +93,12 @@ export function DesignerMediaSettingsMenu({ nodeId, nodeType }: DesignerMediaSet
   const [error, setError] = useState('');
   const [saving, setSaving] = useState(false);
   const [open, setOpen] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
+  const [selectionRevision, setSelectionRevision] = useState(0);
+  const [durationDraft, setDurationDraft] = useState('');
   const rootRef = useRef<HTMLDivElement>(null);
+  const modelRootRef = useRef<HTMLDivElement>(null);
+  const generation = useDesignerModelConfiguration();
 
   useEffect(() => {
     if (!graphId) return undefined;
@@ -106,10 +121,17 @@ export function DesignerMediaSettingsMenu({ nodeId, nodeType }: DesignerMediaSet
     return () => {
       cancelled = true;
     };
-  }, [graphId, runVersion, t]);
+  }, [graphId, runVersion, selectionRevision, t]);
+
+  useEffect(() => {
+    const bump = () => setSelectionRevision((value) => value + 1);
+    window.addEventListener(DESIGN_GENERATION_CHANGED_EVENT, bump);
+    return () => window.removeEventListener(DESIGN_GENERATION_CHANGED_EVENT, bump);
+  }, []);
 
   useEffect(() => {
     setOpen(false);
+    setModelOpen(false);
   }, [nodeId]);
 
   useEffect(() => {
@@ -127,6 +149,22 @@ export function DesignerMediaSettingsMenu({ nodeId, nodeType }: DesignerMediaSet
       document.removeEventListener('keydown', onKeyDown);
     };
   }, [open]);
+
+  useEffect(() => {
+    if (!modelOpen) return undefined;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!modelRootRef.current?.contains(event.target as Node)) setModelOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setModelOpen(false);
+    };
+    document.addEventListener('pointerdown', onPointerDown);
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown);
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [modelOpen]);
 
   const apply = (patch: DesignerMediaSettingsPatch) => {
     setSaving(true);
@@ -156,7 +194,37 @@ export function DesignerMediaSettingsMenu({ nodeId, nodeType }: DesignerMediaSet
         .filter(Boolean)
         .join(' · ')
     : error || t('designer.mediaSettings.loading');
-  const modelLabel = caps ? generationModelLabel(isVideo ? caps.video : caps.image) : '';
+  const modelSlot: DesignGenerationSlot = isVideo ? 'video_gen' : 'visual_gen';
+  const selectedGeneration = generation.snapshot?.models.find((model) => model.model_id === generation.selection[modelSlot]);
+  const modelLabel = selectedGeneration?.display_name
+    || (caps ? generationModelLabel(isVideo ? caps.video : caps.image) : '')
+    || t('designer.models.notSelected');
+
+  useEffect(() => {
+    if (seconds === null) {
+      setDurationDraft('');
+      return;
+    }
+    setDurationDraft(String(seconds));
+  }, [seconds]);
+
+  const commitDuration = (raw: string) => {
+    if (!caps || editingLocked || seconds === null) return;
+    const next = clampDuration(raw, caps.video.min_sec, caps.video.max_sec);
+    if (next === null) {
+      setDurationDraft(String(seconds));
+      return;
+    }
+    setDurationDraft(String(next));
+    if (next !== seconds) {
+      updateNodeConfig(nodeId, (config) => ({ ...config, duration_sec: next }));
+    }
+  };
+
+  const sliderPct =
+    seconds !== null && caps
+      ? ((seconds - caps.video.min_sec) / Math.max(1, caps.video.max_sec - caps.video.min_sec)) * 100
+      : 0;
 
   return (
     <>
@@ -179,7 +247,7 @@ export function DesignerMediaSettingsMenu({ nodeId, nodeType }: DesignerMediaSet
           }}
         >
           <span className="designer-media-settings__summary">{summary}</span>
-          <ChevronDown size={14} aria-hidden />
+          <ChevronUp size={14} aria-hidden />
         </button>
         {open && caps && video && image ? (
           <div
@@ -210,28 +278,50 @@ export function DesignerMediaSettingsMenu({ nodeId, nodeType }: DesignerMediaSet
               }
             />
             {seconds !== null ? (
-              <label className="designer-media-settings__field" data-testid="designer-media-settings-video-duration">
-                <span className="designer-media-settings__label">
-                  {t('designer.toolbar.duration')}
-                  <span className="designer-media-settings__value">
-                    {t('designer.mediaSettings.durationValue', { seconds })}
-                  </span>
-                </span>
-                <input
-                  type="range"
-                  className="designer-media-settings__slider"
-                  min={caps.video.min_sec}
-                  max={caps.video.max_sec}
-                  step={1}
-                  value={seconds}
-                  disabled={editingLocked}
-                  onChange={(event) => {
-                    if (editingLocked) return;
-                    const next = Number(event.target.value);
-                    updateNodeConfig(nodeId, (config) => ({ ...config, duration_sec: next }));
-                  }}
-                />
-              </label>
+              <div className="designer-media-settings__field" data-testid="designer-media-settings-video-duration">
+                <span className="designer-media-settings__label">{t('designer.toolbar.duration')}</span>
+                <div className="designer-media-settings__duration-row">
+                  <input
+                    type="range"
+                    className="designer-media-settings__slider"
+                    style={{ '--designer-slider-pct': `${sliderPct}%` } as CSSProperties}
+                    min={caps.video.min_sec}
+                    max={caps.video.max_sec}
+                    step={1}
+                    value={seconds}
+                    disabled={editingLocked}
+                    aria-label={t('designer.toolbar.duration')}
+                    onChange={(event) => {
+                      if (editingLocked) return;
+                      const next = Number(event.target.value);
+                      updateNodeConfig(nodeId, (config) => ({ ...config, duration_sec: next }));
+                    }}
+                  />
+                  <label className="designer-media-settings__duration-value">
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      className="designer-media-settings__duration-input"
+                      value={durationDraft}
+                      disabled={editingLocked}
+                      data-testid="designer-media-settings-video-duration-input"
+                      aria-label={t('designer.toolbar.duration')}
+                      onChange={(event) => setDurationDraft(event.target.value)}
+                      onBlur={() => commitDuration(durationDraft)}
+                      onKeyDown={(event: ReactKeyboardEvent<HTMLInputElement>) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          commitDuration(durationDraft);
+                          event.currentTarget.blur();
+                        }
+                      }}
+                    />
+                    <span className="designer-media-settings__duration-unit">
+                      {t('designer.mediaSettings.durationUnit')}
+                    </span>
+                  </label>
+                </div>
+              </div>
             ) : null}
             {error ? (
               <p className="designer-media-settings__error" data-testid="designer-media-settings-error">
@@ -241,11 +331,57 @@ export function DesignerMediaSettingsMenu({ nodeId, nodeType }: DesignerMediaSet
           </div>
         ) : null}
       </div>
-      {modelLabel ? (
-        <span className="designer-media-settings__model" data-testid="designer-media-settings-model" title={modelLabel}>
-          {modelLabel}
-        </span>
-      ) : null}
+      <div className="designer-media-settings__model-menu" ref={modelRootRef}>
+        <button
+          type="button"
+          className={`designer-media-settings__trigger${modelOpen ? ' is-open' : ''}`}
+          data-testid="designer-media-settings-model"
+          aria-haspopup="dialog"
+          aria-expanded={modelOpen}
+          title={modelLabel}
+          disabled={editingLocked}
+          onClick={() => {
+            if (editingLocked) return;
+            setModelOpen((prev) => !prev);
+          }}
+        >
+          <span className="designer-media-settings__summary">{modelLabel}</span>
+          <ChevronUp size={14} aria-hidden />
+        </button>
+        {modelOpen ? (
+          <div
+            className="designer-media-settings__model-popover"
+            role="dialog"
+            aria-label={t(`designer.modelConfiguration.${modelSlot}`)}
+            data-testid="designer-node-model-menu"
+          >
+            <DesignGenerationModelList
+              slot={modelSlot}
+              models={generation.snapshot?.models ?? []}
+              selectedId={generation.selection[modelSlot]}
+              loading={generation.loading}
+              failed={generation.failed}
+              disabled={editingLocked}
+              selectError={generation.selectError}
+              onSelect={(modelId) => { void generation.select(modelSlot, modelId); }}
+              onRetry={() => { void generation.reload(); }}
+              testIdPrefix="designer-node-model"
+            />
+            <button
+              type="button"
+              className="model-select__add-btn"
+              data-testid="designer-node-model-add"
+              onClick={() => {
+                setModelOpen(false);
+                requestSettingsModule('models', 'multimodal');
+              }}
+            >
+              <Plus size={14} aria-hidden />
+              {t('designer.modelConfiguration.addModel')}
+            </button>
+          </div>
+        ) : null}
+      </div>
     </>
   );
 }

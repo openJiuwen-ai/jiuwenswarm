@@ -4,13 +4,17 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import pytest
 
 from jiuwenswarm.runtime.session.model import SessionLifecycleContext
 from jiuwenswarm.runtime.team_session_lifecycle import TeamSessionLifecycleAdapter
+
+test_logger = logging.getLogger("tests.team_session_lifecycle")
 
 
 class _RecordingTeamManager:
@@ -122,19 +126,34 @@ def test_adapter_rejects_manager_without_round_state_reporter() -> None:
 
 
 @pytest.mark.asyncio
-async def test_pause_session_broadcasts_terminal_frame_after_successful_pause() -> None:
-    manager = _RecordingTeamManager(paused=True)
+@pytest.mark.parametrize("paused", [True, False])
+async def test_pause_session_returns_result_without_broadcasting(paused: bool) -> None:
+    manager = _RecordingTeamManager(paused=paused)
     adapter = TeamSessionLifecycleAdapter(
         coordinator=_RecordingCoordinator(),
         team_manager=manager,
     )
 
-    await adapter.pause_session(
+    result = await adapter.pause_session(
         SessionLifecycleContext(session_id="session-a", generation=2),
         reason="user_pause",
         channel_id="web",
     )
 
+    assert result is paused
+    assert manager.broadcast_events == []
+    test_logger.info("Pause result=%s; completion delivery remains Runtime-owned", paused)
+
+
+@pytest.mark.asyncio
+async def test_pause_completion_parks_observers_and_broadcasts_terminal() -> None:
+    manager = _RecordingTeamManager()
+    coordinator = _RecordingCoordinator()
+    adapter = TeamSessionLifecycleAdapter(coordinator=coordinator, team_manager=manager)
+
+    await adapter.publish_pause_completed("session-a", generation=2, channel_id="web")
+
+    assert coordinator.transitions == [("waiting", "session-a", 2)]
     assert manager.broadcast_events == [
         (
             "session-a",
@@ -147,36 +166,43 @@ async def test_pause_session_broadcasts_terminal_frame_after_successful_pause() 
             "web",
         ),
     ]
+    test_logger.info("Pause completion parked observers and used the existing Team broadcast")
 
 
 @pytest.mark.asyncio
-async def test_pause_session_skips_terminal_frame_when_nothing_paused() -> None:
-    manager = _RecordingTeamManager(paused=False)
-    adapter = TeamSessionLifecycleAdapter(
-        coordinator=_RecordingCoordinator(),
-        team_manager=manager,
+@pytest.mark.parametrize("delivered", [True, False])
+async def test_pause_completion_uses_existing_push_fallback_without_waiters(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    delivered: bool,
+) -> None:
+    from jiuwenswarm.agents.harness.team import TeamManager
+    from jiuwenswarm.agents.harness.team import team_manager as team_manager_module
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+    manager = TeamManager()
+    server = AsyncMock()
+    server.send_push.return_value = delivered
+    monkeypatch.setattr(AgentWebSocketServer, "get_instance", lambda: server)
+    monkeypatch.setattr(team_manager_module.logger, "handlers", [caplog.handler])
+    adapter = TeamSessionLifecycleAdapter(coordinator=_RecordingCoordinator(), team_manager=manager)
+
+    await adapter.publish_pause_completed("session-a", generation=None, channel_id="web")
+
+    server.send_push.assert_awaited_once_with(
+        {
+            "request_id": "",
+            "channel_id": "web",
+            "session_id": "session-a",
+            "payload": {
+                "event_type": "chat.processing_status",
+                "session_id": "session-a",
+                "is_processing": False,
+                "is_complete": True,
+            },
+            "is_complete": False,
+        },
     )
-
-    await adapter.pause_session(
-        SessionLifecycleContext(session_id="session-a", generation=2),
-        reason="user_pause",
-    )
-
-    assert manager.broadcast_events == []
-
-
-@pytest.mark.asyncio
-async def test_pause_session_swallows_terminal_frame_delivery_failure() -> None:
-    manager = _RecordingTeamManager(paused=True, broadcast_error=RuntimeError("push failed"))
-    adapter = TeamSessionLifecycleAdapter(
-        coordinator=_RecordingCoordinator(),
-        team_manager=manager,
-    )
-
-    await adapter.pause_session(
-        SessionLifecycleContext(session_id="session-a", generation=2),
-        reason="user_pause",
-        channel_id="web",
-    )
-
-    assert len(manager.broadcast_events) == 1
+    if not delivered:
+        assert "waiter-less terminal event not delivered: session_id=session-a" in caplog.text
+    test_logger.info("Existing waiter-less push fallback delivered=%s", delivered)

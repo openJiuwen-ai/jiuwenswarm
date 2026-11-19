@@ -5,6 +5,8 @@ import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from jiuwenswarm.agents.harness.common.rsi.artifact_files_service import (
     RsiArtifactFilesService,
 )
@@ -12,6 +14,104 @@ from jiuwenswarm.agents.harness.common.rsi.artifact_adapter import (
     provider_best_artifact,
     provider_report_to_web,
 )
+from jiuwenswarm.agents.harness.common.rsi.errors import RsiArtifactNotFound, RsiBadRequest, RsiPathInvalid
+
+
+@pytest.mark.parametrize("artifact_id", ["AROOT", "Aepoch-001"])
+def test_harness_snapshot_lists_package_files_without_changing_task_state(tmp_path: Path, artifact_id: str):
+    task_id = "rsi-harness"
+    root = tmp_path / task_id
+    (root / "snapshots").mkdir(parents=True)
+    metadata = '{"scenario":"HARNESS","active_ref_in_use":true}'
+    (root / "task.json").write_text(metadata, encoding="utf-8")
+    with zipfile.ZipFile(root / "snapshots" / f"{artifact_id}.zip", "w") as package:
+        package.writestr("HARNESS_REFS.yaml", "harness_refs: {}\n")
+        package.writestr("PRIMARY_package/README.md", "package overview\n")
+        package.writestr("PRIMARY_package/harness_config.yaml", "name: example\n")
+        package.writestr("PRIMARY_package/prompt_sections/files/identity.md", "Be precise.\n")
+        package.writestr("PRIMARY_package/tools/helper.py", "answer = 42\n")
+    service = RsiArtifactFilesService(SimpleNamespace(tasks_root=tmp_path))
+    listed = service.list_files({"task_id": task_id, "artifact_id": artifact_id})
+    assert listed["initial_path"].endswith("PRIMARY_package/harness_config.yaml")
+    assert {f["name"] for f in listed["files"]} >= {"harness_config.yaml", "identity.md", "helper.py"}
+    config = service.read_file({"task_id": task_id, "path": listed["initial_path"]})
+    assert config["encoding"] == "text" and config["type"].startswith("text/")
+    assert config["content"] == "name: example\n"
+    assert (root / "task.json").read_text(encoding="utf-8") == metadata
+
+
+def test_harness_snapshot_versions_are_independent(tmp_path: Path):
+    root = tmp_path / "rsi-versions"
+    (root / "snapshots").mkdir(parents=True)
+    (root / "task.json").write_text("{}", encoding="utf-8")
+    service = RsiArtifactFilesService(SimpleNamespace(tasks_root=tmp_path))
+    for name, content in [("Aepoch-001", "first"), ("Aepoch-003", "third")]:
+        with zipfile.ZipFile(root / "snapshots" / f"{name}.zip", "w") as package:
+            package.writestr("package/manifest.json", json.dumps({"name": content}))
+        listed = service.list_files({"task_id": root.name, "artifact_id": name})
+        file = service.read_file({"task_id": root.name, "path": listed["initial_path"]})
+        assert json.loads(file["content"])["name"] == content
+
+
+@pytest.mark.parametrize("artifact_id", ["../../other", "A/epoch-001", "..\\other", "/absolute"])
+def test_harness_snapshot_id_cannot_select_an_arbitrary_path(tmp_path: Path, artifact_id: str):
+    root = tmp_path / "rsi-safe"
+    root.mkdir()
+    (root / "task.json").write_text("{}", encoding="utf-8")
+    service = RsiArtifactFilesService(SimpleNamespace(tasks_root=tmp_path))
+    with pytest.raises(RsiBadRequest):
+        service.list_files({"task_id": root.name, "artifact_id": artifact_id})
+
+
+def test_snapshot_selector_rejects_ambiguity_and_missing_snapshot(tmp_path: Path):
+    root = tmp_path / "rsi-safe"
+    root.mkdir()
+    (root / "task.json").write_text("{}", encoding="utf-8")
+    service = RsiArtifactFilesService(SimpleNamespace(tasks_root=tmp_path))
+    with pytest.raises(RsiBadRequest):
+        service.list_files({"task_id": root.name, "artifact_id": "AROOT", "path": "run"})
+    with pytest.raises(RsiArtifactNotFound):
+        service.list_files({"task_id": root.name, "artifact_id": "AROOT"})
+
+
+def test_snapshot_cannot_escape_via_archive_members_or_symlinks(tmp_path: Path):
+    root = tmp_path / "rsi-archive-boundary"
+    (root / "snapshots").mkdir(parents=True)
+    (root / "task.json").write_text("{}", encoding="utf-8")
+    service = RsiArtifactFilesService(SimpleNamespace(tasks_root=tmp_path))
+    with zipfile.ZipFile(root / "snapshots/AROOT.zip", "w") as package:
+        package.writestr("../models/private.yaml", "private\n")
+    with pytest.raises(RsiPathInvalid):
+        service.list_files({"task_id": root.name, "artifact_id": "AROOT"})
+    assert not (root / "models/private.yaml").exists()
+    secret = tmp_path / "outside.zip"
+    with zipfile.ZipFile(secret, "w") as package:
+        package.writestr("private.yaml", "private\n")
+    link = root / "snapshots/Aepoch-001.zip"
+    try:
+        link.symlink_to(secret)
+    except OSError:
+        pytest.skip("Symlink creation is unavailable on this platform")
+    with pytest.raises(RsiPathInvalid):
+        service.list_files({"task_id": root.name, "artifact_id": "Aepoch-001"})
+
+
+@pytest.mark.parametrize("suffix", ["yaml", "yml", "toml", "ts", "tsx", "py", "md"])
+def test_known_text_files_remain_previewable_with_platform_mime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str,
+):
+    from jiuwenswarm.agents.harness.common.rsi import artifact_files_service as module
+
+    monkeypatch.setattr(module.mimetypes, "guess_type", lambda name: ("application/octet-stream", None))
+    root = tmp_path / "rsi-mime"
+    (root / "run").mkdir(parents=True)
+    (root / "task.json").write_text("{}", encoding="utf-8")
+    file = root / "run" / f"config.{suffix}"
+    file.write_text("hello\n", encoding="utf-8")
+    service = RsiArtifactFilesService(SimpleNamespace(tasks_root=tmp_path))
+    listed = service.list_files({"task_id": root.name, "path": str(file)})
+    assert listed["files"][0]["type"].startswith("text/")
+    assert service.read_file({"task_id": root.name, "path": str(file)})["encoding"] == "text"
 
 
 def test_zip_artifact_is_browsable_and_jsonl_is_text(tmp_path: Path):

@@ -52,6 +52,7 @@ from openjiuwen.agent_teams.workflow.engine.runtime import AbortSignal as _Abort
 
 from jiuwenswarm.common.schema.designer_graph import (
     RUN_SCHEMA_VERSION,
+    RUN_TRIGGER_SOURCE_CANVAS,
     DesignerExecutionGraph,
 )
 from jiuwenswarm.server.runtime.design.context import (
@@ -167,6 +168,7 @@ class RunCoordinator:
         node_ids: list[str] | None = None,
         cascade: bool = False,
         on_update: RunUpdateCallback | None = None,
+        source: str = RUN_TRIGGER_SOURCE_CANVAS,
     ) -> dict[str, Any]:
         """Execute one trigger.
 
@@ -179,7 +181,11 @@ class RunCoordinator:
         async with self._lock:
             self.heal_zombie_runs(graph)
             return await self._execute(
-                graph, node_ids=node_ids, cascade=cascade, on_update=on_update
+                graph,
+                node_ids=node_ids,
+                cascade=cascade,
+                on_update=on_update,
+                source=source,
             )
 
     def heal_zombie_runs(self, graph: DesignerExecutionGraph) -> None:
@@ -227,6 +233,7 @@ class RunCoordinator:
         node_ids: list[str] | None,
         cascade: bool,
         on_update: RunUpdateCallback | None,
+        source: str = RUN_TRIGGER_SOURCE_CANVAS,
     ) -> dict[str, Any]:
         run_id, minted = self._ensure_run_id(graph)
         run = self._load_run(run_id, graph)
@@ -259,6 +266,7 @@ class RunCoordinator:
         trigger_scope = f"{run_id}-t{secrets.token_hex(4)}"
         run["status"] = "running"
         run["current_node_ids"] = []
+        run["metadata"] = {**(run.get("metadata") or {}), "trigger_source": source}
         # A new trigger invalidates the previous trigger's run-level error;
         # leaving it would keep showing a stale refusal on every later run.
         run.pop("error", None)
@@ -412,7 +420,10 @@ class RunCoordinator:
                 wal_path=wal_path,
                 abort_event=abort_signal,
             )
-        except _WorkflowAborted:
+        except (_WorkflowAborted, asyncio.CancelledError) as exc:
+            # CancelledError: the awaiting task died (a leader trigger when the
+            # leader is paused). Unrecorded, the run stays 'running' and the
+            # canvas stays read-only with no live trigger behind it.
             run["status"] = "cancelled"
             run["current_node_ids"] = []
             for state in (run.get("node_states") or {}).values():
@@ -421,6 +432,8 @@ class RunCoordinator:
             self._store.save_run(run)
             if on_update is not None:
                 on_update(dict(run))
+            if isinstance(exc, asyncio.CancelledError):
+                raise
             return run
         except Exception as exc:
             logger.exception("[design-run] trigger failed: run_id=%s", run_id)

@@ -31,7 +31,6 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
-
 from openjiuwen.agent_teams.rails.builtin_elements import SKILL_USE as CORE_SKILL_USE
 from openjiuwen.harness.schema import deep_agent_spec as das
 from openjiuwen.agent_teams.harness.manifest import get_catalog, resolve_factory
@@ -62,6 +61,8 @@ from openjiuwen.harness.tools.worktree import WorktreeConfig
 from openjiuwen.harness.prompts.builder import SystemPromptBuilder
 from openjiuwen.harness.prompts.prompt_attachment_manager import PromptAttachmentManager
 from openjiuwen.harness.rails import SkillUseRail
+from openjiuwen.agent_teams.rails.elements import TEAM_SKILL_USE
+from agent_gateway.common.mode_matrix import NEW_TEAM_DESIGN
 
 from jiuwenswarm.agents.harness.code.rails.heartbeat.tools import (
     HEARTBEAT_TOOL_NAMES,
@@ -81,15 +82,13 @@ from jiuwenswarm.agents.swarm import (
     preflight_team_mcps,
     register_swarm_providers,
 )
-from openjiuwen.agent_teams.rails.elements import TEAM_SKILL_USE
-
 from jiuwenswarm.agents.swarm import registry
 from jiuwenswarm.agents.swarm.config_specs import (
     build_member_capability_specs,
     build_member_deep_agent_spec,
     build_member_subagent_specs,
 )
-from gateway.common.mode_matrix import NEW_TEAM_DESIGN
+from agent_gateway.common.mode_matrix import NEW_TEAM_DESIGN
 from jiuwenswarm.agents.swarm.providers import (
     code_rails,
     evolution_rails,
@@ -251,6 +250,7 @@ _TEAM_SHARED_RAIL_NAMES: frozenset[str] = frozenset(
         registry.SYMPHONY_ORCHESTRATION_PROMPT,
         registry.MEMBER_SKILL_TOOLKIT,
         TEAM_SKILL_USE,
+        registry.OPENCODE_SESSION,
     }
 )
 
@@ -642,7 +642,7 @@ def test_build_member_capability_specs_rail_names(
 
     assert _TEAM_SHARED_RAIL_NAMES <= rail_names
     assert extra_rails <= rail_names
-    assert len(_TEAM_SHARED_RAIL_NAMES) == 20
+    assert len(_TEAM_SHARED_RAIL_NAMES) == 21
     assert rail_names == expected
     # No DeepAgent is involved; every entry is a plain declarative RailSpec.
     assert all(isinstance(spec, RailSpec) for spec in rails_specs)
@@ -724,6 +724,12 @@ def test_a4p_intent_authorization_provider_is_interactive_web_leader_only() -> N
             "request_a4p_intent_authorization"
         ]
         assert tools.build_a4p_intent_authorization({}, teammate) == []
+        context = AUTHORIZATION_EXECUTION_CONTEXTS.get("session-1")
+        context.metadata["cron"] = {"job_id": "job-1"}
+        assert tools.build_a4p_intent_authorization({}, enabled) == []
+        context.metadata.clear()
+        assert tools.build_a4p_intent_authorization({}, enabled)
+
     finally:
         AUTHORIZATION_EXECUTION_CONTEXTS.clear()
 
@@ -1126,6 +1132,98 @@ def test_enrich_team_spec_for_swarm_has_no_deep_agent_param() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("dispatch_mode", "spawn_mode", "explicit_fork", "enabled"),
+    [
+        ("scheduled", "inprocess", None, True),
+        ("scheduled", "inprocess", False, False),
+        ("scheduled", "process", None, False),
+        ("autonomous", "inprocess", None, False),
+    ],
+)
+def test_enrich_applies_scheduled_fork_default(
+    dispatch_mode: str, spawn_mode: str, explicit_fork: bool | None, enabled: bool
+) -> None:
+    spec = _make_team_spec()
+    spec.dispatch_mode = dispatch_mode
+    spec.spawn_mode = spawn_mode
+    if explicit_fork is not None:
+        spec.enable_fork = explicit_fork
+    enrich_team_spec_for_swarm(spec, session_id="s", mode="team", channel_id="web")
+    assert spec.enable_fork is enabled
+
+
+@pytest.mark.parametrize(
+    ("mode", "dispatch_mode", "disable", "expected"),
+    [
+        ("code.team", "scheduled", True, False),
+        ("team.plan.code", "scheduled", True, False),
+        ("code.team", "scheduled", False, True),
+        ("code.team", "autonomous", True, True),
+        ("team", "scheduled", True, None),
+    ],
+)
+def test_enrich_gates_code_todo_reminders_by_effective_dispatch_mode(
+    monkeypatch: pytest.MonkeyPatch, mode: str, dispatch_mode: str, disable: bool, expected: bool | None,
+) -> None:
+    config = {"modes": {"team": {"jiuwen_team": {"disable_code_todo_reminder": disable}}}}
+    monkeypatch.setattr("jiuwenswarm.agents.swarm.assembly.get_config", lambda: config)
+    spec = _make_team_spec()
+    spec.dispatch_mode = dispatch_mode
+
+    enrich_team_spec_for_swarm(spec, session_id="s", mode=mode, channel_id="web")
+
+    reminders = [rail for rail in spec.agents["teammate"].rails if rail.type == registry.CODE_TASK_PLANNING]
+    if expected is None:
+        assert reminders == []
+    else:
+        assert len(reminders) == 1
+        assert reminders[0].params.get("enable_task_reminders", True) is expected
+
+
+@pytest.mark.parametrize("mode", ["team", "code.team"])
+def test_enrich_adds_project_skill_dirs_to_member_skill_rails(mode: str, tmp_path: Path) -> None:
+    """A project set from the frontend extends every member Skill rail's roots.
+
+    The global library stays first; ``<project>/.agents/skills`` and
+    ``<project>/.claude/skills`` follow, on the leader, the teammate and the
+    reviewer derived from it.
+    """
+    from jiuwenswarm.common.utils import get_agent_skills_dir
+
+    spec = _make_team_spec()
+    enrich_team_spec_for_swarm(
+        spec, session_id="s", mode=mode, channel_id="web", project_dir=str(tmp_path),
+    )
+
+    expected = [
+        str(get_agent_skills_dir()),
+        str(tmp_path.resolve() / ".agents" / "skills"),
+        str(tmp_path.resolve() / ".claude" / "skills"),
+    ]
+    members = [spec.agents["leader"], spec.agents["teammate"]]
+    if spec.reviewer_agent is not None:
+        members.append(spec.reviewer_agent)
+    for member in members:
+        skill_rails = [
+            rail for rail in (member.rails or []) if rail.type in {TEAM_SKILL_USE, CORE_SKILL_USE}
+        ]
+        assert skill_rails, "member must declare a Skill rail"
+        for rail in skill_rails:
+            assert rail.params["skills_dir"] == expected
+
+
+def test_enrich_without_project_leaves_skill_dir_to_core_completion() -> None:
+    """Projectless teams keep ``skills_dir`` unset; core fills the library."""
+    spec = _make_team_spec()
+    enrich_team_spec_for_swarm(spec, session_id="s", mode="team", channel_id="web")
+
+    for member in (spec.agents["leader"], spec.agents["teammate"]):
+        for rail in member.rails or []:
+            if rail.type == TEAM_SKILL_USE:
+                assert not rail.params.get("skills_dir")
+
+
 def test_enrich_team_spec_for_swarm_rewrites_spec_in_place() -> None:
     """Enrichment rewrites member rails and attaches the build context."""
     spec = _make_team_spec()
@@ -1188,12 +1286,14 @@ def test_enrich_team_spec_for_swarm_builds_a_narrow_reviewer_spec(
         registry.MEMBER_SKILL_TOOLKIT,
         registry.MEMBER_SKILL_EVOLUTION,
         registry.TEAM_PERMISSION,
+        registry.PERMISSION_INTERRUPT,
         registry.PLUGIN_RAILS,
     ):
         assert dropped not in rail_types
-    # The teammate keeps what the reviewer drops.
+    # The teammate keeps the user permission rail the reviewer drops.
     teammate_rail_types = {rail.type for rail in teammate.rails or []}
-    assert registry.TEAM_PERMISSION in teammate_rail_types
+    assert registry.PERMISSION_INTERRUPT in teammate_rail_types
+    assert registry.TEAM_PERMISSION not in teammate_rail_types
     assert registry.HEARTBEAT in teammate_rail_types
 
     tool_types = {tool.type for tool in reviewer.tools or [] if isinstance(tool, BuiltinToolSpec)}
@@ -1539,7 +1639,7 @@ def test_build_enabled_mcp_server_configs_resolves_credentials(
         lambda: [entry],
     )
     monkeypatch.setattr(
-        "jiuwenswarm.common.mcp_config.CredentialStore.get_all",
+        "jiuwenswarm.server.runtime.mcp.credential.CredentialStore.get_all",
         lambda self, name: {"GITHUB_TOKEN": "ghp_real_123"} if name == "github_http" else {},
     )
 
@@ -1799,6 +1899,14 @@ def test_send_file_gating_defaults_by_channel() -> None:
     # Explicit config switch overrides the default.
     disabled = {"channels": {"web": {"send_file_allowed": False}}}
     assert not runtime_tools._is_send_file_enabled(disabled, "web")
+
+
+def test_xiaoyi_send_file_is_disabled_even_when_config_enabled() -> None:
+    """Xiaoyi's missing delivery path is enforced regardless of stale config."""
+    enabled = {"channels": {"xiaoyi": {"send_file_allowed": True}}}
+
+    assert not runtime_tools._is_send_file_enabled(enabled, "xiaoyi")
+    assert not runtime_tools._is_send_file_enabled(enabled, "xiaoyi:app")
 
 
 def test_team_send_file_does_not_enable_auto_authorization(

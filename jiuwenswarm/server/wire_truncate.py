@@ -81,6 +81,7 @@ _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES = frozenset(
         "chat.file",
         "chat.ask_user_question",
         "chat.ask_user_answer",
+        "chat.ask_user_closed",
         "chat.error",
         "team.message",
         "context.usage",
@@ -89,6 +90,23 @@ _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES = frozenset(
         "context.rewind_summary",
     }
 )
+
+# 人数上限通知要在刷新后读回来。其它 chat.notice（例如图片工具降级）不进历史。
+_HISTORY_RESTORABLE_TEAM_NOTICE_TYPES = frozenset({
+    "requested_team_size",
+    "team_quota",
+    "team_teammate_quota",
+})
+
+
+def history_assistant_event_is_restorable(record: dict) -> bool:
+    """True when an assistant history row should survive a session refresh."""
+    event_type = record.get("event_type")
+    if event_type in _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES:
+        return True
+    if event_type != "chat.notice":
+        return False
+    return record.get("notice_type") in _HISTORY_RESTORABLE_TEAM_NOTICE_TYPES
 
 _HISTORY_COLLAPSE_KEEP_KEYS = {
     "id",
@@ -108,6 +126,7 @@ _HISTORY_COLLAPSE_KEEP_KEYS = {
     "is_goal_objective_message",
     "is_goal_completed_message",
     "evidence",
+    "payload_refs",
     "agent_template_name",
 }
 
@@ -128,6 +147,10 @@ _WORKFLOW_LIST_SUMMARY_KEEP_KEYS = (
     # Cold-start marker: the list row is what the tree renders first after a
     # session reopen, and the buttons key their greying on it.
     "recovered",
+    # Run attribution (None = no team context): the executor badge renders
+    # from the list row on a cold reopen — the same cold-start argument as
+    # "recovered"; the detail view shares these keep keys.
+    "executor",
 )
 
 
@@ -236,6 +259,21 @@ def _minimal_history_record_for_wire(record: dict[str, Any]) -> dict[str, Any]:
     return minimal
 
 
+def _restore_mcp_app_block(original: dict[str, Any], sanitized: dict[str, Any]) -> None:
+    """Keep an MCP App tool result (``raw_output.mcp_app``) byte-for-byte.
+
+    The app's ``structuredContent`` is data the app parses; depth/list/string
+    truncation would hand it values like ``"<truncated>"`` where it expects
+    numbers and crash it on history restore. The per-record size budget below
+    still applies: an oversized record collapses and drops the block entirely.
+    """
+    raw_output = original.get("raw_output")
+    block = raw_output.get("mcp_app") if isinstance(raw_output, dict) else None
+    sanitized_raw = sanitized.get("raw_output")
+    if isinstance(block, dict) and isinstance(sanitized_raw, dict):
+        sanitized_raw["mcp_app"] = block
+
+
 def _sanitize_history_record_for_wire(record: Any) -> dict[str, Any]:
     """Sanitize one history record, collapsing if it exceeds the per-record budget."""
     if not isinstance(record, dict):
@@ -243,6 +281,7 @@ def _sanitize_history_record_for_wire(record: Any) -> dict[str, Any]:
     sanitized = _sanitize_history_wire_value(record)
     if not isinstance(sanitized, dict):
         return {"content": str(sanitized), "truncated": True}
+    _restore_mcp_app_block(record, sanitized)
     if _json_wire_size(sanitized) <= _HISTORY_WIRE_RECORD_MAX_BYTES:
         return sanitized
     return _collapse_oversized_history_record(sanitized)
@@ -747,6 +786,7 @@ __all__ = [
     "_WORKFLOW_AGENT_MAX_LIMIT",
     "_SPLITTABLE_AGENT_FIELDS",
     "_HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES",
+    "history_assistant_event_is_restorable",
     "_json_wire_size",
     "_coerce_int",
     "_truncate_string_by_bytes",

@@ -35,12 +35,12 @@ _MAX_DOCUMENT_BYTES: int = 100 * 1024 * 1024
 _MAX_DOCUMENT_COUNT: int = 8
 
 
-from gateway.common.attachment_safety import (  # noqa: F401,E402
+from agent_gateway.common.attachment_safety import (  # noqa: F401,E402  # pylint: disable=wrong-import-order
     strip_data_uri_prefix as _strip_data_uri_prefix,
 )
 
 # Executable / script / package types rejected by document upload.
-from gateway.common.attachment_safety import (  # noqa: F401
+from agent_gateway.common.attachment_safety import (  # noqa: F401  # pylint: disable=wrong-import-order
     FORBIDDEN_DOCUMENT_EXTENSIONS,
     _document_suffix,
     forbidden_formats,
@@ -82,15 +82,18 @@ def persist_and_parse_documents(
 
     stored: list[dict[str, Any]] = []
     errors: list[dict[str, Any]] = []
+    from jiuwenswarm.enterprise import is_enterprise
+
+    max_count = 20 if is_enterprise() else _MAX_DOCUMENT_COUNT
 
     for index, item in enumerate(raw_items):
-        if index >= _MAX_DOCUMENT_COUNT:
+        if index >= max_count:
             # 超出上限的文档不静默丢弃，回显错误让前端可知。
             errors.append(
                 {
                     "index": index,
                     "filename": str(item.get("filename") or item.get("name") or ""),
-                    "error": f"exceeds max document count ({_MAX_DOCUMENT_COUNT})",
+                    "error": f"exceeds max document count ({max_count})",
                 }
             )
             continue

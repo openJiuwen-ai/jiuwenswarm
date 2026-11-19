@@ -62,6 +62,8 @@ jiuwenswarm-start
 
 当看到类似上述提示时，表示服务已启动，在浏览器中访问 `http://localhost:5173` 即可使用。
 
+会话链接（例如 `/chat/new`、`/chat/<session_id>`）支持直接打开和刷新。内置 Python Web 服务与 nginx 部署会将嵌套路由下的 `assets/` 请求映射到前端构建资源；缺失的 JS、CSS 等静态资源返回 404。经 Manager 的 `/chat/` 前缀代理访问时，继续使用同一份相对路径构建产物。
+
 ### 查看应用版本与打包日期
 
 更新页面的“当前版本”会显示完整版本号，并以次级文字显示“构建于 YYYY-MM-DD”。WHL、Windows EXE 与 macOS DMG 的打包日期统一使用 UTC+08:00，安装、启动和检查更新不会改变该日期。旧包或源码运行没有打包日期时，只显示版本号。

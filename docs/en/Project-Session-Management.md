@@ -11,6 +11,8 @@ The Web channel provides project-scoped session management. Sessions bind to pro
 
 The current implementation adds a `work_mode` dimension to isolate regular work collaboration from code projects. `code` projects support Git status, branch operations, Diff snapshots, live Diff monitoring, and discarding/redoing the last turn's file changes. `work` projects keep the regular project/session behavior.
 
+Expert and expert group chats keep model selections per session. Returning to a session retains its selection, and reloading the page restores it from session metadata. Local choices are also retained when switching sessions before sending a message. The chat selector and outgoing requests use the same model selection. If restoration fails, the page shows an error and temporarily disables sending to avoid using the default model unintentionally.
+
 ### Core Concepts
 
 | Concept | Description |
@@ -23,6 +25,8 @@ The current implementation adds a `work_mode` dimension to isolate regular work 
 | **Immutability** | Once `project_id`, `project_dir`, and `work_mode` are bound to a session, they cannot be changed; no cross-project/cross-mode migration API is provided |
 
 ### Communication Convention
+
+In both personal and enterprise editions, Gateway forwards `session.list`, `session.rename`, and `session.pin` to the target AgentServer through E2A. The Server owns session data access. If the Server is stopped, not ready, or disconnected, Gateway returns `SERVICE_UNAVAILABLE` without reading or writing local sessions or loading a local compatibility module.
 
 - Transport: WebSocket JSON messages
 - Request structure: `{ "id": "<req_id>", "method": "<method_name>", "params": { ... } }`

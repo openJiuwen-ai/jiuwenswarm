@@ -40,6 +40,19 @@ def test_load_history_query_cursor_null_returns_messages(tmp_path, monkeypatch):
     assert data.get("snapshot_id")
 
 
+def test_load_history_query_blank_cursor_is_rejected(tmp_path, monkeypatch):
+    """Empty-string cursor is not coerced; callers must omit cursor or pass null."""
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    session_id = "web_blank_cursor_sid"
+    _write_jsonl(
+        tmp_path / session_id / "history.jsonl",
+        [{"id": "m1", "role": "user", "content": "restore"}],
+    )
+
+    with pytest.raises(InvalidHistoryCursor, match="non-empty string"):
+        load_history_query({"session_id": session_id, "cursor": "", "limit": 50})
+
+
 def test_load_history_query_without_page_idx_or_cursor_returns_none():
     assert load_history_query({"session_id": "web_missing"}) is None
 

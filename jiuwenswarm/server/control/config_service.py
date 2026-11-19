@@ -21,13 +21,17 @@ import yaml
 from dotenv import dotenv_values
 
 from jiuwenswarm.common.browser_settings import project_browser_decision
+from jiuwenswarm.common.cua_config import cua_backend_settings, is_cua_agent_enabled
+from jiuwenswarm.common.moa_config import flatten_moa_for_config_panel
+from jiuwenswarm.common.permission_mode import canonical_permission_facade, permission_profile
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_config_file, get_env_file
 from jiuwenswarm.common.version import get_runtime_version
+from jiuwenswarm.common.kv_cache_affinity_config import get_affinity_status
 from jiuwenswarm.server.control.a2ui_config import get_a2ui_config
 from jiuwenswarm.server.control.responses import build_error_response
-from jiuwenswarm.symphony.config import (
+from jiuwenswarm.common.symphony_config import (
     resolve_symphony_enabled,
     resolve_symphony_evolution_enabled,
 )
@@ -63,6 +67,12 @@ _CONFIG_SET_ENV_MAP = {
     "visual_gen_provider": "VISUAL_GEN_PROVIDER",
     "visual_gen_protocol": "VISUAL_GEN_PROTOCOL",
     "visual_gen_enabled": "VISUAL_GEN_ENABLED",
+    "music_gen_api_base": "MUSIC_GEN_API_BASE",
+    "music_gen_api_key": "MUSIC_GEN_API_KEY",
+    "music_gen_model": "MUSIC_GEN_MODEL_NAME",
+    "music_gen_provider": "MUSIC_GEN_PROVIDER",
+    "music_gen_protocol": "MUSIC_GEN_PROTOCOL",
+    "music_gen_enabled": "MUSIC_GEN_ENABLED",
     "audio_api_base": "AUDIO_API_BASE",
     "audio_api_key": "AUDIO_API_KEY",
     "audio_model": "AUDIO_MODEL_NAME",
@@ -71,6 +81,9 @@ _CONFIG_SET_ENV_MAP = {
     "audio_vendor_key": "AUDIO_VENDOR_KEY",
     "audio_plan": "AUDIO_PLAN",
     "audio_enabled": "AUDIO_ENABLED",
+    "asr_api_base": "ASR_API_BASE",
+    "asr_api_key": "ASR_API_KEY",
+    "asr_model": "ASR_MODEL_NAME",
     "vision_api_base": "VISION_API_BASE",
     "vision_api_key": "VISION_API_KEY",
     "vision_model": "VISION_MODEL_NAME",
@@ -116,6 +129,10 @@ _SWARMFLOW_BUDGET_PATH = ("modes", "team", "jiuwen_team", "swarmflow_budget")
 _TEAM_DISPATCH_MODE_PATH = ("modes", "team", "jiuwen_team", "dispatch_mode")
 _TEAM_TASK_VERIFICATION_PATH = ("modes", "team", "jiuwen_team", "enable_task_verification")
 _TEAM_MEMBER_MESSAGING_PATH = ("modes", "team", "jiuwen_team", "enable_member_messaging")
+_TEAM_MEMBER_SUBTASK_DEPTH_PATH = ("modes", "team", "jiuwen_team", "max_subtask_depth")
+# Mirrors ``TEAM_CODE_TODO_REMINDER_DISABLED_CONFIG_PATH`` in ``jiuwenswarm.common.config``;
+# duplicated because the Front process must not import the Runtime config module.
+_TEAM_CODE_TODO_REMINDER_DISABLED_PATH = ("modes", "team", "jiuwen_team", "disable_code_todo_reminder")
 _KV_CACHE_CONFIG_KEY = "kv_cache_affinity_config"
 _KV_CACHE_ENABLED_KEY = "enable_kv_cache_affinity"
 
@@ -140,6 +157,16 @@ def _nested(raw: dict[str, Any], path: tuple[str, ...], default: Any = None) -> 
             return default
         current = current.get(segment)
     return default if current is None else current
+
+
+def _depth_switch_text(value: Any) -> str:
+    """Render ``max_subtask_depth`` as the member-subtask switch: on iff a depth > 0 (core F_128)."""
+    if isinstance(value, bool):
+        return "false"
+    try:
+        return "true" if int(value) > 0 else "false"
+    except (TypeError, ValueError):
+        return "false"
 
 
 def _bool_text(value: Any, default: bool = False) -> str:
@@ -388,6 +415,29 @@ def _browser_credential_environment() -> dict[str, str]:
     return environment
 
 
+def _design_generation_panel(raw: dict[str, Any]) -> dict[str, str]:
+    """Flat design choices stored under ``design_generation``.
+
+    Web ``config.get`` is this panel. The design model menu reads these two
+    keys; a missing key is treated as no saved model and checks the first
+    supported row. Empty string means that modality has no saved id yet.
+    """
+    block = raw.get("design_generation") if isinstance(raw, dict) else None
+    saved: dict[str, str] = {}
+    if isinstance(block, dict):
+        for slot, key in (
+            ("video_gen", "design_generation_video_gen"),
+            ("visual_gen", "design_generation_visual_gen"),
+        ):
+            value = block.get(slot)
+            if isinstance(value, str) and value.strip():
+                saved[key] = value.strip()
+    return {
+        "design_generation_video_gen": saved.get("design_generation_video_gen", ""),
+        "design_generation_visual_gen": saved.get("design_generation_visual_gen", ""),
+    }
+
+
 def get_panel() -> dict[str, Any]:
     """Return the Web/TUI config panel payload without Gateway handlers."""
     # 保存过的 .env 优先于本进程的 os.environ。生成类配置槽是由另一个进程写入的，
@@ -399,30 +449,53 @@ def get_panel() -> dict[str, Any]:
         param_key: (environment.get(env_key) or "")
         for param_key, env_key in _CONFIG_SET_ENV_MAP.items()
     }
+    # Decrypt at the configuration owner; Gateway may use a different provider.
+    asr_key = payload.get("asr_api_key")
+    if asr_key:
+        from jiuwenswarm.common.security.base_crypto import get_crypto_provider
+
+        crypto = get_crypto_provider()
+        if crypto is not None:
+            try:
+                payload["asr_api_key"] = str(crypto.decrypt(asr_key))
+            except Exception:
+                payload["asr_api_key"] = ""
+                payload["asr_credential_error"] = "ASR credential decryption failed at AgentServer"
+            else:
+                payload["asr_api_key_decrypted"] = True
+
     payload["app_version"] = get_runtime_version()
     runtime_platform = (
         (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"
     )
     payload["runtime_platform"] = runtime_platform
     payload["external_cli_agents_supported"] = "false" if runtime_platform == "harmony" else "true"
+    payload.update(cua_backend_settings())
     try:
         raw = _read_raw_config()
+        payload.update(flatten_moa_for_config_panel(raw))
         setup_guide_cfg = raw.get("setup_guide") or {}
         payload["setup_guide_enabled"] = _bool_text(
             setup_guide_cfg.get("enabled", True), True
         )
         react_cfg = raw.get("react") or {}
+        payload["cua_agent_enabled"] = (
+            "true" if is_cua_agent_enabled(_nested(raw, ("react", "subagents", "cua_agent"), {})) else "false"
+        )
         ctx_cfg = react_cfg.get("context_engine_config") or {}
         payload["context_engine_enabled"] = _bool_text(ctx_cfg.get("enabled"), False)
-        payload["kv_cache_affinity_enabled"] = (
-            "true" if _affinity_enabled(raw) else "false"
-        )
+        affinity = get_affinity_status(_resolve_env_vars(raw))
+        payload["kv_cache_affinity_enabled"] = _bool_text(affinity["enabled"])
+        payload["kv_cache_affinity_can_enable"] = affinity["can_enable"]
+        payload["kv_cache_affinity_status"] = affinity
         perm_cfg = raw.get("permissions") or {}
-        payload["permissions_enabled"] = _bool_text(perm_cfg.get("enabled"), False)
+        payload.update(canonical_permission_facade(permission_profile(perm_cfg)))
         evolution_cfg = (raw.get("react") or {}).get("evolution") or {}
         payload["skill_evolution"] = _bool_text(
             evolution_cfg.get("skill_evolution"), False
         )
+        ttse_cfg = react_cfg.get("ttse") or {}
+        payload["ttse_enabled"] = _bool_text(ttse_cfg.get("enabled"), False)
         memory_cfg = (raw.get("memory") or {}).get("forbidden_memory_definition") or {}
         payload["memory_forbidden_enabled"] = _bool_text(memory_cfg.get("enabled"), False)
         payload["memory_forbidden_description"] = memory_cfg.get("description") or {}
@@ -438,6 +511,12 @@ def get_panel() -> dict[str, Any]:
             trajectory_cfg.get("diagnosis_enabled"), False
         )
         experimental_cfg = raw.get("experimental") or {}
+        payload["task_full_duplex_enabled"] = _bool_text(
+            experimental_cfg.get("task_full_duplex_enabled"), False
+        )
+        payload["task_asr_enabled"] = _bool_text(
+            experimental_cfg.get("task_asr_enabled"), False
+        )
         payload["team_organization_ui_enabled"] = _bool_text(
             experimental_cfg.get("team_organization_ui_enabled"), False
         )
@@ -459,6 +538,12 @@ def get_panel() -> dict[str, Any]:
         payload["team_member_messaging_enabled"] = _bool_text(
             _nested(raw, _TEAM_MEMBER_MESSAGING_PATH, False)
         )
+        payload["team_member_subtasks_enabled"] = _depth_switch_text(
+            _nested(raw, _TEAM_MEMBER_SUBTASK_DEPTH_PATH, 0)
+        )
+        payload["team_code_todo_reminder_disabled"] = _bool_text(
+            _nested(raw, _TEAM_CODE_TODO_REMINDER_DISABLED_PATH, False)
+        )
         budget = _nested(raw, _SWARMFLOW_BUDGET_PATH)
         if budget is not None:
             payload["swarmflow_budget"] = str(budget)
@@ -470,47 +555,48 @@ def get_panel() -> dict[str, Any]:
         if not payload.get("free_search_bing_enabled"):
             payload["free_search_bing_enabled"] = "false"
         payload.update(_flatten_modes_team(raw))
-        proactive_cfg = raw.get("proactive_recommendation") or {}
-        payload["proactive_recommendation_enabled"] = _bool_text(
-            proactive_cfg.get("enabled"), False
-        )
-        payload["proactive_recommendation_max_recommend_per_day"] = str(
-            proactive_cfg.get("max_recommend_per_day", 10)
-        )
-        payload["proactive_recommendation_max_rounds_per_tick"] = str(
-            proactive_cfg.get("max_rounds_per_tick", 20)
-        )
         models_cfg = raw.get("models") or {}
         payload["enable_free_models"] = _bool_text(
             models_cfg.get("enable_free_models", True), True
         )
+        # Runtime config_get_handler appends the same keys. This Front panel
+        # is the payload the browser actually receives, so they have to be here too.
+        payload.update(_design_generation_panel(raw))
     except Exception as exc:  # noqa: BLE001
         logger.warning("[config_service] panel yaml merge failed: %s", exc)
+        for key, value in flatten_moa_for_config_panel({}).items():
+            payload.setdefault(key, value)
         payload.setdefault("context_engine_enabled", "false")
+        payload.setdefault("cua_agent_enabled", "true" if is_cua_agent_enabled(None) else "false")
         payload.setdefault("kv_cache_affinity_enabled", "false")
         payload.setdefault("permissions_enabled", "false")
+        payload.setdefault("permissions_profile", "full_access")
         payload.setdefault("setup_guide_enabled", "true")
         payload.setdefault("skill_evolution", "false")
+        payload.setdefault("ttse_enabled", "false")
         payload.setdefault("memory_forbidden_enabled", "false")
         payload.setdefault("memory_forbidden_description", "")
         payload.setdefault("a2ui_enabled", "false")
         payload.setdefault("trajectory_ui_enabled", "false")
         payload.setdefault("trajectory_ui_diagnosis_enabled", "false")
         payload.setdefault("team_organization_ui_enabled", "false")
+        payload.setdefault("task_full_duplex_enabled", "false")
+        payload.setdefault("task_asr_enabled", "false")
         payload.setdefault("comfyui_workflow_enabled", "false")
         payload.setdefault("progressive_tool_optimize", "false")
         payload.setdefault("swarmflow_enabled", "false")
         payload.setdefault("team_scheduled_dispatch_enabled", "false")
         payload.setdefault("team_task_verification_enabled", "false")
         payload.setdefault("team_member_messaging_enabled", "false")
+        payload.setdefault("team_member_subtasks_enabled", "false")
+        payload.setdefault("team_code_todo_reminder_disabled", "false")
         payload.setdefault("free_search_ddg_enabled", "false")
         payload.setdefault("free_search_bing_enabled", "false")
-        payload.setdefault("proactive_recommendation_enabled", "false")
         payload.setdefault("topic_recommendation_enabled", "false")
         payload.setdefault("prompt_suggestion_enabled", "false")
-        payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
-        payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
         payload.setdefault("enable_free_models", "true")
+        payload.setdefault("design_generation_video_gen", "")
+        payload.setdefault("design_generation_visual_gen", "")
     return payload
 
 

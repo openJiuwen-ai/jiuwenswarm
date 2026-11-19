@@ -1,0 +1,26 @@
+[
+  {
+    "event": "chat.moa_status",
+    "payload": {
+      "event_type": "chat.moa_status",
+      "operation_id": "resume-reference",
+      "phase": "reference",
+      "status": "started",
+      "execution_id": "execution-A",
+      "session_id": "sdk_session",
+      "request_id": "answer-question_1"
+    }
+  },
+  {
+    "event": "chat.moa_status",
+    "payload": {
+      "event_type": "chat.moa_status",
+      "operation_id": "resume-reference",
+      "phase": "reference",
+      "status": "completed",
+      "execution_id": "execution-A",
+      "session_id": "sdk_session",
+      "request_id": "answer-question_1"
+    }
+  }
+]

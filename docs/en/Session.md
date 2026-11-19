@@ -53,6 +53,8 @@ JiuwenSwarm session data is stored in the local workspace with the following str
 - The two types are mutually exclusive in project view; `project.list` `session_count` only counts regular sessions
 - **Heartbeat jobs**: resume the regular session in which the job was created and do not create a separate heartbeat session directory
 
+One-shot heartbeat dates, times, and expiry checks use the timezone selected in the form (`Asia/Shanghai` by default; `UTC` is also available), independently of the operating system timezone. Automated tests must generate future dates and times in that same timezone rather than entering a UTC runner's local time into a Shanghai-time form.
+
 **metadata.json File Content:**
 
 ![metadata.json Example](../assets/images/session/jiuwenclaw_session_history_metadata.png)

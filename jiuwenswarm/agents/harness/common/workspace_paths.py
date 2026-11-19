@@ -42,11 +42,14 @@ _PATH_KEYS = frozenset(
     }
 )
 _SANDBOX_ARTIFACT_PATTERN = re.compile(
-    r"(?<![\w:/])"
-    r"(?:~/?|/)"
-    r"[^'\"<>)\],;:\s\r\n]*"
-    r"\.sandbox-artifacts/[^'\"<>)\],;:\r\n]+"
-    r"(?:/[^'\"<>)\],;:\r\n]*)?"
+    r"(?<![\w:/\\])"
+    r"(?:"
+    # Allow spaces in Windows directories without consuming a following path.
+    r"[A-Za-z]:[\\/]"
+    r"(?:(?!\s(?:[\\/]|~[\\/]))[^'\"<>)\],;:\r\n])*(?<=[\\/])"
+    r"|(?:~/?|/)[^'\"<>)\],;:\s\r\n]*"
+    r")"
+    r"\.sandbox-artifacts[\\/][^'\"<>)\],;:\r\n]+"
 )
 _REVIEW_UI_POSIX_ABSOLUTE_PATH_PATTERN = re.compile(
     r"(?<![\w:/*])/(?!/)[^'\"<>)\],;:\s\r\n]+"

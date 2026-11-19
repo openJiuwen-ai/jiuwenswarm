@@ -67,6 +67,11 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
         self.seen_phase: dict[str, str] = {}
         self.seen_agent: dict[str, str] = {}
         self.spawned_members: set[str] = set()
+        # Human-waiting popups already pushed (run_id:agent_id keys). Same
+        # session-scoping reason as the tables above: the consumer loop is
+        # cancelled on team pause and a resume relaunch re-broadcasts the
+        # waiting state — a per-loop table would re-pop the same request_id.
+        self.seen_human_waiting: set[str] = set()
         # Mirrored activity rows per member (tool_call_id/type keys), owned by
         # the consumer for the same replay-dedup reason as seen_agent.
         self.seen_activity: dict[str, set[tuple[str, str]]] = {}
@@ -430,6 +435,7 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
                 cache_tokens=getattr(payload, "cache_tokens", None),
                 token_input=getattr(payload, "token_input", None),
                 token_output=getattr(payload, "token_output", None),
+                executor=getattr(payload, "executor", None),
             )
         except Exception:
             logger.warning("[WorkflowMonitorHandler] Failed to extract progress from event")

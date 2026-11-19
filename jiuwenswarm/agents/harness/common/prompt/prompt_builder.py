@@ -155,9 +155,54 @@ System message types:
     )
 
 
-def _output_prompt(language: str) -> PromptSection:
+def _output_prompt(
+    language: str,
+    *,
+    send_file_enabled: bool = True,
+) -> PromptSection:
     if language == "cn":
-        content = """# 输出规则
+        if send_file_enabled:
+            file_delivery_rule = (
+                "- 任务产生需要交付的文件，或用户明确请求下载、导出、发送文件时，"
+                "调用 `send_file_to_user`，调用时使用服务端可访问的绝对路径，"
+                "如果用户指定了投递 channel 则传入 `target_channels` 参数，"
+                "具体参数、支持的 channel 和默认投递行为以 `send_file_to_user` "
+                "工具 Schema 为准。"
+            )
+            raster_delivery_rule = (
+                "- 仅当产物本质是位图（照片、AI 生图）或用户明确要 png/jpg/pdf 时"
+                "才 `generate_image` + `send_file_to_user`；用户指定格式时以用户为准。"
+            )
+            svg_delivery_rule = (
+                "- **词义消歧**：用户说“给我 svg”“用 svg 画”“要矢量图标”指源码而非 "
+                ".svg 文件附件；仅当明确出现“文件/下载/导出/保存为 .svg”时才生成并\n"
+                "  投递文件。Mermaid 仅用于标准结构图，超出其表达或用户明确要 SVG 时直接给源码。"
+            )
+            svg_attachment_rule = (
+                "- SVG 卡片源码须在**最后一条无工具调用的消息**里；"
+                "同一产物不要既内联又发文件。"
+            )
+        else:
+            file_delivery_rule = (
+                "- 当前渠道不支持文件投递。不要声称可以发送、下载或导出文件；"
+                "需要交付的内容必须完整写入最终回复。"
+            )
+            raster_delivery_rule = (
+                "- 当前渠道不能回传文件；位图产物直接在最终回复中呈现，"
+                "不要承诺通过文件发送。"
+            )
+            svg_delivery_rule = (
+                "- **词义消歧**：用户说“给我 svg”“用 svg 画”“要矢量图标”指源码而非 "
+                ".svg 文件附件；若用户明确要求文件，说明当前渠道不能回传文件，"
+                "改为在最终回复中提供完整的 SVG/XML 源码。"
+                "Mermaid 仅用于标准结构图，超出其表达或用户明确要 SVG 时直接给源码。"
+            )
+            svg_attachment_rule = (
+                "- SVG 卡片源码须在**最后一条无工具调用的消息**里；"
+                "不要为该产物生成附件或承诺文件投递。"
+            )
+
+        content = f"""# 输出规则
 
 ## 最终回复规则
 
@@ -168,12 +213,11 @@ def _output_prompt(language: str) -> PromptSection:
 
 - 完整交付物必须放在最后一条不带工具调用的消息中。
 - 不要只用“已完成”“详见上文”等状态说明代替完整交付物。
-- 任务产生需要交付的文件，或用户明确请求下载、导出、发送文件时，调用 `send_file_to_user`，调用时使用服务端可访问的绝对路径，如果用户指定了投递 channel 则传入 `target_channels` 参数，具体参数、支持的 channel 和默认投递行为以 `send_file_to_user` 工具 Schema 为准。
+{file_delivery_rule}
 - 需要渲染为图片卡片的矢量产物（流程图、架构图、示意图、图标、插画等），默认用 ```svg 围栏包裹完整自包含的 `<svg>...</svg>` 源码写在最终回复正文里；每个围栏必须且只能包含一个顶层 `<svg>`，多个产物分别使用独立围栏。仅展示、讲解、调试或供用户复制修改 SVG 源码时，不得使用 ```svg 围栏：独立 SVG/XML 源码使用 ```xml 围栏，SVG 嵌入 HTML 的示例使用 ```html 围栏，不完整的伪代码或标签片段使用 ```text 围栏。不生成 .svg 文件、不调 `generate_image`、不落盘投递。
-- **词义消歧**：用户说“给我 svg”“用 svg 画”“要矢量图标”指源码而非 .svg 文件附件；仅当明确出现“文件/下载/导出/保存为 .svg”时才生成并
-  投递文件。Mermaid 仅用于标准结构图，超出其表达或用户明确要 SVG 时直接给源码。
-- SVG 卡片源码须在**最后一条无工具调用的消息**里；同一产物不要既内联又发文件。
-- 仅当产物本质是位图（照片、AI 生图）或用户明确要 png/jpg/pdf 时才 `generate_image` + `send_file_to_user`；用户指定格式时以用户为准。
+{svg_delivery_rule}
+{svg_attachment_rule}
+{raster_delivery_rule}
 
 
 ## 输出语言
@@ -188,7 +232,55 @@ def _output_prompt(language: str) -> PromptSection:
 - 用户询问支持或配置了哪些模型时，使用 `runtime.setting` 中的可用模型列表回答。
 """
     else:
-        content = """# Output Rules
+        if send_file_enabled:
+            file_delivery_rule = (
+                "- When a task produces a file that must be delivered, or the user explicitly "
+                "requests a download, export, or file delivery, call `send_file_to_user` with "
+                "an absolute path accessible to the server. If the user specifies a delivery "
+                "channel, pass `target_channels`; follow the tool schema for parameters, "
+                "supported channels, and default delivery behavior."
+            )
+            raster_delivery_rule = (
+                "- Call `generate_image` + `send_file_to_user` only for inherently raster "
+                "artifacts (photos, AI image gen) or when the user explicitly requests "
+                "png/jpg/pdf; honor any explicit format the user specifies."
+            )
+            svg_delivery_rule = (
+                '- **Lexical disambiguation**: "give me an svg", "draw it in svg", '
+                '"I want a vector/icon" means SVG source, NOT a .svg file attachment. '
+                'Only generate and deliver a file when the user explicitly says '
+                '"file/download/export/save as .svg". Use Mermaid only for standard '
+                "structured charts; when the user explicitly asks for SVG or the diagram "
+                "is beyond Mermaid, output SVG source."
+            )
+            svg_attachment_rule = (
+                "- SVG card source MUST go in the **last message with no tool calls**; "
+                "do not both inline and send a file for the same artifact."
+            )
+        else:
+            file_delivery_rule = (
+                "- This channel cannot deliver files. Do not claim that you can send, "
+                "download, or export files. Put the complete deliverable directly in the "
+                "final reply."
+            )
+            raster_delivery_rule = (
+                "- This channel cannot return files. Present raster artifacts directly in "
+                "the final reply and do not promise file delivery."
+            )
+            svg_delivery_rule = (
+                '- **Lexical disambiguation**: "give me an svg", "draw it in svg", '
+                '"I want a vector/icon" means SVG source, NOT a .svg file attachment. '
+                "If the user explicitly requests a file, explain that this channel cannot "
+                "return files and provide the complete SVG/XML source in the final reply. "
+                "Use Mermaid only for standard structured charts; when the user explicitly "
+                "asks for SVG or the diagram is beyond Mermaid, output SVG source."
+            )
+            svg_attachment_rule = (
+                "- SVG card source MUST go in the **last message with no tool calls**; "
+                "do not create an attachment for the same artifact or promise file delivery."
+            )
+
+        content = f"""# Output Rules
 
 ## Final Response Rules
 
@@ -199,7 +291,7 @@ def _output_prompt(language: str) -> PromptSection:
 
 - Put the complete deliverable in the final message that contains no tool calls.
 - Do not replace the complete deliverable with a status statement such as “done” or “see above.”
-- When a task produces a file that must be delivered, or the user explicitly requests a download, export, or file delivery, call `send_file_to_user` with an absolute path accessible to the server. If the user specifies a delivery channel, pass `target_channels`; follow the tool schema for parameters, supported channels, and default delivery behavior.
+{file_delivery_rule}
 - Vector artifacts that should render as image cards (flowcharts, architecture diagrams,
   schematics, icons, illustrations, etc.) default to inline SVG source in the final reply body:
   wrap one complete, self-contained top-level `<svg>...</svg>` in each ```svg fenced
@@ -208,16 +300,9 @@ def _output_prompt(language: str) -> PromptSection:
   modify, never use a ```svg fence: use ```xml for standalone SVG/XML source, ```html for examples
   with SVG embedded in HTML, and ```text for incomplete pseudocode or tag fragments. Do NOT
   generate .svg files, call `generate_image`, or save to disk to deliver.
-- **Lexical disambiguation**: "give me an svg", "draw it in svg", "I want a vector/icon" means
-  SVG source, NOT a .svg file attachment. Only generate and deliver a file when the user
-  explicitly says "file/download/export/save as .svg". Use Mermaid only for standard structured
-  charts; when the user explicitly asks for SVG or the diagram is beyond Mermaid, output SVG
-  source.
-- SVG card source MUST go in the **last message with no tool calls**; do not both inline and send
-  a file for the same artifact.
-- Call `generate_image` + `send_file_to_user` only for inherently raster artifacts (photos, AI
-  image gen) or when the user explicitly requests png/jpg/pdf; honor any explicit format the
-  user specifies.
+{svg_delivery_rule}
+{svg_attachment_rule}
+{raster_delivery_rule}
 
 ## Output Language
 

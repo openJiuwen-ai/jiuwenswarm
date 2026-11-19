@@ -81,14 +81,55 @@ _BOTTOM_STYLES = (
 )
 _DRESS_STYLES = ("midi", "maxi", "mini", "cocktail", "evening", "casual")
 _SLOT_KEYS = ("top=", "bottom=", "outfit=")
+CLOTHING_SLOTS = ("outfit", "top", "bottom", "outerwear", "footwear", "accessories")
+CLOTHING_PARTS_RULE = (
+    "Every characters[] entry MUST carry clothing_parts — garment slots outfit (one-piece "
+    "dress/suit/robe), top, bottom, outerwear, footwear, accessories — each with style and "
+    "color, written in content_language; leave a slot empty when it does not apply. "
+    "description locks face, age, hair, and body; clothing_parts is the wardrobe authority. "
+)
+_SLOT_LABEL_RE = re.compile(r"\b(?:top|bottom|outfit|footwear|outerwear|accessories)\s*=\s*")
 
 
 def _has_clothing_slots(text: str) -> bool:
     return any(key in text for key in _SLOT_KEYS)
 
 
+def normalize_clothing_parts(raw: Any) -> dict[str, str]:
+    """Garment slots authored by the LLM (any language) as a clean slot→text map."""
+    if not isinstance(raw, dict):
+        return {}
+    parts: dict[str, str] = {}
+    for slot in CLOTHING_SLOTS:
+        value = raw.get(slot)
+        if isinstance(value, (list, tuple)):
+            items = [re.sub(r"\s+", " ", str(v)).strip() for v in value]
+            text = ", ".join(item for item in items if item)
+        else:
+            text = re.sub(r"\s+", " ", str(value or "")).strip()
+        # Slot values are joined with ";" / "=" in costume_lock.
+        text = text.replace("=", " ").replace(";", ",").strip(" ,，;；.。")
+        if text:
+            parts[slot] = text[:160]
+    return parts
+
+
+def wearable_phrase(text: str, *, name: str = "", lang: str = "en") -> str:
+    """Readable garment phrase from a costume_lock: no "Name:" prefix or slot keys."""
+    from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
+        clause_separator,
+    )
+
+    raw = re.sub(r"\s+", " ", str(text or "")).strip()
+    if name:
+        raw = re.sub(rf"(?i)^{re.escape(name.strip())}\s*[:：]\s*", "", raw).strip()
+    raw = _SLOT_LABEL_RE.sub("", raw)
+    raw = re.sub(r"\s*[;；]\s*", clause_separator(lang), raw)
+    return raw.strip(" ,，;；.。")
+
+
 def extract_clothing_parts(text: str) -> dict[str, str]:
-    """Parse garment slots from free-text character description / costume_lock."""
+    """Fallback parse of English garment words when the LLM gave no clothing_parts."""
     blob = re.sub(r"\s+", " ", (text or "").strip())
     parts: dict[str, str] = {}
     if not blob:
@@ -189,9 +230,7 @@ def detailed_costume_lock_for_character(ch: dict[str, Any] | None) -> str:
     if not isinstance(ch, dict):
         return ""
     name = str(ch.get("name") or ch.get("id") or "character").strip()
-    existing_parts = (
-        ch.get("clothing_parts") if isinstance(ch.get("clothing_parts"), dict) else {}
-    )
+    existing_parts = normalize_clothing_parts(ch.get("clothing_parts"))
     blob = " ".join(
         str(ch.get(k) or "")
         for k in ("costume_lock", "description", "wardrobe_lock", "prompt")
@@ -222,7 +261,7 @@ def enrich_character_clothing(ch: dict[str, Any]) -> str:
     attrs = ch.get("identity_attrs") if isinstance(ch.get("identity_attrs"), dict) else {}
     if attrs.get("wardrobe"):
         blob = f"{blob} {attrs.get('wardrobe')}"
-    parts = extract_clothing_parts(blob)
+    parts = normalize_clothing_parts(ch.get("clothing_parts")) or extract_clothing_parts(blob)
     if parts:
         ch["clothing_parts"] = parts
     lock = detailed_costume_lock_for_character(ch)

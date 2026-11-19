@@ -7,7 +7,7 @@
  * 布局与组件共用 nodeMetrics，保证布局高度=渲染高度。
  */
 
-import type { RsiTreeNode } from './types';
+import type { RsiScenario, RsiTreeNode } from './types';
 import { nodeMetrics, nodeRuntimeKindForNode, type NodeRuntimeKind } from './rsiPresentation';
 
 export interface LayoutNode {
@@ -66,15 +66,16 @@ function buildSubtree(
   collapsed: Set<string>,
   taskRunning: boolean,
   scoreExpanded: Set<string>,
+  scenario?: RsiScenario,
 ): Subtree {
   const kind = kindOf(node, taskRunning);
-  const m = nodeMetrics(node, kind, scoreExpanded.has(node.node_id));
+  const m = nodeMetrics(node, kind, scoreExpanded.has(node.node_id), scenario);
   const h = m.barH + m.bodyH;
   if (collapsed.has(node.node_id)) {
     return { node, children: [], height: h + SIBLING_GAP, w: m.width, h };
   }
   const childNodes = Array.from(byId.values()).filter((n) => n.parent_id === node.node_id);
-  const subs = childNodes.map((c) => buildSubtree(c, byId, collapsed, taskRunning, scoreExpanded));
+  const subs = childNodes.map((c) => buildSubtree(c, byId, collapsed, taskRunning, scoreExpanded, scenario));
   const totalChildHeight = subs.length ? subs.reduce((acc, s) => acc + Math.max(s.height, s.h + SIBLING_GAP), 0) : 0;
   return { node, children: subs, height: Math.max(h + SIBLING_GAP, totalChildHeight), w: m.width, h };
 }
@@ -154,10 +155,11 @@ export function layoutTree(
   collapsed: Set<string> = new Set(),
   taskRunning = false,
   scoreExpanded: Set<string> = new Set(),
+  scenario?: RsiScenario,
 ): TreeLayout {
   const byId = new Map(allNodes.map((n) => [n.node_id, n]));
   const roots = rootNodes.length ? rootNodes : allNodes.filter((n) => n.parent_id === null);
-  const subs = roots.map((r) => buildSubtree(r, byId, collapsed, taskRunning, scoreExpanded));
+  const subs = roots.map((r) => buildSubtree(r, byId, collapsed, taskRunning, scoreExpanded, scenario));
 
   // 计算每层列宽与列左边界
   const layerWidth: number[] = [];

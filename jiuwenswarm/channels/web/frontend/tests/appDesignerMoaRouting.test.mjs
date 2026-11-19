@@ -2,16 +2,22 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import { build } from 'esbuild';
+import ts from 'typescript';
 
 // Execute App's actual send callback with its network and navigation boundaries replaced.
 const source = fs.readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
-const marker = 'const handleSendMessage = useCallback(';
-const start = source.indexOf(marker) + marker.length;
-const end = source.indexOf(
-  '}, [disposeInFlightHistoryHandles, mode, navigate, request, sendMessage, setGoalObjective, t]);', start,
-);
-assert.ok(start >= marker.length && end > start, 'App send callback is present');
+const tree = ts.createSourceFile('App.tsx', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+let sendCallback;
+function findSendCallback(node) {
+  if (ts.isVariableDeclaration(node) && node.name.getText(tree) === 'handleSendMessage') {
+    sendCallback = node.initializer.arguments[0].getText(tree);
+  }
+  ts.forEachChild(node, findSendCallback);
+}
+findSendCallback(tree);
+assert.ok(sendCallback, 'App send callback is present');
 const dependencyNames = [
+  'isEnterprise', 'route',
   'sessionIdRef', 'creatingSessionRef', 'useSessionStore', 'useChatStore', 'useWorkspaceStore',
   'submitDesignComposer', 'navigate', 'toast', 't', 'window', 'sendMessage', 'disposeInFlightHistoryHandles',
 ];
@@ -24,7 +30,7 @@ await build({
       export { setMultiModelCollaborationEnabled } from './src/features/multiModelCollaboration/featureConfig';
       const NEW_CONVERSATION_ID = 'new';
       export function createAppSend({ ${dependencyNames.join(', ')} }) {
-        return ${source.slice(start, end + 1)};
+        return ${sendCallback};
       }
     `,
     resolveDir: process.cwd(),
@@ -59,6 +65,8 @@ function fixture({ workMode = 'design', sessionId = 'new', mode = 'agent', cronI
     refreshSessionWorkspace: async (session) => assert.equal(session, metadata),
   };
   const dependencies = {
+    isEnterprise: () => false,
+    route: { kind: sessionId === 'new' ? 'chat-new' : 'chat-session' },
     sessionIdRef: { current: sessionId },
     creatingSessionRef,
     useSessionStore: { getState: () => ({ getRuntime: () => runtime, currentSession: metadata, sessions: [] }) },
@@ -124,7 +132,7 @@ test('a failed Designer submission releases the draft for retry without changing
   };
   const send = createAppSend(state.dependencies);
   await send('create a scene');
-  assert.deepEqual(state.calls.alerts, ['designer.chat.limitVideo']);
+  assert.deepEqual(state.calls.errors, [{ content: 'designer.chat.limitVideo', variant: 'error' }]);
   assert.equal(state.processing.isProcessing, false);
   assert.equal(state.creatingSessionRef.current, false);
   await send('retry scene');

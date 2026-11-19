@@ -29,13 +29,17 @@ interface TeamMemberAvatarProps {
 function useTeamMemberIdentity(member?: string): TeamMemberIdentity | undefined {
   const activeSessionId = useOrganizationConversationKey(useChatStore((s) => s.activeSessionId));
   const teamMembers = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamMembers);
+  const departedMembers = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamDepartedMembers);
   return useMemo(() => {
     const id = member?.trim();
-    if (!id || !teamMembers) return undefined;
-    const known = teamMembers.find((item) => item.member_id === id);
+    if (!id) return undefined;
+    // 离队成员做过的任务卡片仍要显示它的头像身份（CLI 品牌脸 / 专家等）。
+    const known =
+      teamMembers?.find((item) => item.member_id === id) ??
+      departedMembers?.find((item) => item.member_id === id);
     if (!known) return undefined;
     return { role: known.role, mode: known.mode, cliAgent: known.cli_agent, agentTemplate: known.agent_template };
-  }, [member, teamMembers]);
+  }, [member, teamMembers, departedMembers]);
 }
 
 /**

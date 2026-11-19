@@ -172,8 +172,10 @@ type DesignerRoleConfig<R extends DesignerNodeRole | string> = {
   skip_llm?: boolean;
   /** The upload replaced the generated output. */
   user_replaced_output?: boolean;
-  /** Manual video length in whole seconds; overrides the storyboard timeline. */
+  /** Manual video or music length in whole seconds; overrides the storyboard timeline. */
   duration_sec?: number;
+  /** Music bed length. Kept in step with `duration_sec` when the toolbar sets it. */
+  film_duration_sec?: number;
 };
 
 export type DesignerNodeConfig =
@@ -211,6 +213,7 @@ export type DesignerNodeConfig =
       skip_llm?: boolean;
       user_replaced_output?: boolean;
       duration_sec?: number;
+      film_duration_sec?: number;
     };
 
 export const DESIGNER_EDGE_KIND_DATA = 'data' as const;
@@ -306,7 +309,7 @@ export type DesignerMediaSettingsPatch = {
 export type DesignerMediaCapabilities = {
   video: {
     configured_model: string;
-    /** Native generation backend of the slot; null on the OpenRouter-style path. */
+    /** Generation backend of the slot ('openrouter' for any non-native endpoint); null when no URL is set. */
     backend: string | null;
     model_id: string;
     provider: string;
@@ -384,8 +387,13 @@ export type DesignerExecutionRun = {
   warning?: string | null;
   warnings?: string[] | null;
   /** `scope_node_ids`: the run only drives these nodes (a ComfyUI generate).
-   * `target_node_id`: a single-node generate; Continue leaves this scope explicitly. */
-  metadata?: { scope_node_ids?: string[]; target_node_id?: string } & Record<string, unknown>;
+   * `target_node_id`: a single-node generate; Continue leaves this scope explicitly.
+   * `trigger_source`: who started the latest trigger; a leader trigger dies with the leader. */
+  metadata?: {
+    scope_node_ids?: string[];
+    target_node_id?: string;
+    trigger_source?: 'canvas' | 'leader';
+  } & Record<string, unknown>;
 };
 
 export type DesignerGraphSummary = {

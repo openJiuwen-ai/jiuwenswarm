@@ -1,4 +1,4 @@
-const { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, net, session, shell, Tray, WebContentsView } = require('electron');
+const { app, BaseWindow, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, Menu, net, session, shell, Tray, WebContentsView } = require('electron');
 const { spawn, execFile } = require('node:child_process');
 const { randomBytes, randomUUID } = require('node:crypto');
 const { inspect } = require('node:util');
@@ -10,17 +10,23 @@ const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
+const { reserveLoopbackPortSync, waitForOwnedCdpTarget } = require('./cdp_port.cjs');
 const { createShareImageExporter } = require('./share_image_export.cjs');
+const { registerDisplayMediaHandler } = require('./display_media_picker.cjs');
 const { SHARED_BROWSER_PARTITION, panelIdentity, hasLiveLease, evictionCandidates, createTargetHandler } = require('./browser_panels.cjs');
 const { createBrowserDownloadService } = require('./browser_downloads.cjs');
 const { createDownloadBubbleController } = require('./browser_download_bubble.cjs');
+const { createShutdownReceipt, completeShutdownReceipt, recordShutdownOutcome } = require('./update_shutdown.cjs');
+const { createAppMarketWindows } = require('./app_market_windows.cjs');
+const appMarketWindows = createAppMarketWindows(BaseWindow, WebContentsView, () => mainWindow, resolveIconPath, () => app.getAppMetrics(), () => app.getLocale());
 let macUpdateInProgress = false;
+let updateShutdownReceipt = null;
 
 const BACKEND_HOST = '127.0.0.1';
 const FRONTEND_HOST = '127.0.0.1';
 // Port-group layout mirrors jiuwenswarm.instance_manager.config.BASE_PORTS:
-// one instance index occupies all four ports (+ index * 1000).
-const BASE_PORTS = { agentServer: 18092, gatewayApi: 19000, gatewayInternal: 19001, frontend: 5173 };
+// one instance index occupies all five ports (+ index * 1000).
+const BASE_PORTS = { agentServer: 18092, gatewayApi: 19000, gatewayInternal: 19001, frontend: 5173, officeTls: 5443 };
 // Aligned with desktop_app.STARTUP_TIMEOUT_SECONDS: gateway binds the API port only
 // after its ~60s agent-connect budget, so this must stay above that.
 const STARTUP_TIMEOUT_MS = 120_000;
@@ -92,46 +98,10 @@ async function findAvailablePorts(scanRange = 10) {
   throw new Error(`No available port group within scan_range=${scanRange}`);
 }
 
-// 打包版 CDP 端口获取：--remote-debugging-port=0 让 Chromium 自选临时端口并
-// 自行绑定（无"预留给竞态留窗口"，也无需同步 spawn 自身 exe 预留——后者冷启动
-// 会被杀软扫描拖到数秒且完全串行阻塞首屏），选定的端口由 Chromium 写入用户
-// 数据目录的 DevToolsActivePort 文件，首行即端口号。
-const DEVTOOLS_ACTIVE_PORT_FILENAME = 'DevToolsActivePort';
-const CDP_PORT_FILE_TIMEOUT_MS = 5_000;
-// packaged port=0 模式标记；轮询在 whenReady 后才启动，避免极端冷启动下
-// Chromium 初始化时间吃掉超时预算（文件通常在 ready 前就已写好）。
-let cdpPortPending = false;
-let cdpPortResolution = null;
-
-function devToolsActivePortPath() {
-  return path.join(app.getPath('userData'), DEVTOOLS_ACTIVE_PORT_FILENAME);
-}
-
-function removeStaleDevToolsActivePortFile() {
-  // 文件跨启动残留；在 Chromium 重写前删掉，避免读到上一次的陈旧端口。
-  try {
-    fsSync.rmSync(devToolsActivePortPath(), { force: true });
-  } catch { /* best effort */ }
-}
-
-async function resolveCdpPortFromDevToolsActivePort() {
-  const file = devToolsActivePortPath();
-  const deadline = Date.now() + CDP_PORT_FILE_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    try {
-      const content = fsSync.readFileSync(file, 'utf8');
-      const port = Number.parseInt(content.split('\n')[0], 10);
-      if (Number.isInteger(port) && port >= 1 && port <= 65535) return port;
-    } catch { /* not written yet */ }
-    await new Promise(resolve => setTimeout(resolve, 25));
-  }
-  return 0;
-}
-
-let hasCdp = cdpPort > 0;
+let hasCdp = false;
 
 function mainLogPath() {
-  return path.join(app.getPath('home'), '.jiuwenswarm', 'logs', 'electron-main.log');
+  return path.join(userWorkspaceDir(), 'logs', 'electron-main.log');
 }
 
 function installMainConsoleTee() {
@@ -159,27 +129,23 @@ function installMainConsoleTee() {
   } catch { /* best effort */ }
 }
 
-if (app.isPackaged) {
-  if (hasCdp) {
-    app.commandLine.appendSwitch('remote-debugging-address', BACKEND_HOST);
-    app.commandLine.appendSwitch('remote-debugging-port', String(cdpPort));
-  } else {
-    removeStaleDevToolsActivePortFile();
-    app.commandLine.appendSwitch('remote-debugging-address', BACKEND_HOST);
-    app.commandLine.appendSwitch('remote-debugging-port', '0');
-    // 先乐观启用 sideview；端口文件超时未出现时降级禁用（沿用预留失败语义）。
-    hasCdp = true;
-    cdpPortPending = true;
+installMainConsoleTee();
+
+if (app.isPackaged && cdpPort === 0) {
+  try {
+    // Port 0 enables Chromium's AutomationControlled feature in every window,
+    // including human-operated OAuth windows. Pass an allocated non-zero port.
+    cdpPort = reserveLoopbackPortSync();
+  } catch (error) {
+    console.error('[electron] failed to reserve CDP port; browser sideview disabled', error);
   }
-} else {
-  if (!hasCdp) {
-    throw new Error('Electron must be started through launch.cjs with a valid loopback CDP port');
-  }
+}
+if (cdpPort > 0) {
   app.commandLine.appendSwitch('remote-debugging-address', BACKEND_HOST);
   app.commandLine.appendSwitch('remote-debugging-port', String(cdpPort));
+} else if (!app.isPackaged) {
+  throw new Error('Electron must be started through launch.cjs with a valid loopback CDP port');
 }
-
-installMainConsoleTee();
 
 let mainWindow = null;
 let tray = null;
@@ -211,6 +177,7 @@ let downloadBubble = null;
 let shuttingDown = false;
 let shutdownComplete = false;
 let shutdownPromise = null;
+let finalShutdownPromise = null;
 let requestedExitCode = 0;
 const serviceProcesses = new Map();
 // Resolved session port group (null before startWebService / FrontendOnly mode).
@@ -247,7 +214,7 @@ const logStreams = new Map();
 function logStreamFor(name) {
   if (!app.isPackaged) return 'inherit';
   if (logStreams.has(name)) return logStreams.get(name);
-  const logDir = path.join(app.getPath('home'), '.jiuwenswarm', 'logs');
+  const logDir = path.join(userWorkspaceDir(), 'logs');
   const logFile = path.join(logDir, `electron-${name}.log`);
   let fd;
   try {
@@ -276,7 +243,7 @@ function serviceCommand(name, extraArgs = []) {
   }
   const moduleNames = {
     agent: 'jiuwenswarm.server.app_agentserver',
-    gateway: 'gateway.app_gateway',
+    gateway: 'agent_gateway.app_gateway',
     web: 'jiuwenswarm.channels.web.app_web',
     lifecycle: 'jiuwenswarm.server.supervisor.shutdown',
   };
@@ -288,14 +255,20 @@ function serviceCommand(name, extraArgs = []) {
   };
 }
 
+function assertServiceStartAllowed() {
+  if (shuttingDown) throw new Error('Application is shutting down; service startup cancelled');
+}
+
 function spawnService(name, ports, extraArgs = []) {
+  // Keep the guard, spawn and registration synchronous with the shutdown snapshot.
+  assertServiceStartAllowed();
   const { command, args } = serviceCommand(name, extraArgs);
   const env = {
     ...process.env,
     JIUWENSWARM_DESKTOP: '1',
     JIUWENSWARM_ELECTRON: '1',
   };
-  if (browserTargetResolver && !forceManagedBrowser) {
+  if (hasCdp && browserTargetResolver && !forceManagedBrowser) {
     const targetMcpDiagnosticLog = path.join(
       app.getPath('home'),
       '.jiuwenswarm',
@@ -366,6 +339,7 @@ function spawnService(name, ports, extraArgs = []) {
   env.AGENT_SERVER_PORT = String(ports.agentServer);
   env.AGENT_PORT = String(ports.agentServer);
   env.FRONTEND_PORT = String(ports.frontend);
+  env.OFFICE_TLS_PORT = String(ports.officeTls);
   // Gateway prefers AGENT_SERVER_URL over AGENT_SERVER_PORT; drop any stale
   // URL from the parent shell so the remapped port is used.
   delete env.AGENT_SERVER_URL;
@@ -396,7 +370,8 @@ function spawnService(name, ports, extraArgs = []) {
       // Keep the process-group identity until Electron exits. A uv wrapper can
       // exit before its Python descendants, and deleting this entry would make
       // the final cleanup lose ownership of that group.
-      void terminateService(child);
+      void terminateService(child).catch(error =>
+        console.error('[electron] background service cleanup incomplete', error));
     }
   });
   child.once('error', error => {
@@ -458,6 +433,7 @@ async function waitForHttp(host, port, child, timeoutMs = STARTUP_TIMEOUT_MS) {
 function runToExit(command, args, { cwd } = {}) {
   const name = 'workspace-prepare';
   return new Promise((resolve, reject) => {
+    assertServiceStartAllowed();
     const env = {
       ...process.env,
       JIUWENSWARM_DESKTOP: '1',
@@ -517,8 +493,14 @@ function watchBackendPair(agentProcess, gatewayProcess) {
       agentExited,
       gatewayExited,
     });
-    if (agentExited && gatewayProcess.exitCode === null) void terminateService(gatewayProcess);
-    if (gatewayExited && agentProcess.exitCode === null) void terminateService(agentProcess);
+    if (agentExited && gatewayProcess.exitCode === null) {
+      void terminateService(gatewayProcess).catch(error =>
+        console.error('[electron] background service cleanup incomplete', error));
+    }
+    if (gatewayExited && agentProcess.exitCode === null) {
+      void terminateService(agentProcess).catch(error =>
+        console.error('[electron] background service cleanup incomplete', error));
+    }
   }, 250);
 }
 
@@ -531,11 +513,12 @@ const GATEWAY_LOCK_FILENAME = '.gateway.lock';
 const GATEWAY_PREFLIGHT_WAIT_MS = 15_000;
 
 function userWorkspaceDir() {
-  return path.join(app.getPath('home'), '.jiuwenswarm');
+  const home = process.env.JIUWENSWARM_HOME || app.getPath('home');
+  return process.env.JIUWENSWARM_DATA_DIR || path.join(home, '.jiuwenswarm');
 }
 
 function desktopWindowPreferencesPath() {
-  const workspaceDir = process.env.JIUWENSWARM_DATA_DIR || userWorkspaceDir();
+  const workspaceDir = userWorkspaceDir();
   return path.join(workspaceDir, 'config', DESKTOP_WINDOW_PREFERENCES_FILENAME);
 }
 
@@ -738,8 +721,10 @@ async function startBackendServices({ ports, webProcess, webReady }) {
   // consume PLAYWRIGHT_MCP_TARGET_RESOLVER through their spawn env.
   let agentProcess = null;
   let gatewayProcess = null;
+  if (shuttingDown) return;
   try {
     await prepareRuntimeWorkspace();
+    if (shuttingDown) return;
     agentProcess = spawnService('agent', ports);
     gatewayProcess = spawnService('gateway', ports);
 
@@ -752,12 +737,18 @@ async function startBackendServices({ ports, webProcess, webReady }) {
       webReady,
     ]);
   } catch (error) {
+    // Quit owns cleanup. A cancelled preparation/readiness wait is not a startup failure.
+    if (shuttingDown) return;
     for (const child of [webProcess, agentProcess, gatewayProcess]) {
-      if (child) void terminateService(child);
+      if (child) {
+        void terminateService(child).catch(error =>
+          console.error('[electron] background service cleanup incomplete', error));
+      }
     }
     throw error;
   }
 
+  if (shuttingDown) return;
   watchBackendPair(agentProcess, gatewayProcess);
   // 健康启动不产生 failure 记录, 删除空的会话诊断目录避免累积
   // (对齐 desktop_app; 非空目录保留)。
@@ -772,9 +763,26 @@ function signalServiceTree(child, signal) {
   try {
     if (process.platform === 'win32') {
       if (serviceProcesses.get('agent') === child) {
-        const { command, args } = serviceCommand('lifecycle', ['--detach-front', String(child.pid)]);
+        const timeout = signal === 'SIGKILL' ? SERVICE_KILL_TIMEOUT_MS : SERVICE_SHUTDOWN_TIMEOUT_MS;
+        const { command, args } = serviceCommand('lifecycle', [
+          '--detach-front', String(child.pid), '--timeout', String(timeout / 1000),
+          ...(signal === 'SIGKILL' ? ['--force'] : []),
+        ]);
         const helper = spawn(command, args, { windowsHide: true, stdio: 'ignore', cwd: serviceWorkingDirectory(), env: child.spawnEnvironment || process.env });
-        helper.on('error', error => console.error('[electron] Front detach helper failed', error));
+        child.frontDetachPromise = new Promise((resolve, reject) => {
+          // The helper starts its own budget after Python has initialized.
+          const timer = setTimeout(() => {
+            helper.kill();
+            reject(new Error('Front detach helper exceeded deadline'));
+          }, timeout + 2_000);
+          helper.once('error', error => { clearTimeout(timer); reject(error); });
+          helper.once('exit', code => {
+            clearTimeout(timer);
+            if (code === 0) resolve();
+            else reject(new Error(`Front detach incomplete (exit=${code})`));
+          });
+        });
+        void child.frontDetachPromise.catch(error => console.error('[electron] Front detach helper failed', error));
         helper.unref();
         return true;
       }
@@ -825,14 +833,28 @@ function waitForServiceTreeExit(child, timeoutMs) {
 }
 
 async function terminateService(child) {
-  if (!child?.pid || !serviceTreeRunning(child)) return;
-  signalServiceTree(child, 'SIGTERM');
-  if (await waitForServiceTreeExit(child, SERVICE_SHUTDOWN_TIMEOUT_MS)) return;
+  if (!child?.pid) return;
+  if (!serviceTreeRunning(child)) {
+    await child.frontDetachPromise;
+    return;
+  }
+  const signaled = signalServiceTree(child, 'SIGTERM');
+  try {
+    if (!signaled) throw new Error('Failed to start service shutdown');
+    const stopped = await waitForServiceTreeExit(child, SERVICE_SHUTDOWN_TIMEOUT_MS);
+    await child.frontDetachPromise;
+    if (stopped || !serviceTreeRunning(child)) return;
+  } catch (error) {
+    console.warn('[electron] graceful Front detach incomplete', error);
+    if (!serviceTreeRunning(child)) throw error;
+  }
 
   console.warn(`[electron] service tree ${child.pid} did not stop after SIGTERM; forcing shutdown`);
-  signalServiceTree(child, 'SIGKILL');
-  if (!(await waitForServiceTreeExit(child, SERVICE_KILL_TIMEOUT_MS))) {
-    console.error(`[electron] service tree ${child.pid} is still running after SIGKILL`);
+  if (!signalServiceTree(child, 'SIGKILL')) throw new Error('Failed to start forced service shutdown');
+  const stopped = await waitForServiceTreeExit(child, SERVICE_KILL_TIMEOUT_MS);
+  await child.frontDetachPromise;
+  if (!stopped) {
+    throw new Error(`Service tree ${child.pid} is still running after SIGKILL`);
   }
 }
 
@@ -844,22 +866,40 @@ function stopServices() {
     console.log(`[electron] stopping ${name} service tree`, { pid: child.pid });
   }
   const deadline = Date.now() + RUNTIME_SHUTDOWN_TIMEOUT_MS;
-  shutdownPromise = Promise.allSettled(services.map(([, child]) => terminateService(child))).then(async results => {
+  shutdownPromise = Promise.allSettled(services.map(async ([, child]) => {
+    await terminateService(child);
+    if (serviceTreeRunning(child)) throw new Error(`Service tree ${child.pid} is still running`);
+  })).then(async results => {
+    let failure = null;
     for (const result of results) {
-      if (result.status === 'rejected') console.error('[electron] service shutdown failed', result.reason);
+      if (result.status === 'rejected') {
+        console.error('[electron] service shutdown failed', result.reason);
+        failure ||= result.reason;
+      }
     }
-    if (services.some(([name]) => name === 'agent')) {
+    // A previous Front may have left this deployment's resident Worker alive,
+    // even when Quit precedes this launch's AgentServer registration.
+    if (!isFrontendOnly) {
       const remaining = Math.max(1, deadline - Date.now());
       const { command, args } = serviceCommand('lifecycle', ['--shutdown-worker', '--timeout', String(remaining / 1000)]);
-      const agent = services.find(([name]) => name === 'agent')[1];
-      await new Promise(resolve => {
-        const helper = spawn(command, args, { windowsHide: true, stdio: 'inherit', cwd: serviceWorkingDirectory(), env: agent.spawnEnvironment || process.env });
-        const timer = setTimeout(() => { console.error('[electron] Worker shutdown helper exceeded deadline'); helper.kill(); resolve(); }, remaining + 500);
-        helper.once('error', error => { clearTimeout(timer); console.error('[electron] Worker shutdown failed', error); resolve(); });
-        helper.once('exit', code => { clearTimeout(timer); if (code !== 0) console.error('[electron] Worker shutdown incomplete', { code }); resolve(); });
-      });
+      const agent = services.find(([name]) => name === 'agent')?.[1];
+      try {
+        await new Promise((resolve, reject) => {
+          const helper = spawn(command, args, { windowsHide: true, stdio: 'inherit', cwd: serviceWorkingDirectory(), env: agent?.spawnEnvironment || process.env });
+          const timer = setTimeout(() => { helper.kill(); reject(new Error('Worker shutdown helper exceeded deadline')); }, remaining + 500);
+          helper.once('error', error => { clearTimeout(timer); reject(error); });
+          helper.once('exit', code => {
+            clearTimeout(timer);
+            if (code !== 0) reject(new Error(`Worker shutdown incomplete (exit=${code})`));
+            else resolve();
+          });
+        });
+      } catch (error) {
+        failure ||= error;
+      }
     }
     serviceProcesses.clear();
+    if (failure) throw failure;
   });
   return shutdownPromise;
 }
@@ -902,6 +942,7 @@ function resolveIconPath() {
 }
 
 function showAndMaximizeMainWindow() {
+  if (quitRequested) return false;
   if (!mainWindow || mainWindow.isDestroyed()) return false;
   mainWindow.show();
   if (mainWindow.isMinimized()) mainWindow.restore();
@@ -932,8 +973,13 @@ function ensureTray() {
 }
 
 function destroyTray() {
-  if (tray && !tray.isDestroyed()) tray.destroy();
-  tray = null;
+  try {
+    if (tray && !tray.isDestroyed()) tray.destroy();
+  } catch (error) {
+    console.error('[electron] failed to destroy tray', error);
+  } finally {
+    tray = null;
+  }
 }
 
 async function promptCloseAction() {
@@ -997,7 +1043,7 @@ async function handleMainWindowCloseRequest() {
     action = choice.action;
     if (choice.remember) saveCloseAction(action);
   }
-  if (action === null) return;
+  if (quitRequested || action === null) return;
   if (action === CLOSE_ACTION_QUIT) {
     requestShutdown(0);
     return;
@@ -1198,6 +1244,25 @@ async function waitForCdpTarget(targetId, timeoutMs = CDP_TARGET_TIMEOUT_MS) {
   throw new Error(
     `Electron CDP target did not become ready at ${endpoint}: ${lastError?.message || 'unknown error'}`,
   );
+}
+
+async function initializeBrowserCdp() {
+  hasCdp = false;
+  const window = mainWindow;
+  if (!(cdpPort > 0) || !window || window.isDestroyed()) return false;
+  try {
+    // A free port is only a candidate: Chromium may lose the bind race. Match
+    // an ID obtained directly from our window, rather than any CDP listener.
+    await waitForOwnedCdpTarget({
+      port: cdpPort,
+      targetId: window.webContents.getOrCreateDevToolsTargetId(),
+    });
+    if (shuttingDown || mainWindow !== window || window.isDestroyed()) return false;
+    hasCdp = true;
+  } catch (error) {
+    console.error('[electron] CDP verification failed; browser sideview disabled', error);
+  }
+  return hasCdp;
 }
 
 function normalizeBrowserSessionId(rawValue) {
@@ -1550,6 +1615,7 @@ function browserEndpointsFilePath() {
 }
 
 function buildBrowserEndpointsPayload() {
+  if (!hasCdp || !browserTargetResolver) throw new Error('Electron CDP has not been verified');
   const cdpEndpoint = `http://${BACKEND_HOST}:${cdpPort}`;
   const targetResolver = `http://${BACKEND_HOST}:${browserTargetResolver.port}`;
   const envJson = {
@@ -1576,6 +1642,7 @@ function buildBrowserEndpointsPayload() {
 }
 
 function writeBrowserEndpointsFile() {
+  if (!hasCdp || !browserTargetResolver) return;
   const target = browserEndpointsFilePath();
   const tmp = `${target}.tmp-${process.pid}`;
   try {
@@ -1589,6 +1656,7 @@ function writeBrowserEndpointsFile() {
 }
 
 function startBrowserEndpointsPublisher() {
+  if (!hasCdp || !browserTargetResolver) return;
   writeBrowserEndpointsFile();
   if (browserEndpointsTimer) clearInterval(browserEndpointsTimer);
   browserEndpointsTimer = setInterval(writeBrowserEndpointsFile, BROWSER_ENDPOINTS_HEARTBEAT_MS);
@@ -1609,6 +1677,7 @@ function stopBrowserEndpointsPublisher() {
 }
 
 function startBrowserTargetResolver() {
+  if (!hasCdp) return Promise.reject(new Error('Electron CDP has not been verified'));
   return new Promise((resolve, reject) => {
     const server = nodeHttp.createServer(createTargetHandler({
       token: browserResolverToken,
@@ -1746,7 +1815,7 @@ async function showStartupFailure(error) {
     requestShutdown(1);
     return;
   }
-  void stopServices();
+  void stopServices().catch(error => console.error('[electron] startup cleanup incomplete', error));
   let status;
   try {
     const records = await loadStartupFailures();
@@ -1755,6 +1824,7 @@ async function showStartupFailure(error) {
     if (shouldRunStartupDoctor(error, childFailure)) {
       try {
         await mainWindow.loadURL(diagnosingHtml());
+        if (quitRequested) return;
         mainWindow.show();
         mainWindow.focus();
       } catch (loadError) {
@@ -1776,6 +1846,7 @@ async function showStartupFailure(error) {
   }
   try {
     await mainWindow.loadURL(failureHtml(status));
+    if (quitRequested) return;
     mainWindow.show();
     mainWindow.focus();
   } catch (loadError) {
@@ -2337,7 +2408,8 @@ function runStartupDoctor() {
     };
     const timer = setTimeout(() => {
       console.warn('[electron] startup doctor timed out');
-      void terminateService(child);
+      void terminateService(child).catch(error =>
+        console.error('[electron] background service cleanup incomplete', error));
     }, STARTUP_DOCTOR_TIMEOUT_MS);
     child.once('exit', finish);
     child.once('error', error => {
@@ -2474,6 +2546,11 @@ async function fetchImplicitAuthorizeUrl(docPage, successOrigin) {
 }
 
 function registerIpcHandlers() {
+  registerHandler('desktop:open-market-app', appMarketWindows.open);
+  registerHandler('desktop:close-market-app', appMarketWindows.close);
+  registerHandler('desktop:set-market-app-viewport', appMarketWindows.setViewport);
+  registerHandler('desktop:reload-market-app', appMarketWindows.reload);
+  registerHandler('desktop:market-app-resources', appMarketWindows.getResources);
   ipcMain.on('desktop:is-frontend-only', event => {
     if (mainWindow && !mainWindow.isDestroyed() && event.sender === mainWindow.webContents) {
       event.returnValue = isFrontendOnly;
@@ -2512,6 +2589,21 @@ function registerIpcHandlers() {
       if (target.origin !== expected.origin
           || target.username || target.password
           || !allowedPath.test(target.pathname)) {
+        return false;
+      }
+      await shell.openExternal(target.href);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+  // MCP Apps ui/open-link: any plain http(s) URL, no embedded credentials.
+  // Kept separate from the OAuth-only desktop:open-external-url above.
+  registerHandler('desktop:open-app-link', async url => {
+    try {
+      const target = new URL(String(url));
+      if (!['http:', 'https:'].includes(target.protocol)
+          || !target.hostname || target.username || target.password) {
         return false;
       }
       await shell.openExternal(target.href);
@@ -2810,12 +2902,14 @@ function registerIpcHandlers() {
       try {
         const { launchMacUpdate } = require('./macos_update.cjs');
         const dataRoot = process.env.JIUWENSWARM_DATA_DIR || path.join(app.getPath('home'), '.jiuwenswarm');
-        await launchMacUpdate({
+        const update = await launchMacUpdate({
           installerPath: target, executable: process.execPath, parentPid: process.pid,
+          backendExecutable: serviceCommand('lifecycle').command,
           childPids: [...serviceProcesses.values()].map(child => child.pid).filter(Number.isInteger),
           ports: Object.values(sessionPorts), updatesDir: path.join(dataRoot, '.updates'),
           logDir: path.join(dataRoot, 'logs'), arch: process.arch,
         });
+        updateShutdownReceipt = update.shutdownReceipt;
         void requestShutdown(0);
         return true;
       } catch (error) {
@@ -2825,6 +2919,9 @@ function registerIpcHandlers() {
       }
     }
     if (canUseBackendUpdateHelper()) {
+      const dataRoot = process.env.JIUWENSWARM_DATA_DIR || path.join(app.getPath('home'), '.jiuwenswarm');
+      const receipt = await createShutdownReceipt(path.join(dataRoot, '.updates'));
+      updateShutdownReceipt = receipt;
       // Windows packaged builds delegate to the bundled backend's update
       // helper (workswarm.exe --desktop-install-update): it waits for this
       // process to exit and for the backend/frontend ports to release before
@@ -2837,6 +2934,7 @@ function registerIpcHandlers() {
         '--parent-pid', String(process.pid),
         '--backend-port', String(sessionPorts.gatewayApi),
         '--frontend-port', String(sessionPorts.frontend),
+        '--shutdown-receipt', receipt,
       ], {
         cwd: serviceWorkingDirectory(),
         env: { ...process.env },
@@ -2846,13 +2944,11 @@ function registerIpcHandlers() {
         shell: false,
       });
       helper.once('error', error => {
+        if (updateShutdownReceipt === receipt) updateShutdownReceipt = null;
         console.error('[electron] failed to launch backend update helper', error);
-        // Helper could not be spawned: fall back to opening the installer
-        // directly (dev-equivalent behavior) instead of leaving the app
-        // running with no update at all.
-        void shell.openPath(target).then(errorMessage => {
-          if (!errorMessage) setTimeout(() => requestShutdown(0), 250);
-        });
+        void dialog.showMessageBox({ type: 'error', message: 'Failed to launch update installer. Please try again.' })
+          .catch(error => console.error('[electron] failed to display update error', error));
+        void completeShutdownReceipt(receipt, false).catch(error => console.error('[electron] update receipt failed', error));
       });
       helper.once('spawn', () => {
         setTimeout(() => requestShutdown(0), 250);
@@ -2998,7 +3094,16 @@ async function createMainWindow() {
       sandbox: true,
     },
   });
-  mainWindow.once('ready-to-show', () => mainWindow.show());
+  mainWindow.once('ready-to-show', () => {
+    if (!quitRequested) mainWindow.show();
+  });
+  registerDisplayMediaHandler({
+    session: mainWindow.webContents.session,
+    desktopCapturer,
+    BrowserWindow,
+    getParentWindow: () => (mainWindow && !mainWindow.isDestroyed() ? mainWindow : null),
+    getFrontendUrl: () => currentFrontendUrl,
+  });
   mainWindow.on('close', event => {
     if (process.platform === 'darwin') {
       if (shuttingDown) return;
@@ -3052,6 +3157,7 @@ async function createMainWindow() {
     void mainWindow
       .loadURL(earlyUrl)
       .then(() => {
+        if (quitRequested) return;
         mainWindow.show();
         mainWindow.focus();
         if (process.platform === 'darwin') app.focus({ steal: true });
@@ -3076,19 +3182,12 @@ async function createMainWindow() {
     // Gateway 单例预检, 冲突时完全不占用端口组(两个 Gateway = 两套
     // CronScheduler = cron 重复执行)。
     await preflightGatewaySingleton();
+    if (shuttingDown) return;
     webStartup = await startWebService(onWebReady);
   }
 
-  // Packaged port=0 mode: finalize the Chromium-chosen CDP port (must precede
-  // the target resolver's ensureBrowserView and any agent/gateway spawn).
-  if (cdpPortResolution) {
-    cdpPort = await cdpPortResolution;
-    cdpPortResolution = null;
-    if (!(cdpPort > 0)) {
-      hasCdp = false;
-      console.warn('[electron] DevToolsActivePort did not appear; browser sideview disabled');
-    }
-  }
+  await initializeBrowserCdp();
+  if (shuttingDown) return;
   if (hasCdp) {
     console.log('[electron] starting browser target resolver...');
     browserTargetResolver = await startBrowserTargetResolver();
@@ -3098,7 +3197,7 @@ async function createMainWindow() {
     // 发布发现文件（dev / 完整包 / FrontendOnly 一致）：外部后端据此绑定壳内浏览器。
     startBrowserEndpointsPublisher();
   } else {
-    console.log('[electron] CDP port not configured; browser sideview disabled (packaged mode)');
+    console.log('[electron] CDP unavailable or unverified; browser sideview disabled');
   }
 
   if (isFrontendOnly) {
@@ -3107,6 +3206,7 @@ async function createMainWindow() {
     currentFrontendUrl = frontendUrl;
     console.log('[electron] loading frontend:', frontendUrl);
     await mainWindow.loadURL(frontendUrl);
+    if (quitRequested) return;
     mainWindow.show();
     mainWindow.focus();
     if (process.platform === 'darwin') app.focus({ steal: true });
@@ -3115,12 +3215,14 @@ async function createMainWindow() {
 
   console.log('[electron] starting backend services...');
   await startBackendServices(webStartup);
+  if (shuttingDown) return;
   const frontendBase = `http://${FRONTEND_HOST}:${webStartup.ports.frontend}`;
   currentFrontendUrl = frontendBase;
   if (!navigated) {
     const entryUrl = VITE_DEV_MODE ? frontendBase : desktopEntryUrl(frontendBase);
     console.log('[electron] loading frontend:', frontendBase);
     await mainWindow.loadURL(entryUrl);
+    if (quitRequested) return;
     mainWindow.show();
     mainWindow.focus();
     if (process.platform === 'darwin') app.focus({ steal: true });
@@ -3131,6 +3233,7 @@ if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', () => {
+    if (quitRequested) return;
     if (!mainWindow) return;
     if (process.platform === 'win32') {
       showAndMaximizeMainWindow();
@@ -3147,9 +3250,6 @@ if (!app.requestSingleInstanceLock()) {
     // 先读回上次运行保存的会话页面 URL（重启还原），再进入启动流程。
     Menu.setApplicationMenu(null);
     loadSessionLastUrls();
-    if (cdpPortPending) {
-      cdpPortResolution = resolveCdpPortFromDevToolsActivePort();
-    }
     if (VITE_DEV_MODE) {
       await session.defaultSession.clearCache();
       await session.defaultSession.clearStorageData({ storages: ['serviceworkers'] });
@@ -3179,17 +3279,30 @@ app.on('before-quit', event => {
   quitRequested = true;
   if (shutdownComplete) return;
   event.preventDefault();
+  if (finalShutdownPromise) return;
+  // Hide before stopping services so intentional disconnects are never shown.
+  try {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide();
+  } catch (error) {
+    console.error('[electron] failed to hide main window before shutdown', error);
+  }
+  destroyTray();
   // 冲刷待写的会话页面 URL（取消防抖定时器），保证重启还原不丢最后一次导航。
   saveSessionLastUrls();
   // 冲刷下载历史，保证重启后下载记录完整。
   saveStoredDownloads();
-  void Promise.all([abortAllBlobSaves(), stopServices()]).finally(() => {
-    shutdownComplete = true;
-    destroyTray();
-    app.exit(requestedExitCode);
-  });
+  finalShutdownPromise = recordShutdownOutcome(updateShutdownReceipt, () => Promise.all([abortAllBlobSaves(), stopServices()]))
+    .catch(error => {
+      requestedExitCode = Math.max(1, requestedExitCode);
+      console.error('[electron] final shutdown incomplete; update is blocked', error);
+    }).finally(() => {
+      shutdownComplete = true;
+      destroyTray();
+      app.exit(requestedExitCode);
+    });
 });
 app.on('activate', () => {
+  if (quitRequested) return;
   if (!mainWindow || mainWindow.isDestroyed()) return;
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();

@@ -24,6 +24,7 @@ async def construct_runtime_server(
 ) -> Any:
     """Bind SDK registry ownership before concurrent Runtime construction."""
     from openjiuwen.core.runner import Runner
+
     from jiuwenswarm.server.worker.callback_registry import bind_callback_registry_owner
 
     registry_owner = bind_callback_registry_owner(Runner.callback_framework)
@@ -60,8 +61,9 @@ async def _construct_runtime_server(
     its cleanup owner before a sibling preparation failure is propagated.
     """
     from openjiuwen.core.runner import Runner
-    from jiuwenswarm.extensions.manager import ExtensionManager
-    from jiuwenswarm.extensions.registry import ExtensionRegistry
+
+    from agent_gateway.extensions.manager import ExtensionManager
+    from agent_gateway.extensions.registry import ExtensionRegistry
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
     extension_registry = ExtensionRegistry.create_instance(
@@ -105,6 +107,12 @@ async def _construct_runtime_server(
         raise extensions
     if isinstance(execution_code, BaseException):
         raise execution_code
+    # Model migration decrypts credentials through the registered crypto
+    # extension. Join registration before migrating, and migrate before any
+    # Runtime consumer or Runner starts.
+    from jiuwenswarm.common.multimodal_store import initialize_multimodal_models
+
+    await asyncio.to_thread(initialize_multimodal_models)
     logger.info(
         "[Worker] 扩展加载完成，共 %d 个 (elapsed %.2fs)",
         len(extension_manager.list_extensions()), telemetry.elapsed,

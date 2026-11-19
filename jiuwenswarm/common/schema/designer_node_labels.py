@@ -214,6 +214,10 @@ def label_compose(story_name: str) -> str:
     return f"Final Composed: {_clean(story_name, limit=64) or 'Untitled'}"
 
 
+def label_music(story_name: str) -> str:
+    return f"BGM: {_clean(story_name, limit=64) or 'Untitled'}"
+
+
 def is_semantic_canvas_label(label: str) -> bool:
     """True when label follows the Designer naming scheme (keep through normalize)."""
     text = (label or "").strip()
@@ -225,5 +229,6 @@ def is_semantic_canvas_label(label: str) -> bool:
         "Character ",
         "Scene ",
         "Final Composed:",
+        "BGM:",
     )
     return any(text.startswith(p) for p in prefixes)

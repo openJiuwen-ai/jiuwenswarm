@@ -3,7 +3,6 @@ import {
   Hand,
   MousePointer2,
   Upload,
-  Workflow,
 } from 'lucide-react';
 import { useCallback, useRef, type ChangeEvent } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -14,7 +13,7 @@ import {
   offsetCanvasPosition,
   type DesignerAddTemplate,
 } from '../designerCanvasNodes';
-import { DesignerAddNodeTypeIcon } from '../designerIcons';
+import { ComfyuiGenerationIcon, DesignerAddNodeTypeIcon } from '../designerIcons';
 import {
   DESIGNER_UPLOAD_ACCEPT,
   buildUploadedDesignerNode,
@@ -27,9 +26,6 @@ import { useDesignerStore } from '../designerStore';
 import { useDesignerUiStore } from '../designerUiStore';
 import { useComfyuiWorkflowEnabled } from '../comfyuiFeatureConfig';
 import { useComfyuiImport } from '../useComfyuiImport';
-
-/** Dock exposes image + video generation; audio stays for asset drops only. */
-const DOCK_ADD_TEMPLATES = DESIGNER_ADD_TEMPLATES.filter((item) => item.type !== 'audio');
 
 export function DesignerCanvasDock() {
   const { t } = useTranslation();
@@ -121,7 +117,7 @@ export function DesignerCanvasDock() {
   return (
     <div className="designer-canvas-dock" data-testid="designer-canvas-dock">
       <div className="designer-canvas-dock__bar" role="toolbar" aria-label={t('designer.dock.label')}>
-        {DOCK_ADD_TEMPLATES.map((item) => (
+        {DESIGNER_ADD_TEMPLATES.map((item) => (
           <button
             key={item.id}
             type="button"
@@ -149,7 +145,7 @@ export function DesignerCanvasDock() {
                 fileInputRef.current?.click();
               }}
             >
-              <Workflow size={18} aria-hidden />
+              <ComfyuiGenerationIcon aria-hidden />
             </button>
             <input
               ref={fileInputRef}

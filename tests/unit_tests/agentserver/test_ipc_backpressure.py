@@ -16,12 +16,16 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
+
+from tests.unit_tests.agentserver.fixtures.front_process import receive_business_frame
 
 from jiuwenswarm.server.ipc.client import connect
 from jiuwenswarm.server.ipc.protocol import KIND_HEARTBEAT
 from jiuwenswarm.server.ipc.server import IpcServer
+from jiuwenswarm.server.ipc.stream import PipeConnection
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front.event_forwarder import EventForwarder
@@ -69,6 +73,161 @@ async def _saturated_default_pool():
     finally:
         release.set()
         await asyncio.gather(*blockers)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_first_close", [False, True])
+async def test_pipe_close_waits_for_native_poll_completion(cancel_first_close: bool) -> None:
+    """Keep an in-flight native read alive until its owner has collected it."""
+    entered = threading.Event()
+    release = threading.Event()
+    in_flight = threading.Event()
+    closed = threading.Event()
+    closed_while_reading = []
+
+    class NativePipe:
+        def poll(self, _timeout):
+            in_flight.set()
+            entered.set()
+            try:
+                assert release.wait(2)
+                return False
+            finally:
+                in_flight.clear()
+
+        def close(self):
+            closed_while_reading.append(in_flight.is_set())
+            closed.set()
+
+    connection = PipeConnection(NativePipe())
+    read = asyncio.create_task(connection.recv())
+    first_close = None
+    try:
+        async with asyncio.timeout(1):
+            while not entered.is_set():
+                await asyncio.sleep(0.005)
+        first_close = asyncio.create_task(connection.close())
+        await asyncio.sleep(0.02)
+        assert not first_close.done()
+        assert not closed.is_set()
+        if cancel_first_close:
+            first_close.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first_close
+        release.set()
+        await asyncio.wait_for(connection.close(), 1)
+        assert closed.is_set()
+        assert closed_while_reading == [False]
+        with pytest.raises(ConnectionError):
+            await read
+    finally:
+        release.set()
+        await connection.close()
+        await asyncio.gather(read, *([first_close] if first_close is not None else []), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_listener_close_preserves_accepted_connection_for_shutdown_ack() -> None:
+    async with _pair() as (client, peer, server):
+        await asyncio.wait_for(server.stop_accepting(), 1)
+        await peer.send({"kind": "shutdown.done", "ok": True})
+        assert await asyncio.wait_for(client.recv(), 1) == {
+            "kind": "shutdown.done", "ok": True,
+        }
+        await peer.close()
+        await client.close()
+        await asyncio.wait_for(server.close(), 1)
+
+
+@pytest.mark.asyncio
+async def test_closed_listener_does_not_unlink_a_replacement_endpoint() -> None:
+    async with _pair() as (client, peer, server):
+        await peer.close()
+        await client.close()
+        await server.close()
+        replacement = Path(server.path)
+        replacement.write_text("replacement owner", encoding="utf-8")
+        try:
+            await server.close()
+            assert replacement.read_text(encoding="utf-8") == "replacement owner"
+        finally:
+            replacement.unlink(missing_ok=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="Unix endpoint ownership across concurrent close")
+async def test_concurrent_listener_close_does_not_unlink_a_new_owner(monkeypatch) -> None:
+    async with _pair() as (client, peer, server):
+        await peer.close()
+        await client.close()
+        waiting = threading.Event()
+        releases = [threading.Event(), threading.Event()]
+        entered = 0
+        wait_closed = server._unix.wait_closed
+
+        async def controlled_wait_closed():
+            nonlocal entered
+            index = entered
+            entered += 1
+            if entered == 2:
+                waiting.set()
+            await wait_closed()
+            while not releases[index].is_set():
+                await asyncio.sleep(0.005)
+
+        monkeypatch.setattr(server._unix, "wait_closed", controlled_wait_closed)
+        first = asyncio.create_task(server.close())
+        second = asyncio.create_task(server.close())
+        replacement = IpcServer(server.path)
+        try:
+            assert await asyncio.to_thread(waiting.wait, 1)
+            releases[0].set()
+            await asyncio.wait_for(first, 1)
+            await replacement.start()
+            releases[1].set()
+            await asyncio.wait_for(second, 1)
+            assert Path(replacement.path).exists()
+        finally:
+            for release in releases:
+                release.set()
+            await asyncio.gather(first, second, return_exceptions=True)
+            await replacement.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="Unix listener cancellation and queued stream cleanup")
+async def test_cancelled_listener_stop_can_resume_draining_connections() -> None:
+    async with _pair() as (client, peer, server):
+        await peer.close()
+        await client.close()
+        closing = threading.Event()
+        drained = threading.Event()
+
+        async def blocked_close():
+            closing.set()
+            await asyncio.Event().wait()
+
+        async def remaining_close():
+            drained.set()
+
+        from jiuwenswarm.server.ipc.io_loop import ipc_io
+
+        await ipc_io(server._queue.put)(SimpleNamespace(close=blocked_close))
+        await ipc_io(server._queue.put)(SimpleNamespace(close=remaining_close))
+        stopping = asyncio.create_task(server.stop_accepting())
+        try:
+            assert await asyncio.to_thread(closing.wait, 1)
+            stopping.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await stopping
+            assert not server._unix.is_serving()
+            await asyncio.wait_for(server.close(), 1)
+            assert drained.is_set()
+        finally:
+            stopping.cancel()
+            await asyncio.gather(stopping, return_exceptions=True)
+            if server._unix is not None:
+                await server.stop_accepting()
 
 
 @pytest.mark.asyncio
@@ -202,19 +361,79 @@ def _capture_logs(caplog):
             logger.removeHandler(caplog.handler)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport", ["resident", "front_loopback"])
+@pytest.mark.parametrize("exit_code", [0, 1])
+async def test_worker_process_inherits_stdout_and_persists_stderr(
+    tmp_path, monkeypatch, capfd, caplog, transport, exit_code,
+):
+    """Keep the pre-diagnostics output routing without relabeling INFO records."""
+    script = (
+        "import logging, sys\n"
+        "sys.stdin.buffer.read()\n"
+        "logging.basicConfig(level=logging.INFO)\n"
+        "print('stdout diagnostic', flush=True)\n"
+        "logging.getLogger('common').info('Registered parser TxtMdParser for .markdown')\n"
+    )
+    if exit_code:
+        script += "raise RuntimeError('worker stderr regression probe')\n"
+    monkeypatch.setattr(
+        process_module,
+        "build_worker_command",
+        lambda *args, **kwargs: [sys.executable, "-c", script],
+    )
+    listener = (
+        process_module.FrontLoopbackListener()
+        if transport == "front_loopback" else None
+    )
+    process = process_module.WorkerProcess(
+        str(tmp_path / "worker.pipe"),
+        host="127.0.0.1",
+        port=18092,
+        ipc_listener=listener,
+    )
+    try:
+        await process.spawn()
+        if listener is not None:
+            payload = listener.launch_payload()
+            assert payload["transport"] == "front_loopback" and payload["port"] > 0
+        assert await process.wait(timeout=5) == exit_code
+        captured = capfd.readouterr()
+        assert "stdout diagnostic" in captured.out
+        stderr = process.stderr_path.read_text(encoding="utf-8")
+        assert "INFO:common:Registered parser TxtMdParser for .markdown" in stderr
+        if exit_code:
+            assert "Traceback (most recent call last):" in stderr
+            assert "RuntimeError: worker stderr regression probe" in stderr
+        assert not list(process.stderr_path.parent.glob("*.stdout.log"))
+        assert not any(
+            record.getMessage().startswith(("[Worker stdout pid=", "[Worker stderr pid="))
+            for record in caplog.records
+        )
+    finally:
+        await process.stop()
+        if listener is not None:
+            await listener.close()
+
+
 @asynccontextmanager
 async def _worker(mode, tmp_path, monkeypatch, *, max_restarts=0):
     fixture = Path(__file__).parent / "fixtures" / "diagnostic_worker.py"
     root = Path(__file__).resolve().parents[3]
-    python_paths = [str(root)]
+    bootstrap = tmp_path / "diagnostic-bootstrap"
+    bootstrap.mkdir()
+    (bootstrap / "sitecustomize.py").write_text(
+        "import os, sys\n"
+        "if 'jiuwenswarm.server.worker.main' in getattr(sys, 'orig_argv', []):\n"
+        "    from diagnostic_worker import configure\n"
+        "    configure(os.environ['JIUWENSWARM_DIAGNOSTIC_WORKER_MODE'])\n",
+        encoding="utf-8",
+    )
+    python_paths = [str(bootstrap), str(fixture.parent), str(root)]
     if os.environ.get("PYTHONPATH"):
         python_paths.append(os.environ["PYTHONPATH"])
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join(python_paths))
-
-    def command(socket_path, **options):
-        return [sys.executable, str(fixture), "--mode", mode, "--socket", socket_path]
-
-    monkeypatch.setattr(process_module, "build_worker_command", command)
+    monkeypatch.setenv("JIUWENSWARM_DIAGNOSTIC_WORKER_MODE", mode)
     endpoint = (
         str(tmp_path / "worker.pipe")
         if os.name == "nt"
@@ -292,7 +511,7 @@ async def _traffic(supervisor, gateway, client, frames):
     async def receive():
         sequence = []
         while True:
-            wire = json.loads(await client.recv())
+            wire = json.loads(await receive_business_frame(client))
             if wire.get("phase") == "final":
                 return sequence
             assert wire.get("response_kind") != "e2a.error", wire
@@ -308,6 +527,85 @@ async def _traffic(supervisor, gateway, client, frames):
         10,
     )
     assert received == list(range(frames))
+
+
+@pytest.mark.asyncio
+@pytest.mark.slow
+@pytest.mark.parametrize("method", [
+    "project.list", "project.get_cron_sessions", "session.list", "session.get_metadata",
+])
+async def test_slow_front_query_keeps_real_worker_stream_consuming(tmp_path, monkeypatch, method):
+    import psutil
+    from websockets.asyncio.client import connect
+
+    from jiuwenswarm.server.control.repositories import project_repository, session_repository
+    from jiuwenswarm.server.front.admission import ExecutionAdmission
+    from jiuwenswarm.server.front.router import MethodRouter
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow_project(*_args):
+        started.set()
+        release.wait(20)
+        return {"projects": [], "sessions": [], "total": 0}, None, None
+
+    def slow_sessions(limit=20, offset=0):
+        started.set()
+        release.wait(20)
+        return [], 0
+
+    def slow_metadata(*_args, **_kwargs):
+        started.set()
+        release.wait(20)
+        return {"session_id": "ipc-pressure"}
+
+    monkeypatch.setattr(project_repository, "load_project_list", slow_project)
+    monkeypatch.setattr(project_repository, "load_project_cron_sessions", slow_project)
+    monkeypatch.setattr(session_repository, "get_all_sessions_metadata", slow_sessions)
+    monkeypatch.setattr(session_repository, "get_session_metadata", slow_metadata)
+    async with _worker("normal", tmp_path, monkeypatch) as (supervisor, process):
+        pid = supervisor.worker_pid
+        created = psutil.Process(pid).create_time()
+        router = MethodRouter(supervisor._readiness, ExecutionAdmission(supervisor._readiness))
+
+        class QuerySocket:
+            async def send(self, _value):
+                pass
+
+        request = AgentRequest(request_id="slow-list", channel_id="web",
+            req_method=ReqMethod(method), session_id="ipc-pressure",
+            params={"project_id": "default", "session_id": "ipc-pressure"})
+        query = None
+        async with _gateway(supervisor) as (url, gateway, attached):
+            async with connect(url, max_size=None) as client:
+                await asyncio.wait_for(attached.wait(), 2)
+                traffic = asyncio.create_task(_traffic(supervisor, gateway, client, 320))
+                try:
+                    await asyncio.sleep(0.05)
+                    query = asyncio.create_task(router.dispatch(QuerySocket(), request, asyncio.Lock()))
+                    async with asyncio.timeout(2):
+                        while not started.is_set():
+                            await asyncio.sleep(0.005)
+                    assert not query.done(), "The Front query blocked its own event loop"
+                    await traffic
+                    assert not query.done(), "Streaming must finish while the query is still pending"
+                    assert supervisor.worker_pid == pid
+                    assert psutil.Process(pid).create_time() == created
+                    assert supervisor._restart_count == 0
+                    assert not supervisor._fatal
+                finally:
+                    release.set()
+                    traffic.cancel()
+                    await asyncio.gather(traffic, return_exceptions=True)
+                    if query is not None:
+                        await query
+    assert process.returncode == 0
+    (tmp_path / "acceptance.json").write_text(json.dumps({
+        "method": method, "worker_pid": pid, "worker_created": created,
+        "same_worker": True, "ordered_frames_while_query_pending": 320,
+        "worker_restarts": 0, "worker_exit_code": process.returncode,
+    }, indent=2), encoding="utf-8")
 
 
 @pytest.mark.asyncio
@@ -352,9 +650,9 @@ async def test_real_worker_survives_large_log_regex(tmp_path, monkeypatch, caplo
                 dispatch = asyncio.create_task(supervisor.dispatch_parsed_request(
                     gateway["ws"], _request(1), gateway["lock"],
                 ))
-                first = json.loads(await asyncio.wait_for(client.recv(), 5))
+                first = json.loads(await asyncio.wait_for(receive_business_frame(client), 5))
                 assert first["phase"] == "regex_starting"
-                final = json.loads(await asyncio.wait_for(client.recv(), 5))
+                final = json.loads(await asyncio.wait_for(receive_business_frame(client), 5))
                 await asyncio.wait_for(dispatch, 2)
                 assert final["phase"] == "final" and final["log_seconds"] < 2
                 assert supervisor.worker_pid == pid and supervisor._restart_count == 0
@@ -383,7 +681,7 @@ async def test_real_worker_survives_blocked_logging_and_exits_before_sink_recove
                 dispatch = asyncio.create_task(supervisor.dispatch_parsed_request(
                     gateway["ws"], _request(1), gateway["lock"],
                 ))
-                first = json.loads(await asyncio.wait_for(client.recv(), 5))
+                first = json.loads(await asyncio.wait_for(receive_business_frame(client), 5))
                 assert first["phase"] == "logging_pending"
                 assert first["first_seconds"] < 2
                 assert first["log_thread"] == "worker-log-writer"
@@ -391,7 +689,7 @@ async def test_real_worker_survives_blocked_logging_and_exits_before_sink_recove
                 assert supervisor._last_rx > began + 25
                 assert supervisor._restart_count == 0
                 assert supervisor.worker_pid == pid and process.returncode is None
-                final = json.loads(await asyncio.wait_for(client.recv(), 10))
+                final = json.loads(await asyncio.wait_for(receive_business_frame(client), 10))
                 await asyncio.wait_for(dispatch, 2)
                 assert final["phase"] == "final" and final["sink_pending"]
                 assert final["blocked_seconds"] >= 36
@@ -443,7 +741,7 @@ async def test_real_worker_survives_busy_pools_timeout_and_reconnect(
                     finally:
                         lock.release()
                     await asyncio.wait_for(dispatch, 3)
-                    wire = json.loads(await asyncio.wait_for(client.recv(), 3))
+                    wire = json.loads(await asyncio.wait_for(receive_business_frame(client), 3))
                     assert wire["response_kind"] == "e2a.error"
                     assert "GATEWAY_FORWARD_FAILED" in json.dumps(wire)
                     snapshot = json.loads(
@@ -506,7 +804,7 @@ async def test_real_worker_keeps_heartbeat_during_slow_shell_probe(
                         gateway["ws"], _request(1), gateway["lock"]
                     )
                 )
-                first = json.loads(await asyncio.wait_for(client.recv(), 5))
+                first = json.loads(await asyncio.wait_for(receive_business_frame(client), 5))
                 assert first["phase"] == "shell_pending"
                 assert first["unknown"] and first["probe_pending"]
                 assert first["first_round_seconds"] < 2
@@ -521,7 +819,7 @@ async def test_real_worker_keeps_heartbeat_during_slow_shell_probe(
                 assert supervisor._restart_count == 0
                 assert supervisor._readiness.state is ReadinessState.AGENT_READY
 
-                final = json.loads(await asyncio.wait_for(client.recv(), 10))
+                final = json.loads(await asyncio.wait_for(receive_business_frame(client), 10))
                 await asyncio.wait_for(dispatch, 3)
                 assert final["phase"] == "final"
                 assert final["unknown"] and final["probe_pending"]
@@ -557,20 +855,22 @@ async def test_real_worker_keeps_heartbeat_during_slow_shell_probe(
 
 @pytest.mark.asyncio
 @pytest.mark.slow
-@pytest.mark.skipif(
-    os.name == "nt",
-    reason="Windows answers heartbeats off-loop; a stalled loop no longer "
-    "times out transport (see test_real_freeze_worker_survives_loop_stall)",
-)
-async def test_real_stalled_worker_dumps_stacks_and_triggers_watchdog(
-    tmp_path, monkeypatch, caplog
+@pytest.mark.timeout(120)
+@pytest.mark.parametrize("transport", ["resident", "front_loopback"])
+async def test_real_missing_heartbeats_triggers_transport_watchdog(
+    tmp_path, monkeypatch, caplog, transport,
 ):
+    """A genuinely silent transport still expires at the 30s deadline."""
     from websockets.asyncio.client import connect as ws_connect
 
-    async with _worker("freeze", tmp_path, monkeypatch) as (supervisor, process):
+    monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", transport)
+    async with _worker("heartbeat-loss", tmp_path, monkeypatch) as (supervisor, process):
         async with _gateway(supervisor) as (url, gateway, attached):
             async with ws_connect(url) as client:
                 await asyncio.wait_for(attached.wait(), 2)
+                worker_pid = supervisor.worker_pid
+                assert worker_pid is not None
                 started = time.monotonic()
                 dispatch = asyncio.create_task(
                     supervisor.dispatch_parsed_request(
@@ -580,11 +880,11 @@ async def test_real_stalled_worker_dumps_stacks_and_triggers_watchdog(
                     )
                 )
                 assert (
-                    json.loads(await asyncio.wait_for(client.recv(), 3))["phase"]
-                    == "freezing"
+                    json.loads(await asyncio.wait_for(receive_business_frame(client), 3))["phase"]
+                    == "heartbeats_muted"
                 )
                 assert process.returncode is None, (
-                    "Fault injection must reach a live hung child"
+                    "Fault injection must reach a live child with missing pongs"
                 )
                 await asyncio.wait_for(dispatch, 39)
                 assert time.monotonic() - started >= 29.5
@@ -593,14 +893,10 @@ async def test_real_stalled_worker_dumps_stacks_and_triggers_watchdog(
                 assert await process.wait(timeout=10) is not None, (
                     "A confirmed unhealthy Worker must be retired even without a restart budget"
                 )
-                failure = json.loads(await asyncio.wait_for(client.recv(), 3))
+                failure = json.loads(await asyncio.wait_for(receive_business_frame(client), 3))
                 assert "WORKER_CLOSED" in json.dumps(failure)
                 stderr = process.stderr_path.read_text(encoding="utf-8")
                 assert "Timeout (0:00:25)" in stderr
-                assert (
-                    "diagnostic_worker.py" in stderr
-                    and "dispatch_parsed_request" in stderr
-                )
                 dump = supervisor._last_dump_path.read_text(encoding="utf-8")
                 assert "ASYNCIO TASKS" in dump and "THREAD STACKS" in dump
                 snapshot = json.loads(dump.splitlines()[0])
@@ -611,8 +907,9 @@ async def test_real_stalled_worker_dumps_stacks_and_triggers_watchdog(
                 (tmp_path / "acceptance.json").write_text(
                     json.dumps(
                         {
-                            "case": "live_stalled_worker",
-                            "pid": supervisor.worker_pid,
+                            "case": "missing_transport_heartbeats",
+                            "transport": transport,
+                            "pid": worker_pid,
                             "worker_exit_code": process.returncode,
                             "watchdog_seconds": time.monotonic() - started,
                             "native_stack_dump": "passed",
@@ -628,15 +925,16 @@ async def test_real_stalled_worker_dumps_stacks_and_triggers_watchdog(
 
 @pytest.mark.asyncio
 @pytest.mark.slow
-@pytest.mark.skipif(
-    os.name != "nt", reason="Windows named-pipe heartbeat fast path"
-)
+@pytest.mark.timeout(150)
+@pytest.mark.parametrize("transport", ["resident", "front_loopback"])
 async def test_real_worker_keeps_heartbeat_with_requests_queued_during_stall(
-    tmp_path, monkeypatch, caplog,
+    tmp_path, monkeypatch, caplog, transport,
 ):
     """A business frame must not strand heartbeats behind a stalled loop."""
     from websockets.asyncio.client import connect as ws_connect
 
+    monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", transport)
     async with _worker("freeze", tmp_path, monkeypatch) as (supervisor, process):
         pid = supervisor.worker_pid
         async with _gateway(supervisor) as (url, gateway, attached):
@@ -647,7 +945,7 @@ async def test_real_worker_keeps_heartbeat_with_requests_queued_during_stall(
                 tasks = [asyncio.create_task(supervisor.dispatch_parsed_request(
                     gateway["ws"], first, gateway["lock"],
                 ))]
-                assert json.loads(await asyncio.wait_for(client.recv(), 3))["phase"] == "freezing"
+                assert json.loads(await asyncio.wait_for(receive_business_frame(client), 3))["phase"] == "freezing"
                 began = time.monotonic()
                 await asyncio.sleep(0.5)
                 for index in range(3):
@@ -678,6 +976,7 @@ async def test_real_worker_keeps_heartbeat_with_requests_queued_during_stall(
                     assert "Timeout (0:00:25)" in stderr and "dispatch_parsed_request" in stderr
                     (tmp_path / "acceptance.json").write_text(json.dumps({
                         "case": "queued_sessions_during_stall", "pid": pid,
+                        "transport": transport,
                         "stall_seconds": 60, "heartbeat_timeout": 30, "sessions": 4,
                         "later_requests_completed": 3, "restarts": 0,
                         "stderr": str(process.stderr_path), "native_stack_dump": True,
@@ -692,9 +991,7 @@ async def test_real_worker_keeps_heartbeat_with_requests_queued_during_stall(
 
 @pytest.mark.asyncio
 @pytest.mark.slow
-@pytest.mark.skipif(
-    os.name != "nt", reason="Windows named-pipe heartbeat fast path"
-)
+@pytest.mark.timeout(150)
 async def test_real_freeze_worker_survives_loop_stall(tmp_path, monkeypatch, caplog):
     """A blocked business loop keeps transport liveness and must not be killed.
 
@@ -717,7 +1014,7 @@ async def test_real_freeze_worker_survives_loop_stall(tmp_path, monkeypatch, cap
                     )
                 )
                 assert (
-                    json.loads(await asyncio.wait_for(client.recv(), 3))["phase"]
+                    json.loads(await asyncio.wait_for(receive_business_frame(client), 3))["phase"]
                     == "freezing"
                 )
                 started = time.monotonic()
@@ -770,7 +1067,7 @@ async def test_real_sustained_stall_replaces_worker(
                     )
                 )
                 assert (
-                    json.loads(await asyncio.wait_for(client.recv(), 3))["phase"]
+                    json.loads(await asyncio.wait_for(receive_business_frame(client), 3))["phase"]
                     == "freezing"
                 )
                 started = time.monotonic()
@@ -778,7 +1075,7 @@ async def test_real_sustained_stall_replaces_worker(
                 assert time.monotonic() - started >= 35
                 assert "business loop stalled" in caplog.text
                 assert "heartbeat timed out" not in caplog.text
-                failure = json.loads(await asyncio.wait_for(client.recv(), 3))
+                failure = json.loads(await asyncio.wait_for(receive_business_frame(client), 3))
                 assert "WORKER_CLOSED" in json.dumps(failure)
                 if max_restarts:
                     assert await supervisor._readiness.wait_agent_ready(15)
@@ -805,6 +1102,62 @@ async def test_real_sustained_stall_replaces_worker(
 
 
 @pytest.mark.asyncio
+@pytest.mark.slow
+@pytest.mark.timeout(300)
+async def test_real_loopback_180_second_stall_logs_business_before_replacing_worker(
+    tmp_path, monkeypatch, caplog,
+):
+    """Keep real 30/180-second deadlines and attribute the frozen business request."""
+    from websockets.asyncio.client import connect as ws_connect
+
+    monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", "front_loopback")
+    async with _worker("freeze-long", tmp_path, monkeypatch, max_restarts=1) as (supervisor, process):
+        pid = supervisor.worker_pid
+        creation_time = supervisor._worker_create_time
+        request = _request(1)
+        request.session_id = "diagnostic-blocked-session"
+        async with _gateway(supervisor) as (url, gateway, attached):
+            async with ws_connect(url, proxy=None) as client:
+                await asyncio.wait_for(attached.wait(), 2)
+                dispatch = asyncio.create_task(supervisor.dispatch_parsed_request(
+                    gateway["ws"], request, gateway["lock"],
+                ))
+                assert json.loads(await asyncio.wait_for(receive_business_frame(client), 3))["phase"] == "freezing"
+                began = time.monotonic()
+                await asyncio.wait_for(dispatch, 205)
+                elapsed = time.monotonic() - began
+                assert 175 <= elapsed < 205
+                assert "heartbeat timed out" not in caplog.text
+                warning = [record.getMessage() for record in caplog.records
+                           if "worker loop unresponsive" in record.getMessage()]
+                restart = [record.getMessage() for record in caplog.records
+                           if "business loop stalled" in record.getMessage()
+                           and "business=" in record.getMessage()]
+                assert warning and restart
+                for message in (warning[0], restart[0]):
+                    business = json.loads(message.split("business=", 1)[1])
+                    assert business["request_id"] == request.request_id
+                    assert business["session_id"] == request.session_id
+                    assert business["method"] == ReqMethod.CHAT_SEND.value
+                    assert any(frame["function"] == "dispatch_parsed_request" for frame in business["stack"])
+                failure = json.loads(await asyncio.wait_for(receive_business_frame(client), 3))
+                assert "WORKER_CLOSED" in json.dumps(failure)
+                assert await supervisor._readiness.wait_agent_ready(20)
+                assert supervisor.worker_pid != pid
+                assert process.returncode is not None
+                await _traffic(supervisor, gateway, client, 3)
+                (tmp_path / "acceptance.json").write_text(json.dumps({
+                    "case": "loopback_real_180_second_stall", "old_pid": pid,
+                    "old_creation_time": creation_time, "old_exit_code": process.returncode,
+                    "new_pid": supervisor.worker_pid, "elapsed_seconds": elapsed,
+                    "request_id": request.request_id, "session_id": request.session_id,
+                    "warning": warning[0], "restart": restart[0],
+                    "fresh_request": "passed", "stderr": str(process.stderr_path),
+                }, indent=2), encoding="utf-8")
+
+
+@pytest.mark.asyncio
 async def test_real_abnormal_exit_keeps_exception_traceback(
     tmp_path, monkeypatch, caplog
 ):
@@ -814,6 +1167,8 @@ async def test_real_abnormal_exit_keeps_exception_traceback(
         async with _gateway(supervisor) as (url, gateway, attached):
             async with ws_connect(url) as client:
                 await asyncio.wait_for(attached.wait(), 2)
+                pid = supervisor.worker_pid
+                assert pid is not None
                 await asyncio.wait_for(
                     supervisor.dispatch_parsed_request(
                         gateway["ws"],
@@ -822,12 +1177,13 @@ async def test_real_abnormal_exit_keeps_exception_traceback(
                     ),
                     5,
                 )
-                assert "WORKER_CLOSED" in await asyncio.wait_for(client.recv(), 3)
+                assert "WORKER_CLOSED" in await asyncio.wait_for(receive_business_frame(client), 3)
         assert await process.wait(timeout=3) == 1
         stderr = process.stderr_path.read_text(encoding="utf-8")
         assert "Traceback" in stderr and "WorkerForceExit" in stderr
         assert "injected diagnostic exit" in stderr
         assert "fatal exit" in stderr
+        assert f"[Worker stderr pid={pid}]" not in caplog.text
         (tmp_path / "acceptance.json").write_text(
             json.dumps(
                 {
@@ -840,6 +1196,29 @@ async def test_real_abnormal_exit_keeps_exception_traceback(
             ),
             encoding="utf-8",
         )
+
+
+@pytest.mark.asyncio
+async def test_worker_exit_reports_only_the_persisted_stderr_path(tmp_path, caplog):
+    supervisor = RuntimeSupervisor(Readiness(), forwarder=EventForwarder())
+    supervisor._generation = 1
+    supervisor._owns_process = True
+    stderr_path = tmp_path / "worker.stderr.log"
+    supervisor._process = SimpleNamespace(
+        wait=AsyncMock(return_value=7), stderr_path=stderr_path,
+    )
+    connection = SimpleNamespace(close=AsyncMock())
+    supervisor._conn = connection
+
+    await supervisor._watch_process(1)
+
+    message = next(
+        record.getMessage() for record in caplog.records
+        if record.getMessage().startswith("[Supervisor] runtime worker exited:")
+    )
+    assert "code=7" in message and f"stderr={stderr_path}" in message
+    assert "stdout=" not in message
+    connection.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -863,6 +1242,9 @@ async def test_event_loop_lag_dump_is_bounded_and_omits_queue_payload(
     text = supervisor._last_dump_path.read_text(encoding="utf-8")
     snapshot = json.loads(text.splitlines()[0])
     assert snapshot["event_loop_lag_seconds"] >= 0.08
+    assert snapshot["worker_stderr"] == str(supervisor._process.stderr_path)
+    assert "worker_stdout" not in snapshot
+    assert supervisor._last_dump_path.parent == supervisor._process.stderr_path.parent
     assert "ASYNCIO TASKS" in text and "THREAD STACKS" in text
     assert (
         text.index("THREAD STACKS")
@@ -907,7 +1289,7 @@ async def test_real_websocket_send_backpressure_reports_send_timeout(
                 assert supervisor._readiness.state is ReadinessState.AGENT_READY
                 async with asyncio.timeout(10):
                     while True:
-                        wire = json.loads(await client.recv())
+                        wire = json.loads(await receive_business_frame(client))
                         if wire.get("response_kind") == "e2a.error":
                             assert "GATEWAY_FORWARD_FAILED" in json.dumps(wire)
                             break

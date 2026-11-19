@@ -170,7 +170,6 @@
     transform var(--duration-normal) var(--ease-out);
 }
 
-.agent-group-avatar,
 .agent-group-member-avatar {
   display: inline-flex;
   flex: 0 0 auto;
@@ -183,7 +182,6 @@
   font-weight: 600;
 }
 
-.agent-group-avatar img,
 .agent-group-member-avatar img {
   width: 100%;
   height: 100%;
@@ -2239,58 +2237,6 @@
 .page-content[data-testid='agent-management-panel'][data-variant='detail'] .agent-management-detail:not(.detail-loading-shell),
 .page-content[data-testid='agent-management-panel'][data-variant='create'] .agent-management-editor {
   padding-top: 0;
-}
-
-.agent-group-avatar {
-  width: 48px;
-  height: 48px;
-  flex-basis: 48px;
-  border: 1px solid var(--color-agent-group-avatar-border, var(--color-border-default));
-  border-radius: var(--radius-agent-group-avatar);
-  background: var(--color-agent-group-avatar-surface);
-  color: var(--color-agent-group-avatar-text);
-}
-
-.agent-group-avatar--variant-1,
-.agent-group-member-avatar--variant-1 {
-  border-color: var(--color-agent-group-avatar-variant-1-border);
-  background: var(--color-agent-group-avatar-variant-1-surface);
-  color: var(--color-agent-group-avatar-variant-1-text);
-}
-
-.agent-group-avatar--variant-2,
-.agent-group-member-avatar--variant-2 {
-  border-color: var(--color-agent-group-avatar-variant-2-border);
-  background: var(--color-agent-group-avatar-variant-2-surface);
-  color: var(--color-agent-group-avatar-variant-2-text);
-}
-
-.agent-group-avatar--variant-3,
-.agent-group-member-avatar--variant-3 {
-  border-color: var(--color-agent-group-avatar-variant-3-border);
-  background: var(--color-agent-group-avatar-variant-3-surface);
-  color: var(--color-agent-group-avatar-variant-3-text);
-}
-
-.agent-group-avatar--variant-4,
-.agent-group-member-avatar--variant-4 {
-  border-color: var(--color-agent-group-avatar-variant-4-border);
-  background: var(--color-agent-group-avatar-variant-4-surface);
-  color: var(--color-agent-group-avatar-variant-4-text);
-}
-
-.agent-group-avatar--variant-5,
-.agent-group-member-avatar--variant-5 {
-  border-color: var(--color-agent-group-avatar-variant-5-border);
-  background: var(--color-agent-group-avatar-variant-5-surface);
-  color: var(--color-agent-group-avatar-variant-5-text);
-}
-
-.agent-group-avatar--variant-6,
-.agent-group-member-avatar--variant-6 {
-  border-color: var(--color-agent-group-avatar-variant-6-border);
-  background: var(--color-agent-group-avatar-variant-6-surface);
-  color: var(--color-agent-group-avatar-variant-6-text);
 }
 
 .agent-group-detail .agent-management-detail__identity h1 {

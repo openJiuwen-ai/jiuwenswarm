@@ -7,9 +7,15 @@ import AspectRatio3_2Icon from '../../assets/designer/aspect_ratio_3_2.svg?react
 import AspectRatio3_4Icon from '../../assets/designer/aspect_ratio_3_4.svg?react';
 import AspectRatio4_3Icon from '../../assets/designer/aspect_ratio_4_3.svg?react';
 import AspectRatio9_16Icon from '../../assets/designer/aspect_ratio_9_16.svg?react';
+import ArrangeNodesIcon from '../../assets/designer/arrange_nodes.svg?react';
+import AudioGenerationIcon from '../../assets/designer/audio_generation.svg?react';
 import AudioTypeIcon from '../../assets/designer/audio_type.svg?react';
+import ComfyuiGenerationIcon from '../../assets/designer/comfyui_generation.svg?react';
+import HideEdgesIcon from '../../assets/designer/hide_edges.svg?react';
 import ImageGenerationIcon from '../../assets/designer/image_generation.svg?react';
 import ImageTypeIcon from '../../assets/designer/image_type.svg?react';
+import MinimapIcon from '../../assets/designer/minimap.svg?react';
+import ShowEdgesIcon from '../../assets/designer/show_edges.svg?react';
 import TextTypeIcon from '../../assets/designer/text_type.svg?react';
 import VideoGenerationIcon from '../../assets/designer/video_generation.svg?react';
 import VideoTypeIcon from '../../assets/designer/video_type.svg?react';
@@ -33,9 +39,19 @@ export const DESIGNER_ASPECT_RATIO_ICONS: Record<string, SvgIcon> = {
   '21:9': AspectRatio21_9Icon,
 };
 
-/** Add-node dock / port menu: generation affordances (image / video only). */
+export {
+  ArrangeNodesIcon,
+  ComfyuiGenerationIcon,
+  HideEdgesIcon,
+  MinimapIcon,
+  ShowEdgesIcon,
+};
+
+/** Add-node dock / port menu: generation affordances. */
 export function DesignerAddNodeTypeIcon({ type }: { type: string }) {
-  const Icon = type === DESIGNER_NODE_TYPE_VIDEO ? VideoGenerationIcon : ImageGenerationIcon;
+  let Icon: SvgIcon = ImageGenerationIcon;
+  if (type === DESIGNER_NODE_TYPE_VIDEO) Icon = VideoGenerationIcon;
+  else if (type === DESIGNER_NODE_TYPE_AUDIO) Icon = AudioGenerationIcon;
   return <Icon aria-hidden />;
 }
 

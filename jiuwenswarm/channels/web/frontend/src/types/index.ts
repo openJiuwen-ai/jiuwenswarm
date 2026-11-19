@@ -10,6 +10,7 @@ export * from './todo';
 export * from './websocket';
 export * from './subagent';
 export * from './contextUsage';
+export * from './sessionTokenUsage';
 export * from '../features/workspace/projectTypes';
 
 // 会话类型
@@ -18,6 +19,7 @@ export type ModelSelection =
   { type: 'model'; id: string; route_id?: never } | { type: 'model_group'; id: string; route_id?: string | null };
 
 export interface Session {
+  type?: 'chat' | 'group_chat';
   session_id: string;
   title: string;
   project_id: string;
@@ -45,6 +47,7 @@ export interface Session {
   updated_at: string;
   is_active?: boolean;
   is_processing?: boolean;
+  organization_owner_stopped?: boolean;
   queued_session_messages?: Array<{
     message_id: string;
     target_session_id: string;
@@ -135,6 +138,7 @@ export interface ChatInputProvenance {
 }
 
 export interface ModelEntry {
+  extensions?: { kv_cache?: { mode?: string; [key: string]: unknown }; [key: string]: unknown };
   /** Backend stable model ID. Zen free models may omit this field. */
   model_id?: string;
   model_name: string;
@@ -147,6 +151,8 @@ export interface ModelEntry {
   temperature?: number;
   reasoning_level?: string;
   context_window_tokens?: number;
+  /** Per-request maximum output tokens; null explicitly clears an existing limit. */
+  max_tokens?: number | null;
   /** 同 model_name 组内的默认勾选标识 */
   is_default?: boolean;
   /** 可选别名，用于快捷切换模型（如 "gpt" → "gpt-4o"） */

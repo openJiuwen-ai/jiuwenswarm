@@ -523,3 +523,37 @@ test('team leader sorts before teammates regardless of observation order', () =>
     member.id,
   ]);
 });
+
+test('grouping reads only the attributes that place a record, never the rest', () => {
+  // A value stated by reference assembles its whole history on each read, so
+  // reading an attribute grouping does not use costs that history per lookup.
+  let reads = 0;
+  const restated = {};
+  Object.defineProperty(restated, 'stringValue', {
+    enumerable: true,
+    get: () => {
+      reads += 1;
+      return '[]';
+    },
+  });
+  const records = [
+    record('0000000000000001', 'main context', '100', main),
+    record('0000000000000002', 'subagent one request', '200', subagentOne),
+  ];
+  for (const one of records) {
+    one.resourceSpans[0].scopeSpans[0].spans[0].attributes.push({
+      key: 'gen_ai.input.messages',
+      value: restated,
+    });
+  }
+  const rawRecords = records.map(detail);
+  const lifecycle = new Map(rawRecords.map(item => [item.record_id, 'completed']));
+
+  const result = groupTrajectorySubjects(records, rawRecords, lifecycle);
+
+  assert.deepEqual(result.groups.map(group => group.subject.id), [
+    MAIN_TRAJECTORY_SUBJECT_ID,
+    subagentOne.id,
+  ]);
+  assert.equal(reads, 0);
+});

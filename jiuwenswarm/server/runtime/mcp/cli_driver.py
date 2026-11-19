@@ -27,6 +27,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from jiuwenswarm.common.runtime_platform import is_harmony_runtime as _is_harmony_runtime
 from jiuwenswarm.common.utils import get_workspace_dir  # re-export for test patches
 from jiuwenswarm.server.runtime.mcp.package_manifest import resolve_mcp_package
 
@@ -128,23 +129,6 @@ class CommandResult:
 
 _SHELL_FORBIDDEN_FIRST = {"bash", "cmd", "/bin/sh", "sh"}
 _SHELL_FORBIDDEN_SECOND = "-c"
-
-
-def _is_harmony_runtime() -> bool:
-    """Return whether this Python process runs in the HarmonyOS HNP sandbox.
-
-    HarmonyOS Python may report linux as sys.platform. The facade exposes HNP
-    executables through PATH, so the HNP path is a reliable fallback when no
-    explicit runtime marker is available.
-    """
-    if os.environ.get("JIUWEN_HARMONY_RUNTIME") == "1":
-        return True
-    if sys.platform == "ohos":
-        return True
-    return any(
-        "/data/app/" in entry and "/hnp/" in entry
-        for entry in os.environ.get("PATH", "").split(os.pathsep)
-    )
 
 
 def _is_binary_not_found(exc: BaseException) -> bool:

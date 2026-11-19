@@ -4,8 +4,12 @@ import test from 'node:test';
 import {
   workflowAgentAvatarName,
   workflowAgentDisplayName,
+  workflowAgentFullName,
   workflowAgentIdentity,
   workflowPhaseWorkers,
+  isWorkflowRunEnded,
+  orderRunsForTreeView,
+  partitionWorkflowRunsByLiveness,
 } from '../node_modules/.cache/workflow-agent-identity/workflowTypes.js';
 
 test('third-party node resolves to its CLI brand identity', () => {
@@ -24,6 +28,15 @@ test('native node gets an empty identity (hashed illustration, no roster fallbac
 
 test('agent_type wins over kind', () => {
   assert.deepEqual(workflowAgentIdentity({ agent_type: 'codex', kind: 'human' }), { cliAgent: 'codex' });
+});
+
+test('workflowAgentFullName prefixes the run to the engine node id', () => {
+  assert.equal(
+    workflowAgentFullName({ id: '[["par", 0, 0], ["call", 0]]' }, 'wf_16b47a41189b'),
+    'wf_16b47a41189b:[["par", 0, 0], ["call", 0]]',
+  );
+  assert.equal(workflowAgentFullName({ id: 'node-1' }), 'node-1');
+  assert.equal(workflowAgentFullName({ id: 'node-1' }, null), 'node-1');
 });
 
 test('expert and plain nodes both show and hash by the call label (roster mirrors the label too)', () => {
@@ -59,4 +72,61 @@ test('phase workers keep same-named one-shot nodes apart and collapse session tu
   }];
   const workers = workflowPhaseWorkers({ task_id: 'wf_1:assemble-3', workflow_run_id: 'wf_1' }, runs);
   assert.deepEqual(workers.map((w) => w.id), ['a', 'b', 'c', 's1']);
+});
+
+test('isWorkflowRunEnded marks exactly completed / failed / stopped as ended', () => {
+  for (const status of ['completed', 'failed', 'stopped']) {
+    assert.equal(isWorkflowRunEnded(status), true, `${status} should be ended`);
+  }
+  for (const status of ['planned', 'pending', 'running', 'paused', 'waiting_for_human']) {
+    assert.equal(isWorkflowRunEnded(status), false, `${status} should be active`);
+  }
+});
+
+test('partitionWorkflowRunsByLiveness pins active runs first and keeps section order', () => {
+  const runs = [
+    { id: 'a', status: 'completed' },
+    { id: 'b', status: 'running' },
+    { id: 'c', status: 'failed' },
+    { id: 'd', status: 'waiting_for_human' },
+    { id: 'e', status: 'paused' },
+    { id: 'f', status: 'stopped' },
+    { id: 'g', status: 'pending' },
+  ];
+  const { active, ended } = partitionWorkflowRunsByLiveness(runs);
+  // Store order is newest-first; each section must preserve it so a status
+  // flip moves a card between sections without reshuffling its neighbours.
+  assert.deepEqual(active.map((run) => run.id), ['b', 'd', 'e', 'g']);
+  assert.deepEqual(ended.map((run) => run.id), ['a', 'c', 'f']);
+});
+
+test('partitionWorkflowRunsByLiveness handles empty and single-section lists', () => {
+  assert.deepEqual(partitionWorkflowRunsByLiveness([]), { active: [], ended: [] });
+  const allEnded = [{ id: 'a', status: 'completed' }, { id: 'b', status: 'stopped' }];
+  assert.deepEqual(partitionWorkflowRunsByLiveness(allEnded), { active: [], ended: allEnded });
+  const allActive = [{ id: 'a', status: 'running' }, { id: 'b', status: 'planned' }];
+  assert.deepEqual(partitionWorkflowRunsByLiveness(allActive), { active: allActive, ended: [] });
+});
+
+test('orderRunsForTreeView interleaves the divider only when both sections exist', () => {
+  const ids = (items) => items.map((item) => (typeof item === 'string' ? item : item.id));
+  // Mixed list: active section first, divider marker, ended section.
+  const mixed = orderRunsForTreeView([
+    { id: 'a', status: 'completed' },
+    { id: 'b', status: 'running' },
+    { id: 'c', status: 'failed' },
+  ]);
+  assert.deepEqual(ids(mixed.items), ['b', 'divider', 'a', 'c']);
+  assert.equal(mixed.activeCount, 1);
+  assert.equal(mixed.endedCount, 2);
+  // Single-section lists: no divider marker.
+  const allActive = orderRunsForTreeView([{ id: 'b', status: 'running' }, { id: 'd', status: 'paused' }]);
+  assert.deepEqual(ids(allActive.items), ['b', 'd']);
+  assert.equal(allActive.activeCount, 2);
+  assert.equal(allActive.endedCount, 0);
+  const allEnded = orderRunsForTreeView([{ id: 'a', status: 'failed' }]);
+  assert.deepEqual(ids(allEnded.items), ['a']);
+  assert.equal(allEnded.activeCount, 0);
+  assert.equal(allEnded.endedCount, 1);
+  assert.deepEqual(orderRunsForTreeView([]), { items: [], activeCount: 0, endedCount: 0 });
 });

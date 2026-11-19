@@ -19,17 +19,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
-from jiuwenswarm.agents.harness.common.recommendation.proactive_actions import (
-    _extract_json_from_response,
-    _extract_output_text,
+from jiuwenswarm.agents.harness.common.recommendation.llm_helpers import (
+    extract_json_from_response,
+    extract_output_text,
 )
 from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
     get_deepagent_user_md_path,
-)
-from jiuwenswarm.server.runtime.session.session_history import load_history_records
-from jiuwenswarm.server.runtime.session.session_metadata import (
-    get_all_sessions_metadata,
 )
 
 _DRIFT_WEIGHTS = (0.4, 0.3, 0.3)
@@ -56,8 +52,10 @@ _EVENT_PAYLOAD_QUERY_FIELDS = frozenset(
         "model",
         "provider_response_id",
         "status",
+        "work_mode",
         "generation_trigger_key.context_scope",
         "generation_trigger_key.model",
+        "generation_trigger_key.work_mode",
     }
 )
 
@@ -65,6 +63,57 @@ logger = logging.getLogger(__name__)
 
 # recommendation.db is written by several stores; wait for the write lock like they do.
 _SQLITE_BUSY_TIMEOUT_SECONDS = 5.0
+
+# Count-based retention: keep the newest N rows per event_type. Training /
+# offline-audit planes keep 0 — investigate those paths in process logs instead.
+# Types omitted here stay until a later pass adds a cap; session summaries are
+# capped per session below, not by a global newest-N.
+_EVENT_KEEP_NEWEST = {
+    "starter_slate_manifest": 24,
+    "dynamic_exposure": 40,
+    "v6_issued_slate": 40,
+    "page_left": 40,
+    "post_exposure_direct": 40,
+    "v6_input_revision_receipt": 40,
+    "state_maintenance_receipt": 20,
+    "background_generation_started": 12,
+    "background_generation_cancelled": 12,
+    "background_generation_deadline": 12,
+    "background_generation_failed": 12,
+    "background_generation_abstained": 12,
+    "v4_behavior_mapping": 20,
+    "v4_memory_curation": 20,
+    "provider_invocation": 40,
+    "external_invocation_attempt": 20,
+    "rid_decision": 12,
+    "rid_abstention": 12,
+    "rid_user_context_snapshot": 12,
+    "rid_summary_pair_match_attempt": 20,
+    "rid_summary_pair_match_receipt": 20,
+    "session_summary_coverage": 20,
+    "prompt_suggestion_generation": 40,
+    "prompt_suggestion_delivery": 40,
+    "prompt_suggestion_shown": 40,
+    "prompt_suggestion_ignored": 40,
+    "prompt_suggestion_accepted": 40,
+    "topic_click": 500,
+    "session_bound": 500,
+    "not_interested": 200,
+    "store_pruned": 10,
+    # Training / offline label plane — not used by live generation.
+    "rid_training_tuple": 0,
+    "utility_training_example": 0,
+    "training_slice_manifest": 0,
+    "pa_training_example": 0,
+    "training_exclusion": 0,
+    "conversation_depth": 0,
+    "active_expression_observation": 0,
+}
+_SUPERSEDED_SUMMARY_KEEP = 2
+_PROFILE_SNAPSHOT_KEEP = 3
+_SHORT_INTENT_KEEP = 30
+_PRUNE_MIN_INTERVAL_SECONDS = 60 * 60
+_PRUNE_EVENT_TYPE = "store_pruned"
 
 
 @dataclass(frozen=True)
@@ -200,6 +249,175 @@ class TopicStarterStore:
         })
         with self._connect() as connection:
             connection.execute("VACUUM")
+
+    def prune(self, *, now: float) -> dict[str, int]:
+        """Drop surplus rows by newest-N caps once per retention interval.
+
+        Live serving needs recent pools, feedback, and a short provider status
+        window. Training labels and long call receipts are not retained — use
+        process logs for investigation. Older session-summary revisions stay
+        capped per session.
+        """
+
+        recent = self.query_events(
+            event_type=_PRUNE_EVENT_TYPE,
+            limit=1,
+            newest_first=True,
+        )
+        if recent and float(recent[0].get("created_at") or 0.0) > (
+            now - _PRUNE_MIN_INTERVAL_SECONDS
+        ):
+            return {}
+        removed: dict[str, int] = {}
+        with self._connect() as connection:
+            for event_type, keep in _EVENT_KEEP_NEWEST.items():
+                dropped = self._prune_event_type_to_newest(
+                    connection, event_type, keep,
+                )
+                if dropped:
+                    removed[event_type] = dropped
+            orphan_cards = self._prune_orphan_starter_cards(connection)
+            if orphan_cards:
+                removed["starter_card_orphaned"] = orphan_cards
+            superseded = self._prune_superseded_summaries(connection)
+            if superseded:
+                removed["session_summary_superseded"] = superseded
+            snapshots = self._prune_profile_snapshots(connection)
+            if snapshots:
+                removed["profile_snapshot"] = snapshots
+            short_intent = self._prune_short_intent(connection)
+            if short_intent:
+                removed["short_intent_state"] = short_intent
+        if removed:
+            connection = self._connect()
+            try:
+                connection.isolation_level = None
+                connection.execute("VACUUM")
+            finally:
+                connection.close()
+            logger.info("[Topic] store pruned: %s", removed)
+        self.record_event({
+            "session_id": "maintenance",
+            "slate_id": "maintenance",
+            "event_type": _PRUNE_EVENT_TYPE,
+            "topic_id": f"maintenance:{int(now)}",
+            "policy_id": "recommendation-retention-v1",
+            "selection_mode": "usage_retention",
+            "propensity_reason": "not_applicable",
+            "payload": removed,
+            "created_at": now,
+        })
+        return removed
+
+    @staticmethod
+    def _prune_event_type_to_newest(
+        connection: sqlite3.Connection,
+        event_type: str,
+        keep: int,
+    ) -> int:
+        """Keep the newest ``keep`` rows of one type; ``keep=0`` deletes all."""
+
+        if keep < 0:
+            raise ValueError("keep must be non-negative")
+        if keep == 0:
+            cursor = connection.execute(
+                "DELETE FROM recommendation_event WHERE event_type = ?",
+                (event_type,),
+            )
+            return int(cursor.rowcount or 0)
+        cursor = connection.execute(
+            """
+            DELETE FROM recommendation_event
+            WHERE rowid IN (
+                SELECT rowid FROM recommendation_event
+                WHERE event_type = ?
+                ORDER BY created_at DESC, event_key DESC
+                LIMIT -1 OFFSET ?
+            )
+            """,
+            (event_type, keep),
+        )
+        return int(cursor.rowcount or 0)
+
+    @staticmethod
+    def _prune_orphan_starter_cards(connection: sqlite3.Connection) -> int:
+        """Drop cards whose manifest was removed by the newest-N pool cap."""
+
+        cursor = connection.execute(
+            """
+            DELETE FROM recommendation_event
+            WHERE event_type = 'starter_card'
+              AND slate_id NOT IN (
+                SELECT slate_id FROM recommendation_event
+                WHERE event_type = 'starter_slate_manifest'
+              )
+            """
+        )
+        return int(cursor.rowcount or 0)
+
+    @staticmethod
+    def _prune_superseded_summaries(connection: sqlite3.Connection) -> int:
+        """Keep the newest summaries of each session; older revisions are never read."""
+
+        rows = connection.execute(
+            "SELECT event_key, payload_json FROM recommendation_event "
+            "WHERE event_type = 'session_summary' "
+            "ORDER BY json_extract(payload_json, '$.session_id'), "
+            "created_at DESC, event_key DESC"
+        ).fetchall()
+        seen: Counter[str] = Counter()
+        doomed: list[tuple[str]] = []
+        for row in rows:
+            session_id = str(
+                json.loads(row["payload_json"]).get("session_id") or ""
+            )
+            if seen[session_id] >= _SUPERSEDED_SUMMARY_KEEP:
+                doomed.append((row["event_key"],))
+            seen[session_id] += 1
+        if doomed:
+            connection.executemany(
+                "DELETE FROM recommendation_event WHERE event_key = ?",
+                doomed,
+            )
+        return len(doomed)
+
+    @staticmethod
+    def _prune_profile_snapshots(connection: sqlite3.Connection) -> int:
+        rows = connection.execute(
+            "SELECT version FROM profile_snapshot ORDER BY version DESC"
+        ).fetchall()
+        doomed = [
+            (int(row["version"]),)
+            for index, row in enumerate(rows)
+            if index >= _PROFILE_SNAPSHOT_KEEP
+        ]
+        if doomed:
+            connection.executemany(
+                "DELETE FROM profile_snapshot WHERE version = ?",
+                doomed,
+            )
+        return len(doomed)
+
+    @staticmethod
+    def _prune_short_intent(connection: sqlite3.Connection) -> int:
+        exists = connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+            "AND name = 'short_intent_state'"
+        ).fetchone()
+        if exists is None:
+            return 0
+        cursor = connection.execute(
+            """
+            DELETE FROM short_intent_state
+            WHERE sequence IN (
+                SELECT sequence FROM short_intent_state
+                ORDER BY sequence DESC
+                LIMIT -1 OFFSET ?
+            )
+            """,
+            (_SHORT_INTENT_KEEP,),
+        )
+        return int(cursor.rowcount or 0)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=_SQLITE_BUSY_TIMEOUT_SECONDS)
@@ -546,42 +764,6 @@ def _read_user_memory() -> str:
         return ""
 
 
-def collect_user_evidence() -> list[dict[str, Any]]:
-    """Read a bounded user-owned view of existing openJiuwen session history."""
-
-    sessions, _ = get_all_sessions_metadata(limit=_MAX_SESSIONS, offset=0)
-    cutoff = time.time() - _LOOKBACK_SECONDS
-    evidence: list[dict[str, Any]] = []
-    for metadata in sessions:
-        session_id = str(metadata.get("session_id") or "").strip()
-        if not session_id:
-            continue
-        for record in load_history_records(session_id):
-            if str(record.get("role") or "").strip().lower() not in {"user", "human"}:
-                continue
-            content = str(record.get("content") or "").strip()[:_MAX_EVIDENCE_CHARS]
-            if not content:
-                continue
-            try:
-                timestamp = float(record.get("timestamp") or 0.0)
-            except (TypeError, ValueError):
-                timestamp = 0.0
-            if timestamp and timestamp < cutoff:
-                continue
-            record_id = str(record.get("id") or record.get("request_id") or len(evidence))
-            evidence.append(
-                {
-                    "evidence_id": f"{session_id}:{record_id}",
-                    "session_id": session_id,
-                    "content": content,
-                    "timestamp": timestamp,
-                    "source": "user_message",
-                }
-            )
-    evidence.sort(key=lambda item: float(item.get("timestamp") or 0.0))
-    return evidence[-_MAX_EVIDENCE:]
-
-
 async def _invoke_json(agent: Any, prompt: str, conversation_prefix: str) -> dict[str, Any] | None:
     if agent is None or not callable(getattr(agent, "invoke", None)):
         return None
@@ -595,7 +777,7 @@ async def _invoke_json(agent: Any, prompt: str, conversation_prefix: str) -> dic
             result = await agent.invoke({"query": prompt}, session=session)
         else:
             result = await agent.invoke({"query": prompt, "conversation_id": conversation_id})
-        candidate = _extract_json_from_response(_extract_output_text(result))
+        candidate = extract_json_from_response(extract_output_text(result))
         parsed = json.loads(candidate)
         return parsed if isinstance(parsed, dict) else None
     except Exception as exc:  # noqa: BLE001
@@ -1407,27 +1589,6 @@ class TopicStarterService:
         self.generator_agent = generator_agent
         self.fetch_page = fetch_page
 
-    def _explicit_negative_evidence(self, evidence_until: float) -> list[dict[str, Any]]:
-        result: list[dict[str, Any]] = []
-        for event in self.store.list_events():
-            if event.get("event_type") != "not_interested":
-                continue
-            created_at = float(event.get("created_at") or 0.0)
-            if created_at <= evidence_until:
-                continue
-            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
-            result.append(
-                {
-                    "evidence_id": f"event:{event.get('event_key')}",
-                    "content": str(payload.get("title") or event.get("topic_id") or ""),
-                    "timestamp": created_at,
-                    "source": "explicit_negative_feedback",
-                    "topic_id": str(event.get("topic_id") or ""),
-                    "explicit_negative": True,
-                }
-            )
-        return result
-
     async def _maybe_update_profile(
         self,
         all_evidence: list[dict[str, Any]],
@@ -1440,14 +1601,11 @@ class TopicStarterService:
             for item in all_evidence
             if float(item.get("timestamp") or 0.0) > evidence_until
         ]
-        explicit_negative = self._explicit_negative_evidence(evidence_until)
-        delta.extend(explicit_negative)
 
         if snapshot is not None and not delta:
             return snapshot
 
-        explicit_correction = any(item.get("explicit_negative") is True for item in delta)
-        if snapshot is not None and not explicit_correction:
+        if snapshot is not None:
             if len(delta) < _MIN_DRIFT_EVIDENCE:
                 return snapshot
             grounded_anchors = _project_grounded_anchors(snapshot, all_evidence)
@@ -1469,7 +1627,7 @@ class TopicStarterService:
                     drift.score,
                 )
 
-        initial_evidence = [*all_evidence, *explicit_negative]
+        initial_evidence = list(all_evidence)
         if snapshot is None and not initial_evidence and not user_memory:
             return None
 
@@ -1500,8 +1658,7 @@ class TopicStarterService:
             prompt = (
                 "按 Update、Retain、New 整理推荐兴趣信念快照。保留未受新证据影响的单元，"
                 "更新相关单元，对一致的新模式新建单元；单次系统曝光或弱点击不能升级为"
-                "稳定偏好。explicit_negative_feedback 应写入或更新具体负偏好，不能扩大为"
-                "对整个兴趣领域的否定。输出完整 JSON，字段仍为 interests、"
+                "稳定偏好。输出完整 JSON，字段仍为 interests、"
                 "negative_preferences 和 evidence_labels；evidence_labels 仍必须是"
                 " {evidence_id, interest_id} 对象列表，interest_id 必须逐字引用"
                 " interests[].id；evidence_id 只能来自当前快照或新增证据，不得虚构。"
@@ -1596,11 +1753,7 @@ class TopicStarterService:
                 return snapshot
         if not isinstance(curated.get("negative_preferences"), list):
             curated["negative_preferences"] = []
-        window = [
-            item
-            for item in (initial_evidence if snapshot is None else delta)
-            if item.get("explicit_negative") is not True
-        ]
+        window = list(initial_evidence if snapshot is None else delta)
         if window:
             curated["drift_reference_labels"] = _curated_window_labels(window, curated)
             curated["drift_reference_origin"] = (
@@ -1623,82 +1776,6 @@ class TopicStarterService:
             )
         return self.store.save_snapshot(curated, evidence_until=next_until)
 
-    async def get_topic_starters(self, session_id: str) -> dict[str, Any]:
-        intervened_prompts = self.store.intervened_prompts()
-        evidence: list[dict[str, Any]] = []
-        for item in collect_user_evidence():
-            prompt_key = (
-                str(item.get("session_id") or ""),
-                str(item.get("content") or "").strip(),
-            )
-            if prompt_key in intervened_prompts:
-                intervened_prompts.remove(prompt_key)
-                continue
-            evidence.append(item)
-        user_memory = _read_user_memory()
-        profile_required = bool(
-            evidence or user_memory or self._explicit_negative_evidence(0.0)
-        )
-        snapshot = await self._maybe_update_profile(evidence, user_memory)
-        if snapshot is None and profile_required:
-            return {"available": False, "reason": "profile_unavailable"}
-        profile_view = snapshot or {"version": 0, "interests": [], "evidence_labels": []}
-        today = datetime.now(timezone.utc).date().isoformat()
-        search_queries = _project_topic_slots(profile_view, evidence, user_memory)
-        selection_mode = (
-            "personalized_dynamic"
-            if any(slot.get("grounding_required") is True for slot in search_queries)
-            else "generic_dynamic"
-        )
-        negative_preferences = profile_view.get("negative_preferences")
-        if not isinstance(negative_preferences, list):
-            negative_preferences = []
-        generator_profile_view = {"negative_preferences": negative_preferences}
-        prompt = (
-            "根据冻结画像投影视图为空白新会话生成话题卡。必须严格按下列"
-            "冻结 TopicSlot 的顺序和 intent 分别搜索与输出："
-            f"{json.dumps(search_queries, ensure_ascii=False)}。"
-            "openJiuwen、话题卡、意图类别名是任务描述词，不是用户兴趣，"
-            "禁止作为检索词或话题主题。必须先调用可用的联网搜索工具，"
-            "必要时抓取网页，再根据真实检索结果写展示文案；不得用模型记忆补写最新事实。"
-            "必须避开画像投影视图中的 negative_preferences，不得换一个标题重复推荐同一内容。"
-            "标题不得互相重复。某槽缺少相关联网证据时可省略该槽；"
-            "不得更换槽位 intent，不得借用无关来源凑满四张。"
-            "最外层必须是 JSON 对象，不得直接输出数组，"
-            "格式为 {topics:[...]}；每个话题包含 id、title、prompt、intent、evidence，"
-            "evidence 必须是数组，其中每项至少包含 url、title、"
-            "retrieved_at，可得时补 published_at。\n\n"
-            f"当前日期: {today}\n"
-            f"画像投影视图: {json.dumps(generator_profile_view, ensure_ascii=False)}"
-        )
-        generated = await _invoke_json(self.generator_agent, prompt, "topic-generator")
-        topics, retrieval_health = await _eligible_topics(
-            (generated or {}).get("topics"),
-            search_queries,
-            self.fetch_page,
-        )
-        if len(topics) != 4:
-            return {
-                "available": False,
-                "reason": "insufficient_grounded_topics",
-                "profile_version": int(profile_view.get("version") or 0),
-                "policy_id": _POLICY_ID,
-                "selection_mode": selection_mode,
-                "retrieval_health": retrieval_health,
-            }
-        generated_at = time.time()
-        return {
-            "available": True,
-            "slate_id": f"slate-{uuid.uuid4().hex}",
-            "session_id": session_id,
-            "profile_version": int(profile_view.get("version") or 0),
-            "policy_id": _POLICY_ID,
-            "selection_mode": selection_mode,
-            "retrieval_health": retrieval_health,
-            "generated_at": generated_at,
-            "topics": topics,
-        }
-
     def record_event(self, event: dict[str, Any]) -> bool:
         return self.store.record_event(event)
 
@@ -1710,8 +1787,8 @@ def _build_topic_starter_agents() -> tuple[Any, Any, Any]:
     from openjiuwen.core.single_agent import AgentCard
     from openjiuwen.harness.factory import create_deep_agent
 
-    from jiuwenswarm.agents.harness.common.recommendation.proactive_actions import (
-        _get_model,
+    from jiuwenswarm.agents.harness.common.recommendation.llm_helpers import (
+        get_recommendation_model,
     )
     from jiuwenswarm.agents.harness.common.tools.mcp_toolkits import (
         mcp_free_search,
@@ -1733,7 +1810,7 @@ def _build_topic_starter_agents() -> tuple[Any, Any, Any]:
             timeout_seconds=timeout_seconds,
         )
 
-    model = _get_model(temperature=0.0)
+    model = get_recommendation_model(temperature=0.0)
     if model is None:
         return None, None, fetch_page
     curator = create_deep_agent(
@@ -1749,9 +1826,10 @@ def _build_topic_starter_agents() -> tuple[Any, Any, Any]:
     search_tools = []
     if any(os.environ.get(name) for name in ("BOCHA_API_KEY", "PERPLEXITY_API_KEY", "SERPER_API_KEY", "JINA_API_KEY")):
         search_tools.append(mcp_paid_search)
-    if str(os.environ.get("FREE_SEARCH_DDG_ENABLED") or "").lower() in {"1", "true", "yes", "on", "enabled"} or str(
-        os.environ.get("FREE_SEARCH_BING_ENABLED") or ""
-    ).lower() in {"1", "true", "yes", "on", "enabled"}:
+    if any(
+        str(os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on", "enabled"}
+        for name in ("FREE_SEARCH_DDG_ENABLED", "FREE_SEARCH_BING_ENABLED")
+    ):
         search_tools.append(mcp_free_search)
     if not search_tools:
         return curator, None, fetch_page

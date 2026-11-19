@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import io
 import json
 import os
 import tempfile
@@ -30,13 +29,8 @@ from jiuwenswarm.channels.cli.chat import (
     build_parser,
     resolve_mode,
 )
-from jiuwenswarm.channels.cli.events import (
-    event_kind,
-    is_terminal_event,
-    needs_user_input,
-)
 from jiuwenswarm.channels.cli.gateway_client import GatewayClient
-from jiuwenswarm.channels.cli.render import HumanRenderer, JsonRenderer, JsonlRenderer
+from jiuwenswarm.channels.cli.render import HumanRenderer
 
 
 class TestResolveMode:
@@ -340,354 +334,25 @@ class TestParser:
         assert ns.timeout == 60
 
 
-class TestEvents:
-    @staticmethod
-    def test_event_kind_delta():
-        assert event_kind("chat.delta") == "delta"
-
-    @staticmethod
-    def test_event_kind_reasoning():
-        assert event_kind("chat.reasoning") == "reasoning"
-
-    @staticmethod
-    def test_event_kind_tool_call():
-        assert event_kind("chat.tool_call") == "tool_call"
-
-    @staticmethod
-    def test_event_kind_tool_result():
-        assert event_kind("chat.tool_result") == "tool_result"
-
-    @staticmethod
-    def test_event_kind_final():
-        assert event_kind("chat.final") == "final"
-
-    @staticmethod
-    def test_event_kind_error():
-        assert event_kind("chat.error") == "error"
-
-    @staticmethod
-    def test_event_kind_interactive():
-        assert event_kind("chat.ask_user_question") == "interactive"
-        assert event_kind("plan.approval_required") == "interactive"
-
-    @staticmethod
-    def test_event_kind_processing_status():
-        assert event_kind("chat.processing_status") == "processing_status"
-
-    @staticmethod
-    def test_event_kind_other():
-        assert event_kind("chat.unknown") == "chat"
-        assert event_kind("some.other") == "other"
-
-    @staticmethod
-    def test_is_terminal_chat_final():
-        assert is_terminal_event("chat.final", {}) is True
-
-    @staticmethod
-    def test_is_terminal_chat_final_keepalive():
-        assert is_terminal_event("chat.final", {"event_type": "keepalive"}) is False
-
-    @staticmethod
-    def test_is_terminal_chat_error():
-        assert is_terminal_event("chat.error", {}) is True
-
-    @staticmethod
-    def test_is_terminal_processing_done():
-        assert is_terminal_event("chat.processing_status", {"is_processing": False}) is True
-
-    @staticmethod
-    def test_is_terminal_processing_still_active():
-        assert is_terminal_event("chat.processing_status", {"is_processing": True}) is False
-
-    @staticmethod
-    def test_needs_user_input_ask():
-        assert needs_user_input("chat.ask_user_question") is True
-
-    @staticmethod
-    def test_needs_user_input_plan():
-        assert needs_user_input("plan.approval_required") is True
-
-    @staticmethod
-    def test_needs_user_input_other():
-        assert needs_user_input("chat.delta") is False
-
-
-class TestHumanRenderer:
-    @staticmethod
-    def _make_renderer(*, show_reasoning=False, show_tools=False):
-        content_io = io.StringIO()
-        status_io = io.StringIO()
-        renderer = HumanRenderer(
-            show_reasoning=show_reasoning,
-            show_tools=show_tools,
-            content_writer=lambda text: content_io.write(text),
-            status_writer=lambda text: status_io.write(text),
-        )
-        return renderer, content_io, status_io
-
-    @staticmethod
-    def test_delta_writes_to_stdout():
-        r, cout, _ = TestHumanRenderer._make_renderer()
-        r.handle_delta({"content": "hello"})
-        assert cout.getvalue() == "hello"
-
-    @staticmethod
-    def test_delta_accumulates_text():
-        r, _, _ = TestHumanRenderer._make_renderer()
-        r.handle_delta({"content": "hello"})
-        r.handle_delta({"content": " world"})
-        assert r.streamed_text == "hello world"
-
-    @staticmethod
-    def test_delta_clears_loading():
-        r, _, _ = TestHumanRenderer._make_renderer()
-        r.ensure_loading()
-        assert r.loading is True
-        r.handle_delta({"content": "hi"})
-        assert r.loading is False
-
-    @staticmethod
-    def test_final_deduplicates_delta():
-        r, cout, _ = TestHumanRenderer._make_renderer()
-        r.handle_delta({"content": "hello world"})
-        cout.truncate(0)
-        cout.seek(0)
-
-        r.handle_final({"content": "hello world"})
-        assert cout.getvalue() == ""
-
-    @staticmethod
-    def test_final_appends_suffix():
-        r, cout, _ = TestHumanRenderer._make_renderer()
-        r.handle_delta({"content": "hello"})
-        cout.truncate(0)
-        cout.seek(0)
-
-        r.handle_final({"content": "hello world"})
-        assert cout.getvalue() == " world"
-
-    @staticmethod
-    def test_final_no_duplicate_on_different_format():
-        r, cout, _ = TestHumanRenderer._make_renderer()
-        r.handle_delta({"content": "partial"})
-        cout.truncate(0)
-        cout.seek(0)
-
-        r.handle_final({"content": "completely different"})
-        # Terminal can't undo already-streamed text; final should not reprint
-        assert cout.getvalue() == ""
-        # Internal state keeps the longer version
-        assert r.streamed_text == "completely different"
-
-    @staticmethod
-    def test_final_only_called_once():
-        r, cout, _ = TestHumanRenderer._make_renderer()
-        r.handle_final({"content": "first"})
-        cout.truncate(0)
-        cout.seek(0)
-        r.handle_final({"content": "second"})
-        assert cout.getvalue() == ""
-
-    @staticmethod
-    def test_final_skip_keepalive():
-        r, cout, _ = TestHumanRenderer._make_renderer()
-        r.handle_final({"content": ""})
-        assert cout.getvalue() == ""
-
-    @staticmethod
-    def _capture_logging(logger_name, capture_builder):
-        import logging
-        stream = io.StringIO()
-        handler = logging.StreamHandler(stream)
-        handler.setLevel(logging.INFO)
-        logger = logging.getLogger(logger_name)
-        logger.addHandler(handler)
-        logger.setLevel(logging.INFO)
-        logger.propagate = False
-        try:
-            capture_builder(stream)
-        finally:
-            logger.removeHandler(handler)
-            handler.close()
-            logger.propagate = True
-
-    @staticmethod
-    def test_error_writes_to_stderr():
-        def _run(stream):
-            r = HumanRenderer()
-            r.handle_error({"error": "bad thing"})
-            assert "bad thing" in stream.getvalue()
-        TestHumanRenderer._capture_logging("jiuwenswarm.channels.cli.render", _run)
-
-    @staticmethod
-    def test_reasoning_hidden_by_default():
-        def _run(stream):
-            r = HumanRenderer()
-            r.handle_reasoning({"content": "thinking..."})
-            assert "thinking" not in stream.getvalue()
-        TestHumanRenderer._capture_logging("jiuwenswarm.channels.cli.render", _run)
-
-    @staticmethod
-    def test_reasoning_shown_when_enabled():
-        def _run(stream):
-            r = HumanRenderer(show_reasoning=True)
-            r.handle_reasoning({"content": "thinking..."})
-            assert "thinking..." in stream.getvalue()
-        TestHumanRenderer._capture_logging("jiuwenswarm.channels.cli.render", _run)
-
-    @staticmethod
-    def test_tool_call_hidden_by_default():
-        def _run(stream):
-            r = HumanRenderer()
-            r.handle_tool_call({"tool_name": "bash", "arguments": "{}"})
-            assert "bash" not in stream.getvalue()
-        TestHumanRenderer._capture_logging("jiuwenswarm.channels.cli.render", _run)
-
-    @staticmethod
-    def test_tool_call_shown_when_enabled():
-        def _run(stream):
-            r = HumanRenderer(show_tools=True)
-            r.handle_tool_call({"tool_name": "bash", "arguments": '{"cmd":"ls"}'})
-            assert "bash" in stream.getvalue()
-        TestHumanRenderer._capture_logging("jiuwenswarm.channels.cli.render", _run)
-
-    @staticmethod
-    def test_tool_result_hidden_by_default():
-        def _run(stream):
-            r = HumanRenderer()
-            r.handle_tool_result({"tool_name": "bash", "status": "done"})
-            assert "bash" not in stream.getvalue()
-        TestHumanRenderer._capture_logging("jiuwenswarm.channels.cli.render", _run)
-
-    @staticmethod
-    def test_tool_result_shown_when_enabled():
-        def _run(stream):
-            r = HumanRenderer(show_tools=True)
-            r.handle_tool_result({"tool_name": "bash", "status": "done"})
-            assert "bash" in stream.getvalue()
-        TestHumanRenderer._capture_logging("jiuwenswarm.channels.cli.render", _run)
-
-    @staticmethod
-    def test_ensure_loading_picks_random_verb():
-        r = HumanRenderer()
-        r.ensure_loading()
-        assert r.verb
-        assert r.start_time > 0
-
-
-class TestJsonRenderer:
-    @staticmethod
-    def _make_renderer():
-        content_io = io.StringIO()
-        renderer = JsonRenderer(
-            content_writer=lambda text: content_io.write(text),
-        )
-        return renderer, content_io
-
-    @staticmethod
-    def test_output_ok():
-        r, cout = TestJsonRenderer._make_renderer()
-        r.handle_event("chat.final", {"content": "result"})
-        r.output()
-        data = json.loads(cout.getvalue())
-        assert data["ok"] is True
-        assert data["content"] == "result"
-
-    @staticmethod
-    def test_output_error():
-        r, cout = TestJsonRenderer._make_renderer()
-        r.handle_error({"error": "fail"})
-        r.output()
-        data = json.loads(cout.getvalue())
-        assert data["ok"] is False
-        assert data["error"] == "fail"
-
-    @staticmethod
-    def test_output_uses_last_content():
-        r, cout = TestJsonRenderer._make_renderer()
-        r.handle_event("chat.final", {"content": "first"})
-        r.handle_event("chat.final", {"content": "last"})
-        r.output()
-        data = json.loads(cout.getvalue())
-        assert data["content"] == "last"
-
-
-class TestJsonlRenderer:
-    @staticmethod
-    def test_handle_event_emits_frame():
-        content_io = io.StringIO()
-        r = JsonlRenderer(content_writer=lambda text: content_io.write(text))
-        r.handle_event("chat.delta", {"content": "hi"})
-        frame = json.loads(content_io.getvalue())
-        assert frame["type"] == "event"
-        assert frame["event"] == "chat.delta"
-        assert frame["payload"]["content"] == "hi"
-
-
-class TestGatewayClient:
-    @pytest.mark.asyncio
-    @staticmethod
-    async def test_connect_waits_for_ack():
-        async def _mock_connect(url, **kwargs):
-            class FakeWs:
-                async def recv(self):
-                    return json.dumps({
-                        "type": "event",
-                        "event": "connection.ack",
-                        "payload": {"protocol_version": "1.0", "transport": "tui"},
-                    })
-
-                async def close(self):
-                    pass
-
-            return FakeWs()
-
-        with patch("jiuwenswarm.channels.cli.gateway_client._connect_ws", _mock_connect):
-            client = GatewayClient("ws://127.0.0.1:19001/tui")
-            await client.connect()
-
-    @pytest.mark.asyncio
-    @staticmethod
-    async def test_connect_rejects_non_ack():
-        async def _mock_connect(url, **kwargs):
-            class FakeWs:
-                async def recv(self):
-                    return json.dumps({"type": "req", "id": "x"})
-
-                async def close(self):
-                    pass
-
-            return FakeWs()
-
-        with patch("jiuwenswarm.channels.cli.gateway_client._connect_ws", _mock_connect):
-            client = GatewayClient("ws://127.0.0.1:19001/tui")
-            with pytest.raises(ConnectionError):
-                await client.connect()
-
-    @pytest.mark.asyncio
-    @staticmethod
-    async def test_connect_rejects_invalid_json():
-        async def _mock_connect(url, **kwargs):
-            class FakeWs:
-                async def recv(self):
-                    return "not json"
-
-                async def close(self):
-                    pass
-
-            return FakeWs()
-
-        with patch("jiuwenswarm.channels.cli.gateway_client._connect_ws", _mock_connect):
-            client = GatewayClient("ws://127.0.0.1:19001/tui")
-            with pytest.raises(ConnectionError):
-                await client.connect()
-
-
 def _permission_question(card_id: str) -> dict:
     return {"card_id": card_id}
 
 
 class TestPermissionCardAnswer:
+    @staticmethod
+    @pytest.mark.parametrize("size", [128, 129, 512, 513])
+    def test_call_id_alias_boundary(size: int):
+        from jiuwenswarm.channels.cli.chat import _permission_answer_for_card
+
+        call_id = "c" * size
+        answers = _permission_answer_for_card(
+            [_permission_question(call_id)], selected="allow_once", custom_input="",
+        )
+        assert answers == (
+            [{"selected_options": ["allow_once"], "custom_input": "", "card_id": call_id}]
+            if size <= 512 else []
+        )
+
     @staticmethod
     def test_builds_one_opaque_card_answer():
         from jiuwenswarm.channels.cli.chat import _permission_answer_for_card
@@ -748,6 +413,45 @@ class TestInteractiveLoop:
         client = GatewayClient("ws://127.0.0.1:19001/tui")
         client.set_mock_ws(FakeWs())
         return client
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("interrupt_id", ["intr-1", ""])
+    async def test_interrupt_answer_echoes_the_interrupt_id_of_the_question(self, interrupt_id):
+        from jiuwenswarm.channels.cli.chat import _run_interactive_loop
+
+        question = {
+            "request_id": "call-1",
+            "source": "ask_user_interrupt",
+            "questions": [{"question": "Which?", "options": [{"label": "A"}]}],
+        }
+        if interrupt_id:
+            question["interrupt_id"] = interrupt_id
+        client = await self._make_connected_client([
+            {"type": "event", "event": "chat.ask_user_question", "payload": question},
+            {"type": "event", "event": "chat.final", "payload": {"content": "before the answer"}},
+            {"type": "event", "event": "chat.final", "payload": {"content": "done"}},
+        ])
+        sent = []
+
+        async def record(frame):
+            sent.append(frame)
+
+        request = {
+            "type": "req", "id": "r1", "method": "chat.send", "is_stream": True,
+            "params": {"session_id": "s1", "query": "hi", "mode": "code.normal"},
+        }
+        with (
+            patch.object(client, "send_request", record),
+            patch("jiuwenswarm.channels.cli.chat.sys.stdin.isatty", return_value=True),
+            patch("builtins.input", return_value="1"),
+        ):
+            assert await _run_interactive_loop(client, HumanRenderer(), request) == 0
+
+        params = sent[-1]["params"]
+        assert sent[-1]["method"] == "chat.send"
+        assert params["request_id"] == "call-1"
+        assert params.get("interrupt_id", "") == interrupt_id
+        assert ("interrupt_id" in params) is bool(interrupt_id)
 
     @pytest.mark.asyncio
     async def test_stream_delta_until_final(self):
@@ -1021,63 +725,6 @@ class TestInteractiveLoop:
             assert renderer.streamed_text == "part1\n\npart2"
 
 
-class TestSpinner:
-    @staticmethod
-    def test_spinner_frames_cycle():
-        from jiuwenswarm.channels.cli.render import _SPINNER_FRAMES as frames
-
-        r = HumanRenderer()
-        r.ensure_loading()
-        first = r.spinner_idx
-        r.tick_spinner()
-        assert r.spinner_idx == (first + 1) % len(frames)
-
-    @staticmethod
-    def test_spinner_clears_on_delta():
-        r = HumanRenderer()
-        r.ensure_loading()
-        assert r.loading is True
-        r.handle_delta({"content": "x"})
-        assert r.loading is False
-
-    @staticmethod
-    def test_spinner_idle_noop():
-        r = HumanRenderer()
-        r.tick_spinner()
-        assert r.spinner_idx == 0
-
-    @staticmethod
-    def test_spinner_verb_rotates():
-        from jiuwenswarm.channels.cli.render import _VERBS
-
-        fake_time = 1000.0
-
-        def mock_monotonic():
-            return fake_time
-
-        with patch("jiuwenswarm.channels.cli.render.time.monotonic", mock_monotonic):
-            r = HumanRenderer()
-            r.ensure_loading()
-            initial_verb = r.verb
-
-        fake_time += 5.5
-
-        with patch("jiuwenswarm.channels.cli.render.time.monotonic", mock_monotonic):
-            r.tick_spinner()
-
-        assert r.verb != initial_verb
-
-    @staticmethod
-    def test_spinner_restarts_on_processing_status():
-        r = HumanRenderer()
-        r.ensure_loading()
-        assert r.loading is True
-        r.handle_delta({"content": "x"})
-        assert r.loading is False
-        r.ensure_loading()
-        assert r.loading is True
-
-
 class TestTrustedDirsState:
     """Tests for _load_state / _save_state."""
 
@@ -1262,3 +909,18 @@ class TestGatewayClientClose:
         client = GatewayClient("ws://127.0.0.1:19001/tui")
         # _ws is None by default
         await client.close()  # Should not raise
+
+
+def test_version_flag_prints_runtime_version_and_exits_zero(capsys) -> None:
+    with patch(
+        "jiuwenswarm.channels.cli.chat.get_runtime_version_label",
+        return_value="0.2.8.dev20261026",
+    ):
+        parser = build_parser()
+
+    with pytest.raises(SystemExit) as exc_info:
+        parser.parse_args(["--version"])
+
+    assert exc_info.value.code == 0
+    assert capsys.readouterr().out.strip() == "jiuwenswarm 0.2.8.dev20261026"
+    

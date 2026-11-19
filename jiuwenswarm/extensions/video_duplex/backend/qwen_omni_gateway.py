@@ -77,6 +77,23 @@ def _safe_upstream_error(exc: BaseException, api_key: str) -> str:
     return message[:1_000]
 
 
+def qwen_upstream_error(event: object, api_key: str) -> tuple[str, str] | None:
+    """Read Realtime errors and untyped Model Studio authorization failures."""
+    if not isinstance(event, dict):
+        return None
+    if event.get("type") == "error":
+        error = event.get("error")
+    elif not event.get("type") and event.get("code") and event.get("message"):
+        error = event
+    else:
+        return None
+    if not isinstance(error, dict):
+        return None
+    code = str(error.get("code") or error.get("type") or "qwen_upstream_error")
+    message = str(error.get("message") or "The provider rejected the session")
+    return code, _safe_upstream_error(RuntimeError(f"{code}: {message}"), api_key)
+
+
 async def _relay_browser_to_upstream(websocket: WebSocket, upstream: object) -> None:
     while True:
         message = await websocket.receive()
@@ -91,11 +108,21 @@ async def _relay_browser_to_upstream(websocket: WebSocket, upstream: object) -> 
             await upstream.send(data)  # type: ignore[attr-defined]
 
 
-async def _relay_upstream_to_browser(websocket: WebSocket, upstream: object) -> None:
+async def _relay_upstream_to_browser(websocket: WebSocket, upstream: object, api_key: str = "") -> None:
     async for message in upstream:  # type: ignore[attr-defined]
         if isinstance(message, bytes):
             await websocket.send_bytes(message)
         else:
+            try:
+                event = json.loads(message)
+            except json.JSONDecodeError:
+                event = None
+            error = qwen_upstream_error(event, api_key)
+            if error and not event.get("type"):
+                # Preserve the cause before the provider aborts its socket.
+                await _send_gateway_error(websocket, error[0], error[1])
+                logger.warning("Qwen-Omni upstream rejected session code=%s", error[0])
+                continue
             await websocket.send_text(message)
 
 
@@ -123,7 +150,7 @@ async def serve_qwen_omni_websocket(websocket: WebSocket) -> None:
         ) as upstream:
             logger.info("Qwen-Omni Realtime relay connected model=%s", config.model)
             browser_task = asyncio.create_task(_relay_browser_to_upstream(websocket, upstream))
-            upstream_task = asyncio.create_task(_relay_upstream_to_browser(websocket, upstream))
+            upstream_task = asyncio.create_task(_relay_upstream_to_browser(websocket, upstream, config.api_key))
             tasks = {browser_task, upstream_task}
             try:
                 done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)

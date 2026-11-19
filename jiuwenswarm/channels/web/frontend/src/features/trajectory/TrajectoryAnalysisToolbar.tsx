@@ -67,8 +67,15 @@ export const TrajectoryAnalysisToolbar = memo(function TrajectoryAnalysisToolbar
     };
   }, [foldsOpen, scaleOpen]);
 
+  const replayLabel = archiveActions?.replayLabel ?? null;
+
   return (
     <div className={css.root} data-testid="trajectory-analysis-toolbar">
+      {replayLabel === null || replayLabel === '' ? null : (
+        <span className={css.replay} data-testid="trajectory-archive-replay-label" title={replayLabel}>
+          {replayLabel}
+        </span>
+      )}
       <div className={css.menu} ref={scaleRef}>
         <button
           type="button"

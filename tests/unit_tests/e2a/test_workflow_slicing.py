@@ -95,6 +95,28 @@ class TestListPaging:
         assert item["id"] == "wf_1"
         assert "budget" in item  # budget kept on summary
 
+    def test_executor_survives_list_and_detail_summaries(self) -> None:
+        # The badge renders from the list row on a cold reopen, so the run
+        # attribution must ride the summary keep keys; the get_workflow meta
+        # shares the same keep-key tuple. Runs without team context carry no
+        # attribution: the summary convention drops None fields, and the
+        # frontend keys the badge on truthiness, so an absent key renders no
+        # badge.
+        member_run = _make_workflow("wf_m")
+        member_run["executor"] = "alice"
+        leader_run = _make_workflow("wf_l")
+        leader_run["executor"] = None
+        payload = wire_truncate._build_workflow_list_payload(
+            [member_run, leader_run], session_id="sess", offset=0, limit=50, total=2
+        )
+        by_id = {item["id"]: item for item in payload["workflows"]}
+        assert by_id["wf_m"]["executor"] == "alice"
+        assert by_id["wf_l"].get("executor") is None
+        detail = wire_truncate._build_workflow_detail_paginated(
+            member_run, session_id="sess"
+        )
+        assert detail["workflow"]["executor"] == "alice"
+
     def test_list_clamps_limit_to_max(self) -> None:
         workflows = [_make_workflow(f"wf_{i}") for i in range(300)]
         payload = wire_truncate._build_workflow_list_payload(

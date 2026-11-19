@@ -32,7 +32,7 @@ const assetStubPlugin = {
 };
 
 await build({
-  entryPoints: ['src/App.tsx', 'src/components/ChatPanel/index.tsx', 'src/stores/index.ts', 'src/services/webClient.ts', 'src/hooks/usePromptSuggestionBox.ts'],
+  entryPoints: ['src/App.tsx', 'src/components/ChatPanel/index.tsx', 'src/stores/index.ts', 'src/services/webClient.ts', 'src/hooks/usePromptSuggestionBox.ts', 'src/features/settings/SettingsPage.tsx', 'src/features/settings/registry/openSourceDefinition.ts'],
   bundle: true,
   splitting: true,
   packages: 'external',
@@ -42,10 +42,12 @@ await build({
   loader: {
     '.svg': 'dataurl',
     '.png': 'dataurl',
+    '.jpg': 'dataurl',
     '.webp': 'dataurl',
     '.css': 'text',
   },
   define: {
+    'import.meta.env': '{}',
     'import.meta.env.DEV': 'false',
     'import.meta.env.MODE': '"test"',
     'import.meta.env.VITE_WS_BASE': '""',

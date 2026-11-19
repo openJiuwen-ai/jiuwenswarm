@@ -145,7 +145,8 @@ async def test_connector_connect_handler_does_not_load_into_agent() -> None:
     import asyncio, json
     from jiuwenswarm.common.schema.agent import AgentRequest
     from jiuwenswarm.common.schema.message import ReqMethod
-    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.context import build_ws_request_context
+    from jiuwenswarm.server.handlers import mcp_hub
 
     class _FakeWS:
         def __init__(self): self.sent = []
@@ -165,17 +166,18 @@ async def test_connector_connect_handler_does_not_load_into_agent() -> None:
             self.probed.append(name)
             return (True, "")
 
-    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     am = _AM()
-    server._agent_manager = am
-    server._mask_sensitive_fields = lambda i: i
+    server = SimpleNamespace(_agent_manager=am)
     ws = _FakeWS()
     request = AgentRequest(request_id="r", session_id="s", channel_id="web",
                            req_method=ReqMethod.MCP_CONNECT,
                            params={"name": "baidu"})
     with patch("jiuwenswarm.server.runtime.mcp.registry.connect_mcp",
-               return_value={"name": "baidu", "transport": "sse", "url": "https://x"}):
-        await server._handle_mcp_connect(ws, request, asyncio.Lock())
+               return_value={"name": "baidu", "transport": "sse", "url": "https://x"}), \
+         patch.object(mcp_hub, "_mask_sensitive_fields", lambda i: i):
+        await mcp_hub.handle_mcp_connect(
+            build_ws_request_context(server, ws, request, asyncio.Lock())
+        )
 
     payload = json.loads(ws.sent[0])
     body = payload.get("body", {})

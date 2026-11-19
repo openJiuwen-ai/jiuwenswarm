@@ -19,7 +19,6 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
 )
 from jiuwenswarm.common.auth.model_catalog import is_login_model
 from jiuwenswarm.common.config import (
-    get_available_models,
     get_config,
     get_default_models,
     update_config,
@@ -141,6 +140,31 @@ class RecommendationConsentStore:
         return {"history_after": history_after, "deleted_at": deleted_at}
 
 
+# ``get_config`` re-reads and parses config.yaml; the stage invoker asks for the
+# language on every model call. Cache it briefly and clear it on a locale save.
+_LANGUAGE_CACHE: tuple[float, str] | None = None
+_LANGUAGE_CACHE_TTL_SECONDS = 2.0
+
+
+def clear_recommendation_language_cache() -> None:
+    global _LANGUAGE_CACHE
+    _LANGUAGE_CACHE = None
+
+
+def recommendation_language() -> str:
+    """The language user-visible recommendation copy must use."""
+
+    global _LANGUAGE_CACHE
+    now = time.monotonic()
+    cached = _LANGUAGE_CACHE
+    if cached is not None and now - cached[0] < _LANGUAGE_CACHE_TTL_SECONDS:
+        return cached[1]
+    raw = str(get_config().get("preferred_language") or "zh").strip().lower()
+    language = "en" if raw == "en" else "zh"
+    _LANGUAGE_CACHE = (now, language)
+    return language
+
+
 def load_recommendation_controls(store: Any = None) -> dict[str, Any]:
     """The switches as resolved, plus the recorded consent boundary and deletion epoch."""
 
@@ -192,6 +216,33 @@ def freeze_consent_boundary(now: float) -> None:
         RecommendationConsentStore(_consent_db_path()).save(
             history_after=now, deleted_at=current["deleted_at"], now=now,
         )
+
+
+def repair_missing_consent_boundary(now: float | None = None) -> bool:
+    """Freeze a missing boundary when topics are already enabled.
+
+    ``topic_enabled`` can land in YAML without the store-side freeze (settings write through
+    ``common.recommendation_switches`` before the agent hook is registered). Across restarts the
+    switch stays on while ``history_after`` stays ``None``, so every turn is excluded and
+    generation abstains with ``no_eligible_history``. Repair freezes at ``now``; earlier turns
+    stay outside the boundary unless the user opts into include-history.
+    """
+
+    from jiuwenswarm.agents.harness.common.recommendation.switches import (
+        is_topic_recommendation_enabled,
+    )
+
+    if not is_topic_recommendation_enabled():
+        return False
+    if _consent_state()["history_after"] is not None:
+        return False
+    moment = time.time() if now is None else now
+    freeze_consent_boundary(moment)
+    logger.info(
+        "[Recommendation] repaired missing consent boundary at history_after=%s",
+        moment,
+    )
+    return True
 
 
 def migrate_legacy_recommendation_switches() -> bool:
@@ -287,7 +338,7 @@ def _unusable_reason(entry: dict[str, Any]) -> str | None:
 
 
 def _chosen_entry(config: dict[str, Any], entries: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """The entry chosen in settings, or None to follow the main model (also when the chosen one was removed)."""
+    """Return only the explicitly chosen entry, never an implicit chat model."""
     section = config.get("recommendation")
     model_id = str(section.get("model") or "") if isinstance(section, dict) else ""
     if model_id in ("", FOLLOW_MAIN_MODEL):
@@ -295,31 +346,45 @@ def _chosen_entry(config: dict[str, Any], entries: list[dict[str, Any]]) -> dict
     return next((entry for entry in entries if str(entry.get("model_id") or "") == model_id), None)
 
 
-def _main_model(entries: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """The model a new chat uses by default: the default entry of the first listed model name."""
-    if not entries:
-        return None
-    name = _model_name(entries[0])
-    return next((entry for entry in entries if _model_name(entry) == name and entry.get("is_default") is True),
-                entries[0])
-
-
 def recommendation_model_options(auth_session: str | None) -> dict[str, Any]:
-    """The chat models the topic model can be chosen from, each with why it cannot be when it cannot."""
-    config = get_config()
-    entries = [entry for entry in get_available_models(config, auth_session) if _model_name(entry)]
-    chosen = _chosen_entry(config, entries)
+    """Status fields for the active topic model only; do not list the chat catalog.
+
+    Dedicated ``model_config`` is the product path. A legacy ``recommendation.model``
+    binding reports its id only when that entry still exists in the chat catalog.
+    ``model_options`` stays empty so status no longer ships every configured chat
+    model to the UI.
+    """
+
+    del auth_session
+    dedicated = recommendation_model_configuration()
+    dedicated_name = str(dedicated.get("model") or "").strip()
+    if dedicated_name:
+        return {
+            "configured_model": dedicated_name,
+            "selected_model": dedicated_name,
+            "model_options": [],
+        }
+    section = get_config().get("recommendation") or {}
+    model_id = str(section.get("model") or "").strip() if isinstance(section, dict) else ""
+    if model_id in ("", FOLLOW_MAIN_MODEL):
+        model_id = ""
+    elif not any(
+        str(entry.get("model_id") or "") == model_id
+        for entry in get_default_models(get_config())
+    ):
+        # Stale binding: not selected and not inherited as a chat model.
+        model_id = ""
     return {
-        "selected_model": str(chosen["model_id"]) if chosen is not None else FOLLOW_MAIN_MODEL,
-        "model_options": [{"model_id": str(entry.get("model_id") or ""),
-                           "name": str(entry.get("alias") or "") or _model_name(entry),
-                           "disabled_reason": _unusable_reason(entry)} for entry in entries],
+        "configured_model": model_id,
+        "selected_model": model_id,
+        "model_options": [],
     }
 
 
 def save_recommendation_model(model: str) -> bool:
-    """Keep the topic model choice: ``follow_main`` or the ID of a configured model the chain can call."""
-    if model != FOLLOW_MAIN_MODEL:
+    """Keep a model id, or clear the binding and disable topics for an empty id."""
+    # Clearing a binding must not depend on the old model still being available or usable.
+    if model:
         entries = [entry for entry in get_default_models(get_config()) if _model_name(entry)]
         entry = next((entry for entry in entries if str(entry.get("model_id") or "") == model), None)
         if entry is None or _unusable_reason(entry) is not None:
@@ -330,7 +395,64 @@ def save_recommendation_model(model: str) -> bool:
         if not isinstance(section, dict):
             section = config["recommendation"] = {}
         section["model"] = model
+        if not model:
+            section.pop("model_config", None)
+            section["topic_enabled"] = False
         return config
+    update_config(mutate)
+    return True
+
+
+def recommendation_model_configuration(*, include_api_key: bool = False) -> dict[str, Any]:
+    """Return dedicated configuration, optionally including the key for editing."""
+    section = get_config().get("recommendation") or {}
+    stored = section.get("model_config") if isinstance(section, dict) else None
+    if not isinstance(stored, dict):
+        return {}
+    payload = {
+        key: value
+        for key, value in stored.items()
+        if key != "api_key" or include_api_key
+    }
+    payload["has_api_key"] = bool(stored.get("api_key"))
+    # Settings always edits an explicit window; legacy rows fall back here.
+    payload["context_window_tokens"] = (
+        parse_positive_int(stored.get("context_window_tokens"))
+        or RECOMMENDATION_CONTEXT_WINDOW_TOKENS
+    )
+    return payload
+
+
+def save_recommendation_model_configuration(values: dict[str, Any]) -> bool:
+    """Save an independent OpenAI-compatible connection, never a chat catalog entry."""
+    fields = ("model", "provider", "api_base", "api_key", "vendor_key", "plan", "endpoint_profile")
+    if any(key in values and not isinstance(values[key], str) for key in fields):
+        return False
+    clean = {key: str(values.get(key) or "").strip() for key in fields}
+    if clean["provider"] != "OpenAI" or not clean["model"] or len(clean["model"]) > 100:
+        return False
+    if not clean["api_base"].startswith(("http://", "https://")) or len(clean["api_base"]) > 512:
+        return False
+    context_window_tokens = parse_positive_int(values.get("context_window_tokens"))
+    if context_window_tokens is None:
+        return False
+    section = get_config().get("recommendation") or {}
+    previous = (section.get("model_config") or {}) if isinstance(section, dict) else {}
+    if not clean["api_key"] and isinstance(previous, dict):
+        if all(clean[key] == previous.get(key) for key in ("api_base", "provider", "vendor_key", "plan")):
+            clean["api_key"] = str(previous.get("api_key") or "")
+    if not clean["api_key"] or len(clean["api_key"]) > 2048:
+        return False
+    clean["context_window_tokens"] = context_window_tokens
+
+    def mutate(config: dict[str, Any]) -> dict[str, Any]:
+        target = config.get("recommendation")
+        if not isinstance(target, dict):
+            target = config["recommendation"] = {}
+        target["model_config"] = clean
+        target["model"] = ""
+        return config
+
     update_config(mutate)
     return True
 
@@ -339,16 +461,40 @@ def recommendation_model_config(environ: Any = None) -> ArkBackgroundConfig | No
     """The topic chain's model: a complete environment override, else the chat model chosen in settings.
 
     The override applies only when ``ARK_API_KEY``, ``ARK_MODEL``, ``ARK_BASE_URL`` and
-    ``ARK_CONTEXT_WINDOW_TOKENS`` are all set. Otherwise the choice is ``follow_main`` or one
-    configured chat model. Name, endpoint, key and window come from that entry. None when
+    ``ARK_CONTEXT_WINDOW_TOKENS`` are all set. Otherwise the choice is one configured
+    model id. An unset choice or a legacy ``follow_main`` value has no model.
+    Name, endpoint, key and window come from the explicit entry. None when
     that model cannot be called this way.
     """
+    from jiuwenswarm.common.reasoning_config import resolve_sampling_override
+
     override = ArkBackgroundConfig.from_environ(environ)
     if override is not None:
         return override
     config = get_config()
+    section = config.get("recommendation") or {}
+    dedicated = section.get("model_config") if isinstance(section, dict) else None
+    if isinstance(dedicated, dict):
+        if not all(dedicated.get(key) for key in ("api_key", "api_base", "model")):
+            return None
+        # Endpoints with mandated sampling (Kimi) reject the deterministic 0.0
+        # default; their required values win over the background defaults.
+        sampling = resolve_sampling_override(dedicated["api_base"], dedicated["model"]) or {}
+        return ArkBackgroundConfig(
+            api_key=dedicated["api_key"],
+            model=dedicated["model"],
+            base_url=dedicated["api_base"],
+            temperature=float(sampling.get("temperature", 0.0)),
+            top_p=float(sampling.get("top_p", 1.0)),
+            context_window_tokens=(
+                parse_positive_int(dedicated.get("context_window_tokens"))
+                or RECOMMENDATION_CONTEXT_WINDOW_TOKENS
+            ),
+            client_provider=str(dedicated.get("provider") or "OpenAI"),
+            endpoint_profile=str(dedicated.get("endpoint_profile") or "").strip() or None,
+        )
     entries = [entry for entry in get_default_models(config) if _model_name(entry)]
-    entry = _chosen_entry(config, entries) or _main_model(entries)
+    entry = _chosen_entry(config, entries)
     if entry is None or _unusable_reason(entry) is not None:
         return None
     client = entry.get("model_client_config") or {}
@@ -356,12 +502,18 @@ def recommendation_model_config(environ: Any = None) -> ArkBackgroundConfig | No
     base_url = str(client.get("api_base") or "").strip()
     if not api_key or not base_url:
         return None
+    model_name = _model_name(entry)
+    sampling = resolve_sampling_override(base_url, model_name) or {}
     return ArkBackgroundConfig(
         api_key=api_key,
-        model=_model_name(entry),
+        model=model_name,
         base_url=base_url,
+        temperature=float(sampling.get("temperature", 0.0)),
+        top_p=float(sampling.get("top_p", 1.0)),
         context_window_tokens=parse_positive_int((entry.get("model_config_obj") or {}).get("context_window"))
         or RECOMMENDATION_CONTEXT_WINDOW_TOKENS,
+        client_provider=str(client.get("client_provider") or "OpenAI"),
+        endpoint_profile=str(client.get("endpoint_profile") or "").strip() or None,
     )
 
 
@@ -405,13 +557,8 @@ def permitted_recommendation_history(
     } for row in records]
 
 
-def recommendation_sources(store: Any, locators: list[Any]) -> list[dict[str, Any]]:
-    """Resolve only unchanged, currently permitted completed user records."""
-    from jiuwenswarm.server.runtime.session.session_history import (
-        load_history_records,
-        project_completed_session_records,
-    )
-
+def load_recommendation_source_context(store: Any) -> dict[str, Any]:
+    """The ledger witness snapshot and per-session cache shared by one profile read."""
     from . import topic_history as history
     state = history.load_latest_history_state(store) or {}
     witnesses = {}
@@ -419,13 +566,39 @@ def recommendation_sources(store: Any, locators: list[Any]) -> list[dict[str, An
         for entry in session.get("entries", []):
             if not entry.get("retracted"):
                 witnesses[(sid, entry["ordinal"])] = entry.get("witness")
-    completed = {}
+    return {"state": state, "witnesses": witnesses, "completed": {}}
+
+
+def recommendation_sources(
+    store: Any,
+    locators: list[Any],
+    *,
+    context: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Resolve only unchanged, currently permitted completed user records.
+
+    ``context`` lets one profile read check every memory unit against a single
+    ledger snapshot and reuse each source session's projection instead of
+    re-reading the same session once per unit. The read itself goes through the
+    bounded, projected history reader; callers on the event loop must run this
+    in a worker thread.
+    """
+    from jiuwenswarm.server.runtime.session.session_history import (
+        project_completed_session_records,
+    )
+
+    from . import topic_history as history
+    shared = context if context is not None else load_recommendation_source_context(store)
+    witnesses = shared["witnesses"]
+    completed = shared["completed"]
     sources = []
     for sid, ordinal in locators:
         if sid not in completed:
             completed[sid] = project_completed_session_records(
                 sid,
-                permitted_recommendation_history(load_history_records(sid)),
+                permitted_recommendation_history(
+                    history.load_recommendation_source_records(sid)
+                ),
                 allow_gaps=True,
             )
         rows = completed[sid]
@@ -433,59 +606,27 @@ def recommendation_sources(store: Any, locators: list[Any]) -> list[dict[str, An
             return []
         if rows[ordinal].get("role") not in {"user", "human"}:
             return []
-        if witnesses.get((sid, ordinal)) != history.record_witness(rows[ordinal], True):
+        if history.normalize_witness(
+            witnesses.get((sid, ordinal))
+        ) != history.record_witness(rows[ordinal], True):
             return []
         sources.append({"session_id": sid, "ordinal": ordinal,
                         "event_id": rows[ordinal].get("id"), "content": rows[ordinal].get("content", "")})
     return sources
 
 
-def _global_feedback(store: Any, state: dict[str, Any], now: float) -> Any:
-    from .topic_product import GLOBAL_NEW_CHAT_SCOPE, InterestFeedback
-    return InterestFeedback.load(store, state, context_scope=GLOBAL_NEW_CHAT_SCOPE, project_id=None, now=now)
-
-
 def inspect_recommendation_profile(store: Any, *, now: float) -> dict[str, Any]:
-    from . import topic_history as history
-    state = history.load_latest_history_state(store) or {}
+    context = load_recommendation_source_context(store)
+    state = context["state"]
     units = []
     for unit in state.get("memory", {}).get("units", []):
-        sources = recommendation_sources(store, unit.get("companion", {}).get("canonical_source_locators", []))
+        sources = recommendation_sources(
+            store,
+            unit.get("companion", {}).get("canonical_source_locators", []),
+            context=context,
+        )
         if sources:
             units.append({"unit_id": unit["companion"]["unit_id"],
                           "summary": unit["core"]["preference_summary"], "sources": sources})
-    summaries = {unit["companion"]["unit_id"]: unit["core"]["preference_summary"]
-                 for unit in state.get("memory", {}).get("units", [])}
-    # Only the global page has directions that become permanent; a project dismissal takes off one card.
-    permanent = [
-        {
-            "direction_id": direction.direction_id,
-            "summary": (
-                direction.direction_anchor
-                or summaries.get(direction.unit_id)
-                or direction.records[-1].get("direction", "")
-            ),
-            "since": direction.permanent_since,
-        }
-        for direction in _global_feedback(store, state, now).permanent_directions
-    ]
-    return {"units": units, "semantic_version": state.get("memory", {}).get("semantic_version", 0),
-            "permanent_directions": permanent}
-
-
-def restore_dismissed_direction(store: Any, direction_id: str, *, now: float) -> bool:
-    """Lift a permanent global direction with one more record; it may return at the next regeneration."""
-    from . import topic_history as history
-    state = history.load_latest_history_state(store)
-    if state is None:
-        return False
-    feedback = _global_feedback(store, state, now)
-    direction = next((item for item in feedback.permanent_directions if item.direction_id == direction_id), None)
-    if direction is None:
-        return False
-    sidecar = state.setdefault("memory_sidecar", {})
-    sidecar["negative_preferences"] = [*(sidecar.get("negative_preferences") or []),
-                                       feedback.restore_record(direction, at=now)]
-    sidecar["negative_preference_version"] = int(sidecar.get("negative_preference_version") or 0) + 1
-    history.save_history_state(store, state, now=now)
-    return True
+    del now
+    return {"units": units, "semantic_version": state.get("memory", {}).get("semantic_version", 0)}

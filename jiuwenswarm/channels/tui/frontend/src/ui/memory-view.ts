@@ -14,8 +14,9 @@ import {
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { type TUI, type SelectItem, SelectList } from "@mariozechner/pi-tui";
-import { addInfo } from "../core/commands/helpers.js";
+import { addError, addInfo } from "../core/commands/helpers.js";
 import type { CliPiAppState } from "../app-state.js";
+import { isTeamMode } from "../core/modes.js";
 import {
   getEditorEnvironmentHint,
   getEditorInfo,
@@ -199,6 +200,15 @@ export class MemoryViewController {
     this.editingPath = null;
     const ctx = this.appState.getCommandContext();
     const fullMode = ctx.mode ?? "agent.code.normal";
+    if (isTeamMode(fullMode)) {
+      this.appState.addItem(
+        addError(
+          this.appState.getSnapshot().sessionId,
+          "Memory management is not supported in Team mode. Please switch to Agent or Code mode.",
+        ),
+      );
+      return;
+    }
     const projectDir = ctx.getCurrentProjectDir() || process.cwd();
     const initialTab: MemoryViewTab = tab ?? "edit";
 

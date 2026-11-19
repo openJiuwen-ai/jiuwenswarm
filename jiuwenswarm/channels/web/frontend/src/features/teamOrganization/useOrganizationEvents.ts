@@ -7,7 +7,21 @@ import { normalizeToolCallPayload, normalizeToolResultPayload } from '../tool-ev
 import { expertTeamId, ownerTeamId } from './conversation';
 import { useTeamOrganizationUiEnabled } from './featureConfig';
 import { generateUuidV4 } from '../../utils/uuid';
+import { MemberToolEventProjector } from './memberToolEvents';
+import { useSessionStore } from '../../stores/sessionStore';
+import { toTaskTimelineEntry } from '../../components/teamArea/groupChatTimeline';
+import { normalizeTaskEvent } from '../../stores/teamTaskNormalize';
+import { toOwnerTeamMessage } from '../../components/ChatPanel/teamEventUtils';
+import type { Message } from '../../types';
+import { clearOrganizationRequests, setOrganizationOwnerStopped } from './processing';
 import { expertProcessingSnapshot, finishExpertRequest, organizationProcessingRevision, reconcileOrganizationRequests, replaceExpertRequests, startExpertRequest, type OrganizationRequest } from './processing';
+
+interface OrganizationRequestSnapshot {
+  organization_owner_stopped?: boolean;
+  expert_requests?: { team_id: string; request_id: string }[];
+  organization_requests?: OrganizationRequest[];
+  teams?: { team_id: string; is_owner?: boolean }[];
+}
 
 /** Organization streams are isolated from the existing foreground Session lifecycle. */
 export function useOrganizationEvents(): void {
@@ -15,9 +29,14 @@ export function useOrganizationEvents(): void {
   useEffect(() => {
     if (!enabled) return;
     const streams = new Map<string, string>();
+    const memberTools = new MemberToolEventProjector();
     const pendingKeys = new Set<string>();
     let disposed = false;
     let syncing = false;
+    const unsubscribeModel = webClient.on('team.model_changed', ({ payload }) => {
+      const sessionId = String(payload.session_id ?? '');
+      if (sessionId) void useTeamSelectorStore.getState().fetchTeams(sessionId);
+    });
     const synchronize = async () => {
       if (syncing || webClient.getState() !== 'ready') return;
       const snapshot = expertProcessingSnapshot();
@@ -28,7 +47,7 @@ export function useOrganizationEvents(): void {
         const sessions = [...new Set([...keys].map((key) => key.split('::')[0]))];
         const results = await Promise.all(sessions.map(async (sessionId) => ({
           sessionId,
-          result: await webClient.request<{ expert_requests?: { team_id: string; request_id: string }[]; organization_requests?: OrganizationRequest[]; teams?: { team_id: string; is_owner?: boolean }[] }>(
+          result: await webClient.request<OrganizationRequestSnapshot>(
             'team.list', { session_id: sessionId },
           ),
         })));
@@ -39,6 +58,7 @@ export function useOrganizationEvents(): void {
             reconcileOrganizationRequests(
               sessionId, result.teams?.find((team) => team.is_owner)?.team_id || ownerTeamId(sessionId),
               result.organization_requests, organizationProcessingRevision(), result.expert_requests,
+              result.organization_owner_stopped,
             );
             for (const key of keys) if (key === sessionId || key.startsWith(`${sessionId}::`)) pendingKeys.delete(key);
             continue;
@@ -71,6 +91,7 @@ export function useOrganizationEvents(): void {
     });
     const timer = window.setInterval(() => { void synchronize(); }, 10000);
     const lifecycleUnsubs = ['session.deleted', 'session.archived'].map((event) => webClient.on(event, ({ payload }) => {
+      clearOrganizationRequests(String(payload.session_id ?? ''));
       const prefix = `${payload.session_id}::`;
       for (const key of new Set([...pendingKeys, ...expertProcessingSnapshot().keys])) {
         if (key === payload.session_id || key.startsWith(prefix)) {
@@ -91,6 +112,7 @@ export function useOrganizationEvents(): void {
       'chat.tool_result',
       'team.task',
       'team.member',
+      'team.message',
     ];
     const unsubs = events.map((event) =>
       webClient.on(event, ({ payload }) => {
@@ -104,6 +126,11 @@ export function useOrganizationEvents(): void {
         const requestId = String(payload.request_id ?? payload.rid ?? '');
         if (event === 'chat.interrupt_result') {
           if (payload.success === true) {
+            if (source === 'org_owner_stop') {
+              useChatStore.getState().setProcessing(sessionId, false);
+              setOrganizationOwnerStopped(sessionId, true);
+              return;
+            }
             if (source === 'org_stop' && Array.isArray(payload.cancelled_requests)) {
               for (const item of payload.cancelled_requests) {
                 const target = String(item.team_id ?? '').trim();
@@ -133,7 +160,38 @@ export function useOrganizationEvents(): void {
         if (!teamId) return;
         const chat = useChatStore.getState();
         chat.ensureTeamRuntime(sessionId, teamId);
+        if (event === 'team.message') {
+          const inner = (payload.event ?? (payload.payload as Record<string, unknown> | undefined)?.event) as Record<string, unknown> | undefined;
+          if (!inner || typeof inner !== 'object') return;
+          const id = typeof inner.message_id === 'string' && inner.message_id
+            ? `team-message-${teamId}-${inner.message_id}` : `team-message-${generateUuidV4()}`;
+          const message: Message = {
+            id, role: 'system', content: `team.event:${JSON.stringify(payload)}`,
+            timestamp: new Date().toISOString(), teamId,
+          };
+          if (!chat.getRuntime(key)?.messages.some((item) => item.id === id)) chat.addMessage(key, message);
+          const ownerMessage = toOwnerTeamMessage(message);
+          if (ownerMessage) {
+            chat.ensureRuntime(sessionId);
+            if (!chat.getRuntime(sessionId)?.messages.some((item) => item.id === ownerMessage.id)) {
+              chat.addMessage(sessionId, ownerMessage);
+            }
+          }
+          return;
+        }
         if (event === 'team.task' || event === 'team.member') {
+          if (event === 'team.task') {
+            const inner = (payload.event ?? (payload.payload as Record<string, unknown> | undefined)?.event) as Record<string, unknown> | undefined;
+            if (inner && typeof inner === 'object') {
+              const store = useSessionStore.getState();
+              store.ensureRuntime(key);
+              const timestamp = typeof inner.timestamp === 'number' ? inner.timestamp : Date.now();
+              const entry = toTaskTimelineEntry(inner, timestamp);
+              if (entry) store.appendTeamTaskTimeline(key, [entry]);
+              const task = normalizeTaskEvent(inner);
+              if (task) store.upsertTeamTask(key, task);
+            }
+          }
           if (useTeamSelectorStore.getState().runtimes[sessionId]?.selectedTeamId === teamId) {
             void useTeamSelectorStore.getState().selectTeam(sessionId, teamId);
           }
@@ -172,6 +230,7 @@ export function useOrganizationEvents(): void {
           });
         }
         if (event === 'chat.final') {
+          memberTools.final(key, payload);
           if (id) chat.updateMessage(key, id, { isStreaming: false });
           streams.delete(streamKey);
           chat.closeReasoning(key);
@@ -180,9 +239,13 @@ export function useOrganizationEvents(): void {
           chat.appendReasoning(key, content);
         } else if (event === 'chat.tool_call') {
           chat.closeReasoning(key);
-          chat.addToolCall(key, normalizeToolCallPayload(payload));
+          const call = normalizeToolCallPayload(payload);
+          chat.addToolCall(key, call);
+          memberTools.toolCall(key, payload, call);
         } else if (event === 'chat.tool_result') {
-          chat.addToolResult(key, normalizeToolResultPayload(payload));
+          const result = normalizeToolResultPayload(payload);
+          chat.addToolResult(key, result);
+          memberTools.toolResult(key, payload, result);
         } else if (event === 'chat.processing_status' && source.startsWith('org_')) {
           const requestId = String(payload.request_id ?? payload.rid ?? '');
           if (payload.is_processing === true) {
@@ -207,6 +270,8 @@ export function useOrganizationEvents(): void {
             timestamp: new Date().toISOString(),
             teamId,
           });
+          // Request bookkeeping above owns busy state; a stale error must not
+          // clear another active request for the same expert.
         }
       }),
     );
@@ -215,6 +280,7 @@ export function useOrganizationEvents(): void {
       disposed = true;
       window.clearInterval(timer);
       unsubscribeState();
+      unsubscribeModel();
       [...unsubs, ...lifecycleUnsubs].forEach((unsubscribe) => unsubscribe());
       for (const key of expertProcessingSnapshot().keys) replaceExpertRequests(key, []);
     };

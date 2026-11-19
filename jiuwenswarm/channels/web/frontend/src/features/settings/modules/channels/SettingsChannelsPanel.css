@@ -77,6 +77,19 @@
   align-items: flex-start;
 }
 
+.settings-channels-panel__channel-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.settings-channels-panel__channel-logo {
+  display: block;
+  width: 24px;
+  height: 24px;
+  object-fit: contain;
+}
+
 .settings-channels-panel__channel-label {
   color: var(--color-text-primary);
   font-size: 14px;

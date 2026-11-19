@@ -187,7 +187,9 @@ async def test_errors_become_error_payloads(tmp_path: Path) -> None:
     assert [item.payload["code"] for item in (not_object, invalid, no_signals)] == ["BAD_REQUEST"] * 3
     assert other_session.payload["code"] == "SESSION_NOT_FOUND"
     assert unsupported.payload["code"] == "BAD_REQUEST"
-    assert set(not_object.payload) == {"error", "code"}
+    assert not_object.payload["status"] == 400
+    assert other_session.payload["status"] == 404
+    assert set(not_object.payload) == {"error", "code", "status"}
 
 
 @pytest.mark.asyncio

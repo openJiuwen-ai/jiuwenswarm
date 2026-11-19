@@ -15,6 +15,8 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any, NoReturn, TextIO
 
+from agent_gateway.common.mode_matrix import is_plan_mode, is_team_mode
+
 from jiuwenswarm.channels.process_cli.display_context import (
     resolve_cli_work_mode,
     resolve_display_mode,
@@ -25,7 +27,6 @@ from jiuwenswarm.channels.process_cli.model_options import (
     prepare_model_options,
     validate_model_options,
 )
-from gateway.common.mode_matrix import is_plan_mode, is_team_mode
 from jiuwenswarm.common.runtime_model_config import runtime_model_config
 
 
@@ -421,7 +422,13 @@ def main() -> None:
             api_key = validate_model_options(args)
         except ModelOptionsError as exc:
             parser.error(str(exc))
+        # Prewarm exec: credential references for the REPL path too (the
+        # single-command branch prewarms inside the streams block below).
         if args.prompt is None:
+            from jiuwenswarm.common.credentials import prewarm_from_config
+            from jiuwenswarm.common.config import get_config_raw
+
+            prewarm_from_config(get_config_raw())
             from jiuwenswarm.channels.process_cli.repl import run_repl
 
             code = asyncio.run(run_repl(args))
@@ -436,6 +443,13 @@ def main() -> None:
         ) as streams:
             diagnostic_log_path = streams.log_path
             try:
+                # Prewarm exec: credential references before the model client
+                # is built, so model probing and chat use the resolved values
+                # instead of raw reference strings.
+                from jiuwenswarm.common.credentials import prewarm_from_config
+                from jiuwenswarm.common.config import get_config_raw
+
+                prewarm_from_config(get_config_raw())
                 model_entry = prepare_model_options(args, api_key)
             except ModelOptionsError as exc:
                 _write_stderr(streams.stderr, f"jiuwenswarm-process: 错误：{exc}")

@@ -16,11 +16,11 @@ import socket
 
 import pytest
 
-from gateway.channel_manager.tui.tui_connect import (
+from agent_gateway.channel_manager.tui.tui_connect import (
     CliHandlersBindParams,
     register_cli_handlers,
 )
-from gateway.routing.agent_client import WebSocketAgentServerClient
+from agent_gateway.routing.agent_client import WebSocketAgentServerClient
 
 pytestmark = [pytest.mark.integration]
 

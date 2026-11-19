@@ -13,6 +13,8 @@ from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.foundation.llm import ToolCall, ToolMessage
 from openjiuwen.core.foundation.tool import ToolOutput
 from openjiuwen.core.single_agent.ability_manager import AbilityExecutionError
+from openjiuwen.core.single_agent.interrupt import ClientToolRequest
+from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptException
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ToolCallInputs
 
 from jiuwenswarm.common.hooks_config import HooksConfig, HookMatcher
@@ -437,3 +439,23 @@ async def test_post_tool_context_reaches_the_error_message_of_a_failed_call():
     await rail.after_tool_call(ctx)
 
     assert error_message.content == "Tool execution error: boom\n[Hook 发现]: retry with --force"
+
+
+@pytest.mark.asyncio
+async def test_post_tool_use_runs_once_for_a_call_that_paused_before_it_ended(tmp_path):
+    ran = tmp_path / "ran"
+    rail = UserHookRail(HooksConfig(events={"PostToolUse": [HookMatcher(
+        matcher="*", hooks=[{"command": f"echo ran >> '{ran}'", "timeout": 5}],
+    )]}))
+    call = ToolCall(id="tc-1", type="function", name="read_page", arguments="{}")
+    paused = AgentCallbackContext(agent=None, inputs=ToolCallInputs(tool_name="read_page", tool_call=call))
+    paused.exception = ToolInterruptException(ClientToolRequest(tool_name="read_page"), tool_call=call)
+
+    await rail.after_tool_call(paused)
+    assert not ran.exists()
+
+    resumed = AgentCallbackContext(agent=None, inputs=ToolCallInputs(
+        tool_name="read_page", tool_call=call, tool_result="page text",
+    ))
+    await rail.after_tool_call(resumed)
+    assert ran.read_text().splitlines() == ["ran"]

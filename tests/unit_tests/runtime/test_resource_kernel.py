@@ -599,3 +599,38 @@ async def test_close_cancels_async_factory_on_its_own_event_loop():
         owning.result(timeout=5)
     assert cancelled_on == owner_loop
     assert kernel.resource_count == 0
+
+
+def test_enterprise_kernel_resources_are_scoped_to_trusted_tenant_root(monkeypatch, tmp_path):
+    from jiuwenswarm.common import utils
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
+    inputs = dict(project_dir="", work_mode="agent", definition=None,
+                  capabilities={}, configuration={})
+    with TenantContext.scoped("group::bot::alice"):
+        alice = KernelIdentity.for_agent(**inputs)
+        assert alice == KernelIdentity.for_agent(**inputs)
+        assert alice.data_dir == str(TenantContext.current_tenant_root().resolve())
+    with TenantContext.scoped("group::bot::bob"):
+        bob = KernelIdentity.for_agent(**inputs)
+    assert alice != bob
+    assert alice.owner != bob.owner
+    assert alice.data_dir != bob.data_dir
+
+
+def test_personal_kernel_identity_keeps_process_root(monkeypatch, tmp_path):
+    from jiuwenswarm.common import utils
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
+    monkeypatch.setattr(utils, "_workspace_base_dir", tmp_path)
+    inputs = dict(project_dir="", work_mode="agent", definition=None,
+                  capabilities={}, configuration={})
+    with TenantContext.scoped("first"):
+        first = KernelIdentity.for_agent(**inputs)
+    with TenantContext.scoped("second"):
+        second = KernelIdentity.for_agent(**inputs)
+    assert first == second
+    assert first.data_dir == str(tmp_path.resolve())

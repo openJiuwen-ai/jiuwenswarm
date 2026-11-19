@@ -1,3 +1,4 @@
+import { attachDuplexAudioMeter } from '../duplexAudioMeter';
 import type { SileroVad, SpeechDetection } from '../../../../channels/web/frontend/src/utils/speechDetection/sileroVad';
 
 const TARGET_RATE = 16_000;
@@ -106,6 +107,10 @@ export class JoyAIVoiceSession {
   private captureNode: AudioWorkletNode | null = null;
   private playback: HTMLAudioElement | null = null;
   private playbackGain: GainNode | null = null;
+  // Pre-mute tap so the orb still shows JoyAI speaking with the speaker muted.
+  private playbackInput: GainNode | null = null;
+  private detachMeters: Array<() => void> = [];
+  private detachOutputMeter: (() => void) | null = null;
   private microphoneMuted = false;
   private speakerMuted = false;
   private playbackFinished: (() => void) | null = null;
@@ -169,6 +174,7 @@ export class JoyAIVoiceSession {
     );
     if (this.stopped) return;
     const source = this.captureContext.createMediaStreamSource(this.microphone);
+    this.detachMeters.push(attachDuplexAudioMeter('input', this.captureContext, source));
     this.captureNode = new AudioWorkletNode(this.captureContext, 'jiuwen-duplex-capture');
     this.captureNode.port.onmessage = ({ data }) => {
       const input = new Int16Array(data);
@@ -206,6 +212,8 @@ export class JoyAIVoiceSession {
     this.vad?.stop();
     this.vad = null;
     this.interruptPlayback();
+    this.detachMeters.forEach((detach) => detach());
+    this.detachMeters = [];
     this.microphone?.getTracks().forEach((track) => track.stop());
     this.microphone = null;
     this.captureNode?.disconnect();
@@ -329,9 +337,11 @@ export class JoyAIVoiceSession {
     if (!this.pcmStreamId || this.pcmStreamPending.length === 0) return;
     if (!this.pcmPlaybackContext) {
       this.pcmPlaybackContext = new AudioContext();
+      this.playbackInput = this.pcmPlaybackContext.createGain();
       this.playbackGain = this.pcmPlaybackContext.createGain();
       this.playbackGain.gain.value = this.speakerMuted ? 0 : 1;
       this.playbackGain.connect(this.pcmPlaybackContext.destination);
+      this.playbackInput.connect(this.playbackGain);
     }
     const context = this.pcmPlaybackContext;
     void context.resume().catch((error) => {
@@ -340,6 +350,8 @@ export class JoyAIVoiceSession {
     });
     if (!this.pcmStreamStarted) {
       this.pcmStreamStarted = true;
+      // Meter only while PCM plays; encoded (HTML audio) replies have no analyser.
+      if (this.playbackInput) this.detachOutputMeter = attachDuplexAudioMeter('output', context, this.playbackInput);
       this.pcmStreamNextTime = context.currentTime + 0.03;
       this.callbacks.onState('speaking');
     }
@@ -353,7 +365,7 @@ export class JoyAIVoiceSession {
       }
       const source = context.createBufferSource();
       source.buffer = buffer;
-      source.connect(this.playbackGain || context.destination);
+      source.connect(this.playbackInput || this.playbackGain || context.destination);
       const startAt = Math.max(this.pcmStreamNextTime, context.currentTime + 0.01);
       this.pcmStreamNextTime = startAt + buffer.duration;
       this.pcmStreamSources.add(source);
@@ -380,6 +392,8 @@ export class JoyAIVoiceSession {
 
   private clearPcmStream(): void {
     const sources = [...this.pcmStreamSources];
+    this.detachOutputMeter?.();
+    this.detachOutputMeter = null;
     this.pcmStreamId = null;
     this.pcmStreamSources.clear();
     this.pcmStreamPending = [];

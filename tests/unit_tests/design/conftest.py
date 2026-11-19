@@ -17,6 +17,15 @@ def _skip_media_config_preflight(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def _pin_preferred_language(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Designer text follows preferred_language; keep tests independent of the host config."""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.designer.pipeline.content_language.get_config",
+        lambda: {"preferred_language": "en"},
+    )
+
+
 _DIRECTOR_LLM_PHASES = (
     "author_creative_brief",
     "review_brief",

@@ -5,6 +5,8 @@ import { deepEqual } from '../../../../components/form/core/FormStore';
 import type { FormValues } from '../../../../components/form/types';
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
 import {
+  buildDingtalkDeletionPayload,
+  buildDingtalkEnabledPayload,
   buildDingtalkFormPayload,
   buildDiscordFormPayload,
   buildFeishuDeletionPayload,
@@ -17,6 +19,7 @@ import {
   buildXiaoyiFormPayload,
   createDefaultFeishuFormValues,
   createDefaultXiaoyiFormValues,
+  createDingtalkAppDraft,
   readDingtalkFormValues,
   readDiscordFormValues,
   readFeishuFormValues,
@@ -28,6 +31,7 @@ import {
 import { buildSettingsChannels } from './channelCatalog';
 import {
   channelConfigurationChecks,
+  isDingtalkAppConfigured,
   isFeishuAppConfigured,
   shouldConfirmXiaoyiEnable,
 } from './channelRequirements';
@@ -52,6 +56,7 @@ export function useSettingsChannelsController({
   const [channelsError, setChannelsError] = useState<string | null>(null);
   const [activeChannelId, setActiveChannelId] = useState<SettingsChannelId>('xiaoyi');
   const [activeFeishuAppIndex, setActiveFeishuAppIndex] = useState(0);
+  const [activeDingtalkAppIndex, setActiveDingtalkAppIndex] = useState(0);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [activeDialogBaseline, setActiveDialogBaseline] = useState<FormValues | null>(null);
   const [pendingDiscardAction, setPendingDiscardAction] = useState<PendingDiscardAction | null>(null);
@@ -93,6 +98,7 @@ export function useSettingsChannelsController({
     setMethod: 'channel.feishu.set_conf',
     loadErrorMessage: t('channels.errors.loadFeishu'),
     saveErrorMessage: t('channels.errors.saveGeneric'),
+    saveErrorByCode: { CHANNEL_BOUND_TO_EMPLOYEE: t('channels.errors.boundToEmployee') },
     savedMessage: t('channels.saved.feishu'),
     onSaved: loadChannels,
   });
@@ -105,6 +111,7 @@ export function useSettingsChannelsController({
     setMethod: 'channel.dingtalk.set_conf',
     loadErrorMessage: t('channels.errors.loadDingtalk'),
     saveErrorMessage: t('channels.errors.saveGeneric'),
+    saveErrorByCode: { CHANNEL_BOUND_TO_EMPLOYEE: t('channels.errors.boundToEmployee') },
     savedMessage: t('channels.saved.dingtalk'),
     onSaved: loadChannels,
   });
@@ -163,10 +170,11 @@ export function useSettingsChannelsController({
     ? !deepEqual(activeController.form.getValues(), activeDialogBaseline)
     : activeController.hasUnsavedChanges;
   const feishuApps = useFormValue(feishu.form, 'apps');
+  const dingtalkApps = useFormValue(dingtalk.form, 'apps');
   const channelEnabled = {
     xiaoyi: useFormValue(xiaoyi.form, 'enabled'),
     feishu: feishuApps.some((app) => isFeishuAppConfigured(app) && app.enabled),
-    dingtalk: useFormValue(dingtalk.form, 'enabled'),
+    dingtalk: dingtalkApps.some((app) => isDingtalkAppConfigured(app) && app.enabled),
     telegram: useFormValue(telegram.form, 'enabled'),
     discord: useFormValue(discord.form, 'enabled'),
     slack: useFormValue(slack.form, 'enabled'),
@@ -232,6 +240,19 @@ export function useSettingsChannelsController({
         setActiveDialogBaseline(null);
         setActiveFeishuAppIndex(target.feishuAppIndex ?? 0);
       }
+    } else if (target.channelId === 'dingtalk') {
+      const apps = dingtalk.form.getValues().apps;
+      if (target.addDingtalkApp) {
+        const nextApp = createDingtalkAppDraft(
+          t('channels.dingtalkApps.appNameTemplate', { index: apps.length + 1 }),
+        );
+        dingtalk.form.setFieldValue('apps', [...apps, nextApp]);
+        setActiveDialogBaseline(dingtalk.form.getValues());
+        setActiveDingtalkAppIndex(apps.length);
+      } else {
+        setActiveDialogBaseline(null);
+        setActiveDingtalkAppIndex(target.dingtalkAppIndex ?? 0);
+      }
     } else {
       setActiveDialogBaseline(null);
     }
@@ -248,13 +269,20 @@ export function useSettingsChannelsController({
     void activateTarget(target);
   };
 
-  const selectChannel = (channelId: SettingsChannelId) =>
-    requestOpenTarget({ channelId, feishuAppIndex: channelId === 'feishu' ? 0 : undefined });
+  const appTarget = (channelId: SettingsChannelId, index: number): ChannelDialogTarget => ({
+    channelId,
+    feishuAppIndex: channelId === 'feishu' ? index : undefined,
+    dingtalkAppIndex: channelId === 'dingtalk' ? index : undefined,
+  });
+
+  const selectChannel = (channelId: SettingsChannelId) => requestOpenTarget(appTarget(channelId, 0));
 
   const editChannel = (channelId: SettingsChannelId, accountIndex: number) =>
-    requestOpenTarget({ channelId, feishuAppIndex: channelId === 'feishu' ? accountIndex : undefined });
+    requestOpenTarget(appTarget(channelId, accountIndex));
 
   const addFeishuConfiguration = () => requestOpenTarget({ channelId: 'feishu', addFeishuApp: true });
+
+  const addDingtalkConfiguration = () => requestOpenTarget({ channelId: 'dingtalk', addDingtalkApp: true });
 
   function resetActiveDialog(): void {
     activeController.reset();
@@ -317,7 +345,7 @@ export function useSettingsChannelsController({
         return;
       case 'dingtalk':
         await dingtalk.replaceAndSave(
-          buildDingtalkFormPayload({ ...dingtalk.form.getValues(), enabled }),
+          buildDingtalkEnabledPayload(dingtalk.form.getValues(), accountIndex, enabled),
           successMessage,
         );
         return;
@@ -363,7 +391,9 @@ export function useSettingsChannelsController({
     const payload =
       channelId === 'feishu'
         ? buildFeishuDeletionPayload(feishu.form.getValues(), accountIndex)
-        : buildSingleChannelDeletionPayload(channelId);
+        : channelId === 'dingtalk'
+          ? buildDingtalkDeletionPayload(dingtalk.form.getValues(), accountIndex)
+          : buildSingleChannelDeletionPayload(channelId);
     const deleted = await channelController.replaceAndSave(
       payload,
       t('channels.unbindConfigurationSuccess', { name: accountName }),
@@ -385,12 +415,14 @@ export function useSettingsChannelsController({
     channelsError,
     activeChannelId,
     activeFeishuAppIndex,
+    activeDingtalkAppIndex,
     dialogOpen,
     pendingDiscardAction,
     pendingDeletion,
     pendingXiaoyiEnable,
     controllers,
     feishuApps,
+    dingtalkList: { apps: dingtalkApps, loaded: dingtalk.loaded, onAdd: addDingtalkConfiguration },
     channelEnabled,
     channelConfigured,
     channelSaving,

@@ -3,6 +3,45 @@ import test from 'node:test';
 
 import { useChatStore } from '../node_modules/.cache/chat-store-streaming/chatStore.mjs';
 
+test('MoA operations clear at turn, pause and history-reset boundaries without leaking into messages', () => {
+  const sessionId = 'moa-store-lifecycle';
+  const store = useChatStore.getState();
+  const start = () => {
+    store.setProcessing(sessionId, false);
+    store.setProcessing(sessionId, true);
+    store.setActiveExecutionId(sessionId, 'moa-execution');
+    store.updateMoaStatus(sessionId, {
+      operation_id: 'reference', phase: 'reference', status: 'started', execution_id: 'moa-execution',
+    });
+    assert.equal(store.getRuntime(sessionId).moaOperations.reference.status, 'started');
+  };
+  store.ensureRuntime(sessionId);
+  try {
+    start();
+    store.replaceHistoryMessages(sessionId, []);
+    assert.equal(store.getRuntime(sessionId).moaOperations.reference.status, 'started', 'live progress survives history loading');
+    store.setPaused(sessionId, true);
+    assert.deepEqual(store.getRuntime(sessionId).moaOperations, {});
+    store.setPaused(sessionId, false);
+    start();
+    store.clearCurrentTurnData(sessionId);
+    assert.deepEqual(store.getRuntime(sessionId).moaOperations, {});
+    start();
+    store.setExecutionError(sessionId, 'failed');
+    assert.deepEqual(store.getRuntime(sessionId).moaOperations, {});
+    start();
+    store.clearMessages(sessionId);
+    assert.deepEqual(store.getRuntime(sessionId).moaOperations, {});
+    start();
+    store.setProcessing(sessionId, false);
+    store.setProcessing(sessionId, true);
+    assert.deepEqual(store.getRuntime(sessionId).moaOperations, {});
+    assert.deepEqual(store.getRuntime(sessionId).messages, []);
+  } finally {
+    store.removeRuntime(sessionId);
+  }
+});
+
 test('setThinking does not notify subscribers when the value is unchanged', () => {
   const sessionId = 'streaming-thinking-noop';
   useChatStore.getState().ensureRuntime(sessionId);
@@ -273,5 +312,34 @@ test('reviewer-only progress preserves the running tool lifecycle', () => {
     );
   } finally {
     useChatStore.getState().removeRuntime(sessionId);
+  }
+});
+
+test('answered ask_user questions are dropped and never re-enqueued from runtime replay', () => {
+  const sessionId = 'answered-ask-user-replay';
+  const store = useChatStore.getState();
+  store.ensureRuntime(sessionId);
+  const question = (requestId) => ({
+    request_id: requestId,
+    source: 'ask_user_interrupt',
+    questions: [{ header: '调研对象', question: '指什么？', options: [{ label: 'A' }] }],
+  });
+
+  try {
+    store.enqueuePendingQuestion(sessionId, question('call-stale'));
+    store.enqueuePendingQuestion(sessionId, question('call-live'));
+    store.markQuestionsAnswered(sessionId, ['call-stale']);
+    assert.deepEqual(
+      useChatStore.getState().getRuntime(sessionId).pendingQuestions.map((item) => item.request_id),
+      ['call-live'],
+    );
+
+    store.enqueuePendingQuestion(sessionId, question('call-stale'));
+    assert.deepEqual(
+      useChatStore.getState().getRuntime(sessionId).pendingQuestions.map((item) => item.request_id),
+      ['call-live'],
+    );
+  } finally {
+    store.removeRuntime(sessionId);
   }
 });

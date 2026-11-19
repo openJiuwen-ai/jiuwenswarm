@@ -55,6 +55,14 @@ the main agent runs the web part with `browser_agent` first, then the desktop pa
 
 ## 3. Enable
 
+Use **Settings → Experimental → Computer control** when the backend's installation
+prerequisites are present. Unsupported platforms, missing optional dependencies or
+missing bundled driver files hide the section without changing saved preferences.
+The check does not start a driver or request OS permissions; visibility does not imply permission grants.
+The persisted `react.subagents.cua_agent.enabled` defaults to `null`, following the
+release default (currently off). Only changing the switch saves `true` or `false`;
+reading settings and upgrading preserve `null` and any explicit user preference.
+
 Install the `cua` extra first (see section 2); enabling `cua_agent` without it fails on
 the first desktop task. Then edit `~/.jiuwenswarm/config/config.yaml` (template: `jiuwenswarm/resources/config.yaml`):
 
@@ -62,7 +70,7 @@ the first desktop task. Then edit `~/.jiuwenswarm/config/config.yaml` (template:
 react:
   subagents:
     cua_agent:
-      enabled: true              # default false; explicit opt-in
+      enabled: true              # explicit opt-in; null follows the release default (currently off)
       # max_iterations: 100      # subagent iteration cap, default 100
       # snapshot_keep_last_k: 3  # screenshots kept in full in context, default 3
       pause_on_user_input: false # hold actions while you use mouse/keyboard, resume when idle
@@ -80,6 +88,10 @@ enabled, the main agent:
 - delegates desktop work through the synchronous `task_tool` with `subagent_type`
   `"cua_agent"`, keeping your full objective in `task_description` rather than reducing it
   to steps;
+- shows an "操作确认: cua_agent" card before each delegation, with the task and a note that
+  the subagent may start apps (`launch_app`) and type text (`type_text`). The options are
+  Allow once, Session allow, Always allow, and Reject; Always allow sets
+  `require_approval` to `false`, so no session asks again (see section 5);
 - asks you to confirm irreversible actions (sending messages, deleting files, submitting
   forms, payments) before they happen;
 - does not script the GUI itself via Bash, PowerShell, pyautogui, AutoHotkey, etc.; if
@@ -115,10 +127,11 @@ force-kill applications.
 
 | Key | Type | Default | Description |
 |---|---|---|---|
-| `react.subagents.cua_agent.enabled` | boolean | `false` | Mount `cua_agent`. |
+| `react.subagents.cua_agent.enabled` | boolean / null | `null` (currently off) | Mount `cua_agent`; `null` follows the release default, while explicit `true` / `false` survives upgrades. |
 | `react.subagents.cua_agent.max_iterations` | int | `100` | Subagent iteration cap. The capture-act-verify loop uses many iterations; avoid setting it too low. |
 | `react.subagents.cua_agent.snapshot_keep_last_k` | int ≥ 1 | `3` | Number of recent screenshots kept in full in context. 3 suits tasks that move between two windows; `1` cuts context considerably for single-window tasks. Invalid values are ignored with a warning and the default applies. |
 | `react.subagents.cua_agent.pause_on_user_input` | boolean | `false` | Hold desktop actions while you use the mouse/keyboard and resume after about 5 s idle. If you keep using the machine for about 60 s, the subagent ends the task and reports what it completed. Detection works on Windows and Linux X11 only; elsewhere the option has no effect. |
+| `react.subagents.cua_agent.require_approval` | boolean | `true` | Show a confirmation card each time the main agent hands a task to `cua_agent` (also in full-access mode). Choosing "Always allow" on the card writes `false`, so no session asks again; set it back to `true` to be asked again. |
 
 Environment variable:
 
@@ -137,6 +150,9 @@ Environment variable:
 - The subagent can start local programs with `launch_app` and type into any focused window
   with `type_text`. Enable it only for trusted tasks and models.
 - Check carefully when the main agent asks you to confirm an irreversible action.
+- The delegation card is the last check before the subagent takes over your desktop. After
+  Always allow, no session asks again; set `react.subagents.cua_agent.require_approval` back
+  to `true` to restore it.
 
 ## 7. Troubleshooting
 

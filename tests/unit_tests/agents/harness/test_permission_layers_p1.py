@@ -249,3 +249,154 @@ def test_user_persist_does_not_copy_session_only_delta(tmp_path: Path, monkeypat
     assert layers.persist_user_overlay_from_effective(effective, session_id="s1") is True
     user = layers.load_user_permissions()
     assert user.get("allow_tools") == ["todo_list"]
+
+
+def test_session_overlay_keeps_rule_when_id_collides_with_user_layer() -> None:
+    user = {
+        "approval_overrides": [
+            {
+                "id": "user_allow_bash_command_echo",
+                "tools": ["bash"],
+                "match_type": "command",
+                "pattern": "echo 你好",
+                "action": "allow",
+            }
+        ]
+    }
+    effective = {
+        "approval_overrides": [
+            *user["approval_overrides"],
+            {
+                "id": "user_allow_bash_command_echo",
+                "tools": ["bash"],
+                "match_type": "command",
+                "pattern": "echo 解决",
+                "action": "allow",
+            },
+            {
+                "id": "user_allow_bash_command_echo",
+                "tools": ["bash"],
+                "match_type": "command",
+                "pattern": "echo 是我",
+                "action": "allow",
+            },
+        ]
+    }
+    overlay = layers.overlay_from_effective(
+        effective, session=True, global_permissions={}, user_permissions=user
+    )
+    overrides = overlay.get("approval_overrides") or []
+    assert [item["pattern"] for item in overrides] == ["echo 解决", "echo 是我"]
+    ids = [item["id"] for item in overrides]
+    assert len(set(ids)) == 2
+    assert all(override_id != "user_allow_bash_command_echo" for override_id in ids)
+
+
+def test_session_overlay_tolerates_scalar_tools_in_yaml() -> None:
+    user = {
+        "approval_overrides": [
+            {
+                "id": "user_allow_bash_command_echo",
+                "tools": 1,
+                "match_type": "command",
+                "pattern": "echo 你好",
+                "action": "allow",
+            },
+            {
+                "id": "user_allow_bash_command_echo_2",
+                "tools": True,
+                "match_type": "command",
+                "pattern": "echo 轻松",
+                "action": "allow",
+            },
+        ]
+    }
+    effective = {
+        "approval_overrides": [
+            *user["approval_overrides"],
+            {
+                "id": "user_allow_bash_command_echo",
+                "tools": ["bash"],
+                "match_type": "command",
+                "pattern": "echo 解决",
+                "action": "allow",
+            },
+        ]
+    }
+    overlay = layers.overlay_from_effective(
+        effective, session=True, global_permissions={}, user_permissions=user
+    )
+    overrides = overlay.get("approval_overrides") or []
+    assert [item["pattern"] for item in overrides] == ["echo 解决"]
+
+
+def test_colliding_ids_are_rewritten_per_full_signature() -> None:
+    effective = {
+        "approval_overrides": [
+            {
+                "id": "user_allow_bash_command_echo",
+                "tools": ["bash"],
+                "match_type": "command",
+                "pattern": "echo 解决",
+                "action": "allow",
+            },
+            {
+                "id": "user_allow_bash_command_echo",
+                "tools": ["bash", "shell"],
+                "match_type": "command",
+                "pattern": "echo 解决",
+                "action": "allow",
+            },
+            {
+                "id": "user_allow_bash_command_echo",
+                "tools": ["bash"],
+                "match_type": "command",
+                "pattern": "echo 解决",
+                "action": "deny",
+            },
+        ]
+    }
+    overlay = layers.overlay_from_effective(
+        effective, session=True, global_permissions={}, user_permissions={}
+    )
+    ids = [item["id"] for item in overlay.get("approval_overrides") or []]
+    assert len(set(ids)) == 3
+    assert all(override_id != "user_allow_bash_command_echo" for override_id in ids)
+
+
+def test_colliding_ids_without_pattern_are_renamed() -> None:
+    user = {
+        "approval_overrides": [
+            {
+                "id": "user_allow_foo",
+                "tools": ["bash"],
+                "action": "allow",
+            }
+        ]
+    }
+    effective = {
+        "approval_overrides": [
+            *user["approval_overrides"],
+            {
+                "id": "user_allow_foo",
+                "tools": ["shell"],
+                "action": "allow",
+            },
+            {
+                "id": "user_allow_bar",
+                "action": "allow",
+            },
+            {
+                "id": "user_allow_bar",
+                "action": "allow",
+            },
+        ]
+    }
+    overlay = layers.overlay_from_effective(
+        effective, session=True, global_permissions={}, user_permissions=user
+    )
+    overrides = overlay.get("approval_overrides") or []
+    ids = [item["id"] for item in overrides]
+    assert len(set(ids)) == len(overrides)
+    assert "user_allow_foo" not in ids
+    assert "user_allow_bar" not in ids

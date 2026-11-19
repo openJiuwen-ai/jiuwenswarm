@@ -101,11 +101,13 @@ class FakeReader:
         page_size: int | None = None,
         chains: dict[str, list[str]] | None = None,
         blobs: dict[str, str] | None = None,
+        kinds: dict[str, str] | None = None,
     ) -> None:
         self._subjects = subjects
         self._page_size = page_size
         self._chains = chains or {}
         self._blobs = blobs or {}
+        self._kinds = kinds or {}
         self.record_calls = 0
 
     async def list_subjects(
@@ -115,7 +117,11 @@ class FakeReader:
         after_revision: int = 0,
     ) -> tuple[list[dict[str, Any]], str, int]:
         items = [
-            {"subject_id": subject_id, "display_name": subject_id.title(), "kind": "main_agent"}
+            {
+                "subject_id": subject_id,
+                "display_name": subject_id.title(),
+                "kind": self._kinds.get(subject_id, "main_agent"),
+            }
             for subject_id in self._subjects
         ]
         return items, "epoch", 0

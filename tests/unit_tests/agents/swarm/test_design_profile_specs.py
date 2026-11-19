@@ -6,6 +6,8 @@ A tool declared in ``_DESIGN_TOOL_NAMES`` but missing from the sanitizer's
 spec and the keep-list must move together.
 """
 
+import pytest
+
 from jiuwenswarm.agents.swarm import config_specs
 from jiuwenswarm.agents.harness.design.rails.designer_surface_sanitizer_rail import (
     _KEEP_TOOL_NAMES,
@@ -25,14 +27,14 @@ _DESIGN_TOOL_CARDS = {
 }
 
 
-def test_design_profile_declares_web_lookup_and_keeps_session_rails():
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+def test_design_profile_declares_web_lookup_and_keeps_session_rails(role):
     rails, _tools = config_specs.build_member_capability_specs(
-        {}, "team.design", "teammate"
+        {}, "team.design", role
     )
     rail_types = {spec.type for spec in rails}
     # Web lookup is in (leader-only tuple; mirror #8874 split it out of the
-    # worker set); the chat-only rails (avatar / heartbeat /
-    # personal-context) are out.
+    # worker set); chat-only avatar, heartbeat and personal-context rails stay out.
     assert config_specs.registry.WEB_SEARCH in config_specs._DESIGN_LEADER_TOOL_NAMES
     assert config_specs.registry.WEB_FETCH in config_specs._DESIGN_LEADER_TOOL_NAMES
     assert config_specs.registry.WEB_PAID_SEARCH in config_specs._DESIGN_LEADER_TOOL_NAMES
@@ -41,7 +43,8 @@ def test_design_profile_declares_web_lookup_and_keeps_session_rails():
     assert config_specs.registry.HEARTBEAT not in rail_types
     assert config_specs.registry.PERSONAL_CONTEXT not in rail_types
     # Workers keep the full sys_operation surface (file read/write for node work).
-    assert config_specs.registry.SYS_OPERATION in rail_types
+    if role == "teammate":
+        assert config_specs.registry.SYS_OPERATION in rail_types
 
 
 def test_every_design_profile_tool_card_survives_the_leader_sanitizer():

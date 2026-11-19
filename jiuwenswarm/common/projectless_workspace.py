@@ -79,10 +79,19 @@ def get_projectless_tasks_dir() -> Path:
     """Return the task root below the platform's Documents directory.
 
     ``JIUWENSWARM_TASKS_DIR`` remains the authoritative deployment override.
-    Otherwise Windows honors the user's configured Documents known folder,
-    Linux honors ``user-dirs.dirs``, and macOS uses ``~/Documents``.
+    Enterprise defaults to the existing tenant workspace (shared across Pods).
+    Personal defaults to the platform's configured Documents directory:
+    Windows honors the user's configured Documents known folder, Linux honors
+    ``user-dirs.dirs``, and macOS uses ``~/Documents``.
     """
     configured = os.environ.get(_TASKS_DIR_ENV, "").strip()
+    if not configured:
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if is_enterprise():
+            from jiuwenswarm.common.utils import get_default_project_workspace_dir
+
+            return get_default_project_workspace_dir().resolve()
     base = (
         Path(configured).expanduser()
         if configured

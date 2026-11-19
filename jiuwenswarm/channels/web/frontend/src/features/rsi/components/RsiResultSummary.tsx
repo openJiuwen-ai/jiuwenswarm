@@ -4,26 +4,26 @@
  *   - score / baseline：P2 推送 liveProgress → task.progress → report.best_score/baseline（§3.3/§8.1）
  *   - usage.tokens：rsi.usage.get → task.usage（§3.4/§8.2）
  *   - metrics.iterations / eval_passed / eval_total / pruned_count：rsi.report.get（§8.1）
- *   - pruned_count 仅 harness 优化有值；产物优化为 null（§14），不渲染剪枝列
+ *   - pruned_count 来自 Provider 统计或树快照；未知时不渲染剪枝列
  * 当前最优论文通过节点产物路径打开已有的 PDF/LaTeX 预览弹窗。
  */
 import { useTranslation } from 'react-i18next';
 import optimizeImage from '../../../assets/rsi/rsi-optimize.svg';
 import type { RsiTaskGetResult, RsiReportGetResult, RsiUsageGetResult } from '../types';
 import { formatArtifactScore, formatGain, formatTokensK, presentRsiNode, typeDisplayLabel } from '../rsiPresentation';
-import { resolveRsiArtifactSource } from '../rsiArtifactFiles';
+import { resolveRsiArtifactSource, type RsiArtifactSource } from '../rsiArtifactFiles';
 import { useRsiStore } from '../rsiStore';
 
 interface RsiResultSummaryProps {
   task: RsiTaskGetResult;
   report: RsiReportGetResult | null;
   usage: RsiUsageGetResult | null;
-  onOpenArtifact: (path: string, title: string) => void;
+  onOpenArtifact: (source: RsiArtifactSource, title: string) => void;
 }
 
 export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiResultSummaryProps) {
   const { t } = useTranslation();
-  const liveProgress = useRsiStore((s) => (s.selectedTaskId ? s.detail[s.selectedTaskId]?.liveProgress : null));
+  const liveProgress = useRsiStore((s) => task.status === 'RUNNING' ? s.detail[task.task_id]?.liveProgress : null);
   const tree = useRsiStore((s) => s.detail[task.task_id]?.tree ?? null);
 
   // 分数优先取运行时推送，回退 task.progress/report
@@ -33,10 +33,14 @@ export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiRes
   const gainFmt = formatGain(gain);
   const bestArtifactId = task.best_artifact?.artifact_id ?? report?.best_artifact?.artifact_id ?? null;
   const bestNode =
-    tree?.nodes.find((node) => bestArtifactId != null && node.snapshot_artifact_id === bestArtifactId) ??
-    [...(tree?.nodes ?? [])].filter((node) => node.type === 'ADOPTED').sort((a, b) => b.iteration - a.iteration)[0] ??
-    null;
-  const bestArtifactSource = bestNode ? resolveRsiArtifactSource(bestNode, task.task_id) : null;
+    tree?.nodes.find((node) => bestArtifactId != null && (
+      node.snapshot_artifact_id === bestArtifactId || (task.scenario === 'HARNESS' && node.node_id === bestArtifactId)
+    )) ??
+    (task.scenario === 'HARNESS' && bestArtifactId != null
+      ? null
+      : [...(tree?.nodes ?? [])].filter((node) => node.type === 'ADOPTED')
+        .sort((a, b) => b.iteration - a.iteration)[0] ?? null);
+  const bestArtifactSource = bestNode ? resolveRsiArtifactSource(bestNode, task.task_id, task.scenario) : null;
   const bestPresentation = bestNode
     ? presentRsiNode(bestNode, {
         scenario: task.scenario,
@@ -64,17 +68,19 @@ export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiRes
       ? (liveProgress?.usage ?? usage?.usage ?? task.usage ?? null)
       : (usage?.usage ?? task.usage ?? liveProgress?.usage ?? null);
 
-  // 指标列顺序：基线分数 → 用量 → 迭代次数 →（组合评测、剪枝，均不含程序优化）
+  // 组合评测仅用于 Harness；论文显示剪枝，程序不显示剪枝。
   const isProgram = task.artifact_type === 'PROGRAM';
   const usageFmt = tokenUsage ? formatTokensK(tokenUsage.tokens) : null;
   const metrics: Array<{ key: string; value: string; unit?: string; label: string }> = [
-    { key: 'baseline', value: formatArtifactScore(baseline, task.artifact_type), label: t('rsi.detail.baselineScore') },
+    {
+      key: 'baseline',
+      value: formatArtifactScore(baseline, task.artifact_type, task.scenario),
+      label: t('rsi.detail.baselineScore'),
+    },
     { key: 'usage', value: usageFmt ? usageFmt.value : '--', unit: usageFmt?.unit, label: t('rsi.detail.usage') },
     { key: 'iterations', value: iterations != null ? String(iterations) : '--', label: t('rsi.detail.iterations') },
   ];
-  // 组合评测是 harness 优化的概念（一次评测跑的是若干组合）；程序优化每个候选
-  // 只有一次评测，那两个数永远是 0/0，占着位置却什么都不说。
-  if (!isProgram) {
+  if (task.scenario === 'HARNESS') {
     metrics.push({
       key: 'eval',
       // 分母 "/40" 走小字单位（紧贴数值，不带空隙）
@@ -103,7 +109,7 @@ export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiRes
           {/* 优化分数 + 当前最优产物（沿用 rsi-score / rsi-best 组合） */}
           <div className="rsi-result__score-best">
             <div className="rsi-score" data-testid="rsi-score">
-              {formatArtifactScore(score, task.artifact_type)}
+              {formatArtifactScore(score, task.artifact_type, task.scenario)}
               {gainFmt.kind !== 'none' && (
                 <span
                   className={
@@ -121,7 +127,7 @@ export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiRes
                 <button
                   type="button"
                   className="rsi-best__link"
-                  onClick={() => onOpenArtifact(bestArtifactSource.path, bestName ?? '论文预览')}
+                  onClick={() => onOpenArtifact(bestArtifactSource, bestName ?? task.name)}
                   data-testid="rsi-best-link"
                   data-variant="link"
                 >
@@ -140,12 +146,12 @@ export function RsiResultSummary({ task, report, usage, onOpenArtifact }: RsiRes
         {/* 指标组：占剩余宽度；指标按内容宽排版，富余空间由 space-between 平均补进各间距（gap 下限 40px） */}
         <div className="rsi-result__metrics">
           {metrics.map((m) => (
-            <div key={m.key} className="rsi-result__metric">
-              <div className="rsi-result__metric-value">
+            <div key={m.key} className="rsi-result__metric" data-testid="rsi-result-metric" data-variant={m.key}>
+              <div className="rsi-result__metric-value" data-testid="rsi-result-metric-value">
                 {m.value}
                 {m.unit && <span className="rsi-result__metric-value-unit">{m.unit}</span>}
               </div>
-              <div className="rsi-result__metric-label">{m.label}</div>
+              <div className="rsi-result__metric-label" data-testid="rsi-result-metric-label">{m.label}</div>
             </div>
           ))}
         </div>

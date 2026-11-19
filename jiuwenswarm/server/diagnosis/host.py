@@ -191,17 +191,17 @@ class DiagnosisHost:
 
         Returns:
             A successful response whose payload mirrors the HTTP body, or an
-            error response whose payload is ``{"error", "code"}``.
+            error response whose payload is ``{"error", "code", "status"}``.
         """
         params = request.params if isinstance(request.params, dict) else {}
         session_id = str(params.get("session_id") or request.session_id or "")
         try:
             payload = await self._dispatch(request.req_method, session_id, params)
         except DiagnosisHostError as exc:
-            return self._error(request, exc.message, exc.code)
+            return self._error(request, exc.message, exc.code, exc.status)
         except Exception as exc:  # noqa: BLE001
             logger.exception("[diagnosis] request failed: method=%s session_id=%s", request.req_method, session_id)
-            return self._error(request, str(exc) or "diagnosis request failed", "INTERNAL_ERROR")
+            return self._error(request, str(exc) or "diagnosis request failed", "INTERNAL_ERROR", 500)
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
@@ -210,12 +210,12 @@ class DiagnosisHost:
         )
 
     @staticmethod
-    def _error(request: AgentRequest, message: str, code: str) -> AgentResponse:
+    def _error(request: AgentRequest, message: str, code: str, status: int) -> AgentResponse:
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=False,
-            payload={"error": message, "code": code},
+            payload={"error": message, "code": code, "status": status},
         )
 
     async def _dispatch(

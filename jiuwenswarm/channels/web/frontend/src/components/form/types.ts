@@ -50,7 +50,11 @@ export type FormItem<TValues extends FormValues> =
       changeOnBlur?: boolean;
     })
   | (FormItemBase<TValues, keyof TValues> & { component: 'textarea'; placeholder?: string; rows?: number })
-  | (FormItemBase<TValues, keyof TValues> & { component: 'select'; options: readonly SelectOption[] })
+  | (FormItemBase<TValues, keyof TValues> & {
+      component: 'select';
+      options: readonly SelectOption[];
+      placeholder?: string;
+    })
   | (FormItemBase<TValues, keyof TValues> & { component: 'switch'; switchLabel: string })
   | (FormItemBase<TValues, keyof TValues> & {
       component: 'radioGroup';
@@ -82,6 +86,7 @@ export interface FormInstance<TValues extends FormValues> {
   setValues(values: Partial<TValues>): void;
   validate(names?: keyof TValues | readonly (keyof TValues)[]): FormValidateResult<TValues>;
   clearValidate(names?: keyof TValues | readonly (keyof TValues)[]): void;
+  setErrors(errors: Partial<Record<keyof TValues, string>>): void;
   reset(nextValues?: TValues): void;
   hasUnsavedChanges(name?: keyof TValues): boolean;
 }

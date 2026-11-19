@@ -54,6 +54,8 @@ RUN ln -s /usr/bin/python3 /usr/bin/python
 EXPOSE 8321
 EXPOSE 8322
 
+RUN groupadd -g 1001 app && useradd -u 1001 -g app -m -s /bin/bash app
+
 # 默认走 HTTP; UDS 模式由调用方覆盖 JIUWENBOX_LISTEN, 例如
 # `docker run -e JIUWENBOX_LISTEN=unix:///run/jiuwenbox/jiuwenbox.sock \
 #             -v /tmp/jiuwenbox-sock:/run/jiuwenbox jiuwenbox`。

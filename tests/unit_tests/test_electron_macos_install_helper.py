@@ -1,6 +1,7 @@
 """Run the real replacement script against disposable bundles and fake OS tools."""
 import os
 import plistlib
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -30,7 +31,7 @@ def _tool(directory, name, source):
     target.chmod(0o755)
 
 
-@pytest.mark.parametrize("mode", ["success", "untrusted", "wrong-id", "swap-failure", "launch-failure", "licensed"])
+@pytest.mark.parametrize("mode", ["success", "untrusted", "wrong-id", "swap-failure", "launch-failure", "licensed", "failed-receipt"])
 def test_real_helper_preserves_or_replaces_app(tmp_path, mode):
     destination = tmp_path / "installed" / "Work 'Swarm.app"
     incoming = tmp_path / "incoming" / "Work 'Swarm.app"
@@ -38,8 +39,23 @@ def test_real_helper_preserves_or_replaces_app(tmp_path, mode):
     _bundle(incoming, "new", "wrong.id" if mode == "wrong-id" else "com.example.workswarm")
     tools = tmp_path / "tools"
     tools.mkdir()
-    installer = tmp_path / "update.dmg"
+    updates = tmp_path / "updates"
+    attempt = updates / "electron-update-test"
+    attempt.mkdir(parents=True)
+    installer = updates / "update.dmg"
     installer.touch()
+    helper = attempt / "install.sh"
+    shutil.copyfile(HELPER, helper)
+    receipt = attempt / "shutdown-fixture.result"
+    receipt.write_text("failed\n" if mode == "failed-receipt" else "ok\n", encoding="utf-8")
+    backend = destination / "Contents/Resources/backend/workswarm"
+    backend.parent.mkdir()
+    _tool(backend.parent, backend.name, '''
+test "$1" = --desktop-run-worker-lifecycle
+test "$2" = --shutdown-worker
+test "$5" = --shutdown-receipt
+test "$(cat "$6")" = ok
+''')
     log = tmp_path / "update.log"
     _tool(tools, "hdiutil", '''
 case "$1" in
@@ -66,8 +82,8 @@ exec /bin/mv "$@"
     env = {**os.environ, "PATH": f"{tools}:/usr/bin:/bin:/usr/sbin:/sbin",
            "FIXTURE_APP": str(incoming), "TEST_MODE": mode}
     result = subprocess.run(
-        ["/bin/bash", str(HELPER), str(installer), str(destination), "99999999",
-         "", "", str(log), "arm64"],
+        ["/bin/bash", str(helper), str(installer), str(destination), "99999999",
+         "", "", str(log), "arm64", str(backend), str(receipt)],
         env=env, capture_output=True, text=True, timeout=15, check=False,
     )
     contents = (destination / "Contents/MacOS/Electron").read_text()
@@ -78,6 +94,8 @@ exec /bin/mv "$@"
     else:
         assert result.returncode != 0, log.read_text()
         assert contents == "old"
-        if mode not in {"swap-failure", "launch-failure"}:
+        if mode not in {"swap-failure", "launch-failure", "failed-receipt"}:
             assert "READY" not in result.stdout
     assert not list(destination.parent.glob(".electron-update.*"))
+    if mode in {"success", "swap-failure", "launch-failure", "failed-receipt"}:
+        assert not attempt.exists()

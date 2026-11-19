@@ -13,7 +13,9 @@ from contextlib import asynccontextmanager
 
 import pytest
 
-from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+from tests.unit_tests.agentserver.fixtures.front_process import receive_business_frame
+
+from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front.event_forwarder import EventForwarder
@@ -131,6 +133,32 @@ async def test_blocked_gateway_keeps_reading_heartbeat_and_readiness(
         else:
             ws.release.set()
         await _until(lambda: len(ws.frames) == 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("server_push", [False, True])
+async def test_buffered_replay_drains_without_failing_other_requests(server_push) -> None:
+    supervisor = RuntimeSupervisor(Readiness(), forwarder=EventForwarder())
+    ws, lock = _WebSocket(), asyncio.Lock()
+    supervisor._gateway_ws, supervisor._gateway_lock = ws, lock
+    if not server_push:
+        supervisor._routes["replay"] = (ws, lock)
+    supervisor._routes["other"] = (ws, lock)
+    future = asyncio.get_running_loop().create_future()
+    supervisor._pending["other"] = future
+    async with _running(supervisor) as (conn, _pump):
+        for sequence in range(600):
+            message = _wire("replay", sequence)
+            message["replayed"] = True
+            if server_push:
+                message["payload"]["metadata"] = {E2A_WIRE_SERVER_PUSH_KEY: True}
+            conn.messages.put_nowait(message)
+        conn.messages.put_nowait(_wire("other", 600))
+        conn.messages.put_nowait(_done("other"))
+        result = await asyncio.wait_for(future, 2)
+        assert result["ok"] is True
+        assert [frame["sequence"] for frame in ws.frames] == list(range(601))
+        assert supervisor._restart_count == 0
 
 
 @pytest.mark.asyncio
@@ -351,7 +379,7 @@ async def test_real_worker_and_websocket_survive_gateway_stall(monkeypatch) -> N
                 finally:
                     lock.release()
                 await asyncio.wait_for(pending, 5)
-                wire = json.loads(await asyncio.wait_for(client.recv(), 5))
+                wire = json.loads(await asyncio.wait_for(receive_business_frame(client), 5))
                 assert wire["echo"] == "chat.send"
                 assert wire["session_id"] == "heartbeat-acceptance"
             attached.clear()
@@ -364,7 +392,7 @@ async def test_real_worker_and_websocket_survive_gateway_stall(monkeypatch) -> N
                     5,
                 )
                 assert (
-                    json.loads(await asyncio.wait_for(client.recv(), 5))["echo"]
+                    json.loads(await asyncio.wait_for(receive_business_frame(client), 5))["echo"]
                     == "chat.send"
                 )
                 assert supervisor.worker_pid == pid and supervisor._restart_count == 0
@@ -374,3 +402,66 @@ async def test_real_worker_and_websocket_survive_gateway_stall(monkeypatch) -> N
         )
     finally:
         await supervisor.stop(terminate_worker=True)
+
+@pytest.mark.asyncio
+async def test_ready_reconnect_invalidates_models_once_per_gateway_and_generation() -> None:
+    from unittest.mock import AsyncMock
+
+    from e2a.wire_codec import parse_agent_server_wire_chunk
+
+    readiness = Readiness()
+    supervisor = RuntimeSupervisor(readiness, forwarder=EventForwarder())
+    ws = _WebSocket()
+    supervisor._gateway_ws, supervisor._gateway_lock = ws, asyncio.Lock()
+    supervisor._conn = supervisor._validated_conn = _Connection()
+    supervisor._conn.send = AsyncMock()
+    supervisor._generation = 1
+    readiness.mark_runtime_warming()
+    await supervisor._handle({"kind": KIND_READINESS, "state": "RUNTIME_WARMING"})
+    await asyncio.sleep(0)
+    assert not ws.frames
+
+    await supervisor._handle({"kind": KIND_READINESS, "state": "AGENT_READY"})
+    await _until(lambda: len(ws.frames) == 1)
+    await supervisor._handle({"kind": KIND_READINESS, "state": "DEGRADED", "agent_ready": True})
+    await asyncio.sleep(0)
+    assert len(ws.frames) == 1
+
+    readiness.mark_runtime_warming()
+    supervisor._generation = 2
+    await supervisor._handle({"kind": KIND_READINESS, "state": "DEGRADED", "agent_ready": True})
+    await _until(lambda: len(ws.frames) == 2)
+    for wire in ws.frames:
+        assert wire["metadata"][E2A_WIRE_SERVER_PUSH_KEY] is True
+        assert parse_agent_server_wire_chunk(wire).payload["event_type"] == "models.updated"
+
+    replacement = _WebSocket()
+    supervisor.attach_gateway_connection(replacement, asyncio.Lock())
+    await _until(lambda: len(replacement.frames) == 1)
+
+
+@pytest.mark.asyncio
+async def test_ready_model_push_retries_after_gateway_send_timeout(monkeypatch) -> None:
+    monkeypatch.setattr(module, "_FORWARD_TIMEOUT", 0.02)
+    monkeypatch.setattr(module, "_MODELS_READY_RETRY_INITIAL", 0.01)
+    readiness = Readiness()
+    supervisor = RuntimeSupervisor(readiness, forwarder=EventForwarder())
+    ws, lock = _WebSocket(), asyncio.Lock()
+    supervisor._gateway_ws, supervisor._gateway_lock = ws, lock
+    supervisor._conn = supervisor._validated_conn = _Connection()
+    supervisor._generation = 1
+    await lock.acquire()
+    try:
+        await supervisor._handle({"kind": KIND_READINESS, "state": "AGENT_READY"})
+        await _until(lambda: supervisor._models_ready_notification is not None)
+        await asyncio.sleep(0.05)
+        assert not ws.frames
+        lock.release()
+        # No new readiness/attach message arrives after the Gateway becomes writable.
+        await _until(lambda: len(ws.frames) == 1)
+        await asyncio.sleep(0.05)
+        assert len(ws.frames) == 1
+    finally:
+        if lock.locked():
+            lock.release()
+        await supervisor._cancel_side_tasks()

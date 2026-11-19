@@ -1,4 +1,3 @@
-import { assetSearchNames } from '../assetNameSearch';
 import type {
   AgentCapability,
   AgentCatalogItem,
@@ -30,6 +29,8 @@ import type {
   RawTeamSkillMarketplaceItem,
 } from './raw';
 import { normalizeEquipmentIdentity, normalizeEquipmentSource } from '../equipmentMarketplace';
+import { getApiBase, resolveApiUrl } from '../../utils/env';
+import { resolveUserId } from '../../utils/userId';
 
 export type SupportedLocale = 'zh' | 'en';
 
@@ -89,6 +90,12 @@ function normalizeTags(tags: RawAgentTag[] | undefined, locale: SupportedLocale)
 
 function normalizeAvatarUrl(value: string | undefined): string | null {
   const avatar = value?.trim() || '';
+  if (avatar.startsWith('/file-api/download?')) {
+    const userId = resolveUserId();
+    const routed = userId ? `${avatar}&user_id=${encodeURIComponent(userId)}` : avatar;
+    const base = getApiBase();
+    return base ? `${base}${routed}` : resolveApiUrl(routed);
+  }
   if (/^(?:https?:|data:image\/)/i.test(avatar)) return avatar;
   return null;
 }
@@ -128,7 +135,6 @@ export function normalizeAgentGroupListItem(raw: RawAgentGroupListItem, locale: 
     id: raw.id,
     name: raw.name?.trim() || raw.id,
     displayName: resolveLocalizedText(raw.displayName, locale) || raw.name || raw.id,
-    searchNames: assetSearchNames(raw.displayName, raw.name || raw.id),
     description: resolveLocalizedText(raw.displayDescription, locale),
     category: raw.category || '',
     source,
@@ -164,7 +170,6 @@ export function normalizeAgentTemplateListItem(raw: RawAgentTemplateListItem, lo
   const identity = normalizeEquipmentIdentity(raw);
   return {
     ...identity,
-    searchNames: assetSearchNames(raw.displayName, raw.id),
     displayName: resolveLocalizedText(raw.displayName, locale) || raw.id,
     description: resolveLocalizedText(raw.displayDescription, locale),
     category: raw.category || '',

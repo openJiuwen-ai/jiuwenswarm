@@ -32,6 +32,11 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# The cast/shot JSON grows with the story and is returned non-streamed, so the
+# budget must cover the whole completion; later Director steps are bounded only
+# by the 1200s client timeout in ``call_model_tool``.
+_SCRIPT_ANALYSIS_TIMEOUT_SEC = 600.0
+
 # Canvas identity the Director rebuilds would otherwise drop: each rebuild
 # starts from ``build_smart_video_graph``'s fresh metadata.
 _IDENTITY_META_KEYS = (
@@ -163,7 +168,7 @@ async def run_director_chain(
         _stage("thinking", "Director · Extracting cast and scenes (LLM)")
         analysis = await analyze_creative_brief(
             analysis_prompt_with_references(prompt, refs),
-            timeout_sec=120.0,
+            timeout_sec=_SCRIPT_ANALYSIS_TIMEOUT_SEC,
             reference_images=[str(item.get("path") or "") for item in image_refs],
             film_duration_sec=intent.film_duration_sec,
         )

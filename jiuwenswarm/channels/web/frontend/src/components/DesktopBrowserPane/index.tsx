@@ -13,8 +13,8 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
   const addressFocusedRef = useRef(false);
   const [address, setAddress] = useState(DEFAULT_BROWSER_URL);
   const [panels, setPanels] = useState<ElectronBrowserState[]>([]);
-  const [selectedPanel, setSelectedPanel] = useState({ sessionId, panelId: sessionId });
-  const panelId = selectedPanel.sessionId === sessionId ? selectedPanel.panelId : sessionId;
+  const [selectedPanel, setSelectedPanel] = useState({ sessionId: '', panelId: '' });
+  const panelId = selectedPanel.sessionId === sessionId ? selectedPanel.panelId : '';
   const [browserState, setBrowserState] = useState<ElectronBrowserState>({
     panelId: '',
     memberId: '',
@@ -29,7 +29,7 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
   });
 
   const syncBounds = useCallback(() => {
-    if (!desktop || !viewportRef.current) return;
+    if (!desktop || !panelId || !viewportRef.current) return;
     const rect = viewportRef.current.getBoundingClientRect();
     void desktop.browser.setBounds(
       {
@@ -45,6 +45,7 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
   useEffect(() => {
     if (!desktop) return;
     let active = true;
+    let receivedEvent = false;
     const update = (allPanels: ElectronBrowserState[]) => {
       if (!active) return;
       const current = allPanels.filter((panel) => panel.sessionId === sessionId);
@@ -55,12 +56,23 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
         }
         return {
           sessionId,
-          panelId: current.find((panel) => !panel.memberId)?.panelId ?? current[0]?.panelId ?? sessionId,
+          panelId: current.find((panel) => panel.busy)?.panelId
+            ?? current.find((panel) => !panel.memberId)?.panelId ?? current[0]?.panelId ?? sessionId,
         };
       });
     };
-    const unsubscribe = desktop.browser.onPanelsChanged(update);
-    void desktop.browser.listPanels(sessionId).then(update);
+    const unsubscribe = desktop.browser.onPanelsChanged((allPanels) => {
+      receivedEvent = true;
+      update(allPanels);
+    });
+    // Resolve an existing page before setVisible can create the default page.
+    void desktop.browser.listPanels(sessionId).then((allPanels) => {
+      if (!receivedEvent) update(allPanels);
+    }).catch((error) => {
+      if (!active) return;
+      console.warn('[desktop.browser] list panels failed:', error);
+      if (!receivedEvent) update([]);
+    });
     return () => {
       active = false;
       unsubscribe();
@@ -74,7 +86,7 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
   }, [desktop]);
 
   useEffect(() => {
-    if (!desktop) return;
+    if (!desktop || !panelId) return;
     void desktop.browser.setVisible(true, panelId);
     window.requestAnimationFrame(syncBounds);
     return () => {
@@ -83,7 +95,7 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
   }, [desktop, panelId, syncBounds]);
 
   useEffect(() => {
-    if (!desktop) return;
+    if (!desktop || !panelId) return;
     let active = true;
     setAddress(DEFAULT_BROWSER_URL);
     void desktop.browser.getState(panelId).then((state) => {
@@ -103,7 +115,7 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
   }, [desktop, panelId]);
 
   useEffect(() => {
-    if (!desktop || !viewportRef.current) return;
+    if (!desktop || !panelId || !viewportRef.current) return;
     // 视口尺寸变化(窗口 resize、侧栏折叠等)后气泡锚点失准，直接收起；
     // 重新点击按钮会重新锚定。
     const handleViewportResize = () => {
@@ -156,7 +168,7 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
   }, [desktop]);
 
   useEffect(() => {
-    if (!desktop) return;
+    if (!desktop || !panelId) return;
     if (modalOverlayOpen) {
       // 模态弹窗挂载期间收起气泡，避免原生视图与气泡盖住弹窗。
       void desktop.browser.hideDownloadBubble();
@@ -207,7 +219,7 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
     void desktop.browser.showDownloadBubble(anchor);
   }, [desktop, downloadBubbleVisible]);
 
-  if (!desktop) return null;
+  if (!desktop || !panelId) return null;
 
   const navigate = (event: FormEvent) => {
     event.preventDefault();

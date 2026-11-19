@@ -200,8 +200,8 @@ def _build_jiuwen_provider(ext_cfg: Dict[str, Any], full_config: Optional[Dict[s
       httpx — ``POST /v1/<verb>``. No local engine; just a network client.
       ``httpx`` is a jiuwenswarm core dependency.
     - ``sdk``: builds the ``agent-memory`` kernel **in-process** via
-      ``from api import assemble`` and calls it directly — no HTTP hop. The
-      ``jiuwen.sdk`` config block is the agent-memory two-level namespace dict
+      ``from jiuwen_memory.api import assemble`` and calls it directly — no HTTP hop.
+      The ``jiuwen.sdk`` config block is the agent-memory two-level namespace dict
       (globals + kv_store/fulltext_store/vector_store/llm/embedder/tokenizer);
       credentials (llm_api_key / embedder_api_key) live under ``globals`` because
       that's where agent-memory's build functions read them. Requires

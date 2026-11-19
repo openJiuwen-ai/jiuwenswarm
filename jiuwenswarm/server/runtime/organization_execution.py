@@ -24,6 +24,25 @@ _stopping: set[tuple[str, str]] = set()
 _stop_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
+def owner_is_stopped(session_id: str, team_id: str = "") -> bool:
+    """Persist user intent across reconnects without suppressing child Teams."""
+    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+    metadata = get_session_metadata(session_id) or {}
+    if team_id and metadata.get("team_name") != team_id:
+        return False
+    return metadata.get("organization_owner_stopped") is True
+
+
+def set_owner_stopped(session_id: str, stopped: bool) -> None:
+    from jiuwenswarm.server.runtime.session.session_metadata import update_session_metadata
+
+    update_session_metadata(
+        session_id=session_id, organization_owner_stopped=stopped,
+        touch_last_message_at=False, sync_write=True,
+    )
+
+
 def is_stopping(session_id: str, team_id: str) -> bool:
     return (session_id, team_id) in _stopping
 

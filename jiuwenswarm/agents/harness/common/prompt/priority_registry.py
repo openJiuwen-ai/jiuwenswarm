@@ -37,6 +37,7 @@ class SystemPromptPriority(IntEnum):
     INPUT = 60
     A2UI = 61
     OUTPUT = 65
+    SESSION_INPUT_DELIVERY = 66
 
     # Workspace and tool-disclosure policy.
     WORKSPACE = 70
@@ -123,6 +124,7 @@ _SECTION_PRIORITIES = MappingProxyType({
     "input": SystemPromptPriority.INPUT,
     "a2ui": SystemPromptPriority.A2UI,
     "output": SystemPromptPriority.OUTPUT,
+    "session_input_delivery": SystemPromptPriority.SESSION_INPUT_DELIVERY,
     "env": SystemPromptPriority.ENV,
     "directory_boundaries": SystemPromptPriority.DIRECTORY_BOUNDARIES,
     "git_status": SystemPromptPriority.GIT_STATUS,

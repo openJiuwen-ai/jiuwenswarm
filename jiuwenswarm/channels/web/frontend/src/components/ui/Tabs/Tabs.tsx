@@ -4,6 +4,8 @@ import './Tabs.css';
 export interface TabsItem {
   value: string;
   label: ReactNode;
+  /** Optional adjacent control, rendered outside the tab button. */
+  suffix?: ReactNode;
   /** Optional item-specific test hook; falls back to the shared itemTestId. */
   testId?: string;
   /** 动作项：传入 onClick 后该条目不再是可选中页签——点击只触发自身回调（不经过 onChange）、
@@ -39,21 +41,36 @@ export function Tabs<T extends string = string>({
   const classes = ['tabs', bordered ? 'tabs--bordered' : '', className].filter(Boolean).join(' ');
   return (
     <div className={classes} role={role} aria-label={ariaLabel} data-testid={wrapperTestId}>
-      {items.map((item) => (
+      {items.map((item) => {
+        const active = !item.onClick && item.value === value;
         // 点击当前已选中的页签不触发 onChange（与原生 tab 行为一致），动作项 onClick 不受影响
-        <button
-          key={item.value}
-          type="button"
-          role={role === 'tablist' && !item.onClick ? 'tab' : undefined}
-          aria-selected={role === 'tablist' && !item.onClick ? item.value === value : undefined}
-          onClick={item.onClick ?? (onChange && item.value !== value ? () => onChange(item.value as T) : undefined)}
-          className={!item.onClick && item.value === value ? 'is-active' : ''}
-          data-testid={item.testId ?? itemTestId}
-          data-variant={item.value}
-        >
-          {item.label}
-        </button>
-      ))}
+        const trigger = (
+          <button
+            key={item.value}
+            type="button"
+            role={role === 'tablist' && !item.onClick ? 'tab' : undefined}
+            aria-selected={role === 'tablist' && !item.onClick ? item.value === value : undefined}
+            onClick={item.onClick ?? (onChange && item.value !== value ? () => onChange(item.value as T) : undefined)}
+            className={item.suffix ? 'tabs__trigger' : active ? 'is-active' : ''}
+            data-testid={item.testId ?? itemTestId}
+            data-variant={item.value}
+          >
+            {item.label}
+          </button>
+        );
+        return item.suffix ? (
+          <div
+            key={item.value}
+            className={`tabs__item${active ? ' is-active' : ''}`}
+            role={role === 'tablist' ? 'presentation' : undefined}
+            data-testid={itemTestId ? `${itemTestId}-item` : undefined}
+            data-variant={item.value}
+          >
+            {trigger}
+            {item.suffix}
+          </div>
+        ) : trigger;
+      })}
     </div>
   );
 }

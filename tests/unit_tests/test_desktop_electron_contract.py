@@ -17,20 +17,21 @@ import json
 import re
 from pathlib import Path
 
+import agent_gateway
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
+GATEWAY_ROOT = Path(agent_gateway.__file__).resolve().parent
 DESKTOP_APP_PY = REPO_ROOT / "jiuwenswarm" / "channels" / "desktop" / "desktop_app.py"
 MAIN_CJS = REPO_ROOT / "jiuwenswarm" / "channels" / "desktop" / "electron" / "main.cjs"
 PRELOAD_CJS = REPO_ROOT / "jiuwenswarm" / "channels" / "desktop" / "electron" / "preload.cjs"
-FILE_PICKER_PY = (
-    REPO_ROOT / "gateway" / "channel_manager" / "web" / "file_picker.py"
-)
+FILE_PICKER_PY = GATEWAY_ROOT / "channel_manager" / "web" / "file_picker.py"
 APP_WEB_PY = REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "app_web.py"
 VITE_ENV_DTS = (
     REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "frontend" / "src" / "vite-env.d.ts"
 )
 FRONTEND_SRC = REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "frontend" / "src"
 INSTANCE_CONFIG_PY = REPO_ROOT / "jiuwenswarm" / "instance_manager" / "config.py"
-INSTANCE_LOCK_PY = REPO_ROOT / "jiuwenswarm" / "instance_manager" / "lock.py"
+GATEWAY_LOCK_PY = GATEWAY_ROOT / "gateway_lock.py"
 STARTUP_DIAGNOSTICS_PY = REPO_ROOT / "jiuwenswarm" / "common" / "startup_diagnostics.py"
 EXE_ENTRY_PY = REPO_ROOT / "scripts" / "jiuwenswarm_exe_entry.py"
 BUILD_RUNTIMES_PSM1 = REPO_ROOT / "scripts" / "build-runtimes.psm1"
@@ -159,16 +160,6 @@ def _gateway_preflight_wait_seconds() -> float:
     default = fn.args.defaults[-1]
     assert isinstance(default, ast.Constant) and isinstance(default.value, (int, float))
     return float(default.value)
-
-
-def _python_shutdown_budget_seconds() -> float:
-    """DesktopRuntime.shutdown 内 SIGTERM→强杀的统一预算(desktop_app.py 字面量)。"""
-    fn = _function_def(_desktop_app_module(), "shutdown")
-    segment = ast.get_source_segment(_read(DESKTOP_APP_PY), fn)
-    assert segment is not None
-    match = re.search(r"time\.monotonic\(\) \+ (\d+(?:\.\d+)?)", segment)
-    assert match, "shutdown 预算字面量未找到, 请同步更新本测试"
-    return float(match.group(1))
 
 
 def _data_url_export_specs() -> dict[str, dict[str, frozenset]]:
@@ -381,6 +372,7 @@ BASE_PORT_NAME_MAP = {
     "web": "gatewayApi",
     "gateway": "gatewayInternal",
     "frontend": "frontend",
+    "office_tls": "officeTls",
 }
 
 
@@ -412,7 +404,7 @@ def test_shutdown_budget_is_the_documented_divergence() -> None:
     Electron 单个传输进程 SIGTERM 等待 5s + 强杀等待 1.5s。
     钉住当前值: 任一侧改动都会红灯, 迫使重新评审该分歧。
     """
-    assert _python_shutdown_budget_seconds() == 30.0
+    assert _py_assignment_value(DESKTOP_APP_PY, "DESKTOP_SHUTDOWN_TIMEOUT_SECONDS") == 30.0
     assert _js_number_const(_read(MAIN_CJS), "RUNTIME_SHUTDOWN_TIMEOUT_MS") == 30_000
     assert _js_number_const(_read(MAIN_CJS), "SERVICE_SHUTDOWN_TIMEOUT_MS") == 5_000
     assert _js_number_const(_read(MAIN_CJS), "SERVICE_KILL_TIMEOUT_MS") == 1_500
@@ -425,7 +417,7 @@ def test_gateway_preflight_wait_matches() -> None:
 
 
 def test_gateway_lock_filename_matches() -> None:
-    python_name = _py_assignment_value(INSTANCE_LOCK_PY, "GATEWAY_LOCK_FILENAME")
+    python_name = _py_assignment_value(GATEWAY_LOCK_PY, "GATEWAY_LOCK_FILENAME")
     assert _js_const(_read(MAIN_CJS), "GATEWAY_LOCK_FILENAME").strip("'\"") == python_name
 
 
@@ -612,15 +604,18 @@ def test_windows_electron_sets_amd64_before_any_preflight() -> None:
     assert "--extra codex" not in source
 
 
-def test_windows_electron_enforces_its_node_minimum_without_changing_python_default() -> None:
-    """Electron 43 需要 Node >=22.12；Python 打包仍沿用共享的 22.11 默认值。"""
+def test_electron_builds_enforce_node_minimum_without_changing_python_default() -> None:
+    """Electron 出包要求 Node >=22.13；Python 打包沿用共享的 22.11 默认值。"""
     module_source = _read(BUILD_RUNTIMES_PSM1)
     electron_source = _read(BUILD_ELECTRON_PS1)
+    macos_source = _read(BUILD_ELECTRON_SH)
     python_source = _read(BUILD_EXE_PS1)
-    assert '$ElectronMinimumNodeVersion = [version]"22.12.0"' in electron_source
-    assert 'Get-RuntimeBundleSettings -DefaultNodeVersion "v22.12.0"' in electron_source
+    assert '$ElectronMinimumNodeVersion = [version]"22.13.0"' in electron_source
+    assert 'Get-RuntimeBundleSettings -DefaultNodeVersion "v22.13.0"' in electron_source
     assert "-MinimumVersion $ElectronMinimumNodeVersion" in electron_source
-    assert "22.12.0" not in python_source
+    assert "NODE_MINIMUM_VERSION=22.13.0" in macos_source
+    assert "NODE_DEFAULT_VERSION=v22.13.0" in macos_source
+    assert "22.13.0" not in python_source
     assert "Get-NodeRuntimeVersion -RuntimeDir $RuntimeDir" in module_source
     assert "$actualVersion -lt $MinimumVersion" in module_source
     assert "$requestedVersion -lt $MinimumVersion" in module_source
@@ -1009,7 +1004,7 @@ def test_electron_macos_close_hides_window_and_dock_reopens_it() -> None:
 def test_electron_module_map_matches_python_entry_points() -> None:
     """开发模式 serviceCommand 的 -m 模块映射须与 pyproject 入口点一致。
 
-    M0-c 盲区回归：main.cjs 曾长期残留 jiuwenswarm.gateway.app_gateway
+    M0-c 盲区回归：main.cjs 曾长期残留 gateway.app_gateway
     （Python 侧与打包模式都已改 gateway.app_gateway），契约测试不覆盖
     该映射导致 CI 抓不到开发模式启动断链。
     """

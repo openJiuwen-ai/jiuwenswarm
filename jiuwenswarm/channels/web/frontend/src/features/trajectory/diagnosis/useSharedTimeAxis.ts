@@ -11,6 +11,7 @@ import {
   collectWallClockSamples,
   compressedToWall,
   compressSharedTimeline,
+  isTeamHarnessNoiseCell,
   wallToCompressed,
   type CompressedTimeline,
   type WallClockDomain,
@@ -62,7 +63,11 @@ export function useSharedTimeAxis(
     if (!enabled) return null;
     const samples: WallClockSample[] = [];
     for (const snapshot of snapshots.values()) {
-      samples.push(...collectWallClockSamples(snapshot.turns));
+      for (const sample of collectWallClockSamples(snapshot.turns)) {
+        // Harness heartbeats must not keep overnight idle awake on the shared axis.
+        if (isTeamHarnessNoiseCell(sample)) continue;
+        samples.push(sample);
+      }
     }
     return compressSharedTimeline(samples, Date.now());
   }, [enabled, snapshots]);

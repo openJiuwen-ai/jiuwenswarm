@@ -1,0 +1,31 @@
+FROM python:3.11.4-slim-bookworm
+
+ARG PIP_EXTRA_ARGS="-i https://mirrors.aliyun.com/pypi/simple/"
+
+# Install build dependencies and Python dependencies
+RUN rm -f /etc/apt/sources.list && \
+    echo "deb https://mirrors.aliyun.com/debian/ bookworm main contrib non-free non-free-firmware" > /etc/apt/sources.list && \
+    echo "deb https://mirrors.aliyun.com/debian/ bookworm-updates main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    echo "deb https://mirrors.aliyun.com/debian-security/ bookworm-security main contrib non-free non-free-firmware" >> /etc/apt/sources.list && \
+    echo 'Acquire::ForceIPv4 "true";' > /etc/apt/apt.conf.d/99force-ipv4 && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        gcc \
+        git \
+        openssh-client \
+        pkg-config \
+        python3-dev \
+        libmariadb3 \
+        libmariadb-dev libmariadb-dev-compat \
+        build-essential \
+        curl \
+        telnet \
+        iputils-ping \
+        netcat-openbsd \
+        unzip \
+        nodejs \
+        npm \
+        yq \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --progress-bar off "uv>=0.9,<1.0" ${PIP_EXTRA_ARGS}

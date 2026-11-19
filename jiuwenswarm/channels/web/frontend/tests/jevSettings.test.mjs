@@ -6,9 +6,15 @@ const bundle = await build({
   entryPoints: ['src/features/settings/modules/browser/jevSettings.ts'],
   bundle: true, format: 'esm', platform: 'node', write: false,
 });
-const { JEV_PRESETS, createJevDraft, validateJevDraft } = await import(
+const { JEV_PRESETS, createEmptyJevDraft, createJevDraft, validateJevDraft } = await import(
   `data:text/javascript;base64,${Buffer.from(bundle.outputFiles[0].text).toString('base64')}`
 );
+
+test('new Jev drafts require an explicit provider selection', () => {
+  const draft = createEmptyJevDraft();
+  assert.deepEqual(draft, { provider: '', api_base: '', api_key: '', model: '', display_name: '' });
+  assert.ok(validateJevDraft(draft).provider);
+});
 
 test('Jev offers only OpenRouter, TypeSafe and custom templates', () => {
   assert.deepEqual(Object.keys(JEV_PRESETS), ['openrouter', 'typesafe', 'custom']);
@@ -19,6 +25,7 @@ test('Jev offers only OpenRouter, TypeSafe and custom templates', () => {
     assert.equal(draft.provider, provider);
     assert.equal(draft.api_base, JEV_PRESETS[provider].api_base);
     assert.equal(draft.model, JEV_PRESETS[provider].model);
+    assert.equal(draft.display_name, JEV_PRESETS[provider].model);
     assert.equal(draft.api_key, provider === 'openrouter' ? 'router-key' : `${provider}-key`);
   }
 });
@@ -26,9 +33,11 @@ test('Jev offers only OpenRouter, TypeSafe and custom templates', () => {
 test('saved model and base are restored without replacing the saved credential', () => {
   const draft = createJevDraft({
     decision_provider: 'custom', decision_model: 'jev-preview', decision_api_base: 'https://jev.example.test/v1',
+    decision_display_name: 'My Jev',
   }, { jev_custom_api_key: 'synthetic-key' });
   assert.deepEqual(draft, {
     provider: 'custom', model: 'jev-preview', api_base: 'https://jev.example.test/v1', api_key: 'synthetic-key',
+    display_name: 'My Jev',
   });
   assert.deepEqual(validateJevDraft(draft), {});
 });
@@ -48,4 +57,11 @@ test('OpenRouter model names are Jev-specific, not chat model names', () => {
   assert.deepEqual(validateJevDraft(draft), {});
   assert.deepEqual(validateJevDraft({ ...draft, model: '~typesafe/jev-latest' }), {});
   assert.ok(validateJevDraft({ ...draft, model: 'ordinary-chat-model' }).model);
+});
+
+test('display names are required, bounded, and independent from model names', () => {
+  const draft = createJevDraft({ decision_provider: 'typesafe' }, { jev_typesafe_api_key: 'synthetic-key' });
+  assert.ok(validateJevDraft({ ...draft, display_name: ' ' }).display_name);
+  assert.ok(validateJevDraft({ ...draft, display_name: 'x'.repeat(101) }).display_name);
+  assert.deepEqual(validateJevDraft({ ...draft, display_name: '决策模型'.repeat(25) }), {});
 });

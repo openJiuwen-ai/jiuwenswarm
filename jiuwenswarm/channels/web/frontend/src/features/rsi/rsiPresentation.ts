@@ -690,9 +690,9 @@ export function formatScore(score: number | null, digits = 1): string {
 // 程序演进的分数按百分制显示：×100 后保留 1 位小数（0.5524531 → 55.2）。
 // 引擎给的是归一化到 [0,1] 的分数，常在 0.5 附近以千分位变化
 // （relative_to_baseline 下 2x 的改进也只到 0.667），百分制正好把那一档变化摆到小数点前。
-// 其余场景（论文 / Harness）保持原值。位数两边都是 1 位。
-export function scoreDigits(_artifactType?: RsiArtifactType | null): number {
-  return 1;
+// Harness keeps three decimal places; paper and program retain one decimal place.
+export function scoreDigits(_artifactType?: RsiArtifactType | null, scenario?: RsiScenario): number {
+  return scenario === 'HARNESS' ? 3 : 1;
 }
 
 export function scoreScale(artifactType?: RsiArtifactType | null): number {
@@ -700,9 +700,13 @@ export function scoreScale(artifactType?: RsiArtifactType | null): number {
 }
 
 // 展示用：按产物类型换算并格式化。两件事绑在一起，避免某个展示位只做了其中一件。
-export function formatArtifactScore(score: number | null, artifactType?: RsiArtifactType | null): string {
+export function formatArtifactScore(
+  score: number | null,
+  artifactType?: RsiArtifactType | null,
+  scenario?: RsiScenario,
+): string {
   if (score == null || Number.isNaN(score)) return '--';
-  return formatScore(score * scoreScale(artifactType), scoreDigits(artifactType));
+  return formatScore(score * scoreScale(artifactType), scoreDigits(artifactType, scenario));
 }
 
 // 提升百分比：↑ 5.2% / ↓ 2.1%，null 显示空串
@@ -901,17 +905,21 @@ export function nodeRuntimeLabel(kind: NodeRuntimeKind): string {
   }
 }
 
-// 节点下层分数行：score(分数) + extra.potential_score(潜力分) + extra.other_score(其他分) + 其余 *_score
-// 数据驱动：当前仅有 score 时只显示 1 行；后端在 extra 补充分数后自动多行并触发展开。
+// Harness cards show only the node score; artifact cards may include additional metrics.
 export interface NodeScoreLine {
   value: string;
   label: string;
 }
 
-export function nodeScoreLines(node: RsiTreeNode, artifactType?: RsiArtifactType | null): NodeScoreLine[] {
+export function nodeScoreLines(
+  node: RsiTreeNode,
+  artifactType?: RsiArtifactType | null,
+  scenario?: RsiScenario,
+): NodeScoreLine[] {
   const lines: NodeScoreLine[] = [];
   const score = scoreForNode(node);
-  if (score != null) lines.push({ value: formatArtifactScore(score, artifactType), label: '分数' });
+  if (score != null) lines.push({ value: formatArtifactScore(score, artifactType, scenario), label: '分数' });
+  if (scenario === 'HARNESS') return lines;
   const extra = node.extra;
   if (extra && typeof extra === 'object') {
     const potential = extra['potential_score'];
@@ -972,7 +980,12 @@ function summaryRows(text: string, width: number): number {
 }
 
 // 节点宽高估算：barH(32) + bodyH(随内容)；评测中宽度自适应(<=280)。
-export function nodeMetrics(node: RsiTreeNode, kind: NodeRuntimeKind, scoreExpanded: boolean): NodeMetrics {
+export function nodeMetrics(
+  node: RsiTreeNode,
+  kind: NodeRuntimeKind,
+  scoreExpanded: boolean,
+  scenario?: RsiScenario,
+): NodeMetrics {
   const barH = RSI_NODE_BAR_H;
   let width = RSI_NODE_MIN_W;
   let bodyH = RSI_BODY_PAD;
@@ -988,7 +1001,7 @@ export function nodeMetrics(node: RsiTreeNode, kind: NodeRuntimeKind, scoreExpan
       RSI_BODY_PAD + evalTextRows(text, width) * RSI_EVAL_LINE_H + (secondary ? RSI_SUMMARY_LINE_H : 0),
     );
   } else if (kind === 'best-path' || kind === 'evaluated') {
-    const linesArr = nodeScoreLines(node);
+    const linesArr = nodeScoreLines(node, undefined, scenario);
     const shown = scoreExpanded ? Math.min(linesArr.length, 5) : Math.min(linesArr.length, 3);
     const summaryH = summary ? summaryRows(summary, RSI_NODE_MIN_W) * RSI_SUMMARY_LINE_H : 0;
     const stageH = rootStageRunning ? RSI_STAGE_LINE_H : 0;
@@ -1008,7 +1021,12 @@ export function nodeMetrics(node: RsiTreeNode, kind: NodeRuntimeKind, scoreExpan
 }
 
 // 节点总高度
-export function nodeHeight(node: RsiTreeNode, kind: NodeRuntimeKind, scoreExpanded: boolean): number {
-  const m = nodeMetrics(node, kind, scoreExpanded);
+export function nodeHeight(
+  node: RsiTreeNode,
+  kind: NodeRuntimeKind,
+  scoreExpanded: boolean,
+  scenario?: RsiScenario,
+): number {
+  const m = nodeMetrics(node, kind, scoreExpanded, scenario);
   return m.barH + m.bodyH;
 }

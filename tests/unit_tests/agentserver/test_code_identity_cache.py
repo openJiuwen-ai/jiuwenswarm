@@ -11,6 +11,7 @@ import os
 import subprocess
 import struct
 import sys
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -394,16 +395,15 @@ def test_controlled_frozen_build_identity_is_path_independent(tmp_path, monkeypa
     assert identity.code_identity() != first
 
 
-def test_legacy_frozen_build_preserves_executable_validation(tmp_path, monkeypatch):
+def test_missing_frozen_manifest_refuses_unverifiable_build(tmp_path, monkeypatch):
     executable = tmp_path / "legacy.exe"
     executable.write_bytes(b"first")
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "executable", str(executable))
     monkeypatch.setattr(sys, "_MEIPASS", str(tmp_path), raising=False)
     monkeypatch.delenv("JIUWENSWARM_BUILD_ID", raising=False)
-    first = identity.code_identity()
-    executable.write_bytes(b"replacement-package")
-    assert identity.code_identity() != first
+    with pytest.raises(RuntimeError, match="Invalid Worker build identity"):
+        identity.code_identity()
 
 
 @pytest.mark.parametrize("value", [b'\xef\xbb\xbf[core]\n autocrlf = true\n',
@@ -549,7 +549,9 @@ async def test_bad_global_gitconfig_does_not_block_real_worker_hello(tmp_path, m
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identities"))
     root = Path(__file__).resolve().parents[3]
     monkeypatch.setenv("PYTHONPATH", str(root))
-    socket = str(tmp_path / ("runtime.pipe" if os.name == "nt" else "runtime.sock"))
+    # macOS pytest paths can exceed the Unix socket address limit.
+    socket_dir = tempfile.TemporaryDirectory(prefix="jw-id-", dir=tmp_path if os.name == "nt" else "/tmp")
+    socket = str(Path(socket_dir.name) / ("runtime.pipe" if os.name == "nt" else "runtime.sock"))
     worker = WorkerProcess(socket, host="127.0.0.1", port=18092, stub=True)
     conn = None
     try:
@@ -566,3 +568,4 @@ async def test_bad_global_gitconfig_does_not_block_real_worker_hello(tmp_path, m
         if conn is not None:
             await conn.close()
         await worker.stop(timeout=5)
+        socket_dir.cleanup()

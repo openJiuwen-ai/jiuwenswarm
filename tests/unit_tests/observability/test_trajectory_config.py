@@ -125,3 +125,19 @@ def test_session_database_path_is_deterministic_and_traversal_safe(
     assert re.fullmatch(r"[0-9a-f]{64}\.sqlite3", first.name)
     assert "outside" not in str(first.relative_to(database_root))
     test_logger.info("session database paths contain only SHA-256 components")
+
+
+def test_zero_retention_keeps_trajectory_forever(tmp_path: Path) -> None:
+    """Zero is accepted for retention while negative values use the default."""
+    for value in (0, "0"):
+        settings = load_trajectory_store_settings(
+            {"trajectory_ui": {"retention_days": value}},
+            workspace=tmp_path,
+        )
+        assert settings.retention_days == 0
+    invalid = load_trajectory_store_settings(
+        {"trajectory_ui": {"retention_days": -1}},
+        workspace=tmp_path,
+    )
+    assert invalid.retention_days == 7
+    test_logger.info("zero retention disables automatic expiry")

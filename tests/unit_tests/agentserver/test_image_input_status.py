@@ -68,7 +68,7 @@ def test_notice_and_prompt_agree_without_changing_attachment_routing(
     request = _request()
     inputs = Adapter._prepare_multimodal_image_inputs(request, {"query": request.params["query"]})
     notice = Adapter._build_image_tool_fallback_notice(
-        request, enable_read_image_multimodal=False, model=model,
+        request, model=model,
         vision_tool_available=vision_tool_available, image_input_status=snapshot,
     )
     updated = Adapter._prepare_react_image_tool_prompt(
@@ -102,16 +102,36 @@ def test_supported_images_and_text_only_requests_have_no_fallback():
         vision_tool_available=False, image_input_status="supported",
     ) is inputs
     assert Adapter._build_image_tool_fallback_notice(
-        request, enable_read_image_multimodal=True, model=_model(), vision_tool_available=False,
+        request, model=_model(), vision_tool_available=False,
         image_input_status="supported",
     ) is None
     request.params.pop("media_items")
     assert Adapter._build_image_tool_fallback_notice(
-        request, enable_read_image_multimodal=False, model=_model(), vision_tool_available=False,
+        request, model=_model(), vision_tool_available=False,
     ) is None
     assert Adapter._prepare_react_image_tool_prompt(
         request, {"query": "hello"}, enable_read_image_multimodal=False, vision_tool_available=False,
     ) == {"query": "hello"}
+
+
+@pytest.mark.parametrize("reader", ["read_file", "visual_question_answering"])
+def test_steer_forces_path_prompt_without_changing_primary_model_capability(reader):
+    request = _request()
+    request.params["query"] = ""
+    inputs = Adapter._prepare_multimodal_image_inputs(request, {
+        "query": "A user can mention jiuwenswarm_image_tool_context in their message.",
+    })
+    updated = Adapter._prepare_react_image_tool_prompt(
+        request, inputs, enable_read_image_multimodal=True,
+        vision_tool_available=True, image_input_status="supported", steer_image_tool=reader,
+    )
+    context = json.loads(updated["query"].rsplit("\n", 1)[-1])
+    assert context["imageInputStatus"] == "supported"
+    assert context["question"]
+    assert f"{reader}(" in context["toolHint"]
+    assert "For every entry in mediaItems" in context["toolHint"]
+    assert "_multimodal_image_files" not in updated
+    assert "_multimodal_image_files" in inputs
 
 
 @pytest.mark.asyncio
@@ -126,7 +146,7 @@ async def test_existing_core_timeout_stays_unknown_and_recovery_enables_images()
         assert status == "unknown"
         assert not Adapter._native_image_input_enabled({}, model)
         notice = Adapter._build_image_tool_fallback_notice(
-            _request(), enable_read_image_multimodal=False, model=model,
+            _request(), model=model,
             vision_tool_available=False, image_input_status=status,
         )
         assert "尚未确认" in notice["content"]

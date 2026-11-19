@@ -18,6 +18,7 @@ module.exports = {
   async init(window) {
     mainWindow = window;
     registerIpcHandlers();
+    await initializeBrowserCdp();
     browserTargetResolver = await startBrowserTargetResolver();
     return buildBrowserEndpointsPayload();
   },

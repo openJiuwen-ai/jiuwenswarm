@@ -18,18 +18,30 @@
 }
 
 .tabs>span,
-.tabs>button {
+.tabs>button,
+.tabs>.tabs__item {
   position: relative;
   padding: 0 0 8px;
   white-space: nowrap;
 }
 
-.tabs>button {
+.tabs>button,
+.tabs__item>.tabs__trigger {
   border: 0;
   background: transparent;
   color: inherit;
   font: inherit;
   cursor: pointer;
+}
+
+.tabs__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.tabs__item>.tabs__trigger {
+  padding: 0;
 }
 
 .tabs>.is-active {

@@ -8,11 +8,12 @@ import asyncio
 import json
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
+from e2a.wire_codec import parse_agent_server_wire_unary
 
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
-from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.session_provisioner import SessionProvisionState
@@ -20,7 +21,6 @@ from jiuwenswarm.server.agent_ws_server import AdapterRegistry, AgentWebSocketSe
 from jiuwenswarm.server.runtime.agent_adapter import (
     interface_deep as interface_deep_module,
 )
-
 
 RUNTIME_EXTRACTED = hasattr(AgentWebSocketServer, "_execution_runtime")
 
@@ -116,7 +116,10 @@ class CharacterizationServer(AgentWebSocketServer):
         request: AgentRequest,
         send_lock: asyncio.Lock,
     ) -> None:
-        await self._handle_session_switch(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.session import handle_session_switch
+
+        await handle_session_switch(build_ws_request_context(self, ws, request, send_lock))
 
     async def handle_session_fork_for_test(
         self,
@@ -124,7 +127,10 @@ class CharacterizationServer(AgentWebSocketServer):
         request: AgentRequest,
         send_lock: asyncio.Lock,
     ) -> None:
-        await self._handle_session_fork(ws, request, send_lock)
+        from jiuwenswarm.server.context import build_ws_request_context
+        from jiuwenswarm.server.handlers.bootstrap import handle_session_fork
+
+        await handle_session_fork(build_ws_request_context(self, ws, request, send_lock))
 
 
 class RecordingAgent:
@@ -760,6 +766,72 @@ async def test_manual_cancel_sends_result_without_cleaning_session(
         "event_type": "chat.interrupt_result",
         "success": True,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["agent.plan", "agent.work.plan", "agent.code.plan"])
+async def test_cancel_stops_a_streamed_answer_that_names_no_mode_to_a_plan_session(
+    monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+) -> None:
+    from jiuwenswarm.runtime import AgentRuntime
+    from jiuwenswarm.runtime.session.model import SessionExecutionState
+
+    trace: list[str] = []
+    agent = RecordingAgent(trace)
+    server, manager, _ = make_server(trace, agent=agent)
+    monkeypatch.setattr(manager, "cleanup", AsyncMock(), raising=False)
+    monkeypatch.setattr(manager, "cancel_all_inflight_work", AsyncMock(), raising=False)
+    runtime = AgentRuntime(agent_manager=manager, initializer=AsyncMock())
+    server._runtime = runtime
+    configure_message_path(monkeypatch, server, trace, agent)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        lambda *_args, **_kwargs: {"mode": mode},
+    )
+    resumed = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def resumed_turn(*_args: Any, **_kwargs: Any):
+        resumed.set()
+        try:
+            await asyncio.Event().wait()
+            yield  # pragma: no cover
+        finally:
+            stopped.set()
+
+    monkeypatch.setattr(runtime, "_stream_started", resumed_turn)
+    answer = AgentRequest(
+        request_id="plan-answer", channel_id="tui", session_id="plan-session", req_method=ReqMethod.CHAT_SEND,
+        is_stream=True, params={"request_id": "q-1", "source": "ask_user_interrupt",
+                                "answers": [{"selected_options": ["yes"]}]},
+    )
+    answering = asyncio.create_task(server._handle_stream_impl(RecordingWebSocket(trace), answer, asyncio.Lock()))
+    try:
+        await asyncio.wait_for(resumed.wait(), 2)
+        assert runtime.is_session_running("plan-session")
+        cancel_ws = RecordingWebSocket(trace)
+        await server.handle_message_for_test(
+            cancel_ws,
+            request_wire(request_id="stop", method=ReqMethod.CHAT_CANCEL, session_id="plan-session",
+                         params={"intent": "cancel", "session_id": "plan-session"}),
+            asyncio.Lock(),
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(asyncio.shield(answering), 2)
+
+        assert stopped.is_set()
+        assert not runtime.is_session_running("plan-session")
+        snapshot = runtime._session_coordinator.snapshot_session("plan-session")
+        assert len(snapshot.executions) == 1
+        assert snapshot.executions[0].state is SessionExecutionState.CANCELLED
+        assert trace.count("cancel.execute") == 1
+        assert parse_agent_server_wire_unary(cancel_ws.sent[0]).payload["success"] is True
+        assert server._session_stream_tasks == {}
+    finally:
+        answering.cancel()
+        await asyncio.gather(answering, return_exceptions=True)
+        await runtime.close()
 
 
 @pytest.mark.asyncio

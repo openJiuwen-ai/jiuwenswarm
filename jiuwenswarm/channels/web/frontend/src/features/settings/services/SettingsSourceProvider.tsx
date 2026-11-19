@@ -2,12 +2,16 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { useTranslation } from 'react-i18next';
 import { Loading } from '../../../components/ui';
 import type { SettingValue, SettingsSource } from '../registry/types';
+import { useMultimodalSettings } from './useMultimodalSettings';
+import { MULTIMODAL_CAPABILITIES, multimodalModelOptions, type MultimodalCapability } from './multimodalSettings';
 import { useSettingsServices } from './SettingsServicesProvider';
 import { serializeConfigSettingValue } from './settingsSourceContract';
 import { useSettingsConfig } from './useSettingsConfig';
 import { applyBrowserDisplaySettings, browserDisplayRevision } from '../../desktopBrowserDisplay';
 
 export type SettingsSourceController = {
+  optionsFor?: (key: string) => readonly { value: SettingValue; label: string }[];
+  requiresConfiguration?: (key: string) => boolean;
   values: Readonly<Record<string, unknown>>;
   savingKeys: ReadonlySet<string>;
   save: (
@@ -107,6 +111,7 @@ type BrowserSettingsState = {
   decision_mode: BrowserDecisionMode;
   decision_provider: BrowserDecisionProvider;
   decision_model: string;
+  decision_display_name: string;
   decision_api_base: string;
   // Read-only: path.get reports whether the provider's key is set, never the key.
   jev_key_configured: boolean;
@@ -127,6 +132,7 @@ function normalizeBrowserState(value: Record<string, unknown> | undefined): Brow
       : 'typesafe',
     jev_key_configured: value?.jev_key_configured === true,
     decision_model: typeof value?.decision_model === 'string' ? value.decision_model : '',
+    decision_display_name: typeof value?.decision_display_name === 'string' ? value.decision_display_name : '',
     decision_api_base: typeof value?.decision_api_base === 'string' ? value.decision_api_base : '',
   };
 }
@@ -182,6 +188,7 @@ function BrowserSourceProvider({ children }: { children: ReactNode }) {
             ...next,
             // Only the Jev dialog edits these fields; unrelated saves must not reset them.
             decision_model: updates.decision_model,
+            decision_display_name: updates.decision_display_name,
             decision_api_base: updates.decision_api_base,
           }, { timeoutMs: 600_000 }),
         );
@@ -266,9 +273,47 @@ function LocaleSourceProvider({ children }: { children: ReactNode }) {
   return <SettingsSourceContext.Provider value={value}>{children}</SettingsSourceContext.Provider>;
 }
 
+function MultimodalSourceProvider({ children }: { children: ReactNode }) {
+  const { snapshot, store } = useMultimodalSettings();
+  const [savingKeys, setSavingKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const values = useMemo(() => Object.fromEntries(MULTIMODAL_CAPABILITIES.flatMap((tool) => [
+    [`${tool}_enabled`, snapshot?.tools[tool].enabled ?? false],
+    [`${tool}_model_id`, snapshot?.tools[tool].model_id ?? ''],
+  ])), [snapshot]);
+  const save = useCallback(async (updates: Record<string, SettingValue>) => {
+    // A row writes one tool. Binding and enabled are submitted together when
+    // present; the server owns automatic selection, confirmation and projection.
+    const tool = MULTIMODAL_CAPABILITIES.find((id) => `${id}_enabled` in updates || `${id}_model_id` in updates);
+    if (!tool) throw new Error('Unknown multimodal setting');
+    const params: Record<string, unknown> = { tool_id: tool };
+    if (`${tool}_enabled` in updates) params.enabled = updates[`${tool}_enabled`];
+    if (`${tool}_model_id` in updates) params.model_id = updates[`${tool}_model_id`];
+    const keys = [`${tool}_enabled`, `${tool}_model_id`];
+    setSavingKeys((current) => addSavingKeys(current, keys));
+    try {
+      return await store.write('tools.update', params);
+    } finally {
+      setSavingKeys((current) => removeSavingKeys(current, keys));
+    }
+  }, [store]);
+  const controller = useMemo<SettingsSourceController>(() => ({
+    values,
+    savingKeys: snapshot ? savingKeys : new Set(Object.keys(values)),
+    save,
+    patchLocal: () => undefined,
+    requiresConfiguration: (key) => !snapshot?.tools[key.replace(/_enabled$/, '') as MultimodalCapability]?.model_id,
+    optionsFor: (key) => {
+      const tool = key.replace(/_model_id$/, '') as MultimodalCapability;
+      return multimodalModelOptions(snapshot?.models ?? [], tool);
+    },
+  }), [save, savingKeys, snapshot, values]);
+  return <SettingsSourceContext.Provider value={controller}>{children}</SettingsSourceContext.Provider>;
+}
+
 export function SettingsSourceProvider({ source, children }: { source?: SettingsSource; children: ReactNode }) {
   if (source === 'config') return <ConfigSourceProvider>{children}</ConfigSourceProvider>;
   if (source === 'browser') return <BrowserSourceProvider>{children}</BrowserSourceProvider>;
   if (source === 'locale') return <LocaleSourceProvider>{children}</LocaleSourceProvider>;
+  if (source === 'multimodal') return <MultimodalSourceProvider>{children}</MultimodalSourceProvider>;
   return children;
 }

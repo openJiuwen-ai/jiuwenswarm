@@ -1,25 +1,25 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
+import time
 
 import pytest
+from openjiuwen.harness.tools.cron import CronToolContext
+from agent_gateway.cron.scheduler import CronSchedulerService
+from agent_gateway.cron.store import CronJob, CronJobStore
 
 from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import (
     _CronToolsCronBackend,
     CronRuntimeBridge,
     _extract_legacy_params,
 )
-from openjiuwen.harness.tools.cron import CronToolContext
 from jiuwenswarm.agents.harness.common.tools.cron import cron_tools as cron_tools_module
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronToolRoute, CronTools
-from gateway.cron.scheduler import CronSchedulerService
-from gateway.cron.store import CronJob, CronJobStore
-
-import time
 
 
 class _TestableScheduler(CronSchedulerService):
@@ -85,7 +85,8 @@ class _FakeCronTools:
 
     async def run_now(self, job_id: str):
         _ = job_id
-        return {"run_id": "r-1"}
+        # 与 CronTools.run_now 的真实 ack 形状一致，不要用扁平形状掩盖适配层的取值错误。
+        return {"action": "run_now", "status": "ok", "data": {"run_id": "run-1"}}
 
 
 class _FakeGatewayPush:
@@ -667,6 +668,43 @@ async def test_cron_backend_uses_bound_context_for_operations_without_context() 
 
 
 @pytest.mark.asyncio
+async def test_cron_backend_run_now_reads_nested_gateway_run_id() -> None:
+    """Gateway ack 的 run_id 在 data 里，适配层不能读顶层导致永远回空串。"""
+    cron_tools = _FakeCronTools()
+    backend = _CronToolsCronBackend(cron_tools=cron_tools, message_handler=None)
+
+    assert await backend.run_now("job-1") == "run-1"
+
+
+@pytest.mark.asyncio
+async def test_cron_backend_run_now_stays_empty_without_ack_payload() -> None:
+    """未等到 ack（status=submitted、data=None）时保持空串，不算失败。"""
+    cron_tools = _FakeCronTools()
+    backend = _CronToolsCronBackend(cron_tools=cron_tools, message_handler=None)
+
+    async def _submitted(job_id: str):
+        _ = job_id
+        return {"action": "run_now", "status": "submitted", "data": None}
+
+    cron_tools.run_now = _submitted
+    assert await backend.run_now("job-1") == ""
+
+
+@pytest.mark.asyncio
+async def test_cron_backend_run_now_keeps_legacy_flat_shape_compatible() -> None:
+    """顶层 run_id 的旧形状仍要能取到，兼容其他 CronTools 实现。"""
+    cron_tools = _FakeCronTools()
+    backend = _CronToolsCronBackend(cron_tools=cron_tools, message_handler=None)
+
+    async def _flat(job_id: str):
+        _ = job_id
+        return {"run_id": "legacy-1"}
+
+    cron_tools.run_now = _flat
+    assert await backend.run_now("job-1") == "legacy-1"
+
+
+@pytest.mark.asyncio
 async def test_cron_backend_explicit_context_wins_over_bound_context() -> None:
     cron_tools = _FakeCronTools()
     backend = _CronToolsCronBackend(cron_tools=cron_tools, message_handler=None)
@@ -1134,6 +1172,25 @@ class TestExtractLegacyParamsKindAt:
         assert out["timezone"] == "Asia/Tokyo"
         assert out["cron_expr"] == "0 0 9 1 1 ? 2026"
 
+    def test_kind_at_second_dst_occurrence_uses_utc(self) -> None:
+        context = SimpleNamespace(channel_id="web", session_id="sess-1")
+        payload = {
+            "schedule": {
+                "kind": "at",
+                "at": "2026-11-01T01:30:00-05:00",
+                "tz": "America/New_York",
+            },
+            "payload": {"kind": "agentTurn", "message": "提醒"},
+            "delivery": {"mode": "announce"},
+        }
+
+        out = _extract_legacy_params(payload, context=context, require_schedule=True)
+
+        # The second 01:30 in New York is 06:30Z; the local expression would
+        # have fired at the first one (05:30Z), an hour early.
+        assert out["cron_expr"] == "0 30 6 1 11 ? 2026"
+        assert out["timezone"] == "UTC"
+
     def test_kind_every_still_raises(self) -> None:
         context = SimpleNamespace(channel_id="web", session_id="sess-1")
         payload = {
@@ -1318,8 +1375,17 @@ class TestBuildToolsAllowCreate:
             await unified._func(action="add", job={"name": "spawned"})
 
     @pytest.mark.asyncio
-    async def test_unified_cron_tool_list_still_works_when_create_disabled(self) -> None:
-        tools = self._build(allow_create=False)
+    @pytest.mark.parametrize(
+        "build_kwargs",
+        [
+            pytest.param({"allow_create": False}, id="create-disabled"),
+            pytest.param({"allow_create": False, "allow_update": False}, id="update-disabled"),
+        ],
+    )
+    async def test_unified_cron_tool_list_still_works_when_create_or_update_disabled(
+        self, build_kwargs: dict
+    ) -> None:
+        tools = self._build(**build_kwargs)
         unified = next(tool for tool in tools if tool.card.name == "cron")
 
         result = await unified._func(action="list")
@@ -1425,11 +1491,50 @@ class TestBuildToolsAllowCreate:
         with pytest.raises(ValueError, match="not allowed"):
             await unified._func(action="update", jobId="job-1", patch={"name": "x"})
 
+
+class TestEnsureSchedulerStartedBackgroundTask:
+    """issue #6286：后台启动 Task 须持强引用且内部异常须记日志。"""
+
+    def _make_bridge_with_backend(self, ensure_coro_factory):
+        bridge = CronRuntimeBridge()
+        backend = MagicMock(spec=_CronToolsCronBackend)
+        backend.ensure_scheduler_started = ensure_coro_factory
+        bridge.set_backend(backend)
+        return bridge
+
     @pytest.mark.asyncio
-    async def test_unified_cron_tool_list_still_works_when_update_disabled(self) -> None:
-        tools = self._build(allow_create=False, allow_update=False)
-        unified = next(tool for tool in tools if tool.card.name == "cron")
+    async def test_holds_task_reference_and_releases_on_done(self) -> None:
+        started = asyncio.Event()
 
-        result = await unified._func(action="list")
+        async def slow_start():
+            await started.wait()
 
-        assert result == {"jobs": [{"id": "job-1"}]}
+        bridge = self._make_bridge_with_backend(slow_start)
+        bridge.ensure_scheduler_started()
+
+        assert len(bridge._scheduler_start_tasks) == 1
+        task = next(iter(bridge._scheduler_start_tasks))
+        assert not task.done()
+
+        started.set()
+        await task
+        assert bridge._scheduler_start_tasks == set()
+
+    @pytest.mark.asyncio
+    async def test_background_exception_is_logged_not_silent(self, caplog) -> None:
+        async def boom():
+            raise RuntimeError("scheduler-start-exploded")
+
+        bridge = self._make_bridge_with_backend(boom)
+        bridge.ensure_scheduler_started()
+
+        with caplog.at_level(logging.WARNING, logger="jiuwenswarm.common.utils"):
+            await asyncio.wait_for(
+                asyncio.gather(*bridge._scheduler_start_tasks), timeout=5
+            )
+
+        assert any(
+            "Background scheduler start failed" in rec.message
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+        )

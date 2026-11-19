@@ -10,7 +10,7 @@ import type {
   DesignerGraphNode,
   DesignerNodeState,
 } from './executionGraphTypes';
-import { readMediaConfig } from './mediaNodeConfig';
+import { isUploadedMediaNode, readMediaConfig } from './mediaNodeConfig';
 
 export type DesignerPreviewKind = 'video' | 'image' | 'audio' | 'text' | 'file' | 'placeholder';
 
@@ -130,6 +130,7 @@ export function materialsFromRefs(
   idPrefix: string,
 ): DesignerMaterial[] {
   const role = typeof node.config?.role === 'string' ? node.config.role : '';
+  const source = isUploadedMediaNode(node) ? 'uploaded' : 'generated';
   return refs.flatMap((ref, index) => {
     if (!ref?.uri) return [];
     const textUrl = designerAssetTextUrl(ref.uri);
@@ -179,7 +180,7 @@ export function materialsFromRefs(
         previewUrl: isTextish ? null : designerAssetPreviewUrl(ref.uri),
         textUrl,
         editable,
-        source: placeholder ? undefined : 'generated',
+        source: placeholder ? undefined : source,
       },
     ];
   });

@@ -269,6 +269,7 @@ async def test_real_ability_manager_uses_policy_frozen_workdir(
     parent = AgentCallbackContext(
         agent=SimpleNamespace(
             agent_callback_manager=_PermissionCallbacks(rail),
+            ability_manager=manager,
         )
     )
 
@@ -336,7 +337,7 @@ async def test_real_ability_manager_fails_before_policy_reviewer_or_execution(
         ),
     )
     parent = AgentCallbackContext(
-        agent=SimpleNamespace(agent_callback_manager=_PermissionCallbacks(rail))
+        agent=SimpleNamespace(agent_callback_manager=_PermissionCallbacks(rail), ability_manager=manager)
     )
 
     await manager.execute(parent, tool_call, session=SimpleNamespace(session_id="s1"))

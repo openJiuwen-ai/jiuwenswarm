@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 import asyncio
-from concurrent.futures import CancelledError, Future
+from concurrent.futures import CancelledError, Future, wait
 from functools import wraps
 import threading
 from typing import Any, Callable
@@ -110,17 +110,16 @@ class CallbackRegistryOwner:
                     self._pending.discard(future)
                     raise
             future.add_done_callback(self._forget)
-            while True:
-                try:
-                    return future.result(timeout=0.25)
-                except TimeoutError:
-                    if future.done():
-                        raise
-                    if not self._loop.is_running():
-                        future.cancel()
-                        raise RuntimeError("Worker callback registry owner is closed") from None
-                except CancelledError:
-                    raise RuntimeError("Worker callback registry owner is closed") from None
+            while not future.done():
+                wait((future,), timeout=0.25)
+                if not future.done() and not self._loop.is_running():
+                    future.cancel()
+                    if not future.done():
+                        raise RuntimeError("Worker callback registry owner is closed")
+            try:
+                return future.result()
+            except CancelledError:
+                raise RuntimeError("Worker callback registry owner is closed") from None
 
         return invoke
 
@@ -135,11 +134,13 @@ class CallbackRegistryOwner:
         else:
             future.set_result(result)
 
-    async def aclose(self) -> None:
-        """Reject late registrations and release callers after Runtime teardown."""
+    def close(self) -> None:
+        """Reject submissions and release waiters without a cancellation point."""
         if asyncio.get_running_loop() is not self._loop:
             raise RuntimeError("Worker callback registry must close on its owner loop")
         with self._state_lock:
+            if self._closed:
+                return
             self._closed = True
             pending = tuple(self._pending)
         for future in pending:
@@ -147,7 +148,11 @@ class CallbackRegistryOwner:
         tasks = tuple(self._tasks)
         for task in tasks:
             task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def aclose(self) -> None:
+        """Join forwarded tasks after closing the registry dispatch entrance."""
+        self.close()
+        await asyncio.gather(*tuple(self._tasks), return_exceptions=True)
         # Let already queued submissions observe closure and settle their
         # concurrent futures before the Worker's event loop is closed.
         await asyncio.sleep(0)

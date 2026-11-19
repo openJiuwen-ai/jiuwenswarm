@@ -95,6 +95,10 @@ class AgentAdapter(Protocol):
     async def handle_heartbeat(self, request: AgentRequest) -> AgentResponse:
         """Handle heartbeat requests."""
 
+    async def pending_interactions(self, session_id: str) -> list[dict[str, Any]]:
+        """What the Session's paused turn still asks, as the events that asked it."""
+        ...
+
 
 def resolve_sdk_choice() -> str:
     """Resolve SDK choice from environment variable.

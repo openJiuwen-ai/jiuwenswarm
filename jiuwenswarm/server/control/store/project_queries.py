@@ -7,8 +7,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from jiuwenswarm.common.cron_session import cron_session_matches_job
-from gateway.common.work_mode import (
+from agent_gateway.common.work_mode import (
     DEFAULT_PROJECT_ID_CODE,
     DEFAULT_PROJECT_ID_WORK,
     DEFAULT_TUI_WORK_MODE,
@@ -17,6 +16,8 @@ from gateway.common.work_mode import (
     SUPPORTED_WORK_MODES,
     is_default_project_id,
 )
+
+from jiuwenswarm.common.cron_session import cron_session_matches_job
 from jiuwenswarm.server.runtime.session import project_store
 from jiuwenswarm.server.runtime.session.lifecycle import projection as lifecycle_projection
 from jiuwenswarm.server.runtime.session.session_info import to_session_info
@@ -34,7 +35,7 @@ def attribute_session_project(
     visible_project_ids: set[str],
     removed_project_ids: set[str] = frozenset(),
 ) -> str:
-    """Return the owning project ID, ``""`` for a removed project, or the default.
+    """Return the owning project ID, ``""`` for a removed project or a client app's conversation, or the default.
 
     Removed (hidden) projects keep their sessions on disk, but those sessions
     must not surface: returning ``""`` makes every caller skip them instead of
@@ -42,6 +43,10 @@ def attribute_session_project(
     record is missing entirely, or that carry no ``project_id`` at all, still
     fall back to the default project so legacy metadata stays readable.
     """
+    from jiuwenswarm.server.client_attachments.registry import conversation_app
+
+    if conversation_app(metadata) is not None:
+        return ""
     project_id = str(metadata.get("project_id") or "")
     if project_id:
         if project_id in visible_project_ids:
@@ -52,6 +57,36 @@ def attribute_session_project(
         DEFAULT_PROJECT_ID_CODE
         if str(metadata.get("work_mode") or "") == DEFAULT_TUI_WORK_MODE
         else DEFAULT_PROJECT_ID_WORK
+    )
+
+
+def cron_session_project_matches(
+    session: dict[str, Any],
+    project_id: str,
+    visible_project_ids: set[str],
+    removed_project_ids: set[str],
+    *,
+    cron_id: str,
+) -> bool:
+    """Match one cron session against the project the task list queried.
+
+    A task created without a project keeps ``project_id=""`` (documented as
+    "default project"), while its execution session is materialized as
+    ``default`` or ``default_code`` by work_mode.  The Web panel therefore
+    queries the work default (``default``) even for code-mode runs.  With a
+    ``cron_id`` present the job identity is already unique, so both virtual
+    default projects are treated as the same bucket.  Removed projects keep
+    returning ``""`` and stay excluded.
+    """
+    actual = attribute_session_project(
+        session, visible_project_ids, removed_project_ids,
+    )
+    if actual == project_id:
+        return True
+    return (
+        bool(cron_id)
+        and is_default_project_id(project_id)
+        and actual in {DEFAULT_PROJECT_ID_WORK, DEFAULT_PROJECT_ID_CODE}
     )
 
 
@@ -201,9 +236,15 @@ def resolve_cron_binding(
     work_mode, error = resolve_request_work_mode(params, channel_id=channel_id or "web")
     if error is not None:
         return None, f"invalid work_mode: {params.get('work_mode')!r}", "BAD_REQUEST"
-    binding = project_store.resolve_cron_project_binding(
-        params.get("project_id"), params.get("project_dir"), work_mode,
-    )
+    try:
+        binding = project_store.resolve_cron_project_binding(
+            params.get("project_id"), params.get("project_dir"), work_mode,
+        )
+    except ValueError as exc:
+        # resolve_cron_project_id 对相对路径等非法入参抛 ValueError。这是参数
+        # 校验失败，必须在这里转成 BAD_REQUEST；否则会冒到 ProjectAdapter /
+        # project_repository 的通用异常兜底，被统一映射成 INTERNAL_ERROR。
+        return None, str(exc), "BAD_REQUEST"
     if binding.error is not None:
         return None, binding.error, binding.code or "BAD_REQUEST"
     return {
@@ -256,6 +297,16 @@ def _session_matches_requested_work_mode(session: dict[str, Any], raw_work_mode:
     return actual == requested
 
 
+def _session_recency_key(session: dict[str, Any]) -> tuple[float, str]:
+    """Deterministic recency key: timestamp, then ``session_id`` as tiebreaker.
+
+    Sessions sharing the same timestamp (e.g. second-level precision or bursts
+    of ``run_now``) must keep a stable order across paginated requests, so
+    ``limit``/``offset`` pages are always consistent slices of one ordering.
+    """
+    return _last_user_message_ts(session), str(session.get("session_id") or "")
+
+
 def load_project_sessions(
     params: dict[str, Any], _user_id: str
 ) -> tuple[dict[str, Any] | None, str | None, str | None]:
@@ -281,7 +332,7 @@ def load_project_sessions(
         if not _session_matches_requested_work_mode(session, params.get("work_mode")):
             continue
         matched.append(session)
-    matched.sort(key=_last_user_message_ts, reverse=True)
+    matched.sort(key=_session_recency_key, reverse=True)
     total = len(matched)
     page = matched[offset:offset + limit] if limit is not None else matched[offset:]
     return {
@@ -329,9 +380,10 @@ def load_project_cron_sessions(
         if name_matched:
             # 已有项目归属必须继续参与过滤；回写只补空值，不能将其他项目
             # 的会话临时列出后又在下一次查询中隐藏。只有未绑定项目才迁移。
-            if str(session.get("project_id") or "").strip() and attribute_session_project(
-                session, visible_project_ids, removed_project_ids
-            ) != project_id:
+            if str(session.get("project_id") or "").strip() and not cron_session_project_matches(
+                session, project_id, visible_project_ids, removed_project_ids,
+                cron_id=cron_id,
+            ):
                 continue
             try:
                 sync_session_request_metadata(
@@ -352,12 +404,13 @@ def load_project_cron_sessions(
             continue
         if cron_id and session.get("cron_id") != cron_id:
             continue
-        if not name_matched and attribute_session_project(
-            session, visible_project_ids, removed_project_ids
-        ) != project_id:
+        if not name_matched and not cron_session_project_matches(
+            session, project_id, visible_project_ids, removed_project_ids,
+            cron_id=cron_id,
+        ):
             continue
         matched.append(session)
-    matched.sort(key=_last_user_message_ts, reverse=True)
+    matched.sort(key=_session_recency_key, reverse=True)
     total = len(matched)
     page = matched[offset:offset + limit] if limit is not None else matched[offset:]
     return {

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from jiuwenswarm.common.e2a.wire_codec import encode_agent_chunk_for_wire
+from e2a.wire_codec import encode_agent_chunk_for_wire
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.session.model import (
@@ -132,7 +132,9 @@ async def test_returned_output_segment_stays_busy_while_its_control_is_waiting()
     record.last_execution_id = "team-execution"
     record.interactions["approval"] = {"control_id": "approval"}
     bridge.events.finish(record.dispatch_id)
-    execution = team_execution(request.request_id, "waiting_for_control", waiting_control_id="approval")
+    execution = team_execution(
+        request.request_id, "waiting_for_control", waiting_control_ids=frozenset({"approval"}),
+    )
     dispatcher._runtime = SimpleNamespace(
         get_session_snapshot=lambda _: SimpleNamespace(executions=(execution,)),
     )
@@ -299,3 +301,41 @@ async def test_actual_team_activity_is_visible_when_only_passive_response_owner_
     context = lifecycle.is_running.call_args.args[0]
     assert context.session_id == request.session_id
     assert context.generation == 1
+
+
+@pytest.mark.asyncio
+async def test_stream_processing_claim_survives_empty_execution_ledger():
+    """A metadata snapshot must not idle a turn the stream still reports running.
+
+    A single-agent turn keeps streaming after its chat.send handler returns,
+    and the Coordinator ledger may neither retain nor have registered its
+    execution yet; pruning on an empty ledger must not cancel the stream's
+    own processing claim (chat.processing_status), only the stream's false
+    or a terminal event retires it.
+    """
+    bridge = WorkerGatewayBridge(ConnHolder())
+    dispatcher = WorkerDispatcher(bridge)
+    request = team_request("single-agent-input")
+    record = bridge.events.register(request, "single-agent-dispatch")
+    bridge.events.append(
+        {"request_id": request.request_id,
+         "body": {"event_type": "chat.processing_status", "is_processing": True}},
+        record.dispatch_id,
+    )
+    bridge.events.finish(record.dispatch_id)
+    dispatcher._runtime = SimpleNamespace(
+        get_session_snapshot=lambda _: SimpleNamespace(executions=()),
+    )
+
+    snapshot = await recovery_snapshot(dispatcher, request)
+
+    assert snapshot["is_processing"] is True
+    assert record.is_processing is True
+
+    bridge.events.append(
+        {"request_id": request.request_id,
+         "body": {"event_type": "chat.processing_status", "is_processing": False, "is_complete": True}},
+        record.dispatch_id,
+    )
+
+    assert (await recovery_snapshot(dispatcher, request))["is_processing"] is False

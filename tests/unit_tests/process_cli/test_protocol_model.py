@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from agent_gateway.common.mode_matrix import SINGLE_AGENT_CANONICAL_MODES
 
 from jiuwenswarm.channels.process_cli import protocol
 from jiuwenswarm.channels.process_cli.protocol import (
@@ -22,7 +23,6 @@ from jiuwenswarm.channels.process_cli.protocol import (
     SingleAgentMode,
     WorkspaceSpec,
 )
-from gateway.common.mode_matrix import SINGLE_AGENT_CANONICAL_MODES
 from jiuwenswarm.runtime.agent_definition import RuntimeAgentDefinition
 from jiuwenswarm.runtime.events import RuntimeEvent
 

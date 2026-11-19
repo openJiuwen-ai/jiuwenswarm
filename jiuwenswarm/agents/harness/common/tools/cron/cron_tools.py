@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 from jiuwenswarm.runtime.cron.cron_expr import normalize_cron_expr
-from jiuwenswarm.runtime.cron.store import CronJobStore, _PROACTIVE_TICK_MODE
+from jiuwenswarm.runtime.cron.store import CronJobStore
 from jiuwenswarm.runtime.cron.models import (
     CronJob,
     CronTargetChannel,
@@ -22,6 +22,7 @@ from jiuwenswarm.runtime.cron.models import (
     normalize_cron_job_mode,
     normalize_target_channel_id,
 )
+from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
 from jiuwenswarm.common.utils import get_cron_jobs_path
 from jiuwenswarm.common.host_services import send_runtime_push
 
@@ -31,9 +32,21 @@ logger = logging.getLogger(__name__)
 def resolve_agent_cron_model(raw: Any) -> str | None:
     """Validate a cron model in the AgentServer process.
 
-    Configured and login models use :func:`validate_cron_model`. A miss then
-    checks the Zen free-model cache that lives in this process.
+    企业版只做空白规范化：真正的名单在 Gateway 企业库，由
+    ``resolve_enterprise_cron_model`` 核对。这里若再读本机 config，会把
+    会话里正在用的企业模型（如 GLM-5.2）误判成未知。
+
+    个人版：配置与登录模型走 :func:`validate_cron_model`；未命中再查本进程
+    的 Zen 免费模型缓存。
     """
+    from jiuwenswarm.enterprise import is_enterprise
+
+    if is_enterprise():
+        if raw is None:
+            return None
+        value = str(raw).strip()
+        return value or None
+
     from jiuwenswarm.runtime.cron.models import validate_cron_model
 
     try:
@@ -156,6 +169,8 @@ class CronToolRoute:
     work_mode: str = ""  # 当前会话锁定工作模式，用于 project_dir 归属消歧
     model_name: str = ""  # 当前会话模型；创建任务时缺省继承，保证定时执行一致
     user_id: str = ""  # 发起会话的用户路由键；AgentOS 下随 E2A 请求透传，供 job 归属创建者
+    group_id: str = ""  # 企业版群身份；随 E2A metadata.routing 透传，供 Gateway 查企业模型库
+    bot_id: str = ""  # 企业版机器人身份；缺省保持空，企业创建路径必须由 Gateway 用真实 routing 盖回
 
 
 class CronTools:
@@ -300,7 +315,7 @@ class CronTools:
         return bool(getattr(self._gateway_push, "supports_cron_command_ack", False))
 
     async def _send_split(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
-        from jiuwenswarm.common.e2a.constants import E2A_RESPONSE_KIND_CRON
+        from e2a.constants import E2A_RESPONSE_KIND_CRON
 
         r = self._route()
         # ``send_push`` is delivered on a side channel.  The originating chat
@@ -310,10 +325,25 @@ class CronTools:
         # not get persisted with an empty ``user_id`` and disappear from the
         # Web user's task list.  This is derived solely from the runtime route,
         # never from an LLM-supplied tool parameter.
-        push_metadata: dict[str, Any] = {}
+        #
+        # list/get/update 等工具参数经常是 {}，不带 group/bot；企业版 Gateway
+        # 会把空身份当成 default 筛任务 → 列表永远空。创建时会从路由写入
+        # params；这里对所有 action 同样补齐，并塞进 push metadata 兜底。
+        params = dict(params or {})
         route_user_id = str(r.user_id or "").strip()
+        route_group_id = str(r.group_id or "").strip()
+        route_bot_id = str(r.bot_id or "").strip()
+        if route_group_id and not str(params.get("group_id") or "").strip():
+            params["group_id"] = route_group_id
+        if route_bot_id and not str(params.get("bot_id") or "").strip():
+            params["bot_id"] = route_bot_id
+        push_metadata: dict[str, Any] = {}
         if route_user_id:
             push_metadata["_jiuwenswarm_cron_owner_user_id"] = route_user_id
+        if route_group_id:
+            push_metadata["_jiuwenswarm_cron_owner_group_id"] = route_group_id
+        if route_bot_id:
+            push_metadata["_jiuwenswarm_cron_owner_bot_id"] = route_bot_id
         command_id = f"cron-{uuid.uuid4().hex}"
         payload = {
             "request_id": r.request_id,
@@ -325,7 +355,7 @@ class CronTools:
                 "command_id": command_id,
                 "action": action,
                 "status": "ok",
-                "data": dict(params or {}),
+                "data": params,
                 "message": "",
             },
         }
@@ -511,18 +541,7 @@ class CronTools:
             result = await self._send("list", {})
             return list(result.get("data") or [])
         jobs = await self._view_jobs()
-        # 给受保护的 proactive.tick job 标记 protected，让 LLM 在批量操作时
-        # （如"删除所有定时任务"）能识别并优雅跳过，而不是删到一半才遇错。
-        out = []
-        for j in jobs:
-            d = j.to_dict()
-            if str(d.get("mode") or "").strip().lower() == _PROACTIVE_TICK_MODE:
-                d["protected"] = True
-                d["protected_reason"] = (
-                    "由主动推荐开关自动维护，不可删除/启停；如需关闭请到设置→主动推荐关闭开关。"
-                )
-            out.append(d)
-        return out
+        return [j.to_dict() for j in jobs]
 
     async def get_authoritative_job(self, job_id: str) -> Any:
         """Read the owner-scoped host store, never a snapshot or local projection."""
@@ -565,6 +584,13 @@ class CronTools:
         )
         session_kw: dict[str, Any] = {}
         r = self._route()
+        # AgentOS 路由按 user_id 归属任务；route 丢身份时建出来的任务无主，
+        # Gateway 也无法把命令 ACK 路由回来（现场表现为 15s 超时 + 任务到点执行失败）。
+        # legacy 单用户部署不受影响（无 JIUWENSWARM_RUNTIME_PROFILE=agentos）。
+        if not str(r.user_id or "").strip() and is_agentos_runtime():
+            raise RuntimeError(
+                "cron owner identity is missing; refuse to create an ownerless job"
+            )
         sid = r.session_id
         if isinstance(sid, str) and sid.strip():
             session_kw["session_id"] = sid.strip()
@@ -630,6 +656,8 @@ class CronTools:
         # 用 build_job（不落盘）拿到规范化视图（含 round-trip 校验）供返回与转发。
         # user_id：优先工具参数，其次当前请求路由上下文（AgentOS 随 E2A 请求透传），
         # 保证 agent 创建的任务归属发起会话的用户，web 端按 user_id 隔离时可见。
+        # group_id/bot_id：企业版必须带真实路由；空串不再收成 default，
+        # Gateway 会用 chat routing 盖回，否则企业创建会因缺身份失败。
         job = self._local_store.build_job(
             job_id=str(normalized.get("id") or "").strip() or None,
             name=str(normalized.get("name") or "").strip(),
@@ -643,6 +671,8 @@ class CronTools:
             project_id=resolved_project_id,
             work_mode=work_mode,
             user_id=str(normalized.get("user_id") or "").strip() or r.user_id,
+            group_id=str(normalized.get("group_id") or "").strip() or r.group_id,
+            bot_id=str(normalized.get("bot_id") or "").strip() or r.bot_id,
             **session_kw,
             **mode_kw,
             **model_kw,
@@ -719,14 +749,8 @@ class CronTools:
         return result
 
     async def delete_job(self, job_id: str) -> Any:
-        # proactive.tick 保护：读只读视图拦截（与 toggle_job 一致），
-        # 避免把受保护的定时任务删除请求转发给 Gateway 后再报错。
         existing = await self._view_job(job_id)
         remote_gateway = self._uses_gateway_command_ack()
-        if existing is not None and str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick":
-            raise RuntimeError(
-                "主动推荐定时任务由设置→主动推荐开关控制，不能删除；请到设置关闭开关。"
-            )
         if existing is None:
             if remote_gateway:
                 result = await self._send("delete", {"job_id": job_id})
@@ -751,14 +775,8 @@ class CronTools:
         return True
 
     async def toggle_job(self, job_id: str, enabled: bool) -> Any:
-        # proactive.tick job 的开关由 config 的 proactive_recommendation.enabled 驱动，
-        # 禁止手动 toggle——否则会与 config 开关不一致。引导用户去设置关开关。
         existing = await self._view_job(job_id)
         remote_gateway = self._uses_gateway_command_ack()
-        if existing is not None and str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick":
-            raise RuntimeError(
-                "主动推荐定时任务由设置→主动推荐开关控制，不能手动启停；请到设置→主动推荐操作。"
-            )
         if existing is None:
             if remote_gateway:
                 return (await self._send("toggle", {"job_id": job_id, "enabled": bool(enabled)})).get("data")

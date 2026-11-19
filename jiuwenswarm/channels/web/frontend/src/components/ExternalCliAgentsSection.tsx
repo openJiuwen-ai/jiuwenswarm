@@ -22,6 +22,8 @@ export type ExternalCliDetectResult = {
   cli_agent: ExternalCliAgentKind;
   status: 'ok' | 'warning' | 'missing' | 'unsupported' | 'unavailable';
   path?: string;
+  /** 内置（托管安装）CLI 的可执行文件路径；未安装时为空。每次探测都携带（#6647） */
+  builtin_path?: string;
   version?: string;
   reference_version?: string;
   reason?: string;
@@ -128,59 +130,41 @@ export function externalCliAgentDisplayName(cliAgent: ExternalCliAgentKind): str
 
 const EXTERNAL_CLI_AUTO_DETECT_DELAY_MS = 400;
 
-/** Max addresses kept per agent in the path dropdown history. */
-const PATH_HISTORY_LIMIT = 10;
-const PATH_HISTORY_STORAGE_KEY = 'external_cli_path_history';
-
-type PathHistoryMap = Partial<Record<ExternalCliAgentKind, string[]>>;
-
-/**
- * Previously used CLI paths per agent, kept so the path dropdown can offer
- * several addresses to switch between (the config itself stores only one
- * active `cli_path` per agent). Persisted in localStorage: this is pure UI
- * convenience state, safe to lose.
- */
-function loadPathHistories(): PathHistoryMap {
-  try {
-    const parsed: unknown = JSON.parse(window.localStorage.getItem(PATH_HISTORY_STORAGE_KEY) ?? '{}');
-    if (typeof parsed !== 'object' || parsed === null) return {};
-    const histories: PathHistoryMap = {};
-    for (const [cliAgent, paths] of Object.entries(parsed)) {
-      if (!Array.isArray(paths)) continue;
-      const valid = paths.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
-      if (valid.length > 0) histories[cliAgent] = valid;
-    }
-    return histories;
-  } catch {
-    return {};
-  }
-}
-
-function storePathHistories(histories: PathHistoryMap): void {
-  try {
-    window.localStorage.setItem(PATH_HISTORY_STORAGE_KEY, JSON.stringify(histories));
-  } catch {
-    // Storage unavailable (private mode, quota): the dropdown just loses history.
-  }
-}
-
 export const EXTERNAL_CLI_AGENT_CONFIG_KEYS = new Set([
   'external_cli_agent_claude_enabled',
   'external_cli_agent_claude_use_builtin',
   'external_cli_agent_claude_cli_path',
+  'external_cli_agent_claude_path_histories',
   'external_cli_agent_codex_enabled',
   'external_cli_agent_codex_use_builtin',
   'external_cli_agent_codex_cli_path',
+  'external_cli_agent_codex_path_histories',
 ]);
 
 export const CODEX_EXTERNAL_CLI_AGENT_CONFIG_KEYS = new Set([
   'external_cli_agent_codex_enabled',
   'external_cli_agent_codex_use_builtin',
   'external_cli_agent_codex_cli_path',
+  'external_cli_agent_codex_path_histories',
 ]);
 
-export function externalCliKey(cliAgent: ExternalCliAgentKind, suffix: 'enabled' | 'use_builtin' | 'cli_path'): string {
+export function externalCliKey(
+  cliAgent: ExternalCliAgentKind,
+  suffix: 'enabled' | 'use_builtin' | 'cli_path' | 'path_histories',
+): string {
   return `external_cli_agent_${cliAgent}_${suffix}`;
+}
+
+/** Parses the JSON-string CLI path history carried in a settings config value. */
+export function parseExternalCliPathHistories(value: string | undefined): string[] {
+  if (!value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is string => typeof item === 'string' && item.trim() !== '');
+  } catch {
+    return [];
+  }
 }
 
 export function applyExternalCliAgentAtomicUpdates(
@@ -307,6 +291,8 @@ function detectFailureMessage(
 
 type ExternalCliAgentsSectionProps = {
   draftValues: Record<string, string>;
+  /** 持久化配置的快照：自动落闸只依据持久化状态决策，不持久化未保存的草稿路径 */
+  persistedValues: Record<string, string>;
   /** Uploaded custom agents, rendered after Claude and Codex. */
   customAgents?: ExternalCliCustomAgent[];
   /** Installs an uploaded provider wheel and optional CLI executable. */
@@ -321,6 +307,11 @@ type ExternalCliAgentsSectionProps = {
   ) => Promise<ExternalCliDetectResult>;
   /** Persists one agent's choice immediately (install / path selection / manual path save). */
   onCommitAgent?: (cliAgent: ExternalCliAgentKind, choice: ExternalCliAgentChoice) => Promise<void>;
+  /**
+   * Drops stale addresses from the agent's persisted path history after a
+   * successful detection; `detectedPath` counts as known-good.
+   */
+  onCleanupPathHistories?: (cliAgent: ExternalCliAgentKind, detectedPath: string) => Promise<void>;
   onSelectFile?: (cliAgent: ExternalCliAgentKind, initialPath?: string) => Promise<string | null>;
   /** Latest detect results, owned by the App layer so they survive unmount. */
   initialResults?: Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>;
@@ -338,12 +329,14 @@ type ExternalCliAgentsSectionProps = {
 
 export function ExternalCliAgentsSection({
   draftValues,
+  persistedValues,
   customAgents = [],
   onUploadCustomAgent,
   onRemoveCustomAgent,
   onChange,
   onDetect,
   onCommitAgent,
+  onCleanupPathHistories,
   onSelectFile,
   initialResults,
   onResultsChange,
@@ -373,6 +366,10 @@ export function ExternalCliAgentsSection({
   const [editDrafts, setEditDrafts] = useState<Record<ExternalCliAgentKind, string>>({});
   const [editValidating, setEditValidating] = useState<Record<ExternalCliAgentKind, boolean>>({});
   const [committing, setCommitting] = useState<Record<ExternalCliAgentKind, boolean>>({});
+  // 一键安装的专属在途标记：开关切换等其它卡片提交也会置 committing，
+  // 若安装按钮的 loading 跟随 committing，重新启用已安装的 agent 时按钮会
+  // 像在重装一样转圈（#6620）。loading 只认这个标记。
+  const [installInFlight, setInstallInFlight] = useState<Record<ExternalCliAgentKind, boolean>>({});
   const [agentErrors, setAgentErrors] = useState<Record<ExternalCliAgentKind, string>>({});
   const detectRequestIdsRef = useRef<Record<ExternalCliAgentKind, number>>({});
   const observedCliPathsRef = useRef<Record<ExternalCliAgentKind, string>>(
@@ -387,10 +384,18 @@ export function ExternalCliAgentsSection({
   // value back into draftValues, which must not be treated as a user edit —
   // the just-probed result is already fresh for that path.
   const commitEchoAgentsRef = useRef<Set<ExternalCliAgentKind>>(new Set());
-  // Most-recently-used path per agent, feeding the path dropdown options.
-  const [pathHistories, setPathHistories] = useState<PathHistoryMap>(() => loadPathHistories());
   // PATH discovery is independent of the executable currently selected.
   const [pathCandidates, setPathCandidates] = useState<Record<string, string>>({});
+  // 内置 CLI 路径来自任意一次探测响应的 builtin_path（托管路径由安装器管理）。
+  // 记住最近一次非空值：依赖安装期间内置文件可能短暂缺失，避免下拉框闪烁。
+  const [builtinPaths, setBuiltinPaths] = useState<Record<string, string>>({});
+  const trackBuiltinPath = useCallback(
+    (cliAgent: ExternalCliAgentKind, result: ExternalCliDetectResult | undefined) => {
+      if (!result) return;
+      setBuiltinPaths((prev) => ({ ...prev, [cliAgent]: result.builtin_path || prev[cliAgent] || '' }));
+    },
+    [],
+  );
   const visibleAgentsSignature = JSON.stringify(visibleAgentKinds);
   useEffect(() => {
     if (!onDetect) return;
@@ -401,12 +406,13 @@ export function ExternalCliAgentsSection({
       void onDetect(agent, '', false).then((result) => {
         if (cancelled) return;
         setPathCandidates((prev) => ({ ...prev, [agent]: result.path || '' }));
+        trackBuiltinPath(agent, result);
       }).catch(() => {
         // Keep the last known PATH candidate when discovery is unavailable.
       });
     }
     return () => { cancelled = true; };
-  }, [onDetect, visibleAgentsSignature]);
+  }, [onDetect, trackBuiltinPath, visibleAgentsSignature]);
 
   // Inline success toast (top-center), mirroring the models settings'
   // connection-test toast; auto-dismisses after 3 seconds.
@@ -460,8 +466,9 @@ export function ExternalCliAgentsSection({
       resultsRef.current = next;
       setResults(next);
       onResultsChange?.(next);
+      trackBuiltinPath(cliAgent, result);
     },
-    [onResultsChange],
+    [onResultsChange, trackBuiltinPath],
   );
 
   // App-layer results can refresh out-of-band (e.g. the post-install re-probe
@@ -472,48 +479,23 @@ export function ExternalCliAgentsSection({
   useEffect(() => {
     resultsRef.current = { ...initialResults };
     setResults({ ...initialResults });
-  }, [initialResults]);
-
-  /**
-   * Record a built-in CLI's managed path into the MRU history. Built-in mode
-   * persists an empty cli_path, so the MRU effect never sees the actual path
-   * and the dropdown would lose it once the user switches to a custom path.
-   * Detection returns the managed path; keeping it in history lets the
-   * dropdown offer it for one-click switching back later.
-   */
-  const rememberBuiltinPath = useCallback(
-    (cliAgent: ExternalCliAgentKind, path: string) => {
-      setPathHistories((prev) => {
-        const list = prev[cliAgent] ?? [];
-        if (list[0] === path) return prev;
-        const next = {
-          ...prev,
-          [cliAgent]: [path, ...list.filter((item) => item !== path)].slice(0, PATH_HISTORY_LIMIT),
-        };
-        storePathHistories(next);
-        return next;
-      });
-    },
-    [],
-  );
-
-  // Drops one entry from the agent's MRU history (dropdown remove button).
-  // The active cli_path is never removed here: it is the persisted config,
-  // not a history entry.
-  const removePathHistory = useCallback((cliAgent: ExternalCliAgentKind, path: string) => {
-    setPathHistories((prev) => {
-      const list = prev[cliAgent] ?? [];
-      if (!list.includes(path)) return prev;
-      const next = { ...prev, [cliAgent]: list.filter((item) => item !== path) };
-      storePathHistories(next);
-      return next;
-    });
-  }, []);
+    for (const [agent, result] of Object.entries(initialResults ?? {})) {
+      trackBuiltinPath(agent as ExternalCliAgentKind, result);
+    }
+  }, [initialResults, trackBuiltinPath]);
 
   // Returns the detection result when it settles for the current request, so
   // manual callers can toast the outcome; undefined on races or failures.
+  // Automatic probes (debounce, post-install, toggle) must not prune the
+  // path history: cleanup only runs when the caller marks the detect as an
+  // explicit user action (manual button, card save).
   const detect = useCallback(
-    async (cliAgent: ExternalCliAgentKind, cliPath?: string, useBuiltin?: boolean): Promise<ExternalCliDetectResult | undefined> => {
+    async (
+      cliAgent: ExternalCliAgentKind,
+      cliPath?: string,
+      useBuiltin?: boolean,
+      options?: { cleanupHistory?: boolean },
+    ): Promise<ExternalCliDetectResult | undefined> => {
       if (!onDetect) return undefined;
       const requestId = (detectRequestIdsRef.current[cliAgent] ?? 0) + 1;
       detectRequestIdsRef.current[cliAgent] = requestId;
@@ -522,8 +504,12 @@ export function ExternalCliAgentsSection({
         const result = await onDetect(cliAgent, cliPath, useBuiltin);
         if (detectRequestIdsRef.current[cliAgent] !== requestId) return undefined;
         updateResults(cliAgent, result);
-        if (useBuiltin && result.path) rememberBuiltinPath(cliAgent, result.path);
         setAgentError(cliAgent, '');
+        if ((result.status === 'ok' || result.status === 'warning') && options?.cleanupHistory) {
+          // Fire-and-forget: a failed cleanup keeps the history as-is and the
+          // next explicit action retries it.
+          void onCleanupPathHistories?.(cliAgent, result.path || '').catch(() => {});
+        }
         return result;
       } catch (error) {
         if (detectRequestIdsRef.current[cliAgent] !== requestId) return undefined;
@@ -536,7 +522,25 @@ export function ExternalCliAgentsSection({
         }
       }
     },
-    [onDetect, rememberBuiltinPath, setAgentError, updateResults],
+    [onDetect, onCleanupPathHistories, setAgentError, updateResults],
+  );
+
+  // Persists one agent's choice; errors propagate to the caller so it can
+  // decide where to surface them (edit form vs. card message line). Declared
+  // before the detect flows: the manual detect's auto-disable commits through
+  // it (未安装 → 自动落闸), so it must exist before those callbacks.
+  const commit = useCallback(
+    async (cliAgent: ExternalCliAgentKind, choice: ExternalCliAgentChoice) => {
+      if (!onCommitAgent) return;
+      setCommitting((prev) => ({ ...prev, [cliAgent]: true }));
+      setAgentError(cliAgent, '');
+      try {
+        await onCommitAgent(cliAgent, choice);
+      } finally {
+        setCommitting((prev) => ({ ...prev, [cliAgent]: false }));
+      }
+    },
+    [onCommitAgent, setAgentError],
   );
 
   // Manual "Detect" click: toasts the outcome like the models settings'
@@ -544,12 +548,43 @@ export function ExternalCliAgentsSection({
   // silent.
   const detectAndNotify = useCallback(
     async (cliAgent: ExternalCliAgentKind, cliPath?: string, useBuiltin?: boolean) => {
-      const result = await detect(cliAgent, cliPath, useBuiltin);
+      // Manual button click: an explicit user action, so stale history
+      // entries may be pruned once the probe settles.
+      const result = await detect(cliAgent, cliPath, useBuiltin, { cleanupHistory: true });
       if (result?.status === 'ok' || result?.status === 'warning') {
         showHint(t('config.externalCli.detectSucceeded'));
+        return;
+      }
+      // 检测确认当前配置的可执行文件不存在（missing）或路径不可执行
+      // （unsupported），而持久化配置里 agent 还处于启用态：自动把开关落掉
+      // 并持久化，让状态行"未安装"与开关一致（未安装 → 禁用，重新启用需先
+      // 安装或修正路径）。仅手动检测触发——自动探测不得静默改写配置；
+      // unavailable（可执行文件在、版本命令失败）不落闸，保留手动关闭的
+      // 能力。且仅当探测的就是持久化路径时才落闸：探测未保存的草稿路径
+      // 失败不代表现有配置失效，不能把草稿路径静默持久化（!10406 检视）。
+      const enabledKey = externalCliKey(cliAgent, 'enabled');
+      const useBuiltinKey = externalCliKey(cliAgent, 'use_builtin');
+      const cliPathKey = externalCliKey(cliAgent, 'cli_path');
+      const confirmedMissing =
+        !!result && (result.status === 'missing' || result.status === 'unsupported');
+      const probedPersistedChoice =
+        (cliPath || '').trim() === (persistedValues[cliPathKey] ?? '').trim()
+        && (useBuiltin ?? false) === (persistedValues[useBuiltinKey] === 'true')
+        && persistedValues[enabledKey] === 'true';
+      if (confirmedMissing && probedPersistedChoice) {
+        try {
+          await commit(cliAgent, {
+            enabled: false,
+            useBuiltin: persistedValues[useBuiltinKey] === 'true',
+            cliPath: persistedValues[cliPathKey] ?? '',
+          });
+          showHint(t('config.externalCli.savedHint'));
+        } catch (error) {
+          setAgentError(cliAgent, error instanceof Error ? error.message : String(error));
+        }
       }
     },
-    [detect, showHint, t],
+    [commit, detect, draftValues, persistedValues, setAgentError, showHint, t],
   );
 
   const clearDetectResult = useCallback(
@@ -638,22 +673,6 @@ export function ExternalCliAgentsSection({
     [changeCliPath, detect, draftValues, onSelectFile, t, updateResults],
   );
 
-  // Persists one agent's choice; errors propagate to the caller so it can
-  // decide where to surface them (edit form vs. card message line).
-  const commit = useCallback(
-    async (cliAgent: ExternalCliAgentKind, choice: ExternalCliAgentChoice) => {
-      if (!onCommitAgent) return;
-      setCommitting((prev) => ({ ...prev, [cliAgent]: true }));
-      setAgentError(cliAgent, '');
-      try {
-        await onCommitAgent(cliAgent, choice);
-      } finally {
-        setCommitting((prev) => ({ ...prev, [cliAgent]: false }));
-      }
-    },
-    [onCommitAgent, setAgentError],
-  );
-
   // Preserve explicit choices and prefer PATH when no executable was selected.
   const resolveEnabledChoice = useCallback(
     async (
@@ -685,13 +704,44 @@ export function ExternalCliAgentsSection({
   const postInstallDetectRanRef = useRef<Partial<Record<ExternalCliAgentKind, boolean>>>({});
   const installNow = useCallback(
     async (cliAgent: ExternalCliAgentKind) => {
+      const enabledKey = externalCliKey(cliAgent, 'enabled');
+      const useBuiltinKey = externalCliKey(cliAgent, 'use_builtin');
+      const cliPathKey = externalCliKey(cliAgent, 'cli_path');
+      setInstallInFlight((prev) => ({ ...prev, [cliAgent]: true }));
+      // Snapshot the pre-install drafts: the optimistic rewrite below must
+      // not survive a failed commit, or the card keeps showing an unpersisted
+      // "enabled + built-in" state and the user's external path stays gone.
+      const prevEnabled = draftValues[enabledKey];
+      const prevUseBuiltin = draftValues[useBuiltinKey];
+      const prevCliPath = draftValues[cliPathKey];
+      let committed = false;
       try {
+        // Resolve the install choice first: preserve the user's explicit
+        // selection, prefer PATH, and fall back to the built-in CLI.
         const choice = await resolveEnabledChoice(
           cliAgent,
-          draftValues[externalCliKey(cliAgent, 'use_builtin')] === 'true',
-          draftValues[externalCliKey(cliAgent, 'cli_path')] || '',
+          draftValues[useBuiltinKey] === 'true',
+          draftValues[cliPathKey] || '',
         );
+        const nextCliPath = choice.useBuiltin ? '' : choice.cliPath;
+        // Reflect the resolved intent in draftValues immediately so the card
+        // switches to the chosen mode right away. Without this, deferred
+        // agents (install still running) keep showing the old external-CLI
+        // state until the replay save settles after install success.
+        // Exempt the path rewrite from the detect-result wipe so the card
+        // does not flash "not installed" before the install status lands.
+        // Only when the previous path is non-empty: an empty-to-nonempty
+        // transition never reaches the wipe (treated as a reload, not a
+        // user edit), so the one-shot marker would never be consumed and
+        // would wrongly skip a later real path change.
+        if (prevCliPath && prevCliPath !== nextCliPath) {
+          commitEchoAgentsRef.current.add(cliAgent);
+        }
+        onChange(enabledKey, 'true');
+        onChange(useBuiltinKey, choice.useBuiltin ? 'true' : 'false');
+        onChange(cliPathKey, nextCliPath);
         await commit(cliAgent, { ...choice, force: true });
+        committed = true;
         userInitiatedInstallRef.current.add(cliAgent);
         postInstallDetectRanRef.current[cliAgent] = false;
         // The commit only queues the install. When it finishes instantly (deps
@@ -703,10 +753,23 @@ export function ExternalCliAgentsSection({
           onInstallStatusChange(cliAgent, status);
         }
       } catch (error) {
+        // A failed commit leaves the optimistic rewrite in place: restore the
+        // pre-install drafts so the card reflects the persisted state again,
+        // and drop the echo exemption (nothing was committed). Failures after
+        // the commit itself (e.g. the status probe) must keep the new drafts,
+        // since the choice is already persisted at that point.
+        if (!committed) {
+          onChange(enabledKey, prevEnabled ?? '');
+          onChange(useBuiltinKey, prevUseBuiltin ?? '');
+          onChange(cliPathKey, prevCliPath ?? '');
+          commitEchoAgentsRef.current.delete(cliAgent);
+        }
         setAgentError(cliAgent, error instanceof Error ? error.message : String(error));
+      } finally {
+        setInstallInFlight((prev) => ({ ...prev, [cliAgent]: false }));
       }
     },
-    [commit, draftValues, onInstallStatusChange, onInstallStatusGet, resolveEnabledChoice, setAgentError],
+    [commit, draftValues, onChange, onInstallStatusChange, onInstallStatusGet, resolveEnabledChoice, setAgentError],
   );
 
   /**
@@ -790,11 +853,12 @@ export function ExternalCliAgentsSection({
       // The draft update re-arms the debounced auto-detect for the same path;
       // mark it as already scheduled so the refresh probe below stays the only
       // follow-up detection (no duplicate backend round-trip).
-      scheduledDetectPathsRef.current[cliAgent] = persistedPath;
+      scheduledDetectPathsRef.current[cliAgent] = `${persistedPath}|true`;
       // Refresh the result with one more probe so the badge lands on a fresh
       // "installed" state even if the just-probed result gets wiped meanwhile;
-      // `detect` releases the held flag when it settles.
-      void detect(cliAgent, requestedPath, false);
+      // `detect` releases the held flag when it settles. The save is an
+      // explicit user action, so it also prunes stale history entries.
+      void detect(cliAgent, requestedPath, false, { cleanupHistory: true });
       showHint(t('config.externalCli.savedHint'));
       return true;
     },
@@ -898,19 +962,20 @@ export function ExternalCliAgentsSection({
     [onSelectFile, setAgentError, t],
   );
 
-  // One string covering every agent's path and built-in-vs-external choice,
-  // so the effects below rerun only when an agent appears, disappears, or has
-  // its path or CLI mode edited.
+  // One string covering every agent's path, built-in-vs-external choice and
+  // enabled state, so the effects below rerun only when an agent appears,
+  // disappears, or has its path, CLI mode or enabled flag edited.
   const cliPathsSignature = JSON.stringify(
     visibleAgentKinds.map((agent) => [
       agent,
       draftValues[externalCliKey(agent, 'cli_path')] || '',
       draftValues[externalCliKey(agent, 'use_builtin')] === 'true',
+      draftValues[externalCliKey(agent, 'enabled')] === 'true',
     ]),
   );
 
   useEffect(() => {
-    const currentPaths = JSON.parse(cliPathsSignature) as [ExternalCliAgentKind, string, boolean][];
+    const currentPaths = JSON.parse(cliPathsSignature) as [ExternalCliAgentKind, string, boolean, boolean][];
     for (const [cliAgent, cliPath] of currentPaths) {
       const previous = observedCliPathsRef.current[cliAgent];
       if (previous === cliPath) continue;
@@ -942,40 +1007,23 @@ export function ExternalCliAgentsSection({
     }
   }, [cliPathsSignature, clearDetectResult, detecting]);
 
-  // Move each agent's effective path to the front of its MRU history so the
-  // dropdown keeps previously used addresses selectable ("add another
-  // address" = enter a new path, the old one stays in the list). Covers every
-  // source: dropdown switch, edit form save, and the native file picker.
-  useEffect(() => {
-    const currentPaths = JSON.parse(cliPathsSignature) as [ExternalCliAgentKind, string, boolean][];
-    setPathHistories((prev) => {
-      let changed = false;
-      const next = { ...prev };
-      for (const [cliAgent, cliPath] of currentPaths) {
-        if (!cliPath) continue;
-        const list = prev[cliAgent] ?? [];
-        if (list[0] === cliPath) continue;
-        next[cliAgent] = [cliPath, ...list.filter((item) => item !== cliPath)].slice(0, PATH_HISTORY_LIMIT);
-        changed = true;
-      }
-      if (!changed) return prev;
-      storePathHistories(next);
-      return next;
-    });
-  }, [cliPathsSignature]);
-
   useEffect(() => {
     if (!onDetect) return undefined;
-    const currentPaths = JSON.parse(cliPathsSignature) as [ExternalCliAgentKind, string, boolean][];
+    const currentPaths = JSON.parse(cliPathsSignature) as [ExternalCliAgentKind, string, boolean, boolean][];
     const timers = new Map<ExternalCliAgentKind, number>();
-    for (const [cliAgent, cliPath, useBuiltin] of currentPaths) {
-      if (scheduledDetectPathsRef.current[cliAgent] === cliPath) continue;
-      scheduledDetectPathsRef.current[cliAgent] = cliPath;
+    for (const [cliAgent, cliPath, useBuiltin, enabled] of currentPaths) {
+      if (scheduledDetectPathsRef.current[cliAgent] === `${cliPath}|${enabled}`) continue;
+      scheduledDetectPathsRef.current[cliAgent] = `${cliPath}|${enabled}`;
       const timer = window.setTimeout(() => {
         timers.delete(cliAgent);
         // Detect in the mode the agent is configured for: probing PATH for a
         // built-in CLI would report a false "not installed".
-        void detect(cliAgent, cliPath, useBuiltin);
+        // When the agent is disabled, use_builtin and cli_path are not
+        // persisted by the backend, so they reset to defaults on reload.
+        // Probe with use_builtin=true so the managed built-in CLI path is
+        // checked first (it also falls back to PATH), giving the correct
+        // "is the CLI installed" answer for disabled agents.
+        void detect(cliAgent, cliPath, enabled ? useBuiltin : true);
       }, EXTERNAL_CLI_AUTO_DETECT_DELAY_MS);
       timers.set(cliAgent, timer);
     }
@@ -1093,15 +1141,18 @@ export function ExternalCliAgentsSection({
         // typed an explicit path over it).
         const detectedPath = result?.path || '';
         const copyablePath = displayResult?.path && !cliPath ? displayResult.path : '';
-        // Dropdown choices: active path first, then the PATH-detected one, then
-        // the agent's MRU history. Trigger, edit field and panel are capped at
-        // max-w-[55rem] (880px); longer paths truncate with a tooltip.
-        // History entries carry a remove button; the active path and the
-        // detected PATH lookup are not history and cannot be dropped here.
+        // Dropdown choices: active path first, then the persisted path
+        // history, then the PATH-detected one, then the path from the latest
+        // detection result, then the built-in (managed) CLI path. The built-in
+        // entry stays constant across local-path switches so the dropdown
+        // keeps offering the built-in CLI (#6647). Trigger, edit field and
+        // panel are capped at max-w-[55rem] (880px); longer paths truncate
+        // with a tooltip.
+        const historyPaths = parseExternalCliPathHistories(draftValues[externalCliKey(cliAgent, 'path_histories')]);
         const pathOptions: SelectOption[] = [];
         {
           const seen = new Set<string>();
-          const pushPathOption = (path: string, removable: boolean) => {
+          const pushPathOption = (path: string) => {
             if (!path || seen.has(path)) return;
             seen.add(path);
             pathOptions.push({
@@ -1111,27 +1162,17 @@ export function ExternalCliAgentsSection({
                   {path}
                 </span>
               ),
-              trailing: removable ? (
-                <span
-                  role="button"
-                  aria-label={t('config.externalCli.removePath')}
-                  title={t('config.externalCli.removePath')}
-                  data-testid="ui-select-option-remove"
-                  className="ml-1 flex h-5 w-5 flex-shrink-0 items-center justify-center rounded text-text-muted opacity-40 hover:bg-secondary/40 hover:opacity-100"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    removePathHistory(cliAgent, path);
-                  }}
-                >
-                  <svg viewBox="0 0 16 16" className="h-3 w-3" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true">
-                    <path strokeLinecap="round" d="M4 4l8 8M12 4l-8 8" />
-                  </svg>
-                </span>
-              ) : undefined,
             });
           };
-          for (const path of [cliPath, pathCandidates[cliAgent] || '', detectedPath]) pushPathOption(path, false);
-          for (const path of pathHistories[cliAgent] ?? []) pushPathOption(path, true);
+          for (const path of [
+            cliPath,
+            ...historyPaths,
+            pathCandidates[cliAgent] || '',
+            detectedPath,
+            builtinPaths[cliAgent] || '',
+          ]) {
+            pushPathOption(path);
+          }
         }
         const detectingNow = detecting[cliAgent];
         // Keep the last detection result mounted while re-detecting: hiding
@@ -1179,8 +1220,8 @@ export function ExternalCliAgentsSection({
             <Button
               variant="quiet"
               size="sm"
-              loading={committing[cliAgent]}
-              disabled={disabled || !onCommitAgent || agentInstalling || editing[cliAgent]}
+              loading={installInFlight[cliAgent]}
+              disabled={disabled || !onCommitAgent || committing[cliAgent] || installInFlight[cliAgent] || agentInstalling || editing[cliAgent]}
               onClick={() => void installNow(cliAgent)}
               title={t('config.externalCli.installNow')}
               aria-label={t('config.externalCli.installNow')}
@@ -1215,6 +1256,15 @@ export function ExternalCliAgentsSection({
             <Loader2 className="settings-spinner h-3.5 w-3.5" />
             {t('config.externalCli.installPhase.running')}
           </span>
+        ) : !installed ? (
+          <span
+            className="inline-flex items-center gap-1 text-xs text-text-muted"
+            data-testid="settings-panel-external-cli-agent-status"
+            data-variant={cliAgent}
+          >
+            <CliStatusDisc />
+            {t('config.externalCli.notInstalled')}
+          </span>
         ) : !enabled ? (
           <span
             className="inline-flex items-center gap-1 text-xs text-danger"
@@ -1224,7 +1274,7 @@ export function ExternalCliAgentsSection({
             <CliStatusDisc ringClassName="text-danger" filled />
             {t('config.externalCli.disabled')}
           </span>
-        ) : installed ? (
+        ) : (
           <span
             className="inline-flex items-center gap-1 text-xs text-text-muted"
             data-testid="settings-panel-external-cli-agent-status"
@@ -1235,15 +1285,6 @@ export function ExternalCliAgentsSection({
             {result?.version ? (
               <span className="ml-2 text-text-muted">{t('config.externalCli.version', { version: result.version })}</span>
             ) : null}
-          </span>
-        ) : (
-          <span
-            className="inline-flex items-center gap-1 text-xs text-text-muted"
-            data-testid="settings-panel-external-cli-agent-status"
-            data-variant={cliAgent}
-          >
-            <CliStatusDisc />
-            {t('config.externalCli.notInstalled')}
           </span>
         );
 
@@ -1260,7 +1301,7 @@ export function ExternalCliAgentsSection({
             className="space-y-2 rounded-lg border border-border bg-secondary/10 p-3"
             data-testid="settings-panel-external-cli-agent"
             data-variant={cliAgent}
-            data-state={detectingNow ? 'detecting' : installed ? 'installed' : 'not-installed'}
+            data-state={detectingNow ? 'detecting' : !installed ? 'not-installed' : !enabled ? 'disabled' : 'installed'}
           >
             {custom ? (
               <>
@@ -1291,7 +1332,7 @@ export function ExternalCliAgentsSection({
                       aria-checked={enabled}
                       aria-label={toggleLabel(cliAgent)}
                       onClick={() => onChange(enabledKey, enabled ? 'false' : 'true')}
-                      disabled={disabled}
+                      disabled={disabled || (!installed && !enabled)}
                       data-testid="settings-panel-external-cli-agent-toggle"
                       data-variant={cliAgent}
                       className={`relative inline-flex h-5 w-9 flex-shrink-0 cursor-pointer rounded-full border-2 border-transparent focus:outline-none ${enabled ? 'bg-[var(--color-toggle-enabled)]' : 'bg-[var(--color-toggle-disabled)]'} disabled:cursor-not-allowed disabled:opacity-60`}
@@ -1422,7 +1463,7 @@ export function ExternalCliAgentsSection({
                   <div className="flex flex-shrink-0 items-center gap-2">
                     <Switch
                       checked={enabled}
-                      disabled={disabled || committing[cliAgent] || agentInstalling || editing[cliAgent]}
+                      disabled={disabled || (!installed && !enabled) || committing[cliAgent] || agentInstalling || editing[cliAgent]}
                       onChange={(next) => void toggleAgentEnabled(cliAgent, next, useBuiltin, cliPath)}
                       aria-label={t('config.externalCli.toggleEnable', { agent: label })}
                       data-testid="settings-panel-external-cli-agent-enable-switch"
@@ -1474,7 +1515,21 @@ export function ExternalCliAgentsSection({
                           </span>
                         ) : undefined
                       }
-                      onChange={(next) => void validateAndCommitPath(cliAgent, next)}
+                      onChange={(next) => {
+                        // 选中内置（托管安装）路径时切回内置模式：use_builtin=true、
+                        // 清空自定义路径。托管路径由安装器管理（升级/重装会挪位置），
+                        // 固化成自定义 cli_path 与内置语义相悖（!10307 检视意见）。
+                        if (builtinPaths[cliAgent] && next === builtinPaths[cliAgent]) {
+                          // 内置提交把 cli_path 清空为托管模式：与 validateAndCommitPath
+                          // 相同地登记 echo 豁免与已观察路径，防止配置回显落在探测窗口
+                          // 之外时被草稿同步 effect 当成外部编辑清掉探测结果、闪"未安装"。
+                          observedCliPathsRef.current[cliAgent] = '';
+                          commitEchoAgentsRef.current.add(cliAgent);
+                          void toggleAgentEnabled(cliAgent, true, true, '');
+                          return;
+                        }
+                        void validateAndCommitPath(cliAgent, next);
+                      }}
                       className="!h-9 min-w-0 max-w-[55rem] flex-1"
                       maxPanelWidth={880}
                       data-testid="settings-panel-external-cli-agent-cli-path-select"
@@ -1554,13 +1609,13 @@ export function ExternalCliAgentsSection({
                     onStatusChange={onInstallStatusChange}
                     inline
                   />
-                ) : !installed && enabled && (!result || !detectingNow) ? (
+                ) : !installed && (!result || !detectingNow) ? (
                   // One-click install entry: shown initially (no result yet)
                   // and whenever a finished detect reports the agent missing.
                   // While a detect is in flight with a result on screen the
                   // banner hides, so a manual re-detect never flashes it.
-                  // Disabled agents never prompt: the user already turned them
-                  // off, so "install now" would be noise after a page reload.
+                  // The toggle is disabled when not installed, so the user
+                  // must use this button to install before enabling.
                   <div
                     className="flex items-center gap-1.5 rounded-md border border-accent/30 bg-accent/10 px-2.5 py-1.5"
                     data-testid="settings-panel-external-cli-agent-install-hint"
@@ -1576,7 +1631,7 @@ export function ExternalCliAgentsSection({
                       <button
                         type="button"
                         className="rounded font-medium text-accent outline-none hover:underline disabled:cursor-not-allowed disabled:opacity-60"
-                        disabled={disabled || !onCommitAgent || committing[cliAgent] || agentInstalling || editing[cliAgent]}
+                        disabled={disabled || !onCommitAgent || committing[cliAgent] || installInFlight[cliAgent] || agentInstalling || editing[cliAgent]}
                         onClick={() => void installNow(cliAgent)}
                         title={t('config.externalCli.installNow')}
                         aria-label={t('config.externalCli.installNow')}

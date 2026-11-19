@@ -10,6 +10,71 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
+    current_content_language,
+    join_sentences,
+    list_separator,
+    localized_lighting,
+    localized_time_of_day,
+    phrase,
+    sentence,
+    strip_phrase,
+)
+
+_PHRASES: dict[str, dict[str, str]] = {
+    "en": {
+        "exterior": "Exterior, with the ground and the open background.",
+        "interior": "Interior of this place.",
+        "tod_with_lighting": "It is {label}; {lighting}.",
+        "tod": "It is {label}.",
+        "empty_setting": "One empty setting.",
+        "setting_is_empty": "The setting is empty.",
+        "visible_props": "Visible props: {props}.",
+        "one_clear_image": "One clear image.",
+        "one_person": (
+            "One person only: {name}, as a three-view turnaround with a head close-up — four "
+            "views in one row from left to right on one continuous pure white background: a "
+            "head-and-shoulders close-up of the face (front view, as tall as the sheet), then "
+            "full-body front, side, and back views at one scale; the side view is a profile "
+            "facing the left edge of the image; open white space between the figures; the "
+            "background is one unbroken white field, borderless, with no frames and no dividing "
+            "lines."
+        ),
+        "one_group": (
+            "One group only: {name}, {count} distinct people — varied faces, ages, and "
+            "postures within one shared wardrobe family, full bodies, on a plain blank "
+            "background. No two share the same face."
+        ),
+        "neutral_backdrop": "Solid neutral background, identity and costume only.",
+        "identity_only": "Identity and costume only.",
+        "wearing": "Wearing {costume}.",
+        "the_character": "the character",
+    },
+    "zh": {
+        "exterior": "室外，可见地面与开阔的背景。",
+        "interior": "该地点的室内。",
+        "tod_with_lighting": "时间是{label}；{lighting}。",
+        "tod": "时间是{label}。",
+        "empty_setting": "一个空旷的场景。",
+        "setting_is_empty": "场景中空无一人。",
+        "visible_props": "可见道具：{props}。",
+        "one_clear_image": "画面清晰，单张图像。",
+        "one_person": (
+            "只画一个人：{name}，三视图加头部特写——从左到右排成一行，站在同一块连续的纯白背景上："
+            "正面头部特写（头到胸口，与整张图同高）、正面全身、侧面全身（脸朝画面左侧）、背面全身；"
+            "三个全身像比例一致，人物之间只留白色空隙，背景连成一整块白，没有分格线和边框。"
+        ),
+        "one_group": (
+            "画面中只有一群人：{name}，共{count}人，面孔、年龄与姿态各不相同，但属于"
+            "统一的着装体系；全员全身，纯色空白背景。没有两个人共用同一张脸。"
+        ),
+        "neutral_backdrop": "纯色中性背景，只呈现人物身份与服装。",
+        "identity_only": "只呈现人物身份与服装。",
+        "wearing": "身穿{costume}。",
+        "the_character": "该角色",
+    },
+}
+
 _BAD = re.compile(
     r"(?i)(\bforbid\b|\bforbidden\b|\bdo not\b|\bdon't\b|\bnever\b|"
     r"\bmust not\b|\bno people\b|\bno faces\b|\bno bodies\b|"
@@ -83,7 +148,7 @@ def visual_place_name(text: Any) -> str:
         return ""
     if _PLACEHOLDER_PROP.search(raw) or _BAD.search(raw):
         return ""
-    return raw.split(".")[0].strip()[:160]
+    return re.split(r"[.。]", raw, maxsplit=1)[0].strip()[:160]
 
 
 def visual_prop_list(raw: Any) -> list[str]:
@@ -104,29 +169,31 @@ def visual_prop_list(raw: Any) -> list[str]:
     return out[:6]
 
 
-def _enclosure_phrase(place: str) -> str:
+def _enclosure_phrase(place: str, lang: str = "en") -> str:
     text = str(place or "")
     low = text.lower()
     if any(word in text or word in low for word in _EXTERIOR):
-        return "Exterior, with the ground and the open background."
+        return phrase(_PHRASES, lang, "exterior")
     if any(word in text or word in low for word in _INTERIOR):
-        return "Interior of this place."
+        return phrase(_PHRASES, lang, "interior")
     return ""
 
 
-def _tod_phrase(cfg: dict[str, Any]) -> str:
+def _tod_phrase(cfg: dict[str, Any], lang: str = "en") -> str:
     tod = cfg.get("time_of_day_lock") if isinstance(cfg.get("time_of_day_lock"), dict) else {}
     bible = cfg.get("scene_specs") if isinstance(cfg.get("scene_specs"), dict) else {}
-    label = str((tod or {}).get("time_of_day") or bible.get("time_of_day") or "").strip()
+    raw_label = str((tod or {}).get("time_of_day") or bible.get("time_of_day") or "").strip()
     lighting = _visual_lighting(str((tod or {}).get("lighting") or bible.get("lighting") or ""))
-    if label and label.lower() != "unspecified":
+    lighting = strip_phrase(localized_lighting(lighting, lang))
+    if raw_label and raw_label.lower() != "unspecified":
+        label = localized_time_of_day(raw_label, lang)
         if lighting and label.lower() in lighting.lower():
-            return lighting.rstrip(".") + "."
+            return sentence(lighting, lang)
         if lighting:
-            return f"It is {label}; {lighting.rstrip('.')}."
-        return f"It is {label}."
+            return phrase(_PHRASES, lang, "tod_with_lighting", label=label, lighting=lighting)
+        return phrase(_PHRASES, lang, "tod", label=label)
     if lighting:
-        return lighting.rstrip(".") + "."
+        return sentence(lighting, lang)
     return ""
 
 
@@ -152,9 +219,9 @@ def _scene_phrase(cfg: dict[str, Any]) -> str:
     return ""
 
 
-def _props_phrase(cfg: dict[str, Any]) -> str:
+def _props_phrase(cfg: dict[str, Any], lang: str = "en") -> str:
     bible = cfg.get("scene_specs") if isinstance(cfg.get("scene_specs"), dict) else {}
-    return ", ".join(visual_prop_list(bible.get("objects")))
+    return list_separator(lang).join(visual_prop_list(bible.get("objects")))
 
 
 def looks_like_lock_essay(prompt: str) -> bool:
@@ -175,34 +242,53 @@ def compose_scene_specs_prompt(
     seed: str = "",
 ) -> str:
     """Positive empty-environment plate for the image model."""
-    del graph
     cfg = _cfg(cfg)
+    lang = current_content_language()
     place = _scene_phrase(cfg)
-    tod = _tod_phrase(cfg)
-    props = _props_phrase(cfg)
+    tod = _tod_phrase(cfg, lang)
+    props = _props_phrase(cfg, lang)
     look = _style_look(cfg)
-    bits = [f"{place}." if place else "One empty setting."]
-    enclosure = _enclosure_phrase(place)
+    bits = [sentence(place, lang) if place else phrase(_PHRASES, lang, "empty_setting")]
+    enclosure = _enclosure_phrase(place, lang)
     if enclosure:
         bits.append(enclosure)
-    bits.append("The setting is empty.")
+    bits.append(phrase(_PHRASES, lang, "setting_is_empty"))
     if tod:
-        bits.append(tod if tod.endswith(".") else tod + ".")
+        bits.append(sentence(tod, lang))
     if props:
-        bits.append(f"Visible props: {props}.")
+        bits.append(phrase(_PHRASES, lang, "visible_props", props=props))
     spatial = cfg.get("spatial_lock") if isinstance(cfg.get("spatial_lock"), dict) else {}
     arch = visual_place_name((spatial or {}).get("architecture"))
     if arch and arch.casefold() not in place.casefold():
-        bits.append(arch.rstrip(".") + ".")
+        bits.append(sentence(arch, lang))
     if look and not _BAD.search(look):
-        bits.append(f"{look}.")
-    bits.append("One clear image.")
+        bits.append(sentence(look, lang))
+    bits.append(phrase(_PHRASES, lang, "one_clear_image"))
     # Optional seed: only keep positive fragments that add place detail.
     seed_text = str(seed or "").strip()
     if seed_text and not looks_like_lock_essay(seed_text) and len(seed_text) < 400:
-        bits.insert(1, seed_text.rstrip(".") + ".")
-    text = " ".join(b for b in bits if b)
+        bits.insert(1, sentence(seed_text, lang))
+    text = join_sentences(bits, lang)
     return re.sub(r"\s+", " ", text).strip()
+
+
+_REFERENCE_SHEET_TASKS = frozenset({"character_specs", "medium_change"})
+
+
+def is_reference_led_sheet(cfg: dict[str, Any] | None) -> bool:
+    """A sheet re-drawn from a user upload, which keeps that upload's framing and style."""
+    return str(_cfg(cfg).get("reference_image_task") or "").strip() in _REFERENCE_SHEET_TASKS
+
+
+def is_turnaround_sheet(cfg: dict[str, Any] | None) -> bool:
+    """A solo character sheet drawn as front/side/back views of one person.
+
+    Group plates and combined casts hold several people.
+    """
+    cfg = _cfg(cfg)
+    if cfg.get("combined_cast") or is_reference_led_sheet(cfg):
+        return False
+    return str(cfg.get("cast_form") or "").strip().lower() != "group"
 
 
 def compose_character_sheet_prompt(
@@ -211,32 +297,47 @@ def compose_character_sheet_prompt(
     graph: dict[str, Any] | None = None,
     seed: str = "",
 ) -> str:
-    """Positive one-person studio sheet for the image model."""
-    del graph
+    """Positive studio sheet for the image model.
+
+    A cast entry declared as a group gets a group sheet: one shared look drawn
+    across a small crowd. A "one person only" sheet for a team contradicted every
+    shot that then asked for that team on screen.
+    """
+    from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import wearable_phrase
+
     cfg = _cfg(cfg)
+    lang = current_content_language()
     name = str(
         cfg.get("character_name")
         or (cfg.get("character_names") or [None])[0]
         or cfg.get("character_id")
-        or "the character"
+        or phrase(_PHRASES, lang, "the_character")
     ).strip()
     costume = str(cfg.get("costume_lock") or "").strip()
     costume = re.split(r"(?i)\b(?:do not|don't|never|forbid)\b", costume, maxsplit=1)[0]
-    costume = costume.strip(" ,;.—-")[:200]
+    costume = wearable_phrase(costume, name=name, lang=lang).strip(" ,;.—-")[:200]
     look = _style_look(cfg)
+    is_group = str(cfg.get("cast_form") or "").strip().lower() == "group"
+    if is_group:
+        count = str(cfg.get("cast_group_size") or "").strip() or (
+            "数" if lang == "zh" else "several"
+        )
+        opening = phrase(_PHRASES, lang, "one_group", name=name, count=count)
+    else:
+        opening = phrase(_PHRASES, lang, "one_person", name=name)
     bits = [
-        f"One person only: {name}, full or three-quarter body on a plain empty studio backdrop.",
-        "Solid neutral background, identity and costume only.",
+        opening,
+        phrase(_PHRASES, lang, "neutral_backdrop" if is_group else "identity_only"),
     ]
     if costume and not _BAD.search(costume):
-        bits.append(f"Wearing {costume}.")
+        bits.append(phrase(_PHRASES, lang, "wearing", costume=costume))
     if look and not _BAD.search(look):
-        bits.append(f"{look}.")
-    bits.append("One clear image.")
+        bits.append(sentence(look, lang))
+    bits.append(phrase(_PHRASES, lang, "one_clear_image"))
     seed_text = str(seed or "").strip()
     if seed_text and not looks_like_lock_essay(seed_text) and len(seed_text) < 300:
-        bits.insert(1, seed_text.rstrip(".") + ".")
-    text = " ".join(b for b in bits if b)
+        bits.insert(1, sentence(seed_text, lang))
+    text = join_sentences(bits, lang)
     return re.sub(r"\s+", " ", text).strip()
 
 

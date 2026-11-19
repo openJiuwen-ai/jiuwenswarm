@@ -49,18 +49,12 @@ _mark_startup_import_phase("runtime_workspace_deferred")
 _mark_startup_import_phase("entry_module_ready")
 
 
-
 async def _start_supervisor(front: object, host: str, port: int) -> object:
-    """Attach the supervisor and wait until Worker IPC is up.
-
-    ``AGENT_READY`` arrives later on the IPC readiness stream. Control-plane
-    requests are already served by Front.
-    """
+    """Attach the supervisor after Front listens and wait for Worker IPC."""
     from jiuwenswarm.server.supervisor.runtime_supervisor import RuntimeSupervisor
 
-    readiness = getattr(front, "readiness", None)
     supervisor = RuntimeSupervisor(
-        readiness,
+        getattr(front, "readiness", None),
         forwarder=getattr(front, "forwarder", None),
         host=host,
         port=port,
@@ -91,12 +85,102 @@ def _install_common_providers() -> None:
     install_front()
 
 
+def _configure_openjiuwen_logging() -> None:
+    """Bind OpenJiuwen logging to the writable workspace before Front serves.
+
+    Front handles control-plane requests (``history.get`` among them) whose
+    todo snapshot lazily imports OpenJiuwen. Without an explicit configuration
+    OpenJiuwen falls back to its relative default ``./logs/``, resolved against
+    the process CWD. AgentOS sandboxes run with CWD=/ on a read-only root, so
+    logger creation raises and the history stream aborts before its done frame.
+
+    Both branches are guarded: a missing or malformed ``logging.yaml`` (or an
+    unwritable path inside it) must not crash Front startup, so the workspace
+    fallback config is tried next and only if that also fails does the function
+    give up with a warning, leaving Front's default logging intact.
+
+    The fallback config keeps OpenJiuwen at ``INFO``; do not silence its
+    loggers here, or control-plane failures (``history.get`` included) would
+    disappear from Front's logs.
+    """
+    from jiuwenswarm.common.utils import get_config_dir, get_logs_dir
+
+    logging_yaml = get_config_dir() / "logging.yaml"
+    if logging_yaml.exists():
+        try:
+            from openjiuwen.core.common.logging.log_config import configure_log
+
+            configure_log(str(logging_yaml))
+            return
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[AgentServer] openjiuwen logging.yaml config failed; "
+                "trying workspace fallback",
+                exc_info=True,
+            )
+
+    try:
+        from openjiuwen.core.common.logging.log_config import configure_log_config
+
+        configure_log_config({
+            "backend": "default",
+            "level": "INFO",
+            "log_path": f"{get_logs_dir() / 'core'}/",
+            "log_file": "run/jiuwen.log",
+            "output": ["file"],
+            "structured_output_format": "json",
+            "interface_log_file": "interface/jiuwen_interface.log",
+            "prompt_builder_interface_log_file": "interface/jiuwen_prompt_builder_interface.log",
+            "performance_log_file": "performance/jiuwen_performance.log",
+        })
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[AgentServer] openjiuwen log config failed; Front keeps default logging",
+            exc_info=True,
+        )
+
+
+def _start_team_store_before_traffic() -> None:
+    """Create team tables before this process accepts chat.
+
+    Personal edition does not use the shared team store, so this returns immediately.
+    """
+    from jiuwenswarm.infrastructure.db.team_store_actor import (
+        get_team_store_actor,
+        use_shared_team_store,
+    )
+
+    if not use_shared_team_store():
+        return
+    get_team_store_actor()
+
+
 async def _run(host: str, port: int) -> None:
     _install_common_providers()
     from jiuwenswarm.server.front.server import AgentServerFront
 
+    _configure_openjiuwen_logging()
+
     startup_t0 = time.monotonic()
     logger.info("[AgentServer] starting: ws://%s:%s", host, port)
+
+    # 企业版：冷加载 Manager 下发的日志级别（Pod 拉起/重建时 DB 行生效）。
+    # 放在其余冷加载之前，后续启动日志即按新级别输出。
+    try:
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if is_enterprise():
+            from jiuwenswarm.enterprise.capabilities.logging import (
+                reload_logging_levels_from_gateway_db,
+            )
+
+            await reload_logging_levels_from_gateway_db()
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[AgentServer] logging_config cold load skipped",
+            exc_info=True,
+        )
+
     for import_stage, marked_at in _STARTUP_IMPORT_PHASES:
         logger.info(
             "[AgentServer] startup import stage=%s process_elapsed=%.2fs",
@@ -110,21 +194,28 @@ async def _run(host: str, port: int) -> None:
         time.monotonic() - startup_t0,
     )
 
+    await asyncio.to_thread(_start_team_store_before_traffic)
     front = AgentServerFront(host=host, port=port)
-    await front.start()
-    logger.info(
-        "[AgentServer] port listening: ws://%s:%s (elapsed %.2fs)",
-        host,
-        port,
-        time.monotonic() - startup_t0,
-    )
-    logger.info(
-        "[AgentServer] startup stage=%s process_elapsed=%.2fs run_elapsed=%.2fs control_ready=%s",
-        "agent_ws_listening",
-        time.monotonic() - _PROCESS_START_T0,
-        time.monotonic() - startup_t0,
-        front.readiness.snapshot().get("control_ready"),
-    )
+    from jiuwenswarm.server.startup_switches import resolve_websocket_enabled, ws_server_config
+
+    websocket_enabled = resolve_websocket_enabled(config_section=ws_server_config())
+    if websocket_enabled:
+        await front.start()
+        logger.info(
+            "[AgentServer] port listening: ws://%s:%s (elapsed %.2fs)",
+            host,
+            port,
+            time.monotonic() - startup_t0,
+        )
+        logger.info(
+            "[AgentServer] startup stage=%s process_elapsed=%.2fs run_elapsed=%.2fs control_ready=%s",
+            "agent_ws_listening",
+            time.monotonic() - _PROCESS_START_T0,
+            time.monotonic() - startup_t0,
+            front.readiness.snapshot().get("control_ready"),
+        )
+    else:
+        logger.info("[AgentServer] WebSocket 门关闭，不听端口")
 
     stop_event = asyncio.Event()
     supervisor: object | None = None

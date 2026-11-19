@@ -47,11 +47,28 @@
   line-height: 22px;
 }
 
+.setting-row__error {
+  display: block;
+  margin-top: 4px;
+  color: var(--color-feedback-danger);
+}
+
 .setting-row__control {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
   gap: 8px;
+}
+
+.setting-row__unavailable-switch {
+  display: inline-flex;
+  cursor: not-allowed;
+}
+
+.setting-row__unavailable-switch > .ui-switch:disabled {
+  border-color: var(--color-switch-track-off);
+  background: var(--color-switch-track-off);
+  pointer-events: none;
 }
 
 .setting-row__sub-settings {

@@ -1,21 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { isEnterprise } from '../../edition';
 import { useTranslation } from 'react-i18next';
 import type { AgentGroupCatalogItem, RequestStatus } from '../../features/agentManagement';
 import { CategoryTabs, EmptyState } from '../ui';
 // 深引入而非 ../ui barrel：本组件会被 esbuild 独立打包进测试
 import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 import { GroupCard } from './GroupCard';
-
-const GROUP_CATEGORIES = [
-  'ProductDevelopment',
-  'Marketing',
-  'Efficiency',
-  'DataAnalysis',
-  'ContentCreation',
-  'SafetyCompliance',
-  'Communication',
-  'Other',
-];
 
 /** 首批渲染数量；触底后每批追加同数量（组目录一次性载入内存，这里做增量展示）。 */
 const GROUP_CATALOG_BATCH_SIZE = 15;
@@ -27,6 +17,8 @@ type GroupCatalogPageProps = {
   items: AgentGroupCatalogItem[];
   query: string;
   category: string;
+  /** 分类页签：由父组件从已加载组目录动态统计（collectCategories），市场有几个分类出几个页签 */
+  categories?: readonly string[];
   installation?: 'all' | 'installed' | 'uninstalled';
   status: RequestStatus;
   error: string | null;
@@ -44,6 +36,7 @@ export function GroupCatalogPage({
   items,
   query,
   category,
+  categories = [],
   installation = 'all',
   status,
   error,
@@ -125,7 +118,7 @@ export function GroupCatalogPage({
           <CategoryTabs
             items={[
               { value: '', label: t('agentManagement.categoryAll') },
-              ...GROUP_CATEGORIES.map((item) => ({
+              ...categories.map((item) => ({
                 value: item,
                 label: t(`agentManagement.categories.${item}`, { defaultValue: item }),
               })),
@@ -177,7 +170,7 @@ export function GroupCatalogPage({
                 : t(isMine ? 'agentManagement.group.states.mineEmpty' : 'agentManagement.group.states.catalogEmpty')
             }
           >
-            {isMine && !hasQuery ? (
+            {isMine && !hasQuery && !isEnterprise() ? (
               <button
                 type="button"
                 className="h-[28px] w-[96px] rounded-full border border-[var(--color-button-border)] bg-card text-[12px] text-text"

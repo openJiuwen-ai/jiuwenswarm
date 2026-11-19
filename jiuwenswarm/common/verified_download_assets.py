@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""TTL-owned immutable download assets for authorized file delivery."""
+"""Registered snapshots and original-file references for authorized delivery."""
 
 from __future__ import annotations
 
@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from jiuwenswarm.common.utils import get_user_workspace_dir
+
 logger = logging.getLogger(__name__)
 
 _ASSET_STATE_STAGED = "staged"
@@ -32,13 +34,14 @@ def _default_asset_root() -> Path:
     configured = str(os.getenv("JIUWENSWARM_DOWNLOAD_ASSET_ROOT") or "").strip()
     if configured:
         return Path(configured).expanduser()
-    owner_id = os.getuid() if hasattr(os, "getuid") else os.getpid()
-    return Path(tempfile.gettempdir()) / f"jiuwenswarm-download-assets-{owner_id}"
+    if not hasattr(os, "getuid"):
+        return get_user_workspace_dir() / "download-assets"
+    return Path(tempfile.gettempdir()) / f"jiuwenswarm-download-assets-{os.getuid()}"
 
 
 @dataclass(frozen=True)
 class VerifiedDownloadAsset:
-    """One immutable sealed file staged before its token becomes visible."""
+    """One registered file; a zero expiry references the original file."""
 
     asset_id: str
     sealed_path: Path
@@ -48,7 +51,7 @@ class VerifiedDownloadAsset:
 
 
 class VerifiedDownloadAssetOwner:
-    """Own staged and committed sealed files until their token TTL expires."""
+    """Own file registrations and, for expiring assets, their sealed copies."""
 
     def __init__(
         self,
@@ -77,22 +80,29 @@ class VerifiedDownloadAssetOwner:
         *,
         file_name: str,
         expires_at: float,
+        reference_only: bool = False,
     ) -> VerifiedDownloadAsset:
-        """Atomically capture one stable delivery-time snapshot."""
+        """Register delivery-time bytes, optionally without copying the source."""
 
-        if expires_at <= self._now_fn():
+        if reference_only:
+            if type(expires_at) not in (int, float) or expires_at != 0:
+                raise ValueError("download_asset_reference_expiry_invalid")
+        elif expires_at <= self._now_fn():
             raise ValueError("download_asset_expired")
         source = Path(source_path).expanduser().absolute()
+        if reference_only and source.resolve(strict=False).is_relative_to(self.root):
+            raise ValueError("download_asset_reference_in_asset_root")
         self._ensure_root()
         self.prune()
         asset_id = uuid.uuid4().hex
         suffix = Path(file_name).suffix[:32]
-        sealed_path = self.root / f"{asset_id}{suffix}"
+        # Keep source unresolved for no-follow checks; register its canonical path.
+        sealed_path = source.resolve(strict=False) if reference_only else self.root / f"{asset_id}{suffix}"
         sidecar_path = self._sidecar_path(asset_id)
         try:
             actual_size, actual_digest = self._copy_verified_source(
                 source,
-                sealed_path,
+                None if reference_only else sealed_path,
             )
             payload = {
                 "asset_id": asset_id,
@@ -105,9 +115,11 @@ class VerifiedDownloadAssetOwner:
             self._write_sidecar_atomic(sidecar_path, payload)
         except (OSError, ValueError):
             self._safe_unlink(sidecar_path)
-            self._safe_unlink(sealed_path)
+            if not reference_only:
+                self._safe_unlink(sealed_path)
             raise
-        self._ensure_sweeper()
+        if not reference_only:
+            self._ensure_sweeper()
         return VerifiedDownloadAsset(
             asset_id=asset_id,
             sealed_path=sealed_path,
@@ -117,7 +129,7 @@ class VerifiedDownloadAssetOwner:
         )
 
     def commit(self, asset: VerifiedDownloadAsset) -> None:
-        """Mark a staged asset delivered while preserving the same TTL owner."""
+        """Mark a staged registration delivered without changing its lifetime."""
 
         with self._lock:
             sidecar_path = self._sidecar_path(asset.asset_id)
@@ -134,7 +146,8 @@ class VerifiedDownloadAssetOwner:
 
         with self._lock:
             self._safe_unlink(self._sidecar_path(asset.asset_id))
-            self._safe_unlink(asset.sealed_path)
+            if asset.expires_at != 0:
+                self._safe_unlink(asset.sealed_path)
 
     def is_active(
         self,
@@ -149,13 +162,17 @@ class VerifiedDownloadAssetOwner:
         """Validate managed token claims against durable staged ownership."""
 
         current_time = self._now_fn() if now is None else float(now)
-        if current_time > float(expires_at):
+        reference_only = expires_at == 0
+        if not reference_only and current_time > float(expires_at):
             return False
         normalized_id = _normalize_asset_id(asset_id)
         if not normalized_id:
             return False
         candidate = Path(sealed_path).expanduser().resolve(strict=False)
-        if candidate.parent != self.root or candidate.name.startswith("."):
+        if reference_only:
+            if candidate.is_relative_to(self.root):
+                return False
+        elif candidate.parent != self.root or candidate.name.startswith("."):
             return False
         try:
             payload = self._read_sidecar(self._sidecar_path(normalized_id))
@@ -166,6 +183,7 @@ class VerifiedDownloadAssetOwner:
                 payload.get("state") in _ACTIVE_ASSET_STATES
                 and payload.get("asset_id") == normalized_id
                 and payload.get("sealed_path") == candidate.as_posix()
+                and type(payload.get("expires_at")) in (int, float)
                 and float(payload.get("expires_at")) == float(expires_at)
                 and int(payload.get("size_bytes")) == int(size_bytes)
                 and payload.get("content_digest") == _normalize_digest(content_digest)
@@ -182,6 +200,7 @@ class VerifiedDownloadAssetOwner:
         with self._lock:
             registered_names: set[str] = set()
             for sidecar_path in self.root.glob("*.json"):
+                reference_only = False
                 if sidecar_path.is_symlink():
                     self._safe_unlink(sidecar_path)
                     continue
@@ -190,23 +209,29 @@ class VerifiedDownloadAssetOwner:
                     sealed_path = Path(str(payload["sealed_path"])).resolve(
                         strict=False
                     )
+                    expires_at = payload["expires_at"]
+                    reference_only = type(expires_at) in (int, float) and expires_at == 0
                     valid_location = (
-                        sealed_path.parent == self.root
+                        (
+                            not sealed_path.is_relative_to(self.root)
+                            if reference_only else sealed_path.parent == self.root
+                        )
                         and payload.get("asset_id") == sidecar_path.stem
                     )
-                    expired = current_time > float(payload["expires_at"])
+                    expired = not reference_only and current_time > float(expires_at)
                     valid_state = payload.get("state") in _ACTIVE_ASSET_STATES
-                except (KeyError, OSError, TypeError, ValueError):
+                except (KeyError, OSError, RuntimeError, TypeError, ValueError):
                     valid_location = False
                     expired = True
                     valid_state = False
                     sealed_path = self.root / sidecar_path.stem
                 if not valid_location or expired or not valid_state:
                     self._safe_unlink(sidecar_path)
-                    if valid_location:
+                    if valid_location and not reference_only:
                         self._safe_unlink(sealed_path)
                     continue
-                registered_names.add(sealed_path.name)
+                if not reference_only:
+                    registered_names.add(sealed_path.name)
 
             orphan_cutoff = current_time - self._orphan_grace_seconds
             for candidate in self.root.iterdir():
@@ -257,7 +282,7 @@ class VerifiedDownloadAssetOwner:
     @staticmethod
     def _copy_verified_source(
         source: Path,
-        destination: Path,
+        destination: Path | None,
     ) -> tuple[int, str]:
         try:
             source_stat = source.stat(follow_symlinks=False)
@@ -273,21 +298,24 @@ class VerifiedDownloadAssetOwner:
             opened_source_stat = os.fstat(source_fd)
             if not stat.S_ISREG(opened_source_stat.st_mode):
                 raise ValueError("download_asset_source_not_file")
-            destination_fd = os.open(destination, write_flags, 0o600)
+            if destination is not None:
+                destination_fd = os.open(destination, write_flags, 0o600)
             digest = hashlib.sha256()
             copied = 0
             while True:
                 chunk = os.read(source_fd, _DIGEST_CHUNK_SIZE)
                 if not chunk:
                     break
-                _write_all(destination_fd, chunk)
+                if destination_fd is not None:
+                    _write_all(destination_fd, chunk)
                 copied += len(chunk)
                 digest.update(chunk)
             actual_digest = f"sha256:{digest.hexdigest()}"
             if copied != opened_source_stat.st_size:
                 raise ValueError("download_asset_size_mismatch")
-            os.fsync(destination_fd)
-            os.chmod(destination, 0o400)
+            if destination_fd is not None:
+                os.fsync(destination_fd)
+                os.chmod(destination, 0o400)
             return copied, actual_digest
         finally:
             os.close(source_fd)

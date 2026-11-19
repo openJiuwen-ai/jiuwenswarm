@@ -12,6 +12,8 @@ import datetime
 from typing import List, Optional, Dict, Any, Set
 from dataclasses import dataclass
 
+from jiuwenswarm.common.sqlite_config import normalize_journal_mode
+
 from .types import (
     MemorySearchResult, MemoryFileEntry, MemoryChunk, MemorySource
 )
@@ -174,9 +176,16 @@ class MemoryIndexManager:
         ensure_dir(os.path.dirname(db_path) or ".")
 
         conn = sqlite3.connect(db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA foreign_keys=ON")
+        try:
+            conn.row_factory = sqlite3.Row
+            mode = normalize_journal_mode(self.settings.store.get("journal_mode", "WAL"))
+            actual = conn.execute(f"PRAGMA journal_mode={mode}").fetchone()[0]
+            if actual.upper() != mode:
+                raise sqlite3.OperationalError("could not select SQLite journal mode")
+            conn.execute("PRAGMA foreign_keys=ON")
+        except Exception:
+            conn.close()
+            raise
 
         return conn
 

@@ -42,20 +42,32 @@ This version only supports **AI video creation based on characters and scenes**:
 
 ## 2. Before you start: what to configure
 
-Design uses several kinds of models. Check the following in the left navigation under "More → Settings" first.
+Design uses several kinds of models. Open the model control beside the Design composer to view them under **Model configuration**.
 
 | Model | Used for | Required? | Where to configure |
 |:---|:---|:---|:---|
-| **Default model** | Understanding your request, writing the brief, breaking down shots, making edits | ✅ Required | Settings → Model configuration |
-| **Image generation model** | Generating character sheets, scene sheets, keyframes | Required if you want images | Settings → Agent → "Configure image generation model", and switch on **Image generation** |
-| **Video generation model** | Turning each shot into a video clip | Required if you want video | Settings → Agent → "Configure video generation model", and switch on **Video generation** |
+| **Chat model** | Understanding your request, writing the brief, breaking down shots, making edits | ✅ Required | Settings → Models |
+| **Image generation model** | Generating character sheets, scene sheets, keyframes | Required if you want images | Settings → Models → Multimodal models; select and enable it under Agent → Tools |
+| **Video generation model** | Turning each shot into a video clip | Required if you want video | Settings → Models → Multimodal models; select and enable it under Agent → Tools |
 | **Music model** | Background music for the final cut | Optional | A music node only appears once this is configured |
+
+**Model configuration** has three tabs: **Chat**, **Video generation**, and **Image generation**. Chat contains the limited-time free models and configured chat models. You can select a chat model on the Design landing page; the canvas chat dock displays its existing chat model read-only.
+
+The popover retains the Work model menu's corners, typography, model rows and icon styling, with segmented tabs and compact generation details. The header, tabs and footer stay fixed while only the model list scrolls. Chat keeps its original **Add custom model/model group** entry, which opens ordinary model settings. Generation tabs retain the tool-binding explanation instead of an add or selection action. The help tooltip remains available without changing the pointer to a question mark.
+
+Generation tabs identify the **Currently bound model** and show **Configured** when ready. This view is read-only; change the model under **Agent → Tools**. Design does not save a separate generation selection. A missing generation model shows a warning on the model control and its tab; **Configure** opens the Multimodal models tab directly. A bound but disabled tool retains its model display, with **Enable** opening Agent settings, without a ready badge. Returning from Settings refreshes the configuration. Read failures offer a retry and are displayed separately from missing configuration.
+
+An absent binding shows **Not configured**. A bound model with incomplete execution configuration shows **Missing required fields**. Display names do not affect readiness; the actual model name and API key retain their existing protocol-specific requirements.
 
 > 💡 **Tip:** Video generation uses reference-image-to-video mode. The video models tested so far are MiniMax H3, the Seedance 2.5 series, and the Wan 3.0 series. Image generation currently supports MiniMax, Volcengine / BytePlus ModelArk, Alibaba Cloud Model Studio (DashScope, e.g. the Wan series), and self-hosted vLLM-Omni. Because a reference image has to be sent along, image and video models **relayed through OpenRouter are not supported for now**.
 
 For Volcengine, the image and video generation dropdowns fetch the complete matching generation catalogue from the configured official regional endpoint. You can also enter a model ID. The catalogue includes retiring or discontinued models; listing does not confirm account activation or access. Discovery, generation and video task queries stay on the configured region without automatic region switching. Coding Plan endpoints do not support these generation features.
 
 Image and video generation run through tools and do not use the conversation context window, so these two configuration dialogs omit the context window option.
+
+The default model can use either the OpenAI or the Anthropic protocol. When Design calls the default model (writing the brief, breaking down shots, building the execution graph, and so on), thinking is turned off; if the model cannot turn thinking off, Design uses the lowest thinking level the model supports, so thinking does not use up the output length and truncate the result. The system picks each provider's parameter format for this from the endpoint.
+
+> 💡 **Tip:** When the service address is an IP, `localhost`, or a host name without dots (such as `http://gpu-box:8000/v1`), Design turns thinking off the way self-hosted vLLM / SGLang services expect, with no extra setup. If such an address points to a different kind of service, or your self-hosted service uses a dotted internal domain, register the host and its format under the top-level `endpoint_profile_overrides` in `config.yaml`, for example `"llm.corp.internal": "vllm"` (use `vllm` for SGLang services too). A registered value takes precedence.
 
 > ⚠️ **Note:** If a model is not configured, the corresponding node fails immediately during execution with a message like "Video generation is not configured". Fix the configuration, then click "Regenerate" on the node.
 

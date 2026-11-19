@@ -16,7 +16,7 @@ import { FreeModelSettingsDialog } from './FreeModelSettingsDialog';
 import { LOGIN_MODEL_SOURCE } from './modelListOperations';
 import './FreeModelsSettings.css';
 
-export function FreeModelsSettings() {
+export function FreeModelsSettings({ onSaved }: { onSaved?: () => void }) {
   const { t } = useTranslation();
   const campaign = useFreeModelsCampaign();
   const campaignActive = campaign.state === 'active';
@@ -114,7 +114,9 @@ export function FreeModelsSettings() {
             </button>
           </div>
         </article>
-        <FreeModelSettingsDialog open={configOpen} models={loginModels} onClose={() => setConfigOpen(false)} />
+        <FreeModelSettingsDialog
+          open={configOpen} models={loginModels} onClose={() => setConfigOpen(false)} onSaved={onSaved}
+        />
       </>
     );
   }
@@ -159,7 +161,9 @@ export function FreeModelsSettings() {
           </button>
         </div>
       </section>
-      <FreeModelSettingsDialog open={configOpen} models={loginModels} onClose={() => setConfigOpen(false)} />
+      <FreeModelSettingsDialog
+        open={configOpen} models={loginModels} onClose={() => setConfigOpen(false)} onSaved={onSaved}
+      />
     </>
   );
 }

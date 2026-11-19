@@ -13,6 +13,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from jiuwenswarm.common.sqlite_config import normalize_journal_mode
+
 
 ACTIVE_SESSION_MESSAGE_STATUSES = frozenset(
     {"queued", "running", "waiting_user", "unknown"}
@@ -73,8 +75,9 @@ class SessionMessageRecord:
 class SessionMessageStore:
     """SQLite-backed Session mailbox with transactional claim and dedup."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, journal_mode: str = "WAL") -> None:
         self.path = Path(path)
+        self._journal_mode = normalize_journal_mode(journal_mode)
         self._schema_lock = threading.Lock()
         self._schema_ready = False
 
@@ -84,10 +87,18 @@ class SessionMessageStore:
     def _connect(self) -> sqlite3.Connection:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(self.path, timeout=30.0)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.execute("PRAGMA busy_timeout=30000")
-        conn.execute("PRAGMA synchronous=FULL")
+        try:
+            if self._journal_mode == "DELETE":
+                actual = conn.execute("PRAGMA journal_mode=DELETE").fetchone()[0]
+                if actual.upper() != self._journal_mode:
+                    raise sqlite3.OperationalError("could not select SQLite DELETE journal mode")
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys=ON")
+            conn.execute("PRAGMA busy_timeout=30000")
+            conn.execute("PRAGMA synchronous=FULL")
+        except Exception:
+            conn.close()
+            raise
         return conn
 
     def _session(self) -> closing[sqlite3.Connection]:
@@ -107,7 +118,9 @@ class SessionMessageStore:
             if self._schema_ready:
                 return
             with self._session() as conn, conn:
-                conn.execute("PRAGMA journal_mode=WAL")
+                actual = conn.execute(f"PRAGMA journal_mode={self._journal_mode}").fetchone()[0]
+                if actual.upper() != self._journal_mode:
+                    raise sqlite3.OperationalError("could not select SQLite journal mode")
                 conn.execute("PRAGMA synchronous=FULL")
                 conn.executescript(
                     """
@@ -491,24 +504,24 @@ class SessionMessageStore:
             ).fetchone()
         return self._row_to_record(row)
 
-    def waiting_for_resume(
+    def waiting_for_pause(
         self,
         target_session_id: str,
-        interrupt_request_id: str,
-        interrupt_source: str,
+        interaction_ids: Iterable[str],
     ) -> SessionMessageRecord | None:
-        """Return the exact waiting item addressed by an interrupt answer."""
+        """Return the waiting item whose question is one of a pause's interactions."""
 
+        ids = sorted(set(interaction_ids))
         self.ensure_schema()
         with self._session() as conn, conn:
             row = conn.execute(
-                """
+                f"""
                 SELECT * FROM session_messages
                 WHERE target_session_id = ? AND status = 'waiting_user'
-                  AND interrupt_request_id = ? AND interrupt_source = ?
+                  AND interrupt_request_id IN ({", ".join("?" for _ in ids)})
                 ORDER BY sequence LIMIT 1
                 """,
-                (target_session_id, interrupt_request_id, interrupt_source),
+                (target_session_id, *ids),
             ).fetchone()
         return self._row_to_record(row)
 
@@ -695,8 +708,6 @@ class SessionMessageStore:
         self,
         message_id: str,
         *,
-        expected_interrupt_request_id: str,
-        expected_interrupt_source: str,
         interrupt_request_id: str,
         interrupt_source: str,
     ) -> SessionMessageRecord | None:
@@ -711,16 +722,8 @@ class SessionMessageStore:
                 SET updated_at = ?, interrupt_request_id = ?, interrupt_source = ?,
                     last_error_code = '', last_error = ''
                 WHERE message_id = ? AND status = 'waiting_user'
-                  AND interrupt_request_id = ? AND interrupt_source = ?
                 """,
-                (
-                    now,
-                    interrupt_request_id,
-                    interrupt_source,
-                    message_id,
-                    expected_interrupt_request_id,
-                    expected_interrupt_source,
-                ),
+                (now, interrupt_request_id, interrupt_source, message_id),
             )
             if cursor.rowcount != 1:
                 return None

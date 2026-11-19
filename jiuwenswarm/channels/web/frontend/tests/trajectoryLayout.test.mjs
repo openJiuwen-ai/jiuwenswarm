@@ -11,6 +11,7 @@ import {
   rawInspectorKeyboardHeight,
   shouldInsetTrajectoryForFloatingTasks,
   trajectoryComposerClearance,
+  trajectoryComposerPolicy,
 } from '../node_modules/.cache/trajectory-layout/trajectoryLayout.js';
 
 test('raw inspector height is clamped to its fixed minimum and container-relative maximum', () => {
@@ -68,6 +69,13 @@ test('docked composer reserves exactly what it covers, and nothing once collapse
   // Collapsed to watch-only, or left behind on the chat view, it covers nothing.
   assert.equal(trajectoryComposerClearance(true, true, 148), 0);
   assert.equal(trajectoryComposerClearance(false, false, 148), 0);
+});
+
+test('diagnosis selection and the diagnosis page keep the composer closed', () => {
+  assert.equal(trajectoryComposerPolicy('trajectory', false), 'available');
+  assert.equal(trajectoryComposerPolicy('trajectory', true), 'locked');
+  assert.equal(trajectoryComposerPolicy('diagnosis', false), 'hidden');
+  assert.equal(trajectoryComposerPolicy('diagnosis', true), 'hidden');
 });
 
 test('composer clearance refuses heights a layout pass cannot have produced', () => {

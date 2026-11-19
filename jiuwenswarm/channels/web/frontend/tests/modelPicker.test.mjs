@@ -9,6 +9,14 @@ import { JSDOM } from 'jsdom';
 import { createServer } from 'vite';
 import svgr from 'vite-plugin-svgr';
 
+// Transport selection reads the browser environment while modules are imported.
+const moduleDom = new JSDOM('<!doctype html>', { url: 'http://localhost/' });
+const moduleGlobals = new Map();
+for (const [name, value] of Object.entries({ window: moduleDom.window, document: moduleDom.window.document })) {
+  moduleGlobals.set(name, Object.getOwnPropertyDescriptor(globalThis, name));
+  Object.defineProperty(globalThis, name, { configurable: true, writable: true, value });
+}
+
 // Use the production transform for the provider catalog's import.meta.glob and assets.
 const vite = await createServer({
   configFile: false,
@@ -34,9 +42,26 @@ try {
     vite.ssrLoadModule('/src/features/multiModelCollaboration/featureConfig.ts'),
     vite.ssrLoadModule('/src/features/settings/modules/models/ModelGroupDialog.tsx'),
     vite.ssrLoadModule('/src/features/settings/services/SettingsServicesProvider'),
+    vite.ssrLoadModule('/src/stores/teamSelectorStore.ts'),
+    vite.ssrLoadModule('/src/features/teamOrganization/featureConfig.ts'),
+    vite.ssrLoadModule('/src/features/designer/components/DesignerModelSelector.tsx'),
+    vite.ssrLoadModule('/src/features/settings/components/SettingsTabLayout.tsx'),
+    vite.ssrLoadModule('/src/features/settings/services/settingsContract.ts'),
+    vite.ssrLoadModule('/src/features/designer/designerModelConfiguration.ts'),
+    vite.ssrLoadModule('/src/features/designer/useDesignerModelConfiguration.ts'),
+    vite.ssrLoadModule('/src/stores/workspaceStore.ts'),
+    vite.ssrLoadModule('/src/components/ui/Toast/Toast.tsx'),
+    vite.ssrLoadModule('/src/components/ui/Toast/toastStore.ts'),
+    vite.ssrLoadModule('/src/features/designer/designerStore.ts'),
+    vite.ssrLoadModule('/src/assets/providers/index.ts'),
   ]);
 } finally {
   await vite.close();
+  for (const [name, descriptor] of moduleGlobals) {
+    if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+    else delete globalThis[name];
+  }
+  moduleDom.window.close();
 }
 const [
   { default: ModelPicker },
@@ -54,10 +79,24 @@ const [
     findModelGroupReferencesForModel,
     formatModelSelectionReferenceScopes,
     extractModelSelectionReferences,
+    isFreeModelEntry,
+    getGroupCandidateModels,
   },
   { setMultiModelCollaborationEnabled, isMultiModelCollaborationEnabled },
   { ModelGroupDialog },
   { SettingsServicesProvider },
+  { useTeamSelectorStore },
+  { setTeamOrganizationUiEnabled, isTeamOrganizationUiEnabled },
+  { default: DesignerModelSelector },
+  { SettingsTabLayout },
+  { SETTINGS_CONFIG_CHANGED_EVENT },
+  { modelsForSlot, resolvedGenerationModelId },
+  { useDesignerGenerationStore },
+  { useWorkspaceStore },
+  { ToastStack },
+  { toast, toastStore, TOAST_EXIT_ANIMATION_MS },
+  { useDesignerStore },
+  { getModelLogoUrl },
 ] = modules;
 
 const resources = Object.fromEntries(
@@ -77,6 +116,7 @@ const initialForm = {
   name: 'Existing scheduled task',
   description: 'Draft description',
   modelName: 'configured-a',
+  modelSelection: null,
   mode: 'agent',
   cronExpr: '0 0 2 * * ? *',
   timezone: 'Asia/Shanghai',
@@ -93,6 +133,9 @@ async function withFixture(run, language = 'en') {
   const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>', {
     url: 'http://localhost/',
   });
+  const toastStyle = dom.window.document.createElement('style');
+  toastStyle.textContent = readFileSync(new URL('../src/components/ui/Toast/Toast.css', import.meta.url), 'utf8');
+  dom.window.document.head.appendChild(toastStyle);
   dom.window.HTMLDialogElement.prototype.showModal = function () { this.open = true; };
   dom.window.HTMLDialogElement.prototype.close = function () { this.open = false; };
   if (!dom.window.ResizeObserver) {
@@ -103,6 +146,7 @@ async function withFixture(run, language = 'en') {
     };
   }
   const previousGlobals = new Map();
+  dom.window.__JIUWENSWARM_EDITION__ = 'personal';
   for (const [name, value] of Object.entries({
     window: dom.window,
     document: dom.window.document,
@@ -124,6 +168,7 @@ async function withFixture(run, language = 'en') {
   const previousSession = useSessionStore.getState();
   const previousChat = useChatStore.getState();
   const previousAuth = useAuthStore.getState();
+  const previousWorkspace = useWorkspaceStore.getState();
   const previousCollaboration = isMultiModelCollaborationEnabled();
   setMultiModelCollaborationEnabled(false);
   // 预置成「状态已查过、活动没开」：否则组件挂载时会真的去查登录状态，测试环境里
@@ -136,7 +181,9 @@ async function withFixture(run, language = 'en') {
   const byId = (id) => document.querySelector(`[data-testid="${id}"]`);
   const mount = async (...children) =>
     act(async () => {
-      root.render(createElement(I18nextProvider, { i18n }, createElement(Fragment, null, ...children)));
+      root.render(
+        createElement(I18nextProvider, { i18n }, createElement(Fragment, null, ...children, createElement(ToastStack))),
+      );
     });
   const click = async (element) => {
     assert.ok(element, 'click target exists');
@@ -154,9 +201,15 @@ async function withFixture(run, language = 'en') {
     await run({ dom, mount, click, byId });
   } finally {
     await act(async () => root.unmount());
+    const activeToasts = toastStore.getSnapshot();
+    for (const record of activeToasts) toast.close(record.key);
+    if (activeToasts.length > 0) {
+      await new Promise((resolve) => setTimeout(resolve, TOAST_EXIT_ANIMATION_MS + 20));
+    }
     useSessionStore.setState(previousSession, true);
     useChatStore.setState(previousChat, true);
     useAuthStore.setState(previousAuth, true);
+    useWorkspaceStore.setState(previousWorkspace, true);
     setMultiModelCollaborationEnabled(previousCollaboration);
     for (const [name, descriptor] of previousGlobals) {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor);
@@ -177,6 +230,20 @@ function cronDrawer(overrides = {}) {
     ...overrides,
   });
 }
+
+test('enterprise chat model stays visible but cannot open its menu or show a dropdown arrow', async () => {
+  await withFixture(async ({ mount, click, byId }) => {
+    window.__JIUWENSWARM_EDITION__ = 'enterprise';
+    await mount(createElement(ChatModelSelector));
+    const trigger = byId('chat-panel-model-selector-trigger');
+    assert.equal(trigger.disabled, true);
+    assert.match(trigger.textContent, /Configured A/);
+    assert.equal(trigger.querySelector('.chat-mode-select__chevron'), null);
+    await click(trigger);
+    assert.equal(byId('chat-panel-model-selector-menu'), null);
+    assert.equal(useSessionStore.getState().getRuntime(sessionId).selectedModelName, 'configured-a');
+  });
+});
 
 test('Team conversations keep model-group selection enabled', () => {
   const selectorSource = readFileSync(
@@ -266,6 +333,9 @@ test('限时免费模型：活动没在跑时，这一栏整个不出现', async
 
 test('selecting a scheduled-task model submits its ID and leaves the active chat unchanged', async () => {
   await withFixture(async ({ mount, click, byId }) => {
+    useSessionStore.setState({ modelGroups: [{
+      model_group_id: 'cron-hidden-group', display_name: 'Cron hidden group', enabled: true, routes: [],
+    }] });
     let submitted;
     await mount(
       createElement(ChatModelSelector),
@@ -276,13 +346,47 @@ test('selecting a scheduled-task model submits its ID and leaves the active chat
       }),
     );
     await click(byId('cron-model-picker-trigger'));
+    assert.equal(byId('cron-model-picker-menu').textContent.includes('Cron hidden group'), false);
     await click(byId('cron-model-picker-menu').querySelector('[data-variant="configured-b"]'));
     assert.equal(byId('cron-model-picker-menu'), null);
     assert.equal(byId('cron-model-picker-trigger').textContent, 'Configured B');
     assert.equal(byId('chat-panel-model-selector-trigger').textContent, 'Configured A');
     assert.equal(useSessionStore.getState().getEffectiveModelName(sessionId), 'configured-a');
     await click(byId('cron-drawer-submit-btn'));
+    // 目录条目没有 model_id 时退回名称契约：modelSelection 字段保留但为空
     assert.deepEqual(submitted, { ...initialForm, modelName: 'configured-b' });
+    assert.equal(submitted.modelSelection, null);
+  });
+});
+
+test('a scheduled-task model with a stable ID submits its model_selection', async () => {
+  await withFixture(async ({ mount, click, byId }) => {
+    // 回归：目录里两条同名配置只能按 model_id 区分；若提交只带 model_name，
+    // cron 执行会话按名字反查命中多条，报 "ambiguous legacy model name" 秒败。
+    const stableCatalog = [
+      { model_id: 'mdl-flash-1', model_name: 'deepseek-flash', alias: 'Flash One', is_default: true },
+      { model_id: 'mdl-flash-2', model_name: 'deepseek-flash', alias: 'Flash Two', is_free: false },
+      { model_id: 'mdl-glm', model_name: 'GLM-5.3', alias: 'GLM', is_free: false },
+    ];
+    await act(async () => useSessionStore.getState().setAvailableModels(stableCatalog, 'deepseek-flash'));
+    let submitted;
+    await mount(
+      cronDrawer({
+        initial: { ...initialForm, modelName: 'deepseek-flash' },
+        onSubmit(value) {
+          submitted = value;
+        },
+      }),
+    );
+    await click(byId('cron-model-picker-trigger'));
+    await click(byId('cron-model-picker-menu').querySelector('[data-variant="mdl-flash-2"]'));
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'Flash Two');
+    await click(byId('cron-drawer-submit-btn'));
+    assert.deepEqual(submitted, {
+      ...initialForm,
+      modelName: 'deepseek-flash',
+      modelSelection: { type: 'model', id: 'mdl-flash-2' },
+    });
   });
 });
 
@@ -306,6 +410,242 @@ test('selecting a chat model preserves the scheduled-task draft and canonical re
     assert.deepEqual(submitted, initialForm);
   });
 });
+
+test('run now waits for navigation and reports a session restore failure', async (t) => {
+  const job = {
+    id: 'run-now-job', name: 'Run now', description: 'Run now', mode: 'agent',
+    cron_expr: '0 0 2 * * ? *', timezone: 'Asia/Shanghai', targets: 'web',
+    enabled: true, expired: false, project_id: 'default', wake_offset_seconds: 0,
+  };
+  t.mock.method(webClient, 'request', async (method) => {
+    if (method === 'cron.job.list') return { jobs: [job] };
+    if (method === 'project.list') return { projects: [] };
+    if (method === 'channel.get') return { channels: [{ channel_id: 'web' }] };
+    if (method === 'channel.xiaoyi.get_conf') return { config: {} };
+    if (method === 'cron.job.run_now') return { accepted: true, run_id: 'run', session_id: 'cron-session' };
+    throw new Error(`Unexpected request: ${method}`);
+  });
+  let releaseNavigation;
+  const navigation = new Promise((resolve) => { releaseNavigation = resolve; });
+  await withFixture(async ({ mount, click, byId }) => {
+    await mount(createElement(CronPanel, {
+      sessionId, onCreateViaChat() {},
+      async onSelectSession(id) {
+        assert.equal(id, 'cron-session');
+        await navigation;
+        throw new Error('metadata missing');
+      },
+    }));
+    await click(byId('cron-job-run-now-btn'));
+    await click(byId('cron-confirm-submit-btn'));
+    assert.equal(byId('cron-confirm-submit-btn').disabled, true);
+    await act(async () => { releaseNavigation(); });
+    assert.equal(byId('cron-confirm-dialog'), null);
+    assert.match(byId('cron-error-toast').textContent, /task was triggered.*session list/);
+    assert.equal(byId('cron-success-toast'), null);
+    const runNowToast = toastStore.getSnapshot().find((record) => record.id === 'cron-error');
+    assert.equal(runNowToast.closable, true);
+    assert.equal(runNowToast.durationMs, 5000);
+  });
+});
+
+test('scheduled tasks follow the selected work mode without mixing status counts', async (t) => {
+  const base = {
+    description: 'Task', mode: 'agent', cron_expr: '0 0 2 * * ? *', timezone: 'Asia/Shanghai',
+    targets: 'web', expired: false, project_id: 'default', wake_offset_seconds: 0,
+  };
+  t.mock.method(webClient, 'request', async (method) => {
+    if (method === 'cron.job.list') return { jobs: [
+      { ...base, id: 'work', name: 'Work task', work_mode: 'work', enabled: true },
+      { ...base, id: 'code', name: 'Code task', work_mode: 'code', enabled: false },
+      { ...base, id: 'legacy', name: 'Legacy task', enabled: true },
+    ] };
+    if (method === 'project.list') return { projects: [] };
+    if (method === 'channel.get') return { channels: [{ channel_id: 'web' }] };
+    if (method === 'channel.xiaoyi.get_conf') return { config: {} };
+    throw new Error(`Unexpected request: ${method}`);
+  });
+  const previousMode = useWorkspaceStore.getState().workMode;
+  try {
+    useWorkspaceStore.setState({ workMode: 'work' });
+    await withFixture(async ({ mount, byId }) => {
+      await mount(createElement(CronPanel, { sessionId, onCreateViaChat() {}, onSelectSession() {} }));
+      assert.match(byId('cron-jobs-table').textContent, /Work task/);
+      assert.match(byId('cron-jobs-table').textContent, /Legacy task/);
+      assert.doesNotMatch(byId('cron-jobs-table').textContent, /Code task/);
+      assert.match(byId('cron-stats-total').textContent, /2/);
+      await act(async () => useWorkspaceStore.setState({ workMode: 'code' }));
+      assert.match(byId('cron-jobs-table').textContent, /Code task/);
+      assert.doesNotMatch(byId('cron-jobs-table').textContent, /Work task|Legacy task/);
+      assert.match(byId('cron-stats-total').textContent, /1/);
+      await act(async () => useWorkspaceStore.setState({ workMode: 'design' }));
+      assert.match(byId('cron-jobs-table').textContent, /Work task/);
+      assert.match(byId('cron-jobs-table').textContent, /Legacy task/);
+      assert.doesNotMatch(byId('cron-jobs-table').textContent, /Code task/);
+      assert.match(byId('cron-stats-total').textContent, /2/);
+    });
+  } finally {
+    useWorkspaceStore.setState({ workMode: previousMode });
+  }
+});
+
+test('create and edit failures use a fixed body toast above the scheduled task drawer', async (t) => {
+  const job = {
+    id: 'edit-job', name: 'Existing task', description: 'Task description', mode: 'agent',
+    cron_expr: '0 0 2 * * ? *', timezone: 'Asia/Shanghai', targets: 'web',
+    enabled: true, expired: false, project_id: 'default', work_mode: 'work', wake_offset_seconds: 0,
+  };
+  let jobs = [];
+  t.mock.method(webClient, 'request', async (method) => {
+    if (method === 'cron.job.list') return { jobs };
+    if (method === 'project.list') return { projects: [] };
+    if (method === 'channel.get') return { channels: [{ channel_id: 'web' }] };
+    if (method === 'channel.xiaoyi.get_conf') return { config: {} };
+    if (method === 'cron.job.create' || method === 'cron.job.update') throw new Error('server rejected request');
+    throw new Error(`Unexpected request: ${method}`);
+  });
+  const previousMode = useWorkspaceStore.getState().workMode;
+  try {
+    useWorkspaceStore.setState({ workMode: 'work' });
+    await withFixture(async ({ dom, mount, click, byId }) => {
+      await mount(createElement(CronPanel, { sessionId, onCreateViaChat() {}, onSelectSession() {} }));
+      byId('cron-panel').scrollTop = 500;
+      await click(byId('cron-empty-template-card'));
+      await click(byId('cron-drawer-submit-btn'));
+      assert.match(byId('cron-error-toast').textContent, /server rejected request/);
+      assert.equal(byId('cron-drawer-submit-error'), null);
+      const stack = byId('ui-toast-stack');
+      assert.equal(stack.parentElement, document.body);
+      assert.equal(byId('cron-panel').contains(byId('cron-error-toast')), false);
+      const stackStyle = dom.window.getComputedStyle(stack);
+      assert.equal(stackStyle.position, 'fixed');
+      assert.equal(stackStyle.top, '16px');
+      assert.ok(Number(stackStyle.zIndex) > 50, 'toast sits above the drawer (40) and confirm dialog (50)');
+      assert.ok(byId('cron-drawer-overlay'));
+      assert.equal(byId('cron-panel').scrollTop, 500);
+      byId('cron-panel').scrollTop = 1000;
+      assert.equal(dom.window.getComputedStyle(stack).top, '16px');
+      assert.match(byId('cron-error-toast').textContent, /server rejected request/);
+      const firstToast = toastStore.getSnapshot().find((record) => record.id === 'cron-error');
+      assert.equal(firstToast.closable, true);
+      assert.equal(firstToast.durationMs, 8000);
+      assert.ok(byId('cron-error-toast').querySelector('[data-testid="ui-toast-close"]'));
+      await click(byId('cron-drawer-submit-btn'));
+      assert.equal(document.querySelectorAll('[data-testid="cron-error-toast"]').length, 1);
+      const retriedToast = toastStore.getSnapshot().find((record) => record.id === 'cron-error');
+      assert.equal(retriedToast.key, firstToast.key);
+      assert.ok(retriedToast.updatedAt > firstToast.updatedAt, 'identical errors refresh the toast lifetime');
+      await click(byId('cron-error-toast').querySelector('[data-testid="ui-toast-close"]'));
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, TOAST_EXIT_ANIMATION_MS + 20));
+      });
+      assert.equal(byId('cron-error-toast'), null);
+      await click(byId('cron-drawer-close-btn'));
+      jobs = [job];
+    });
+    await withFixture(async ({ mount, click, byId }) => {
+      await mount(createElement(CronPanel, { sessionId, onCreateViaChat() {}, onSelectSession() {} }));
+      await click(byId('cron-job-edit-btn'));
+      assert.equal(byId('cron-drawer-submit-error'), null);
+      await click(byId('cron-drawer-submit-btn'));
+      assert.match(byId('cron-error-toast').textContent, /server rejected request/);
+      assert.equal(byId('cron-drawer-submit-error'), null);
+      const editToast = toastStore.getSnapshot().find((record) => record.id === 'cron-error');
+      assert.equal(editToast.closable, true);
+      assert.equal(editToast.durationMs, 8000);
+      assert.ok(byId('cron-error-toast').querySelector('[data-testid="ui-toast-close"]'));
+    });
+  } finally {
+    useWorkspaceStore.setState({ workMode: previousMode });
+  }
+});
+
+test('a subsequent successful submit clears the active cron error toast and reasonless failures use 5s duration', async (t) => {
+  let failCreate = true;
+  let errorMode = 'empty';
+  const createdJob = {
+    id: 'created-job', name: 'Created task', description: 'Task description', mode: 'agent',
+    cron_expr: '0 0 2 * * ? *', timezone: 'Asia/Shanghai', targets: 'web',
+    enabled: true, expired: false, project_id: 'default', work_mode: 'work', wake_offset_seconds: 0,
+  };
+  let jobs = [];
+  t.mock.method(webClient, 'request', async (method) => {
+    if (method === 'cron.job.list') return { jobs };
+    if (method === 'project.list') return { projects: [] };
+    if (method === 'channel.get') return { channels: [{ channel_id: 'web' }] };
+    if (method === 'channel.xiaoyi.get_conf') return { config: {} };
+    if (method === 'cron.job.create') {
+      if (failCreate) {
+        if (errorMode === 'empty') throw new Error('');
+        throw new Error('detailed reason');
+      }
+      jobs = [createdJob];
+      return { job: createdJob };
+    }
+    throw new Error(`Unexpected request: ${method}`);
+  });
+  await withFixture(async ({ mount, click, byId }) => {
+    useWorkspaceStore.setState({ workMode: 'work' });
+    await mount(createElement(CronPanel, { sessionId, onCreateViaChat() {}, onSelectSession() {} }));
+    await click(byId('cron-empty-template-card'));
+    await click(byId('cron-drawer-submit-btn'));
+    const reasonlessToast = toastStore.getSnapshot().find((record) => record.id === 'cron-error');
+    assert.equal(reasonlessToast.closable, true);
+    assert.equal(reasonlessToast.durationMs, 5000);
+    errorMode = 'reason';
+    await click(byId('cron-drawer-submit-btn'));
+    const detailedToast = toastStore.getSnapshot().find((record) => record.id === 'cron-error');
+    assert.equal(detailedToast.durationMs, 8000);
+    failCreate = false;
+    await click(byId('cron-drawer-submit-btn'));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, TOAST_EXIT_ANIMATION_MS + 20));
+    });
+    assert.equal(byId('cron-error-toast'), null);
+    assert.ok(byId('cron-success-toast'));
+  });
+});
+
+for (const operation of ['create', 'update']) {
+  test(`a late ${operation} failure remains visible after closing and reopening the drawer`, async (t) => {
+    let rejectRequest;
+    const pendingRequest = new Promise((resolve, reject) => { rejectRequest = reject; });
+    const job = {
+      id: 'edit-job', name: 'Existing task', description: 'Task description', mode: 'agent',
+      cron_expr: '0 0 2 * * ? *', timezone: 'Asia/Shanghai', targets: 'web',
+      enabled: true, expired: false, project_id: 'default', work_mode: 'work', wake_offset_seconds: 0,
+    };
+    t.mock.method(webClient, 'request', async (method) => {
+      if (method === 'cron.job.list') return { jobs: operation === 'update' ? [job] : [] };
+      if (method === 'project.list') return { projects: [] };
+      if (method === 'channel.get') return { channels: [{ channel_id: 'web' }] };
+      if (method === 'channel.xiaoyi.get_conf') return { config: {} };
+      if (method === `cron.job.${operation}`) return pendingRequest;
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    const previousMode = useWorkspaceStore.getState().workMode;
+    try {
+      useWorkspaceStore.setState({ workMode: 'work' });
+      await withFixture(async ({ mount, click, byId }) => {
+        await mount(createElement(CronPanel, { sessionId, onCreateViaChat() {}, onSelectSession() {} }));
+        const openButtonId = operation === 'update' ? 'cron-job-edit-btn' : 'cron-empty-template-card';
+        await click(byId(openButtonId));
+        await click(byId('cron-drawer-submit-btn'));
+        assert.equal(byId('cron-error-toast'), null);
+        await click(byId('cron-drawer-close-btn'));
+        assert.equal(byId('cron-drawer'), null);
+        await act(async () => { rejectRequest(new Error('late server rejection')); });
+        assert.match(byId('cron-error-toast').textContent, /late server rejection/);
+        await click(byId(openButtonId));
+        assert.ok(byId('cron-drawer'));
+        assert.equal(byId('cron-drawer-submit-error'), null);
+        assert.equal(byId('cron-drawer').textContent.includes('late server rejection'), false);
+      });
+    } finally {
+      useWorkspaceStore.setState({ workMode: previousMode });
+    }
+  });
+}
 
 test('a historical chat alias still resolves to the selected model after extraction', async () => {
   await withFixture(async ({ mount, click, byId }) => {
@@ -359,24 +699,83 @@ test('opening a stored team task from the list preserves its mode and model', as
   });
 });
 
-test('an unavailable saved task model stays visible and is not replaced during catalog refresh', async () => {
+for (const language of ['zh', 'en']) {
+  test(`an unavailable saved task model is explained in ${language} without replacing its value`, async () => {
+    await withFixture(async ({ mount, click, byId }) => {
+      let submitted;
+      await mount(
+        cronDrawer({
+          initial: { ...initialForm, modelName: 'removed-model' },
+          onSubmit(value) {
+            submitted = value;
+          },
+        }),
+      );
+      await act(async () => useSessionStore.getState().setAvailableModels(catalog, 'configured-b'));
+      assert.equal(byId('cron-model-picker-trigger').textContent, 'removed-model');
+      const hint = byId('cron-drawer-model-unavailable-hint');
+      assert.ok(hint);
+      assert.equal(hint.getAttribute('role'), 'status');
+      assert.equal(
+        hint.textContent,
+        resources[language].translation.cron.drawer.modelUnavailable.replace('{{model}}', 'removed-model'),
+      );
+      await click(byId('cron-model-picker-trigger'));
+      assert.equal(document.querySelector('[aria-checked="true"]'), null);
+      await click(document.body);
+      await click(byId('cron-drawer-submit-btn'));
+      assert.equal(submitted.modelName, 'removed-model');
+    }, language);
+  });
+}
+
+test('task model availability waits for a successful catalog load, including an empty result', async () => {
+  await withFixture(async ({ mount, byId }) => {
+    useSessionStore.setState({ modelsLoaded: false, availableModels: [], chatAvailableModels: [] });
+    await mount(cronDrawer());
+    assert.equal(byId('cron-drawer-model-unavailable-hint'), null);
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'configured-a');
+
+    await act(async () => useSessionStore.getState().setAvailableModels([]));
+    assert.ok(byId('cron-drawer-model-unavailable-hint'));
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'configured-a');
+  });
+});
+
+test('deleting the last task model shows a warning until the user selects an available model', async () => {
   await withFixture(async ({ mount, click, byId }) => {
     let submitted;
+    useSessionStore.getState().setAvailableModels([catalog[1]]);
     await mount(
       cronDrawer({
-        initial: { ...initialForm, modelName: 'removed-model' },
         onSubmit(value) {
           submitted = value;
         },
       }),
     );
-    await act(async () => useSessionStore.getState().setAvailableModels(catalog, 'configured-b'));
-    assert.equal(byId('cron-model-picker-trigger').textContent, 'removed-model');
+    assert.equal(byId('cron-drawer-model-unavailable-hint'), null);
+    await act(async () => useSessionStore.getState().setAvailableModels([]));
+    assert.ok(byId('cron-drawer-model-unavailable-hint'));
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'configured-a');
+
+    await act(async () => useSessionStore.getState().setAvailableModels([catalog[3]]));
+    assert.ok(byId('cron-drawer-model-unavailable-hint'));
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'configured-a');
     await click(byId('cron-model-picker-trigger'));
-    assert.equal(document.querySelector('[aria-checked="true"]'), null);
-    await click(document.body);
+    await click(byId('cron-model-picker-menu').querySelector('[data-variant="configured-b"]'));
+    assert.equal(byId('cron-drawer-model-unavailable-hint'), null);
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'Configured B');
     await click(byId('cron-drawer-submit-btn'));
-    assert.equal(submitted.modelName, 'removed-model');
+    assert.equal(submitted.modelName, 'configured-b');
+  });
+});
+
+test('a task model remains available when only a same-name non-default connection survives', async () => {
+  await withFixture(async ({ mount, byId }) => {
+    await mount(cronDrawer());
+    await act(async () => useSessionStore.getState().setAvailableModels([catalog[2]]));
+    assert.equal(byId('cron-drawer-model-unavailable-hint'), null);
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'Secondary connection');
   });
 });
 
@@ -393,17 +792,71 @@ test('a new task keeps an unselected model instead of borrowing the active chat 
       }),
     );
     assert.equal(byId('cron-model-picker-trigger').textContent, 'Select Model');
+    await act(async () => useSessionStore.getState().setAvailableModels([]));
+    assert.equal(byId('cron-drawer-model-unavailable-hint'), null);
     await click(byId('cron-drawer-submit-btn'));
     assert.equal(submitted.modelName, null);
   });
 });
 
-test('locked task models cannot be changed; disabling an open picker closes it', async () => {
+test('create drawer shows the default model hint without borrowing the default into the submitted task', async () => {
   await withFixture(async ({ mount, click, byId }) => {
-    await mount(cronDrawer({ proactiveLocked: true }));
-    assert.equal(byId('cron-model-picker-trigger').disabled, true);
+    let submitted;
+    await mount(
+      cronDrawer({
+        mode: 'create',
+        initial: { ...initialForm, modelName: null },
+        onSubmit(value) {
+          submitted = value;
+        },
+      }),
+    );
+    const hint = byId('cron-drawer-model-default-hint');
+    assert.ok(hint, 'hint renders when no model is selected in create mode');
+    assert.equal(hint.dataset.kind, 'named');
+    assert.equal(
+      hint.textContent,
+      resources.en.translation.cron.drawer.modelDefaultHintNamed.replace('{{model}}', 'Configured A'),
+    );
+    // 提示仅展示：提交值保持不带任何模型字段，!5666 契约不回退
+    await click(byId('cron-drawer-submit-btn'));
+    assert.equal(submitted.modelName, null);
+    assert.equal(submitted.modelSelection, null);
+  });
+});
+
+test('default model hint tracks catalog state, hides once a model is picked, and stays off in edit mode', async () => {
+  await withFixture(async ({ mount, click, byId }) => {
+    // 模板创建与新建同样展示
+    await mount(cronDrawer({ mode: 'template', initial: { ...initialForm, modelName: null } }));
+    assert.equal(byId('cron-drawer-model-default-hint')?.dataset.kind, 'named');
+    // 目录清空 → 警示态（创建时即可预见到点失败，而不是静默提交）
+    await act(async () => useSessionStore.getState().setAvailableModels([]));
+    assert.equal(byId('cron-drawer-model-default-hint')?.dataset.kind, 'empty');
+    // 用户选中模型后提示消失
+    await act(async () => useSessionStore.getState().setAvailableModels(catalog, 'configured-a'));
     await click(byId('cron-model-picker-trigger'));
-    assert.equal(byId('cron-model-picker-menu'), null);
+    await click(byId('cron-model-picker-menu').querySelector('[data-variant="configured-b"]'));
+    assert.equal(byId('cron-drawer-model-default-hint'), null);
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'Configured B');
+    // 编辑一个本就未存模型的任务：与创建时同样展示（提示只取决于任务是否存了模型）。
+    // 先空挂载一次卸载上个抽屉实例：同 root 连续 render 会复用组件实例，
+    // useState(initial) 不重新执行，form 会残留上个抽屉的选择
+    await mount();
+    await mount(cronDrawer({
+      mode: 'edit',
+      initial: { ...initialForm, modelName: null, modelSelection: null },
+    }));
+    assert.equal(byId('cron-drawer-model-default-hint')?.dataset.kind, 'named');
+    // 编辑存了模型的任务：不展示
+    await mount();
+    await mount(cronDrawer({ mode: 'edit', initial: initialForm }));
+    assert.equal(byId('cron-drawer-model-default-hint'), null);
+  });
+});
+
+test('disabling an open picker closes it', async () => {
+  await withFixture(async ({ mount, click, byId }) => {
     const picker = (disabled) => createElement(ModelPicker, { value: null, onChange() {}, disabled });
     await mount(picker(false));
     await click(byId('model-picker-trigger'));
@@ -539,7 +992,7 @@ for (const language of ['zh', 'en']) {
 }
 
 for (const source of ['current', 'list']) {
-  test(`scheduled ${source} metadata and team selections retain upstream groups with the feature off`, async () => {
+  test(`scheduled ${source} metadata hides groups while ordinary team sessions retain groups`, async () => {
     await withFixture(async ({ mount, click, byId }) => {
       setupStableCatalog();
       const session = { session_id: sessionId, title: 'Scheduled', mode: 'agent', cron_id: 'job',
@@ -548,7 +1001,7 @@ for (const source of ['current', 'list']) {
       else useSessionStore.getState().setSessions([session]);
       await mount(createElement(ChatModelSelector));
       await click(byId('chat-panel-model-selector-trigger'));
-      assert.ok(byId('chat-panel-model-selector-group-option'));
+      assert.equal(byId('chat-panel-model-selector-group-option'), null);
       assert.equal(byId('chat-panel-model-selector-moa-option'), null);
       await click(document.body);
       await act(async () => useSessionStore.getState().setCurrentSession({ ...session, mode: 'team', cron_id: null }));
@@ -772,6 +1225,46 @@ test('deleted model groups fall back to a default model instead of showing model
   });
 });
 
+test('a locked selector keeps its model and shows why it cannot be changed', async () => {
+  await withFixture(async ({ mount, click, byId }) => {
+    setupStableCatalog();
+    await mount(createElement(ChatModelSelector, { locked: true, lockedTitle: 'Locked after start' }));
+    const trigger = byId('chat-panel-model-selector-trigger');
+    assert.equal(trigger.disabled, true);
+    assert.equal(byId('chat-panel-model-selector-wrap').title, 'Locked after start');
+    await click(trigger);
+    assert.equal(byId('chat-panel-model-selector-menu'), null);
+    assert.deepEqual(useSessionStore.getState().getRuntime(sessionId).selectedModelSelection, {
+      type: 'model',
+      id: 'mdl-a',
+    });
+  });
+});
+
+test('a locked selector still replaces a deleted model and writes the fallback back', async (t) => {
+  const persisted = [];
+  t.mock.method(webClient, 'request', async (method, params) => {
+    assert.equal(method, 'session.selection.set');
+    persisted.push(params);
+    return { success: true };
+  });
+  await withFixture(async ({ mount }) => {
+    setupStableCatalog();
+    useSessionStore.getState().setSelectedModelSelection(sessionId, { type: 'model', id: 'mdl-deleted' });
+    await mount(createElement(ChatModelSelector, { locked: true, lockedTitle: 'Locked after start' }));
+    await act(async () => {});
+    // The deleted-model fallback runs even while locked and is written back.
+    assert.deepEqual(persisted.at(-1), {
+      session_id: sessionId,
+      model_selection: { type: 'model', id: 'mdl-a' },
+    });
+    assert.deepEqual(useSessionStore.getState().getRuntime(sessionId).selectedModelSelection, {
+      type: 'model',
+      id: 'mdl-a',
+    });
+  });
+});
+
 function groupEditor(models, routes, onSave, groupOverrides = {}) {
   return createElement(
     SettingsServicesProvider,
@@ -893,4 +1386,505 @@ test('model group dialog preserves existing duplicate route identities and overr
     assert.equal(saved[0].model_group_id, 'mgp-stable');
     assert.deepEqual(saved[0].request_config, { temperature: 0.5 });
   });
+});
+
+for (const explicitSession of [false, true]) {
+  test(`organization child model preserves owner selection with explicit session: ${explicitSession}`, async () => {
+    const previousTeams = useTeamSelectorStore.getState();
+    const previousEnabled = isTeamOrganizationUiEnabled();
+    try {
+      await withFixture(async ({ mount, byId }) => {
+        setTeamOrganizationUiEnabled(true);
+        useSessionStore.getState().setAvailableModels([
+          { model_id: 'glm', model_name: 'GLM-5.3', is_default: true },
+          { model_id: 'deepseek', model_name: 'deepseek-flash' },
+        ], 'GLM-5.3');
+        useSessionStore.getState().setMode(sessionId, 'team');
+        useSessionStore.getState().setSelectedModelName(sessionId, 'GLM-5.3');
+        useSessionStore.getState().setSelectedModelSelection(sessionId, { type: 'model', id: 'glm' });
+        const teams = [
+          { team_id: 'owner', team_name: 'owner', organization_id: 'org', is_owner: true },
+          {
+            team_id: 'expert', team_name: 'expert', organization_id: 'org', is_owner: false,
+            execution_model_name: 'deepseek-flash', execution_model_selection: { type: 'model', id: 'deepseek' },
+          },
+        ];
+        const runtime = { teams, selectedTeamId: 'expert', defaultTeamId: 'owner', loaded: true };
+        useTeamSelectorStore.setState({ runtimes: { [sessionId]: runtime } });
+
+        if (explicitSession) useChatStore.setState({ activeSessionId: 'another-session' });
+        await mount(createElement(ChatModelSelector, explicitSession ? { sessionId } : {}));
+
+        assert.match(byId('chat-panel-model-selector-trigger').textContent, /deepseek-flash/);
+        assert.equal(byId('chat-panel-model-selector-trigger').disabled, true);
+        assert.equal(useSessionStore.getState().runtimes[sessionId].selectedModelName, 'GLM-5.3');
+        await act(async () => {
+          useTeamSelectorStore.setState({ runtimes: { [sessionId]: { ...runtime, selectedTeamId: 'owner' } } });
+        });
+        assert.match(byId('chat-panel-model-selector-trigger').textContent, /GLM-5.3/);
+        assert.equal(byId('chat-panel-model-selector-trigger').disabled, false);
+        await act(async () => {
+          useTeamSelectorStore.setState({ runtimes: { [sessionId]: runtime } });
+          setTeamOrganizationUiEnabled(false);
+        });
+        assert.match(byId('chat-panel-model-selector-trigger').textContent, /GLM-5.3/);
+      });
+    } finally {
+      useTeamSelectorStore.setState(previousTeams, true);
+      setTeamOrganizationUiEnabled(previousEnabled);
+    }
+  });
+}
+
+
+test('design selectors hide model groups and persist an ordinary model fallback', async (t) => {
+  const persisted = [];
+  t.mock.method(webClient, 'request', async (method, params) => {
+    assert.equal(method, 'session.selection.set');
+    persisted.push(params);
+    return { success: true };
+  });
+  await withFixture(async ({ mount, click, byId }) => {
+    setupStableCatalog();
+    useSessionStore.getState().setSelectedModelSelection(sessionId, { type: 'model_group', id: 'mgp-stable' });
+    await mount(createElement(ChatModelSelector, { sessionId, allowModelGroups: false }));
+    await act(async () => {});
+    assert.deepEqual(useSessionStore.getState().getRuntime(sessionId).selectedModelSelection,
+      { type: 'model', id: 'mdl-a' });
+    assert.deepEqual(persisted.at(-1), { session_id: sessionId, model_selection: { type: 'model', id: 'mdl-a' } });
+    await click(byId('chat-panel-model-selector-trigger'));
+    assert.equal(byId('chat-panel-model-selector-group-option'), null);
+    assert.equal(byId('chat-panel-model-selector-moa-option'), null);
+  });
+});
+
+async function hover(element) {
+  await act(async () => {
+    element.dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true }));
+  });
+}
+
+function generationSnapshot(models = [], overrides = {}) {
+  return {
+    schema_version: 1, models,
+    tools: Object.fromEntries(['vision', 'audio', 'video', 'visual_gen', 'video_gen'].map((slot) => [
+      slot, overrides[slot] ?? { model_id: null, enabled: false },
+    ])),
+  };
+}
+function generationModel(id, slot, extra = {}) {
+  return { model_id: id, display_name: id, purpose: 'generation', capabilities: [slot], references: [slot],
+    provider: 'DashScope', protocol: 'dashscope', api_base: 'https://example.invalid', model_name: id,
+    api_key_configured: true, ...extra };
+}
+
+function resetGenerationStore() {
+  useDesignerGenerationStore.setState({
+    snapshot: null,
+    selection: { video_gen: null, visual_gen: null },
+    loading: true,
+    failed: false,
+    selectError: '',
+  });
+}
+
+function installGenerationApi(t, models = [], saved = { video_gen: null, visual_gen: null }) {
+  const requests = [];
+  t.mock.method(webClient, 'request', async (method, params) => {
+    requests.push(method);
+    if (method === 'multimodal.models.list') return generationSnapshot(models);
+    if (method === 'config.get') {
+      return {
+        design_generation_video_gen: saved.video_gen || '',
+        design_generation_visual_gen: saved.visual_gen || '',
+      };
+    }
+    if (method === 'config.set') {
+      if (params?.design_generation_video_gen) saved.video_gen = params.design_generation_video_gen;
+      if (params?.design_generation_visual_gen) saved.visual_gen = params.design_generation_visual_gen;
+      return { updated: Object.keys(params || {}) };
+    }
+    throw new Error(method);
+  });
+  return { requests, saved };
+}
+
+function generationCopy(language) {
+  return resources[language].translation;
+}
+
+test('design model panel lists every catalogue model and adds models from the matching settings tab', async (t) => {
+  const requests = installGenerationApi(t).requests;
+  const copy = generationCopy('en');
+  await withFixture(async ({ mount, click, byId }) => {
+    resetGenerationStore();
+    const navigation = [];
+    window.addEventListener('jiuwen:settings-module', (event) => navigation.push(event.detail));
+    await mount(createElement(DesignerModelSelector));
+    const warning = byId('designer-model-config-trigger-warning');
+    assert.equal(warning.getAttribute('aria-label'), copy.designer.modelConfiguration.notConfigured);
+    await hover(warning);
+    assert.equal(byId('designer-model-config-warning-action').textContent, 'Configure');
+    await click(byId('designer-model-config-warning-action'));
+    assert.deepEqual(navigation.at(-1), { moduleId: 'models', tabId: 'multimodal' });
+    await click(byId('designer-model-selector-trigger'));
+    const tabs = [...document.querySelectorAll('[data-testid="designer-model-config-tab"]')];
+    assert.deepEqual(tabs.map((tab) => tab.textContent), ['Chat', 'Video generation', 'Image generation']);
+    assert.equal(document.querySelectorAll('[data-testid="designer-model-config-tab-warning"]').length, 2);
+    assert.ok(document.querySelector('[data-testid="designer-model-selector-section-header"][data-variant="free"]'));
+    assert.ok(document.querySelector('[data-testid="designer-model-selector-section-header"][data-variant="configured"]'));
+    assert.equal(byId('designer-model-config-help').getAttribute('aria-label'), copy.designer.modelConfiguration.help);
+    assert.equal(byId('designer-model-config-add').textContent, copy.designer.modelConfiguration.addModel);
+    assert.equal(byId('designer-model-selector-add'), null);
+    await click(byId('designer-model-config-add'));
+    assert.equal(navigation.at(-1), 'models');
+    await click(byId('designer-model-selector-trigger'));
+    await click(document.querySelector('[data-testid="designer-model-config-tab"][data-variant="video_gen"]'));
+    assert.equal(document.querySelector('[data-testid="designer-model-selector-section-header"][data-variant="free"]'), null);
+    assert.equal(byId('designer-generation-model-description'), null);
+    assert.equal(byId('designer-generation-model-empty').textContent, copy.designer.models.videoMissing);
+    assert.equal(byId('designer-model-config-add').getAttribute('data-variant'), 'video_gen');
+    assert.equal(byId('designer-model-config-add').textContent, copy.designer.modelConfiguration.addModel);
+    await click(byId('designer-model-config-add'));
+    assert.deepEqual(navigation.at(-1), { moduleId: 'models', tabId: 'multimodal' });
+    assert.ok(requests.includes('multimodal.models.list'));
+    assert.ok(requests.includes('config.get'));
+  });
+});
+
+for (const language of ['zh', 'en']) {
+  test(`design warning keeps the reason and configuration action in one hover bubble in ${language}`, async (t) => {
+    t.mock.method(webClient, 'request', async () => generationSnapshot());
+    await withFixture(async ({ mount, click, byId, dom }) => {
+      const navigation = [];
+      window.addEventListener('jiuwen:settings-module', (event) => navigation.push(event.detail));
+      await mount(createElement(DesignerModelSelector));
+      const trigger = byId('designer-model-config-trigger-warning');
+      assert.equal(trigger.getAttribute('title'), null);
+      assert.equal(byId('designer-model-config-outside-action'), null);
+      assert.equal(byId('designer-model-config-warning-content'), null);
+      await act(async () => {
+        trigger.dispatchEvent(new dom.window.MouseEvent('mouseover', { bubbles: true }));
+      });
+      const bubble = byId('designer-model-config-trigger-warning-tooltip');
+      assert.equal(bubble.getAttribute('role'), 'dialog');
+      assert.equal(byId('designer-model-config-warning-reason').textContent, trigger.getAttribute('aria-label'));
+      const action = byId('designer-model-config-warning-action');
+      assert.equal(action.textContent, resources[language].translation.designer.modelConfiguration.configure);
+      assert.equal(action.getAttribute('title'), null);
+      await act(async () => {
+        trigger.dispatchEvent(new dom.window.MouseEvent('mouseout', { bubbles: true, relatedTarget: bubble }));
+        bubble.dispatchEvent(new dom.window.MouseEvent('mouseover', { bubbles: true, relatedTarget: trigger }));
+        await new Promise((resolve) => setTimeout(resolve, 180));
+      });
+      assert.ok(byId('designer-model-config-warning-content'));
+      // The document's pointerdown handler must not remove the action before its click.
+      await click(action);
+      assert.deepEqual(navigation, [{ moduleId: 'models', tabId: 'multimodal' }]);
+      assert.equal(byId('designer-model-config-warning-content'), null);
+    }, language);
+  });
+}
+
+test('design lists every generation model and ignores the agent tool switch', async (t) => {
+  const first = generationModel('First video', 'video_gen');
+  const second = generationModel('Other candidate', 'video_gen');
+  const image = generationModel('Bound image', 'visual_gen');
+  const { requests, saved } = installGenerationApi(t, [first, second, image]);
+  await withFixture(async ({ mount, click, byId }) => {
+    resetGenerationStore();
+    await mount(createElement(DesignerModelSelector));
+    assert.equal(byId('designer-model-config-trigger-warning'), null);
+    await click(byId('designer-model-selector-trigger'));
+    await click(document.querySelector('[data-testid="designer-model-config-tab"][data-variant="video_gen"]'));
+    const options = [...document.querySelectorAll('[data-testid="designer-generation-model-option"]')];
+    assert.deepEqual(options.map((option) => option.getAttribute('data-variant')), [first.model_id, second.model_id]);
+    assert.equal(byId('designer-generation-model-name').textContent, 'First video');
+    assert.equal(options[0].getAttribute('aria-checked'), 'true');
+    assert.equal(byId('designer-generation-model-warning'), null);
+    assert.equal(byId('designer-model-config-content').textContent.includes('Not enabled'), false);
+    await click(options[1]);
+    await act(async () => { await Promise.resolve(); });
+    assert.equal(saved.video_gen, second.model_id);
+    assert.ok(requests.includes('config.set'));
+    assert.equal(byId('designer-generation-model-name').textContent, 'Other candidate');
+    await click(document.querySelector('[data-testid="designer-model-config-tab"][data-variant="visual_gen"]'));
+    assert.equal(byId('designer-generation-model-name').textContent, 'Bound image');
+    assert.equal(useSessionStore.getState().getRuntime(sessionId).selectedModelName, 'configured-a');
+  });
+});
+
+test('design reloads the catalogue after a settings change without changing its chat selection', async (t) => {
+  let models = [];
+  t.mock.method(webClient, 'request', async (method) => {
+    if (method === 'config.get') return { design_generation_video_gen: '', design_generation_visual_gen: '' };
+    if (method === 'multimodal.models.list') return generationSnapshot(models);
+    throw new Error(method);
+  });
+  await withFixture(async ({ mount, click, byId, dom }) => {
+    resetGenerationStore();
+    await mount(createElement(DesignerModelSelector));
+    assert.ok(byId('designer-model-config-trigger-warning'));
+    await hover(byId('designer-model-config-trigger-warning'));
+    assert.ok(byId('designer-model-config-warning-content'));
+    models = [generationModel('video', 'video_gen'), generationModel('image', 'visual_gen')];
+    await act(async () => { window.dispatchEvent(new dom.window.CustomEvent(SETTINGS_CONFIG_CHANGED_EVENT)); });
+    assert.equal(byId('designer-model-config-trigger-warning'), null);
+    assert.equal(byId('designer-model-config-warning-content'), null);
+    await click(byId('designer-model-selector-trigger'));
+    await click(document.querySelector('[data-testid="designer-model-config-tab"][data-variant="visual_gen"]'));
+    assert.equal(byId('designer-generation-model-name').textContent, 'image');
+    assert.equal(useSessionStore.getState().getRuntime(sessionId).selectedModelName, 'configured-a');
+  });
+});
+
+test('a missing multimodal catalogue says models are not configured', async (t) => {
+  const missing = Object.assign(new Error('not configured'), { code: 'MM_NOT_CONFIGURED' });
+  t.mock.method(webClient, 'request', async () => { throw missing; });
+  const copy = generationCopy('en');
+  await withFixture(async ({ mount, byId }) => {
+    resetGenerationStore();
+    await mount(createElement(DesignerModelSelector));
+    const warning = byId('designer-model-config-trigger-warning');
+    assert.equal(warning.getAttribute('aria-label'), copy.designer.modelConfiguration.notConfigured);
+    await hover(warning);
+    assert.equal(byId('designer-model-config-warning-action').textContent, copy.designer.modelConfiguration.configure);
+    assert.equal(byId('designer-model-config-warning-reason').textContent, copy.designer.modelConfiguration.notConfigured);
+  });
+});
+
+test('design read failures offer retry and then show an empty catalogue', async (t) => {
+  let failed = true;
+  t.mock.method(webClient, 'request', async (method) => {
+    if (failed) throw new Error('transport failed');
+    if (method === 'config.get') return { design_generation_video_gen: '', design_generation_visual_gen: '' };
+    if (method === 'multimodal.models.list') return generationSnapshot();
+    throw new Error(method);
+  });
+  await withFixture(async ({ mount, click, byId }) => {
+    resetGenerationStore();
+    await mount(createElement(DesignerModelSelector));
+    await click(byId('designer-model-selector-trigger'));
+    await click(document.querySelector('[data-testid="designer-model-config-tab"][data-variant="video_gen"]'));
+    assert.match(byId('designer-generation-model-error').textContent, /Could not load/);
+    assert.equal(byId('designer-generation-model-empty'), null);
+    assert.equal(byId('designer-model-config-tab-warning'), null);
+    failed = false;
+    await hover(byId('designer-model-config-trigger-warning'));
+    assert.match(byId('designer-model-config-warning-reason').textContent, /Could not load/);
+    assert.equal(byId('designer-model-config-warning-action').textContent,
+      resources.en.translation.designer.modelConfiguration.retry);
+    await click(byId('designer-model-config-warning-action'));
+    assert.equal(byId('designer-generation-model-error'), null);
+    await click(byId('designer-model-selector-trigger'));
+    await click(document.querySelector('[data-testid="designer-model-config-tab"][data-variant="video_gen"]'));
+    assert.equal(byId('designer-generation-model-empty').textContent, resources.en.translation.designer.models.videoMissing);
+  });
+});
+
+test('canvas model configuration keeps chat locked and still changes generation models', async (t) => {
+  const video = generationModel('画布视频', 'video_gen');
+  const other = generationModel('另一视频', 'video_gen');
+  const { saved } = installGenerationApi(t, [video, other, generationModel('画布图片', 'visual_gen')]);
+  const copy = generationCopy('zh');
+  await withFixture(async ({ mount, click, byId }) => {
+    resetGenerationStore();
+    await mount(createElement(DesignerModelSelector, { sessionId, readOnly: true }));
+    await click(byId('designer-model-selector-trigger'));
+    assert.match(byId('designer-model-config-locked-chat').textContent, /Configured A/);
+    assert.equal(byId('designer-model-selector-option'), null);
+    assert.equal(byId('designer-model-config-add').textContent, copy.designer.modelConfiguration.addModel);
+    assert.deepEqual([...document.querySelectorAll('[data-testid="designer-model-config-tab"]')].map((tab) => tab.textContent),
+      ['对话', '视频生成', '图片生成']);
+    await click(document.querySelector('[data-testid="designer-model-config-tab"][data-variant="video_gen"]'));
+    const options = [...document.querySelectorAll('[data-testid="designer-generation-model-option"]')];
+    assert.equal(options.length, 2);
+    await click(options[1]);
+    await act(async () => { await Promise.resolve(); });
+    assert.equal(saved.video_gen, other.model_id);
+    assert.equal(byId('designer-model-config-add').textContent, copy.designer.modelConfiguration.addModel);
+    assert.equal(useSessionStore.getState().getRuntime(sessionId).selectedModelName, 'configured-a');
+  }, 'zh');
+});
+
+test('canvas label follows the selected model id when names collide', async (t) => {
+  t.mock.method(webClient, 'request', async () => generationSnapshot());
+  const sharedName = 'deepseek-chat';
+  const official = {
+    model_id: 'official-ds', model_name: sharedName, alias: 'Official DeepSeek',
+    vendor_key: 'deepseek', model_provider: 'DeepSeek',
+  };
+  const customOpenAI = {
+    model_id: 'custom-oai', model_name: sharedName, alias: 'Custom OpenAI DeepSeek',
+    model_provider: 'OpenAI',
+  };
+  const customAnthropic = {
+    model_id: 'custom-ant', model_name: sharedName, alias: 'Custom Anthropic DeepSeek',
+    model_provider: 'Anthropic',
+  };
+  await withFixture(async ({ mount, click, byId }) => {
+    resetGenerationStore();
+    useDesignerStore.setState({ domainGraph: null });
+    useSessionStore.getState().setAvailableModels([official, customOpenAI, customAnthropic], sharedName);
+    useSessionStore.getState().setSelectedModelSelection(sessionId, { type: 'model', id: customAnthropic.model_id });
+    await mount(createElement(DesignerModelSelector, { sessionId, readOnly: true }));
+    const trigger = byId('designer-model-selector-trigger');
+    const label = byId('designer-model-selector-label');
+    assert.equal(label.textContent, customAnthropic.alias);
+    assert.equal(trigger.querySelector('[data-testid="model-provider-icon"]').getAttribute('src'),
+      getModelLogoUrl(customAnthropic));
+    assert.notEqual(getModelLogoUrl(customAnthropic), getModelLogoUrl(official));
+    await click(trigger);
+    assert.match(byId('designer-model-config-locked-chat').textContent, new RegExp(customAnthropic.alias));
+    assert.equal(byId('designer-model-config-locked-chat').textContent.includes(official.alias), false);
+
+    await act(async () => {
+      useDesignerStore.setState({
+        domainGraph: { metadata: { model_id: official.model_id } },
+      });
+      useSessionStore.getState().setSelectedModelSelection(sessionId, null);
+    });
+    await mount(createElement(DesignerModelSelector, { sessionId, readOnly: true }));
+    assert.equal(byId('designer-model-selector-label').textContent, official.alias);
+    assert.equal(byId('designer-model-selector-trigger').querySelector('[data-testid="model-provider-icon"]').getAttribute('src'),
+      getModelLogoUrl(official));
+  });
+  useDesignerStore.setState({ domainGraph: null });
+});
+
+test('settings tab navigation applies fresh requests while allowing subsequent manual tab selection', async () => {
+  await withFixture(async ({ mount, click, byId }) => {
+    const tabs = [{ id: 'models', labelKey: 'settingsPanel.models.modelsTab' }, { id: 'multimodal', labelKey: 'settingsPanel.multimodal.tab' }];
+    const props = { tabs, defaultTab: 'models', ariaLabelKey: 'settingsPanel.models.tabsLabel', testIdPrefix: 'settings-models', renderPanel: (tab) => createElement('span', { 'data-testid': 'test-panel' }, tab) };
+    const requestedTab = { tabId: 'multimodal' };
+    await mount(createElement(SettingsTabLayout, { ...props, requestedTab }));
+    assert.equal(byId('test-panel').textContent, 'multimodal');
+    await click(document.querySelector('[data-testid="settings-models-tab"][data-variant="models"]'));
+    assert.equal(byId('test-panel').textContent, 'models');
+    await mount(createElement(SettingsTabLayout, { ...props, requestedTab: { ...requestedTab } }));
+    assert.equal(byId('test-panel').textContent, 'multimodal');
+  });
+});
+
+test('design selection keeps a saved model and otherwise uses the first of that modality', () => {
+  const first = generationModel('first-video', 'video_gen');
+  const second = generationModel('second-video', 'video_gen');
+  const image = generationModel('only-image', 'visual_gen');
+  const models = [first, second, image];
+  assert.deepEqual(modelsForSlot(models, 'video_gen').map((model) => model.model_id), [first.model_id, second.model_id]);
+  assert.equal(resolvedGenerationModelId(models, 'video_gen', second.model_id), second.model_id);
+  assert.equal(resolvedGenerationModelId(models, 'video_gen', 'missing'), first.model_id);
+  assert.equal(resolvedGenerationModelId(models, 'video_gen', null), first.model_id);
+  assert.equal(resolvedGenerationModelId([], 'visual_gen', image.model_id), null);
+  assert.equal(resolvedGenerationModelId(models, 'visual_gen', ''), image.model_id);
+  const blocked = generationModel('seedream', 'video_gen', { protocol: 'openai' });
+  assert.equal(resolvedGenerationModelId([blocked, first], 'video_gen', blocked.model_id), first.model_id);
+  assert.equal(resolvedGenerationModelId([blocked], 'video_gen', blocked.model_id), null);
+});
+
+test('unsupported generation protocols stay listed and are not a choice', async (t) => {
+  const blocked = generationModel('seedream', 'video_gen', { protocol: 'openai', display_name: 'Seedream' });
+  const allowed = generationModel('wan', 'video_gen', { protocol: 'dashscope', display_name: 'Wan' });
+  const image = generationModel('qwen', 'visual_gen', { protocol: 'ModelArk' });
+  const { requests, saved } = installGenerationApi(t, [blocked, allowed, image], {
+    video_gen: blocked.model_id,
+    visual_gen: null,
+  });
+  await withFixture(async ({ mount, click }) => {
+    resetGenerationStore();
+    await mount(createElement(DesignerModelSelector));
+    await click(document.querySelector('[data-testid="designer-model-selector-trigger"]'));
+    await click(document.querySelector('[data-testid="designer-model-config-tab"][data-variant="video_gen"]'));
+    const options = [...document.querySelectorAll('[data-testid="designer-generation-model-option"]')];
+    assert.deepEqual(options.map((node) => node.getAttribute('data-variant')), [blocked.model_id, allowed.model_id]);
+    const blockedOption = options[0];
+    const allowedOption = options[1];
+    assert.equal(blockedOption.getAttribute('aria-disabled'), 'true');
+    assert.equal(blockedOption.getAttribute('aria-checked'), 'false');
+    assert.equal(allowedOption.getAttribute('aria-checked'), 'true');
+    assert.equal(allowedOption.getAttribute('title'), allowed.api_base);
+    assert.equal(
+      blockedOption.parentElement.getAttribute('data-tooltip'),
+      'Design does not support the openai protocol.',
+    );
+    assert.equal(
+      document.querySelector(`[data-testid="designer-generation-model-protocol-warning"][data-variant="${blocked.model_id}"]`)?.getAttribute('data-variant'),
+      blocked.model_id,
+    );
+    await click(blockedOption);
+    assert.equal(requests.includes('config.set'), false);
+    assert.equal(saved.video_gen, blocked.model_id);
+  });
+});
+
+test('a modality with only unsupported protocols warns like a missing model', async (t) => {
+  installGenerationApi(t, [
+    generationModel('seedream', 'visual_gen', { protocol: 'openai' }),
+    generationModel('seedance', 'video_gen', { protocol: 'bytedance' }),
+  ]);
+  const copy = generationCopy('en');
+  await withFixture(async ({ mount, click, byId }) => {
+    resetGenerationStore();
+    await mount(createElement(DesignerModelSelector));
+    assert.equal(byId('designer-model-config-trigger-warning').getAttribute('aria-label'), copy.designer.modelConfiguration.notConfigured);
+    await click(byId('designer-model-selector-trigger'));
+    await click(document.querySelector('[data-testid="designer-model-config-tab"][data-variant="video_gen"]'));
+    const option = document.querySelector('[data-testid="designer-generation-model-option"]');
+    assert.equal(option.getAttribute('aria-disabled'), 'true');
+    assert.equal(option.getAttribute('aria-checked'), 'false');
+    assert.ok(document.querySelector('[data-testid="designer-generation-model-protocol-warning"]'));
+  });
+});
+
+for (const language of ['zh', 'en']) {
+  test(`every design model tab uses the add-custom-model footer in ${language}`, async (t) => {
+    const video = generationModel('video', 'video_gen');
+    installGenerationApi(t, [video, generationModel('image', 'visual_gen')]);
+    const copy = generationCopy(language);
+    await withFixture(async ({ mount, click, byId }) => {
+      resetGenerationStore();
+      const targets = [];
+      window.addEventListener('jiuwen:settings-module', (event) => targets.push(event.detail));
+      await mount(createElement(DesignerModelSelector));
+      await click(byId('designer-model-selector-trigger'));
+      for (const tab of ['chat', 'video_gen', 'visual_gen']) {
+        await click(document.querySelector(`[data-testid="designer-model-config-tab"][data-variant="${tab}"]`));
+        const content = byId('designer-model-config-content');
+        const footer = byId('designer-model-config-footer');
+        const add = byId('designer-model-config-add');
+        assert.equal(content.contains(footer), false);
+        assert.equal(byId('designer-model-selector-add'), null);
+        assert.equal(byId('designer-generation-model-description'), null);
+        assert.equal(add.textContent, copy.designer.modelConfiguration.addModel);
+        assert.notEqual(add.textContent, copy.chat.modelSelector.addModel);
+        assert.ok(add.classList.contains('model-select__add-btn'));
+        assert.equal(add.getAttribute('data-variant'), tab);
+        await click(add);
+        assert.equal(byId('designer-model-selector-menu'), null);
+        assert.deepEqual(targets.at(-1), tab === 'chat' ? 'models' : { moduleId: 'models', tabId: 'multimodal' });
+        await click(byId('designer-model-selector-trigger'));
+      }
+    }, language);
+  });
+}
+
+test('OpenCode Go endpoints stay out of the free Zen classifier and remain group candidates', () => {
+  const goBase = 'https://opencode.ai/zen/go/v1';
+  const goInference = 'https://opencode.ai/inference/go/openai/v1';
+
+  assert.equal(isFreeModelEntry({ model_name: 'go', api_base: goBase }), false);
+  assert.equal(isFreeModelEntry({ model_name: 'go-trailing', api_base: `${goBase}/` }), false);
+  assert.equal(isFreeModelEntry({ model_name: 'go-inference', api_base: goInference }), false);
+  assert.equal(isFreeModelEntry({ model_name: 'zen', api_base: 'https://opencode.ai/zen/v1/' }), true);
+  assert.equal(
+    isFreeModelEntry({ model_name: 'explicit', api_base: goBase, is_free: true }),
+    true,
+  );
+
+  const candidates = getGroupCandidateModels([
+    { model_id: 'mdl_go', model_name: 'go', api_base: goBase, is_free: false },
+    { model_id: 'mdl_zen', model_name: 'zen', api_base: 'https://opencode.ai/zen/v1', is_free: true },
+  ]).map((model) => model.model_id);
+
+  assert.deepEqual(candidates, ['mdl_go']);
 });

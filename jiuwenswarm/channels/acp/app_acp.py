@@ -13,17 +13,16 @@ import subprocess
 import sys
 import uuid
 
-# --- Early --dotenv parsing (before jiuwenswarm imports) ---
-from jiuwenswarm.dotenv_early import parse_dotenv_early, get_parsed_dotenv
-parse_dotenv_early("jiuwenswarm-tui")
-
-# --- Now safe to import jiuwenswarm modules ---
-from jiuwenswarm.common.e2a.adapters import (
+from e2a.adapters import (
     e2a_response_to_acp_jsonrpc_response,
     envelope_from_acp_jsonrpc,
 )
-from jiuwenswarm.common.e2a.constants import E2A_RESPONSE_KIND_E2A_CHUNK
-from jiuwenswarm.common.e2a.models import E2AResponse
+from e2a.constants import E2A_RESPONSE_KIND_E2A_CHUNK
+from e2a.models import E2AResponse
+
+# --- Early --dotenv parsing (before jiuwenswarm imports) ---
+from jiuwenswarm.dotenv_early import parse_dotenv_early, get_parsed_dotenv
+parse_dotenv_early("jiuwenswarm-tui")
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +93,7 @@ def run_acp(args: argparse.Namespace) -> int:
     env.request_id = request_id
     env.is_stream = True
 
-    cmd = [sys.executable, "-m", "gateway.channel_manager.protocol.acp.acp_connect"]
+    cmd = [sys.executable, "-m", "agent_gateway.channel_manager.protocol.acp.acp_connect"]
     gateway_url = getattr(args, "gateway_url", None) or getattr(args, "agent_server_url", None)
     if gateway_url:
         cmd.extend(["--gateway-url", str(gateway_url)])

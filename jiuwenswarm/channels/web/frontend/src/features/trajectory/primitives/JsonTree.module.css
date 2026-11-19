@@ -117,7 +117,7 @@
 }
 
 .copyAnchor {
-  position: fixed;
+  position: absolute;
   z-index: 3;
   display: inline-flex;
 }

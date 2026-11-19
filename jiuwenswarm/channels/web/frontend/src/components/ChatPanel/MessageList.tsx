@@ -22,6 +22,8 @@ import { filterPublishedHistoryBatch } from '../../features/historyPagination';
 import { projectTimelineItems, type TimelineDisplayItem } from '../../features/chatTimeline/projectTimelineItems';
 import { VirtualTimeline, type TimelineViewportState } from './VirtualTimeline';
 import { TimelineRowStateProvider, useTimelineRowState } from './timelineRowState';
+import { EMPTY_APPLICATION_TASKS, useApplicationTaskStore } from '../../applicationPlugins/taskProgressStore';
+import { taskTimelineClock, type TaskTimelineClock } from '../../applicationPlugins/taskTimelineClock';
 import {
   buildTimelineItems,
   buildRenderItems,
@@ -189,8 +191,10 @@ const MAX_PLAUSIBLE_TURN_MS = 24 * 60 * 60 * 1000;
 export function TurnElapsed({
   startMs,
   endMs,
+  isStarting = false,
   isLastTurn,
   isProcessing,
+  taskClock,
   showAvatar,
   agentTemplateName,
   teamLayout,
@@ -199,8 +203,10 @@ export function TurnElapsed({
 }: {
   startMs: number;
   endMs: number;
+  isStarting?: boolean;
   isLastTurn: boolean;
   isProcessing: boolean;
+  taskClock?: TaskTimelineClock;
   showAvatar?: boolean;
   agentTemplateName?: string;
   teamLayout: boolean;
@@ -208,9 +214,10 @@ export function TurnElapsed({
   teamGroupIdentity?: AgentGroupIdentity | null;
 }) {
   const { t } = useTranslation();
-  const active = isLastTurn && isProcessing;
+  const active = taskClock?.active ?? (isLastTurn && isProcessing);
+  const starting = isStarting && !taskClock;
   const now = useNow(active);
-  const end = active ? now : endMs;
+  const end = active ? now : (taskClock?.endMs ?? endMs);
   const rawElapsed = Math.max(0, end - startMs);
   // 进行中若 startMs 异常偏旧，停用实时计时，避免一直飙到数小时。
   const elapsed =
@@ -229,7 +236,7 @@ export function TurnElapsed({
     <div
       className={clsx('completed-work-chip', showActive && 'is-active', !showAvatar && teamLayout && 'turn-elapsed--team')}
       data-testid="chat-panel-turn-elapsed"
-      data-variant={showActive ? 'active' : 'finished'}
+      data-variant={showActive ? (starting ? 'starting' : 'active') : 'finished'}
     >
       <span
         className={clsx('completed-work-chip__icon', showActive ? 'is-active' : 'is-success')}
@@ -243,11 +250,13 @@ export function TurnElapsed({
       </span>
       <span className="completed-work-chip__label">
         <span data-testid="chat-panel-turn-elapsed-label">
-          {showActive ? t('chatUi.turnRunning') : t('chatUi.turnElapsed')}
+          {showActive ? t(starting ? 'chatUi.turnStarting' : 'chatUi.turnRunning') : t('chatUi.turnElapsed')}
         </span>{' '}
-        <span data-testid="chat-panel-turn-elapsed-value">
-          {showActive ? formatElapsedCoarse(elapsed) : formatDurationPrecise(elapsed)}
-        </span>
+        {!(showActive && starting) && (
+          <span data-testid="chat-panel-turn-elapsed-value">
+            {showActive ? formatElapsedCoarse(elapsed) : formatDurationPrecise(elapsed)}
+          </span>
+        )}
       </span>
     </div>
   );
@@ -282,6 +291,8 @@ function CompletedWorkChip({
   showAvatar,
   teamLayout,
   elapsedMs = 0,
+  taskClock,
+  startMs = 0,
   agentTemplateName,
   teamLeaderIdentity,
   teamGroupIdentity,
@@ -295,16 +306,22 @@ function CompletedWorkChip({
   showAvatar: boolean;
   teamLayout: boolean;
   elapsedMs?: number;
+  taskClock?: TaskTimelineClock;
+  startMs?: number;
   agentTemplateName?: string;
   teamLeaderIdentity?: TeamLeaderIdentity | null;
   teamGroupIdentity?: AgentGroupIdentity | null;
 }) {
   const { t } = useTranslation();
+  const now = useNow(Boolean(taskClock?.active));
+  const displayElapsed = taskClock?.active
+    ? Math.max(elapsedMs, now - startMs)
+    : taskClock?.endMs ? Math.max(elapsedMs, taskClock.endMs - startMs) : elapsedMs;
   // 耗时并入 turn 折叠条文案（原底部 TurnElapsed 已移除），位置唯一不再打架。
   const label =
     variant === 'turn'
-      ? elapsedMs > 0
-        ? `${t('chatUi.turnElapsed')} ${formatDurationPrecise(elapsedMs)}`
+      ? displayElapsed > 0
+        ? `${t('chatUi.turnElapsed')} ${taskClock?.active ? formatElapsedCoarse(displayElapsed) : formatDurationPrecise(displayElapsed)}`
         : t('chatUi.workCompletedFallback')
       : formatStreakSummaryLabel(t, thinkingCount, toolCount, outcomeTone);
   // 图标统一用 frame-time 时钟资源，状态色仍由 is-success/is-partial/is-error 通过 currentColor 区分。
@@ -565,6 +582,8 @@ export function ChatTimelineList({
     (s) => s.runtimes[conversationId]?.reasoningSegments ?? EMPTY_REASONING,
   );
   const isProcessing = staticTimeline ? false : storeIsProcessing;
+  const applicationTasks = useApplicationTaskStore(state =>
+    staticTimeline ? EMPTY_APPLICATION_TASKS : state.sessions[sessionId ?? conversationId ?? ''] ?? EMPTY_APPLICATION_TASKS);
   const allReasoningSegments = reasoningSegmentsProp ?? (staticTimeline ? EMPTY_REASONING : storeReasoningSegments);
   const publishedBatchSeq = staticTimeline
     ? Number.MAX_SAFE_INTEGER
@@ -617,6 +636,18 @@ export function ChatTimelineList({
   const settleNow = useNow(settlingForStreak);
   const streakNowMs = settlingForStreak ? settleNow : Date.now();
   const turnWorkMeta = useMemo(() => buildTurnWorkMeta(renderItems, isProcessing), [renderItems, isProcessing]);
+  const taskClocks = useMemo(() => {
+    const summaries = renderItems.filter(item => item.type === 'turnSummary');
+    const clocks = new Map<number, TaskTimelineClock>();
+    summaries.forEach((summary, index) => {
+      const ids = renderItems.flatMap(item => item.type === 'toolGroup' && item.turnId === summary.turnId
+        ? item.executions.map(execution => execution.toolCall.id) : []);
+      const clock = taskTimelineClock(applicationTasks, summary.startMs,
+        summaries[index + 1]?.startMs ?? Number.POSITIVE_INFINITY, ids);
+      if (clock) clocks.set(summary.turnId, clock);
+    });
+    return clocks;
+  }, [applicationTasks, renderItems]);
   const turnFoldAnchorKeys = useMemo(
     () => buildTurnFoldAnchorKeys(renderItems, turnWorkMeta),
     [renderItems, turnWorkMeta],
@@ -749,6 +780,8 @@ export function ChatTimelineList({
       expanded={Boolean(expandedTurns[turnKey])}
       onToggle={() => toggleTurn(turnKey)}
       elapsedMs={completedWorkDurationMs(meta)}
+      startMs={turnElapsedRangeMs(meta).startMs}
+      taskClock={taskClocks.get(meta.turnId)}
       showAvatar
       teamLayout={isTeamMode}
       agentTemplateName={agentTemplateNameByTurn.get(meta.turnId)}
@@ -811,6 +844,7 @@ export function ChatTimelineList({
             <ToolGroupDisplay
               key={`${timelineScope}/${item.key}-deliverable`}
               executions={deliverables}
+              sessionId={sessionId}
               notices={[]}
               showAvatar={false}
               teamLayout={isTeamMode}
@@ -840,6 +874,7 @@ export function ChatTimelineList({
         ) : (
           <ToolGroupDisplay
             executions={item.executions}
+            sessionId={sessionId}
             notices={item.notices}
             showAvatar={hideAvatar ? false : item.showAvatar}
             teamLayout={isTeamMode}
@@ -883,8 +918,10 @@ export function ChatTimelineList({
           key={`${timelineScope}/${item.key}`}
           startMs={range.startMs}
           endMs={range.endMs}
+          isStarting={item.isStarting}
           isLastTurn={item.isLastTurn}
           isProcessing={isProcessing}
+          taskClock={taskClocks.get(item.turnId)}
           showAvatar={item.showAvatar}
           agentTemplateName={agentTemplateNameByTurn.get(item.turnId)}
           teamLayout={isTeamMode}

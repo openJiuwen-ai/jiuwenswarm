@@ -17,13 +17,13 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any
 
-from gateway.common.mode_matrix import (
+from agent_gateway.common.mode_matrix import (
     canonicalize_mode_text,
     is_code_profile_mode,
     is_single_agent_mode,
     is_team_mode,
 )
-from gateway.common.protocol_ids import is_valid_session_id
+from agent_gateway.common.protocol_ids import is_valid_session_id
 from jiuwenswarm.common.config import get_config, get_skill_evolution_enabled, get_ttse_enabled
 from jiuwenswarm.diagnosis.engine import (
     DiagnosisEngine,
@@ -170,6 +170,28 @@ def _crosses_subjects(refs: list[StepRef]) -> bool:
     return len({ref.subject_id for ref in refs}) > 1
 
 
+def _dominant_subject_id(refs: list[StepRef]) -> str:
+    """Subject cited most often. Ties keep the subject that appears first."""
+    counts: dict[str, int] = {}
+    order: list[str] = []
+    for ref in refs:
+        subject_id = ref.subject_id
+        if subject_id == "":
+            continue
+        if subject_id not in counts:
+            counts[subject_id] = 0
+            order.append(subject_id)
+        counts[subject_id] += 1
+    chosen = ""
+    best = 0
+    for subject_id in order:
+        count = counts[subject_id]
+        if count > best:
+            best = count
+            chosen = subject_id
+    return chosen
+
+
 def filter_reward_failure_causes(
     causes: list[RewardFailureCause],
     *,
@@ -205,7 +227,13 @@ def filter_evolution_judge(
     index: ScopeIndex,
     profile: ModeProfile,
 ) -> list[EvolutionJudge]:
-    """Apply interface section 5.4 to one list of evolution items."""
+    """Apply interface section 5.4 to one list of evolution items.
+
+    Skill evidence may cite several subjects. Experience stays on one subject,
+    because TTSE replays a single subject's window. An item with no in-scope
+    reference is dropped. Reward failure causes keep the single-subject rule
+    separately.
+    """
     allowed = _ALLOWED_EVOLUTION_CATEGORIES[profile]
     kept: list[EvolutionJudge] = []
     experience_seen = False
@@ -213,7 +241,7 @@ def filter_evolution_judge(
         if judge.category not in allowed:
             continue
         refs = _scoped_refs(judge.evidence, index)
-        if not refs or _crosses_subjects(refs):
+        if not refs or (judge.category != "skill" and _crosses_subjects(refs)):
             continue
         suggestion = [item for item in judge.suggestion if item.strip()]
         if not suggestion and judge.category != "experience":
@@ -251,6 +279,7 @@ def filter_engine_result(
     judges = filter_evolution_judge(result.evolution_judge, index=index, profile=profile)
     return EngineResult(
         trajectory_summary=result.trajectory_summary,
+        summary_tree=result.summary_tree,
         reward_failure_causes=causes,
         evolution_judge=judges,
         artifact_improvement=result.artifact_improvement,
@@ -512,6 +541,22 @@ class DiagnosisService:
 
     async def _on_engine_event(self, session_id: str, state: _RunState, event: EngineEvent) -> None:
         record = state.record
+        if event.kind == "trajectory_summary":
+            if event.summary_tree is None:
+                return
+            record.summary_tree = event.summary_tree
+            record.trajectory_summary = str(event.summary_tree.get("trajectory_summary") or "")
+            record.seq += 1
+            await self._persist(session_id, record)
+            progress = DiagnosisProgressEvent(
+                session_id=session_id, diagnosis_id=record.diagnosis_id, seq=record.seq,
+                stage_id=event.stage_id, kind=event.kind, summary_tree=record.summary_tree,
+            )
+            await self._safe_push(session_id, PROGRESS_EVENT, progress.model_dump(mode="json", exclude_none=True))
+            return
+        if event.kind == "reward":
+            await self._on_reward(session_id, state, event)
+            return
         if event.kind == "reward_failure_causes":
             await self._on_reward_failure_causes(session_id, state, event)
             return
@@ -564,6 +609,28 @@ class DiagnosisService:
                 await self._persist(session_id, record)
             except Exception:  # noqa: BLE001
                 logger.warning("[diagnosis] stage persist failed: session_id=%s", session_id, exc_info=True)
+
+    async def _on_reward(self, session_id: str, state: _RunState, event: EngineEvent) -> None:
+        """Publish the artifact evaluation as soon as diagnosis has scored it."""
+        payload = event.reward
+        if not isinstance(payload, Mapping):
+            return
+        record = state.record
+        record.reward = dict(payload)
+        record.seq += 1
+        progress = DiagnosisProgressEvent(
+            session_id=session_id,
+            diagnosis_id=record.diagnosis_id,
+            seq=record.seq,
+            stage_id=event.stage_id,
+            kind="reward",
+            reward=record.reward,
+        )
+        await self._safe_push(session_id, PROGRESS_EVENT, progress.model_dump(mode="json", exclude_none=True))
+        try:
+            await self._persist(session_id, record)
+        except Exception:  # noqa: BLE001
+            logger.warning("[diagnosis] reward persist failed: session_id=%s", session_id, exc_info=True)
 
     async def _on_reward_failure_causes(
         self, session_id: str, state: _RunState, event: EngineEvent
@@ -631,7 +698,10 @@ class DiagnosisService:
 
     @staticmethod
     def _apply_result(record: DiagnosisRecord, result: EngineResult) -> None:
-        record.trajectory_summary = result.trajectory_summary
+        if result.summary_tree is not None:
+            record.summary_tree = result.summary_tree
+        if result.trajectory_summary or record.summary_tree is None:
+            record.trajectory_summary = result.trajectory_summary
         record.reward_failure_causes = result.reward_failure_causes
         record.evolution_judge = result.evolution_judge
         record.artifact_improvement = result.artifact_improvement
@@ -757,7 +827,7 @@ class DiagnosisService:
         results: dict[str, TtseTriggerResult] = {}
         payloads: list[dict[str, Any]] = []
         for judge in judges:
-            subject_id = judge.evidence[0].subject_id if judge.evidence else ""
+            subject_id = _dominant_subject_id(judge.evidence)
             window = await asyncio.to_thread(_diagnosed_window, snapshot, diagnosed, subject_id)
             task_query, messages = (
                 await asyncio.to_thread(build_ttse_conversation, snapshot, subject_id, window[0], window[1])

@@ -1,0 +1,1 @@
+export const COLLEAGUE_DESCRIPTION_LIMIT = 200;

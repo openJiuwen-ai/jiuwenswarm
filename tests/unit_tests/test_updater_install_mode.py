@@ -1,4 +1,5 @@
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -114,6 +115,39 @@ def test_pip_executor_installs_canonical_package_name(monkeypatch):
 
     assert checked_packages == ["workswarm"]
     assert statuses[-1]["error"] == "pip install failed: editable test stop"
+
+
+def test_pip_executor_detects_uv_editable_install(monkeypatch):
+    statuses = []
+    executor = PipExecutor(
+        {
+            "package_name": "workswarm",
+            "repo_name": "jiuwenswarm",
+            "timeout_seconds": 20,
+        },
+        statuses.append,
+    )
+    commands = []
+    monkeypatch.setattr(executor, "_resolve_uv_command", lambda: "uv")
+    monkeypatch.setattr(
+        upgrade_executor.subprocess,
+        "run",
+        lambda command, **kwargs: (
+            commands.append(command)
+            or SimpleNamespace(
+                returncode=0,
+                stdout="Name: workswarm\nEditable project location: C:\\src\\workswarm\n",
+            )
+        ),
+    )
+
+    executor.install()
+
+    assert commands == [["uv", "pip", "show", "workswarm"]]
+    assert statuses[-1]["error"] == (
+        "pip install failed: 'workswarm' is installed as an editable package. "
+        "Use 'git pull && uv sync' to update instead."
+    )
 
 
 def test_desktop_executor_rejects_truncated_download(monkeypatch, tmp_path):
@@ -504,17 +538,44 @@ def test_desktop_check_uses_timestamp_and_product_agnostic_installer(
 
 
 @pytest.mark.parametrize(
-    ("platform", "legacy_name", "preferred_name"),
+    ("platform", "legacy_name", "preferred_name", "preferred_url"),
     [
-        ("win32", "JiuwenSwarm-legacy.exe", "WorkSwarm-current.exe"),
-        ("darwin", "JiuwenSwarm-legacy.dmg", "WORKSWARM-current.dmg"),
+        pytest.param(
+            "win32",
+            "JiuwenSwarm-legacy.exe",
+            "WorkSwarm-current.exe",
+            "https://example.test/workswarm",
+            id="workswarm-installer-over-legacy-win32",
+        ),
+        pytest.param(
+            "darwin",
+            "JiuwenSwarm-legacy.dmg",
+            "WORKSWARM-current.dmg",
+            "https://example.test/workswarm",
+            id="workswarm-installer-over-legacy-darwin",
+        ),
+        pytest.param(
+            "win32",
+            "WorkSwarm-setup-0.2.5.beta1.exe",
+            "workswarm-0.2.5.beta1-windows.exe",
+            "https://example.test/preferred",
+            id="platform-filename-over-legacy-win32",
+        ),
+        pytest.param(
+            "darwin",
+            "WorkSwarm-0.2.5.beta1.dmg",
+            "workswarm-0.2.5.beta1-macos.dmg",
+            "https://example.test/preferred",
+            id="platform-filename-over-legacy-darwin",
+        ),
     ],
 )
-def test_desktop_check_prefers_workswarm_installer_for_multiple_candidates(
+def test_desktop_check_prefers_new_asset_over_legacy_candidate(
     monkeypatch,
     platform,
     legacy_name,
     preferred_name,
+    preferred_url,
 ):
     from jiuwenswarm.common.version_source import ReleaseAsset, ReleaseInfo
 
@@ -528,7 +589,7 @@ def test_desktop_check_prefers_workswarm_installer_for_multiple_candidates(
             ),
             ReleaseAsset(
                 name=preferred_name,
-                download_url="https://example.test/workswarm",
+                download_url=preferred_url,
             ),
         ],
     )
@@ -538,7 +599,7 @@ def test_desktop_check_prefers_workswarm_installer_for_multiple_candidates(
 
     status = service.get_status()
     assert status["matched_asset"] == preferred_name
-    assert status["download_url"] == "https://example.test/workswarm"
+    assert status["download_url"] == preferred_url
 
 
 @pytest.mark.parametrize(
@@ -710,52 +771,6 @@ def test_desktop_cleanup_preserves_current_installer_with_different_casing(
     )
 
     assert installer.exists()
-
-
-@pytest.mark.parametrize(
-    ("platform", "legacy_name", "preferred_name"),
-    [
-        (
-            "win32",
-            "WorkSwarm-setup-0.2.5.beta1.exe",
-            "workswarm-0.2.5.beta1-windows.exe",
-        ),
-        (
-            "darwin",
-            "WorkSwarm-0.2.5.beta1.dmg",
-            "workswarm-0.2.5.beta1-macos.dmg",
-        ),
-    ],
-)
-def test_desktop_check_prefers_platform_filename_over_legacy_workswarm_asset(
-    monkeypatch,
-    platform,
-    legacy_name,
-    preferred_name,
-):
-    from jiuwenswarm.common.version_source import ReleaseAsset, ReleaseInfo
-
-    monkeypatch.setattr(sys, "platform", platform)
-    release = ReleaseInfo(
-        version="0.2.5.beta1",
-        assets=[
-            ReleaseAsset(
-                name=legacy_name,
-                download_url="https://example.test/legacy",
-            ),
-            ReleaseAsset(
-                name=preferred_name,
-                download_url="https://example.test/preferred",
-            ),
-        ],
-    )
-
-    service = updater.UpdaterService()
-    service._resolve_desktop_asset({}, release)
-
-    status = service.get_status()
-    assert status["matched_asset"] == preferred_name
-    assert status["download_url"] == "https://example.test/preferred"
 
 
 def test_desktop_check_rejects_ambiguous_same_platform_installers_without_workswarm(

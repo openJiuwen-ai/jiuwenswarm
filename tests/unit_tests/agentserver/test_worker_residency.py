@@ -3,22 +3,25 @@
 """Worker execution residency, delivery and launch identity regressions."""
 
 from __future__ import annotations
+
 import asyncio
 import json
 from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
+
 import pytest
+
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front.request_registry import DuplicateRequestError, RequestRegistry
-from jiuwenswarm.server.ipc.protocol import KIND_DELIVERY_ACK, KIND_REQUEST, dump_agent_request
+from jiuwenswarm.server.ipc.protocol import KIND_DELIVERY_ACK, KIND_REQUEST, KIND_SUBSCRIBE, dump_agent_request
 from jiuwenswarm.server.worker.dispatcher import WorkerDispatcher
 from jiuwenswarm.server.worker.event_store import WorkerEventStore
 from jiuwenswarm.server.worker.gateway_bridge import (
     ConnHolder, WorkerGatewayBridge, begin_delivery_tracking, begin_request_dispatch,
     begin_request_generation, end_delivery_tracking, end_request_dispatch, end_request_generation,
 )
-from unittest.mock import AsyncMock, Mock
 from jiuwenswarm.server.ipc.protocol import KIND_HELLO, KIND_SHUTDOWN, KIND_SHUTDOWN_DONE
 from jiuwenswarm.server.supervisor import identity
 from jiuwenswarm.server.worker import service, stub
@@ -79,6 +82,84 @@ def test_pending_goal_control_is_still_busy(action: str) -> None:
     control = replace(request(method=ReqMethod.COMMAND_GOAL), params={"action": action})
     store.register(control, "goal-control")
     assert store.snapshot(control)["is_processing"] is True
+
+
+def test_targeted_cancel_retires_only_the_target_dispatch() -> None:
+    """A targeted cancel must not retire other same-scope rounds' popups.
+
+    The owner turn and an expert round share the session scope; retiring the
+    whole scope on an expert-targeted cancel would drop ask_user popups that
+    are still answerable while their rounds keep running. A session-level
+    cancel (no target_request_id) still retires the whole scope.
+    """
+    store = WorkerEventStore()
+    for request_id, dispatch in (("owner-turn", "owner"), ("expert-turn", "expert")):
+        store.register(request(request_id), dispatch)
+        store.append({"body": {"event_type": "chat.ask_user_question", "is_processing": True,
+                               "interaction_id": f"ask-{request_id}"}}, dispatch)
+        store.finish(dispatch)
+
+    def popup(dispatch_id: str, query: AgentRequest) -> list[dict]:
+        return next(item["pending_interactions"] for item in store.snapshot(query)["dispatches"]
+                    if item["dispatch_id"] == dispatch_id)
+
+    targeted = replace(request("cancel-1", method=ReqMethod.CHAT_CANCEL),
+                       params={"target_request_id": "expert-turn"})
+    store.retire_session_interactions(targeted)
+    # is_processing is scope-wide: the owner round still holds work, so the
+    # session stays busy even though the expert round was retired.
+    assert store.snapshot(request("owner-turn"))["is_processing"] is True
+    assert popup("owner", request("owner-turn"))
+    assert popup("expert", request("expert-turn")) == []
+    session_wide = replace(request("cancel-2", method=ReqMethod.CHAT_CANCEL), params={})
+    store.retire_session_interactions(session_wide)
+    assert store.snapshot(request("owner-turn"))["is_processing"] is False
+    assert popup("owner", request("owner-turn")) == []
+
+
+def test_retire_releases_finished_dispatch_active_slot() -> None:
+    """Retiring a finished round's ask_user frees its _active slot.
+
+    finish() kept the slot because the suspended interaction made the record
+    look busy; without the release every retired round leaks one slot until
+    register raises the dispatch limit."""
+    store = WorkerEventStore()
+    store.register(request("turn-1"), "d-1")
+    store.append({"body": {"event_type": "chat.ask_user_question", "is_processing": True,
+                           "interaction_id": "ask-1"}}, "d-1")
+    store.finish("d-1")
+    interrupt = replace(request("cancel", method=ReqMethod.CHAT_CANCEL), params={})
+    store.retire_session_interactions(interrupt)
+    # The slot is free again: re-registering the request_id succeeds instead
+    # of raising "duplicate active request_id".
+    store.register(request("turn-1"), "d-2")
+
+
+def test_cancel_with_legacy_request_id_param_retires_only_that_round() -> None:
+    """A cancel whose target arrives as params.request_id retires that round.
+
+    Legacy clients use request_id instead of target_request_id — same
+    fallback contract as admission._dispatch_cancel and
+    dispatcher._drop_queued_cancel."""
+    store = WorkerEventStore()
+    for request_id, dispatch in (("owner-turn", "owner"), ("expert-turn", "expert")):
+        store.register(request(request_id), dispatch)
+        store.append({"body": {"event_type": "chat.ask_user_question", "is_processing": True,
+                               "interaction_id": f"ask-{request_id}"}}, dispatch)
+        store.finish(dispatch)
+
+    cancel = replace(request("cancel-1", method=ReqMethod.CHAT_CANCEL),
+                     params={"request_id": "expert-turn"})
+    store.retire_session_interactions(cancel)
+
+    def popup(dispatch_id: str, query: AgentRequest) -> list[dict]:
+        for item in store.snapshot(query)["dispatches"]:
+            if item["dispatch_id"] == dispatch_id:
+                return item["pending_interactions"]
+        return []
+
+    assert popup("owner", request("owner-turn"))
+    assert popup("expert", request("expert-turn")) == []
 
 
 @pytest.mark.asyncio
@@ -234,7 +315,7 @@ async def test_critical_reply_aborts_on_transport_detach():
 
 
 @pytest.mark.asyncio
-async def test_accepted_execution_survives_detach_and_publishes_on_new_connection():
+async def test_accepted_execution_survives_detach_and_replays_before_live_delivery():
     holder = ConnHolder()
     first = Connection()
     generation = holder.open_session(first)
@@ -245,7 +326,8 @@ async def test_accepted_execution_survives_detach_and_publishes_on_new_connectio
     cancellations = []
 
     class Runtime:
-        def attach_gateway_connection(self, ws, lock):
+        @staticmethod
+        def attach_gateway_connection(ws, lock):
             pass
 
         async def on_gateway_disconnect(self, ws, remote):
@@ -267,6 +349,14 @@ async def test_accepted_execution_survives_detach_and_publishes_on_new_connectio
     second = Connection()
     new_generation = holder.open_session(second)
     release.set()
+    async with asyncio.timeout(1):
+        while bridge.events.records["original-dispatch"].completion is None:
+            await asyncio.sleep(0)
+    assert second.frames == []
+    await dispatcher.handle({"kind": KIND_SUBSCRIBE, "generation": new_generation,
+                             "query_id": "resume", "dispatch_id": "original-dispatch",
+                             "payload": dump_agent_request(request()), "after": 0,
+                             "worker_instance": bridge.events.instance}, second)
     await asyncio.wait_for(second.sent.wait(), 1)
     assert cancellations == []
     assert second.frames[0]["generation"] == new_generation
@@ -290,7 +380,8 @@ async def test_warming_queue_survives_reconnection():
     invoked = []
 
     class Runtime:
-        def attach_gateway_connection(self, ws, lock):
+        @staticmethod
+        def attach_gateway_connection(ws, lock):
             pass
 
         async def dispatch_parsed_request(self, ws, req, lock):
@@ -327,10 +418,12 @@ async def test_empty_execution_snapshot_does_not_hide_accepted_warming_work():
     dispatcher = WorkerDispatcher(bridge)
 
     class Runtime:
-        def attach_gateway_connection(self, ws, lock):
+        @staticmethod
+        def attach_gateway_connection(ws, lock):
             pass
 
-        def get_session_snapshot(self, session_id):
+        @staticmethod
+        def get_session_snapshot(session_id):
             return SimpleNamespace(executions=())
 
     await dispatcher.bind_runtime(Runtime())
@@ -440,7 +533,7 @@ def test_replayed_frame_retains_authoritative_session_and_app_routing():
 
 def test_mailbox_push_and_execution_are_owned_by_target_session():
     from dataclasses import replace
-    from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+    from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
     from jiuwenswarm.runtime.execution_telemetry import observe_execution_entry
 
     bridge = WorkerGatewayBridge(ConnHolder())
@@ -682,7 +775,13 @@ async def test_resident_worker_startup_window_retries_without_spawning(monkeypat
     from jiuwenswarm.server.lifecycle import Readiness
     from jiuwenswarm.server.supervisor import runtime_supervisor as module
 
-    conn = SimpleNamespace(recv=AsyncMock(return_value={
+    from jiuwenswarm.server.supervisor import resident_lifecycle
+
+    # This case isolates election while the endpoint is busy; real OS ownership
+    # is covered by the legacy compatibility and shutdown process tests.
+    monkeypatch.setattr(resident_lifecycle, "worker_process",
+        lambda *args, **kwargs: (SimpleNamespace(pid=123), 1.0))
+    conn = SimpleNamespace(close=AsyncMock(), recv=AsyncMock(return_value={
         "kind": KIND_HELLO, "protocol": module.PROTOCOL_VERSION,
         "data_scope": "scope", "code_identity": "code", "stub": False,
         "instance": "original-worker",

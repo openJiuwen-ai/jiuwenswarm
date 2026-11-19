@@ -12,14 +12,23 @@ import type {
 import type { ExternalCliInstallStatuses } from '../../../components/ExternalCliInstallDialog';
 import { SettingsSaveQueue } from './SettingsSaveQueue';
 import { SettingsUnsavedChangesRegistry } from './SettingsUnsavedChangesRegistry';
+import { MultimodalSettingsProvider } from './useMultimodalSettings';
+import type { SettingsNavigationTarget } from '../settingsNavigation';
 
 export type SettingsServices = {
+  navigationTarget?: SettingsNavigationTarget;
+  appVersion?: string;
   isConnected: boolean;
   connectionState: WebConnectionState;
   request: SettingsRequest;
   saveQueue: SettingsSaveQueue;
   unsavedChanges: SettingsUnsavedChangesRegistry;
   onDetectExternalCli?: (agent: ExternalCliAgentKind, path?: string, useBuiltin?: boolean) => Promise<ExternalCliDetectResult>;
+  /** Checks which CLI paths exist on disk; keys are the requested paths. */
+  onValidateExternalCliPaths?: (paths: string[]) => Promise<Record<string, boolean | null>>;
+  /** Server-side prune of one kind's persisted history: only the
+   * intersection with the on-disk history is dropped. Returns survivors. */
+  onPruneExternalCliPathHistories?: (agent: ExternalCliAgentKind, removePaths: string[]) => Promise<string[]>;
   onSelectExternalCliPath?: (agent: ExternalCliAgentKind, initialPath?: string) => Promise<string | null>;
   onTrackExternalCliDependencyInstalls?: (statuses: ExternalCliInstallStatuses) => void;
   externalCliInstallStatuses?: ExternalCliInstallStatuses;
@@ -43,8 +52,6 @@ export type SettingsServices = {
           Record<ExternalCliAgentKind, ExternalCliDetectResult>
         >),
   ) => void;
-  recommendationFocus?: number | null;
-  onCorrectRecommendation?: (text: string) => void;
   onRecommendationEnabledChange?: (enabled: boolean) => void;
 };
 
@@ -64,6 +71,8 @@ export function SettingsServicesProvider({
   const value = useMemo(
     () => ({ ...services, saveQueue: saveQueueRef.current!, unsavedChanges: changesRef.current! }),
     [
+      services.navigationTarget,
+      services.appVersion,
       services.connectionState,
       services.externalCliDetectResults,
       services.externalCliInstallStatuses,
@@ -76,8 +85,8 @@ export function SettingsServicesProvider({
       services.onGetExternalCliInstallStatus,
       services.onSelectExternalCliPath,
       services.onTrackExternalCliDependencyInstalls,
-      services.recommendationFocus,
-      services.onCorrectRecommendation,
+      services.onValidateExternalCliPaths,
+      services.onPruneExternalCliPathHistories,
       services.onRecommendationEnabledChange,
       services.request,
     ],
@@ -87,7 +96,11 @@ export function SettingsServicesProvider({
     return value.unsavedChanges.subscribe(() => onHasChangesChange?.(value.unsavedChanges.hasChanges()));
   }, [onHasChangesChange, value.unsavedChanges]);
   useEffect(() => () => onHasChangesChange?.(false), [onHasChangesChange]);
-  return <SettingsServicesContext.Provider value={value}>{children}</SettingsServicesContext.Provider>;
+  return (
+    <SettingsServicesContext.Provider value={value}>
+      <MultimodalSettingsProvider>{children}</MultimodalSettingsProvider>
+    </SettingsServicesContext.Provider>
+  );
 }
 export function useSettingsServices(): SettingsServices {
   const services = useContext(SettingsServicesContext);

@@ -6,63 +6,40 @@ import logging
 import time
 from typing import Any
 
+from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskModification
 from jiuwenswarm.extensions.video_duplex.backend.tasks.store import task_database
-
-from .qwen_omni_tools import parse_qwen_omni_tool_call
-from .tasks.errors import QueueVersionConflict, TaskRevisionConflict
+from .tasks.errors import QueueVersionConflict, TaskRevisionConflict, TaskNotFound
+from .tasks.interactions import approval_cards, approval_option_labels, voice_approval_answers
+from .tasks.diagnostics import receipt_state, task_state, trace_task
 from .tasks.prompts import (
     EMPTY_QUERY_INSTRUCTIONS,
     QUEUE_CONFLICT_INSTRUCTIONS,
+    SCHEDULED_JOBS_INSTRUCTIONS,
     REORDER_INSTRUCTIONS,
     REVISION_CONFLICT_INSTRUCTIONS,
     task_query_instructions,
 )
+from .qwen_omni_tools import delegate_matches_input, parse_qwen_omni_tool_call
+from .core_receipts import receipt_payload
 
 logger = logging.getLogger(__name__)
-AGENT_QUERY_TIMEOUT = 20
 EVENT_SEND_TIMEOUT = 2
+SCHEDULED_JOBS_LIMIT = 20
 
 
-class AgentRequestTimeoutError(TimeoutError):
-    """AgentServer unary 请求超时（与 gateway.routing.agent_request_timeout 同契约的最小子集）."""
+async def gateway_scheduled_jobs(owner):
+    """Read the Gateway cron store with the same owner scope as the sidebar's ``cron.job.list``."""
+    from agent_gateway.cron.controller import CronController
 
-    code = "AGENT_SERVER_TIMEOUT"
-
-
-async def send_agent_request_with_timeout(
-    agent_client: Any,
-    env: Any,
-    *,
-    label: str,
-    timeout_seconds: float,
-) -> Any:
-    """限时等待 AgentServer unary 响应（gateway 薄代理同语义的最小本地实现）。
-
-    task 查询始终显式传 timeout_seconds，不涉及 gateway 的 TUI 通道超时策略；
-    仅依赖注入的 AgentServerClient.send_request，不引用 gateway 树实现。
-    """
-    try:
-        return await asyncio.wait_for(
-            agent_client.send_request(env), timeout=timeout_seconds
-        )
-    except asyncio.TimeoutError as exc:
-        logger.warning(
-            "[%s] AgentServer unary request timed out: request_id=%s method=%s "
-            "channel=%s timeout=%ss",
-            label,
-            getattr(env, "request_id", ""),
-            getattr(env, "method", ""),
-            getattr(env, "channel", ""),
-            timeout_seconds,
-        )
-        raise AgentRequestTimeoutError() from exc
+    # Empty identity reads anonymous jobs only; None would expose every owner's jobs.
+    return await CronController.get_instance().list_jobs(user_id=owner)
 
 
 def task_identity(ws, scope):
     """Use WebChannel's user scope; connection admission belongs to the gateway."""
-    from gateway.channel_manager.web.web_connect import WebChannel
+    from agent_gateway.channel_manager.web.web_connect import WebChannel
 
     if not isinstance(scope, str) or not scope:
         raise ValueError("Invalid task conversation")
@@ -83,19 +60,39 @@ def task_identity(ws, scope):
     return owner, scope
 
 
-async def task_agent_query(client, method, params, session, owner):
+async def task_login_credential_ref(ws: Any, target: dict[str, Any]) -> str:
+    """Bind a login model to this caller without persisting its session or token."""
+    from agent_gateway.auth.passthrough import expired_login_session, normalize_model_auth
+    from agent_gateway.auth.service import get_auth_service
+
+    auth_session = getattr(ws, "_jiuwen_auth_session", None)
+    if not isinstance(auth_session, str) or not auth_session or not target.get("model_name"):
+        return ""
+    params = {"model_name": target["model_name"]}
+    expired = expired_login_session(params, auth_session)
+    if expired is not None:
+        try:
+            await asyncio.to_thread(get_auth_service().try_refresh, expired)
+        except Exception as exc:
+            logger.debug("Task login credential refresh failed: %s", type(exc).__name__)
+    normalize_model_auth(params, session_id=auth_session)
+    return (params.get(E2A_MODEL_AUTH_PARAM_KEY) or {}).get("credential_ref", "")
+
+
+async def task_agent_query(client, method, params, session, owner, *, metadata=None):
     """Read from the routed AgentServer, never from Gateway's local session tree."""
-    from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+    from e2a.gateway_normalize import e2a_from_agent_fields
 
     client = client.get("value") if isinstance(client, dict) else client
     if client is None:
         raise RuntimeError("AgentServer client is unavailable")
-    response = await send_agent_request_with_timeout(
-        client, e2a_from_agent_fields(
+    response = await client.send_request(
+        e2a_from_agent_fields(
             request_id="task-query-" + str(time.time_ns()),
             req_method=method, params=params, session_id=session,
             user_id=owner or None, channel_id="video_tool", timestamp=time.time(),
-        ), label="voice.task", timeout_seconds=AGENT_QUERY_TIMEOUT,
+            metadata=metadata,
+        ),
     )
     payload = response.payload or {}
     if not response.ok:
@@ -106,16 +103,47 @@ async def task_agent_query(client, method, params, session, owner):
 class AgentTaskExecutor:
     def __init__(self, client, store, normalize_media):
         self.client, self.store, self.normalize_media = client, store, normalize_media
-        from gateway.extensions.video_duplex.backend.tasks.bridge import (
+        from agent_gateway.extensions.video_duplex.backend.tasks.bridge import (
             GatewayTaskEndpoint,
         )
 
         self.endpoint = GatewayTaskEndpoint(store)
+        self.reconciliation_outcomes = {}
+        self._readiness_check = None
 
     async def close(self):
+        if self._readiness_check is not None:
+            self._readiness_check.cancel()
+            await asyncio.gather(self._readiness_check, return_exceptions=True)
         self.endpoint.close()
+        self.reconciliation_outcomes.clear()
+
+    @staticmethod
+    async def _model_auth(task: dict[str, Any]) -> dict[str, Any] | None:
+        """Resolve the bound account through Gateway's existing refresh path."""
+        from agent_gateway.auth.login_credentials import bare_model_name
+        from agent_gateway.auth.session_owners import SessionOwner, login_auth_for_owner
+
+        ref = task["request"].get("login_credential_ref")
+        model_name = task["request"].get("execution_target", {}).get("model_name")
+        if not ref or not model_name:
+            return None
+        return await asyncio.to_thread(
+            login_auth_for_owner, SessionOwner(ref, bare_model_name(model_name)),
+        )
+
+    def prune_reconciliation(self, active_requests):
+        """Retain one-shot outcomes only while their execution is unresolved."""
+        for request_id in self.reconciliation_outcomes.keys() - active_requests:
+            del self.reconciliation_outcomes[request_id]
 
     async def run(self, task, progress):
+        if "execution_target" not in task["request"]:
+            from .mode_routing import resolve_execution_target
+
+            target = await resolve_execution_target(self.client, task["owner"], task["session"])
+            task["request"]["execution_target"] = target
+            self.store.update(task["id"], lambda t: t["request"].update(execution_target=target))
         independent = task["request"].get("independent", False)
         dependencies = task["request"].get("depends_on", [])
         completed = []
@@ -146,9 +174,10 @@ class AgentTaskExecutor:
                 }
             )
         from jiuwenswarm.extensions.video_duplex.backend.tasks.service import (
-            ExecutionUncertain,
             InteractionPending,
+            ExecutionUncertain,
         )
+        from jiuwenswarm.extensions.video_duplex.backend.tasks.errors import CoreExecutionError
 
         try:
             result = await self._run(task, progress, context)
@@ -157,6 +186,7 @@ class AgentTaskExecutor:
                 raise ExecutionUncertain(
                     "Answer channel closed before the question was answered"
                 )
+            self.store.update(task["id"], lambda t: t.update(observed_result=result))
             if current.get("execution_bound"):
                 await self.wait_settled(task)
             # Native send_file_to_user is a server push, not part of this RPC stream.
@@ -182,31 +212,54 @@ class AgentTaskExecutor:
         except InteractionPending:
             await self.wait_settled(task)
             raise
+        except CoreExecutionError:
+            current = self.store.read(task["id"])
+            if current.get("execution_bound") and not current.get("execution_settled"):
+                await self.wait_settled(task)
+            raise
         except Exception as exc:
             current = self.store.read(task["id"])
             if current.get("execution_bound") and not current.get("execution_settled"):
                 raise ExecutionUncertain("Execution cleanup is unconfirmed; no work was replayed") from exc
             raise
 
-    async def wait_settled(self, task):
-        from jiuwenswarm.extensions.video_duplex.backend.tasks.service import (
-            ExecutionUncertain,
+    async def pending_interrupt(self, task):
+        """Whether the task's chat still waits for a card answer; only saved chats share Core sessions."""
+        if not task["session"].startswith("task-duplex:"):
+            return False
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        payload = await task_agent_query(
+            self.client, ReqMethod.VOICE_TASK_PENDING_INTERRUPT, {},
+            task["core_session_id"], task["owner"],
+        )
+        return bool(payload.get("pending"))
+
+    async def interaction_state(self, task):
+        """Read the original card independently of its suspended output stream."""
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        interaction = task["interaction"]
+        params = {"interaction_id": interaction["request_id"],
+                  "interrupt_id": interaction.get("interrupt_id")}
+        if interaction.get("card_binding"):
+            params["card_binding"] = interaction["card_binding"]
+        return await task_agent_query(
+            self.client, ReqMethod.VOICE_TASK_PENDING_INTERRUPT, params,
+            task["core_session_id"], task["owner"],
         )
 
-        try:
-            async with asyncio.timeout(20):
-                while not self.store.read(task["id"])["execution_settled"]:
-                    await asyncio.sleep(0.05)
-        except TimeoutError as exc:
-            raise ExecutionUncertain(
-                "Execution cleanup is unconfirmed; no work was replayed"
-            ) from exc
+    async def wait_settled(self, task):
+        """Retain ownership until Core confirms settlement, including suspended turns."""
+        while not self.store.read(task["id"])["execution_settled"]:
+            await asyncio.sleep(0.05)
 
     @staticmethod
     def answer_input(task):
         from jiuwenswarm.runtime.interaction import InteractionAnswerInput
 
         interaction = task["interaction"]
+        target = (task.get("request") or {}).get("execution_target") or {"mode": "agent", "work_mode": "work"}
         return InteractionAnswerInput(
             request_id=task["request_id"]
             if task.get("resume_answer")
@@ -228,8 +281,10 @@ class AgentTaskExecutor:
                 for a in interaction["answers"]
             ),
             source=interaction["source"],
-            mode="agent",
-            work_mode="work",
+            interrupt_id=str(interaction.get("interrupt_id") or ""),
+            mode=target["mode"],
+            work_mode="" if target["mode"] == "team.design" else target.get("work_mode", "work"),
+            project_dir=target.get("project_dir", ""),
         )
 
     async def answer(self, task):
@@ -239,13 +294,25 @@ class AgentTaskExecutor:
         client = (
             self.client.get("value") if isinstance(self.client, dict) else self.client
         )
+        params = {
+            **request.params,
+            "managed_task_request": task["request_id"],
+            "managed_task_binding": self.endpoint.binding(task),
+        }
+        target = task["request"].get("execution_target", {})
+        for key in ("model_name", "model_selection"):
+            if target.get(key) is not None:
+                params[key] = target[key]
+        model_auth = await self._model_auth(task)
+        if model_auth is not None:
+            params[E2A_MODEL_AUTH_PARAM_KEY] = model_auth
         response = await client.send_request(
             e2a_from_agent_fields(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 session_id=request.session_id,
                 req_method=request.req_method,
-                params=request.params,
+                params=params,
                 is_stream=False,
                 timestamp=time.time(),
                 user_id=task["owner"] or None,
@@ -256,6 +323,12 @@ class AgentTaskExecutor:
 
     async def _run(self, task, progress, context):
         from . import video_search
+        from .mode_routing import resolve_execution_target
+
+        current = await resolve_execution_target(self.client, task["owner"], task["session"])
+        target = task["request"].get("execution_target", current)
+        if any(target.get(key) != current.get(key) for key in ("mode", "work_mode", "project_id", "project_dir")):
+            raise ValueError("Conversation mode or project changed; submit a new task")
 
         return await video_search.execute_core_agent(
             self.client,
@@ -273,11 +346,96 @@ class AgentTaskExecutor:
             interaction_answer=self.answer_input(task)
             if task.get("resume_answer")
             else None,
-            brief_nonce=task["id"],
             managed_task_binding=self.endpoint.binding(task),
+            execution_target=target,
+            model_auth=await self._model_auth(task),
         )
 
-    async def cancel(self, task):
+    async def reconciliation_ready(self) -> bool:
+        """Read current Front readiness, not the snapshot from connection.ack."""
+        if self._readiness_check is None or self._readiness_check.done():
+            self._readiness_check = asyncio.create_task(self._check_reconciliation_readiness())
+        return await asyncio.shield(self._readiness_check)
+
+    async def _check_reconciliation_readiness(self) -> bool:
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        try:
+            async with asyncio.timeout(5):
+                payload = await task_agent_query(
+                    self.client, ReqMethod.HEALTH_CHECK_GET_CONF, {}, "", "",
+                )
+            return payload.get("agent_ready") is True
+        except Exception:
+            # This is not the one task query. Retry readiness on the next sweep.
+            return False
+
+    async def reconcile(self, task):
+        """Recheck live executions; retain only confirmed settlement receipts."""
+        key = task["request_id"]
+        if key in self.reconciliation_outcomes:
+            return self.reconciliation_outcomes[key]
+        outcome = await self._reconcile_once(task)
+        if outcome.get("settled"):
+            self.reconciliation_outcomes[key] = outcome
+        return outcome
+
+    async def _reconcile_once(self, task):
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        metadata = await task_agent_query(
+            self.client, ReqMethod.SESSION_GET_METADATA,
+            {"session_id": task["core_session_id"], "enable_writeback": False},
+            task["core_session_id"], task["owner"],
+        )
+        if str(metadata.get("user_id") or "").strip() != task["owner"]:
+            raise ValueError("Task session is unavailable to this user")
+        runtime = metadata.get("runtime") or {}
+        executions = runtime.get("executions") or []
+        roots = [e for e in executions if e.get("request_id") == task["request_id"]]
+        owned = {e["execution_id"] for e in executions
+                 if e.get("request_id") == task["request_id"] or e.get("root_request_id") == task["request_id"]}
+        if runtime.get("recovery_pending") or not roots:
+            raise RuntimeError("Core has not confirmed the execution state")
+        while True:
+            descendants = {e["execution_id"] for e in executions if e.get("parent_execution_id") in owned}
+            if descendants.issubset(owned):
+                break
+            owned.update(descendants)
+        records = [e for e in executions if e["execution_id"] in owned]
+        if any(e.get("state") not in {"succeeded", "failed", "cancelled"} for e in records):
+            return {"status": "running", "settled": False}
+        root = roots[-1]
+        state = root["state"]
+        if state != "succeeded":
+            return {"status": "cancelled" if state == "cancelled" else "failed", "settled": True,
+                    "error": root.get("error") or ""}
+        result = task.get("observed_result")
+        if result is None:
+            result = task.get("result")
+        if result is None:
+            page = 1
+            while True:
+                history = await task_agent_query(
+                    self.client, ReqMethod.HISTORY_GET, {"session_id": task["core_session_id"], "page_idx": page},
+                    task["core_session_id"], task["owner"],
+                )
+                final = None
+                for record in history.get("messages", []):
+                    if record.get("request_id") != task["request_id"]:
+                        continue
+                    if record.get("event_type") == "chat.final" and record.get("content"):
+                        final = record
+                        break
+                if final is not None:
+                    result = {"answer": final["content"]}
+                    break
+                if page >= history.get("total_pages", 1):
+                    raise RuntimeError("Core result is not yet available in history")
+                page += 1
+        return {"status": "completed", "result": result, "settled": True}
+
+    async def _send_cancel_request(self, task):
         from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
         from jiuwenswarm.common.schema.message import ReqMethod
 
@@ -285,21 +443,75 @@ class AgentTaskExecutor:
             self.client.get("value") if isinstance(self.client, dict) else self.client
         )
         request = e2a_from_agent_fields(
-            request_id="cancel-" + task["request_id"],
-            channel_id="video_tool",
+            request_id="cancel-" + task["request_id"] + "-" + str(time.time_ns()),
+            channel_id="web",
             session_id=task["core_session_id"],
             req_method=ReqMethod.CHAT_CANCEL,
             user_id=task["owner"] or None,
-            params={"intent": "cancel", "mode": "agent", "work_mode": "work",
-                    "managed_task_request": task["request_id"]},
+            params={"intent": "cancel",
+                    **task["request"].get("execution_target", {"mode": "agent", "work_mode": "work"}),
+                    "target_request_id": task["request_id"]},
             is_stream=False,
             timestamp=time.time(),
         )
-        response = await asyncio.wait_for(client.send_request(request), 20)
+        trace_task("cancel_rpc_sent", task=task_state(task), cancel_request_id=request.request_id)
+        response = await client.send_request(request)
+        trace_task("cancel_rpc_response", task=task_state(task),
+                   ok=response.ok, payload=receipt_state(response.payload))
+        return response
+
+    async def refresh_execution(self, task):
+        """Read original Runtime facts without invoking cancellation or replay."""
+        outcome = await self._reconcile_once(task)
+        if outcome.get("settled"):
+            def settle(t):
+                if t["request_id"] != task["request_id"]:
+                    return
+                t.update(
+                    execution_settled=True, execution_cancelled=outcome["status"] == "cancelled",
+                    **({"observed_result": outcome["result"]} if outcome.get("result") is not None else {}),
+                )
+                if t["status"] == "cancelling" and outcome["status"] != "cancelled":
+                    t.update(status=outcome["status"], result=outcome.get("result"), error=outcome.get("error", ""))
+            self.store.update(task["id"], settle)
+
+    async def cancel(self, task):
+        """Stop only the exact request through the original Runtime cancel API."""
+        # Revoke unclaimed admission in the same transaction as bind.
+        with self.store.transaction() as db:
+            current = self.store.get(db, task["id"])
+            if current["request_id"] != task["request_id"]:
+                raise RuntimeError("Task execution changed before cancellation")
+            if current["execution_cancelled"] and current["execution_settled"]:
+                return True
+            if current["status"] == "cancelling" and not current["execution_bound"]:
+                current.update(checkpoint_open=False, execution_settled=True,
+                               execution_cancelled=True, output_closed=True,
+                               sequence=current["sequence"] + 1)
+                self.store.put(db, current)
+                trace_task("cancel_before_execution_bound", task=task_state(current))
+                return True
+
+        response = await self._send_cancel_request(task)
         if not response.ok or (response.payload or {}).get("success") is False:
-            raise RuntimeError("Agent has not confirmed the stop request")
-        while not self.store.read(task["id"])["execution_settled"]:
-            await asyncio.sleep(0.2)
+            detail = str((response.payload or {}).get("code") or (response.payload or {}).get("error") or "")[:500]
+            raise RuntimeError("Agent has not confirmed the stop request" + (": " + detail if detail else ""))
+        if (response.payload or {}).get("stop_confirmed"):
+            if (response.payload or {}).get("matched") == 0:
+                # A known terminal execution was not cancelled by this request.
+                await self.refresh_execution(task)
+                return False
+            # The original Runtime confirmed cancellation of this exact request.
+
+            def settle(t):
+                if t["request_id"] == task["request_id"] and not t["execution_settled"]:
+                    t.update(checkpoint_open=False, execution_settled=True,
+                             execution_cancelled=True)
+            self.store.update(task["id"], settle)
+            return True
+        await self.wait_settled(task)
+        trace_task("cancel_settled", task=task_state(self.store.read(task["id"])))
+        return False
 
 
 class VideoSearchManager:
@@ -316,13 +528,22 @@ class VideoSearchManager:
         max_concurrency=2,
         path=None,
         authorize=task_identity,
+        scheduled_jobs=gateway_scheduled_jobs,
     ):
         self.channel, self.log_event, self.qwen_active = channel, log_event, qwen_active
         self.client, self.normalize_media = agent_client, normalize_media_attachments
         self.path, self.authorize, self.concurrency = path, authorize, max_concurrency
         self._service = None
+        self.list_scheduled_jobs = scheduled_jobs
         self.subscribers = {}
         self._approval_cards = {}
+        self._execution_targets = {}
+        # Typed chat cards the web channel pushed, by Core session (latest only).
+        self._chat_cards = {}
+        listen = getattr(channel, "add_session_event_listener", None)
+        if callable(listen):
+            listen(self._on_session_event)
+        self._queue_requests = {}
 
     @property
     def service(self):
@@ -333,7 +554,7 @@ class VideoSearchManager:
                 AgentTaskExecutor(self.client, store, self.normalize_media),
                 on_change=self.changed,
                 concurrency=self.concurrency,
-                notification_timeout=AGENT_QUERY_TIMEOUT + 2 * EVENT_SEND_TIMEOUT + 1,
+                notification_timeout=25,
             )
         return self._service
 
@@ -354,6 +575,11 @@ class VideoSearchManager:
             )
             if not metadata or str(metadata.get("user_id") or "").strip() != owner:
                 raise ValueError("Conversation is unavailable to this user")
+            from .mode_routing import execution_target
+
+            self._execution_targets[(owner, session)] = execution_target(metadata)
+            if len(self._execution_targets) > 128:
+                self._execution_targets.pop(next(iter(self._execution_targets)))
         return owner, session
 
     @staticmethod
@@ -366,6 +592,7 @@ class VideoSearchManager:
                     files.extend(entry.get("files", []))
         return dict(
             engine="Jiuwen Core Agent",
+            title=task.get("title", ""),
             id=task["id"],
             job_id=task["id"],
             search_session_id=task["session"],
@@ -374,9 +601,7 @@ class VideoSearchManager:
             status=task["status"],
             revision=task["revision"],
             sequence=task["sequence"],
-            result=result.get("answer", ""),
-            display_result=result.get("display_result", ""),
-            realtime_brief=result.get("realtime_brief"),
+            **receipt_payload(result, question=task["instruction"]),
             files=files,
             artifact_lookup_failed=bool(result.get("artifact_lookup_failed")),
             progress_history=task["progress"],
@@ -394,7 +619,30 @@ class VideoSearchManager:
             resources=request.get("resources", []),
             interaction=task.get("interaction"),
             wait_reason=task.get("wait_reason", ""),
+            waiting_on=task.get("waiting_on", []),
         )
+
+    async def scheduled_jobs(self, owner):
+        """The user's Cron jobs from every conversation; Core invocations stay conversation-scoped."""
+        reader = getattr(self, "list_scheduled_jobs", gateway_scheduled_jobs)
+        try:
+            jobs = list(await reader(owner) or [])
+        except Exception as exc:  # noqa: BLE001 - report the gap; never present it as "no jobs"
+            logger.warning("[VideoTasks] scheduled job lookup failed", exc_info=True)
+            return {"available": False, "error": str(exc)[:300],
+                    "message": "Scheduled jobs could not be read; do not claim there are none."}
+        fields = ("id", "name", "enabled", "cron_expr", "timezone", "description", "targets", "expired")
+        return {
+            "available": True,
+            "scope": "all conversations of this user (same list as the sidebar)",
+            "total": len(jobs),
+            "jobs": [
+                {key: str(job.get(key) or "")[:300] if key == "description" else job.get(key) for key in fields}
+                for job in jobs[:SCHEDULED_JOBS_LIMIT]
+            ],
+            "truncated": len(jobs) > SCHEDULED_JOBS_LIMIT,
+            "message": SCHEDULED_JOBS_INSTRUCTIONS,
+        }
 
     def snapshot(self, owner, scope):
         tasks, version = self.service.snapshot(owner, scope)
@@ -404,6 +652,8 @@ class VideoSearchManager:
         positions = {t["id"]: i + 1 for i, t in enumerate(queued)}
         return {
             "search_session_id": scope,
+            "conversation": {key: value for key, value in self._execution_targets.get((owner, scope), {}).items()
+                             if key in {"mode", "work_mode", "project_id"}},
             "queue_version": version,
             "max_concurrency": self.concurrency,
             "concurrency_scope": "owned_active_executions; unknown execution activity is unconfirmed",
@@ -422,7 +672,7 @@ class VideoSearchManager:
     def voice_job(job):
         """Return control facts, not the UI's repeated reasoning/tool history."""
         fields = (
-            "id", "job_id", "status", "revision", "queue_version", "queue_position",
+            "id", "job_id", "title", "status", "revision", "queue_version", "queue_position",
             "independent", "parent_id", "successor_id", "wait_reason",
         )
         result = {key: job.get(key) for key in fields}
@@ -451,11 +701,21 @@ class VideoSearchManager:
         ]
         result["files_truncated"] = len(files) != len(result["files"])
         interaction = job.get("interaction")
-        if interaction and len(json.dumps(interaction, ensure_ascii=False).encode("utf-8")) > 8000:
+        if interaction and (interaction.get("source") == "permission_interrupt"
+                            or len(json.dumps(interaction, ensure_ascii=False).encode("utf-8")) > 8000):
             # Never truncate the exact question that an answer must be bound to.
             result["interaction_requires_ui"] = True
+            if interaction.get("source") == "permission_interrupt":
+                result["message"] = (
+                    "Permission requests require a manual click on the on-screen card; "
+                    "do not submit a voice answer."
+                )
         else:
             result["interaction"] = interaction
+        # Voice answers approval cards with one of each card's own option labels.
+        cards = approval_cards(interaction)
+        approval = {"approval_cards": cards} if cards else {}
+        result.update(approval)
         if len(json.dumps(result, ensure_ascii=False).encode("utf-8")) > 12000:
             # Five jobs remain well below the provider's 256 KiB frame limit,
             # including the second JSON encoding of function_call_output.
@@ -464,13 +724,16 @@ class VideoSearchManager:
                 question=str(job.get("question") or "")[:1000],
                 details_omitted=True,
                 artifact_status="not_in_response",
+                **approval,
             )
         return result
 
     async def changed(self, task):
         state = task["status"]
-        if state in {"failed", "completed", "cancelled"}:
-            self.log_event({"stage": "search_" + state, "job_id": task["id"]})
+        trace_task("task_state_published", task=task_state(task),
+                   queue_version=self.snapshot(task["owner"], task["session"])["queue_version"],
+                   subscriber_count=sum(key[:2] == (task["owner"], task["session"])
+                                        for key in self.subscribers))
         event = state if state in {"completed", "failed", "cancelled"} else "progress"
 
         async def deliver(key, ws):
@@ -490,6 +753,7 @@ class VideoSearchManager:
                 ws, "video.search.queue", self.snapshot(*key[:2])
             ), EVENT_SEND_TIMEOUT)
             await self._sync_approval_card(ws, task, key)
+            trace_task("task_push_sent", task=task_state(task), connection_id=key[2])
 
         # One slow connection must not consume the budget of other subscribers.
         results = await asyncio.gather(*(
@@ -497,7 +761,69 @@ class VideoSearchManager:
             if key[:2] == (task["owner"], task["session"])
         ), return_exceptions=True)
         if any(isinstance(result, Exception) for result in results):
+            trace_task("task_push_failed", task=task_state(task),
+                       errors=[str(result)[:1000] for result in results if isinstance(result, Exception)])
             raise RuntimeError("Task notification delivery was incomplete")
+
+    def _on_session_event(self, event_name, session_id, payload):
+        """Follow typed chat cards and turn ends from the web channel's own pushes."""
+        if not session_id:
+            return
+        if event_name == "chat.ask_user_question":
+            if payload.get("source") == "permission_interrupt":
+                self._chat_cards.pop(session_id, None)
+                return
+            if payload.get("duplex_job_id") or payload.get("source") != "confirm_interrupt":
+                return
+            self._chat_cards[session_id] = {
+                key: payload.get(key)
+                for key in ("request_id", "interrupt_id", "source", "questions", "approval_schema")
+            }
+            if len(self._chat_cards) > 128:
+                expired = next(iter(self._chat_cards))
+                self._chat_cards.pop(expired)
+        elif event_name == "chat.processing_status":
+            if not payload.get("is_processing") and self._service is not None:
+                # A turn ended: the card was answered or a new one is up; Core decides.
+                self._service.interrupt_settled(session_id)
+
+    async def chat_card(self, owner, scope):
+        """The typed chat card Core still waits on in this conversation, for voice."""
+        if not scope.startswith("task-duplex:"):
+            return None
+        session = scope.removeprefix("task-duplex:")
+        card = self._chat_cards.get(session)
+        if not card or card.get("source") != "confirm_interrupt":
+            return None
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        try:
+            payload = await task_agent_query(
+                self.client, ReqMethod.VOICE_TASK_PENDING_INTERRUPT,
+                {"interaction_id": card["request_id"], "interrupt_id": card.get("interrupt_id")}, session, owner,
+            )
+        except Exception:
+            logger.warning("Chat card lookup failed for %s", session, exc_info=True)
+            return None
+        if not payload.get("pending"):
+            self._chat_cards.pop(session, None)
+            return None
+        if self._chat_cards.get(session) is not card:
+            return None
+        card["card_binding"] = payload.get("card_binding")
+        cards = approval_cards({**card, "state": "pending"}) or []
+        # Same shape as a job's interaction; the answer is one of each question's option labels.
+        questions = [
+            {"question": q.get("question", ""), "options": [{"label": label} for label in approval_option_labels(q)]}
+            for q in card.get("questions") or [] if isinstance(q, dict)
+        ]
+        return {"job_id": "", "interaction_id": card["request_id"], "approval_cards": cards,
+                "interaction": {"id": card["request_id"], "source": card["source"], "questions": questions}}
+
+    async def answer_chat_card(self, ws, owner, scope, interaction_id, answers):
+        """Return intent to the browser's original question submission controller."""
+        return {"state": "client_required", "applied": False,
+                "interaction_answer": {"interaction_id": interaction_id, "answers": answers}}
 
     async def _sync_approval_card(self, ws, task, key):
         interaction = task.get("interaction") or {}
@@ -506,7 +832,9 @@ class VideoSearchManager:
             task["session"].startswith("task-duplex:")
             and task["status"] == "waiting_user"
             and interaction.get("state") == "pending"
-            and interaction.get("source") in {"permission_interrupt", "confirm_interrupt"}
+            and interaction.get("source") in {
+                "permission_interrupt", "confirm_interrupt", "ask_user", "ask_user_interrupt", "",
+            }
         )
         if pending:
             if self._approval_cards.get(card_key) == interaction["id"]:
@@ -518,6 +846,8 @@ class VideoSearchManager:
                 "source": interaction["source"],
                 "questions": interaction["questions"],
             }
+            if interaction.get("interrupt_id"):
+                payload["interrupt_id"] = interaction["interrupt_id"]
             if interaction.get("approval_schema"):
                 payload["approval_schema"] = interaction["approval_schema"]
             await asyncio.wait_for(
@@ -547,30 +877,51 @@ class VideoSearchManager:
         turn_id="",
         command_id="",
         scheduling=None,
+        title="",
     ):
         owner, scope = await self.scope(ws, {"search_session_id": search_session_id})
+        from .mode_routing import resolve_execution_target
+
+        target = await resolve_execution_target(self.client, owner, scope)
+        credential_ref = await task_login_credential_ref(ws, target)
         request = dict(
+            title=title,
             query=query,
             visual_context=visual_context,
             frame_data_url=frame_data_url,
             tool_call_id=tool_call_id,
             tool_name=tool_name,
             turn_id=turn_id,
+            execution_target=target,
         )
         request.update(scheduling or {})
+        request["execution_target"] = target
+        request.pop("login_credential_ref", None)
+        if credential_ref:
+            request["login_credential_ref"] = credential_ref
         task = self.service.submit(
             owner, scope, command_id or tool_call_id, question or query, request
         )
         return self.public(task)
 
-    async def _respond(self, ws, req_id, action):
+    async def _respond(self, ws, req_id, action, *, trace=None):
+        started = time.monotonic()
+        if trace is not None:
+            trace_task("task_rpc_received", rpc_request_id=req_id, **trace)
         try:
             payload = await action()
         except Exception as exc:
+            if trace is not None:
+                trace_task("task_rpc_rejected", rpc_request_id=req_id, **trace,
+                           error_type=type(exc).__name__, error=str(exc)[:2000],
+                           elapsed_ms=round((time.monotonic() - started) * 1000))
             await self.channel.send_response(
                 ws, req_id, ok=False, error=str(exc), code="TASK_REQUEST_REJECTED"
             )
             return
+        if trace is not None:
+            trace_task("task_rpc_completed", rpc_request_id=req_id, **trace,
+                       receipt=receipt_state(payload), elapsed_ms=round((time.monotonic() - started) * 1000))
         await self.channel.send_response(ws, req_id, ok=True, payload=payload)
 
     async def handle_qwen_tool(self, ws, req_id, params, session_id):
@@ -579,8 +930,26 @@ class VideoSearchManager:
             if not self.qwen_active():
                 raise ValueError("Qwen Omni Realtime is not the active provider")
             call = parse_qwen_omni_tool_call(params)
+            if call.name == "jiuwen_queue_manage":
+                instruction = str(params.get("question") or call.task).strip()
+                result = await self.manage_queue_call(owner, scope, call, instruction)
+                return {"tool_result": result, "call_id": call.call_id}
             if call.name in {"jiuwen_delegate", "jiuwen_research"}:
-                from .video_search import MAX_FRAME_CHARS, _frame_media_item
+                question = str(params.get("question") or "").strip()
+                if question and not delegate_matches_input(question, call.task):
+                    return {
+                        "tool_result": {
+                            "state": "rejected", "applied": False, "retryable": True,
+                            "code": "TASK_INPUT_MISMATCH",
+                            "message": (
+                                "No task was created. The proposed task does not match the latest user utterance. "
+                                "Read that utterance again and call jiuwen_delegate with the user's actual goal. "
+                                "If the utterance is only a short answer, use the preceding conversation for context."
+                            ),
+                        },
+                        "call_id": call.call_id,
+                    }
+                from .video_search import _frame_media_item, MAX_FRAME_CHARS
 
                 frame = params.get("frame_data_url", "")
                 if frame and (
@@ -591,6 +960,9 @@ class VideoSearchManager:
                     ws,
                     question=params.get("question") or call.task,
                     query=call.task,
+                    title=(call.arguments.get("title", "")
+                           if delegate_matches_input(question or call.task, call.arguments.get("title", ""))
+                           else ""),
                     search_session_id=scope,
                     frame_data_url=frame,
                     tool_call_id=call.call_id,
@@ -604,15 +976,93 @@ class VideoSearchManager:
                 )
                 return {"search_job": task, "call_id": call.call_id}
             return {
-                "tool_result": await self.operate(owner, scope, call),
+                "tool_result": await self.operate(
+                    owner, scope, call, ws=ws, user_instruction=params.get("question") or "",
+                ),
                 "call_id": call.call_id,
             }
 
-        await self._respond(ws, req_id, run)
+        await self._respond(ws, req_id, run, trace={
+            "source": "qwen", "call_id": params.get("call_id"),
+            "name": params.get("name"), "search_session_id": params.get("search_session_id"),
+            "arguments": str(params.get("arguments") or "")[:6000],
+            "question": str(params.get("question") or "")[:1000],
+        })
 
-    async def operate(self, owner, scope, call):
+    async def manage_queue_call(self, owner, scope, call, instruction, *, allow_answers=True, reply_language="match"):
+        """Share deduplication and lifecycle for provider queue management calls."""
+        from .cron_control import CronControl
+        from .queue_manager import manage_queue
+
+        key = (owner, scope, call.call_id)
+        signature = (call.task, instruction, allow_answers, reply_language)
+        existing = self._queue_requests.get(key)
+        if existing is not None and existing[0] != signature:
+            raise ValueError("Queue command ID reused with different instructions")
+        if existing is None:
+            if len(self._queue_requests) >= 128:
+                expired = next((k for k, v in self._queue_requests.items() if v[1].done()), None)
+                if expired is None:
+                    raise ValueError("Too many queue management requests")
+                del self._queue_requests[expired]
+            task = asyncio.create_task(manage_queue(
+                self, owner, scope, call, instruction,
+                allow_answers=allow_answers, reply_language=reply_language,
+                cron=CronControl(owner),
+            ))
+            self._queue_requests[key] = (signature, task)
+        return await asyncio.shield(self._queue_requests[key][1])
+
+    async def operate(self, owner, scope, call, *, ws=None, approvals_only=False, user_instruction=""):
         args = call.arguments
+        if call.name == "jiuwen_form_answer":
+            if approvals_only:
+                raise ValueError("JoyAI voice form answers are disabled; complete the on-screen form")
+            with self.service.store.transaction() as db:
+                tasks = self.service.store.rows(db, owner, scope)
+                replay, pending = [], []
+                for task in tasks:
+                    interaction = task.get("interaction") or {}
+                    if interaction.get("source") != "ask_user_interrupt":
+                        continue
+                    if interaction.get("operation_id") == call.call_id:
+                        replay.append(task)
+                    if task["status"] == "waiting_user" and interaction.get("state") == "pending":
+                        pending.append(task)
+                candidates = replay or pending
+            if len(candidates) != 1:
+                raise ValueError("Select exactly one pending information form before answering")
+            task = candidates[0]
+            # Reuse Core validation, pending-card checks and persisted answer receipts.
+            return await self.service.answer(
+                owner, scope, task["id"], call.call_id, task["interaction"]["id"],
+                answers=args["answers"],
+            )
+        if args.get("job_id"):
+            try:
+                self.service.get(owner, scope, args["job_id"])
+            except TaskNotFound:
+                logger.info(
+                    "Voice task target not found: operation=%s job_id=%s scope=%s",
+                    call.name, args["job_id"], scope,
+                )
+                return {
+                    "state": "rejected", "applied": False, "code": "TASK_NOT_FOUND",
+                    "attempted_job_id": args["job_id"], "retryable": True,
+                    "message": (
+                        "No operation was performed. This ID does not identify a Core invocation "
+                        "in the current conversation. "
+                        "Do not infer that the resulting resource was deleted or that the user request is impossible. "
+                        "Query jiuwen_task_query without job_id, locate the intended invocation from its requirement "
+                        "and result, and copy its exact job_id and revision before trying a corrected operation. "
+                        "IDs inside result text identify external resources, not Core invocations; send such IDs "
+                        "to Core in the follow-up instruction, never as job_id. "
+                        "If the target remains ambiguous, ask the user. "
+                        "Never repeat this rejected ID, operate on another conversation, or recreate the resource."
+                    ),
+                }
         if call.name == "jiuwen_task_query":
+            await self.service.refresh(owner, scope)
             snapshot = self.snapshot(owner, scope)
             jobs = snapshot["jobs"]
             if args.get("job_id"):
@@ -620,7 +1070,7 @@ class VideoSearchManager:
                 jobs = [t for t in jobs if t["id"] == args["job_id"]]
             else:
                 query = args.get("query", "").casefold()
-                jobs = [t for t in jobs if query in t["question"].casefold()]
+                jobs = [t for t in jobs if query in t["question"].casefold() or query in t.get("title", "").casefold()]
             counts = {}
             for job in jobs:
                 counts[job["status"]] = counts.get(job["status"], 0) + 1
@@ -636,6 +1086,7 @@ class VideoSearchManager:
             page = selected[offset:offset + 5]
             result = {
                 **snapshot,
+                "operation": "query", "applied": False,
                 "jobs": [self.voice_job(t) for t in page],
                 "scope": {"session_id": scope, "job_id": args.get("job_id"),
                           "query": args.get("query", ""), "status": status},
@@ -648,16 +1099,25 @@ class VideoSearchManager:
             }
             if not jobs:
                 result["message"] = EMPTY_QUERY_INSTRUCTIONS
+            if not args.get("job_id"):
+                result["scheduled_jobs"] = await self.scheduled_jobs(owner)
+                card = await self.chat_card(owner, scope)
+                if card is not None:
+                    result["chat_approval"] = card
         elif call.name == "jiuwen_task_cancel":
             result = await self.service.cancel(
-                owner, scope, args["job_id"], call.call_id
+                owner, scope, args["job_id"], call.call_id,
+                user_instruction=user_instruction if user_instruction != call.name else "",
             )
         elif call.name == "jiuwen_task_reorder":
             if args["action"] == "before" and not args.get("before_job_id"):
                 raise ValueError("before requires before_job_id")
             try:
+                queue_version = args.get("queue_version")
+                if queue_version is None:
+                    queue_version = self.snapshot(owner, scope)["queue_version"]
                 receipt = self.service.reorder(
-                    owner, scope, args["job_id"], args["queue_version"],
+                    owner, scope, args["job_id"], queue_version,
                     args.get("before_job_id"), command_id=call.call_id,
                 )
             except QueueVersionConflict as exc:
@@ -681,19 +1141,41 @@ class VideoSearchManager:
             if receipt.get("state") == "rejected":
                 result.update(receipt, message=QUEUE_CONFLICT_INSTRUCTIONS)
         elif call.name == "jiuwen_task_answer":
-            result = await self.service.answer(
-                owner,
-                scope,
-                args["job_id"],
-                call.call_id,
-                args["interaction_id"],
-                answers=args["answers"],
-            )
+            if not args.get("job_id"):
+                # A typed chat's card has no job; it is named by its interaction_id.
+                return await self.answer_chat_card(
+                    ws, owner, scope, args["interaction_id"], args["answers"]
+                )
+            interaction = self.service.get(owner, scope, args["job_id"]).get("interaction")
+            if approvals_only and approval_cards(interaction) is None:
+                raise ValueError("JoyAI voice form answers are disabled; complete the on-screen form")
+            try:
+                result = await self.service.answer(
+                    owner,
+                    scope,
+                    args["job_id"],
+                    call.call_id,
+                    args["interaction_id"],
+                    answers=args["answers"],
+                )
+            except ValueError as exc:
+                # Explicit receipt so the model cannot mistake a refusal for consent.
+                current = self.service.get(owner, scope, args["job_id"])
+                return dict(
+                    task_id=args["job_id"], state="rejected", applied=False, error=str(exc),
+                    current_task=self.voice_job(self.public(current)),
+                    message=(
+                        "The answer was not applied. Report the current task state from this receipt; "
+                        "do not claim approval, continued execution or completion without evidence. "
+                        "Query the current card before another answer. Do not recreate the task or "
+                        "transfer consent to a different card automatically."
+                    ),
+                )
         else:
             try:
                 result = self.service.modify(
                     owner, scope, args["job_id"], call.call_id,
-                    TaskModification(args["revision"], args["instruction"]),
+                    TaskModification(args["revision"], args["instruction"], args.get("title", "")),
                 )
             except TaskRevisionConflict as exc:
                 current = self.service.get(owner, scope, args["job_id"])
@@ -714,6 +1196,7 @@ class VideoSearchManager:
     async def handle_list(self, ws, req_id, params, session_id):
         async def run():
             owner, scope = await self.scope(ws, params)
+            await self.service.refresh(owner, scope)
             tasks, cursor = self.service.list(
                 owner, scope, offset=params.get("offset", 0)
             )
@@ -741,9 +1224,19 @@ class VideoSearchManager:
             interaction = task.get("interaction") or {}
             if interaction.get("request_id") != params.get("request_id"):
                 raise ValueError("Confirmation is no longer pending")
+            answers = params.get("answers")
+            if interaction.get("source") in {"", "ask_user", "ask_user_interrupt"} and isinstance(answers, list):
+                # The native card sends UserAnswer DTOs; the task store uses answer.
+                # Keep identity/count/content validation in the existing service.
+                answers = [
+                    {**{k: v for k, v in a.items() if k not in {"custom_input", "card_id"}},
+                     "answer": a.get("custom_input", a.get("answer", ""))}
+                    if isinstance(a, dict) else a
+                    for a in answers
+                ]
             return await self.service.answer(
                 owner, scope, task["id"], str(req_id), interaction.get("id"),
-                answers=params.get("answers"), native_ui=True,
+                answers=answers, native_ui=True,
             )
 
         await self._respond(ws, req_id, run)
@@ -781,7 +1274,7 @@ class VideoSearchManager:
                     scope,
                     task_id,
                     params.get("command_id") or str(req_id),
-                    TaskModification(params.get("revision"), params.get("instruction")),
+                    TaskModification(params.get("revision"), params.get("instruction"), params.get("title", "")),
                 )
             else:
                 raise ValueError(
@@ -791,8 +1284,19 @@ class VideoSearchManager:
             await self.channel.send_event(ws, "video.search.queue", snapshot)
             return snapshot
 
-        await self._respond(ws, req_id, run)
+        await self._respond(ws, req_id, run, trace={
+            "source": "task_controls", "job_id": params.get("job_id"),
+            "action": params.get("action"), "before_job_id": params.get("before_job_id"),
+            "queue_version": params.get("queue_version"),
+            "search_session_id": params.get("search_session_id"),
+        })
 
     async def close(self):
+        self._chat_cards.clear()
+        pending = [entry[1] for entry in self._queue_requests.values()]
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        self._queue_requests.clear()
         if self._service is not None:
             await self._service.close()

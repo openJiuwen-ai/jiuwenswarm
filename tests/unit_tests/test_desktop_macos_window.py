@@ -201,3 +201,46 @@ def test_pywebview_native_paste_api_is_only_exposed_on_macos(desktop_app, monkey
     assert callable(desktop_app._WindowApi(runtime).paste_clipboard)
     monkeypatch.setattr(desktop_app.sys, "platform", "win32")
     assert not hasattr(desktop_app._WindowApi(runtime), "paste_clipboard")
+
+
+@pytest.mark.parametrize(
+    ("scheme", "host", "port", "media_type", "expected"),
+    [
+        ("http", "127.0.0.1", 5173, 1, 1),
+        ("http", "127.0.0.1", 5174, 1, 2),
+        ("http", "localhost", 5173, 1, 2),
+        ("https", "127.0.0.1", 5173, 1, 2),
+        ("http", "external.example", 5173, 1, 2),
+        ("http", "127.0.0.1", 0, 1, 2),
+        ("http", "127.0.0.1", 5173, 0, 2),
+        ("http", "127.0.0.1", 5173, 2, 2),
+    ],
+)
+def test_macos_microphone_requires_exact_frontend_origin(
+    desktop_app, monkeypatch, scheme, host, port, media_type, expected,
+):
+    callbacks = []
+    delegate = type("BrowserDelegate", (), {})
+    objc = types.SimpleNamespace(
+        selector=lambda callback, **kwargs: callback,
+        classAddMethods=lambda cls, methods: callbacks.extend(methods),
+    )
+    monkeypatch.setitem(sys.modules, "objc", objc)
+    monkeypatch.setitem(sys.modules, "webview.platforms.cocoa", types.SimpleNamespace(
+        BrowserView=types.SimpleNamespace(BrowserDelegate=delegate),
+    ))
+    monkeypatch.setattr(desktop_app.sys, "platform", "darwin")
+    frontend = ["http://127.0.0.1:5173"]
+    desktop_app._install_macos_media_capture_permission(lambda: frontend[0])
+    origin = types.SimpleNamespace(protocol=lambda: scheme, host=lambda: host, port=lambda: port)
+    decisions = []
+    callbacks[0](None, None, origin, None, media_type, decisions.append)
+    assert decisions == [expected]
+    # Port changes are read at request time, not captured during startup.
+    frontend[0] = "http://127.0.0.1:6000"
+    decisions.clear()
+    callbacks[0](None, None, origin, None, media_type, decisions.append)
+    assert decisions == [2]
+    decisions.clear()
+    callbacks[0](None, None, None, None, media_type, decisions.append)
+    assert decisions == [2]
