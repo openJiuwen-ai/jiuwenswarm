@@ -11,6 +11,8 @@ JiuwenSwarm provides this capability on top of the A4P SDK from the openJiuwen A
 
 ## Enabling and Using
 
+The switch applies to the application and can be changed from Settings on a blank new conversation page. Approval cards load pending requests for the active conversation after it is created.
+
 Enable it under **Settings → Experimental features → A4P Preauthorization**. It is off by default and only takes effect in the "default permission" mode. Smart Approval and Full Access do not inject A4P authorization guidance, expose the preauthorization tool, or use A4P tokens to approve calls. **once enabled, cron job runs also go through the permission guardrail.** You can also configure it in `config.yaml`:
 
 ```yaml
