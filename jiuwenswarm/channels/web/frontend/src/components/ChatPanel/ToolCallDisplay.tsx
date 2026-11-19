@@ -15,6 +15,7 @@ import {
 } from '../../utils/symphonyCommandDisplay';
 import { describeToolCall } from './toolCategory';
 import { AutoReviewerDetails } from './AutoReviewerStatus';
+import { ToolResultOriginal } from './ToolResultOriginal';
 
 interface ToolCallDisplayProps {
   toolCall?: ToolCall;
@@ -158,6 +159,7 @@ export function ToolCallDisplay({ toolCall, toolResult }: ToolCallDisplayProps) 
               {formatToolResult(toolResult.result)}
             </pre>
             <AutoReviewerDetails reviewer={toolResult.reviewer} />
+            <ToolResultOriginal result={toolResult} />
           </div>
         )}
       </div>
