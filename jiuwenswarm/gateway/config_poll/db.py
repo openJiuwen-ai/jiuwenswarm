@@ -12,6 +12,7 @@ POLL_TABLES: tuple[str, ...] = (
     "channel_config",
     "logging_config",
     "log_masking_rule",
+    "content_masking_config",
     "audit_log_config",
 )
 _POLL_TABLES = frozenset(POLL_TABLES)
@@ -43,7 +44,7 @@ def row_key(table: str, row: dict[str, Any]) -> str:
         return str(row.get("channel_id") or "").strip()
     if table == "log_masking_rule":
         return str(row.get("rule_id") or "").strip()
-    # logging_config / audit_log_config：单文档表
+    # logging_config / audit_log_config / content_masking_config：单文档表
     return str(row.get("id") or "default").strip()
 
 

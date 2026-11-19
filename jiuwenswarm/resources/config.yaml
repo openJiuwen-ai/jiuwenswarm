@@ -993,7 +993,7 @@ gateway:
   # remote 时前端 SessionsPanel 不再浏览网关本地会话文件，仅支持恢复会话历史。
   web_session_storage: ${GATEWAY_WEB_SESSION_STORAGE:-local}
 
-  # 企业版 Gateway 多副本：从共享库轮询 Gateway 自身配置（channel/logging/log_masking）
+  # 企业版 Gateway 多副本：从共享库轮询 Gateway 自身配置（channel/logging/log_masking/content_masking）
   config_poll:
     enabled: ${GATEWAY_CONFIG_POLL_ENABLED:-false}
     interval_seconds: ${GATEWAY_CONFIG_POLL_INTERVAL_SECONDS:-10}

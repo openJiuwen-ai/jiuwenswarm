@@ -71,6 +71,17 @@ async def apply_log_masking_rule_table(ctx: TableApplyContext) -> None:
     logger.info("[ConfigPoll] log_masking_rule applied rows=%d", len(rows))
 
 
+async def apply_content_masking_config_table(ctx: TableApplyContext) -> None:
+    """网页出站内容脱敏：整段配置单文档，空行表示回退 config.yaml。"""
+    from jiuwenswarm.gateway.channel_manager.web.sensitive_mask import (
+        apply_content_masking_row,
+        select_content_masking_row,
+    )
+
+    apply_content_masking_row(select_content_masking_row(ctx.rows))
+    logger.info("[ConfigPoll] content_masking_config applied rows=%d", len(ctx.rows))
+
+
 async def apply_channel_config_table(ctx: TableApplyContext) -> None:
     """Apply channel_config rows via overlay reload hooks.
 
@@ -113,5 +124,6 @@ TABLE_APPLIERS: dict[str, ApplyTableFn] = {
     "channel_config": apply_channel_config_table,
     "logging_config": apply_logging_config_table,
     "log_masking_rule": apply_log_masking_rule_table,
+    "content_masking_config": apply_content_masking_config_table,
     "audit_log_config": apply_audit_log_config_table,
 }

@@ -2937,6 +2937,18 @@ async def _run_with_telemetry(
             name="agent-prewarm-periodic-sync",
         )
 
+    # 企业版内容脱敏：Web 通道先于 config_poll 首轮就绪，监听前冷加载一次，
+    # 避免重启后首个会话按下发前的状态出站。
+    if is_enterprise():
+        try:
+            from jiuwenswarm.gateway.channel_manager.web.sensitive_mask import (
+                reload_content_masking_from_db,
+            )
+
+            await reload_content_masking_from_db()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[App] content masking cold load failed: %s", exc)
+
     await channel_manager.start_dispatch()
 
     config_poll_scheduler = None

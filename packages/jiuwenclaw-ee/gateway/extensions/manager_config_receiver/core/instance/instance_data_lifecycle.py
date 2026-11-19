@@ -36,6 +36,7 @@ INSTANCE_PURGE_TABLES: tuple[str, ...] = (
     "agent_template",
     "instance_agent_resource",
     "log_masking_rule",
+    "content_masking_config",
     "workspace_quota_policy",
     "workspace_quota_usage",
     "logging_config",
@@ -142,6 +143,19 @@ async def purge_gateway_instance_data() -> dict[str, int]:
 
     if await require_enterprise_repository(_MANAGER_SIGN_PUBKEY_TABLE).delete():
         deleted_counts[_MANAGER_SIGN_PUBKEY_TABLE] = 1
+
+    # DB 行已清空，进程内缓存也要同步回落 config.yaml，避免 poll 关闭时继续生效。
+    try:
+        from jiuwenswarm.gateway.channel_manager.web.sensitive_mask import (
+            apply_content_masking_row,
+        )
+
+        apply_content_masking_row(None)
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[instance_data_lifecycle] content masking cache reset failed",
+            exc_info=True,
+        )
 
     logger.info(
         "[instance_data_lifecycle] purged gateway instance data counts=%s",

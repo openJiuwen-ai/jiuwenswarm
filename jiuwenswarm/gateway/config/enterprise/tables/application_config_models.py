@@ -128,6 +128,28 @@ CRON_POLICY_TABLE_DEF = TableDefinition(
     indexes=[],
 )
 
+CONTENT_MASKING_CONFIG_TABLE_DEF = TableDefinition(
+    table_name="content_masking_config",
+    columns=[
+        ColumnDefinition(
+            "id",
+            "integer",
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        ColumnDefinition("enabled", "boolean", nullable=False, default=False),
+        # 网页出站脱敏规则：``[{"title": str, "pattern": str}]``，与个人版
+        # config.yaml::sensitive_mask.rules 同构。
+        ColumnDefinition("rules", "json", nullable=False),
+        ColumnDefinition("source", "string", length=16, nullable=False, default="manager"),
+        ColumnDefinition("revision", "integer", nullable=False, default=1),
+        ColumnDefinition("created_at", "datetime", nullable=False),
+        ColumnDefinition("updated_at", "datetime", nullable=False),
+    ],
+    indexes=[],
+)
+
 AUDIT_LOG_CONFIG_TABLE_DEF = TableDefinition(
     table_name="audit_log_config",
     columns=[
