@@ -13,6 +13,7 @@ files:
   - jiuwenswarm/server/ipc/stream.py
   - jiuwenswarm/server/supervisor/runtime_supervisor.py
   - jiuwenswarm/server/runtime/session/session_archive.py
+  - jiuwenswarm/server/runtime/session/lifecycle.py
   - jiuwenswarm/server/runtime/session/history_stream.py
   - jiuwenswarm/agents/harness/common/session_ops_service.py
 designs: []
@@ -57,6 +58,18 @@ Windows / Python 3.13，分别使用两个发布线锁定的 agent-core 环境�
 ## 防错模式与资料同步
 
 本地排队不改变事件实际发生时间；配额前的推测检查不得同步等待资源锁；取消边界必须包括登记持久化阶段；历史组的前瞻判断只统计实际模型语义。对应中英文运行恢复说明已同步，回归用例固化这些边界。
+
+## 11 月 19 日 PR !10626 建议级评审复查
+
+本轮从 `7de055d8cf3d14aaacf8a1be0c5d65b5a768125f` 续写，限定在三条建议及直接受影响的回归，不改变以上四类修复的范围。
+
+- 采纳探针错误分类建议：`ConnectionError` 直接返回 `connection_closed`；其他发送异常在连接关闭或 reader 已失败时同样归为断连，其余保留 `write_failed`。发送失败时不采用无关联的旧版心跳作为往返成功证据。若直接复用 `outcome("write_failed")`，这类旧心跳会被误判为成功，故仅复用原有连接状态判据。
+- 采纳缓存 LIMIT 校验的降级建议：将 cursor 访问放入校验边界，普通异常返回“不复用缓存”，由原有配额内恢复重新读取。`LifecycleError` 在当前模块实际存在；扩大捕获是为了覆盖 TypeError、AttributeError 及普通读取错误，取消和中断仍传播。
+- 已核实 `_begin_unarchive` 的返回约定：`lc.update` 返回 operation 子字典，调用方可以直接读取 `operation_id` 和 `pin_reindex_required`。补充该返回值说明，以真实归档/取消归档验证置顶重排、原始异常到 RESTORE_FAILED 的转换、同一操作的失败落盘和历史字节不变；无需改动返回数据结构。
+
+Windows / Python 3.13，使用本分支 `.venv`，agent-core 为发布线锁定的 `ce89516ddc45e3154a6c2719e4b8740f3cc5e78b`，未更换依赖。仅在三份测试新增用例的基线上执行对照：10 failed、7 passed；失败为 TCP/Windows named pipe 的断连分类及缓存校验异常，归档返回值验证通过。
+
+最终执行 7 个相关模块，289 passed、7 skipped、0 failed；跳过项均为 Windows 不支持的 Unix-domain-socket 用例。覆盖探针异常分类及旧版心跳的负向对照、缓存异常后的原生上下文恢复和取消传播、解归档成功与失败、已有预读和 warmup、Front 存活新鲜度及 Worker 换代。执行记录位于本地 `artifacts/pr10626-review-20261119/`；本轮不将原始事故验收或远端 CI 的历史结果作为新提交验证。
 
 ## 遗留与后续
 

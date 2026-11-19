@@ -255,6 +255,7 @@ def renew_operation(
 
 
 def update(kind: str, resource_id: str, **changes: Any) -> dict:
+    """Update and return the lifecycle state's operation record."""
     with resource_lock(kind, resource_id):
         value = state(kind, resource_id)
         operation = value["operation"]

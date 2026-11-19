@@ -300,6 +300,49 @@ async def test_front_resumes_with_one_bounded_probe_on_real_socket(reply, tmp_pa
             watchdog.cancel()
             await asyncio.gather(reader, watchdog, return_exceptions=True)
 
+@pytest.mark.parametrize("transport", ["tcp", "resident"])
+async def test_probe_on_closed_connection_reports_disconnection(transport, tmp_path):
+    async with _pair(transport, tmp_path) as (_worker, front):
+        await front.close()
+        result = await front.probe_heartbeat(1, correlated=True)
+        assert result.state == "connection_closed"
+        assert result.frame is None
+        assert front._probe_observer is None and not front._probe_lock.locked()
+
+
+@pytest.mark.parametrize("transport", ["tcp", "resident"])
+@pytest.mark.parametrize("failure", ["connection", "reader", "write", "runtime"])
+async def test_probe_send_failure_preserves_disconnect_classification(transport, failure, tmp_path, monkeypatch):
+    async with _pair(transport, tmp_path) as (_worker, front):
+        async def fail_send(_message):
+            if failure == "connection":
+                raise ConnectionError("peer disconnected before reader noticed")
+            if failure == "reader":
+                front._reader_error = ConnectionError("peer closed during write")
+            if failure == "runtime":
+                raise RuntimeError("controlled writer failure")
+            raise OSError("controlled writer failure")
+
+        monkeypatch.setattr(front, "send", fail_send)
+        result = await front.probe_heartbeat(1, correlated=True)
+        expected = "connection_closed" if failure in {"connection", "reader"} else "write_failed"
+        assert result.state == expected
+        assert result.frame is None
+        assert front._probe_observer is None and not front._probe_lock.locked()
+
+
+@pytest.mark.parametrize("transport", ["tcp", "resident"])
+async def test_failed_probe_write_cannot_use_uncorrelated_legacy_heartbeat(transport, tmp_path, monkeypatch):
+    async with _pair(transport, tmp_path) as (_worker, front):
+        async def fail_after_incoming_heartbeat(_message):
+            front._record_frame({"kind": KIND_HEARTBEAT})
+            raise OSError("probe write did not complete")
+
+        monkeypatch.setattr(front, "send", fail_after_incoming_heartbeat)
+        result = await front.probe_heartbeat(1, correlated=False)
+        assert result.state == "write_failed" and result.frame is None
+
+
 async def test_probe_write_deadline_and_cancelled_token_on_real_socket(tmp_path):
     async with _pair("tcp", tmp_path) as (worker, front):
         await stream.on_loop(front._loop, front._write_lock.acquire())

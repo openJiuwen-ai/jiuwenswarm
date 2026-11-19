@@ -137,8 +137,8 @@ def _history_snapshot_is_current(
 
 
 def _legacy_limit_source_is_current(source: LegacyLimitSource) -> bool:
-    cursor = source.cursor
     try:
+        cursor = source.cursor
         with lc.resource_lock("session", source.session_id, blocking=False):
             lc.guard(source.session_id)
             state = lc.state("session", source.session_id)
@@ -148,7 +148,8 @@ def _legacy_limit_source_is_current(source: LegacyLimitSource) -> bool:
                 and get_read_history_path(source.session_id) == cursor.path
                 and _history_file_identity(cursor.path) == cursor.identity
             )
-    except (OSError, ValueError, lc.LifecycleError):
+    except Exception:
+        # An unverifiable cached limit must defer to the admitted history reader.
         return False
 
 

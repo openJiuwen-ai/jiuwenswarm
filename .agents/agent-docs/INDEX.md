@@ -141,7 +141,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [B_20261119_1816_recovery-review-boundaries](bugfix/jiuwenswarm/server/B_20261119_1816_recovery-review-boundaries.md) | B | Worker 恢复的收包新鲜度、前置锁、取消登记和历史终态边界 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/supervisor, jiuwenswarm/server/runtime/session, jiuwenswarm/agents/harness/common | jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/runtime/session/session_archive.py, jiuwenswarm/server/runtime/session/history_stream.py, jiuwenswarm/agents/harness/common/session_ops_service.py | 无独立 D：对既有恢复契约的缺陷修复，未建立独立设计。 |
+| [B_20261119_1816_recovery-review-boundaries](bugfix/jiuwenswarm/server/B_20261119_1816_recovery-review-boundaries.md) | B | Worker 恢复的收包新鲜度、前置锁、取消登记和历史终态边界 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/supervisor, jiuwenswarm/server/runtime/session, jiuwenswarm/agents/harness/common | jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/runtime/session/session_archive.py, jiuwenswarm/server/runtime/session/lifecycle.py, jiuwenswarm/server/runtime/session/history_stream.py, jiuwenswarm/agents/harness/common/session_ops_service.py | 无独立 D：对既有恢复契约的缺陷修复，未建立独立设计。 |
 
 <a id="module-10"></a>
 
@@ -370,7 +370,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [B_20261119_1816_recovery-review-boundaries](bugfix/jiuwenswarm/server/B_20261119_1816_recovery-review-boundaries.md) | B | Worker 恢复的收包新鲜度、前置锁、取消登记和历史终态边界 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/supervisor, jiuwenswarm/server/runtime/session, jiuwenswarm/agents/harness/common | jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/runtime/session/session_archive.py, jiuwenswarm/server/runtime/session/history_stream.py, jiuwenswarm/agents/harness/common/session_ops_service.py | 无独立 D：对既有恢复契约的缺陷修复，未建立独立设计。 |
+| [B_20261119_1816_recovery-review-boundaries](bugfix/jiuwenswarm/server/B_20261119_1816_recovery-review-boundaries.md) | B | Worker 恢复的收包新鲜度、前置锁、取消登记和历史终态边界 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/supervisor, jiuwenswarm/server/runtime/session, jiuwenswarm/agents/harness/common | jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/runtime/session/session_archive.py, jiuwenswarm/server/runtime/session/lifecycle.py, jiuwenswarm/server/runtime/session/history_stream.py, jiuwenswarm/agents/harness/common/session_ops_service.py | 无独立 D：对既有恢复契约的缺陷修复，未建立独立设计。 |
 
 <a id="module-34"></a>
 
@@ -407,7 +407,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [B_20261119_1816_recovery-review-boundaries](bugfix/jiuwenswarm/server/B_20261119_1816_recovery-review-boundaries.md) | B | Worker 恢复的收包新鲜度、前置锁、取消登记和历史终态边界 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/supervisor, jiuwenswarm/server/runtime/session, jiuwenswarm/agents/harness/common | jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/runtime/session/session_archive.py, jiuwenswarm/server/runtime/session/history_stream.py, jiuwenswarm/agents/harness/common/session_ops_service.py | 无独立 D：对既有恢复契约的缺陷修复，未建立独立设计。 |
+| [B_20261119_1816_recovery-review-boundaries](bugfix/jiuwenswarm/server/B_20261119_1816_recovery-review-boundaries.md) | B | Worker 恢复的收包新鲜度、前置锁、取消登记和历史终态边界 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/supervisor, jiuwenswarm/server/runtime/session, jiuwenswarm/agents/harness/common | jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/runtime/session/session_archive.py, jiuwenswarm/server/runtime/session/lifecycle.py, jiuwenswarm/server/runtime/session/history_stream.py, jiuwenswarm/agents/harness/common/session_ops_service.py | 无独立 D：对既有恢复契约的缺陷修复，未建立独立设计。 |
 
 <a id="module-37"></a>
 
@@ -425,7 +425,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261107_1505_6226-forwarding-replay](bugfix/jiuwenswarm/server/supervisor/B_20261107_1505_6226-forwarding-replay.md) | B | 历史回放触发转发队列溢出及前端计时不收尾 | kdgmpw | jiuwenswarm/server/supervisor, jiuwenswarm/channels/web/frontend | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, tests/unit_tests/agentserver/test_supervisor_forwarding.py, jiuwenswarm/channels/web/frontend/tests/sessionInput.test.mjs | 无独立 D：对现有有界转发及前端终态处理的小范围修复，无独立设计。 |
-| [B_20261119_1816_recovery-review-boundaries](bugfix/jiuwenswarm/server/B_20261119_1816_recovery-review-boundaries.md) | B | Worker 恢复的收包新鲜度、前置锁、取消登记和历史终态边界 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/supervisor, jiuwenswarm/server/runtime/session, jiuwenswarm/agents/harness/common | jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/runtime/session/session_archive.py, jiuwenswarm/server/runtime/session/history_stream.py, jiuwenswarm/agents/harness/common/session_ops_service.py | 无独立 D：对既有恢复契约的缺陷修复，未建立独立设计。 |
+| [B_20261119_1816_recovery-review-boundaries](bugfix/jiuwenswarm/server/B_20261119_1816_recovery-review-boundaries.md) | B | Worker 恢复的收包新鲜度、前置锁、取消登记和历史终态边界 | 刘瑜 | jiuwenswarm/server/ipc, jiuwenswarm/server/supervisor, jiuwenswarm/server/runtime/session, jiuwenswarm/agents/harness/common | jiuwenswarm/server/ipc/stream.py, jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/server/runtime/session/session_archive.py, jiuwenswarm/server/runtime/session/lifecycle.py, jiuwenswarm/server/runtime/session/history_stream.py, jiuwenswarm/agents/harness/common/session_ops_service.py | 无独立 D：对既有恢复契约的缺陷修复，未建立独立设计。 |
 
 <a id="module-39"></a>
 
