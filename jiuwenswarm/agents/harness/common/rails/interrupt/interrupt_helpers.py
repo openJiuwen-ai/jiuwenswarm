@@ -29,6 +29,9 @@ from jiuwenswarm.agents.harness.code.rails.code_plan_approval_interrupt_rail imp
     strip_inline_plan_approval_choices,
 )
 from jiuwenswarm.common.utils import logger
+from jiuwenswarm.agents.harness.common.rails.permission_decisions import (
+    stash_permission_decision,
+)
 
 SKILL_EVOLUTION_APPROVAL_SCHEMA = "openjiuwen.skill_evolution_approval.v1"
 EVOLUTION_INTERRUPT_SOURCE = "evolution_interrupt"
@@ -632,6 +635,55 @@ def build_permission_rail(
                 return await active[0].on_permission_evaluated(request)
             return None
 
+        async def _forward_permission_decision(request):
+            """引擎自身的 allow/deny 判定 → 暂存，由 ``stream_event_rail.after_tool_call``
+            在工具结果时刻经会话通道下发（permission rail 的 before_tool_call 阶段
+            ``write_stream`` 未进入 consumer 读取窗口，直接发会丢事件）。
+
+            只处理 allow/deny（ask 仍走中断 / ask_user_question），且只观察、不改变判定。
+            """
+            result = getattr(request, "result", None)
+            level = getattr(result, "permission", None)
+            decision = str(getattr(level, "value", level) or "")
+            stash_permission_decision(
+                getattr(request, "ctx", None),
+                getattr(request, "tool_call", None),
+                decision,
+                matched_rule=str(getattr(result, "matched_rule", "") or ""),
+                reason=str(getattr(result, "reason", "") or ""),
+            )
+
+        async def _on_permission_decision(request):
+            """始终接线的判定钩子：保留原 behavior/云授权，再把判定转发给客户端。"""
+            external = None
+            if behavior_enabled:
+                try:
+                    external = await _behavior_evaluated(request)
+                except Exception:
+                    logger.warning("[InterruptHelpers] behavior evaluated failed", exc_info=True)
+            try:
+                await _forward_permission_decision(request)
+            except Exception:
+                logger.warning(
+                    "[InterruptHelpers] forward permission decision failed", exc_info=True
+                )
+            # 外部（behavior/云授权）判定同样暂存——behavior 启用时外部判定为最终决策，
+            # 覆盖引擎判定（因此没有 undetermined 条件守卫）。
+            try:
+                ext_level = getattr(external, "permission", None)
+                stash_permission_decision(
+                    getattr(request, "ctx", None),
+                    getattr(request, "tool_call", None),
+                    str(getattr(ext_level, "value", ext_level) or ""),
+                    matched_rule=str(getattr(external, "matched_rule", "") or ""),
+                    reason=str(getattr(external, "reason", "") or ""),
+                )
+            except Exception:
+                logger.warning(
+                    "[InterruptHelpers] external decision stash failed", exc_info=True
+                )
+            return external
+
         host = ToolPermissionHost(
             get_permissions_snapshot=_get_permissions_snapshot,
             persist_allow_rule=_persist_allow_rule,
@@ -644,7 +696,7 @@ def build_permission_rail(
             permission_yaml_path=get_config_file(),
             request_permission_confirmation=_request_permission_confirmation,
             permission_scene_hook=_permission_scene_hook,
-            on_permission_evaluated=_behavior_evaluated if behavior_enabled else None,
+            on_permission_evaluated=_on_permission_decision,
         )
 
         permission_rail = PermissionInterruptRail(
