@@ -6,7 +6,7 @@ USER root
 ARG AGENT_RUNTIME_REPOS=https://gitcode.com/openJiuwen/agent-runtime.git
 ARG AGENT_RUNTIME_BRANCH=develop
 ARG AGENT_CORE_REPOS=https://gitcode.com/lin-xiaoyu/agent-core.git
-ARG AGENT_CORE_COMMIT=a24585bd7c5a8753a829f5c549693e887a615f91
+ARG AGENT_CORE_COMMIT=b8ef9a7c2a1ab3ef7e5050102b5e6a377a7ae1f3
 ARG AGENT_PROTOCOL_REPOS=https://gitcode.com/openJiuwen/agent-protocol.git
 ARG AGENT_PROTOCOL_COMMIT=d3d1681e4dd96f9fe38bdac47ca81ea1774d7677
 ARG AGENT_GATEWAY_REPOS=https://gitcode.com/openJiuwen/agent-gateway.git

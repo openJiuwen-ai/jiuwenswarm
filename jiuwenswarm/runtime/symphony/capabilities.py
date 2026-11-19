@@ -19,7 +19,7 @@ from openjiuwen.symphony import (
     capability_content_hash,
 )
 from openjiuwen.symphony.discovery import (
-    CapabilityAction, CapabilityCandidate, SkillFS, SkillRecord, read_fingerprints, search_capabilities,
+    CapabilityAction, CapabilityCandidate, SkillFS, read_fingerprints, search_capabilities,
 )
 
 from jiuwenswarm.common.mcp_package_manifest import McpPackageManifest
@@ -104,23 +104,23 @@ async def _installed_expert_candidates(*, paths_only: bool = False) -> tuple[Cap
     return tuple(entries)
 
 
-def _connector_descriptor(package: McpPackageManifest) -> CapabilityDescriptor:
+def _package_descriptor(package: McpPackageManifest, service_description: str) -> CapabilityDescriptor:
     names = _localized_texts(package.raw.get("display_name"), package.name, package.server_name)
-    description = "\n".join(_localized_texts(package.raw.get("display_description"), package.description))
+    description = "\n".join(_localized_texts(
+        package.raw.get("display_description"), package.description, service_description,
+    ))
     return _describe(
-        "connector", package.package_id, names[0] if names else package.package_id, description,
+        "mcp", package.package_id, names[0] if names else package.package_id, description,
         metadata={"aliases": list(names), "version": package.version},
     )
 
 
 @dataclass(frozen=True)
 class _ServiceCatalog:
-    connectors: dict[str, CapabilityDescriptor]
-    servers: dict[str, CapabilityDescriptor]
-    connector_for_server: dict[str, str]
-    connected: frozenset[str]
-    tracked: frozenset[str]
-    configured: frozenset[str]
+    descriptors: dict[str, CapabilityDescriptor]
+    package_for_server: dict[str, str]
+    known_ids: frozenset[str]
+    available_ids: frozenset[str]
     bundled_skill_roots: dict[str, str]
 
 
@@ -130,37 +130,42 @@ def _service_catalog() -> _ServiceCatalog:
     from jiuwenswarm.server.runtime.mcp.state_store import connected_mcp_skill_dirs, read_mcp_state
 
     packages = list_local_packages()
-    connectors = {package.package_id: _connector_descriptor(package) for package in packages}
-    connector_for_server = {package.package_id: package.package_id for package in packages if package.server_name}
-    for package in packages:
-        if package.server_name:
-            connector_for_server.setdefault(package.server_name, package.package_id)
-    servers = {
-        name: _describe("mcp", name, name, connectors[identifier].description)
-        for name, identifier in connector_for_server.items()
+    raw_records = read_mcp_state().get("mcp", {})
+    records = raw_records if isinstance(raw_records, dict) else {}
+    descriptions = {
+        name: str(record.get("description") or "").strip() for name, record in records.items()
+        if isinstance(record, dict) and record.get("state") == "connected"
     }
-    configured = set()
+    connected = set(descriptions)
     yaml_names = set()
     for entry in get_config_yaml_mcp_servers():
         name = str(entry.get("name") or "").strip()
-        if name:
-            yaml_names.add(name)
-        if name and entry.get("enabled", True):
-            configured.add(name)
-            description = str(entry.get("description") or "").strip()
-            if description or name not in servers:
-                servers[name] = _describe("mcp", name, name, description)
-    raw_records = read_mcp_state().get("mcp", {})
-    records = {
-        name: record for name, record in raw_records.items() if isinstance(record, dict)
-    } if isinstance(raw_records, dict) else {}
-    connected = frozenset(name for name, record in records.items() if record.get("state") == "connected")
-    for name in connected - servers.keys():
-        servers[name] = _describe("mcp", name, name, str(records[name].get("description") or ""))
+        if not name:
+            continue
+        yaml_names.add(name)
+        if entry.get("enabled", True):
+            descriptions[name] = str(entry.get("description") or "").strip() or descriptions.get(name, "")
+
+    descriptors = {
+        package.package_id: _package_descriptor(package, descriptions.get(package.package_id, ""))
+        for package in packages
+    }
+    for name, description in descriptions.items():
+        if name not in descriptors:
+            descriptors[name] = _describe("mcp", name, name, description)
+    package_for_server = {}
+    for package in packages:
+        if package.server_name:
+            package_for_server.setdefault(package.server_name, package.package_id)
     return _ServiceCatalog(
-        connectors, servers, connector_for_server, connected, frozenset(records.keys() | yaml_names),
-        frozenset(configured),
-        {str(Path(entry["dir"]).resolve()): entry["name"] for entry in connected_mcp_skill_dirs()},
+        descriptors=descriptors,
+        package_for_server=package_for_server,
+        known_ids=frozenset(descriptors.keys() | records.keys() | yaml_names),
+        available_ids=frozenset(descriptions),
+        bundled_skill_roots={
+            str(Path(entry["dir"]).resolve()): entry["name"]
+            for entry in connected_mcp_skill_dirs() if entry["name"] in connected
+        },
     )
 
 
@@ -192,10 +197,7 @@ def _fingerprint_root(config: SymphonyConfig, kind: str) -> Path:
 async def build_catalog_fingerprints(config: SymphonyConfig, model: Any, *, force: bool) -> None:
     """Refresh the non-Skill source catalogs during an explicit retrieval build."""
     services = await asyncio.to_thread(_service_catalog)
-    sources = {
-        "connector": tuple(services.connectors.values()),
-        "mcp": tuple(services.servers.values()),
-    }
+    sources = {"mcp": tuple(services.descriptors.values())}
     if not any(source.type == "expert" for source in config.capability.sources):
         experts = await _installed_expert_candidates()
         sources["expert"] = tuple(candidate.descriptor for candidate in experts)
@@ -212,37 +214,28 @@ async def build_catalog_fingerprints(config: SymphonyConfig, model: Any, *, forc
 
 def service_candidates(
     mcp_tools: tuple[tuple[Any, Any], ...],
-    skills: tuple[SkillRecord, ...],
-    *,
-    kind: str,
+    environment: SkillFS,
 ) -> tuple[CapabilityCandidate, ...]:
-    """Join only live actions to their service or connector descriptions."""
+    """Group session-visible tools and bundled Skills under their owning MCP service."""
     catalog = _service_catalog()
     actions: dict[str, list[CapabilityAction]] = {}
     for server, card in mcp_tools:
         name = server.server_name
-        connector = catalog.connector_for_server.get(name)
-        if name in catalog.tracked and name != connector:
-            connector = None
-        if name not in catalog.configured and (
-            (connector or name) in catalog.tracked or connector is not None
-        ) and (connector or name) not in catalog.connected:
+        # A configured service or a package ID takes precedence over a manifest's server alias.
+        identifier = name if name in catalog.known_ids else catalog.package_for_server.get(name, name)
+        if identifier in catalog.known_ids and identifier not in catalog.available_ids:
             continue
-        if kind == "connector" and connector not in catalog.connected:
-            continue
-        key = connector if kind == "connector" else name
-        actions.setdefault(key, []).append(CapabilityAction("tool", card.name, card.description, server.server_id))
-    if kind == "connector":
-        for skill in skills:
-            connector = catalog.bundled_skill_roots.get(skill.source_root)
-            if connector in catalog.connected and connector in catalog.connectors:
-                actions.setdefault(connector, []).append(
+        actions.setdefault(identifier, []).append(CapabilityAction("tool", card.name, card.description, server.server_id))
+    if catalog.bundled_skill_roots:
+        for skill in environment.directory.record_by_id.values():
+            identifier = catalog.bundled_skill_roots.get(skill.source_root)
+            if identifier is not None:
+                actions.setdefault(identifier, []).append(
                     CapabilityAction("skill", skill.worker_id, skill.description)
                 )
     return tuple(
         CapabilityCandidate(
-            descriptor=(catalog.connectors[identifier] if kind == "connector" else
-                        catalog.servers.get(identifier) or _describe("mcp", identifier, identifier, "")),
+            descriptor=catalog.descriptors.get(identifier) or _describe("mcp", identifier, identifier, ""),
             actions=tuple(dict.fromkeys(references)),
         )
         for identifier, references in actions.items()
@@ -253,16 +246,15 @@ async def search_catalog(
     config: SymphonyConfig, environment: SkillFS, manager: AbilityManager | None,
     kind: str, query: str, top_k: int,
 ) -> dict[str, Any]:
-    """Search live connector or MCP actions registered in the session."""
-    if manager is None:
+    """Search MCP services that expose actions in this session."""
+    if kind != "mcp" or manager is None:
         return {"matches": []}
     can_expand = manager.get("tool_search") is not None
     tools = tuple((server, card) for server, card in manager.registered_mcp_tool_cards()
                   if can_expand or card.exposure != ToolExposure.DEFERRED)
 
     def rank():
-        skills = tuple(environment.directory.record_by_id.values()) if kind == "connector" else ()
-        candidates = service_candidates(tools, skills, kind=kind)
+        candidates = service_candidates(tools, environment)
         return {"matches": search_capabilities(_enrich(config, kind, candidates), query, top_k=top_k)}
 
     return await asyncio.to_thread(rank)

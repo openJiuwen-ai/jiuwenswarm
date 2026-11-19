@@ -82,7 +82,7 @@ Discovery exposes `capability_search`. Skill Retrieval controls whether the taxo
 
 | Tool | What it does | When to use |
 |------|--------------|-------------|
-| `capability_search` | Select a catalog with `type=skill` (default), `expert`, `connector`, or `mcp`. Skill and expert catalogs support `operation=list`, category-scoped search, batches of up to eight queries, and cursor pagination. | Find a capability or its service. Search with `type=expert` before work that needs independent review, domain or platform expertise, or separate deliverables that can be developed in parallel. |
+| `capability_search` | Choose `type=skill` (default), `expert`, or `mcp`. Skills and experts support `operation=list`, category-scoped search, up to eight queries, and cursor pagination. MCP takes one query and groups session-visible tools and bundled Skills by service. | Find a capability or its service. Search with `type=expert` before work that needs independent review, domain or platform expertise, or separate deliverables that can be developed in parallel. |
 
 After Skill Retrieval finds relevant skills, the agent narrows the candidate set by skill name and description. If orchestration is needed later, those candidates help guide skill-chain generation.
 
