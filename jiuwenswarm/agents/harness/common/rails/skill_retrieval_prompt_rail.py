@@ -471,7 +471,10 @@ class SkillRetrievalPromptRail(DeepAgentRail):
                     (
                         "No available Skills."
                         if complete
-                        else f'No examples shown. Find installed Skills with {CAPABILITY_SEARCH_TOOL_NAME} (type=["skill"]).'
+                        else (
+                            "No examples shown. Find installed Skills with "
+                            f'{CAPABILITY_SEARCH_TOOL_NAME} (type=["skill"]).'
+                        )
                     )
                     if english
                     else (

@@ -227,7 +227,9 @@ def service_candidates(
         identifier = name if name in catalog.known_ids else catalog.package_for_server.get(name, name)
         if identifier in catalog.known_ids and identifier not in catalog.available_ids:
             continue
-        actions.setdefault(identifier, []).append(CapabilityAction("tool", card.name, card.description, server.server_id))
+        actions.setdefault(identifier, []).append(
+            CapabilityAction("tool", card.name, card.description, server.server_id)
+        )
     if catalog.bundled_skill_roots:
         for skill in environment.directory.record_by_id.values():
             identifier = catalog.bundled_skill_roots.get(skill.source_root)
@@ -260,7 +262,11 @@ async def mcp_candidates(
     return await asyncio.to_thread(load)
 
 
-def _enrich(config: SymphonyConfig, kind: str, candidates: tuple[CapabilityCandidate, ...]) -> tuple[CapabilityCandidate, ...]:
+def _enrich(
+    config: SymphonyConfig,
+    kind: str,
+    candidates: tuple[CapabilityCandidate, ...],
+) -> tuple[CapabilityCandidate, ...]:
     fingerprints = read_fingerprints(FingerprintArtifactStore(_fingerprint_root(config, kind))) if candidates else {}
     return tuple(
         replace(candidate, fingerprint=fingerprints.get((kind, candidate.descriptor.capability_id)),

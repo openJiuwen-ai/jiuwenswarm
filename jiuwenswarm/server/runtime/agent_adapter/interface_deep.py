@@ -151,6 +151,7 @@ from openjiuwen.harness.schema.interaction import (
 from openjiuwen.harness.schema.task import TodoStatus
 from openjiuwen.harness.workspace.workspace import Workspace, WorkspaceNode
 from openjiuwen.harness.schema.config import SubAgentConfig
+from openjiuwen.symphony.discovery import CAPABILITY_SEARCH_TOOL_NAME
 
 from agent_gateway.common.interrupt_resume import answers_paused_calls, is_client_tool_resume
 
@@ -669,7 +670,6 @@ from jiuwenswarm.agents.harness.common.tools import (
     is_skill_retrieval_enabled,
     SymphonyToolkit,
 )
-from openjiuwen.symphony.discovery import CAPABILITY_SEARCH_TOOL_NAME
 from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
     SKILL_RETRIEVAL_SESSION_PROFILE_VERSION, skill_sources_from_directories,
 )

@@ -430,8 +430,11 @@ def _skill_catalogue_args_valid(args: Mapping[str, Any]) -> bool:
     if not _bounded_text(operation, 6) or operation not in ("list", "search"):
         return False
     top_k = args.get("top_k")
-    if top_k is not None and (type(top_k) is not int or not 1 <= top_k <= 50 or "cursor" in args):
-        return False
+    if top_k is not None:
+        if type(top_k) is not int or not 1 <= top_k <= 50:
+            return False
+        if "cursor" in args:
+            return False
     for key, limit in (("category", 4096), ("cursor", 128)):
         if key in args and not _bounded_text(args[key], limit):
             return False
