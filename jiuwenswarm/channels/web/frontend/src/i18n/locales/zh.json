@@ -499,7 +499,7 @@
       "shortcutChanged": "模型已添加；未包含{{tool}}能力，该工具设置保持不变。",
       "separator": "、",
       "empty": "尚未配置多模态模型",
-      "emptyDescription": "添加模型并选择其支持的能力后，尚未配置模型的对应工具将自动启用。",
+      "emptyDescription": "添加模型并选择其支持的能力。若对应工具尚未开启，保存时可选择开启或保持关闭。",
       "tools": {
         "vision": "图片处理",
         "audio": "音频处理",
