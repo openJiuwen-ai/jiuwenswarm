@@ -2587,7 +2587,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                       className="chat-welcome__banner chat-welcome__banner--bee"
                       altText={t('chat.welcomeLogoAlt')}
                       onTrigger={() => {
-                        setTopicBubbleActive(false);
+                        if (!showTopicBubble || !bubbleVisible) setTopicBubbleActive(false);
                         handleBubbleShow();
                       }}
                       onLeave={handleBubbleLeave}

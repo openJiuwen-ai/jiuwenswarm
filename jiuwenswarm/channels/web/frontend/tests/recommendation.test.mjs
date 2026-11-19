@@ -740,6 +740,36 @@ test('disabled homepage keeps preset cards and links to General; enabling refres
   }
 });
 
+test('hovering the bee preserves the visible recommendation hint until it hides', async () => {
+  const panel = await mountWelcome('sess-bee-hint-hover', { holdResponses: true });
+  try {
+    await react.act(async () => liveSocket.reply(starterRequests().at(-1).id, {
+      ...dynamicSlateResponse('sess-bee-hint-hover', 'PRESET'), preparation_state: 'disabled',
+    }));
+    await react.act(settle);
+    const bubble = document.querySelector('[data-testid="chat-panel-welcome-banner-bubble"]');
+    const bee = document.querySelector('.chat-welcome__banner--bee');
+    await react.act(async () => document.querySelector('[data-testid="chat-panel-welcome-suggestion"]').dispatchEvent(
+      new window.MouseEvent('mouseover', { bubbles: true }),
+    ));
+    const hint = document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]');
+    assert.ok(hint);
+    const content = bubble.textContent;
+    await react.act(async () => bee.dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true })));
+    assert.equal(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'), hint);
+    assert.equal(bubble.textContent, content);
+    await react.act(async () => bee.dispatchEvent(new window.MouseEvent('mouseout', { bubbles: true })));
+    await react.act(async () => new Promise(resolve => setTimeout(resolve, 3100)));
+    assert.equal(bubble.classList.contains('chat-welcome__banner--bubble--visible'), false);
+    await react.act(async () => bee.dispatchEvent(new window.MouseEvent('mouseover', { bubbles: true })));
+    assert.equal(bubble.classList.contains('chat-welcome__banner--bubble--visible'), true);
+    assert.equal(document.querySelector('[data-testid="chat-panel-topic-disabled-hint"]'), null);
+    assert.notEqual(bubble.textContent, content);
+  } finally {
+    await panel.unmount();
+  }
+});
+
 test('a disabled recommendation bubble stays unchanged while switching projects', async () => {
   const frames = [];
   let capture = false;

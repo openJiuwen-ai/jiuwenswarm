@@ -198,9 +198,7 @@
     "confirm": {
       "install": "Install {{name}}",
       "repair": "Repair {{name}}",
-      "remove": "Remove {{name}}?",
-      "removeNotice": "Office stops loading WorkSwarm, and the local certificate is deleted once no other add-in remains installed.",
-      "trustNotice": "The system may ask you to trust a local certificate (on macOS, with your login password); Office uses it to connect securely to WorkSwarm on this computer."
+      "remove": "Remove {{name}}?"
     },
     "suites": {
       "office": {
@@ -208,20 +206,38 @@
         "what": "Use WorkSwarm in Word, Excel and PowerPoint to edit the open document.",
         "requirement": "Microsoft 365: version 2504 or later on Windows, or 16.96 or later on Mac. Not on the web.",
         "data": "WorkSwarm for Office connects only to WorkSwarm on this computer. WorkSwarm sends the document content to the model service you configured in WorkSwarm.",
+        "installNotice": "The system may ask you to trust a local certificate (on macOS, with your login password); Office uses it to connect securely to WorkSwarm on this computer.",
+        "removeNotice": "Office stops loading WorkSwarm, and the local certificate is deleted once no other add-in remains installed.",
         "steps": {
           "restart": "Restart Office",
           "openPane": "Open WorkSwarm from Home → Add-ins",
           "connect": "The pane connects to WorkSwarm on this computer"
+        }
+      },
+      "wps": {
+        "title": "WorkSwarm for WPS",
+        "what": "Use WorkSwarm in WPS Presentation, Writer and Spreadsheets to edit the open document.",
+        "requirement": "WPS Office for Mac or Windows, international or China edition.",
+        "data": "WorkSwarm for WPS connects only to WorkSwarm on this computer. WorkSwarm sends the document content to the model service you configured in WorkSwarm.",
+        "installNotice": "WorkSwarm joins the WPS add-in list; your other add-ins stay as they are. It takes effect after you restart WPS.",
+        "removeNotice": "WPS stops loading WorkSwarm; your other add-ins stay as they are.",
+        "steps": {
+          "restart": "Restart WPS",
+          "trust": "Trust WorkSwarm when WPS asks; it asks only the first time",
+          "openPane": "On the WorkSwarm tab, click 打开 WorkSwarm (Open WorkSwarm)"
         }
       }
     },
     "apps": {
       "word": "Word",
       "excel": "Excel",
-      "powerpoint": "PowerPoint"
+      "powerpoint": "PowerPoint",
+      "wps-writer": "WPS Writer",
+      "wps-spreadsheet": "WPS Spreadsheets",
+      "wps-presentation": "WPS Presentation"
     },
     "problems": {
-      "permission_denied": "The system didn't let WorkSwarm write to Office's add-in folder. Allow it in the system prompt or in Privacy & Security settings, then click Repair.",
+      "permission_denied": "The system didn't let WorkSwarm write to the add-in folder. Allow it in the system prompt or in Privacy & Security settings, then click Repair.",
       "certificate_untrusted": "The local certificate isn't trusted yet. Click Repair and confirm when the system asks.",
       "certificate_expiring": "The local certificate expires soon. Click Repair to replace it.",
       "tls_unavailable": "The local service Office connects to isn't running. Click Repair to retry, or restart WorkSwarm if it still fails.",

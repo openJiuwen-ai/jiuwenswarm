@@ -66,6 +66,11 @@ _PATH_TOOLS = {
     "lsp",
     "read_file",
     "read_pdf",
+    "read_docx",
+    "read_spreadsheet",
+    "read_pptx",
+    "inspect_archive",
+    "extract_archive",
     "write_file",
     "edit_file",
     "read_text_file",
@@ -599,6 +604,7 @@ def _redaction_key(resource_class: str) -> str:
 def _is_path_write_tool(tool_name: str) -> bool:
     return tool_name in {
         "apply_patch",
+        "extract_archive",
         "write_file",
         "edit_file",
         "write_text_file",

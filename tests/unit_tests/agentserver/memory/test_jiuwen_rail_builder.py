@@ -56,6 +56,7 @@ class _FakeJiuwenRail:
 
 
 class _FakeAgentMemoryProvider:
+    name = "fake-agent-memory"
     last_init_kwargs = None
     available = True
 
