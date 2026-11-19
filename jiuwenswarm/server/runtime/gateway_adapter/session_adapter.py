@@ -327,11 +327,32 @@ class SessionAdapter(GatewayAdapter):
             return build_error_response(
                 request, "session not found", code="NOT_FOUND"
             )
+        payload = dict(meta)
+        # Enterprise HTTP refresh rebuilds pause UI from this flag. Gateway may
+        # overwrite is_processing from its busy map but must leave is_paused.
+        # Prefer durable metadata.is_paused (survives Runner pool teardown);
+        # OR with live Runner PAUSED so a just-paused turn still reads true
+        # before the metadata sync_write is visible to another process.
+        durable_paused = meta.get("is_paused") is True
+        live_paused = False
+        try:
+            from jiuwenswarm.agents.harness.team.team_manager import (
+                is_team_session_paused,
+            )
+
+            live_paused = bool(await is_team_session_paused(sid))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "[SessionAdapter] is_paused lookup failed session_id=%s error=%s",
+                sid,
+                exc,
+            )
+        payload["is_paused"] = bool(durable_paused or live_paused)
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=True,
-            payload=meta,
+            payload=payload,
             metadata=request.metadata,
         )
 

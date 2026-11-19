@@ -2212,6 +2212,15 @@ function AppContent({
         session.is_processing = false;
         session.status = 'interrupted';
       }
+      // Enterprise HTTP refresh: rebuild pause UI from AgentServer pool state.
+      // Do this before history merge so later team-board restore can re-freeze.
+      if (session.is_paused === true) {
+        useChatStore.getState().setPaused(targetSessionId, true);
+        useChatStore.getState().setProcessing(targetSessionId, false);
+        useChatStore.getState().setThinking(targetSessionId, false);
+        useSessionStore.getState().freezeRunningTeamTasks(targetSessionId);
+        session.is_processing = false;
+      }
       upsertSessionMetadata(session, { setCurrent: sessionIdRef.current === targetSessionId });
       useWorkspaceStore.getState().upsertSession(session);
       // is_processing 由 Gateway 在 session.get_metadata 响应入队前读取当前

@@ -919,6 +919,21 @@ function snapshotItemToTask(item: Record<string, unknown>, fallbackTimestamp: nu
   };
 }
 
+/** Snapshot wins identity/body/status; history keeps progress_frozen across refresh. */
+export function mergeTeamSnapshotTaskWithHistory(
+  fromSnap: TeamTask,
+  existing: TeamTask | undefined,
+): TeamTask {
+  return {
+    ...fromSnap,
+    skills: fromSnap.skills || existing?.skills,
+    files: fromSnap.files || existing?.files,
+    progress_frozen: existing?.progress_frozen,
+    progress_frozen_at: existing?.progress_frozen_at,
+    timestamp: Math.max(existing?.timestamp || 0, fromSnap.timestamp || 0),
+  };
+}
+
 /**
  * Reconcile the restored task board against the live DB snapshot.
  *
@@ -962,14 +977,7 @@ async function reconcileTasksFromSnapshot(
         continue;
       }
       const existing = existingById.get(fromSnap.task_id);
-      // Snapshot wins for identity/body/status; keep history-only extras
-      // (skills/files) when the snapshot omits them.
-      tasks.push({
-        ...fromSnap,
-        skills: fromSnap.skills || existing?.skills,
-        files: fromSnap.files || existing?.files,
-        timestamp: Math.max(existing?.timestamp || 0, fromSnap.timestamp || 0),
-      });
+      tasks.push(mergeTeamSnapshotTaskWithHistory(fromSnap, existing));
     }
     return { ...state, tasks };
   } catch {
