@@ -61,6 +61,7 @@ import { designLandingModelProblem } from '../../features/designer/designLanding
 import { FileIcon } from '../FileIcon';
 import { getEvolutionPillLabel } from './evolution-status';
 import { webRequest } from '../../services/webClient';
+import { GitIdentityOption } from './GitIdentityOption';
 import {
   markUploadDispatched,
   unmarkUploadDispatched,
@@ -1713,6 +1714,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     }
     return selectedProject && !isDefaultInputProject(selectedProject) ? selectedProject : null;
   }, [activeSession, projects, selectedProject, t, workMode]);
+
+  const independentGitIdentity = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.independentGitIdentity ?? false,
+  );
+  // 开关只改本地会话状态，随下一条 team chat.send 的 execution_settings 下发并由后端提交。
+  const toggleIndependentGitIdentity = (next: boolean) => {
+    if (!activeSessionId) return;
+    useSessionStore.getState().setIndependentGitIdentity(activeSessionId, next);
+  };
 
   const appendTaskAsrTranscript = useCallback(
     (transcript: string) => {
@@ -5085,6 +5095,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                               </div>
                             );
                           })()}
+                        <GitIdentityOption
+                          visible={isTeamMode && workMode === 'code'}
+                          checked={independentGitIdentity}
+                          label={t('gitIdentity.label')}
+                          hint={t('gitIdentity.hint')}
+                          onChange={toggleIndependentGitIdentity}
+                        />
                         {isTeamMode && teamScheduledDispatchEnabled && (
                           <div
                             className={cx(

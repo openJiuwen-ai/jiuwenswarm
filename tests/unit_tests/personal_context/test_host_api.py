@@ -14,6 +14,7 @@ import pytest
 import yaml
 
 from openjiuwen.harness.personal_context import PersonalContext
+from openjiuwen.harness.personal_context.config import PersonalContextConfig
 
 from jiuwenswarm.server.personal_context import host_api as host_module
 from jiuwenswarm.server.personal_context.host_api import PersonalContextHostAPI
@@ -1454,12 +1455,11 @@ async def test_repository_pat_first_authorization_creates_minimal_stopped_config
     assert validations == [("github", "first-token")]
     assert [name for name, _value in core.calls] == ["set_configuration"]
     saved = yaml.safe_load(host._config_path.read_text(encoding="utf-8"))
-    assert saved == {
+    expected = {
         "master_enabled": False,
         "collection_enabled": False,
         "agent_use_enabled": False,
         "strategy_profile": "rules",
-        "max_context_size_mb": 50,
         "max_pages_per_directory": 20,
         "max_subdirectories_per_directory": 20,
         "fetch_services": [],
@@ -1467,6 +1467,11 @@ async def test_repository_pat_first_authorization_creates_minimal_stopped_config
         "model_id": None,
         "provider_credentials": {"github": {"token": "first-token"}},
     }
+    # The capacity setting ships on agent-core release/v0.1.21 but not yet on
+    # develop; expect it only when the installed core's config declares it.
+    if "max_context_size_mb" in PersonalContextConfig.model_fields:
+        expected["max_context_size_mb"] = 50
+    assert saved == expected
     assert "provider_credentials" not in await host.get_runtime_config()
 
 

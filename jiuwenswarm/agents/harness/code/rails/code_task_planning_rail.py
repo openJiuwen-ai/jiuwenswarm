@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 from collections import OrderedDict
 from dataclasses import dataclass, replace
+from typing import Any
 from weakref import WeakValueDictionary
 
 from openjiuwen.core.common.logging import logger
@@ -68,13 +69,16 @@ class CodeTaskPlanningRail(TaskPlanningRail):
 
     def __init__(
         self,
-        *args,
+        *args: Any,
+        enable_task_reminders: bool = True,
         task_reminder_turns_since_management: int = _TASK_REMINDER_TURNS_SINCE_MANAGEMENT,
         task_reminder_turns_between_reminders: int = _TASK_REMINDER_TURNS_BETWEEN_REMINDERS,
         max_tracked_task_reminder_sessions: int = _MAX_TRACKED_TASK_REMINDER_SESSIONS,
-        **kwargs,
+        **kwargs: Any,
     ) -> None:
+        """Initialize Code Todo tools and optionally enable periodic reminders."""
         super().__init__(*args, **kwargs)
+        self.enable_task_reminders = enable_task_reminders
         self.task_reminder_turns_since_management = task_reminder_turns_since_management
         self.task_reminder_turns_between_reminders = task_reminder_turns_between_reminders
         self.max_tracked_task_reminder_sessions = max(1, max_tracked_task_reminder_sessions)
@@ -84,7 +88,7 @@ class CodeTaskPlanningRail(TaskPlanningRail):
         )
 
     async def on_user_message(self, ctx: AgentCallbackContext) -> None:
-        """Restore the active reminder before attachment history is synchronized."""
+        """Reconcile the active reminder before attachment history is synchronized."""
 
         await self._restore_task_reminder_attachment(ctx)
 
@@ -100,6 +104,8 @@ class CodeTaskPlanningRail(TaskPlanningRail):
         """
 
         await self._switch_model_if_needed(ctx)
+        if not self.enable_task_reminders:
+            return
 
         session_id = self._session_id(ctx)
         manager = getattr(getattr(ctx, "agent", None), "prompt_attachment_manager", None)
@@ -156,7 +162,7 @@ class CodeTaskPlanningRail(TaskPlanningRail):
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         await super().after_tool_call(ctx)
 
-        if not self._is_todo_tool_call(ctx):
+        if not self.enable_task_reminders or not self._is_todo_tool_call(ctx):
             return
 
         session_id = self._session_id(ctx)
@@ -256,6 +262,13 @@ class CodeTaskPlanningRail(TaskPlanningRail):
             return
 
         async with self._task_reminder_lock(session_id):
+            if not self.enable_task_reminders:
+                await manager.remove_by_filter(
+                    session_id=session_id,
+                    section=_TASK_REMINDER_SECTION,
+                    source=_TASK_REMINDER_SOURCE,
+                )
+                return
             await self._restore_task_reminder_attachment_locked(
                 ctx, manager, session_id
             )

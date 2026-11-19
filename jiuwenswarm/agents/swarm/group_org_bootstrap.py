@@ -1155,6 +1155,13 @@ async def wait_for_earlier_organization_plans(
         if not pending:
             return
         event = _plan_event(session_id, str(pending[0].get("plan_id") or ""))
+        if event.is_set():
+            # The plan's record still reads live although its completion was
+            # signalled: a status write failed, or the event outlived an earlier
+            # plan with the same id. ``event.wait()`` on a set event returns
+            # without suspending, so waiting on it would spin and starve the
+            # event loop. Re-arm it; the timeout below re-reads the record.
+            event.clear()
         try:
             await asyncio.wait_for(event.wait(), timeout=POLL_SECONDS)
         except TimeoutError:
