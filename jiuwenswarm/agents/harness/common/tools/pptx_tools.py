@@ -153,7 +153,7 @@ def _resolve_pptx_path(raw_path: str) -> Path:
             if not resolved.is_relative_to(ws_path):
                 raise ValueError(f"Path must be inside workspace: {raw_path}")
         else:
-            resolved = (Path.cwd() / path).resolve()
+            raise ValueError("read_pptx runtime workspace is unavailable")
     else:
         resolved = path.resolve()
 
@@ -458,18 +458,26 @@ def _read_pptx_sync(req: ReadPptxRequest) -> str:
 async def read_pptx(
     file_path: str,
     slides: Any = None,
-    max_chars: int = DEFAULT_MAX_CHARS,
+    max_chars: Any = DEFAULT_MAX_CHARS,
 ) -> str:
     """Async entrypoint for reading PowerPoint (.pptx) presentation files."""
     try:
-        parsed_slides = _parse_slide_ranges(slides)
-    except ValueError as exc:
-        return f"[ERROR]: Invalid slides argument: {exc}"
+        try:
+            parsed_slides = _parse_slide_ranges(slides)
+        except ValueError as exc:
+            return f"[ERROR]: Invalid slides argument: {exc}"
 
-    capped_max_chars = min(max(1, max_chars), _MAX_CHARS_CEILING)
-    req = ReadPptxRequest(
-        pptx_path=file_path,
-        slides=parsed_slides,
-        max_chars=capped_max_chars,
-    )
-    return await asyncio.to_thread(_read_pptx_sync, req)
+        try:
+            safe_max = int(max_chars)
+        except (TypeError, ValueError):
+            safe_max = DEFAULT_MAX_CHARS
+        safe_max = max(1, min(safe_max, _MAX_CHARS_CEILING))
+
+        req = ReadPptxRequest(
+            pptx_path=file_path,
+            slides=parsed_slides,
+            max_chars=safe_max,
+        )
+        return await asyncio.to_thread(_read_pptx_sync, req)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        return f"[ERROR]: read_pptx failed: {exc}"

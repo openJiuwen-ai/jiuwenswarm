@@ -295,3 +295,26 @@ async def test_read_pptx_absolute_path_allowed(tmp_path: Path) -> None:
         result = await read_pptx.invoke({"file_path": str(outside_file)})
         assert "# Presentation: outside.pptx" in result
         assert "Slide 1 Heading" in result
+
+
+@pytest.mark.asyncio
+async def test_read_pptx_invalid_max_chars_fallback(tmp_path: Path) -> None:
+    """Test non-int max_chars fallback to default safely without raising TypeError."""
+    pptx_path = tmp_path / "sample.pptx"
+    _create_mock_pptx(pptx_path, slide_count=1)
+
+    result = await read_pptx.invoke({"file_path": str(pptx_path), "max_chars": "invalid"})
+    assert "# Presentation: sample.pptx" in result
+    assert "Slide 1 Heading" in result
+
+
+@pytest.mark.asyncio
+async def test_read_pptx_relative_path_without_workspace() -> None:
+    """Test relative path rejection when runtime workspace is unavailable."""
+    with patch(
+        "jiuwenswarm.agents.harness.common.tools.pptx_tools._get_workspace",
+        return_value=None,
+    ):
+        result = await read_pptx.invoke({"file_path": "relative/file.pptx"})
+        assert "[ERROR]" in result
+        assert "runtime workspace is unavailable" in result
