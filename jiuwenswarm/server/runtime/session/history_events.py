@@ -16,7 +16,7 @@ import uuid
 
 from openjiuwen.core.events import Event, ExtensionEventBus, SessionContext
 
-from jiuwenswarm.common.mode_matrix import is_team_mode
+from agent_gateway.common.mode_matrix import is_team_mode
 from jiuwenswarm.extensions_v2.event_types.session_history import (
     SESSION_APPEND_EVENT, SessionAppendInput, SessionAppendMessage, SessionAppendRejection, SessionAppendResult,
 )

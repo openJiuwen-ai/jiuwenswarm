@@ -427,6 +427,7 @@ test('a previous window workspace request cannot close a newer window after its 
     await act(async () => { host.ready(); await host.opening; });
     await act(async () => { await host.receive(request(1, 'workspace', { conversationKey: 'a' })); });
     assert.equal(typeof finishWorkspace, 'function');
+    await act(async () => { host.closed('current'); });
     let reopened;
     await act(async () => { reopened = host.activate(); });
     await act(async () => { host.ready('next'); await reopened; });

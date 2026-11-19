@@ -5108,7 +5108,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
     }
   }, [activeNav, sessionId, webUIPage]);
 
-  if (isJiuwenMate) {
+  if (isJiuwenMate && route.kind !== 'system-plugin-recovery') {
     return (
       <>
         <JiuwenMateApp

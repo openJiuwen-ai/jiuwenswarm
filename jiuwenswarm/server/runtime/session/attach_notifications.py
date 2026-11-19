@@ -16,7 +16,7 @@ import uuid
 
 from openjiuwen.core.events import Event, SessionContext
 
-from jiuwenswarm.common.protocol_ids import is_valid_session_id
+from agent_gateway.common.protocol_ids import is_valid_session_id
 from jiuwenswarm.extensions_v2.event_types.session_attach import (
     SESSION_ATTACH_EVENT,
     AttachInvocation,
@@ -117,7 +117,7 @@ class SessionAssociationStore:
 
 
 def _confirmed_context(event: SessionForegroundEvent) -> SessionContext | None:
-    from jiuwenswarm.common.mode_matrix import is_team_mode
+    from agent_gateway.common.mode_matrix import is_team_mode
     from jiuwenswarm.server.runtime.session import lifecycle
     from jiuwenswarm.server.runtime.session.session_history import resolve_session_dir
     from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata

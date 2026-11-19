@@ -11,7 +11,7 @@ import json
 import math
 import re
 import sys
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, redirect_stdout
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, AsyncIterator
@@ -410,7 +410,9 @@ def main(argv: list[str] | None = None) -> int:
             stream.reconfigure(encoding="utf-8")
     try:
         args = parser().parse_args(argv)
-        result, code = asyncio.run(execute(args))
+        # Dependency initialization may log to stdout; reserve it for the JSON result.
+        with redirect_stdout(sys.stderr):
+            result, code = asyncio.run(execute(args))
     except ClientError as error:
         result = {"ok": False, "status": "FAILED", "error": error.as_dict()}
         code = 2

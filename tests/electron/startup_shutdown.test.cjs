@@ -33,7 +33,7 @@ function fixture(platform, frontendOnly = false) {
   app.getPath = () => '.';
   app.exit = code => exits.push(code);
   const context = vm.createContext({
-    app, path, fs: { mkdir: async () => {}, unlink: async () => {} }, mainWindow: null, isFrontendOnly: frontendOnly, VITE_DEV_MODE: false, hasCdp: false,
+    app, path, fs: { mkdir: async () => {}, unlink: async () => {} }, mainWindow: null, applicationPresentation: null, isFrontendOnly: frontendOnly, VITE_DEV_MODE: false, hasCdp: false,
     browserTargetResolver: null, forceManagedBrowser: false, startupDiagnosticsDir: null,
     desktopLockToken: 'isolated', BACKEND_HOST: '127.0.0.1', FRONTEND_HOST: '127.0.0.1',
     process: { platform, argv: ['workswarm'], execPath: 'workswarm',
@@ -212,7 +212,7 @@ function windowFixture() {
     section('async function handleMainWindowCloseRequest()', 'function loadingHtml('),
     section("  app.on('second-instance'", '  app.whenReady()'),
     section("app.on('activate'", "app.on('window-all-closed'"),
-    section("  mainWindow.once('ready-to-show'", '  registerDisplayMediaHandler('),
+    section("  mainWindow.once('ready-to-show'", '  applicationPresentation = createApplicationPresentation('),
   ].join('\n'), f.context);
   return { ...f, window };
 }
@@ -343,3 +343,44 @@ for (const platform of ['darwin', 'win32']) {
     assert.equal(f.context.backendRestartInProgress, false);
   });
 }
+
+
+test('presentation cleanup failure still completes the application-owned service shutdown', async () => {
+  const f = fixture('win32');
+  f.context.applicationPresentation = { close() { throw new Error('presentation close failed'); } };
+  f.context.spawnService('agent', ports);
+  f.context.spawnService('gateway', ports);
+  f.quit();
+  await f.context.finalShutdownPromise;
+  assert.deepEqual(f.exits, [0]);
+  assert.equal(f.workerAlive, false);
+  assert.ok(f.errors.some(item => String(item[0]).includes('close application presentation')));
+});
+
+test('recovery polling does not consume another restore while a previous poll or restart is active', async () => {
+  let poll;
+  let finishRead;
+  let reads = 0;
+  const context = vm.createContext({
+    recoveryRestartWatcher: null, shuttingDown: false, backendRestartInProgress: false,
+    setInterval(callback) { poll = callback; return 1; }, clearInterval() {},
+    consumeRecoveryRestartSignal() { reads += 1; return new Promise(resolve => { finishRead = resolve; }); },
+    restartBackendServices() { throw new Error('No restore was requested'); },
+    console: { error() {} },
+  });
+  vm.runInContext(section('function watchRecoveryRestartRequests(', '// ─── Gateway 单例预检'), context);
+  context.watchRecoveryRestartRequests(ports);
+  poll();
+  poll();
+  assert.equal(reads, 1);
+  finishRead(false);
+  await new Promise(resolve => setImmediate(resolve));
+  context.backendRestartInProgress = true;
+  poll();
+  assert.equal(reads, 1);
+  context.backendRestartInProgress = false;
+  poll();
+  assert.equal(reads, 2);
+  finishRead(false);
+  await new Promise(resolve => setImmediate(resolve));
+});

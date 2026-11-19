@@ -27,10 +27,10 @@ from jiuwenswarm.extensions_v2 import assembly
 from jiuwenswarm.extensions_v2.webui.adapter import WebUIDispatchAdapter
 from jiuwenswarm.extensions_v2.webui.contributions import WebUICatalogService
 from jiuwenswarm.extensions_v2.webui.resources import WebUIResourceService
-from jiuwenswarm.gateway.channel_manager.web import webui_resource_http
-from jiuwenswarm.gateway.extensions_v2.models import GatewayRequestOutput
-from jiuwenswarm.gateway.extensions_v2.webui.bridge import BrowserBridge
-from jiuwenswarm.gateway.extensions_v2.webui.http import attach_browser_routes
+from agent_gateway.channel_manager.web import webui_resource_http
+from agent_gateway.extensions_v2.models import GatewayRequestOutput
+from agent_gateway.extensions_v2.webui.bridge import BrowserBridge
+from agent_gateway.extensions_v2.webui.http import attach_browser_routes
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio]
 

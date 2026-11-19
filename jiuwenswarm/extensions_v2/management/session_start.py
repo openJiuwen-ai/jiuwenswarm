@@ -12,7 +12,7 @@ from pathlib import Path, PureWindowsPath
 from openjiuwen.core.events import Event, ExtensionEventBus, SessionContext
 from openjiuwen.core.extension import ActivePackageRecord, Runtime
 
-from jiuwenswarm.common.protocol_ids import is_valid_session_id
+from agent_gateway.common.protocol_ids import is_valid_session_id
 from jiuwenswarm.extensions_v2.event_types.session_start import (
     SESSION_START_EVENT,
     SessionStartInput,

@@ -70,9 +70,10 @@ const runnerSessionId = window.location.pathname === '/share-export-runner'
 const runnerJobId = window.location.pathname === '/share-export-runner'
   ? runnerQuery.get('job_id')?.trim() || null
   : null
+const enterpriseLogin = isEnterprise() && isUserLoginRoute(userWebPaths().route)
 
-// The export runner has no startup gate to take over the first-paint layer.
-if (runnerJobId || runnerSessionId) document.getElementById('workswarm-neutral')?.remove()
+// Login and export runners have no startup gate to take over the first-paint layer.
+if (enterpriseLogin || browserRunner || runnerJobId || runnerSessionId) document.getElementById('workswarm-neutral')?.remove()
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <A2UIProvider onAction={handleA2UIAction}>
@@ -83,7 +84,7 @@ ReactDOM.createRoot(document.getElementById('root')!).render(
         locale={runnerQuery.get('locale')}
         client={browserRunner}
       />
-    ) : isEnterprise() && isUserLoginRoute(userWebPaths().route) ? (
+    ) : enterpriseLogin ? (
       <UserLoginPage />
     ) : (
       <WebUIAppRoot>

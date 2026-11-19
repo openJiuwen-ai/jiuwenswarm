@@ -106,6 +106,17 @@ test('connection retainers keep a shared socket alive until its final owner rele
   assert.equal(webClient.getState(), 'ready');
 });
 
+test('an explicit auth reconnect replaces the socket while a shared owner retains it', async () => {
+  const release = webClient.retainConnection();
+  const original = FakeWebSocket.instance;
+  await webClient.reconnect('Auth changed');
+  assert.notEqual(FakeWebSocket.instance, original);
+  assert.equal(webClient.getState(), 'ready');
+  release();
+  assert.equal(webClient.getState(), 'closed');
+  await webClient.connect();
+});
+
 test('runtime-ack request stays pending after gateway response and resolves exact ack', async () => {
   let settled = false;
   const result = webClient

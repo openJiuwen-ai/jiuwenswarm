@@ -8,3 +8,6 @@ Plugin splash playback, previews and theme backgrounds continue to use their exi
 A plugin menu without an ordering anchor is appended after existing menus. Older declarations using `after: "extensions"` also append under the missing-anchor rule, so their menus and settings remain available.
 
 See the [S_18 settings location specification](../../jiuwenswarm/extensions_v2/docs/specs/S_18_settings-location.md) for declaration and placement rules.
+
+System Plugin Recovery restores installed plugins' enabled states to a selected record, then restarts AgentServer, its owned Worker and Gateway. Active tasks are interrupted.
+The independent recovery page listens on the local loopback interface and remains available when the main services fail. Recovery does not reinstall removed packages or undo plugins' file or network side effects.

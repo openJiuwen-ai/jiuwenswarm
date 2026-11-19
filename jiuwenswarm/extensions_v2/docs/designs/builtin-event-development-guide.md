@@ -821,11 +821,11 @@ Gateway 侧还须接入结果消费。下面只展示转发前判断的分支；
 ```python
 from collections.abc import Awaitable, Callable
 from jiuwenswarm.common.client.agent_client import AgentServerClient
-from jiuwenswarm.common.e2a.models import E2AEnvelope
+from e2a import E2AEnvelope
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.message import Message
 from jiuwenswarm.extensions_v2.event_types.channel_event import ChannelEventOutput
-from jiuwenswarm.gateway.routing.agent_request_timeout import send_agent_request_with_timeout
+from agent_gateway.routing.agent_request_timeout import send_agent_request_with_timeout
 
 
 def decode_channel_output(response: AgentResponse) -> ChannelEventOutput:

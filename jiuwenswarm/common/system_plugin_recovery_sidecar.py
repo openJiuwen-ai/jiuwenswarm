@@ -16,6 +16,7 @@ from jiuwenswarm.common.system_plugin_recovery import (
     RecoveryRecordNotFound,
     SystemPluginRecovery,
     begin_system_plugin_recovery_session,
+    is_local_recovery_request,
 )
 
 _PATH = "/system-plugin-recovery"
@@ -535,7 +536,7 @@ class _RecoveryHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
         path, query = _request_target(self.path)
-        if not self._authorized(query):
+        if not is_local_recovery_request(self.headers, self.server.server_address[1]) or not self._authorized(query):
             self._forbidden()
             return
         if path in {_PATH, f"{_PATH}/"}:
@@ -565,11 +566,15 @@ class _RecoveryHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
         path, query = _request_target(self.path)
-        if not self._authorized(query):
+        if not is_local_recovery_request(self.headers, self.server.server_address[1]) or not self._authorized(query):
             self._forbidden()
             return
         if path != f"{_PATH}/api/restore":
             self.send_error(HTTPStatus.NOT_FOUND)
+            return
+        content_types = self.headers.get_all("Content-Type", [])
+        if len(content_types) != 1 or content_types[0].split(";", 1)[0].strip().lower() != "application/json":
+            self._json({"error": "application/json is required"}, status=HTTPStatus.UNSUPPORTED_MEDIA_TYPE)
             return
         body = self._body()
         record_id = body.get("record_id") if isinstance(body, dict) else None

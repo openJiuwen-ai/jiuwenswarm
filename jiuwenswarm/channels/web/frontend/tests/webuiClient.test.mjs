@@ -469,6 +469,7 @@ for (const [name, read, payload, expected] of [
       let finish;
       host.setInvocationWaiter(() => new Promise((resolve) => { finish = resolve; }));
       assert.equal(host.acceptOperation(operation({ credential: 'new' })), true);
+      socket.receive({ type: 'res', id: first.id, ok: false, code: 'CONTEXT_CHANGED', error: 'stale context' });
       await turn();
       assert.equal(socket.sent.length, 1, 'no retry while the context is changing');
       finish(); await turn();
@@ -479,7 +480,9 @@ for (const [name, read, payload, expected] of [
       assert.deepEqual(retry.params, first.params);
       assert.deepEqual(retry.request_context, { headers: { Authorization: 'Bearer new' } });
       socket.receive({ type: 'res', id: retry.id, ok: true, payload });
-      assert.deepEqual(await pending, expected);
+      const result = await pending;
+      assert.deepEqual(Array.isArray(result) ? Array.from(result) : result, expected);
+      if (Array.isArray(result)) assert.equal(result.cache, payload.cache);
     });
   });
 }
@@ -488,9 +491,13 @@ test('plugin reads retry at most once and preserve ordinary errors', async () =>
   await withPluginClient(async (socket, host) => {
     const pending = systemPluginApi.show('pkg.one');
     const rejected = assert.rejects(pending, (error) => error.code === 'CONTEXT_CHANGED');
-    await turn(); host.configure(declarations([websocket])); await turn();
+    await turn(); host.configure(declarations([websocket]));
+    socket.receive({ type: 'res', id: socket.sent[0].id, ok: false, code: 'CONTEXT_CHANGED', error: 'stale context' });
+    await turn();
     assert.equal(socket.sent.length, 2);
-    host.configure(declarations([websocket])); await rejected; await turn();
+    host.configure(declarations([websocket]));
+    socket.receive({ type: 'res', id: socket.sent[1].id, ok: false, code: 'CONTEXT_CHANGED', error: 'stale context' });
+    await rejected; await turn();
     assert.equal(socket.sent.length, 2);
     const denied = systemPluginApi.catalog('mine');
     const deniedResult = assert.rejects(denied, (error) => error.code === 'AUTH_REQUIRED');
@@ -520,6 +527,9 @@ test('plugin context waits release subscriptions and timers on ready and timeout
         const rejected = timeout ? assert.rejects(pending, (error) => error.code === 'CONTEXT_CHANGED') : null;
         await turn();
         host.suspendConnection(); await turn();
+        socket.receive({ type: 'res', id: socket.sent.at(-1).id, ok: false,
+          code: 'CONTEXT_CHANGED', error: 'stale context' });
+        await turn();
         assert.equal(active, 1);
         assert.equal(timers.size, 1);
         if (timeout) {
@@ -527,7 +537,9 @@ test('plugin context waits release subscriptions and timers on ready and timeout
         } else {
           host.configure(declarations([websocket])); await turn();
           socket.receive({ type: 'res', id: socket.sent.at(-1).id, ok: true, payload: { packages: [] } });
-          assert.deepEqual(await pending, []);
+          const result = await pending;
+          assert.deepEqual(Array.from(result), []);
+          assert.equal(result.cache, undefined);
         }
         assert.equal(active, 0);
         assert.equal(timers.size, 0);
@@ -545,6 +557,7 @@ test('plugin reads do not retry with unavailable declarations', async () => {
     const rejected = assert.rejects(pending, (error) => error.code === 'CONTEXT_CHANGED');
     await turn();
     assert.throws(() => host.configure({}));
+    socket.receive({ type: 'res', id: socket.sent[0].id, ok: false, code: 'CONTEXT_CHANGED', error: 'stale context' });
     await rejected; await turn();
     assert.equal(socket.sent.length, 1);
   });
@@ -558,16 +571,31 @@ for (const [name, write] of [
   ['uninstall', () => systemPluginApi.uninstall('pkg.one')],
   ['reload', () => systemPluginApi.reload('pkg.one')],
 ]) {
-  test(`plugin ${name} is never replayed after context cancellation`, async () => {
+  test(`plugin ${name} is never replayed after a Gateway context rejection`, async () => {
     await withPluginClient(async (socket, host) => {
       const pending = write();
       const rejected = assert.rejects(pending, (error) => error.code === 'CONTEXT_CHANGED');
       await turn(); host.configure(declarations([websocket]));
+      socket.receive({ type: 'res', id: socket.sent[0].id, ok: false, code: 'CONTEXT_CHANGED', error: 'stale context' });
       await rejected; await turn();
       assert.equal(socket.sent.length, 1);
     });
   });
 }
+
+test('management receipts survive declaration changes caused by their own completed operation', async () => {
+  await withPluginClient(async (socket, host) => {
+    const pending = systemPluginApi.setEnabled('pkg.one', true);
+    await turn();
+    const id = socket.sent[0].id;
+    host.configure(declarations([websocket]));
+    await turn();
+    assert.equal(socket.sent.length, 1);
+    socket.receive({ type: 'res', id, ok: true, payload: { reports: [{ package_id: 'pkg.one', status: 'SUCCESS' }] } });
+    await pending;
+    assert.equal(socket.sent.length, 1);
+  });
+});
 
 const reloadOperation = (extra = {}) => operation(undefined, { method: 'page.reload', params: {}, ...extra });
 async function setupReload(options = {}) {

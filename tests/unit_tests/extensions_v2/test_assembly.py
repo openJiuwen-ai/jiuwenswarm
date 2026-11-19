@@ -125,3 +125,8 @@ async def test_assembly_failure_keeps_the_server_usable(tmp_path: Path, monkeypa
 
     monkeypatch.setattr(assembly, "resolve_install_dir", fail)
     assert await assembly.install_extensions(FakeServer()) is None
+
+
+def test_extension_host_version_matches_the_runtime_distribution(monkeypatch) -> None:
+    monkeypatch.setattr(assembly, "get_runtime_version", lambda: "0.2.9.beta3")
+    assert assembly._host_version() == "0.2.9.beta3"

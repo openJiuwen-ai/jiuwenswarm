@@ -5,7 +5,7 @@ import json
 import pytest
 from openjiuwen.core.events import OPS_BUILD_EVENT_TYPE, Event, ExtensionEventBus, HandlerLevel
 
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (

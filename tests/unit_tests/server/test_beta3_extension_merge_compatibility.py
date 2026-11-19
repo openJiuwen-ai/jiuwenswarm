@@ -245,7 +245,10 @@ async def test_workspace_binding_keeps_history_facts_and_both_memory_agent_coord
     class WorkspaceBound(Exception):
         pass
 
-    def after_workspace(*args):
+    def after_workspace(config, channel_id, session_id, *, request_id):
+        assert channel_id == "web"
+        assert session_id == "workspace-session"
+        assert request_id == "workspace-request"
         raise WorkspaceBound()
 
     monkeypatch.setattr(adapter, "_sync_a4p_tools_for_runtime", after_workspace)

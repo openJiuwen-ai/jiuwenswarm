@@ -3,16 +3,17 @@
  * 生命周期（start/dispose）集中在这里；业务页面只负责在槽位处渲染 WebUIHost。
  */
 
-import { useEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { webClient } from '../../../services/webClient';
+import { WebHttpClient } from '../../../services/webHttpClient';
 import { createWebUIAppRuntime } from '../assembly/createWebUIAppRuntime.ts';
 import { componentCatalog } from '../catalog/componentCatalog.ts';
 import { createComponentRendererRegistry } from '../renderer/adapters/componentRegistry.ts';
 import { WebUIAppearanceHost } from './WebUIAppearanceHost.tsx';
 import { WebUIBackgroundHost } from './WebUIBackgroundHost.tsx';
 import { WebUIEntryHost } from './WebUIEntryHost.tsx';
-import { WebUISplashGate } from './WebUISplashGate.tsx';
+import { STATIC_NEUTRAL_ID, WebUISplashGate } from './WebUISplashGate.tsx';
 import { fetchSplashHint, resolveLaunch } from '../splash/launch.ts';
 import { SPLASH_PLAY_EVENT } from '../splash/controller.ts';
 import { WebUIProvider } from './WebUIProvider.tsx';
@@ -26,22 +27,32 @@ export interface WebUIAppRootProps {
 }
 
 export function WebUIAppRoot({ children }: WebUIAppRootProps) {
+  useLayoutEffect(() => {
+    if (webClient instanceof WebHttpClient) document.getElementById(STATIC_NEUTRAL_ID)?.remove();
+  }, []);
+  if (webClient instanceof WebHttpClient) return <>{children}</>;
+  return <WebSocketWebUIAppRoot client={webClient}>{children}</WebSocketWebUIAppRoot>;
+}
+
+function WebSocketWebUIAppRoot({ children, client }: WebUIAppRootProps & {
+  client: Exclude<typeof webClient, WebHttpClient>;
+}) {
   const { t } = useTranslation();
   const error = useSyncExternalStore(browserClientCapabilities.subscribeErrors, browserClientCapabilities.getError);
   const app = useMemo(
     () =>
       createWebUIAppRuntime({
-        client: webClient,
+        client,
         clientCapabilities: browserClientCapabilities,
         catalog: componentCatalog,
         registry: createComponentRendererRegistry(),
       }),
-    [],
+    [client],
   );
 
   useEffect(() => {
     app.start();
-    const releaseConnection = webClient.retainConnection();
+    const releaseConnection = client.retainConnection();
     const onStorage = (event: StorageEvent) => browserClientCapabilities.storageChanged(event);
     const onVisible = () => { if (document.visibilityState === 'visible') browserClientCapabilities.refresh(); };
     const onFocus = () => browserClientCapabilities.refresh();
@@ -55,25 +66,25 @@ export function WebUIAppRoot({ children }: WebUIAppRootProps) {
       app.dispose();
       releaseConnection();
     };
-  }, [app]);
+  }, [app, client]);
 
   // Imports and exports go through the host (Gateway S_10); adapters never reach the client directly.
   const uploads = useMemo(() => createUploadService({
     runtime: app.runtime,
-    request: (method, params) => webClient.request(method, params),
+    request: (method, params) => client.request(method, params),
     put: putWithFetch,
-  }), [app]);
-  useEffect(() => webClient.on(DOWNLOAD_EVENT, (event) => {
+  }), [app, client]);
+  useEffect(() => client.on(DOWNLOAD_EVENT, (event) => {
     const offer = readDownloadOffer(event.payload);
     if (!offer) return;
     const desktop = window.jiuwenDesktop?.downloadFile;
     void startDownload(offer, { desktopDownload: desktop, document }).catch(() => undefined);
-  }), []);
+  }), [client]);
 
   const launch = useMemo(() => resolveLaunch(window.jiuwenDesktop?.launchId), []);
-  const requestProviders = useMemo(() => () => webClient.request('webui.splash.providers', {}), []);
+  const requestProviders = useMemo(() => () => client.request('webui.splash.providers', {}), [client]);
   const subscribePreview = useMemo(() => (listener: (payload: unknown) => void) =>
-    webClient.on(SPLASH_PLAY_EVENT, (event) => listener(event.payload)), []);
+    client.on(SPLASH_PLAY_EVENT, (event) => listener(event.payload)), [client]);
 
   return (
     <WebUIProvider runtime={app.runtime} registry={app.registry}>

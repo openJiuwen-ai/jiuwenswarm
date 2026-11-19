@@ -8,6 +8,7 @@ import argparse
 import asyncio
 import json
 import sys
+from contextlib import redirect_stdout
 
 from jiuwenswarm.channels.cli.extension import ClientError, JsonArgumentParser, LocalClient, Settings, valid_id
 
@@ -54,7 +55,10 @@ def main(argv: list[str] | None = None) -> int:
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(encoding="utf-8")
     try:
-        result, code = asyncio.run(execute(parser().parse_args(argv)))
+        args = parser().parse_args(argv)
+        # Keep dependency startup diagnostics out of the structured CLI response.
+        with redirect_stdout(sys.stderr):
+            result, code = asyncio.run(execute(args))
     except ClientError as error:
         result, code = {"ok": False, "status": "FAILED", "error": error.as_dict()}, 2
     except KeyboardInterrupt:

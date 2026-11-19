@@ -8,7 +8,7 @@ from importlib import import_module
 # Installed packages are executed from their own directory, outside the frozen
 # entry point's import graph, so PyInstaller cannot discover these imports.
 PLUGIN_ONLY_MODULES = (
-    "jiuwenswarm.gateway.extensions_v2.webui.ops",
+    "agent_gateway.extensions_v2.webui.ops",
 )
 
 

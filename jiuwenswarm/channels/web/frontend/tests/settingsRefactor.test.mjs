@@ -2075,7 +2075,7 @@ test('legacy channel and More surfaces are removed while Settings owns their rep
   assert.doesNotMatch(app, /ConfigPanel|BrowserPanel|ChannelsPanel|ExtensionsHubPanel/);
   assert.match(settingsChannelsModule, /import \{ SettingsChannelsPanel \} from '\.\/SettingsChannelsPanel'/);
   assert.doesNotMatch(settingsChannelsModule, /components\/ChannelsPanel/);
-  assert.match(settingsNavigation, /export type SettingsModuleTarget = 'general' \| 'models' \| 'agent'/);
+  assert.match(settingsNavigation, /export type SettingsModuleTarget =\s*(?:\|\s*)?'general'\s*\|\s*'models'\s*\|\s*'agent'/);
   assert.doesNotMatch(settingsNavigation, /'recommendation'/);
   assert.match(settingsNavigation, /SETTINGS_MODULE_NAVIGATION_EVENT = 'jiuwen:settings-module'/);
   assert.equal(existsSync(new URL('src/components/ConfigPanel/index.tsx', root)), false);

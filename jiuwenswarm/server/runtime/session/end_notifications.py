@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from openjiuwen.core.events import Event, SessionContext
 
-from jiuwenswarm.common.protocol_ids import is_valid_session_id
+from agent_gateway.common.protocol_ids import is_valid_session_id
 from jiuwenswarm.extensions_v2.event_types.session_end import (
     SESSION_END_EVENT,
     EndInvocation,

@@ -8,7 +8,7 @@ import { presentationConversations } from './conversations.ts';
 import { selectConversationModel } from '../../../multi-session/state/modelSelectionActions.ts';
 import { createPresentationReplyReader } from './reply.ts';
 import { webClient } from '../../../services/webClient';
-import { useWebUIRuntime } from '../react/WebUIProvider.tsx';
+import { useOptionalWebUIAppContext, useWebUIRuntime } from '../react/WebUIProvider.tsx';
 import { createPresentationStartHandler, PRESENTATION_START_EVENT, PRESENTATION_RESULT_METHOD } from './start.ts';
 import {
   createPresentationRequests, parsePresentationRequest, PRESENTATION_SLOT,
@@ -40,6 +40,11 @@ function useActiveStore<State>(enabled: boolean, store: {
 
 /** The host owns semantic state and operations; plugin markup stays entirely in its sandbox. */
 export function ApplicationPresentationHost(props: ApplicationPresentationHostProps) {
+  const context = useOptionalWebUIAppContext();
+  return context ? <ConnectedApplicationPresentationHost {...props} /> : null;
+}
+
+function ConnectedApplicationPresentationHost(props: ApplicationPresentationHostProps) {
   const { t, i18n } = useTranslation();
   const [isActive, setIsActive] = useState(false);
   const sessionState = useActiveStore(isActive, useSessionStore);

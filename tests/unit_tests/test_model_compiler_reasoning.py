@@ -8,7 +8,7 @@ import pytest
 from openai.resources.chat.completions import AsyncCompletions
 from openjiuwen.core.foundation.llm.model_clients.openai_model_client import OpenAIModelClient
 
-from jiuwenswarm.common.model_selection import ResolvedModel, ResolvedModelGroup, ResolvedRoute
+from agent_gateway.common.model_selection import ResolvedModel, ResolvedModelGroup, ResolvedRoute
 from jiuwenswarm.server.runtime.model_compiler_adapter import compile_model_selection
 
 

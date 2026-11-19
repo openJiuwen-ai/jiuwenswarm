@@ -6252,7 +6252,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   ]);
 
   useEffect(() => {
-    const releaseConnection = webClient.retainConnection();
+    const releaseConnection = webClient instanceof WebHttpClient
+      ? () => { void webClient.disconnect(); }
+      : webClient.retainConnection();
     return () => {
       streamDeltaBatcherRef.current?.flushAll();
       lastConnectSignatureRef.current = '';

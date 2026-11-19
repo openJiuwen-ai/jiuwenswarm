@@ -107,13 +107,14 @@ def test_env_only_transaction_recovers_at_atomic_env_commit(catalogue, committed
     yaml_hash = sha256(path.read_bytes()).hexdigest()
     old_env, new_env = "VISION_ENABLED=false\n", "VISION_ENABLED=true\n"
     expected = new_env if committed else old_env
-    path.with_name(".env").write_text(expected)
+    # Production commits write these journaled bytes without newline translation.
+    path.with_name(".env").write_bytes(expected.encode("utf-8"))
     path.with_name(".multimodal-transaction.json").write_text(json.dumps({
         "transaction_id": "env-only", "old_yaml_hash": yaml_hash, "new_yaml_hash": yaml_hash,
         "old_env": old_env, "new_env": new_env,
     }))
     with config_write_lock(config_path=path):
-        assert path.with_name(".env").read_text() == expected
+        assert path.with_name(".env").read_bytes() == expected.encode("utf-8")
     assert not path.with_name(".multimodal-transaction.json").exists()
 
 

@@ -274,7 +274,7 @@ async def test_malformed_request_preserves_current_association(detach_host, bad)
 async def test_wire_adapter_returns_actual_release_and_clear_errors(detach_host, monkeypatch):
     import jiuwenswarm.server.agent_ws_server as server
     from dataclasses import asdict
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+    from e2a.wire_codec import parse_agent_server_wire_unary
     from jiuwenswarm.common.schema.agent import AgentRequest
     from jiuwenswarm.common.schema.message import ReqMethod
 

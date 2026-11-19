@@ -249,6 +249,8 @@ if [ "$FRONTEND_ONLY" = false ]; then
     # Same RSI Harness baseline self-check as build-macos.sh.
     "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_rsi_bundle.py"
 
+    "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_gateway_extensions_bundle.py"
+
     "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_computer_use_bundle.py"
 
     # Exercise lazy adapter exports before shipping a backend that only binds
