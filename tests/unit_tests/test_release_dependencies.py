@@ -119,6 +119,37 @@ def test_release_rejects_mutable_computer_use_revision(tmp_path, location):
         validate_release_dependencies(tmp_path)
 
 
+@pytest.mark.parametrize(
+    ("specifier", "locked_version", "registry", "accepted"),
+    [
+        ("==0.1.0b1", "0.1.0b1", "https://pypi.org/simple", True),
+        (">=0.1.0b1", "0.1.0b1", "https://pypi.org/simple", False),
+        ("==0.1.*", "0.1.0b1", "https://pypi.org/simple", False),
+        ("==0.1.0b1", "0.1.0b2", "https://pypi.org/simple", False),
+        ("==0.1.0b1", "0.1.0b1", "https://example.org/simple", False),
+    ],
+)
+def test_release_checks_computer_use_pypi_pin(tmp_path, specifier, locked_version, registry, accepted):
+    _project(tmp_path)
+    config = tmp_path / "pyproject.toml"
+    config.write_text(
+        config.read_text(encoding="utf-8").replace(
+            "dependencies = [", f'dependencies = ["openjiuwen-computeruse{specifier}", '
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "uv.lock").write_text(
+        '[[package]]\nname = "openjiuwen-computeruse"\n'
+        f'version = "{locked_version}"\nsource = {{ registry = "{registry}" }}\n',
+        encoding="utf-8",
+    )
+    if accepted:
+        validate_release_dependencies(tmp_path)
+    else:
+        with pytest.raises(ValueError, match="Release blocked"):
+            validate_release_dependencies(tmp_path)
+
+
 @pytest.mark.parametrize("location", ["dependencies", "harmony", "override"])
 @pytest.mark.parametrize("suffix", ["#subdirectory=packages/core", "?download=1#subdirectory=packages/core"])
 def test_release_accepts_official_pins_with_url_components(tmp_path, location, suffix):

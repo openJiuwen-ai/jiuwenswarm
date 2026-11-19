@@ -21,7 +21,7 @@ dependencies = [
     "lark-oapi>=1.5.3,<2",
     "loguru>=0.7.3,<0.8",
     "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@fd6e1865dba6dcf60ef51bf034ff0957f3690596",
-    "openjiuwen-computeruse @ git+https://gitcode.com/openJiuwen/computer-use.git@77ef66ab4505ae0faf2cade7f7622e5500420e2c",
+    "openjiuwen-computeruse==0.1.0b1; implementation_name == 'cpython' and python_version == '3.11' and ((sys_platform == 'darwin' and (platform_machine == 'arm64' or platform_machine == 'x86_64')) or (sys_platform == 'linux' and platform_machine == 'x86_64') or (sys_platform == 'win32' and (platform_machine == 'AMD64' or platform_machine == 'x86_64')))",
     "JiuwenMemory>=0.2.1",
     # openjiuwen's FS read-write lock acquires and releases on different tasks;
     # filelock>=4.0.2 binds async locks to their acquiring task, stranding them.
