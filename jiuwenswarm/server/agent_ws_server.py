@@ -3446,6 +3446,11 @@ class AgentWebSocketServer:
 
             if await self._handle_lifecycle_request(ws, request, send_lock):
                 return
+            # A4P configuration belongs to the application. A legacy client
+            # may still provide a session ID, even for an archived session.
+            if request.req_method in {ReqMethod.A4P_CONFIG_GET, ReqMethod.A4P_CONFIG_UPDATE}:
+                await self._handle_a4p_request(ws, request, send_lock)
+                return
             from jiuwenswarm.server.runtime.session.lifecycle import (
                 LifecycleError,
                 guard,
