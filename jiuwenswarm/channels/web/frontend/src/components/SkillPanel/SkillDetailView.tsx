@@ -559,7 +559,9 @@ export function SkillDetailView(props: SkillDetailViewProps) {
         </button>
       ) : null}
     </div>,
-    selectedSkill.description || t('skills.noDescription'),
+    <div className="whitespace-pre-line">
+      {selectedSkill.description || t('skills.noDescription')}
+    </div>,
     <>
       {/* 企业版：只展示当前版本；社区版保留版本管理（可切换历史副本） */}
       <DetailSection
