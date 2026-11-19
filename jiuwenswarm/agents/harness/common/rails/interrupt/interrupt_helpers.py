@@ -1639,6 +1639,16 @@ def extract_question_from_interaction(payload: Any) -> dict | None:
                 question = _rewrite_option_label_hint(question)
             elif is_enterprise():
                 question = _strip_permanent_remember_hint(question)
+            try:
+                from jiuwenswarm.gateway.channel_manager.web.sensitive_mask import (
+                    mask_permission_question,
+                )
+
+                question = mask_permission_question(question)
+            except Exception as exc:
+                logger.warning(
+                    "[InterruptHelpers] mask_permission_question failed: %s", exc
+                )
 
     return {
         "question": question,

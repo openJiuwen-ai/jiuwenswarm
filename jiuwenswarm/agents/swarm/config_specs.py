@@ -34,6 +34,8 @@ from openjiuwen.agent_teams.schema.deep_agent_spec import (
 )
 from openjiuwen.agent_teams.rails.builtin_elements import SKILL_USE as CORE_SKILL_USE
 from openjiuwen.agent_teams.rails.elements import TEAM_SKILL_USE
+from openjiuwen.core.context_engine.context.context_utils import ContextUtils
+from openjiuwen.core.context_engine.schema.config import ContextEngineConfig
 from openjiuwen.core.foundation.kv_cache import KVCacheAffinityConfig
 from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.core.single_agent import AgentCard
@@ -70,6 +72,7 @@ from jiuwenswarm.agents.harness.common.browser_defaults import (
 
 # Modes that route to the code adapter and get the code member profile.
 _CODE_MODES: frozenset[str] = frozenset({"code.team", "team.plan"})
+_TEAM_CONTEXT_WINDOW_TOKENS = 200_000
 logger = logging.getLogger(__name__)
 
 # Hard boundary: TeamSkillUseRail is required. Silently folding to
@@ -633,6 +636,70 @@ def _model_entry_alias(entry: dict[str, Any]) -> str:
     （条目允许带顶层 ``alias``），因此匹配成员模型名时两个字段都算命中。
     """
     return str(entry.get("alias") or "").strip()
+
+
+def _positive_context_window_tokens(raw: Any) -> int | None:
+    """Accept positive integer settings; ignore empty or invalid window limits."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None
+
+
+def _team_context_engine_config(
+    config: dict[str, Any], base_spec: DeepAgentSpec,
+) -> ContextEngineConfig:
+    """在 Team 副本继承产品配置，并保留产品、成员及模型的更小窗口。"""
+    product_config = _config_section(
+        _config_section(config, "react"), "context_engine_config",
+    )
+    member_config = base_spec.context_engine_config or {}
+    if isinstance(member_config, ContextEngineConfig):
+        # SDK 默认值不应覆盖产品配置；成员明确声明的字段才有覆盖权。
+        member_config = member_config.model_dump(exclude_unset=True)
+    product_window = _positive_context_window_tokens(product_config.get("context_window_tokens"))
+    member_window = _positive_context_window_tokens(member_config.get("context_window_tokens"))
+    merged_config: dict[str, Any] = {}
+    for source in (product_config, member_config):
+        for key, value in source.items():
+            if key in ContextEngineConfig.model_fields:
+                merged_config[key] = value
+    # 窗口单独取各来源的最小正整数，非法值不进入 SDK 校验或掩盖更小上限。
+    merged_config["context_window_tokens"] = None
+    context_config = ContextEngineConfig.model_validate(merged_config).model_copy(deep=True)
+    model_name = context_config.model_name or _member_model_name(base_spec)
+    entries = _declared_model_entries(config)
+    if not model_name and entries:
+        default_entry = next(
+            (entry for entry in entries if entry.get("is_default") is True), entries[0],
+        )
+        model_name = _model_entry_name(default_entry)
+    for entry in entries:
+        if model_name and model_name in {_model_entry_name(entry), _model_entry_alias(entry)}:
+            model_name = _model_entry_name(entry)
+            break
+    model_window = ContextUtils.resolve_context_max(
+        model_name=model_name,
+        model_context_window_tokens=context_config.model_context_window_tokens,
+    )
+    # 用独立运行时配置承接产品上限，避免修改 SDK 模型表或共享模板。
+    window = min(
+        _TEAM_CONTEXT_WINDOW_TOKENS,
+        model_window,
+        product_window or _TEAM_CONTEXT_WINDOW_TOKENS,
+        member_window or _TEAM_CONTEXT_WINDOW_TOKENS,
+    )
+    if any(explicit is not None and window < explicit for explicit in (product_window, member_window)):
+        logger.info(
+            "Team context window capped: model=%s product_window=%s member_window=%s "
+            "model_window=%s team_limit=%s window=%s",
+            model_name or "<default>", product_window, member_window,
+            model_window, _TEAM_CONTEXT_WINDOW_TOKENS, window,
+        )
+    return context_config.model_copy(update={"context_window_tokens": window})
 
 
 def _declared_model_entries(config: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -1255,6 +1322,7 @@ def build_member_deep_agent_spec(
         "tools": merged_tools,
         "mcps": merged_mcps,
         "kv_cache_affinity_config": _kv_cache_affinity_config(config),
+        "context_engine_config": _team_context_engine_config(config, base_spec),
         # 显式写死能力位：openjiuwen 对成员 None 一律兜底 False（省掉每成员一次
         # 探测 LLM 往返），不写这里的话 rail 即便挂上也走非原生分支。
         "enable_read_image_multimodal": native_image_enabled,

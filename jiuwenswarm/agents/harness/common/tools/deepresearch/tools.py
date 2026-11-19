@@ -34,6 +34,13 @@ from openjiuwen.core.common.exception.errors import BaseError
 from openjiuwen.core.foundation.tool import tool
 from openjiuwen.core.sys_operation.cwd import get_cwd
 
+from jiuwenswarm.agents.harness.common.tools.deepresearch.diagnostics import (
+    LOG_DIR_CONFIG_KEY,
+    close_runner_diagnostics,
+    prepare_runner_diagnostics,
+    trusted_fallback_log_config,
+    write_runner_diagnostics,
+)
 from jiuwenswarm.agents.harness.common.tools.deepresearch.runtime import (
     DeepResearchRuntimeError,
     build_child_env,
@@ -88,6 +95,7 @@ from jiuwenswarm.common.local_env_config import (
 )
 from jiuwenswarm.common.utils import (
     JIUWENSWARM_SHARED_SKILLS_DIRS_ENV,
+    get_logs_dir,
     get_shared_agent_skills_dirs,
     parse_shared_skills_dirs_raw,
 )
@@ -804,6 +812,20 @@ def _build_deepresearch_request_config(
         }
     config = _build_deepresearch_config(source)
     config["DEEPSEARCH_HITL"] = "true" if interactive_ask else "false"
+    try:
+        config[LOG_DIR_CONFIG_KEY] = str(
+            (get_logs_dir(service_id) / "DeepResearch" / "output" / "logs").resolve()
+        )
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.warning(
+            "DeepResearch 服务日志目录不可用 service_id=%s type=%s; "
+            "runner 将沿用独立运行时的备用日志目录",
+            _safe_log_correlation_id(service_id), type(exc).__name__,
+        )
+    try:
+        config.update(trusted_fallback_log_config(os.environ))
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.warning("DeepResearch 备用日志数据根不可用 type=%s", type(exc).__name__)
     # 宿主会话归属标识:随 config frame 注入 runner,SDK StartNode 写入
     # 会话 config 随快照落盘;认领侧(probe/扫库)校验归属防跨会话误认领。
     host_session_id = str(_get_route().get("session_id") or "").strip()
@@ -3039,6 +3061,9 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
                 )
 
     if action == "start":
+        # 提前绑定 SDK 使用的会话标识，首帧前崩溃也能按同一标识定位日志。
+        if not conversation_id:
+            conversation_id = str(uuid.uuid4())
         argv = [
             str(python_bin),
             script,
@@ -3283,15 +3308,34 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
     argv.extend(("--progress-file", str(progress_file)))
 
     try:
+        diagnostics = await prepare_runner_diagnostics(
+            config.get(LOG_DIR_CONFIG_KEY, ""),
+            conversation_id,
+            str(route.get("request_id") or ""),
+        )
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.warning("DeepResearch runner 诊断准备失败 type=%s", type(exc).__name__)
+        diagnostics = None
+    except BaseException:
+        _remove_progress_artifact(progress_artifact)
+        raise
+    try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=child_env,
+            **({"cwd": str(diagnostics.cwd)} if diagnostics and diagnostics.cwd else {}),
         )
-    except Exception as exc:  # pylint: disable=broad-exception-caught
+    except BaseException as exc:  # spawn 等待阶段被取消时同样清理自有资源。
+        if diagnostics:
+            diagnostics.incomplete("spawn_cancelled" if isinstance(exc, asyncio.CancelledError) else "spawn_failed")
+            close = asyncio.create_task(close_runner_diagnostics(diagnostics))
+            await _await_cleanup_task(close)
         _remove_progress_artifact(progress_artifact)
+        if not isinstance(exc, Exception):
+            raise
         return json.dumps(
             {
                 "status": "error",
@@ -3305,18 +3349,35 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
     session_id = str(route.get("session_id") or "")
     tracked = False
     stderr_tail = bytearray()
+    if diagnostics:
+        diagnostics.started(proc.pid)
 
     async def _drain_stderr() -> None:
-        stream = proc.stderr
-        if stream is None:
-            return
-        while True:
-            chunk = await stream.read(8192)
-            if not chunk:
+        try:
+            stream = proc.stderr
+            if stream is None:
                 return
-            stderr_tail.extend(chunk)
-            if len(stderr_tail) > DEEPRESEARCH_STDERR_TAIL_MAX_BYTES:
-                del stderr_tail[:-DEEPRESEARCH_STDERR_TAIL_MAX_BYTES]
+            while True:
+                chunk = await stream.read(8192)
+                if not chunk:
+                    return
+                stderr_tail.extend(chunk)
+                if len(stderr_tail) > DEEPRESEARCH_STDERR_TAIL_MAX_BYTES:
+                    del stderr_tail[:-DEEPRESEARCH_STDERR_TAIL_MAX_BYTES]
+                if diagnostics:
+                    await write_runner_diagnostics(diagnostics, chunk)
+        except asyncio.CancelledError:
+            if diagnostics:
+                diagnostics.incomplete("drain_cancelled")
+            raise
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            if diagnostics:
+                diagnostics.incomplete(f"stderr_read_{type(exc).__name__}")
+            else:
+                logger.warning("DeepResearch stderr 排空失败 type=%s", type(exc).__name__)
+        finally:
+            if diagnostics:
+                await close_runner_diagnostics(diagnostics)
 
     stderr_task = asyncio.create_task(_drain_stderr())
     try:
