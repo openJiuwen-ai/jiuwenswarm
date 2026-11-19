@@ -262,11 +262,15 @@ async def test_stale_closed_loop_entries_swept_on_build(tmp_path):
         ]
     # 已关闭循环条目的释放契约: backend 构造期即建立 SQLite 连接等同步
     # 资源, 不随循环销毁释放——清扫必须经独立线程的全新事件循环后台执行
-    # close(条目所属循环已关闭, 无法派发), 与初始化失败/收口超时两条剔除
-    # 路径的"后台关闭"契约一致(evicted.closed is True), 三条路径的释放
-    # 契约由本用例与另两用例分别显式锁定; wait_for+gather 确定性等待清扫
-    # 派发的全部 close Task 完成(to_thread 线程内 asyncio.run 退出即 close
-    # 落定), 超时上限与同文件其余三处一致(5s)防用例悬挂
+    # close(条目所属循环已关闭, 无法派发)。三条释放路径按是否有持有者分层:
+    # 本用例(无持有者: 缓存条目所属循环已销毁)关闭; 初始化失败与收口超时
+    # 两条可自愈路径仅剔除不关闭(已装配 rail 代理可能仍持有该 backend,
+    # 后续事件由 _ensure_initialized 兜底), 分别由
+    # test_init_failure_evicts_cache_for_retry /
+    # test_wait_timeout_cancels_and_evicts_hung_task 断言 closed is False;
+    # wait_for+gather 确定性等待清扫派发的全部 close Task 完成(to_thread
+    # 线程内 asyncio.run 退出即 close 落定), 超时上限与同文件其余三处
+    # 一致(5s)防用例悬挂
     await asyncio.wait_for(
         asyncio.gather(*pending_close, return_exceptions=True), timeout=5.0
     )
