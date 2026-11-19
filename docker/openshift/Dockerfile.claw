@@ -8,7 +8,8 @@ ARG AGENT_RUNTIME_BRANCH=develop
 ARG AGENT_CORE_REPOS=https://gitcode.com/openJiuwen/agent-core.git
 ARG AGENT_CORE_COMMIT=f5ecfd7435400fafc4e4b4d399c921a134c4358c
 ARG AGENT_PROTOCOL_REPOS=https://gitcode.com/openJiuwen/agent-protocol.git
-ARG AGENT_PROTOCOL_COMMIT=d3d1681e4dd96f9fe38bdac47ca81ea1774d7677
+# 2bc6e46：协议仓 e2a/ → openjiuwen-e2a/，并带 MULTIMODAL_*；旧 d3d1681 + subdirectory=e2a 会构建失败。
+ARG AGENT_PROTOCOL_COMMIT=2bc6e46dedd0336e550a44be39303a2b7650959e
 ARG AGENT_GATEWAY_REPOS=https://gitcode.com/openJiuwen/agent-gateway.git
 ARG AGENT_GATEWAY_BRANCH=develop
 ARG PIP_EXTRA_ARGS="-i https://mirrors.aliyun.com/pypi/simple/"
@@ -36,17 +37,19 @@ RUN chgrp -R 0 /app/jiuwenswarm && chmod -R g+rwX /app/jiuwenswarm
 RUN sed -E -i \
     -e '/^[[:space:]]*"openjiuwen(\[|"| @ |[>=<!~;])/d' \
     -e '/^[[:space:]]*"e2a(\[|"| @ |[>=<!~;])/d' \
+    -e '/^[[:space:]]*"openjiuwen-e2a(\[|"| @ |[>=<!~;])/d' \
     -e '/^[[:space:]]*"openjiuwen-runtime-foundation(\[|"| @ |[>=<!~;])/d' \
     -e '/^[[:space:]]*"openjiuwen-runtime-management(\[|"| @ |[>=<!~;])/d' \
     -e '/^[[:space:]]*"agent-gateway(\[|"| @ |[>=<!~;])/d' \
     -e '/^[[:space:]]*openjiuwen[[:space:]]*=/d' \
     -e '/^[[:space:]]*e2a[[:space:]]*=/d' \
+    -e '/^[[:space:]]*openjiuwen-e2a[[:space:]]*=/d' \
     -e '/^[[:space:]]*openjiuwen-runtime-foundation[[:space:]]*=/d' \
     -e '/^[[:space:]]*openjiuwen-runtime-management[[:space:]]*=/d' \
     -e '/^[[:space:]]*agent-gateway[[:space:]]*=/d' \
     pyproject.toml \
- && if grep -Eq '^[[:space:]]*("(openjiuwen-runtime-foundation|openjiuwen-runtime-management|openjiuwen|e2a|agent-gateway)(\[|"| @ |[>=<!~;])|(openjiuwen-runtime-foundation|openjiuwen-runtime-management|openjiuwen|e2a|agent-gateway)[[:space:]]*=)' pyproject.toml; then \
-      echo "[docker] pyproject 仍钉着 CLI 注入包（openjiuwen/e2a/runtime-*/agent-gateway），构建参数会被 uv 丢掉" >&2; \
+ && if grep -Eq '^[[:space:]]*("(openjiuwen-runtime-foundation|openjiuwen-runtime-management|openjiuwen-e2a|openjiuwen|e2a|agent-gateway)(\[|"| @ |[>=<!~;])|(openjiuwen-runtime-foundation|openjiuwen-runtime-management|openjiuwen-e2a|openjiuwen|e2a|agent-gateway)[[:space:]]*=)' pyproject.toml; then \
+      echo "[docker] pyproject 仍钉着 CLI 注入包（openjiuwen/e2a|openjiuwen-e2a/runtime-*/agent-gateway），构建参数会被 uv 丢掉" >&2; \
       grep -nE 'openjiuwen|e2a|agent-gateway' pyproject.toml >&2 || true; \
       exit 1; \
     fi
@@ -68,22 +71,24 @@ RUN git init -q /tmp/build/agent-gateway \
     && sed -E -i \
         -e '/^[[:space:]]*"openjiuwen(\[|"| @ |[>=<!~;])/d' \
         -e '/^[[:space:]]*"e2a(\[|"| @ |[>=<!~;])/d' \
+        -e '/^[[:space:]]*"openjiuwen-e2a(\[|"| @ |[>=<!~;])/d' \
         -e '/^[[:space:]]*"openjiuwen-runtime-foundation(\[|"| @ |[>=<!~;])/d' \
         -e '/^[[:space:]]*"openjiuwen-runtime-management(\[|"| @ |[>=<!~;])/d' \
         -e '/^[[:space:]]*openjiuwen[[:space:]]*=/d' \
         -e '/^[[:space:]]*e2a[[:space:]]*=/d' \
+        -e '/^[[:space:]]*openjiuwen-e2a[[:space:]]*=/d' \
         -e '/^[[:space:]]*openjiuwen-runtime-foundation[[:space:]]*=/d' \
         -e '/^[[:space:]]*openjiuwen-runtime-management[[:space:]]*=/d' \
         /tmp/build/agent-gateway/pyproject.toml \
-    && if grep -Eq '^[[:space:]]*("(openjiuwen-runtime-foundation|openjiuwen-runtime-management|openjiuwen|e2a)(\[|"| @ |[>=<!~;])|(openjiuwen-runtime-foundation|openjiuwen-runtime-management|openjiuwen|e2a)[[:space:]]*=)' /tmp/build/agent-gateway/pyproject.toml; then \
-         echo "[docker] agent-gateway pyproject 仍钉着 CLI 注入包（openjiuwen/e2a/runtime-*），会被 uv 丢掉" >&2; \
+    && if grep -Eq '^[[:space:]]*("(openjiuwen-runtime-foundation|openjiuwen-runtime-management|openjiuwen-e2a|openjiuwen|e2a)(\[|"| @ |[>=<!~;])|(openjiuwen-runtime-foundation|openjiuwen-runtime-management|openjiuwen-e2a|openjiuwen|e2a)[[:space:]]*=)' /tmp/build/agent-gateway/pyproject.toml; then \
+         echo "[docker] agent-gateway pyproject 仍钉着 CLI 注入包（openjiuwen/e2a|openjiuwen-e2a/runtime-*），会被 uv 丢掉" >&2; \
          grep -nE 'openjiuwen|e2a' /tmp/build/agent-gateway/pyproject.toml >&2 || true; \
          exit 1; \
        fi \
     && uv pip install --system \
         -e . \
         "openjiuwen @ git+${AGENT_CORE_REPOS}@${AGENT_CORE_COMMIT}" \
-        "e2a @ git+${AGENT_PROTOCOL_REPOS}@${AGENT_PROTOCOL_COMMIT}#subdirectory=e2a" \
+        "openjiuwen-e2a @ git+${AGENT_PROTOCOL_REPOS}@${AGENT_PROTOCOL_COMMIT}#subdirectory=openjiuwen-e2a" \
         "openjiuwen-runtime-foundation @ git+${AGENT_RUNTIME_REPOS}@${AGENT_RUNTIME_BRANCH}#subdirectory=foundation" \
         "openjiuwen-runtime-management @ git+${AGENT_RUNTIME_REPOS}@${AGENT_RUNTIME_BRANCH}#subdirectory=management" \
         /tmp/build/agent-gateway \
