@@ -215,6 +215,26 @@ def test_auto_encoding_still_detected_for_small_file(harness) -> None:
     assert handler.sent_headers["X-Original-Encoding"].lower().startswith("gb")
 
 
+def test_decode_bytes_auto_raises_oserror_when_all_fallbacks_fail(monkeypatch) -> None:
+    # Regression: the ``raise OSError(...) from decode_exc`` used to sit one
+    # block below the ``except`` clause, so the unbound ``decode_exc`` alias
+    # turned the intended OSError into an UnboundLocalError instead.  Pin the
+    # exception type, message and __cause__ chain for the "detected encoding
+    # fails strict decode AND every CJK fallback fails" path.
+    import charset_normalizer
+
+    monkeypatch.setattr(
+        charset_normalizer, "from_bytes", lambda _raw: SimpleNamespace(best=lambda: None)
+    )
+    # Odd-length high-byte garbage that strict-fails utf-8 and every fallback
+    # codec (gbk/gb2312/big5/shift_jis/euc_kr) -- verified codec by codec.
+    garbage = b"\x81\xff\x81"
+    with pytest.raises(OSError) as excinfo:
+        app_web._decode_bytes_auto(garbage)
+    assert "Unable to decode file with any known encoding" in str(excinfo.value)
+    assert isinstance(excinfo.value.__cause__, UnicodeDecodeError)
+
+
 def test_tail_read_is_bounded_when_file_grows_after_stat(harness, tmp_path, monkeypatch) -> None:
     # TOCTOU: the log grows between the handler's stat() and the read.  stat
     # must report the pre-growth size while the on-disk file is already
