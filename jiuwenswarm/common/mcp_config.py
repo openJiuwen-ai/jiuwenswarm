@@ -653,39 +653,82 @@ async def probe_mcp_live_connection(name: str) -> tuple[bool, str]:
     return True, ""
 
 
-async def prewarm_connected_mcps(*, report_status: bool = False) -> bool | None:
+async def discard_probed_mcp(name: str) -> None:
+    """Drop the instance a successful probe cached for a cancelled connect.
+
+    ``probe_mcp_live_connection`` keeps it in the process-level
+    ``Runner.resource_mgr``; after a cancel the record is rolled back, so the
+    cached connection (and its stdio child) must not outlive it.
+    """
+    from openjiuwen.core.runner import Runner
+
+    # Fresh task: closing an SSE client's anyio scope in the caller's task
+    # raises "exit cancel scope in a different task".
+    task = asyncio.create_task(
+        Runner.resource_mgr.remove_mcp_server(server_name=name, ignore_exception=True)
+    )
+    try:
+        await asyncio.wait_for(task, timeout=10.0)
+    except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+        logger.warning("[mcp-config] discard probed MCP '%s' failed: %s", name, exc)
+
+
+async def prewarm_connected_mcps(
+    *, report_status: bool = False, settle_connecting: bool = False
+) -> bool | None:
     """Prewarm ``Runner.resource_mgr`` for every ``state==connected`` MCP.
 
     Probes each so a later ``chat.send`` reconcile hits the existing-entry
-    branch (no re-spawn). Failure-isolated per MCP and never downgrades state.
-    Safe to call at startup and again from the root adapter (idempotent).
+    branch (no re-spawn). Connected records are never downgraded.
 
-    ``report_status`` returns whether every probe succeeded for capability
-    readiness. The default retains the existing best-effort ``None`` result.
+    ``settle_connecting`` additionally probes leftover ``connecting`` records
+    and settles them to connected or a retryable state, so a connect interrupted
+    by a crash cannot strand the UI on "connecting".
 
-    Background fire-and-forget — the service never awaits this task, so a
-    slow/cold MCP probe (npx first-install ~30s, HTTP connect) is allowed to
-    take as long as it needs; only a genuine deadlock (stuck well beyond what
-    probe's internal preflight/connect would take) is bounded by a generous
-    stall timeout.  A semaphore caps concurrency so N simultaneous spawns
-    don't overwhelm the host during startup.
+    ``report_status`` returns whether every connected probe succeeded for
+    capability readiness; connecting records never affect readiness.
+
+    Best-effort background task: slow/cold probes may take as long as they need
+    (only a genuine stall hits the timeout), and a semaphore caps concurrency.
     """
     try:
-        names = [
+        state = provider("mcp_state")
+        connected_names = [
             str(r.get("name", "")).strip()
-            for r in provider("mcp_state").list_truly_connected_mcps()
+            for r in state.list_truly_connected_mcps()
             if r.get("name")
         ]
+        connecting_names: list[str] = []
+        if settle_connecting:
+            connecting_names = [
+                str(r.get("name", "")).strip()
+                for r in state.list_connecting_mcps()
+                if r.get("name")
+            ]
+        names = [*connected_names, *connecting_names]
         if not names:
             return True if report_status else None
         logger.info(
-            "[mcp-prewarm] prewarming %d connected MCP(s): %s",
-            len(names), names,
+            "[mcp-prewarm] prewarming %d connected MCP(s), settling %d connecting: %s",
+            len(connected_names), len(connecting_names), names,
         )
+        connected_set = set(connected_names)
+        connecting_set = set(connecting_names)
+        mcp_registry = None
+        if connecting_set:
+            try:
+                mcp_registry = provider("mcp_registry")
+            except Exception as exc:  # noqa: BLE001 - settling is best-effort
+                logger.warning(
+                    "[mcp-prewarm] mcp_registry provider unavailable; "
+                    "connecting MCPs will not be settled: %s", exc,
+                )
 
         sem = asyncio.Semaphore(_PREWARM_MAX_CONCURRENCY)
 
         async def _probe_one(name: str) -> bool:
+            ok = False
+            reason = ""
             async with sem:
                 try:
                     # Only a genuine stall (>> probe's expected worst case)
@@ -694,31 +737,30 @@ async def prewarm_connected_mcps(*, report_status: bool = False) -> bool | None:
                         probe_mcp_live_connection(name),
                         timeout=_PREWARM_STALL_TIMEOUT_S,
                     )
-                    if ok:
-                        logger.info("[mcp-prewarm] '%s' prewarmed", name)
-                    else:
-                        logger.warning(
-                            "[mcp-prewarm] '%s' prewarm failed: %s "
-                            "(will lazy-connect on first chat)", name, reason,
-                        )
-                    return bool(ok)
                 except asyncio.TimeoutError:
-                    logger.warning(
-                        "[mcp-prewarm] '%s' prewarm stalled >%.0fs "
-                        "and was skipped (will lazy-connect on first chat)",
-                        name, _PREWARM_STALL_TIMEOUT_S,
-                    )
+                    reason = f"stalled >{_PREWARM_STALL_TIMEOUT_S:.0f}s"
                 except Exception as exc:  # noqa: BLE001
+                    reason = f"{type(exc).__name__}: {exc}"
+                if ok:
+                    logger.info("[mcp-prewarm] '%s' prewarmed", name)
+                else:
                     logger.warning(
-                        "[mcp-prewarm] '%s' prewarm error: %s", name, exc,
+                        "[mcp-prewarm] '%s' prewarm failed: %s "
+                        "(will lazy-connect on first chat)", name, reason,
                     )
-                return False
+                if mcp_registry is not None and name in connecting_set:
+                    await asyncio.to_thread(
+                        mcp_registry.settle_connecting_mcp, name, probe_ok=ok
+                    )
+                return ok
 
         # Concurrent probes bounded by semaphore — all MCPs start in parallel
         # but at most N execute add_mcp_server at any moment.  Total wall time
         # ≈ the slowest probe alone (not N×), with stall protection only.
         results = await asyncio.gather(*[_probe_one(name) for name in names])
-        return all(results) if report_status else None
+        if not report_status:
+            return None
+        return all(ok for name, ok in zip(names, results) if name in connected_set)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[mcp-prewarm] background prewarm failed: %s", exc)
         return False if report_status else None
