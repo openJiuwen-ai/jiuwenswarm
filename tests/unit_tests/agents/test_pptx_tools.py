@@ -278,3 +278,20 @@ async def test_read_pptx_workspace_escape_rejected(tmp_path: Path) -> None:
         result = await read_pptx.invoke({"file_path": "../../escaped.pptx"})
         assert "[ERROR]" in result
         assert "Path must be inside workspace" in result
+
+
+@pytest.mark.asyncio
+async def test_read_pptx_absolute_path_allowed(tmp_path: Path) -> None:
+    """Test that absolute path outside workspace can be read directly."""
+    ws = tmp_path / "workspace"
+    ws.mkdir()
+    outside_file = tmp_path / "outside.pptx"
+    _create_mock_pptx(outside_file, slide_count=1)
+
+    with patch(
+        "jiuwenswarm.agents.harness.common.tools.pptx_tools._get_workspace",
+        return_value=str(ws),
+    ):
+        result = await read_pptx.invoke({"file_path": str(outside_file)})
+        assert "# Presentation: outside.pptx" in result
+        assert "Slide 1 Heading" in result

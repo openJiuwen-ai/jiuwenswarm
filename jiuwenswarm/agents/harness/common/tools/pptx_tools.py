@@ -146,16 +146,15 @@ def _resolve_pptx_path(raw_path: str) -> Path:
     cleaned = raw_path.strip().strip("'\"")
     path = Path(cleaned).expanduser()
     ws = _get_workspace()
-    if ws is not None:
-        ws_path = Path(ws).resolve()
-        if not path.is_absolute():
-            path = ws_path / path
-        resolved = path.resolve()
-        if not resolved.is_relative_to(ws_path):
-            raise ValueError(f"Path must be inside workspace: {raw_path}")
+    if not path.is_absolute():
+        if ws is not None:
+            ws_path = Path(ws).resolve()
+            resolved = (ws_path / path).resolve()
+            if not resolved.is_relative_to(ws_path):
+                raise ValueError(f"Path must be inside workspace: {raw_path}")
+        else:
+            resolved = (Path.cwd() / path).resolve()
     else:
-        if not path.is_absolute():
-            path = Path.cwd() / path
         resolved = path.resolve()
 
     if not resolved.exists():
