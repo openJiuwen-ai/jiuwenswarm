@@ -171,6 +171,7 @@ generated: true
 | [B_20261116_1701_my-plugin-installed-only](jiuwenswarm/server/runtime/B_20261116_1701_my-plugin-installed-only.md) | B | 未安装插件草稿混入我的扩展并显示安装按钮 | lizhiyuan | 无独立 D：用户在本次对话明确确认插件列表归属及按钮策略，属于现有市场行为的小范围修复，无独立设计文档。 |
 | [B_20261117_1522_team-plan-toggle-lock](jiuwenswarm/B_20261117_1522_team-plan-toggle-lock.md) | B | 集群会话计划模式开关是假开关：建队后冻结并让位动态工作流 | chenchunzhou | 无独立 D：由 issue 6361 现象逆向定位，无独立设计文档；方案与取舍记录在 OpenSpec 变更 issue-6361-team-plan-toggle-lock 的 proposal/design/specs，修复范围限定 Web 前端开关闸门与提示文案。 |
 | [B_20261118_1527_session-delete-plan-runtime](jiuwenswarm/channels/web/frontend/B_20261118_1527_session-delete-plan-runtime.md) | B | 侧边栏删除会话漏清 planStore runtime，Plan 模式状态在内存永久残留 | gunner_beat | 无独立 D：会话生命周期清理的一致性补齐，复用 usePlanStore 既有 removeRuntime，无独立设计文档。缺陷检视清单 |
+| [B_20261119_1039_video-memory-submit-pending](jiuwenswarm/channels/web/frontend/B_20261119_1039_video-memory-submit-pending.md) | B | 视频记忆任务 pending 导致提交工具持续执行中 | ToNy_St4rk | 无独立 D：现有工具结果状态的局部修复，无独立设计。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-features-rsi"></a>
 
