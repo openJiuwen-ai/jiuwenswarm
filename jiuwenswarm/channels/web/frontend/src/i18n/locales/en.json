@@ -2320,7 +2320,8 @@
     "selectTeamMembers": "Select team members",
     "noTeamMembersAvailable": "No team members available",
     "moaReferenceRunning": "Running reference models…",
-    "moaVerifying": "Evaluating task progress…"
+    "moaVerifying": "Evaluating task progress…",
+    "toolResultLabel": "Tool result"
   },
   "autoHarness": {
     "busy": "An Auto-Harness task is already running",
