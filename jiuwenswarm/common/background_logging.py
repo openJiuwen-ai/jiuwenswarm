@@ -133,7 +133,20 @@ class BackgroundLogWriter:
             self._handlers.difference_update(retired)
         for handler in retired:
             try:
-                handler.close()
+                # dictConfig/fileConfig hold the module lock before acquiring
+                # handler locks. FileHandler.close() must follow that order too;
+                # the writer state lock has already been released above.
+                with logging._lock:
+                    name = handler.name
+                    replacement = logging._handlers.get(name)
+                    try:
+                        handler.close()
+                    finally:
+                        # Configuration can reuse a retired sink's name before
+                        # its deferred close removes that registry entry.
+                        if (replacement is not None and replacement is not handler
+                                and name not in logging._handlers):
+                            logging._handlers[name] = replacement
             except Exception as exc:
                 self._report_sink_failure("close", handler, exc)
 

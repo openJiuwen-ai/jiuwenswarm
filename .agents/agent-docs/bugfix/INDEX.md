@@ -197,6 +197,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261112_2025_permission-profile-refresh](jiuwenswarm/server/B_20261112_2025_permission-profile-refresh.md) | B | 刷新后智能审批档位错误回显为默认权限 | nypdmax | jiuwenswarm/common, jiuwenswarm/server/control | jiuwenswarm/common/permission_mode.py, jiuwenswarm/common/config_panel/config_set_handlers.py, jiuwenswarm/server/control/config_service.py, tests/unit_tests/agentserver/test_front_permission_profile.py | 无独立 D：补齐既有 config.get/config.set 权限档位回显契约，无独立设计；审批决策与持久化格式不变。 |
+| [B_20261119_2124_worker-log-reconfiguration](jiuwenswarm/common/B_20261119_2124_worker-log-reconfiguration.md) | B | Worker 默认日志初始化与后台处理器关闭的锁顺序修复 | 刘瑜 | jiuwenswarm/common, jiuwenswarm/server/worker | jiuwenswarm/common/background_logging.py, tests/unit_tests/common/test_background_logging_reconfigure.py, tests/unit_tests/common/fixtures/logging_reconfigure_process.py, docs/zh/日志.md, docs/en/Logs.md | 无独立 D：修复既有后台日志处理器生命周期中的锁顺序，保持日志配置、队列和 Worker 启动契约，无独立设计。 |
 
 <a id="module-18"></a>
 
@@ -268,6 +269,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261105_1518_worker-dispatch-slot-accounting](jiuwenswarm/server/worker/B_20261105_1518_worker-dispatch-slot-accounting.md) | B | Worker 派发容量排除已返回的 handler | kdgmpw | jiuwenswarm/server/worker | jiuwenswarm/server/worker/event_store.py | 无独立 D：按会话中确认的最小修复方案调整 Worker 内部计数。 |
+| [B_20261119_2124_worker-log-reconfiguration](jiuwenswarm/common/B_20261119_2124_worker-log-reconfiguration.md) | B | Worker 默认日志初始化与后台处理器关闭的锁顺序修复 | 刘瑜 | jiuwenswarm/common, jiuwenswarm/server/worker | jiuwenswarm/common/background_logging.py, tests/unit_tests/common/test_background_logging_reconfigure.py, tests/unit_tests/common/fixtures/logging_reconfigure_process.py, docs/zh/日志.md, docs/en/Logs.md | 无独立 D：修复既有后台日志处理器生命周期中的锁顺序，保持日志配置、队列和 Worker 启动契约，无独立设计。 |
 
 <a id="module-26"></a>
 
