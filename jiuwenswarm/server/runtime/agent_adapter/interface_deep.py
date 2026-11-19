@@ -669,6 +669,7 @@ from jiuwenswarm.agents.harness.common.tools import (
     skill_sources_from_manager,
     SymphonyToolkit,
 )
+from jiuwenswarm.agents.harness.common.tools.fetch_docs_tools import fetch_docs
 from jiuwenswarm.agents.harness.common.rails.symphony.retrieval_context_processor import (
     symphony_retrieval_compact_processor_spec,
 )
@@ -13505,6 +13506,9 @@ class JiuWenSwarmDeepAdapter:
                 "[JiuWenSwarmDeepAdapter] orchestration tools registration failed: %s",
                 exc,
             )
+
+        self._register_shared_tool(fetch_docs)
+        tool_cards.append(fetch_docs.card)
 
         # acp_chat: forward prompts to external stdio ACP agents (see acp_agents in config.yaml)
         try:
