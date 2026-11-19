@@ -84,6 +84,8 @@ Discovery exposes `capability_search`. Skill Retrieval controls whether the taxo
 |------|--------------|-------------|
 | `capability_search` | Omit `type` to search Skills, experts and MCP services together. Pass `"type": ["expert", "mcp"]` to select a subset. The selected catalogs share up to eight queries, a category scope, one `top_k` limit per page and one cursor. Use `operation=list` to browse. MCP groups session-visible tools and bundled Skills by service. | Find a capability or its service. To look up installed experts for an independent review or specialist assignment, pass `"type": ["expert"]`. |
 
+In automatic permission mode, a search that explicitly selects `"type": ["skill"]` can use the read-only fast path. Omitting `type` or selecting experts or MCP services invokes host-provided catalogs and requires manual approval.
+
 After Skill Retrieval finds relevant skills, the agent narrows the candidate set by skill name and description. If orchestration is needed later, those candidates help guide skill-chain generation.
 
 #### Skill Orchestration tools

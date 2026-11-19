@@ -194,7 +194,7 @@ def _session_observation_binding(invocation, session_id: str, agent) -> bool:
         from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import SkillRetrievalPromptRail
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import SkillRetrievalToolkit
 
-        # Host callbacks for other catalogs follow the ordinary permission route.
+        # Expert and MCP searches, including the default scope, use host callbacks and require manual approval here.
         if not is_skill_only_search(invocation.tool_args.get("type")):
             return False
         rail = _owned_rail(agent, SkillRetrievalPromptRail)

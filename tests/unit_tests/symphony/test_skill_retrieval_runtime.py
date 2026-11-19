@@ -213,6 +213,33 @@ def test_mcp_search_includes_skill_only_packages_and_independent_yaml_servers(tm
     }
 
 
+@pytest.mark.parametrize(("connected", "server_name", "expected"), [
+    ((), "office", None),
+    (("office-west",), "office", "office-west"),
+    (("office-east",), "office", "office-east"),
+    (("office-west", "office-east"), "office", None),
+    (("office-west", "office-east"), "office-east", "office-east"),
+])
+def test_mcp_shared_server_alias_uses_unique_connected_package(monkeypatch, connected, server_name, expected):
+    from jiuwenswarm.common import config
+    from jiuwenswarm.runtime.symphony.capabilities import service_candidates
+    from jiuwenswarm.server.runtime.mcp import registry, state_store
+
+    packages = [
+        SimpleNamespace(package_id=name, name=name, server_name="office", raw={}, description="", version="1")
+        for name in ("office-west", "office-east")
+    ]
+    records = {name: {"state": "connected"} for name in connected}
+    monkeypatch.setattr(registry, "list_local_packages", lambda: packages)
+    monkeypatch.setattr(config, "get_config_yaml_mcp_servers", lambda: [])
+    monkeypatch.setattr(state_store, "read_mcp_state", lambda: {"mcp": records})
+    monkeypatch.setattr(state_store, "connected_mcp_skill_dirs", lambda: [])
+    server = SimpleNamespace(server_name=server_name, server_id="session-office")
+    tool = SimpleNamespace(name="lookup", description="")
+    candidates = service_candidates(((server, tool),), SimpleNamespace())
+    assert [item.descriptor.capability_id for item in candidates] == ([] if expected is None else [expected])
+
+
 def test_actual_model_supplies_only_missing_context_defaults(tmp_path):
     config = config_for(tmp_path)
     config["symphony"]["retrieval"]["prompt"] = {"candidate_budget_ratio": 0.02}
@@ -815,8 +842,10 @@ async def test_team_discovery_execution_and_seed_recovery_share_workspace_skills
         declared = next(rail for rail in rails if rail.type == TEAM_SKILL_USE)
         execution = declared.build(language="cn", context=ctx)
         assert execution.skills_dir == [str(workspace)]
+
         async def read_file(path, **kwargs):
             return SimpleNamespace(code=0, data=SimpleNamespace(content=Path(path).read_text()))
+
         execution.set_sys_operation(SimpleNamespace(fs=lambda: SimpleNamespace(read_file=read_file)))
         await execution.reload_skills()
         assert [item.name for item in execution.get_skills_for_session()] == ["installed"]

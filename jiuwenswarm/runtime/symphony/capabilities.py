@@ -120,10 +120,20 @@ def _package_descriptor(package: McpPackageManifest, service_description: str) -
 @dataclass(frozen=True)
 class _ServiceCatalog:
     descriptors: dict[str, CapabilityDescriptor]
-    package_for_server: dict[str, str]
+    packages_by_server: dict[str, list[str]]
     known_ids: frozenset[str]
     available_ids: frozenset[str]
     bundled_skill_roots: dict[str, str]
+
+    def resolve_server(self, name: str) -> str | None:
+        """Prefer explicit service IDs and resolve manifest aliases only to a unique available package."""
+        if name in self.known_ids:
+            return name if name in self.available_ids else None
+        packages = self.packages_by_server.get(name)
+        if packages is None:
+            return name
+        available = self.available_ids.intersection(packages)
+        return next(iter(available)) if len(available) == 1 else None
 
 
 def _service_catalog() -> _ServiceCatalog:
@@ -155,13 +165,13 @@ def _service_catalog() -> _ServiceCatalog:
     for name, description in descriptions.items():
         if name not in descriptors:
             descriptors[name] = _describe("mcp", name, name, description)
-    package_for_server = {}
+    packages_by_server: dict[str, list[str]] = {}
     for package in packages:
         if package.server_name:
-            package_for_server.setdefault(package.server_name, package.package_id)
+            packages_by_server.setdefault(package.server_name, []).append(package.package_id)
     return _ServiceCatalog(
         descriptors=descriptors,
-        package_for_server=package_for_server,
+        packages_by_server=packages_by_server,
         known_ids=frozenset(descriptors.keys() | records.keys() | yaml_names),
         available_ids=frozenset(descriptions),
         bundled_skill_roots={
@@ -222,10 +232,8 @@ def service_candidates(
     catalog = _service_catalog()
     actions: dict[str, list[CapabilityAction]] = {}
     for server, card in mcp_tools:
-        name = server.server_name
-        # A configured service or a package ID takes precedence over a manifest's server alias.
-        identifier = name if name in catalog.known_ids else catalog.package_for_server.get(name, name)
-        if identifier in catalog.known_ids and identifier not in catalog.available_ids:
+        identifier = catalog.resolve_server(server.server_name)
+        if identifier is None:
             continue
         actions.setdefault(identifier, []).append(
             CapabilityAction("tool", card.name, card.description, server.server_id)
