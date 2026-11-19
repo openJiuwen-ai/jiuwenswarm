@@ -363,6 +363,13 @@ if (Test-Path "node_modules") {
 npm run build
 if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
 Pop-Location
+# Office task pane, served by the desktop at /office/ (inside the frontend dist built above).
+Push-Location (Join-Path $ProjectRoot "packages\jiuwenswarm-office-addin")
+npm ci --no-audit --no-fund
+if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
+npm run build:desktop
+if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
+Pop-Location
 
 # 3. Run PyInstaller
 Write-Host "`n[3/4] Running PyInstaller..." -ForegroundColor Yellow
@@ -372,6 +379,12 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 # Verify the actual frozen runtime, not only the PyInstaller source configuration.
 $FrozenDir = Join-Path $ProjectRoot "dist\$BuildDistDirName"
 $FrozenExe = Join-Path $FrozenDir $BuildExecutableNameWindows
+$MemoryVerifier = Join-Path $ProjectRoot "scripts\verify_memory_bundle.py"
+uv run --no-sync python $MemoryVerifier --executable $FrozenExe
+if ($LASTEXITCODE -ne 0) {
+    throw "Frozen JiuwenMemory SDK and video tool verification failed. See verifier output above."
+}
+
 $A2UIVerifier = Join-Path $ProjectRoot "scripts\verify_a2ui_bundle.py"
 $VerifyProcess = Start-Process `
     -FilePath $FrozenExe `

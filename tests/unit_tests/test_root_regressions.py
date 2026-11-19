@@ -290,16 +290,19 @@ def test_spec_collects_cli_channel_submodules():
 # --- from test_connector_search_names.py ---
 
 def test_connector_search_names_preserve_only_declared_display_names(monkeypatch, tmp_path):
-    package = SimpleNamespace(name='hidden-6', description='', raw={
-        'display_name': {'zh': '回归连接器', 'en': 'Regression Connector'},
-    })
+    package = SimpleNamespace(
+        name='hidden-6',
+        description='',
+        integration_type='mcp',
+        skill_dirs=(),
+        icon_file=None,
+        root=tmp_path,
+        raw={'display_name': {'zh': '回归连接器', 'en': 'Regression Connector'}},
+    )
     monkeypatch.setattr(registry, '_resolve_package', lambda name: package)
     meta = registry._load_index_entry('hidden-6')
     assert meta['display_name_i18n'] == package.raw['display_name']
-    monkeypatch.setattr(registry, '_detect_integration_type', lambda path: 'mcp')
-    monkeypatch.setattr(registry, '_bundled_skill_names', lambda path: [])
-    monkeypatch.setattr(registry, '_load_icon_data_url', lambda path: None)
-    card = registry._build_summary('hidden-6', tmp_path, meta, set())
+    card = registry._build_summary('hidden-6', package, meta, set())
     assert card['display_name_i18n'] == package.raw['display_name']
     package.raw['display_name'] = {'zh': '回归连接器'}
     meta = registry._load_index_entry('hidden-6')
@@ -309,7 +312,9 @@ def test_connector_search_names_preserve_only_declared_display_names(monkeypatch
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-MIN_PROTOBUF5_COMPATIBLE_OTEL = Version("1.28.0")
+# openjiuwen (agent-core) requires opentelemetry>=1.45.1; swarm's declarations must
+# admit it while still excluding the protobuf<5-only releases (<1.28).
+OPENJIUWEN_REQUIRED_OTEL = Version("1.45.1")
 
 OTEL_REQUIREMENTS = {
     "opentelemetry-api",
@@ -327,8 +332,8 @@ def test_opentelemetry_dependencies_exclude_protobuf4_only_proto_versions():
 
     for name in OTEL_REQUIREMENTS:
         specifier = requirements[name].specifier
-        assert specifier.contains(MIN_PROTOBUF5_COMPATIBLE_OTEL), (
-            f"{name} must allow OpenTelemetry {MIN_PROTOBUF5_COMPATIBLE_OTEL}"
+        assert specifier.contains(OPENJIUWEN_REQUIRED_OTEL), (
+            f"{name} must allow OpenTelemetry {OPENJIUWEN_REQUIRED_OTEL} required by openjiuwen"
         )
         assert not specifier.contains(Version("1.27.0")), (
             f"{name} must exclude OpenTelemetry 1.27.0 and older because "

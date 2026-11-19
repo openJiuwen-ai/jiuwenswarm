@@ -95,9 +95,18 @@
   padding: 4px 0;
 }
 
-.designer-model-selector__warning-icon {
+.designer-model-selector__warning-icon,
+.designer-generation-model-list__warning {
   flex: none;
   color: var(--color-feedback-warning);
+}
+
+.designer-generation-model-list__row {
+  display: block;
+}
+
+.designer-generation-model-list__row > .chat-mode-select__option {
+  width: 100%;
 }
 
 .designer-model-selector__warning-trigger {

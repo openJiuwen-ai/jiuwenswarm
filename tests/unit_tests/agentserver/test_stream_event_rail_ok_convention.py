@@ -11,6 +11,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from openjiuwen.core.foundation.tool.schema import ToolOutput
 
 from jiuwenswarm.agents.harness.code.rails.sdd.common.rail_state_machine import (
     RailStateMachineBase,
@@ -29,11 +30,11 @@ class _StreamSession:
         self.events.append(event)
 
 
-async def _emit(result: object) -> dict[str, object]:
+async def _emit(result: object, tool_name: str = "sdd_advance") -> dict[str, object]:
     """Emit one tool result and return the payload a reader receives."""
     session = _StreamSession()
     await JiuSwarmStreamEventRail()._emit_tool_result(
-        session, SimpleNamespace(name="sdd_advance", id="tc-1"), result
+        session, SimpleNamespace(name=tool_name, id="tc-1"), result
     )
     return session.events[0].payload["tool_result"]
 
@@ -132,6 +133,38 @@ async def test_a_call_that_worked_is_emitted_as_a_call_that_worked() -> None:
     assert payload["success"] is True
     assert "status" not in payload
     assert "is_error" not in payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target_result", "expected_success"),
+    [
+        ({"success": False, "error": "AgentMemory add failed (server unavailable)."}, False),
+        ({"status": "failed", "error": "Video ingestion failed."}, False),
+        ({"status": "pending"}, True),
+        ({"success": True, "result": "stored"}, True),
+        ("ok", True),
+        ("[ERROR] add failed", False),
+        ("exit_code: 5", False),
+        ('{"success": false, "error": "failed"}', False),
+        ([{"success": True}, {"success": False, "error": "failed"}], False),
+        ([{"success": True}], True),
+    ],
+)
+async def test_deferred_tool_event_reflects_target_failure(
+    target_result: object, expected_success: bool,
+) -> None:
+    wrapper = ToolOutput(success=True, data={"name": "agent_memory_conclude", "result": target_result})
+
+    payload = await _emit(wrapper, tool_name="tool_call")
+
+    assert payload["success"] is expected_success
+    if expected_success:
+        assert "status" not in payload
+        assert "is_error" not in payload
+    else:
+        assert payload["status"] == "error"
+        assert payload["is_error"] is True
 
 
 @pytest.mark.asyncio

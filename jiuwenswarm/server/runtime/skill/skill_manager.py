@@ -28,6 +28,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Awaitable, Callable, Iterator
 from urllib.parse import quote, urlparse
 import yaml
+import portalocker
 import urllib3
 import httpx
 import requests
@@ -625,6 +626,7 @@ _TEAM_SKILL_PLUGIN_TYPES = {"swarmskill", "swarm-skill", "teamskills", "team-ski
 _SINGLE_SKILL_PLUGIN_TYPES = {"skill", "skillpack"}
 
 _SKILL_DISPLAY_FILENAME = "skill_display.md"
+# 个人版 UI 白名单：扁平内置技能 + 迁移后的 workswarm-builtin 目录技能。
 _BUILTIN_SKILL_UI_WHITELIST = frozenset(
     {
         "advanced-daily-report",
@@ -633,6 +635,7 @@ _BUILTIN_SKILL_UI_WHITELIST = frozenset(
         "skill-gen-4-enterprise-doc",
         "skill-creator",
         "swarmskill-creator",
+        "workswarm-builtin",
     }
 )
 # 企业场景内置自动安装范围（个人版 UI 白名单不变）：
@@ -673,24 +676,6 @@ _ENTERPRISE_BUILTIN_AUTO_INSTALL = (
     _ENTERPRISE_CREATOR_BUILTIN_SKILLS
     | _ENTERPRISE_OFFICE_BUILTIN_SKILLS
     | _ENTERPRISE_KNOWLEDGE_BUILTIN_SKILLS
-)
-_SKILL_DISPLAY_KEYS = (
-    "display_name_zh",
-    "description_zh",
-    "display_name_en",
-    "description_en",
-)
-
-_SKILL_DISPLAY_FILENAME = "skill_display.md"
-_BUILTIN_SKILL_UI_WHITELIST = frozenset(
-    {
-        "advanced-daily-report",
-        "gitcode-api",
-        "financial-document-parser",
-        "skill-gen-4-enterprise-doc",
-        "skill-creator",
-        "swarmskill-creator",
-    }
 )
 _SKILL_DISPLAY_KEYS = (
     "display_name_zh",
@@ -1572,6 +1557,20 @@ class SkillManager:
         # 企业版不消费 marketplace，跳过 git clone/pull，避免列表被同步拖住。
         if refresh_marketplaces and not is_enterprise():
             await self._sync_marketplace_repos()
+        # Startup migration may have been followed by a stale manager write or
+        # a legacy installer. Reconcile against disk before projecting the UI.
+        from jiuwenswarm.common.builtin_skills import BUILTIN_CATALOG_NAME, migrate_builtin_catalog
+
+        if (self._skills_dir / BUILTIN_CATALOG_NAME / "SKILL.md").is_file():
+            self.reload_state()
+            if any(p.get("name") == BUILTIN_CATALOG_NAME and p.get("source") == "builtin"
+                   for p in self._get_installed_plugins()):
+                try:
+                    with portalocker.Lock(str(self._skills_dir / ".builtin-catalog.lock"), timeout=30):
+                        migrate_builtin_catalog(get_builtin_skills_dir(), self._skills_dir)
+                except (OSError, ValueError, portalocker.exceptions.LockException) as exc:
+                    logger.warning("Builtin catalog reconciliation failed; preserving skills: %s", exc)
+                self.reload_state()
         # 每次列举前，把手动拷入 skills 目录、尚未登记的本地技能补登记为 local，
         # 使其无需重启 server、刷新"我的技能"即可显示（与导入本地技能一致）。
         # 企业路径把登记放到线程里，workspace 文件锁不会占住事件循环。
@@ -6012,10 +6011,11 @@ class SkillManager:
             }
 
         output_dir = Path(tempfile.mkdtemp(prefix="jiuwenswarm_skill_from_knowledge_"))
-        skills = ["skill-omni-creation"] if has_link else ["skill-creator-router"]
+        skills = ["workswarm-builtin"]
         prompt_parts = [
             "请根据以下知识来源生成一个完整、可安装的 Skill，并写入指定输出目录。",
             f"输出目录（必须在此目录内生成含 SKILL.md 的 Skill 根目录）: {output_dir}",
+            "请先读取内置能力目录，再读取 skill-creator；链接来源按该入口选择 skill-omni-creation。",
             "要求：",
             "1. SKILL.md 必须含有效 YAML front matter，name 与 description 均为非空字符串；",
             "2. 不得创建根级 .archive/；",
@@ -6082,6 +6082,9 @@ class SkillManager:
             "and write it into the specified output directory.",
             "Output directory (the Skill root containing SKILL.md must be created "
             f"inside this directory): {output_dir}",
+            "Read the WorkSwarm built-in capability catalog first, then read "
+            "skill-creator; for link sources choose skill-omni-creation through "
+            "that entry.",
             "Requirements:",
             "1. SKILL.md must contain valid YAML front matter whose name and "
             "description are both non-empty strings;",

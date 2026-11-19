@@ -791,6 +791,7 @@ from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
     get_default_project_session_workspace_dir,
     get_env_file,
+    get_project_skills_dirs,
     get_runtime_state_path,
     mask_sensitive,
 )
@@ -4257,6 +4258,18 @@ class JiuWenSwarmDeepAdapter:
         if cancellation is not None:
             raise cancellation
 
+    async def get_or_create_member_session_adapter(
+        self, session_id: str, binding: dict[str, Any],
+    ) -> "JiuWenSwarmDeepAdapter":
+        """Fetch or create the session-scoped adapter of an app_role member.
+
+        The binding is validated against the member's session metadata before
+        any adapter is built, so consultations cannot cross team boundaries.
+        """
+        return await self._get_or_create_session_adapter(
+            session_id, required_app_role_member=binding,
+        )
+
     async def _get_or_create_session_adapter(
         self,
         session_id: str | None,
@@ -4274,6 +4287,7 @@ class JiuWenSwarmDeepAdapter:
         moa_can_access: Callable[[str, str], bool] | None = None,
         retain_moa_snapshot: bool = False,
         reuse_without_reload: bool = False,
+        required_app_role_member: dict[str, str] | None = None,
     ) -> "JiuWenSwarmDeepAdapter":
         """Return the session-owned adapter, creating and initializing it once."""
         if moa_enabled is not None and not isinstance(moa_enabled, bool):
@@ -4288,6 +4302,50 @@ class JiuWenSwarmDeepAdapter:
         )
         lock = self._session_adapter_locks.setdefault(sid, asyncio.Lock())
         async with lock:
+            from jiuwenswarm.runtime.app_role import app_role_instructions, is_app_role_team, validate_app_role_member
+            from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+            # Shared read stays keyword-free to match the persisted call sites
+            # and session-scoped test doubles that expose the positional form.
+            role_metadata = get_session_metadata(sid)
+            if required_app_role_member is not None:
+                from jiuwenswarm.server.runtime.session.lifecycle import guard
+
+                # Member consultations must validate against fresh metadata,
+                # because the binding is written right before this lookup.
+                role_metadata = get_session_metadata(sid, cache_bust=True, enable_writeback=False)
+                validate_app_role_member(role_metadata, required_app_role_member)
+                guard(sid, str(role_metadata.get("project_id") or ""))
+            if app_role_instructions(role_metadata) is not None and not is_app_role_team(role_metadata):
+                from jiuwenswarm.server.runtime.agent_adapter.interface_app_role import AppRoleAdapter
+
+                adapter = self._session_adapters.get(sid)
+                if adapter is not None and not isinstance(adapter, AppRoleAdapter):
+                    raise ValueError("session execution profile cannot change")
+                if adapter is None:
+                    adapter = AppRoleAdapter()
+                    adapter.mark_as_session_scoped(sid)
+                    adapter.adopt_model_selection_access(self._model_selection_can_access)
+                    await adapter.create_instance(
+                        {"channel_id": role_metadata.get("channel_id", "web")},
+                        mode=role_metadata.get("mode", "agent"),
+                    )
+                    # Lead sessions consult members through the channel-level
+                    # facade so each member keeps its own session-scoped
+                    # AppRoleAdapter and history. Member sessions simply never
+                    # expose ask_<name> tools, so the binding stays inert.
+                    from jiuwenswarm.server.runtime.agent_adapter.interface_app_role import (
+                        AppRoleMemberExecutor,
+                    )
+
+                    adapter.bind_member_executor(
+                        AppRoleMemberExecutor(self, sid) if not self._is_session_scoped_adapter else None
+                    )
+                    self._session_adapters[sid] = adapter
+                self._touch_session_adapter(sid)
+                if reserve_activity:
+                    adapter.register_session_agent_task(sid)
+                return adapter
             existing = self._session_adapters.get(sid)
             # Goal status observes the installed adapter; execution requests
             # own cron mode reconciliation and config adoption.
@@ -5288,6 +5346,14 @@ class JiuWenSwarmDeepAdapter:
             # between the first cancel and abort().
             self._cancel_scheduler_running_tasks()
         return completed
+
+    def register_session_agent_task(self, session_id: str) -> None:
+        """Track the current task as the session's active agent task.
+
+        Public entry point for collaborators holding another adapter instance
+        of this class; the protected form stays for in-instance callers.
+        """
+        self._register_session_agent_task(session_id)
 
     def _register_session_agent_task(self, session_id: str) -> None:
         task = asyncio.current_task()
@@ -6783,6 +6849,15 @@ class JiuWenSwarmDeepAdapter:
         params: dict[str, Any] | None,
     ) -> dict[str, Any]:
         """Resolve the root request's runtime before MCP session reconciliation."""
+        from jiuwenswarm.runtime.app_role import app_role_instructions, is_app_role_team, validate_app_role_request
+        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+        metadata = get_session_metadata(self._session_adapter_key(session_id), enable_writeback=False)
+        validate_app_role_request(metadata, params or {})
+        if is_app_role_team(metadata):
+            return {"kind": "deep_agent", "app_role_team": True}
+        if app_role_instructions(metadata) is not None:
+            return {"kind": "app_role"}
         return await resolve_external_harness_binding(
             self._session_adapter_key(session_id),
             params,
@@ -6850,7 +6925,10 @@ class JiuWenSwarmDeepAdapter:
         """
         if (
             runtime_binding is not None
-            and runtime_binding.get("kind") == "external_harness"
+            and (
+                runtime_binding.get("kind") in {"external_harness", "app_role"}
+                or runtime_binding.get("app_role_team")
+            )
         ):
             return
         needed_set = {str(n).strip() for n in (needed or []) if isinstance(n, str) and str(n).strip()}
@@ -10862,9 +10940,10 @@ class JiuWenSwarmDeepAdapter:
         return skill_rail
 
     def _skill_scan_dirs(self) -> list[str]:
-        """Skill scan roots: agent skills dir + this session's selected MCP
-        skill dirs. A client app that leaves out the skill library scans
-        no agent skills dir; its template binds its own skills.
+        """Skill scan roots: agent skills dir + project-level skill dirs + this
+        session's selected MCP skill dirs. A client app that leaves out the
+        skill library scans neither the agent skills dir nor project skill
+        dirs; its template binds its own skills.
 
         Centralized so _build_skill_rail (init) and refresh_skill_rails
         (reload) compute the same roots. Only a session-scoped child scans MCP
@@ -10877,8 +10956,19 @@ class JiuWenSwarmDeepAdapter:
         support them, so the root's view of them must be empty (previously it
         scanned ALL connected MCP dirs, leaking cli/skill skills into rewind/
         cron/admin root runs).
+
+        When a project is set from the frontend, ``<project>/.agents/skills``
+        and ``<project>/.claude/skills`` (project-level installs) follow the
+        agent skills dir. They come after it so an installed Skill keeps
+        precedence over a same-named project Skill.
         """
-        roots = [] if self._leaves_out(Capability.SKILL_LIBRARY) else [str(get_agent_skills_dir())]
+        if self._leaves_out(Capability.SKILL_LIBRARY):
+            roots: list[str] = []
+        else:
+            roots = [str(get_agent_skills_dir())]
+            for project_root in get_project_skills_dirs(getattr(self, "_project_dir", None)):
+                if project_root not in roots:
+                    roots.append(project_root)
         if not getattr(self, "_is_session_scoped_adapter", False):
             return roots
         try:
@@ -20359,6 +20449,7 @@ class JiuWenSwarmDeepAdapter:
                         is_complete=True,
                     )
                     return
+                request.trusted_runtime_binding = runtime_binding
             try:
                 session_adapter = await self._get_session_adapter_for_request(
                     request,

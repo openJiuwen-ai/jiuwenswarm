@@ -582,6 +582,7 @@ def _build_child_env(
     env["AGENT_SERVER_PORT"] = str(ports["agent_server"])
     env["AGENT_PORT"] = str(ports["agent_server"])
     env["FRONTEND_PORT"] = str(ports["frontend"])
+    env["OFFICE_TLS_PORT"] = str(ports["office_tls"])
     # Gateway prefers AGENT_SERVER_URL over AGENT_SERVER_PORT; drop any stale
     # URL from the parent shell so the remapped port is used.
     env.pop("AGENT_SERVER_URL", None)
@@ -2590,7 +2591,13 @@ class DesktopRuntime:
   // Durable stub: never leave Python without a callable ingest hook.
   if (typeof window.__JIUWEN_INGEST_LOCAL_FILES__ !== 'function') {
     window.__JIUWEN_INGEST_LOCAL_FILES__ = function (detail) {
-      try { window.__JIUWEN_DROP_QUEUE__.push(detail); } catch (err) {}
+      try {
+        // Same rule as localFilePicker.ts: do not replay a drop into a later
+        // chat when the composer was not mounted.
+        if (document.querySelector('.chat-panel-shell')) {
+          window.__JIUWEN_DROP_QUEUE__.push(detail);
+        }
+      } catch (err) {}
       window.dispatchEvent(new CustomEvent('jiuwen-desktop-local-files', { detail: detail }));
     };
   }

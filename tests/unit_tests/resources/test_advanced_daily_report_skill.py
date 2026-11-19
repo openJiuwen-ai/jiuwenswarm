@@ -13,7 +13,8 @@ from pathlib import Path
 
 _RUN_REPORT = (
     Path(__file__).resolve().parents[3]
-    / "jiuwenswarm/resources/agent/workspace/skills/advanced-daily-report/run_report.py"
+    / "jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin"
+    / "references/capabilities/advanced-daily-report/run_report.py"
 )
 
 

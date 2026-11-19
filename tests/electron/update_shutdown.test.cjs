@@ -50,7 +50,7 @@ for (const failure of ['exit', 'spawn', 'timeout', 'service', 'survivor']) {
     let spawns = 0;
     let saves = 0;
     const context = vm.createContext({
-      shutdownPromise: null, finalShutdownPromise: null, shutdownComplete: false,
+      mainWindow: null, shutdownPromise: null, finalShutdownPromise: null, shutdownComplete: false,
       shuttingDown: false, quitRequested: false, requestedExitCode: 0, isFrontendOnly: false,
       serviceProcesses: new Map([['agent', { pid: 123 }]]), RUNTIME_SHUTDOWN_TIMEOUT_MS: 1,
       terminateService: async () => { if (failure === 'service') throw new Error('Front cleanup failed'); },

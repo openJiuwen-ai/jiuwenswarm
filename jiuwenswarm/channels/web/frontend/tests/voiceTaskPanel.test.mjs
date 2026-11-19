@@ -175,7 +175,7 @@ test('page forwards captured input, acknowledges acceptance once, and delivers c
   });
   assert.equal(outputs().length, 1);
   assert.equal(
-    sent.filter((event) => event.item?.content?.[0]?.text?.includes('Background task result for future context only')).length,
+    sent.filter((event) => event.item?.content?.[0]?.text?.includes('Jiuwen result delivery notice')).length,
     1,
   );
 });
@@ -315,7 +315,7 @@ test('a task accepted before idle renewal is notified once without replaying its
     panel.current.deliverToolResult(result);
   });
   assert.equal(outputs().length, 1, 'old acceptance is never replayed on the new connection');
-  assert.equal(sent.filter(event => event.item?.content?.[0]?.text?.includes('Background task result for future context only')).length, 1);
+  assert.equal(sent.filter(event => event.item?.content?.[0]?.text?.includes('Jiuwen result delivery notice')).length, 1);
 });
 
 test('user cancellation wins over a queued idle-timeout renewal', async () => {
@@ -353,8 +353,8 @@ for (const terminal of ['completed', 'failed', 'cancelled', 'stop']) {
     });
     await act(async () => { resolveConfig({ provider: 'qwen_omni', url: 'ws://127.0.0.1/realtime' }); });
     const notices = sent.filter(event => event.item?.content?.[0]?.text?.includes('Jiuwen result delivery notice'));
-    assert.equal(notices.length, terminal === 'failed' ? 1 : 0);
-    assert.equal(sent.filter(event => event.item?.content?.[0]?.text?.includes('Background task result for future context only')).length, terminal === 'completed' ? 1 : 0);
+    assert.equal(notices.length, ['completed', 'failed'].includes(terminal) ? 1 : 0);
+
     assert.equal(outputs().length, 1, 'old call ID and acceptance are never replayed');
   });
 }
@@ -418,4 +418,25 @@ test('cancelling the screen picker still starts no voice session', async () => {
   assert.equal(started, false);
   assert.equal(session, undefined);
   assert.ok(!toastStore.getSnapshot().some((notice) => notice.content === '当前环境不支持屏幕共享，已仅开启语音' && !notice.closing));
+});
+
+
+test('standalone reconnect recovers a missed terminal event without polling', async () => {
+  const args = await call('jiuwen_delegate', { task: '计算' }, 'recover');
+  await receipt('recover', { search_job: { id: 'recover-job', status: 'running',
+    search_session_id: args.search_session_id, question: '计算' } });
+  const request = globalThis.__panel.request;
+  globalThis.__panel.request = async (method, params) => {
+    if (method !== 'video.search.status') return request(method, params);
+    requests.push({ method, args: params });
+    return { job_id: 'recover-job', search_session_id: args.search_session_id,
+      status: 'completed', result: '恢复结果', realtime_brief: { status: 'completed', summary: '恢复结果' } };
+  };
+  await act(async () => listeners.get('connection-state')('reconnecting'));
+  assert.equal(requests.filter(r => r.method === 'video.search.status').length, 0);
+  await act(async () => listeners.get('connection-state')('ready'));
+  assert.equal(requests.filter(r => r.method === 'video.search.status').length, 1);
+  assert.match(document.body.textContent, /恢复结果/);
+  await act(async () => listeners.get('connection-state')('ready'));
+  assert.equal(requests.filter(r => r.method === 'video.search.status').length, 1);
 });

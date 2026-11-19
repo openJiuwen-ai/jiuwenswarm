@@ -512,7 +512,7 @@ def test_fingerprint_sensitive_to_http_endpoint():
 async def test_jiuwen_provider_uses_default_project_across_operations(monkeypatch, mode):
     prefetch = AsyncMock()
     sync_turn = AsyncMock()
-    tool = AsyncMock()
+    tool = AsyncMock(return_value='{"result": "ok"}')
     monkeypatch.setattr(_FakeAgentMemoryProvider, "prefetch", prefetch, raising=False)
     monkeypatch.setattr(_FakeAgentMemoryProvider, "sync_turn", sync_turn, raising=False)
     monkeypatch.setattr(_FakeAgentMemoryProvider, "handle_tool_call", tool, raising=False)
@@ -535,6 +535,104 @@ async def test_jiuwen_provider_uses_default_project_across_operations(monkeypatc
     tool.assert_awaited_with("agent_memory_read_md_file", {"project": ""})
     await provider.handle_tool_call("agent_memory_conclude", {"project": "testMemory"})
     tool.assert_awaited_with("agent_memory_conclude", {"project": "testMemory"})
+
+
+@pytest.mark.parametrize("mode", ["sdk", "http"])
+@pytest.mark.parametrize(("tool_name", "result", "expected"), [
+    (
+        "agent_memory_conclude",
+        '{"error": "AgentMemory add failed (server unavailable)."}',
+        {"error": "AgentMemory add failed (server unavailable).", "success": False},
+    ),
+    (
+        "agent_memory_search",
+        '{"error": "Missing required parameter: query"}',
+        {"error": "Missing required parameter: query", "success": False},
+    ),
+    ("agent_memory_conclude", '{"result": "Fact stored."}', None),
+    ("agent_memory_search", '{"results": [], "count": 0}', None),
+    ("agent_memory_search", '{"error": ""}', None),
+    ("agent_memory_video_status", '{"status": "pending", "error": "waiting"}', None),
+    ("agent_memory_search", '{"success": false, "error": "failed"}', None),
+    ("agent_memory_search", "plain text", None),
+    ("agent_memory_search", None, None),
+    ("agent_memory_search", {"error": "SDK dictionary result"}, None),
+    ("agent_memory_search", object(), None),
+    ("agent_memory_search", '["empty"]', None),
+])
+@pytest.mark.asyncio
+async def test_jiuwen_provider_normalizes_legacy_tool_errors(monkeypatch, mode, tool_name, result, expected):
+    monkeypatch.setattr(_FakeAgentMemoryProvider, "handle_tool_call", AsyncMock(return_value=result), raising=False)
+    provider = jrb.build_jiuwen_memory_rail(_cfg({"mode": mode})).provider
+
+    actual = await provider.handle_tool_call(tool_name, {})
+
+    if expected is None:
+        assert actual == result
+    else:
+        assert json.loads(actual) == expected
+
+
+@pytest.mark.asyncio
+async def test_sdk_memory_failure_reaches_tool_result_event(monkeypatch):
+    from openjiuwen.core.foundation.tool import ToolExposure
+    from openjiuwen.harness.tools.tool_discovery.tool_call import ToolCallTool
+
+    rail_module = pytest.importorskip("openjiuwen.harness.rails.memory.jiuwen_memory_rail")
+    memory_rail_class = getattr(rail_module, "JiuwenMemoryRail", None)
+    if memory_rail_class is None:
+        pytest.skip("Installed Core does not provide JiuwenMemoryRail")
+
+    from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
+    from jiuwenswarm.agents.harness.common.rails.tool_retrieval_prompt_rail import ToolRetrievalPromptRail
+
+    tool_name = "agent_memory_conclude"
+    error = "AgentMemory add failed (server unavailable)."
+    schema = {
+        "name": tool_name,
+        "parameters": {"type": "object", "properties": {"conclusion": {"type": "string"}}},
+    }
+    monkeypatch.setattr("openjiuwen.harness.rails.JiuwenMemoryRail", memory_rail_class)
+    monkeypatch.setattr(_FakeAgentMemoryProvider, "get_tool_schemas", lambda self: [schema], raising=False)
+    monkeypatch.setattr(
+        _FakeAgentMemoryProvider, "handle_tool_call",
+        AsyncMock(return_value=json.dumps({"error": error})), raising=False,
+    )
+    registered = {}
+
+    def register(card, function):
+        card.exposure = ToolExposure.DEFERRED
+        registered[card.name] = function
+        return SimpleNamespace(added=True)
+
+    async def execute(*, tool_call, **_kwargs):
+        result = await registered[tool_call.name].invoke(json.loads(tool_call.arguments))
+        return [(result, SimpleNamespace(content=json.dumps(result)))]
+
+    agent = SimpleNamespace(ability_manager=SimpleNamespace(
+        add_ability=register, get=lambda name: registered[name].card, execute=execute,
+    ))
+    rail = jrb.build_jiuwen_memory_rail(_cfg({"mode": "sdk"}))
+    rail.init(agent)
+    args = {"conclusion": "Uses Python"}
+    direct = await registered[tool_name].invoke(args)
+    assert direct == {"success": False, "error": error}
+    retrieval = ToolRetrievalPromptRail(toolkit=SimpleNamespace(deferred_tool_names={tool_name}))
+    wrapper = await ToolCallTool(call_tool=retrieval._call_deferred_tool).invoke(
+        {"name": tool_name, "args": args},
+        _tool_callback_context=SimpleNamespace(agent=agent, extra={}),
+    )
+    assert wrapper.success is True
+    assert wrapper.data["result"] == direct
+
+    for name, result in ((tool_name, direct), ("tool_call", wrapper)):
+        session = SimpleNamespace(write_stream=AsyncMock())
+        call = SimpleNamespace(name=name, id="memory-call")
+        assert await JiuSwarmStreamEventRail()._emit_tool_result(session, call, result)
+        payload = session.write_stream.call_args.args[0].payload["tool_result"]
+        assert payload["success"] is False
+        assert payload["status"] == "error"
+        assert payload["is_error"] is True
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,8 @@ import { UploadFileCreateModal } from './UploadFileCreateModal';
 import { Toast } from './Toast';
 import { toast } from '../ui/Toast/toastStore';
 import { equipmentListFilter } from '../../features/equipmentMarketplace';
+import { OfficeSuiteDetail, useOfficeSuites } from '../../features/officeAddins/OfficeSuite';
+import type { SuiteId } from '../../features/officeAddins/officeAddins';
 
 // "管理我的插件/MCP" 一次性跳转握手：调用方（InputArea.tsx 的扩展面板）先把目标 tab 存进这个
 // 模块级变量，再触发 `jiuwen:nav` 切到 connectorMarket——ConnectorMarketPanel 挂载是这次导航
@@ -28,6 +30,7 @@ type View =
   | { name: 'market' }
   | { name: 'plugin-detail'; id: string; fromMy: boolean }
   | { name: 'mcp-detail'; connectorName: string }
+  | { name: 'office-suite'; suite: SuiteId }
   | { name: 'create-manual' }
   // editName 有值＝从 McpDetailPage 的"编辑"按钮进来，RegisterMcpPage 据此切到编辑态（name 只读+
   // 回填表单）；不传就是原有的"注册自定义MCP"新建流程，见该文件 editName prop 注释。
@@ -94,6 +97,9 @@ export function ConnectorMarketPanel({
   });
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  // Office 加载项套件只有桌面端有：网页端状态接口 404，suites 为 null，广场不出卡片。
+  const office = useOfficeSuites();
+  const officeStatus = view.name === 'office-suite' ? office.suites?.[view.suite] : undefined;
 
   const loadConnectorList = useConnectorStore((s) => s.loadList);
   const loadPluginList = usePluginPackageStore((s) => s.loadList);
@@ -186,7 +192,7 @@ export function ConnectorMarketPanel({
   // 之前那样挂载时无脑把两份列表都拉一遍——两边数据量都可能不小，没必要为了看不见的那一页
   // 多打一次请求。activeKind 是"当前实际展示的是哪种列表"：topTab 直接是 'plugin'/'mcp' 时
   // 就是它本身，topTab 是 'my'（我的扩展）时看 myKind 子筛选。
-  const activeKind: MarketKind = topTab === 'my' ? myKind : topTab;
+  const activeKind: MarketKind = topTab === 'my' ? myKind : topTab === 'mcp' ? 'mcp' : 'plugin';
 
   // 进入市场或切换插件/连接器范围时，直接请求当前列表。
   useEffect(() => {
@@ -219,6 +225,8 @@ export function ConnectorMarketPanel({
           onMyKindChange={setMyKind}
           onOpenConnectorDetail={(name) => setView({ name: 'mcp-detail', connectorName: name })}
           onOpenPluginDetail={(id) => setView({ name: 'plugin-detail', id, fromMy: topTab === 'my' })}
+          officeSuites={office.suites}
+          onOpenOfficeSuite={(suite) => setView({ name: 'office-suite', suite })}
           onUse={sessionUse ? (onUseExtension ?? handleUseNotWired) : undefined}
           onCreateManual={() => setView({ name: 'create-manual' })}
           // 2026-08-25：onCreateViaChat 改为跳新会话并预填"帮我创建一个xxx插件，擅长xxx"提示词，
@@ -277,6 +285,15 @@ export function ConnectorMarketPanel({
           }
           onUseExample={sessionUse ? onUseExample : undefined}
           onEdit={() => setView({ name: 'register-mcp', editName: view.connectorName })}
+        />
+      )}
+
+      {view.name === 'office-suite' && officeStatus && (
+        <OfficeSuiteDetail
+          suite={view.suite}
+          status={officeStatus}
+          onStatus={(status) => office.setStatus(view.suite, status)}
+          onBack={() => setView({ name: 'market' })}
         />
       )}
 

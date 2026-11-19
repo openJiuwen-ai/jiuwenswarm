@@ -372,6 +372,7 @@ BASE_PORT_NAME_MAP = {
     "web": "gatewayApi",
     "gateway": "gatewayInternal",
     "frontend": "frontend",
+    "office_tls": "officeTls",
 }
 
 
@@ -603,15 +604,18 @@ def test_windows_electron_sets_amd64_before_any_preflight() -> None:
     assert "--extra codex" not in source
 
 
-def test_windows_electron_enforces_its_node_minimum_without_changing_python_default() -> None:
-    """Electron 43 需要 Node >=22.12；Python 打包仍沿用共享的 22.11 默认值。"""
+def test_electron_builds_enforce_node_minimum_without_changing_python_default() -> None:
+    """Electron 出包要求 Node >=22.13；Python 打包沿用共享的 22.11 默认值。"""
     module_source = _read(BUILD_RUNTIMES_PSM1)
     electron_source = _read(BUILD_ELECTRON_PS1)
+    macos_source = _read(BUILD_ELECTRON_SH)
     python_source = _read(BUILD_EXE_PS1)
-    assert '$ElectronMinimumNodeVersion = [version]"22.12.0"' in electron_source
+    assert '$ElectronMinimumNodeVersion = [version]"22.13.0"' in electron_source
     assert 'Get-RuntimeBundleSettings -DefaultNodeVersion "v22.13.0"' in electron_source
     assert "-MinimumVersion $ElectronMinimumNodeVersion" in electron_source
-    assert "22.12.0" not in python_source
+    assert "NODE_MINIMUM_VERSION=22.13.0" in macos_source
+    assert "NODE_DEFAULT_VERSION=v22.13.0" in macos_source
+    assert "22.13.0" not in python_source
     assert "Get-NodeRuntimeVersion -RuntimeDir $RuntimeDir" in module_source
     assert "$actualVersion -lt $MinimumVersion" in module_source
     assert "$requestedVersion -lt $MinimumVersion" in module_source

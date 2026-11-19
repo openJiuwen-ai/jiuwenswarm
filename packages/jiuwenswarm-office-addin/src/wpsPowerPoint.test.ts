@@ -37,7 +37,8 @@ function pane() {
       languages: { displayLanguage: 'zh-CN', contentLanguage: 'zh-CN' } }),
     powerPointWriteRuntime({ run, host: WPS_HOST, journal: id => snapshots.journal(id), fetcher }),
     powerPointPackageRuntime({ run, host: WPS_HOST, journal: id => snapshots.journal(id), sandbox: nodeSandbox(),
-      forgetUndo: () => snapshots.forget(), insertTakesDeckDesign: true, fetcher }));
+      rasterize: async () => new Uint8Array(), forgetUndo: () => snapshots.forget(), insertTakesDeckDesign: true,
+      fetcher }));
   const dispatcher = new ClientToolDispatcher(POWERPOINT, runtime, writes);
   let calls = 0;
   const call = (toolName: string, input: JsonObject = {}, downloads: Record<string, string> = {}): Promise<ClientToolResult> => {

@@ -31,6 +31,7 @@ export interface ClientToolRuntime<Name extends string = string> {
     downloads: Readonly<Record<string, string>>;
     /** The conversation that made the call. */
     sessionId?: string;
+    iconSvg?: string;
   }): Promise<ClientToolResponse>;
 }
 
@@ -93,7 +94,7 @@ export class ClientToolDispatcher implements ClientToolExecutor {
       try {
         return await this.runtime.execute(
           { callId: request.requestId, toolName, input: request.input, downloads: request.downloads,
-            sessionId: request.sessionId });
+            sessionId: request.sessionId, iconSvg: request.iconSvg });
       } catch (error) {
         return { ok: false, error: {
           code: 'CLIENT_TOOL_EXECUTION_FAILED', message: error instanceof Error ? error.message : String(error),
