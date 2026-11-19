@@ -45,12 +45,23 @@ def load_symphony_config(
     return symphony_config_from_dict(config.get("symphony", {}), context_window_tokens=context_window_tokens)
 
 
+def configured_skill_roots(config: SymphonyConfig) -> tuple[Path, ...]:
+    return tuple(dict.fromkeys(Path(source.root) for source in config.capability.sources if source.type == "skill"))
+
+
+def require_graph_skill_root(config: SymphonyConfig) -> Path:
+    roots = configured_skill_roots(config)
+    if len(roots) != 1:
+        raise ValueError("Symphony orchestration requires exactly one skill capability source")
+    return roots[0]
+
+
 def symphony_config_from_dict(
     raw: dict[str, Any] | None,
     *,
     context_window_tokens: int | None = None,
 ) -> SymphonyConfig:
-    """显式 YAML 值优先；不识别旧字段或静默丢弃未知配置。"""
+    """将产品 YAML 的路径和来源名称解析为 Core 配置。"""
     workspace = get_agent_workspace_dir()
     defaults = {
         "capability": {
@@ -91,7 +102,11 @@ def symphony_config_from_dict(
     sources = capability.get("sources") if isinstance(capability, dict) else None
     if isinstance(sources, list):
         for source in sources:
-            if isinstance(source, dict) and isinstance(source.get("root"), (str, PurePath)):
+            if not isinstance(source, dict):
+                continue
+            if source.get("type") == "connector":
+                source["type"] = "mcp"
+            if isinstance(source.get("root"), (str, PurePath)):
                 root = os.path.expandvars(str(source["root"])).strip()
                 source["root"] = str(Path(root).expanduser().resolve()) if root else root
     storage = data.get("storage")

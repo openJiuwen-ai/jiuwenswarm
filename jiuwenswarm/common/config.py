@@ -498,8 +498,7 @@ def is_tool_retrieval_enabled(config: dict[str, Any] | None = None) -> bool:
 
     True only when both top-level switches are true: ``progressive_tool_enabled``
     (AbilityManager deferred assignment) and ``progressive_tool_optimize`` (the
-    retrieval layer itself). ``true`` means our skill_index-framework
-    ``tool_search`` is mounted and deferred tools are hidden until discovered;
+    retrieval layer itself). ``true`` mounts ``tool_search`` and hides deferred tools until discovered.
     ``false`` disables it and every tool stays direct.
     """
 

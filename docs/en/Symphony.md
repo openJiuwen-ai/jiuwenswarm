@@ -59,7 +59,7 @@ User sends a task
   v
 The agent reads the session skill inventory
   v
-skill_index lists categories or searches for relevant skills when needed
+capability_search with type=["skill"] lists categories or finds relevant skills
   v
 Candidate skills are found
   v
@@ -76,13 +76,13 @@ Skill Retrieval mainly finds skills. Skill Orchestration organizes candidate ski
 
 ### Runtime tools
 
-Discovery exposes the `skill_index` directory tool; Skill Retrieval controls whether taxonomy is built and used. When Skill Symphony is enabled, the agent receives graph and orchestration tools. Users usually do not need to call these tools manually; the system chooses them based on the task.
+Discovery exposes `capability_search`. Skill Retrieval controls whether the taxonomy is built and used. When Skill Symphony is enabled, the agent also receives graph and orchestration tools. The system chooses tools based on the task.
 
-#### Skill Retrieval tools
+#### Capability retrieval
 
 | Tool | What it does | When to use |
 |------|--------------|-------------|
-| `skill_index` | Lists categories and candidates, searches skills, and reads skill details using the `list`, `search`, and `read` operations | Use when the session inventory does not already identify the required skill |
+| `capability_search` | Omit `type` to search Skills, experts and MCP services together. Pass `"type": ["expert", "mcp"]` to select a subset. The selected catalogs share up to eight queries, a category scope, one `top_k` limit per page and one cursor. Use `operation=list` to browse. MCP groups session-visible tools and bundled Skills by service. | Find a capability or its service. To look up installed experts for an independent review or specialist assignment, pass `"type": ["expert"]`. |
 
 After Skill Retrieval finds relevant skills, the agent narrows the candidate set by skill name and description. If orchestration is needed later, those candidates help guide skill-chain generation.
 
@@ -266,12 +266,12 @@ The user configuration is `~/.jiuwenswarm/config/config.yaml`. The `symphony` no
 - `retrieval.enabled` controls tree retrieval. Discover SkillPack enables experience collection and supplies its required orchestration setting at runtime. Swarm defaults these switches to `false`, and `null` inherits the default.
 - The Discover SkillPack switch saves `orchestration.experience.enabled`. Set `orchestration.plan.dynamic_graph_enabled` independently to use existing dynamic observations in planning.
 - Tree and graph builds use the host default model. Online planning uses the current session model. There is no retrieval-specific `llm` configuration. Fingerprint `max_output_tokens: null` inherits the host model output budget.
-- Discovery derives `retrieval.prompt.context_window_tokens` from the actual session model unless explicitly configured. Saved settings affect new sessions; existing sessions retain their frozen budget and index version. Tools and prompt Rails share one Discovery session.
-- `capability.sources` declares the global collection as a list of directories, each with a `type` and `root`. The current runtime consumes a single source. Plugin and selected MCP capabilities belong only to their session views. Session visibility and dynamic disabled filters still apply.
+- Discovery derives `retrieval.prompt.context_window_tokens` from the actual session model unless explicitly configured. Saved settings affect new sessions; existing sessions retain their frozen budget and index version. The tool and prompt Rail share the same capability view bound to the agent's Runtime.
+- `capability.sources` lists directories by `type` and `root`. Skill and standalone expert directories share one taxonomy. Skill discovery uses the host's session visibility and disabled filters. Expert discovery uses the host's installed catalog in single-agent and team sessions. Explicit expert sources restrict it to installed standalone experts whose actual manifest paths are in those sources. Without expert sources it also includes non-leader members of installed expert groups. Calling an expert requires the session's `spawn_expert` tool. Graph and Flow require exactly one Skill source.
 
 ### Directories and rebuilding
 
-If `capability.sources` is omitted, Swarm uses a single `skill` source in the workspace `skills` directory. An explicit list replaces that default. An empty `storage.artifact_root` resolves to workspace `symphony/runtime`. The template supports `SYMPHONY_ARTIFACT_ROOT`. Artifacts are separated into `inventory/`, `cache/`, `tree/`, `graph/` and `flow/`; Core validates layout version and collection identity.
+If `capability.sources` is omitted, Swarm uses the workspace `skills` directory. An explicit list replaces that default. An empty `storage.artifact_root` resolves to workspace `symphony/runtime`. The template supports `SYMPHONY_ARTIFACT_ROOT`. Collections with multiple directories or expert sources build their taxonomy under `taxonomy_collections/<scope_id>`. Build the shared taxonomy once after adding an expert source. The existing single-Skill tree, graph, and Flow retain their original paths.
 
 Old top-level `paths`, `fingerprint`, `build`, `skill_retrieval`, `evolution` and model-backend nodes are rejected. Old signatures and layouts are not reused. Rebuild with the new configuration; old directories are neither migrated nor deleted automatically. Failed refreshes preserve the last published version; cancellation prevents publication.
 
@@ -305,6 +305,8 @@ symphony:
     sources:
       - type: skill
         root: /path/to/skills
+      - type: expert
+        root: /path/to/agent_templates/local
     fingerprint:
       extraction:
         max_concurrency: 4
@@ -376,7 +378,7 @@ Open:
 Skills -> Skill Index -> Build Index
 ```
 
-Alternatively, let the model call `skill_index_build` after a retrieval tool explicitly asks for it. Then retry the task.
+Retry the task after the build finishes.
 
 ### Why does the skill index build take time?
 

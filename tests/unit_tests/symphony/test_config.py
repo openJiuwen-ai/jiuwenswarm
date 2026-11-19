@@ -51,13 +51,17 @@ symphony:
         root: ./shared-skills
       - type: expert
         root: ./experts
+      - type: connector
+        root: ./mcp_hub
 """)
     cfg = symphony_config.load_symphony_config(raw)
     assert [source.model_dump() for source in cfg.capability.sources] == [
         {"type": "skill", "root": str(tmp_path / "skills")},
         {"type": "skill", "root": str(tmp_path / "shared-skills")},
         {"type": "expert", "root": str(tmp_path / "experts")},
+        {"type": "mcp", "root": str(tmp_path / "mcp_hub")},
     ]
+    assert raw["symphony"]["capability"]["sources"][-1]["type"] == "connector"
 
 
 @pytest.mark.parametrize("sources", [None, []])

@@ -40,10 +40,12 @@ a4p:
 
 symphony:
   capability:
-    # sources 缺省时使用工作区 skills 目录。当前运行入口使用单个来源。
+    # sources 缺省时使用工作区 skills 目录。Skill 和专家来源可以共用一棵分类树。
     # sources:
     #   - type: skill
     #     root: /path/to/skills
+    #   - type: expert
+    #     root: /path/to/agent_templates/local
     scan:
       max_depth: null
     fingerprint:
@@ -54,7 +56,7 @@ symphony:
         max_body_chars: 16000
         max_output_tokens: null  # 沿用宿主默认模型的输出预算
   storage:
-    artifact_root: ${SYMPHONY_ARTIFACT_ROOT:-}  # 默认工作区 symphony/runtime；旧产物需重新构建
+    artifact_root: ${SYMPHONY_ARTIFACT_ROOT:-}  # 默认工作区 symphony/runtime；混合分类树单独存放
   retrieval:
     enabled: false
     index_build:

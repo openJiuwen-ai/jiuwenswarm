@@ -59,7 +59,7 @@ Symphony（技能交响乐）是 JiuwenSwarm 面向海量已安装技能提供�
   ↓
 智能体读取会话技能清单
   ↓
-需要时通过 skill_index 列出分类或搜索相关技能
+通过 capability_search 的 type=["skill"] 列出分类或搜索技能
   ↓
 发现候选技能
   ↓
@@ -76,13 +76,13 @@ Symphony（技能交响乐）是 JiuwenSwarm 面向海量已安装技能提供�
 
 ### 运行时工具
 
-Discovery 提供 `skill_index` 目录查阅工具，技能检索开关控制分类树的构建与使用；启用技能交响乐后，智能体会获得技能编排工具。通常不需要用户手动调用这些工具，系统会根据任务自动选择。
+Discovery 提供 `capability_search`。技能检索开关控制分类树的构建与使用。启用技能交响乐后，智能体也能使用技能编排工具。系统根据任务选择工具。
 
-#### 技能检索工具
+#### 能力检索工具
 
 | 工具 | 作用 | 使用时机 |
 |------|------|----------|
-| `skill_index` | 通过 `list`、`search`、`read` 操作列出分类和候选、搜索技能或读取详情 | 会话技能清单还不能确定目标技能时使用 |
+| `capability_search` | 省略 `type` 会同时查询 Skill、专家和 MCP 服务。传 `"type": ["expert", "mcp"]` 可只查后两类。所选类型共享最多八条查询、分类范围、整页 `top_k` 和一个续页游标，也可用 `operation=list` 浏览。连接器归入 MCP，按服务汇总当前可用的工具和随包 Skill。 | 按任务找能力或所属服务。如果只需要已安装专家，例如安排独立审查，可传 `"type": ["expert"]`。 |
 
 当技能检索找到相关技能后，智能体会根据技能名称和描述缩小候选范围；如果后续需要编排，这些候选技能会作为生成技能链的参考。
 
@@ -266,12 +266,12 @@ Symphony 只会使用已安装技能。请先在左侧导航栏 **技能** 页�
 - `retrieval.enabled` 控制分类树检索。开启「发现技能包」后，Swarm 在运行时启用所需的编排能力，接收新观测并沉淀技能包。Swarm 默认关闭这些开关，`null` 继承缺省值。
 - 面板的「发现技能包」保存 `orchestration.experience.enabled`。规划是否采用已有动态观测由 `orchestration.plan.dynamic_graph_enabled` 独立配置。
 - 分类树和关系图使用宿主默认模型构建；在线编排使用当前会话模型。没有独立检索 `llm` 配置。指纹 `max_output_tokens: null` 沿用宿主模型输出预算。
-- Discovery 的 `retrieval.prompt.context_window_tokens` 缺省由实际会话模型解析，显式值优先。配置保存影响新会话；已建立会话的预算与索引版本保持冻结。工具和提示 Rail 共用一个 Discovery 会话。
-- `capability.sources` 声明全局能力目录列表，每项填写 `type` 和 `root`。当前运行入口使用单个来源。插件和会话选中的 MCP 附带能力只进入对应会话视图，不能混入全局构建集合。可见范围和动态禁用仍受会话权限约束。
+- Discovery 的 `retrieval.prompt.context_window_tokens` 缺省由实际会话模型解析，显式值优先。配置保存影响新会话；已建立会话的预算与索引版本保持冻结。工具和提示 Rail 共用绑定在智能体 Runtime 上的能力目录。
+- `capability.sources` 按 `type` 和 `root` 声明目录。Skill 与独立专家包共用一棵分类树。会话 Skill 检索按宿主可见范围和禁用规则过滤。单智能体和团队会话均从宿主已安装目录检索专家。显式配置专家来源时，按已安装独立专家的实际 manifest 路径取交集。省略专家来源时，目录也包含已安装专家组的非队长成员。调用专家需要会话提供 `spawn_expert` 工具。关系图和 Flow 要求恰有一个 Skill 来源。
 
 ### 目录与重建
 
-省略 `capability.sources` 时，Swarm 使用工作区 `skills` 目录作为单个 `skill` 来源。显式列表整体替换默认值。`storage.artifact_root` 为空时使用工作区 `symphony/runtime`。模板允许通过 `SYMPHONY_ARTIFACT_ROOT` 设置产物根目录。其下统一为 `inventory/`、`cache/`、`tree/`、`graph/`、`flow/`，Core 校验布局版本和集合身份。
+省略 `capability.sources` 时，Swarm 使用工作区 `skills` 目录。显式列表整体替换默认值。`storage.artifact_root` 为空时使用工作区 `symphony/runtime`。模板允许通过 `SYMPHONY_ARTIFACT_ROOT` 设置产物根目录。多目录或含专家的集合在 `taxonomy_collections/<scope_id>` 下构建分类树。添加专家来源后构建一次共用分类树即可，原单 Skill 树、关系图和 Flow 继续使用原路径。
 
 旧的 `paths`、`fingerprint`、`build`、`skill_retrieval`、`evolution` 顶层配置以及旧模型后端节点不再接受。旧缓存签名和目录布局不能复用，需要按新配置重新构建；系统不会自动迁移或删除旧目录。刷新失败保留上一可用版本，取消后不发布。
 
@@ -305,6 +305,8 @@ symphony:
     sources:
       - type: skill
         root: /path/to/skills
+      - type: expert
+        root: /path/to/agent_templates/local
     fingerprint:
       extraction:
         max_concurrency: 4
@@ -376,7 +378,7 @@ symphony:
 技能 → 技能索引 → 构建索引
 ```
 
-或让模型在工具提示要求下调用 `skill_index_build`。构建完成后再次发起任务。
+构建完成后再次发起任务。
 
 ### 为什么构建时间较长？
 
