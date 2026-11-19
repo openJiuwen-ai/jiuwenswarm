@@ -18,6 +18,7 @@ Notes:
 import argparse
 import base64
 import glob
+import logging
 import os
 import subprocess
 import sys
@@ -29,6 +30,28 @@ from _tool_paths import (
     SOFFICE_FALLBACKS,
     resolve,
 )
+
+# All console output goes through logging (G.LOG.02): info stays on stdout,
+# warnings on stderr, message text unchanged for existing callers.
+log = logging.getLogger("xlsx.render")
+
+
+def _setup_logging():
+    if log.handlers:
+        return
+    out = logging.StreamHandler(sys.stdout)
+    out.setFormatter(logging.Formatter("%(message)s"))
+    out.addFilter(lambda rec: rec.levelno < logging.WARNING)
+    err = logging.StreamHandler(sys.stderr)
+    err.setFormatter(logging.Formatter("%(message)s"))
+    err.addFilter(lambda rec: rec.levelno >= logging.WARNING)
+    log.addHandler(out)
+    log.addHandler(err)
+    log.setLevel(logging.INFO)
+    log.propagate = False
+
+
+_setup_logging()
 
 CJK_FONT_CANDIDATES = [
     "Noto Sans CJK SC", "Noto Sans CJK TC", "Noto Sans CJK JP",
@@ -67,15 +90,16 @@ def to_pdf(src, outdir):
         raise SystemExit("soffice (LibreOffice) not found; cannot render. See doctor.py")
     os.makedirs(outdir, exist_ok=True)
     env = dict(os.environ)
-    # Isolated profile avoids locking issues when run repeatedly.
-    profile = tempfile.mkdtemp(prefix="lo_profile_")
-    cmd = [
-        soffice, "--headless", "--norestore", "--convert-to", "pdf",
-        "--outdir", outdir, src,
-        f"-env:UserInstallation=file://{profile}",
-    ]
-    subprocess.run(cmd, check=True, capture_output=True, text=True,
-                   encoding="utf-8", errors="replace", env=env, timeout=180)
+    # Isolated profile avoids locking issues when run repeatedly. It is removed
+    # as soon as soffice exits (G.FIO.04).
+    with tempfile.TemporaryDirectory(prefix="lo_profile_") as profile:
+        cmd = [
+            soffice, "--headless", "--norestore", "--convert-to", "pdf",
+            "--outdir", outdir, src,
+            f"-env:UserInstallation=file://{profile}",
+        ]
+        subprocess.run(cmd, check=True, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", env=env, timeout=180)
     base = os.path.splitext(os.path.basename(src))[0]
     pdf = os.path.join(outdir, base + ".pdf")
     if not os.path.exists(pdf):
@@ -97,18 +121,18 @@ def pdf_to_pngs(pdf, outdir, prefix):
 def render(src, outdir, pdf_only=False):
     font = _pick_cjk_font()
     if font is None:
-        print("WARNING: no CJK font detected; Chinese text may render as boxes. "
-              "Run doctor.py and install Noto Sans CJK.", file=sys.stderr)
+        log.warning("WARNING: no CJK font detected; Chinese text may render as boxes. "
+                    "Run doctor.py and install Noto Sans CJK.")
     else:
-        print(f"Using CJK font hint: {font}", file=sys.stderr)
+        log.warning("Using CJK font hint: %s", font)
     pdf = to_pdf(src, outdir)
-    print(f"PDF: {pdf}")
+    log.info("PDF: %s", pdf)
     if pdf_only:
         return [pdf]
     base = os.path.splitext(os.path.basename(src))[0]
     pngs = pdf_to_pngs(pdf, outdir, base + "_p")
     for p in pngs:
-        print(f"PNG: {p}")
+        log.info("PNG: %s", p)
     return pngs
 
 
@@ -117,17 +141,26 @@ def _b64(path):
         return base64.b64encode(f.read()).decode("ascii")
 
 
+def _page_cell(pngs, index):
+    """Inline <img> for page `index`, or a placeholder when that page is absent."""
+    if index >= len(pngs):
+        return "<em>(no page)</em>"
+    return f'<img src="data:image/png;base64,{_b64(pngs[index])}"/>'
+
+
 def render_diff_html(old_src, new_src, html_path):
     outdir = os.path.dirname(os.path.abspath(html_path)) or "."
-    work = tempfile.mkdtemp(prefix="xlsx_diff_")
-    old_pngs = render(old_src, os.path.join(work, "old"))
-    new_pngs = render(new_src, os.path.join(work, "new"))
-    n = max(len(old_pngs), len(new_pngs))
     rows = []
-    for i in range(n):
-        left = f'<img src="data:image/png;base64,{_b64(old_pngs[i])}"/>' if i < len(old_pngs) else "<em>(no page)</em>"
-        right = f'<img src="data:image/png;base64,{_b64(new_pngs[i])}"/>' if i < len(new_pngs) else "<em>(no page)</em>"
-        rows.append(f"<tr><td>{left}</td><td>{right}</td></tr>")
+    # The per-page PNGs are embedded into the HTML below, so the scratch tree
+    # only has to live until the base64 payloads are built (G.FIO.04).
+    with tempfile.TemporaryDirectory(prefix="xlsx_diff_") as work:
+        old_pngs = render(old_src, os.path.join(work, "old"))
+        new_pngs = render(new_src, os.path.join(work, "new"))
+        for i in range(max(len(old_pngs), len(new_pngs))):
+            rows.append(
+                f"<tr><td>{_page_cell(old_pngs, i)}</td>"
+                f"<td>{_page_cell(new_pngs, i)}</td></tr>"
+            )
     os.makedirs(outdir, exist_ok=True)
     css = (
         "body{font-family:'Noto Sans CJK SC','Microsoft YaHei',sans-serif;"
@@ -150,7 +183,7 @@ def render_diff_html(old_src, new_src, html_path):
     )
     with open(html_path, "w", encoding="utf-8") as f:
         f.write(html)
-    print(f"HTML diff: {html_path}")
+    log.info("HTML diff: %s", html_path)
     return html_path
 
 

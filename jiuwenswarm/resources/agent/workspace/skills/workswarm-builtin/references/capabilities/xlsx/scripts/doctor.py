@@ -13,6 +13,7 @@ Exit code 0 = all required checks passed; 1 = something required is missing.
 import argparse
 import importlib
 import json
+import logging
 import subprocess
 import sys
 
@@ -22,6 +23,21 @@ from _tool_paths import (
     SOFFICE_FALLBACKS,
     resolve,
 )
+
+# All console output goes through logging (G.LOG.02). The formatter is left bare
+# so the CLI output stays byte-for-byte what callers already parse.
+log = logging.getLogger("xlsx.doctor")
+
+
+def _setup_logging():
+    if log.handlers:
+        return
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    log.propagate = False
+
 
 # (module, pip-name, required?)
 PY_DEPS = [
@@ -118,6 +134,8 @@ def main():
     ap.add_argument("--json", action="store_true", help="emit machine-readable JSON")
     args = ap.parse_args()
 
+    _setup_logging()
+
     results = []
     check_python(results)
     check_py_deps(results)
@@ -128,16 +146,17 @@ def main():
     ok = not required_failed
 
     if args.json:
-        print(json.dumps({"ok": ok, "results": results}, ensure_ascii=False, indent=2))
+        log.info(json.dumps({"ok": ok, "results": results}, ensure_ascii=False, indent=2))
     else:
-        print("XLSX skill - environment self-check")
-        print("=" * 44)
+        log.info("XLSX skill - environment self-check")
+        log.info("=" * 44)
         for r in results:
             mark = "PASS" if r["ok"] else ("FAIL" if r["required"] else "warn")
             star = "" if r["required"] else " (optional)"
-            print(f"[{mark}] {r['check']}{star}: {r['detail']}")
-        print("=" * 44)
-        print("RESULT:", "ready" if ok else "missing required components (see FAIL above)")
+            log.info(f"[{mark}] {r['check']}{star}: {r['detail']}")
+        log.info("=" * 44)
+        log.info("RESULT: %s",
+                 "ready" if ok else "missing required components (see FAIL above)")
 
     return 0 if ok else 1
 
