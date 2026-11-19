@@ -10,6 +10,7 @@ never leaves the host namespaces, so it can serve the next request.
 from __future__ import annotations
 
 import ctypes
+import errno
 import json
 import os
 import sys
@@ -19,6 +20,7 @@ CLONE_NEWNS = 0x00020000
 CLONE_NEWUSER = 0x10000000
 AT_FDCWD = -100
 AT_EMPTY_PATH = 0x1000
+AT_RECURSIVE = 0x8000
 OPEN_TREE_CLONE = 1
 OPEN_TREE_CLOEXEC = os.O_CLOEXEC
 MOVE_MOUNT_F_EMPTY_PATH = 0x4
@@ -28,17 +30,9 @@ SYS_MOUNT_SETATTR = 442
 MS_RDONLY = 1
 MS_REMOUNT = 32
 MS_BIND = 4096
+MS_REC = 1 << 14
 MS_PRIVATE = 1 << 18
-
-
-class _MountAttr(ctypes.Structure):
-    _fields_ = [
-        ("attr_set", ctypes.c_uint64),
-        ("attr_clr", ctypes.c_uint64),
-        ("propagation", ctypes.c_uint64),
-        ("userns_fd", ctypes.c_uint64),
-    ]
-
+MS_SLAVE = 1 << 19
 
 _libc = ctypes.CDLL("libc.so.6", use_errno=True)
 _libc.setns.argtypes = [ctypes.c_int, ctypes.c_int]
@@ -53,6 +47,17 @@ _libc.mount.argtypes = [
 _libc.mount.restype = ctypes.c_int
 _syscall = _libc.syscall
 _syscall.restype = ctypes.c_long
+
+
+class _MountAttr(ctypes.Structure):
+    """``struct mount_attr`` passed to ``mount_setattr(2)``."""
+
+    _fields_ = (
+        ("attr_set", ctypes.c_uint64),
+        ("attr_clr", ctypes.c_uint64),
+        ("propagation", ctypes.c_uint64),
+        ("userns_fd", ctypes.c_uint64),
+    )
 
 
 def _errno(prefix: str) -> OSError:
@@ -100,6 +105,46 @@ def _open_tree(src: str) -> int:
         os.close(fd)
         raise
     return fd
+
+
+def _make_private(tree_fd: int) -> bool:
+    """Drop the cloned mount out of its source peer group.
+
+    ``open_tree(OPEN_TREE_CLONE)`` copies the source propagation. On a
+    systemd host that source is ``shared``, so the detached mount stays in
+    the host peer group. Returns ``False`` when this kernel has no
+    ``mount_setattr`` (``ENOSYS``); the caller then re-slaves the sandbox
+    around every attach instead.
+    """
+    attr = _MountAttr(propagation=MS_PRIVATE)
+    empty = ctypes.create_string_buffer(b"")
+    result = _syscall_long(
+        SYS_MOUNT_SETATTR,
+        tree_fd,
+        ctypes.addressof(empty),
+        AT_EMPTY_PATH | AT_RECURSIVE,
+        ctypes.addressof(attr),
+        ctypes.sizeof(attr),
+    )
+    if result == 0:
+        return True
+    err = ctypes.get_errno()
+    if err == errno.ENOSYS:
+        return False
+    raise OSError(err, f"mount_setattr private: {os.strerror(err)}")
+
+
+def _make_rslave(path: str = "/") -> None:
+    """Stop mounts under ``path`` from propagating out of this namespace.
+
+    A private clone attached onto a still-shared parent is propagated
+    anyway: the kernel walks the destination peer group, not the source's.
+    Bubblewrap's ``/usr`` bind is such a parent — it cloned a shared host
+    mount and was never made a slave. Slave conversion here touches only
+    this namespace's mounts.
+    """
+    if _libc.mount(None, path.encode(), None, MS_REC | MS_SLAVE, None) != 0:
+        raise _errno(f"make rslave {path}")
 
 
 def _move_mount(tree_fd: int, dst: str) -> None:
@@ -177,22 +222,37 @@ def _apply(pid: int, user_ns: bool, mounts: list[dict]) -> None:
             user_fd = os.open(f"/proc/{pid}/ns/user", os.O_RDONLY)
         mnt_fd = os.open(f"/proc/{pid}/ns/mnt", os.O_RDONLY)
         prepared: list[tuple[int, str, bool, bool]] = []
+        clones_are_private = True
         for mount in mounts:
             src = str(mount["src"])
             dst = str(mount["dst"])
             is_dir = os.path.isdir(src)
             trees.append(_open_tree(src))
+            if clones_are_private:
+                clones_are_private = _make_private(trees[-1])
             prepared.append((trees[-1], dst, bool(mount.get("ro")), is_dir))
         if user_fd >= 0:
             _setns(user_fd, CLONE_NEWUSER, "setns user")
         _setns(mnt_fd, CLONE_NEWNS, "setns mnt")
 
         def attach() -> None:
+            # Existing sandbox binds (bwrap's /usr) are still shared peers of
+            # the host. Slave them before attaching, or the new mount is
+            # copied back onto the host at the same path and never unmounted.
+            _make_rslave("/")
             for tree_fd, dst, read_only, is_dir in prepared:
                 _ensure_destination(dst, is_dir)
+                if not clones_are_private:
+                    # The clone itself stayed shared. A nested bind later in
+                    # this batch would then see that new mount as a shared
+                    # parent and propagate. Slave again before each attach,
+                    # and once more after the last one.
+                    _make_rslave("/")
                 _move_mount(tree_fd, dst)
                 if read_only:
                     _remount_readonly(dst)
+            if not clones_are_private:
+                _make_rslave("/")
 
         with_writable_root(attach)
     finally:
