@@ -1464,6 +1464,185 @@ def test_run_now_forward_targets_gateway_connection(tmp_path, monkeypatch) -> No
     assert push.payloads[0].get(PUSH_TARGET_KEY) == PUSH_TARGET_GATEWAY
 
 
+# ── run_now Reverse RPC 回执（2026-11-19「run_id 为空」修复）────────────────
+
+from jiuwenswarm.common.reverse_rpc.constants import ERROR_METHOD_NOT_FOUND
+from jiuwenswarm.common.reverse_rpc.errors import (
+    ReverseRpcRemoteError,
+    ReverseRpcTimeoutError,
+)
+
+
+class _FakeReverseRpcClient:
+    """按预定结果/异常替换 get_reverse_rpc_client() 的桩。"""
+
+    def __init__(
+        self,
+        *,
+        result: dict | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self.calls: list[dict] = []
+        self._result = result
+        self._error = error
+
+    async def call(
+        self,
+        *,
+        method: str,
+        payload: dict,
+        origin,
+        route,
+        timeout: float,
+        remote_cancel: bool = True,
+    ):
+        self.calls.append(
+            {
+                "method": method,
+                "payload": payload,
+                "origin": origin,
+                "route": route,
+                "timeout": timeout,
+                "remote_cancel": remote_cancel,
+            }
+        )
+        if self._error is not None:
+            raise self._error
+        return self._result
+
+
+def _patch_reverse_rpc_client(monkeypatch, client) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.server.reverse_rpc.get_reverse_rpc_client",
+        lambda: client,
+    )
+
+
+@pytest.mark.asyncio
+async def test_run_now_receipt_returns_real_run_id(tmp_path, monkeypatch) -> None:
+    """reverse RPC 成功：回执 run_id 回填，且不再走 legacy 推送帧。"""
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+    client = _FakeReverseRpcClient(result={"run_id": "job-1:1795051274"})
+    _patch_reverse_rpc_client(monkeypatch, client)
+
+    token = CronTools.push_cron_route(
+        CronToolRoute(request_id="req-1", channel_id="desktop", session_id="s-1")
+    )
+    try:
+        result = await tools.run_now("job-1")
+    finally:
+        CronTools.reset_cron_route(token)
+
+    assert result == {
+        "action": "run_now",
+        "status": "ok",
+        "run_id": "job-1:1795051274",
+        "data": {"run_id": "job-1:1795051274"},
+        "message": "",
+    }
+    assert len(client.calls) == 1
+    call = client.calls[0]
+    assert call["method"] == "cron.run_now"
+    assert call["payload"] == {"job_id": "job-1"}
+    assert call["origin"].request_id == "req-1"
+    assert call["route"].channel_id == "desktop"
+    assert push.payloads == []
+
+
+@pytest.mark.asyncio
+async def test_run_now_falls_back_to_push_when_transport_unavailable(
+    tmp_path, monkeypatch
+) -> None:
+    """Reverse RPC 通道不可用（请求未上线）：回退 legacy 转发帧。"""
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+    client = _FakeReverseRpcClient(
+        error=RuntimeError("Reverse RPC transport is not configured")
+    )
+    _patch_reverse_rpc_client(monkeypatch, client)
+
+    result = await tools.run_now("job-1")
+
+    assert result["status"] == "forwarded"
+    assert result.get("run_id", "") == ""
+    assert len(push.payloads) == 1
+    assert push.payloads[0].get(PUSH_TARGET_KEY) == PUSH_TARGET_GATEWAY
+
+
+@pytest.mark.asyncio
+async def test_run_now_falls_back_on_method_not_found(tmp_path, monkeypatch) -> None:
+    """旧版 gateway 未注册 cron.run_now：回退存量转发帧（部署错配兼容）。"""
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+    client = _FakeReverseRpcClient(
+        error=ReverseRpcRemoteError(
+            ERROR_METHOD_NOT_FOUND, "Reverse RPC method is not registered"
+        )
+    )
+    _patch_reverse_rpc_client(monkeypatch, client)
+
+    result = await tools.run_now("job-1")
+
+    assert result["status"] == "forwarded"
+    assert len(push.payloads) == 1
+    assert push.payloads[0].get(PUSH_TARGET_KEY) == PUSH_TARGET_GATEWAY
+
+
+@pytest.mark.asyncio
+async def test_run_now_raises_on_definitive_remote_error(
+    tmp_path, monkeypatch
+) -> None:
+    """gateway 明确拒绝（任务不存在）：上抛且不得再发转发帧（任务未执行）。"""
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+    client = _FakeReverseRpcClient(
+        error=ReverseRpcRemoteError("CRON_JOB_NOT_FOUND", "job not found")
+    )
+    _patch_reverse_rpc_client(monkeypatch, client)
+
+    with pytest.raises(RuntimeError, match="CRON_JOB_NOT_FOUND"):
+        await tools.run_now("job-1")
+
+    assert push.payloads == []
+
+
+@pytest.mark.asyncio
+async def test_run_now_receipt_timeout_does_not_resend(tmp_path, monkeypatch) -> None:
+    """回执超时：触发可能已送达，按 forwarded 返回且不得重发（防双触发）。"""
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+    client = _FakeReverseRpcClient(error=ReverseRpcTimeoutError("timed out"))
+    _patch_reverse_rpc_client(monkeypatch, client)
+
+    result = await tools.run_now("job-1")
+
+    assert result["status"] == "forwarded"
+    assert result["run_id"] == ""
+    assert len(client.calls) == 1
+    assert push.payloads == []
+
+
+@pytest.mark.asyncio
+async def test_cron_backend_extracts_run_id_from_receipt() -> None:
+    """bridge 从回执信封 top-level run_id 提取真实 ID 返回给工具层。"""
+
+    class _ReceiptTools(_FakeCronTools):
+        async def run_now(self, job_id: str, *, context=None):
+            _ = (job_id, context)
+            return {
+                "action": "run_now",
+                "status": "ok",
+                "run_id": "job-1:1795051274",
+                "data": {"run_id": "job-1:1795051274"},
+                "message": "",
+            }
+
+    backend = _CronToolsCronBackend(_ReceiptTools())
+    context = SimpleNamespace(
+        channel_id="web", session_id="s-1", metadata={}, tool_scope="t"
+    )
+
+    run_id = await backend.run_now("job-1", context=context)
+
+    assert run_id == "job-1:1795051274"
+
+
 def test_create_forward_keeps_legacy_routing(tmp_path, monkeypatch) -> None:
     """create 同步帧不定向网关：任务由 agent 直接写共享 store，
     gateway 经 mtime 轮询感知，行为与存量一致。"""
