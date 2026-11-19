@@ -649,11 +649,18 @@ export interface TeamMemberExecutionEvent {
   }>;
 }
 
+export interface AppMarketPreview {
+  appId: string;
+  name: string;
+  instanceId: string;
+}
+
 /**
  * 单个 session 的运行态。
  * 原 B 类全局字段全部迁移到这里，按 session 隔离。
  */
 export interface SessionRuntime {
+  appMarketPreview?: AppMarketPreview;
   mode: AgentMode;
   selectedModelName: string | null;
   /** Stable `{type,id}` selection; preferred over model_name for runtime/session APIs. */
@@ -705,6 +712,11 @@ export interface SessionRuntime {
   enableSwarmflow: boolean;
   /** 本会话 swarmflow token 上限（留空=不限） */
   swarmflowBudget: number | null;
+  /**
+   * 本会话 team 成员是否使用独立 Git 身份（会话级，code 模式随 chat.send 下发）。
+   * undefined = 用户未拨过：不随请求发送，后端沿用已提交的会话设置。
+   */
+  independentGitIdentity?: boolean;
   /**
    * 本会话团队的任务调度模式（会话级，随 chat.send 下发并持久化到会话 metadata）。
    * undefined = 用户未拨过：开关默认关闭（自主模式）。团队建好后不可再改。
@@ -861,6 +873,7 @@ interface SessionState {
   clearSelectedSkills: (sessionId: string) => void;
   /** 设置/清除会话级元数据（skill-creator 统一入口等场景） */
   setSessionMetadata: (sessionId: string, metadata: Record<string, unknown> | null) => void;
+  setAppMarketPreview: (sessionId: string, preview: AppMarketPreview | undefined) => void;
   /** 输入栏智能体选择：选择、清空或恢复为不修改 */
   setAgentSelectionIntent: (sessionId: string, intent: AgentSelectionIntent) => void;
   clearAgentSelectionIntent: (sessionId: string, expectedIntent?: AgentSelectionIntent) => void;
@@ -914,6 +927,7 @@ interface SessionState {
   applyWorkflowUpdate: (sessionId: string, workflow: WorkflowRun) => void;
   /** 设置/关闭用户配置 enableSwarmflow 与预算 swarmflowBudget（配置态，非视图态） */
   setSwarmflowActive: (sessionId: string, active: boolean, budget?: number | null) => void;
+  setIndependentGitIdentity: (sessionId: string, enabled: boolean) => void;
   /** 设置本会话团队的任务调度模式（显式值，随 chat.send 下发并持久化到会话 metadata） */
   setTeamDispatchMode: (sessionId: string, mode: TeamDispatchMode) => void;
   /** 设置本会话团队的建队方式（调度模式子开关；显式值，随 chat.send 下发并持久化到会话 metadata） */
@@ -1649,6 +1663,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
+  setAppMarketPreview: (sessionId, preview) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      return { runtimes: { ...state.runtimes, [sessionId]: { ...runtime, appMarketPreview: preview } } };
+    });
+  },
+
   setSessionMetadata: (sessionId, metadata) => {
     set((state) => {
       const runtime = state.runtimes[sessionId];
@@ -2284,6 +2306,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           },
         },
       };
+    });
+  },
+
+  setIndependentGitIdentity: (sessionId, enabled) => {
+    set((state) => {
+      const rt = state.runtimes[sessionId];
+      if (!rt) return state;
+      return { runtimes: { ...state.runtimes, [sessionId]: { ...rt, independentGitIdentity: enabled } } };
     });
   },
 

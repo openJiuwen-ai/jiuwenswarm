@@ -14,6 +14,7 @@ import {
   parseVendorCatalog,
   rebaseModelDraft,
   reconcileModelReasoning,
+  reconcileModelOutputTokens,
   resolveModelPreset,
   selectProviderDefaultModel,
   syncDisplayNameWithModelName,
@@ -107,6 +108,7 @@ test('preset protocol mapping uses only the exact server fields', () => {
   );
   assert.equal(anthropic.model_provider, 'Anthropic');
   assert.equal(anthropic.api_base, 'https://anthropic.example');
+  assert.equal(anthropic.max_tokens, 32 * 1024);
   assert.equal('endpoint_profile' in anthropic, false);
 });
 
@@ -345,6 +347,114 @@ test('model context windows stay editable and expose common presets', () => {
   assert.match(contextWindow, /CONTEXT_WINDOW_PRESETS = \['128K', '256K', '512K', '1M'\]/);
 });
 
+test('model output limits use protocol defaults and preserve the unlimited clear signal', () => {
+  const freshDraft = createModelDraft(undefined, catalog);
+  assert.equal(freshDraft.max_tokens, '');
+
+  const anthropicDraft = applyModelProtocol(freshDraft, 'anthropic', catalog);
+  assert.equal(anthropicDraft.max_tokens, '32K');
+
+  const validationDraft = {
+    ...freshDraft,
+    alias: 'output-validation',
+    vendor_selection: CUSTOM_VENDOR_SELECTION,
+    model_name: 'output-validation',
+    api_key: 'secret',
+    api_base: 'https://custom.example/v1',
+    protocol: 'anthropic',
+  };
+  assert.match(
+    validateModelDraft({ ...validationDraft, max_tokens: '' }, [], undefined, catalog, t).max_tokens,
+    /outputTokensRequired/,
+  );
+  assert.match(
+    validateModelDraft({ ...validationDraft, max_tokens: 'zero' }, [], undefined, catalog, t).max_tokens,
+    /outputTokensInvalid/,
+  );
+  assert.equal(
+    validateModelDraft({ ...validationDraft, protocol: 'openai', max_tokens: '' }, [], undefined, catalog, t).max_tokens,
+    undefined,
+  );
+  const defaultLowCap = reconcileModelOutputTokens({
+    ...anthropicDraft,
+    model_name: 'anthropic/claude-3-haiku-20240307-v1:0',
+  });
+  assert.equal(defaultLowCap.max_tokens, '4K');
+  assert.equal(
+    reconcileModelOutputTokens({
+      ...anthropicDraft,
+      model_name: 'claude-3.5-sonnet',
+    }).max_tokens,
+    '8K',
+  );
+  assert.match(
+    validateModelDraft(
+      {
+        ...validationDraft,
+        model_name: 'claude-3-haiku-20240307-v1:0',
+        max_tokens: '8K',
+        max_tokens_is_default: false,
+      },
+      [],
+      undefined,
+      catalog,
+      t,
+    ).max_tokens,
+    /outputTokensExceedsModelLimit/,
+  );
+
+  const limited = modelDraftToEntry(
+    {
+      ...freshDraft,
+      alias: 'custom-model',
+      vendor_selection: CUSTOM_VENDOR_SELECTION,
+      model_name: 'custom-model',
+      api_key: 'secret',
+      api_base: 'https://custom.example/v1',
+      max_tokens: '16K',
+    },
+    undefined,
+    catalog,
+    true,
+  );
+  assert.equal(limited.max_tokens, 16 * 1024);
+
+  const unlimited = modelDraftToEntry(
+    { ...createModelDraft(limited, catalog), max_tokens: '' },
+    limited,
+    catalog,
+    false,
+  );
+  assert.equal(unlimited.max_tokens, null);
+
+  const legacyAnthropic = {
+    alias: 'legacy-anthropic',
+    model_name: 'legacy-anthropic',
+    api_key: 'secret',
+    api_base: 'https://anthropic.example',
+    model_provider: 'Anthropic',
+  };
+  const legacyDraft = createModelDraft(legacyAnthropic, catalog);
+  assert.equal(legacyDraft.max_tokens, '32K');
+  assert.equal(modelDraftToEntry(legacyDraft, legacyAnthropic, catalog, false).max_tokens, undefined);
+
+  const dialog = source('src/features/settings/modules/models/ModelDialog.tsx');
+  const outputField = source('src/features/settings/modules/models/OutputTokenField.tsx');
+  assert.match(dialog, /name: 'max_tokens'/);
+  assert.match(dialog, /<OutputTokenField/);
+  assert.match(outputField, /OUTPUT_TOKEN_PRESETS/);
+  assert.match(outputField, /settings-output-token-unlimited/);
+  assert.match(outputField, /exceedsModelLimit/);
+});
+
+test('model list payload accepts and normalizes a cleared output limit', () => {
+  const page = source('src/features/settings/modules/models/ModelsSettings.tsx');
+
+  assert.match(page, /function isOptionalNumberOrNull\(value: unknown\): boolean \{[\s\S]*value === null/);
+  assert.match(page, /isOptionalNumberOrNull\(\(model as ModelEntry\)\.max_tokens\)/);
+  assert.match(page, /max_tokens: typeof model\.max_tokens === 'number' \? model\.max_tokens : undefined,/);
+});
+
 test('switching providers clears credentials before applying the next connection preset', () => {
   const startingDraft = {
     ...createModelDraft(undefined, catalog),
@@ -570,6 +680,7 @@ test('display name validation is required, unique among display names, and exclu
     api_base: 'https://custom.example/v1',
     reasoning_level: '',
     context_window_tokens: '262144',
+    max_tokens: '32K',
     is_default: false,
   };
   assert.match(validateModelDraft(baseDraft, models, undefined, catalog, t).alias, /aliasRequired/);
@@ -748,6 +859,7 @@ test('model API keys accept 2048 characters and reject longer values', () => {
     api_base: 'https://custom.example/v1',
     reasoning_level: '',
     context_window_tokens: '262144',
+    max_tokens: '32K',
     is_default: false,
   };
   assert.equal(
@@ -849,6 +961,7 @@ test('custom vendor clears and ignores reasoning data even when the catalog has 
     api_base: 'https://custom.example/v1',
     reasoning_level: '',
     context_window_tokens: '262144',
+    max_tokens: '32K',
     is_default: false,
   };
   const historicalDraft = { ...draft, reasoning_level: 'high' };
@@ -1090,7 +1203,8 @@ test('model dialog uses provider terminology and validates as part of confirmati
   assert.ok(dialog.indexOf("name: 'api_key'") < dialog.indexOf("name: 'model_name'"));
   assert.ok(dialog.indexOf("name: 'model_name'") < dialog.indexOf("name: 'alias'"));
   assert.ok(dialog.indexOf("name: 'alias'") < dialog.indexOf("name: 'context_window_tokens'"));
-  assert.ok(dialog.indexOf("name: 'context_window_tokens'") < dialog.indexOf("name: 'reasoning_level'"));
+  assert.ok(dialog.indexOf("name: 'context_window_tokens'") < dialog.indexOf("name: 'max_tokens'"));
+  assert.ok(dialog.indexOf("name: 'max_tokens'") < dialog.indexOf("name: 'reasoning_level'"));
   assert.match(
     dialog,
     /name: 'model_name'[\s\S]{0,400}onBlur:[\s\S]{0,220}syncDisplayNameWithModelName/,
@@ -1141,12 +1255,16 @@ test('model dialog uses provider terminology and validates as part of confirmati
   assert.equal(zh.settingsPanel.models.vendor, '模型提供商');
   assert.equal(zh.settingsPanel.models.vendorPlaceholder, '请选择');
   assert.equal(zh.settingsPanel.models.apiKeyLabel, 'API Key');
+  assert.equal(zh.settingsPanel.models.outputTokens, '模型单次最大输出');
+  assert.equal(zh.settingsPanel.models.outputTokensUnlimited, '不限');
   assert.equal(zh.settingsPanel.models.apiKeyTooLong, 'API Key 过长，请控制在 2048 字符以内');
   assert.equal(zh.settingsPanel.models.fetchModelsLoading, '获取中...');
   assert.equal(zh.settingsPanel.models.testingConnection, '正在测试连接…');
   assert.equal(zh.settingsPanel.models.savingModel, '正在保存…');
   assert.equal(zh.settingsPanel.models.continueSave, '忽略测试并保存');
   assert.equal(en.settingsPanel.models.vendor, 'Model provider');
+  assert.equal(en.settingsPanel.models.outputTokens, 'Maximum output per request');
+  assert.equal(en.settingsPanel.models.outputTokensUnlimited, 'Unlimited');
   assert.equal(en.settingsPanel.models.vendorPlaceholder, 'Select');
   assert.equal(en.settingsPanel.models.apiKeyTooLong, 'API key is too long. Use 2048 characters or fewer');
   assert.equal(en.settingsPanel.models.fetchModelsLoading, 'Fetching...');

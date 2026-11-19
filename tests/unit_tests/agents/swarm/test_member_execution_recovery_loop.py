@@ -26,7 +26,17 @@ async def test_recovery_loop_reconciles_member_executions(monkeypatch, tmp_path:
     monkeypatch.setattr(
         "jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: tmp_path
     )
-    monkeypatch.setattr(recovery, "reconcile_group", AsyncMock())
+
+    stop = asyncio.Event()
+
+    # Stop the loop once it has actually reached the session, rather than after a
+    # fixed number of event-loop ticks.  Upstream runs the directory scan in a
+    # worker thread (asyncio.to_thread), so a fixed number of sleep(0) calls is
+    # not a reliable synchronization point.
+    async def _stop_on_session(*args, **kwargs) -> None:
+        stop.set()
+
+    monkeypatch.setattr(recovery, "reconcile_group", AsyncMock(side_effect=_stop_on_session))
 
     reconcile_mock = AsyncMock()
     fake_ge = MagicMock()
@@ -37,15 +47,6 @@ async def test_recovery_loop_reconciles_member_executions(monkeypatch, tmp_path:
         fake_ge,
     )
 
-    stop = asyncio.Event()
-
-    async def _stop_soon() -> None:
-        # Let the loop finish one full scan, then stop it.
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        stop.set()
-
-    asyncio.create_task(_stop_soon())
     await recovery.recovery_loop(stop)
 
     fake_ge.GroupExecutions.assert_called_once_with(session)

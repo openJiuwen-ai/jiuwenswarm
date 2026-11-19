@@ -46,6 +46,7 @@ export type MultimodalFieldError = { field: string; key: string; args?: Record<s
 export type MultimodalErrorDetails = {
   code?: string;
   affected_tools?: MultimodalCapability[];
+  activation_tools?: MultimodalCapability[];
   field_errors?: MultimodalFieldError[];
 };
 export function multimodalErrorDetails(error: unknown): MultimodalErrorDetails {
@@ -62,15 +63,10 @@ export function capabilitiesFor(purpose: MultimodalPurpose): MultimodalCapabilit
 }
 
 export function multimodalModelOptions(models: PublicMultimodalModel[], tool: MultimodalCapability) {
-  const candidates = models.filter((model) => model.capabilities.includes(tool));
-  const names = candidates.map((model) => model.display_name);
-  const labels = candidates.map((model) => names.filter((name) => name === model.display_name).length > 1
-    ? [model.display_name, model.model_name, model.api_base].filter(Boolean).join(' · ')
-    : model.display_name);
-  return candidates.map((model, index) => ({
+  return models.filter((model) => model.capabilities.includes(tool)).map((model) => ({
     value: model.model_id,
-    label: labels.filter((label) => label === labels[index]).length > 1
-      ? `${labels[index]} · ${model.model_id}` : labels[index],
+    label: model.display_name,
+    title: [model.model_name, model.api_base, model.model_id].filter(Boolean).join('\n'),
   }));
 }
 
@@ -151,7 +147,10 @@ export class MultimodalSettingsStore {
         this.publish({ snapshot: result.snapshot, lastChange: result, loading: false });
         return result;
       } catch (error) {
-        this.publish({ error: { source: 'write', cause: error } });
+        // The model editor owns validation feedback; other failures remain page-visible.
+        if (operation !== 'models.upsert' || multimodalErrorDetails(error).code !== 'MM_VALIDATION_FAILED') {
+          this.publish({ error: { source: 'write', cause: error } });
+        }
         throw error;
       } finally {
         this.publish({ saving: false });

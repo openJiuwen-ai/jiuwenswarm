@@ -35,7 +35,7 @@ await build({
 
 const { ChatTimelineList, TurnElapsed, useApplicationTaskStore, taskTimelineClock } = await import('../node_modules/.cache/chat-timeline-list/MessageList.mjs');
 
-test('#6010 duplex elapsed ticks without progress and freezes after cancellation', async () => {
+async function checkDuplexElapsed(hasWork) {
   const originalNow = Date.now;
   const originalInterval = window.setInterval;
   const originalClear = window.clearInterval;
@@ -53,10 +53,15 @@ test('#6010 duplex elapsed ticks without progress and freezes after cancellation
   const task = { id: 'elapsed-job', pluginId: 'video-duplex', title: 'Weather', status: 'running',
     sequence: 1, detail: '', createdAt: start + 1000 };
   useApplicationTaskStore.setState({ sessions: { 'clock-session': [task] } });
-  const messages = [{ id: 'full-duplex-user', role: 'user', content: 'weather', timestamp: new Date(start).toISOString() }];
-  const reasoningSegments = [{ id: 'reason', content: 'Checking', startedAt: start + 1000,
+  const messages = [
+    { id: 'full-duplex-user', role: 'user', content: 'weather', timestamp: new Date(start).toISOString() },
+    { id: 'reply', role: 'assistant', content: 'I will check', timestamp: new Date(start + 1000).toISOString() },
+  ];
+  const reasoningSegments = !hasWork ? [] : [{ id: 'reason', content: 'Checking', startedAt: start + 1000,
     updatedAt: start + 2000, isStreaming: false }];
-  const label = () => container.querySelector('[data-testid="chat-panel-completed-work-chip-label"]')?.textContent;
+  const label = () => container.querySelector(
+    '[data-testid="chat-panel-turn-elapsed"], [data-testid="chat-panel-completed-work-chip-label"]',
+  )?.textContent;
   try {
     await act(async () => root.render(createElement(A2UIProvider, null, createElement(ChatTimelineList, {
       messages, reasoningSegments, sessionId: 'clock-session', virtualized: false,
@@ -77,7 +82,11 @@ test('#6010 duplex elapsed ticks without progress and freezes after cancellation
     window.setInterval = originalInterval;
     window.clearInterval = originalClear;
   }
-});
+}
+
+for (const hasWork of [false, true]) {
+  test(`#6010 duplex elapsed ticks and freezes after cancellation (hasWork=${hasWork})`, () => checkDuplexElapsed(hasWork));
+}
 
 test('#6010 task clocks isolate turns and never count queued or unknown tasks as running', () => {
   const base = { id: 'job', pluginId: 'video-duplex', createdAt: 2000 };

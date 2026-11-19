@@ -1,4 +1,7 @@
-/** Word: its identity, and the contract of the ``office-word`` app's package directory. */
+/**
+ * Word and WPS Writer: their identities, and the contract of the package directory both apps (``office-word``,
+ * ``wps-writer``) load.
+ */
 import contractProfile from '@office/word/profile.json';
 import contractTools from '@office/word/tools.json';
 
@@ -14,3 +17,5 @@ export const WORD: OfficeApp = {
   // A section read or a document's text for a claim check runs long; the industry add-in gives Word 200,000.
   resultChars: 200_000,
 };
+
+export const WPS_WRITER: OfficeApp = { ...WORD, platform: 'wps', host: 'WPS Writer', clientApp: 'wps-writer' };

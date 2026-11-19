@@ -261,3 +261,37 @@ async def test_shape_repair_retries_on_json_decode_error() -> None:
     assert "JSON parse failed" in calls[1]
     assert '"request_id": "repair-json-1"' in calls[1] or '"request_id":"repair-json-1"' in calls[1]
     assert result["scores"][0]["candidate_id"] == "c1"
+
+
+def test_parse_stage_json_repairs_unescaped_quotes_inside_strings() -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
+        _parse_stage_json,
+    )
+
+    parsed = _parse_stage_json(
+        '{"scores":[{"candidate_id":"c1","reason":"compare "Quicksort" and "Merge Sort""}]}'
+    )
+
+    assert parsed["scores"][0]["candidate_id"] == "c1"
+    assert "Quicksort" in parsed["scores"][0]["reason"]
+
+
+def test_parse_stage_json_repairs_a_bare_array_with_unescaped_quotes() -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
+        _parse_stage_json,
+    )
+
+    parsed = _parse_stage_json(
+        '[{"candidate_id":"c1","reason":"compare "Quicksort" and Merge Sort"}]'
+    )
+
+    assert parsed[0]["candidate_id"] == "c1"
+
+
+def test_parse_stage_json_still_rejects_non_object_content() -> None:
+    from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
+        _parse_stage_json,
+    )
+
+    with pytest.raises(json.JSONDecodeError):
+        _parse_stage_json("not json at all")

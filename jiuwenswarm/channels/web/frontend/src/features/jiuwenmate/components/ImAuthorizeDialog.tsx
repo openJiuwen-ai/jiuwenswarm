@@ -47,9 +47,13 @@ export function ImAuthorizeDialog({ onSkip, onConfirm, created = true, fixed, in
       });
     } catch (cause) {
       const code = cause && typeof cause === 'object' && 'code' in cause ? cause.code : undefined;
-      setError(code === 'CHANNEL_ALREADY_BOUND'
-        ? t('jiuwenmate.im.channelAlreadyBound')
-        : cause instanceof Error ? cause.message : String(cause));
+      if (code === 'CHANNEL_ALREADY_BOUND') {
+        setError(t('jiuwenmate.im.channelAlreadyBound'));
+      } else if (code === 'CHANNEL_USED_IN_PERSONAL_EDITION') {
+        setError(t('jiuwenmate.im.channelUsedInPersonalEdition'));
+      } else {
+        setError(cause instanceof Error ? cause.message : String(cause));
+      }
     } finally {
       setSaving(false);
     }

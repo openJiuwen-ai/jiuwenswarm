@@ -24,6 +24,7 @@ from openjiuwen.agent_evolving.attribution import (
     TaskParseError,
     TaskParseResult,
     TrajectoryNode,
+    SummaryTree,
 )
 
 from jiuwenswarm.diagnosis.attribution_engine import (
@@ -112,8 +113,98 @@ def _parsed() -> TaskParseResult:
     )
 
 
-def _summary_outcome(summary: str = "选中范围内共执行了 3 个步骤，期间出现一次工具报错。") -> SimpleNamespace:
-    return SimpleNamespace(trajectory_summary=summary, status="success", completed=True)
+def _summary_outcome(summary: str = "预生成的轨迹摘要") -> SummaryTree:
+    return SummaryTree(trajectory_summary=summary, status="completed")
+
+
+@pytest.fixture(autouse=True)
+def _fake_hierarchical_summary(monkeypatch):
+    """Keep orchestration tests independent of real model calls, as other core stages are."""
+    async def summarize(**kwargs):
+        return _summary_outcome()
+    monkeypatch.setattr("jiuwenswarm.diagnosis.attribution_engine.summarize_trajectory", summarize)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("locale", ["zh", "en"])
+async def test_real_hierarchy_runs_before_parse_and_is_kept_in_result(monkeypatch, locale):
+    from dataclasses import replace
+    from openjiuwen.agent_evolving.attribution import summarize_trajectory
+    import jiuwenswarm.diagnosis.attribution_engine as module
+    import json
+
+    calls = []
+
+    class Model:
+        async def invoke(self, messages, tools, **kwargs):
+            assert ("输出语言：中文" if locale == "zh" else "Output language: English") in messages[0]["content"]
+            calls.append("summary")
+            return {"tool_calls": [{"name": "report_summary", "arguments": json.dumps({
+                "narrative": "Observed work", "display_summary": "Readable outcome", "problems": []})}]}
+
+    async def parse(*args, **kwargs):
+        assert calls == ["summary", "summary"]
+        assert kwargs["summary_tree"].trajectory_summary == "Observed work"
+        calls.append("parse")
+        return _parsed()
+
+    async def diagnose(*args, **kwargs):
+        return SimpleNamespace(signals=[], reward_overall=None, signal_mode="rule_jev", run_meta={}, reward_payload=None)
+
+    monkeypatch.setattr(module, "summarize_trajectory", summarize_trajectory)
+    monkeypatch.setattr(module, "run_task_parse", parse)
+    monkeypatch.setattr(module, "run_diagnosis", diagnose)
+    engine = AttributionCoreEngine(model_factory=lambda _: Model())
+    events = []
+
+    async def emit(event):
+        events.append(event)
+
+    snapshot = _snapshot([_chat_record(0, 1000, 2000)])
+    inputs = replace(_inputs(snapshot, [SubjectRange("main", 0, 10**9)]), locale=locale)
+    result = await engine.run(inputs, emit)
+    assert calls == ["summary", "summary", "parse"]
+    assert result.trajectory_summary == "Observed work"
+    assert result.summary_tree["display_summary"] == "Readable outcome"
+    assert "start_time" in result.summary_tree["turns"]["main"][0]["segments"][0]
+    assert result.summary_tree["turns"]["main"][0]["segments"][0]["start_node_id"] == "main:0"
+    assert result.summary_tree["agent_summaries"] == {}
+    assert any("trajectory_summary" in (event.text_delta or "") for event in events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["exception", "failed", "degraded"])
+async def test_summary_failure_and_degradation_are_visible_without_losing_diagnosis(monkeypatch, mode):
+    import jiuwenswarm.diagnosis.attribution_engine as module
+
+    async def summarize(**kwargs):
+        if mode == "exception":
+            raise ValueError("duplicate input")
+        return SummaryTree(trajectory_summary="partial" if mode == "degraded" else "",
+                           status=mode, warnings=[{"code": "test_warning", "message": "evidence incomplete"}])
+
+    async def parse(*args, **kwargs):
+        return _parsed()
+
+    async def diagnose(*args, **kwargs):
+        return SimpleNamespace(signals=[], reward_overall=None, signal_mode="rule_jev", run_meta={}, reward_payload=None)
+
+    monkeypatch.setattr(module, "summarize_trajectory", summarize)
+    monkeypatch.setattr(module, "run_task_parse", parse)
+    monkeypatch.setattr(module, "run_diagnosis", diagnose)
+    engine = AttributionCoreEngine(model_factory=lambda _: object())
+    events = []
+
+    async def emit(event):
+        events.append(event)
+
+    snapshot = _snapshot([_chat_record(0, 1000, 2000)])
+    result = await engine.run(_inputs(snapshot, [SubjectRange("main", 0, 10**9)]), emit)
+    assert result.error is None
+    assert result.summary_tree["status"] == ("failed" if mode == "exception" else mode)
+    lines = [event.text_delta or "" for event in events if event.stage_id == "trajectory_summary"]
+    assert any(("摘要存在不完整项" if mode == "degraded" else "摘要生成失败") in line for line in lines)
+    assert result.summary_tree["warnings"]
 
 
 def _signal(signal_id: str, tier: str = "weak", *, source: SignalSource = SignalSource.KEYWORD_TOOL) -> DiagnosticSignal:
@@ -259,7 +350,7 @@ async def test_task_parse_errors_map_to_engine_codes(monkeypatch: pytest.MonkeyP
             sink.report(
                 SimpleNamespace(
                     request_id="llm-9",
-                    stage="attribution",
+                    stage="trajectory_summary",
                     iteration=1,
                     status="succeeded",
                     model="fake-model",
@@ -269,7 +360,7 @@ async def test_task_parse_errors_map_to_engine_codes(monkeypatch: pytest.MonkeyP
             )
         return _summary_outcome("任务解析失败，但已阅读选中范围的轨迹。")
 
-    monkeypatch.setattr(module, "run_trajectory_summary", summary)
+    monkeypatch.setattr(module, "summarize_trajectory", summary)
     events: list[EngineEvent] = []
 
     async def emit(event: EngineEvent) -> None:
@@ -304,13 +395,13 @@ async def test_task_parse_errors_map_to_engine_codes(monkeypatch: pytest.MonkeyP
         assert ("diagnose", "skipped") in finished
         assert ("attribute", "skipped") in finished
         assert any(
-            event.stage_id == "task_parse"
+            event.stage_id == "trajectory_summary"
             and event.kind == "output_delta"
             and event.text_delta == "正在生成轨迹摘要"
             for event in events
         )
         assert any(
-            event.stage_id == "task_parse" and event.kind == "output_delta" and "llm-9" in (event.text_delta or "")
+            event.stage_id == "trajectory_summary" and event.kind == "output_delta" and "llm-9" in (event.text_delta or "")
             for event in events
         )
         assert not any(event.stage_id == "attribute" and event.kind == "output_delta" for event in events)
@@ -333,7 +424,7 @@ async def test_task_parse_errors_map_to_engine_codes(monkeypatch: pytest.MonkeyP
     result = await engine.run(inputs, emit)
     assert result.error is not None and result.error.code == "MODEL_OUTPUT_INVALID"
     assert result.error.message == "任务解析输出无法解析：boom"
-    assert result.trajectory_summary == ""
+    assert result.trajectory_summary == "任务解析失败，但已阅读选中范围的轨迹。"
     failed = next(
         event for event in events
         if event.stage_id == "task_parse" and event.kind == "stage_finished"
@@ -349,7 +440,7 @@ async def test_task_parse_errors_map_to_engine_codes(monkeypatch: pytest.MonkeyP
     result = await engine.run(inputs, emit)
     assert result.error is not None and result.error.code == "MODEL_CALL_FAILED"
     assert result.error.message == "任务解析模型调用失败：network down"
-    assert result.trajectory_summary == ""
+    assert result.trajectory_summary == "任务解析失败，但已阅读选中范围的轨迹。"
     failed = next(
         event for event in events
         if event.stage_id == "task_parse" and event.kind == "stage_finished"
@@ -391,7 +482,7 @@ async def test_no_signals_finishes_normally_and_skips_attribution(monkeypatch: p
     monkeypatch.setattr(module, "run_task_parse", parse)
     monkeypatch.setattr(module, "run_diagnosis", diagnose)
     monkeypatch.setattr(module, "run_attribution", attribute)
-    monkeypatch.setattr(module, "run_trajectory_summary", summary)
+    monkeypatch.setattr(module, "summarize_trajectory", summary)
 
     result = await engine.run(inputs, emit)
 
@@ -408,7 +499,7 @@ async def test_no_signals_finishes_normally_and_skips_attribution(monkeypatch: p
     assert finished["attribute"].summary == "已跳过归因 · 轨迹摘要已生成"
     attribute = [event for event in events if event.stage_id == "attribute"]
     assert [event.kind for event in attribute] == ["stage_started", "output_delta", "stage_finished"]
-    assert attribute[1].text_delta == "正在生成轨迹摘要"
+    assert attribute[1].text_delta == "已复用预先生成的轨迹摘要"
 
 
 @pytest.mark.asyncio
@@ -444,7 +535,7 @@ async def test_only_perfect_signals_still_run_summary_only(monkeypatch: pytest.M
     monkeypatch.setattr(module, "run_task_parse", parse)
     monkeypatch.setattr(module, "run_diagnosis", diagnose)
     monkeypatch.setattr(module, "run_attribution", attribute)
-    monkeypatch.setattr(module, "run_trajectory_summary", summary)
+    monkeypatch.setattr(module, "summarize_trajectory", summary)
 
     result = await engine.run(inputs, emit)
 
@@ -461,7 +552,7 @@ async def test_only_perfect_signals_still_run_summary_only(monkeypatch: pytest.M
 
 
 @pytest.mark.asyncio
-async def test_engine_emits_three_stages_in_order_with_llm_lines(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_engine_emits_four_stages_in_order_with_llm_lines(monkeypatch: pytest.MonkeyPatch) -> None:
     import jiuwenswarm.diagnosis.attribution_engine as module
 
     engine = AttributionCoreEngine(model_factory=lambda _model: object())
@@ -521,9 +612,10 @@ async def test_engine_emits_three_stages_in_order_with_llm_lines(monkeypatch: py
     result = await engine.run(_inputs(snapshot, [SubjectRange("main", 0, 10**9)]), emit)
 
     stage_ids = [event.stage_id for event in events]
-    assert stage_ids.count("task_parse") == 7  # start + 2 llm + description + 2 artifacts + finished
+    assert stage_ids.count("task_parse") == 7
     kinds = [(event.stage_id, event.kind) for event in events]
-    assert ("task_parse", "stage_started") == kinds[0]
+    assert ("trajectory_summary", "stage_started") == kinds[0]
+    assert kinds.index(("trajectory_summary", "trajectory_summary")) < kinds.index(("task_parse", "stage_started"))
     assert ("attribute", "stage_finished") == kinds[-1]
     reward_at = kinds.index(("diagnose", "reward"))
     assert reward_at < kinds.index(("diagnose", "stage_finished")) < kinds.index(("attribute", "stage_started"))
@@ -535,9 +627,10 @@ async def test_engine_emits_three_stages_in_order_with_llm_lines(monkeypatch: py
     assert any("llm-2" in line and "keyword_diag" in line for line in diagnose_lines)
     starts = [index for index, kind in enumerate(kinds) if kind[1] == "stage_started"]
     finishes = [index for index, kind in enumerate(kinds) if kind[1] == "stage_finished"]
-    assert starts == [0, kinds.index(("diagnose", "stage_started")), kinds.index(("attribute", "stage_started"))]
-    assert finishes[0] < starts[1] < finishes[1] < starts[2] < finishes[2]
-    assert result.trajectory_summary == "这段轨迹跑了测试但仍有失败"
+    assert [kinds[index][0] for index in starts] == ["trajectory_summary", "task_parse", "diagnose", "attribute"]
+    assert all(finishes[index] < starts[index + 1] for index in range(3))
+    assert result.trajectory_summary == "预生成的轨迹摘要"
+    assert result.summary_tree["trajectory_summary"] == result.trajectory_summary
     assert result.reward == _reward_payload("测试应当通过")
     cause = result.reward_failure_causes[0]
     assert cause.dimension == "测试应当通过"
@@ -609,7 +702,7 @@ async def test_attribution_failure_keeps_results_and_reports_error(monkeypatch: 
     snapshot = _snapshot([_chat_record(0, 1000, 2000)])
     result = await engine.run(_inputs(snapshot, [SubjectRange("main", 0, 10**9)]), emit)
 
-    assert result.trajectory_summary == "归因超时前写了一半"
+    assert result.trajectory_summary == "预生成的轨迹摘要"
     assert result.reward_failure_causes and result.reward_failure_causes[0].summary == "半成品原因"
     assert result.error is not None
     assert result.error.code == "ATTRIBUTION_INCOMPLETE"

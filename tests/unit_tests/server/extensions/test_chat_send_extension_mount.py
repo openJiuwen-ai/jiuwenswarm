@@ -893,14 +893,25 @@ async def test_missing_hub_expert_invalidates_catalog_and_returns_code(monkeypat
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("method", [ReqMethod.PLUGIN_PACKAGES_INSTALL, ReqMethod.AGENT_TEMPLATES_INSTALL])
-async def test_equipment_install_has_total_timeout(monkeypatch, method):
+@pytest.mark.parametrize(
+    ("method", "expected_timeout"),
+    [
+        (ReqMethod.PLUGIN_PACKAGES_INSTALL, 120),
+        (ReqMethod.AGENT_TEMPLATES_INSTALL, 120),
+        (ReqMethod.AGENT_GROUPS_INSTALL, 220),
+    ],
+)
+async def test_equipment_install_has_total_timeout(monkeypatch, method, expected_timeout):
     iface = _iface()
     owner = iface.JiuWenSwarm.__new__(iface.JiuWenSwarm)
+    if method == ReqMethod.AGENT_GROUPS_INSTALL:
+        monkeypatch.setattr(iface.package_manager, "install_agent_group_with_hub", AsyncMock())
+
     async def expired(operation, *, timeout):
-        assert timeout == 120
         operation.close()
+        assert timeout == expected_timeout
         raise TimeoutError()
+
     monkeypatch.setattr(iface.asyncio, "wait_for", expired)
     response = await iface.JiuWenSwarm._handle_package_catalog_request(
         owner, _req({"id": "slow-hub-asset"}, method=method)

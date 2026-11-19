@@ -161,3 +161,23 @@ def test_configure_code_team_member_uses_fallback_for_rail_without_workspace_nod
     assert observed_project_dirs["rail"] == expected_project_dir
     assert observed_project_dirs["agent_workspace"] == str(global_workspace)
     assert "workspace_path" not in observed_project_dirs
+
+
+def test_native_failed_rebuild_keeps_same_binding(monkeypatch, tmp_path):
+    config = {"modes": {"code": {"memory": {"enabled": True}}},
+              "embed": {"embed_model": "first"}}
+    adapter = interface_code.JiuwenSwarmCodeAdapter()
+    adapter._project_dir = str(tmp_path)
+    adapter._workspace_dir = str(tmp_path)
+    adapter._agent_workspace_dir = str(tmp_path / "agent")
+    monkeypatch.setattr(adapter, "_active_code_config", lambda: config)
+    rail = object()
+    monkeypatch.setattr(interface_code, "create_coding_memory_rail", lambda **kwargs: rail)
+    assert adapter._build_coding_memory_rail() is rail
+    fingerprint = adapter._coding_memory_config_fingerprint
+    config["embed"]["embed_model"] = "second"
+    monkeypatch.setattr(interface_code, "create_coding_memory_rail", lambda **kwargs: None)
+    assert adapter._build_coding_memory_rail() is rail
+    assert adapter._coding_memory_config_fingerprint == fingerprint
+    adapter._project_dir = str(tmp_path / "another-project")
+    assert adapter._build_coding_memory_rail() is None

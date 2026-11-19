@@ -57,9 +57,11 @@ import ChatModelSelector from './ChatModelSelector';
 import DesignerModelSelector from '../../features/designer/components/DesignerModelSelector';
 import { getTeamSessionLive, subscribeTeamSessionLive, teamFollowUpLiveReady } from '../../services/sessionLive';
 import { getTeamQuota } from '../../services/teamApi';
+import { designLandingModelProblem } from '../../features/designer/designLandingDraft';
 import { FileIcon } from '../FileIcon';
 import { getEvolutionPillLabel } from './evolution-status';
 import { webRequest } from '../../services/webClient';
+import { GitIdentityOption } from './GitIdentityOption';
 import {
   markUploadDispatched,
   unmarkUploadDispatched,
@@ -953,6 +955,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const composerFrameRef = useRef<HTMLDivElement>(null);
   const composerSuggestionMenuRef = useRef<HTMLDivElement>(null);
   const compactingSessionIdsRef = useRef<Set<string>>(new Set());
+  const designLandingGateRef = useRef(false);
   const compactStartedAtRef = useRef<Map<string, number>>(new Map());
   const skillPanelRef = useRef<HTMLDivElement>(null);
   const swarmflowConfigBtnRef = useRef<HTMLButtonElement>(null);
@@ -1319,13 +1322,20 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const swarmflowActive = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.enableSwarmflow ?? false);
   const swarmflowBudget = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.swarmflowBudget ?? null);
   // 进入真实会话后开关只读：仅新建对话页可修改，真实会话可查看不可改
-  const swarmflowToggleDisabled = isProcessing || (activeSessionId !== NEW_CONVERSATION_ID && hasHistory);
+  const swarmflowSessionFrozen = activeSessionId !== NEW_CONVERSATION_ID && hasHistory;
+  const swarmflowToggleDisabled = isProcessing || swarmflowSessionFrozen;
   // 会话级调度模式：实验开关「调度模式」打开才展示；团队按首条消息建好后不可再改，
   // 与 swarmflow 开关同一把锁（仅新建对话页可拨）。
   const teamScheduledDispatchEnabled = useTeamScheduledDispatchEnabled();
   const sessionTeamDispatchMode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamDispatchMode);
   const teamDispatchScheduled = resolveTeamDispatchMode(sessionTeamDispatchMode) === 'scheduled';
   const teamDispatchToggleDisabled = swarmflowToggleDisabled;
+  // 置灰原因二分，冻结优先：建队冻结是永久的，会话进行中只是暂时的，两者同时
+  // 成立时报忙态会骗用户白等（团队活着期间常驻忙态，几乎永远轮不到冻结文案）。
+  // 与调度模式的 readonlyHint 同一做法，也与计划开关取 planModeGate 的 reason 对齐。
+  const swarmflowDisabledHint = swarmflowSessionFrozen
+    ? 'swarmflow.readonlyHint'
+    : 'swarmflow.closeTagDisabled';
   // 调度模式的子开关「启动即建队」（F_122）：只在调度模式打开时展示，同一把锁。
   const sessionTeamBootstrapMode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamBootstrapMode);
   const teamBootstrapFramework = resolveTeamBootstrapMode(sessionTeamBootstrapMode) === 'framework';
@@ -1704,6 +1714,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     }
     return selectedProject && !isDefaultInputProject(selectedProject) ? selectedProject : null;
   }, [activeSession, projects, selectedProject, t, workMode]);
+
+  const independentGitIdentity = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.independentGitIdentity ?? false,
+  );
+  // 开关只改本地会话状态，随下一条 team chat.send 的 execution_settings 下发并由后端提交。
+  const toggleIndependentGitIdentity = (next: boolean) => {
+    if (!activeSessionId) return;
+    useSessionStore.getState().setIndependentGitIdentity(activeSessionId, next);
+  };
 
   const appendTaskAsrTranscript = useCallback(
     (transcript: string) => {
@@ -2874,7 +2893,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     [activeSessionId, planActive, pushAttachmentAlert, t],
   );
 
-  const handleSubmit = useCallback(() => {
+  const handleSubmit = useCallback(async () => {
     if (composerDisabled || isListening || isTranscribing || modelGroupSendBlocked) return;
     if (
       enterprise &&
@@ -2955,6 +2974,20 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     // Other non-team modes still go through the text-only onInterrupt channel where
     // attachments would be lost, so keep blocking there.
     if (isInterruptible && !isTeamMode && !isAgentMode && hasReadyMedia) return;
+
+    // Design landing validates models after the click. The composer used to
+    // clear before that check finished, so a missing model wiped the prompt.
+    if (isDesignLanding) {
+      if (designLandingGateRef.current) return;
+      designLandingGateRef.current = true;
+      let modelProblem: string | null = null;
+      try {
+        modelProblem = await designLandingModelProblem();
+      } finally {
+        designLandingGateRef.current = false;
+      }
+      if (modelProblem) return;
+    }
 
     const sid = useChatStore.getState().activeSessionId;
     let sentViaTaskQueue = false;
@@ -3045,6 +3078,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     hasAttachmentErrors,
     isPreparingFiles,
     composerDisabled,
+    isDesignLanding,
     isListening,
     isTranscribing,
     modelGroupSendBlocked,
@@ -5061,6 +5095,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                               </div>
                             );
                           })()}
+                        <GitIdentityOption
+                          visible={isTeamMode && workMode === 'code'}
+                          checked={independentGitIdentity}
+                          label={t('gitIdentity.label')}
+                          hint={t('gitIdentity.hint')}
+                          onChange={toggleIndependentGitIdentity}
+                        />
                         {isTeamMode && teamScheduledDispatchEnabled && (
                           <div
                             className={cx(
@@ -5131,6 +5172,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                 )}
                                 role="menuitem"
                                 data-testid="chat-panel-input-attach-menu-swarmflow"
+                                title={swarmflowToggleDisabled ? t(swarmflowDisabledHint) : undefined}
                               >
                                 <span
                                   className="chat-mode-select__option-main"
@@ -5548,15 +5590,19 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     </span>
                     {(() => {
                       // 关闭「计划」chip 与输入框旁 Plan 开关、`/plan` 命令共用同一套限制
-                      // （planModeGate）：会话进行中 / 暂停 / 等待 ask_user 回答时不可退出。
-                      const closeBlocked = !evaluatePlanToggle(activeSessionId, false).ok;
+                      // （planModeGate）：会话进行中 / 暂停 / 等待 ask_user 回答时不可退出，
+                      // 集群会话建队后永久只读。提示语取闸门给的 reason，别写死忙态文案。
+                      const closeDecision = evaluatePlanToggle(activeSessionId, false);
+                      const closeBlocked = !closeDecision.ok;
                       return (
                         <button
                           type="button"
                           className="chat-agent-tag__close"
                           data-testid="chat-panel-plan-tag-close"
                           disabled={closeBlocked}
-                          aria-label={closeBlocked ? t('plan.closeTagDisabled') : t('plan.closeTag')}
+                          aria-label={
+                            closeDecision.reason ? t(closeDecision.reason) : t('plan.closeTag')
+                          }
                           onClick={() => {
                             applyPlanToggle(activeSessionId, false);
                           }}
@@ -5622,7 +5668,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       className="chat-goal-tag__close"
                       data-testid="chat-panel-swarmflow-tag-close"
                       disabled={swarmflowToggleDisabled}
-                      title={swarmflowToggleDisabled ? t('swarmflow.closeTagDisabled') : t('swarmflow.closeTag')}
+                      title={swarmflowToggleDisabled ? t(swarmflowDisabledHint) : t('swarmflow.closeTag')}
                       onClick={() => {
                         if (swarmflowToggleDisabled) return;
                         if (!activeSessionId) return;

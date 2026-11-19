@@ -241,6 +241,7 @@ def build_permission_rail(
 
     from jiuwenswarm.agents.harness.common.a4p.preflight import unregister_preflight_rail
 
+    bound_channel_id = str(channel_id or "").strip()
     if session_id:
         unregister_preflight_rail(str(session_id).strip())
     inline_permissions = config.get("permissions", {})
@@ -426,8 +427,8 @@ def build_permission_rail(
             )
             channel = (
                 execution_context.channel_id
-                if execution_context is not None
-                else (TOOL_PERMISSION_CHANNEL_ID.get() or "web")
+                if execution_context is not None and execution_context.channel_id
+                else (TOOL_PERMISSION_CHANNEL_ID.get() or bound_channel_id or "web")
             )
 
             tool_call = req.tool_call

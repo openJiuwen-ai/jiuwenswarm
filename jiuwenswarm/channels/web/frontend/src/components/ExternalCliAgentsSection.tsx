@@ -291,6 +291,8 @@ function detectFailureMessage(
 
 type ExternalCliAgentsSectionProps = {
   draftValues: Record<string, string>;
+  /** 持久化配置的快照：自动落闸只依据持久化状态决策，不持久化未保存的草稿路径 */
+  persistedValues: Record<string, string>;
   /** Uploaded custom agents, rendered after Claude and Codex. */
   customAgents?: ExternalCliCustomAgent[];
   /** Installs an uploaded provider wheel and optional CLI executable. */
@@ -327,6 +329,7 @@ type ExternalCliAgentsSectionProps = {
 
 export function ExternalCliAgentsSection({
   draftValues,
+  persistedValues,
   customAgents = [],
   onUploadCustomAgent,
   onRemoveCustomAgent,
@@ -522,6 +525,24 @@ export function ExternalCliAgentsSection({
     [onDetect, onCleanupPathHistories, setAgentError, updateResults],
   );
 
+  // Persists one agent's choice; errors propagate to the caller so it can
+  // decide where to surface them (edit form vs. card message line). Declared
+  // before the detect flows: the manual detect's auto-disable commits through
+  // it (未安装 → 自动落闸), so it must exist before those callbacks.
+  const commit = useCallback(
+    async (cliAgent: ExternalCliAgentKind, choice: ExternalCliAgentChoice) => {
+      if (!onCommitAgent) return;
+      setCommitting((prev) => ({ ...prev, [cliAgent]: true }));
+      setAgentError(cliAgent, '');
+      try {
+        await onCommitAgent(cliAgent, choice);
+      } finally {
+        setCommitting((prev) => ({ ...prev, [cliAgent]: false }));
+      }
+    },
+    [onCommitAgent, setAgentError],
+  );
+
   // Manual "Detect" click: toasts the outcome like the models settings'
   // connection test. Automatic detection calls detect() directly and stays
   // silent.
@@ -532,9 +553,38 @@ export function ExternalCliAgentsSection({
       const result = await detect(cliAgent, cliPath, useBuiltin, { cleanupHistory: true });
       if (result?.status === 'ok' || result?.status === 'warning') {
         showHint(t('config.externalCli.detectSucceeded'));
+        return;
+      }
+      // 检测确认当前配置的可执行文件不存在（missing）或路径不可执行
+      // （unsupported），而持久化配置里 agent 还处于启用态：自动把开关落掉
+      // 并持久化，让状态行"未安装"与开关一致（未安装 → 禁用，重新启用需先
+      // 安装或修正路径）。仅手动检测触发——自动探测不得静默改写配置；
+      // unavailable（可执行文件在、版本命令失败）不落闸，保留手动关闭的
+      // 能力。且仅当探测的就是持久化路径时才落闸：探测未保存的草稿路径
+      // 失败不代表现有配置失效，不能把草稿路径静默持久化（!10406 检视）。
+      const enabledKey = externalCliKey(cliAgent, 'enabled');
+      const useBuiltinKey = externalCliKey(cliAgent, 'use_builtin');
+      const cliPathKey = externalCliKey(cliAgent, 'cli_path');
+      const confirmedMissing =
+        !!result && (result.status === 'missing' || result.status === 'unsupported');
+      const probedPersistedChoice =
+        (cliPath || '').trim() === (persistedValues[cliPathKey] ?? '').trim()
+        && (useBuiltin ?? false) === (persistedValues[useBuiltinKey] === 'true')
+        && persistedValues[enabledKey] === 'true';
+      if (confirmedMissing && probedPersistedChoice) {
+        try {
+          await commit(cliAgent, {
+            enabled: false,
+            useBuiltin: persistedValues[useBuiltinKey] === 'true',
+            cliPath: persistedValues[cliPathKey] ?? '',
+          });
+          showHint(t('config.externalCli.savedHint'));
+        } catch (error) {
+          setAgentError(cliAgent, error instanceof Error ? error.message : String(error));
+        }
       }
     },
-    [detect, showHint, t],
+    [commit, detect, draftValues, persistedValues, setAgentError, showHint, t],
   );
 
   const clearDetectResult = useCallback(
@@ -621,22 +671,6 @@ export function ExternalCliAgentsSection({
       }
     },
     [changeCliPath, detect, draftValues, onSelectFile, t, updateResults],
-  );
-
-  // Persists one agent's choice; errors propagate to the caller so it can
-  // decide where to surface them (edit form vs. card message line).
-  const commit = useCallback(
-    async (cliAgent: ExternalCliAgentKind, choice: ExternalCliAgentChoice) => {
-      if (!onCommitAgent) return;
-      setCommitting((prev) => ({ ...prev, [cliAgent]: true }));
-      setAgentError(cliAgent, '');
-      try {
-        await onCommitAgent(cliAgent, choice);
-      } finally {
-        setCommitting((prev) => ({ ...prev, [cliAgent]: false }));
-      }
-    },
-    [onCommitAgent, setAgentError],
   );
 
   // Preserve explicit choices and prefer PATH when no executable was selected.

@@ -713,7 +713,7 @@ async def test_cancel_accepted_answer_before_dispatch_does_not_resume(system):
     assert len(executor.calls) == 2
 
 
-async def test_restart_expires_questions_without_replaying_answers(system):
+async def test_restart_retains_questions_until_native_state_is_known(system):
     service, executor = system
     task = submit(service, "restart")
     await until(lambda: service.store.read(task["id"])["output_closed"])
@@ -722,7 +722,7 @@ async def test_restart_expires_questions_without_replaying_answers(system):
     try:
         current = restarted.get("user", "voice", task["id"])
         assert current["status"] == "unknown"
-        assert current["interaction"]["state"] == "expired"
+        assert current["interaction"]["state"] == "pending"
         with pytest.raises(ValueError):
             await restarted.answer(
                 "user",
@@ -976,7 +976,10 @@ async def test_voice_answer_on_managed_card_then_queued_task_runs(approval_syste
     assert len(core.runs) == 3, "repeated and stale answers must not execute again"
 
 
-async def test_typed_card_holds_voice_task_until_turn_ends(approval_system):
+@pytest.mark.parametrize("notification", [True, False, "unavailable"])
+async def test_typed_card_holds_voice_task_until_turn_ends(approval_system, monkeypatch, notification):
+    from jiuwenswarm.extensions.video_duplex.backend.tasks import service as module
+
     service, core, store = approval_system
     service.start()
     core.card_live = True  # A typed chat turn left a card on screen.
@@ -984,13 +987,28 @@ async def test_typed_card_holds_voice_task_until_turn_ends(approval_system):
     await until(lambda: core.probes >= 1)
     await asyncio.sleep(0.05)
     assert store.read(task["id"])["status"] == "queued"
-    assert core.probes == 1, "a held task is not re-probed until the card settles"
+    assert core.probes == 1, "waiting cards do not introduce periodic polling"
     tasks, _ = service.snapshot("alice", SCOPE)
     assert tasks[0]["wait_reason"] == "pending_interrupt"
 
     # The user clicks on screen: the resumed typed turn ends.
     core.card_live = False
-    service.interrupt_settled("chat")
+    if notification == "unavailable":
+        original = core.pending_interrupt
+
+        async def disconnected(task):
+            raise ConnectionError("probe unavailable")
+
+        monkeypatch.setattr(core, "pending_interrupt", disconnected)
+        await service.refresh("alice", SCOPE)
+        await asyncio.sleep(0.06)
+        assert not core.runs, "a query failure cannot release a card blocker"
+        monkeypatch.setattr(core, "pending_interrupt", original)
+        await service.refresh("alice", SCOPE)
+    elif notification:
+        service.interrupt_settled("chat")
+    else:
+        await service.refresh("alice", SCOPE)
     await until(lambda: store.read(task["id"])["status"] == "completed")
     assert core.runs == [("打开微信", False)]
 
@@ -1027,7 +1045,8 @@ def manager_for(service, core, channel, monkeypatch):
 
     async def query(client, method, params, session, owner):
         assert session == "chat" and owner == "alice"
-        return {"pending": core.card_live}
+        return {"pending": core.card_live, "card_binding": {"execution_id": "typed"},
+                "card_state": "applied" if channel.dispatched and channel.resumes else "pending"}
 
     return manager, query
 
@@ -1061,19 +1080,10 @@ async def test_voice_answers_typed_card_through_click_path(approval_system, monk
 
     answer = SimpleNamespace(name="jiuwen_task_answer", call_id="a", arguments={
         "job_id": "", "interaction_id": "typed-approval", "answers": ["可以吧"]})
-    rejected = await manager.operate("alice", SCOPE, answer, ws=ws)
-    assert rejected["state"] == "rejected" and not channel.dispatched
-
-    answer.arguments["answers"] = [spoken]
-    accepted = await manager.operate("alice", SCOPE, answer, ws=ws)
-    assert accepted["state"] == "accepted"
-    method, params = channel.dispatched[-1]
-    assert method == "chat.send" and params["session_id"] == "chat" and params["query"] == ""
-    assert params["request_id"] == "typed-approval" and params["source"] == "confirm_interrupt"
-    assert params["answers"] == [{"custom_input": "", "question": "允许执行 rm？",
-                                  "selected_options": [spoken], "card_id": "card-9"}]
-    assert ("video.search.confirmation_closed", {"session_id": "chat", "request_id": "typed-approval"}) \
-        in channel.events, "the on-screen card closes"
+    deferred = await manager.operate("alice", SCOPE, answer, ws=ws)
+    assert deferred["state"] == "client_required"
+    assert deferred["interaction_answer"]["interaction_id"] == "typed-approval"
+    assert not channel.dispatched, "the browser's original question controller owns submission"
     assert store.read(task["id"])["status"] == "queued"
 
     # The resumed typed turn runs, then ends: the queued voice task dispatches.

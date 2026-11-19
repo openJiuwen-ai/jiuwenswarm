@@ -196,7 +196,7 @@ async def test_outer_symphony_timeout_terminates_without_retry(
     ability_manager = AbilityManager()
     ability_manager.add(card)
     orchestration_rail = SymphonyOrchestrationRail(
-        config_base={"symphony": {"enabled": True}},
+        config_base={"symphony": {"orchestration": {"enabled": True}}},
     )
     resilience_rail = ToolCallResilienceRail()
     callback_manager = _LifecycleCallbackManager(

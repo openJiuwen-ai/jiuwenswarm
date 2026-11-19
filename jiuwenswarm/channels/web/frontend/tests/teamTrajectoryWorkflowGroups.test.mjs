@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  attachWorkflowGroupsToHostLanes,
   groupTeamMemberLanesByWorkflowRun,
   memberNameOfSubjectId,
   parseEngineSwarmflowMemberId,
@@ -121,6 +122,30 @@ test('workflowRunLaneStatus maps run statuses onto lane statuses', () => {
 test('shortWorkflowRunId keeps ids within eight characters', () => {
   assert.equal(shortWorkflowRunId('wf_7e02a12cabdf'), 'wf_7e02a');
   assert.equal(shortWorkflowRunId('short'), 'short');
+});
+
+test('attachWorkflowGroupsToHostLanes binds each group to one lane per member', () => {
+  // Interleaved task runs of one member share a subjectId; the group must
+  // attach to the lane it matched, not render in every lane with that id.
+  const aliceT1 = lane('team-member:sess:t:alice', 'alice');
+  const bobT2 = lane('team-member:sess:t:bob', 'bob');
+  const aliceT3 = lane('team-member:sess:t:alice', 'alice');
+  const aliceGroup = { runId: 'wf_aaa', name: '调研', shortId: 'wf_aaa', status: 'completed', executor: 'alice', lanes: [] };
+  const bobGroup = { runId: 'wf_bbb', name: '评审', shortId: 'wf_bbb', status: 'running', executor: 'bob', lanes: [] };
+  const plan = attachWorkflowGroupsToHostLanes([aliceGroup, bobGroup], [aliceT1, bobT2, aliceT3]);
+  assert.deepEqual(plan.attached.get(aliceT1), [aliceGroup]);
+  assert.equal(plan.attached.get(aliceT3), undefined);
+  assert.deepEqual(plan.attached.get(bobT2), [bobGroup]);
+  assert.deepEqual(plan.trailing, []);
+});
+
+test('attachWorkflowGroupsToHostLanes trails groups with no matching lane', () => {
+  const leader = lane('team-member:sess:t:team-leader', 'leader');
+  const group = { runId: 'wf_ccc', name: '归档', shortId: 'wf_ccc', status: 'idle', executor: 'gone-member', lanes: [] };
+  const anonymous = { ...group, runId: 'wf_ddd', executor: undefined };
+  const plan = attachWorkflowGroupsToHostLanes([group, anonymous], [leader]);
+  assert.equal(plan.attached.size, 0);
+  assert.deepEqual(plan.trailing, [group, anonymous]);
 });
 
 test('parseEngineSwarmflowMemberId splits the wf_<run>:<call key> id', () => {

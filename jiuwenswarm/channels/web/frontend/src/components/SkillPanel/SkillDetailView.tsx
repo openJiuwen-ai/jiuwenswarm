@@ -524,7 +524,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
           <Switch
             checked={selectedSkill.enabled !== false}
             onChange={() => onToggleSkillDisabled(selectedSkill.name)}
-            disabled={actionTarget === `toggle:${selectedSkill.name}` || isPackBlocked}
+            disabled={Boolean(actionTarget?.startsWith('toggle:')) || isPackBlocked}
           />
           <span
             className="text-sm text-text whitespace-nowrap"
@@ -559,7 +559,9 @@ export function SkillDetailView(props: SkillDetailViewProps) {
         </button>
       ) : null}
     </div>,
-    selectedSkill.description || t('skills.noDescription'),
+    <div className="whitespace-pre-line">
+      {selectedSkill.description || t('skills.noDescription')}
+    </div>,
     <>
       {/* 企业版：只展示当前版本；社区版保留版本管理（可切换历史副本） */}
       <DetailSection

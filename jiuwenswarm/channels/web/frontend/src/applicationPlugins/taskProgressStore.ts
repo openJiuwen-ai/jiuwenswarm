@@ -1,5 +1,19 @@
 import { create } from 'zustand';
 import type { TeamTask } from '../stores/sessionStore';
+import type { UserAnswer } from '../types';
+
+type QuestionController = (sessionId: string, requestId: string, answers: UserAnswer[], source?: string) => Promise<boolean>;
+let questionController: QuestionController | undefined;
+
+export function registerApplicationQuestionController(controller: QuestionController): () => void {
+  questionController = controller;
+  return () => { if (questionController === controller) questionController = undefined; };
+}
+
+export function answerApplicationQuestion(sessionId: string, requestId: string, answers: UserAnswer[], source?: string): Promise<boolean> {
+  if (!questionController) return Promise.reject(new Error('Question submission is unavailable'));
+  return questionController(sessionId, requestId, answers, source);
+}
 
 export type ApplicationTaskStatus = 'unknown' | 'queued' | 'running' | 'cancelling' | 'cancelled' | 'completed' | 'failed';
 export type ApplicationTaskAction = 'cancel' | 'next' | 'before' | 'preempt';

@@ -70,23 +70,27 @@ await build({
               setMicrophoneMuted(value) { globalThis.__duplexHarness.mic.push(value); },
               setSpeakerMuted(value) { globalThis.__duplexHarness.speaker.push(value); },
               stopScreenSharing() { props.onScreenSharingChange(false); },
+              async startScreenSharing() { props.onScreenSharingChange(true); },
               stop() { globalThis.__duplexHarness.stops += 1; props.onRuntimeState('idle'); },
               deliverToolResult(payload) { globalThis.__duplexHarness.mediaResults.push(payload); },
               deliverQuestion(payload) { globalThis.__duplexHarness.mediaQuestions.push(payload); },
+              deliverChatApproval(payload) { globalThis.__duplexHarness.mediaQuestions.push(payload); },
               deliverTaskInteraction(payload) { globalThis.__duplexHarness.interactions.push(payload); }
             }));
             return null;
           });`
             : path.endsWith('webClient')
               ? `
-          export const webClient = { on(...args) { return globalThis.__duplexHarness.on(...args); } };
+          export const webClient = { on(...args) { return globalThis.__duplexHarness.on(...args); },
+            onStateChange(callback) { return globalThis.__duplexHarness.on('connection', callback); } };
           export const webRequest = (...args) => globalThis.__duplexHarness.request(...args);
           export const requestAgentDetail = async () => null;
           export const requestPhaseAgents = async () => [];`
               : path.endsWith('featureFlag')
                 ? 'export const useTaskFullDuplexEnabled = () => true; export const setTaskFullDuplexEnabled = () => {};'
                 : `export const useApplicationTaskStore = { getState: () => globalThis.__duplexHarness.tasks };
-                   export const registerApplicationTaskController = () => () => {};`,
+                   export const registerApplicationTaskController = () => () => {};
+                   export const answerApplicationQuestion = (...args) => globalThis.__duplexHarness.answerQuestion(...args);`,
         }));
       },
     },
@@ -106,6 +110,8 @@ const {
   toggleTaskDuplexMicrophone,
   toggleTaskDuplexSpeaker,
   stopTaskDuplexScreenSharing,
+  startTaskDuplexScreenSharing,
+  answerDuplexQuestion,
   useChatStore,
   useSessionStore,
   buildArtifacts,
@@ -173,6 +179,7 @@ beforeEach(async () => {
     emit(event, payload) {
       listeners.get(`video.search.${event}`)?.forEach((fn) => fn({ payload }));
     },
+    reconnect() { listeners.get('connection')?.forEach((fn) => fn('ready')); },
     async request(method, params) {
       this.requests.push({ method, params });
       if (method === 'session.assets.register') return { assets: params.items.map((item, index) => ({ ...item, asset_id: String(index), name: 'report', kind: 'document', created_at: 1 })) };
@@ -183,6 +190,7 @@ beforeEach(async () => {
   };
   globalThis.__duplexHarness = harness;
   useChatStore.setState({ runtimes: {} });
+  useChatStore.getState().ensureRuntime('conversation-a');
   useSessionAssetsStore.setState({ bySession: {} });
   props = {
     sessionId: 'conversation-a',
@@ -233,15 +241,52 @@ test('headless task runtime forwards waiting forms only to their active conversa
   const interaction = { id: 'form-a', request_id: 'request-a', state: 'pending', source: 'ask_user_interrupt',
     questions: [{ question: '什么时候执行？' }, { question: '内容是什么？' }] };
   await event('progress', job(scope, { status: 'waiting_user', interaction }));
-  assert.deepEqual(harness.interactions.at(-1).interaction, interaction);
+  assert.equal(harness.mediaQuestions.length, 0, 'task projections do not own cards');
+  await act(async () => useChatStore.getState().enqueuePendingQuestion('conversation-a', {
+    ...interaction, duplexJobId: 'job-a',
+  }));
+  assert.equal(harness.mediaQuestions.at(-1).request_id, interaction.request_id);
   assert.match(harness.tasks.sessions['conversation-a'][0].detail, /什么时候执行/);
-  const count = harness.interactions.length;
+  const count = harness.mediaQuestions.length;
   await event('progress', job('foreign-scope', { status: 'waiting_user', interaction }));
-  assert.equal(harness.interactions.length, count);
+  assert.equal(harness.mediaQuestions.length, count);
   await act(async () => stopTaskFullDuplex());
   await event('progress', job(scope, { sequence: 3, status: 'waiting_user', interaction }));
-  assert.equal(harness.interactions.length, count, 'stopped media must not receive voice questions');
+  assert.equal(harness.mediaQuestions.length, count, 'stopped media must not receive voice questions');
 });
+
+for (const source of ['ask_user_interrupt', 'confirm_interrupt', 'permission_interrupt']) {
+  test(`voice card answers delegate to the native controller: ${source}`, async () => {
+    const card = { request_id: 'original-card', duplexJobId: 'job-a', source,
+      questions: [{ question: 'Continue?', options: [{ label: 'Yes' }], card_id: 'native-alias' }] };
+    useChatStore.getState().enqueuePendingQuestion('conversation-a', card);
+    const submissions = [];
+    harness.answerQuestion = async (...args) => { submissions.push(args); return true; };
+    const submit = () => answerDuplexQuestion('conversation-a',
+      source === 'ask_user_interrupt' ? 'jiuwen_form_answer' : 'jiuwen_task_answer',
+      { job_id: 'job-a', answers: ['Yes'] });
+    if (source === 'permission_interrupt') {
+      await assert.rejects(submit, /manual click/);
+      assert.equal(submissions.length, 0);
+    } else {
+      await assert.rejects(() => answerDuplexQuestion('conversation-a', 'jiuwen_task_answer', {
+        job_id: 'job-a', interaction_id: 'expired-card', answers: ['Yes'],
+      }), /no longer pending/);
+      assert.equal(submissions.length, 0, 'a stale voice answer cannot target the next card');
+      assert.deepEqual(await submit(), { state: 'accepted', applied: false, interaction_id: 'original-card',
+        message: 'Submission receipt only; completion follows the original chat events.' });
+      assert.equal(submissions[0][0], 'conversation-a');
+      assert.equal(submissions[0][1], 'original-card');
+      assert.equal(submissions[0][3], source);
+      assert.equal(submissions[0][2][0].question, 'Continue?');
+      harness.answerQuestion = async () => false;
+      assert.equal((await submit()).state, 'rejected');
+    }
+    assert.equal(useChatStore.getState().getRuntime('conversation-a').pendingQuestions[0].request_id, 'original-card',
+      'only the native handler consumes or retains the card');
+    assert.equal(timers.size, 0, 'task state has no periodic synchronizer');
+  });
+}
 
 test('queue pushes update waiting positions and delayed snapshots cannot undo a reorder', async () => {
   const scope = await start();
@@ -297,8 +342,11 @@ test('a pending approval card reaches the live voice session, but not from repla
   await event('started', job(scope));
   await event('progress', job(scope, { status: 'waiting_user', interaction: card }));
   await event('progress', job(scope, { status: 'waiting_user', interaction: card, replay: true }));
+  await act(async () => useChatStore.getState().enqueuePendingQuestion('conversation-a', {
+    ...card, duplexJobId: 'job-a',
+  }));
   assert.equal(harness.mediaQuestions.length, 1);
-  assert.equal(harness.mediaQuestions[0].interaction.source, 'confirm_interrupt');
+  assert.equal(harness.mediaQuestions[0].source, 'confirm_interrupt');
 
   await act(async () => stopTaskFullDuplex());
   await event('progress', job(scope, { status: 'waiting_user', interaction: { ...card, id: 'interaction-b' } }));
@@ -319,7 +367,7 @@ test('a stopped conversation receives and persists a completed result exactly on
   assert.equal(harness.mediaResults.length, 0);
 });
 
-test('polling recovers missing completion events after media stops, including tool history', async () => {
+test('reconnect restores the task projection without replaying native history', async () => {
   const scope = await start();
   await event('started', job(scope));
   await act(async () => stopTaskFullDuplex());
@@ -350,14 +398,16 @@ test('polling recovers missing completion events after media stops, including to
     }),
   );
   await act(async () => {
-    for (const tick of timers.values()) tick();
+    harness.recoveryJobs = [harness.statuses.get('job-a')];
+    useChatStore.getState().ensureRuntime('conversation-a');
+    harness.reconnect();
   });
-  assert.equal(harness.messages[0][2], '计算结果为 42');
-  assert.equal(harness.tools.length, 2);
-  assert.equal(harness.tools[0][1].id, harness.tools[1][1].toolCallId);
+  assert.equal(harness.tasks.sessions['conversation-a'][0].status, 'completed');
+  assert.equal(harness.messages.length, 0);
+  assert.equal(harness.tools.length, 0);
   await event('completed', harness.statuses.get('job-a'));
-  assert.equal(harness.messages.length, 1);
-  assert.equal(harness.tools.length, 2);
+  assert.equal(harness.messages.length, 0);
+  assert.equal(harness.tools.length, 0);
 });
 
 test('switching conversations keeps old jobs attached to their owner and never plays them in the new conversation', async () => {
@@ -599,7 +649,7 @@ test('files arriving after media stops or conversation switches populate origina
   );
 });
 
-test('a missed file push is recovered from terminal status and newer tokens retain one artifact', async () => {
+test('history restoration owns files while reconnect restores task status', async () => {
   const scope = await start();
   await event('started', job(scope));
   await act(async () => stopTaskFullDuplex());
@@ -624,11 +674,12 @@ test('a missed file push is recovered from terminal status and newer tokens reta
   ];
   harness.statuses.set('job-a', job(scope, { status: 'failed', error: '后续步骤失败', progress_history: entries }));
   await act(async () => {
-    for (const tick of timers.values()) tick();
+    harness.recoveryJobs = [harness.statuses.get('job-a')];
+    useChatStore.getState().setLoadingHistory('conversation-a', true);
+    useChatStore.getState().setLoadingHistory('conversation-a', false);
   });
-  const artifacts = buildArtifacts(useChatStore.getState().getRuntime('conversation-a').messages);
-  assert.equal(artifacts.length, 1);
-  assert.equal(artifacts[0].downloadUrl, '/file-api/download?token=renewed');
+  assert.equal(harness.tasks.sessions['conversation-a'][0].status, 'failed');
+  assert.equal(harness.requests.filter(item => item.method === 'video.conversation.append').length, 0);
   assert.equal(harness.mediaResults.length, 0);
 });
 
@@ -636,7 +687,7 @@ test('a missed file push is recovered from terminal status and newer tokens reta
 test('recovery restores persisted tasks without replaying history or audio', async () => {
   const scope = 'task-duplex:conversation-a';
   harness.recoveryJobs = [job(scope, { status: 'completed', sequence: 8, display_result: 'Saved result' })];
-  await act(async () => { for (const run of timers.values()) run(); });
+  await act(async () => harness.reconnect());
   assert.equal(harness.tasks.sessions['conversation-a'][0].status, 'completed');
   assert.equal(harness.messages.length, 0);
   assert.equal(harness.mediaResults.length, 0);
@@ -657,6 +708,8 @@ test('voice starts without screen capture and forwards mute controls without sto
   });
   assert.deepEqual(harness.mic, [true, false]);
   assert.deepEqual(harness.speaker, [true]);
+  await act(async () => startTaskDuplexScreenSharing());
+  assert.equal(harness.stops, 0);
   assert.equal(harness.starts.length, 1);
   await act(async () => stopTaskFullDuplex());
   await act(async () => toggleTaskDuplexMicrophone());

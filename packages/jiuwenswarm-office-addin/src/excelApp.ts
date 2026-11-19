@@ -1,4 +1,7 @@
-/** Excel: its identity, and the contract of the ``office-excel`` app's package directory. */
+/**
+ * Excel and WPS Spreadsheets: their identities, and the contract of the package directory both apps
+ * (``office-excel``, ``wps-spreadsheet``) load.
+ */
 import contractProfile from '@office/excel/profile.json';
 import contractTools from '@office/excel/tools.json';
 
@@ -14,4 +17,8 @@ export const EXCEL: OfficeApp = {
   flatResults: new Set(['get_cell_ranges', 'get_range_as_csv', 'set_cell_range', 'copy_paste_range']),
   // A sheet's cells read in one call run long; the industry add-in gives a spreadsheet tool 40,000 characters.
   resultChars: 40_000,
+};
+
+export const WPS_SPREADSHEET: OfficeApp = {
+  ...EXCEL, platform: 'wps', host: 'WPS Spreadsheets', clientApp: 'wps-spreadsheet',
 };

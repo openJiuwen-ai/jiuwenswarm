@@ -186,7 +186,6 @@ export function TaskFullDuplexRuntime({
   const runtimeSessionIdRef = useRef<string | null>(null);
   const processedCoreProgressRef = useRef<Map<string, Set<number>>>(new Map());
   const conversationJobsRef = useRef(new TaskDuplexJobs());
-  const pollingJobsRef = useRef(new Set<string>());
   const coreToolIdsRef = useRef<Map<string, Map<string, string>>>(new Map());
   const deliveredFilesRef = useRef(new Map<string, Map<string, string>>());
   const persistedAssistantStreamsRef = useRef<Set<string>>(new Set());
@@ -375,11 +374,10 @@ export function TaskFullDuplexRuntime({
         stored_status: stored?.status, stored_sequence: stored?.sequence,
         stored_queue_version: stored?.queueVersion, stored_queue_position: stored?.queuePosition,
       });
-      if (runtimeSessionIdRef.current === targetSessionId)
-        panelRef.current?.deliverTaskInteraction(payload);
-      if (payload.replay) return;
-      if (payload.interaction && runtimeSessionIdRef.current === targetSessionId)
-        panelRef.current?.deliverQuestion(payload);
+      if (payload.replay) {
+        processedCoreProgressRef.current.set(jobId, new Set(entries.map(entry => entry.sequence)));
+        return;
+      }
       const processed =
         processedCoreProgressRef.current.get(jobId) || new Set<number>();
       processedCoreProgressRef.current.set(jobId, processed);
@@ -621,7 +619,6 @@ export function TaskFullDuplexRuntime({
 
   // Subscribe and recover both progress and final answers independently of media lifetime.
   useEffect(() => {
-    let disposed = false;
     const unsubscribe = (
       ["started", "progress", "completed", "failed", "cancelled"] as const
     ).map((event) =>
@@ -629,29 +626,7 @@ export function TaskFullDuplexRuntime({
         handleCoreAgentProgress(event, payload),
       ),
     );
-    const timer = window.setInterval(() => {
-      for (const { payload } of conversationJobsRef.current.pending()) {
-        const jobId = payload.job_id!;
-        if (pollingJobsRef.current.has(jobId)) continue;
-        pollingJobsRef.current.add(jobId);
-        void webRequest<SearchJobPayload>(
-          "video.search.status",
-          {
-            job_id: jobId,
-            search_session_id: payload.search_session_id,
-          },
-          { timeoutMs: 5000 },
-        )
-          .then((payload) => {
-            if (!disposed) handleCoreAgentProgress("progress", payload);
-          })
-          .catch(() => undefined)
-          .finally(() => pollingJobsRef.current.delete(jobId));
-      }
-    }, 3000);
     return () => {
-      disposed = true;
-      window.clearInterval(timer);
       unsubscribe.forEach((off) => off());
     };
   }, [handleCoreAgentProgress]);
@@ -660,9 +635,10 @@ export function TaskFullDuplexRuntime({
     if (!sessionId || sessionId === "new") return;
     let disposed = false;
     let loading = false;
+    let refreshPending = false;
     const scope = conversationJobsRef.current.bind(sessionId);
     const recover = async () => {
-      if (loading) return;
+      if (loading) { refreshPending = true; return; }
       loading = true;
       try {
         let offset: number | null = 0;
@@ -674,21 +650,31 @@ export function TaskFullDuplexRuntime({
           }
           offset = page.next_offset;
         }
-      } catch { /* Next connection/poll retries the persisted snapshot. */ }
-      finally { loading = false; }
+      } catch { /* Reconnect or the next history load retries the snapshot. */ }
+      finally {
+        loading = false;
+        if (refreshPending && !disposed) { refreshPending = false; void recover(); }
+      }
     };
     void recover();
-    const timer = window.setInterval(() => void recover(), 10000);
-    return () => { disposed = true; window.clearInterval(timer); };
+    const offConnection = webClient.onStateChange((state) => {
+      if (state === "ready") void recover();
+    });
+    const offHistory = useChatStore.subscribe((state, previous) => {
+      if (previous.runtimes[sessionId]?.isLoadingHistory && !state.runtimes[sessionId]?.isLoadingHistory)
+        void recover();
+    });
+    return () => { disposed = true; offConnection(); offHistory(); };
   }, [sessionId, handleCoreAgentProgress]);
 
-  // Typed-chat approval cards are not duplex jobs; forward them so voice can answer them too.
-  const chatApprovalsRef = useRef(new Map<string, { request_id: string; source?: string; questions?: unknown[] }>());
+  // The native question queue owns both typed and delegated cards, including history restoration.
+  const chatApprovalsRef = useRef(new Map<string, { request_id: string; duplexJobId?: string; source?: string; questions?: unknown[] }>());
   const syncChatApprovals = useCallback(() => {
     const target = runtimeSessionIdRef.current;
-    const pending = new Map<string, { request_id: string; source?: string; questions?: unknown[] }>();
-    for (const card of (target && useChatStore.getState().getRuntime(target)?.pendingQuestions) || []) {
-      if (!card.duplexJobId && card.source && APPROVAL_SOURCES.has(card.source)) pending.set(card.request_id, card);
+    const pending = new Map<string, { request_id: string; duplexJobId?: string; source?: string; questions?: unknown[] }>();
+    for (const card of ((target && useChatStore.getState().getRuntime(target)?.pendingQuestions) || []).slice(0, 1)) {
+      if (card.source !== "permission_interrupt" && (APPROVAL_SOURCES.has(card.source || "")
+          || ["", "ask_user", "ask_user_interrupt"].includes(card.source || ""))) pending.set(card.request_id, card);
     }
     for (const [id, card] of chatApprovalsRef.current)
       if (!pending.has(id)) panelRef.current?.deliverChatApproval({ ...card, state: "answered" });

@@ -1,6 +1,7 @@
 import { useRef, useState, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Pencil } from 'lucide-react';
+import { deriveDrawerCanSubmit } from './drawerSubmitGuard';
 import ScheduleEditor from './ScheduleEditor';
 import ModelPicker from '../ModelPicker';
 import ModeSelector from './ModeSelector';
@@ -126,6 +127,8 @@ interface CronTaskDrawerProps {
   targetOptions: { value: string; label: string; disabled?: boolean }[];
   onClose: () => void;
   onSubmit: (value: CronTaskFormValue) => void;
+  /** 提交中标记：请求在途时禁用"确认"，防止慢响应窗口内重复点击发出第二个请求（对齐 HeartbeatTaskDrawer） */
+  submitting?: boolean;
   onSwitchToManual?: () => void;
   onSwitchToTemplate?: () => void;
 }
@@ -190,6 +193,7 @@ export default function CronTaskDrawer({
   targetOptions,
   onClose,
   onSubmit,
+  submitting = false,
   onSwitchToManual,
   onSwitchToTemplate,
 }: CronTaskDrawerProps) {
@@ -254,7 +258,7 @@ export default function CronTaskDrawer({
   // 单独提示（而不是塞进"还需要填写"的缺失字段列表里，语义对不上）
   const parsedSchedule = form.cronExpr.trim() ? cronExprToSchedule(form.cronExpr) : null;
   const scheduleAlreadyExpired = parsedSchedule ? isOnceScheduleExpired(parsedSchedule, form.timezone) : false;
-  const canSubmit = missingFieldLabels.length === 0 && !scheduleAlreadyExpired;
+  const canSubmit = deriveDrawerCanSubmit(missingFieldLabels, scheduleAlreadyExpired, submitting);
   const missingFieldsHint =
     missingFieldLabels.length > 0
       ? t('cron.drawer.missingFieldsHint', { fields: missingFieldLabels.join(t('cron.schedule.listSeparator')) })

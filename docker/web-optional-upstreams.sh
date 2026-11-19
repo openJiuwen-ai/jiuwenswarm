@@ -40,9 +40,31 @@ if [ "${JIUWENSWARM_EDITION:-personal}" = "enterprise" ]; then
             if ($i ~ /^[^.]+\.svc\./) { print $i; exit }
         }
     }' /etc/resolv.conf)
+    backend_target=${USER_WEB_BACKEND_TARGET:-}
     if [ -n "$service_domain" ]; then
         idp_target=$(qualify_service_target "$idp_target")
         manager_target=$(qualify_service_target "$manager_target")
+        backend_target=$(qualify_service_target "$backend_target")
+    fi
+    if [ -n "$backend_target" ]; then
+        printf 'set $user_backend_target "%s";\n' "${backend_target%/}" >> "$CONF"
+        cat >> "$CONF" <<'EOF_BACKEND'
+location ^~ /idp/ {
+    proxy_pass $user_backend_target;
+}
+location ^~ /manager-api/v1/user-console/ {
+    rewrite ^/manager-api/(.*)$ /api/$1 break;
+    proxy_pass $user_backend_target;
+}
+location = /manager-api { return 404; }
+location ^~ /manager-api/ { return 404; }
+location = /file-api { return 307 /file-api/; }
+location = /share-api { return 307 /share-api/; }
+EOF_BACKEND
+        for file in user-http.inc user-webchannel-http.inc user-ws.inc; do
+            printf 'proxy_pass $user_backend_target;\n' > "/etc/nginx/optional-upstreams/$file"
+        done
+        exit 0
     fi
     cat >> "$CONF" <<EOF_TARGETS
 set \$user_idp_target "${idp_target%/}";

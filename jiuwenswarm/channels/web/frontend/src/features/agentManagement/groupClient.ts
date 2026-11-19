@@ -120,7 +120,8 @@ export function createLiveAgentGroupManagementClient(): AgentGroupManagementClie
     },
     async installGroup(id) {
       try {
-        await webRequest('agent_groups.install', { id });
+        // Allow the server's 220-second install deadline and time to return its result.
+        await webRequest('agent_groups.install', { id }, { timeoutMs: 240_000 });
       } catch (error) {
         return rethrowGroupError(error);
       }

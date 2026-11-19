@@ -62,7 +62,7 @@ describe('the PowerPoint contract the pane shares with the backend', () => {
     expect(declared.resource).toEqual(
       { key: DOCUMENT_ID, display_name: 'Deck.pptx', kind: 'presentation', host_vendor: 'wps' });
     expect(declared.capabilities.supported_tools).toEqual(
-      contractTools.map(tool => tool.name).filter(name => name !== 'edit_slide_master'));
+      contractTools.map(tool => tool.name).filter(name => !['edit_slide_master', 'insert_icon'].includes(name)));
   });
 });
 

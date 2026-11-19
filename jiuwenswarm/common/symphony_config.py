@@ -1,313 +1,108 @@
-"""Runtime configuration for Symphony orchestration."""
+"""宿主目录、产品缺省值和会话上下文到 Core 统一配置的唯一解析入口。"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
+from copy import deepcopy
+import os
+from pathlib import Path, PurePath
 from typing import Any
 
+from openjiuwen.symphony import OrchestrationConfig, SymphonyConfig
+from pydantic import ValidationError
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 
-
-DEFAULT_FINGERPRINT_EXTRACTION_WORKERS = 1
-DEFAULT_FINGERPRINT_EXTRACTION_BATCH_SIZE = 1
-DEFAULT_FINGERPRINT_EXTRACTION_BODY_LIMIT = None
-DEFAULT_FINGERPRINT_SCAN_MAX_DEPTH = None
-
-DEFAULT_BUILD_WORKERS = 1
-DEFAULT_BUILD_MATCHER_BATCH_SIZE = 12
-DEFAULT_BUILD_MAX_CANDIDATES_PER_SKILL_RELATION = 32
-DEFAULT_BUILD_REQUIRE_CONSENSUS = False
-DEFAULT_BUILD_MIN_EDGE_CONFIDENCE = 0.5
-
 DEFAULT_SYMPHONY_ENABLED = False
-DEFAULT_EVOLUTION_ENABLED = False
-
-DEFAULT_FLOW_MIN_SUCCESSES = 3
-DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE = 0.8
-
-DEFAULT_ORCHESTRATION_MODE = "fast"
-DEFAULT_ORCHESTRATION_TOP_K = 3
-DEFAULT_ORCHESTRATION_MAX_DEPTH = 4
-DEFAULT_ORCHESTRATION_MIN_EDGE_CONFIDENCE = 0.5
+DEFAULT_EVOLUTION_ENABLED = OrchestrationConfig().experience.enabled
 
 
-@dataclass(frozen=True)
-class SymphonyPathsConfig:
-    skills_root: Path
-    graph_dir: Path
-
-
-@dataclass(frozen=True)
-class FingerprintScanConfig:
-    max_depth: int | None = DEFAULT_FINGERPRINT_SCAN_MAX_DEPTH
-
-
-@dataclass(frozen=True)
-class FingerprintExtractionConfig:
-    workers: int = DEFAULT_FINGERPRINT_EXTRACTION_WORKERS
-    batch_size: int = DEFAULT_FINGERPRINT_EXTRACTION_BATCH_SIZE
-    body_limit: int | None = DEFAULT_FINGERPRINT_EXTRACTION_BODY_LIMIT
-
-
-@dataclass(frozen=True)
-class SymphonyFingerprintConfig:
-    scan: FingerprintScanConfig
-    extraction: FingerprintExtractionConfig
-
-
-@dataclass(frozen=True)
-class SymphonyBuildConfig:
-    workers: int = DEFAULT_BUILD_WORKERS
-    batch_size: int = DEFAULT_BUILD_MATCHER_BATCH_SIZE
-    max_candidates_per_skill_relation: int = (
-        DEFAULT_BUILD_MAX_CANDIDATES_PER_SKILL_RELATION
-    )
-    require_consensus: bool = DEFAULT_BUILD_REQUIRE_CONSENSUS
-    min_edge_confidence: float = DEFAULT_BUILD_MIN_EDGE_CONFIDENCE
-
-
-@dataclass(frozen=True)
-class SymphonyFlowDistillConfig:
-    """Flow 沉淀开关与阈值；成功次数同时约束 Core 的两个判级阶段。"""
-
-    enabled: bool = DEFAULT_EVOLUTION_ENABLED
-    min_successes: int = DEFAULT_FLOW_MIN_SUCCESSES
-    min_pack_success_rate: float = DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE
-
-
-@dataclass(frozen=True)
-class SymphonyEvolutionConfig:
-    flow: SymphonyFlowDistillConfig = SymphonyFlowDistillConfig()
-
-
-def evolution_flow_enabled(config: Any) -> bool:
-    """Read the Flow switch, including test doubles that only set ``evolution.enabled``."""
-
-    evolution = getattr(config, "evolution", None)
-    flow = getattr(evolution, "flow", None)
-    if flow is not None and hasattr(flow, "enabled"):
-        return bool(flow.enabled)
-    return bool(getattr(evolution, "enabled", False))
-
-
-@dataclass(frozen=True)
-class SymphonyOrchestrationConfig:
-    mode: str = DEFAULT_ORCHESTRATION_MODE
-    top_k: int = DEFAULT_ORCHESTRATION_TOP_K
-    max_depth: int = DEFAULT_ORCHESTRATION_MAX_DEPTH
-    min_edge_confidence: float = DEFAULT_ORCHESTRATION_MIN_EDGE_CONFIDENCE
-
-
-@dataclass(frozen=True)
-class SymphonyConfig:
-    enabled: bool
-    paths: SymphonyPathsConfig
-    fingerprint: SymphonyFingerprintConfig
-    build: SymphonyBuildConfig
-    evolution: SymphonyEvolutionConfig
-    orchestration: SymphonyOrchestrationConfig
-
-
-def load_symphony_config(config: dict[str, Any] | None = None) -> SymphonyConfig:
-    """Load and normalize ``config.yaml`` Symphony settings."""
-
-    if config is None:
-        from jiuwenswarm.common.config import get_config
-
-        config = get_config() or {}
-    raw = config.get("symphony") if isinstance(config, dict) else {}
-    return symphony_config_from_dict(raw if isinstance(raw, dict) else {})
-
-
-def default_symphony_config() -> SymphonyConfig:
-    return symphony_config_from_dict({})
-
-
-def symphony_config_from_dict(raw: dict[str, Any] | None) -> SymphonyConfig:
-    data = _mapping(raw)
-    paths = _mapping(data.get("paths"))
-    fingerprint = _mapping(data.get("fingerprint"))
-    scan = _mapping(fingerprint.get("scan"))
-    extraction = _mapping(fingerprint.get("extraction"))
-    build = _mapping(data.get("build"))
-    evolution = _mapping(data.get("evolution"))
-    flow_cfg = _mapping(evolution.get("flow"))
-    flow_enabled = flow_cfg.get("enabled")
-    if flow_enabled is None:
-        flow_enabled = evolution.get("enabled")
-    orchestration = _mapping(data.get("orchestration"))
-
-    return SymphonyConfig(
-        # Discover SkillPack enables its required orchestration infrastructure;
-        # users must not need a second, hidden switch. Disabling discovery does
-        # not disable independently configured Symphony functionality.
-        enabled=(
-            resolve_symphony_enabled(data.get("enabled"))
-            or resolve_symphony_evolution_enabled(flow_enabled)
-        ),
-        paths=SymphonyPathsConfig(
-            skills_root=_resolve_path(
-                paths.get("skills_root"),
-                get_agent_workspace_dir() / "skills",
-            ),
-            graph_dir=_resolve_path(
-                paths.get("graph_dir"),
-                get_agent_workspace_dir() / "symphony" / "graph",
-            ),
-        ),
-        fingerprint=SymphonyFingerprintConfig(
-            scan=FingerprintScanConfig(
-                max_depth=_optional_non_negative_int(
-                    scan.get("max_depth"),
-                    DEFAULT_FINGERPRINT_SCAN_MAX_DEPTH,
-                ),
-            ),
-            extraction=FingerprintExtractionConfig(
-                workers=_positive_int(
-                    extraction.get("workers"),
-                    DEFAULT_FINGERPRINT_EXTRACTION_WORKERS,
-                ),
-                batch_size=_positive_int(
-                    extraction.get("batch_size"),
-                    DEFAULT_FINGERPRINT_EXTRACTION_BATCH_SIZE,
-                ),
-                body_limit=_optional_body_limit(
-                    extraction.get("body_limit"),
-                    DEFAULT_FINGERPRINT_EXTRACTION_BODY_LIMIT,
-                ),
-            ),
-        ),
-        build=SymphonyBuildConfig(
-            workers=_positive_int(build.get("workers"), DEFAULT_BUILD_WORKERS),
-            batch_size=_positive_int(
-                build.get("batch_size"),
-                DEFAULT_BUILD_MATCHER_BATCH_SIZE,
-            ),
-            max_candidates_per_skill_relation=_positive_int(
-                build.get("max_candidates_per_skill_relation"),
-                DEFAULT_BUILD_MAX_CANDIDATES_PER_SKILL_RELATION,
-            ),
-            require_consensus=_bool(
-                build.get("require_consensus"),
-                DEFAULT_BUILD_REQUIRE_CONSENSUS,
-            ),
-            min_edge_confidence=_clamped_float(
-                build.get("min_edge_confidence"),
-                DEFAULT_BUILD_MIN_EDGE_CONFIDENCE,
-            ),
-        ),
-        evolution=SymphonyEvolutionConfig(
-            flow=SymphonyFlowDistillConfig(
-                # enabled 移到 flow 下；旧配置（enabled 在 evolution 层）向后兼容
-                enabled=resolve_symphony_evolution_enabled(flow_enabled),
-                min_successes=_positive_int(
-                    flow_cfg.get("min_successes"),
-                    DEFAULT_FLOW_MIN_SUCCESSES,
-                ),
-                min_pack_success_rate=_clamped_float(
-                    flow_cfg.get("min_pack_success_rate"),
-                    DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE,
-                ),
-            ),
-        ),
-        orchestration=SymphonyOrchestrationConfig(
-            mode=_orchestration_mode(
-                orchestration.get("mode"),
-                DEFAULT_ORCHESTRATION_MODE,
-            ),
-            top_k=_positive_int(
-                orchestration.get("top_k"),
-                DEFAULT_ORCHESTRATION_TOP_K,
-            ),
-            max_depth=_positive_int(
-                orchestration.get("max_depth"),
-                DEFAULT_ORCHESTRATION_MAX_DEPTH,
-            ),
-            min_edge_confidence=_clamped_float(
-                orchestration.get("min_edge_confidence"),
-                DEFAULT_ORCHESTRATION_MIN_EDGE_CONFIDENCE,
-            ),
-        ),
-    )
-
-
-def _mapping(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
-def _resolve_path(value: Any, default: Path) -> Path:
-    text = str(value or "").strip()
-    if not text:
-        return default.resolve()
-    return Path(text).expanduser().resolve()
-
-
-def _positive_int(value: Any, default: int) -> int:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return max(1, parsed)
-
-
-def _optional_non_negative_int(value: Any, default: int | None) -> int | None:
-    if value is None or str(value).strip() == "":
-        return default
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return max(0, parsed)
-
-
-def _optional_body_limit(value: Any, default: int | None) -> int | None:
-    if value is None or str(value).strip() == "":
-        return default
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return default
-    return parsed if parsed > 0 else None
-
-
-def _clamped_float(value: Any, default: float) -> float:
-    try:
-        parsed = float(value)
-    except (TypeError, ValueError):
-        return default
-    return max(0.0, min(1.0, parsed))
-
-
-def _bool(value: Any, default: bool) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return default
-    text = str(value).strip().lower()
-    if text in {"1", "true", "yes", "on"}:
-        return True
-    if text in {"0", "false", "no", "off"}:
-        return False
-    return default
+def _merge(base: dict[str, Any], explicit: dict[str, Any]) -> dict[str, Any]:
+    result = deepcopy(base)
+    for key, value in explicit.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = _merge(result[key], value)
+        else:
+            result[key] = deepcopy(value)
+    return result
 
 
 def resolve_symphony_enabled(value: Any) -> bool:
-    """Resolve an explicit switch or inherit the code default for ``null``."""
-
-    return _bool(value, DEFAULT_SYMPHONY_ENABLED)
+    """null 继承产品缺省；非布尔值交由严格配置校验拒绝。"""
+    return DEFAULT_SYMPHONY_ENABLED if value is None else value
 
 
 def resolve_symphony_evolution_enabled(value: Any) -> bool:
-    """Resolve an explicit evolution switch or inherit the code default."""
-
-    return _bool(value, DEFAULT_EVOLUTION_ENABLED)
+    return DEFAULT_EVOLUTION_ENABLED if value is None else value
 
 
-def _orchestration_mode(value: Any, default: str) -> str:
-    text = str(value or "").strip().lower()
-    if not text:
-        return default
-    if text in {"fast", "beam"}:
-        return text
-    raise ValueError(f"Unsupported Symphony orchestration mode: {value}")
+def load_symphony_config(
+    config: dict[str, Any] | None = None,
+    *,
+    context_window_tokens: int | None = None,
+) -> SymphonyConfig:
+    if config is None:
+        from jiuwenswarm.common.config import get_config
+        config = get_config() or {}
+    return symphony_config_from_dict(config.get("symphony", {}), context_window_tokens=context_window_tokens)
+
+
+def symphony_config_from_dict(
+    raw: dict[str, Any] | None,
+    *,
+    context_window_tokens: int | None = None,
+) -> SymphonyConfig:
+    """显式 YAML 值优先；不识别旧字段或静默丢弃未知配置。"""
+    workspace = get_agent_workspace_dir()
+    defaults = {
+        "capability": {
+            "sources": [{"type": "skill", "root": str(workspace / "skills")}],
+            "fingerprint": {"extraction": {
+                "llm_enabled": True, "max_concurrency": 1, "batch_size": 1,
+                "max_output_tokens": None,
+            }},
+        },
+        "storage": {"artifact_root": str(workspace / "symphony" / "runtime")},
+        "retrieval": {"enabled": False, "use_existing_index": True},
+        "orchestration": {
+            "enabled": False, "min_edge_confidence": 0.5,
+            "build": {"max_concurrency": 1, "matching": {"batch_size": 12, "require_consensus": False}},
+        },
+    }
+    if context_window_tokens is not None:
+        defaults["retrieval"]["prompt"] = {"context_window_tokens": context_window_tokens}
+    if raw is not None and not isinstance(raw, dict):
+        raise ValueError("symphony must be an object")
+    from jiuwenswarm.common.config import resolve_env_vars
+    data = _merge(defaults, resolve_env_vars(raw or {}))
+    for group in ("retrieval", "orchestration"):
+        node = data.get(group)
+        if isinstance(node, dict) and node.get("enabled") is None:
+            node["enabled"] = False
+    orchestration = data.get("orchestration")
+    if isinstance(orchestration, dict):
+        experience = orchestration.get("experience")
+        if isinstance(experience, dict) and experience.get("enabled") is None:
+            experience.pop("enabled", None)
+        if isinstance(experience, dict) and experience.get("enabled") is True and orchestration.get("enabled") is False:
+            orchestration["enabled"] = True
+        plan = orchestration.get("plan")
+        if isinstance(plan, dict) and plan.get("dynamic_graph_enabled") is None:
+            plan.pop("dynamic_graph_enabled", None)
+    capability = data.get("capability")
+    sources = capability.get("sources") if isinstance(capability, dict) else None
+    if isinstance(sources, list):
+        for source in sources:
+            if isinstance(source, dict) and isinstance(source.get("root"), (str, PurePath)):
+                root = os.path.expandvars(str(source["root"])).strip()
+                source["root"] = str(Path(root).expanduser().resolve()) if root else root
+    storage = data.get("storage")
+    if isinstance(storage, dict):
+        artifact_root = storage.get("artifact_root")
+        if artifact_root in ("", None):
+            artifact_root = defaults["storage"]["artifact_root"]
+        if isinstance(artifact_root, str):
+            storage["artifact_root"] = str(Path(os.path.expandvars(artifact_root)).expanduser().resolve())
+    try:
+        return SymphonyConfig.model_validate(data)
+    except ValidationError as exc:
+        errors = [{**error, "loc": ("symphony", *error["loc"])} for error in exc.errors(include_url=False)]
+        raise ValidationError.from_exception_data("Swarm Symphony configuration", errors) from exc
