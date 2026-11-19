@@ -1647,13 +1647,10 @@ class AgentWebSocketServer:
         try:
             # Disabled Flow still supports Skill discovery through the toolkit;
             # it does not need the heavy recovery service at process startup.
-            from jiuwenswarm.common.symphony_config import (
-                evolution_flow_enabled,
-                load_symphony_config,
-            )
+            from jiuwenswarm.common.symphony_config import load_symphony_config
 
             config = await asyncio.to_thread(load_symphony_config)
-            if not config.enabled or not evolution_flow_enabled(config):
+            if not config.orchestration.experience_enabled:
                 return True
             import importlib
 

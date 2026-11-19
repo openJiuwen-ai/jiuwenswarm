@@ -171,15 +171,6 @@ _ACCEPTED_KEYS: dict[tuple[str, ...], str] = {
         "an unconfigured main agent stays unbounded. Distributed team and "
         "yuanrong configs keep an explicit value as a per-deployment choice."
     ),
-    ("symphony", "fingerprint", "normalization"): (
-        "Retired. SymphonyConfig builds `fingerprint` from `scan` and "
-        "`extraction` only; no reader in this tree, in openjiuwen, or in the "
-        "frontend."
-    ),
-    ("symphony", "skill_retrieval", "retrieve"): (
-        "Retired. Nothing fetches skill_retrieval.retrieve; the block survives "
-        "only where a writer round-trips the file it sits in."
-    ),
     ("modes", "team", "jiuwen_team", "enable_permissions"): (
         "Retired deliberately. The team-level switch was removed from this "
         "template when _resolve_enable_permissions stopped reading it and took "

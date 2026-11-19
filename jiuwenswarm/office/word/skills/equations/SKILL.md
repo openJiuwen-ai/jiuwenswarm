@@ -3,7 +3,7 @@ name: equations
 description: Read before inserting or editing an equation in a Word document.
 ---
 
-**Insert real equations.** An equation is an Office Math object, inserted as OOXML (an `m:oMath` element inside a paragraph) with `insertOoxml` in `execute_office_js`. Never fake one with plain text, Unicode superscripts or an image, unless the user asks for that.
+**Insert real equations.** An equation is an Office Math object, inserted as OOXML (an `m:oMath` element inside a paragraph) with `insertOoxml` in `execute_office_js`, or with `range.InsertXML` in `execute_wps_js`. Never fake one with plain text, Unicode superscripts or an image, unless the user asks for that.
 
 **Build the OOXML carefully.** Wrap the math in a complete package with the `m` (math) and `w` (wordprocessing) namespaces declared. Use `m:oMathPara` for a display equation on its own line and a bare `m:oMath` inside a run's paragraph for an inline one. Escape `&`, `<` and `>` in text. Structures: fractions `m:f`, superscripts and subscripts `m:sSup`, `m:sSub`, `m:sSubSup`, radicals `m:rad`, n-ary operators such as sums and integrals `m:nary`, delimiters `m:d`, matrices `m:m`.
 

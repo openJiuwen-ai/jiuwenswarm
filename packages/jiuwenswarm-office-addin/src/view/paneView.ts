@@ -67,12 +67,21 @@ export function mountPane(
   };
   const trayActions = { continueHere: () => void controller.continueHere(), dismissAlert: () => controller.dismissAlert() };
   let announcedTray = new Map<string, string>();
+  /** The tray line the announcer last read out. */
+  let spoken: TrayItem | undefined;
   const paintTray = (state: PaneState, now: number): void => {
     const items = trayItems(state, now, trayActions, words.noun);
     tray.update(items);
     // A line is read out when it appears or says something new; a countdown's ticks are not news.
     const news = items.find(item => announcedTray.get(item.key) !== shape(item));
-    if (news) announce(news.text);
+    if (news) {
+      announce(news.text);
+      spoken = news;
+    } else if (spoken && !items.some(({ key }) => key === spoken?.key)) {
+      // A line gone from the tray, as the connection's once it is back, is not left to be read in the announcer.
+      if (announcer.textContent === spoken.text) announce('');
+      spoken = undefined;
+    }
     announcedTray = new Map(items.map(item => [item.key, shape(item)]));
   };
 

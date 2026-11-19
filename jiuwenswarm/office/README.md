@@ -3,11 +3,14 @@
 Office 任务窗格在 AgentServer 侧的能力：工具合同、在任务窗格执行的客户端工具、人设与 skills、
 插入用的会话资产。`server/client_attachments/registry.py` 把应用编号 `office-powerpoint`、`office-word`、
 `office-excel` 分别登记为包目录 `powerpoint/`、`word/`、`excel/`，`wps-presentation`（WPS 演示）也登记为
-`powerpoint/`；每个目录既是合同，也是对话加载的 agent template（`manifest.json`）。
+`powerpoint/`，`wps-spreadsheet`（WPS 表格）也登记为 `excel/`，`wps-writer`（WPS 文字）也登记为 `word/`；
+每个目录既是合同，也是对话加载的 agent template（`manifest.json`）。
 
 每个工具的 `host_requirements` 按平台（`office`、`wps`）写宿主要具备什么（`sets`：Office.js 需求集合；
 `worker`：要 Worker）。工具只在写了的平台上运行：登记表给每个应用一个平台，attach 拒绝声明本平台
-没有的工具；窗格只声明本平台写了、条件满足、自己实现了的工具。只有 WPS 能做的工具以后只写 `wps`。
+没有的工具；窗格只声明本平台写了、条件满足、自己实现了的工具。只有 WPS 能做的工具只写 `wps`：WPS 不跑
+Office.js，`execute_office_js` 只写 `office`，WPS 表格和 WPS 文字改用只写 `wps` 的 `execute_wps_js`（在 WPS
+对象模型上运行模型的代码）。
 
 ## 目录
 
@@ -18,7 +21,8 @@ client_tools.py        TaskPaneTool(ClientTool)：build_request 判断能否执�
 review.py              独立审稿：视觉复核（选审稿模型、审稿调用 60s、判定、几何摘要）与 explain_edits 的依据核对
 rails.py               OfficeToolsRail：注册所在包的工具，第一次模型调用时按 supported_tools 去掉窗格跑不了的；
                        把窗格随消息发来的文档状态作为一次 read_surface_context 调用和结果加进对话
-excel_reminders.py     ExcelReminderRail：Excel 回合要结束时，写了没读回、改了图表没看、调用失败没重试，各提醒一次
+excel_reminders.py     ExcelReminderRail：Excel 和 WPS 表格回合要结束时，写了没读回、改了图表没看、调用失败没重试，
+                       各提醒一次
 assets.py              publish_office_asset 与会话资产（office_assets/，经 /file-api/download 下发）
 documents.py           list_open_documents：同一用户其他已连接的文档及其对话
 icons.py               search_icons 与随包图标集（fluent_icons/：Fluent UI System Icons 24px regular+filled，MIT；

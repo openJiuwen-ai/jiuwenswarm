@@ -30,7 +30,8 @@ from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, AgentRa
 
 _READ_TOOLS = frozenset({"get_cell_ranges", "get_range_as_csv"})
 _WRITE_TOOLS = frozenset({"set_cell_range", "copy_paste_range"})
-_CODE_TOOL = "execute_office_js"
+# Office.js code, and code on WPS's object model (VBA's, written as JavaScript).
+_CODE_TOOLS = frozenset({"execute_office_js", "execute_wps_js"})
 
 # Where code writes and reads, by its text (whether it wrote at all is the task pane's mutation record): a
 # property assignment or a mutating call writes; loading values or text, or rendering an image, after the last
@@ -40,7 +41,8 @@ _CODE_WRITE = re.compile(
     r"|autoFit|refresh|apply|sort|group|ungroup)\w*\s*\(", re.IGNORECASE)
 _CODE_IMAGE = re.compile(r"\.getImage\s*\(", re.IGNORECASE)
 _CODE_READ = re.compile(
-    r"""\.load\(\s*\[?\s*["'][^"']*(?:values|text)|freezePanes\.getLocation|\.getImage\s*\(""", re.IGNORECASE)
+    r"""\.load\(\s*\[?\s*["'][^"']*(?:values|text)|freezePanes\.getLocation|\.getImage\s*\("""
+    r"|\.(?:Value2?|Text|Formula)\b(?!\s*=(?!=))", re.IGNORECASE)
 _CODE_CHART_WRITE = re.compile(
     r"\.(?:charts|shapes)\.add\w*\s*\(|\w+\.(?:top|left|width|height)\s*=(?!=)|\.setPosition\s*\("
     r"|\.(?:charts|shapes)\b[^\n;]*\.delete\s*\(", re.IGNORECASE)
@@ -56,13 +58,13 @@ _REMINDERS = {
     "read_back": (
         "You changed the workbook this turn and have not read back the cells you changed. The user sees the "
         "displayed text, after number formats and locale, so check what is displayed, not only the value. Read "
-        "them back with get_cell_ranges or get_range_as_csv, or load values or text in execute_office_js; read "
+        "them back with get_cell_ranges or get_range_as_csv, or read values or text in your code; read "
         "freeze panes, protection and visibility directly. Call the work done only when what you read matches "
         "the request; otherwise say what you did not check."),
     "look": (
         "You changed a chart or a shape this turn and have not looked at it. Value reads cannot show layout, "
-        "overlap or size: render it with getImage in execute_office_js before you describe how it looks, or say "
-        "that you did not check it visually."),
+        "overlap or size: render it (getImage in execute_office_js) before you describe how it looks; where you "
+        "cannot render it, say that you did not check it visually."),
 }
 
 
@@ -81,7 +83,7 @@ class _Turn:
             self.failures.append((name, batch))
             return
         self.failures = [(n, b) for n, b in self.failures if n != name or b >= batch]
-        code = str(arguments.get("code") or "") if name == _CODE_TOOL else ""
+        code = str(arguments.get("code") or "") if name in _CODE_TOOLS else ""
         if name in _READ_TOOLS or (code and _reads_back(code)):
             self.unread_writes = 0
         elif _left_unread(name, content):
@@ -123,7 +125,7 @@ def _chart_writes(code: str) -> Iterator[re.Match[str]]:
 
 def _left_unread(name: str, content: Any) -> bool:
     """Whether the call wrote cells its own result does not show."""
-    if name == _CODE_TOOL:
+    if name in _CODE_TOOLS:
         return _code_wrote(content)
     return name in _WRITE_TOOLS and not _checked_itself(name, content)
 

@@ -59,3 +59,24 @@ async def test_a_turn_ends_on_open_work_only_after_one_reminder(
     seen = reminders(pane.model)
     assert len(seen) == len(expected)
     assert all(text in reminder for text, reminder in zip(expected, seen))
+
+
+@pytest.mark.parametrize(("code", "expected"), [
+    ('const cell = workbook.Worksheets.Item(1).Range("A1"); cell.Value2 = 1;', ["read back the cells"]),
+    ('const cell = workbook.Worksheets.Item(1).Range("A1"); cell.Value2 = 1; return cell.Text;', []),
+])
+async def test_code_on_wps_reads_back_what_it_wrote_by_reading_the_cells(conversation, attach_pane, code,
+                                                                         expected) -> None:
+    attach_pane("book-a", ["execute_wps_js"], client_app="wps-spreadsheet")
+    call = ToolCall(id="code-1", type="function", name="execute_wps_js",
+                    arguments=json.dumps({"code": code, "explanation": "put 1"}))
+
+    async with conversation([[call]], session_id="book-a", package=EXCEL_PACKAGE) as pane:
+        await pane.agent.register_rail(ExcelReminderRail())
+        requests = await pane.turn("put 1 in A1")
+        applied = {"content": '{"success": true, "mutation": {"state": "applied"}}'}
+        assert await pane.answer((requests[0], applied)) == []
+
+    seen = reminders(pane.model)
+    assert len(seen) == len(expected)
+    assert all(text in reminder for text, reminder in zip(expected, seen))

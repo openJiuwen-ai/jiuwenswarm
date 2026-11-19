@@ -666,8 +666,10 @@ from jiuwenswarm.agents.harness.common.tools import (
     SkillToolkit,
     build_model_discovery_settings,
     is_skill_retrieval_enabled,
-    skill_sources_from_manager,
     SymphonyToolkit,
+)
+from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
+    SKILL_RETRIEVAL_SESSION_PROFILE_VERSION, skill_sources_from_directories,
 )
 from jiuwenswarm.agents.harness.common.rails.symphony.retrieval_context_processor import (
     symphony_retrieval_compact_processor_spec,
@@ -2322,6 +2324,7 @@ class JiuWenSwarmDeepAdapter:
         self._skill_retrieval_tools_registered: bool = False
         self._skill_retrieval_tools: list[Any] = []
         self._skill_retrieval_toolkit: SkillRetrievalToolkit | None = None
+        self._retired_skill_retrieval_toolkits: list[SkillRetrievalToolkit] = []
         self._skill_retrieval_environment: Any | None = None
         self._skill_retrieval_prompt_rail: SkillRetrievalPromptRail | None = None
         # Frozen when this adapter/session is created. Config reloads are
@@ -2691,7 +2694,7 @@ class JiuWenSwarmDeepAdapter:
                 reason,
             )
             return {
-                "schema_version": 1,
+                "schema_version": SKILL_RETRIEVAL_SESSION_PROFILE_VERSION,
                 "session_id": sid,
                 "enabled": False,
                 "profile_recovery_error": reason,
@@ -2703,7 +2706,10 @@ class JiuWenSwarmDeepAdapter:
             if path.stat().st_size > 16 * 1024 * 1024:
                 return _unrecoverable("profile_too_large")
             payload = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(payload, dict) or payload.get("schema_version") != 1:
+            if (
+                not isinstance(payload, dict)
+                or payload.get("schema_version") != SKILL_RETRIEVAL_SESSION_PROFILE_VERSION
+            ):
                 return _unrecoverable("invalid_profile_schema")
             checksum = str(payload.get("profile_checksum") or "")
             if (
@@ -2732,7 +2738,7 @@ class JiuWenSwarmDeepAdapter:
             # replace an already restored profile with a newly inferred one.
             if self._restored_skill_retrieval_profile is not None:
                 return
-            profile: dict[str, Any] = {"schema_version": 1}
+            profile: dict[str, Any] = {"schema_version": SKILL_RETRIEVAL_SESSION_PROFILE_VERSION}
         else:
             profile_builder = getattr(toolkit, "session_profile", None)
             if not callable(profile_builder):
@@ -7681,7 +7687,7 @@ class JiuWenSwarmDeepAdapter:
         )
         return (
             actual_name == self._skill_retrieval_context_model_name
-            and settings.context_window_tokens
+            and settings.prompt.context_window_tokens
             == self._skill_retrieval_context_window_tokens
         )
 
@@ -7705,51 +7711,23 @@ class JiuWenSwarmDeepAdapter:
         ).strip()
         settings = build_model_discovery_settings(config_base, model=selected_model)
         self._skill_retrieval_context_model_name = model_name
-        self._skill_retrieval_context_window_tokens = settings.context_window_tokens
+        self._skill_retrieval_context_window_tokens = settings.prompt.context_window_tokens
         self._skill_retrieval_settings = settings
 
     def _live_skill_retrieval_disabled_skills(self) -> list[str]:
         """Return the persisted deny-list used to materialize the live SkillFS.
 
-        Skill-management RPCs and chat sessions can be served by different
-        adapter instances that share the state file but not the manager's
-        in-memory ``_state`` snapshot. Reload before every SkillFS refresh so a
-        toggle made through the UI is reflected by the next inventory command.
+        Read each visible collection's state on every refresh so changes made
+        by another adapter are applied without consulting a different library
+        or a manager's stale in-memory snapshot.
         The full disabled list is safe here because the filesystem scan itself
         intersects it with Skills that are currently present.
         """
 
-        manager = self._skill_manager
-        if manager is None:
-            return []
-        reload_state = getattr(manager, "reload_state", None)
-        if callable(reload_state):
-            try:
-                reload_state()
-            except Exception:
-                logger.warning(
-                    "[JiuWenSwarmDeepAdapter] failed to reload Skill state "
-                    "before retrieval",
-                    exc_info=True,
-                )
-        list_disabled = getattr(manager, "list_disabled_skills", None)
-        if not callable(list_disabled):
-            list_disabled = getattr(
-                manager,
-                "list_execution_disabled_skills",
-                None,
-            )
-        if not callable(list_disabled):
-            return []
-        try:
-            return [str(name) for name in list_disabled() if str(name).strip()]
-        except Exception:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] failed to read disabled Skills "
-                "before retrieval",
-                exc_info=True,
-            )
-            return []
+        from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
+
+        return sorted({name for directory in self._skill_scan_dirs()
+                       for name in load_execution_disabled_skills(skills_dir=Path(directory))})
 
     def _get_or_create_skill_retrieval_toolkit(self) -> SkillRetrievalToolkit:
         toolkit = self._skill_retrieval_toolkit
@@ -7759,20 +7737,12 @@ class JiuWenSwarmDeepAdapter:
             # Match SkillUseRail exactly: selected MCP-bundled Skills are part
             # of this session's directory, while unselected MCPs stay hidden.
             skill_directories=self._skill_scan_dirs,
-            # Shared taxonomy generations are built only from JiuwenSwarm's
-            # stable installed inventory. Session-selected MCP Skills remain
-            # visible through the live provider above and appear in a stale
-            # taxonomy under /newly_installed_skills.
-            index_skill_directories=lambda: [str(get_agent_skills_dir())],
             disabled_skills=self._live_skill_retrieval_disabled_skills,
-            source_by_name=lambda: (
-                skill_sources_from_manager(self._skill_manager)
-                if self._skill_manager is not None
-                else {}
-            ),
+            source_by_name=lambda: skill_sources_from_directories(self._skill_scan_dirs()),
             session_scope=self._skill_retrieval_session_scope(),
             config_base=self._config_base_cache,
             settings=getattr(self, "_skill_retrieval_settings", None),
+            model=getattr(self, "_model", None),
             auto_build_index=True,
             frozen_profile=getattr(self, "_restored_skill_retrieval_profile", None),
         )
@@ -7817,6 +7787,12 @@ class JiuWenSwarmDeepAdapter:
         self._skill_retrieval_tools = tools
         self._skill_retrieval_tools_registered = registered
         if not enabled:
+            toolkit = self._skill_retrieval_toolkit
+            if toolkit is not None:
+                toolkit.close()
+                retired = getattr(self, "_retired_skill_retrieval_toolkits", [])
+                retired.append(toolkit)
+                self._retired_skill_retrieval_toolkits = retired
             self._skill_retrieval_toolkit = None
             self._skill_retrieval_environment = None
             self._drop_tool_names_from_runtime(_SKILL_RETRIEVAL_TOOL_NAMES)
@@ -8239,6 +8215,9 @@ class JiuWenSwarmDeepAdapter:
             logger.info("[JiuWenSwarmDeepAdapter] SkillRetrievalPromptRail registered")
             return
 
+        for toolkit in getattr(self, "_retired_skill_retrieval_toolkits", []):
+            await toolkit.aclose()
+        self._retired_skill_retrieval_toolkits = []
         if rail is None:
             return
         try:
@@ -8290,13 +8269,7 @@ class JiuWenSwarmDeepAdapter:
         try:
             from jiuwenswarm.runtime.symphony.skill_retrieval import SkillTaxonomyRuntime
 
-            await asyncio.to_thread(
-                SkillTaxonomyRuntime(
-                    records_provider=lambda: (),
-                    index_root=previous_root,
-                    config_base=config_base,
-                ).cancel
-            )
+            await SkillTaxonomyRuntime.cancel_at(previous_root)
         except Exception:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] unable to cancel the disabled Skill "
@@ -8491,7 +8464,7 @@ class JiuWenSwarmDeepAdapter:
     def _sync_symphony_tools_for_runtime(self, config_base: dict[str, Any]) -> None:
         """Reconcile discovery tools without replacing unchanged Symphony tools."""
         try:
-            enabled = bool(load_symphony_config(config_base).enabled)
+            enabled = load_symphony_config(config_base).orchestration.enabled
             desired = mark_stateless(SymphonyToolkit().get_tools(config_base)) if enabled else []
         except Exception as exc:
             logger.warning(
@@ -8522,7 +8495,7 @@ class JiuWenSwarmDeepAdapter:
             return
         try:
             config = load_symphony_config(self._config_base_cache)
-            enabled = config.enabled and config.evolution.flow.enabled
+            enabled = config.orchestration.experience_enabled
         except Exception as exc:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] SymphonyGraphEvolutionRail config reload failed: %s",
@@ -10931,7 +10904,10 @@ class JiuWenSwarmDeepAdapter:
                 skills_dir=skills_dirs,
                 skill_mode=skill_mode,
                 include_tools=include_tools,
-                disabled_skills=self._skill_manager.list_execution_disabled_skills(),
+                disabled_skills=(
+                    self._skill_manager.list_execution_disabled_skills()
+                    if self._skill_manager is not None else None
+                ),
             )
             logger.info("[JiuWenSwarmDeepAdapter] SkillUseRail create success")
         except Exception as exc:
@@ -11971,28 +11947,19 @@ class JiuWenSwarmDeepAdapter:
         前把已连接 MCP 的 skill 目录并入 scan roots，让新连接 MCP 的 skills
         对 agent 可见。
         """
-        # disabled skills: use list_disabled_skills (NOT list_execution_disabled_skills)
-        # — the latter filters to "registered" (installed_plugins/local_skills) and
-        # excludes MCP bundled skills, so a disabled MCP's skills would stay
-        # visible. list_disabled_skills returns ALL skill_configs entries with
-        # enabled=False, including MCP skills. Fall back to
-        # list_execution_disabled_skills for older SkillManager variants / test
-        # mocks that only implement the latter.
-        sm = self._skill_manager
-        # reload_state first: MCP disable/enable writes skill_configs via a
-        # different SkillManager instance, so this adapter's _skill_manager._state
-        # is stale. Reload from disk so list_disabled_skills sees the just-toggled
-        # MCP skills.
-        _reload = getattr(sm, "reload_state", None)
-        if _reload is not None:
+        manager = self._skill_manager
+        # Another manager may have written the state during an MCP change.
+        reload_state = getattr(manager, "reload_state", None)
+        if reload_state is not None:
             try:
-                _reload()
+                reload_state()
             except Exception:  # noqa: BLE001
                 pass
-        _list_disabled = getattr(sm, "list_disabled_skills", None)
-        if _list_disabled is None:
-            _list_disabled = getattr(sm, "list_execution_disabled_skills", lambda: [])
-        new_disabled = set(_list_disabled())
+        # Include disabled MCP skills, which are outside the installed Skill list.
+        list_disabled = getattr(manager, "list_disabled_skills", None)
+        if list_disabled is None:
+            list_disabled = getattr(manager, "list_execution_disabled_skills", list)
+        new_disabled = set(list_disabled())
         # Rebuild the rail's scan roots from scratch (agent skills dir +
         # currently-connected MCP skill dirs). Previously this preserved the
         # rail's existing roots and only appended new MCP dirs, so a
@@ -12119,13 +12086,13 @@ class JiuWenSwarmDeepAdapter:
         """Build the single-Agent execution-graph producer."""
 
         config = load_symphony_config(self._config_base_cache)
-        if not config.enabled or not config.evolution.flow.enabled:
+        if not config.orchestration.experience_enabled:
             return None
         try:
             from jiuwenswarm.runtime.symphony.experience import _build_graph_evolution_rail
 
             return _build_graph_evolution_rail(
-                config.paths.graph_dir,
+                (Path(config.storage.artifact_root) / "graph"),
                 capture_mode="agent",
                 model=self._model,
                 channel_id=lambda: getattr(self, "_channel_id", None),
@@ -13213,10 +13180,10 @@ class JiuWenSwarmDeepAdapter:
             )
             if self._skill_rail.skill_mode != new_skill_mode:
                 self._skill_rail.skill_mode = new_skill_mode
-            # Update disabled_skills.
-            new_disabled = set(self._skill_manager.list_execution_disabled_skills())
-            if self._skill_rail.disabled_skills != new_disabled:
-                self._skill_rail.disabled_skills = new_disabled
+            if self._skill_manager is not None:
+                new_disabled = set(self._skill_manager.list_execution_disabled_skills())
+                if self._skill_rail.disabled_skills != new_disabled:
+                    self._skill_rail.disabled_skills = new_disabled
 
         if not self._filesystem_rail_enabled_for_profile():
             self._filesystem_rail = None
@@ -16047,6 +16014,15 @@ class JiuWenSwarmDeepAdapter:
         else:
             await self.close_moa_runtime()
         finally:
+            toolkits = list(getattr(self, "_retired_skill_retrieval_toolkits", []))
+            toolkit = getattr(self, "_skill_retrieval_toolkit", None)
+            if toolkit is not None:
+                toolkits.append(toolkit)
+            for toolkit in toolkits:
+                await toolkit.aclose()
+            self._retired_skill_retrieval_toolkits = []
+            self._skill_retrieval_toolkit = None
+            self._skill_retrieval_environment = None
             snapshot = getattr(self, "_rsi_selected_package_snapshot", None)
             if snapshot is not None:
                 snapshot.cleanup()

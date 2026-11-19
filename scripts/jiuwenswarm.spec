@@ -321,7 +321,6 @@ hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdo
     "lxml.etree",
     "PIL._imaging",
     "bcrypt._bcrypt",
-    "faiss",
     "chromadb_rust_bindings",
     "tiktoken_ext",  # tiktoken 编码插件（cl100k_base 等）
     "tiktoken_ext.openai_public",

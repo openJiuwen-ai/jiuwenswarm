@@ -1628,7 +1628,7 @@ async def test_discovery_toggle_hot_reloads_tools_and_capture_without_resetting_
         pass
 
     adapter = interface_deep.JiuWenSwarmDeepAdapter()
-    config = {"symphony": {"enabled": True, "evolution": {"flow": {"enabled": False}}}}
+    config = {"symphony": {"orchestration": {"enabled": True, "experience": {"enabled": False}}}}
     monkeypatch.setattr(interface_deep, "get_config", lambda: deepcopy(config))
     adapter._config_base_cache = deepcopy(config)
     orchestration = adapter._build_symphony_orchestration_rail()
@@ -1674,7 +1674,7 @@ async def test_discovery_toggle_hot_reloads_tools_and_capture_without_resetting_
         monkeypatch.setattr(adapter, name, MagicMock())
 
     try:
-        config["symphony"]["evolution"]["flow"]["enabled"] = True
+        config["symphony"]["orchestration"]["experience"]["enabled"] = True
         assert direct_route_mode(adapter._config_base_cache) == "off"
         assert orchestration._direct_route_mode() == "confirm"
         await adapter.reload_agent_config(config, {})
@@ -1701,7 +1701,7 @@ async def test_discovery_toggle_hot_reloads_tools_and_capture_without_resetting_
         assert adapter._symphony_orchestration_rail is orchestration
         assert orchestration._active_states[scope] is state
 
-        config["symphony"]["evolution"]["flow"]["enabled"] = False
+        config["symphony"]["orchestration"]["experience"]["enabled"] = False
         assert direct_route_mode(adapter._config_base_cache) == "confirm"
         assert orchestration._direct_route_mode() == "off"
         await adapter.reload_agent_config(config, {})
@@ -1714,7 +1714,7 @@ async def test_discovery_toggle_hot_reloads_tools_and_capture_without_resetting_
         assert state.valid and state.pack_route.token is token and state.pack_route.member_started
         assert direct_route_mode(orchestration._resolve_config_base()) == "off"
 
-        config["symphony"]["evolution"]["flow"]["enabled"] = True
+        config["symphony"]["orchestration"]["experience"]["enabled"] = True
         await adapter.reload_agent_config(config, {})
         assert capture.call_count == 2
         assert instance.is_registered_rail(adapter._symphony_graph_evolution_rail)
