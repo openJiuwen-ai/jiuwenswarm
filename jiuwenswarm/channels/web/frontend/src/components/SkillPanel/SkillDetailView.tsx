@@ -317,7 +317,8 @@ export function SkillDetailView(props: SkillDetailViewProps) {
           </button>
         )}
       </div>,
-      hubDetail?.data?.short_desc || hubSkill.short_desc || t('skills.noDescription'),
+      /* 基本信息：description 可能含换行（YAML 字面量块），须保留换行渲染（#6672） */
+      <p className="whitespace-pre-line">{hubDetail?.data?.short_desc || hubSkill.short_desc || t('skills.noDescription')}</p>,
       /* 页签：内容详情 / 包含技能（仅技能包显示"包含技能"） */
       <div data-testid={`${tid}-tabs-section`} className="flex flex-col min-h-0">
         <PageToolbar style={{ marginTop: 0, flexShrink: 0 }}>
@@ -559,7 +560,8 @@ export function SkillDetailView(props: SkillDetailViewProps) {
         </button>
       ) : null}
     </div>,
-    selectedSkill.description || t('skills.noDescription'),
+    /* 基本信息：description 可能含换行（YAML 字面量块），须保留换行渲染（#6672） */
+    <p className="whitespace-pre-line">{selectedSkill.description || t('skills.noDescription')}</p>,
     <>
       {/* 企业版：只展示当前版本；社区版保留版本管理（可切换历史副本） */}
       <DetailSection
