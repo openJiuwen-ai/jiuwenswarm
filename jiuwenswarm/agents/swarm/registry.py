@@ -135,6 +135,8 @@ STATUSLINE_SETUP_AGENT = _code_subagents.STATUSLINE_SETUP_AGENT
 
 # Swarm-owned rails declared in ``builtin_rails``.
 RESPONSE_PROMPT = _builtin_rails.RESPONSE_PROMPT
+TEAM_ACCEL_PROMPT = _builtin_rails.TEAM_ACCEL_PROMPT
+TEAM_ACCEL_SYS = _builtin_rails.TEAM_ACCEL_SYS
 STREAM_EVENT = _builtin_rails.STREAM_EVENT
 AVATAR_PROMPT = _builtin_rails.AVATAR_PROMPT
 WORKSPACE_QUOTA = _builtin_rails.WORKSPACE_QUOTA
@@ -176,6 +178,14 @@ def register_swarm_providers() -> None:
     wires the build-context seed factory. Safe to call multiple times, but only
     the first call performs the registration.
     """
+    # Always (re)assert the accel worktree guard patch: early returns must not
+    # leave a process that imported registry before accel with the stock guard.
+    from jiuwenswarm.agents.harness.team.accel.worktree_sys_rail_patch import (
+        apply_team_accel_sys_rail_patch,
+    )
+
+    apply_team_accel_sys_rail_patch()
+
     global _REGISTERED
     if _REGISTERED:
         return
@@ -233,6 +243,8 @@ __all__ = [
     "TEAM_TTSE",
     "MEMBER_TTSE",
     "RESPONSE_PROMPT",
+    "TEAM_ACCEL_PROMPT",
+    "TEAM_ACCEL_SYS",
     "SYS_OPERATION",
     "STREAM_EVENT",
     "TASK_PLANNING",

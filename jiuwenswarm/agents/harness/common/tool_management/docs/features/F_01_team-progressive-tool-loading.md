@@ -22,8 +22,9 @@
 | 维度 | 单 agent（yaml `eager_tools`） | 团队成员（代码常量） |
 |---|---|---|
 | 协作 | 无 | `send_message` / 任务板 / `build_team` 常驻 |
-| Shell | 仅 `bash` | `bash` + `powershell` |
-| 记忆 | 五件套 + external 常驻 | 仅 `memory_search` / `memory_get`；写入延迟 |
+| Shell | 仅 `bash` | 仅 `bash`（`powershell` 延迟；bash 可 `shell_type=powershell`） |
+| 记忆 | 五件套 + external 常驻 | 仅 `memory_search` 常驻；`memory_get` / 写入延迟 |
+| 任务板完成 | — | `verify_task` 常驻（与 `view_task` 同热路径） |
 | 子代理 | `task_tool` + 六个 `subagent_*` 常驻 | `task_tool` 仅 GP 开启时追加；`subagent_*` 延迟 |
 | 待办 | `todo_*` 常驻 | 延迟（团队走任务板） |
 | 询问用户 | `ask_user` 常驻 | 仅 leader 常驻 |

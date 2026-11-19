@@ -78,8 +78,10 @@ def test_leader_eager_tuple_order_and_role_diff():
     only_teammate = set(teammate) - set(leader)
     assert only_leader == set(TEAM_LEADER_EXTRA_EAGER_TOOLS)
     assert only_teammate == set(TEAM_TEAMMATE_EXTRA_EAGER_TOOLS)
-    assert "verify_task" not in leader
-    assert "verify_task" not in teammate
+    assert "verify_task" in leader
+    assert "verify_task" in teammate
+    assert "memory_get" not in leader
+    assert "powershell" not in leader
     assert "shutdown_member" not in leader
 
 
@@ -382,12 +384,13 @@ async def test_filter_skips_unregistered_role_tools_and_keeps_verify_in_nav():
     visible = [t.name for t in ctx.inputs.tools]
     assert "claim_task" in visible
     assert "create_task" not in visible
-    assert "verify_task" not in visible  # deferred: nav only, not schema
+    assert "verify_task" in visible  # eager: board completion hot path
     assert "todo_list" not in visible
 
     deferred_names = {t.name for t in rail._cached_deferred_tool_infos}
-    assert "verify_task" in deferred_names
+    assert "verify_task" not in deferred_names
     assert "create_task" not in deferred_names
+    assert "todo_list" in deferred_names
 
 
 @pytest.mark.asyncio
