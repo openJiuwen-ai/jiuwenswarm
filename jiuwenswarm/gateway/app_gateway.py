@@ -1523,6 +1523,9 @@ async def _run(
     )
     from jiuwenswarm.gateway.cron import CronController, CronJobStore, CronSchedulerService
     from jiuwenswarm.gateway.heartbeat.heartbeat import GatewayHeartbeatService, HeartbeatConfig
+    from jiuwenswarm.gateway.gateway_push.cron_reverse_rpc import (
+        register_cron_reverse_rpc,
+    )
     from jiuwenswarm.gateway.gateway_push.xiaoyi_device_reverse_rpc import (
         register_xiaoyi_device_reverse_rpc,
     )
@@ -1678,6 +1681,12 @@ async def _run(
     register_xiaoyi_gui_reverse_rpc(
         message_handler.get_reverse_rpc_registry(),
         channel_manager,
+    )
+    # cron.run_now 回执关联（2026-11-19「立即执行 run_id 为空」修复）：
+    # cron_controller 已在本函数上方创建（set_cron_controller 同源实例）。
+    register_cron_reverse_rpc(
+        message_handler.get_reverse_rpc_registry(),
+        cron_controller,
     )
     channel_manager.set_config_persister(update_channel_in_config)
     updater_service = UpdaterService()

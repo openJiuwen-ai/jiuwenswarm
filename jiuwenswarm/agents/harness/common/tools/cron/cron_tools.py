@@ -549,4 +549,113 @@ class CronTools:
         return out
 
     async def run_now(self, job_id: str) -> Any:
+        """立即执行一次任务，经 Reverse RPC 等待 gateway 回执回填真实 run_id。
+
+        原 fire-and-forget 转发信封（``_send_split``）不含 run_id——真实 run_id
+        由 gateway 调度器收到触发后才生成，工具恒返回 ``run_id=""``（2026-11-19
+        「立即执行 run_id 为空」根因）。改为 Reverse RPC 请求-响应，按序回退：
+
+        - Reverse RPC 通道不可用（transport 未配置 / 管道无连接 / 断连）或
+          gateway 未注册本 method（旧版 gateway 部署）→ 回退 legacy 转发帧
+          （触发仍送达，run_id 为空，与存量行为一致）；
+        - 回执超时 → 触发是否已送达是 ambiguous 的，不重发（防双触发），
+          按 forwarded 语义返回；
+        - gateway 明确报错（任务不存在等）→ 上抛，让模型把错误告诉用户。
+        """
+        receipt = await self._run_now_via_reverse_rpc(job_id)
+        if receipt is not None:
+            return receipt
         return await self._send("run_now", {"job_id": job_id}, target_gateway=True)
+
+    async def _run_now_via_reverse_rpc(self, job_id: str) -> dict[str, Any] | None:
+        """经 Reverse RPC 触发 run_now 并等待含 run_id 的回执。
+
+        Args:
+            job_id: 目标定时任务 ID。
+
+        Returns:
+            成功/超时的结果信封（top-level ``run_id`` 供 bridge 直接提取）；
+            需要回退 legacy 转发帧时返回 ``None``。
+
+        Raises:
+            RuntimeError: gateway 明确拒绝（任务不存在、触发失败等），
+                此时任务未被执行，重试转发帧只会撞同样的错误。
+        """
+        # Lazy import：reverse RPC transport 由 agent_ws_server 装配，
+        # cron_tools 可能在装配前被导入（单进程测试/工具构建场景）。
+        from jiuwenswarm.common.cron_rpc import (
+            CRON_RUN_NOW_REVERSE_RPC_METHOD,
+            CRON_RUN_NOW_TIMEOUT_SECONDS,
+        )
+        from jiuwenswarm.common.reverse_rpc.constants import ERROR_METHOD_NOT_FOUND
+        from jiuwenswarm.common.reverse_rpc.errors import (
+            ReverseRpcRemoteError,
+            ReverseRpcTimeoutError,
+        )
+        from jiuwenswarm.common.reverse_rpc.models import (
+            ReverseRpcOrigin,
+            ReverseRpcRoute,
+        )
+        from jiuwenswarm.server.reverse_rpc import get_reverse_rpc_client
+
+        route = self._route()
+        try:
+            result = await get_reverse_rpc_client().call(
+                method=CRON_RUN_NOW_REVERSE_RPC_METHOD,
+                payload={"job_id": job_id},
+                origin=ReverseRpcOrigin(
+                    request_id=route.request_id or None,
+                    session_id=route.session_id or None,
+                    channel_id=route.channel_id or None,
+                ),
+                route=ReverseRpcRoute(channel_id=route.channel_id or None),
+                timeout=CRON_RUN_NOW_TIMEOUT_SECONDS,
+                remote_cancel=False,
+            )
+        except ReverseRpcRemoteError as exc:
+            if exc.code == ERROR_METHOD_NOT_FOUND:
+                # 旧版 gateway 未注册本 method：回退存量转发帧（无 run_id 回执）。
+                logger.warning(
+                    "[CronTools] run_now reverse_rpc method not registered "
+                    "(old gateway?), falling back to push frame: %s",
+                    exc,
+                )
+                return None
+            raise RuntimeError(f"cron run_now failed: {exc}") from exc
+        except ReverseRpcTimeoutError:
+            # 回执超时：触发可能已送达，重发会双触发；按 forwarded 语义返回。
+            logger.warning(
+                "[CronTools] run_now reverse_rpc receipt timeout "
+                "(trigger may have been delivered), job_id=%s",
+                job_id,
+            )
+            return {
+                "action": "run_now",
+                "status": "forwarded",
+                "run_id": "",
+                "data": None,
+                "message": "cron run_now receipt timed out; run may have been triggered",
+            }
+        except RuntimeError as exc:
+            # transport 未配置 / 管道无连接 / 断连：请求未上线，回退 legacy 帧。
+            logger.warning(
+                "[CronTools] run_now reverse_rpc unavailable, falling back "
+                "to push frame: %s",
+                exc,
+            )
+            return None
+        run_id = ""
+        if isinstance(result, dict):
+            run_id = str(result.get("run_id") or "")
+        logger.info(
+            "[CronTools] run_now receipt job_id=%s run_id=%s",
+            job_id,
+            run_id,
+        )
+        return {
+            "action": "run_now",
+            "status": "ok",
+            "run_id": run_id,
+            "data": {"run_id": run_id},
+            "message": "",
+        }
