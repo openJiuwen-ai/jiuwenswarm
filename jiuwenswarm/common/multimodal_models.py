@@ -179,7 +179,7 @@ def _confirm(params: dict, affected: list[str], activation_tools: list[str] | No
     activation = params.get("tool_activation")
     references_confirmed = not affected or _matches_tools(confirmed, affected)
     activation_confirmed = not activation_tools or (
-        isinstance(activation, dict) and type(activation.get("enabled")) is bool
+        isinstance(activation, dict) and isinstance(activation.get("enabled"), bool)
         and _matches_tools(activation.get("tools"), activation_tools)
     )
     if not references_confirmed or not activation_confirmed:
