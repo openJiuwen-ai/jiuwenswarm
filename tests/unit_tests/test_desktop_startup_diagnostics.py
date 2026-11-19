@@ -444,6 +444,53 @@ def test_failed_recovery_start_cleans_up_the_new_worker(desktop_app, tmp_path, m
     assert runtime.processes["web"] is web and web.poll() is None
 
 
+@pytest.mark.parametrize(
+    "termination_error",
+    [None, RuntimeError("peer termination failed")],
+    ids=["peer-stopped", "peer-stop-error"],
+)
+def test_backend_monitor_keeps_listening_for_recovery_after_peer_exit(
+    desktop_app, tmp_path: Path, monkeypatch, termination_error: Exception | None
+) -> None:
+    from jiuwenswarm.common import system_plugin_recovery
+
+    runtime = _runtime(desktop_app, tmp_path, monkeypatch)
+    agent = _RecoveryProcess(10001)
+    gateway = _RecoveryProcess(10002)
+    agent.returncode = 1
+    runtime.processes.update(agent=agent, gateway=gateway)
+    stopped: list[int] = []
+    restarted: list[bool] = []
+
+    class RecoveryRequests:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def consume_backend_restart(self, _session_id: str) -> bool:
+            self.calls += 1
+            return self.calls == 2
+
+    def terminate(process: _RecoveryProcess) -> None:
+        stopped.append(process.pid)
+        if termination_error is not None:
+            raise termination_error
+        process.returncode = 0
+
+    def restart() -> None:
+        restarted.append(True)
+        with runtime._lock:
+            runtime._is_shutting_down = True
+
+    monkeypatch.setattr(system_plugin_recovery, "SystemPluginRecovery", RecoveryRequests)
+    monkeypatch.setattr(desktop_app, "_terminate_process_tree", terminate)
+    monkeypatch.setattr(runtime, "_restart_backend_processes", restart)
+
+    runtime._watch_backend_pair()
+
+    assert stopped == [gateway.pid]
+    assert restarted == [True]
+
+
 def test_start_services_terminates_peer_waiter_after_first_readiness_failure(
     desktop_app, tmp_path: Path, monkeypatch
 ) -> None:

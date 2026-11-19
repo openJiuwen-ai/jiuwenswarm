@@ -9583,12 +9583,12 @@ class AgentWebSocketServer:
             try:
                 # TODO(compact): Keep command.compact on its original path; extension integration is deferred.
                 # options = {"session_id": session_id, "return_state": True,
-                           # "processor_types": _MANUAL_COMPACT_PROCESSOR_TYPES}
+                #            "processor_types": _MANUAL_COMPACT_PROCESSOR_TYPES}
                 # instructions = params.get("instructions")
                 # if instructions is not None:
-                    # if not isinstance(instructions, str):
-                        # raise ValueError("compact instructions must be a string")
-                    # options["instructions"] = instructions
+                #     if not isinstance(instructions, str):
+                #         raise ValueError("compact instructions must be a string")
+                #     options["instructions"] = instructions
                 # result_data = await agent.compress_context(**options)
 
                 result_data = await agent.compress_context(

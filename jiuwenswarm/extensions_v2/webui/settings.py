@@ -30,11 +30,17 @@ def parse_settings(raw: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("invalid settings contribution id")
     location = raw.get("location")
     required = set() if kind == "menu" else {"menu"} if kind == "section" else {"menu", "section"}
-    if (not isinstance(location, Mapping) or not required <= location.keys()
-            or set(location) - (required | {"before", "after"})
-            or {"before", "after"} <= location.keys()
-            or any(not isinstance(value, str) or not value.strip() or len(value.encode("utf-8")) > 256
-                   for value in location.values())):
+    if not isinstance(location, Mapping) or not required <= location.keys():
+        raise ValueError("invalid settings location")
+    if set(location) - (required | {"before", "after"}):
+        raise ValueError("invalid settings location")
+    if {"before", "after"} <= location.keys():
+        raise ValueError("invalid settings location")
+    invalid_value = any(
+        not isinstance(value, str) or not value.strip() or len(value.encode("utf-8")) > 256
+        for value in location.values()
+    )
+    if invalid_value:
         raise ValueError("invalid settings location")
     result: dict[str, Any] = {"kind": kind, "location": dict(location)}
     if kind != "item" or "title" in raw:
@@ -56,8 +62,11 @@ def parse_settings(raw: Mapping[str, Any]) -> dict[str, Any]:
         if scope not in ("session", "application"):
             raise ValueError("invalid settings scope")
         instance_key = raw.get("instanceKey", raw["id"])
-        if (not isinstance(instance_key, str) or not instance_key.strip() or instance_key != instance_key.strip()
-                or "|" in instance_key or len(instance_key.encode("utf-8")) > 200):
+        if not isinstance(instance_key, str) or not instance_key.strip():
+            raise ValueError("invalid settings instanceKey")
+        if instance_key != instance_key.strip() or "|" in instance_key:
+            raise ValueError("invalid settings instanceKey")
+        if len(instance_key.encode("utf-8")) > 200:
             raise ValueError("invalid settings instanceKey")
         result.update(scope=scope, instance_key=instance_key, presentation="row" if "title" in result else "content")
     elif "scope" in raw or "instanceKey" in raw:

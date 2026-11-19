@@ -166,7 +166,14 @@ class ExtensionInstallState:
         )
         self._write(records)
 
-    def mark(self, package_id: str, *, version: str = "", active: bool | None = None, enabled: bool | None = None) -> None:
+    def mark(
+        self,
+        package_id: str,
+        *,
+        version: str = "",
+        active: bool | None = None,
+        enabled: bool | None = None,
+    ) -> None:
         records = self._read()
         changed = False
         for key, record in list(records.items()):

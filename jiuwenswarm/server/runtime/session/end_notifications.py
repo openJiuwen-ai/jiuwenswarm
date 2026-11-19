@@ -100,9 +100,15 @@ class ExtensionSessionEndParticipant:
         try:
             task.result()
         except asyncio.CancelledError:
-            logger.warning("[ExtensionsV2] session.end handler cancelled; Runtime release continues: session_id=%s", session_id)
+            logger.warning(
+                "[ExtensionsV2] session.end handler cancelled; Runtime release continues: session_id=%s", session_id,
+            )
         except Exception:
-            logger.warning("[ExtensionsV2] session.end failed; Runtime release continues: session_id=%s", session_id, exc_info=True)
+            logger.warning(
+                "[ExtensionsV2] session.end failed; Runtime release continues: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
 
     async def _dispatch(
         self,

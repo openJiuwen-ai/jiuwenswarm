@@ -357,7 +357,10 @@ class AssetPublishAPI:
                 return self.skillpacks.status(scope, operation_id)
             if method in {"describe", "prepare", "records"}:
                 kind, local_id = params.get("kind"), _safe_id(params.get("local_id"))
-                if kind not in {"skill", "skillpack", "agent_template", "agent_group", "plugin", "mcp", "system_plugin"}:
+                supported_kinds = {
+                    "skill", "skillpack", "agent_template", "agent_group", "plugin", "mcp", "system_plugin",
+                }
+                if kind not in supported_kinds:
                     raise PublishAPIError("INVALID_KIND")
                 if method == "records":
                     return {

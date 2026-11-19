@@ -5,11 +5,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from pathlib import Path
 import shutil
 import subprocess
 import threading
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -18,12 +20,16 @@ from openjiuwen.core.events import Event, EventHandlerOpsBuilder, SessionContext
 from jiuwenswarm.extensions_v2 import assembly
 from jiuwenswarm.extensions_v2.handler_ops import session_ops
 from jiuwenswarm.extensions_v2.webui.models import RenderTarget, UiActionInput
-from jiuwenswarm.server.runtime.session import session_repo
+from jiuwenswarm.server.runtime.session import query_repo, session_repo
 from jiuwenswarm.server.runtime.session.session_repo import SessionRepoError
 from .management.support import write_package
 
 
 REPO_EXTENSION = """\
+import json
+import os
+from pathlib import Path
+
 class Extension:
     def register(self, registrar):
         registrar.register_event_handler("ui.ready", self.handle, {})
@@ -31,7 +37,7 @@ class Extension:
     async def handle(self, event, ops, next_handler):
         info = await ops.session.repo()
         receipt = await next_handler(event)
-        return {
+        observation = {
             "repo": info,
             "cwd": await ops.session.cwd(),
             "root": await ops.session.root(),
@@ -40,6 +46,9 @@ class Extension:
             "accepted": receipt.accepted,
             "ui_available": callable(ops.ui.render),
         }
+        with Path(os.environ["SESSION_REPO_TEST_OUTPUT"]).open("a", encoding="utf-8") as stream:
+            stream.write(json.dumps(observation, ensure_ascii=False) + "\\n")
+        return receipt
 
 
 def create_extension():
@@ -97,13 +106,44 @@ async def repo_host(tmp_path: Path, monkeypatch):
     monkeypatch.setattr(assembly, "resolve_install_dir", lambda: tmp_path / "store")
     instance = await assembly.install_extensions()
     assert instance is not None
+    output = tmp_path / "repo-observations.jsonl"
+    monkeypatch.setenv("SESSION_REPO_TEST_OUTPUT", str(output))
     package = write_package(tmp_path / "source", package_id="repo.reader", module_source=REPO_EXTENSION)
     try:
         reports = await instance.manager.install([package])
         assert reports[0].status == "SUCCESS"
-        yield instance
+        yield SimpleNamespace(bus=instance.bus, manager=instance.manager, output=output)
     finally:
         await assembly.shutdown_extensions()
+
+
+def _repo_observations(repo_host) -> list[dict[str, object]]:
+    if not repo_host.output.exists():
+        return []
+    return [
+        json.loads(line)
+        for line in repo_host.output.read_text(encoding="utf-8").splitlines()
+    ]
+
+
+def test_public_repo_view_preserves_stable_git_error(
+    repository: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        query_repo,
+        "read_session_repo",
+        lambda _cwd: {"repo_root": str(repository)},
+    )
+
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired("git", 5)
+
+    monkeypatch.setattr(query_repo.subprocess, "run", timeout)
+
+    with pytest.raises(SessionRepoError) as caught:
+        query_repo.read_session_repo_view(str(repository))
+
+    assert caught.value.code == "GIT_QUERY_TIMEOUT"
 
 
 @pytest.mark.asyncio
@@ -111,7 +151,8 @@ async def test_user_package_reads_real_repo_and_existing_ops(repo_host, reposito
     context = SessionContext("repo-session", str(repository / "src"), {"project_root": str(repository / "src")})
     before = {name: (repository / ".git" / name).read_bytes() for name in ("HEAD", "config", "index")}
     result = await repo_host.bus.trigger(_ui_event({"cwd": str(repository.parent), "repo": "forged"}), context)
-    assert result == {
+    assert result.accepted is True and result.status == "ready"
+    assert _repo_observations(repo_host) == [{
         "repo": {"root": str(repository.resolve()), "remote": None, "internal": False, "name": None},
         "cwd": context.cwd,
         "root": context.cwd,
@@ -119,7 +160,7 @@ async def test_user_package_reads_real_repo_and_existing_ops(repo_host, reposito
         "package": "repo.reader",
         "accepted": True,
         "ui_available": True,
-    }
+    }]
     assert {name: (repository / ".git" / name).read_bytes() for name in before} == before
 
 
@@ -272,8 +313,10 @@ async def test_concurrent_user_handlers_keep_their_own_worktree(repo_host, repos
     _git(repository, "worktree", "add", "-b", "second", str(linked))
     contexts = [SessionContext("repo-session", str(path)) for path in (repository, linked)]
     results = await asyncio.gather(*(repo_host.bus.trigger(_ui_event(), context) for context in contexts))
-    assert [result["repo"]["root"] for result in results] == [str(repository.resolve()), str(repository.resolve())]
-    assert [result["cwd"] for result in results] == [str(repository), str(linked)]
+    assert all(result.accepted is True and result.status == "ready" for result in results)
+    observed = sorted(_repo_observations(repo_host), key=lambda item: item["cwd"])
+    assert [item["repo"]["root"] for item in observed] == [str(repository.resolve())] * 2
+    assert [item["cwd"] for item in observed] == sorted((str(repository), str(linked)))
 
 
 @pytest.mark.asyncio
@@ -281,16 +324,22 @@ async def test_user_reload_and_uninstall_leave_platform_capability(repo_host, re
     reloaded = await repo_host.manager.reload("repo.reader")
     assert reloaded.status == "SUCCESS"
     context = SessionContext("repo-session", str(repository))
-    assert (await repo_host.bus.trigger(_ui_event(), context))["repo"]["root"] == str(repository.resolve())
+    receipt = await repo_host.bus.trigger(_ui_event(), context)
+    assert receipt.accepted is True and receipt.status == "ready"
+    assert _repo_observations(repo_host)[-1]["repo"]["root"] == str(repository.resolve())
     removed = await repo_host.manager.uninstall("repo.reader")
     assert removed.status == "SUCCESS"
     assert (await repo_host.bus.trigger(_ui_event(), context)).status == "ready"
 
+    seen = []
+
     async def reader(event, ops, next_handler):
-        return await ops.session.repo()
+        seen.append(await ops.session.repo())
+        return await next_handler(event)
 
     repo_host.bus.register_event_handler("ui.ready", reader, {})
-    assert (await repo_host.bus.trigger(_ui_event(), context))["root"] == str(repository.resolve())
+    assert (await repo_host.bus.trigger(_ui_event(), context)).status == "ready"
+    assert seen[-1]["root"] == str(repository.resolve())
 
 
 @pytest.mark.asyncio

@@ -23,6 +23,8 @@ from jiuwenswarm.server.runtime.session.model_selection_store import (
 from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 
 logger = logging.getLogger(__name__)
+
+
 @dataclass(slots=True)
 class _HistoryScope:
     session_id: str
@@ -41,12 +43,10 @@ _RUNTIME: ContextVar[_HistoryScope | None] = ContextVar(
 def history_context_scope(session_id: str, *, request_id: str | None = None) -> Iterator[None]:
     """Own a request-local context slot and release it on exit or cancellation."""
     existing = _RUNTIME.get()
-    if (
-        existing is not None and existing.active and existing.session_id == session_id
-        and existing.request_id == request_id
-    ):
-        yield
-        return
+    if existing is not None and existing.active:
+        if existing.session_id == session_id and existing.request_id == request_id:
+            yield
+            return
     # Producer tasks inherit the same request-owned holder. Replacing a
     # ContextVar value inside a child task would not reach the history consumer.
     scope = _HistoryScope(session_id, request_id)

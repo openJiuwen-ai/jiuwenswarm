@@ -198,10 +198,11 @@ async def _dispatch(manager: ExtensionManager, method: str, parsed: _Request) ->
             record.version if record is not None else ""
         )
         record = store.get(package_id, installed) or record
-        if record is not None and record.origin == "hub" and parsed.version and parsed.version != installed:
-            return await _hub_file_payload(
-                record.asset_id or package_id, method, parsed.path, parsed.version
-            )
+        if record is not None and record.origin == "hub":
+            if parsed.version and parsed.version != installed:
+                return await _hub_file_payload(
+                    record.asset_id or package_id, method, parsed.path, parsed.version
+                )
         try:
             entry = find_entry(
                 package_id,
@@ -553,7 +554,8 @@ def _version(value: object) -> str:
     version = value.strip()
     if not version:
         return ""
-    if len(version) > 64 or any(ch.isspace() for ch in version) or "/" in version or "\\" in version:
+    invalid_separator = "/" in version or "\\" in version
+    if len(version) > 64 or any(ch.isspace() for ch in version) or invalid_separator:
         raise ValueError("version must be 1-64 characters without spaces or slashes")
     return version
 
@@ -658,5 +660,5 @@ def _installed_package_domain(root: Path) -> str | None:
     """Read one installed package domain for the slash-command presentation."""
     try:
         return package_domain(read_manifest_document(root))
-    except (OSError, UnicodeError, ValueError):
+    except (OSError, ValueError):
         return None

@@ -15,8 +15,9 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
-from jiuwenswarm.common.file_download_token import build_verified_asset_download_info
 from agent_gateway.common.mode_matrix import deprecate_mode, is_single_agent_mode, is_team_mode
+
+from jiuwenswarm.common.file_download_token import build_verified_asset_download_info
 from jiuwenswarm.common.projectless_workspace import get_registered_projectless_task_root
 from jiuwenswarm.common.runtime_workspace import RuntimeWorkspacePaths
 from jiuwenswarm.common.verified_download_assets import get_verified_download_asset_owner
@@ -79,12 +80,13 @@ def _valid_session_id(value: str) -> bool:
 def _relative_path(value: str, *, allow_root: bool = False) -> str:
     if allow_root and value == "":
         return ""
-    if (
-        not isinstance(value, str) or not value or len(value) > MAX_PATH_LENGTH
-        or "\\" in value or ":" in value or "\0" in value
-        or PurePosixPath(value).is_absolute() or PureWindowsPath(value).drive
-        or any(part in {"", ".", ".."} for part in value.split("/"))
-    ):
+    if not isinstance(value, str) or not value or len(value) > MAX_PATH_LENGTH:
+        raise ValueError("A normalized relative workspace path is required")
+    if "\\" in value or ":" in value or "\0" in value:
+        raise ValueError("A normalized relative workspace path is required")
+    if PurePosixPath(value).is_absolute() or PureWindowsPath(value).drive:
+        raise ValueError("A normalized relative workspace path is required")
+    if any(part in {"", ".", ".."} for part in value.split("/")):
         raise ValueError("A normalized relative workspace path is required")
     return value
 
@@ -109,10 +111,11 @@ def _preview_type(path: Path) -> tuple[str, str]:
     if suffix == ".pdf":
         return "pdf", "application/pdf"
     mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-    if (
-        not suffix or suffix in _TEXT_SUFFIXES or mime_type.startswith("text/")
-        or mime_type in {"application/json", "application/xml", "application/javascript"}
-    ):
+    if not suffix or suffix in _TEXT_SUFFIXES:
+        return "text", "text/plain" if mime_type == "application/octet-stream" else mime_type
+    if mime_type.startswith("text/") or mime_type in {
+        "application/json", "application/xml", "application/javascript",
+    }:
         return "text", "text/plain" if mime_type == "application/octet-stream" else mime_type
     return "unsupported", mime_type
 
@@ -144,7 +147,8 @@ class SessionWorkspaceFiles:
         except (OSError, RuntimeError, ValueError):
             return SessionFileWorkspace("error", message="The session workspace could not be resolved")
 
-    def _workspace(self, session_id: str, paths: RuntimeWorkspacePaths | None) -> SessionFileWorkspace:
+    @staticmethod
+    def _workspace(session_id: str, paths: RuntimeWorkspacePaths | None) -> SessionFileWorkspace:
         metadata = get_session_metadata(session_id, enable_writeback=False)
         mode = deprecate_mode(metadata.get("mode")) if metadata else ""
         if is_team_mode(mode) or metadata.get("team_name"):
@@ -174,10 +178,11 @@ class SessionWorkspaceFiles:
             root = registered.resolve(strict=True)
             cwd = (root / "work").resolve(strict=True)
             project_root = None
-        if not root.is_dir() or (
-            cwd is not None and (not cwd.is_dir() or (cwd != root and root not in cwd.parents))
-        ):
+        if not root.is_dir():
             return SessionFileWorkspace("unavailable", message="The session workspace is unavailable")
+        if cwd is not None:
+            if not cwd.is_dir() or (cwd != root and root not in cwd.parents):
+                return SessionFileWorkspace("unavailable", message="The session workspace is unavailable")
         return SessionFileWorkspace("ready", root=root, cwd=cwd, project_root=project_root)
 
     async def files(
@@ -313,7 +318,7 @@ class SessionWorkspaceFiles:
             return {"status": "too_large", "file": None}
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
         flags |= getattr(os, "O_NONBLOCK", 0)
-        descriptor = os.open(target, flags)
+        descriptor = os.open(target, flags, 0o600)
         with os.fdopen(descriptor, "rb") as stream:
             current = os.fstat(stream.fileno())
             if not stat.S_ISREG(current.st_mode):

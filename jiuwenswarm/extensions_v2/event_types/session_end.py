@@ -8,7 +8,7 @@ import asyncio
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, make_dataclass
 
 from openjiuwen.core.events import ExtensionEventBus
 
@@ -25,20 +25,27 @@ class SessionResume:
     id: str
 
 
-@dataclass(frozen=True, slots=True)
-class SessionEndInput:
-    """Immutable engine facts, matching Claude reason/sessionId/resume."""
+SessionEndInput = make_dataclass(
+    "SessionEndInput",
+    [("reason", str), ("sessionId", str), ("resume", SessionResume)],
+    namespace={
+        "__doc__": "Immutable engine facts, matching Claude reason/sessionId/resume.",
+        "__module__": __name__,
+    },
+    frozen=True,
+    slots=True,
+)
 
-    reason: str
-    sessionId: str
-    resume: SessionResume
-
-
-@dataclass(frozen=True, slots=True)
-class SessionEndOutput:
-    """The actual ending session identity echoed by CORE."""
-
-    sessionId: str
+SessionEndOutput = make_dataclass(
+    "SessionEndOutput",
+    [("sessionId", str)],
+    namespace={
+        "__doc__": "The actual ending session identity echoed by CORE.",
+        "__module__": __name__,
+    },
+    frozen=True,
+    slots=True,
+)
 
 
 @dataclass
@@ -65,20 +72,29 @@ def current_end_invocation() -> EndInvocation:
 def valid_end_input(value: object) -> bool:
     """Allow observations of the original input, never rewritten targets."""
     state = _INVOCATION.get()
-    return (
-        state is not None and state.active and state.owner is asyncio.current_task()
-        and type(value) is SessionEndInput and value == state.original
-        and type(value.resume) is SessionResume and value.resume.id == value.sessionId
-        and value.reason in {reason.value for reason in SessionRunEndReason}
-    )
+    if state is None or not state.active or state.owner is not asyncio.current_task():
+        return False
+    if not isinstance(value, SessionEndInput) or value.__class__ is not SessionEndInput:
+        return False
+    if value != state.original:
+        return False
+    if not isinstance(value.resume, SessionResume) or value.resume.__class__ is not SessionResume:
+        return False
+    return value.resume.id == value.sessionId and value.reason in {
+        reason.value for reason in SessionRunEndReason
+    }
 
 
 def valid_end_output(value: object) -> bool:
     """Only the actual CORE receipt can complete the notification chain."""
     state = _INVOCATION.get()
+    if state is None or not state.active or state.owner is not asyncio.current_task():
+        return False
+    if state.receipt is None:
+        return False
     return (
-        state is not None and state.active and state.owner is asyncio.current_task()
-        and state.receipt is not None and type(value) is SessionEndOutput
+        isinstance(value, SessionEndOutput)
+        and value.__class__ is SessionEndOutput
         and value == state.receipt
     )
 

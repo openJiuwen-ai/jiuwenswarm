@@ -80,7 +80,9 @@ class WebUIRuntime:
         target = bus or self.bus
         target.register_event_handler(
             OPS_BUILD_EVENT_TYPE,
-            build_webui_ops_build_handler(target, WebUIEvent.RENDER.value, render=self.render, resources=self.resources),
+            build_webui_ops_build_handler(
+                target, WebUIEvent.RENDER.value, render=self.render, resources=self.resources,
+            ),
             {},
             HandlerLevel.BUILTIN,
         )
@@ -126,12 +128,12 @@ class WebUIRuntime:
 
         connection_id = request.target.connection_id or connection_id
         spec = slot_spec(request.target.slot_id)
-        if (spec is not None and request.target.resolved_scope == SlotScope.APPLICATION.value
-                and connection_id and not request.target.connection_id):
-            request = replace(
-                request,
-                target=replace(request.target, scope=SlotScope.APPLICATION.value, connection_id=connection_id),
-            )
+        if spec is not None and request.target.resolved_scope == SlotScope.APPLICATION.value:
+            if connection_id and not request.target.connection_id:
+                request = replace(
+                    request,
+                    target=replace(request.target, scope=SlotScope.APPLICATION.value, connection_id=connection_id),
+                )
         rejection = validate_upstream(request, self.registry)
         if rejection is not None:
             return rejection

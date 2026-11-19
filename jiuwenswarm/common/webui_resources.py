@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import base64
-import binascii
 import json
 import re
 from pathlib import PurePosixPath
@@ -31,12 +30,16 @@ RESOURCE_MIME_TYPES = {
 
 def resource_path(value: str) -> str:
     """Validate one canonical relative resource path without filesystem guessing."""
-    if (not isinstance(value, str) or not value or len(value) > 512
-            or re.fullmatch(r"[A-Za-z0-9._/-]+", value) is None
-            or any(part in ("", ".", "..") or part.endswith(".")
-                   or re.fullmatch(r"(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?", part, re.I)
-                   for part in value.split("/"))
-            or PurePosixPath(value).suffix.lower() not in RESOURCE_MIME_TYPES):
+    if not isinstance(value, str) or not value or len(value) > 512:
+        raise ValueError("Invalid WebUI resource path")
+    if re.fullmatch(r"[A-Za-z0-9._/-]+", value) is None:
+        raise ValueError("Invalid WebUI resource path")
+    for part in value.split("/"):
+        if part in ("", ".", "..") or part.endswith("."):
+            raise ValueError("Invalid WebUI resource path")
+        if re.fullmatch(r"(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?", part, re.I):
+            raise ValueError("Invalid WebUI resource path")
+    if PurePosixPath(value).suffix.lower() not in RESOURCE_MIME_TYPES:
         raise ValueError("Invalid WebUI resource path")
     return value
 
@@ -53,10 +56,12 @@ def decode_resource_route(value: str) -> tuple[str, str, str]:
         raise ValueError("Invalid WebUI resource route")
     try:
         parts = json.loads(base64.b64decode(value + "=" * (-len(value) % 4), altchars=b"-_", validate=True))
-    except (ValueError, UnicodeError, binascii.Error) as exc:
+    except ValueError as exc:
         raise ValueError("Invalid WebUI resource route") from exc
-    if (not isinstance(parts, list) or len(parts) != 3
-            or any(not isinstance(part, str) or len(part) > 512 for part in parts)
-            or bool(parts[1]) == bool(parts[2]) or encode_resource_route(*parts) != value):
+    if not isinstance(parts, list) or len(parts) != 3:
+        raise ValueError("Invalid WebUI resource route")
+    if any(not isinstance(part, str) or len(part) > 512 for part in parts):
+        raise ValueError("Invalid WebUI resource route")
+    if bool(parts[1]) == bool(parts[2]) or encode_resource_route(*parts) != value:
         raise ValueError("Invalid WebUI resource route")
     return parts[0], parts[1], parts[2]

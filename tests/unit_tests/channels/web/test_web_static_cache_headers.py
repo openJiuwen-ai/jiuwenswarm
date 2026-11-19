@@ -105,11 +105,10 @@ def test_route_prefixed_static_paths_resolve_to_static_root(static_server: str) 
     assert headers["cache-control"] == "no-cache"
 
 
-def test_route_prefixed_missing_asset_keeps_spa_fallback(static_server: str) -> None:
-    status, headers, body = _request(static_server, "/chat/assets/index-STALE123.js")
-    assert status == 200
-    assert body == b"<html>app</html>"
-    assert headers["cache-control"] == "no-cache"
+def test_route_prefixed_missing_asset_returns_404(static_server: str) -> None:
+    status, _, body = _request(static_server, "/chat/assets/index-STALE123.js")
+    assert status == 404
+    assert body != b"<html>app</html>"
 
 
 def test_conditional_request_for_asset_returns_304_with_immutable(static_server: str) -> None:

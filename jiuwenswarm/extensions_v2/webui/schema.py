@@ -139,9 +139,11 @@ def validate_request(request: UiRenderInput) -> ValidationReport:
         return _OK
     binding = request.visible_when
     if binding is not None:
-        if (not isinstance(binding, Mapping) or set(binding) != {"key", "default"}
-                or not isinstance(binding["key"], str) or not binding["key"].strip()
-                or type(binding["default"]) is not bool or not request.target.package_id):
+        if not isinstance(binding, Mapping) or set(binding) != {"key", "default"}:
+            return _fail("invalid visible_when preference binding")
+        if not isinstance(binding["key"], str) or not binding["key"].strip():
+            return _fail("invalid visible_when preference binding")
+        if not isinstance(binding["default"], bool) or not request.target.package_id:
             return _fail("invalid visible_when preference binding")
         try:
             if len(binding["key"].encode("utf-8")) > 128:
@@ -252,8 +254,10 @@ def _validate_node(node: RenderNode, *, depth: int, counter: _Counter) -> Valida
         if not component_rule.get("children", False):
             return _fail(f"component {node.component} does not accept children")
         for child in node.children:
-            if (component_rule.get("childComponents")
-                    and (not isinstance(child, RenderNode) or child.component not in component_rule["childComponents"])):
+            child_components = component_rule.get("childComponents")
+            if child_components and (
+                not isinstance(child, RenderNode) or child.component not in child_components
+            ):
                 return _fail(f"invalid child component for {node.component}")
             report = _validate_node(child, depth=depth + 1, counter=counter)
             if not report.ok:

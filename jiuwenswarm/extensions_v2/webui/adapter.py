@@ -52,9 +52,11 @@ class WebUIDispatchAdapter(GatewayAdapter):
         metadata = request.metadata if isinstance(request.metadata, Mapping) else {}
         if request.req_method == ReqMethod.WEBUI_RESOURCE_READ:
             params = request.params
-            if (request.channel_id != DEFAULT_CHANNEL_ID or not isinstance(params, dict)
-                    or set(params) != {"resource_id", "path", "connection_id"}
-                    or any(not isinstance(value, str) for value in params.values())):
+            if request.channel_id != DEFAULT_CHANNEL_ID or not isinstance(params, dict):
+                return build_error_response(request, "Invalid WebUI resource request", code=CODE_SCHEMA_ERROR)
+            if set(params) != {"resource_id", "path", "connection_id"}:
+                return build_error_response(request, "Invalid WebUI resource request", code=CODE_SCHEMA_ERROR)
+            if any(not isinstance(value, str) for value in params.values()):
                 return build_error_response(request, "Invalid WebUI resource request", code=CODE_SCHEMA_ERROR)
             route = encode_resource_route(request.user_id or "", request.session_id or "", params["connection_id"])
             try:
@@ -130,10 +132,9 @@ class WebUIDispatchAdapter(GatewayAdapter):
             if not isinstance(raw_session_id, str):
                 return build_error_response(request, "target fields must be strings", code=CODE_SCHEMA_ERROR)
             session_id = raw_session_id or (request.session_id or "")
-            if (
-                (request.session_id and session_id != request.session_id)
-                or ("session_id" in raw_target and raw_target["session_id"] != session_id)
-            ):
+            if request.session_id and session_id != request.session_id:
+                return build_error_response(request, "session_id mismatch", code=CODE_SESSION_MISMATCH)
+            if "session_id" in raw_target and raw_target["session_id"] != session_id:
                 return build_error_response(request, "session_id mismatch", code=CODE_SESSION_MISMATCH)
             target = RenderTarget(
                 session_id=session_id,
@@ -176,12 +177,16 @@ class WebUIDispatchAdapter(GatewayAdapter):
         if trusted_connection:
             dispatch_kwargs["connection_id"] = trusted_connection
         if event_name == "ui.ready" and not target.package_id and spec.capacity == "list":
-            contributions = sorted(
-                (item for item in catalog.items if item.type == "web.slot.contribution" and item.slot == target.slot_id
-                 and item.settings.get("kind", "item") == "item"
-                 and (not item.settings or item.settings["scope"] == target.resolved_scope)),
-                key=lambda item: (item.order, item.package_id, item.id),
-            )
+            contributions = []
+            for item in catalog.items:
+                if item.type != "web.slot.contribution" or item.slot != target.slot_id:
+                    continue
+                if item.settings.get("kind", "item") != "item":
+                    continue
+                if item.settings and item.settings["scope"] != target.resolved_scope:
+                    continue
+                contributions.append(item)
+            contributions.sort(key=lambda item: (item.order, item.package_id, item.id))
             package_ids = dict.fromkeys(item.package_id for item in contributions)
             logger.debug("[WebUI] list ready: slot=%s packages=%s", target.slot_id, tuple(package_ids))
             if len(package_ids) == 1:
@@ -202,7 +207,9 @@ class WebUIDispatchAdapter(GatewayAdapter):
                                    "status": "error", "code": "INTERNAL_ERROR"}
                     results.append(receipt)
                 accepted = all(result["accepted"] for result in results)
-                status = "ready" if accepted else "partial" if any(result["accepted"] for result in results) else "rejected"
+                status = "ready" if accepted else "rejected"
+                if not accepted and any(result["accepted"] for result in results):
+                    status = "partial"
                 return AgentResponse(
                     request_id=request.request_id, channel_id=request.channel_id, ok=True,
                     payload={"event": event_name, "accepted": accepted, "status": status, "results": results},

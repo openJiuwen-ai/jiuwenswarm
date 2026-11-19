@@ -25,6 +25,9 @@ in the single-agent input before that version has been deployed.
 from __future__ import annotations
 
 import argparse
+import importlib
+import importlib.util
+import logging
 import shutil
 import sys
 from pathlib import Path
@@ -34,15 +37,47 @@ SOURCE = REPO_ROOT / "jiuwenswarm/extensions_v2/examples/webui_workbench_v2"
 ZIP_PATH = REPO_ROOT / "webui_workbench_v2.zip"
 
 
+def _load_repo_package() -> None:
+    """Make the repository package importable without changing sys.path."""
+
+    if "jiuwenswarm" in sys.modules:
+        return
+    package_root = REPO_ROOT / "jiuwenswarm"
+    spec = importlib.util.spec_from_file_location(
+        "jiuwenswarm",
+        package_root / "__init__.py",
+        submodule_search_locations=[str(package_root)],
+    )
+    if spec is None or spec.loader is None:
+        raise ImportError("cannot load the repository jiuwenswarm package")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(spec.name, None)
+        raise
+
+
+def _write_stdout(message: str) -> None:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    record = logging.LogRecord(__name__, logging.INFO, __file__, 0, message, (), None)
+    try:
+        handler.emit(record)
+    finally:
+        handler.close()
+
+
 def _resolve_install_dir() -> Path:
     """Reuse the server-side resolution so the copy lands where the service looks."""
 
     try:
-        sys.path.insert(0, str(REPO_ROOT))
+        _load_repo_package()
         from jiuwenswarm.extensions_v2.config import resolve_install_dir
 
         return resolve_install_dir()
-    except (ImportError, ModuleNotFoundError):
+    except ImportError:
         import os
 
         base = Path(os.getenv("JIUWENSWARM_DATA_DIR") or Path.home() / ".jiuwenswarm")
@@ -54,7 +89,7 @@ def _load_manifest(root: Path):
         from openjiuwen.core.extension.manifest import load_manifest
 
         return load_manifest(root)
-    except (ImportError, ModuleNotFoundError):
+    except ImportError:
         import json
         from types import SimpleNamespace
 
@@ -81,9 +116,9 @@ def deploy(install_dir: Path, package_id: str, version: str, *, force: bool) -> 
     destination = install_dir / package_id / version
     if destination.exists():
         if not force:
-            print(f"[skip] 已存在安装副本（用 --force 覆盖）: {destination}")
+            _write_stdout(f"[skip] 已存在安装副本（用 --force 覆盖）: {destination}")
             return destination
-        print(f"[force] 移除旧副本: {destination}")
+        _write_stdout(f"[force] 移除旧副本: {destination}")
         shutil.rmtree(destination)
 
     staging = destination.with_name(f"{destination.name}.staging-{id(destination)}")
@@ -107,22 +142,22 @@ def main() -> int:
     args = parser.parse_args()
 
     if not (SOURCE / "manifest.json").is_file():
-        print(f"[error] 未找到插件源码: {SOURCE}")
+        _write_stdout(f"[error] 未找到插件源码: {SOURCE}")
         return 1
 
     manifest = _load_manifest(SOURCE)
     zip_path = build_zip()
-    print(f"[zip] {zip_path}")
+    _write_stdout(f"[zip] {zip_path}")
 
     if args.zip_only:
-        print(f"在 Web 单 Agent 输入框执行热安装（该版本尚未部署时）:\n  /extension install {zip_path}")
+        _write_stdout(f"在 Web 单 Agent 输入框执行热安装（该版本尚未部署时）:\n  /extension install {zip_path}")
         return 0
 
     install_dir = _resolve_install_dir()
     destination = deploy(install_dir, manifest.package_id, manifest.version, force=args.force)
-    print(f"[deploy] {destination}")
+    _write_stdout(f"[deploy] {destination}")
 
-    print(
+    _write_stdout(
         "\n下一步：重启调试服务后自动加载: make stop && make start-debug\n"
         "该版本已部署；热安装请在部署前使用 --zip-only 生成安装包。\n"
         "安装后进入真实会话并刷新页面触发 ui.ready。"

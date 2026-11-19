@@ -2,8 +2,21 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
+from typing import TextIO
+
+
+def _emit_error(stream: TextIO, message: str) -> None:
+    """Write a user-facing error without relying on host logger setup."""
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    record = logging.LogRecord(__name__, logging.ERROR, __file__, 0, message, (), None)
+    try:
+        handler.emit(record)
+    finally:
+        handler.close()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -14,7 +27,7 @@ def main(argv: list[str] | None = None) -> int:
 
     arguments = list(sys.argv[1:] if argv is None else argv)
     if not arguments:
-        print("请提供系统插件的测试目录或测试文件。", file=sys.stderr)
+        _emit_error(sys.stderr, "请提供系统插件的测试目录或测试文件。")
         return 2
 
     sys.dont_write_bytecode = True
@@ -24,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         import pytest
     except ImportError as error:
-        print(f"当前宿主环境无法加载 pytest：{error}", file=sys.stderr)
+        _emit_error(sys.stderr, f"当前宿主环境无法加载 pytest：{error}")
         return 2
 
     return int(pytest.main([

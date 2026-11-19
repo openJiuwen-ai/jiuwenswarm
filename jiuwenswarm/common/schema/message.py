@@ -131,6 +131,7 @@ _ensure_req_method("RECOMMENDATION", "recommendation.job")
 # does not define it, so a missing attribute fails chat and session creation
 # before their own handlers run.
 _ensure_req_method("MCP_OAUTH_START", "mcp.oauth.start")
+_ensure_req_method("MCP_SOURCES_PROVIDERS", "mcp.sources.providers")
 # Trajectory reads are served by the AgentServer. The pinned protocol package
 # does not define these members yet; registration leaves a matching upstream
 # member in place once that package ships the same name and value.

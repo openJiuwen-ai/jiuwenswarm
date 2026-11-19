@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Mapping
 import math
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from openjiuwen.core.events import SessionContext
@@ -26,9 +26,15 @@ from jiuwenswarm.server.runtime.session.session_statistics import (
 def _path(value: object, capability: str) -> str | None:
     if value is None:
         return None
+    if isinstance(value, (Path, PureWindowsPath)):
+        if not value.is_absolute():
+            raise ValueError(f"{capability} requires an absolute path")
+        return str(value)
     if not isinstance(value, str):
         raise TypeError(f"{capability} requires a string path or None")
-    if not value or not Path(value).is_absolute():
+    if not value:
+        raise ValueError(f"{capability} requires an absolute path")
+    if not Path(value).is_absolute() and not PureWindowsPath(value).is_absolute():
         raise ValueError(f"{capability} requires an absolute path")
     return value
 
@@ -84,8 +90,12 @@ async def _usage(arguments: Mapping[str, object], context: SessionContext) -> di
         return output
     window = raw.get("context_window")
     window = window if isinstance(window, Mapping) else {}
-    if any(window[key] is not None and not _finite(window[key]) for key in ("input_tokens", "limit_tokens") if key in window):
-        raise ValueError("session.usage requires valid observed token counts")
+    for key in ("input_tokens", "limit_tokens"):
+        if key not in window:
+            continue
+        observed = window[key]
+        if observed is not None and not _finite(observed):
+            raise ValueError("session.usage requires valid observed token counts")
     public = output["context"]
     limit = window.get("limit_tokens")
     if _finite(limit) and limit > 0:

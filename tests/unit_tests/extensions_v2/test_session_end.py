@@ -369,9 +369,32 @@ async def test_new_generation_waits_until_previous_platform_cleanup_finishes(end
 
 
 @pytest.mark.asyncio
-async def test_worker_shutdown_keeps_user_handlers_until_all_run_ends(end_host):
+async def test_worker_shutdown_keeps_user_handlers_until_all_run_ends(
+    end_host, monkeypatch
+):
     from dataclasses import replace
+    from jiuwenswarm.runtime import kernel as runtime_kernel
+    from jiuwenswarm.server import agent_http_server
+    from jiuwenswarm.server.runtime.session import session_history, session_metadata
+    from jiuwenswarm.server.runtime.session.kv_cache import kv_cache_application_owner
+    from jiuwenswarm.server.worker import runtime_host
     from jiuwenswarm.server.worker.lifecycle import WorkerRuntime
+
+    monkeypatch.setattr(runtime_host.telemetry, "unbind_runtime_observability", AsyncMock())
+    monkeypatch.setattr(runtime_host.telemetry, "shutdown_runtime_observability", lambda: None)
+    monkeypatch.setattr(agent_http_server, "stop_http_server", AsyncMock())
+    monkeypatch.setattr(session_history, "flush_pending_writes", lambda _timeout: True)
+    monkeypatch.setattr(session_metadata, "flush_pending_writes", lambda _timeout: True)
+    monkeypatch.setattr(
+        kv_cache_application_owner,
+        "get_kv_cache_application_owner",
+        lambda: SimpleNamespace(close=AsyncMock()),
+    )
+    monkeypatch.setattr(
+        runtime_kernel,
+        "process_kernel",
+        lambda: SimpleNamespace(close=AsyncMock()),
+    )
 
     runtime, manager = run_host(end_host)
     await runtime.start()

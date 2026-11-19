@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, make_dataclass
 
 from openjiuwen.core.events import ExtensionEventBus
 
@@ -28,12 +28,19 @@ class CommandOrigin:
     server: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
-class CommandPresentation:
-    """Host-measured presentation; an unmeasured headless run uses false/80."""
-
-    isFullscreen: bool = False
-    columns: int = 80
+CommandPresentation = make_dataclass(
+    "CommandPresentation",
+    [
+        ("isFullscreen", bool, field(default=False)),
+        ("columns", int, field(default=80)),
+    ],
+    namespace={
+        "__doc__": "Host-measured presentation; an unmeasured headless run uses false/80.",
+        "__module__": __name__,
+    },
+    frozen=True,
+    slots=True,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,8 +97,13 @@ def valid_origin(value: object) -> bool:
 
 
 def valid_presentation(value: object) -> bool:
-    return (isinstance(value, CommandPresentation) and type(value.isFullscreen) is bool
-            and type(value.columns) is int and value.columns > 0)
+    return (
+        isinstance(value, CommandPresentation)
+        and isinstance(value.isFullscreen, bool)
+        and isinstance(value.columns, int)
+        and value.columns.__class__ is int
+        and value.columns > 0
+    )
 
 
 def valid_command_input(value: object) -> bool:

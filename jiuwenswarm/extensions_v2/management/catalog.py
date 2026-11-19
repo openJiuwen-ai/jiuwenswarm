@@ -106,7 +106,7 @@ def entry_from_root(root: Path) -> MarketEntry | None:
 
     try:
         document = read_manifest_document(root)
-    except (OSError, UnicodeError, ValueError):
+    except (OSError, ValueError):
         return None
     package = document["package"]
     return MarketEntry(
@@ -363,7 +363,7 @@ def _enabled(entry: MarketEntry, installed_root: Path | None) -> bool:
     else:
         try:
             value = read_manifest_document(installed_root).get("enable")
-        except (OSError, UnicodeError, ValueError):
+        except (OSError, ValueError):
             value = entry.document.get("enable")
     return value if isinstance(value, bool) else True
 

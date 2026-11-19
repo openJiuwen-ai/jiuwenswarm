@@ -1642,7 +1642,7 @@ def prepare_history_record(
             sid,
             event_type,
         )
-        return
+        return None
     rid = str(request_id or "").strip()
     cid = str(channel_id or "").strip()
     role_norm = "assistant" if role == "assistant" else "user"
@@ -1657,7 +1657,7 @@ def prepare_history_record(
             sid,
             event_type or "",
         )
-        return
+        return None
 
     item: dict[str, Any] = {
         "id": f"{rid}:{role_norm}",

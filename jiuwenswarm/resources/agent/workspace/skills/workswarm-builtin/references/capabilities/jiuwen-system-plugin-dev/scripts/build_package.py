@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -14,6 +15,20 @@ from openjiuwen.core.extension.manifest import MANIFEST_NAME, load_manifest
 
 EXCLUDED_DIRECTORIES = frozenset({".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache"})
 EXCLUDED_SUFFIXES = frozenset({".pyc", ".pyo"})
+
+
+def _emit_result(result: dict[str, object]) -> None:
+    """Write one JSON result without relying on application logging setup."""
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    record = logging.LogRecord(
+        __name__, logging.INFO, __file__, 0,
+        json.dumps(result, ensure_ascii=False), (), None,
+    )
+    try:
+        handler.emit(record)
+    finally:
+        handler.close()
 
 
 def package_files(source: Path) -> list[Path]:
@@ -106,8 +121,10 @@ def main() -> int:
         result = build_package(arguments.source, arguments.output, overwrite=arguments.force)
     except Exception as error:
         parser.exit(1, f"打包失败：{error}\n")
-    print(json.dumps({"zip": str(result), "validated": ["core_manifest", "entry_paths", "zip_layout"]},
-                     ensure_ascii=False))
+    _emit_result({
+        "zip": str(result),
+        "validated": ["core_manifest", "entry_paths", "zip_layout"],
+    })
     return 0
 
 

@@ -85,8 +85,9 @@ class WebUIResourceService:
     def _owner(self, ops: EventHandlerOps) -> tuple[str, int, str]:
         metadata = ops.package_metadata
         record = self._catalog.active_package(metadata.package_id) if metadata is not None else None
-        if (record is None or self._revoked_activations.get(record.package_id) is record
-                or metadata.root != record.root or metadata.package_version != record.version):
+        if record is None or self._revoked_activations.get(record.package_id) is record:
+            raise PermissionError("Active package identity is required for WebUI files")
+        if metadata.root != record.root or metadata.package_version != record.version:
             raise PermissionError("Active package identity is required for WebUI files")
         context = ops.session_context
         connection = current_connection()
@@ -99,8 +100,11 @@ class WebUIResourceService:
         if not session_id and connection is not None:
             connection_id = connection.connection_id
             user_id = connection.user_id
-        if (self._closed or session_id in self._closed_sessions or connection_id in self._closed_connections
-                or not (session_id or connection_id) or (not session_id and connection is not None and connection.closed)):
+        if self._closed or session_id in self._closed_sessions:
+            raise PermissionError("An active WebUI session or connection is required")
+        if connection_id in self._closed_connections or not (session_id or connection_id):
+            raise PermissionError("An active WebUI session or connection is required")
+        if not session_id and connection is not None and connection.closed:
             raise PermissionError("An active WebUI session or connection is required")
         route = encode_resource_route(user_id, session_id, connection_id)
         decode_resource_route(route)
@@ -184,9 +188,13 @@ class WebUIResourceService:
                 await _io(lambda: _read_regular(root, path))
                 if self._owner(ops) != (package_id, generation, route):
                     raise PermissionError("WebUI activation changed while reading an asset")
-                match = next(((key, entry) for key, entry in self._sets.items()
-                              if not entry.managed and not entry.revoked and (entry.package_id, entry.generation, entry.route)
-                              == (package_id, generation, route)), None)
+                match = None
+                for key, entry in self._sets.items():
+                    if entry.managed or entry.revoked:
+                        continue
+                    if (entry.package_id, entry.generation, entry.route) == (package_id, generation, route):
+                        match = (key, entry)
+                        break
                 if match is None:
                     resource_id = secrets.token_urlsafe(32)
                     item = _Publication(package_id, generation, route, root, False)
@@ -214,17 +222,22 @@ class WebUIResourceService:
     def _active(self, item: _Publication) -> bool:
         record = self._catalog.active_package(item.package_id)
         _, session_id, connection_id = decode_resource_route(item.route)
-        return (not self._closed and not item.revoked and record is not None and record.generation == item.generation
-                and self._revoked_activations.get(item.package_id) is not record
-                and session_id not in self._closed_sessions and connection_id not in self._closed_connections)
+        if self._closed or item.revoked or record is None:
+            return False
+        if record.generation != item.generation:
+            return False
+        if self._revoked_activations.get(item.package_id) is record:
+            return False
+        return session_id not in self._closed_sessions and connection_id not in self._closed_connections
 
     async def read(self, resource_id: str, path: str, *, route: str) -> tuple[bytes, str]:
         """Read registered files while enforcing ownership, activation and integrity."""
         resource_path(path)
         async with self._lock:
             item = self._sets.get(resource_id)
-            if (item is None or not self._active(item) or item.route != route
-                    or (item.managed and (item.files is None or path not in item.files))):
+            if item is None or not self._active(item) or item.route != route:
+                raise FileNotFoundError("WebUI resource not found")
+            if item.managed and (item.files is None or path not in item.files):
                 raise FileNotFoundError("WebUI resource not found")
             try:
                 data = await _io(lambda: _read_regular(item.root, path))
@@ -251,8 +264,10 @@ class WebUIResourceService:
             retired = []
             for resource_id, item in tuple(self._sets.items()):
                 _, session, connection = decode_resource_route(item.route)
-                if ((package_id and item.package_id == package_id) or (session_id and session == session_id)
-                        or (connection_id and connection == connection_id)):
+                package_matches = package_id and item.package_id == package_id
+                session_matches = session_id and session == session_id
+                connection_matches = connection_id and connection == connection_id
+                if package_matches or session_matches or connection_matches:
                     item.revoked = True
                     retired.append((resource_id, item))
         await self._retire(retired)

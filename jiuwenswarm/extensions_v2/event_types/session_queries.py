@@ -132,11 +132,12 @@ def _messages(value: object) -> bool:
             return False
         if not isinstance(message["toolUses"], list) or not all(_tool_use(item) for item in message["toolUses"]):
             return False
-        if "toolResults" in message and (
-            message["role"] != "user" or not isinstance(message["toolResults"], list)
-            or not all(_tool_result(item) for item in message["toolResults"])
-        ):
-            return False
+        if "toolResults" in message:
+            tool_results = message["toolResults"]
+            if message["role"] != "user" or not isinstance(tool_results, list):
+                return False
+            if not all(_tool_result(item) for item in tool_results):
+                return False
     return True
 
 
@@ -169,12 +170,13 @@ def _usage(value: object) -> bool:
     if not isinstance(value["rateLimits"], list):
         return False
     for window in value["rateLimits"]:
-        if (
-            not isinstance(window, Mapping) or not {"kind", "percentUsed"} <= set(window)
-            or set(window) - {"kind", "percentUsed", "resetsAt"}
-            or not _text(window["kind"]) or not _number(window["percentUsed"])
-            or "resetsAt" in window and not _text(window["resetsAt"])
-        ):
+        if not isinstance(window, Mapping) or not {"kind", "percentUsed"} <= set(window):
+            return False
+        if set(window) - {"kind", "percentUsed", "resetsAt"}:
+            return False
+        if not _text(window["kind"]) or not _number(window["percentUsed"]):
+            return False
+        if "resetsAt" in window and not _text(window["resetsAt"]):
             return False
     return "cost" not in value or (
         isinstance(value["cost"], Mapping) and set(value["cost"]) == {"usd"} and _number(value["cost"]["usd"])

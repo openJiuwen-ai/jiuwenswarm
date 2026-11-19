@@ -18,6 +18,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 
 from agent_gateway.extensions_v2 import assembly
 from agent_gateway.extensions_v2.config import GatewayExtensionConfig
@@ -58,8 +59,11 @@ class Channel:
         self.broadcasts.append((event, payload))
 
 
-@pytest.fixture(autouse=True)
-def isolate_control_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest_asyncio.fixture(autouse=True)
+async def isolate_control_context(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    await assembly.shutdown_gateway_extensions()
     # Both independently packaged local transports must publish into this test workspace.
     monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr("agent_gateway.common.paths.get_user_workspace_dir", lambda: tmp_path)
@@ -67,6 +71,10 @@ def isolate_control_context(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setenv("AGENT_SERVER_PORT", "18092")
     monkeypatch.delenv("JIUWENSWARM_EXTENSION_CLI_GATEWAY", raising=False)
     monkeypatch.delenv("JIUWENSWARM_EXTENSION_CLI_AGENT_SERVER", raising=False)
+    try:
+        yield
+    finally:
+        await assembly.shutdown_gateway_extensions()
 
 
 ENTRY = """\

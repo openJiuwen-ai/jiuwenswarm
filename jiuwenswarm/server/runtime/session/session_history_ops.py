@@ -122,16 +122,20 @@ def prepare_extension_append(
             view = message_from_dict({"type": message["role"], "content": message["content"], "is_meta": True})
         else:
             view = message_from_dict(message["message"])
-            if view.type not in ("user", "assistant", "system") or view.role != view.type or view.tool_calls is not None or view.tool_call_id is not None:
+            if view.type not in ("user", "assistant", "system") or view.role != view.type:
+                raise ValueError("Notes cannot impersonate tool messages")
+            if view.tool_calls is not None or view.tool_call_id is not None:
                 raise ValueError("Notes cannot impersonate tool messages")
             if any(block.get("type") != "text" for block in view.content):
                 raise ValueError("Extension notes accept text blocks only")
             view = replace(view, is_meta=True)
         role = "user" if view.type == "user" else "assistant"
         content = message_text(view)
-        if not legacy and len(json.dumps(view.to_dict(), ensure_ascii=False, allow_nan=False).encode("utf-8")) > MAX_APPEND_BYTES:
-            raise ValueError("Note exceeds the message limit")
-    except (KeyError, TypeError, ValueError, UnicodeError):
+        if not legacy:
+            encoded_view = json.dumps(view.to_dict(), ensure_ascii=False, allow_nan=False).encode("utf-8")
+            if len(encoded_view) > MAX_APPEND_BYTES:
+                raise ValueError("Note exceeds the message limit")
+    except (KeyError, TypeError, ValueError):
         raise SessionHistoryError("INVALID_MESSAGE") from None
     if role not in ("user", "assistant") or not isinstance(content, str) or not content.strip():
         raise SessionHistoryError("INVALID_MESSAGE")

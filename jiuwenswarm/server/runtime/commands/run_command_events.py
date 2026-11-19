@@ -68,7 +68,9 @@ class _CommandFrame:
                 try:
                     self.executing = True
                     native = await self.execute(args)
-                    if not isinstance(native, NativeCommandResult) or not _valid_text_context(native.text, native.context):
+                    if not isinstance(native, NativeCommandResult) or not _valid_text_context(
+                        native.text, native.context,
+                    ):
                         raise ServerCommandError("COMMAND_INVALID_NATIVE_RESULT")
                     self.native = NativeCommandResult(copy.deepcopy(native.value), native.text, tuple(native.context))
                     self.public = ServerRunCommandResult(native.text, tuple(native.context) or None, next(_REFERENCES))
@@ -140,7 +142,8 @@ async def dispatch_server_run_command(
         use_native = output.ref is not None
         text = frame.public.text if use_native else output.text
         final = ServerRunCommandResult(text=text, context=notes or None, ref=output.ref)
-        return CommandExecution(final, copy.deepcopy(frame.native.value) if frame.native is not None else None, use_native)
+        native_value = copy.deepcopy(frame.native.value) if frame.native is not None else None
+        return CommandExecution(final, native_value, use_native)
     finally:
         frame.active = False
         _CURRENT.reset(token)

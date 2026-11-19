@@ -24,7 +24,8 @@ logger = logging.getLogger(__name__)
 class PushTransport(Protocol):
     """Minimal protocol shared with server/gateway_push."""
 
-    async def send_push(self, msg: dict[str, Any]) -> bool: ...
+    async def send_push(self, msg: dict[str, Any]) -> bool:
+        ...
 
 
 class RenderTransport:

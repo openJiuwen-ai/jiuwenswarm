@@ -866,6 +866,37 @@ async function startBackendServices({ ports, webProcess, webReady }) {
   } catch (error) {
     // Quit owns cleanup. A cancelled preparation/readiness wait is not a startup failure.
     if (shuttingDown) return;
+    const recoveryAvailable = Boolean(recoveryProcess && serviceTreeRunning(recoveryProcess));
+    let webAvailable = false;
+    if (recoveryAvailable && webProcess) {
+      try {
+        await webReady;
+        webAvailable = serviceTreeRunning(webProcess);
+      } catch {
+        webAvailable = false;
+      }
+    }
+    if (recoveryAvailable && webAvailable) {
+      const failedBackends = [agentProcess, gatewayProcess].filter(Boolean);
+      for (const child of failedBackends) intentionallyStoppedProcesses.add(child);
+      const cleanupResults = await Promise.allSettled(failedBackends.map(terminateService));
+      for (const result of cleanupResults) {
+        if (result.status === 'rejected') {
+          console.error('[electron] failed backend startup cleanup incomplete', result.reason);
+        }
+      }
+      for (const [name, child] of serviceProcesses.entries()) {
+        if (failedBackends.includes(child) && !serviceTreeRunning(child)) {
+          serviceProcesses.delete(name);
+        }
+      }
+      watchRecoveryRestartRequests(ports);
+      console.error(
+        '[electron] backend startup failed; keeping Web and recovery services available',
+        error,
+      );
+      return;
+    }
     for (const child of [webProcess, recoveryProcess, agentProcess, gatewayProcess]) {
       if (child) {
         void terminateService(child).catch(error =>

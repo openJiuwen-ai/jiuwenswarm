@@ -1451,7 +1451,8 @@ class DesktopRuntime:
             raise RuntimeError("desktop startup cancelled")
         return process
 
-    def _stop_recovery_backends(self, processes: list[subprocess.Popen[bytes]]) -> None:
+    @staticmethod
+    def _stop_recovery_backends(processes: list[subprocess.Popen[bytes]]) -> None:
         """Confirm Front/service exit before retiring this application's Worker."""
         from jiuwenswarm.common.process_supervision import terminate_service_tree
         from jiuwenswarm.server.supervisor.shutdown import shutdown_application_worker
@@ -1491,6 +1492,96 @@ class DesktopRuntime:
             if restarted:
                 self._stop_recovery_backends(list(reversed(restarted)))
             raise
+
+    def _watch_backend_pair(self) -> None:
+        """Keep recovery restart handling alive after either backend exits."""
+        from jiuwenswarm.common.system_plugin_recovery import SystemPluginRecovery
+
+        recovery = SystemPluginRecovery()
+        recovery_failed = False
+        failed_pair: tuple[
+            subprocess.Popen[bytes], subprocess.Popen[bytes]
+        ] | None = None
+        while True:
+            with self._lock:
+                if self._is_shutting_down:
+                    return
+                agent = self.processes.get("agent")
+                gateway = self.processes.get("gateway")
+            try:
+                restart_requested = recovery.consume_backend_restart(
+                    self.recovery_session_id
+                )
+            except Exception:  # noqa: BLE001 - recovery must not stop desktop supervision
+                logger.warning(
+                    "[desktop] could not read system plugin recovery restart request",
+                    exc_info=True,
+                )
+                restart_requested = False
+            if restart_requested:
+                logger.info(
+                    "[desktop] restarting AgentServer and Gateway after system plugin recovery"
+                )
+                try:
+                    self._restart_backend_processes()
+                    recovery_failed = False
+                    failed_pair = None
+                except Exception:  # noqa: BLE001 - keep the independent recovery page available
+                    logger.exception(
+                        "[desktop] could not restart backend services after system plugin recovery"
+                    )
+                    recovery_failed = True
+                continue
+            if recovery_failed:
+                time.sleep(0.25)
+                continue
+            if agent is None or gateway is None:
+                time.sleep(0.25)
+                continue
+
+            current_pair = (agent, gateway)
+            if failed_pair is not None and failed_pair != current_pair:
+                failed_pair = None
+            if failed_pair is not None:
+                if agent.poll() is not None and gateway.poll() is not None:
+                    with self._lock:
+                        if self.processes.get("agent") is agent:
+                            self.processes.pop("agent", None)
+                        if self.processes.get("gateway") is gateway:
+                            self.processes.pop("gateway", None)
+                    failed_pair = None
+                time.sleep(0.25)
+                continue
+
+            exited = (
+                ("agent", agent)
+                if agent.poll() is not None
+                else (("gateway", gateway) if gateway.poll() is not None else None)
+            )
+            if exited is not None:
+                exited_name, _ = exited
+                peer_name, peer_process = (
+                    ("gateway", gateway)
+                    if exited_name == "agent"
+                    else ("agent", agent)
+                )
+                logger.error(
+                    "[desktop] %s exited after startup; terminating %s peer",
+                    exited_name,
+                    peer_name,
+                )
+                if peer_process.poll() is None:
+                    try:
+                        _terminate_process_tree(peer_process)
+                    except Exception:  # noqa: BLE001 - recovery supervision must remain available
+                        logger.exception(
+                            "[desktop] could not terminate %s after %s exited",
+                            peer_name,
+                            exited_name,
+                        )
+                failed_pair = current_pair
+                continue
+            time.sleep(0.25)
 
     def start_services(
         self, on_web_ready: Callable[[], None] | None = None
@@ -1678,69 +1769,8 @@ class DesktopRuntime:
         # jiuwenswarm.app). Preserve the supervisor's paired-lifecycle rule:
         # if either backend exits after startup, promptly stop its peer so it
         # cannot keep ports, cron jobs, or the gateway singleton lock alive.
-        def _watch_backend_pair() -> None:
-            from jiuwenswarm.common.system_plugin_recovery import SystemPluginRecovery
-
-            recovery = SystemPluginRecovery()
-            recovery_failed = False
-            while True:
-                with self._lock:
-                    if self._is_shutting_down:
-                        return
-                    agent = self.processes.get("agent")
-                    gateway = self.processes.get("gateway")
-                try:
-                    restart_requested = recovery.consume_backend_restart(
-                        self.recovery_session_id
-                    )
-                except Exception:  # noqa: BLE001 - recovery must not stop desktop supervision
-                    logger.warning(
-                        "[desktop] could not read system plugin recovery restart request",
-                        exc_info=True,
-                    )
-                    restart_requested = False
-                if restart_requested:
-                    logger.info(
-                        "[desktop] restarting AgentServer and Gateway after system plugin recovery"
-                    )
-                    try:
-                        self._restart_backend_processes()
-                        recovery_failed = False
-                    except Exception:  # noqa: BLE001 - keep the independent recovery page available
-                        logger.exception(
-                            "[desktop] could not restart backend services after system plugin recovery"
-                        )
-                        recovery_failed = True
-                    continue
-                if recovery_failed:
-                    time.sleep(0.25)
-                    continue
-                if agent is None or gateway is None:
-                    return
-                exited = (
-                    ("agent", agent)
-                    if agent.poll() is not None
-                    else (("gateway", gateway) if gateway.poll() is not None else None)
-                )
-                if exited is not None:
-                    exited_name, _ = exited
-                    peer_name, peer_process = (
-                        ("gateway", gateway)
-                        if exited_name == "agent"
-                        else ("agent", agent)
-                    )
-                    logger.error(
-                        "[desktop] %s exited after startup; terminating %s peer",
-                        exited_name,
-                        peer_name,
-                    )
-                    if peer_process.poll() is None:
-                        _terminate_process_tree(peer_process)
-                    return
-                time.sleep(0.25)
-
         threading.Thread(
-            target=_watch_backend_pair,
+            target=self._watch_backend_pair,
             name="desktop-backend-pair-watch",
             daemon=True,
         ).start()

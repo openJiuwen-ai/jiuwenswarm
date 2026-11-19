@@ -87,7 +87,9 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "icon": token(*WEBUI_ICON_NAMES), "iconPlacement": token("start", "end"), "aria-label": LOCALIZED_TEXT,
     }, "events": {"ui.click": NO_DATA}},
     "Input": {"props": {
-        **INPUT_PROPS, "ariaLabel": LOCALIZED_TEXT, "value": TEXT, "defaultValue": TEXT, "placeholder": TEXT, "maxLength": INTEGER,
+        **INPUT_PROPS,
+        "ariaLabel": LOCALIZED_TEXT, "value": TEXT, "defaultValue": TEXT,
+        "placeholder": TEXT, "maxLength": INTEGER,
         "allowClear": BOOL, "showCount": BOOL, "type": token("text", "email", "tel", "url", "password"),
         "readOnly": BOOL,
     }, "events": {
@@ -100,7 +102,12 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "ariaLabel": LOCALIZED_TEXT, "size": COMPACT_SIZE, "checkedChildren": TEXT, "unCheckedChildren": TEXT,
     }, "events": {name: obj({"checked": BOOL}, "checked") for name in ("ui.click", "ui.change")}},
     "Select": {"props": {
-        **INPUT_PROPS, "ariaLabel": LOCALIZED_TEXT, "options": array(obj({"value": OPTION_VALUE, "label": LOCALIZED_TEXT, "disabled": BOOL}, "value", "label")),
+        **INPUT_PROPS,
+        "ariaLabel": LOCALIZED_TEXT,
+        "options": array(obj(
+            {"value": OPTION_VALUE, "label": LOCALIZED_TEXT, "disabled": BOOL},
+            "value", "label",
+        )),
         "value": union(OPTION_VALUE, NIL, array(OPTION_VALUE)),
         "defaultValue": union(OPTION_VALUE, NIL, array(OPTION_VALUE)), "placeholder": TEXT, "allowClear": BOOL,
         "mode": token("multiple", "tags"), "maxCount": {"kind": "number", "integer": True, "min": 1},
@@ -124,7 +131,10 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "dots": BOOL, "included": BOOL, "reverse": BOOL, "orientation": token("horizontal", "vertical"),
     }, "events": {"ui.change": obj({"value": NUMBER}, "value")}},
     "Tabs": {"props": {
-        "items": array(obj({"key": TEXT, "label": TEXT, "disabled": BOOL, "children": {"kind": "nodes"}}, "key", "label")),
+        "items": array(obj(
+            {"key": TEXT, "label": TEXT, "disabled": BOOL, "children": {"kind": "nodes"}},
+            "key", "label",
+        )),
         "activeKey": TEXT, "defaultActiveKey": TEXT, "type": token("line", "card"),
         "tabPlacement": token("top", "end", "start", "bottom"), "size": SIZE,
         "centered": BOOL, "destroyOnHidden": BOOL, "ariaLabel": TEXT,
@@ -231,7 +241,7 @@ def check_value(rule: Mapping[str, Any], value: Any, *, depth: int = 0) -> bool:
     if kind == "string":
         return isinstance(value, str) and len(value.encode("utf-8")) <= rule.get("maxBytes", MAX_TEXT_BYTES)
     if kind == "boolean":
-        return type(value) is bool
+        return isinstance(value, bool)
     if kind == "null":
         return value is None
     if kind == "number":
@@ -296,17 +306,19 @@ def _file_tree_nodes(items: Any) -> dict[str, Mapping[str, Any]]:
             raise ValueError("file tree is too deep")
         for item in entries:
             key, path = item["key"], item["path"]
-            if (not key or key in nodes or not _workspace_path_ok(path) or path in paths
-                    or (parent is not None and not path.startswith(f"{parent}/"))):
+            if not key or key in nodes:
+                raise ValueError("invalid file tree identities or paths")
+            if not _workspace_path_ok(path) or path in paths:
+                raise ValueError("invalid file tree identities or paths")
+            if parent is not None and not path.startswith(f"{parent}/"):
                 raise ValueError("invalid file tree identities or paths")
             nodes[key] = item
             paths.add(path)
             if len(nodes) > 512:
                 raise ValueError("file tree has too many nodes")
-            if item["kind"] == "file" and (
-                "children" in item or "loaded" in item or "truncated" in item
-            ):
-                raise ValueError("file nodes cannot declare directory fields")
+            if item["kind"] == "file":
+                if "children" in item or "loaded" in item or "truncated" in item:
+                    raise ValueError("file nodes cannot declare directory fields")
             if item.get("loaded") is False and "children" in item:
                 raise ValueError("unloaded directory has children")
             walk(item.get("children", ()), depth + 1, path)
@@ -366,8 +378,11 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
         labels = label.values() if isinstance(label, Mapping) else (label,)
         accessible = props.get("aria-label", "")
         accessible_labels = accessible.values() if isinstance(accessible, Mapping) else (accessible,)
-        if props.get("icon") and not all(text.strip() for text in labels) and not all(text.strip() for text in accessible_labels):
-            return "icon-only buttons require a non-empty aria-label"
+        if props.get("icon"):
+            if not all(text.strip() for text in labels) and not all(
+                text.strip() for text in accessible_labels
+            ):
+                return "icon-only buttons require a non-empty aria-label"
         if "target" in props and "href" not in props:
             return "button target requires href"
     if component == "Dropdown" and props.get("icon") and not props.get("ariaLabel", "").strip():
@@ -381,7 +396,9 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
     if component == "Select":
         values = [item["value"] for item in props["options"]]
         value_type = str if props.get("mode") == "tags" else (str if values and isinstance(values[0], str) else float)
-        if (not _unique(values) or any(value == "" or (isinstance(value, str)) != (value_type is str) for value in values)):
+        if not _unique(values):
+            return "invalid option values"
+        if any(value == "" or isinstance(value, str) != (value_type is str) for value in values):
             return "invalid option values"
         for key in ("value", "defaultValue"):
             if key in props and not _selection_allowed(props[key], values, "mode" in props,
@@ -394,15 +411,22 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
             return str(exc)
         values = [item["value"] for item in options]
         keys = [item.get("key", item["value"]) for item in options]
-        if not all(values) or not all(keys) or not _unique(values) or not _unique(keys):
+        if not all(values) or not all(keys):
+            return "invalid tree identities"
+        if not _unique(values) or not _unique(keys):
             return "invalid tree identities"
         if props.get("treeCheckable") and props.get("multiple") is False:
             return "treeCheckable conflicts with multiple=false"
         multiple = props.get("treeCheckable", False) or props.get("multiple", False)
-        if any(key in props and not _selection_allowed(props[key], values, multiple) for key in ("value", "defaultValue")):
+        if any(
+            key in props and not _selection_allowed(props[key], values, multiple)
+            for key in ("value", "defaultValue")
+        ):
             return "invalid tree selection"
         expanded = props.get("treeDefaultExpandedKeys", [])
-        if not _unique(expanded) or any(key not in keys for key in expanded) or (expanded and props.get("treeDefaultExpandAll")):
+        if not _unique(expanded) or any(key not in keys for key in expanded):
+            return "invalid tree expansion"
+        if expanded and props.get("treeDefaultExpandAll"):
             return "invalid tree expansion"
     if component == "Button" and "openPanel" in props and re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", props["openPanel"],
@@ -474,8 +498,17 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
         if any(key in style and re.fullmatch(r"#(?:[0-9a-fA-F]{3,4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})", style[key]) is None
                for key in ("backgroundColor", "color")):
             return "Avatar colors must use hexadecimal notation"
-    url_fields = {"Button": ("href",), "Avatar": ("src",), "Card": ("cover",), "Tag": ("href",), "Image": ("src", "fallback")}
-    if any(key in props and not valid_url(props[key], iframe=component == "Iframe") for key in url_fields.get(component, ())):
+    url_fields = {
+        "Button": ("href",),
+        "Avatar": ("src",),
+        "Card": ("cover",),
+        "Tag": ("href",),
+        "Image": ("src", "fallback"),
+    }
+    if any(
+        key in props and not valid_url(props[key], iframe=component == "Iframe")
+        for key in url_fields.get(component, ())
+    ):
         return "invalid resource URL"
     if component == "Image":
         if isinstance(props.get("preview"), Mapping) and not valid_url(props["preview"]["src"]):
@@ -489,19 +522,29 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
             match = re.fullmatch(r"(\d+(?:\.\d+)?)(px|%)", value) if isinstance(value, str) else None
             if match is None or float(match[1]) > (100 if match[2] == "%" else 4096):
                 return "invalid image dimension"
-    if component == "Empty" and "image" in props and props["image"] not in ("default", "simple") and not valid_url(props["image"]):
-        return "invalid Empty image"
+    if component == "Empty" and "image" in props:
+        if props["image"] not in ("default", "simple") and not valid_url(props["image"]):
+            return "invalid Empty image"
     if component == "Divider" and props.get("orientation") == "vertical" and props.get("children"):
         return "vertical Divider cannot have a title"
     if component == "Dropdown":
         items = props["items"]
         keys = [item["key"] for item in items]
-        if not items or any(not key.strip() for key in keys) or not _unique(keys) or any(not item["label"].strip() for item in items):
+        if not items or any(not key.strip() for key in keys):
+            return "invalid dropdown items"
+        if not _unique(keys) or any(not item["label"].strip() for item in items):
             return "invalid dropdown items"
     return None
 
 
-def _selection_allowed(value: Any, values: list[Any], multiple: bool, *, tags: bool = False, maximum: int | None = None) -> bool:
+def _selection_allowed(
+    value: Any,
+    values: list[Any],
+    multiple: bool,
+    *,
+    tags: bool = False,
+    maximum: int | None = None,
+) -> bool:
     if multiple != isinstance(value, (list, tuple)):
         return False
     selected = list(value) if multiple else ([] if value is None else [value])
@@ -512,7 +555,9 @@ def _selection_allowed(value: Any, values: list[Any], multiple: bool, *, tags: b
 def validate_event_data(component: str, event: str, data: Mapping[str, Any], props: Mapping[str, Any]) -> bool:
     """Check event data before business handlers, including mutable selection values."""
     rule = COMPONENT_RULES.get(component, {}).get("events", {}).get(event)
-    if rule is None or not check_value(rule, data) or props.get("disabled") or props.get("loading"):
+    if rule is None or not check_value(rule, data):
+        return False
+    if props.get("disabled") or props.get("loading"):
         return False
     if component == "Input":
         return (not (props.get("readOnly") and event != "ui.click")
@@ -542,14 +587,24 @@ def validate_event_data(component: str, event: str, data: Mapping[str, Any], pro
                            for item in options)
         if component == "Select" and props.get("mode") == "tags":
             return isinstance(value, str) and bool(value)
-        values = [item["value"] for item in options if not item.get("disabled")
-                  and (item.get("checkable", True) and not item.get("disableCheckbox")
-                       if component == "TreeSelect" and props.get("treeCheckable")
-                       else item.get("selectable", True))]
+        values = []
+        for item in options:
+            if item.get("disabled"):
+                continue
+            if component == "TreeSelect" and props.get("treeCheckable"):
+                allowed = item.get("checkable", True) and not item.get("disableCheckbox")
+            else:
+                allowed = item.get("selectable", True)
+            if allowed:
+                values.append(item["value"])
         if component == "TreeSelect" and event == "ui.change":
             return _selection_allowed(value, values, props.get("treeCheckable", False) or props.get("multiple", False))
-        return any(type(value) is type(item) and value == item or finite_number(value) and finite_number(item) and value == item
-                   for item in values)
+        for item in values:
+            if value.__class__ is item.__class__ and value == item:
+                return True
+            if finite_number(value) and finite_number(item) and value == item:
+                return True
+        return False
     if component == "FileTree":
         if props.get("status") not in (None, "ready"):
             return False

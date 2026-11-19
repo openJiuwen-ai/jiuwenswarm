@@ -68,11 +68,20 @@ def message_from_base_message(message: Any) -> SessionAppendMessage:
     return SessionAppendMessage(
         type=role, content=content_blocks(message.content), role=role, name=message.name,
         tool_call_id=getattr(message, "tool_call_id", None),
-        tool_calls=[call.model_dump(mode="json") if hasattr(call, "model_dump") else copy.deepcopy(call) for call in calls] if calls is not None else None,
+        tool_calls=(
+            [
+                call.model_dump(mode="json") if hasattr(call, "model_dump") else copy.deepcopy(call)
+                for call in calls
+            ]
+            if calls is not None
+            else None
+        ),
     )
 
 
-def prepare_platform_history(record_kwargs: Mapping[str, Any]) -> tuple[PreparedHistoryRecord | None, SessionAppendMessage | None]:
+def prepare_platform_history(
+    record_kwargs: Mapping[str, Any],
+) -> tuple[PreparedHistoryRecord | None, SessionAppendMessage | None]:
     """Accept native BaseMessage content at the existing platform write seam."""
     from openjiuwen.core.foundation.llm import BaseMessage
 
@@ -85,8 +94,12 @@ def prepare_platform_history(record_kwargs: Mapping[str, Any]) -> tuple[Prepared
     extra["native_message"] = native.model_dump(mode="json")
     if view.type == "tool":
         kwargs["event_type"] = "chat.tool_result"
-        extra.update({"tool_call_id": view.tool_call_id, "name": view.name, "result": copy.deepcopy(native.content),
-                      "rendered_result": message_text(view)})
+        extra.update({
+            "tool_call_id": view.tool_call_id,
+            "name": view.name,
+            "result": copy.deepcopy(native.content),
+            "rendered_result": message_text(view),
+        })
     elif view.type == "assistant" and view.tool_calls:
         kwargs["event_type"] = "chat.tool_call"
         extra["tool_calls"] = [{**copy.deepcopy(call), "tool_call_id": call.get("id")} for call in view.tool_calls]
@@ -95,7 +108,11 @@ def prepare_platform_history(record_kwargs: Mapping[str, Any]) -> tuple[Prepared
     elif view.type == "assistant":
         if not kwargs.get("event_type"):
             kwargs["event_type"] = "chat.final"
-    kwargs.update({"role": "user" if view.type == "user" else "assistant", "content": message_text(view), "extra": extra})
+    kwargs.update({
+        "role": "user" if view.type == "user" else "assistant",
+        "content": message_text(view),
+        "extra": extra,
+    })
     return prepare_history_record(**kwargs), view
 
 
@@ -111,15 +128,24 @@ def message_from_dict(value: object) -> SessionAppendMessage:
     if role not in (None, "user", "assistant", "tool", "system"):
         raise ValueError("Unsupported message role")
     name, tool_id, calls = value.get("name"), value.get("tool_call_id"), value.get("tool_calls")
-    if name is not None and (not isinstance(name, str) or not name.strip() or len(name) > 256):
-        raise ValueError("Invalid message name")
+    if name is not None:
+        if not isinstance(name, str) or not name.strip() or len(name) > 256:
+            raise ValueError("Invalid message name")
     if tool_id is not None and (not isinstance(tool_id, str) or not tool_id):
         raise ValueError("Invalid tool call id")
     if calls is not None and (not isinstance(calls, list) or any(not isinstance(x, dict) for x in calls)):
         raise ValueError("Invalid tool calls")
     if not isinstance(value.get("is_meta", False), bool):
         raise ValueError("Invalid is_meta")
-    result = SessionAppendMessage(kind, content_blocks(value["content"]), role, name, value.get("is_meta", False), tool_id, copy.deepcopy(calls))
+    result = SessionAppendMessage(
+        kind,
+        content_blocks(value["content"]),
+        role,
+        name,
+        value.get("is_meta", False),
+        tool_id,
+        copy.deepcopy(calls),
+    )
     _json_size(result.to_dict())
     return result
 
@@ -148,7 +174,11 @@ def message_from_record(record: Mapping[str, Any], *, prefer_stored: bool = True
     elif event_type == "chat.tool_call":
         calls = copy.deepcopy(record.get("tool_calls"))
         if calls is None:
-            calls = [{key: copy.deepcopy(record[key]) for key in ("tool_call_id", "tool_name", "name", "arguments") if key in record}]
+            calls = [{
+                key: copy.deepcopy(record[key])
+                for key in ("tool_call_id", "tool_name", "name", "arguments")
+                if key in record
+            }]
     elif event_type in ("context.compact_boundary", "chat.notice", "system.notice"):
         kind, name = "system", event_type
     elif event_type in ("chat.attachment", "attachment"):
@@ -159,7 +189,9 @@ def message_from_record(record: Mapping[str, Any], *, prefer_stored: bool = True
     )
 
 
-def classify_record(record: Mapping[str, Any], source: str, model_name: str | None = None) -> tuple[str, SessionAppendOrigin]:
+def classify_record(
+    record: Mapping[str, Any], source: str, model_name: str | None = None,
+) -> tuple[str, SessionAppendOrigin]:
     """Separate the row's semantic door from producer and adapter entrance."""
     if source == "extension":
         return "note", SessionAppendOrigin("extension", record.get("extension_package_id"), "ops.session.append")
@@ -196,18 +228,24 @@ def valid_message_rewrite(original: SessionAppendMessage, value: object) -> bool
             if before.get("type") == "text":
                 if not isinstance(after.get("text"), str):
                     return False
-                if not _same_json({k: v for k, v in before.items() if k != "text"}, {k: v for k, v in after.items() if k != "text"}):
+                before_metadata = {key: item for key, item in before.items() if key != "text"}
+                after_metadata = {key: item for key, item in after.items() if key != "text"}
+                if not _same_json(before_metadata, after_metadata):
                     return False
             elif not _same_json(before, after):
                 return False
         if message_text(original).strip() and not message_text(value).strip():
             return False
         return _json_size(value.to_dict()) <= max(MAX_MESSAGE_BYTES, _json_size(original.to_dict()))
-    except (TypeError, ValueError, UnicodeError):
+    except (TypeError, ValueError):
         return False
 
 
-def apply_message(prepared: PreparedHistoryRecord, message: SessionAppendMessage, original: SessionAppendMessage) -> PreparedHistoryRecord:
+def apply_message(
+    prepared: PreparedHistoryRecord,
+    message: SessionAppendMessage,
+    original: SessionAppendMessage,
+) -> PreparedHistoryRecord:
     """Merge allowed content into the original row, preserving private fields."""
     if message == original:
         return replace(prepared, record={**copy.deepcopy(prepared.record), "transcript_message": message.to_dict()})
@@ -220,7 +258,7 @@ def apply_message(prepared: PreparedHistoryRecord, message: SessionAppendMessage
             extra["rendered_result"] = content
     if "content_blocks" in prepared.record:
         record["content_blocks"] = copy.deepcopy(message.content)
-    if isinstance(record.get("native_message"), dict):
-        native = record["native_message"]
+    native = record.get("native_message")
+    if isinstance(native, dict):
         native["content"] = content if isinstance(native.get("content"), str) else copy.deepcopy(message.content)
     return replace(prepared, record=record, metadata={**prepared.metadata, "content": content, "extra": extra})

@@ -49,6 +49,7 @@ RENDERER_WEBUI_TREE: Final[str] = "webui-tree"
 RENDER_SCHEMA_VERSION: Final[int] = 1
 DEFAULT_CHANNEL_ID: Final[str] = "web"
 
+
 class SlotScope(StrEnum):
     """Whether a slot is tied to one chat or to one browser connection."""
 
@@ -69,7 +70,12 @@ class SlotSpec:
         return scope in (self.scope, *self.additional_scopes)
 
 
-def _slot(capacity: str, scope: SlotScope = SlotScope.SESSION, *, additional_scopes: tuple[SlotScope, ...] = ()) -> SlotSpec:
+def _slot(
+    capacity: str,
+    scope: SlotScope = SlotScope.SESSION,
+    *,
+    additional_scopes: tuple[SlotScope, ...] = (),
+) -> SlotSpec:
     return SlotSpec(capacity=capacity, scope=scope, additional_scopes=additional_scopes)
 
 

@@ -109,7 +109,12 @@ class SessionAuthorizationService:
             return False
         if kind not in ("bearer", "api-key"):
             raise ValueError("credential kind must be bearer or api-key")
-        if not isinstance(credential, str) or not credential.strip() or len(credential) > 16384 or any(ord(char) < 32 or ord(char) == 127 for char in credential):
+        if not isinstance(credential, str) or not credential.strip():
+            raise ValueError("credential must be a non-empty header-safe string")
+        has_control_character = any(
+            ord(char) < 32 or ord(char) == 127 for char in credential
+        )
+        if len(credential) > 16384 or has_control_character:
             raise ValueError("credential must be a non-empty header-safe string")
         if expires_at is not None and (type(expires_at) not in (int, float) or not math.isfinite(expires_at)):
             raise ValueError("expires_at must be finite UTC epoch seconds or None")
@@ -166,7 +171,9 @@ class SessionAuthorizationService:
         """Issue a single opaque reference; used only by the trusted CORE frame."""
         from jiuwenswarm.extensions_v2.session_authorization.dispatch import current_frame
         frame = current_frame()
-        if frame is None or frame.service is not self or frame.caller is not caller or frame.context.session_id != session_id:
+        if frame is None or frame.service is not self:
+            raise SessionAuthorizationError("UNBOUND_INVOCATION")
+        if frame.caller is not caller or frame.context.session_id != session_id:
             raise SessionAuthorizationError("UNBOUND_INVOCATION")
         self._require_open()
         self._prune()

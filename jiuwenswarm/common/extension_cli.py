@@ -69,12 +69,16 @@ def read_context(domain: str) -> dict[str, Any]:
             context = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         raise ControlError("当前实例的扩展管理入口不可用，请确认 Swarm 已启动并包含 CLI 支持。") from None
-    if (
-        not isinstance(context, dict) or context.get("domain") != domain
-        or type(context.get("port")) is not int or not 0 < context["port"] < 65536
-        or not isinstance(context.get("token"), str) or len(context["token"]) < 32
-        or not isinstance(context.get("instance"), str) or not context["instance"]
-    ):
+    if not isinstance(context, dict) or context.get("domain") != domain:
+        raise ControlError("本机管理连接记录不合法。")
+    port = context.get("port")
+    if port.__class__ is not int or not 0 < port < 65536:
+        raise ControlError("本机管理连接记录不合法。")
+    token = context.get("token")
+    if not isinstance(token, str) or len(token) < 32:
+        raise ControlError("本机管理连接记录不合法。")
+    instance = context.get("instance")
+    if not isinstance(instance, str) or not instance:
         raise ControlError("本机管理连接记录不合法。")
     return context
 
@@ -186,22 +190,21 @@ class LocalControl:
                     raise ValueError("invalid frame")
                 request_id = frame.get("id", "")
                 token = frame.get("token")
-                if (
-                    not isinstance(token, str) or not token.isascii()
-                    or not hmac.compare_digest(token, self._context["token"])
-                    or frame.get("instance") != self._context["instance"]
+                invalid_token = not isinstance(token, str) or not token.isascii()
+                if invalid_token or not hmac.compare_digest(token, self._context["token"]) or (
+                    frame.get("instance") != self._context["instance"]
                 ):
                     response = {"ok": False, "payload": {"code": "AUTH_REQUIRED", "error": "本机管理授权无效。"}}
-                elif not isinstance(frame.get("action"), str) or frame["action"] not in self._methods or not isinstance(
-                    frame.get("params"), dict,
-                ):
+                elif not isinstance(frame.get("action"), str) or frame["action"] not in self._methods:
+                    response = {"ok": False, "payload": {"code": "INVALID_PARAMS", "error": "无效的包管理请求。"}}
+                elif not isinstance(frame.get("params"), dict):
                     response = {"ok": False, "payload": {"code": "INVALID_PARAMS", "error": "无效的包管理请求。"}}
                 else:
                     response = await self._handler(frame["action"], frame["params"])
                 response = {**response, "id": request_id}
                 writer.write(json.dumps(response, ensure_ascii=False).encode("utf-8") + b"\n")
                 await writer.drain()
-        except (OSError, ValueError, TimeoutError):
+        except (OSError, ValueError):
             logger.debug("[ExtensionCLI] local connection closed or rejected")
         except Exception:  # noqa: BLE001 - keep the host running after a failed management request
             logger.exception("[ExtensionCLI] local request failed")
@@ -225,7 +228,6 @@ class LocalControl:
 
 def source_domain(path: Path) -> str:
     """Read the declared host without importing package code."""
-    import json
     from zipfile import BadZipFile, ZipFile
 
     try:
@@ -241,7 +243,7 @@ def source_domain(path: Path) -> str:
                     raise ValueError("manifest exceeds 64 KiB")
                 raw = archive.read(entry)
         manifest = json.loads(raw)
-    except (OSError, KeyError, BadZipFile, ValueError, UnicodeError) as error:
+    except (OSError, KeyError, BadZipFile, ValueError) as error:
         raise ValueError("Cannot read package manifest") from error
     package = manifest.get("package") if isinstance(manifest, dict) else None
     domain = package.get("domain") if isinstance(package, dict) else None

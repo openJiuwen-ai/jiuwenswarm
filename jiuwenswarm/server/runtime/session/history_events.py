@@ -20,9 +20,17 @@ from agent_gateway.common.mode_matrix import is_team_mode
 from jiuwenswarm.extensions_v2.event_types.session_history import (
     SESSION_APPEND_EVENT, SessionAppendInput, SessionAppendMessage, SessionAppendRejection, SessionAppendResult,
 )
-from jiuwenswarm.server.runtime.session.history_message import classify_record, message_from_record, prepare_platform_history
+from jiuwenswarm.server.runtime.session.history_message import (
+    classify_record,
+    message_from_record,
+    prepare_platform_history,
+)
 from jiuwenswarm.server.runtime.session.session_history import PreparedHistoryRecord
-from jiuwenswarm.server.runtime.session.session_history_ops import SessionHistoryError, original_fingerprint, preflight_append
+from jiuwenswarm.server.runtime.session.session_history_ops import (
+    SessionHistoryError,
+    original_fingerprint,
+    preflight_append,
+)
 
 
 @dataclass
@@ -64,15 +72,28 @@ async def dispatch_session_append(
         raise SessionHistoryError("APPEND_REENTRANT")
     if context.session_id != prepared.session_id:
         raise SessionHistoryError("INVALID_SESSION")
-    generation = await asyncio.to_thread(preflight_append, prepared.session_id, require_existing=source == "extension")
-    row_uuid = prepared.record["id"] if source == "extension" else "row:" + hashlib.sha256(append_key.encode("utf-8")).hexdigest()
-    prepared = replace(prepared, record={**prepared.record, "uuid": row_uuid}, metadata={**prepared.metadata, "append_generation": generation})
+    generation = await asyncio.to_thread(
+        preflight_append, prepared.session_id, require_existing=source == "extension",
+    )
+    if source == "extension":
+        row_uuid = prepared.record["id"]
+    else:
+        row_uuid = "row:" + hashlib.sha256(append_key.encode("utf-8")).hexdigest()
+    prepared = replace(
+        prepared,
+        record={**prepared.record, "uuid": row_uuid},
+        metadata={**prepared.metadata, "append_generation": generation},
+    )
     model_info = (context.metadata or {}).get("session_model_info")
     model_name = model_info.get("model_name") if isinstance(model_info, Mapping) else None
     door, origin = classify_record(prepared.record, source, model_name)
-    message = native_message if native_message is not None else message_from_record(prepared.record, prefer_stored=source == "extension")
+    message = native_message
+    if message is None:
+        message = message_from_record(prepared.record, prefer_stored=source == "extension")
     original = SessionAppendInput(copy.deepcopy(message), door, origin, row_uuid)
-    state = AppendInvocation(copy.deepcopy(prepared), copy.deepcopy(original), message_id, append_key, fingerprint, update_metadata)
+    state = AppendInvocation(
+        copy.deepcopy(prepared), copy.deepcopy(original), message_id, append_key, fingerprint, update_metadata,
+    )
     token = _INVOCATION.set(state)
     try:
         result = await bus.trigger(Event(SESSION_APPEND_EVENT, copy.deepcopy(original)), context)
@@ -93,7 +114,10 @@ async def try_append_platform_history(
     from jiuwenswarm.server.runtime.session.history_context import platform_history_context
 
     bus = get_extension_bus()
-    if bus is None or record_kwargs.get("subagent_id") or is_team_mode(record_kwargs.get("mode", "")) or record_kwargs.get("mode") == "subagent":
+    if bus is None or record_kwargs.get("subagent_id"):
+        return False, None
+    mode = record_kwargs.get("mode", "")
+    if is_team_mode(mode) or mode == "subagent":
         return False, None
     prepared, native_message = prepare_platform_history(record_kwargs)
     if prepared is None:

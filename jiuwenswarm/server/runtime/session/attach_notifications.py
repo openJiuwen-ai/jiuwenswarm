@@ -201,11 +201,13 @@ class ExtensionSessionAttachParticipant:
         if bus is None or manager is None or not manager.initialized:
             return
         context = self.associations.context(value)
+
         async def validate_target() -> bool:
             return await asyncio.to_thread(_confirmed_context, event) is not None
 
-        state = AttachInvocation(value.event_input(), lambda: self.associations.is_current(value),
-                                 validate_target, value.session_id)
+        state = AttachInvocation(
+            value.event_input(), lambda: self.associations.is_current(value), validate_target, value.session_id,
+        )
         task = asyncio.create_task(self._dispatch(bus, manager, state, context), name="extension-session-attach")
         self._tasks.add(task)
         task.add_done_callback(self._task_done)
@@ -218,23 +220,30 @@ class ExtensionSessionAttachParticipant:
         if not done:
             state.active = False
             task.cancel()
-            logger.warning("[ExtensionsV2] session.attach timed out; association remains: session_id=%s", value.session_id)
+            logger.warning(
+                "[ExtensionsV2] session.attach timed out; association remains: session_id=%s", value.session_id,
+            )
             return
         try:
             task.result()
         except asyncio.CancelledError:
-            logger.warning("[ExtensionsV2] session.attach cancelled; association remains: session_id=%s", value.session_id)
+            logger.warning(
+                "[ExtensionsV2] session.attach cancelled; association remains: session_id=%s", value.session_id,
+            )
         except Exception:
-            logger.warning("[ExtensionsV2] session.attach notification failed: session_id=%s", value.session_id, exc_info=True)
+            logger.warning(
+                "[ExtensionsV2] session.attach notification failed: session_id=%s", value.session_id, exc_info=True,
+            )
 
     async def detach(self, *, channel_id: str, session_id: str, view_id: str, attachment_id: str) -> bool:
         """Remove only an explicitly identified current view association."""
-        if (
-            not isinstance(channel_id, str) or not channel_id
-            or not isinstance(view_id, str) or _SURFACE_ID.fullmatch(view_id) is None
-            or not isinstance(session_id, str) or not is_valid_session_id(session_id)
-            or not isinstance(attachment_id, str) or re.fullmatch(r"[0-9a-f]{32}", attachment_id) is None
-        ):
+        if not isinstance(channel_id, str) or not channel_id:
+            raise ValueError("session.detach requires valid session_id, view_id and attachment_id")
+        if not isinstance(view_id, str) or _SURFACE_ID.fullmatch(view_id) is None:
+            raise ValueError("session.detach requires valid session_id, view_id and attachment_id")
+        if not isinstance(session_id, str) or not is_valid_session_id(session_id):
+            raise ValueError("session.detach requires valid session_id, view_id and attachment_id")
+        if not isinstance(attachment_id, str) or re.fullmatch(r"[0-9a-f]{32}", attachment_id) is None:
             raise ValueError("session.detach requires valid session_id, view_id and attachment_id")
         value = self.associations.get(channel_id, view_id)
         if value is None:
@@ -297,10 +306,9 @@ class ExtensionSessionAttachParticipant:
         try:
             with bind_attach_invocation(state):
                 result = await bus.trigger(Event(SESSION_ATTACH_EVENT, state.original), context)
-                if (
-                    not state.is_current() or state.receipt is None or result != state.receipt
-                    or not await state.validate_target() or not state.is_current()
-                ):
+                if not state.is_current() or state.receipt is None or result != state.receipt:
+                    raise RuntimeError("session.attach requires the actual current CORE receipt")
+                if not await state.validate_target() or not state.is_current():
                     raise RuntimeError("session.attach requires the actual current CORE receipt")
         finally:
             runtime.end_calls(packages)

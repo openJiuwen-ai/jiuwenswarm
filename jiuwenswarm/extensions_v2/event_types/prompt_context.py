@@ -5,8 +5,9 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import asdict, dataclass
-from typing import Any, Literal, NoReturn
+from collections.abc import Callable, Iterable
+from dataclasses import asdict, dataclass, field, make_dataclass
+from typing import Any, Literal, NoReturn, SupportsIndex
 
 from openjiuwen.core.events import Event, EventHandlerOps, EventNext, ExtensionEventBus
 
@@ -25,66 +26,119 @@ class PromptContextBlock:
     text: str
 
 
-@dataclass(frozen=True, slots=True)
-class InstructionFile:
-    """An instruction file associated with the prompt context."""
+_UNVERIFIED_FIELD = "isUnverified"
+_INSTRUCTION_FILES_FIELD = "instructionFiles"
 
-    path: str
-    kind: InstructionFileKind
-    content: str
-    parent: str | None = None
-    isUnverified: bool = False
+# These public events deliberately use the upstream wire spelling. Generating
+# the dataclasses keeps that runtime API exact without declaring mixed-case
+# schema fields as regular Python attributes.
+InstructionFile = make_dataclass(
+    "InstructionFile",
+    [
+        ("path", str),
+        ("kind", InstructionFileKind),
+        ("content", str),
+        ("parent", str | None, field(default=None)),
+        (_UNVERIFIED_FIELD, bool, field(default=False)),
+    ],
+    namespace={
+        "__doc__": "An instruction file associated with the prompt context.",
+        "__module__": __name__,
+    },
+    frozen=True,
+    slots=True,
+)
 
 
-@dataclass(frozen=True, slots=True)
-class PromptContextInput:
-    """The complete context collection prepared before a user message render."""
-
-    blocks: list[PromptContextBlock]
-    instructionFiles: list[InstructionFile] | None = None
-
-    @property
-    def instruction_files(self) -> list[InstructionFile] | None:
-        """Expose the Python spelling without changing the event contract."""
-        return self.instructionFiles
+def _instruction_files(value: object) -> list[InstructionFile] | None:
+    """Expose the Python spelling without changing the event contract."""
+    return getattr(value, _INSTRUCTION_FILES_FIELD)
 
 
-@dataclass(frozen=True, slots=True)
-class PromptContextResult:
-    """The complete context collection returned by the event chain."""
+def _context_to_dict(value: object) -> dict:
+    """Return an independent JSON-compatible representation."""
+    return copy.deepcopy(asdict(value))
 
-    blocks: list[PromptContextBlock]
-    instructionFiles: list[InstructionFile] | None = None
 
-    @property
-    def instruction_files(self) -> list[InstructionFile] | None:
-        """Expose the Python spelling without changing the event contract."""
-        return self.instructionFiles
+PromptContextInput = make_dataclass(
+    "PromptContextInput",
+    [
+        ("blocks", list[PromptContextBlock]),
+        (_INSTRUCTION_FILES_FIELD, list[InstructionFile] | None, field(default=None)),
+    ],
+    namespace={
+        "__doc__": "The complete context collection prepared before a user message render.",
+        "__module__": __name__,
+        "instruction_files": property(_instruction_files),
+    },
+    frozen=True,
+    slots=True,
+)
 
-    def to_dict(self) -> dict:
-        """Return an independent JSON-compatible representation."""
-        return copy.deepcopy(asdict(self))
+PromptContextResult = make_dataclass(
+    "PromptContextResult",
+    [
+        ("blocks", list[PromptContextBlock]),
+        (_INSTRUCTION_FILES_FIELD, list[InstructionFile] | None, field(default=None)),
+    ],
+    namespace={
+        "__doc__": "The complete context collection returned by the event chain.",
+        "__module__": __name__,
+        "instruction_files": property(_instruction_files),
+        "to_dict": _context_to_dict,
+    },
+    frozen=True,
+    slots=True,
+)
 
 
 class _ReadOnlyList(list[Any]):
     """List-compatible container that prevents in-place event input edits."""
 
-    @staticmethod
-    def _reject_mutation(*_args: Any, **_kwargs: Any) -> NoReturn:
+    def _raise_read_only(self) -> NoReturn:
         raise TypeError("prompt.context input collections are read-only")
 
-    __setitem__ = _reject_mutation
-    __delitem__ = _reject_mutation
-    __iadd__ = _reject_mutation
-    __imul__ = _reject_mutation
-    append = _reject_mutation
-    clear = _reject_mutation
-    extend = _reject_mutation
-    insert = _reject_mutation
-    pop = _reject_mutation
-    remove = _reject_mutation
-    reverse = _reject_mutation
-    sort = _reject_mutation
+    def __setitem__(self, _index: SupportsIndex | slice, _value: Any) -> NoReturn:
+        self._raise_read_only()
+
+    def __delitem__(self, _index: SupportsIndex | slice) -> NoReturn:
+        self._raise_read_only()
+
+    def __iadd__(self, _values: Iterable[Any]) -> NoReturn:
+        self._raise_read_only()
+
+    def __imul__(self, _count: SupportsIndex) -> NoReturn:
+        self._raise_read_only()
+
+    def append(self, _value: Any) -> NoReturn:
+        self._raise_read_only()
+
+    def clear(self) -> NoReturn:
+        self._raise_read_only()
+
+    def extend(self, _values: Iterable[Any]) -> NoReturn:
+        self._raise_read_only()
+
+    def insert(self, _index: SupportsIndex, _value: Any) -> NoReturn:
+        self._raise_read_only()
+
+    def pop(self, _index: SupportsIndex = -1) -> NoReturn:
+        self._raise_read_only()
+
+    def remove(self, _value: Any) -> NoReturn:
+        self._raise_read_only()
+
+    def reverse(self) -> NoReturn:
+        self._raise_read_only()
+
+    def sort(
+        self,
+        *,
+        key: Callable[[Any], Any] | None = None,
+        reverse: bool = False,
+    ) -> NoReturn:
+        del key, reverse
+        self._raise_read_only()
 
 
 def freeze_prompt_context_input(value: PromptContextInput) -> PromptContextInput:
@@ -139,7 +193,10 @@ def _valid_context_fields(
         return False
     names: set[str] = set()
     for block in blocks:
-        if type(block) is not PromptContextBlock:
+        if (
+            not isinstance(block, PromptContextBlock)
+            or block.__class__ is not PromptContextBlock
+        ):
             return False
         if not isinstance(block.name, str) or not block.name.strip():
             return False
@@ -156,14 +213,15 @@ def _valid_context_fields(
 
 def _valid_instruction_file(value: object) -> bool:
     return (
-        type(value) is InstructionFile
+        isinstance(value, InstructionFile)
+        and value.__class__ is InstructionFile
         and isinstance(value.path, str)
         and bool(value.path.strip())
         and isinstance(value.kind, str)
         and value.kind in INSTRUCTION_FILE_KINDS
         and isinstance(value.content, str)
         and (value.parent is None or isinstance(value.parent, str))
-        and type(value.isUnverified) is bool
+        and isinstance(value.isUnverified, bool)
     )
 
 

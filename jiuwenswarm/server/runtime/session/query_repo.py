@@ -73,14 +73,27 @@ def read_session_repo_view(cwd: str) -> dict[str, object] | None:
             raise SessionRepoError("GIT_QUERY_FAILED")
         return result.stdout.rstrip("\r\n")
 
-    worktrees = query(["worktree", "list", "--porcelain", "-z"])
-    first = worktrees.split("\0", 1)[0]
-    if not first.startswith("worktree "):
-        raise SessionRepoError("GIT_QUERY_FAILED")
     try:
-        root = Path(first[len("worktree "):]).resolve(strict=True)
+        current_root = Path(str(original["repo_root"])).resolve(strict=True)
+        common_text = query(["rev-parse", "--git-common-dir"])
+        if not common_text:
+            raise ValueError("missing Git common directory")
+        common_dir = Path(common_text)
+        if not common_dir.is_absolute():
+            common_dir = Path(cwd) / common_dir
+        common_dir = common_dir.resolve(strict=True)
+        # A linked worktree has a .git file whose common directory is the main
+        # worktree's .git directory. Submodules also use a .git file, but their
+        # common directory ends in the submodule name rather than ``.git``.
+        root = (
+            common_dir.parent
+            if (current_root / ".git").is_file() and common_dir.name == ".git"
+            else current_root
+        )
         if not root.is_dir():
             raise ValueError("unavailable main root")
+    except SessionRepoError:
+        raise
     except (OSError, RuntimeError, ValueError):
         raise SessionRepoError("WORKSPACE_UNAVAILABLE") from None
     remote = query(["config", "--get", "remote.origin.pushurl"], missing=True)

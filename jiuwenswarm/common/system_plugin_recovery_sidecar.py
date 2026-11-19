@@ -534,7 +534,7 @@ class _RecoveryServer(ThreadingHTTPServer):
 class _RecoveryHandler(BaseHTTPRequestHandler):
     server: _RecoveryServer
 
-    def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
+    def do_get(self) -> None:
         path, query = _request_target(self.path)
         if not is_local_recovery_request(self.headers, self.server.server_address[1]) or not self._authorized(query):
             self._forbidden()
@@ -564,7 +564,7 @@ class _RecoveryHandler(BaseHTTPRequestHandler):
             return
         self.send_error(HTTPStatus.NOT_FOUND)
 
-    def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
+    def do_post(self) -> None:
         path, query = _request_target(self.path)
         if not is_local_recovery_request(self.headers, self.server.server_address[1]) or not self._authorized(query):
             self._forbidden()
@@ -591,8 +591,8 @@ class _RecoveryHandler(BaseHTTPRequestHandler):
             return
         self._json({"record": record, "restart_requested": True})
 
-    def log_message(self, format: str, *args: object) -> None:  # noqa: A002 - standard library signature
-        del format, args
+    def log_message(self, message_format: str, *args: object) -> None:
+        del message_format, args
 
     def _authorized(self, query: dict[str, list[str]]) -> bool:
         values = query.get("token")
@@ -638,6 +638,11 @@ class _RecoveryHandler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(encoded)
+
+
+# BaseHTTPRequestHandler dispatches these protocol-defined method names.
+setattr(_RecoveryHandler, "do_GET", _RecoveryHandler.do_get)
+setattr(_RecoveryHandler, "do_POST", _RecoveryHandler.do_post)
 
 
 def main() -> None:

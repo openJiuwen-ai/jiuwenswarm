@@ -22,8 +22,21 @@ from jiuwenswarm.common.process_supervision import (
 _COMMANDS = {"agentserver": ["agentserver"], "gateway": ["gateway"]}
 
 
-@pytest.mark.parametrize("keep_worker,worker_ok,expected", [(False, True, 0), (False, False, 1), (True, False, 0)])
-def test_application_final_exit_owns_worker_unless_launcher_delegates(monkeypatch, keep_worker, worker_ok, expected):
+@pytest.mark.parametrize(
+    "keep_worker,worker_ok,expected,gateway_config_dir",
+    [
+        (False, True, 0, None),
+        (False, False, 1, None),
+        (True, False, 0, "D:/explicit-gateway-config"),
+    ],
+)
+def test_application_final_exit_owns_worker_unless_launcher_delegates(
+    monkeypatch,
+    keep_worker,
+    worker_ok,
+    expected,
+    gateway_config_dir,
+):
     import sys
     from jiuwenswarm.common import utils
     from jiuwenswarm.server.supervisor import shutdown
@@ -33,7 +46,18 @@ def test_application_final_exit_owns_worker_unless_launcher_delegates(monkeypatc
     monkeypatch.setattr(sys, "argv", ["jiuwenswarm-app"] + (["--keep-worker"] if keep_worker else []))
     app = importlib.import_module("jiuwenswarm.app")
     order = []
-    monkeypatch.setattr(app, "supervise", lambda *args, **kwargs: order.append("fronts-stopped") or 0)
+    supervised = []
+
+    def supervise_application(_commands, popen_kwargs, **_kwargs):
+        supervised.append(popen_kwargs)
+        order.append("fronts-stopped")
+        return 0
+
+    monkeypatch.setattr(app, "supervise", supervise_application)
+    if gateway_config_dir is None:
+        monkeypatch.delenv("JIUWENSWARM_GATEWAY_CONFIG_DIR", raising=False)
+    else:
+        monkeypatch.setenv("JIUWENSWARM_GATEWAY_CONFIG_DIR", gateway_config_dir)
     monkeypatch.setattr(app, "begin_system_plugin_recovery_session", lambda: None)
     monkeypatch.setattr(app.subprocess, "Popen", lambda *args, **kwargs: SimpleNamespace(poll=lambda: 0))
     monkeypatch.setattr(app.signal, "signal", lambda *args: None)
@@ -44,6 +68,8 @@ def test_application_final_exit_owns_worker_unless_launcher_delegates(monkeypatc
         app.main()
     assert result.value.code == expected
     assert order == (["fronts-stopped"] if keep_worker else ["fronts-stopped", "worker-stopped"])
+    expected_config_dir = gateway_config_dir or str(app._env_file.parent)
+    assert supervised[0]["env"]["JIUWENSWARM_GATEWAY_CONFIG_DIR"] == expected_config_dir
 
 
 class _Clock:

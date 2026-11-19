@@ -51,6 +51,7 @@ class SessionCompactionService:
         if previous is not None:
             previous.remove()
         binding = _Binding(engine, context, busy, after_commit, processor_types=processor_types)
+
         async def hook(request, continuation):
             if self.bindings.get(sid) is not binding or request.session_id != sid:
                 raise CompactionError("COMPACT_SESSION_UNAVAILABLE")
@@ -92,6 +93,7 @@ class SessionCompactionService:
             processor_types = binding.processor_types
         if binding.lock.locked() or binding.busy():
             raise CompactionError("COMPACT_BUSY")
+
         async def execute():
             result = await binding.engine.compact_context(
                 session_id=session_id, trigger=trigger, instructions=instructions,
@@ -133,6 +135,7 @@ class SessionCompactionService:
             return
         if session_id in self.precomputing:
             return
+
         async def prepare():
             if self.bindings.get(session_id) is not binding or binding.busy():
                 return
@@ -146,6 +149,7 @@ class SessionCompactionService:
                 await self.run(session_id, trigger="precompute")
             except Exception:
                 logger.warning("Session compaction precompute failed: session_id=%s", session_id, exc_info=True)
+
         def start(_):
             if self.bindings.get(session_id) is not binding or session_id in self.precomputing:
                 return

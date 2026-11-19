@@ -24,6 +24,7 @@ function fixture(platform, frontendOnly = false) {
   const exits = [];
   const errors = [];
   let watched = 0;
+  let recoveryWatched = 0;
   let workerAlive = true; // A resident Worker from an earlier Front.
   let pid = 1000;
   let workerExit = 0;
@@ -44,7 +45,8 @@ function fixture(platform, frontendOnly = false) {
     } },
     serviceProcesses: new Map(), backendRestartInProgress: false, recoveryRestartWatcher: null,
     recoveryRestartSignalPath: '', recoverySessionId: 'test-session', intentionallyStoppedProcesses: new WeakSet(),
-    watchRecoveryRestartRequests() {}, shuttingDown: false, quitRequested: false, shutdownPromise: null,
+    watchRecoveryRestartRequests() { recoveryWatched += 1; },
+    shuttingDown: false, quitRequested: false, shutdownPromise: null,
     finalShutdownPromise: null, shutdownComplete: false, requestedExitCode: 0,
     SERVICE_SHUTDOWN_TIMEOUT_MS: 500, SERVICE_KILL_TIMEOUT_MS: 500, RUNTIME_SHUTDOWN_TIMEOUT_MS: 3000,
     backendExecutable: () => 'backend', serviceWorkingDirectory: () => '.', logStreamFor: () => 'ignore',
@@ -94,7 +96,10 @@ function fixture(platform, frontendOnly = false) {
   const quit = () => app.emit('before-quit', { preventDefault() {} });
   return { context, launches, helpers, exits, errors, quit, events,
     refuseWorker() { workerExit = 1; }, failGatewayStart() { gatewayStartFails = true; },
-    get workerAlive() { return workerAlive; }, get watched() { return watched; } };
+    get workerAlive() { return workerAlive; },
+    get watched() { return watched; },
+    get recoveryWatched() { return recoveryWatched; },
+  };
 }
 
 for (const platform of ['darwin', 'win32']) {
@@ -165,6 +170,25 @@ for (const platform of ['darwin', 'win32']) {
       assert.equal(f.workerAlive, false);
       assert.deepEqual(f.exits, [0]);
     }
+  });
+
+  test(`${platform}: backend startup failure keeps Web and recovery available`, async () => {
+    const f = fixture(platform);
+    const webProcess = f.context.spawnService('web', ports);
+    f.failGatewayStart();
+    const starting = f.context.startBackendServices({ ports, webProcess, webReady: Promise.resolve() });
+    const preparation = f.context.serviceProcesses.get('workspace-prepare');
+    preparation.exitCode = 0;
+    preparation.emit('exit', 0);
+
+    await starting;
+
+    assert.equal(f.context.serviceProcesses.get('web'), webProcess);
+    assert.ok(f.context.serviceProcesses.has('recovery'));
+    assert.equal(f.context.serviceProcesses.has('agent'), false);
+    assert.equal(f.recoveryWatched, 1);
+    assert.equal(f.watched, 0);
+    assert.ok(f.events.includes('stop-agent'));
   });
 
   test(`${platform}: Quit during readiness does not install backend watchers`, async () => {

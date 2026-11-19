@@ -61,10 +61,9 @@ def sanitize_model_info(value: object) -> dict[str, object]:
     activated = value.get("activated")
     if source not in ("runtime", "session"):
         raise ValueError("session.model source must be runtime or session")
-    if (
-        (source == "runtime" and activated is not True)
-        or (source == "session" and activated is not None)
-    ):
+    if source == "runtime" and activated is not True:
+        raise ValueError("session.model activation must agree with its fact source")
+    if source == "session" and activated is not None:
         raise ValueError("session.model activation must agree with its fact source")
     raw_selection = value.get("selection")
     selection = None

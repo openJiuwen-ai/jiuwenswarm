@@ -17,7 +17,13 @@ from jiuwenswarm.extensions_v2.webui.constants import (
     SLOT_READY_EVENT,
     UPSTREAM_EVENTS,
 )
-from jiuwenswarm.extensions_v2.webui.models import RenderMode, RenderNode, UiActionInput, UiActionOutput, _content_to_payload
+from jiuwenswarm.extensions_v2.webui.models import (
+    RenderMode,
+    RenderNode,
+    UiActionInput,
+    UiActionOutput,
+    _content_to_payload,
+)
 from jiuwenswarm.extensions_v2.webui.registry import ActiveRenderRegistry
 from jiuwenswarm.extensions_v2.webui.schema import _validate_value, validate_target
 
@@ -30,8 +36,9 @@ def validate_upstream(request: UiActionInput, registry: ActiveRenderRegistry) ->
     if not isinstance(request, UiActionInput):
         return invalid
     report = validate_target(request.target)
-    if (not report.ok or not isinstance(request.event_type, str) or request.event_type not in UPSTREAM_EVENTS
-            or not isinstance(request.payload, Mapping)):
+    if not report.ok or not isinstance(request.event_type, str):
+        return invalid
+    if request.event_type not in UPSTREAM_EVENTS or not isinstance(request.payload, Mapping):
         return invalid
     if request.event_type == SLOT_READY_EVENT:
         if not request.payload:
@@ -55,14 +62,20 @@ def validate_upstream(request: UiActionInput, registry: ActiveRenderRegistry) ->
     if not _validate_value("payload", payload).ok:
         return invalid
     try:
-        if len(json.dumps(_content_to_payload(payload), ensure_ascii=False, allow_nan=False).encode("utf-8")) > MAX_FRAME_BYTES:
+        encoded_payload = json.dumps(
+            _content_to_payload(payload), ensure_ascii=False, allow_nan=False,
+        ).encode("utf-8")
+        if len(encoded_payload) > MAX_FRAME_BYTES:
             return invalid
     except (TypeError, ValueError):
         return invalid
     if node.events is None:
         return invalid
     declaration = node.events.get(request.event_type)
-    if not isinstance(declaration, Mapping) or type(payload["action_id"]) is not str:
+    action_id = payload["action_id"]
+    if not isinstance(declaration, Mapping) or not isinstance(action_id, str):
+        return invalid
+    if action_id.__class__ is not str:
         return invalid
     if payload["action_id"] != declaration.get("id") or not isinstance(payload["args"], Mapping):
         return invalid
@@ -104,8 +117,9 @@ def _find_node(root: RenderNode, node_key: Any) -> RenderNode | None:
                 return None
             node = node.children[index]
             position += 1
-        elif (node.component == "Tabs" and segment == "items" and position + 3 < len(parts)
-              and parts[position + 2] == "children"):
+        elif node.component == "Tabs" and segment == "items":
+            if position + 3 >= len(parts) or parts[position + 2] != "children":
+                return None
             item_index, child_index = parts[position + 1], parts[position + 3]
             if not all(re.fullmatch(r"0|[1-9][0-9]{0,2}", item) for item in (item_index, child_index)):
                 return None

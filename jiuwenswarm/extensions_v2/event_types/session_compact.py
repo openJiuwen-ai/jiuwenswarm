@@ -71,7 +71,8 @@ def valid_compact_output(value) -> bool:
         return isinstance(value.skip, str) and 1 <= len(value.skip.strip()) <= 512
     if not isinstance(value, SessionCompacted) or not valid_compact_messages(value.messages):
         return False
-    if not all(number is None or type(number) is int and number >= 0 for number in (value.tokens_before, value.tokens_after)):
+    token_counts = (value.tokens_before, value.tokens_after)
+    if not all(number is None or number.__class__ is int and number >= 0 for number in token_counts):
         return False
     try:
         frame.codec.decode(value.messages)

@@ -45,14 +45,24 @@ class CompactMessageCodec:
                     arguments = json.loads(call.arguments) if isinstance(call.arguments, str) else call.arguments
                 except (ValueError, TypeError):
                     arguments = {"raw": call.arguments}
-                item = {"tool_use_id": call.id, "tool": call.name, "input": arguments if isinstance(arguments, dict) else {"value": arguments}}
+                item = {
+                    "tool_use_id": call.id,
+                    "tool": call.name,
+                    "input": arguments if isinstance(arguments, dict) else {"value": arguments},
+                }
                 if call.id in results:
                     item["text"] = _text(results[call.id].content)
                 view["toolUses"].append(item)
             if isinstance(message, ToolMessage):
                 view["text"] = ""
-                view["toolResults"] = [{"tool_use_id": message.tool_call_id, "text": _text(message.content),
-                                        "isError": message.metadata.get("isError") is True or message.metadata.get("is_error") is True}]
+                view["toolResults"] = [{
+                    "tool_use_id": message.tool_call_id,
+                    "text": _text(message.content),
+                    "isError": (
+                        message.metadata.get("isError") is True
+                        or message.metadata.get("is_error") is True
+                    ),
+                }]
             views.append(view)
         return views
 
@@ -67,8 +77,15 @@ class CompactMessageCodec:
                 used.add(handle)
                 native.append(copy.deepcopy(self.handles[handle]))
             elif message["role"] == "assistant":
-                calls = [ToolCall(id=item["tool_use_id"], name=item["tool"], type="function",
-                                  arguments=json.dumps(item["input"], ensure_ascii=False)) for item in message["toolUses"]]
+                calls = [
+                    ToolCall(
+                        id=item["tool_use_id"],
+                        name=item["tool"],
+                        type="function",
+                        arguments=json.dumps(item["input"], ensure_ascii=False),
+                    )
+                    for item in message["toolUses"]
+                ]
                 native.append(AssistantMessage(content=message["text"], tool_calls=calls or None))
             else:
                 if message["text"] or not message.get("toolResults"):
@@ -100,7 +117,9 @@ def compact_invocation():
 
 async def prepare_compact(event, ops):
     frame = compact_invocation()
-    if frame is None or ops is None or ops.session_context != frame.context or not valid_compact_input(event.event_input):
+    if frame is None or ops is None:
+        raise CompactionError("COMPACT_UNBOUND_INVOCATION")
+    if ops.session_context != frame.context or not valid_compact_input(event.event_input):
         raise CompactionError("COMPACT_UNBOUND_INVOCATION")
     value = event.event_input
     request = replace(frame.request, messages=frame.codec.decode(value.messages), instructions=value.instructions)

@@ -51,8 +51,8 @@ class Host:
     push: RecordingPush
 
 
-@pytest_asyncio.fixture
-async def host(tmp_path: Path) -> AsyncIterator[Host]:
+@pytest_asyncio.fixture(name="host")
+async def host_fixture(tmp_path: Path) -> AsyncIterator[Host]:
     # 只写 pytest 临时目录，不读取或修改用户的 ~/.jiuwenswarm 安装区。
     bus = ExtensionEventBus()
     manager = ExtensionManager(tmp_path / "install", report_path=tmp_path / "report.yaml")

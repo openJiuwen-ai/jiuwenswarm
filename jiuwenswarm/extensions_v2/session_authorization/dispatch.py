@@ -42,7 +42,9 @@ def current_frame() -> _AuthorizationFrame | None:
 
 def authorize_core(event, ops) -> dict:
     frame = current_frame()
-    if frame is None or ops is None or ops.session_context != frame.context or not valid_authorize_input(event.event_input):
+    if frame is None or ops is None:
+        raise SessionAuthorizationError("UNBOUND_INVOCATION")
+    if ops.session_context != frame.context or not valid_authorize_input(event.event_input):
         raise SessionAuthorizationError("UNBOUND_INVOCATION")
     if not frame.core_called:
         frame.issued = frame.service.issue(frame.caller, frame.context.session_id)

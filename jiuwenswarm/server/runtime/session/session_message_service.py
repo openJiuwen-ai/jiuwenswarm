@@ -577,12 +577,18 @@ class SessionMessageService:
                 asyncio.to_thread(self._session_metadata, source.session_id),
                 asyncio.to_thread(self._session_metadata, target_session_id),
             )
-            if (
-                not current_source_metadata or not current_target_metadata
-                or not self._owner_matches(current_source_metadata, source.user_id)
-                or not self._supported(current_source_metadata)
-                or not self._owner_matches(current_target_metadata, source.user_id)
-                or not self._supported(current_target_metadata)
+            if not current_source_metadata or not current_target_metadata:
+                raise SessionMessagingError(
+                    "NOT_FOUND_OR_FORBIDDEN", "target Session was not found"
+                )
+            if not self._owner_matches(current_source_metadata, source.user_id) or not self._supported(
+                current_source_metadata,
+            ):
+                raise SessionMessagingError(
+                    "NOT_FOUND_OR_FORBIDDEN", "target Session was not found"
+                )
+            if not self._owner_matches(current_target_metadata, source.user_id) or not self._supported(
+                current_target_metadata,
             ):
                 raise SessionMessagingError(
                     "NOT_FOUND_OR_FORBIDDEN", "target Session was not found"

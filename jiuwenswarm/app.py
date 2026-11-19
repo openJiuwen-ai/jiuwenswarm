@@ -135,14 +135,15 @@ def main() -> None:
     except Exception:  # noqa: BLE001 - recovery history must not block service startup
         logger.warning("[SystemPluginRecovery] could not create startup record", exc_info=True)
 
-    _popen_kwargs: dict = {
-        "env": {
-            **os.environ,
-            "JIUWENSWARM_RUNTIME_WORKSPACE_READY": "1",
-            SUPERVISOR_PID_ENV: str(os.getpid()),
-            "JIUWENSWARM_RECOVERY_SESSION_ID": recovery_session_id,
-        }
+    child_env = {
+        **os.environ,
+        "JIUWENSWARM_RUNTIME_WORKSPACE_READY": "1",
+        SUPERVISOR_PID_ENV: str(os.getpid()),
+        "JIUWENSWARM_RECOVERY_SESSION_ID": recovery_session_id,
     }
+    if not child_env.get("JIUWENSWARM_GATEWAY_CONFIG_DIR", "").strip():
+        child_env["JIUWENSWARM_GATEWAY_CONFIG_DIR"] = str(_env_file.parent)
+    _popen_kwargs: dict = {"env": child_env}
     if os.name != "nt":
         # Own process group per child so a crash respawn can killpg the dead
         # child's lingering descendants (see process_supervision). Ctrl-C and

@@ -6,11 +6,17 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import sys
 from contextlib import redirect_stdout
 
-from jiuwenswarm.channels.cli.extension import ClientError, JsonArgumentParser, LocalClient, Settings, valid_id
+from jiuwenswarm.channels.cli.extension import (
+    ClientError,
+    JsonArgumentParser,
+    LocalClient,
+    Settings,
+    _emit_json_result,
+    valid_id,
+)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -33,7 +39,9 @@ async def execute(args: argparse.Namespace) -> tuple[dict, int]:
             raise ClientError("INVALID_INPUT", "query 只接受 package_id / query only accepts package_id")
         params = {"package_id": args.package_id} if args.package_id is not None else {}
     else:
-        if not args.package_id or args.instance_key is None or not args.connection_id or args.revision is None:
+        if not args.package_id or args.instance_key is None:
+            raise ClientError("INVALID_INPUT", "start 需要查询得到的完整目标 / start requires the complete queried target")
+        if not args.connection_id or args.revision is None:
             raise ClientError("INVALID_INPUT", "start 需要查询得到的完整目标 / start requires the complete queried target")
         if args.timeout <= 30:
             raise ClientError("INVALID_INPUT", "timeout 必须大于 30 秒 / timeout must exceed 30 seconds")
@@ -63,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
         result, code = {"ok": False, "status": "FAILED", "error": error.as_dict()}, 2
     except KeyboardInterrupt:
         result, code = {"ok": False, "status": "UNKNOWN", "error": {"code": "INTERRUPTED"}}, 3
-    print(json.dumps(result, ensure_ascii=False))
+    _emit_json_result(result)
     return code
 
 

@@ -8,6 +8,7 @@ import argparse
 import asyncio
 import hashlib
 import json
+import logging
 import math
 import re
 import sys
@@ -25,6 +26,20 @@ UNCERTAIN_CODES = frozenset({
     "REQUEST_TIMEOUT", "TRANSPORT_ERROR", "INVALID_RESPONSE", "AGENT_SERVER_TIMEOUT",
     "WS_DISCONNECTED", "WS_CLOSED", "REQUEST_ABORTED",
 })
+
+
+def _emit_json_result(result: dict[str, Any]) -> None:
+    """Write one machine-readable result without depending on logger setup."""
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    record = logging.LogRecord(
+        __name__, logging.INFO, __file__, 0,
+        json.dumps(result, ensure_ascii=False), (), None,
+    )
+    try:
+        handler.emit(record)
+    finally:
+        handler.close()
 
 
 class ClientError(Exception):
@@ -86,11 +101,11 @@ class LocalClient:
             raise ClientError("REQUEST_TIMEOUT", "等待宿主响应超时；写操作可能仍在执行。") from None
         except control.ControlError:
             raise ClientError("INVALID_RESPONSE", "宿主响应未通过校验。") from None
-        except (ValueError, UnicodeError):
+        except ValueError:
             raise ClientError("INVALID_RESPONSE", "宿主返回了无法解析的消息。") from None
         except OSError:
             raise ClientError("TRANSPORT_ERROR", "当前实例的本机管理连接不可用。") from None
-        if type(response.get("ok")) is not bool or not isinstance(response.get("payload"), dict):
+        if not isinstance(response.get("ok"), bool) or not isinstance(response.get("payload"), dict):
             raise ClientError("INVALID_RESPONSE", "宿主响应缺少明确的状态和 payload。")
         payload = response["payload"]
         if not response["ok"]:
@@ -125,9 +140,7 @@ def inspect_zip(value: str) -> dict[str, str]:
         version = package.get("version")
         if not isinstance(version, str) or not version.strip():
             raise ValueError("manifest 中的 package.version 必须是非空字符串。")
-    except ClientError:
-        raise
-    except (BadZipFile, OSError, ValueError, RuntimeError, UnicodeError) as error:
+    except (BadZipFile, OSError, ValueError, RuntimeError) as error:
         raise ClientError("INVALID_ZIP", str(error)) from None
     try:
         with source.open("rb") as stream:
@@ -420,7 +433,7 @@ def main(argv: list[str] | None = None) -> int:
         result = {"ok": False, "status": "UNKNOWN", "error": {"code": "INTERRUPTED",
                   "message": "客户端已中断；如已发送写请求，结果需另行查询。"}}
         code = 3
-    print(json.dumps(result, ensure_ascii=False))
+    _emit_json_result(result)
     return code
 
 

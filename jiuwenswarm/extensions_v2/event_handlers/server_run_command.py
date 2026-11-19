@@ -15,6 +15,8 @@ async def server_run_command_core(
 ) -> ServerRunCommandResult:
     del next_handler
     frame = current_command()
-    if frame is None or ops is None or ops.session_context != frame.context or not valid_command_input(event.event_input):
+    if frame is None or ops is None:
+        raise ServerCommandError("COMMAND_UNBOUND_INVOCATION")
+    if ops.session_context != frame.context or not valid_command_input(event.event_input):
         raise ServerCommandError("COMMAND_UNBOUND_INVOCATION")
     return await frame.execute_once(event.event_input.args)

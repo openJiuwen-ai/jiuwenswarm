@@ -211,11 +211,15 @@ async def session_ops_build(
 class SessionFileService(Protocol):
     """Host-owned file data provider; no UI or package lifecycle ownership."""
 
-    async def files(self, session_id: str, expanded_paths: list[str], channel_id: str) -> dict[str, Any]: ...
+    async def files(
+        self, session_id: str, expanded_paths: list[str], channel_id: str,
+    ) -> dict[str, Any]:
+        ...
 
     async def read_file(
         self, session_id: str, path: str, channel_id: str, *, user_id: str = "",
-    ) -> dict[str, Any]: ...
+    ) -> dict[str, Any]:
+        ...
 
 
 def register_session_ops(
@@ -258,6 +262,7 @@ def register_session_ops(
         builder.add_method("session", "read_file", read_file)
         from jiuwenswarm.extensions_v2.handler_ops.session_authorize import add_session_authorize_method
         add_session_authorize_method(builder, authorization_service)
+
         async def compact(ops, *, instructions=None):
             if compact_service is None:
                 from openjiuwen.core.context_engine import CompactionError

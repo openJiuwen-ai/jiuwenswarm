@@ -27,7 +27,7 @@ def _read_records(session_id: str) -> list[dict] | None:
         raise ValueError("invalid session_id")
     try:
         return read_committed_main_history(session_id)
-    except (OSError, ValueError, TimeoutError) as exc:
+    except (OSError, ValueError) as exc:
         raise SessionStatisticsError("cannot read committed session statistics") from exc
 
 
@@ -42,15 +42,15 @@ def read_session_turns(session_id: str) -> int | None:
             continue
         metadata = record.get("metadata")
         automation = metadata.get("automation") if isinstance(metadata, dict) else None
-        if (
-            record.get("subagent_id") or record.get("extension_message_id")
-            or record.get("message_origin") == SESSION_MESSAGE_ORIGIN
-            or record.get("feedback_only") or record.get("is_compact_summary")
-            or record.get("mode") == "subagent"
-            or record.get("channel_id") in ("cron", "heartbeat")
-            or record.get("source")
-            or isinstance(automation, dict) and automation.get("kind") == "heartbeat"
-        ):
+        if record.get("subagent_id") or record.get("extension_message_id"):
+            continue
+        if record.get("message_origin") == SESSION_MESSAGE_ORIGIN or record.get("feedback_only"):
+            continue
+        if record.get("is_compact_summary") or record.get("mode") == "subagent":
+            continue
+        if record.get("channel_id") in ("cron", "heartbeat") or record.get("source"):
+            continue
+        if isinstance(automation, dict) and automation.get("kind") == "heartbeat":
             continue
         request_id = record.get("request_id")
         record_id = record.get("id")
@@ -78,10 +78,9 @@ def _context(session_id: str, raw: dict | None) -> dict | None:
         return None
     # Child/member windows can share the product session; they are not the
     # primary context and must not replace its most recent observation.
-    if (
-        raw.get("session_id") != session_id or raw.get("depth", 0) != 0
-        or raw.get("parent_invocation_id") or raw.get("member_name") or raw.get("team_id")
-    ):
+    if raw.get("session_id") != session_id or raw.get("depth", 0) != 0:
+        return None
+    if raw.get("parent_invocation_id") or raw.get("member_name") or raw.get("team_id"):
         return None
     for key in ("limit_tokens", "input_tokens", "local_estimated_input_tokens", "occupancy_rate"):
         _number(raw["context_window"].get(key), key)
@@ -104,9 +103,9 @@ def _turn(raw: dict | None) -> dict | None:
     if raw is None or not isinstance(raw.get("usage"), dict):
         return None
     usage = raw["usage"]
-    values = {key: _number(usage.get(key), key) for key in (
-        "input_tokens", "output_tokens", "total_tokens", "cache_tokens",
-    )}
+    values = {}
+    for key in ("input_tokens", "output_tokens", "total_tokens", "cache_tokens"):
+        values[key] = _number(usage.get(key), key)
     if all(value is None for value in values.values()):
         return None
     return {
@@ -172,12 +171,11 @@ def read_session_usage(session_id: str, breakdown: bool = False) -> dict | None:
     turn = None
     try:
         for record in reversed(records):
-            if (
-                record.get("subagent_id") or record.get("mode") == "subagent"
-                or record.get("session_id") not in (None, "", session_id)
-                or record.get("depth", 0) != 0 or record.get("parent_invocation_id")
-                or record.get("member_name") or record.get("team_id")
-            ):
+            if record.get("subagent_id") or record.get("mode") == "subagent":
+                continue
+            if record.get("session_id") not in (None, "", session_id) or record.get("depth", 0) != 0:
+                continue
+            if record.get("parent_invocation_id") or record.get("member_name") or record.get("team_id"):
                 continue
             if context is None and record.get("event_type") == "context.usage":
                 context = _context(session_id, record)

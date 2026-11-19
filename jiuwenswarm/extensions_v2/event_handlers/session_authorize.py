@@ -2,8 +2,9 @@
 
 """Issue only a host-owned handle within a trusted authorization call."""
 
-from jiuwenswarm.extensions_v2.session_authorization.dispatch import authorize_core
 from openjiuwen.core.events import HandlerLevel
+
+from jiuwenswarm.extensions_v2.session_authorization.dispatch import authorize_core
 
 
 async def session_authorize_core(event, ops, next_handler):

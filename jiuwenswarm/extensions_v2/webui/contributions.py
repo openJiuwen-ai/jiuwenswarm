@@ -63,10 +63,13 @@ class UiCatalog:
         return {"revision": revision, **payload}
 
     def slots(self) -> frozenset[str]:
-        return frozenset(
-            item.slot for item in self.items if item.type == "web.slot.contribution" and item.slot is not None
-            and item.settings.get("kind", "item") == "item"
-        )
+        slots = set()
+        for item in self.items:
+            if item.type != "web.slot.contribution" or item.slot is None:
+                continue
+            if item.settings.get("kind", "item") == "item":
+                slots.add(item.slot)
+        return frozenset(slots)
 
 
 class WebUICatalogService:
@@ -104,7 +107,7 @@ def load_ui_catalog(records: Sequence[ActivePackageRecord]) -> UiCatalog:
     for record in records:
         try:
             package_items = load_package_ui(record)
-        except (OSError, UnicodeError, ValueError) as exc:
+        except (OSError, ValueError) as exc:
             errors[record.package_id] = str(exc)
             continue
         if package_items is None:

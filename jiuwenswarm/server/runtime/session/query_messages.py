@@ -32,7 +32,9 @@ def _tool_use(call: Mapping[str, Any]) -> dict[str, Any] | None:
             arguments = json.loads(arguments)
         except ValueError:
             return None
-    if not isinstance(identifier, str) or not identifier or not isinstance(name, str) or not name:
+    if not isinstance(identifier, str) or not identifier:
+        return None
+    if not isinstance(name, str) or not name:
         return None
     if not isinstance(arguments, Mapping):
         return None
@@ -43,8 +45,14 @@ def _block_text(content: object) -> str:
     if isinstance(content, str):
         return content
     if isinstance(content, list):
-        return "".join(block.get("text", "") for block in content
-                       if isinstance(block, Mapping) and block.get("type") == "text" and isinstance(block.get("text"), str))
+        text_blocks: list[str] = []
+        for block in content:
+            if not isinstance(block, Mapping) or block.get("type") != "text":
+                continue
+            text = block.get("text")
+            if isinstance(text, str):
+                text_blocks.append(text)
+        return "".join(text_blocks)
     return ""
 
 
@@ -67,20 +75,22 @@ def read_session_messages_view(session_id: str) -> list[dict[str, Any]]:
     require_session_id(session_id)
     try:
         records = read_committed_main_history(session_id)
-    except (OSError, ValueError, TimeoutError) as error:
+    except (OSError, ValueError) as error:
         raise SessionHistoryError("HISTORY_IO_FAILED") from error
     if records is None:
         return []
     messages: list[dict[str, Any]] = []
     calls: dict[tuple[object, str], list[dict[str, Any]]] = {}
     for record in records:
-        if (
-            record.get("event_type") in _NON_MESSAGES or record.get("subagent_id")
-            or record.get("mode") == "subagent" or record.get("depth", 0) != 0
-            or record.get("parent_invocation_id") or record.get("member_name") or record.get("team_id")
-            or record.get("session_id") not in (None, "", session_id)
-            or record.get("role") not in ("user", "human", "assistant", "tool")
-        ):
+        if record.get("event_type") in _NON_MESSAGES or record.get("subagent_id"):
+            continue
+        if record.get("mode") == "subagent" or record.get("depth", 0) != 0:
+            continue
+        if record.get("parent_invocation_id") or record.get("member_name") or record.get("team_id"):
+            continue
+        if record.get("session_id") not in (None, "", session_id):
+            continue
+        if record.get("role") not in ("user", "human", "assistant", "tool"):
             continue
         try:
             view = message_from_record(record)
@@ -106,7 +116,8 @@ def read_session_messages_view(session_id: str) -> list[dict[str, Any]]:
         role = "assistant" if view.type == "assistant" else "user"
         message: dict[str, Any] = {"role": role, "text": text, "toolUses": []}
         if role == "assistant":
-            raw_calls = [*(view.tool_calls or []), *(block for block in view.content if block.get("type") == "tool_use")]
+            raw_calls = list(view.tool_calls or [])
+            raw_calls.extend(block for block in view.content if block.get("type") == "tool_use")
             seen_ids = set()
             for raw_call in raw_calls:
                 call = _tool_use(raw_call)

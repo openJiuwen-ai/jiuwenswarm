@@ -2148,6 +2148,7 @@ class JiuWenSwarmDeepAdapter:
         self._session_input_guard: SessionInputGuard | None = None
         self._voice_agent_task_rail = None
         self._project_dir: str | None = None
+        self._extension_compact_context = None
         self._workspace_dir: str = str(get_agent_workspace_dir())
         self._memory_media_workspace: str | None = None
         self._memory_media_upload_root: Path | None = None
@@ -5004,8 +5005,8 @@ class JiuWenSwarmDeepAdapter:
         # from jiuwenswarm.extensions_v2.assembly import get_compaction_service
         # compact = get_compaction_service()
         # if compact is not None and compact.is_compacting(sid):
-            # from openjiuwen.core.context_engine import CompactionError
-            # raise CompactionError("COMPACT_BUSY")
+        #     from openjiuwen.core.context_engine import CompactionError
+        #     raise CompactionError("COMPACT_BUSY")
         self._active_session_ids[sid] += 1
 
     def _unmark_session_active(self, session_id: str, *, cleanup_rail: bool = True) -> None:
@@ -5024,8 +5025,12 @@ class JiuWenSwarmDeepAdapter:
             # from jiuwenswarm.extensions_v2.assembly import get_compaction_service
             # compact = get_compaction_service()
             # if compact is not None:
-                # config = get_config().get("react", {}).get("context_engine_config", {}).get("compaction_precompute", {})
-                # compact.schedule_precompute(sid, enabled=config.get("enabled", False) is True, ratio=config.get("ratio", 0.8))
+            #     config = (
+            #         get_config().get("react", {}).get("context_engine_config", {}).get("compaction_precompute", {})
+            #     )
+            #     compact.schedule_precompute(
+            #         sid, enabled=config.get("enabled", False) is True, ratio=config.get("ratio", 0.8),
+            #     )
             if cleanup_rail and self._stream_event_rail is not None:
                 # If interruption state is unreadable, keep replay deduplication
                 # until resume or fresh input, but still release stream state.
@@ -19668,6 +19673,7 @@ class JiuWenSwarmDeepAdapter:
                 context = SessionContext(session_id, cwd=str(root) if root else None,
                                          metadata={"project_root": str(root)} if root else {})
         self._extension_compact_context = context
+
         async def after_commit(trigger, result):
             if trigger != "plugin":
                 return
@@ -21149,11 +21155,10 @@ class JiuWenSwarmDeepAdapter:
             nonlocal run_answer_final, output_sequence
             nonlocal latest_extension_context_usage
             event_type = payload.get("event_type")
-            if (
-                event_type == "context.usage" and payload.get("session_id") == session_id
-                and payload.get("depth", 0) == 0 and not payload.get("parent_invocation_id")
-                and not payload.get("member_name") and not payload.get("team_id")
-            ):
+            is_context_usage = event_type == "context.usage" and payload.get("session_id") == session_id
+            is_primary_depth = payload.get("depth", 0) == 0 and not payload.get("parent_invocation_id")
+            has_no_team_identity = not payload.get("member_name") and not payload.get("team_id")
+            if is_context_usage and is_primary_depth and has_no_team_identity:
                 # Capture the primary window before asynchronous notification;
                 # a later live window must not change this turn's observation.
                 latest_extension_context_usage = copy.deepcopy(payload)
@@ -23647,21 +23652,23 @@ class JiuWenSwarmDeepAdapter:
         # TODO(compact): Retain the future manual bridge; execute the original compression path.
         # compact_service = self._bind_extension_compaction(session_id)
         # if compact_service is not None:
-            # from jiuwenswarm.extensions_v2.event_types.session_compact import SessionCompacted
-            # decision = await compact_service.run(session_id, trigger="manual", instructions=instructions, processor_types=processor_types)
-            # compact_result = {
-                # "result": "compressed" if isinstance(decision, SessionCompacted) else "noop",
-                # "state": getattr(context, "_last_compaction", {}) if isinstance(decision, SessionCompacted) else {},
-                # "skip": getattr(decision, "skip", None),
-            # }
+        #     from jiuwenswarm.extensions_v2.event_types.session_compact import SessionCompacted
+        #     decision = await compact_service.run(
+        #         session_id, trigger="manual", instructions=instructions, processor_types=processor_types,
+        #     )
+        #     compact_result = {
+        #         "result": "compressed" if isinstance(decision, SessionCompacted) else "noop",
+        #         "state": getattr(context, "_last_compaction", {}) if isinstance(decision, SessionCompacted) else {},
+        #         "skip": getattr(decision, "skip", None),
+        #     }
         # else:
-            # compact_result = await context_engine.compress_context(
-                # session=session,
-                # session_id=session_id,
-                # return_state=True,
-                # processor_types=processor_types,
-                # instructions=instructions,
-            # )
+        #     compact_result = await context_engine.compress_context(
+        #         session=session,
+        #         session_id=session_id,
+        #         return_state=True,
+        #         processor_types=processor_types,
+        #         instructions=instructions,
+        #     )
         compact_result = await context_engine.compress_context(
             session=session,
             session_id=session_id,

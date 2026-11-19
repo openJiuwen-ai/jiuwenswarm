@@ -8,7 +8,7 @@ import asyncio
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, make_dataclass
 
 from openjiuwen.core.events import ExtensionEventBus
 
@@ -18,20 +18,27 @@ from jiuwenswarm.extensions_v2.event_types.session_surface import RenderSurface,
 SESSION_DETACH_EVENT = "session.detach"
 
 
-@dataclass(frozen=True, slots=True)
-class SessionDetachInput:
-    """Identity of the released association, distinct from its replacement."""
+SessionDetachInput = make_dataclass(
+    "SessionDetachInput",
+    [("surface", RenderSurface), ("clientId", str), ("reason", str)],
+    namespace={
+        "__doc__": "Identity of the released association, distinct from its replacement.",
+        "__module__": __name__,
+    },
+    frozen=True,
+    slots=True,
+)
 
-    surface: RenderSurface
-    clientId: str
-    reason: str
-
-
-@dataclass(frozen=True, slots=True)
-class SessionDetachOutput:
-    """CORE acknowledgement of the already committed release."""
-
-    clientId: str
+SessionDetachOutput = make_dataclass(
+    "SessionDetachOutput",
+    [("clientId", str)],
+    namespace={
+        "__doc__": "CORE acknowledgement of the already committed release.",
+        "__module__": __name__,
+    },
+    frozen=True,
+    slots=True,
+)
 
 
 @dataclass
@@ -52,7 +59,9 @@ _INVOCATION: ContextVar[DetachInvocation | None] = ContextVar("session_detach_in
 def current_detach_invocation() -> DetachInvocation:
     """Require a live dispatch task and a committed association release."""
     state = _INVOCATION.get()
-    if state is None or not state.active or state.owner is not asyncio.current_task() or not state.is_released():
+    if state is None or not state.active or state.owner is not asyncio.current_task():
+        raise RuntimeError("session.detach requires a trusted released association")
+    if not state.is_released():
         raise RuntimeError("session.detach requires a trusted released association")
     return state
 
@@ -60,22 +69,31 @@ def current_detach_invocation() -> DetachInvocation:
 def valid_detach_input(value: object) -> bool:
     """Only original host facts can continue down the notification chain."""
     state = _INVOCATION.get()
-    return (
-        state is not None and state.active and state.owner is asyncio.current_task()
-        and state.is_released() and type(value) is SessionDetachInput and value == state.original
-        and valid_surface(value.surface) and type(value.clientId) is str and bool(value.clientId)
-        and value.reason in {"detach", "end"}
-    )
+    if state is None or not state.active or state.owner is not asyncio.current_task():
+        return False
+    if not state.is_released():
+        return False
+    if not isinstance(value, SessionDetachInput) or value.__class__ is not SessionDetachInput:
+        return False
+    if value != state.original or not valid_surface(value.surface):
+        return False
+    if not isinstance(value.clientId, str) or value.clientId.__class__ is not str:
+        return False
+    return bool(value.clientId) and value.reason in {"detach", "end"}
 
 
 def valid_detach_output(value: object) -> bool:
     """Only the actual CORE receipt is an accepted notification result."""
     state = _INVOCATION.get()
-    return (
-        state is not None and state.active and state.owner is asyncio.current_task()
-        and state.is_released() and state.receipt is not None and type(value) is SessionDetachOutput
-        and type(value.clientId) is str and value == state.receipt
-    )
+    if state is None or not state.active or state.owner is not asyncio.current_task():
+        return False
+    if not state.is_released() or state.receipt is None:
+        return False
+    if not isinstance(value, SessionDetachOutput) or value.__class__ is not SessionDetachOutput:
+        return False
+    if not isinstance(value.clientId, str) or value.clientId.__class__ is not str:
+        return False
+    return value == state.receipt
 
 
 @contextmanager

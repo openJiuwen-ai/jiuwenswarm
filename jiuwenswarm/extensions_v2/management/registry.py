@@ -368,19 +368,15 @@ class ExtensionManager:
                 )
             reports = list(await self.install([source]))
             report = reports[0] if reports else None
-            if (
-                report is not None
-                and report.status == "SUCCESS"
-                and self._registry.runtime.get_active(package_id) is None
-                and stored.is_dir()
-            ):
-                context = context_for(self._bus)
-                report = await _enable_installed_package(
-                    context,
-                    self._bus,
-                    load_manifest(stored, require_domain=False),
-                    stored,
-                )
+            if report is not None and report.status == "SUCCESS":
+                if self._registry.runtime.get_active(package_id) is None and stored.is_dir():
+                    context = context_for(self._bus)
+                    report = await _enable_installed_package(
+                        context,
+                        self._bus,
+                        load_manifest(stored, require_domain=False),
+                        stored,
+                    )
         if report is None or report.status != "SUCCESS":
             if previous:
                 await self._restore_version(package_id, previous)
@@ -472,16 +468,18 @@ class ExtensionManager:
             active = {record.package_id: record for record in runtime.active_packages()}
             remaining = set(active)
             while remaining:
-                ready = [
-                    package_id
-                    for package_id in sorted(remaining)
-                    if not any(
-                        dependency.package_id == package_id
-                        for dependent_id in remaining
-                        if dependent_id != package_id
-                        for dependency in active[dependent_id].requires_packages
-                    )
-                ]
+                ready = []
+                for package_id in sorted(remaining):
+                    has_dependent = False
+                    for dependent_id in remaining:
+                        if dependent_id == package_id:
+                            continue
+                        dependencies = active[dependent_id].requires_packages
+                        if any(dependency.package_id == package_id for dependency in dependencies):
+                            has_dependent = True
+                            break
+                    if not has_dependent:
+                        ready.append(package_id)
                 if not ready:
                     ready = sorted(remaining)
                 for package_id in ready:

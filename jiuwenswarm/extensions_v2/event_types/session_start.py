@@ -8,7 +8,7 @@ import asyncio
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, make_dataclass
 from pathlib import Path, PureWindowsPath
 
 from openjiuwen.core.events import (
@@ -53,13 +53,16 @@ class SessionStartEventBus(ExtensionEventBus):
         )
 
 
-@dataclass(frozen=True, slots=True)
-class SessionStartInput:
-    """Claude Mods start observations; activation identity stays with the host."""
-
-    cwd: str
-    surface: RenderSurface | None
-    isInteractive: bool
+SessionStartInput = make_dataclass(
+    "SessionStartInput",
+    [("cwd", str), ("surface", RenderSurface | None), ("isInteractive", bool)],
+    namespace={
+        "__doc__": "Claude Mods start observations; activation identity stays with the host.",
+        "__module__": __name__,
+    },
+    frozen=True,
+    slots=True,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,7 +104,7 @@ def valid_start_input(value: object) -> bool:
         and isinstance(value.cwd, str) and bool(value.cwd)
         and (Path(value.cwd).is_absolute() or PureWindowsPath(value.cwd).is_absolute())
         and (value.surface is None or valid_surface(value.surface))
-        and type(value.isInteractive) is bool
+        and isinstance(value.isInteractive, bool)
     )
 
 
@@ -141,10 +144,9 @@ def bind_start_invocation(
 def match_session_start(event_input: object, match_pattern: MatchPattern) -> bool:
     """Match the host-bound target first, then the public input fields."""
     state = _INVOCATION.get()
-    if (
-        state is None or not state.active or state.owner is not asyncio.current_task()
-        or match_pattern.get(_PACKAGE_PATTERN_KEY) != state.package_id
-    ):
+    if state is None or not state.active or state.owner is not asyncio.current_task():
+        return False
+    if match_pattern.get(_PACKAGE_PATTERN_KEY) != state.package_id:
         return False
     public_pattern = {key: value for key, value in match_pattern.items() if key != _PACKAGE_PATTERN_KEY}
     return match_pattern_subset(event_input, public_pattern)
