@@ -2549,7 +2549,8 @@
     "selectTeamMembers": "选择团队成员",
     "noTeamMembersAvailable": "暂无可选择的团队成员",
     "moaReferenceRunning": "正在运行参考模型…",
-    "moaVerifying": "正在评估任务执行进展…"
+    "moaVerifying": "正在评估任务执行进展…",
+    "toolResultLabel": "工具结果"
   },
   "autoHarness": {
     "busy": "当前已有 Auto-Harness 任务在运行",
