@@ -4,13 +4,45 @@ import asyncio
 import copy
 import logging
 import time
+from collections.abc import Callable
+from functools import partial
+from typing import TypeVar
 
 from jiuwenswarm.server.runtime import group_service as groups
 from jiuwenswarm.server.runtime.session import lifecycle
 
 logger = logging.getLogger(__name__)
 _enabled = False
+_T = TypeVar("_T")
 TERMINAL = {"completed", "failed", "cancelled", "interrupted", "timed_out", "stopped"}
+
+
+async def _file_io(operation: Callable[[], _T]) -> _T:
+    """Finish file operations before releasing their caller's ownership locks."""
+    task = asyncio.create_task(asyncio.to_thread(operation))
+    cancellation = None
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError as exc:
+            if task.cancelled():
+                raise
+            cancellation = exc
+        except Exception as exc:
+            if cancellation is not None:
+                raise cancellation from exc
+            raise
+    if cancellation is not None:
+        raise cancellation
+    return result
+
+
+def _scan_sessions() -> list[str]:
+    """Consume the lazy glob in the file worker, including exists/stat calls."""
+    from jiuwenswarm.common.utils import get_agent_sessions_dir
+
+    return [path.parent.name for path in get_agent_sessions_dir().glob("*/group.json")]
 
 
 def close_card(record: dict, status: str, reason: str | None = None) -> bool:
@@ -56,7 +88,7 @@ async def _pool_for(plan: dict):
     from openjiuwen.agent_teams.spawn.shared_resources import get_shared_db
     from jiuwenswarm.agents.harness.team.config_loader import resolve_team_runtime_database_config
 
-    config = resolve_team_runtime_database_config()
+    config = await _file_io(resolve_team_runtime_database_config)
     if config is None:
         raise RuntimeError("No verified organization database for offline cleanup")
     db = get_shared_db(config)
@@ -73,7 +105,8 @@ async def _runtime_has_binding(runtime, session_id: str, plan: dict, pool) -> bo
     )
 
     teams = {instance_team_id(session_id, name) for name in plan.get("members", [])}
-    teams.update(row["team_id"] for row in groups.group_organization_teams(session_id, plan["organization_id"]))
+    bindings = await _file_io(partial(groups.group_organization_teams, session_id, plan["organization_id"]))
+    teams.update(row["team_id"] for row in bindings)
     summary = await pool.get_summary_team()
     if summary is not None and summary.summary_team_id:
         teams.add(summary.summary_team_id)
@@ -97,7 +130,7 @@ async def reconcile_group(session_id: str) -> None:
     from jiuwenswarm.agents.swarm import group_org_bootstrap as boot
     from jiuwenswarm.server.runtime.group_execution import GroupExecutions
 
-    group = groups.read_group(session_id)
+    group = await _file_io(partial(groups.read_group, session_id))
     if not group or group.get("status") == "deleting":
         return
     if not group.get("organization_plans"):
@@ -106,12 +139,13 @@ async def reconcile_group(session_id: str) -> None:
     # Same lock as instance binding, plus the cross-process group write lock.
     async with boot.session_organization_lock(session_id):
         async with groups.group_lock(session_id):
-            for saved in groups.group_organization_plans(session_id):
+            plans = await _file_io(partial(groups.group_organization_plans, session_id))
+            for saved in plans:
                 plan_id = saved["plan_id"]
                 if saved.get("cleanup_status") == "done" or _active(session_id, plan_id):
                     continue
                 store = GroupExecutions(session_id)
-                records = store.read()
+                records = await _file_io(store.read)
                 cards = []
                 for record in records.values():
                     if record.get("execution_kind") != "organization":
@@ -128,11 +162,11 @@ async def reconcile_group(session_id: str) -> None:
                 if not owner:
                     continue
                 try:
-                    if lifecycle.runtime_owner_alive(owner):
+                    if await _file_io(partial(lifecycle.runtime_owner_alive, owner)):
                         # A terminal run in this Worker may have finished its
                         # cleanup only partially. Other live Workers are opaque.
                         if (saved.get("status") in {"pending", "running"}
-                                or owner != lifecycle.current_runtime_owner()):
+                                or owner != await _file_io(lifecycle.current_runtime_owner)):
                             continue
                     pool = await _pool_for(saved)
                     if await _runtime_has_binding(runtime, session_id, saved, pool):
@@ -145,7 +179,7 @@ async def reconcile_group(session_id: str) -> None:
                     continue
                 # Re-read under the binding lock. A recovered generation must
                 # never be fenced by an earlier snapshot.
-                current = boot.organization_plan_record(session_id, plan_id)
+                current = await _file_io(partial(boot.organization_plan_record, session_id, plan_id))
                 if current != saved or _active(session_id, plan_id):
                     continue
                 reason = "服务重启或执行进程退出，组织任务已中断，请重新发起。"
@@ -153,7 +187,7 @@ async def reconcile_group(session_id: str) -> None:
                 fields = dict(cleanup_status="pending", cleanup_error=None)
                 if interrupted:
                     fields.update(status="failed", runtime_interrupted=True, error=reason)
-                groups.update_group_organization_plan(session_id, plan_id, **fields)
+                await _file_io(partial(groups.update_group_organization_plan, session_id, plan_id, **fields))
                 changed = []
                 for card in cards:
                     if card.get("status") == "completed":
@@ -161,21 +195,21 @@ async def reconcile_group(session_id: str) -> None:
                     status = "interrupted" if interrupted else "failed"
                     if close_card(card, status, reason if interrupted else None):
                         changed.append(copy.deepcopy(card))
-                store.save(records)
+                await _file_io(partial(store.save, records))
                 # State is durable before cleanup or notification. A crash at
                 # any subsequent point leaves a retryable cleanup marker.
                 try:
                     await asyncio.wait_for(pool.dissolve_organization(), 15)
-                    groups.clear_group_organization_binding(session_id, saved["organization_id"])
-                    groups.update_group_organization_plan(
-                        session_id, plan_id, cleanup_status="done", cleanup_error=None,
-                    )
+                    await _file_io(partial(
+                        groups.clear_group_organization_binding, session_id, saved["organization_id"],
+                    ))
+                    await _file_io(partial(groups.update_group_organization_plan, session_id, plan_id,
+                                           cleanup_status="done", cleanup_error=None))
                 except Exception as exc:
-                    groups.update_group_organization_plan(session_id, plan_id,
-                                                          cleanup_status="pending", cleanup_error=str(exc)[:500])
+                    await _file_io(partial(groups.update_group_organization_plan, session_id, plan_id,
+                                           cleanup_status="pending", cleanup_error=str(exc)[:500]))
                     logger.warning(
-                        "Organization cleanup pending session=%s plan=%s",
-                        session_id, plan_id, exc_info=True,
+                        "Organization cleanup pending session=%s plan=%s", session_id, plan_id, exc_info=True,
                     )
                 boot.organization_plan_event(session_id, plan_id).set()
                 for record in changed:
@@ -183,10 +217,43 @@ async def reconcile_group(session_id: str) -> None:
                         await store.publish(record, "updated")
                     except Exception:
                         logger.warning("Organization recovery publication failed session=%s", session_id, exc_info=True)
-        # Release deferred requests after leaving the group write lock.
-        for plan in groups.group_organization_plans(session_id):
-            if plan.get("cleanup_status") == "done":
-                boot.release_deferred_direct(session_id, plan["plan_id"])
+        # Check and persist expiration under the same cross-process lock as writers.
+        expired = []
+        async with groups.group_lock(session_id):
+            plans = await _file_io(partial(groups.group_organization_plans, session_id))
+            if (any(plan.get("cleanup_status") == "done" for plan in plans)
+                    and boot.has_deferred_direct(session_id)):
+                for plan in plans:
+                    plan_id = str(plan.get("plan_id") or "")
+                    if (plan.get("status") not in {"pending", "running"}
+                            or _active(session_id, plan_id)
+                            or int(time.time() * 1000) - int(plan.get("created_at") or 0)
+                            <= int(boot.PLAN_STALE_SECONDS * 1000)):
+                        continue
+                    owner = plan.get("run_owner")
+                    if not owner:
+                        continue
+                    try:
+                        alive = await _file_io(partial(lifecycle.runtime_owner_alive, owner))
+                        if alive and owner != await _file_io(lifecycle.current_runtime_owner):
+                            continue
+                        current = await _file_io(partial(boot.organization_plan_record, session_id, plan_id))
+                    except Exception:
+                        logger.warning("Organization expiration ownership unavailable session=%s plan=%s",
+                                       session_id, plan_id, exc_info=True)
+                        continue
+                    if current != plan or _active(session_id, plan_id):
+                        continue
+                    await _file_io(partial(groups.update_group_organization_plan, session_id,
+                                           plan_id, status="expired"))
+                    expired.append(plan_id)
+                    boot.organization_plan_event(session_id, plan_id).set()
+                if expired:
+                    plans = await _file_io(partial(groups.group_organization_plans, session_id))
+        # Schedule direct replies only after releasing the cross-process lock.
+        for plan in plans:
+            if plan.get("cleanup_status") == "done" or plan["plan_id"] in expired:
+                boot.release_deferred_direct(session_id, plan["plan_id"], plans=plans)
 
 
 async def recovery_loop(stop_event: asyncio.Event) -> None:
@@ -195,15 +262,18 @@ async def recovery_loop(stop_event: asyncio.Event) -> None:
     _enabled = True
     try:
         while not stop_event.is_set():
-            from jiuwenswarm.common.utils import get_agent_sessions_dir
-
-            for path in get_agent_sessions_dir().glob("*/group.json"):
+            try:
+                sessions = await asyncio.to_thread(_scan_sessions)
+            except OSError:
+                logger.warning("Organization recovery scan deferred", exc_info=True)
+                sessions = []
+            for session_id in sessions:
                 if stop_event.is_set():
                     return
                 try:
-                    await reconcile_group(path.parent.name)
+                    await reconcile_group(session_id)
                 except Exception:
-                    logger.warning("Organization recovery deferred session=%s", path.parent.name, exc_info=True)
+                    logger.warning("Organization recovery deferred session=%s", session_id, exc_info=True)
                 await asyncio.sleep(0)
             try:
                 await asyncio.wait_for(stop_event.wait(), 30)
