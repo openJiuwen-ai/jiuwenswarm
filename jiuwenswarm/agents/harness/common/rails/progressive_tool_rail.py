@@ -1523,7 +1523,13 @@ class ProgressiveToolRail(DeepAgentRail):
             "message": (
                 f"已找到工具 '{tool_name}'，请根据 input_schema 构造 arguments 后调用 invoke_tool。"
                 if result_matches
-                else f"未找到名为 '{tool_name}' 的按需可见工具，请检查名称是否与导航列表一致。"
+                else (
+                    f"未找到名为 '{tool_name}' 的按需可见工具，请检查名称是否与导航列表一致。"
+                    "若确认本请求没有该工具：不要因此改交用户没要求的交付格式，"
+                    "也不要把替代品说成已完成。"
+                    "没有工具能产出用户要求的格式时，先告知用户该工具不可用并说明可选方案，"
+                    "等用户同意后再继续。"
+                )
             ),
         }
 
@@ -1557,11 +1563,22 @@ class ProgressiveToolRail(DeepAgentRail):
         ]
         if not matches:
             return ""
-        preferred = []
-        for tool_id in matches:
-            if is_request_scoped_mcp_tool_id(tool_id) and tool_id.endswith(suffix):
-                preferred.append(tool_id)
-        return preferred[0] if preferred else matches[0]
+        # ``owned`` is a frozenset, so iteration order is arbitrary. A request can
+        # own several ids for one name (e.g. pptx-lazy.open_pptx and, after the
+        # lazy open swaps in the real catalog, pptx-mcp.open_pptx); the lazy
+        # card's instance may already be gone. Sort for determinism and prefer
+        # an id that still resolves, staying inside this request's allowlist.
+        matches.sort()
+        preferred = [
+            tool_id
+            for tool_id in matches
+            if is_request_scoped_mcp_tool_id(tool_id) and tool_id.endswith(suffix)
+        ]
+        candidates = preferred or matches
+        for tool_id in candidates:
+            if self._lookup_tool_instance(tool_id) is not None:
+                return tool_id
+        return candidates[0]
 
     def _is_foreign_office_claw_tool_id(
         self,
