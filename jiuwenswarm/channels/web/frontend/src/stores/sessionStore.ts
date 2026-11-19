@@ -575,6 +575,10 @@ export interface TeamTask {
   files?: string[];
   /** Swarmflow run that produced this task (absent on plain team tasks). */
   workflow_run_id?: string;
+  /** Run paused: the board's time-eased progress must hold, not creep or reset. */
+  progress_frozen?: boolean;
+  /** Wall-clock at which progress_frozen flipped true (the easing clock stops here). */
+  progress_frozen_at?: number;
   // Truncation observability flags — set by the backend on team.task.created/
   // updated events when title/content exceeded the wire limit. Carried through
   // the normalize/upsert pipeline; a status-only event MUST NOT reset these

@@ -123,6 +123,31 @@ _WAITER_PUT_TIMEOUT_LOG_INTERVAL_SEC = 5.0
 _TEAM_ROUND_FINAL_GRACE_SECONDS = 2.0
 
 
+def _persist_session_paused_flag(session_id: str, *, is_paused: bool) -> None:
+    """Durable session pause bit for enterprise HTTP refresh (not Runner-only)."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        return
+    try:
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            update_session_metadata,
+        )
+
+        update_session_metadata(
+            session_id=sid,
+            is_paused=bool(is_paused),
+            touch_last_message_at=False,
+            sync_write=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "[TeamManager] persist is_paused failed: session_id=%s is_paused=%s error=%s",
+            sid,
+            is_paused,
+            exc,
+        )
+
+
 def _safe_payload_preview(payload: Any) -> str:
     """Render an interact payload as a bounded single-line log fragment.
 
@@ -2821,6 +2846,8 @@ class TeamManager:
                         reason,
                     )
                 return False, reason
+            # Successful delivery after a pause means the session is running again.
+            _persist_session_paused_flag(session_id, is_paused=False)
             return True, None
         except Exception as exc:
             logger.error("[TeamManager] interact failed: session_id=%s, error=%s", session_id, exc)
@@ -3820,6 +3847,7 @@ class TeamManager:
             cleaned,
             runner_stopped,
         )
+        _persist_session_paused_flag(session_id, is_paused=False)
         return True
 
     async def stop_session_runtime(
@@ -4113,6 +4141,84 @@ class TeamManager:
                 stopped_count += 1
         return stopped_count
 
+    async def _broadcast_running_task_freeze(self, session_id: str) -> None:
+        """Emit progress_frozen team.task frames for non-terminal board rows.
+
+        Pause keeps TaskStatus as in_progress so a later chat.send can resume.
+        The board needs an explicit freeze event (and history record) so a
+        refresh does not look like the tasks started running again.
+        """
+        monitor = self._team_monitors.get(session_id)
+        if monitor is None:
+            return
+        try:
+            snapshot = await monitor.get_team_snapshot()
+        except Exception as exc:
+            logger.warning(
+                "[TeamManager] pause freeze snapshot failed: session_id=%s error=%s",
+                session_id,
+                exc,
+            )
+            return
+        if not isinstance(snapshot, dict):
+            return
+        tasks = snapshot.get("tasks") or []
+        if not isinstance(tasks, list):
+            return
+        terminal = {"completed", "cancelled", "failed", "stopped"}
+        team_id = str(snapshot.get("team_id") or "").strip() or None
+        for task in tasks:
+            if not isinstance(task, dict):
+                continue
+            task_id = str(task.get("task_id") or "").strip()
+            status = str(task.get("status") or "").strip().lower()
+            if not task_id or status in terminal:
+                continue
+            event = {
+                "type": "team.task.paused",
+                "task_id": task_id,
+                "status": "in_progress",
+                "progress_frozen": True,
+                "title": task.get("title"),
+                "content": task.get("content"),
+                "assignee": task.get("assignee"),
+                "team_id": team_id or task.get("team_name"),
+            }
+            await self.broadcast_event(
+                session_id,
+                {
+                    "event_type": "team.task",
+                    "session_id": session_id,
+                    "event": event,
+                },
+            )
+            try:
+                from jiuwenswarm.server.runtime.session.session_history import (
+                    append_history_record,
+                )
+
+                append_history_record(
+                    session_id=session_id,
+                    request_id=f"pause-freeze:{task_id}",
+                    channel_id="web",
+                    role="assistant",
+                    content="",
+                    timestamp=time.time(),
+                    event_type="team.task",
+                    # session_id must be in the record body: team history restore
+                    # filters getRecordSessionId(record) === sessionId and would
+                    # otherwise drop these freeze events on refresh.
+                    extra={"session_id": session_id, "event": event},
+                )
+            except Exception as exc:
+                logger.debug(
+                    "[TeamManager] pause freeze history append skipped: "
+                    "session_id=%s task_id=%s error=%s",
+                    session_id,
+                    task_id,
+                    exc,
+                )
+
     async def pause_session_runtime(
         self,
         session_id: str,
@@ -4137,7 +4243,17 @@ class TeamManager:
                 or self.is_runtime_active(session_id)
                 or self.is_runtime_pending(session_id)
             )
+            # Idempotent success when Runtime already paused the pool and the
+            # adapter interrupt runs again with no local stream/markers left.
             if not has_stream_task and not has_team_runtime:
+                if await self._find_paused_runner_team_name(session_id):
+                    logger.info(
+                        "[TeamManager] %s pause no-op success: already paused session_id=%s",
+                        reason,
+                        session_id,
+                    )
+                    _persist_session_paused_flag(session_id, is_paused=True)
+                    return True
                 return False
 
             # 如果 cancel 请求已到达，中止 pause 并让 cancel 执行
@@ -4175,6 +4291,9 @@ class TeamManager:
                     # pause record, emits WORKFLOW_PAUSED while the workflow
                     # handler is still alive, and parks the relaunch ticket.
                     await self._pause_swarmflow_runs(session_id)
+                    # Freeze board rows before tearing down the monitor so a
+                    # refresh can replay progress_frozen from history.
+                    await self._broadcast_running_task_freeze(session_id)
 
                     # 注册当前 pause 任务，供 cancel 抢占取消
                     self._active_pause_tasks[session_id] = asyncio.current_task()
@@ -4221,6 +4340,10 @@ class TeamManager:
             session_id,
             runner_paused,
         )
+        # Always persist pause on the success path (including when Runner.pause
+        # was a soft no-op but local cleanup still completed). Refresh rebuilds
+        # the board from this durable bit when the pool entry is already gone.
+        _persist_session_paused_flag(session_id, is_paused=True)
         return True
 
     async def _cancel_stream_task(self, session_id: str, reason: str) -> None:
@@ -4282,6 +4405,18 @@ class TeamManager:
 # routed through interact() instead of being misidentified as a first request
 # and colliding with the Runner team pool.
 _team_manager: TeamManager | None = None
+
+
+async def is_team_session_paused(session_id: str) -> bool:
+    """Whether the Runner pool still parks this session in RuntimeState.PAUSED.
+
+    Used by session.get_metadata so enterprise HTTP refresh can rebuild the
+    paused board without relying on Gateway busy maps or WS resumeExecutions.
+    """
+    normalized = str(session_id or "").strip()
+    if not normalized:
+        return False
+    return bool(await TeamManager._find_paused_runner_team_name(normalized))
 
 
 def is_team_session_running(session_id: str) -> bool:
