@@ -1052,6 +1052,31 @@ def rollback_failed_connect(name: str) -> None:
         logger.warning("[mcp.registry] rollback '%s' failed: %s", n, exc)
 
 
+def settle_connecting_mcp(name: str, *, probe_ok: bool) -> None:
+    """Apply a startup probe result to a ``connecting`` record.
+
+    A live server is promoted to connected; a failed one is lowered to a
+    retryable state so the card cannot stay on "connecting" forever. The
+    conditional write leaves a connect that finished meanwhile untouched.
+    """
+    n = str(name or "").strip()
+    if not n:
+        return
+    from jiuwenswarm.server.runtime.mcp.state_store import set_mcp_state_if
+
+    target = "connected"
+    if not probe_ok:
+        try:
+            is_custom = _resolve_package(n) is None
+        except Exception:  # noqa: BLE001 - a broken package must not block settling
+            is_custom = False
+        target = "registered" if is_custom else "disconnected"
+    try:
+        set_mcp_state_if(n, expected="connecting", state=target)
+    except Exception as exc:  # noqa: BLE001 - startup self-heal is best-effort
+        logger.warning("[mcp.registry] settle connecting '%s' failed: %s", n, exc)
+
+
 def _entry_missing_tokens(entry: dict[str, Any], store: Any) -> set[str]:
     """Collect ${VAR} placeholders not yet in the CredentialStore."""
     from jiuwenswarm.server.runtime.mcp.credential import extract_placeholders
@@ -1614,6 +1639,7 @@ __all__ = [
     "delete_custom_mcp",
     "save_mcp_credentials",
     "rollback_failed_connect",
+    "settle_connecting_mcp",
     "CliConnectError",
     "McpRegistryError",
     "CODE_RUNTIME_MISSING",
