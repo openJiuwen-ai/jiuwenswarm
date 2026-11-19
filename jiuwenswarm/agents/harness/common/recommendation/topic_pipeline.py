@@ -199,7 +199,7 @@ RID_DECISION_EVENT_TYPE = "rid_decision"
 _RID_THRESHOLD_VERSION = "icebreaker-api-proxy-threshold-v1"
 # The fallback reason of an RID receipt whose round left it nothing to judge.
 _RID_NOTHING_TO_JUDGE = "no_rid_input"
-GLOBAL_INTEREST_PROMPT_VERSION = "topic-starter-v6-global-interest-v26"
+GLOBAL_INTEREST_PROMPT_VERSION = "topic-starter-v6-global-interest-v27"
 PROJECT_CONTINUATION_PROMPT_VERSION = "topic-starter-v6-project-continuation-v15"
 MEMORY_INCREMENTAL_PROMPT_VERSION = "topic-starter-v6-memory-incremental-v10"
 RECENT_PLANNER_PROMPT_VERSION = "topic-starter-v6-recent-planner-v5"
@@ -2328,6 +2328,7 @@ direction：用户原兴趣里的短对象名，不写新知识点/收益/进度
    不虚构新目标/观察/行动。做事类与理解类都出题，做事不优先。
    “先定 A 再谈 B”：除非用户请助手做 A，否则 A/B 都不替用户出题；无条件事项照常可出。
 2. 找尚未讲清的知识/机制/判断/取舍。助手说法未经验证：可问成立条件或取舍，不问“为何起效”。
+   助手提到而用户未确认的计划、预测或传闻不能写成题面的既定前提；未发生的事只写假设或条件句，不写成既定事实。
    intent：前半用户对象，后半点开能学会/分辨/改善什么。理解型兴趣不要改成任务/工具推荐。
    同流程下一步不算新话题。already_offered 只去重。
    旧题必需核心答案已覆盖则 skip；换措辞/拆小/改问法不算新角度。
