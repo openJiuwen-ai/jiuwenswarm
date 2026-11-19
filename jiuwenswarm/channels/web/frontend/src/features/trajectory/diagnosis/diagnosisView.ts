@@ -538,11 +538,13 @@ export function artifactSuggestionItems(record: DiagnosisRecord): ArtifactSugges
 }
 
 /**
- * The artifact-fix text of a new-interface record: the experimental whole block when enabled,
- * else the causes' suggestions. Legacy records keep their own outlet, see
- * `legacyArtifactInstruction`, so the two cards can never both render.
+ * The artifact-fix text of a new-interface record: a game's design suggestion first, then the
+ * experimental whole block when enabled, else the causes' suggestions. Legacy records keep their
+ * own outlet, see `legacyArtifactInstruction`, so the two cards can never both render.
  */
 export function artifactSuggestion(record: DiagnosisRecord, useExperimentalArtifactFix: boolean): string {
+  const design = (record.design_suggestion ?? '').trim();
+  if (design !== '') return design;
   if (useExperimentalArtifactFix && (record.artifact_improvement ?? '').trim() !== '') {
     return (record.artifact_improvement ?? '').trim();
   }
