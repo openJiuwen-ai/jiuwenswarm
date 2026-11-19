@@ -548,3 +548,93 @@ def test_store_update_delivery_session_id(tmp_path):
         assert cleared.delivery_session_id is None
 
     asyncio.run(_run())
+
+
+class TestFinalPushEmbedsDeliverFiles:
+    """最终 chat.final 必须带本轮产物清单（桌面据此写入云端会话 artifacts）。
+
+    独立 chat.file 帧保留；终帧只带本地路径与基础信息，不带下载令牌。
+    """
+
+    @pytest.mark.asyncio
+    async def test_final_push_carries_files(self, tmp_path, monkeypatch):
+        svc, handler = _svc_with_recorder(monkeypatch)
+        real_file = tmp_path / "final.txt"
+        real_file.write_text("x", encoding="utf-8")
+        job = SimpleNamespace(
+            id="job-final",
+            name="最终推送",
+            targets="web",
+            session_id=None,
+            delivery_session_id=None,
+        )
+        state = CronRunState(
+            run_id="job-final:1",
+            job_id="job-final",
+            wake_at_iso="2026-11-18T10:00:00+08:00",
+            push_at_iso="2026-11-18T10:00:00+08:00",
+            deliver_files=[
+                {"path": str(real_file), "name": "final.txt", "mime_type": "text/plain"}
+            ],
+        )
+
+        await svc._push_to_targets(  # pylint: disable=protected-access
+            job, state, text="总结", is_placeholder=False
+        )
+
+        finals = [
+            m
+            for m in handler.published
+            if getattr(m, "event_type", None).value == "chat.final"
+        ]
+        assert len(finals) == 1
+        files = finals[0].payload.get("files")
+        assert files == [
+            {
+                "path": str(real_file),
+                "source_path": str(real_file),
+                "name": "final.txt",
+                "mime_type": "text/plain",
+            }
+        ]
+        assert "download_token" not in files[0]
+        # 独立 chat.file 帧仍保留（本地即时卡片/历史兼容）
+        assert [
+            m
+            for m in handler.published
+            if getattr(m, "event_type", None).value == "chat.file"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_placeholder_and_missing_files_not_embedded(self, tmp_path, monkeypatch):
+        svc, handler = _svc_with_recorder(monkeypatch)
+        missing = tmp_path / "missing.txt"
+        job = SimpleNamespace(
+            id="job-ph",
+            name="占位",
+            targets="web",
+            session_id=None,
+            delivery_session_id=None,
+        )
+        state = CronRunState(
+            run_id="job-ph:1",
+            job_id="job-ph",
+            wake_at_iso="2026-11-18T10:00:00+08:00",
+            push_at_iso="2026-11-18T10:00:00+08:00",
+            deliver_files=[{"path": str(missing), "name": "missing.txt"}],
+        )
+
+        await svc._push_to_targets(  # pylint: disable=protected-access
+            job, state, text="", is_placeholder=True
+        )
+        await svc._push_to_targets(  # pylint: disable=protected-access
+            job, state, text="总结", is_placeholder=False
+        )
+
+        finals = [
+            m
+            for m in handler.published
+            if getattr(m, "event_type", None).value == "chat.final"
+        ]
+        assert finals
+        assert all("files" not in m.payload for m in finals)
