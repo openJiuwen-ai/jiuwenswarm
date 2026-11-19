@@ -45,9 +45,12 @@ def unknown_interrupt_intent_error(intent: str) -> str | None:
 
 
 def reject_interrupt_result_payload(intent: str, error: str) -> dict:
-    """未知 intent 的拒绝应答 payload，沿用既有 chat.interrupt_result 字段契约
-    （interface_deep.py / external_harness_helpers.py 的 intent+success+message），
-    另附 error 便于适配层按原因排查。"""
+    """未知 intent 的拒绝应答 payload。
+
+    沿用既有 chat.interrupt_result 字段契约（interface_deep.py /
+    external_harness_helpers.py 的 intent+success+message），另附 error
+    便于适配层按原因排查。
+    """
     return {
         "event_type": "chat.interrupt_result",
         "intent": intent,
