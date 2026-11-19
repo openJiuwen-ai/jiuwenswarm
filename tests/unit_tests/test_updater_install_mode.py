@@ -477,7 +477,7 @@ def test_desktop_check_uses_timestamp_and_product_agnostic_installer(
             )
 
     monkeypatch.setattr(sys, "platform", platform)
-    monkeypatch.setattr(updater, "__version__", "9.0.0")
+    monkeypatch.setattr(updater, "get_runtime_version", lambda: "9.0.0")
     monkeypatch.setattr(
         updater.UpdaterService,
         "_create_version_source",
@@ -835,7 +835,7 @@ def test_desktop_check_does_not_update_for_same_or_older_timestamp(
                 source_type="gitcode",
             )
 
-    monkeypatch.setattr(updater, "__version__", "0.2.2")
+    monkeypatch.setattr(updater, "get_runtime_version", lambda: "0.2.2")
     monkeypatch.setattr(
         updater.UpdaterService,
         "_create_version_source",
@@ -874,7 +874,7 @@ def test_pip_check_keeps_version_comparison(monkeypatch):
                 source_type="pypi",
             )
 
-    monkeypatch.setattr(updater, "__version__", "0.2.2")
+    monkeypatch.setattr(updater, "get_runtime_version", lambda: "0.2.2")
     monkeypatch.setattr(
         updater.UpdaterService,
         "_create_version_source",
@@ -908,7 +908,7 @@ def test_linux_desktop_keeps_version_comparison(monkeypatch):
             )
 
     monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(updater, "__version__", "9.0.0")
+    monkeypatch.setattr(updater, "get_runtime_version", lambda: "9.0.0")
     monkeypatch.setattr(
         updater.UpdaterService,
         "_create_version_source",
@@ -924,3 +924,139 @@ def test_linux_desktop_keeps_version_comparison(monkeypatch):
 
     assert status["state"] == "up_to_date"
     assert status["has_update"] is False
+
+
+def test_check_uses_installed_version_as_baseline(monkeypatch):
+    from jiuwenswarm.common.version_source import ReleaseAsset, ReleaseInfo
+
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    monkeypatch.delenv("JIUWENSWARM_DESKTOP", raising=False)
+
+    seen = {}
+
+    class FakeSource:
+        def fetch_latest(self, current_version=""):
+            seen["current_version"] = current_version
+            return ReleaseInfo(
+                version="0.2.9b3",
+                published_at="2026-11-13T02:36:10Z",
+                assets=[
+                    ReleaseAsset(
+                        name="workswarm-0.2.5-py3-none-any.whl",
+                        download_url="https://example.test/0.2.5.whl",
+                    ),
+                    ReleaseAsset(
+                        name="workswarm-0.2.9b3-py3-none-any.whl",
+                        download_url="https://example.test/0.2.9b3.whl",
+                    ),
+                ],
+                source_type="pypi",
+            )
+
+    # Daily wheels bump the distribution metadata only; the checked-in
+    # _build_config constant stays behind.
+    monkeypatch.setattr(updater, "__version__", "0.2.8")
+    monkeypatch.setattr(updater, "get_runtime_version", lambda: "0.2.9")
+    monkeypatch.setattr(
+        updater.UpdaterService,
+        "_create_version_source",
+        staticmethod(lambda config: FakeSource()),
+    )
+    monkeypatch.setattr(
+        updater,
+        "get_config_raw",
+        lambda: {"updater": {"enabled": True}},
+    )
+
+    status = updater.UpdaterService().check(manual=True)
+
+    assert seen["current_version"] == "0.2.9"
+    assert status["has_update"] is False
+    assert status["state"] == "up_to_date"
+
+
+def test_check_picks_wheel_matching_release_version(monkeypatch):
+    from jiuwenswarm.common.version_source import ReleaseAsset, ReleaseInfo
+
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    monkeypatch.delenv("JIUWENSWARM_DESKTOP", raising=False)
+
+    class FakeSource:
+        def fetch_latest(self, current_version=""):
+            return ReleaseInfo(
+                version="0.2.9b3",
+                published_at="2026-11-13T02:36:10Z",
+                assets=[
+                    ReleaseAsset(
+                        name="workswarm-0.2.5-py3-none-any.whl",
+                        download_url="https://example.test/0.2.5.whl",
+                    ),
+                    ReleaseAsset(
+                        name="workswarm-0.2.8-py3-none-any.whl",
+                        download_url="https://example.test/0.2.8.whl",
+                    ),
+                    ReleaseAsset(
+                        name="workswarm-0.2.9b3-py3-none-any.whl",
+                        download_url="https://example.test/0.2.9b3.whl",
+                    ),
+                ],
+                source_type="pypi",
+            )
+
+    monkeypatch.setattr(updater, "__version__", "0.2.8")
+    monkeypatch.setattr(updater, "get_runtime_version", lambda: "0.2.8")
+    monkeypatch.setattr(
+        updater.UpdaterService,
+        "_create_version_source",
+        staticmethod(lambda config: FakeSource()),
+    )
+    monkeypatch.setattr(
+        updater,
+        "get_config_raw",
+        lambda: {"updater": {"enabled": True}},
+    )
+
+    status = updater.UpdaterService().check(manual=True)
+
+    assert status["state"] == "update_available"
+    assert status["latest_version"] == "0.2.9b3"
+    assert status["matched_asset"] == "workswarm-0.2.9b3-py3-none-any.whl"
+    assert status["download_url"] == "https://example.test/0.2.9b3.whl"
+
+
+def test_resolve_pip_asset_falls_back_to_first_wheel(monkeypatch):
+    from jiuwenswarm.common.version_source import ReleaseAsset, ReleaseInfo
+
+    release = ReleaseInfo(
+        version="0.3.0",
+        assets=[
+            ReleaseAsset(
+                name="nightly-build.whl",
+                download_url="https://example.test/nightly-build.whl",
+            ),
+            ReleaseAsset(
+                name="other-build.whl",
+                download_url="https://example.test/other-build.whl",
+            ),
+        ],
+        source_type="pypi",
+    )
+    service = updater.UpdaterService()
+
+    service._resolve_pip_asset({}, release)  # pylint: disable=protected-access
+
+    status = service.get_status()
+    assert status["asset_name"] == "nightly-build.whl"
+    assert status["download_url"] == "https://example.test/nightly-build.whl"
+
+
+def test_wheel_version_key_normalizes_prerelease_spellings():
+    assert updater._wheel_version_key(  # pylint: disable=protected-access
+        "workswarm-0.2.3b1-py3-none-any.whl"
+    ) == updater._wheel_version_key(  # pylint: disable=protected-access
+        "workswarm-0.2.3.beta1-py3-none-any.whl"
+    )
+    assert (
+        updater._wheel_version_key("not-a-wheel")  # pylint: disable=protected-access
+        is None
+    )
