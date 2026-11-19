@@ -7,8 +7,8 @@
 | 类型 | spec |
 | 编号 / slug | S_10 / model-and-reasoning |
 | 关联模块 | jiuwenswarm/common/{model_client_extensions, model_config_validation, model_identity, openrouter_attribution, reasoning_config, reasoning_injector}.py |
-| 最近一次修订日期 | 2026-10-31 |
-| 关联 feature | 暂无 |
+| 最近一次修订日期 | 2026-11-17 |
+| 关联 feature | [[F_02_thinking-passthrough-no-rewrite]]；窗口交叉见 server [[F_03_context-window-effective-denominator]] |
 
 ## 范围 / 边界
 
@@ -44,6 +44,14 @@
 - **N7 厂商参数形态**：deepseek 官方 → `extra_body.thinking = {type: ...}`；百炼 →
   `extra_body.enable_thinking = bool`；映射为 high 时补 `reasoning_effort = high`；
   非白名单目标原样返回（不注入）。
+- **N8 显式厂商思考字段优先**：`model_config_obj` 已带顶层 `reasoning_effort`，或
+  `extra_body` 内 `thinking` / `enable_thinking` / `reasoning_effort` 任一非空键时，
+  **跳过** `reasoning_level` 注入，只剥离内部字段后原样返回。OfficeAce / 档位 catalog
+  走这条透传路径；仅有 `reasoning_level`、无显式字段时仍按 N5–N7。
+- **N9 窗口字段禁止进 `model_config_obj`**：catalog 上限 `context_window_tokens` 与请求选用
+  `selected_context_window_tokens`（`ChatSendParams`）均不得写入 `model_config_obj`
+  （会进入厂商请求）。生效压缩分母的写入与 Deep 接线归 **server**
+  `docs/specs/S_06_context-window-effective-denominator.md`，不在本规约装配路径内。
 
 ## 接口契约
 
@@ -78,6 +86,10 @@
 | 非 openrouter provider | 不注入任何头 | 同上 |
 | deepseek-v3.x + thinking | 白名单外，原样返回 | reasoning 测试 |
 | reasoning_level 透传到 SDK | 注入前剥离（N6） | reasoning 测试 |
+| OfficeAce 仅厂商字段 | 原样透传，不注入 | `test_reasoning_injector.py` |
+| 厂商字段 + reasoning_level 并存（白名单端点） | 保住厂商字段，跳过注入（N8） | 同上 |
+| 仅 reasoning_level（DeepSeek 官方 / 百炼） | 仍按 N7 注入 | 同上 |
+| 窗口键写入 `model_config_obj` | 禁止（N9）；server 侧单测断言只读同级键 | server `test_apply_request_context_window.py` |
 
 ## 修改检查单
 
@@ -92,3 +104,4 @@
 - [[S_06]]：thinking 管线（正交，见其范围段）。
 - [[S_08]]：models 段与 react 段的配置来源。
 - [[S_01]]：N1 装配点登记。
+- server `S_06_context-window-effective-denominator`：窗口生效分母（本规约仅约束 N9 字段归属）。

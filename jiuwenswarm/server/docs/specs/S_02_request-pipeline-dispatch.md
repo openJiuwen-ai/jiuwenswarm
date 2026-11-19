@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_02 / request-pipeline-dispatch |
 | 关联模块 | jiuwenswarm/server/{dispatch.py, pipeline.py, context.py, wire_parse.py, wire_truncate.py, ws_send.py, handlers/, transports/} |
-| 最近一次修订日期 | 2026-11-11 |
+| 最近一次修订日期 | 2026-11-17 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -51,6 +51,7 @@
 
 约 100+ 条目，分域：
 - bootstrap ：INITIALIZE / SESSION_CREATE / SESSION_FORK / ACP_TOOL_RESPONSE
+- session_prepare ：SESSION_PREPARE（handlers/session_prepare.py；只读解析后立即应答，构建在 TenantAgentPool 后台进行，HTTP `POST /sessions/{session_id}/actions/prepare`；契约见 runtime [[S_02]] N10-N12 / P6）
 - session ：SESSION_LIST / SESSION_RENAME / SESSION_SWITCH / SESSION_DELETE / SESSION_REWIND / SESSION_REWIND_AND_RESTORE（同 fn + kwargs restore_files=True）/ SESSION_REWIND_COMPACT（同 fn + kwargs compact=True）/ SESSION_REWIND_CONTEXT / HISTORY_GET（fn + stream_fn 分支）
 - chat ：CHAT_CANCEL / CHAT_STEER / CHAT_STEER_STATUS
 - file_transfer（3）：按 event_type 分派

@@ -904,7 +904,7 @@ class GatewayServer(BaseWebChannel):
             logger.debug("send_event failed (client disconnected?)", exc_info=True)
 
     async def start(self) -> None:
-        if self._running or not self.config.enabled:
+        if self._running or not self.config.enabled or is_enterprise():
             return
         try:
             from websockets.legacy.server import serve as ws_serve
@@ -2980,11 +2980,13 @@ async def _run_with_telemetry(
     except Exception as e:  # noqa: BLE001  # 兜底：启动时 proactive job 注册失败不阻断 Gateway 启动
         logger.warning("[App] proactive.tick auto-register failed (non-fatal): %s", e)
     # 先同步完成监听绑定，避免 IDE/ACP 子进程在端口尚未就绪时连接导致多次重试。
-    await gateway_server.start()
-    gateway_server_task = asyncio.create_task(
-        gateway_server.wait_until_closed(),
-        name="acp-gateway-server",
-    )
+    gateway_server_task = None
+    if not is_enterprise():
+        await gateway_server.start()
+        gateway_server_task = asyncio.create_task(
+            gateway_server.wait_until_closed(),
+            name="acp-gateway-server",
+        )
     web_task = (
         asyncio.create_task(web_channel.start(), name="web-channel")
         if web_channel is not None
@@ -3001,15 +3003,21 @@ async def _run_with_telemetry(
         port_val = getattr(web_channel, "web_http_port", None)
         web_http_port_for_log = port_val if port_val is not None else "-"
     if web_channel is not None:
-        logger.info(
-            "[App] started: Web ws://%s:%s%s  WebHTTP http://%s:%s/api/v1  AgentServer: %s  Press Ctrl+C to exit.",
-            web_host,
-            web_port,
-            web_path,
-            web_host,
-            web_http_port_for_log,
-            agent_server_url,
-        )
+        if is_enterprise():
+            logger.info(
+                "[App] started: enterprise WebHTTP %s:%s/api/v1  AgentServer: %s",
+                web_host, web_http_port_for_log, agent_server_url,
+            )
+        else:
+            logger.info(
+                "[App] started: Web ws://%s:%s%s  WebHTTP http://%s:%s/api/v1  AgentServer: %s  Press Ctrl+C to exit.",
+                web_host,
+                web_port,
+                web_path,
+                web_host,
+                web_http_port_for_log,
+                agent_server_url,
+            )
 
     restart_requested = False
     try:

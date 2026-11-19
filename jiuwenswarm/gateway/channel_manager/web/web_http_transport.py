@@ -77,6 +77,11 @@ class WebHttpTransport:
         task.add_done_callback(_on_http_task_done)
         return True
 
+    async def wait_closed(self) -> None:
+        if self._http_task is None:
+            raise RuntimeError("Web HTTP server is not running")
+        await self._http_task
+
     async def stop(self) -> None:
         """Stop Gateway Web HTTP and clear in-flight request outbounds."""
         from jiuwenswarm.gateway.channel_manager.web.web_http_server import stop_web_http_server

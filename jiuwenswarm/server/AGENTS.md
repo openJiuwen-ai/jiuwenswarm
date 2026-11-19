@@ -147,6 +147,7 @@ server/
 │   ├── bootstrap.py                  # INITIALIZE / SESSION_CREATE / SESSION_FORK / ACP_TOOL_RESPONSE：连接引导 + checkpointer 等待
 │   ├── chat.py                       # CHAT_SEND / CHAT_RESUME / CHAT_CANCEL + _ensure_auto_team_binding_for_chat（团队绑定兜底）
 │   ├── session.py                    # SESSION_* / HISTORY_GET：会话管理 + history 截断（wire_truncate 常量）
+│   ├── session_prepare.py            # SESSION_PREPARE：Relay 首条消息路由后提前构建会话实例（只读解析，后台构建）
 │   ├── steering.py                   # CHAT_STEER / CHAT_STEER_STATUS：中途引导
 │   ├── team.py                       # TEAM_* 全域：templates / bindings / session_bind / snapshot / mq_publish / members / tasks_dependencies
 │   ├── commands.py                   # COMMAND_*：workflows / compact / recap / diff / context / status / model / ...

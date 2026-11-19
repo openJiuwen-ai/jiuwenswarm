@@ -87,17 +87,17 @@ def test_resolve_storage_config_drops_unknown_sqlite_params(tmp_path, monkeypatc
 @pytest.mark.parametrize(
     ("team_cfg", "expected"),
     [
-        ({"enable_swarmflow": False}, 4),
+        ({"enable_swarmflow": False}, 15),
         ({"enable_swarmflow": True}, 0),
         ({"enable_swarmflow": False, "resource_admission": {"max_concurrent_llm_calls": 2}}, 2),
         ({"enable_swarmflow": True, "resource_admission": {"max_concurrent_llm_calls": 3}}, 3),
         ({"enable_swarmflow": False, "resource_admission": {"max_concurrent_llm_calls": 0}}, 0),
-        ({"enable_swarmflow": False, "resource_admission": {"max_concurrent_llm_calls": None}}, 4),
+        ({"enable_swarmflow": False, "resource_admission": {"max_concurrent_llm_calls": None}}, 15),
         # Invalid values fall back to swarmflow-aware default (not fail-open to 0).
-        ({"enable_swarmflow": False, "resource_admission": {"max_concurrent_llm_calls": "x"}}, 4),
+        ({"enable_swarmflow": False, "resource_admission": {"max_concurrent_llm_calls": "x"}}, 15),
         ({"enable_swarmflow": True, "resource_admission": {"max_concurrent_llm_calls": "x"}}, 0),
         # YAML `.inf` → float('inf'); int(inf) raises OverflowError.
-        ({"enable_swarmflow": False, "resource_admission": {"max_concurrent_llm_calls": float("inf")}}, 4),
+        ({"enable_swarmflow": False, "resource_admission": {"max_concurrent_llm_calls": float("inf")}}, 15),
     ],
 )
 def test_resolve_team_admission_limit(team_cfg, expected):
@@ -165,7 +165,7 @@ def test_resolve_team_section_for_admission_refuses_first_dict_when_ambiguous():
     )
     # No team_key + no jiuwen_team → do not silently pick A or B by dict order.
     assert section == {}
-    assert resolve_team_admission_limit(section) == 4
+    assert resolve_team_admission_limit(section) == 15
 
 
 def test_build_team_admission_rail_disabled_when_zero():
@@ -246,7 +246,7 @@ async def test_team_admission_task_cancel_returns_permit_without_after_callbacks
 
     openjiuwen rail base finally gates after callbacks when is_cancelled; the
     permit must still return via Task done_callback or the process deadlocks
-    after ``limit`` cancels (default 4).
+    after ``limit`` cancels.
     """
     reset_team_llm_semaphore_for_tests()
     rail = TeamAdmissionRail(max_concurrent_llm_calls=1)
@@ -280,8 +280,8 @@ async def test_team_admission_task_cancel_returns_permit_without_after_callbacks
 
 
 @pytest.mark.asyncio
-async def test_team_admission_four_cancels_do_not_exhaust_default_limit():
-    """Default limit=4: four cancelled in-flight holds must fully reclaim."""
+async def test_team_admission_four_cancels_do_not_exhaust_configured_limit():
+    """Configured limit=4: four cancelled in-flight holds must fully reclaim."""
     reset_team_llm_semaphore_for_tests()
     rail = TeamAdmissionRail(max_concurrent_llm_calls=4)
     gate = asyncio.Event()
