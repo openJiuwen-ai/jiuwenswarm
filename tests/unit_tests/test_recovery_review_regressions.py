@@ -13,9 +13,64 @@ from openjiuwen.core.context_engine import ContextEngine
 from jiuwenswarm.agents.harness.common import session_ops_service as ops
 from jiuwenswarm.server.runtime.session import lifecycle as lc
 from jiuwenswarm.server.runtime.session.history_io import run_history_io
+from jiuwenswarm.server.runtime.session.recovery_budget import LegacyLimitSource
 from tests.unit_tests.server.test_archive_lifecycle import archive
 from tests.unit_tests.test_context_migration import _completion
 from tests.unit_tests.test_context_snapshots import native_session, stored
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid", ["generation", "missing_cursor", "invalid_cursor", "state_error"])
+async def test_invalid_cached_limit_rechecks_history_without_losing_context(stored, monkeypatch, invalid):
+    await native_session(stored, monkeypatch)
+    stored.write([
+        {"role": "user", "request_id": "old", "content": "PERSISTED_QUESTION"},
+        {"role": "assistant", "request_id": "old", "event_type": "chat.final", "content": "PERSISTED_ANSWER"},
+        {"role": "user", "request_id": "current", "content": "CURRENT_INPUT"},
+    ])
+    original = stored.path.read_bytes()
+    cursor = ops.read_history_replay(stored.sid, before_request_id="current").prefix_cursor
+    source = LegacyLimitSource(stored.sid, "current", cursor)
+    assert ops._legacy_limit_source_is_current(source)
+    if invalid == "missing_cursor":
+        source = SimpleNamespace(session_id=stored.sid, before_request_id="current")
+    elif invalid == "invalid_cursor":
+        source = LegacyLimitSource(stored.sid, "current", None)
+    else:
+        read_state = lc.state
+        invalid_reads = 2 if invalid == "generation" else 1
+
+        def state(kind, resource_id):
+            nonlocal invalid_reads
+            if invalid_reads and (kind, resource_id) == ("session", stored.sid):
+                # The guard and the cached-limit check each read lifecycle state.
+                invalid_reads -= 1
+                if invalid == "state_error":
+                    raise RuntimeError("speculative lifecycle read failed")
+                return {**read_state(kind, resource_id), "generation": None}
+            return read_state(kind, resource_id)
+
+        monkeypatch.setattr(lc, "state", state)
+    engine = ContextEngine()
+    agent = SimpleNamespace(react_agent=SimpleNamespace(context_engine=engine), _interaction_session=stored.session)
+    assert await ops.warmup_session_context(
+        deep_agent=agent, session_id=stored.sid, history_before_request_id="current", prior_limit=source,
+    )
+    contents = [message.content for message in engine.get_context(session_id=stored.sid).get_messages()]
+    assert contents == ["PERSISTED_QUESTION", "PERSISTED_ANSWER"]
+    assert stored.path.read_bytes() == original
+
+
+def test_cached_limit_validation_propagates_cancellation(tmp_path, monkeypatch):
+    monkeypatch.setattr(lc, "get_agent_root_dir", lambda: tmp_path)
+
+    def cancelled(*_args):
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(lc, "state", cancelled)
+    source = LegacyLimitSource("cancelled", "current", SimpleNamespace(generation=0))
+    with pytest.raises(asyncio.CancelledError):
+        ops._legacy_limit_source_is_current(source)
 
 
 @pytest.mark.asyncio

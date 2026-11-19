@@ -253,7 +253,11 @@ class IpcConnection:
                 except TimeoutError:
                     pass
             return outcome("reply_timeout")
+        except ConnectionError:
+            return HeartbeatProbeResult("connection_closed")
         except (OSError, RuntimeError):
+            if getattr(self, "_closed", False) or getattr(self, "_reader_error", None) is not None:
+                return HeartbeatProbeResult("connection_closed")
             return HeartbeatProbeResult("write_failed")
         finally:
             self._probe_observer = None

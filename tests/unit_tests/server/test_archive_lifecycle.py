@@ -238,6 +238,39 @@ async def test_idle_archive_restore_preserves_data_and_event_time(archive):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("fail_reindex", [False, True])
+async def test_unarchive_operation_fields_preserve_pin_reindex_and_failure(archive, monkeypatch, fail_reindex):
+    service, create, root, _ = archive
+    create(pinned=True, pin_order=1)
+    original_history = (root / "sessions/sess_a/history.json").read_bytes()
+    await service.session("sess_a", "archive", "web")
+    reindex_pins = service.reindex_pins
+    seen = []
+
+    def reindex(*, include_blocked=None):
+        operation = lc.state("session", "sess_a")["operation"]
+        seen.append((include_blocked, operation["operation_id"], operation["pin_reindex_required"]))
+        if fail_reindex:
+            raise OSError("controlled unarchive reindex failure")
+        return reindex_pins(include_blocked=include_blocked)
+
+    monkeypatch.setattr(service, "reindex_pins", reindex)
+    if fail_reindex:
+        with pytest.raises(lc.LifecycleError, match="controlled unarchive reindex failure") as failure:
+            await service.session("sess_a", "unarchive", "web")
+        assert failure.value.code == "RESTORE_FAILED"
+        assert isinstance(failure.value.__cause__, OSError)
+    else:
+        assert (await service.session("sess_a", "unarchive", "web"))["restored"] is True
+        lc.guard("sess_a")
+        assert lc.raw_metadata("sess_a")["pin_order"] == 1
+    operation = lc.state("session", "sess_a")["operation"]
+    assert seen == [("sess_a", operation["operation_id"], True)]
+    assert operation["status"] == ("failed" if fail_reindex else "completed")
+    assert (root / "sessions/sess_a/history.json").read_bytes() == original_history
+
+
+@pytest.mark.asyncio
 async def test_moved_directory_recovers_original_timestamp(archive):
     service, create, root, _ = archive
     directory = create()
