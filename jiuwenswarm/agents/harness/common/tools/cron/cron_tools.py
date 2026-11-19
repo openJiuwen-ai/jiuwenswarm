@@ -610,7 +610,12 @@ class CronTools:
             if inherited_model:
                 normalized["model_name"] = inherited_model
         model_name_raw = normalized.get("model_name")
-        if model_name_raw is not None and str(model_name_raw).strip():
+        if normalized.get("model_selection") is not None:
+            # Preserve stable identity; the name is compatibility/display data.
+            model_kw["model_selection"] = normalized["model_selection"]
+            if model_name_raw is not None and str(model_name_raw).strip():
+                model_kw["model_name"] = str(model_name_raw).strip()
+        elif model_name_raw is not None and str(model_name_raw).strip():
             model_kw["model_name"] = resolve_agent_cron_model(model_name_raw)
         # mcp：会话级 MCP 选择（backend 层已继承 chat-session 快照或显式传入），
         # 只做类型规范化（strip/去空/去重），不校验存在性——MCP 断连后 job 应降级运行。
