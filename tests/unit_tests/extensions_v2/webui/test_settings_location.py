@@ -8,8 +8,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from tests.unit_tests.extensions_v2.gateway_compat import require_gateway_module
-
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions_v2.webui.adapter import WebUIDispatchAdapter
@@ -93,7 +91,7 @@ async def test_catalog_request_uses_the_bound_web_connection_without_a_conversat
 
 @pytest.mark.asyncio
 async def test_gateway_registers_both_catalog_and_existing_dispatch(monkeypatch) -> None:
-    webui_handlers = require_gateway_module("agent_gateway.channel_manager.web.webui_handlers")
+    from agent_gateway.channel_manager.web import webui_handlers
 
     routes = {}
     channel = SimpleNamespace(channel_id="web", register_method=lambda name, handler: routes.update({name: handler}))

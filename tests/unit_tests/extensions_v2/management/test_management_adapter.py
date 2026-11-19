@@ -12,8 +12,6 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from tests.unit_tests.extensions_v2.gateway_compat import require_gateway_module
-
 from openjiuwen.core.events import Event
 from openjiuwen.core.extension import ActivationReport, ActivePackageRecord
 
@@ -270,7 +268,7 @@ async def test_unavailable_manager_is_not_created(
 
 
 async def test_gateway_proxies_preserve_method_and_request_fields(monkeypatch: pytest.MonkeyPatch) -> None:
-    proxy_module = require_gateway_module("agent_gateway.channel_manager.web.extension_package_handlers")
+    from agent_gateway.channel_manager.web import extension_package_handlers as proxy_module
     handlers: dict[str, Any] = {}
     channel = SimpleNamespace(register_method=lambda method, handler: handlers.setdefault(method, handler))
     proxy = AsyncMock()
@@ -381,7 +379,7 @@ async def test_failed_install_does_not_notify_ready_clients(
 async def test_web_install_notifies_mounted_slot_and_renders_on_ready(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    proxy_module = require_gateway_module("agent_gateway.channel_manager.web.extension_package_handlers")
+    from agent_gateway.channel_manager.web import extension_package_handlers as proxy_module
     from jiuwenswarm.extensions_v2.webui.adapter import WebUIDispatchAdapter
     from jiuwenswarm.extensions_v2.webui.contributions import WebUICatalogService
     from jiuwenswarm.extensions_v2.webui.runtime import WebUIRuntime
@@ -502,7 +500,7 @@ async def test_install_does_not_guess_a_path_for_a_different_generation(
 async def test_web_command_parameters_cross_the_real_gateway_proxy_and_adapter(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, session_id: str | None,
 ) -> None:
-    proxy_module = require_gateway_module("agent_gateway.channel_manager.web.extension_package_handlers")
+    from agent_gateway.channel_manager.web import extension_package_handlers as proxy_module
     await _manager(tmp_path, monkeypatch)
     adapter = PackageManagementAdapter()
     envelopes: list[E2AEnvelope] = []
@@ -546,7 +544,7 @@ async def test_web_command_parameters_cross_the_real_gateway_proxy_and_adapter(
 async def test_gateway_preserves_unknown_outcome_and_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    proxy_module = require_gateway_module("agent_gateway.channel_manager.web.extension_package_handlers")
+    from agent_gateway.channel_manager.web import extension_package_handlers as proxy_module
     manager = await _manager(tmp_path, monkeypatch)
     monkeypatch.setattr(manager, "install", AsyncMock(side_effect=RuntimeError("lost report")))
     adapter = PackageManagementAdapter()
