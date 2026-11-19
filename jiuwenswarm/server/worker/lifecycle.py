@@ -203,6 +203,12 @@ def _preload_runtime_backend() -> None:
     _configure_openjiuwen_logging()
     _apply_runtime_entry_patches()
     import openjiuwen.core.runner  # noqa: F401
+    # Sandbox shell wrapper for MCP CLI connectors: installed after the
+    # openjiuwen log config above, otherwise the import raises [183001]
+    # (default log_path "./logs" resolves to read-only "/logs").
+    from jiuwenswarm.server.runtime.mcp.cli_env_patch import install_shell_patch
+
+    install_shell_patch()
     import jiuwenswarm.extensions.manager  # noqa: F401
     import jiuwenswarm.extensions.registry  # noqa: F401
     import jiuwenswarm.server.agent_ws_server  # noqa: F401
