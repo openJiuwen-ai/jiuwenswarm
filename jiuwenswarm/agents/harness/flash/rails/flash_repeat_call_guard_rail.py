@@ -80,8 +80,30 @@ def _sort_json_value(value: Any) -> Any:
     return value
 
 
+def _parse_arguments(arguments: Any) -> Any:
+    """把真实 SDK 的 JSON 字符串参数解析成结构，解析失败则原样返回。
+
+    ``ToolCall.arguments`` 的类型是 ``str``（JSON 文本），字典只在测试/部分适配器
+    路径出现；不解析会让「键序或空白不同」的等价调用得到不同规范化键。
+    """
+    if not isinstance(arguments, str):
+        return arguments
+    text = arguments.strip()
+    if not text:
+        return arguments
+    try:
+        return json.loads(text)
+    except (TypeError, ValueError):
+        return arguments
+
+
 def _canonicalize(arguments: Any) -> str:
-    return json.dumps(_sort_json_value(arguments), ensure_ascii=False, default=str)
+    """参数规范化：先解析 JSON 字符串，再深度键排序，最后稳定序列化。"""
+    return json.dumps(
+        _sort_json_value(_parse_arguments(arguments)),
+        ensure_ascii=False,
+        default=str,
+    )
 
 
 def _preview(canonical: str, cap: int) -> str:

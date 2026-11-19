@@ -111,6 +111,19 @@ class TestCanonicalize:
     def test_different_values_differ(self) -> None:
         assert _canonicalize({"x": 1}) != _canonicalize({"x": 2})
 
+    def test_json_string_key_order_normalized(self) -> None:
+        """真实 ToolCall.arguments 是 JSON 字符串：键序不同视为同一调用。"""
+        a = '{"x": 1, "nested": {"b": 2, "a": 1}}'
+        b = '{"nested": {"a": 1, "b": 2}, "x": 1}'
+        assert _canonicalize(a) == _canonicalize(b)
+
+    def test_json_string_whitespace_normalized(self) -> None:
+        assert _canonicalize('{"a": 1, "b": [1, 2]}') == _canonicalize('{"a":1,"b":[1,2]}')
+
+    def test_invalid_json_string_kept_as_is(self) -> None:
+        assert _canonicalize("not json") == _canonicalize("not json")
+        assert _canonicalize("not json") != _canonicalize("other")
+
 
 class TestWildcard:
     def test_star_wildcard_anchored(self) -> None:
@@ -201,6 +214,23 @@ class TestRepeatChain:
         await rail.after_tool_call(ctx)
         reminder = _reminder(agent)
         assert reminder is not None  # 命中 threshold[0]=3
+
+    @pytest.mark.asyncio
+    async def test_real_json_string_arguments_accumulate(self) -> None:
+        """真实 ToolCall.arguments 是 JSON 字符串：键序/空白不同的等价调用应累计。"""
+        agent = _FakeAgent()
+        rail = _make_rail(agent)
+        ctx = _ctx()
+        await rail.before_invoke(ctx)
+
+        for raw in (
+            '{"path": "a.txt", "encoding": "utf-8"}',
+            '{"encoding":"utf-8","path":"a.txt"}',
+            '{"path":"a.txt", "encoding": "utf-8"}',
+        ):
+            ctx.inputs.tool_call = _tool_call("read_file", raw)
+            await rail.after_tool_call(ctx)
+        assert _reminder(agent) is not None
 
     @pytest.mark.asyncio
     async def test_before_invoke_resets_chain(self) -> None:
