@@ -1304,20 +1304,12 @@ def prepare_workspace(
     if config_initialized:
         # init/重新部署用模板覆盖 config.yaml——三方 agent 的启用配置不取自被
         # 覆盖的旧文件，而是从数据目录之外的状态旁路恢复（旁路在每次保存/清理
-        # 时镜像，见 dump_yaml_round_trip 的挂接点）。强制重置（init -f /
-        # overwrite）例外：重置语义完整生效——跳过恢复并清除旁路文件，否则
-        # "重置"名存实亡，且被恢复的 cli_path 指向已删除的安装。
-        if overwrite:
-            # 强制重置：跳过恢复并清除旁路文件（删除失败仅告警，不阻塞 init）
-            try:
-                external_cli_state_sidecar_path(workspace_dir).unlink(missing_ok=True)
-            except OSError as exc:
-                logger.warning(f"清除三方 agent 状态旁路失败: {exc}")
-        pre_restore_state = (
-            _read_external_cli_state_sidecar(workspace_dir)
-            if not overwrite and not config_yaml_dest.exists()
-            else None
-        )
+        # 时镜像，见 dump_yaml_round_trip 的挂接点）。无论强制重置（init -f /
+        # overwrite）还是全新初始化，都从旁路恢复三方 agent 状态且保留旁路文件
+        # （2026-11-19 语义调整：init 后保持已安装/已开启状态；旁路缺失或为空
+        # 时自然落到模板默认；要彻底重置三方 agent，在 UI 里关闭对应 agent 并
+        # 保存，旁路即同步为空态，后续 init 恢复为空）。
+        pre_restore_state = _read_external_cli_state_sidecar(workspace_dir)
         with TrackCopyDiff(
             dest=config_yaml_dest,
             is_file=True,
