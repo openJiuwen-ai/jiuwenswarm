@@ -963,12 +963,9 @@ def _ensure_worker_started() -> None:
         if _WORKER_STARTED:
             return
 
-        # A worker must acknowledge tasks on the same queue it consumes.
-        write_queue = _METADATA_QUEUE
-
         def _worker() -> None:
             while True:
-                sid, metadata, options = write_queue.get()
+                sid, metadata, options = _METADATA_QUEUE.get()
                 try:
                     if sid is None:
                         metadata.set()
@@ -982,7 +979,7 @@ def _ensure_worker_started() -> None:
                     if options is not None and options.migration_key is not None:
                         with _MIGRATION_LOCK:
                             _PENDING_MIGRATIONS.discard(options.migration_key)
-                    write_queue.task_done()
+                    _METADATA_QUEUE.task_done()
 
         t = threading.Thread(target=_worker, name="session-metadata-writer", daemon=True)
         t.start()

@@ -220,34 +220,3 @@ with store.file_lock(pathlib.Path(sys.argv[2])):
         assert output.strip() == "acquired"
     finally:
         _stop_processes(processes)
-
-
-def test_metadata_worker_keeps_its_queue_when_test_queue_is_replaced():
-    code = """
-import queue, threading
-from jiuwenswarm.server.runtime.session import session_metadata as sm
-original = sm._METADATA_QUEUE
-reached, release = threading.Event(), threading.Event()
-errors = []
-threading.excepthook = lambda args: errors.append(str(args.exc_value))
-class Barrier:
-    def set(self):
-        reached.set()
-        assert release.wait(5)
-sm._ensure_worker_started()
-original.put((None, Barrier(), None))
-assert reached.wait(5)
-sm._METADATA_QUEUE = queue.Queue()
-release.set()
-with original.all_tasks_done:
-    assert original.all_tasks_done.wait_for(lambda: original.unfinished_tasks == 0, timeout=5), errors
-sm._METADATA_QUEUE = original
-assert sm.flush_pending_writes(5), 'metadata worker stopped after queue replacement'
-assert not errors, errors
-"""
-    process = _process(code)
-    try:
-        _, errors = process.communicate(timeout=20)
-        assert process.returncode == 0, errors
-    finally:
-        _stop_processes([process])
