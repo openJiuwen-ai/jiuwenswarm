@@ -161,6 +161,7 @@ from jiuwenswarm.runtime.checkpointer import (
 from jiuwenswarm.server.runtime.session.history_io import (
     run_history_io, run_stream_parser, stream_chunk_writes_history,
 )
+from jiuwenswarm.server.runtime.session.recovery_budget import LegacyGroupLimit, serialize_adapter_assembly
 
 from jiuwenswarm.server.runtime.agent_adapter.permission_rail_group import (
     PERMISSION_GROUP_TYPES, PERMISSION_RAIL_TYPES, PermissionRailGroup, build_permission_group,
@@ -4307,7 +4308,7 @@ class JiuWenSwarmDeepAdapter:
             set(pending_mcp_scan_names) if pending_mcp_scan_names is not None else None
         )
         lock = self._session_adapter_locks.setdefault(sid, asyncio.Lock())
-        async with lock:
+        async with serialize_adapter_assembly(lock) as (prior_limit, assembly):
             from jiuwenswarm.runtime.app_role import app_role_instructions, is_app_role_team, validate_app_role_member
             from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 
@@ -4790,7 +4791,9 @@ class JiuWenSwarmDeepAdapter:
                 config["moa_config_snapshot"] = moa_snapshot
                 config["moa_can_access"] = moa_can_access
             history_preparation = None
-            if history_before_request_id:
+            if history_before_request_id and (
+                prior_limit is None or prior_limit.before_request_id != history_before_request_id
+            ):
                 from jiuwenswarm.agents.harness.common.session_ops_service import prefetch_session_history
                 history_preparation = asyncio.create_task(run_history_io(
                     prefetch_session_history, sid, history_before_request_id=history_before_request_id,
@@ -4858,6 +4861,7 @@ class JiuWenSwarmDeepAdapter:
                         deep_agent=getattr(adapter, "_instance", None),
                         session_id=sid,
                         history_before_request_id=history_before_request_id,
+                        **({"prior_limit": prior_limit} if prior_limit is not None else {}),
                         **(
                             {"history_snapshot": history_snapshot}
                             if history_snapshot is not None
@@ -4895,6 +4899,8 @@ class JiuWenSwarmDeepAdapter:
                     if self._session_adapters.get(sid) is adapter:
                         self._session_adapters.pop(sid, None)
                     await adapter.cleanup()
+                if isinstance(exc, LegacyGroupLimit):
+                    assembly.source = exc.source
                 raise
             finally:
                 await self._drain_history_preparation(history_preparation)

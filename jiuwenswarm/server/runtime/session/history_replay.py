@@ -190,6 +190,33 @@ def read_history_replay(
         _READ_SLOTS.release()
 
 
+def try_prefetch_history_prefix(
+    session_id: str, before_request_id: str, eligible: Callable[[Path, int, dict[str, Any]], bool],
+) -> HistoryReplayBatch | None:
+    """Read an optional prefix only if both the reader slot and lifecycle fence are available now."""
+    from jiuwenswarm.server.runtime.session.session_history import get_read_history_path
+
+    if not _READ_SLOTS.acquire(blocking=False):
+        return None
+    try:
+        with lc.resource_lock("session", session_id, blocking=False):
+            lc.guard(session_id)
+            state = lc.state("session", session_id)
+            path = get_read_history_path(session_id)
+            if not path.exists():
+                return None
+            identity = _identity(path.stat())
+            if not eligible(path, identity[2], state):
+                return None
+            batch = _read_prefix(path, int(state.get("generation", 0)), identity, 0,
+                                 is_context_record, before_request_id, HistoryReplayLimits())
+            return batch if get_read_history_path(session_id) == path else None
+    except BlockingIOError:
+        return None
+    finally:
+        _READ_SLOTS.release()
+
+
 def read_history_for_rewrite(path: Path) -> list[dict[str, Any]]:
     """Bound legacy format conversion while the caller owns the writer locks.
 

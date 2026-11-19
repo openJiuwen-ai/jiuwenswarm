@@ -175,7 +175,7 @@ def _install_heartbeat_fast_path(conn: IpcConnection, beat: LoopBeat) -> None:
         # Sample before the 30s warning: its watchdog tick can precede the
         # concurrent pong, so the preceding 10/20s pongs must carry attribution.
         context = beat.stall_context() if age >= 5.0 else None
-        conn.send_direct(heartbeat_reply(age, stall_context=context))
+        conn.send_direct(heartbeat_reply(age, stall_context=context, probe_id=message.get("probe_id")))
 
     set_responder(respond)
 
@@ -364,6 +364,7 @@ async def _send_hello(
             "data_scope": data_scope(),
             "deployment_scope": deployment_scope(),
             "shutdown_ack": True,
+            "heartbeat_probe": True,
             "process_created": psutil.Process().create_time(),
             "code_identity": identity,
         }

@@ -563,6 +563,7 @@ async def _team_preflight_failure_chunks(
     work remains to settle the Session the terminal status is sent here.
     """
     from jiuwenswarm.agents.harness.team.team_manager import team_session_has_active_work
+    from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
 
     logger.warning(
         "[JiuWenSwarm] Team turn rejected before dispatch: session_id=%s request_id=%s error=%s",
@@ -570,12 +571,13 @@ async def _team_preflight_failure_chunks(
         request_id,
         exc,
     )
-    yield AgentResponseChunk(
-        request_id=request_id,
-        channel_id=channel_id,
-        payload={"event_type": "chat.error", "error": mask_sensitive(str(exc))},
-        is_complete=False,
-    )
+    if not isinstance(exc, HistoryReplayError):
+        yield AgentResponseChunk(
+            request_id=request_id,
+            channel_id=channel_id,
+            payload={"event_type": "chat.error", "error": mask_sensitive(str(exc))},
+            is_complete=False,
+        )
     if not team_session_has_active_work(session_id):
         yield AgentResponseChunk(
             request_id=request_id,
@@ -588,6 +590,9 @@ async def _team_preflight_failure_chunks(
             },
             is_complete=False,
         )
+    if isinstance(exc, HistoryReplayError):
+        # RuntimeEvent.error carries the machine-readable recovery code.
+        raise exc
     yield AgentResponseChunk(
         request_id=request_id,
         channel_id=channel_id,
