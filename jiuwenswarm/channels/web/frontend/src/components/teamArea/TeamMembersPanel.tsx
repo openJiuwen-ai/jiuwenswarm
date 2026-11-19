@@ -303,7 +303,7 @@ export function TeamMembersPanel({
       data-variant="expanded"
     >
       <aside
-        className="w-[240px] shrink-0 overflow-y-auto border-r border-border bg-card"
+        className="w-[clamp(144px,38%,240px)] shrink-0 overflow-y-auto border-r border-border bg-card"
         data-testid="team-area-members-sidebar"
       >
         <div className="px-[24px] pt-[24px]">

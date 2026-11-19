@@ -19,13 +19,9 @@ from jiuwenswarm.server.runtime.video_task.rail import task_checkpoint
 from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
 from jiuwenswarm.extensions.video_duplex.tests.backend import test_task_bridge
 
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import until
+
 routed_task_fixture = test_task_bridge.routed_task_fixture
-
-
-async def until(predicate):
-    async with asyncio.timeout(5):
-        while not predicate():
-            await asyncio.sleep(0.005)
 
 
 @pytest.mark.parametrize("failure", ["cancel", "query"])
@@ -105,6 +101,44 @@ async def test_file_lookup_does_not_erase_execution_result(tmp_path, monkeypatch
         assert public["artifact_lookup_failed"] is (failure != "none")
         if failure == "none":
             assert extra in record["result"]["files"]
+    finally:
+        await service.close()
+
+
+@pytest.mark.parametrize("explicit", [True, False])
+async def test_core_failure_preserves_error_or_uncertainty(tmp_path, monkeypatch, explicit):
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.errors import CoreExecutionError
+
+    store = TaskStore(tmp_path / "explicit-core-error.sqlite")
+    executor = task_adapter.AgentTaskExecutor(None, store, None)
+    service = TaskService(store, executor)
+    task = service.submit("alice", "voice", "weather", "Check weather", {
+        "execution_target": {"mode": "agent", "work_mode": "work"},
+    })
+    error = "[181001] Insufficient Balance (request_id: provider-request-1)"
+
+    async def failed_execution(current, _progress, _context):
+        store.update(current["id"], lambda t: t.update(execution_bound=True))
+
+        async def settle():
+            await asyncio.sleep(0.01)
+            store.update(current["id"], lambda t: t.update(execution_settled=True))
+
+        if explicit:
+            asyncio.create_task(settle())
+            raise CoreExecutionError(error)
+        raise ConnectionError("Agent transport disconnected")
+
+    monkeypatch.setattr(executor, "_run", failed_execution)
+    try:
+        await until(lambda: store.read(task["id"])["output_closed"])
+        current = store.read(task["id"])
+        assert current["status"] == ("failed" if explicit else "unknown")
+        assert current["error"] == (
+            error if explicit else "Execution cleanup is unconfirmed; no work was replayed"
+        )
+        assert current["execution_settled"] is explicit
+        assert task_adapter.VideoSearchManager.public(current)["error"] == current["error"]
     finally:
         await service.close()
 

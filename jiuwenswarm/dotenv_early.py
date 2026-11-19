@@ -76,6 +76,7 @@ DESKTOP_PRESERVED_ENV_KEYS = (
     "AGENT_SERVER_PORT",
     "AGENT_PORT",
     "FRONTEND_PORT",
+    "OFFICE_TLS_PORT",
 )
 
 # Electron owns these values for the lifetime of a desktop launch.  Its CDP

@@ -46,12 +46,19 @@ type DesktopWindowMarker = Window & {
 let desktopLocalFilesConsumer: DesktopLocalFilesConsumer | null = null;
 let durableBridgeInstalled = false;
 
+const CHAT_PANEL_SHELL_SELECTOR = '.chat-panel-shell';
+
 function getDropQueue(): DesktopLocalFilesEventDetail[] {
   const marker = window as DesktopWindowMarker;
   if (!Array.isArray(marker.__JIUWEN_DROP_QUEUE__)) {
     marker.__JIUWEN_DROP_QUEUE__ = [];
   }
   return marker.__JIUWEN_DROP_QUEUE__;
+}
+
+function chatComposerIsMounted(): boolean {
+  if (typeof document === 'undefined') return false;
+  return document.querySelector(CHAT_PANEL_SHELL_SELECTOR) !== null;
 }
 
 /**
@@ -69,7 +76,12 @@ export function installDesktopLocalFilesBridge(): void {
     // and a concurrent JS->Python call deadlocks the WebView2 UI thread.
     if (desktopLocalFilesConsumer) {
       desktopLocalFilesConsumer(detail, files);
-    } else {
+    } else if (chatComposerIsMounted()) {
+      // Queue only while the composer shell is still in the document.
+      // A drop on another page (skill upload, for example) has no consumer;
+      // replaying it when ChatPanel mounts later attaches the file to a
+      // conversation the user did not drop onto. The queue still covers the
+      // brief remount gap while the shell remains and its consumer is replaced.
       getDropQueue().push(detail);
     }
     window.dispatchEvent(new CustomEvent(DESKTOP_LOCAL_FILES_EVENT, { detail }));

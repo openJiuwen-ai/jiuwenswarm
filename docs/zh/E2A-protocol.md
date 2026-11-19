@@ -439,6 +439,8 @@ Server 自己的 `TEAM_SKILLS_HUB_BASE_URL` 决定查询哪个 Hub。WebSocket �
 
 大型工具结果保留短预览，并可携带 `payload_refs`。每个引用包含 `sha256`、`bytes`、`media_type` 和宿主路径。客户端通过会话和摘要读取原文，已保存的 prompt 引用仍可通过同一接口读取。
 
+通过 `tool_call` 调度工具时，如果目标工具返回的对象明确报告失败，工具结果事件携带 `success: false`、`status: "error"` 和 `is_error: true`。即使调度成功，客户端也会将该工具调用显示为失败。
+
 `text/plain` 表示原始字符串，`application/json` 表示完整结构化值。`raw_output_truncated=true` 表示内联预览已缩减，对应的 `payload_refs` 引用用于读取完整工件。工件存储失败时，工具事件仍发送有界预览，不携带不可用的引用，并记录失败日志。已有小结果和内联历史保持原语义。
 
 使用非流式 `history.get` 请求，传入以下 `params`：
@@ -481,3 +483,9 @@ Web 仅在用户查看原文时读取内容，本地只保留最多 64 KiB 的�
 `chat.usage_metadata` 的输入、输出、缓存 token、费用和耗时统计继续上报。
 上下文占用使用 `context.usage`，累计用量使用既有 session usage 快照。
 历史读取兼容已保存的含 `prompt` 记录。
+
+## 会话快照与模型列表的自动恢复
+
+`session.get_metadata` 的运行时快照通过共享 Worker IPC 查询。等待发送超时或连接回收取消发送时，元数据请求仍返回 `runtime.recovery_pending=true`；对应的 `recovery_reason` 分别为 `snapshot_transport_timeout`、`snapshot_transport_cancelled`。这类响应保留持久化元数据中的 `is_processing` 和 `status`，不能把尚未取得快照解释为会话已经空闲。查询等待超时不会取消共享管道写；连接回收仍负责取消和清理发送任务。
+
+模型设置页在保持连接且页面可用时，对 `models.list` 返回的 `WORKER_CLOSED`、`WORKER_UNSTABLE`、`RUNTIME_WARMING`、`RUNTIME_FAILED` 和 `SERVICE_UNAVAILABLE` 自动重试：先等待 1、2、4 秒，之后每 10 秒继续查询。`RUNTIME_FAILED` 也可能表示后端正在等待自动恢复，因此不能仅凭该错误码停止观察。成功后更新列表、清除临时错误并恢复添加按钮；断开连接或离开页面会清理重试定时器。该恢复流程不需要手动重新加载入口。

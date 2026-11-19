@@ -251,6 +251,156 @@ async def test_config_validate_model_retries_failed_probe_with_more_tokens(
     assert channel.responses[-1]["ok"] is True
 
 
+@pytest.mark.asyncio
+async def test_config_validate_model_rejects_anthropic_limit_below_thinking_budget(monkeypatch):
+    channel = FakeWebChannel()
+
+    async def unexpected_probe(*_args, **_kwargs):
+        pytest.fail("an invalid configured Anthropic output limit must fail before probing")
+
+    monkeypatch.setattr(models_handlers, "probe_model_connection", unexpected_probe)
+    monkeypatch.setattr(models_handlers, "get_config", lambda: {"models": {}})
+    monkeypatch.setattr(models_handlers, "get_default_models", lambda _config: [])
+    monkeypatch.setattr(
+        models_handlers,
+        "build_reasoning_model_request_kwargs",
+        lambda *, model_config_obj, model_name, **_kwargs: {
+            "model_name": model_name,
+            "max_tokens": model_config_obj.get("max_tokens"),
+        },
+    )
+    monkeypatch.setattr(
+        "openjiuwen.core.foundation.llm.reasoning.resolve_reasoning_plan",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            sdk_params={"thinking": {"budget_tokens": 16 * 1024}},
+        ),
+    )
+    monkeypatch.setattr(
+        models_handlers,
+        "build_probe_model_client_config",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+
+    await models_handlers.config_validate_model_handler(
+        channel,
+        object(),
+        "req-validate-output-limit",
+        {
+            "model_provider": "Anthropic",
+            "model": "claude-test",
+            "api_base": "https://api.anthropic.com/v1",
+            "api_key": "secret",
+            "max_tokens": 8 * 1024,
+        },
+    )
+
+    response = channel.responses[-1]
+    assert response["ok"] is False
+    assert response["code"] == "BAD_REQUEST"
+    assert "max_tokens must be greater than thinking.budget_tokens" in response["error"]
+
+
+@pytest.mark.asyncio
+async def test_config_validate_model_rejects_saved_anthropic_limit_below_thinking_budget(monkeypatch):
+    channel = FakeWebChannel()
+
+    async def unexpected_probe(*_args, **_kwargs):
+        pytest.fail("an invalid saved Anthropic output limit must fail before probing")
+
+    monkeypatch.setattr(models_handlers, "probe_model_connection", unexpected_probe)
+    monkeypatch.setattr(models_handlers, "resolve_persisted_mcc_for_validate", lambda _model: {})
+    monkeypatch.setattr(
+        models_handlers,
+        "resolve_model_config_obj_for_validate",
+        lambda *_args: {"max_tokens": 8 * 1024},
+    )
+    monkeypatch.setattr(
+        models_handlers,
+        "build_reasoning_model_request_kwargs",
+        lambda *, model_config_obj, model_name, **_kwargs: {
+            "model_name": model_name,
+            "max_tokens": model_config_obj.get("max_tokens"),
+        },
+    )
+    monkeypatch.setattr(
+        "openjiuwen.core.foundation.llm.reasoning.resolve_reasoning_plan",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            sdk_params={"thinking": {"budget_tokens": 16 * 1024}},
+        ),
+    )
+    monkeypatch.setattr(
+        models_handlers,
+        "build_probe_model_client_config",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+
+    await models_handlers.config_validate_model_handler(
+        channel,
+        object(),
+        "req-validate-saved-output-limit",
+        {
+            "model_provider": "Anthropic",
+            "model": "claude-test",
+            "api_base": "https://api.anthropic.com/v1",
+            "api_key": "secret",
+        },
+    )
+
+    response = channel.responses[-1]
+    assert response["ok"] is False
+    assert response["code"] == "BAD_REQUEST"
+    assert "max_tokens must be greater than thinking.budget_tokens" in response["error"]
+
+
+@pytest.mark.asyncio
+async def test_config_validate_model_ignores_core_default_limit_when_not_configured(monkeypatch):
+    channel = FakeWebChannel()
+    probe_calls = []
+
+    async def probe(*args, **kwargs):
+        probe_calls.append((args, kwargs))
+
+    monkeypatch.setattr(models_handlers, "probe_model_connection", probe)
+    monkeypatch.setattr(models_handlers, "get_config", lambda: {"models": {}})
+    monkeypatch.setattr(models_handlers, "get_default_models", lambda _config: [])
+    monkeypatch.setattr(
+        models_handlers,
+        "build_reasoning_model_request_kwargs",
+        lambda *, model_name, **_kwargs: {
+            "model_name": model_name,
+            # Simulate a core-derived default rather than a saved or draft limit.
+            "max_tokens": 8 * 1024,
+        },
+    )
+    monkeypatch.setattr(
+        "openjiuwen.core.foundation.llm.reasoning.resolve_reasoning_plan",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            sdk_params={"thinking": {"budget_tokens": 16 * 1024}},
+        ),
+    )
+    monkeypatch.setattr(
+        models_handlers,
+        "build_probe_model_client_config",
+        lambda *_args, **_kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(models_handlers, "Model", lambda *_args, **_kwargs: object())
+
+    await models_handlers.config_validate_model_handler(
+        channel,
+        object(),
+        "req-validate-core-default-output-limit",
+        {
+            "model_provider": "Anthropic",
+            "model": "claude-test",
+            "api_base": "https://api.anthropic.com/v1",
+            "api_key": "secret",
+        },
+    )
+
+    assert probe_calls
+    assert channel.responses[-1]["ok"] is True
+
+
 class _CapturingSessionListAgentClient:
     """捕获 E2A 信封并返回标准 session.list 响应（供 Web 转发断言）。"""
 

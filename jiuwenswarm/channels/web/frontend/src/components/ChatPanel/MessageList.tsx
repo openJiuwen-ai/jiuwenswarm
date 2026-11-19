@@ -194,6 +194,7 @@ export function TurnElapsed({
   isStarting = false,
   isLastTurn,
   isProcessing,
+  taskClock,
   showAvatar,
   agentTemplateName,
   teamLayout,
@@ -205,6 +206,7 @@ export function TurnElapsed({
   isStarting?: boolean;
   isLastTurn: boolean;
   isProcessing: boolean;
+  taskClock?: TaskTimelineClock;
   showAvatar?: boolean;
   agentTemplateName?: string;
   teamLayout: boolean;
@@ -212,9 +214,10 @@ export function TurnElapsed({
   teamGroupIdentity?: AgentGroupIdentity | null;
 }) {
   const { t } = useTranslation();
-  const active = isLastTurn && isProcessing;
+  const active = taskClock?.active ?? (isLastTurn && isProcessing);
+  const starting = isStarting && !taskClock;
   const now = useNow(active);
-  const end = active ? now : endMs;
+  const end = active ? now : (taskClock?.endMs ?? endMs);
   const rawElapsed = Math.max(0, end - startMs);
   // 进行中若 startMs 异常偏旧，停用实时计时，避免一直飙到数小时。
   const elapsed =
@@ -233,7 +236,7 @@ export function TurnElapsed({
     <div
       className={clsx('completed-work-chip', showActive && 'is-active', !showAvatar && teamLayout && 'turn-elapsed--team')}
       data-testid="chat-panel-turn-elapsed"
-      data-variant={showActive ? (isStarting ? 'starting' : 'active') : 'finished'}
+      data-variant={showActive ? (starting ? 'starting' : 'active') : 'finished'}
     >
       <span
         className={clsx('completed-work-chip__icon', showActive ? 'is-active' : 'is-success')}
@@ -247,9 +250,9 @@ export function TurnElapsed({
       </span>
       <span className="completed-work-chip__label">
         <span data-testid="chat-panel-turn-elapsed-label">
-          {showActive ? t(isStarting ? 'chatUi.turnStarting' : 'chatUi.turnRunning') : t('chatUi.turnElapsed')}
+          {showActive ? t(starting ? 'chatUi.turnStarting' : 'chatUi.turnRunning') : t('chatUi.turnElapsed')}
         </span>{' '}
-        {!(showActive && isStarting) && (
+        {!(showActive && starting) && (
           <span data-testid="chat-panel-turn-elapsed-value">
             {showActive ? formatElapsedCoarse(elapsed) : formatDurationPrecise(elapsed)}
           </span>
@@ -918,6 +921,7 @@ export function ChatTimelineList({
           isStarting={item.isStarting}
           isLastTurn={item.isLastTurn}
           isProcessing={isProcessing}
+          taskClock={taskClocks.get(item.turnId)}
           showAvatar={item.showAvatar}
           agentTemplateName={agentTemplateNameByTurn.get(item.turnId)}
           teamLayout={isTeamMode}

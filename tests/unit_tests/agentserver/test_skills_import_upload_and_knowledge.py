@@ -131,7 +131,7 @@ async def test_create_from_knowledge_xor(manager: SkillManager) -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_from_knowledge_link_routes_omni(manager: SkillManager) -> None:
+async def test_create_from_knowledge_link_routes_catalog(manager: SkillManager) -> None:
     payload = await manager.handle_skills_create_from_knowledge(
         {
             "link": "https://example.com/guide",
@@ -139,7 +139,8 @@ async def test_create_from_knowledge_link_routes_omni(manager: SkillManager) -> 
         }
     )
     assert payload["result_type"] == "followup"
-    assert payload["skills"] == ["skill-omni-creation"]
+    assert payload["skills"] == ["workswarm-builtin"]
+    assert "内置能力目录" in payload["followup_prompt"]
     assert "输出风险等级" in payload["followup_prompt"]
     assert "禁止写入 workspace/skills" in payload["followup_prompt"]
     assert "跳过 code-writer" in payload["followup_prompt"]
@@ -147,13 +148,13 @@ async def test_create_from_knowledge_link_routes_omni(manager: SkillManager) -> 
 
 
 @pytest.mark.asyncio
-async def test_create_from_knowledge_file_routes_router(
+async def test_create_from_knowledge_file_routes_catalog(
     manager: SkillManager, tmp_path: Path
 ) -> None:
     doc = tmp_path / "guide.pdf"
     doc.write_bytes(b"%PDF-1.4")
     payload = await manager.handle_skills_create_from_knowledge({"file_path": str(doc)})
-    assert payload["skills"] == ["skill-creator-router"]
+    assert payload["skills"] == ["workswarm-builtin"]
     assert str(doc) in payload["followup_prompt"] or str(doc.resolve()) in payload["followup_prompt"]
 
 
@@ -302,9 +303,10 @@ async def test_create_from_knowledge_prompt_follows_english_preference(
     )
     prompt = payload["followup_prompt"]
     assert payload["result_type"] == "followup"
-    assert payload["skills"] == ["skill-omni-creation"]
+    assert payload["skills"] == ["workswarm-builtin"]
     assert prompt.startswith("Generate a complete, installable Skill")
     assert str(payload["output_dir"]) in prompt
+    assert "built-in capability catalog" in prompt
     assert "never write to workspace/skills/<name>" in prompt
     assert "skip code-writer/code-verifier" in prompt
     assert "Installed Skill names (do not reuse): keep-out" in prompt
@@ -322,7 +324,7 @@ async def test_create_from_knowledge_file_prompt_english(
     doc = tmp_path / "guide.pdf"
     doc.write_bytes(b"%PDF-1.4")
     payload = await manager.handle_skills_create_from_knowledge({"file_path": str(doc)})
-    assert payload["skills"] == ["skill-creator-router"]
+    assert payload["skills"] == ["workswarm-builtin"]
     assert "Absolute path of the local knowledge document: " in payload["followup_prompt"]
 
 

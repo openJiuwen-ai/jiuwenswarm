@@ -210,6 +210,8 @@ In a channel conversation, run:
 
 The current thread enters Agent Team mode, and the Leader agent coordinates tasks.
 
+Under **Settings → Experimental → Scheduled Dispatch**, turn on **Disable Code Todo reminders** to stop adding periodic Todo reminders to Code team members' context during scheduled dispatch. Members can still use Todo tools. The switch defaults to off and is stored at `modes.team.jiuwen_team.disable_code_todo_reminder`.
+
 **How to write prompts in Agent Team mode**
 
 Prompting is similar to normal chat, but for smoother runs:

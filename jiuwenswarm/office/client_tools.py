@@ -12,6 +12,7 @@ result resumes the turn and ``complete`` makes it the tool output.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +31,7 @@ from openjiuwen.core.foundation.tool import (
 
 from jiuwenswarm.office.assets import OfficeAssetStore, referenced_handles
 from jiuwenswarm.office.contract import load_contract
+from jiuwenswarm.office.icons import icon_set
 from jiuwenswarm.office.review import (
     ReviewFailed,
     check_claims,
@@ -41,6 +43,8 @@ from jiuwenswarm.office.review import (
     vision_client_config,
 )
 from jiuwenswarm.office.runtime import image_attachment
+
+logger = logging.getLogger(__name__)
 
 _VISION_TOOL_HINT = (
     "If a vision tool is configured, call visual_question_answering with visual_attachment.path to inspect the "
@@ -95,6 +99,11 @@ class TaskPaneTool(ClientTool):
         only (``keep_in_context: False``). Any other model gets the path of the
         image in the conversation's uploads, for ``visual_question_answering``.
         """
+        # The pane's timings (queue wait, host export and insert), set beside the model call times of the
+        # same session's log to see how much of a deck build the host takes.
+        telemetry = result.data.get("telemetry") if isinstance(result.data, dict) else None
+        logger.info("[office] %s %s in %s: %s", self.card.name, context.tool_call.id, context.session_id,
+                    json.dumps(telemetry))
         output = default_client_output(result, tool_name=self.card.name)
         images = (output.data or {}).get("multimodal")
         if not output.success or not images:
@@ -192,7 +201,7 @@ class ReviewTool(TaskPaneTool):
         text = await self._review.judge(ReviewRequest(review_checklist(self._package_dir, self._review.checklist),
                                                       model, capture, arguments, self._package_dir))
         images = ({"type": "image", "data_url": render} for render in capture.renders)
-        reviewed = ClientToolResult(content=[{"type": "text", "text": text}, *images])
+        reviewed = ClientToolResult(content=[{"type": "text", "text": text}, *images], data=result.data)
         return super().complete(arguments, reviewed, context)
 
 
@@ -284,6 +293,18 @@ _REVIEWS: dict[str, Review] = {
 }
 
 
+class InsertIconTool(TaskPaneTool):
+    """``insert_icon``: the task pane gets the SVG of the named icon of the bundled set with the call."""
+
+    def build_request(self, arguments: dict[str, Any], context: ClientToolContext) -> dict[str, Any]:
+        request = super().build_request(arguments, context)
+        name, style = arguments["icon"], arguments.get("style", "regular")
+        svg = icon_set().svg(name, style)
+        if svg is None:
+            raise ClientToolUnavailable(f"the icon set has no {style} {name}; find icons with search_icons")
+        return {**request, "icon_svg": svg}
+
+
 def build_task_pane_tools(
     package_dir: Path, session_model: Callable[[], Model], native_image_model: Callable[[], Model | None],
     store: OfficeAssetStore,
@@ -293,7 +314,8 @@ def build_task_pane_tools(
     for tool in load_contract(package_dir):
         review = _REVIEWS.get(tool.name)
         if review is None:
-            tools.append(TaskPaneTool(tool.card(), native_image_model=native_image_model, store=store))
+            kind = InsertIconTool if tool.name == "insert_icon" else TaskPaneTool
+            tools.append(kind(tool.card(), native_image_model=native_image_model, store=store))
         else:
             tools.append(ReviewTool(tool.card(), review=review, package_dir=package_dir, session_model=session_model,
                                     native_image_model=native_image_model, store=store))

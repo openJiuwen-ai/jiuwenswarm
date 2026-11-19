@@ -21,6 +21,7 @@ import { mergeTaskTimeline } from '../teamArea/groupChatTimeline';
 import { mergeEnterpriseTeamTasks } from '../../stores/teamSliceApply';
 import { TaskPlanningPanel } from '../teamArea/TaskPlanningPanel';
 import { TeamMembersPanel } from '../teamArea/TeamMembersPanel';
+import { TEAM_PANEL_MIN_WIDTH_PX } from '../teamArea/teamPanelLayout';
 import { CompactTaskList } from '../teamArea/CompactTaskList';
 import { RunGroupHeader } from '../teamArea/RunGroupHeader';
 import { groupByWorkflowRun } from '../teamArea/runGrouping';
@@ -51,6 +52,7 @@ import { SubagentExpandedPanel } from '../subagent/SubagentExpandedPanel';
 import { useSubagentStore, selectSubagents } from '../../stores/subagentStore';
 import { useMinWidth } from '../../hooks/useResponsive';
 import { DesktopBrowserPane } from '../DesktopBrowserPane';
+import { AppMarketPreviewReload, AppMarketSessionPreview } from '../AppMarketPanel/AppMarketSessionPreview';
 import './ToolPanel.css';
 import { SessionAssetList } from '../../features/sessionAssets/SessionAssetList';
 import { selectSessionAssets, useSessionAssetsStore } from '../../features/sessionAssets/sessionAssets';
@@ -162,6 +164,7 @@ export function ToolPanel({
   const conversationId = useOrganizationConversationKey(activeSessionId);
   const mode = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const resolvedSessionId = sessionId ?? activeSessionId ?? '';
+  const appMarketPreview = useSessionStore(s => s.runtimes[resolvedSessionId]?.appMarketPreview);
   const teamMembers = useSessionStore(s => s.runtimes[conversationId]?.teamMembers ?? []);
   const teamConnectionPresentation = useSessionStore((s) =>
     s.runtimes[activeSessionId ?? '']?.mode === 'team'
@@ -357,6 +360,7 @@ export function ToolPanel({
     (hasBrowserAgentActivity || desktopBrowserTabFlags.requested);
   const handleTabClose = (tab: string) => {
     if (tab === 'browser') closeDesktopBrowserTab();
+    if (tab === 'app') useSessionStore.getState().setAppMarketPreview(resolvedSessionId, undefined);
   };
 
   useEffect(() => {
@@ -516,6 +520,7 @@ export function ToolPanel({
       <div
         data-testid={testId}
         className="bg-panel h-full overflow-hidden flex flex-1 flex-col min-w-[320px]"
+        style={isTeam ? { minWidth: TEAM_PANEL_MIN_WIDTH_PX } : undefined}
       >
         <div className="h-full bg-panel flex flex-col overflow-hidden">
           <ExpandedPanel
@@ -550,6 +555,12 @@ export function ToolPanel({
             }
             showMiddleTab={isTeam ? true : subagentCount > 0}
             showBrowserTab={showBrowserTab}
+            additionalTab={appMarketPreview ? {
+              key: 'app', label: appMarketPreview.name, closable: true, closeLabel: t('appMarket.hidePane'),
+              actions: <AppMarketPreviewReload preview={appMarketPreview} />,
+              content: <AppMarketSessionPreview key={`${resolvedSessionId}:${appMarketPreview.instanceId}`}
+                sessionId={resolvedSessionId} preview={appMarketPreview} />,
+            } : undefined}
             resolveActiveTab={(tab, count, review) => {
               if (tab === 'artifacts' && count > 0) return 'artifacts';
               if (tab === 'browser') return showBrowserTab ? 'browser' : 'planning';

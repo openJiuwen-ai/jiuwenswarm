@@ -204,10 +204,11 @@ $script:registry | Add-Member ScriptMethod Dispose { }
     script = tmp_path / "preserve.ps1"
     script.write_text(text, encoding="utf-8")
     data = tmp_path / "user data 测试"
-    report = tmp_path / "report.json"
     path_result = tmp_path / "user-path.txt"
 
-    def run(app, *, mode="Preserve", original_path="%USERPROFILE%\\tools;;C:\\existing;C:\\existing", data_dir=None, progress_path=None):
+    def run(app, *, mode="Preserve", original_path="%USERPROFILE%\\tools;;C:\\existing;C:\\existing",
+            data_dir=None, progress_path=None, report_name="report.json"):
+        report = tmp_path / report_name
         env = os.environ.copy()
         env.pop("PSModulePath", None)
         env["JIUWENSWARM_DATA_DIR"] = str(data_dir or data)
@@ -944,6 +945,9 @@ def test_inno_compiles_preservation_hooks(tmp_path, monkeypatch, name):
     scripts.mkdir(parents=True)
     for filename in (name, "windows-cli-preservation.iss", "preserve-windows-cli.ps1"):
         shutil.copyfile(ROOT / "scripts" / filename, scripts / filename)
+    license_dir = ROOT / "scripts" / "license"
+    if license_dir.is_dir():
+        shutil.copytree(license_dir, scripts / "license")
     icon = project / "jiuwenswarm/channels/web/frontend/public/logo.ico"
     icon.parent.mkdir(parents=True)
     shutil.copyfile(ROOT / "jiuwenswarm/channels/web/frontend/public/logo.ico", icon)
@@ -951,8 +955,18 @@ def test_inno_compiles_preservation_hooks(tmp_path, monkeypatch, name):
         payload = project / "dist" / dist
         payload.mkdir(parents=True)
         (payload / "fixture.txt").write_text("compile-only fixture; never installed")
+    command = [str(compiler), "/Qp", f"/O{tmp_path / 'compiled'}", "/DBuildDisplayName=WorkSwarm",
+        "/DBuildVersion=0.0.0", "/DBuildExecutableNameWindows=workswarm.exe",
+        "/DBuildDistDirName=workswarm", "/DBuildSetupBaseName=issue5338-test"]
+    if name == "installer-electron.iss":
+        missing = subprocess.run(
+            [*command, str(scripts / name)], cwd=scripts, capture_output=True, text=True, errors="replace", timeout=60,
+        )
+        assert missing.returncode != 0
+        assert "MaxPayloadRelativePath is required" in missing.stdout + missing.stderr
+        command.append(f"/DMaxPayloadRelativePath={len('fixture.txt')}")
     result = subprocess.run(
-        [str(compiler), "/Qp", f"/O{tmp_path / 'compiled'}", "/DBuildDisplayName=WorkSwarm", "/DBuildVersion=0.0.0", "/DBuildExecutableNameWindows=workswarm.exe", "/DBuildDistDirName=workswarm", "/DBuildSetupBaseName=issue5338-test", str(scripts / name)],
+        [*command, str(scripts / name)],
         cwd=scripts, capture_output=True, text=True, errors="replace", timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
@@ -963,7 +977,7 @@ def test_inno_compiles_preservation_hooks(tmp_path, monkeypatch, name):
 def test_absent_runtime_skips_file_inventory(tmp_path, preservation_runner, mode):
     script = preservation_runner.script
     script.write_text(script.read_text(encoding="utf-8").replace(
-        "function Inventory([string]$Root) {", "function Inventory([string]$Root) { throw 'unexpected inventory'"
+        "function Inventory([string]$Root, [switch]$Verify) {", "function Inventory([string]$Root, [switch]$Verify) { throw 'unexpected inventory'"
     ), encoding="utf-8")
     result, report, _, path_result = preservation_runner(tmp_path / "empty-app", mode=mode)
     assert result.returncode == 0, result.stderr + report.read_text()
@@ -979,8 +993,8 @@ def test_bundled_node_only_initialization_uses_verified_digest(tmp_path, preserv
     script = preservation_runner.script
     trace = tmp_path / "inventory.txt"
     script.write_text(script.read_text(encoding="utf-8").replace(
-        "function Inventory([string]$Root) {",
-        "function Inventory([string]$Root) {\n[IO.File]::AppendAllText('" + str(trace) + "',$Root+[Environment]::NewLine)"
+        "function Inventory([string]$Root, [switch]$Verify) {",
+        "function Inventory([string]$Root, [switch]$Verify) {\n[IO.File]::AppendAllText('" + str(trace) + "',$Root+[Environment]::NewLine)"
     ), encoding="utf-8")
     result, report, root, _ = preservation_runner(app, mode="Initialize")
     assert result.returncode == 0, result.stderr + report.read_text()
@@ -1038,8 +1052,8 @@ def test_stock_upgrade_skips_recovery_copies_and_reuses_user_environment(tmp_pat
     # inventory any independently mutable user runtime or recovery directory.
     script = preservation_runner.script
     script.write_text(script.read_text(encoding="utf-8").replace(
-        "function Inventory([string]$Root) {",
-        "function Inventory([string]$Root) {\nif ($Root -ne '" + str(source) + "') { throw 'unexpected user environment inventory' }"
+        "function Inventory([string]$Root, [switch]$Verify) {",
+        "function Inventory([string]$Root, [switch]$Verify) {\nif ($Root -ne '" + str(source) + "') { throw 'unexpected user environment inventory' }"
     ), encoding="utf-8")
     result, report, _, _ = preservation_runner(app)
     assert result.returncode == 0, report.read_text(encoding="utf-8")
@@ -1049,7 +1063,7 @@ def test_stock_upgrade_skips_recovery_copies_and_reuses_user_environment(tmp_pat
     assert not (root / "installed").exists()
     # Existing managed npm initialization must not scan any file tree at all.
     script.write_text(script.read_text(encoding="utf-8").replace(
-        "function Inventory([string]$Root) {", "function Inventory([string]$Root) { throw 'unexpected initialization inventory'"
+        "function Inventory([string]$Root, [switch]$Verify) {", "function Inventory([string]$Root, [switch]$Verify) { throw 'unexpected initialization inventory'"
     ), encoding="utf-8")
     result, report, _, _ = preservation_runner(app, mode="Initialize")
     assert result.returncode == 0, report.read_text(encoding="utf-8")

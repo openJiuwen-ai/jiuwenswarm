@@ -23,7 +23,7 @@ WORD_TOOLS = {"read_doc_section", "search_doc_text", "edit_doc_text", "edit_doc_
               "execute_office_js", "read_surface_context"}
 EXCEL_TOOLS = {"get_cell_ranges", "get_range_as_csv", "set_cell_range", "copy_paste_range", "execute_office_js",
                "read_surface_context"}
-PRESENTATION = ({"app_id": "office_powerpoint", "domain": "presentation", "contract_version": 1}, 18,
+PRESENTATION = ({"app_id": "office_powerpoint", "domain": "presentation", "contract_version": 1}, 19,
                 {"read_presentation_context", "list_slide_shapes", "read_slide_image", "read_slide_text",
                  "edit_slide_text", "find_and_replace"})
 # Each app: its profile, how many tools its contract has, and the ones offered directly.
@@ -85,7 +85,7 @@ def test_each_contract_tool_is_a_client_tool_offered_as_its_annotations_say(app_
 def test_wps_presentation_runs_the_powerpoint_package_less_what_wps_cannot_do() -> None:
     wps, powerpoint = registry.client_apps()["wps-presentation"], registry.client_apps()[CLIENT_APP]
     assert wps.package_dir == powerpoint.package_dir
-    assert powerpoint.tool_names - wps.tool_names == {"edit_slide_master"}
+    assert powerpoint.tool_names - wps.tool_names == {"edit_slide_master", "insert_icon"}
 
 
 def test_host_requirements_that_name_no_platform_are_refused(tmp_path) -> None:

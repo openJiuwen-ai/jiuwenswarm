@@ -57,6 +57,7 @@ await i18next.use(initReactI18next).init({ lng: 'en', showSupportNotice: false, 
 async function mount(t, {
   refresh = () => ({ status: 'pending', generation: 1 }), legacy = true,
   freeModels = false, saveFree = async () => {},
+  listModels,
 } = {}) {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost/' });
@@ -87,7 +88,7 @@ async function mount(t, {
   const request = async (method, params, options) => {
     calls.push({ method, params, options });
     if (method === 'models.refresh_status') return refresh();
-    if (method === 'models.list') return { models: loginModels, model_groups: [] };
+    if (method === 'models.list') return listModels ? listModels() : { models: loginModels, model_groups: [] };
     if (method === 'config.save_all') return saveFree(params);
     if (method === 'models.upsert') return { applied_without_restart: legacy };
     if (method === 'model_groups.upsert') return {};
@@ -97,14 +98,21 @@ async function mount(t, {
     throw new Error(`Unexpected RPC: ${method}`);
   };
   const root = createRoot(dom.window.document.getElementById('root'));
-  await act(async () => root.render(createElement(SettingsServicesProvider, {
-    request, isConnected: true, connectionState: 'connected',
+  const render = async (connected = true) => act(async () => root.render(createElement(SettingsServicesProvider, {
+    request, isConnected: connected, connectionState: connected ? 'connected' : 'disconnected',
   }, createElement(ModelsSettings, {
     tabs: [{ id: 'models', labelKey: 'settingsPanel.models.customModels' },
       { id: 'groups', labelKey: 'settingsPanel.models.modelGroupsManagement' }], defaultTab: 'models',
   }))));
-  t.after(async () => {
+  let mounted = true;
+  const unmount = async () => {
+    if (!mounted) return;
     await act(async () => root.unmount());
+    mounted = false;
+  };
+  await render();
+  t.after(async () => {
+    await unmount();
     useAuthStore.setState(originalAuth);
     dom.window.close();
     for (const [key, descriptor] of previous) {
@@ -114,12 +122,101 @@ async function mount(t, {
   });
   const find = (id) => dom.window.document.querySelector(`[data-testid="${id}"]`);
   return {
-    find, calls,
+    find, calls, render, unmount,
     freeDialog: () => dom.window.document.querySelector('.free-models-config-dialog'),
     click: async (element) => act(async () => element.click()),
     tick: async (ms) => act(async () => t.mock.timers.tick(ms)),
   };
 }
+
+for (const code of ['WORKER_CLOSED', 'WORKER_UNSTABLE', 'RUNTIME_WARMING', 'RUNTIME_FAILED', 'SERVICE_UNAVAILABLE']) {
+  test(`model list recovers automatically while Web stays connected: ${code}`, async (t) => {
+    let fail = true;
+    const view = await mount(t, { refresh: () => ({ status: 'applied', generation: 0 }), listModels: () => {
+      if (fail) throw Object.assign(new Error('runtime worker closed: ipc connection is closed'), { code });
+      return { models: [], model_groups: [] };
+    } });
+    assert.equal(view.find('settings-models-add-btn').disabled, true);
+    const initialError = view.find('settings-models-error').textContent;
+    assert.equal(view.find('settings-models-error').querySelectorAll('button').length, 0);
+    fail = false;
+    await view.tick(1000);
+    assert.equal(Boolean(view.find('settings-models-error')), false);
+    assert.equal(view.find('settings-models-add-btn').disabled, false);
+    assert.doesNotMatch(initialError, /ipc connection/);
+    assert.equal(view.calls.filter(({ method }) => method === 'models.list').length, 2);
+  });
+}
+
+for (const code of ['WORKER_CLOSED', 'RUNTIME_FAILED']) {
+  test(`model retries keep waiting at a capped interval until the service recovers: ${code}`, async (t) => {
+    let fail = true;
+    const view = await mount(t, { listModels: () => {
+      if (fail) throw Object.assign(new Error('worker unavailable'), { code });
+      return { models: [], model_groups: [] };
+    } });
+    for (const delay of [1000, 2000, 4000, 10000, 10000, 10000]) await view.tick(delay);
+    assert.equal(view.calls.filter(({ method }) => method === 'models.list').length, 7);
+    assert.equal(view.find('settings-models-error').querySelectorAll('button').length, 0);
+    fail = false;
+    await view.tick(10000);
+    assert.equal(Boolean(view.find('settings-models-error')), false);
+    assert.equal(view.find('settings-models-add-btn').disabled, false);
+    await view.tick(10000);
+    assert.equal(view.calls.filter(({ method }) => method === 'models.list').length, 8);
+  });
+}
+
+test('model validation errors remain visible without automatic requests', async (t) => {
+  const view = await mount(t, { listModels: () => {
+    throw Object.assign(new Error('configuration cannot be read'), { code: 'BAD_REQUEST' });
+  } });
+  await view.tick(10000);
+  assert.match(view.find('settings-models-error').textContent, /configuration cannot be read/);
+  assert.equal(view.calls.filter(({ method }) => method === 'models.list').length, 1);
+});
+
+test('leaving the settings page cancels a scheduled model retry', async (t) => {
+  const view = await mount(t, { listModels: () => {
+    throw Object.assign(new Error('worker unavailable'), { code: 'WORKER_CLOSED' });
+  } });
+  await view.unmount();
+  await view.tick(10000);
+  assert.equal(view.calls.filter(({ method }) => method === 'models.list').length, 1);
+});
+
+test('Web disconnect stops model retries and reconnect reloads automatically', async (t) => {
+  let fail = true;
+  const view = await mount(t, { listModels: () => {
+    if (fail) throw Object.assign(new Error('worker unavailable'), { code: 'WORKER_CLOSED' });
+    return { models: [], model_groups: [] };
+  } });
+  await view.render(false);
+  await view.tick(30000);
+  assert.equal(view.calls.filter(({ method }) => method === 'models.list').length, 1);
+  fail = false;
+  await view.render(true);
+  assert.equal(Boolean(view.find('settings-models-error')), false);
+  assert.equal(view.find('settings-models-add-btn').disabled, false);
+});
+
+test('a stale retry response cannot replace a successful load after Web reconnects', async (t) => {
+  let calls = 0;
+  let rejectStale;
+  const view = await mount(t, { listModels: () => {
+    calls += 1;
+    if (calls === 1) throw Object.assign(new Error('worker unavailable'), { code: 'WORKER_CLOSED' });
+    if (calls === 2) return new Promise((_, reject) => { rejectStale = reject; });
+    return { models: [], model_groups: [] };
+  } });
+  await view.tick(1000);
+  await view.render(false);
+  await view.render(true);
+  assert.equal(Boolean(view.find('settings-models-error')), false);
+  await act(async () => rejectStale(new Error('late error')));
+  assert.equal(Boolean(view.find('settings-models-error')), false);
+  assert.equal(view.find('settings-models-add-btn').disabled, false);
+});
 
 test('pending and failed feedback survives toast expiry and is visible on both tabs', async (t) => {
   let status = 'pending';

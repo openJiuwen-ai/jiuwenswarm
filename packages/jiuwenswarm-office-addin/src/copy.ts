@@ -188,6 +188,8 @@ export const copy = {
     withdraw_doc_edits: '撤回修改建议',
     explain_edits: '核对修改依据',
     verify_doc_visual: '检查页面排版',
+    search_icons: '查找图标',
+    insert_icon: '插入图标',
     list_open_documents: '查看打开的文档',
     publish_office_asset: '准备素材文件',
     session_send_message: '发送任务给另一份文档',

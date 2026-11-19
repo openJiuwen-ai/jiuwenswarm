@@ -9,6 +9,7 @@ modules:
   - jiuwenswarm/channels/web/frontend/src/features/rsi
 files:
   - jiuwenswarm/agents/harness/common/rsi/artifact_adapter.py
+  - jiuwenswarm/agents/harness/common/rsi/paper_workspace_provider.py
   - jiuwenswarm/agents/harness/common/rsi/services.py
   - jiuwenswarm/channels/web/frontend/src/features/rsi/rsiStore.ts
   - jiuwenswarm/channels/web/frontend/src/features/rsi/components/RsiResultSummary.tsx
@@ -16,7 +17,7 @@ files:
 
 # RSI 观测投影
 
-最近修订：2026-11-14。范围为 Provider 快照经服务映射到 Web 的报告、详情和侧栏；引擎搜索预算与错误生成由 agent-core 维护。
+最近修订：2026-11-19。范围为 Provider 快照经服务映射到 Web 的报告、详情和侧栏；引擎搜索预算与错误生成由 agent-core 维护。
 
 ## 状态与不变量
 
@@ -33,5 +34,7 @@ rsi.report.get 保留 Provider 显式 metrics，包括零值。缺失 pruned_cou
 
 ## 兼容与验证
 
+重启后，论文 Provider 可从当前任务根目录定位已落盘的历史快照。详情、报告、树、用量和最优产物查询均可作为首次请求。用量总量从快照恢复，包括已记录的零值。旧快照缺少用量时仍返回用量不可用。
+
 旧 Provider 不实现 get_tree 时，报告接口继续可用，剪枝数未知。Provider 自身的轮次定义保持不变。
-回归入口：tests/unit_tests/rsi/test_report_metrics.py、frontend/tests/rsiPolling.test.mjs、frontend/tests/rsiHarnessPreview.test.mjs。
+回归入口：tests/unit_tests/rsi/test_provider_snapshot_restart.py、tests/unit_tests/rsi/test_report_metrics.py、frontend/tests/rsiPolling.test.mjs、frontend/tests/rsiHarnessPreview.test.mjs。
