@@ -9,11 +9,14 @@
 """
 
 import json
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -126,12 +129,14 @@ class TodoCollector:
             paths.extend(sorted(todo_dir.glob("*/todo.json")))
         return paths
 
-    def _collect_json_file(self, path: Path, stats: TodoStats) -> None:
+    @staticmethod
+    def _collect_json_file(path: Path, stats: TodoStats) -> None:
         """解析单个 todo.json 并累加到统计。"""
+        raw = None
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return
+        except (OSError, ValueError) as exc:
+            logger.warning("Failed to read todo json %s: %s", path, exc)
         if not isinstance(raw, list):
             return
         for item in raw:
