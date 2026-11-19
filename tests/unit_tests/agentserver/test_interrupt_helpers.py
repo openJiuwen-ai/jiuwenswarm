@@ -48,6 +48,34 @@ from jiuwenswarm.server.runtime.agent_adapter.browser_runtime_security import (
 )
 
 
+def test_permission_card_channel_prefers_request_context_over_build_channel() -> None:
+    from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
+        TOOL_PERMISSION_CHANNEL_ID,
+    )
+
+    rail = build_permission_rail(
+        {"permissions": {"enabled": True}},
+        channel_id="acp",
+    )
+    assert rail is not None
+    request = SimpleNamespace(
+        ctx=SimpleNamespace(session=None),
+        tool_call=SimpleNamespace(name="bash", arguments="{}"),
+        result=None,
+    )
+    confirm = rail._host.request_permission_confirmation
+
+    current = TOOL_PERMISSION_CHANNEL_ID.set("web")
+    try:
+        chosen = asyncio.run(confirm(request))
+    finally:
+        TOOL_PERMISSION_CHANNEL_ID.reset(current)
+    assert chosen == "interrupt"
+
+    fallback = asyncio.run(confirm(request))
+    assert fallback is None
+
+
 def test_permission_builder_defaults_to_develop_manual_rail() -> None:
     rail = build_permission_rail(
         {"permissions": {"enabled": True, "mode": "auto"}},
@@ -134,6 +162,11 @@ def test_explicit_auto_builder_degrades_when_audit_root_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
+    # 分区后审计根兜底 get_infra_data_dir() 恒可用；显式注入 None 复现降级分支
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.persistent_audit.resolve_persistent_audit_root",
+        lambda config: None,
+    )
     monkeypatch.delenv("JIUWENSWARM_DATA_DIR", raising=False)
     rail = build_permission_rail(
         {

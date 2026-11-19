@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import agent_client, until
+
 from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import LocalCheckpoint
 
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
@@ -20,11 +22,8 @@ from jiuwenswarm.extensions.video_duplex.backend.qwen_omni_tools import (
     parse_qwen_omni_tool_call,
 )
 
+from jiuwenswarm.extensions.video_duplex.backend import video_search
 
-async def until(predicate):
-    async with asyncio.timeout(3):
-        while not predicate():
-            await asyncio.sleep(0.005)
 
 
 def token(service, task):
@@ -206,10 +205,12 @@ async def test_answer_resumes_same_task_and_waiting_releases_only_settled_capaci
     assert final["request_id"] != trip["request_id"]
     assert len(service.snapshot("user", "voice")[0]) == 2
     assert len(executor.calls) == 3
-    with pytest.raises(ValueError):
-        await service.answer(
-            "user", "voice", trip["id"], "late", token(service, trip), answers=reply()
-        )
+    repeated = await service.answer(
+        "user", "voice", trip["id"], "late", token(service, trip), answers=reply()
+    )
+    assert repeated["state"] == "already_answered"
+    assert repeated["applied"] is False
+    assert len(executor.calls) == 3
 
 
 async def test_questions_do_not_cross_tasks_and_cancel_prevents_resume(system):
@@ -570,20 +571,6 @@ def test_ambiguous_or_destructive_queue_arguments_are_rejected(args):
 
 @pytest.mark.parametrize("source", ["ask_user_interrupt", "permission_interrupt", "confirm_interrupt"])
 async def test_agent_question_is_not_a_completed_result(source):
-    class Client:
-        async def send_request_stream(self, env):
-            yield SimpleNamespace(
-                payload=dict(
-                    event_type="chat.ask_user_question",
-                    request_id="q",
-                    source=source,
-                    questions=[{"question": "预算是多少？"}],
-                )
-            )
-            yield SimpleNamespace(
-                payload=dict(event_type="chat.final", content="等待预算")
-            )
-
     progress = []
 
     async def observe(entry):
@@ -591,7 +578,11 @@ async def test_agent_question_is_not_a_completed_result(source):
 
     with pytest.raises(InteractionPending):
         await execute_core_agent(
-            Client(),
+            agent_client(frames=[
+                {"event_type": "chat.ask_user_question", "request_id": "q", "source": source,
+                 "questions": [{"question": "预算是多少？"}]},
+                {"event_type": "chat.final", "content": "等待预算"},
+            ]),
             question="trip",
             query="trip",
             visual_context="",
@@ -722,7 +713,7 @@ async def test_cancel_accepted_answer_before_dispatch_does_not_resume(system):
     assert len(executor.calls) == 2
 
 
-async def test_restart_expires_questions_without_replaying_answers(system):
+async def test_restart_retains_questions_until_native_state_is_known(system):
     service, executor = system
     task = submit(service, "restart")
     await until(lambda: service.store.read(task["id"])["output_closed"])
@@ -731,7 +722,7 @@ async def test_restart_expires_questions_without_replaying_answers(system):
     try:
         current = restarted.get("user", "voice", task["id"])
         assert current["status"] == "unknown"
-        assert current["interaction"]["state"] == "expired"
+        assert current["interaction"]["state"] == "pending"
         with pytest.raises(ValueError):
             await restarted.answer(
                 "user",
@@ -848,3 +839,320 @@ async def test_confirmed_native_cancellation_closes_stuck_output_observer(tmp_pa
         assert store.read(task["id"])["output_closed"]
     finally:
         await service.close()
+
+
+SCOPE = "task-duplex:chat"
+
+
+
+OPTIONS = [{"label": "允许", "value": "allow_once"}, {"label": "拒绝", "value": "reject"}]
+
+
+
+class CoreSession:
+    """One Core session shared by typed chat and voice tasks."""
+
+    def __init__(self, store):
+        self.store, self.card_live, self.runs, self.probes = store, False, [], 0
+
+    async def pending_interrupt(self, task):
+        self.probes += 1
+        return self.card_live
+
+    async def run(self, task, progress):
+        # Core refuses a managed task while a card waits (interface_deep guard).
+        assert not self.card_live or task.get("resume_answer"), "task was fed to a live card"
+        self.runs.append((task["instruction"], bool(task.get("resume_answer"))))
+        if task["instruction"] == "删除文件" and not task.get("resume_answer"):
+            await progress(dict(stage="interaction", interaction=native_approval_question({
+                "request_id": "core-approval", "source": "confirm_interrupt",
+                "questions": [{"question": "允许删除？", "options": OPTIONS, "card_id": "card-1"}],
+            })))
+            self.card_live = True
+            self.store.update(task["id"], lambda t: t.update(execution_settled=True))
+            raise InteractionPending()
+        if task.get("resume_answer"):
+            self.card_live = False
+            picked = task["interaction"]["answers"][0]["selected_options"]
+            return {"answer": "deleted" if picked == ["允许"] else "kept"}
+        return {"answer": "done " + task["instruction"]}
+
+
+
+@pytest.mark.parametrize("spoken", ["允许", "拒绝"])
+async def test_delayed_settlement_does_not_expire_approval(tmp_path, monkeypatch, spoken):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.extensions.video_duplex.backend import task_adapter
+
+    real_timeout = asyncio.timeout
+    monkeypatch.setattr(asyncio, "timeout", lambda delay: real_timeout(0.02 if delay == 20 else delay))
+    monkeypatch.setattr(task_adapter, "task_agent_query", AsyncMock(return_value={"files": []}))
+    store = TaskStore(tmp_path / "delayed-card.sqlite")
+
+    class DelayedApproval(task_adapter.AgentTaskExecutor):
+        def __init__(self):
+            super().__init__(None, store, None)
+            self.calls = []
+
+        async def _run(self, task, progress, context):
+            self.calls.append(bool(task.get("resume_answer")))
+            store.update(task["id"], lambda t: t.update(execution_bound=True))
+            if not task.get("resume_answer"):
+                await progress(dict(stage="interaction", interaction=native_approval_question({
+                    "request_id": "delayed-card", "source": "confirm_interrupt",
+                    "questions": [{"question": "允许执行？", "options": OPTIONS, "card_id": "card-1"}],
+                })))
+                raise InteractionPending()
+            store.update(task["id"], lambda t: t.update(execution_settled=True))
+            return {"answer": "done"}
+
+    executor = DelayedApproval()
+    service = TaskService(store, executor)
+    try:
+        task = service.submit("alice", SCOPE, "create", "执行操作", {
+            "execution_target": {"mode": "agent", "work_mode": "work"},
+        })
+        await until(lambda: store.read(task["id"])["status"] == "waiting_user")
+        # Exceed the shortened ordinary settlement deadline before answering.
+        await asyncio.sleep(0.1)
+        current = store.read(task["id"])
+        assert current["status"] == "waiting_user"
+        assert current["interaction"]["state"] == "pending"
+        assert not current["execution_settled"]
+        await service.answer("alice", SCOPE, task["id"], "answer", current["interaction"]["id"],
+                             answers=[spoken])
+        await asyncio.sleep(0.05)
+        assert executor.calls == [False], "do not resume before the old invocation settles"
+        store.update(task["id"], lambda t: t.update(execution_settled=True))
+        await until(lambda: store.read(task["id"])["status"] == "completed")
+        assert executor.calls == [False, True]
+        assert store.read(task["id"])["interaction"]["answers"][0]["selected_options"] == [spoken]
+    finally:
+        await service.close()
+        await executor.close()
+
+
+def submit_approval(service, key, text):
+    return service.submit("alice", SCOPE, key, text, {"independent": True, "resources": []})
+
+
+
+@pytest.fixture
+async def approval_system(tmp_path):
+    store = TaskStore(tmp_path / "tasks.sqlite")
+    core = CoreSession(store)
+    service = TaskService(store, core)
+    yield service, core, store
+    await service.close()
+
+
+
+@pytest.mark.parametrize("spoken, outcome", [("允许", "deleted"), ("拒绝", "kept")])
+async def test_voice_answer_on_managed_card_then_queued_task_runs(approval_system, spoken, outcome):
+    service, core, store = approval_system
+    first = submit_approval(service, "first", "删除文件")
+    await until(lambda: store.read(first["id"])["status"] == "waiting_user"
+                and store.read(first["id"])["output_closed"])
+    second = submit_approval(service, "second", "打开微信")
+    await asyncio.sleep(0.05)
+    assert store.read(second["id"])["status"] == "queued"
+    assert store.read(first["id"])["interaction"]["state"] == "pending", "the card stays valid"
+
+    with pytest.raises(ValueError, match="card options"):
+        await service.answer("alice", SCOPE, first["id"], "vague", store.read(first["id"])["interaction"]["id"],
+                             answers=["好的"])
+    await service.answer("alice", SCOPE, first["id"], "voice", store.read(first["id"])["interaction"]["id"],
+                         answers=[spoken])
+    await until(lambda: store.read(second["id"])["status"] == "completed")
+    assert store.read(first["id"])["result"]["answer"] == outcome
+    assert core.runs == [("删除文件", False), ("删除文件", True), ("打开微信", False)]
+    interaction_id = store.read(first["id"])["interaction"]["id"]
+    repeated = await service.answer("alice", SCOPE, first["id"], "voice-again", interaction_id, answers=[spoken])
+    assert repeated["state"] == "already_answered" and repeated["task_state"] == "completed"
+    assert repeated["applied"] is False
+    for answer_token, answer in [(interaction_id, "拒绝" if spoken == "允许" else "允许"), ("different", spoken)]:
+        with pytest.raises(ValueError, match="no longer pending"):
+            await service.answer("alice", SCOPE, first["id"], "bad-" + answer_token, answer_token, answers=[answer])
+    assert len(core.runs) == 3, "repeated and stale answers must not execute again"
+
+
+@pytest.mark.parametrize("notification", [True, False, "unavailable"])
+async def test_typed_card_holds_voice_task_until_turn_ends(approval_system, monkeypatch, notification):
+    from jiuwenswarm.extensions.video_duplex.backend.tasks import service as module
+
+    service, core, store = approval_system
+    service.start()
+    core.card_live = True  # A typed chat turn left a card on screen.
+    task = submit_approval(service, "voice", "打开微信")
+    await until(lambda: core.probes >= 1)
+    await asyncio.sleep(0.05)
+    assert store.read(task["id"])["status"] == "queued"
+    assert core.probes == 1, "waiting cards do not introduce periodic polling"
+    tasks, _ = service.snapshot("alice", SCOPE)
+    assert tasks[0]["wait_reason"] == "pending_interrupt"
+
+    # The user clicks on screen: the resumed typed turn ends.
+    core.card_live = False
+    if notification == "unavailable":
+        original = core.pending_interrupt
+
+        async def disconnected(task):
+            raise ConnectionError("probe unavailable")
+
+        monkeypatch.setattr(core, "pending_interrupt", disconnected)
+        await service.refresh("alice", SCOPE)
+        await asyncio.sleep(0.06)
+        assert not core.runs, "a query failure cannot release a card blocker"
+        monkeypatch.setattr(core, "pending_interrupt", original)
+        await service.refresh("alice", SCOPE)
+    elif notification:
+        service.interrupt_settled("chat")
+    else:
+        await service.refresh("alice", SCOPE)
+    await until(lambda: store.read(task["id"])["status"] == "completed")
+    assert core.runs == [("打开微信", False)]
+
+
+
+class FakeChannel:
+    def __init__(self):
+        self.listeners, self.dispatched, self.events = [], [], []
+        self.resumes = True
+
+    def add_session_event_listener(self, listener):
+        self.listeners.append(listener)
+
+    async def dispatch_client_request(self, ws, method, params):
+        self.dispatched.append((method, params))
+        if self.resumes:
+            # Core resumes the answered turn.
+            self.push("chat.processing_status", {"is_processing": True})
+
+    async def send_event(self, ws, event, payload):
+        self.events.append((event, payload))
+
+    def push(self, event, payload):
+        for listener in self.listeners:
+            listener(event, "chat", payload)
+
+
+def manager_for(service, core, channel, monkeypatch):
+    manager = video_search.VideoSearchManager(
+        channel, None, log_event=lambda _: None, qwen_active=lambda: True,
+        authorize=lambda ws, scope: ("alice", scope),
+    )
+    monkeypatch.setattr(manager, "_service", service, raising=False)
+
+    async def query(client, method, params, session, owner):
+        assert session == "chat" and owner == "alice"
+        return {"pending": core.card_live, "card_binding": {"execution_id": "typed"},
+                "card_state": "applied" if channel.dispatched and channel.resumes else "pending"}
+
+    return manager, query
+
+
+
+@pytest.mark.parametrize("spoken", ["允许", "拒绝"])
+async def test_voice_answers_typed_card_through_click_path(approval_system, monkeypatch, spoken):
+    from jiuwenswarm.extensions.video_duplex.backend import task_adapter
+
+    service, core, store = approval_system
+    channel = FakeChannel()
+    manager, query = manager_for(service, core, channel, monkeypatch)
+    monkeypatch.setattr(task_adapter, "task_agent_query", query)
+    ws = object()
+    manager.subscribers[("alice", SCOPE, id(ws))] = ws
+    core.card_live = True
+    channel.push("chat.ask_user_question", {
+        "request_id": "typed-approval", "source": "confirm_interrupt",
+        "questions": [{"question": "允许执行 rm？", "header": "权限审批: bash", "options": OPTIONS,
+                       "card_id": "card-9"}],
+    })
+    channel.push("chat.processing_status", {"is_processing": False})
+    task = submit_approval(service, "voice", "打开微信")
+    await until(lambda: core.probes >= 1)
+
+    receipt = await manager.operate("alice", SCOPE, SimpleNamespace(
+        name="jiuwen_task_query", arguments={}, call_id="q"))
+    card = receipt["chat_approval"]
+    assert card["job_id"] == "" and card["interaction_id"] == "typed-approval"
+    assert [option["label"] for option in card["interaction"]["questions"][0]["options"]] == ["允许", "拒绝"]
+
+    answer = SimpleNamespace(name="jiuwen_task_answer", call_id="a", arguments={
+        "job_id": "", "interaction_id": "typed-approval", "answers": ["可以吧"]})
+    deferred = await manager.operate("alice", SCOPE, answer, ws=ws)
+    assert deferred["state"] == "client_required"
+    assert deferred["interaction_answer"]["interaction_id"] == "typed-approval"
+    assert not channel.dispatched, "the browser's original question controller owns submission"
+    assert store.read(task["id"])["status"] == "queued"
+
+    # The resumed typed turn runs, then ends: the queued voice task dispatches.
+    core.card_live = False
+    channel.push("chat.processing_status", {"is_processing": False})
+    await until(lambda: store.read(task["id"])["status"] == "completed")
+    assert (await manager.chat_card("alice", SCOPE)) is None
+
+
+async def test_joyai_may_answer_approval_cards_but_not_information_forms(approval_system, monkeypatch):
+    service, core, store = approval_system
+    manager = object.__new__(video_search.VideoSearchManager)
+    monkeypatch.setattr(manager, "_service", service, raising=False)
+    service.start()
+    task = submit_approval(service, "trip", "规划行程")
+    service.store.update(task["id"], lambda t: t.update(status="waiting_user", interaction={
+        "id": "question-a", "request_id": "q", "state": "pending", "source": "ask_user_interrupt",
+        "questions": [{"question": "预算是多少？"}]}))
+    call = SimpleNamespace(name="jiuwen_task_answer", call_id="a", arguments={
+        "job_id": task["id"], "interaction_id": "question-a", "answers": ["5000"]})
+    with pytest.raises(ValueError, match="JoyAI voice form answers are disabled"):
+        await manager.operate("alice", SCOPE, call, approvals_only=True)
+
+
+async def test_compact_form_answer_binds_only_unique_scoped_information_card(system, monkeypatch):
+    from jiuwenswarm.extensions.video_duplex.backend.task_adapter import VideoSearchManager
+
+    service, executor = system
+    task = submit(service, "compact-form")
+    await until(lambda: service.store.read(task["id"])["output_closed"])
+    manager = object.__new__(VideoSearchManager)
+    monkeypatch.setattr(manager, "_service", service, raising=False)
+    call = parse_qwen_omni_tool_call({
+        "name": "jiuwen_form_answer", "call_id": "compact-answer",
+        "arguments": {"answers": ["230"]},
+    })
+    with pytest.raises(ValueError, match="pending information form"):
+        await manager.operate("other-user", "voice", call)
+    receipt = await manager.operate("user", "voice", call)
+    assert receipt["state"] == "accepted"
+    assert await manager.operate("user", "voice", call) == receipt
+    await until(lambda: service.store.read(task["id"])["status"] == "completed")
+    assert service.store.read(task["id"])["result"]["answer"] == "230"
+    assert await manager.operate("user", "voice", call) == receipt
+
+
+async def test_compact_form_answer_refuses_ambiguous_and_permission_cards(monkeypatch):
+    from contextlib import nullcontext
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.extensions.video_duplex.backend.task_adapter import VideoSearchManager
+
+    task = {"id": "one", "status": "waiting_user", "interaction": {
+        "id": "question", "source": "ask_user_interrupt", "state": "pending",
+    }}
+    rows = [task, {**task, "id": "two"}]
+    answer = AsyncMock()
+    manager = object.__new__(VideoSearchManager)
+    service = SimpleNamespace(answer=answer, store=SimpleNamespace(
+        transaction=lambda: nullcontext(None), rows=lambda db, owner, scope: rows,
+    ))
+    monkeypatch.setattr(manager, "_service", service, raising=False)
+    call = parse_qwen_omni_tool_call({
+        "name": "jiuwen_form_answer", "call_id": "answer", "arguments": {"answers": ["yes"]},
+    })
+    with pytest.raises(ValueError, match="pending information form"):
+        await manager.operate("user", "voice", call)
+    rows[:] = [{**task, "interaction": {**task["interaction"], "source": "permission_interrupt"}}]
+    with pytest.raises(ValueError, match="pending information form"):
+        await manager.operate("user", "voice", call)
+    with pytest.raises(ValueError, match="JoyAI voice form answers are disabled"):
+        await manager.operate("user", "voice", call, approvals_only=True)
+    answer.assert_not_awaited()

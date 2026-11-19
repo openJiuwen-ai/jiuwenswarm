@@ -938,7 +938,9 @@ def _real_deep_reload_model(api_base: str, model_name: str):
     )
 
 
-async def _reload_deep_adapter_config_for_test(previous_config, deep_config_factory):
+async def _reload_deep_adapter_config_for_test(
+    previous_config, deep_config_factory, *, live_reload=None,
+):
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_module
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
         JiuWenSwarmDeepAdapter,
@@ -1019,10 +1021,30 @@ async def _reload_deep_adapter_config_for_test(previous_config, deep_config_fact
         ),
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "_sync_mcp_servers_for_runtime", _async_noop),
     ):
-        await adapter.reload_agent_config(
-            {"react": {"agent_name": "main_agent"}, "browser": {"headless": True}},
-            {},
-        )
+        config = {"react": {"agent_name": "main_agent"}, "browser": {"headless": True}}
+        if live_reload is None:
+            await adapter.reload_agent_config(config, {})
+        else:
+            sid = "session-a"
+            adapter._is_session_scoped_adapter = True
+            adapter._parent_session_id = sid
+            adapter._active_request_model = previous_config.model
+            parent = JiuWenSwarmDeepAdapter()
+            parent._session_adapters[sid] = adapter
+            adapter._mark_session_active(sid)
+            try:
+                with patch.object(adapter, "_try_init_a2x_client", AsyncMock()):
+                    if live_reload == "targeted":
+                        await parent._reload_target_session_adapter(config, {}, target_session_id=sid)
+                    else:
+                        config["permissions"] = {"enabled": False}
+                        parent._mark_session_adapters_stale_for_reload(
+                            config, {"FREE_SEARCH_BING_ENABLED": "true"}
+                        )
+                        await parent._reload_session_adapter_if_stale(sid, adapter)
+            finally:
+                adapter._unmark_session_active(sid)
+
 
     adapter._instance.react_agent.register_callback.assert_awaited_once()
     return adapter, configured_fields
@@ -1230,6 +1252,30 @@ def test_deep_adapter_model_config_fingerprint_includes_legacy_react_model_field
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("live_reload", ["targeted", "mixed"])
+async def test_live_reload_preserves_selected_model(live_reload):
+    from openjiuwen.harness import DeepAgentConfig
+
+    active_model = _real_deep_reload_model("https://active.example.test/v1", "GLM-5.2")
+
+    def _new_config(model, agent_card, tool_cards, rails):
+        return DeepAgentConfig(
+            model=model, card=agent_card, system_prompt="updated", tools=tool_cards, rails=rails
+        )
+
+    adapter, configured_fields = await _reload_deep_adapter_config_for_test(
+        DeepAgentConfig(model=active_model, system_prompt="previous"),
+        _new_config,
+        live_reload=live_reload,
+    )
+
+    assert configured_fields == [(None, "updated")]
+    assert adapter._instance._deep_config.model is active_model
+    assert adapter._model_client_config is active_model.model_client_config
+    assert adapter._model_request_config is active_model.model_config
+
+
+@pytest.mark.asyncio
 async def test_deep_adapter_reload_omits_unchanged_model_and_system_prompt():
     from openjiuwen.harness import DeepAgentConfig
 
@@ -1339,6 +1385,88 @@ async def test_deep_adapter_existing_session_lazy_reload_once(monkeypatch):
     assert call["args"][0] == pending_config
     assert call["args"][1] == {"MODEL_NAME": "new-model"}
     assert call["kwargs"]["target_session_id"] == "session-a"
+    assert parent._session_adapter_versions["session-a"] == 1
+
+
+@pytest.mark.asyncio
+async def test_goal_get_does_not_apply_pending_session_reload(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    parent = JiuWenSwarmDeepAdapter()
+    child = JiuWenSwarmDeepAdapter()
+    child._is_session_scoped_adapter = True
+    child._parent_session_id = "session-a"
+    child._instance = MagicMock()
+    goal_manager = MagicMock()
+    goal_manager.peek.return_value = None
+    monkeypatch.setattr(child, "_get_goal_manager", lambda: goal_manager)
+    monkeypatch.setattr(child, "reload_agent_config", AsyncMock())
+    monkeypatch.setattr(parent, "_evict_idle_session_adapters", AsyncMock())
+    parent._session_adapters["session-a"] = child
+    parent._mark_session_adapters_stale_for_reload({}, {"FREE_SEARCH_BING_ENABLED": "true"})
+
+    result = await parent.dispatch_goal_control(action="get", session_id="session-a")
+
+    assert result["result_type"] == "goal_control"
+    goal_manager.peek.assert_called_once_with()
+    child.reload_agent_config.assert_not_awaited()
+    assert parent._session_adapter_versions.get("session-a", 0) == 0
+
+
+@pytest.mark.asyncio
+async def test_goal_get_checks_cleanup_for_permission_isolated_session(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    parent = JiuWenSwarmDeepAdapter()
+    child = JiuWenSwarmDeepAdapter()
+    child._is_session_scoped_adapter = True
+    child._parent_session_id = "session-a"
+    child._permission_state.permission_isolated = True
+    child._permission_state.permission_cleanup_complete = False
+    cleanup = AsyncMock()
+    get_goal_manager = MagicMock()
+    monkeypatch.setattr(child, "_isolate_permission_instance", cleanup)
+    monkeypatch.setattr(child, "_get_goal_manager", get_goal_manager)
+    parent._session_adapters["session-a"] = child
+
+    with pytest.raises(RuntimeError, match="permission_session_cleanup_pending"):
+        await parent.dispatch_goal_control(action="get", session_id="session-a")
+
+    cleanup.assert_awaited_once()
+    get_goal_manager.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_lazy_reload_waits_until_running_session_settles(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    parent = JiuWenSwarmDeepAdapter()
+    child = JiuWenSwarmDeepAdapter()
+    child._is_session_scoped_adapter = True
+    child._parent_session_id = "session-a"
+    monkeypatch.setattr(child, "reload_agent_config", AsyncMock())
+    parent._session_adapters["session-a"] = child
+    env_delta = {"FREE_SEARCH_BING_ENABLED": "true"}
+    parent._mark_session_adapters_stale_for_reload({}, env_delta)
+
+    child._mark_session_active("session-a")
+    try:
+        assert await parent._get_or_create_session_adapter("session-a") is child
+        child.reload_agent_config.assert_not_awaited()
+        assert parent._session_adapter_versions.get("session-a", 0) == 0
+    finally:
+        child._unmark_session_active("session-a")
+
+    assert await parent._get_or_create_session_adapter("session-a") is child
+    child.reload_agent_config.assert_awaited_once_with(
+        {}, env_delta, target_session_id="session-a", reload_scopes=None
+    )
     assert parent._session_adapter_versions["session-a"] == 1
 
 
@@ -1500,7 +1628,7 @@ async def test_discovery_toggle_hot_reloads_tools_and_capture_without_resetting_
         pass
 
     adapter = interface_deep.JiuWenSwarmDeepAdapter()
-    config = {"symphony": {"enabled": True, "evolution": {"flow": {"enabled": False}}}}
+    config = {"symphony": {"orchestration": {"enabled": True, "experience": {"enabled": False}}}}
     monkeypatch.setattr(interface_deep, "get_config", lambda: deepcopy(config))
     adapter._config_base_cache = deepcopy(config)
     orchestration = adapter._build_symphony_orchestration_rail()
@@ -1546,7 +1674,7 @@ async def test_discovery_toggle_hot_reloads_tools_and_capture_without_resetting_
         monkeypatch.setattr(adapter, name, MagicMock())
 
     try:
-        config["symphony"]["evolution"]["flow"]["enabled"] = True
+        config["symphony"]["orchestration"]["experience"]["enabled"] = True
         assert direct_route_mode(adapter._config_base_cache) == "off"
         assert orchestration._direct_route_mode() == "confirm"
         await adapter.reload_agent_config(config, {})
@@ -1573,7 +1701,7 @@ async def test_discovery_toggle_hot_reloads_tools_and_capture_without_resetting_
         assert adapter._symphony_orchestration_rail is orchestration
         assert orchestration._active_states[scope] is state
 
-        config["symphony"]["evolution"]["flow"]["enabled"] = False
+        config["symphony"]["orchestration"]["experience"]["enabled"] = False
         assert direct_route_mode(adapter._config_base_cache) == "confirm"
         assert orchestration._direct_route_mode() == "off"
         await adapter.reload_agent_config(config, {})
@@ -1586,7 +1714,7 @@ async def test_discovery_toggle_hot_reloads_tools_and_capture_without_resetting_
         assert state.valid and state.pack_route.token is token and state.pack_route.member_started
         assert direct_route_mode(orchestration._resolve_config_base()) == "off"
 
-        config["symphony"]["evolution"]["flow"]["enabled"] = True
+        config["symphony"]["orchestration"]["experience"]["enabled"] = True
         await adapter.reload_agent_config(config, {})
         assert capture.call_count == 2
         assert instance.is_registered_rail(adapter._symphony_graph_evolution_rail)

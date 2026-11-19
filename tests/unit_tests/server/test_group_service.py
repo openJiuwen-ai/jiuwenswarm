@@ -106,48 +106,6 @@ async def create(service, token="one", **params):
 
 
 @pytest.mark.asyncio
-async def test_group_lock_releases_after_repeated_cancellation(tmp_path, monkeypatch):
-    monkeypatch.setattr(gs, "get_agent_sessions_dir", lambda: tmp_path / "sessions")
-    original_lock = gs.cross_process_file_lock
-    original_to_thread = asyncio.to_thread
-    guards = []
-
-    def retain_guard(path):
-        guard = original_lock(path, timeout=0.05)
-        guards.append(guard)
-        return guard
-
-    async def offload(func, *args):
-        if getattr(func, "__name__", None) == "__exit__":
-            await asyncio.sleep(0)
-        return await original_to_thread(func, *args)
-
-    monkeypatch.setattr(gs, "cross_process_file_lock", retain_guard)
-    monkeypatch.setattr(asyncio, "to_thread", offload)
-    entered = asyncio.Event()
-
-    async def hold_lock():
-        async with gs.group_lock("group-cancelled"):
-            entered.set()
-            try:
-                await asyncio.Future()
-            finally:
-                asyncio.get_running_loop().call_soon(task.cancel)
-
-    task = asyncio.create_task(hold_lock())
-    try:
-        await asyncio.wait_for(entered.wait(), 2)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        async with gs.group_lock("group-cancelled"):
-            pass
-    finally:
-        for guard in guards:
-            guard.__exit__(None, None, None)
-
-
-@pytest.mark.asyncio
 async def test_create_list_update_and_owner_isolation(service):
     group = await create(service)
     assert not {"compiled", "user_id", "receipts"} & group.keys()

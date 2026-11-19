@@ -122,6 +122,7 @@ from jiuwenswarm.common.utils import (
     get_agent_root_dir,
     get_agent_sessions_dir,
     get_config_file,
+    get_domain_data_dir,
     get_user_workspace_dir,
     mask_sensitive,
 )
@@ -224,6 +225,7 @@ from jiuwenswarm.server.runtime.agent_manager import (
 from jiuwenswarm.server.runtime.gateway_adapter import (
     AdapterRegistry,
     ConfigAdapter,
+    MultimodalConfigAdapter,
     DesignerAdapter,
     HarmonyOSAdapter,
     MemoryAdapter,
@@ -241,6 +243,7 @@ from jiuwenswarm.server.utils.utils import is_team_params
 from jiuwenswarm.server.wire_truncate import (  # noqa: F401  — re-exported for tests / handlers
     _HISTORY_PAGE_SIZE,
     _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES,
+    history_assistant_event_is_restorable,
     _HISTORY_WIRE_DEPTH_LIMIT,
     _HISTORY_WIRE_LIST_LIMIT,
     _HISTORY_WIRE_METADATA_STRING_LIMIT,
@@ -953,7 +956,7 @@ def _is_restorable_history_record(record: Any) -> bool:
     event_type = record.get("event_type")
     if not event_type:
         return has_content
-    return event_type in _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES
+    return history_assistant_event_is_restorable(record)
 
 
 def _todo_snapshot_session_fields(session_id: str) -> dict[str, str | None]:
@@ -1372,7 +1375,7 @@ class AgentWebSocketServer:
         )
         self._adapter_registry = AdapterRegistry()
         for adapter in (
-            VoiceTaskServerAdapter(self._agent_manager.session_has_pending_interrupt),
+            VoiceTaskServerAdapter(self._agent_manager.session_has_pending_interrupt, self._execution_runtime),
             SessionAdapter(),
             WorkspaceFileAdapter(),
             MemoryAdapter(),
@@ -1380,6 +1383,7 @@ class AgentWebSocketServer:
             DesignerAdapter(),
             HarmonyOSAdapter(),
             ConfigAdapter(on_config_saved=self._reload_after_config_save),
+            MultimodalConfigAdapter(on_config_saved=self._reload_after_config_save),
             self._jiuwenmate_web,
         ):
             self._adapter_registry.register(adapter)
@@ -1411,12 +1415,13 @@ class AgentWebSocketServer:
         self._jiuwenbox_runner = JiuwenBoxRunner.instance()
         # AgentServer 内唯一持有的进程内 PersonalContext Host；Context Rail 使用同一固定目录。
         self._personal_context_host = PersonalContextHostAPI(
-            home=get_user_workspace_dir() / ".personal_context",
+            home=get_domain_data_dir() / ".personal_context",
         )
         self._personal_context_start_task: asyncio.Task[None] | None = None
         self._sandbox_start_task: asyncio.Task[None] | None = None
         # checkpointer 后台预热任务 (start() 里 fire-and-forget, stop() 时 cancel)
         self._checkpointer_warmup_task: Optional[asyncio.Task] = None
+        self._team_session_reconcile_task: Optional[asyncio.Task] = None
         # MCP 连接缓存预热任务 (同上, 建 Runner.resource_mgr 供首轮对话命中)
         self._mcp_prewarm_task: Optional[asyncio.Task] = None
         # 图像模态探针重探任务 (模型配置变更时拉起, stop() 时 cancel)
@@ -1642,13 +1647,10 @@ class AgentWebSocketServer:
         try:
             # Disabled Flow still supports Skill discovery through the toolkit;
             # it does not need the heavy recovery service at process startup.
-            from jiuwenswarm.common.symphony_config import (
-                evolution_flow_enabled,
-                load_symphony_config,
-            )
+            from jiuwenswarm.common.symphony_config import load_symphony_config
 
             config = await asyncio.to_thread(load_symphony_config)
-            if not config.enabled or not evolution_flow_enabled(config):
+            if not config.orchestration.experience_enabled:
                 return True
             import importlib
 
@@ -1844,6 +1846,16 @@ class AgentWebSocketServer:
                 # Optional imports, downloads and recovery may start only after
                 # the required Runtime/Heartbeat initialization succeeded.
                 preparation.mark_minimum_ready()
+
+                from jiuwenswarm.enterprise.team.session_cleanup import (
+                    bind_startup_sweep,
+                    run_startup_sweep,
+                )
+
+                self._team_session_reconcile_task = asyncio.create_task(
+                    run_startup_sweep(), name="team-session-reconcile",
+                )
+                bind_startup_sweep(self._team_session_reconcile_task)
                 return
 
         self._checkpointer_warmup_task = asyncio.create_task(
@@ -2320,6 +2332,16 @@ class AgentWebSocketServer:
             await jiuwenmate_web.aclose()
         await self._heartbeat_runtime.stop()
         # 同理取消 MCP 连接缓存预热任务.
+        team_reconcile = self._team_session_reconcile_task
+        self._team_session_reconcile_task = None
+        if team_reconcile is not None and not team_reconcile.done():
+            team_reconcile.cancel()
+            try:
+                await team_reconcile
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[AgentWebSocketServer] team reconcile cancel failed: %s", exc)
         mcp_prewarm = self._mcp_prewarm_task
         self._mcp_prewarm_task = None
         if mcp_prewarm is not None and not mcp_prewarm.done():
@@ -2405,7 +2427,7 @@ class AgentWebSocketServer:
                 self._install_session_message_service()
                 self._adapter_registry = AdapterRegistry()
                 for adapter in (
-                    VoiceTaskServerAdapter(self._agent_manager.session_has_pending_interrupt),
+                    VoiceTaskServerAdapter(self._agent_manager.session_has_pending_interrupt, self._execution_runtime),
                     SessionAdapter(),
                     WorkspaceFileAdapter(),
                     MemoryAdapter(),
@@ -2413,6 +2435,7 @@ class AgentWebSocketServer:
                     DesignerAdapter(),
                     HarmonyOSAdapter(),
                     ConfigAdapter(on_config_saved=self._reload_after_config_save),
+                    MultimodalConfigAdapter(on_config_saved=self._reload_after_config_save),
                     self._jiuwenmate_web,
                 ):
                     self._adapter_registry.register(adapter)
@@ -7906,6 +7929,7 @@ class AgentWebSocketServer:
 
         snapshot: dict[str, Any] | None = None
         source = "empty"
+        runtime_available: bool | None = True if live_matches_request else None
         if live_matches_request:
             try:
                 snapshot = await monitor_handler.get_team_snapshot()
@@ -7920,18 +7944,25 @@ class AgentWebSocketServer:
             tasks = payload.get("tasks")
             return tasks if isinstance(tasks, list) else []
 
-        # 请求的 team 活着、但 session 级 monitor 不是它（多 team 并发的会话）：另开一个
-        # 精确绑定 (team_name, session_id) 的只读 monitor 读一次。单个 monitor 实例会读
-        # 全量成员/消息，会话一多就是 N 倍 DB 开销，所以只在"请求的 team 不是当前
-        # monitor"这个确实需要区分的场景才走这条路，且用完即弃。
-        if snapshot is None and requested_team_name and session_id:
+        # Resolve one exact identity for the runtime probe and DB fallback.
+        # A session monitor may belong to another Team; a replacement worker
+        # may have none. Probe only when the matching live board is missing.
+        snapshot_team_name = requested_team_name
+        if not snapshot_team_name and session_id:
+            snapshot_team_name = str(team_manager.get_active_team_name(session_id) or "").strip()
+            if not snapshot_team_name:
+                snapshot_team_name = str(
+                    (get_session_metadata(session_id) or {}).get("team_name") or ""
+                ).strip()
+        if snapshot is None and snapshot_team_name and session_id:
             try:
                 from openjiuwen.core.runner.runner import GLOBAL_RUNNER
 
                 scoped_monitor = await GLOBAL_RUNNER.get_agent_team_monitor(
-                    team_name=requested_team_name,
+                    team_name=snapshot_team_name,
                     session_id=session_id,
                 )
+                runtime_available = scoped_monitor is not None
                 if scoped_monitor is not None:
                     scoped_snapshot = await TeamMonitorHandler(
                         scoped_monitor, session_id
@@ -7944,7 +7975,7 @@ class AgentWebSocketServer:
                     "[AgentWebSocketServer] team.snapshot (scoped live) failed: "
                     "session_id=%s team_name=%s error=%s",
                     session_id,
-                    requested_team_name,
+                    snapshot_team_name,
                     e,
                 )
 
@@ -7955,15 +7986,7 @@ class AgentWebSocketServer:
         # title/content. Fall back whenever live has no tasks.
         needs_db = snapshot is None or not _snapshot_tasks(snapshot)
         if needs_db and session_id:
-            team_name = requested_team_name
-            if not team_name:
-                team_name = str(
-                    team_manager.get_active_team_name(session_id) or ""
-                ).strip()
-            if not team_name:
-                team_name = str(
-                    (get_session_metadata(session_id) or {}).get("team_name") or ""
-                ).strip()
+            team_name = snapshot_team_name
             if team_name:
                 try:
                     db_snapshot = await TeamMonitorHandler.get_team_snapshot_from_db(
@@ -7987,19 +8010,39 @@ class AgentWebSocketServer:
                     snapshot = db_snapshot
                     source = "db"
 
+        # A replacement worker can read the old DB's busy/running rows without
+        # having restored any TeamAgent. Do not mutate those historical rows or
+        # infer completion from a ready worker. Expose the independent runtime
+        # probe and whether unfinished work needs an explicit recovery action.
+        unfinished = any(
+            isinstance(task, dict)
+            and task.get("status")
+            and task["status"] not in {"completed", "cancelled", "failed"}
+            for task in _snapshot_tasks(snapshot)
+        )
+        recovery_required = (
+            False if runtime_available else (
+                None if runtime_available is None or snapshot is None else unfinished
+            )
+        )
         payload = {
             **(snapshot or empty_payload),
             "members_source": source if snapshot is not None else "empty",
+            "members_live": source in {"live", "live-scoped"},
+            "runtime_available": runtime_available,
+            "recovery_required": recovery_required,
         }
         members = payload.get("members") if isinstance(payload, dict) else []
         tasks = _snapshot_tasks(payload if isinstance(payload, dict) else None)
         logger.info(
             "[AgentWebSocketServer] team.snapshot session_id=%s source=%s "
-            "tasks_count=%s members_count=%s",
+            "tasks_count=%s members_count=%s runtime_available=%s recovery_required=%s",
             session_id or "-",
             source if snapshot is not None else "empty",
             len(tasks),
             len(members) if isinstance(members, list) else 0,
+            runtime_available,
+            recovery_required,
         )
 
         resp = AgentResponse(
@@ -14084,6 +14127,10 @@ class AgentWebSocketServer:
                     moa_enabled=params.get("moa_enabled"),
                     cron_id=str(params.get("cron_id") or "").strip(),
                     client_app=str(params.get("client_app") or "").strip(),
+                    execution_profile=params.get("execution_profile", "default"),
+                    role_instructions=params.get("role_instructions", ""),
+                    npc_team=params.get("npc_team"),
+                    role_tools=params.get("tools"),
                 )
             )
             params.pop("_work_mode_explicit", None)
@@ -14106,6 +14153,9 @@ class AgentWebSocketServer:
                 "prewarm_hit": result.prewarm_hit,
                 "prewarm_status": result.prewarm_status,
             }
+            if result.execution_profile != "default":
+                payload["execution_profile"] = result.execution_profile
+                payload["mode"] = result.canonical_mode
             if result.explicit_id_compatibility:
                 payload.update(
                     {

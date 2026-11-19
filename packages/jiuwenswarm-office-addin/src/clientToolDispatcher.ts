@@ -1,11 +1,13 @@
 import type { OfficeApp, Surface } from './appContract';
-import type { ClientToolExecutor, ClientToolRequest, ClientToolResult, ContentBlock } from './clientAttachment';
+import type {
+  ClientToolExecutor, ClientToolRequest, ClientToolResult, ContentBlock, ToolImage,
+} from './clientAttachment';
 import { withMutationRecord } from './clientToolOutcome';
 import { isRecord, type JsonObject } from './gatewayClient';
 import type { HostWriteQueue } from './hostWriteQueue';
 import { fitToolResultJson } from './toolResultBudget';
 
-const MAX_TOOL_RESULT_CHARS = 9500;
+export const MAX_TOOL_RESULT_CHARS = 9500;
 /**
  * A call the host has not finished by then is answered as timed out. This only
  * guards against a host that hangs: a write keeps the write queue until the
@@ -27,8 +29,14 @@ export interface ClientToolRuntime<Name extends string = string> {
     toolName: Name;
     input: JsonObject;
     downloads: Readonly<Record<string, string>>;
+    /** The conversation that made the call. */
+    sessionId?: string;
+    iconSvg?: string;
   }): Promise<ClientToolResponse>;
 }
+
+/** A PNG a tool returns. */
+export const png = (data: string): ToolImage => ({ media_type: 'image/png', data });
 
 /** One runtime of several, each running the tools it declares. */
 export function joinRuntimes(...runtimes: ClientToolRuntime[]): ClientToolRuntime {
@@ -85,7 +93,8 @@ export class ClientToolDispatcher implements ClientToolExecutor {
       hostStarted = true;
       try {
         return await this.runtime.execute(
-          { callId: request.requestId, toolName, input: request.input, downloads: request.downloads });
+          { callId: request.requestId, toolName, input: request.input, downloads: request.downloads,
+            sessionId: request.sessionId, iconSvg: request.iconSvg });
       } catch (error) {
         return { ok: false, error: {
           code: 'CLIENT_TOOL_EXECUTION_FAILED', message: error instanceof Error ? error.message : String(error),
@@ -95,10 +104,12 @@ export class ClientToolDispatcher implements ClientToolExecutor {
     };
     let queueWait = 0;
     const settled = mutating
-      ? this.writes.exclusive(() => {
+      ? new Promise<ClientToolResponse>(answer => void this.writes.exclusive(async () => {
         queueWait = Date.now() - started;
-        return run();
-      }).then(withMutationRecord)
+        const response = await run();
+        answer(withMutationRecord(response));
+        await response.settled;
+      }))
       : run();
     let deadline: ReturnType<typeof setTimeout> | undefined;
     const response = await Promise.race([settled, new Promise<ClientToolResponse>(resolve => {
@@ -128,11 +139,14 @@ export class ClientToolDispatcher implements ClientToolExecutor {
   }
 
   private answer(toolName: string, response: ClientToolResponse, telemetry: ToolTelemetry): ClientToolResult {
-    return toolResult(response, telemetry, this.app.flatResults?.has(toolName) ?? false);
+    return toolResult(response, telemetry, this.app.flatResults?.has(toolName) ?? false,
+      this.app.resultChars ?? MAX_TOOL_RESULT_CHARS);
   }
 }
 
-function toolResult(response: ClientToolResponse, telemetry: ToolTelemetry, flat: boolean): ClientToolResult {
+function toolResult(
+  response: ClientToolResponse, telemetry: ToolTelemetry, flat: boolean, limit: number,
+): ClientToolResult {
   const mutation = response.mutation ? { mutation: response.mutation } : {};
   let value: JsonObject;
   if (!response.ok) {
@@ -148,9 +162,9 @@ function toolResult(response: ClientToolResponse, telemetry: ToolTelemetry, flat
     value = { success: true, ...response.successFields,
       ...(response.result === undefined ? {} : { result: response.result }), ...mutation };
   }
-  const content: ContentBlock[] = [{ type: 'text', text: fitToolResultJson(value, MAX_TOOL_RESULT_CHARS) }];
-  if (response.ok && response.imageBase64) {
-    content.push({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: response.imageBase64 } });
+  const content: ContentBlock[] = [{ type: 'text', text: fitToolResultJson(value, limit) }];
+  for (const image of response.ok ? response.images ?? [] : []) {
+    content.push({ type: 'image', source: { type: 'base64', ...image } });
   }
   return {
     status: response.ok ? 'completed' : FAILURE_STATUS.get(response.error.code) ?? 'error',
@@ -235,6 +249,8 @@ interface ResponseRecords {
   mutationEvidence?: Record<string, unknown>;
   mutation?: MutationRecord;
   hostTimings?: HostTimings;
+  /** Host work that goes on past the answer (a timed-out run's code); the write queue stays held until it ends. */
+  settled?: Promise<unknown>;
 }
 
 /** What a tool runtime returns for one call. */
@@ -243,8 +259,8 @@ export type ClientToolResponse = ResponseRecords & (
     ok: true;
     result?: unknown;
     successFields?: Record<string, unknown>;
-    /** A PNG the tool produced (a slide render), returned as an image block. */
-    imageBase64?: string;
+    /** Images the tool produced (a slide render, a document's pages), each returned as an image block. */
+    images?: ToolImage[];
   }
   | { ok: false; error: ClientToolError }
 );

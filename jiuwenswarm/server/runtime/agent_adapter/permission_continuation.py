@@ -8,7 +8,7 @@ import logging
 from collections.abc import Collection, Iterator, Mapping
 from typing import Any, NamedTuple
 
-from openjiuwen.core.foundation.llm import ToolMessage
+from openjiuwen.core.foundation.llm import ToolCall, ToolMessage
 from openjiuwen.core.foundation.tool import ClientToolResult, ClientToolStatus, default_client_output
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.single_agent.interrupt.response import InterruptKind, interrupt_kind_of
@@ -497,6 +497,13 @@ def unanswered_permission_batch(instance: Any, target_sid: str, loop_session_id:
     return message
 
 
+def _same_restored_tool_calls(expected: list[ToolCall], actual: list[ToolCall]) -> bool:
+    """Ignore streaming indexes omitted by snapshots, preserving every other field."""
+    expected_calls = [call.model_copy(update={"index": None}) for call in expected]
+    actual_calls = [call.model_copy(update={"index": None}) for call in actual]
+    return expected_calls == actual_calls
+
+
 async def discard_restored_permission_batch(
     instance: Any, target_sid: str, loop_session_id: str | None,
 ) -> bool:
@@ -526,7 +533,9 @@ async def discard_restored_permission_batch(
         calls = getattr(item, "tool_calls", None) or []
         if any(getattr(call, "id", None) in ids for call in calls):
             existing.append(item)
-    if existing and (len(existing) != 1 or existing[0].tool_calls != message.tool_calls):
+    if existing and (
+        len(existing) != 1 or not _same_restored_tool_calls(message.tool_calls, existing[0].tool_calls)
+    ):
         raise RootPermissionQueueError("permission_continuation_context_mismatch")
     try:
         if not existing:

@@ -7,6 +7,8 @@ export type TeamMemberLaneStatus = 'running' | 'completed' | 'error' | 'idle';
 export interface TeamMemberLaneModel {
   subjectId: string;
   label: string;
+  /** Hover full name; callers fall back to `label` when absent. */
+  fullLabel?: string;
   kind: TrajectorySubjectGroup['subject']['kind'];
   status: TeamMemberLaneStatus;
   traceCount: number;

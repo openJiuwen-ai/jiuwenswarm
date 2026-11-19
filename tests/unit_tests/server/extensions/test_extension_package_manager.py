@@ -1222,7 +1222,7 @@ class TestCreateInstallUninstall:
             },
         )
 
-        with pytest.raises(ValueError, match="provider_name.*claudecode.*codex.*dsh"):
+        with pytest.raises(ValueError, match="provider_name.*claudecode.*codex;"):
             catalog.install_agent_template({"id": "invalid-runtime"})
 
         assert catalog.read_agent_template_marketplace_entries() == []
@@ -1238,7 +1238,7 @@ class TestCreateInstallUninstall:
             extra_manifest={
                 "name": "unsupported-runtime",
                 "description": "External expert with unsupported native capabilities.",
-                "runtime": {"provider_name": "dsh"},
+                "runtime": {"provider_name": "codex"},
                 unsupported_field: [{"file": "unsupported.py"}],
             },
         )
@@ -1617,6 +1617,29 @@ def _write_src_zip(root: Path, kind: str, package_id: str) -> Path:
             if path.is_file():
                 zf.write(path, Path(src.name) / path.relative_to(src))
     return zip_path
+
+
+@pytest.mark.parametrize("provider_name", ["gemini", "dsh"])
+def test_install_imported_expert_lists_only_supported_providers(
+    extension_workspace: Path, tmp_path: Path, provider_name: str
+) -> None:
+    package_id = "external-expert"
+    manifest = _src_manifest(AGENT_TEMPLATES, package_id)
+    manifest["runtime"] = {"provider_name": provider_name}
+    zip_path = tmp_path / f"{package_id}.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr(f"{package_id}/manifest.json", json.dumps(manifest))
+        archive.writestr(f"{package_id}/README.md", "External expert.")
+        archive.writestr(f"{package_id}/persona/{package_id}.md", "# Persona")
+
+    imported = catalog.import_agent_template({"path": str(zip_path)})
+    with pytest.raises(ValueError) as error:
+        catalog.install_agent_template(imported)
+
+    assert str(error.value) == (
+        f"runtime.provider_name must be one of: claudecode, codex; got {provider_name!r}"
+    )
+    assert marketplace_entries(AGENT_TEMPLATES)[0]["installed"] is False
 
 
 class TestImportLocal:

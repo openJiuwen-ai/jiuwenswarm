@@ -435,7 +435,7 @@ async def test_a4p_rpc_recovers_and_resolves_canonical_chat_authorization(
     monkeypatch, legacy_mode, canonical_mode, decision,
 ) -> None:
     runtime = A4PRuntime({"a4p": {"enabled": True}})
-    monkeypatch.setattr(a4p_rpc, "is_a4p_enabled", lambda: True)
+    monkeypatch.setattr(a4p_rpc, "is_a4p_enabled", lambda *args, **kwargs: True)
     monkeypatch.setattr(a4p_rpc, "get_a4p_runtime", lambda: runtime)
 
     async def send_push(*_args, **_kwargs):
@@ -524,6 +524,50 @@ async def test_a4p_mode_alias_matching_preserves_route_isolation(
 
 
 @pytest.mark.asyncio
+async def test_a4p_route_match_skips_empty_inbound_dims_only(monkeypatch) -> None:
+    """Empty inbound app/agent dims may match; filled wrong dims must not."""
+    broker = WebAuthorizerBroker()
+
+    async def send_push(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(broker, "_send_push", send_push)
+    pending_route = AuthorizerRoute(
+        session_id="session-1",
+        app_id="default",
+        agent_ref_mode="agent.work.normal",
+        agent_ref_id="agent-1",
+    )
+    task = asyncio.create_task(broker.request_authorization(WebAuthorizationRequest(
+        request_id="intent-1", mandate={}, signing_options={},
+        ui_context={"sessionId": "session-1"}, route=pending_route,
+    )))
+    await asyncio.sleep(0)
+    try:
+        http_unknown = AuthorizerRoute(
+            session_id="session-1",
+            app_id="",
+            agent_ref_mode="",
+            agent_ref_id="",
+        )
+        assert broker.pending_for_route(http_unknown)["pending"]["requestId"] == "intent-1"
+        other_agent = AuthorizerRoute(
+            session_id="session-1",
+            app_id="default",
+            agent_ref_mode="agent.work.normal",
+            agent_ref_id="agent-2",
+        )
+        assert broker.pending_for_route(other_agent)["pending"] is None
+        assert broker.complete("intent-1", other_agent)["ok"] is False
+        assert broker.complete("intent-1", http_unknown)["ok"] is True
+        await task
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("extra", [{"signedMandate": {"untrusted": True}}, {"assertion": {"id": "untrusted"}}])
 async def test_a4p_complete_rpc_rejects_external_authorization(
     monkeypatch: pytest.MonkeyPatch, extra,
@@ -543,7 +587,7 @@ async def test_a4p_complete_rpc_rejects_external_authorization(
     class _Runtime:
         authorizer = _Authorizer()
 
-    monkeypatch.setattr(a4p_rpc, "is_a4p_enabled", lambda: True)
+    monkeypatch.setattr(a4p_rpc, "is_a4p_enabled", lambda *args, **kwargs: True)
     monkeypatch.setattr(a4p_rpc, "get_a4p_runtime", lambda: _Runtime())
 
     response = await a4p_rpc.dispatch_a4p_request(
@@ -579,7 +623,7 @@ async def test_a4p_pending_rpc_returns_only_current_route(
     class _Runtime:
         authorizer = _Authorizer()
 
-    monkeypatch.setattr(a4p_rpc, "is_a4p_enabled", lambda: True)
+    monkeypatch.setattr(a4p_rpc, "is_a4p_enabled", lambda *args, **kwargs: True)
     monkeypatch.setattr(a4p_rpc, "get_a4p_runtime", lambda: _Runtime())
     response = await a4p_rpc.dispatch_a4p_request(
         AgentRequest(
@@ -602,7 +646,7 @@ async def test_a4p_pending_rpc_returns_only_current_route(
 async def test_a4p_pending_rpc_clears_stale_card_when_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(a4p_rpc, "is_a4p_enabled", lambda: False)
+    monkeypatch.setattr(a4p_rpc, "is_a4p_enabled", lambda *args, **kwargs: False)
 
     response = await a4p_rpc.dispatch_a4p_request(
         AgentRequest(
@@ -1994,7 +2038,7 @@ async def test_a4p_partial_approval_bound_to_latest_mandate(monkeypatch):
 @pytest.mark.asyncio
 async def test_a4p_partial_rpc_reprepare_and_unknown_fields(monkeypatch):
     runtime, route, _, _, task, initial = await _start_partial_authorization(monkeypatch)
-    monkeypatch.setattr(a4p_rpc, "is_a4p_enabled", lambda: True)
+    monkeypatch.setattr(a4p_rpc, "is_a4p_enabled", lambda *args, **kwargs: True)
     monkeypatch.setattr(a4p_rpc, "get_a4p_runtime", lambda: runtime)
 
     def rpc(params):

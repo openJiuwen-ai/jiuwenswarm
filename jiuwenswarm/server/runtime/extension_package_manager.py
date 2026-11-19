@@ -97,9 +97,8 @@ _AGENT_TEMPLATE_KIND = "agent_templates"
 _AGENT_GROUP_KIND = "agent_groups"
 _PLUGIN_PACKAGE_KIND = "plugin_packages"
 _HUB_PREVIEW_ARCHIVE_LIMIT = 8
-_EXTERNAL_HARNESS_PROVIDERS = frozenset({"claudecode", "codex", "dsh"})
+_EXTERNAL_HARNESS_PROVIDERS = frozenset({"claudecode", "codex"})
 _EXTERNAL_HARNESS_UNSUPPORTED_FIELDS = ("tools", "rails", "subagents")
-_FORM_HARNESS_PROVIDERS = frozenset({"claudecode", "codex"})
 _EXTERNAL_HARNESS_TAG = {"zh": "三方Harness", "en": "External Harness"}
 
 
@@ -1888,8 +1887,8 @@ def _require_form_runtime(params: dict) -> dict[str, Any] | None:
     if not isinstance(runtime, dict):
         raise ValueError("missing or invalid runtime")
     provider_name = runtime.get("provider_name")
-    if provider_name not in _FORM_HARNESS_PROVIDERS:
-        allowed = ", ".join(sorted(_FORM_HARNESS_PROVIDERS))
+    if provider_name not in _EXTERNAL_HARNESS_PROVIDERS:
+        allowed = ", ".join(sorted(_EXTERNAL_HARNESS_PROVIDERS))
         raise ValueError(
             f"runtime.provider_name must be one of: {allowed}; got {provider_name!r}"
         )
@@ -2182,11 +2181,15 @@ def lifecycle_package_id(params: dict, kind: str) -> str:
 
 
 def _apply_list_source_filter(
-    cards: list[dict], params: dict | None
+    cards: list[dict],
+    params: dict | None,
+    *,
+    package_kind: str | None = None,
 ) -> list[dict]:
     """Filter list cards by the catalog/mine source contract.
     local: source is local or builtin and installed
     builtin: source is builtin
+    mine: plugins require installation; other equipment also includes local drafts
     """
     if not isinstance(params, dict):
         return cards
@@ -2198,11 +2201,13 @@ def _apply_list_source_filter(
     if raw == "builtin+hub":
         return [card for card in cards if card.get("source") in {"builtin", "hub"}]
     if raw == "mine":
-        return [
-            card
-            for card in cards
-            if card.get("source") == "local" or bool(card.get("installed"))
-        ]
+        mine_cards: list[dict] = []
+        for card in cards:
+            if bool(card.get("installed")):
+                mine_cards.append(card)
+            elif package_kind != _PLUGIN_PACKAGE_KIND and card.get("source") == "local":
+                mine_cards.append(card)
+        return mine_cards
     filtered: list[dict] = []
     for card in cards:
         source = card.get("source")
@@ -2338,7 +2343,7 @@ async def _list_equipment_with_hub(
 
     source_filter = params.get("filter") if isinstance(params, dict) else None
     if source_filter in {"local", "mine"}:
-        return _apply_list_source_filter(list(cards_by_id.values()), params)
+        return _apply_list_source_filter(list(cards_by_id.values()), params, package_kind=kind)
 
     query = str((params or {}).get("query") or "").strip()
     if query:
@@ -2384,7 +2389,7 @@ async def _list_equipment_with_hub(
                 hub_asset_kind,
                 exc_info=True,
             )
-            return _apply_list_source_filter(list(cards_by_id.values()), params)
+            return _apply_list_source_filter(list(cards_by_id.values()), params, package_kind=kind)
     if query:
         remote_items = [
             item
@@ -2433,7 +2438,7 @@ async def _list_equipment_with_hub(
             continue
         cards_by_id[item.asset_id] = _hub_list_card(item)
     cards = [cards_by_id[key] for key in sorted(cards_by_id)]
-    result = _apply_list_source_filter(cards, params)
+    result = _apply_list_source_filter(cards, params, package_kind=kind)
     if cache_state is not None:
         from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import CatalogCards
         return CatalogCards(result, cache_state)
@@ -2894,7 +2899,7 @@ def list_plugin_packages(params: dict | None = None) -> list[dict]:
         built_in_root=_built_in_root(_PLUGIN_PACKAGE_KIND),
         marketplace_by_id=market,
     )
-    return _apply_list_source_filter(cards, params)
+    return _apply_list_source_filter(cards, params, package_kind=_PLUGIN_PACKAGE_KIND)
 
 
 def show_agent_template(name: str) -> dict | None:

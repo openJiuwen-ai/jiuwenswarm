@@ -17,6 +17,9 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
     load_readable_global_pool,
     write_cold_start_pool,
 )
+from jiuwenswarm.agents.harness.common.recommendation.topic_sources import (
+    CORPUS_VERSION,
+)
 from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
     TopicStarterStore,
 )
@@ -45,7 +48,7 @@ def _trigger_key(*, work_mode: str = "work") -> dict:
         },
         model="test-model",
         generation_config_version="cfg",
-        corpus_version="topic-starter-corpus-v1",
+        corpus_version=CORPUS_VERSION,
         document_snapshot_version="documents:2026-11-11:v2",
         retrieval_config_version="retrieval",
         evidence_extractor_version="evidence",

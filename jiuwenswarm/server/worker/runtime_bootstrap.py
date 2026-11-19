@@ -107,6 +107,12 @@ async def _construct_runtime_server(
         raise extensions
     if isinstance(execution_code, BaseException):
         raise execution_code
+    # Model migration decrypts credentials through the registered crypto
+    # extension. Join registration before migrating, and migrate before any
+    # Runtime consumer or Runner starts.
+    from jiuwenswarm.common.multimodal_store import initialize_multimodal_models
+
+    await asyncio.to_thread(initialize_multimodal_models)
     logger.info(
         "[Worker] 扩展加载完成，共 %d 个 (elapsed %.2fs)",
         len(extension_manager.list_extensions()), telemetry.elapsed,

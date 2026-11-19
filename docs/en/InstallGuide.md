@@ -26,7 +26,7 @@ Desktop installers are pre-built for a specific platform and architecture. Confi
 | Windows | Windows 10 / 11 (64-bit) | x64 only | **Administrator privileges required** to run the installer (`PrivilegesRequired=admin`) | 2 CPU cores, 4 GB RAM, 2 GB free disk |
 | macOS | macOS 11 (Big Sur) or newer | arm64 (Apple Silicon) only | On first launch, right-click the app in Finder and choose "Open" to pass GateKeeper | 2 CPU cores, 4 GB RAM, 2 GB free disk |
 
-> 💡 **Resources**: The values above are an empirical lower bound for a single-machine local run (Web UI plus at least one model channel). If you also enable browser automation (Playwright), vector retrieval (ChromaDB/FAISS), or connect multiple IM channels, 8 GB+ RAM is recommended. Actual cost is dominated by the configured models and concurrency.
+> 💡 **Resources**: The values above are an empirical lower bound for a single-machine local run (Web UI plus at least one model channel). If you also enable browser automation (Playwright), vector retrieval (ChromaDB), or connect multiple IM channels, 8 GB+ RAM is recommended. Actual cost is dominated by the configured models and concurrency.
 
 ##### Architecture note (macOS)
 

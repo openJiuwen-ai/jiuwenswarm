@@ -703,7 +703,7 @@ async def _run_interactive_loop(
             except Exception:
                 logger.warning("Unexpected error while receiving", exc_info=True)
                 write_stderr(
-                    "Error receiving response. Check ~/.jiuwenswarm/agent/.logs/full.log"
+                    "Error receiving response. Check ~/.jiuwenswarm/infra/logs/agent/full.log"
                     " (gateway errors: gateway.log in the same dir"
                     " or $AGENTOS_GATEWAY_LOG_DIR)\n"
                 )

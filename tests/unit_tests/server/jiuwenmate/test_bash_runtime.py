@@ -3,9 +3,15 @@
 import asyncio
 import importlib
 import os
+import sys
 from types import SimpleNamespace
 
 import pytest
+
+
+def _sh(command: str) -> str:
+    """Run the command with this interpreter. The host may have no ``python`` binary."""
+    return command.replace("python -c", f"{sys.executable} -c", 1)
 
 
 def module():
@@ -39,7 +45,7 @@ def tool(tmp_path, agent="agent-a"):
 @pytest.mark.asyncio
 async def test_published_agent_can_execute_bash_in_its_office(tmp_path):
     bash, session = tool(tmp_path)
-    result = await bash.invoke({"command": 'python -c "import os; from pathlib import Path; Path(\'marker.txt\').write_text(os.getcwd())"'})
+    result = await bash.invoke({"command": _sh('python -c "import os; from pathlib import Path; Path(\'marker.txt\').write_text(os.getcwd())"')})
     assert result.success, result
     assert (session / "marker.txt").read_text() == str(session)
 
@@ -48,7 +54,7 @@ async def test_published_agent_can_execute_bash_in_its_office(tmp_path):
 async def test_bash_defaults_to_session_and_exposes_session_output_directory(tmp_path):
     bash, session = tool(tmp_path)
     command = '''python -c "import os; from pathlib import Path; Path('cwd.txt').write_text(os.getcwd()); Path('draft.md').write_text('final'); Path(os.environ['JIUWENMATE_OUTPUT_DIR'], 'final.md').write_text(Path('draft.md').read_text()); Path('output.txt').write_text(os.environ['JIUWENMATE_OUTPUT_DIR'])"'''
-    result = await bash.invoke({"command": command})
+    result = await bash.invoke({"command": _sh(command)})
     assert result.success, result
     assert (session / "cwd.txt").read_text() == str(session)
     assert (session / "output.txt").read_text() == str(session / "output")
@@ -61,7 +67,7 @@ async def test_relative_bash_workdir_is_resolved_from_the_current_session(tmp_pa
     nested = session / "nested"
     nested.mkdir()
     command = '''python -c "import os; from pathlib import Path; Path('cwd.txt').write_text(os.getcwd())"'''
-    result = await bash.invoke({"command": command, "workdir": "nested"})
+    result = await bash.invoke({"command": _sh(command), "workdir": "nested"})
     assert result.success, result
     assert (nested / "cwd.txt").read_text() == str(nested)
 
@@ -73,7 +79,7 @@ async def test_concurrent_bash_uses_separate_cli_environment(tmp_path):
     a, a_dir = tool(tmp_path, "agent-a")
     b, b_dir = tool(tmp_path, "agent-b")
     command = 'python -c "import os; from pathlib import Path; Path(\'env.txt\').write_text(os.environ[\'LARKSUITE_CLI_CONFIG_DIR\'])"'
-    results = await asyncio.gather(a.invoke({"command": command}), b.invoke({"command": command}))
+    results = await asyncio.gather(a.invoke({"command": _sh(command)}), b.invoke({"command": _sh(command)}))
     assert all(result.success for result in results), results
     assert "agent-a" in (a_dir / "env.txt").read_text()
     assert "agent-b" in (b_dir / "env.txt").read_text()
@@ -84,7 +90,7 @@ async def test_concurrent_bash_uses_separate_cli_environment(tmp_path):
 @pytest.mark.asyncio
 async def test_bash_timeout_is_not_transparently_retried(tmp_path):
     bash, office = tool(tmp_path)
-    result = await bash.invoke({"command": 'python -c "from pathlib import Path; import time; p=Path(\'attempts\'); p.write_text(p.read_text()+\'x\' if p.exists() else \'x\'); time.sleep(5)"', "timeout": 1})
+    result = await bash.invoke({"command": _sh('python -c "from pathlib import Path; import time; p=Path(\'attempts\'); p.write_text(p.read_text()+\'x\' if p.exists() else \'x\'); time.sleep(5)"'), "timeout": 1})
     assert not result.success
     assert (office / "attempts").read_text() == "x"
     assert bash.card.idempotent is not True
@@ -93,7 +99,7 @@ async def test_bash_timeout_is_not_transparently_retried(tmp_path):
 @pytest.mark.asyncio
 async def test_timeout_stops_children_before_their_late_side_effect(tmp_path):
     bash, office = tool(tmp_path)
-    result = await bash.invoke({"command": 'python -c "from pathlib import Path; import time; time.sleep(2); Path(\'late-side-effect\').touch()"', "timeout": 1})
+    result = await bash.invoke({"command": _sh('python -c "from pathlib import Path; import time; time.sleep(2); Path(\'late-side-effect\').touch()"'), "timeout": 1})
     assert not result.success
     await asyncio.sleep(1.2)
     assert not (office / "late-side-effect").exists()
@@ -102,7 +108,7 @@ async def test_timeout_stops_children_before_their_late_side_effect(tmp_path):
 @pytest.mark.asyncio
 async def test_stream_uses_the_same_environment(tmp_path):
     bash, office = tool(tmp_path)
-    chunks = [chunk async for chunk in bash.stream({"command": 'python -c "from pathlib import Path; Path(\'stream.txt\').write_text(\'ok\')"'})]
+    chunks = [chunk async for chunk in bash.stream({"command": _sh('python -c "from pathlib import Path; Path(\'stream.txt\').write_text(\'ok\')"')})]
     assert chunks[-1].success
     assert (office / "stream.txt").read_text() == "ok"
 
@@ -110,7 +116,7 @@ async def test_stream_uses_the_same_environment(tmp_path):
 @pytest.mark.asyncio
 async def test_background_process_is_stopped_at_invocation_cleanup(tmp_path):
     bash, office = tool(tmp_path)
-    result = await bash.invoke({"command": 'python -c "import time; from pathlib import Path; Path(\'started\').touch(); time.sleep(6); Path(\'leaked\').touch()"', "run_in_background": True})
+    result = await bash.invoke({"command": _sh('python -c "import time; from pathlib import Path; Path(\'started\').touch(); time.sleep(6); Path(\'leaked\').touch()"'), "run_in_background": True})
     assert result.success, result
     for _ in range(100):
         if (office / "started").exists():

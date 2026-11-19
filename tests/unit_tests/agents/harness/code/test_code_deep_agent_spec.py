@@ -330,7 +330,7 @@ async def test_code_adapter_builds_caller_supplied_spec_directly(
         "experimental": {"multi_model_collaboration_enabled": True},
         "react": {"agent_name": "config-agent"},
         "modes": {"code": {"rails": [], "tools": []}},
-        "symphony": {"enabled": True},
+        "symphony": {"orchestration": {"enabled": True}},
     }
     custom_model = _model()
     aggregator = _model()

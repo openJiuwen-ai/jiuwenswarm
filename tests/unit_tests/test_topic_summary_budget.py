@@ -348,7 +348,7 @@ def test_store_prune_keeps_newest_counts_and_drops_training(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_summarize_sessions_splits_a_long_first_preparation() -> None:
+async def test_summarize_sessions_splits_a_long_first_preparation(monkeypatch) -> None:
     messages = tuple(
         _message(f"s{index}", ordinal, "用" * 400, "答" * 400)
         for index in range(4)
@@ -356,7 +356,9 @@ async def test_summarize_sessions_splits_a_long_first_preparation() -> None:
     )
     snapshot = _snapshot(messages)
     calls: list[dict[str, Any]] = []
-    counter = pipeline.history.StageTokenCounter("gpt-4o")
+    # Exercise batch planning without downloading tokenizer assets.
+    counter = _CharCounter()
+    monkeypatch.setattr(pipeline.history, "StageTokenCounter", lambda _model: counter)
     payloads = [
         pipeline._session_model_payload(
             f"s{index}",

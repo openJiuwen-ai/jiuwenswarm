@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from openjiuwen.symphony.flow import PackageReviewGate, SkillPackAdapter, SymphonyFlowEngine
-from openjiuwen.symphony.orchestration import SymphonyFlowConfig
+from openjiuwen.symphony.flow import PackageReviewGate
+from openjiuwen.symphony import SymphonyRuntime
 from openjiuwen.core.single_agent.rail.base import ToolCallInputs
 
 from jiuwenswarm.agents.harness.common.tools.skillpack_toolkit import SkillPackToolkit
@@ -29,6 +29,7 @@ from jiuwenswarm.runtime.symphony.skillpack_candidates import (
     CandidateEvidenceScope, CandidateScopeStore, ScopedCandidateStore, annotate_member_types, member_snapshot,
 )
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+from jiuwenswarm.server.runtime.skill.skillpack import load_skillpack
 from jiuwenswarm.runtime.symphony.experience import _EdgeEvaluationModelAdapter
 from jiuwenswarm.common.host_services import install_runtime_push_handler, restore_runtime_push_handler
 
@@ -40,7 +41,7 @@ class Approver:
 
 @pytest.fixture(autouse=True)
 def isolated_discovery_config(monkeypatch):
-    config = {"symphony": {"evolution": {"flow": {"enabled": False}}}}
+    config = {"symphony": {"orchestration": {"experience": {"enabled": False}}}}
     monkeypatch.setattr("jiuwenswarm.common.config.get_config", lambda: config)
     return config
 
@@ -89,7 +90,7 @@ def _execution(trace_id):
 def environment(tmp_path, monkeypatch, isolated_discovery_config):
     from jiuwenswarm.common.utils import get_agent_workspace_dir
 
-    isolated_discovery_config["symphony"]["evolution"]["flow"]["enabled"] = True
+    isolated_discovery_config["symphony"]["orchestration"]["experience"]["enabled"] = True
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path / "data"))
     skills = tmp_path / "skills"
     for name in ("search", "writer"):
@@ -97,21 +98,20 @@ def environment(tmp_path, monkeypatch, isolated_discovery_config):
         directory.mkdir(parents=True)
         (directory / "SKILL.md").write_text(f"---\nname: {name}\ndescription: ordinary member\n---\nDo the task.\n")
     config = symphony_config_from_dict({
-        "enabled": True, "paths": {"skills_root": str(skills), "graph_dir": str(tmp_path / "graph")},
-        "evolution": {"enabled": True},
+        "capability": {"sources": [{"type": "skill", "root": str(skills)}]}, "storage": {"artifact_root": str(get_agent_workspace_dir() / "symphony" / "runtime")},
+        "orchestration": {"enabled": True, "experience": {"enabled": True}},
     })
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config)
-    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda: [])
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda **_kwargs: [])
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.trusted_session_user", lambda session_id: "")
-    flow = SymphonyFlowEngine(
-        get_agent_workspace_dir() / "symphony" / "flow", config=SymphonyFlowConfig(min_successes=3),
-        gate=PackageReviewGate(review_agent=Approver()), skill_adapter=SkillPackAdapter(),
-    )
+    runtime = SymphonyRuntime(None, config)
+    flow = runtime.flow
+    flow._get_engine().gate = PackageReviewGate(review_agent=Approver())
 
     async def submit(planned, execution, *, session_id, capture_mode):
         return SimpleNamespace(new_candidates=await flow.submit(execution))
 
-    runtime = SimpleNamespace(flow_engine=flow, submit_evolution=submit)
+    runtime.submit_evolution = submit
     service = SwarmSymphonyService()
     monkeypatch.setattr(service, "_runtime_for", lambda config: runtime)
     monkeypatch.setattr(service, "runtime", lambda: runtime)
@@ -129,11 +129,11 @@ async def _collect(service, session="session-a"):
 def _disable_discovery(monkeypatch, config):
     from jiuwenswarm.runtime.symphony import service as service_module
 
-    config["symphony"]["evolution"]["flow"]["enabled"] = False
+    config["symphony"]["orchestration"]["experience"]["enabled"] = False
     current = service_module.load_symphony_config()
-    disabled = replace(current, evolution=replace(
-        current.evolution, flow=replace(current.evolution.flow, enabled=False),
-    ))
+    disabled_values = current.model_dump()
+    disabled_values["orchestration"]["experience"]["enabled"] = False
+    disabled = symphony_config_from_dict(disabled_values)
     monkeypatch.setattr(service_module, "load_symphony_config", lambda: disabled)
 
 
@@ -273,7 +273,7 @@ async def test_switch_off_during_review_does_not_offer_a_new_confirmation(
     async def prepare_and_disable(**kwargs):
         result = await original(**kwargs)
         _disable_discovery(monkeypatch, isolated_discovery_config)
-        monkeypatch.setattr(service, "runtime", lambda: SimpleNamespace(flow_engine=None))
+        monkeypatch.setattr(service, "runtime", lambda: SimpleNamespace(flow=None))
         return result
 
     monkeypatch.setattr(service, "_prepare_skillpack_candidates", prepare_and_disable)
@@ -292,7 +292,7 @@ async def test_reviewed_candidate_does_not_offer_without_flow(environment, monke
     await _collect(service)
     candidate = (await service.prepare_skillpack_candidates(session_id="session-a"))["candidates"][0]
     service._notify_candidate.reset_mock()
-    monkeypatch.setattr(service, "runtime", lambda: SimpleNamespace(flow_engine=None))
+    monkeypatch.setattr(service, "runtime", lambda: SimpleNamespace(flow=None))
     if phase == "request":
         result = await service.request_skillpack_candidate(
             recipe_id=candidate["recipe_id"], recipe_version=candidate["recipe_version"],
@@ -369,7 +369,7 @@ async def test_scope_cache_close_failure_retains_worker_and_limit(environment):
 
     service, flow, skills = environment
     scope = CandidateEvidenceScope.resolve("session-a", "", "current_session", None)
-    config = SimpleNamespace(paths=SimpleNamespace(skills_root=skills))
+    config = symphony_config_from_dict({"capability": {"sources": [{"type": "skill", "root": skills}]}})
     retired = SimpleNamespace(close=AsyncMock(side_effect=RuntimeError("close failed")))
     for index in range(8):
         service._skillpack_candidate_flows[("old", str(index))] = retired
@@ -476,7 +476,7 @@ async def test_members_changed_during_review_cannot_reach_install(environment, m
         if change == "content":
             (skills / "writer" / "run.py").write_text("new implementation after confirmation")
         else:
-            monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda: ["writer"])
+            monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda **_kwargs: ["writer"])
         return prepared
 
     monkeypatch.setattr(flow, "review_and_prepare_install", review_with_concurrent_change)
@@ -514,7 +514,7 @@ async def test_tool_accepts_only_intent_and_server_candidate_references(environm
 @pytest.mark.parametrize("source_refs", ["trace-1", [], ["trace-1"] * 101, [None], [{}], ["  "], ["x" * 257]])
 @pytest.mark.asyncio
 async def test_tool_rejects_invalid_source_refs_without_calling_service(isolated_discovery_config, source_refs):
-    isolated_discovery_config["symphony"]["evolution"]["flow"]["enabled"] = True
+    isolated_discovery_config["symphony"]["orchestration"]["experience"]["enabled"] = True
     service = SimpleNamespace(prepare_skillpack_candidates=AsyncMock())
     token = bind_session_messaging_route(session_id="session-a", request_id="chat-1", user_id="user-a")
     try:
@@ -527,7 +527,7 @@ async def test_tool_rejects_invalid_source_refs_without_calling_service(isolated
 
 @pytest.mark.asyncio
 async def test_distill_route_survives_supervisor_and_parallel_tools(isolated_discovery_config):
-    isolated_discovery_config["symphony"]["evolution"]["flow"]["enabled"] = True
+    isolated_discovery_config["symphony"]["orchestration"]["experience"]["enabled"] = True
     service = SimpleNamespace(prepare_skillpack_candidates=AsyncMock(return_value={"success": True, "candidates": []}))
     toolkit = SkillPackToolkit(service)
     rail = SessionMessagingRouteRail()
@@ -585,7 +585,7 @@ def test_tool_is_absent_by_default(monkeypatch):
 def test_tool_registration_follows_discovery_switch(monkeypatch, symphony_enabled, discovery_enabled):
     monkeypatch.setenv("SKILLPACK_PRODUCTIZATION_ENABLED", str(not discovery_enabled).lower())
     tools = SymphonyToolkit().get_tools({"symphony": {
-        "enabled": symphony_enabled, "evolution": {"flow": {"enabled": discovery_enabled}},
+        "orchestration": {"enabled": symphony_enabled, "experience": {"enabled": discovery_enabled}},
     }})
     assert ("skillpack_distill" in [tool.card.name for tool in tools]) is discovery_enabled
 
@@ -692,7 +692,7 @@ def _personal_evidence_scope(session_id, user_id, scope, source_refs):
 
     return CandidateEvidenceScope.resolve(
         session_id, user_id, scope, source_refs,
-        flow_root=get_agent_workspace_dir() / "symphony" / "flow",
+        flow_root=get_agent_workspace_dir() / "symphony" / "runtime" / "flow",
     )
 
 
@@ -969,7 +969,7 @@ def test_local_scope_rejects_external_or_symlinked_flow(local_web_sessions, tmp_
     identity = CandidateEvidenceScope.resolve("local-b", "", "current_user", None, flow_root=external)
     assert identity.scope == "current_session"
     assert not identity.allows("trace-a", {"session_id": "local-a", "user_id": ""})
-    managed = get_agent_workspace_dir() / "symphony" / "flow"
+    managed = get_agent_workspace_dir() / "symphony" / "runtime" / "flow"
     managed.parent.mkdir(parents=True, exist_ok=True)
     managed.symlink_to(external, target_is_directory=True)
     assert not _personal_evidence_scope("local-b", "", "current_user", None).local_workspace
@@ -979,7 +979,7 @@ def test_local_scope_rejects_external_or_symlinked_flow(local_web_sessions, tmp_
 def test_local_scope_uses_only_managed_partition(local_web_sessions, partition, allowed):
     from jiuwenswarm.common.utils import get_user_workspace_dir
 
-    flow_root = get_user_workspace_dir() / partition / "agent" / "workspace" / "symphony" / "flow"
+    flow_root = get_user_workspace_dir() / partition / "agent" / "workspace" / "symphony" / "runtime" / "flow"
     flow_root.mkdir(parents=True, exist_ok=True)
     identity = CandidateEvidenceScope.resolve("local-b", "", "current_user", None, flow_root=flow_root)
     assert bool(identity.local_workspace) is allowed
@@ -1007,7 +1007,7 @@ async def test_shared_flow_cannot_borrow_other_local_roots_matching_session_ids(
     for index in range(3):
         init_session_metadata(session_id=f"shared-session-{index}", channel_id="web")
     restarted = SwarmSymphonyService()
-    monkeypatch.setattr(restarted, "_runtime_for", lambda _config: SimpleNamespace(flow_engine=source))
+    monkeypatch.setattr(restarted, "_runtime_for", lambda _config: SimpleNamespace(flow=source))
     result = await restarted.prepare_skillpack_candidates(session_id="shared-session-2")
     assert result["scope"] == "current_session"
     assert result["candidates"] == []
@@ -1067,8 +1067,8 @@ async def test_local_cross_session_history_and_confirmation_survive_restart(
     )
     await service.close()
     restarted = SwarmSymphonyService()
-    monkeypatch.setattr(restarted, "runtime", lambda: SimpleNamespace(flow_engine=source))
-    monkeypatch.setattr(restarted, "_runtime_for", lambda _config: SimpleNamespace(flow_engine=source))
+    monkeypatch.setattr(restarted, "runtime", lambda: SimpleNamespace(flow=source))
+    monkeypatch.setattr(restarted, "_runtime_for", lambda _config: SimpleNamespace(flow=source))
     arguments = {
         "request_id": request["request_id"], "recipe_id": candidate["recipe_id"],
         "recipe_version": candidate["recipe_version"], "package_id": None, "integrity": None,
@@ -1105,6 +1105,56 @@ async def test_confirmed_candidate_installs_through_real_skill_manager(environme
         package_id=None, integrity=None, skill_manager=manager, session_id="session-a",
     )
     assert replay["installed"] and replay["replayed"] and not replay["newly_installed"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing_kind", ["skill", "skillpack"])
+async def test_name_conflict_preserves_existing_skill_and_allows_install_retry(
+    environment, allow_macos_pytest_temp_sources, existing_kind,
+):
+    service, source, skills = environment
+    await _collect(service)
+    candidate = (await service.prepare_skillpack_candidates(session_id="session-a"))["candidates"][0]
+    existing = skills / candidate["name"]
+    existing.mkdir()
+    if existing_kind == "skillpack":
+        # A different member order is a different combination with the same name.
+        document = candidate["root_document"].replace("search", "temporary-member")
+        document = document.replace("writer", "search").replace("temporary-member", "writer")
+        renamed = candidate["name"].replace("writer", "search")
+        document = document.replace(f"name: {renamed}", f"name: {candidate['name']}")
+    else:
+        document = f"---\nname: {candidate['name']}\ndescription: existing ordinary skill\n---\nKeep this skill.\n"
+    (existing / "SKILL.md").write_text(document, encoding="utf-8")
+    if existing_kind == "skillpack":
+        definition = load_skillpack(existing, expected_name=candidate["name"])
+        assert definition.members == ("writer", "search")
+    (existing / "user-notes.txt").write_text("Keep this content unchanged.", encoding="utf-8")
+    original = {path.name: path.read_bytes() for path in existing.iterdir()}
+    request = await service.request_skillpack_candidate(
+        recipe_id=candidate["recipe_id"], recipe_version=candidate["recipe_version"],
+        session_id="session-a", channel_id="web",
+    )
+    arguments = {
+        "request_id": request["request_id"], "recipe_id": candidate["recipe_id"],
+        "recipe_version": candidate["recipe_version"], "package_id": None, "integrity": None,
+        "skill_manager": SkillManager(workspace_dir=str(skills.parent)), "session_id": "session-a",
+    }
+    result = await service.install_candidate(**arguments)
+    assert result == {"installed": False, "reason": "skill_already_exists"}
+    assert {path.name: path.read_bytes() for path in existing.iterdir()} == original
+    assert request["request_id"] not in service._install_receipts
+    scoped = next(iter(service._skillpack_candidate_flows.values()))
+    assert not scoped.store.is_candidate_acknowledged(candidate["recipe_id"], candidate["recipe_version"])
+    assert CandidateScopeStore(source.store.root).approval(request["request_id"])
+
+    # Moving the conflicting directory away is an explicit user action; retry
+    # reuses the approval but still performs current member/evidence validation.
+    existing.rename(skills.parent / "preserved-existing-skill")
+    installed = await service.install_candidate(**arguments)
+    assert installed["installed"] and installed["newly_installed"]
+    assert (existing / "SKILL.md").is_file()
+    assert {path.name: path.read_bytes() for path in (skills.parent / "preserved-existing-skill").iterdir()} == original
 
 
 @pytest.mark.asyncio
@@ -1314,8 +1364,8 @@ async def test_scoped_confirmation_and_receipt_survive_service_restart(
         assert (await service.install_candidate(**arguments))["installed"]
     await service.close()
     restarted = SwarmSymphonyService()
-    monkeypatch.setattr(restarted, "runtime", lambda: SimpleNamespace(flow_engine=source))
-    monkeypatch.setattr(restarted, "_runtime_for", lambda _config: SimpleNamespace(flow_engine=source))
+    monkeypatch.setattr(restarted, "runtime", lambda: SimpleNamespace(flow=source))
+    monkeypatch.setattr(restarted, "_runtime_for", lambda _config: SimpleNamespace(flow=source))
     result = await restarted.install_candidate(**arguments)
     assert result["installed"]
     assert result["replayed"] is installed_before_restart

@@ -104,9 +104,9 @@ WORKSPACE_PROMPT = (
 
 # Feishu IM accepts uploaded files up to 30 MB, so no shared file may exceed it.
 SHARE_FILE_MAX_BYTES = 30_000_000
-# Formal execution refuses a Spec that omits the capacity check. A model entry's
-# own positive context window and output limit are kept; otherwise the host uses
-# the fixed 256K window and reserves 8192 tokens for output plus a 1024 margin.
+# Keep capacity accounting separate from the provider's output limit. When no
+# output limit is configured, reserve 8192 tokens locally without sending that
+# reserve as max_tokens; the provider keeps its default, as in personal mode.
 FORMAL_OUTPUT_RESERVE_TOKENS = 8192
 FORMAL_CAPACITY_MARGIN_TOKENS = 1024
 
@@ -123,6 +123,9 @@ class ModelProvider(Protocol):
 
     def resolve(self, selection: str, *, client_id: str) -> TeamModelConfig:
         """Return the full model configuration; raise PersistentAgentError if it cannot be resolved."""
+
+    def available_selection(self, selection: str) -> str | None:
+        """A selection that resolves now: ``selection`` itself, the same model at a new position, or the default."""
 
 
 class ConfiguredModelProvider:
@@ -168,6 +171,17 @@ class ConfiguredModelProvider:
         _, catalog = self._catalog()
         return catalog.current_selection or None
 
+    def available_selection(self, selection: str) -> str | None:
+        _, catalog = self._catalog()
+        if any(item.selection_key == selection for item in catalog.models):
+            return selection
+        # Removing an earlier entry shifts ``name#index``; an unambiguous name still means the same model.
+        name = selection.rpartition("#")[0] or selection
+        same = [item.selection_key for item in catalog.models if item.model_name == name]
+        if len(same) == 1:
+            return same[0]
+        return catalog.current_selection or None
+
     def resolve(self, selection: str, *, client_id: str) -> TeamModelConfig:
         from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
         from jiuwenswarm.runtime.model_catalog import ModelCatalogError, resolve_model_selection
@@ -198,19 +212,20 @@ def _positive_token_count(value: Any) -> int | None:
 
 
 def formal_model_capacity(model: TeamModelConfig) -> tuple[TeamModelConfig, int, int]:
-    """Fill the four values formal execution requires, keeping a configured output limit.
+    """Resolve capacity accounting without imposing an unconfigured output limit.
 
     Returns the model, the input limit, and the safety margin. The input limit is the
     context window minus the output reserve and the margin.
     """
     request = model.model_request_config or ModelRequestConfig()
     window = _positive_token_count(request.context_window) or DEFAULT_CONTEXT_WINDOW_TOKENS
-    reserve = _positive_token_count(request.max_tokens)
+    output_limit = _positive_token_count(request.max_tokens)
+    reserve = output_limit
     if reserve is None:
         reserve = min(FORMAL_OUTPUT_RESERVE_TOKENS, window - FORMAL_CAPACITY_MARGIN_TOKENS - 1)
     if reserve is None or reserve <= 0 or reserve + FORMAL_CAPACITY_MARGIN_TOKENS >= window:
         raise PersistentAgentError("model capacity leaves no room for input", code="INVALID_CONFIG")
-    request = request.model_copy(update={"context_window": window, "max_tokens": reserve})
+    request = request.model_copy(update={"context_window": window, "max_tokens": output_limit})
     return (
         model.model_copy(update={"model_request_config": request}),
         window - reserve - FORMAL_CAPACITY_MARGIN_TOKENS,
@@ -542,7 +557,10 @@ class PersistentAgentService:
                 if definition.has_unpublished_changes and not initializing:
                     applied = False
                     continue
-                self.publish(namespace_id, definition.agent_id, expected_revision=definition.revision, models=models)
+                self.publish(
+                    namespace_id, definition.agent_id, expected_revision=definition.revision, models=models,
+                    replace_model=None if initializing else self._replacement_model(definition, models),
+                )
             except Exception as exc:
                 applied = False
                 code = exc.code if isinstance(exc, PersistentAgentError) else type(exc).__name__
@@ -550,6 +568,27 @@ class PersistentAgentService:
                     "[JiuwenMate] colleague kept its version: agent=%s code=%s", definition.agent_id, code
                 )
         return applied
+
+    def _replacement_model(self, definition: ColleagueDefinition, models: ModelProvider | None) -> str | None:
+        """The model a published colleague switches to once its own was removed; ``None`` keeps the selection."""
+        provider = models or self._models
+        selection = definition.settings.capabilities.model
+        if selection is None:
+            return None
+        try:
+            provider.resolve(selection, client_id=f"jiuwenmate:{definition.agent_id}")
+        except PersistentAgentError as exc:
+            if exc.code != "MODEL_NOT_FOUND":
+                raise
+            replacement = provider.available_selection(selection)
+            if replacement is None or replacement == selection:
+                return None
+            logger.info(
+                "[JiuwenMate] colleague model was removed, switching: agent=%s from=%s to=%s",
+                definition.agent_id, selection, replacement,
+            )
+            return replacement
+        return None
 
     def list_colleagues(self, namespace_id: str) -> list[ColleagueView]:
         """The visible colleague configurations; their IM agents are not listed."""
@@ -679,11 +718,13 @@ class PersistentAgentService:
     def publish(
         self, namespace_id: str, agent_id: str, *,
         expected_revision: int | None = None, models: ModelProvider | None = None,
+        replace_model: str | None = None,
     ) -> ConfigVersionView:
         """Freeze the current settings as the version new Requests use; unchanged settings keep the version.
 
         Every agent of the colleague is switched in one transaction. If any of them cannot be
         published, or the colleague changed meanwhile, all of them keep their versions.
+        ``replace_model`` is saved as the selected model in that same transaction.
         """
         definition = self._require_config(namespace_id, agent_id)
         if expected_revision is not None and definition.revision != expected_revision:
@@ -697,7 +738,9 @@ class PersistentAgentService:
                     "configure a model before initializing this employee", code="MODEL_NOT_CONFIGURED",
                 )
             settings = replace(settings, capabilities=replace(settings.capabilities, model=selection))
-        initialize_model = initializing and settings.capabilities.model != definition.settings.capabilities.model
+        elif replace_model is not None:
+            settings = replace(settings, capabilities=replace(settings.capabilities, model=replace_model))
+        model_changed = settings.capabilities.model != definition.settings.capabilities.model
         if settings.capabilities.model is None:
             raise PersistentAgentError("choose a model before publishing", code="MODEL_NOT_CONFIGURED")
         settings = settings.with_persona(self._templates.read_persona(agent_id))
@@ -711,7 +754,8 @@ class PersistentAgentService:
         self._repository.publish_configuration(
             namespace_id, agent_id, revision=definition.revision, published_settings=settings, changes=changes,
             published_at=self._clock(),
-            initialize_model=initialize_model,
+            initialize_model=initializing and model_changed,
+            replace_model=not initializing and model_changed,
         )
         web = changes[0][2]
         version = definition.current_version if web is None else web.config_version

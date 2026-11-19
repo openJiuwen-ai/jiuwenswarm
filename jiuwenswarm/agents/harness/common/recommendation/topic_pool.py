@@ -14,8 +14,6 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
-logger = logging.getLogger(__name__)
-
 from jiuwenswarm.agents.harness.common.recommendation.topic_history import (
     apply_negative_preferences,
     filter_distinct_personalized_candidates,
@@ -26,6 +24,10 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_model import (
 from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
     TopicStarterStore,
 )
+
+from .topic_primitives import plain_int as _plain_int
+
+logger = logging.getLogger(__name__)
 
 POLICY_ID = "topic-starter-mvp-v5"
 PAYLOAD_VERSION = "topic-starter-pool-v1"
@@ -77,11 +79,6 @@ _MANIFEST_REQUIRED_FIELDS = frozenset(
         "payload_version",
     }
 )
-
-
-def _plain_int(value: Any) -> bool:
-    # bool is an int subclass; a JSON boolean is never a version or a count.
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def build_generation_trigger_key(
@@ -691,6 +688,7 @@ class BackgroundGenerationCoordinator:
         grounding_evidence_receipt: dict[str, Any] | None = None,
         external_invocation_audit: dict[str, Any] | None = None,
         rid_result: dict[str, Any] | None = None,
+        failure_cause: dict[str, Any] | None = None,
     ) -> None:
         event_id = uuid.uuid4().hex
         self.store.record_event(
@@ -722,6 +720,7 @@ class BackgroundGenerationCoordinator:
                         else {}
                     ),
                     **({"rid_result": rid_result} if rid_result is not None else {}),
+                    **({"failure_cause": failure_cause} if failure_cause is not None else {}),
                 },
                 "created_at": time.time(),
             }
@@ -888,6 +887,24 @@ class BackgroundGenerationCoordinator:
                     external_invocation_audit=external_invocation_audit,
                 )
                 return "abstained"
+            if result.failure_reason:
+                # A failed run has no cards; record why instead of letting the
+                # empty-card gate mislabel it as expiry.
+                manifest = result.manifest if isinstance(result.manifest, dict) else {}
+                failure_cause = manifest.get("failure_cause")
+                self.record_generation_event(
+                    "background_generation_rejected",
+                    trigger_key,
+                    generation_attempt_id=generation_attempt_id,
+                    reason=result.failure_reason,
+                    grounding_decision_receipt=grounding_decision_receipt,
+                    grounding_evidence_receipt=grounding_evidence_receipt,
+                    external_invocation_audit=external_invocation_audit,
+                    failure_cause=(
+                        dict(failure_cause) if isinstance(failure_cause, dict) else None
+                    ),
+                )
+                return "background_generation_rejected"
             write_started_at = time.time()
             live_cards, live_manifest = drop_expired_pool_cards(
                 list(result.cards),

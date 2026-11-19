@@ -184,7 +184,7 @@ async def test_cold_create_passes_only_explicit_gp(
     kwargs = create.call_args.kwargs
     spec = _gp(kwargs["subagents"])
     assert kwargs["add_general_purpose_agent"] is False
-    assert spec.max_iterations == 100
+    assert spec.max_iterations == 1000
     assert spec.rails is not None and spec.rails[1] is ordinary
     assert spec.workspace is kwargs["workspace"]
     assert spec.sys_operation is kwargs["sys_operation"] is sys_operation
@@ -214,7 +214,7 @@ def _build_gp(
 def test_general_purpose_inherits_former_generic_cap_when_unconfigured() -> None:
     spec = _build_gp({"subagents": {"general_agent": {"enabled": True}}})
 
-    assert spec.max_iterations == 100
+    assert spec.max_iterations == 1000
 
 
 def test_general_purpose_inherits_configured_generic_cap() -> None:

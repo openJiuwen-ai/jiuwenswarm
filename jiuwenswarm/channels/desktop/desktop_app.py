@@ -52,6 +52,8 @@ from jiuwenswarm.common.startup_diagnostics import (
 )
 from jiuwenswarm.common.utils import (
     get_user_workspace_dir,
+    get_config_dir,
+    get_infra_data_dir,
     get_logs_dir,
     prepare_runtime_workspace,
     wait_for_pid_exit,
@@ -82,6 +84,8 @@ UPDATE_HELPER_FLAG = "--desktop-install-update"
 DESKTOP_ENV_FLAG = "JIUWENSWARM_DESKTOP"
 STARTUP_TIMEOUT_SECONDS = 120.0
 STARTUP_DOCTOR_TIMEOUT_SECONDS = DOCTOR_TIMEOUT_SECONDS + 15.0
+DESKTOP_SHUTDOWN_TIMEOUT_SECONDS = 30.0
+DESKTOP_SHUTDOWN_GRACE_SECONDS = 5.0
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 DESKTOP_BLOB_CHUNK_SIZE = 1024 * 1024
 MAX_JAVASCRIPT_SAFE_INTEGER = 9_007_199_254_740_991
@@ -183,7 +187,7 @@ def _macos_display_capture_supported() -> bool:
 
 
 def _desktop_window_preferences_path() -> Path:
-    return get_user_workspace_dir() / "config" / DESKTOP_WINDOW_PREFERENCES_FILENAME
+    return get_config_dir() / DESKTOP_WINDOW_PREFERENCES_FILENAME
 
 
 def _load_close_action() -> str | None:
@@ -487,7 +491,7 @@ def resolve_desktop_ports(
 
 
 def _cleanup_stale_update_artifacts() -> None:
-    updates_dir = get_user_workspace_dir() / ".updates"
+    updates_dir = get_infra_data_dir() / ".updates"
     if not updates_dir.is_dir():
         return
 
@@ -578,6 +582,7 @@ def _build_child_env(
     env["AGENT_SERVER_PORT"] = str(ports["agent_server"])
     env["AGENT_PORT"] = str(ports["agent_server"])
     env["FRONTEND_PORT"] = str(ports["frontend"])
+    env["OFFICE_TLS_PORT"] = str(ports["office_tls"])
     # Gateway prefers AGENT_SERVER_URL over AGENT_SERVER_PORT; drop any stale
     # URL from the parent shell so the remapped port is used.
     env.pop("AGENT_SERVER_URL", None)
@@ -675,7 +680,7 @@ def _start_process(
 # web 子进程 import 的大头是 jiuwenswarm 自身, 放在最前优先预热; openjiuwen
 # 与 C 扩展库主要服务 app 子进程。预读块加大到 64KB 以覆盖归档多页。
 _WARMUP_PACKAGES = (
-    "jiuwenswarm", "openjiuwen", "faiss", "pymilvus", "google", "a2ui",
+    "jiuwenswarm", "openjiuwen", "pymilvus", "google", "a2ui",
     "sqlite_vec", "tree_sitter", "tiktoken", "tiktoken_ext",
 )
 _WARMUP_READ_BYTES = 64 * 1024
@@ -1304,6 +1309,8 @@ class DesktopRuntime:
         self._blob_save_lock = threading.Lock()
         self._blob_save_transfers: dict[str, _BlobSaveTransfer] = {}
         self._is_shutting_down = False
+        self._shutdown_complete = threading.Event()
+        self._shutdown_deadline = 0.0
         self._update_shutdown_receipt: Path | None = None
         self._allow_window_close = False
         self._tray_icon = None
@@ -2584,7 +2591,13 @@ class DesktopRuntime:
   // Durable stub: never leave Python without a callable ingest hook.
   if (typeof window.__JIUWEN_INGEST_LOCAL_FILES__ !== 'function') {
     window.__JIUWEN_INGEST_LOCAL_FILES__ = function (detail) {
-      try { window.__JIUWEN_DROP_QUEUE__.push(detail); } catch (err) {}
+      try {
+        // Same rule as localFilePicker.ts: do not replay a drop into a later
+        // chat when the composer was not mounted.
+        if (document.querySelector('.chat-panel-shell')) {
+          window.__JIUWEN_DROP_QUEUE__.push(detail);
+        }
+      } catch (err) {}
       window.dispatchEvent(new CustomEvent('jiuwen-desktop-local-files', { detail: detail }));
     };
   }
@@ -3020,7 +3033,7 @@ class DesktopRuntime:
             return False
 
         app_executable = Path(sys.executable).resolve()
-        self._update_shutdown_receipt = create_shutdown_receipt(get_user_workspace_dir() / ".updates")
+        self._update_shutdown_receipt = create_shutdown_receipt(get_infra_data_dir() / ".updates")
 
         if os.name == "nt":
             ok = self._launch_windows_install_helper(target, app_executable)
@@ -3039,7 +3052,7 @@ class DesktopRuntime:
 
     def _launch_macos_install_helper(self, target: Path, app_executable: Path) -> bool:
         parent_pid = os.getpid()
-        updates_dir = get_user_workspace_dir() / ".updates"
+        updates_dir = get_infra_data_dir() / ".updates"
         updates_dir.mkdir(parents=True, exist_ok=True)
 
         if not os.access(updates_dir, os.W_OK):
@@ -3205,7 +3218,7 @@ echo "=== install helper finished: $(date) ==="
 
     def _launch_linux_install_helper(self, target: Path, app_executable: Path) -> bool:
         parent_pid = os.getpid()
-        updates_dir = get_user_workspace_dir() / ".updates"
+        updates_dir = get_infra_data_dir() / ".updates"
         updates_dir.mkdir(parents=True, exist_ok=True)
 
         if not os.access(updates_dir, os.W_OK):
@@ -3289,57 +3302,74 @@ nohup {q_executable} >/dev/null 2>&1 &
         with self._lock:
             if self._is_shutting_down:
                 return
+            deadline = time.monotonic() + DESKTOP_SHUTDOWN_TIMEOUT_SECONDS
+            self._shutdown_deadline = deadline
             self._is_shutting_down = True
             self._startup_cancelled.set()
             processes = list(self.processes.values())
 
-        self._abort_all_blob_saves()
-        shutdown_ok = True
-        deadline = time.monotonic() + 30.0
-        logger.info("[desktop] shutting down child processes")
-
-        for process in processes:
-            if process.poll() is None:
-                try:
-                    _terminate_process_tree(process)
-                except (OSError, RuntimeError):
-                    shutdown_ok = False
-                    logger.exception("[desktop] service tree cleanup incomplete")
-
-        # A previous launch may own a resident Worker even before this
-        # application's first service is registered. Final exit owns both.
-        from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
         try:
-            result = asyncio.run(shutdown_resident_worker(timeout=max(.001, deadline - time.monotonic()),
-                include_legacy=True))
-            if not isinstance(result, dict) or result.get("ok") is not True:
-                shutdown_ok = False
-                logger.error("[desktop] resident Worker final shutdown incomplete: %s", result)
-        except Exception:
-            shutdown_ok = False
-            logger.exception("[desktop] resident Worker final shutdown incomplete")
+            self._abort_all_blob_saves()
+            shutdown_ok = True
+            logger.info("[desktop] shutting down child processes")
 
-        while time.monotonic() < deadline:
-            if all(process.poll() is not None for process in processes):
-                break
-            time.sleep(0.2)
+            for process in processes:
+                if process.poll() is None:
+                    try:
+                        _terminate_process_tree(process)
+                    except (OSError, RuntimeError):
+                        shutdown_ok = False
+                        logger.exception("[desktop] service tree cleanup incomplete")
 
-        for process in processes:
-            if process.poll() is None:
-                shutdown_ok = False
-                try:
-                    _kill_process_tree(process)
-                except (OSError, RuntimeError):
-                    logger.exception("[desktop] forced service tree cleanup incomplete")
-
-        with self._lock:
-            self.processes.clear()
-        receipt = getattr(self, "_update_shutdown_receipt", None)
-        if receipt is not None:
+            # A previous launch may own a resident Worker even before this
+            # application's first service is registered. Final exit owns both.
+            from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
             try:
-                complete_shutdown_receipt(receipt, ok=shutdown_ok)
-            except (OSError, RuntimeError):
-                logger.exception("[desktop] failed to record update shutdown receipt")
+                result = asyncio.run(
+                    shutdown_resident_worker(
+                        timeout=max(.001, deadline - time.monotonic()),
+                        include_legacy=True,
+                    )
+                )
+                if not isinstance(result, dict) or result.get("ok") is not True:
+                    shutdown_ok = False
+                    logger.error("[desktop] resident Worker final shutdown incomplete: %s", result)
+            except Exception:
+                shutdown_ok = False
+                logger.exception("[desktop] resident Worker final shutdown incomplete")
+
+            while time.monotonic() < deadline:
+                if all(process.poll() is not None for process in processes):
+                    break
+                time.sleep(0.2)
+
+            for process in processes:
+                if process.poll() is None:
+                    shutdown_ok = False
+                    try:
+                        _kill_process_tree(process)
+                    except (OSError, RuntimeError):
+                        logger.exception("[desktop] forced service tree cleanup incomplete")
+
+            with self._lock:
+                self.processes.clear()
+            receipt = getattr(self, "_update_shutdown_receipt", None)
+            if receipt is not None:
+                try:
+                    complete_shutdown_receipt(receipt, ok=shutdown_ok)
+                except (OSError, RuntimeError):
+                    logger.exception("[desktop] failed to record update shutdown receipt")
+        finally:
+            self._shutdown_complete.set()
+
+    def shutdown_and_wait(self) -> None:
+        """Finish desktop cleanup before the main thread exits."""
+        self.shutdown()
+        # The owner shares its deadline with the main thread. Allow time after
+        # it for final process cleanup and writing the update receipt.
+        remaining = self._shutdown_deadline + DESKTOP_SHUTDOWN_GRACE_SECONDS - time.monotonic()
+        if not self._shutdown_complete.wait(timeout=max(0.0, remaining)):
+            logger.error("[desktop] shutdown did not complete within the shutdown budget")
 
     @staticmethod
     def _clear_wkwebview_system_cache() -> None:
@@ -3397,7 +3427,7 @@ nohup {q_executable} >/dev/null 2>&1 &
     def run(self, window_title: str, width: int, height: int, debug: bool) -> None:
         self._clear_wkwebview_system_cache()
 
-        storage_path = get_user_workspace_dir() / "tmp" / "webview"
+        storage_path = get_infra_data_dir() / "tmp" / "webview"
         storage_path.mkdir(parents=True, exist_ok=True)
         self._clear_webview_http_cache(storage_path)
         _install_macos_media_capture_permission(lambda: self.frontend_display_url)
@@ -3853,7 +3883,7 @@ def main() -> None:
             debug=args.debug,
         )
     finally:
-        runtime.shutdown()
+        runtime.shutdown_and_wait()
 
 
 if __name__ == "__main__":

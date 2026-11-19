@@ -98,6 +98,13 @@ export function openChannelTrace(state: JiuwenMateWorkspaceState): JiuwenMateWor
   return { ...state, recordTab: 'channels', traceOpen: true };
 }
 
+export function openManagementChannelTrace(
+  state: JiuwenMateWorkspaceState,
+  managementChannelId: string,
+): JiuwenMateWorkspaceState {
+  return { ...state, ...RESET_TRACE, recordTab: 'conversations', managementChannelId, traceOpen: true };
+}
+
 export function closeChannelTrace(state: JiuwenMateWorkspaceState): JiuwenMateWorkspaceState {
   return { ...state, ...RESET_TRACE };
 }

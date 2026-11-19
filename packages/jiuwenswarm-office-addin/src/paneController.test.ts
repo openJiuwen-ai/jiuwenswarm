@@ -98,7 +98,7 @@ describe('opening the pane', () => {
     expect(gateway.sent('session.create')).toEqual([]);
     expect(controller.state().conversations.map(item => item.sessionId)).toEqual(['s1', 's0']);
     expect(transcript(controller)).toEqual([{ kind: 'user', text: '改标题' }, { kind: 'assistant', text: '好了。' }]);
-    expect(controller.state().documents.get('s9')).toBe('市场分析.pptx');
+    expect(controller.state().documents.get('s9')?.name).toBe('市场分析.pptx');
   });
 
   it('starts a conversation on the server\'s active model when the document has none', async () => {
@@ -144,6 +144,27 @@ describe('chatting', () => {
     expect(gateway.sent('chat.send')).toHaveLength(1);
     expect(transcript(controller).filter(entry => entry.kind === 'user')).toEqual(
       ['改标题', '检查标题', '只看前 3 页'].map(text => ({ kind: 'user', text })));
+  });
+
+  it('sends the images picked with the message, and shows them in it; during a turn they wait', async () => {
+    const path = { filename: 'logo.png', mime_type: 'image/png', path: '/u/logo.png' };
+    gateway.answer('media.persist', { media_items: [{ type: 'image', ...path }] });
+    const controller = pane();
+    await controller.open();
+    await settle();
+    const logo = { filename: 'logo.png', mimeType: 'image/png', base64Data: 'QUJD' };
+
+    expect(await controller.send('', [logo])).toBe(true);
+    expect(gateway.sent('chat.send')).toEqual(
+      [expect.objectContaining({ content: '', files: { uploaded_images: [path] } })]);
+    expect(transcript(controller).at(-1)).toEqual(
+      { kind: 'user', text: '', images: [{ filename: 'logo.png', src: 'data:image/png;base64,QUJD' }] });
+
+    expect(controller.state().conversation.turn).toBe('running');
+    const shown = transcript(controller);
+    expect(await controller.send('照这个改', [logo])).toBe(false);
+    expect(gateway.sent('chat.interrupt')).toEqual([]);
+    expect(transcript(controller)).toEqual(shown);
   });
 
   it('says why a message did not go out, takes it off the transcript and leaves the turn idle', async () => {
@@ -401,6 +422,32 @@ describe('the document\'s conversations', () => {
     expect(gateway.sent('client.attach').map(params => params.session_id)).toEqual(['s1', 's2']);
     expect(controller.state().conversations.map(item => item.sessionId)).toEqual(['s2']);
     expect(transcript(controller)).toEqual([]);
+  });
+
+  it('stays in a conversation nobody has written in yet, however fast new conversation is clicked', async () => {
+    gateway.answer('session.create', { session_id: 's2' });
+    const controller = pane();
+    await controller.open();
+    await settle();
+    gateway.answer('client.conversation.messages', () => new Promise<JsonObject>(() => undefined));
+    await Promise.all([controller.newConversation(), controller.newConversation()]);
+    await controller.newConversation();
+    await settle();
+
+    expect(gateway.sent('session.create')).toHaveLength(1);
+    expect(gateway.sent('client.attach').map(params => params.session_id)).toEqual(['s1', 's2']);
+  });
+
+  it('starts a new conversation from one whose history could not be read', async () => {
+    gateway.answer('client.conversation.messages', new GatewayRequestError('down', 'UNAVAILABLE'));
+    gateway.answer('session.create', { session_id: 's2' });
+    const controller = pane();
+    await controller.open();
+    await settle();
+    await controller.newConversation();
+    await settle();
+
+    expect(gateway.sent('client.attach').map(params => params.session_id)).toEqual(['s1', 's2']);
   });
 });
 

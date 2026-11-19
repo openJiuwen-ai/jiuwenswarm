@@ -4,32 +4,18 @@
 
 from __future__ import annotations
 
-import json
 import math
-import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, fields
 from typing import Any, Literal
 
-from jiuwenswarm.agents.harness.common.recommendation.topic_history import (
-    empty_history_state,
-    load_history_state_at,
-    load_latest_history_state,
-    save_history_state,
-)
-from jiuwenswarm.agents.harness.common.recommendation.topic_news import news_card_event
 from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
-    GLOBAL_NEW_CHAT_SCOPE,
     POLICY_ID,
-    card_is_news,
     card_provider_response_ids,
     card_search_receipt,
     card_uses_host_evidence,
     find_exact_terminal_card,
-    interest_evidence_ids,
-    interest_session_ids,
     is_cold_start_card,
-    memory_sessions_by_unit,
     normalize_topic_work_mode,
     project_id_for_scope,
     valid_search_receipt,
@@ -42,6 +28,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_terminal import (
     SessionSummaryArtifact,
     is_user_revisit_eligible,
 )
+from .topic_primitives import nonempty as _nonempty, plain_int as _plain_int, valid_scope as _valid_scope
 
 STARTER_OUTCOME_SCHEMA_VERSION = "topic-starter-v6-starter-outcome-v3"
 UTILITY_TRAINING_SCHEMA_VERSION = "topic-starter-v6-utility-training-v2"
@@ -52,25 +39,8 @@ PREFERENCE_PAIR_SCHEMA_VERSION = "topic-starter-v6-preference-pair-v1"
 TRAINING_SLICE_SCHEMA_VERSION = "topic-starter-v6-training-slice-v2"
 
 
-def _plain_int(value: Any) -> bool:
-    # bool is an int subclass; a JSON boolean is never a version or a count.
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _nonempty(value: Any) -> bool:
-    return isinstance(value, str) and bool(value.strip())
-
-
 def _finite_timestamp(value: Any) -> bool:
     return type(value) in (int, float) and math.isfinite(float(value)) and value >= 0
-
-
-def _valid_scope(value: Any) -> bool:
-    return value == "global_new_chat" or (
-        isinstance(value, str)
-        and value.startswith("project:")
-        and _nonempty(value.removeprefix("project:"))
-    )
 
 
 def _from_payload(
@@ -1028,206 +998,6 @@ def _deduplicated_text(values: list[Any]) -> list[str]:
         if text and text not in result:
             result.append(text)
     return result
-
-
-def _negative_preference(
-    card: dict[str, Any],
-    *,
-    context_scope: str,
-    project_id: str | None,
-    dismissed_at: float,
-) -> dict[str, Any]:
-    source_ids = list(card.get("source_memory_unit_ids") or [])
-    preference = {
-        "context_scope": context_scope,
-        "project_id": project_id,
-        "direction": str(card.get("intent") or "").strip(),
-        "source_id": str(source_ids[0]) if source_ids else "",
-        "aliases": _deduplicated_text([card.get("title"), card.get("prompt")]),
-        "anchors": _deduplicated_text(
-            [card.get("identity_anchor"), *(card.get("context_anchors") or [])]
-        ),
-        "reason": "explicit_not_interested",
-        "dismissed_at": dismissed_at,
-    }
-    if card_is_news(card):
-        # The news event itself is never offered again, whatever its direction's tier.
-        preference["news_source_url"] = str(card["evidence_bundle"].get("source_url") or "")
-        if card.get("news_match"):
-            preference["news_match"] = card["news_match"]
-    if context_scope == GLOBAL_NEW_CHAT_SCOPE and card.get("direction"):
-        preference["direction_anchor"] = str(card["direction"]).strip()
-        preference["direction"] = preference["direction_anchor"]
-        preference["anchors"] = [preference["direction_anchor"]]
-    return preference
-
-
-def _dismissal_record(
-    store: TopicStarterStore,
-    state: dict[str, Any],
-    card: dict[str, Any],
-    *,
-    manifest_id: str,
-    context_scope: str,
-    project_id: str | None,
-    dismissed_at: float,
-) -> dict[str, Any]:
-    """A dismissal of this card under this state, with the conversations of its direction."""
-
-    preference = _negative_preference(
-        card,
-        context_scope=context_scope,
-        project_id=project_id,
-        dismissed_at=dismissed_at,
-    )
-    # The direction's conversations as they stand now; a rebuilt profile finds the
-    # direction again in the unit that holds most of them. A card served from a pool
-    # written before the profile was rebuilt names its unit's conversations itself.
-    sessions = memory_sessions_by_unit(state).get(preference["source_id"]) or frozenset(
-        str(locator[0]) for locator in card.get("source_locators") or () if preference["source_id"] and locator
-    )
-    if context_scope == GLOBAL_NEW_CHAT_SCOPE and (card_is_news(card) or not preference["source_id"]):
-        manifests = store.query_events(
-            event_type="starter_slate_manifest", slate_id=manifest_id, policy_id=POLICY_ID,
-            limit=1, newest_first=True,
-        )
-        manifest = manifests[0].get("payload") if manifests else None
-        manifest = manifest if isinstance(manifest, dict) else {}
-        # A news card's event is the hot-list term it was made for, whichever site reported it.
-        news_event = (
-            news_card_event(store, manifest, card.get("card_id")) if card_is_news(card) else None
-        )
-        if news_event:
-            preference["news_event"] = news_event
-        if not preference["source_id"]:
-            # A global card built from a conversation names that conversation's events
-            # instead; a project's cards all continue its own conversations.
-            interest_id = str(card.get("interest_summary_id") or "")
-            events = interest_evidence_ids(manifest).get(interest_id)
-            if events:
-                preference["source_event_ids"] = list(events)
-                sessions = interest_session_ids(manifest).get(interest_id, frozenset())
-    preference["evidence_session_ids"] = sorted(sessions)
-    return preference
-
-
-def _card_dismissal_record(
-    store: TopicStarterStore,
-    card: dict[str, Any],
-    *,
-    manifest_id: str,
-    context_scope: str,
-    project_id: str | None,
-    dismissed_at: float,
-) -> dict[str, Any]:
-    """A card's dismissal: that card and its question, and a news card's event.
-
-    It names no direction, unit or source conversation, so the card's interest
-    stays with RID, generation and the reader.
-    """
-
-    record: dict[str, Any] = {
-        "context_scope": context_scope,
-        "project_id": project_id,
-        "dismissal_kind": "card",
-        "card_id": str(card.get("card_id") or ""),
-        "aliases": _deduplicated_text([card.get("title"), card.get("prompt")]),
-        "reason": "explicit_not_interested",
-        "dismissed_at": dismissed_at,
-    }
-    if card_is_news(card):
-        record["news_source_url"] = str(card["evidence_bundle"].get("source_url") or "")
-        manifests = store.query_events(
-            event_type="starter_slate_manifest", slate_id=manifest_id, policy_id=POLICY_ID,
-            limit=1, newest_first=True,
-        )
-        manifest = manifests[0].get("payload") if manifests else None
-        news_event = news_card_event(
-            store, manifest if isinstance(manifest, dict) else {}, card.get("card_id")
-        )
-        if news_event:
-            record["news_event"] = news_event
-    return record
-
-
-_WRITTEN_DISMISSAL_FIELDS = ("context_scope", "project_id", "direction", "source_id", "aliases", "anchors")
-_DISMISSAL_MIGRATION_EVENT_TYPE = "dismissal_records_migrated"
-
-
-def migrate_dismissal_records(store: TopicStarterStore, *, now: float) -> None:
-    """Give dismissals written before strikes were counted their time and conversations, once.
-
-    Each ledger ``not_interested`` event is matched to the record it wrote by the
-    same card; its time is the dismissal's, and the conversations are its
-    direction's in the profile then in force. Earlier writes kept one record for
-    the same card dismissed twice: the further dismissals are appended, each a
-    strike. A record no event matches is left as written, in force as before.
-    Records only gain fields or follow, so pools keep their versions. Every
-    dismissal written since carries its time, so the ledger keeps a mark of the
-    run and later starts read nothing more.
-    """
-
-    if store.query_events(event_type=_DISMISSAL_MIGRATION_EVENT_TYPE, policy_id=POLICY_ID, limit=1):
-        return
-    _time_dismissal_records(store, now=now)
-    store.record_event({"event_type": _DISMISSAL_MIGRATION_EVENT_TYPE, "policy_id": POLICY_ID, "created_at": now})
-
-
-def _time_dismissal_records(store: TopicStarterStore, *, now: float) -> None:
-    state = load_latest_history_state(store)
-    sidecar = state.get("memory_sidecar") if state else None
-    if not isinstance(sidecar, dict):
-        return
-    preferences = [dict(item) for item in sidecar.get("negative_preferences") or [] if isinstance(item, dict)]
-    untimed = [
-        index for index, item in enumerate(preferences)
-        if item.get("reason", "explicit_not_interested") == "explicit_not_interested" and "dismissed_at" not in item
-    ]
-    if not untimed:
-        return
-    claimed: set[int] = set()
-    repeated: list[dict[str, Any]] = []
-    for event in store.query_events(event_type="not_interested", policy_id=POLICY_ID, limit=100_000):
-        payload = event.get("payload")
-        if not isinstance(payload, dict):
-            continue
-        manifest_id = str(payload.get("manifest_id") or "")
-        cards = store.query_events(
-            event_type="starter_card", slate_id=manifest_id, topic_id=str(payload.get("card_revision_id") or ""),
-            policy_id=POLICY_ID, limit=1, newest_first=True,
-        )
-        card = cards[0].get("payload") if cards else None
-        at = float(event.get("created_at") or 0.0)
-        if not isinstance(card, dict):
-            continue
-        written = _dismissal_record(
-            store, load_history_state_at(store, at) or {}, card, manifest_id=manifest_id,
-            context_scope=str(payload.get("context_scope") or ""), project_id=payload.get("project_id"),
-            dismissed_at=at,
-        )
-        matches = [
-            index for index in untimed
-            if all(preferences[index].get(field) == written[field] for field in _WRITTEN_DISMISSAL_FIELDS)
-        ]
-        if not matches:
-            continue
-        timed = {
-            key: written[key] for key in ("dismissed_at", "evidence_session_ids", "news_source_url") if key in written
-        }
-        unclaimed = [index for index in matches if index not in claimed]
-        if unclaimed:
-            claimed.add(unclaimed[0])
-            preferences[unclaimed[0]].update(timed)
-        else:
-            repeated.append({**preferences[matches[0]], **timed})
-    if not claimed:
-        return
-    preferences.extend(repeated)
-    sidecar["negative_preferences"] = preferences
-    sidecar["negative_preference_version"] = max(
-        int(sidecar.get("negative_preference_version") or 0), len(preferences)
-    )
-    save_history_state(store, state, now=now)
 
 
 def _shown_card(

@@ -53,6 +53,7 @@ from jiuwenswarm.common.config import (
     coerce_subtask_depth,
     get_config,
     get_config_raw,
+    get_team_code_todo_reminder_disabled,
     resolve_env_vars,
     replace_teams_in_config,
     update_a2ui_in_config,
@@ -80,6 +81,7 @@ from jiuwenswarm.common.config import (
     update_comfyui_workflow_enabled_in_config,
     update_task_asr_in_config,
     update_team_scheduled_dispatch_in_config,
+    update_team_code_todo_reminder_disabled_in_config,
     update_team_member_messaging_in_config,
     update_team_member_subtasks_in_config,
     update_team_task_verification_in_config,
@@ -142,6 +144,7 @@ class ConfigPanelInternalError(RuntimeError):
 WEB_CONFIG_RELOAD_CHANNEL_ID = "web"
 SEARCH_RELOAD_ENV_KEYS = {
     "BOCHA_API_KEY", "PERPLEXITY_API_KEY", "SERPER_API_KEY", "JINA_API_KEY",
+    "FREE_SEARCH_DDG_ENABLED", "FREE_SEARCH_BING_ENABLED",
 }
 MODEL_RELOAD_ENV_KEYS = {
     "MODEL_PROVIDER",
@@ -410,6 +413,7 @@ CONFIG_YAML_KEYS = frozenset({
     "team_task_verification_enabled",
     "team_member_messaging_enabled",
     "team_member_subtasks_enabled",
+    "team_code_todo_reminder_disabled",
     "external_cli_agent_claude_enabled",
     "external_cli_agent_claude_use_builtin",
     "external_cli_agent_claude_cli_path",
@@ -424,13 +428,13 @@ CONFIG_YAML_KEYS = frozenset({
     "enable_free_models",
     "progressive_tool_optimize",
 })
-# 调度模式开关（modes.team.jiuwen_team.dispatch_mode / enable_task_verification /
-# enable_member_messaging / max_subtask_depth），改动后需重载 team。
+# Scheduled dispatch settings require a team reload.
 TEAM_DISPATCH_CONFIG_KEYS = frozenset({
     "team_scheduled_dispatch_enabled",
     "team_task_verification_enabled",
     "team_member_messaging_enabled",
     "team_member_subtasks_enabled",
+    "team_code_todo_reminder_disabled",
 })
 # Settings toggles that only change YAML; AgentServer reads the file next turn.
 RECOMMENDATION_UI_CONFIG_KEYS = frozenset({
@@ -442,6 +446,8 @@ WEB_UI_YAML_KEYS = frozenset({
     "team_organization_ui_enabled",
     "comfyui_workflow_enabled",
     "setup_guide_enabled",
+    "design_generation_video_gen",
+    "design_generation_visual_gen",
     *RECOMMENDATION_UI_CONFIG_KEYS,
 })
 # Scopes that must reach AgentServer before config.save_all returns.
@@ -481,9 +487,9 @@ PERMISSIONS_PROFILES = frozenset({"default", "automatic", "full_access"})
 
 
 SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
-    "symphony_enabled": (("enabled",), "bool", DEFAULT_SYMPHONY_ENABLED),
+    "symphony_enabled": (("orchestration", "enabled"), "bool", DEFAULT_SYMPHONY_ENABLED),
     "symphony_evolution_enabled": (
-        ("evolution", "flow", "enabled"),
+        ("orchestration", "experience", "enabled"),
         "bool",
         DEFAULT_EVOLUTION_ENABLED,
     ),
@@ -491,22 +497,19 @@ SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
 SYMPHONY_CONFIG_KEYS = tuple(SYMPHONY_CONFIG_SPECS.keys())
 SKILL_RETRIEVAL_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
     "skill_retrieval_enabled": (("enabled",), "bool", False),
-    # Kept for compatibility with existing config-panel clients and older
-    # config.yaml files.  Newer runtimes may ignore this legacy switch.
-    "skill_retrieval_index_enabled": (("index", "enabled"), "bool", False),
-    "skill_retrieval_max_results": (("discovery", "max_results"), "int", 10),
+    "skill_retrieval_max_results": (("output", "max_results"), "int", 10),
     "skill_retrieval_max_output_chars": (
-        ("discovery", "max_output_chars"),
+        ("output", "max_chars"),
         "output_chars",
         12000,
     ),
     "skill_retrieval_max_list_entries": (
-        ("discovery", "max_list_entries"),
+        ("output", "max_list_entries"),
         "int",
         40,
     ),
     "skill_retrieval_incremental_notice_max_chars": (
-        ("discovery", "incremental_notice_max_chars"),
+        ("output", "incremental_notice_max_chars"),
         "int",
         4000,
     ),
@@ -582,15 +585,6 @@ def flatten_symphony_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
     flat: dict[str, str] = {}
     for key, (path, value_type, default) in SYMPHONY_CONFIG_SPECS.items():
         value = get_nested_config_value(symphony, path, default)
-        if key == "symphony_evolution_enabled":
-            # null 或缺失时回退旧配置；明确写 false 时保持关闭。
-            flow = get_nested_config_value(symphony, ("evolution", "flow"), {})
-            legacy = get_nested_config_value(symphony, ("evolution", "enabled"), None)
-            if (
-                (not isinstance(flow, dict) or flow.get("enabled") is None)
-                and legacy is not None
-            ):
-                value = legacy
         if value_type == "bool":
             if key == "symphony_enabled":
                 value = resolve_symphony_enabled(value)
@@ -605,7 +599,7 @@ def flatten_symphony_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
 
 def flatten_skill_retrieval_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
     symphony = raw.get("symphony") if isinstance(raw.get("symphony"), dict) else {}
-    section = symphony.get("skill_retrieval") if isinstance(symphony.get("skill_retrieval"), dict) else {}
+    section = symphony.get("retrieval") if isinstance(symphony.get("retrieval"), dict) else {}
     flat: dict[str, str] = {}
     for key, (path, value_type, default) in SKILL_RETRIEVAL_CONFIG_SPECS.items():
         value = get_nested_config_value(section, path, default)
@@ -654,6 +648,7 @@ def flatten_team_dispatch_for_config_panel(raw: dict[str, Any]) -> dict[str, str
         "team_member_messaging_enabled": "true" if parse_config_switch_bool(member_messaging) else "false",
         # The depth doubles as the switch (core F_128): on means any depth > 0.
         "team_member_subtasks_enabled": "true" if coerce_subtask_depth(subtask_depth) > 0 else "false",
+        "team_code_todo_reminder_disabled": "true" if get_team_code_todo_reminder_disabled(raw) else "false",
     }
 
 
@@ -941,10 +936,14 @@ def detect_external_cli_agent(
     cli_agent: str, cli_path: str = "", use_builtin: bool = False
 ) -> dict[str, Any]:
     normalized_agent = cli_agent.strip().lower()
+    # 每次探测都携带内置（托管安装）CLI 路径：配置本地可执行文件后探测结果与
+    # PATH 扫描都不再指向内置路径，前端路径下拉框需要它作为常驻选项，
+    # 否则内置路径会从下拉框消失且会被历史清理剪掉（#6647）。
+    builtin_path = external_cli_managed_cli_path(normalized_agent)
     if normalized_agent not in EXTERNAL_CLI_AGENT_KINDS and normalized_agent in external_cli_agent_kinds():
-        return _detect_custom_agent_cli(normalized_agent, cli_path)
-    if normalized_agent not in EXTERNAL_CLI_AGENT_KINDS:
-        return {
+        result = _detect_custom_agent_cli(normalized_agent, cli_path)
+    elif normalized_agent not in EXTERNAL_CLI_AGENT_KINDS:
+        result = {
             "cli_agent": normalized_agent,
             "status": "unavailable",
             "path": "",
@@ -952,8 +951,10 @@ def detect_external_cli_agent(
             "reference_version": "",
             "message": f"unsupported cli_agent: {cli_agent}",
         }
-
-    return _detect_cli_at(normalized_agent, cli_path, use_builtin)
+    else:
+        result = _detect_cli_at(normalized_agent, cli_path, use_builtin)
+    result["builtin_path"] = builtin_path
+    return result
 
 
 def _detect_custom_agent_cli(cli_agent: str, cli_path: str) -> dict[str, Any]:
@@ -1021,6 +1022,21 @@ def _detect_cli_at(normalized_agent: str, cli_path: str, use_builtin: bool = Fal
             "version": "",
             "reference_version": reference_version,
             "message": version_error or "version command failed",
+        }
+
+    identity_patterns = {
+        "claude": r"\bClaude Code\b",
+        "codex": r"\bcodex(?:-cli)?\s+\d",
+    }
+    identity_pattern = identity_patterns.get(normalized_agent)
+    if identity_pattern and not re.search(identity_pattern, version_output, re.IGNORECASE):
+        return {
+            "cli_agent": normalized_agent,
+            "status": "unavailable",
+            "path": resolved_path,
+            "version": version,
+            "reference_version": reference_version,
+            "message": f"version output does not identify the selected program as {normalized_agent}",
         }
 
     status = "ok"
@@ -1282,34 +1298,15 @@ def build_external_cli_publish_url() -> str:
 
 
 def persist_env_updates(updates: dict[str, str]) -> None:
-    """把已更新的环境变量写回 .env（仅覆盖或追加对应 KEY=value 行）。"""
-    env_path = ENV_FILE
+    """Persist settings atomically; callers must observe disk failures."""
     if not updates:
         return
-    try:
-        lines: list[str] = []
-        if env_path.is_file():
-            with open(env_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-        new_lines: list[str] = []
-        for line in lines:
-            stripped = line.strip()
-            found = False
-            for env_key, value in updates.items():
-                if stripped.startswith(env_key + "="):
-                    new_lines.append(f'{env_key}="{value}"\n' if value else f"{env_key}=\n")
-                    found = True
-                    break
-            if not found:
-                new_lines.append(line)
-        for env_key, value in updates.items():
-            if not any(s.strip().startswith(env_key + "=") for s in new_lines):
-                new_lines.append(f'{env_key}="{value}"\n' if value else f"{env_key}=\n")
-        env_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(env_path, "w", encoding="utf-8") as f:
-            f.writelines(new_lines)
-    except OSError as e:
-        logger.warning("[config.set] 写回 .env 失败: %s", e)
+    from jiuwenswarm.common.config import config_write_lock
+    from jiuwenswarm.common.config_persistence import atomic_write, env_content
+
+    with config_write_lock(config_path=ENV_FILE.with_name("config.yaml")):
+        original = ENV_FILE.read_text(encoding="utf-8") if ENV_FILE.exists() else ""
+        atomic_write(ENV_FILE, env_content(original, updates).encode())
 
 
 def parse_config_bool(value: Any) -> bool:
@@ -1362,10 +1359,21 @@ def encrypt_config_params(params: dict[str, Any]) -> dict[str, Any]:
     if crypto is None:
         return dict(params)
     encrypted = dict(params)
+    from jiuwenswarm.common.credentials.resolver import is_reference
+
     for key, val in list(encrypted.items()):
         if key.endswith("_context_window_tokens"):
             continue
         if "api_key" in key.lower() or "token" in key.lower():
+            # exec: references are config declarations, not secrets — encrypting
+            # one corrupts it irreversibly; store verbatim.
+            if is_reference(str(val or "")):
+                continue
+            # An empty value means "clear the stored credential" (e.g. the Jev
+            # delete flow). Encrypting it would persist a non-empty ciphertext,
+            # so the credential would keep looking configured and never clear.
+            if val is None or str(val).strip() == "":
+                continue
             encrypted[key] = crypto.encrypt(val)
     return encrypted
 
@@ -1519,6 +1527,16 @@ def apply_config_payload(
             raise ConfigPanelInternalError("failed to update modes.team") from exc
 
     external_cli_agents_updated = False
+    try:
+        from jiuwenswarm.common.design_generation_selection import (
+            DesignSelectionError,
+            apply_design_generation_config,
+        )
+
+        yaml_updated.extend(apply_design_generation_config(params))
+    except DesignSelectionError as exc:
+        raise ConfigPanelBadRequest(str(exc)) from exc
+
     for param_key in (*CONFIG_YAML_KEYS, *custom_external_cli_config_keys()):
         if param_key not in params:
             continue
@@ -1551,17 +1569,20 @@ def apply_config_payload(
             elif param_key == "team_scheduled_dispatch_enabled":
                 update_team_scheduled_dispatch_in_config(parsed)
                 if not parsed:
-                    # 验证者、成员间通信与成员子任务只在调度模式下生效，关闭调度模式时一并关闭。
+                    # Reset the child switches when scheduled dispatch is disabled.
                     update_team_task_verification_in_config(False)
                     yaml_updated.append("team_task_verification_enabled")
                     update_team_member_messaging_in_config(False)
                     yaml_updated.append("team_member_messaging_enabled")
                     update_team_member_subtasks_in_config(False)
                     yaml_updated.append("team_member_subtasks_enabled")
+                    update_team_code_todo_reminder_disabled_in_config(False)
+                    yaml_updated.append("team_code_todo_reminder_disabled")
             elif param_key in (
                 "team_task_verification_enabled",
                 "team_member_messaging_enabled",
                 "team_member_subtasks_enabled",
+                "team_code_todo_reminder_disabled",
             ):
                 scheduled = (
                     parse_config_bool(params["team_scheduled_dispatch_enabled"])
@@ -1572,8 +1593,10 @@ def apply_config_payload(
                     update_team_task_verification_in_config(parsed and scheduled)
                 elif param_key == "team_member_messaging_enabled":
                     update_team_member_messaging_in_config(parsed and scheduled)
-                else:
+                elif param_key == "team_member_subtasks_enabled":
                     update_team_member_subtasks_in_config(parsed and scheduled)
+                else:
+                    update_team_code_todo_reminder_disabled_in_config(parsed and scheduled)
             elif is_external_cli_agent_config_key(param_key):
                 if not external_cli_agents_updated:
                     try:
@@ -1722,10 +1745,12 @@ def apply_config_payload(
             raise ConfigPanelBadRequest(str(exc)) from exc
         yaml_updated.append("kv_cache_affinity_enabled")
 
-    for env_key, value in env_updates.items():
-        os.environ[env_key] = value
     if env_updates:
-        persist_env_updates(env_updates)
+        try:
+            persist_env_updates(env_updates)
+        except OSError:
+            raise ConfigPanelInternalError("failed to save environment settings") from None
+        os.environ.update(env_updates)
         logger.info("[config.set] 已更新 .env: %s", list(env_updates.keys()))
     if yaml_updated:
         logger.info("[config.set] 已更新 config.yaml: %s", yaml_updated)
@@ -1901,6 +1926,9 @@ async def config_get_handler(
         resolved = get_config()
         models_cfg = resolved.get("models") or {}
         payload["enable_free_models"] = "true" if models_cfg.get("enable_free_models", False) else "false"
+        from jiuwenswarm.common.design_generation_selection import saved_generation_config
+
+        payload.update(saved_generation_config())
     except Exception:  # noqa: BLE001
         for key, value in flatten_moa_for_config_panel({}).items():
             payload.setdefault(key, value)
@@ -1926,6 +1954,7 @@ async def config_get_handler(
             "true" if DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED else "false",
         )
         payload.setdefault("team_member_subtasks_enabled", "false")
+        payload.setdefault("team_code_todo_reminder_disabled", "false")
         for key, value in _default_a2ui_config_payload().items():
             payload.setdefault(key, value)
         payload.setdefault("trajectory_ui_enabled", "false")
@@ -1949,6 +1978,8 @@ async def config_get_handler(
         payload.setdefault("topic_recommendation_enabled", "false")
         payload.setdefault("prompt_suggestion_enabled", "false")
         payload.setdefault("enable_free_models", "false")
+        payload.setdefault("design_generation_video_gen", "")
+        payload.setdefault("design_generation_visual_gen", "")
     await channel.send_response(ws, req_id, ok=True, payload=payload)
 
 

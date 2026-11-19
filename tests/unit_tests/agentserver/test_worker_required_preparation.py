@@ -56,10 +56,9 @@ async def test_required_preparation_failure_prevents_runtime_consumers(monkeypat
 
 @pytest.mark.asyncio
 async def test_successful_construction_retains_cleanup_owner_when_parallel_extensions_fail(
-    monkeypatch, worker_callback_framework,
+    monkeypatch, worker_callback_framework, clean_extension_registry,
 ):
     from agent_gateway.extensions.manager import ExtensionManager
-    from agent_gateway.extensions.registry import ExtensionRegistry
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.server.worker import service
 
@@ -80,7 +79,6 @@ async def test_successful_construction_retains_cleanup_owner_when_parallel_exten
 
     monkeypatch.setattr(runtime_backend, "preload_runtime_backend", lambda: None)
     monkeypatch.setattr(runtime_backend, "preload_shared_execution_code", lambda: None)
-    monkeypatch.setattr(ExtensionRegistry, "_instance", None)
     monkeypatch.setattr(AgentWebSocketServer, "get_instance", construct)
     monkeypatch.setattr(ExtensionManager, "load_all_extensions", load_extensions)
     signals = SimpleNamespace(failed=Mock())
@@ -107,10 +105,9 @@ async def _raise(error):
 
 @pytest.mark.asyncio
 async def test_execution_code_overlaps_construction_and_failure_retains_owner(
-    monkeypatch, worker_callback_framework,
+    monkeypatch, worker_callback_framework, clean_extension_registry,
 ):
     from agent_gateway.extensions.manager import ExtensionManager
-    from agent_gateway.extensions.registry import ExtensionRegistry
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
     barrier = threading.Barrier(2, timeout=2)
@@ -129,7 +126,6 @@ async def test_execution_code_overlaps_construction_and_failure_retains_owner(
         owners.append(value)
 
     monkeypatch.setattr(runtime_backend, "preload_shared_execution_code", prepare_code)
-    monkeypatch.setattr(ExtensionRegistry, "_instance", None)
     monkeypatch.setattr(AgentWebSocketServer, "get_instance", construct)
     load_extensions = AsyncMock()
     monkeypatch.setattr(ExtensionManager, "load_all_extensions", load_extensions)
@@ -143,11 +139,11 @@ async def test_execution_code_overlaps_construction_and_failure_retains_owner(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("enterprise", [False, True])
 async def test_extensions_observe_execution_patches_after_parallel_server_construction(
-    monkeypatch, worker_callback_framework,
+    monkeypatch, worker_callback_framework, clean_extension_registry, enterprise,
 ):
     from agent_gateway.extensions.manager import ExtensionManager
-    from agent_gateway.extensions.registry import ExtensionRegistry
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
     overlap = threading.Barrier(2, timeout=2)
@@ -174,18 +170,42 @@ async def test_extensions_observe_execution_patches_after_parallel_server_constr
         assert set(events) == {"constructed", "extensions"}
         events.append("retained")
 
+    def migrate_multimodal():
+        assert "extensions" in events
+        assert not server.start.called
+        events.append("multimodal-migrated")
+
     monkeypatch.setattr(runtime_backend, "preload_shared_execution_code", prepare_code)
-    monkeypatch.setattr(ExtensionRegistry, "_instance", None)
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise" if enterprise else "personal")
     monkeypatch.setattr(AgentWebSocketServer, "get_instance", construct)
     monkeypatch.setattr(ExtensionManager, "load_all_extensions", load_extensions)
+    monkeypatch.setattr("jiuwenswarm.common.multimodal_store.initialize_multimodal_models", migrate_multimodal)
 
     actual = await runtime_bootstrap.construct_runtime_server(
         "127.0.0.1", 18000, on_constructed=retain_owner, telemetry=StartupTelemetry(),
     )
 
     assert actual is server
-    assert events[-1] == "retained"
+    assert events[-2:] == ["retained", "multimodal-migrated"]
     server.start.assert_not_awaited()
+
+
+@pytest.mark.parametrize("enterprise", [False, True])
+def test_worker_configuration_does_not_write_legacy_switches_before_full_migration(monkeypatch, tmp_path, enterprise):
+    events = []
+    env_file = tmp_path / ".env"
+    monkeypatch.setenv("JIUWENSWARM_RUNTIME_WORKSPACE_READY", "1")
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise" if enterprise else "personal")
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_env_file", lambda: env_file)
+    legacy = Mock(side_effect=lambda path: events.append(("legacy", path)))
+    monkeypatch.setattr("jiuwenswarm.common.media_capability_config.migrate_media_capability_switches", legacy)
+    monkeypatch.setattr("jiuwenswarm.common.config.migrate_model_business_ids", lambda: events.append("model-ids"))
+    monkeypatch.setattr("jiuwenswarm.common.model_migration.migrate_legacy_model_selections", lambda: None)
+    for name in ("migrate_legacy_recommendation_switches", "migrate_recommendation_consent_state", "repair_missing_consent_boundary"):
+        monkeypatch.setattr(f"jiuwenswarm.agents.harness.common.recommendation.topic_controls.{name}", lambda: None)
+    runtime_backend._prepare_worker_configuration()
+    legacy.assert_not_called()
+    assert events == ["model-ids"]
 
 
 def test_team_controller_preserves_reporter_without_constructing_unused_team_mode():

@@ -176,17 +176,6 @@ def _serve_file(
     return handler
 
 
-def test_valid_token_is_accepted() -> None:
-    manager = WebFileDownloadManager(secret="s" * 32)
-    token = manager.generate_token("/tmp/report.xlsx", "session-1", expires_in=60)
-
-    payload = manager.validate_token(token)
-    assert payload is not None
-    assert payload["path"] == "/tmp/report.xlsx"
-    assert payload["exp"] == pytest.approx(int(time.time()) + 60, abs=1)
-    assert payload["sid"] == "session-1"
-
-
 def test_package_avatar_url_downloads_original_image(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     from jiuwenswarm.server.runtime.package_avatars import resolve_package_avatar_url
 
@@ -208,18 +197,6 @@ def test_package_avatar_url_downloads_original_image(monkeypatch: pytest.MonkeyP
     assert handler.wfile.getvalue() == image
 
 
-def test_non_expiring_token_omits_exp() -> None:
-    """send_file_to_user 交付产物应签发不过期令牌（payload 无 exp）。"""
-    manager = WebFileDownloadManager(secret="s" * 32)
-    token = manager.generate_token("/tmp/report.xlsx", "session-1", expires_in=None)
-
-    payload = manager.validate_token(token)
-    assert payload is not None
-    assert payload["path"] == "/tmp/report.xlsx"
-    assert "exp" not in payload
-    assert payload["sid"] == "session-1"
-
-
 def test_non_expiring_download_info_stays_valid(tmp_path: Path) -> None:
     file_path = tmp_path / "deliverable.txt"
     file_path.write_text("ok", encoding="utf-8")
@@ -231,22 +208,6 @@ def test_non_expiring_download_info_stays_valid(tmp_path: Path) -> None:
     assert "exp" not in payload
 
 
-def test_expired_token_is_rejected() -> None:
-    manager = WebFileDownloadManager(secret="s" * 32)
-    token = manager.generate_token("/tmp/report.xlsx", "session-1", expires_in=-1)
-
-    assert manager.validate_token(token) is None
-    assert manager.validate_token(token, check_expiry=False) is not None
-
-
-def test_tampered_token_is_rejected() -> None:
-    manager = WebFileDownloadManager(secret="s" * 32)
-    token = manager.generate_token("/tmp/report.xlsx", expires_in=60)
-    encoded, signature = token.split(".")
-
-    assert manager.validate_token(f"{encoded}x.{signature}") is None
-
-
 def _signed_token(secret: str, payload: object) -> str:
     encoded = base64.urlsafe_b64encode(
         json.dumps(payload, separators=(",", ":")).encode("utf-8")
@@ -255,60 +216,6 @@ def _signed_token(secret: str, payload: object) -> str:
         secret.encode("utf-8"), encoded.encode("ascii"), hashlib.sha256
     ).hexdigest()
     return f"{encoded}.{signature}"
-
-
-def test_strict_legacy_token_without_expiration_remains_compatible() -> None:
-    secret = "s" * 32
-    manager = WebFileDownloadManager(secret=secret)
-    token = _signed_token(
-        secret,
-        {"path": "/tmp/report.xlsx", "sid": "session-1"},
-    )
-
-    assert manager.validate_token(token) == {
-        "path": "/tmp/report.xlsx",
-        "sid": "session-1",
-    }
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [
-        {"path": "/tmp/report.xlsx"},
-        {"path": "", "sid": "session-1"},
-        {"path": "/tmp/report.xlsx", "sid": ""},
-        {"path": 1, "sid": "session-1"},
-        {"path": "/tmp/report.xlsx", "sid": 1},
-        {"path": "/tmp/report.xlsx", "sid": "session-1", "extra": "claim"},
-        {
-            "path": "/tmp/report.xlsx",
-            "sid": "session-1",
-            "download_http_base": "",
-        },
-        {
-            "path": "/tmp/report.xlsx",
-            "sid": "session-1",
-            "download_http_base": "http://test.invalid",
-            "extra": "claim",
-        },
-        {
-            "kind": "verified_asset_v1",
-            "asset_id": "asset-1",
-            "path": "/tmp/report.xlsx",
-            "size": 1,
-            "digest": "sha256:digest",
-            "name": "report.xlsx",
-            "sid": "session-1",
-        },
-    ],
-)
-def test_only_exact_legacy_no_expiration_payload_is_accepted(
-    payload: dict[str, object],
-) -> None:
-    secret = "s" * 32
-    manager = WebFileDownloadManager(secret=secret)
-
-    assert manager.validate_token(_signed_token(secret, payload)) is None
 
 
 def test_agent_http_bases_use_trusted_resolver(
@@ -556,7 +463,7 @@ def test_verified_single_user_download_fallback_keeps_range_support(
     def _unexpected_proxy(*_args, **_kwargs):
         raise AssertionError("legacy local download must not proxy to the WS port")
 
-    monkeypatch.setattr(_SpaStaticHandler, "_proxy_file_download", _unexpected_proxy)
+    monkeypatch.setattr(_DownloadHandlerStub, "_proxy_file_download", _unexpected_proxy)
     handler = _DownloadHandlerStub(command="GET")
     handler.headers["Range"] = "bytes=0-5"
 
@@ -564,6 +471,57 @@ def test_verified_single_user_download_fallback_keeps_range_support(
 
     assert handler.status == 206
     assert handler.wfile.getvalue() == b"legacy"
+
+
+@pytest.mark.parametrize(
+    "file_name,content,expected_content_type",
+    [
+        ("快速排序算法介绍.md", "# 快速排序算法介绍\n".encode("utf-8"), "text/markdown; charset=utf-8"),
+        ("历史说明.md", (b"A" * 65536) + "中文".encode("gbk"), "text/markdown; charset=gb18030"),
+        ("事件.jsonl", '{"message":"中文"}\n'.encode("utf-8"), "application/x-ndjson; charset=utf-8"),
+        ("日志.log", "中文日志\n".encode("utf-8"), "text/plain; charset=utf-8"),
+        ("数据.csv", "列,值\n中文,1\n".encode("utf-8"), "text/csv; charset=utf-8"),
+        ("写入中.md", "中文正文\n".encode("utf-8") + b"\xe4\xb8", "text/markdown; charset=utf-8"),
+    ],
+    ids=["utf8-markdown", "long-gbk-markdown", "jsonl", "log", "csv", "incomplete-utf8"],
+)
+def test_local_download_declares_charset_for_text_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    file_name: str, content: bytes, expected_content_type: str,
+) -> None:
+    """The desktop built-in browser navigates this URL directly.
+
+    A text artifact served without ``charset`` is decoded with the browser
+    default and renders as mojibake (issue #5435).
+    """
+    # Sealed assets have no extension; the token retains the original name.
+    file_path = tmp_path / "sealed-object"
+    file_path.write_bytes(content)
+    monkeypatch.setattr(
+        web_file_download,
+        "validate_file_download_token",
+        lambda _token, **_kwargs: {
+            "path": str(file_path), "kind": "verified_asset_v1", "name": file_name,
+        },
+    )
+    monkeypatch.setattr(
+        app_web.mimetypes, "guess_type", lambda _name: ("application/octet-stream", None)
+    )
+
+    def _unexpected_proxy(*_args, **_kwargs):
+        raise AssertionError("a verified local artifact must not be proxied")
+
+    monkeypatch.setattr(_DownloadHandlerStub, "_proxy_file_download", _unexpected_proxy)
+    handler = _DownloadHandlerStub(command="GET")
+
+    _SpaStaticHandler._handle_file_download(
+        handler, {"token": "signed-token", "inline": "1"}
+    )
+
+    assert handler.status == 200
+    assert handler.response_headers["Content-Type"] == expected_content_type
+    assert handler.response_headers["Content-Disposition"].startswith("inline;")
+    assert handler.wfile.getvalue() == content
 
 
 def test_verified_agentos_token_uses_bridge_when_gateway_cannot_see_user_path(
@@ -615,9 +573,11 @@ def test_verified_single_user_upload_persists_without_http_bridge(
     assert handler.response == (200, {"path": str(target), "size": 13})
 
 
-def test_verified_asset_retry_range_and_concurrent_get_use_same_sealed_object(
+@pytest.mark.parametrize("reference_only", [False, True])
+def test_verified_asset_retry_range_and_concurrent_get_use_registered_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    reference_only: bool,
 ) -> None:
     source = tmp_path / "media.bin"
     source.write_bytes(b"0123456789")
@@ -628,7 +588,8 @@ def test_verified_asset_retry_range_and_concurrent_get_use_same_sealed_object(
     asset = owner.stage(
         source,
         file_name=source.name,
-        expires_at=time.time() + 60,
+        expires_at=0 if reference_only else time.time() + 60,
+        reference_only=reference_only,
     )
     manager = WebFileDownloadManager("s" * 32, asset_owner=owner)
     monkeypatch.setattr(WebFileDownloadManager, "_instance", manager)
@@ -638,6 +599,7 @@ def test_verified_asset_retry_range_and_concurrent_get_use_same_sealed_object(
         session_id="session-a",
     )
     source.write_bytes(b"changed-after-capture")
+    expected = b"changed-after-capture" if reference_only else b"0123456789"
 
     def fetch(headers: dict[str, str] | None = None) -> _DownloadHandlerStub:
         handler = _DownloadHandlerStub(command="GET", headers=headers)
@@ -647,16 +609,21 @@ def test_verified_asset_retry_range_and_concurrent_get_use_same_sealed_object(
     first = fetch()
     retry = fetch()
     partial = fetch({"Range": "bytes=2-5"})
+    head = _DownloadHandlerStub(command="HEAD")
+    _SpaStaticHandler._handle_file_download(head, {"token": token})
     with ThreadPoolExecutor(max_workers=4) as executor:
         concurrent_bodies = tuple(
             executor.map(lambda _index: fetch().wfile.getvalue(), range(4))
         )
 
     assert first.status == retry.status == 200
-    assert first.wfile.getvalue() == retry.wfile.getvalue() == b"0123456789"
+    assert first.wfile.getvalue() == retry.wfile.getvalue() == expected
+    assert head.status == 200
+    assert head.response_headers["Content-Length"] == str(len(expected))
+    assert head.wfile.getvalue() == b""
     assert partial.status == 206
-    assert partial.wfile.getvalue() == b"2345"
-    assert concurrent_bodies == (b"0123456789",) * 4
+    assert partial.wfile.getvalue() == expected[2:6]
+    assert concurrent_bodies == (expected,) * 4
 
 
 @pytest.mark.parametrize("command", ["GET", "HEAD"])

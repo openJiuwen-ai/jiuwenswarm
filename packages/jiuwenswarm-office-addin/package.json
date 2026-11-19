@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc --noEmit && vite build",
+    "build:desktop": "tsc --noEmit && vite build --mode desktop",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
@@ -21,6 +22,7 @@
   "dependencies": {
     "@xmldom/xmldom": "0.9.12",
     "fflate": "0.8.3",
+    "pdfjs-dist": "6.4.299",
     "ses": "2.3.0"
   }
 }

@@ -23,9 +23,9 @@
    ============================================ */
 
 .sidebar--icon-rail {
-  width: 72px;
-  max-width: 72px;
-  min-width: 72px;
+  width: var(--mode-rail-width);
+  max-width: var(--mode-rail-width);
+  min-width: var(--mode-rail-width);
   flex-shrink: 0;
   align-items: center;
   padding: 0;
@@ -34,9 +34,9 @@
 }
 
 .shell--agent-management .sidebar--icon-rail {
-  width: 72px;
-  max-width: 72px;
-  min-width: 72px;
+  width: var(--mode-rail-width);
+  max-width: var(--mode-rail-width);
+  min-width: var(--mode-rail-width);
 }
 
 /* Logo in icon rail — SVG handles gradient + mark */
@@ -108,6 +108,11 @@
   color: var(--color-text-primary);
 }
 
+.icon-rail-nav-item:focus-visible {
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: 2px;
+}
+
 /* hover 与选中态同色（--color-sidebar-nav-active） */
 .icon-rail-nav-item:hover {
   background: var(--color-sidebar-nav-active);
@@ -135,7 +140,7 @@
 .enterprise-context-popover {
   position: absolute;
   z-index: 1500;
-  left: 72px;
+  left: 100%;
   bottom: 12px;
   width: 280px;
   padding: 12px;

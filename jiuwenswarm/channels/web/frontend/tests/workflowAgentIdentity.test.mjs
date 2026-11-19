@@ -4,6 +4,7 @@ import test from 'node:test';
 import {
   workflowAgentAvatarName,
   workflowAgentDisplayName,
+  workflowAgentFullName,
   workflowAgentIdentity,
   workflowPhaseWorkers,
   isWorkflowRunEnded,
@@ -27,6 +28,15 @@ test('native node gets an empty identity (hashed illustration, no roster fallbac
 
 test('agent_type wins over kind', () => {
   assert.deepEqual(workflowAgentIdentity({ agent_type: 'codex', kind: 'human' }), { cliAgent: 'codex' });
+});
+
+test('workflowAgentFullName prefixes the run to the engine node id', () => {
+  assert.equal(
+    workflowAgentFullName({ id: '[["par", 0, 0], ["call", 0]]' }, 'wf_16b47a41189b'),
+    'wf_16b47a41189b:[["par", 0, 0], ["call", 0]]',
+  );
+  assert.equal(workflowAgentFullName({ id: 'node-1' }), 'node-1');
+  assert.equal(workflowAgentFullName({ id: 'node-1' }, null), 'node-1');
 });
 
 test('expert and plain nodes both show and hash by the call label (roster mirrors the label too)', () => {

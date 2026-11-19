@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+
+
 from agent_gateway.extensions.video_duplex.backend.tasks.bridge import GatewayTaskEndpoint
 from agent_gateway.message_handler.message_handler import MessageHandler
 
@@ -19,6 +21,103 @@ from jiuwenswarm.server.runtime.video_task import bridge
 from jiuwenswarm.server.runtime.video_task.execution import bind_task_execution
 from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import until
+
+
+@pytest.mark.parametrize("finished_before_cancel", [False, True])
+async def test_list_refresh_and_cancel_use_separate_front_runtime_paths(tmp_path, monkeypatch, finished_before_cancel):
+    """Read through the real Front router; cancel through Runtime's exact-request path."""
+    from dataclasses import asdict
+    from enum import Enum
+    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+    from jiuwenswarm.runtime.service import AgentRuntime
+    from jiuwenswarm.runtime.session import RuntimeSessionCoordinator, SessionPersistencePolicy, SessionWorkKind
+    from jiuwenswarm.server.control.repositories import session_repository
+    from jiuwenswarm.server.front.admission import ExecutionAdmission
+    from jiuwenswarm.server.front.protocol import encode_response
+    from jiuwenswarm.server.front.router import MethodRouter
+    from jiuwenswarm.server.lifecycle import Readiness
+    from jiuwenswarm.server.runtime.session import lifecycle
+
+    store = TaskStore(tmp_path / "readonly.sqlite")
+    service = TaskService(store, None)
+    service.started = True
+    service.kick = Mock()
+    task = service.submit("alice", "task-duplex:chat", "create", "Add two jokes")
+    task = store.update(task["id"], lambda t: t.update(status="running", execution_bound=True))
+    coordinator = RuntimeSessionCoordinator()
+    await coordinator.register_session("chat", "web", SessionPersistencePolicy.PERSISTENT)
+    release = asyncio.Event()
+    target_release = asyncio.Event()
+    native = asyncio.create_task(coordinator.run_unary(
+        "chat", task["request_id"], SessionWorkKind.GOAL_CONTROL, target_release.wait,
+    ))
+    sibling = asyncio.create_task(coordinator.run_unary(
+        "chat", "unrelated-request", SessionWorkKind.GOAL_CONTROL, release.wait,
+    ))
+    await until(lambda: len(coordinator.snapshot_session("chat").executions) == 2)
+    runtime = AgentRuntime(session_coordinator=coordinator)
+    readiness = Readiness()
+    admission = ExecutionAdmission(readiness)
+    methods = []
+
+    async def snapshot(request):
+        return {"executions": json.loads(json.dumps(
+            [asdict(e) for e in coordinator.snapshot_session("chat").executions],
+            default=lambda value: value.value if isinstance(value, Enum) else list(value),
+        ))}
+
+    async def dispatch(ws, request, lock):
+        response = await runtime.cancel_request(request)
+        await ws.send(json.dumps(encode_response(response, response_id=request.request_id)))
+
+    admission.attach_backend(SimpleNamespace(get_runtime_snapshot=snapshot, dispatch_parsed_request=dispatch))
+    router = MethodRouter(readiness, admission)
+    monkeypatch.setattr(lifecycle, "guard", Mock())
+    metadata = Mock(return_value={"user_id": "alice", "channel_id": "web"})
+    monkeypatch.setattr(session_repository, "get_session_metadata", metadata)
+
+    async def send(env):
+        request = e2a_to_agent_request(env)
+        methods.append(request.req_method)
+        ws = SimpleNamespace(send=AsyncMock())
+        await router.dispatch(ws, request, asyncio.Lock())
+        wire = ws.send.call_args.args[0]
+        return parse_agent_server_wire_unary(json.loads(wire) if isinstance(wire, str) else wire)
+
+    executor = task_adapter.AgentTaskExecutor(SimpleNamespace(send_request=send), store, None)
+    service.executor = executor
+    service.active_scopes.add(("alice", task["session"]))
+    service.workers[task["id"]] = native
+    try:
+        for _ in range(3):
+            await service.refresh("alice", task["session"])
+            service.list("alice", task["session"])
+        assert methods == [ReqMethod.SESSION_GET_METADATA] * 3
+        assert not native.done() and not sibling.done()
+        assert not store.read(task["id"])["execution_settled"]
+        assert metadata.call_args.kwargs["enable_writeback"] is False
+        if finished_before_cancel:
+            target_release.set()
+            await native
+            task = store.update(task["id"], lambda t: t.update(
+                status="cancelling", observed_result={"answer": "Two jokes"},
+            ))
+        await executor.cancel(task)
+        assert ReqMethod.CHAT_CANCEL in methods
+        assert native.cancelled() is not finished_before_cancel
+        assert not sibling.done()
+        current = store.read(task["id"])
+        assert current["execution_cancelled"] is not finished_before_cancel
+        if finished_before_cancel:
+            assert current["status"] == "completed" and current["result"] == {"answer": "Two jokes"}
+    finally:
+        release.set()
+        target_release.set()
+        await asyncio.gather(native, sibling, return_exceptions=True)
+        service.workers.clear()
+        await service.close()
+        await coordinator.close()
 
 
 @pytest.fixture(name="routed_task")
@@ -97,6 +196,7 @@ async def test_checkpoint_changes_and_settlement_roundtrip_without_shared_data(r
         assert len(messages) == 1
         assert r.store.read(r.task["id"])["changes"][0]["state"] == "context_written"
         await checkpoint.after_model(ctx)
+    await until(lambda: r.store.read(r.task["id"])["execution_settled"])
     current = r.store.read(r.task["id"])
     assert current["changes"][0]["state"] == "model_input_observed"
     assert current["execution_settled"] and not current["execution_cancelled"]
@@ -117,7 +217,7 @@ async def test_cancel_settlement_closes_and_settles_in_one_checkpoint(routed_tas
     assert current["execution_cancelled"]
 
 
-async def test_cancel_during_normal_output_cleanup_preserves_settlement(routed_task, monkeypatch):
+async def test_receipt_delivery_does_not_hold_native_execution(routed_task, monkeypatch):
     from jiuwenswarm.server.runtime.video_task import execution
 
     r = routed_task
@@ -146,17 +246,14 @@ async def test_cancel_during_normal_output_cleanup_preserves_settlement(routed_t
     consumer = asyncio.create_task(consume())
     try:
         await asyncio.wait_for(closing.wait(), 1)
-        r.store.update(r.task["id"], lambda t: t.update(status="cancelling"))
-        consumer.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await consumer
+        await asyncio.wait_for(consumer, 1)
         assert not r.store.read(r.task["id"])["execution_settled"]
-        assert not execution.managed_request_detached(rail, r.request)
+        assert execution.managed_request_detached(rail, r.request)
         release.set()
         async with asyncio.timeout(1):
             while not r.store.read(r.task["id"])["execution_settled"]:
                 await asyncio.sleep(0.005)
-        assert r.store.read(r.task["id"])["execution_cancelled"]
+        assert not r.store.read(r.task["id"])["execution_cancelled"]
         await asyncio.sleep(0)
         assert execution.managed_request_detached(rail, r.request)
     finally:
@@ -187,7 +284,8 @@ async def test_foreign_or_stale_execution_cannot_read_or_mutate_checkpoint(route
         assert r.store.read(r.task["id"]) == before
 
 
-async def test_lost_claim_ack_does_not_write_or_replay_change(routed_task, monkeypatch):
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_lost_claim_ack_does_not_write_or_replay_change(routed_task, monkeypatch, cancel):
     r = routed_task
     remote = bridge.RemoteTaskEndpoint(r.request)
     await remote.call("bind")
@@ -195,11 +293,14 @@ async def test_lost_claim_ack_does_not_write_or_replay_change(routed_task, monke
         "id": "change", "instruction": "French", "state": "pending",
     }]))
     saved = []
+    retried = asyncio.Event()
 
     async def lose_claim_ack(message):
         if message["payload"]["action"] == "claim":
             command = message["payload"]
             saved.append((command, r.endpoint.execute(command)))
+            if len(saved) >= 2:
+                retried.set()
             return True
         return await r.push(message)
 
@@ -211,15 +312,26 @@ async def test_lost_claim_ack_does_not_write_or_replay_change(routed_task, monke
         extra={"run_context": {"extra": {"managed_task_request": r.task["request_id"]}}},
         context=SimpleNamespace(add_messages=write),
     )
-    with pytest.raises(TimeoutError):
-        await checkpoint.before_model(ctx)
-    write.assert_not_called()
-    assert r.store.read(r.task["id"])["changes"][0]["state"] == "claimed"
-    command, receipt = saved[0]
-    assert r.endpoint.execute(command) == receipt  # Repeated transport command is idempotent.
-    monkeypatch.setattr(bridge, "send_runtime_push", r.push)
-    await checkpoint.before_model(ctx)
-    write.assert_not_called()  # A fresh claim cannot silently replay uncertain context writes.
+    pending = asyncio.create_task(checkpoint.before_model(ctx))
+    try:
+        await asyncio.wait_for(retried.wait(), 2)
+        assert not pending.done(), "lost ACKs cannot impose a business deadline"
+        write.assert_not_called()
+        assert r.store.read(r.task["id"])["changes"][0]["state"] == "claimed"
+        assert len({command["command_id"] for command, _ in saved}) == 1
+        if cancel:
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+            write.assert_not_called()
+        else:
+            monkeypatch.setattr(bridge, "send_runtime_push", r.push)
+            await asyncio.wait_for(pending, 2)
+            await checkpoint.before_model(ctx)
+            assert write.await_count == 1, "retries must not duplicate the context mutation"
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
 
 
 async def test_wrong_ack_cannot_release_waiting_execution(routed_task, monkeypatch):
@@ -253,11 +365,18 @@ async def test_wrong_ack_cannot_release_waiting_execution(routed_task, monkeypat
 
 async def test_unavailable_gateway_never_uses_an_agentserver_database(routed_task, monkeypatch):
     r = routed_task
-    monkeypatch.setattr(bridge, "send_runtime_push", AsyncMock(return_value=False))
-    with pytest.raises(RuntimeError, match="could not reach Gateway"):
-        await bridge.RemoteTaskEndpoint(r.request).call("bind")
-    assert not r.store.read(r.task["id"])["execution_bound"]
-    assert not list(r.server_root.iterdir())
+    push = AsyncMock(return_value=False)
+    monkeypatch.setattr(bridge, "send_runtime_push", push)
+    monkeypatch.setattr(bridge, "ACK_TIMEOUT", 0.02)
+    pending = asyncio.create_task(bridge.RemoteTaskEndpoint(r.request).call("bind"))
+    try:
+        await until(lambda: push.await_count >= 2)
+        assert not pending.done()
+        assert not r.store.read(r.task["id"])["execution_bound"]
+        assert not list(r.server_root.iterdir())
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
 
 
 @pytest.mark.parametrize("owner", ["alice", "", "mallory"])
@@ -420,6 +539,34 @@ async def test_form_answer_request_does_not_rebind_running_task(routed_task):
             assert rail.managed_tasks[r.request.session_id] is checkpoint
 
 
+@pytest.mark.parametrize("state", ["missing", "recovering", "waiting_control", "live_child"])
+async def test_snapshot_requires_exact_settled_execution(routed_task, state):
+    r = routed_task
+    root = {"execution_id": "root", "request_id": r.task["request_id"], "state": "succeeded"}
+    records = [root]
+    if state == "missing":
+        root["request_id"] = "another-request"
+    elif state == "waiting_control":
+        root["state"] = "waiting_control"
+    elif state == "live_child":
+        records.append({"execution_id": "child", "parent_execution_id": "root", "state": "running"})
+    payload = {"user_id": "alice", "runtime": {
+        "executions": records, "recovery_pending": state == "recovering",
+    }}
+    client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(ok=True, payload=payload)))
+    executor = task_adapter.AgentTaskExecutor(client, r.store, None)
+    if state in {"missing", "recovering"}:
+        with pytest.raises(RuntimeError, match="not confirmed"):
+            await executor.refresh_execution(r.task)
+    else:
+        await executor.refresh_execution(r.task)
+    assert not r.store.read(r.task["id"])["execution_settled"]
+    assert all(
+        call.args[0].method == ReqMethod.SESSION_GET_METADATA.value
+        for call in client.send_request.call_args_list
+    )
+
+
 async def test_bound_task_worker_loss_preserves_unknown_stop_error(routed_task):
     r = routed_task
     await bridge.RemoteTaskEndpoint(r.request).call("bind")
@@ -432,7 +579,6 @@ async def test_bound_task_worker_loss_preserves_unknown_stop_error(routed_task):
         await executor.cancel(r.task)
     current = r.store.read(r.task["id"])
     assert not current["execution_settled"] and not current["execution_cancelled"]
-
 
 
 async def test_cancel_ack_waits_for_execution_receipt_and_keeps_target(routed_task):
@@ -464,11 +610,11 @@ async def test_cancel_ack_waits_for_execution_receipt_and_keeps_target(routed_ta
         for env in requests:
             assert env.method == ReqMethod.CHAT_CANCEL.value
             assert env.session_id == r.task["core_session_id"]
-            assert env.params["managed_task_request"] == r.task["request_id"]
+            assert env.channel == "web"
+            assert env.params["target_request_id"] == r.task["request_id"]
     finally:
         pending.cancel()
         await asyncio.gather(pending, return_exceptions=True)
-
 
 
 async def test_cancel_during_dispatch_finishes_and_releases_waiting_task(routed_task):
@@ -485,6 +631,7 @@ async def test_cancel_during_dispatch_finishes_and_releases_waiting_task(routed_
     executor.run = run
     service = TaskService(r.store, executor, concurrency=1)
     service.started = True
+    service.active_scopes.add((r.task["owner"], r.task["session"]))
     try:
         service.kick()
         assert await asyncio.wait_for(started.get(), 1) == r.task["id"]
@@ -500,19 +647,23 @@ async def test_cancel_during_dispatch_finishes_and_releases_waiting_task(routed_
         await service.close()
 
 
-
-async def test_missing_cancel_receipt_reports_timeout_without_claiming_stop(routed_task, monkeypatch):
+async def test_missing_cancel_receipt_waits_without_claiming_stop(routed_task):
     r = routed_task
     client = SimpleNamespace(send_request=AsyncMock(
         return_value=SimpleNamespace(ok=True, payload={"success": True})
     ))
     executor = task_adapter.AgentTaskExecutor(client, r.store, None)
-    monkeypatch.setattr(task_adapter, "STOP_SETTLEMENT_TIMEOUT", 0.02)
-    with pytest.raises(RuntimeError, match="cleanup was not confirmed"):
-        await executor.cancel(r.task)
-    assert not r.store.read(r.task["id"])["execution_settled"]
-    assert not r.store.read(r.task["id"])["execution_cancelled"]
-
+    pending = asyncio.create_task(executor.cancel(r.task))
+    try:
+        await asyncio.sleep(0.04)
+        assert not pending.done()
+        assert not r.store.read(r.task["id"])["execution_settled"]
+        assert not r.store.read(r.task["id"])["execution_cancelled"]
+        r.store.update(r.task["id"], lambda t: t.update(execution_settled=True))
+        await asyncio.wait_for(pending, 1)
+    finally:
+        pending.cancel()
+        await asyncio.gather(pending, return_exceptions=True)
 
 
 @pytest.mark.parametrize("bind_first", [False, True])

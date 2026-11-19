@@ -1,5 +1,19 @@
 import { create } from 'zustand';
 import type { TeamTask } from '../stores/sessionStore';
+import type { UserAnswer } from '../types';
+
+type QuestionController = (sessionId: string, requestId: string, answers: UserAnswer[], source?: string) => Promise<boolean>;
+let questionController: QuestionController | undefined;
+
+export function registerApplicationQuestionController(controller: QuestionController): () => void {
+  questionController = controller;
+  return () => { if (questionController === controller) questionController = undefined; };
+}
+
+export function answerApplicationQuestion(sessionId: string, requestId: string, answers: UserAnswer[], source?: string): Promise<boolean> {
+  if (!questionController) return Promise.reject(new Error('Question submission is unavailable'));
+  return questionController(sessionId, requestId, answers, source);
+}
 
 export type ApplicationTaskStatus = 'unknown' | 'queued' | 'running' | 'cancelling' | 'cancelled' | 'completed' | 'failed';
 export type ApplicationTaskAction = 'cancel' | 'next' | 'before' | 'preempt';
@@ -32,6 +46,7 @@ export interface ApplicationTaskProgress {
   sequence: number;
   detail: string;
   createdAt: number;
+  finishedAt?: number;
   steps?: Array<{ id: string; content: string; status: string }>;
   queuePosition?: number;
   queueVersion?: number;
@@ -65,6 +80,9 @@ export const useApplicationTaskStore = create<{
         ...existing,
         ...task,
         createdAt: existing?.createdAt ?? task.createdAt,
+        finishedAt: terminal(task.status)
+          ? existing?.finishedAt ?? task.finishedAt ?? (existing && !terminal(existing.status) ? Date.now() : undefined)
+          : undefined,
         steps: task.steps ?? existing?.steps,
       };
       const next = existing ? tasks.map((item) => (item === existing ? updated : item)) : [...tasks, updated];

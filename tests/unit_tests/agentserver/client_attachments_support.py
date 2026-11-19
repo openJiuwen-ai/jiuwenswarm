@@ -24,7 +24,7 @@ from jiuwenswarm.server.client_attachments import (
 from jiuwenswarm.server.runtime.session import session_metadata
 
 RESOURCE = {"key": "office-deck", "display_name": "Roadmap.pptx",
-            "kind": "presentation", "host_vendor": "microsoft"}
+            "kind": "presentation", "host_vendor": "office"}
 CLIENT_APP = "office-powerpoint"
 OTHER_APP = "wps-presentation"
 OWNERS = {"session-1": "user-1", "session-2": "user-1", "session-3": "user-1", "foreign": "user-2"}
@@ -73,11 +73,12 @@ class Socket:
         self.sent.append(json.loads(data))
 
 
-def write_app(root: Path, directory: str, tools: list[str]) -> Path:
-    """An app's contract directory: the tools its client may declare."""
+def write_app(root: Path, directory: str, tools: list[str], platform: str) -> Path:
+    """An app's contract directory: the tools its client may declare, each run on ``platform``."""
     contract = root / directory
     contract.mkdir(parents=True)
-    (contract / "tools.json").write_text(json.dumps([{"name": name, "description": name} for name in tools]))
+    (contract / "tools.json").write_text(json.dumps(
+        [{"name": name, "description": name, "host_requirements": {platform: {}}} for name in tools]))
     return contract
 
 
@@ -107,10 +108,10 @@ def isolated(monkeypatch, tmp_path):
     (importable / "docapps" / "__init__.py").write_text("")
     monkeypatch.syspath_prepend(str(importable))
     apps = importable / "docapps" / "apps"
-    write_app(apps, "powerpoint", ["read_presentation_context", "presentation_apply_patch"])
-    write_app(apps, "wps", ["read_deck"])
-    monkeypatch.setattr(registry, "APPS", {CLIENT_APP: ("docapps/apps/powerpoint", frozenset()),
-                                         OTHER_APP: ("docapps/apps/wps", frozenset())})
+    write_app(apps, "powerpoint", ["read_presentation_context", "presentation_apply_patch"], "office")
+    write_app(apps, "wps", ["read_deck"], "wps")
+    monkeypatch.setattr(registry, "APPS", {CLIENT_APP: ("docapps/apps/powerpoint", "office", frozenset()),
+                                         OTHER_APP: ("docapps/apps/wps", "wps", frozenset())})
     registry.client_apps.cache_clear()
     clock = Clock()
     monkeypatch.setattr(directory, "clock", clock)
