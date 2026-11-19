@@ -20,6 +20,8 @@ Report these defects whenever pixels or authoritative measurements show them:
 - Numeric table columns centred instead of right-aligned
 - A process or flow that breaks onto a second row without a connector leading to the continuation
 - Leftover placeholder text such as "Click to add title"
+- Chart data labels that touch or overlap each other
+- The same text repeated in two places on the slide, other than a running footer
 - A logo or image that is visibly duplicated, distorted, stretched, clipped, or surrounded by an unintended opaque rectangle
 - Body copy that remains technically inside its box but is visibly too small or dense to read at presentation distance
 

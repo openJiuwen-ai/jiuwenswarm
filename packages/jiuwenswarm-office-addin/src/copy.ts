@@ -84,6 +84,7 @@ export const copy = {
   sendFailed: (reason: string) => `发送失败：${reason}`,
   stopFailed: (reason: string) => `停止任务失败：${reason}`,
   stopped: '已停止任务。',
+  endedWhileAway: '连接中断期间，这一轮已结束。',
   turnError: (reason: string) => `出错了：${reason}`,
   turnErrorFallback: '执行失败',
   replied: (text: string) => `WorkSwarm 回复：${text}`,
