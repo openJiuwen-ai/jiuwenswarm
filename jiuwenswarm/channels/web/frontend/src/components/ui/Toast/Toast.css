@@ -3,8 +3,8 @@
 .ui-toast-stack {
   position: fixed;
   top: 16px;
-  left: 0;
-  right: 0;
+  left: 16px;
+  right: 16px;
   z-index: 100;
   display: flex;
   flex-direction: column;
@@ -16,7 +16,6 @@
 /* 右上角变体（调用方传 position: 'right'）：右侧留 24px 间距，条目右对齐堆叠 */
 .ui-toast-stack--right {
   right: 24px;
-  left: auto;
   align-items: flex-end;
 }
 
@@ -24,7 +23,8 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  width: min(300px, calc(100vw - 32px));
+  width: fit-content;
+  max-width: min(400px, 100%);
   padding: 8px 16px;
   box-sizing: border-box;
   color: var(--color-text-primary);
@@ -40,19 +40,7 @@
 
 /* 带操作按钮时按内容撑开，避免文案与操作挤在一起 */
 .ui-toast--with-actions {
-  width: auto;
-  max-width: min(520px, calc(100vw - 32px));
-}
-
-/* 长文案提示按条加宽（调用方传 wide: true），不影响其他 toast 的默认宽度 */
-.ui-toast--wide {
-  width: min(400px, calc(100vw - 32px));
-}
-
-/* 加宽后仍放不下时换行兜底，保证「请先手动停止」这类操作指引能读完 */
-.ui-toast--wide .ui-toast__content {
-  white-space: normal;
-  overflow-wrap: anywhere;
+  max-width: min(520px, 100%);
 }
 
 @keyframes ui-toast-rise {
@@ -143,9 +131,8 @@
 .ui-toast__content {
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 /* 文本操作（如「查看」「撤销」）：沿用既有链接色，不另造胶囊配色 */
@@ -209,19 +196,8 @@
 @media (max-width: 720px) {
   .ui-toast-stack {
     top: 8px;
-    gap: 6px;
-  }
-
-  .ui-toast-stack--right {
+    left: 12px;
     right: 12px;
-  }
-
-  .ui-toast {
-    width: calc(100vw - 24px);
-  }
-
-  .ui-toast--with-actions {
-    width: calc(100vw - 24px);
-    max-width: none;
+    gap: 6px;
   }
 }

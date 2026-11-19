@@ -23,18 +23,93 @@ def model_for(capabilities, name="model-a"):
                            **({} if generation else {"context_window_tokens": 262144})}}
 
 
-def create(state, model):
-    return transition(state, "models.upsert", {"mode": "create", "model": model})[0]
+def create(state, model, enabled=True):
+    activation_tools = [tool for tool in model["capabilities"] if not state["tools"][tool]["enabled"]]
+    return transition(state, "models.upsert", {"mode": "create", "model": model,
+                                              "tool_activation": {"tools": activation_tools, "enabled": enabled}})[0]
 
 
-def test_new_model_binds_all_unbound_capabilities_without_overwriting_choice_or_switch():
-    first = model_for(["vision"])
+@pytest.mark.parametrize("enabled", [False, True])
+def test_new_model_confirms_closed_tools_in_batch_and_preserves_enabled_tools(enabled):
+    first = model_for(["vision", "audio"])
     state = create(empty_state(), first)
-    state, _ = transition(state, "tools.update", {"tool_id": "vision", "enabled": False})
-    second = model_for(["vision", "audio"])
-    state = create(state, second)
-    assert state["tools"]["vision"] == {"model_id": first["model_id"], "enabled": False}
-    assert state["tools"]["audio"] == {"model_id": second["model_id"], "enabled": True}
+    state["tools"]["audio"]["enabled"] = False
+    second = model_for(["vision", "audio", "video"])
+    original = deepcopy(state)
+    params = {"mode": "create", "model": second}
+    with pytest.raises(MultimodalError, match="MM_CONFIRM_REQUIRED") as error:
+        transition(state, "models.upsert", params)
+    assert error.value.payload["affected_tools"] == []
+    assert error.value.payload["activation_tools"] == ["audio", "video"]
+    assert state == original
+    updated, _ = transition(state, "models.upsert", {
+        **params, "tool_activation": {"tools": ["audio", "video"], "enabled": enabled},
+    })
+    assert updated["tools"]["vision"] == {"model_id": first["model_id"], "enabled": True}
+    assert updated["tools"]["audio"] == {
+        "model_id": second["model_id"] if enabled else first["model_id"], "enabled": enabled,
+    }
+    assert updated["tools"]["video"] == {"model_id": second["model_id"], "enabled": enabled}
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_edit_only_confirms_new_capabilities_and_can_replace_a_disabled_binding(enabled):
+    first = model_for(["vision"])
+    second = model_for(["audio"])
+    state = create(create(empty_state(), first, enabled=False), second, enabled=False)
+    edited = deepcopy(first)
+    edited["capabilities"] = ["vision", "audio", "video"]
+    params = {"mode": "update", "model": edited}
+    with pytest.raises(MultimodalError, match="MM_CONFIRM_REQUIRED") as error:
+        transition(state, "models.upsert", params)
+    assert error.value.payload["activation_tools"] == ["audio", "video"]
+    updated, _ = transition(state, "models.upsert", {
+        **params, "tool_activation": {"tools": ["audio", "video"], "enabled": enabled},
+    })
+    assert updated["tools"]["vision"] == state["tools"]["vision"]
+    assert updated["tools"]["audio"] == {
+        "model_id": first["model_id"] if enabled else second["model_id"], "enabled": enabled,
+    }
+    assert updated["tools"]["video"] == {"model_id": first["model_id"], "enabled": enabled}
+
+
+@pytest.mark.parametrize("activation", [
+    None, True, {}, {"tools": ["vision"], "enabled": "true"},
+    {"tools": ["vision", "vision"], "enabled": True},
+    {"tools": ["vision", None], "enabled": True},
+    {"tools": ["audio"], "enabled": False},
+])
+def test_missing_or_invalid_activation_confirmation_cannot_save(activation):
+    state = empty_state()
+    original = deepcopy(state)
+    with pytest.raises(MultimodalError, match="MM_CONFIRM_REQUIRED") as error:
+        transition(state, "models.upsert", {"mode": "create", "model": model_for(["vision"]),
+                                              "tool_activation": activation})
+    assert error.value.payload["activation_tools"] == ["vision"]
+    assert state == original
+
+
+def test_confirmation_is_recomputed_when_a_tool_is_enabled_by_another_request():
+    existing = model_for(["vision"])
+    state = create(empty_state(), existing)
+    new = model_for(["vision", "audio"])
+    params = {"mode": "create", "model": new,
+              "tool_activation": {"tools": ["vision", "audio"], "enabled": True}}
+    with pytest.raises(MultimodalError, match="MM_CONFIRM_REQUIRED") as error:
+        transition(state, "models.upsert", params)
+    assert error.value.payload["activation_tools"] == ["audio"]
+    params["tool_activation"]["tools"] = ["audio"]
+    updated, _ = transition(state, "models.upsert", params)
+    assert updated["tools"]["vision"] == state["tools"]["vision"]
+    assert updated["tools"]["audio"] == {"model_id": new["model_id"], "enabled": True}
+
+
+def test_create_retry_does_not_reenable_a_model_saved_with_tools_off():
+    model = model_for(["vision"])
+    state = create(empty_state(), model, enabled=False)
+    updated, result = transition(state, "models.upsert", {"mode": "create", "model": model})
+    assert updated == state
+    assert result["changed"] is False
 
 
 def test_edit_adds_capability_and_updates_connection_for_enabled_and_disabled_references():
@@ -43,7 +118,8 @@ def test_edit_adds_capability_and_updates_connection_for_enabled_and_disabled_re
     state["tools"]["audio"]["enabled"] = False
     model["capabilities"].append("video")
     model["connection"]["api_base"] = "https://updated.invalid/v1"
-    candidate, result = transition(state, "models.upsert", {"mode": "update", "model": model})
+    candidate, result = transition(state, "models.upsert", {"mode": "update", "model": model,
+                                                           "tool_activation": {"tools": ["video"], "enabled": True}})
     assert candidate["tools"]["audio"]["enabled"] is False
     assert candidate["tools"]["video"]["enabled"] is True
     assert result["changed_tools"] == ["vision", "audio", "video"]
@@ -64,6 +140,7 @@ def test_reference_confirmation_includes_off_tools_and_fallback_preserves_each_s
         edited["capabilities"] = ["video_gen"]
         edited["connection"].pop("context_window_tokens")
         params.update(mode="update", model=edited)
+        params["tool_activation"] = {"tools": ["video_gen"], "enabled": False}
     original = deepcopy(state)
     with pytest.raises(MultimodalError) as error:
         transition(state, operation, params)

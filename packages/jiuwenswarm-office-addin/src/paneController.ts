@@ -49,15 +49,15 @@ export interface PaneState {
 type Attachment = Pick<
   ClientAttachment, 'current' | 'sessionId' | 'start' | 'attach' | 'onEvent' | 'onStateChange' | 'cancelToolCalls'>;
 type Sessions = Pick<
-  SessionFacade, 'create' | 'models' | 'conversations' | 'history' | 'openDocuments'
+  SessionFacade, 'create' | 'models' | 'conversations' | 'history' | 'processing' | 'openDocuments'
   | 'sendText' | 'interrupt' | 'answer'>;
 
 export class TaskPaneController {
   private value: PaneState;
   /** The conversation whose transcript the pane shows. */
   private shown: SessionId | undefined;
-  /** The attachment the transcript was loaded for: each attach is a new one, a renew is not. */
-  private loadedFor: string | undefined;
+  /** The connection dropped since the transcript was loaded, so events of its turn may have gone missing. */
+  private missedEvents = false;
   /** Counts the transcript resets; a history load shows its answer only if no reset came after it. */
   private loads = 0;
   /** Live events of the shown conversation that arrived before its history. */
@@ -86,7 +86,10 @@ export class TaskPaneController {
     };
     attachment.onStateChange(state => this.attachmentChanged(state));
     attachment.onEvent(event => this.received(event));
-    options.connection.onConnectionChange(connection => this.update({ connection }));
+    options.connection.onConnectionChange(connection => {
+      if (connection.kind === 'down') this.missedEvents = true;
+      this.update({ connection });
+    });
   }
 
   state(): PaneState {
@@ -258,26 +261,34 @@ export class TaskPaneController {
   private attachmentChanged(state: AttachmentState): void {
     const sessionId = state.kind === 'detached' ? undefined : state.sessionId;
     // Attached again, as after a reconnect or "continue here": what the turn did meanwhile is only in the history.
-    const reattached = state.kind === 'attached' && state.attachmentId !== this.loadedFor;
-    if (state.kind === 'attached') this.loadedFor = state.attachmentId;
+    // The attachment id cannot tell, as every attach of the document by its user gets the same one.
+    const reattached = state.kind === 'attached' && (this.missedEvents || this.value.attachment.kind !== 'attached');
+    if (state.kind === 'attached') this.missedEvents = false;
     if (sessionId === this.shown && !reattached) {
       this.update({ attachment: state });
       return;
     }
+    const { turn, prompt } = this.value.conversation;
+    const wasBusy = sessionId === this.shown && (turn === 'running' || prompt !== undefined);
     this.shown = sessionId;
     this.loads += 1;
     this.held = [];
     this.update({
       attachment: state, conversation: emptyConversation, loadingHistory: sessionId !== undefined, alert: undefined });
     if (!sessionId) return;
-    void this.loadHistory(sessionId);
+    void this.loadHistory(sessionId, wasBusy);
     void this.refreshDocuments(sessionId);
     // The attachment may have started this conversation itself, as when the one it had was refused.
     void this.refreshConversations().catch(() => undefined);
   }
 
-  private async loadHistory(sessionId: SessionId): Promise<void> {
+  /**
+   * Show the conversation's history, and its turn as running while the server still runs it; history alone cannot
+   * tell. A turn the pane showed running (``wasBusy``) that no longer runs ended out of its sight.
+   */
+  private async loadHistory(sessionId: SessionId, wasBusy: boolean): Promise<void> {
     const load = this.loads;
+    const processing = this.options.sessions.processing(sessionId).catch(() => undefined);
     let conversation: Conversation;
     try {
       const messages = await this.options.sessions.history(sessionId);
@@ -287,7 +298,10 @@ export class TaskPaneController {
       conversation = emptyConversation;
       if (load === this.loads) this.update({ alert: { tone: 'error', text: copy.historyFailed(reasonOf(error)) } });
     }
+    const running = await processing;
     if (load !== this.loads) return;
+    if (running) conversation = startTurn(conversation);
+    else if (running === false && wasBusy) conversation = addNotice(conversation, 'info', copy.endedWhileAway);
     const held = this.held;
     this.held = [];
     this.update({

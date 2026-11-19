@@ -1,6 +1,6 @@
 export const TEAM_PANEL_WIDTH_REFERENCE_NAME = 'research:agent';
 // Calibrated to keep the representative member name visible in the overview card.
-export const TEAM_PANEL_MIN_WIDTH_PX = 400;
+export const TEAM_PANEL_MIN_WIDTH_PX = 520;
 
 const WORKSPACE_DIVIDER_WIDTH_PX = 4;
 const CHAT_PANEL_MIN_WIDTH_PCT = 20;

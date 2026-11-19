@@ -13,11 +13,15 @@ Choose a purpose and one or more capabilities:
 
 Select only capabilities the model actually supports. Existing provider and connection validation rules apply. For example, vLLM-Omni allows an empty API key and model name; other providers retain their existing requirements. The model display name fills when you leave the model-name field or select a model. Customized names are preserved; clearing the display name enables automatic filling again. Switching providers with an empty model name does not fill the provider name.
 
-Saving automatically selects the model and enables matching tools that have no model selected. Existing selections and manually disabled tools are preserved. Editing a model to add a capability follows the same rule.
+When adding a model or adding capabilities during an edit, saving lists the matching tools that are currently disabled in one confirmation. Choose **Enable and use this model** to bind those tools to the model and enable them, or **Keep off** to save the model while retaining their switches and existing selections. Unbound tools select the new model but remain disabled when you choose to keep them off. Already enabled tools retain their selections. Closing the confirmation or pressing Esc cancels the save.
 
 Each tool dropdown lists matching models. Turning a tool off retains its selection; turning it back on uses that selection. Turning on an unconfigured tool opens the add dialog with its purpose and capability preselected. You can change both. If the saved model excludes the originating capability, it is still added and the originating tool stays unchanged.
 
-Display names can repeat. Matching candidates with the same name also show their actual model name and address. If those are identical too, the model ID distinguishes them.
+When the add dialog is opened from a tool switch and you save only that tool's single capability, saving enables it without asking again. Changing the purpose or adding other capabilities requires confirmation for the actual tool list.
+
+When adding or editing a model, the page checks for duplicate display names across the multimodal model list, including both understanding and generation models. Existing duplicate names are preserved, but must be changed before saving an edit.
+
+Tool dropdowns and their options show only the display name. Hover over an option to see its actual model name, API address, and model ID.
 
 ## Edit and delete
 

@@ -18,6 +18,7 @@ import './Select.css';
 export type SelectOption = {
   value: string;
   label: ReactNode;
+  title?: string;
   disabled?: boolean;
   disabledReason?: string;
   /** 行尾附加内容（如徽标）；渲染在 label 之后、对勾之前，旧版 space-between 布局的尾部子项 */
@@ -111,15 +112,17 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
 
     const reposition = () => {
       const triggerRect = trigger.getBoundingClientRect();
-      const panelRect = panel.getBoundingClientRect();
+      // Layout dimensions exclude the dropdown's opening scale animation.
+      const panelWidth = panel.offsetWidth;
+      const panelHeight = panel.offsetHeight;
       const below = triggerRect.bottom + TRIGGER_GAP;
       const top =
-        below + panelRect.height <= window.innerHeight - VIEWPORT_MARGIN
+        below + panelHeight <= window.innerHeight - VIEWPORT_MARGIN
           ? below
-          : Math.max(VIEWPORT_MARGIN, triggerRect.top - panelRect.height - TRIGGER_GAP);
+          : Math.max(VIEWPORT_MARGIN, triggerRect.top - panelHeight - TRIGGER_GAP);
       const left = Math.min(
         Math.max(triggerRect.left, VIEWPORT_MARGIN),
-        Math.max(VIEWPORT_MARGIN, window.innerWidth - panelRect.width - VIEWPORT_MARGIN),
+        Math.max(VIEWPORT_MARGIN, window.innerWidth - panelWidth - VIEWPORT_MARGIN),
       );
       setPosition({ left, top, minWidth: triggerRect.width });
     };
@@ -290,7 +293,7 @@ export const Select = forwardRef<HTMLButtonElement, SelectProps>(function Select
                     role="option"
                     aria-selected={isSelected}
                     disabled={option.disabled}
-                    title={option.disabledReason}
+                    title={option.disabledReason ?? option.title}
                     className={`ui-dropdown-menu__item ui-select__option${
                       isSelected ? ' ui-select__option--selected' : ''
                     }`}

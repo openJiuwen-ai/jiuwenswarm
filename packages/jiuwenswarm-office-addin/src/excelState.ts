@@ -216,8 +216,6 @@ export class ExcelState {
       sheet.load('id,name');
       const chart = context.workbook.getActiveChartOrNullObject();
       chart.load('id,name');
-      const selection = context.workbook.getSelectedRanges();
-      selection.load('address');
       await context.sync();
       const name = label(sheet.name, MAX_NAME_CHARS);
       const lines = [`Current active sheet: "${name.shown}" (sheet id ${sheet.id}${
@@ -227,9 +225,15 @@ export class ExcelState {
         await context.sync();
         lines.push(`Selected chart: "${label(chart.title.text || chart.name, MAX_NAME_CHARS).shown}" (id: "${
           label(chart.id, MAX_NAME_CHARS).shown}")`);
-      } else if (selection.address) {
-        lines.push(`Selected ranges: ${selectedRanges(selection.address)
-          .map(range => label(range, MAX_RANGE_CHARS).shown).join(' | ')}`);
+      } else {
+        // Asked for only when no chart is selected: with a chart selected, Excel fails the whole read.
+        const selection = context.workbook.getSelectedRanges();
+        selection.load('address');
+        await context.sync();
+        if (selection.address) {
+          lines.push(`Selected ranges: ${selectedRanges(selection.address)
+            .map(range => label(range, MAX_RANGE_CHARS).shown).join(' | ')}`);
+        }
       }
       return `<user_context>\n${lines.join('\n')}\n</user_context>`;
     });

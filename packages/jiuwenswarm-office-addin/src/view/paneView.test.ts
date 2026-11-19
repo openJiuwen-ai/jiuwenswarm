@@ -376,6 +376,7 @@ describe('the tray', () => {
     expect(announced()).toBe('连接已中断，5 秒后重连（第 2 次）');
     set({ connection: { kind: 'open' } });
     expect(root.querySelector<HTMLElement>('.tray')!.hidden).toBe(true);
+    expect(announced()).toBe('');
   });
 
   it('offers to continue here when another window holds the document, with the composer off', () => {
