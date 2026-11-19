@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 from copy import deepcopy
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -64,9 +65,10 @@ def parent_for(h, monkeypatch):
     monkeypatch.setattr(parent, "_load_skill_retrieval_session_profile", lambda _sid: None)
     monkeypatch.setattr(parent, "_reload_session_adapter_if_stale", AsyncMock())
     monkeypatch.setattr(session_ops_service, "history_exists", lambda _sid: True)
-    monkeypatch.setattr(session_ops_service, "load_history_records", lambda _sid: [
-        {"role": "user", "request_id": "original", "content": "Run the old probe"},
-    ])
+    monkeypatch.setattr(session_ops_service, "read_history_replay", lambda _sid, **_kwargs: SimpleNamespace(
+        records=[{"role": "user", "request_id": "original", "content": "Run the old probe"}],
+        prefix_cursor=None,
+    ))
     return parent
 
 

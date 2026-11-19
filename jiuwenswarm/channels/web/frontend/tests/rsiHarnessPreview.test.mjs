@@ -142,6 +142,26 @@ test('the best Harness link opens the same snapshot source without downloading i
   assert.equal(opened[0][0].artifactId, 'Aepoch-001');
 }));
 
+test('failed paper summary uses the final round count and does not show Harness combination evaluations', () => mounted(async root => {
+  const task = {
+    ...globalThis.rsiPreviewState.detail.task.task,
+    scenario: 'ARTIFACT', artifact_type: 'PAPER', status: 'FAILED',
+    progress: { iteration: 1 }, best_artifact: null,
+  };
+  globalThis.rsiPreviewState.detail.task.liveProgress = { iteration: 0 };
+  globalThis.rsiPreviewState.selectedTaskId = 'task';
+  globalThis.rsiPreviewState.detail.task.tree = { nodes: [] };
+  const report = { metrics: { iterations: 1, pruned_count: 1, eval_passed: 0, eval_total: 0 } };
+  await act(async () => root.render(React.createElement(RsiResultSummary, {
+    task, report, usage: null, onOpenArtifact() {},
+  })));
+  const metric = key => [...document.querySelectorAll('.rsi-result__metric')]
+    .find(element => element.textContent.includes('rsi.detail.' + key));
+  assert.equal(metric('iterations').querySelector('.rsi-result__metric-value').textContent, '1');
+  assert.equal(metric('pruned').querySelector('.rsi-result__metric-value').textContent, '1');
+  assert.equal(metric('evalCount'), undefined);
+}));
+
 test('an explicit best node ID selects its own snapshot rather than the latest node', () => mounted(async root => {
   const task = globalThis.rsiPreviewState.detail.task.task;
   task.best_artifact = { artifact_id: 'e1', name: 'best' };

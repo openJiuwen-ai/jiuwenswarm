@@ -1,5 +1,6 @@
 import type { Entry } from '../conversationModel';
 import { copy, toolLabel } from '../copy';
+import type { OpenDocument } from '../sessionFacade';
 import { h } from './dom';
 import { icon, type IconName } from './icons';
 
@@ -29,7 +30,7 @@ export function running(step: Step): boolean {
 }
 
 export interface ActivityView {
-  documents: ReadonlyMap<string, string>;
+  documents: ReadonlyMap<string, OpenDocument>;
   clock: StepClock;
   expanded: boolean;
   /** The one step whose details are open, if any. */
@@ -61,9 +62,9 @@ export function activityGroup(id: string, steps: readonly Step[], view: Activity
   return h('section', { class: `entry activity${active ? ' is-running' : ''}` }, head, list);
 }
 
-function stepLabel(step: Step, documents: ReadonlyMap<string, string>): string {
+function stepLabel(step: Step, documents: ReadonlyMap<string, OpenDocument>): string {
   return step.kind === 'outgoing'
-    ? copy.outgoingTo(documents.get(step.targetSessionId) || copy.otherConversation)
+    ? copy.outgoingTo(documents.get(step.targetSessionId)?.name || copy.otherConversation)
     : toolLabel(step.name);
 }
 

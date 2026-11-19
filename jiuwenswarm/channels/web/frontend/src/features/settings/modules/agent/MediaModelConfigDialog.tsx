@@ -10,6 +10,7 @@ import { ModelNameField } from '../models/ModelNameField';
 import { ModelProviderSelect } from '../models/ModelProviderSelect';
 import { ContextWindowField } from '../models/ContextWindowField';
 import { parseContextWindowTokens } from '../models/contextWindow';
+import { ModelConfigSaveCancelled, type ModelConfigDialogExtension } from './modelConfigDialogExtension';
 import {
   CUSTOM_VENDOR_SELECTION,
   findVendorPreset,
@@ -106,6 +107,7 @@ export function MediaModelConfigDialog({
   onSaved,
   onClose,
   titleKey,
+  extension,
 }: {
   modality: ModelConfigurationSlot;
   config: Record<string, unknown>;
@@ -114,6 +116,7 @@ export function MediaModelConfigDialog({
   onSaved: (result: unknown) => void;
   onClose: () => void;
   titleKey?: string;
+  extension?: ModelConfigDialogExtension;
 }) {
   const { t } = useTranslation();
   const { isConnected, request } = useSettingsServices();
@@ -121,8 +124,11 @@ export function MediaModelConfigDialog({
   const form = useForm<MediaModelDraft>({ initialValues });
   useFormState(form);
   const values = form.getValues();
+  useEffect(() => {
+    if (extension?.fieldErrors) form.setErrors(extension.fieldErrors);
+  }, [extension?.fieldErrors, form]);
   const [catalog, setCatalog] = useState<VendorPresetMap>(EMPTY_VENDOR_CATALOG);
-  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogLoading, setCatalogLoading] = useState(isConnected);
   const [catalogError, setCatalogError] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -149,7 +155,12 @@ export function MediaModelConfigDialog({
     form,
     closeBlocked,
     onClose,
+    additionalChanges: extension?.dirty,
   });
+  const draftChange = extension?.onDraftChange;
+  useEffect(() => {
+    draftChange?.(buildMediaModelConfigUpdates(values, catalog, modality, false));
+  }, [draftChange, values, catalog, modality]);
 
   const describePresetStatus = useCallback(
     (targetPreset: VendorPreset | undefined, apiKey: string, options: readonly string[]) => {
@@ -225,6 +236,7 @@ export function MediaModelConfigDialog({
   };
 
   const updateVendor = (selection: string) => {
+    const previousModelName = form.getValues().model_name;
     invalidateFetchState();
     fetchedModelLists.current.clear();
     if (selection === CUSTOM_VENDOR_SELECTION) {
@@ -239,6 +251,7 @@ export function MediaModelConfigDialog({
         vendor_key: '',
         plan: '',
       });
+      extension?.onModelNameCommit('', previousModelName);
       setModelOptions([]);
       form.clearValidate(['vendor_selection', 'api_base', 'api_key', 'model_name']);
       return;
@@ -250,17 +263,19 @@ export function MediaModelConfigDialog({
       return;
     }
     const nextOptions = normalizeModelOptions(nextPreset.model_options);
+    const modelName = selectProviderDefaultModel(nextPreset.default_model, nextOptions);
     form.setValues({
       vendor_selection: selection,
       api_base: nextPreset.api_base,
       api_key: '',
-      model_name: selectProviderDefaultModel(nextPreset.default_model, nextOptions),
+      model_name: modelName,
       model_input_mode: 'options',
       provider: nextPreset.client_provider,
       endpoint_profile: nextPreset.endpoint_profile ?? '',
       vendor_key: nextPreset.vendor_key,
       plan: nextPreset.plan,
     });
+    extension?.onModelNameCommit(modelName, previousModelName);
     form.clearValidate(['vendor_selection', 'api_base', 'api_key', 'model_name']);
     setModelOptions(nextOptions);
     setFetchStatus(describePresetStatus(nextPreset, '', nextOptions));
@@ -352,6 +367,7 @@ export function MediaModelConfigDialog({
           value={String(value ?? '')}
           protocol="openai"
           catalog={catalog}
+          loading={catalogLoading}
           includeOpenAIAccount={false}
           disabled={fieldDisabled}
           invalid={Boolean(error)}
@@ -405,6 +421,7 @@ export function MediaModelConfigDialog({
     label: t('settingsPanel.models.model'),
     component: 'custom',
     required: true,
+    onBlur: (_modelName, nextValues) => extension?.onModelNameCommit(nextValues.model_name),
     render: ({ id, value, error, disabled: fieldDisabled, onChange, onBlur }) => (
       <ModelNameField
         id={id}
@@ -461,6 +478,7 @@ export function MediaModelConfigDialog({
       onSaved(saveResult);
       onClose();
     } catch (error) {
+      if (error instanceof ModelConfigSaveCancelled) return;
       setSaveError(error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'));
     } finally {
       setSubmitting(false);
@@ -520,6 +538,22 @@ export function MediaModelConfigDialog({
     }
   };
 
+  const formProps = {
+    form,
+    disabled: submitting || testing,
+    optionalText: t('common.optional'),
+    showOptional: false,
+    testIdPrefix: 'settings-agent-media-config-dialog',
+    rules: {
+      vendor_selection: [{ validator: () => errors.vendor_selection }],
+      api_base: [{ validator: () => errors.api_base }],
+      api_key: [{ validator: () => errors.api_key }],
+      model_name: [{ validator: () => errors.model_name }],
+      context_window_tokens: [{ validator: () => errors.context_window_tokens }],
+    },
+    items: formItems,
+  };
+
   return (
     <>
       <FormDialog
@@ -541,11 +575,7 @@ export function MediaModelConfigDialog({
         onConfirm={() => void confirm()}
         onCancel={requestClose}
       >
-        {catalogLoading ? (
-          <div className="settings-model-dialog__catalog-status" role="status" aria-live="polite" data-testid="settings-agent-media-config-dialog-catalog-loading">
-            {t('settingsPanel.models.catalogLoadingCustomAvailable')}
-          </div>
-        ) : null}
+        {extension?.render(closeBlocked)}
         {catalogError ? (
           <div
             className="settings-model-dialog__catalog-status settings-model-dialog__catalog-status--error"
@@ -562,20 +592,11 @@ export function MediaModelConfigDialog({
           </div>
         ) : null}
         <Form<MediaModelDraft>
-          form={form}
-          disabled={submitting || testing}
-          optionalText={t('common.optional')}
-          showOptional={false}
-          testIdPrefix="settings-agent-media-config-dialog"
-          rules={{
-            vendor_selection: [{ validator: () => errors.vendor_selection }],
-            api_base: [{ validator: () => errors.api_base }],
-            api_key: [{ validator: () => errors.api_key }],
-            model_name: [{ validator: () => errors.model_name }],
-            context_window_tokens: [{ validator: () => errors.context_window_tokens }],
-          }}
-          items={formItems}
+          {...formProps}
+          renderFields={extension ? formItems.filter((item) => item.name !== 'context_window_tokens').map((item) => item.name) : undefined}
         />
+        {extension?.renderDisplayName(closeBlocked)}
+        {extension ? <Form<MediaModelDraft> {...formProps} renderFields={['context_window_tokens']} /> : null}
         {saveError ? (
           <div className="settings-page__error" role="alert" data-testid="settings-agent-media-config-dialog-error">
             {saveError}

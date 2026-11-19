@@ -10,7 +10,7 @@ import pytest
 from agent_gateway.extensions.loader import ExtensionLoader
 from starlette.requests import Request
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
+from e2a.models import E2AEnvelope
 from jiuwenswarm.extensions.runtime_management_extension.extension import (
     register_extensions,
     runtime_client_requested,

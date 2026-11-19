@@ -305,17 +305,23 @@ var
   ProgressPath: String;
   ResultCode: Integer;
   StartProgress, EndProgress: Integer;
+  TimingPath: String;
+  ReadTiming: Boolean;
+  TimingLines: TArrayOfString;
+  I: Integer;
 begin
   Result := False;
   ResultCode := -1;
   ScriptPath := ExpandConstant('{tmp}\preserve-windows-cli.ps1');
   if not FileExists(ScriptPath) then
     ExtractTemporaryFile('preserve-windows-cli.ps1');
-  ReportPath := ExpandConstant('{tmp}\workswarm-cli-preservation.log');
+  ReportPath := ExpandConstant('{tmp}\workswarm-cli-') + Mode + '.log';
   ProgressPath := ExpandConstant('{tmp}\workswarm-cli-progress.txt');
   DeleteFile(ProgressPath);
   StartProgress := 0;
   EndProgress := 300;
+  TimingPath := ReportPath + '.timing';
+  ReadTiming := not FileExists(TimingPath) or DeleteFile(TimingPath);
   if Mode = 'Initialize' then
   begin
     StartProgress := 850;
@@ -335,6 +341,10 @@ begin
       ProgressPath, StartProgress, EndProgress, ResultCode);
   Log('[CLI] End ' + Mode + '; success=' + IntToStr(Ord(Result)) +
     '; result code=' + IntToStr(ResultCode));
+  if Result and ReadTiming then
+    if LoadStringsFromFile(TimingPath, TimingLines) then
+      for I := 0 to GetArrayLength(TimingLines) - 1 do
+        Log('[CLI] ' + Mode + ' ' + TimingLines[I]);
   if not Result then
     if Mode = 'Preserve' then
       MsgBox('External CLI preservation failed. Installation will stop before cleanup.' +

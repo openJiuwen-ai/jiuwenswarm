@@ -121,6 +121,32 @@ def resolve_team_sqlite_db_path(config_base: dict[str, Any] | None = None) -> Pa
     return get_agent_teams_home() / conn_str
 
 
+def resolve_team_runtime_database_config(config_base: dict[str, Any] | None = None):
+    """Database handle for team runtime reads outside a live TeamAgent.
+
+    Enterprise uses the deployment database. Personal edition uses the sqlite
+    file from team config. ``None`` means that sqlite path cannot be resolved.
+    """
+    from openjiuwen.agent_teams.schema.blueprint import StorageSpec
+    from openjiuwen.agent_teams.tools.database.config import DatabaseConfig
+
+    from jiuwenswarm.enterprise.team.runtime_storage import enterprise_team_runtime_storage
+
+    deployed = enterprise_team_runtime_storage()
+    if deployed is not None:
+        return StorageSpec(
+            type=str(deployed["type"]),
+            params=dict(deployed.get("params") or {}),
+        ).build()
+
+    if config_base is None:
+        config_base = get_config()
+    db_path = resolve_team_sqlite_db_path(config_base)
+    if db_path is None:
+        return None
+    return DatabaseConfig(db_type="sqlite", connection_string=str(db_path))
+
+
 def _entry_model_name(entry: dict[str, Any] | None) -> str:
     if not isinstance(entry, dict):
         return ""
@@ -130,14 +156,33 @@ def _entry_model_name(entry: dict[str, Any] | None) -> str:
     return str(mcc.get("model_name") or "").strip()
 
 
+def _entry_model_id(entry: dict[str, Any] | None) -> str:
+    if not isinstance(entry, dict):
+        return ""
+    return str(entry.get("model_id") or entry.get("id") or "").strip()
+
+
 def _select_default_model_config(
     configured_entries: list[dict[str, Any]],
     *,
     requested_model_name: str | None = None,
     login_model_entry: dict[str, Any] | None = None,
+    model_id: str | None = None,
 ) -> dict[str, Any]:
     requested = (requested_model_name or "").strip()
+    wanted_id = (model_id or "").strip()
     agentos = is_agentos_runtime()
+    if wanted_id:
+        # Duplicate custom models share model_name. The stable id is the only
+        # way to keep the page-selected endpoint instead of the first row.
+        for item in configured_entries:
+            if _entry_model_id(item) == wanted_id:
+                return item
+        if login_model_entry is not None and _entry_model_id(login_model_entry) == wanted_id:
+            return login_model_entry
+        for item in get_zen_free_model_entries():
+            if _entry_model_id(item) == wanted_id:
+                return item
     if requested:
         # Port agent_os b8273f093's selector over develop's normalized entries.
         # Keep their positions: models.list and the single-agent cache use the
@@ -192,12 +237,14 @@ def _resolve_default_model_config(
     *,
     requested_model_name: str | None = None,
     login_model_entry: dict[str, Any] | None = None,
+    model_id: str | None = None,
 ) -> dict[str, Any]:
     """Resolve the selected model from normalized executable entries."""
     return _select_default_model_config(
         get_default_models(config_base),
         requested_model_name=requested_model_name,
         login_model_entry=login_model_entry,
+        model_id=model_id,
     )
 
 
@@ -272,11 +319,26 @@ def _merge_effective_model_entries(
     return merged
 
 
+def _prefer_entry_by_model_id(
+    entries: list[dict[str, Any]],
+    model_id: str | None,
+) -> list[dict[str, Any]]:
+    """Put the stable id first so a same-name pool lookup hits that endpoint."""
+    wanted = (model_id or "").strip()
+    if not wanted:
+        return entries
+    for index, entry in enumerate(entries):
+        if _entry_model_id(entry) == wanted and index:
+            return [entry, *entries[:index], *entries[index + 1:]]
+    return entries
+
+
 def get_effective_team_model_entries(
     config_base: dict[str, Any],
     *,
     requested_model_name: str | None = None,
     login_model_entry: dict[str, Any] | None = None,
+    model_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return configured models plus the effective page-selected model."""
     configured_entries = get_default_models(config_base)
@@ -284,10 +346,14 @@ def get_effective_team_model_entries(
         configured_entries,
         requested_model_name=requested_model_name,
         login_model_entry=login_model_entry,
+        model_id=model_id,
     )
-    return _merge_effective_model_entries(
-        configured_entries,
-        selected_entry,
+    return _prefer_entry_by_model_id(
+        _merge_effective_model_entries(
+            configured_entries,
+            selected_entry,
+        ),
+        model_id,
     )
 
 
@@ -296,11 +362,13 @@ def _build_default_model_dict(
     *,
     requested_model_name: str | None = None,
     login_model_entry: dict[str, Any] | None = None,
+    model_id: str | None = None,
 ) -> dict[str, Any]:
     model_config = _resolve_default_model_config(
         config_base,
         requested_model_name=requested_model_name,
         login_model_entry=login_model_entry,
+        model_id=model_id,
     )
     model_client_config = dict(model_config.get("model_client_config", {}))
     model_name = model_client_config.get("model_name", "")
@@ -371,11 +439,13 @@ def _build_agents_config(
     *,
     requested_model_name: str | None = None,
     login_model_entry: dict[str, Any] | None = None,
+    model_id: str | None = None,
 ) -> dict[str, Any]:
     default_model = _build_default_model_dict(
         config_base,
         requested_model_name=requested_model_name,
         login_model_entry=login_model_entry,
+        model_id=model_id,
     )
     default_workspace, max_iterations, completion_timeout = _build_agent_defaults()
 
@@ -560,6 +630,7 @@ def load_team_spec_dict(
     *,
     requested_model_name: str | None = None,
     login_model_entry: dict[str, Any] | None = None,
+    model_id: str | None = None,
     template_id: str | None = None,
     template_snapshot: dict[str, Any] | None = None,
     strict_template: bool = False,
@@ -598,6 +669,7 @@ def load_team_spec_dict(
         config_base,
         requested_model_name=requested_model_name,
         login_model_entry=login_model_entry,
+        model_id=model_id,
     )
     spec_dict = deepcopy(team_raw)
     spec_dict.pop("enable_team_plan", None)
@@ -645,9 +717,15 @@ def load_team_spec_dict(
     elif "predefined_members" in spec_dict:
         spec_dict.pop("predefined_members", None)
 
-    storage_raw = team_raw.get("storage", {})
-    if storage_raw:
-        spec_dict["storage"] = _resolve_storage_config(storage_raw)
+    from jiuwenswarm.enterprise.team.runtime_storage import enterprise_team_runtime_storage
+
+    deployed = enterprise_team_runtime_storage()
+    if deployed is not None:
+        spec_dict["storage"] = deployed
+    else:
+        storage_raw = team_raw.get("storage", {})
+        if storage_raw:
+            spec_dict["storage"] = _resolve_storage_config(storage_raw)
 
     logger.info(
         "[TeamConfigLoader] team config loaded: team_name=%s, lifecycle=%s, agents=%s, predefined_members=%s",

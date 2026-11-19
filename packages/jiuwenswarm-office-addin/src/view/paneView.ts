@@ -1,12 +1,13 @@
 import type { AttachmentState, SessionId } from '../clientAttachment';
 import type { Entry, Prompt } from '../conversationModel';
-import { copy } from '../copy';
+import { copy, type DocumentCopy } from '../copy';
 import type { PaneState, TaskPaneController } from '../paneController';
 import { transcriptFileName, transcriptMarkdown } from '../transcriptMarkdown';
 import { Composer, type Waiting } from './composer';
 import { saveFile } from './download';
 import { h } from './dom';
 import { Header } from './header';
+import type { ToolCards } from './editCards';
 import { approvalSheet, questionCard, type Interaction } from './interaction';
 import { Transcript } from './transcript';
 import { Tray, trayItems, type TrayItem } from './tray';
@@ -26,12 +27,16 @@ export interface PaneClock {
 const wallClock: PaneClock = { now: () => Date.now(), every: (ms, tick) => void setInterval(tick, ms) };
 
 /**
- * Render the pane into ``root`` and keep it in step with the controller. The
- * clock moves the running steps' seconds and the reconnect countdown on once
- * a second.
+ * Render the pane into ``root`` and keep it in step with the controller, in
+ * ``words`` that name the host's document, with the host's ``cards`` under its
+ * calls. The clock moves the running steps' seconds and the reconnect
+ * countdown on once a second.
  */
-export function mountPane(root: HTMLElement, controller: Controller, clock: PaneClock = wallClock): void {
-  const header = new Header({
+export function mountPane(
+  root: HTMLElement, controller: Controller, words: DocumentCopy,
+  { clock = wallClock, cards }: { clock?: PaneClock; cards?: ToolCards } = {},
+): void {
+  const header = new Header(words.noun, {
     switchTo: sessionId => void controller.switchTo(sessionId),
     newConversation: () => void controller.newConversation(),
     downloadTranscript: () => {
@@ -41,13 +46,14 @@ export function mountPane(root: HTMLElement, controller: Controller, clock: Pane
         transcriptMarkdown(name || copy.untitledConversation, conversation.entries, documents));
     },
   });
-  const composer = new Composer({
-    send: text => controller.send(text), stop: () => void controller.stop(), chooseModel: model => controller.chooseModel(model),
+  const composer = new Composer(words.noun, {
+    send: (text, images) => controller.send(text, images), stop: () => void controller.stop(),
+    chooseModel: model => controller.chooseModel(model),
   });
-  const transcript = new Transcript(text => composer.fill(text), {
+  const transcript = new Transcript(words, text => composer.fill(text), {
     undo: (...choice) => void controller.undo(...choice),
     cancelUndo: () => controller.cancelUndo(),
-  });
+  }, cards);
   const tray = new Tray();
   const interactionSlot = h('div', { class: 'interaction-slot' });
   // Not the transcript: a streamed reply would be read out again on every delta.
@@ -62,7 +68,7 @@ export function mountPane(root: HTMLElement, controller: Controller, clock: Pane
   const trayActions = { continueHere: () => void controller.continueHere(), dismissAlert: () => controller.dismissAlert() };
   let announcedTray = new Map<string, string>();
   const paintTray = (state: PaneState, now: number): void => {
-    const items = trayItems(state, now, trayActions);
+    const items = trayItems(state, now, trayActions, words.noun);
     tray.update(items);
     // A line is read out when it appears or says something new; a countdown's ticks are not news.
     const news = items.find(item => announcedTray.get(item.key) !== shape(item));
@@ -77,7 +83,7 @@ export function mountPane(root: HTMLElement, controller: Controller, clock: Pane
     const attached = attachment.kind === 'attached';
     header.update({
       conversations: state.conversations, shown: shownSession(attachment), enabled: attachment.kind !== 'detached',
-      canDownload: conversation.entries.length > 0,
+      canDownload: conversation.entries.length > 0, documents: state.documents,
     });
     transcript.update({
       entries: conversation.entries, documents: state.documents, openReply: conversation.openReply,
@@ -110,6 +116,7 @@ export function mountPane(root: HTMLElement, controller: Controller, clock: Pane
   };
   render(controller.state());
   controller.subscribe(render);
+  cards?.subscribe(() => render(controller.state()));
   clock.every(1000, () => {
     const now = clock.now();
     transcript.tick(now);

@@ -1,13 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { attachDeclaration } from './appContract';
 import type { ClientToolResult } from './clientAttachment';
 import { FakeDeck } from './fakePowerPoint';
 import type { JsonObject } from './gatewayClient';
 import { HostWriteQueue } from './hostWriteQueue';
+import { POWERPOINT } from './powerPointApp';
 import { powerPointReadRuntime } from './powerPointReadTools';
-import { joinRuntimes, PowerPointToolDispatcher } from './powerPointToolDispatcher';
+import { joinRuntimes, ClientToolDispatcher } from './clientToolDispatcher';
 import { powerPointWriteRuntime } from './powerPointWriteTools';
-import { presentationAttachDeclaration } from './presentationContract';
 import { SlideSnapshots } from './slideSnapshots';
 import { powerPointSlideDeck } from './powerPointWriteTools';
 
@@ -24,7 +25,7 @@ function pane(deck = new FakeDeck({ slides: [{ id: '256#', shapes: [{ id: '2', t
     powerPointReadRuntime({ run: deck.run, host: deck.host, documentName: async () => 'Deck.pptx',
       languages: { displayLanguage: 'zh-CN', contentLanguage: 'zh-CN' } }),
     powerPointWriteRuntime({ run: deck.run, host: deck.host, journal: id => snapshots.journal(id), fetcher }));
-  const dispatcher = new PowerPointToolDispatcher(runtime, writes);
+  const dispatcher = new ClientToolDispatcher(POWERPOINT, runtime, writes);
   let calls = 0;
   const call = async (toolName: string, input: JsonObject = {}, downloads: Record<string, string> = {}) => {
     calls += 1;
@@ -47,7 +48,7 @@ function patch(base: string, slides: JsonObject[], extra: JsonObject = {}): Json
 describe('presentation_apply_patch', () => {
   it('is declared on a host with PowerPointApi 1.8, and not below', () => {
     const { runtime } = pane();
-    const declared = (api: string) => presentationAttachDeclaration({ documentId: 'd' as never, displayName: 'x',
+    const declared = (api: string) => attachDeclaration(POWERPOINT, { documentId: 'd' as never, displayName: 'x',
       host: new FakeDeck({ api }).host, implemented: runtime.tools }).capabilities.supported_tools;
     expect(declared('1.8')).toContain('presentation_apply_patch');
     expect(declared('1.7')).not.toContain('presentation_apply_patch');
@@ -189,6 +190,40 @@ describe('a patch the host fails part way', () => {
     await snapshots.closeTurn();
     expect(await snapshots.undo(['c2'])).toMatchObject({ kind: 'undone', turns: 1 });
     expect(deck.slides[0].shapes[0].text).toBe('Hi');
+  });
+});
+
+describe('a patch that draws connectors', () => {
+  const ARROW = { op: 'add_connector', end_arrow: true, start_anchor: { shape_id: '2', side: 'bottom' },
+    end_anchor: { shape_name: 'Next', side: 'top' } };
+  const NEXT = { op: 'add_shape', shape_type: 'Rectangle', name: 'Next', left: 300, top: 300, width: 100, height: 50 };
+
+  it('replaces the slide with one that has them, names its new id, and is undone as that one slide', async () => {
+    const { deck, call, fingerprint, snapshots } = pane();
+    const before = deck.content();
+    const result = await call('presentation_apply_patch', patch(await fingerprint(), [{ slide_ref: 'S1',
+      slide_id: '256#', operations: [NEXT, ARROW] }]));
+    const [copy] = deck.ids();
+    expect(result).toMatchObject({ success: true, result: { slide_id_updates: [{ old_slide_id: '256#',
+      new_slide_id: copy }], slides: [{ slide_id: copy }] },
+      mutation: { state: 'applied', replacement_slide_ids: { '256#': copy }, verification_targets: [copy] } });
+    expect(deck.slides[0].shapes.map(shape => shape.type)).toEqual(['Placeholder', 'GeometricShape', 'Line']);
+    expect((result.result as JsonObject).structure_fingerprint_after).toBe(await fingerprint());
+
+    await snapshots.closeTurn();
+    expect(snapshots.undoable(['c2'])).toEqual({ slides: 1 });
+    expect(await snapshots.undo(['c2'])).toMatchObject({ kind: 'undone', positions: [1] });
+    expect(deck.content()).toEqual(before);
+  });
+
+  it('puts the slide back as it was before the patch when PowerPoint fails to insert the copy', async () => {
+    const { deck, call, fingerprint } = pane();
+    const before = deck.content();
+    deck.insertsBeforeFailure = 0;
+    expect(await call('presentation_apply_patch', patch(await fingerprint(), [{ slide_ref: 'S1', slide_id: '256#',
+      operations: [NEXT, ARROW] }]))).toMatchObject({ success: false, code: 'HOST_WRITE_FAILED',
+      details: { outcome: 'rolled_back' } });
+    expect(deck.content()).toEqual(before);
   });
 });
 

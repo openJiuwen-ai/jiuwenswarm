@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 
 import pytest
@@ -38,6 +39,61 @@ def test_render_carries_uploaded_files():
 
     assert json.loads(envelope["files_updated_by_user"]) == files
     assert envelope["content"] == "总结这份文档"
+
+
+@pytest.mark.parametrize("relative_root", [False, True])
+def test_browser_video_upload_reaches_agent_prompt(tmp_path, monkeypatch, relative_root):
+    from pathlib import Path
+
+    from jiuwenswarm.common.schema.agent import AgentRequest
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.server.runtime.agent_adapter import interface
+    from jiuwenswarm.server.runtime.attachments import document_attachments, video_attachments
+
+    monkeypatch.chdir(tmp_path)
+    sessions_dir = Path("sessions") if relative_root else tmp_path / "sessions"
+    monkeypatch.setattr(document_attachments, "get_agent_sessions_dir", lambda: sessions_dir)
+    monkeypatch.setattr(video_attachments, "get_agent_sessions_dir", lambda: sessions_dir)
+    media = b"test video bytes"
+    persisted = document_attachments.persist_and_parse_documents({"documents": [{
+        "filename": "磨豆 #1.mp4",
+        "mime_type": "video/mp4",
+        "base64_data": base64.b64encode(media).decode("ascii"),
+    }]}, session_id="web_session")
+    path = tmp_path / "sessions" / "web_session" / "uploads" / "磨豆 #1.mp4"
+    assert path.read_bytes() == media
+    assert video_attachments.session_video_upload_root("web_session") == path.parent
+    request = AgentRequest(
+        request_id="req-video", channel_id="web", session_id="web_session", req_method=ReqMethod.CHAT_SEND,
+        params={"content": "请记住这个视频", "files": persisted["files"]},
+    )
+    monkeypatch.setattr(interface, "get_config", lambda: {})
+    inputs, _, _ = object.__new__(interface.JiuWenSwarm)._build_inputs(request)
+    envelope = _envelope(inputs["query"])
+    attachments = json.loads(envelope["files_updated_by_user"])["video_memory_attachments"]
+    assert attachments["videos"] == [{"filename": path.name, "uri": path.as_uri()}]
+    assert "%23" in attachments["videos"][0]["uri"]
+    assert "agent_memory_video_submit" in attachments["usage"]
+
+
+def test_video_prompt_only_uses_current_session_uploads(tmp_path, monkeypatch):
+    from jiuwenswarm.server.runtime.attachments import video_attachments
+
+    monkeypatch.setattr(video_attachments, "get_agent_sessions_dir", lambda: tmp_path)
+    uploads = tmp_path / "web_session" / "uploads"
+    uploads.mkdir(parents=True)
+    outside = tmp_path / "other.mp4"
+    outside.touch()
+    (uploads / "doc.md").touch()
+    files = {"uploaded_documents": [
+        {"path": str(outside)},
+        {"path": str(uploads / "doc.md")},
+        {"path": str(uploads / "missing.mp4")},
+        {"path": str(uploads / ".." / "uploads" / "missing.mp4")},
+    ], "video_memory_attachments": {"videos": [{"uri": outside.as_uri()}]}}
+    result = video_attachments.video_upload_prompt_files(files, "web_session")
+    assert result == {"uploaded_documents": files["uploaded_documents"]}
+    assert video_attachments.session_video_upload_root("web_session") is None
 
 
 def test_render_is_identical_for_the_same_turn_regardless_of_caller():

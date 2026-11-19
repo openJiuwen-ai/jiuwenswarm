@@ -18,6 +18,13 @@ function applyTheme(theme: Theme | undefined, root: HTMLElement = document.docum
   root.dataset.theme = theme ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
 }
 
+/** A host without a theme the pane can read (WPS): the system's, now and whenever it changes. */
+export function followSystemTheme(): void {
+  const apply = (): void => applyTheme(undefined);
+  apply();
+  matchMedia('(prefers-color-scheme: dark)').addEventListener('change', apply);
+}
+
 /** Apply the Office theme to the page now and whenever the user or the system changes it. */
 export function followOfficeTheme(office: typeof Office.context): void {
   const apply = (): void => applyTheme(themeForBackground(office.officeTheme?.bodyBackgroundColor));

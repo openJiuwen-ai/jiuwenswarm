@@ -29,6 +29,8 @@ export interface WsEvent {
   payload: Record<string, unknown>;
   seq?: number;
   stream_id?: string;
+  /** Gateway request id. SSE carries it on the frame id, not only inside payload. */
+  request_id?: string;
 }
 
 export type WebMessage = WsRequest | WsResponse | WsEvent;
@@ -41,6 +43,8 @@ export interface WebRequestOptions {
   isStream?: boolean;
   /** Keep the existing request pending until the runtime confirms acceptance. */
   awaitRuntimeAccepted?: boolean;
+  /** Ignore the admission ACK for chat.user_answer and wait for its resolved result. */
+  awaitUserAnswerResult?: boolean;
   /** Called before sending, so supplemental receipts can be associated with this request. */
   onRequestId?: (requestId: string) => void;
 }

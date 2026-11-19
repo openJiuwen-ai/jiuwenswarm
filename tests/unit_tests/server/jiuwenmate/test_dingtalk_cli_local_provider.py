@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import io
 import json
 import os
 import subprocess
+import tarfile
 import threading
 import time
+import zipfile
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
-from jiuwenswarm.server.jiuwenmate.dingtalk_cli_runtime import DingTalkCliScope
+from jiuwenswarm.server.jiuwenmate import dingtalk_cli_local_provider
+from jiuwenswarm.server.jiuwenmate.dingtalk_cli_runtime import DingTalkCliRuntimeService, DingTalkCliScope
 from jiuwenswarm.server.jiuwenmate.dingtalk_cli_local_provider import LocalDingTalkCliRuntime
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 
@@ -872,6 +878,77 @@ def test_dingtalk_auth_status_reads_cli_top_level_authentication(tmp_path, authe
         assert len(calls) == 1
 
 
+def _connected_status_runtime(tmp_path, calls, apps):
+    def runner(args, *, env, input_text=None, timeout=None, cwd):
+        calls.append(args[1:3])
+        if args[1:3] == ["auth", "status"]:
+            payload = {"success": True, "authenticated": True}
+        else:
+            payload = {"success": True, "profiles": [{"current": True, "userName": "tester"}]}
+        return subprocess.CompletedProcess(args, 0, json.dumps(payload), "")
+
+    return LocalDingTalkCliRuntime(
+        root=tmp_path, config_loader=lambda: _config(*apps), dws_path=Path("/tools/dws"), runner=runner,
+    )
+
+
+@pytest.mark.asyncio
+async def test_group_polling_reuses_recent_authorization_until_it_changes(tmp_path):
+    calls = []
+    apps = [_app("employee-1", "ding-app", "secret")]
+    runtime = _connected_status_runtime(tmp_path, calls, apps)
+    scope = DingTalkCliScope("local", "employee-1", app_id="ding-app")
+
+    first = await runtime.dingtalk_auth_status(scope)
+    second = await runtime.dingtalk_auth_status(scope)
+
+    assert first["status"] == second["status"] == "connected"
+    assert calls.count(["auth", "status"]) == 1
+    apps[0] = _app("employee-1", "ding-app", "rotated-secret")
+    await runtime.dingtalk_auth_status(scope)
+    assert calls.count(["auth", "status"]) == 2
+    assert (await runtime.dingtalk_auth_disconnect(scope))["status"] == "not_connected"
+    await runtime.dingtalk_auth_status(scope)
+    assert calls.count(["auth", "status"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_authorizing_status_is_always_checked_again(tmp_path, monkeypatch):
+    runtime = _connected_status_runtime(tmp_path, [], [_app("employee-1", "ding-app", "secret")])
+    checks = []
+    monkeypatch.setattr(runtime, "_dingtalk_auth_status", lambda scope: checks.append(1) or {"status": "authorizing"})
+    scope = DingTalkCliScope("local", "employee-1", app_id="ding-app")
+
+    await runtime.dingtalk_auth_status(scope)
+    await runtime.dingtalk_auth_status(scope)
+
+    assert len(checks) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("known_status", [True, False])
+async def test_busy_status_check_returns_last_known_authorization(tmp_path, monkeypatch, known_status):
+    monkeypatch.setattr(dingtalk_cli_local_provider, "_AUTH_STATUS_BUSY_WAIT_SECONDS", 0.1)
+    monkeypatch.setattr(dingtalk_cli_local_provider, "_OAUTH_LOCK_TIMEOUT_SECONDS", 0.1)
+    runtime = _connected_status_runtime(tmp_path, [], [_app("employee-1", "ding-app", "secret")])
+    scope = DingTalkCliScope("local", "employee-1", app_id="ding-app")
+    if known_status:
+        await runtime.dingtalk_auth_status(scope)
+        key = runtime._auth_status_key(scope)
+        runtime._auth_status_cache[key] = (time.monotonic() - 30, runtime._auth_status_cache[key][1])
+    lock = runtime._oauth_locks.setdefault(runtime._scope_digest(scope), threading.RLock())
+    lock.acquire()
+    try:
+        if known_status:
+            assert (await runtime.dingtalk_auth_status(scope))["status"] == "connected"
+        else:
+            with pytest.raises(PersistentAgentError) as error:
+                await runtime.dingtalk_auth_status(scope)
+            assert error.value.code == "DINGTALK_CLI_AUTH_BUSY"
+    finally:
+        lock.release()
+
+
 @pytest.mark.parametrize("has_saved_state", [False, True])
 def test_uninitialized_dingtalk_auth_status_does_not_install_cli(tmp_path, monkeypatch, has_saved_state):
     runtime = LocalDingTalkCliRuntime(
@@ -1168,7 +1245,8 @@ async def test_execute_uses_app_token_api_mode_without_user_login(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_execute_uses_a_cached_pinned_cli_binary_without_npx(tmp_path):
+async def test_execute_uses_a_cached_pinned_cli_binary_without_npx(tmp_path, monkeypatch):
+    monkeypatch.setattr(dingtalk_cli_local_provider, "_find_npx", lambda: None)
     package = (
         tmp_path / "shared-cli" / "home" / ".cache" / "npm" / "_npx" / "cache-key" /
         "node_modules" / "dingtalk-workspace-cli"
@@ -1188,13 +1266,113 @@ async def test_execute_uses_a_cached_pinned_cli_binary_without_npx(tmp_path):
     runtime = LocalDingTalkCliRuntime(
         root=tmp_path,
         config_loader=lambda: _config(_app("employee-1", "ding-app", "secret", is_default=True)),
-        npx_path=Path("/tools/npx"),
         runner=runner,
     )
 
     await runtime.execute(DingTalkCliScope("local", "employee-1"), ["api", "GET", "/v1.0/test"])
 
     assert calls == [[str(binary), "api", "GET", "/v1.0/test"]]
+
+
+@pytest.mark.asyncio
+async def test_dingtalk_auth_status_on_clean_install_without_npx(tmp_path, monkeypatch):
+    monkeypatch.setattr(dingtalk_cli_local_provider, "_find_npx", lambda: None)
+    runtime = LocalDingTalkCliRuntime(
+        root=tmp_path / "profiles", cache_root=tmp_path / "programs",
+        config_loader=lambda: _config(_app("employee-1", "ding-app", "secret")),
+        runner=lambda *args, **kwargs: pytest.fail("status must not start the CLI on first use"),
+    )
+    service = DingTalkCliRuntimeService(runtime=runtime)
+
+    result = await service.dingtalk_auth_status(DingTalkCliScope("local", "employee-1", app_id="ding-app"))
+
+    assert result == {"status": "not_connected", "cli_version": "1.0.65"}
+    assert not (tmp_path / "programs").exists()
+    with pytest.raises(PersistentAgentError) as error:
+        await service.dingtalk_auth_begin(DingTalkCliScope("local", "another-employee", app_id="ding-app"))
+    assert error.value.code == "DINGTALK_CLI_APP_NOT_CONFIGURED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("system", "machine", "platform_tag", "binary_name", "suffix"), [
+    ("Darwin", "arm64", "darwin-arm64", "dws", ".tar.gz"),
+    ("Windows", "AMD64", "windows-amd64", "dws.exe", ".zip"),
+])
+async def test_clean_dingtalk_authorization_verifies_and_reuses_native_cli(
+    tmp_path, monkeypatch, system, machine, platform_tag, binary_name, suffix,
+):
+    import httpx
+    from jiuwenswarm.server.jiuwenmate import dingtalk_cli_distribution as distribution
+
+    monkeypatch.setattr(dingtalk_cli_local_provider, "_find_npx", lambda: None)
+    monkeypatch.setattr(distribution.platform, "system", lambda: system)
+    monkeypatch.setattr(distribution.platform, "machine", lambda: machine)
+    binary_bytes = b"pinned dws executable"
+    archive = io.BytesIO()
+    if suffix == ".zip":
+        with zipfile.ZipFile(archive, "w") as package:
+            package.writestr(binary_name, binary_bytes)
+    else:
+        with tarfile.open(fileobj=archive, mode="w:gz") as package:
+            member = tarfile.TarInfo(f"./{binary_name}")
+            member.size = len(binary_bytes)
+            package.addfile(member, io.BytesIO(binary_bytes))
+    monkeypatch.setitem(distribution._RELEASE_SHA256, platform_tag, hashlib.sha256(archive.getvalue()).hexdigest())
+    downloads = []
+    calls = []
+    valid_release = False
+
+    @contextmanager
+    def stream(method, url, **kwargs):
+        assert method == "GET"
+        downloads.append(url)
+        content = archive.getvalue() if valid_release and "github.com" in url else b"wrong checksum"
+        yield httpx.Response(200, content=content, request=httpx.Request(method, url))
+
+    def runner(args, *, env, input_text=None, timeout=None, cwd):
+        assert Path(args[0]).read_bytes() == binary_bytes
+        return subprocess.CompletedProcess(args, 0, '{"authenticated":false}', "")
+
+    def login(args, *, stdin, stdout, stderr, env, cwd, start_new_session):
+        calls.append(args)
+        assert Path(args[0]).read_bytes() == binary_bytes
+        assert args[1:] == ["auth", "login", "--device", "--no-browser"]
+        stdout.write(b"https://login.dingtalk.com/oauth2/device/verify.htm?user_code=TEST-CODE")
+        stdout.flush()
+        return type("Pending", (), {"pid": 987654, "poll": lambda self: None})()
+
+    monkeypatch.setattr(distribution.httpx, "stream", stream)
+    monkeypatch.setattr(subprocess, "Popen", login)
+    programs = tmp_path / "programs"
+    runtime = LocalDingTalkCliRuntime(
+        root=tmp_path / "profiles", cache_root=programs,
+        config_loader=lambda: _config(_app("employee-1", "ding-app", "secret")),
+        runner=runner,
+    )
+    service = DingTalkCliRuntimeService(runtime=runtime)
+    scope = DingTalkCliScope("local", "employee-1", app_id="ding-app")
+    (runtime._oauth_root(scope) / "existing-profile").write_text("private state", encoding="utf-8")
+    assert (await service.dingtalk_auth_status(scope))["status"] == "error"
+    assert not downloads
+
+    with pytest.raises(PersistentAgentError) as error:
+        await service.dingtalk_auth_begin(scope)
+    assert error.value.code == "DINGTALK_CLI_PREPARE_FAILED"
+    assert not list(programs.rglob(binary_name))
+    assert not calls
+
+    valid_release = True
+    result = await service.dingtalk_auth_begin(scope)
+    assert result["status"] == "authorizing"
+    assert result["user_code"] == "TEST-CODE"
+    assert len(calls) == 1
+    assert len(downloads) == 4
+    assert all(url.endswith(f"/v1.0.65/dws-{platform_tag}{suffix}") for url in downloads)
+    assert ["gitee.com" in url for url in downloads] == [True, False, True, False]
+
+    another_runtime = LocalDingTalkCliRuntime(root=tmp_path / "another-profile", cache_root=programs)
+    assert another_runtime._cached_dws_binary() == Path(calls[0][0])
+    assert len(downloads) == 4
 
 
 @pytest.mark.asyncio

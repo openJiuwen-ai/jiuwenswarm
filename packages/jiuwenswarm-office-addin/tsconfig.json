@@ -13,7 +13,7 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "paths": {
-      "@contract/*": ["../../jiuwenswarm/office/powerpoint/*"]
+      "@office/*": ["../../jiuwenswarm/office/*"]
     }
   },
   "include": ["src", "vite.config.ts"]

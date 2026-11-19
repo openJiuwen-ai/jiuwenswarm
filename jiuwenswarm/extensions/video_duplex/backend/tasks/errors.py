@@ -13,5 +13,9 @@ class TaskNotFound(ValueError):
     """The requested invocation is absent from the authenticated conversation."""
 
 
+class CoreExecutionError(RuntimeError):
+    """Core reported an explicit failure for this task execution."""
+
+
 class CancellationSettlementTimeout(RuntimeError):
     """The stop request did not receive execution cleanup evidence in time."""

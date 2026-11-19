@@ -1057,16 +1057,18 @@ test('composer rejects new input for an unavailable selected team without affect
 test('settings load and save immediately gate the Team selector; failed saves preserve the flag', async () => {
   let settings;
   let failSave = false;
+  let config = {};
   function Probe() {
     settings = useSettingsConfig();
     const enabled = useTeamOrganizationUiEnabled();
     return enabled ? React.createElement(TeamSelector, { sessionId: 'session' }) : null;
   }
   await withOrganizationPanel(
-    (method) => {
-      if (method === 'config.get') return {};
+    (method, params) => {
+      if (method === 'config.get') return { ...config };
       if (method === 'config.save_all') {
         if (failSave) throw new Error('save failed');
+        config = { ...config, ...params.config };
         return { success: true };
       }
       return method === 'team.list' ? ownerList : boundSnapshot;

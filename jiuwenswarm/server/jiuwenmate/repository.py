@@ -377,12 +377,14 @@ class PersistentAgentRepository(SQLiteStore):
         changes: list[tuple[str, str | None, ConfigSnapshot | None]],
         published_at: datetime,
         initialize_model: bool = False,
+        replace_model: bool = False,
     ) -> None:
         """Switch every agent of a configuration to one publication, or none of them.
 
         ``changes`` names each agent with the version it had when the publication was
         prepared and its new snapshot, or ``None`` if its version stays. The configuration
-        must still be at ``revision`` and own exactly these agents.
+        must still be at ``revision`` and own exactly these agents. ``initialize_model`` and
+        ``replace_model`` also save ``published_settings`` as the configuration's settings.
         """
         settings_json = json.dumps(published_settings.with_persona("").to_dict(), ensure_ascii=False)
         with self._transaction() as conn:
@@ -399,9 +401,9 @@ class PersistentAgentRepository(SQLiteStore):
             }
             if row is None or row["revision"] != revision or owned | {config_id} != {item[0] for item in changes}:
                 raise PersistentAgentError("colleague was changed concurrently", code="CONFLICT")
-            if initialize_model:
-                if not row["is_default"] or revision != 1:
-                    raise PersistentAgentError("default initialization was changed concurrently", code="CONFLICT")
+            if initialize_model and (not row["is_default"] or revision != 1):
+                raise PersistentAgentError("default initialization was changed concurrently", code="CONFLICT")
+            if initialize_model or replace_model:
                 revision += 1
                 conn.execute(
                     "UPDATE colleagues SET settings_json = ?, revision = ?, updated_at = ?"

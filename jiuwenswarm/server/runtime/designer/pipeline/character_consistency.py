@@ -84,7 +84,7 @@ def extract_already_done_beats(
             f"({text[:120]})"
         )
     elif re.search(rf"\b{_MOTION_NOUNS}\b", lower):
-        bullets.append(f"{prefix}prior beat already covered — do not restage: {text[:120]}")
+        bullets.append(f"{prefix}prior shot already covered — do not restage: {text[:120]}")
     else:
         bullets.append(f"{prefix}already staged — do not redo: {text[:120]}")
 
@@ -187,7 +187,7 @@ def character_consistency_clause(card: dict[str, Any] | None) -> str:
         lines.append(f"- Source: {src}")
     summary = str(card.get("prior_action_summary") or "").strip()
     if summary:
-        lines.append(f"- Prior beat summary (reference only): {summary[:160]}")
+        lines.append(f"- Prior shot summary (reference only): {summary[:160]}")
     done = [str(x) for x in (card.get("already_done") or []) if str(x).strip()]
     if done:
         lines.append("ALREADY_DONE (do not restage unless storyboard explicitly repeats):")

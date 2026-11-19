@@ -12,7 +12,7 @@ from jiuwenswarm.server.client_attachments.errors import ClientAttachError
 from tests.unit_tests.agentserver.client_attachments_support import Clock
 
 RESOURCE = {"key": "office-deck", "display_name": "Roadmap.pptx",
-            "kind": "presentation", "host_vendor": "microsoft"}
+            "kind": "presentation", "host_vendor": "office"}
 CLIENT_APP = "office-powerpoint"
 
 

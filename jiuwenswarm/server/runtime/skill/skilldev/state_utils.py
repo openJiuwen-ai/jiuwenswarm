@@ -144,18 +144,23 @@ def list_execution_disabled_skills(state: dict[str, Any]) -> list[str]:
     ]
 
 
-def load_execution_disabled_skills() -> list[str]:
-    """Read skills_state.json and return disabled skill names that are installed."""
+def load_skill_state(*, skills_dir: str | Path | None = None) -> dict[str, Any]:
+    """Read one library state without creating directories or changing registrations."""
+    state_file = Path(skills_dir) / "skills_state.json" if skills_dir is not None else get_state_file()
     try:
-        state: dict[str, Any] = {}
-        state_file = get_state_file()
-        if state_file.exists():
-            state = json.loads(state_file.read_text(encoding="utf-8"))
-    except Exception as exc:
-        logger.warning("[SkillState] Failed to load disabled skills: %s", exc)
-        return []
+        state = json.loads(state_file.read_text(encoding="utf-8")) if state_file.exists() else {}
+    except (OSError, ValueError) as exc:
+        logger.warning("[SkillState] Failed to load Skill state: %s", exc)
+        return {}
+    return state if isinstance(state, dict) else {}
 
-    disabled = set(list_execution_disabled_skills(state))
+
+def load_execution_disabled_skills(*, skills_dir: str | Path | None = None) -> list[str]:
+    """Read execution exclusions from the specified collection or the default install library."""
+    state = load_skill_state(skills_dir=skills_dir)
+    # Core supplies the live inventory for explicit collections. A stale
+    # registration list must never bypass their library-wide kill switch.
+    disabled = set(list_disabled_skills(state) if skills_dir is not None else list_execution_disabled_skills(state))
     try:
         from jiuwenswarm.server.runtime.skill.skillpack import (
             unavailable_skillpacks,
@@ -163,7 +168,7 @@ def load_execution_disabled_skills() -> list[str]:
 
         disabled.update(
             unavailable_skillpacks(
-                get_agent_skills_dir(),
+                Path(skills_dir) if skills_dir is not None else get_agent_skills_dir(),
                 enabled_for=lambda name: get_skill_enabled(state, name),
             )
         )

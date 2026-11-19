@@ -4,7 +4,7 @@ TTSE (Two-Track Self-Evolution) induces environment facts (FACT) and capability-
 
 Builtin TTSE is gated by `react.ttse.enabled` and supports agent/work mode only. The shipped template is **off by default**: set `enabled: true` to mount `TTSERail` when agent-core provides it (Host skips with a warning if missing). Main code sessions enable TTSE exclusively by selecting the plugin; the legacy switch never mounts a code Rail.
 
-Trajectory induction needs LLM/tool spans: when TTSE is on, the Host auto-acquires `agent_observability` (same as skill/symphony evolution) even if that switch is `enabled: false`; otherwise `run_evolution` silently skips with an empty trajectory.
+Trajectory induction needs LLM/tool spans: when TTSE is on, the Host auto-acquires `observability.agent` (same as skill/symphony evolution) even if that switch is `enabled: false`; otherwise `run_evolution` silently skips with an empty trajectory.
 
 ```yaml
 react:

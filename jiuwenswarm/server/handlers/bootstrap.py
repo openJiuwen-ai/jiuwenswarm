@@ -195,6 +195,10 @@ async def handle_session_create(ctx: RequestContext) -> None:
                 moa_enabled=params.get("moa_enabled"),
                 cron_id=str(params.get("cron_id") or "").strip(),
                 client_app=str(params.get("client_app") or "").strip(),
+                execution_profile=params.get("execution_profile", "default"),
+                role_instructions=params.get("role_instructions", ""),
+                npc_team=params.get("npc_team"),
+                role_tools=params.get("tools"),
             )
         )
         params.pop("_work_mode_explicit", None)
@@ -217,6 +221,9 @@ async def handle_session_create(ctx: RequestContext) -> None:
             "prewarm_hit": result.prewarm_hit,
             "prewarm_status": result.prewarm_status,
         }
+        if result.execution_profile != "default":
+            payload["execution_profile"] = result.execution_profile
+            payload["mode"] = result.canonical_mode
         if result.explicit_id_compatibility:
             payload.update(
                 {

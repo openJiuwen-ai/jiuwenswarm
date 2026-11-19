@@ -130,7 +130,7 @@ class SymphonyToolkit:
             "success": False,
             "disabled": True,
             "method": method,
-            "detail": "Symphony is disabled by config: symphony.enabled=false",
+            "detail": "Symphony is disabled by config: symphony.orchestration.enabled=false",
         }
 
     def _llm_config_kwargs(
@@ -165,10 +165,6 @@ class SymphonyToolkit:
         if not self.is_enabled():
             return self._disabled_payload("symphony_refresh_graph")
         kwargs: dict[str, Any] = {"progress": current_tool_progress()}
-        llm_kwargs, error = self._llm_config_kwargs("refresh_graph")
-        if error is not None:
-            return error
-        kwargs.update(llm_kwargs)
         return await self._call_service(
             "refresh_graph",
             **kwargs,
@@ -321,8 +317,8 @@ class SymphonyToolkit:
     def is_enabled(config: dict[str, Any] | None = None) -> bool:
         try:
             if config is None:
-                return bool(load_symphony_config().enabled)
-            return bool(load_symphony_config(config).enabled)
+                return bool(load_symphony_config().orchestration.enabled)
+            return bool(load_symphony_config(config).orchestration.enabled)
         except Exception as exc:  # noqa: BLE001
             logger.warning("failed to load Symphony config; tools disabled: %s", exc)
             return False
@@ -426,7 +422,7 @@ class SymphonyToolkit:
                 self.plan,
                 uses_internal_timeout=True,
             ),
-        ] + SkillPackToolkit(self._service).get_tools()
+        ] + SkillPackToolkit(self._service).get_tools(config)
 
 
 def _copy_compact_fields(

@@ -8,6 +8,7 @@ Supports ``--dotenv <path>`` for multi-instance isolation.
 from __future__ import annotations
 
 import argparse
+import codecs
 import errno
 import hmac
 import http.client
@@ -24,6 +25,7 @@ import ssl
 import sys
 import threading
 import time
+from dataclasses import asdict
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -50,6 +52,7 @@ _resolve_agent_upload_base = resolve_agent_upload_base
 from jiuwenswarm.common.projectless_workspace import get_projectless_tasks_dir
 
 if TYPE_CHECKING:
+    from jiuwenswarm.channels.desktop.office_addins import OfficeAddins
     from jiuwenswarm.channels.web.share_image_export import (
         ShareImageExportManager,
         ShareImageRenderAuth,
@@ -157,6 +160,140 @@ def _parse_single_byte_range(
     if start >= file_size or end < start:
         return None
     return start, min(end, file_size - 1)
+
+
+# Upper bound for `/file-api/file-content` reads.  The endpoint used to slurp
+# the whole file into memory (raw bytes + decoded str + re-encoded body) with
+# no size check, so previewing a large workspace artifact or polling a
+# long-running log peaked at several times the file size per request and
+# could OOM the backend.  Text preview beyond this bound has little
+# interactive value; download (`/file-api/download`, streamed) covers it.
+MAX_FILE_CONTENT_BYTES = 10 * 1024 * 1024
+
+
+def _decode_bytes_auto(raw_data: bytes, errors: str = "strict") -> tuple[str, str]:
+    """Decode raw bytes with charset detection plus CJK fallbacks.
+
+    Shared by the whole-file and tail reads of ``/file-api/file-content`` so
+    both paths get identical encoding behaviour.  ``errors`` is forwarded to
+    ``bytes.decode``; tail reads pass ``"replace"`` because the window may
+    start mid-character even after line alignment.
+    """
+    import charset_normalizer
+
+    detected = charset_normalizer.from_bytes(raw_data).best()
+    if detected is None:
+        detected_encoding = "utf-8"
+    else:
+        detected_encoding = detected.encoding or "utf-8"
+    try:
+        return raw_data.decode(detected_encoding, errors), detected_encoding
+    except (UnicodeDecodeError, LookupError) as decode_exc:
+        for try_encoding in ["gbk", "gb2312", "big5", "shift_jis", "euc_kr"]:
+            try:
+                return raw_data.decode(try_encoding, errors), try_encoding
+            except (UnicodeDecodeError, LookupError):
+                continue
+    raise OSError("Unable to decode file with any known encoding") from decode_exc
+
+
+_TEXTUAL_MIME_TYPES = frozenset(
+    {
+        "application/javascript",
+        "application/json",
+        "application/xhtml+xml",
+        "application/xml",
+        "application/x-ndjson",
+    }
+)
+_TEXTUAL_EXTENSION_MIME_TYPES = {
+    ".conf": "text/plain",
+    ".csv": "text/csv",
+    ".htm": "text/html",
+    ".html": "text/html",
+    ".ini": "text/plain",
+    ".js": "text/javascript",
+    ".json": "application/json",
+    ".jsonl": "application/x-ndjson",
+    ".log": "text/plain",
+    ".markdown": "text/markdown",
+    ".md": "text/markdown",
+    ".mdx": "text/markdown",
+    ".mjs": "text/javascript",
+    ".ndjson": "application/x-ndjson",
+    ".py": "text/plain",
+    ".text": "text/plain",
+    ".ts": "text/plain",
+    ".tsx": "text/plain",
+    ".txt": "text/plain",
+    ".yaml": "text/yaml",
+    ".yml": "text/yaml",
+}
+_TEXT_CHARSET_READ_BYTES = 65536
+
+
+def _is_textual_mime_type(mime_type: str) -> bool:
+    """Return whether a browser decodes this payload with a text charset."""
+    normalized = mime_type.split(";", 1)[0].strip().lower()
+    return (
+        normalized.startswith("text/")
+        or normalized in _TEXTUAL_MIME_TYPES
+        or normalized.endswith(("+json", "+xml"))
+    )
+
+
+def _guess_text_charset(file_path: Path) -> str:
+    """Sniff a text artifact's charset from its BOM or complete UTF-8 bytes.
+
+    Artifacts are written as UTF-8, but a workspace can still hold legacy GBK
+    files. ``gb18030`` is a superset of GBK/GB2312, so one fallback decodes
+    both. The UTF-8 check is incremental so large files stay bounded in memory;
+    scanning the complete file avoids treating an ASCII-only prefix as evidence
+    that the rest of a legacy file is UTF-8. An incomplete UTF-8 sequence at EOF
+    is tolerated because an artifact may still be in the process of being written.
+    """
+    try:
+        with file_path.open("rb") as file_obj:
+            prefix = file_obj.read(4)
+            if prefix.startswith(codecs.BOM_UTF8):
+                return "utf-8"
+            if prefix.startswith(codecs.BOM_UTF16_LE):
+                return "utf-16le"
+            if prefix.startswith(codecs.BOM_UTF16_BE):
+                return "utf-16be"
+
+            file_obj.seek(0)
+            decoder = codecs.getincrementaldecoder("utf-8")()
+            while True:
+                chunk = file_obj.read(_TEXT_CHARSET_READ_BYTES)
+                if not chunk:
+                    break
+                decoder.decode(chunk, final=False)
+            # Keep a partial trailing character buffered: it must not change
+            # the charset of an otherwise valid UTF-8 document.
+    except OSError:
+        return "utf-8"
+    except UnicodeDecodeError:
+        return "gb18030"
+    return "utf-8"
+
+
+def _text_content_type(
+    mime_type: str, file_path: Path, file_name: str | None = None,
+) -> str:
+    """Declare the charset of a text artifact served to a browser.
+
+    ``/file-api/download`` and ``/file-api/raw-file`` are navigated directly by
+    the desktop built-in browser and by artifact HTML preview iframes.  A text
+    response without ``charset`` is decoded with the browser default instead of
+    the artifact's own encoding, so Chinese artifacts render as mojibake.
+    """
+    normalized_mime_type = _TEXTUAL_EXTENSION_MIME_TYPES.get(
+        Path(file_name or file_path.name).suffix.lower(), mime_type
+    )
+    if not _is_textual_mime_type(normalized_mime_type):
+        return mime_type
+    return f"{normalized_mime_type}; charset={_guess_text_charset(file_path)}"
 
 
 def _get_agent_teams_root(project_root: Path) -> Path:
@@ -335,6 +472,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     # Cookie 名按端口区分: 同 host 多桌面实例(端口偏移)互不覆盖。
     desktop_cookie_name = "__wsdt"
     _DESKTOP_TOKEN_QUERY_PARAM = "dt"
+    # Set only in desktop mode, where the office add-in routes exist.
+    office_addins: OfficeAddins | None = None
+    _OFFICE_ADDINS_PATH = "/desktop-api/office-addins"
 
     project_root = _get_user_workspace_dir()
     workspace_root = _get_agent_root_dir()
@@ -634,12 +774,15 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self.command != "HEAD":
             self.wfile.write(data)
 
-    def _proxy_http(self) -> None:
+    def _proxy_http(
+        self, *, target: str | None = None, path: str | None = None,
+        stream_sse: bool = False, login_surface: str | None = None,
+    ) -> None:
         outer_host = self._clean_outer_host()
         if outer_host is None:
             self._write_proxy_error(400, "invalid Host header")
             return
-        parsed = urlparse(self.api_target)
+        parsed = urlparse(target or self.api_target)
         if parsed.scheme == "https":
             ssl_ctx = None if _get_ssl_verify() else _get_insecure_ssl_context()
             conn: http.client.HTTPConnection = http.client.HTTPSConnection(
@@ -668,22 +811,43 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     continue
                 if normalized_key == "host":
                     continue
+                if login_surface and normalized_key == "x-jiuwen-web-surface":
+                    continue
                 if normalized_key in self._UNTRUSTED_FORWARDED_HOST_HEADERS:
                     continue
                 forward_headers[key] = value
             forward_headers["Host"] = outer_host
 
-            conn.request(self.command, self.path, body=body, headers=forward_headers)
+            if login_surface:
+                forward_headers["X-Jiuwen-Web-Surface"] = login_surface
+            conn.request(self.command, path or self.path, body=body, headers=forward_headers)
             resp = conn.getresponse()
-            resp_body = resp.read()
+            streaming = (
+                stream_sse
+                and self.command != "HEAD"
+                and resp.getheader("Content-Type", "").startswith("text/event-stream")
+            )
+            resp_body = b"" if streaming else resp.read()
 
             self.send_response(resp.status, resp.reason)
             for key, value in resp.getheaders():
                 if key.lower() in self._HOP_BY_HOP_HEADERS:
                     continue
                 self.send_header(key, value)
+            if streaming:
+                self.close_connection = True
+                self.send_header("Connection", "close")
             self.end_headers()
-            if self.command != "HEAD":
+            if streaming:
+                try:
+                    chunk = resp.read1(65536)
+                    while chunk:
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+                        chunk = resp.read1(65536)
+                except (OSError, http.client.HTTPException):
+                    return
+            elif self.command != "HEAD":
                 self.wfile.write(resp_body)
         except Exception as exc:  # noqa: BLE001
             self.log_error("proxy http error: %s", exc)
@@ -691,8 +855,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         finally:
             conn.close()
 
-    def _proxy_websocket_tunnel(self) -> None:
-        parsed = urlparse(self.ws_target)
+    def _proxy_websocket_tunnel(self, *, target: str | None = None) -> None:
+        parsed = urlparse(target or self.ws_target)
         if parsed.scheme not in ("ws", "wss", "http", "https"):
             self.send_error(500, "ws proxy target must be ws/wss/http/https")
             return
@@ -836,6 +1000,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     direction = "frontend->backend" if sock is self.connection else "backend->frontend"
                     try:
                         data = sock.recv(self._WS_RECV_BUFFER)
+                    except ssl.SSLWantReadError:
+                        # Only part of a TLS record has arrived; select wakes again when the rest does.
+                        continue
                     except OSError as recv_exc:
                         self.log_error(
                             "proxy ws recv failed, closing tunnel: %s",
@@ -878,7 +1045,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                             sent = target.send(pending)
                         except OSError as e:
                             would_block = (
-                                getattr(e, "winerror", None) == 10035
+                                isinstance(e, ssl.SSLWantWriteError)
+                                or getattr(e, "winerror", None) == 10035
                                 or e.errno in (errno.EAGAIN, errno.EWOULDBLOCK)
                             )
                             if not would_block:
@@ -989,13 +1157,121 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self._send_desktop_forbidden()
             return True
 
-        cookie_token = self._get_auth_cookie(self.desktop_cookie_name)
-        if cookie_token and hmac.compare_digest(
-            cookie_token.encode("utf-8"), self.desktop_token.encode("utf-8")
-        ):
+        if self._has_desktop_cookie():
             return False
 
         self._send_desktop_forbidden()
+        return True
+
+    def _has_desktop_cookie(self) -> bool:
+        cookie_token = self._get_auth_cookie(self.desktop_cookie_name)
+        return bool(cookie_token) and hmac.compare_digest(
+            cookie_token.encode("utf-8"), self.desktop_token.encode("utf-8")
+        )
+
+    def _dispatch_office_addins(self, parsed: ParseResult) -> bool:
+        """``/desktop-api/office-addins``: exists only for the desktop window, answers 404 to anyone else."""
+        if not parsed.path.startswith(self._OFFICE_ADDINS_PATH):
+            return False
+        from jiuwenswarm.channels.desktop.office_addins import SUITES
+
+        route = parsed.path[len(self._OFFICE_ADDINS_PATH):]
+        # A page on another local port shares the cookie; only the desktop window's own page may act.
+        same_origin = self.headers.get("Sec-Fetch-Site") == "same-origin"
+        addins = self.office_addins
+        if addins is None or not self._has_desktop_cookie():
+            self._write_json(404, {"error": "not_found"})
+            return True
+        match (self.command, route.split("/")):
+            case ("GET", [""]):
+                self._write_json(200, {"suites": {name: asdict(status) for name, status in addins.status().items()}})
+            case ("POST", ["", suite, "install" | "remove" as action]) if same_origin and suite in SUITES:
+                self._write_json(200, asdict(addins.install(suite) if action == "install" else addins.remove(suite)))
+            case _:
+                self._write_json(404, {"error": "not_found"})
+        return True
+
+    def _resolve_enterprise_upstream(self) -> tuple[str, str] | None:
+        target = os.getenv("USER_WEB_MANAGER_TARGET", "").rstrip("/")
+        if not target:
+            self._write_proxy_error(503, "user authorization is unavailable")
+            return None
+        authorization = self.headers.get("Authorization")
+        if not authorization:
+            token = self._get_auth_cookie("openjiuwen_user_access_token")
+            if not token:
+                self._write_proxy_error(401, "not authenticated")
+                return None
+            authorization = f"Bearer {token}"
+
+        import httpx
+
+        try:
+            response = httpx.get(
+                f"{target}/api/v1/user-console/user-face-upstream",
+                headers={
+                    "Authorization": authorization,
+                    "Cookie": self.headers.get("Cookie", ""),
+                },
+                timeout=5,
+                trust_env=False,
+            )
+        except httpx.HTTPError:
+            self._write_proxy_error(503, "user authorization is unavailable")
+            return None
+        if response.status_code in (401, 403):
+            self._write_proxy_error(response.status_code, "user access denied")
+            return None
+        if response.status_code != 200:
+            self._write_proxy_error(503, "user authorization is unavailable")
+            return None
+        http_target = response.headers.get("X-Gateway-Http-Upstream")
+        ws_target = response.headers.get("X-Gateway-Ws-Upstream")
+        if not http_target or not ws_target:
+            self._write_proxy_error(502, "incomplete user upstream")
+            return None
+        return http_target, ws_target
+
+    def _dispatch_enterprise(self) -> bool:
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if not is_enterprise():
+            return False
+        path = urlparse(self.path).path
+        if path.startswith("/idp/"):
+            target = os.getenv("USER_WEB_IDP_TARGET", "")
+            if target:
+                self._proxy_http(target=target, path=self.path.removeprefix("/idp"), login_surface="user")
+            else:
+                self._write_proxy_error(503, "identity service is unavailable")
+            return True
+        if path == "/manager-api" or path.startswith("/manager-api/"):
+            if not path.startswith("/manager-api/v1/user-console/"):
+                self._write_proxy_error(404, "not found")
+                return True
+            target = os.getenv("USER_WEB_MANAGER_TARGET", "")
+            if target:
+                self._proxy_http(target=target, path=self.path.replace("/manager-api", "/api", 1))
+            else:
+                self._write_proxy_error(503, "manager service is unavailable")
+            return True
+        gateway_api = path == "/gateway-api" or path.startswith("/gateway-api/")
+        ws = self._is_ws_route()
+        if not (gateway_api or ws or self._is_api_route() or self._is_file_api_route()
+                or self._is_share_api_route()):
+            return False
+        upstream = self._resolve_enterprise_upstream()
+        if upstream is None:
+            return True
+        http_target, ws_target = upstream
+        if ws:
+            if self._is_websocket_upgrade():
+                self._proxy_websocket_tunnel(target=ws_target)
+            else:
+                self.send_error(400, "expected websocket upgrade")
+        else:
+            forward_path = self.path.replace("/gateway-api", "/api", 1) if gateway_api else self.path
+            self._proxy_http(target=http_target, path=forward_path, stream_sse=True)
         return True
 
     def _dispatch_proxy(self) -> bool:
@@ -1526,7 +1802,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             start, end = byte_range or (0, max(file_size - 1, 0))
             content_length = 0 if file_size == 0 else end - start + 1
             self.send_response(206 if byte_range is not None else 200)
-            self.send_header("Content-Type", mime_type or "application/octet-stream")
+            self.send_header(
+                "Content-Type",
+                _text_content_type(mime_type or "application/octet-stream", full_path),
+            )
             self.send_header("Content-Length", str(content_length))
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Cache-Control", "no-store")
@@ -1548,6 +1827,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if path == "/file-api/file-content":
             file_arg = query.get("path", "")
             encoding_arg = query.get("encoding", "utf-8")
+            tail_arg = str(query.get("tail_bytes", "")).strip()
             if not file_arg:
                 self._write_json(400, {"error": "missing_file_path"})
                 return
@@ -1566,26 +1846,57 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     self._write_json(404, {"error": "file_not_found", "fullPath": str(full_path)})
                     return
 
+            # A length cap keeps int() away from the CPython digit-limit
+            # ValueError on absurdly long digit strings; anything longer is
+            # treated as "no tail" and lands in the 413 gate below.
+            tail_bytes = int(tail_arg) if tail_arg.isascii() and tail_arg.isdecimal() and len(tail_arg) <= 12 else 0
+            try:
+                file_size = full_path.stat().st_size
+            except OSError as exc:
+                self._write_json(500, {"error": str(exc)})
+                return
+            if file_size > MAX_FILE_CONTENT_BYTES and tail_bytes <= 0:
+                self._write_json(413, {
+                    "error": "file_too_large",
+                    "fileSize": file_size,
+                    "maxBytes": MAX_FILE_CONTENT_BYTES,
+                })
+                return
+            # Tail mode reads only the trailing bytes so callers like the
+            # logs panel can poll a growing log without transferring (or
+            # decoding) the whole file every interval.  The window is also
+            # clamped to MAX_FILE_CONTENT_BYTES: an unbounded tail_bytes
+            # would otherwise reopen the whole-file read this limit exists
+            # to prevent.
+            read_size = min(tail_bytes, file_size, MAX_FILE_CONTENT_BYTES) if tail_bytes > 0 else file_size
+            read_offset = file_size - read_size
+            truncated = file_size > read_size
+
             def read_file_with_encoding(file_path: Path, encoding: str) -> tuple[str, str]:
+                if read_size != file_size:
+                    with file_path.open("rb") as file_obj:
+                        file_obj.seek(read_offset)
+                        # Bound the read to the computed window: a growing
+                        # log could otherwise append bytes between the stat
+                        # above and this read, pushing the transfer (and
+                        # the memory peak) past MAX_FILE_CONTENT_BYTES.
+                        raw_data = file_obj.read(read_size)
+                    if truncated:
+                        # The seek lands on an arbitrary byte, possibly inside
+                        # a multi-byte character.  Align to the next newline
+                        # ('\n' never occurs inside UTF-8/GBK/Big5/Shift-JIS
+                        # sequences) so callers always get complete lines;
+                        # decode then uses "replace" as a last resort for
+                        # windows without any newline at all.
+                        newline_pos = raw_data.find(b"\n")
+                        if newline_pos >= 0:
+                            raw_data = raw_data[newline_pos + 1:]
+                    if encoding == "auto":
+                        return _decode_bytes_auto(raw_data, errors="replace")
+                    return raw_data.decode(encoding, errors="replace"), encoding
                 if encoding == "auto":
-                    import charset_normalizer
-                    raw_data = file_path.read_bytes()
-                    detected = charset_normalizer.from_bytes(raw_data).best()
-                    if detected is None:
-                        detected_encoding = "utf-8"
-                    else:
-                        detected_encoding = detected.encoding or "utf-8"
-                    try:
-                        return raw_data.decode(detected_encoding), detected_encoding
-                    except (UnicodeDecodeError, LookupError) as decode_exc:
-                        for try_encoding in ["gbk", "gb2312", "big5", "shift_jis", "euc_kr"]:
-                            try:
-                                return raw_data.decode(try_encoding), try_encoding
-                            except (UnicodeDecodeError, LookupError):
-                                continue
-                        raise OSError("Unable to decode file with any known encoding") from decode_exc
-                else:
-                    return file_path.read_text(encoding=encoding), encoding
+                    return _decode_bytes_auto(file_path.read_bytes())
+                return file_path.read_text(encoding=encoding), encoding
 
             try:
                 data, used_encoding = read_file_with_encoding(full_path, encoding_arg)
@@ -1600,6 +1911,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("X-Original-Encoding", used_encoding)
+            self.send_header("X-Truncated", "1" if truncated else "0")
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(body)
@@ -1782,7 +2094,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             start, end = byte_range or (0, max(0, file_size - 1))
             content_length = 0 if file_size == 0 else end - start + 1
             self.send_response(206 if byte_range is not None else 200)
-            self.send_header("Content-Type", mime_type)
+            self.send_header(
+                "Content-Type",
+                _text_content_type(mime_type, Path(file_path), file_name),
+            )
             self.send_header("Content-Length", str(content_length))
             self.send_header("Accept-Ranges", "bytes")
             self.send_header(
@@ -2314,7 +2629,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         self._write_json(status, payload)
 
     def do_GET(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         parsed = urlparse(self.path)
+        if self._dispatch_office_addins(parsed):
+            return
         if parsed.path == "/oauth/hub/callback":
             from jiuwenswarm.channels.web.hub_oauth import complete
 
@@ -2356,7 +2675,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_POST(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         parsed = urlparse(self.path)
+        if self._dispatch_office_addins(parsed):
+            return
         if parsed.path in {"/marketplace-oauth/hub/start", "/marketplace-oauth/hub/result"}:
             from jiuwenswarm.channels.web.hub_oauth import result, start
 
@@ -2401,26 +2724,36 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         self.send_error(405, "method not allowed")
 
     def do_PUT(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         if self._dispatch_proxy():
             return
         self.send_error(405, "method not allowed")
 
     def do_PATCH(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         if self._dispatch_proxy():
             return
         self.send_error(405, "method not allowed")
 
     def do_DELETE(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         if self._dispatch_proxy():
             return
         self.send_error(405, "method not allowed")
 
     def do_OPTIONS(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         if self._dispatch_proxy():
             return
         self.send_error(405, "method not allowed")
 
     def do_HEAD(self) -> None:  # noqa: N802
+        if self._dispatch_enterprise():
+            return
         parsed = urlparse(self.path)
         if self._is_share_api_route():
             self._handle_share_api_get(parsed)
@@ -2774,6 +3107,16 @@ def main() -> None:
     _ConfiguredHandler.logger = logger
     handler = partial(_ConfiguredHandler, directory=str(dist_dir))
     server = ThreadingHTTPServer((args.host, args.port), handler)
+    office_listener = None
+    if desktop_token:
+        from jiuwenswarm.channels.desktop.office_addins import OfficeAddins
+        from jiuwenswarm.channels.desktop.office_addins.listener import TlsListener
+
+        # Office loads task panes only over HTTPS: the same handler, on its own port.
+        office_listener = TlsListener(int(os.getenv("OFFICE_TLS_PORT", "5443")), handler)
+        _ConfiguredHandler.office_addins = OfficeAddins.for_this_machine(
+            project_root, office_listener, dist_dir / "office",
+        )
 
     # Windows has no SIGUSR1, so avoid importing debug_dump (which itself
     # imports the runtime utility module) in the EXE's critical Web path.
@@ -2824,6 +3167,13 @@ def main() -> None:
             daemon=True,
         ).start()
 
+        if _ConfiguredHandler.office_addins is not None:
+            try:
+                _ConfiguredHandler.office_addins.ensure_registered()
+            except OSError as exc:
+                # The status route reports what is still wrong; the panes are optional.
+                logger.warning("[office-addins] could not restore the installed add-ins: %s", exc)
+
     threading.Thread(
         target=_finish_after_listen,
         name="web-post-listen-setup",
@@ -2841,6 +3191,8 @@ def main() -> None:
         except Exception as exc:
             logger.warning("Failed to remove web process info: %s", exc)
         server.server_close()
+        if office_listener is not None:
+            office_listener.close()
         logger.info("[jiuwenswarm-web] server closed")
 
 

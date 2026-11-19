@@ -379,6 +379,18 @@ export function workflowAgentDisplayName(agent: Pick<WorkflowAgent, 'name' | 'di
   return agent.name;
 }
 
+/**
+ * The node's hover full name: ``wf_<runid>:<agent id>`` — the engine's
+ * resume-stable per-node id (a call key such as ``[["par", 0, 0], ["call", 0]]``
+ * on one-shot operators), the only sound way to tell same-label nodes apart.
+ */
+export function workflowAgentFullName(
+  agent: Pick<WorkflowAgent, 'id'>,
+  runId?: string | null,
+): string {
+  return runId ? `${runId}:${agent.id}` : agent.id;
+}
+
 /** String the avatar illustration is hashed from — the call label, same as the mirrored member list. */
 export function workflowAgentAvatarName(agent: Pick<WorkflowAgent, 'name' | 'display_name'>): string {
   return agent.name;

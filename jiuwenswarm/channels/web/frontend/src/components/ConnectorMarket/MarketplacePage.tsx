@@ -25,8 +25,16 @@ import {
 import { useClickOutside } from './useClickOutside';
 import { usePendingConnectorFlow, PendingConnectorModals } from './usePendingConnectorFlow';
 import { PageToolbarSearch, PageHeader, CategoryTabs, Tabs, EmptyState } from '../ui';
+import { OfficeSuiteCard } from '../../features/officeAddins/OfficeSuite';
+import {
+  SUITE_CATEGORY,
+  type SuiteId,
+  type SuiteStatus,
+  type Suites,
+} from '../../features/officeAddins/officeAddins';
 
 export type MarketKind = 'plugin' | 'mcp';
+// 应用市场（原 'app' tab）已提升为侧边栏一级入口（AppMarketPage），扩展页不再承载。
 export type TopTab = MarketKind | 'my';
 // 状态筛选：'pending' 对应不可用态（插件未安装或MCP未连接/绑定MCP未连接），'available' 对应
 // 可用态。2026-08-15 去除全局启用/禁用后不再有第三个"disabled"筛选项，见
@@ -39,10 +47,13 @@ interface MarketplacePageProps {
   onMyKindChange: (kind: MarketKind) => void;
   onOpenConnectorDetail: (name: string) => void;
   onOpenPluginDetail: (id: string) => void;
+  /** 桌面端 Office 加载项套件的状态，网页端为 null（见 ConnectorMarket/index.tsx）。 */
+  officeSuites: Suites | null;
+  onOpenOfficeSuite: (suite: SuiteId) => void;
   /** "会话使用"点击——跳新会话并顺带打开这个扩展的会话内启用开关，跟详情页顶部"使用"按钮
    * 是同一条 onUseExtension 通道（见 ConnectorMarket/index.tsx），这里需要知道点的是卡片列表
    * 里的哪一个，所以带上 kind/id。 */
-  onUse: (payload: { kind: 'plugin' | 'mcp'; id: string }) => void;
+  onUse?: (payload: { kind: 'plugin' | 'mcp'; id: string }) => void;
   onCreateManual: () => void;
   onCreateWithSkill: () => void;
   onCreateWithUpload: () => void;
@@ -75,6 +86,8 @@ export function MarketplacePage({
   onMyKindChange,
   onOpenConnectorDetail,
   onOpenPluginDetail,
+  officeSuites,
+  onOpenOfficeSuite,
   onUse,
   onCreateManual,
   onCreateWithSkill,
@@ -379,6 +392,23 @@ export function MarketplacePage({
     i18n.language,
   ]);
 
+  // 桌面端 Office 加载项套件：状态接口每列出一个套件就出一张本地卡片，置顶，不依赖 Hub。
+  // 不是插件包（安装发生在本机系统和 Office 里，不在 agent 服务端），但跟插件卡片走同一套
+  // 搜索/安装状态/分类筛选；已安装的同时出现在"我的扩展 / 插件"里。
+  const officeCards = useMemo(() => {
+    if (!officeSuites || (topTab === 'my' ? myKind !== 'plugin' : topTab !== 'plugin')) return [];
+    return (Object.entries(officeSuites) as [SuiteId, SuiteStatus][]).filter(([suite, status]) => {
+      if (topTab === 'my' && !status.installed) return false;
+      if (!matchesInstallation(status.installed, installationFilter)) return false;
+      if (topTab !== 'my' && pluginCategory !== 'all') {
+        if (pluginCategory === 'other' ? pluginTopCategorySet.has(SUITE_CATEGORY) : SUITE_CATEGORY !== pluginCategory) {
+          return false;
+        }
+      }
+      return matchesAssetName(query, [t(`officeAddins.suites.${suite}.title`), t(`officeAddins.suites.${suite}.what`)]);
+    });
+  }, [officeSuites, topTab, myKind, installationFilter, pluginCategory, pluginTopCategorySet, query, t]);
+
   // 当前实际展示的那份列表（四个渲染分支互斥，取其一即可），分页条/总数/isEmpty 都基于它算。
   const activeKindForEmpty: MarketKind = topTab === 'my' ? myKind : topTab === 'mcp' ? 'mcp' : 'plugin';
   const activeList =
@@ -389,7 +419,7 @@ export function MarketplacePage({
       : topTab === 'mcp'
         ? filteredConnectors
         : filteredPlugins;
-  const isEmpty = activeList.length === 0;
+  const isEmpty = activeList.length === 0 && officeCards.length === 0;
   // 列表为空时要分清"数据还没回来"和"回来了但真的没有"——首次/切 tab 的非静默 loadList() 会把
   // 对应 store 的 isLoading 短暂置 true，10s 静默轮询不影响它（见两个 store 的 loadList 实现），
   // 用它区分空态文案该显示"加载中"还是"没有找到匹配的结果"。
@@ -601,9 +631,13 @@ export function MarketplacePage({
         </div>
       )}
 
+      {/* 应用市场（原 'app' tab）入口见侧边栏 AppMarketPage；这里只渲染插件/MCP 列表 */}
           <CatalogCacheNotice cache={catalogCacheOf(topTab === 'my' ? (myKind === 'mcp' ? myConnectors : localPackages) : topTab === 'mcp' ? builtinConnectors : packages)} />
           <div ref={scrollRef} className="page-scroll min-h-0 flex-1 overflow-y-auto" onScroll={handleListScroll}>
             <div className="card-grid-auto" data-testid="connector-market-card-list">
+        {officeCards.map(([suite, status]) => (
+          <OfficeSuiteCard key={suite} suite={suite} status={status} onOpen={() => onOpenOfficeSuite(suite)} />
+        ))}
         {topTab === 'my'
           ? myKind === 'mcp'
             ? visibleConnectors.map((connector) => {
@@ -621,7 +655,7 @@ export function MarketplacePage({
                     busyKind={busyMap[connector.id] ?? busyMap[connector.runtimePackageName]}
                     onOpenDetail={() => onOpenConnectorDetail(connector.id)}
                     canOpenDetail={mcpInstalled}
-                    onUse={() => onUse({ kind: 'mcp', id: connector.runtimePackageName })}
+                    onUse={onUse ? () => onUse?.({ kind: 'mcp', id: connector.runtimePackageName }) : undefined}
                     onQuickInstall={cs === 'connected' ? undefined : () => handleConnectorQuickAdd(connector.id)}
                     quickAction={mcpInstalled ? 'connect' : 'install'}
                   />
@@ -639,9 +673,10 @@ export function MarketplacePage({
                     iconUrl={pkg.avatar || undefined}
                     state={pluginInstallingIds[pkg.id] ? 'connecting' : pluginInstalled ? 'connected' : 'idle'}
                     busyKind="install"
+                    actionMode="use"
                     actionDisabled={!!pluginInstallingIds[pkg.id]}
                     onOpenDetail={() => onOpenPluginDetail(pkg.id)}
-                    onUse={() => pluginConnected ? onUse({ kind: 'plugin', id: pkg.runtimePackageName }) : onOpenPluginDetail(pkg.id)}
+                    onUse={onUse ? () => (pluginConnected ? onUse({ kind: 'plugin', id: pkg.runtimePackageName }) : onOpenPluginDetail(pkg.id)) : undefined}
                     // 触发条件要跟着卡片态走，不能只看 installed——"已安装但 MCP 未连接"这个
                     // 组合下 derivePluginCardState 也会算出 'idle'（见该函数注释），"+"按钮同样
                     // 要能点（点击后重新触发安装，对应按钮矩阵"已安装+未连接：+号"这一格）。
@@ -669,7 +704,7 @@ export function MarketplacePage({
                     onOpenDetail={() => onOpenConnectorDetail(connector.id)}
                     onQuickAdd={() => handleConnectorQuickAdd(connector.id)}
                     quickAction={mcpInstalled ? 'connect' : 'install'}
-                    onUse={() => onUse({ kind: 'mcp', id: connector.runtimePackageName })}
+                    onUse={onUse ? () => onUse?.({ kind: 'mcp', id: connector.runtimePackageName }) : undefined}
                   />
                 );
               })
@@ -688,8 +723,9 @@ export function MarketplacePage({
                     actionDisabled={!!pluginInstallingIds[pkg.id]}
                     canOpenDetail
                     onOpenDetail={() => onOpenPluginDetail(pkg.id)}
-                    onUse={() => pluginConnected ? onUse({ kind: 'plugin', id: pkg.runtimePackageName }) : onOpenPluginDetail(pkg.id)}
+                    onUse={onUse ? () => (pluginConnected ? onUse({ kind: 'plugin', id: pkg.runtimePackageName }) : onOpenPluginDetail(pkg.id)) : undefined}
                     // 同款修正：不能只看 installed，见上面"我的插件"卡片同名 prop 的注释。
+                    // Marketplace installation can resume pending connector setup.
                     onQuickAdd={() => {
                       if (derivePluginCardState(pluginInstalled, pluginConnected) !== 'connected')
                         installPlugin(pkg.id);
