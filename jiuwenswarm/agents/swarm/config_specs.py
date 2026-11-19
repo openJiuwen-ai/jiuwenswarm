@@ -1045,7 +1045,7 @@ def build_member_deep_agent_spec(
     merged_rails.extend(rails_specs)
     if disable_code_todo_reminder and _is_code_mode(mode):
         merged_rails = [
-            rail.model_copy(update={"params": {**rail.params, "enable_task_reminders": False}})
+            rail.model_copy(update={"params": {**(rail.params or {}), "enable_task_reminders": False}})
             if rail.type == registry.CODE_TASK_PLANNING else rail
             for rail in merged_rails
         ]

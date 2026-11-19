@@ -4373,11 +4373,21 @@ async def _process_team_message_stream(
         )
         from jiuwenswarm.server.runtime.session.execution_settings import prepare_session_execution
 
-        await prepare_session_execution(
-            session_id,
-            team_spec,
-            params_obj.get("execution_settings") if isinstance(params_obj, dict) else None,
-        )
+        try:
+            await prepare_session_execution(
+                session_id,
+                team_spec,
+                params_obj.get("execution_settings") if isinstance(params_obj, dict) else None,
+            )
+        except ValueError as exc:
+            # Rejected settings are the client's to fix. Running the team
+            # without them would silently drop the requested Git identity.
+            logger.warning("[team] execution settings rejected: session_id=%s error=%s", session_id, exc)
+            yield AgentResponseChunk(
+                request_id=rid, channel_id=channel_id,
+                payload={"event_type": "chat.error", "error": str(exc)}, is_complete=True,
+            )
+            return
         if group_input is not None:
             update_session_metadata(session_id=session_id,
                 conversation_type="group_chat",
