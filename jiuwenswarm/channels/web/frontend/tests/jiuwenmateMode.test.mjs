@@ -32,3 +32,9 @@ test('the mode switch exposes a stable JiuwenMate entry at the bottom rail', () 
   assert.match(markup, /aria-pressed="false"/);
   assert.match(markup, />JiuwenMate</);
 });
+
+test('both mode switches use the same visual classes', () => {
+  const render = (active) => renderToStaticMarkup(React.createElement(JiuwenMateModeSwitch, { active, label: 'Switch', onToggle() {} }));
+  assert.equal(render(false).match(/class="([^"]+)"/)[1], render(true).match(/class="([^"]+)"/)[1]);
+  assert.match(render(true), /aria-pressed="true"/);
+});
