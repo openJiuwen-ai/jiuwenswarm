@@ -50,20 +50,6 @@ AUTO_REVIEW_REASON_CODE_LIMIT = 80
 AUTO_REVIEW_PATH_TARGET_LIMIT = 8
 AUTO_REVIEW_PATH_LABEL_LIMIT = 80
 AUTO_REVIEW_PAYLOAD_MAX_BYTES = 65536
-FORBIDDEN_REVIEWER_FIELDS = frozenset(
-    {
-        "allow_always",
-        "approval_override",
-        "command_rewrite",
-        "config_update",
-        "escalation",
-        "grant",
-        "mutable_permission_config",
-        "permission_override",
-        "tool_calls",
-        "tools",
-    }
-)
 REQUIRED_REVIEWER_FIELDS = frozenset(
     {
         "outcome",
@@ -78,7 +64,7 @@ OPTIONAL_REVIEWER_FIELDS = frozenset(
         "user_review_hint",
     }
 )
-ALLOWED_REVIEWER_FIELDS = REQUIRED_REVIEWER_FIELDS | OPTIONAL_REVIEWER_FIELDS | {"confidence"}
+REVIEWER_RESPONSE_FIELDS = REQUIRED_REVIEWER_FIELDS | OPTIONAL_REVIEWER_FIELDS
 ISOLATED_AUTO_REVIEWER_PROMPT = (
     "You review a single tool call for safety and consistency with the user's "
     "authorization, using only the supplied evidence. "
@@ -681,12 +667,9 @@ class AutoReviewer:
         payload = _decode_strict_response(raw_response)
         if payload is None:
             return self._manual("invalid_json")
-        if FORBIDDEN_REVIEWER_FIELDS.intersection(payload):
-            return self._manual("forbidden_field")
+        payload = {name: payload[name] for name in REVIEWER_RESPONSE_FIELDS if name in payload}
         if not REQUIRED_REVIEWER_FIELDS.issubset(payload):
             return self._manual("missing_field")
-        if set(payload).difference(ALLOWED_REVIEWER_FIELDS):
-            return self._manual("unknown_field")
         if not all(
             _is_nonempty_string(payload[name])
             for name in ("outcome", "reason_code", "rationale")
