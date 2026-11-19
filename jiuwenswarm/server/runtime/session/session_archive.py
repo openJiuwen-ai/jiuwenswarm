@@ -33,6 +33,31 @@ def _cleanup_backoff(attempts: int) -> float:
     return _CLEANUP_BACKOFF_SECONDS[index]
 
 
+async def _finish_before_unlock(awaitable):
+    """Keep the execution owner until an in-flight operation has settled."""
+    task = asyncio.create_task(awaitable)
+    cancelled = False
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError:
+            if task.cancelled():
+                raise
+            cancelled = True
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
+
+
+def _run_lifecycle_io(func, *args, **kwargs):
+    return _finish_before_unlock(asyncio.to_thread(func, *args, **kwargs))
+
+
+def _session_project_id(session_id: str) -> str:
+    return lc.project_id_for(lc.raw_metadata(session_id))
+
+
 def get_agent_sessions_dir():
     return lc.get_agent_sessions_dir()
 
@@ -81,14 +106,15 @@ class SessionArchiveService:
             owner = lc.file_lock(owner_path)
             # Acquisition runs in a worker; never block the event loop while
             # another process owns the operation. Release on the same live fd.
-            acquire = asyncio.create_task(asyncio.to_thread(owner.__enter__))
+            acquired = False
+
+            def acquire():
+                nonlocal acquired
+                owner.__enter__()
+                acquired = True
+
             try:
-                await asyncio.shield(acquire)
-            except asyncio.CancelledError:
-                await acquire
-                owner.__exit__(None, None, None)
-                raise
-            try:
+                await _run_lifecycle_io(acquire)
 
                 async def renew():
                     while True:
@@ -97,7 +123,7 @@ class SessionArchiveService:
                             # Worker threads may hold the same resource lock
                             # for a directory move; a blocked renew must never
                             # stall the event loop or kill the lease task.
-                            await asyncio.to_thread(
+                            await _run_lifecycle_io(
                                 lc.renew_operation, kind, resource_id, self._owner_id
                             )
                         except Exception:
@@ -109,23 +135,19 @@ class SessionArchiveService:
                             )
 
                 lease = asyncio.create_task(renew())
-                yield
-            finally:
                 try:
-                    if "lease" in locals():
-                        lease.cancel()
-                        await asyncio.gather(lease, return_exceptions=True)
-                    release = asyncio.create_task(asyncio.to_thread(
-                        lc.renew_operation, kind, resource_id, self._owner_id, release=True
-                    ))
-                    try:
-                        await asyncio.shield(release)
-                    except asyncio.CancelledError:
-                        # Keep ownership until the worker's lease write exits.
-                        await release
-                        raise
+                    yield
                 finally:
-                    owner.__exit__(None, None, None)
+                    lease.cancel()
+                    try:
+                        await asyncio.gather(lease, return_exceptions=True)
+                    finally:
+                        await _run_lifecycle_io(
+                            lc.renew_operation, kind, resource_id, self._owner_id, release=True
+                        )
+            finally:
+                if acquired:
+                    await _run_lifecycle_io(owner.__exit__, None, None, None)
 
     def start_recovery(self):
         if self._recovery_task is None:
@@ -167,42 +189,69 @@ class SessionArchiveService:
         self._finalizing_operations.clear()
         self._finalizer_tasks.clear()
 
+    @staticmethod
+    def _recovery_due(operation: dict) -> bool:
+        return (
+            operation.get("retryable", True)
+            and operation.get("status") not in {"completed", "abandoned"}
+            and time.time() >= float(operation.get("cleanup_next_at") or 0)
+        )
+
+    @staticmethod
+    def _scan_recovery_operations(
+        parsed: dict[str, tuple[tuple[int, int, int], dict]],
+    ) -> list[dict]:
+        """Read lifecycle files off-loop. Only the scan owns the parse cache."""
+        directory = lc.resource_path("session", "_scan").parent
+        seen = set()
+        operations = []
+        for path in directory.glob("session_*.json"):
+            seen.add(path.name)
+            try:
+                stat = path.stat()
+                stamp = (stat.st_ino, stat.st_mtime_ns, stat.st_size)
+                cached = parsed.get(path.name)
+                if cached is None or cached[0] != stamp:
+                    operation = lc.read_json(path).get("operation") or {}
+                    if isinstance(operation, dict) and operation.get("status") in ("completed", "abandoned"):
+                        operation = {}
+                    if operation:
+                        operation_id = operation.get("operation_id") if isinstance(operation, dict) else None
+                        try:
+                            lc.validate_id(operation_id)
+                        except lc.LifecycleError:
+                            logger.warning("Skipping lifecycle recovery file with invalid operation_id: %s", path.name)
+                            operation = {}
+                    parsed[path.name] = (stamp, operation)
+                else:
+                    operation = cached[1]
+                if operation:
+                    operations.append(operation)
+            except FileNotFoundError:
+                continue
+            except Exception:
+                logger.debug("lifecycle recovery scan deferred: %s", path.name, exc_info=True)
+        for name in parsed.keys() - seen:
+            del parsed[name]
+        return operations
+
     async def _recover(self):
         failures: dict[str, tuple[int, float]] = {}
-        # Steady state only stats the files: unchanged lifecycle files reuse
-        # the previous parse instead of re-reading JSON every pass.
-        parsed: dict[str, tuple[tuple[int, int], dict]] = {}
+        parsed: dict[str, tuple[tuple[int, int, int], dict]] = {}
         while True:
-            directory = lc.resource_path("session", "_scan").parent
-            seen: set[str] = set()
-            for path in directory.glob("session_*.json") if directory.exists() else ():
-                operation = {}
+            try:
+                operations = await asyncio.to_thread(self._scan_recovery_operations, parsed)
+            except OSError:
+                logger.debug("lifecycle recovery directory unavailable", exc_info=True)
+                operations = []
+            for operation in operations:
+                sid = str(operation.get("resource_id") or "")
                 try:
-                    seen.add(path.name)
-                    try:
-                        stat = path.stat()
-                        stamp = (stat.st_mtime_ns, stat.st_size)
-                    except OSError:
+                    if not self._recovery_due(operation):
                         continue
-                    cached = parsed.get(path.name)
-                    if cached is not None and cached[0] == stamp:
-                        operation = cached[1]
-                    else:
-                        operation = lc.read_json(path).get("operation") or {}
-                        parsed[path.name] = (stamp, operation)
-                    if not operation or operation.get("status") in {
-                        "completed",
-                        "abandoned",
-                    }:
-                        continue
-                    if not operation.get("retryable", True):
-                        continue
-                    sid = str(operation.get("resource_id") or "")
                     if not sid or sid in self._finalizing:
                         # A live finalizer already owns this session.  Starting
                         # a second one could move or delete the directory twice.
-                        continue
-                    if time.time() < float(operation.get("cleanup_next_at") or 0):
                         continue
                     attempts, next_try = failures.get(sid, (0, 0))
                     if time.monotonic() < next_try:
@@ -216,21 +265,21 @@ class SessionArchiveService:
                             str(operation.get("channel_id") or ""),
                             str(operation.get("project_id") or ""),
                             operation.get("stop_generation"),
+                            operation_id=operation["operation_id"],
+                            recovering=True,
                         )
                     else:
-                        await self.session(sid, kind, "")
+                        await self.session(
+                            sid, kind, "", recovery_operation_id=operation["operation_id"]
+                        )
                     failures.pop(sid, None)
                 except Exception:
-                    key = operation.get("resource_id", path.name)
-                    attempts = failures.get(key, (0, 0))[0] + 1
-                    failures[key] = (
+                    attempts = failures.get(sid, (0, 0))[0] + 1
+                    failures[sid] = (
                         attempts,
                         time.monotonic() + min(60, 2 ** min(attempts, 6)),
                     )
-                    logger.debug("lifecycle recovery deferred: %s", key, exc_info=True)
-            for name in list(parsed):
-                if name not in seen:
-                    del parsed[name]
+                    logger.debug("lifecycle recovery deferred: %s", sid, exc_info=True)
             # Idle poll is 10s, but a pending per-resource backoff must not
             # wait it out: wake at the earliest scheduled retry, or right away
             # when a failure path pokes the loop.
@@ -297,21 +346,22 @@ class SessionArchiveService:
         channel_id: str,
         *,
         parent_operation: str = "",
+        recovery_operation_id: str | None = None,
     ) -> dict:
         lc.validate_id(session_id)
         # Project lock must precede the session lock; project cascade already
         # owns it and explicitly supplies its operation ID.
-        meta = lc.raw_metadata(session_id)
-        project_id = lc.project_id_for(meta)
+        project_id = await _run_lifecycle_io(_session_project_id, session_id)
         if not parent_operation:
             async with self.lock("project", project_id):
-                parent = lc.state("project", project_id).get("operation")
+                parent = (await _run_lifecycle_io(lc.state, "project", project_id)).get("operation")
                 if parent and parent["status"] != "completed":
                     raise lc.LifecycleError(
                         "OPERATION_IN_PROGRESS", "project operation is pending"
                     )
                 return await self._session(
-                    session_id, action, channel_id, project_id
+                    session_id, action, channel_id, project_id,
+                    recovery_operation_id=recovery_operation_id,
                 )
         return await self._session(
             session_id, action, channel_id, project_id
@@ -416,10 +466,11 @@ class SessionArchiveService:
         channel_id: str,
         project_id: str,
         generation: int | None,
+        *,
+        operation_id: str,
+        recovering: bool = False,
     ) -> asyncio.Task | None:
-        """Start (or reuse) the background cleanup for one Session."""
-        operation = lc.state("session", session_id).get("operation") or {}
-        operation_id = str(operation.get("operation_id") or "")
+        """Start (or reuse) the cleanup for this persisted operation."""
         existing = self._finalizing.get(session_id)
         if existing is not None and not existing.done():
             if self._finalizing_operations.get(session_id) == operation_id:
@@ -436,6 +487,7 @@ class SessionArchiveService:
                     project_id,
                     generation,
                     operation_id=operation_id,
+                    recovering=recovering,
                 ),
                 name=f"session-finalize-{action}-{session_id}",
             )
@@ -475,9 +527,10 @@ class SessionArchiveService:
         generation: int | None,
         *,
         operation_id: str | None = None,
+        recovering: bool = False,
     ) -> None:
         if operation_id is None:
-            operation = lc.state("session", session_id).get("operation") or {}
+            operation = (await _run_lifecycle_io(lc.state, "session", session_id)).get("operation") or {}
             operation_id = str(operation.get("operation_id") or "")
         async with self._finalize_semaphore:
             busy_exc: BaseException | None = None
@@ -491,6 +544,7 @@ class SessionArchiveService:
                             project_id,
                             generation,
                             operation_id,
+                            recovering=recovering,
                         )
                     return
                 except asyncio.CancelledError:
@@ -498,7 +552,7 @@ class SessionArchiveService:
                     # failure marker so the next process (or the recovery loop)
                     # can finish the physical cleanup.
                     try:
-                        updated = await asyncio.to_thread(
+                        updated = await _run_lifecycle_io(
                             self._save_cleanup_failure,
                             session_id,
                             operation_id,
@@ -524,7 +578,7 @@ class SessionArchiveService:
                         busy_exc = exc
                         await asyncio.sleep(0.05)
                         continue
-                    operation = lc.state("session", session_id).get("operation") or {}
+                    operation = (await _run_lifecycle_io(lc.state, "session", session_id)).get("operation") or {}
                     attempts = int(operation.get("cleanup_attempts") or 0) + 1
                     await self._record_finalize_failure(
                         session_id, action, attempts, exc, operation_id
@@ -539,7 +593,7 @@ class SessionArchiveService:
             # `_recover` 每 10 秒重新 spawn 一次，同一个被残留 flock 占住的会话会被
             # 无限重试，每次还占一个收尾槽位约 2 秒。记一次可重试失败：退避按
             # `_cleanup_backoff` 生效，达到 `_MAX_CLEANUP_ATTEMPTS` 后转入 abandoned。
-            operation = lc.state("session", session_id).get("operation") or {}
+            operation = (await _run_lifecycle_io(lc.state, "session", session_id)).get("operation") or {}
             attempts = int(operation.get("cleanup_attempts") or 0) + 1
             await self._record_finalize_failure(
                 session_id,
@@ -558,14 +612,18 @@ class SessionArchiveService:
         project_id: str,
         generation: int | None,
         operation_id: str,
+        *,
+        recovering: bool = False,
     ) -> None:
-        value = await asyncio.to_thread(lc.state, "session", session_id)
+        value = await _run_lifecycle_io(lc.state, "session", session_id)
         operation = value.get("operation") or {}
         if operation.get("operation_id") != operation_id:
             return
         if operation.get("status") in {"completed", "abandoned"}:
             return
         if operation.get("kind") != action:
+            return
+        if recovering and not self._recovery_due(operation):
             return
         # Count the attempt before doing work so a process that repeatedly
         # crashes mid-cleanup still exhausts its budget instead of looping
@@ -581,7 +639,7 @@ class SessionArchiveService:
             )
             return
         cleanup_only = action == "delete" and bool(operation.get("runtime_deleted"))
-        await asyncio.to_thread(
+        await _run_lifecycle_io(
             lc.update,
             "session",
             session_id,
@@ -617,8 +675,8 @@ class SessionArchiveService:
         if action == "delete" and operation.get("runtime_deleted"):
             await self._complete_session_delete(session_id, project_id)
             return
-        active, archived = lc.session_paths(session_id)
-        meta = lc.raw_metadata(session_id)
+        active, archived = await _run_lifecycle_io(lc.session_paths, session_id)
+        meta = await _run_lifecycle_io(lc.raw_metadata, session_id)
         owner_channel = str(meta.get("channel_id") or channel_id or "")
         if action == "delete":
             # The accept path only blocks new work; waiting for a consumer that
@@ -626,7 +684,7 @@ class SessionArchiveService:
             mailbox = self._session_message_service()
             if mailbox is not None:
                 await mailbox.begin_target_delete(session_id)
-        if active.exists():
+        if await _run_lifecycle_io(active.exists):
             await self._stop_heartbeat(session_id)
             await self._stop_subagents(session_id, action, owner_channel)
             running = True
@@ -655,7 +713,7 @@ class SessionArchiveService:
                 else:
                     # Older runtimes only expose the delete-oriented entry point.
                     await self.stop(session_id, owner_channel)
-        await asyncio.to_thread(lc.update, "session", session_id, phase="flush_writes")
+        await _run_lifecycle_io(lc.update, "session", session_id, phase="flush_writes")
         from jiuwenswarm.server.runtime.session import (
             session_history,
             session_metadata,
@@ -673,10 +731,10 @@ class SessionArchiveService:
                 session_id,
                 action,
             )
-        await asyncio.to_thread(lc.update, "session", session_id, phase="fence_writes")
-        await asyncio.to_thread(lc.fence_writes, "session", session_id)
+        await _run_lifecycle_io(lc.update, "session", session_id, phase="fence_writes")
+        await _run_lifecycle_io(lc.fence_writes, "session", session_id)
         if action == "delete":
-            await asyncio.to_thread(lc.update, "session", session_id, phase="delete_directory")
+            await _run_lifecycle_io(lc.update, "session", session_id, phase="delete_directory")
             result = await self.runtime.delete_session(
                 channel_id=owner_channel, session_id=session_id
             )
@@ -687,7 +745,7 @@ class SessionArchiveService:
                 )
             # Persist this boundary before mailbox cleanup so a retry after
             # deletion never repeats destructive Runtime work or reopens FIFO.
-            await asyncio.to_thread(
+            await _run_lifecycle_io(
                 lc.update,
                 "session",
                 session_id,
@@ -697,9 +755,9 @@ class SessionArchiveService:
             )
             await self._complete_session_delete(session_id, project_id)
             return
-        await asyncio.to_thread(lc.update, "session", session_id, phase="move_directory")
+        await _run_lifecycle_io(lc.update, "session", session_id, phase="move_directory")
         archived_at = float(operation.get("archived_at") or time.time())
-        await asyncio.to_thread(
+        await _run_lifecycle_io(
             self._move_session_directory,
             session_id,
             active,
@@ -713,7 +771,7 @@ class SessionArchiveService:
 
         remove_session_metadata_cache(session_id)
         if bool(operation.get("pin_reindex_required")):
-            await asyncio.to_thread(self.reindex_pins)
+            await _run_lifecycle_io(self.reindex_pins)
         payload = dict(
             session_id=session_id,
             ok=True,
@@ -722,7 +780,7 @@ class SessionArchiveService:
             stop_pending=False,
             project_id=project_id,
         )
-        await asyncio.to_thread(
+        await _run_lifecycle_io(
             lc.complete, "session", session_id, archived=True, result=payload
         )
 
@@ -732,7 +790,7 @@ class SessionArchiveService:
         if mailbox is not None:
             await mailbox.on_target_deleted(session_id)
         payload = dict(session_id=session_id, ok=True, project_id=project_id)
-        await asyncio.to_thread(
+        await _run_lifecycle_io(
             lc.complete, "session", session_id, deleted=True, result=payload
         )
         # Fixed-format audit line: deletion success is silent otherwise, and
@@ -810,7 +868,7 @@ class SessionArchiveService:
             )
             return
         next_at = time.time() + _cleanup_backoff(attempts)
-        updated = await asyncio.to_thread(
+        updated = await _run_lifecycle_io(
             self._save_cleanup_failure,
             session_id,
             operation_id,
@@ -839,7 +897,7 @@ class SessionArchiveService:
         reason: str,
         operation_id: str,
     ) -> None:
-        operation = await asyncio.to_thread(
+        operation = await _run_lifecycle_io(
             self._save_cleanup_failure,
             session_id,
             operation_id,
@@ -870,6 +928,33 @@ class SessionArchiveService:
                         exc_info=True,
                     )
 
+    def _load_session_for_action(
+        self, session_id: str, action: str, recovery_operation_id: str | None,
+        preloaded_meta: dict | None,
+    ) -> tuple[Path, Path, dict | None, bool, dict] | None:
+        active, archived = lc.session_paths(session_id)
+        previous = lc.state("session", session_id).get("operation")
+        if recovery_operation_id is not None:
+            if not previous or previous.get("operation_id") != recovery_operation_id:
+                return None
+            if previous.get("kind") != action or not self._recovery_due(previous):
+                return None
+        pending = bool(previous and previous.get("status") != "completed")
+        if (
+            not active.exists()
+            and not archived.exists()
+            and not (pending and action == "delete")
+        ):
+            raise lc.LifecycleError("NOT_FOUND", "session not found")
+        # Batch callers already hold the project execution lock and pass
+        # their inventory snapshot; only the single-session path re-reads.
+        meta = (
+            preloaded_meta
+            if preloaded_meta is not None
+            else lc.raw_metadata(session_id)
+        )
+        return active, archived, previous, pending, meta
+
     async def _session(
         self,
         session_id: str,
@@ -878,24 +963,15 @@ class SessionArchiveService:
         project_id: str,
         *,
         preloaded_meta: dict | None = None,
+        recovery_operation_id: str | None = None,
     ) -> dict:
         async with self.lock("session", session_id):
-            active, archived = lc.session_paths(session_id)
-            previous = lc.state("session", session_id).get("operation")
-            pending = bool(previous and previous.get("status") != "completed")
-            if (
-                not active.exists()
-                and not archived.exists()
-                and not (pending and action == "delete")
-            ):
-                raise lc.LifecycleError("NOT_FOUND", "session not found")
-            # Batch callers already hold the project execution lock and pass
-            # their inventory snapshot; only the single-session path re-reads.
-            meta = (
-                preloaded_meta
-                if preloaded_meta is not None
-                else lc.raw_metadata(session_id)
+            snapshot = await _run_lifecycle_io(
+                self._load_session_for_action, session_id, action, recovery_operation_id, preloaded_meta
             )
+            if snapshot is None:
+                return {}
+            active, archived, previous, pending, meta = snapshot
             is_cron_session = bool(meta.get("cron_id")) or session_id.startswith(
                 ("cron_", "heartbeat_")
             )
@@ -927,17 +1003,21 @@ class SessionArchiveService:
                 raise lc.LifecycleError(
                     "BAD_REQUEST", "unknown session lifecycle action"
                 )
-            return await self._accept_session_cleanup(
-                session_id,
-                action,
-                project_id,
-                meta,
-                active,
-                archived,
-                owner_channel_id,
-                pin_reindex_required,
-                previous,
-                pending,
+            # Once accepted, persist the generation, mailbox fence and finalizer
+            # before cancellation can release the project/session owners.
+            return await _finish_before_unlock(
+                self._accept_session_cleanup(
+                    session_id,
+                    action,
+                    project_id,
+                    meta,
+                    active,
+                    archived,
+                    owner_channel_id,
+                    pin_reindex_required,
+                    previous,
+                    pending,
+                )
             )
 
     async def _accept_session_cleanup(
@@ -966,8 +1046,8 @@ class SessionArchiveService:
                 # A failed archive still holds the logical "archived" result.
                 # Deleting it must persist the new intent instead of bouncing
                 # off the leftover operation; physical cleanup stays best-effort.
-                lc.abandon_failed_operation("session", session_id, "archive")
-                previous = lc.state("session", session_id).get("operation")
+                await asyncio.to_thread(lc.abandon_failed_operation, "session", session_id, "archive")
+                previous = (await asyncio.to_thread(lc.state, "session", session_id)).get("operation")
                 pending = bool(previous and previous.get("status") != "completed")
             else:
                 raise lc.LifecycleError(
@@ -986,26 +1066,27 @@ class SessionArchiveService:
                 owner_channel_id,
                 project_id,
                 previous.get("stop_generation"),
+                operation_id=str(previous.get("operation_id") or ""),
             )
             return self._accepted_payload(
                 session_id, action, project_id, previous
             )
-        if not pending and action == "archive" and archived.exists():
+        if not pending and action == "archive" and await asyncio.to_thread(archived.exists):
             return dict(
                 session_id=session_id,
                 ok=True,
                 archived=True,
-                archived_at=self.archive_time(session_id, archived, meta),
+                archived_at=await asyncio.to_thread(self.archive_time, session_id, archived, meta),
                 accepted=True,
                 finalizing=False,
                 stop_pending=False,
                 project_id=project_id,
             )
-        operation = lc.begin(
-            "session", session_id, action, block_execution=True
+        await asyncio.to_thread(
+            lc.begin, "session", session_id, action, block_execution=True
         )
-        operation = lc.claim_operation(
-            "session", session_id, self._owner_id
+        operation = await asyncio.to_thread(
+            lc.claim_operation, "session", session_id, self._owner_id
         )
         generation = self._capture_generation(session_id)
         # A retry after a failed pin reindex must not lose the requirement just
@@ -1015,25 +1096,46 @@ class SessionArchiveService:
             or (previous or {}).get("pin_reindex_required")
             or operation.get("pin_reindex_required")
         )
-        lc.update(
-            "session",
+        await asyncio.to_thread(
+            lc.update, "session",
             session_id,
             project_id=project_id,
             channel_id=owner_channel_id,
             stop_generation=generation,
             pin_reindex_required=pin_reindex_required,
         )
-        operation = lc.mark_finalizing(
-            "session", session_id, deleted=(action == "delete")
+        operation = await asyncio.to_thread(
+            lc.mark_finalizing, "session", session_id, deleted=(action == "delete")
         )
         if mailbox is not None:
             # Fast, non-blocking barrier.  Waiting for the consumer to exit is
             # part of the background finalizer, so the response is not delayed.
             mailbox.block_target_delete(session_id)
         self._spawn_finalizer(
-            session_id, action, owner_channel_id, project_id, generation
+            session_id, action, owner_channel_id, project_id, generation,
+            operation_id=operation["operation_id"],
         )
         return self._accepted_payload(session_id, action, project_id, operation)
+
+    def _begin_unarchive(
+        self, session_id: str, project_id: str, pin_reindex_required: bool, accepted: dict
+    ) -> dict:
+        operation = lc.begin(
+            "session", session_id, "unarchive", block_execution=True
+        )
+        # The drained I/O may commit admission and then propagate cancellation
+        # instead of returning. Preserve this exact operation for its cleanup.
+        accepted.update(operation)
+        operation = lc.claim_operation("session", session_id, self._owner_id)
+        pin_reindex_required = bool(
+            pin_reindex_required or operation.get("pin_reindex_required")
+        )
+        return lc.update(
+            "session",
+            session_id,
+            project_id=project_id,
+            pin_reindex_required=pin_reindex_required,
+        )
 
     async def _unarchive_session(
         self,
@@ -1051,8 +1153,8 @@ class SessionArchiveService:
             if previous.get("status") in {"failed", "abandoned"}:
                 # A failed cleanup must not make the Session impossible to
                 # unarchive.  Close the leftover operation, then take over.
-                lc.abandon_failed_operation("session", session_id, "archive")
-                previous = lc.state("session", session_id).get("operation")
+                await _run_lifecycle_io(lc.abandon_failed_operation, "session", session_id, "archive")
+                previous = (await _run_lifecycle_io(lc.state, "session", session_id)).get("operation")
                 pending = bool(previous and previous.get("status") != "completed")
                 took_over_failed_archive = True
             elif previous.get("status") != "completed":
@@ -1060,40 +1162,32 @@ class SessionArchiveService:
                     "OPERATION_IN_PROGRESS",
                     "session archive cleanup is still running",
                 )
-        if not pending and active.exists():
+        if not pending and await _run_lifecycle_io(active.exists):
             # An abandoned archive can leave the directory active while its
             # project is still hidden.  Undo is a restore operation, so bring
             # the project back too; otherwise the Session leaves the archive
             # list but remains invisible in a hidden project.
-            await asyncio.to_thread(self._restore_hidden_project, project_id)
+            await _run_lifecycle_io(self._restore_hidden_project, project_id)
             # Already back in the active area: make sure a stale fence from an
             # earlier failure cannot keep it hidden from the workspace.
-            lc.set_visibility("session", session_id, blocked=False, deleted=False)
+            await _run_lifecycle_io(lc.set_visibility, "session", session_id, blocked=False, deleted=False)
             return dict(
                 session_id=session_id,
                 ok=True,
                 restored=took_over_failed_archive,
                 project_id=project_id,
             )
-        operation = lc.begin(
-            "session", session_id, "unarchive", block_execution=True
-        )
-        operation = lc.claim_operation("session", session_id, self._owner_id)
-        pin_reindex_required = bool(
-            pin_reindex_required or operation.get("pin_reindex_required")
-        )
-        lc.update(
-            "session",
-            session_id,
-            project_id=project_id,
-            pin_reindex_required=pin_reindex_required,
-        )
+        operation = {}
         try:
+            operation = await _run_lifecycle_io(
+                self._begin_unarchive, session_id, project_id, pin_reindex_required, operation
+            )
+            pin_reindex_required = bool(operation.get("pin_reindex_required"))
             # 项目被移除时,归档区是它唯一还能被看到的内容。先把项目
             # 恢复出来,否则会话离开归档页后在工作区里也找不到。
-            await asyncio.to_thread(self._restore_hidden_project, project_id)
-            lc.update(
-                "session",
+            await _run_lifecycle_io(self._restore_hidden_project, project_id)
+            await _run_lifecycle_io(
+                lc.update, "session",
                 session_id,
                 phase="move_directory",
                 status="running",
@@ -1102,7 +1196,7 @@ class SessionArchiveService:
             # The move, its PermissionError backoff and the metadata rewrite
             # stay under the cross-process resource lock, but run in a worker
             # thread so the retry sleeps never stall the loop.
-            await asyncio.to_thread(
+            await _run_lifecycle_io(
                 self._move_session_directory,
                 session_id,
                 archived,
@@ -1118,7 +1212,7 @@ class SessionArchiveService:
             if pin_reindex_required:
                 # 刚搬回活跃区的会话仍在执行栅栏内，reindex_pins 默认跳过
                 # blocked 会话，这里显式让它写回这一条的序号。
-                await asyncio.to_thread(
+                await _run_lifecycle_io(
                     self.reindex_pins, include_blocked=session_id
                 )
             payload = dict(
@@ -1127,49 +1221,34 @@ class SessionArchiveService:
                 restored=True,
                 project_id=project_id,
             )
-            lc.complete("session", session_id, result=payload)
+            await _run_lifecycle_io(lc.complete, "session", session_id, result=payload)
             return payload
-        except Exception as exc:
-            lc.update(
-                "session",
-                session_id,
-                status="failed",
-                errors=[str(exc)],
-                retryable=getattr(exc, "code", "")
-                not in {
-                    "SESSION_ID_CONFLICT",
-                    "BAD_REQUEST",
-                    "PROJECT_NAME_CONFLICT",
-                },
-            )
-            # Visibility follows the directory's actual position: a failed
-            # unarchive must never leave an active Session hidden.
-            lc.set_visibility(
-                "session",
-                session_id,
-                blocked=not active.exists(),
-                deleted=False,
-            )
-            self._poke_recovery()
-            if isinstance(exc, lc.LifecycleError):
+        except BaseException as exc:
+            retryable = getattr(exc, "code", "") not in {
+                "SESSION_ID_CONFLICT", "BAD_REQUEST", "PROJECT_NAME_CONFLICT",
+            }
+            reason = str(exc) if isinstance(exc, Exception) else "operation cancelled"
+            if operation.get("operation_id"):
+                try:
+                    await _run_lifecycle_io(
+                        self._save_unarchive_failure, session_id, operation["operation_id"], active, reason, retryable
+                    )
+                finally:
+                    self._poke_recovery()
+            if not isinstance(exc, Exception) or isinstance(exc, lc.LifecycleError):
                 raise
             raise lc.LifecycleError("RESTORE_FAILED", str(exc)) from exc
-        except BaseException:
-            lc.update(
-                "session",
-                session_id,
-                status="failed",
-                errors=["operation cancelled"],
-                retryable=True,
-            )
-            lc.set_visibility(
-                "session",
-                session_id,
-                blocked=not active.exists(),
-                deleted=False,
-            )
-            self._poke_recovery()
-            raise
+
+    @staticmethod
+    def _save_unarchive_failure(
+        session_id: str, operation_id: str, active: Path, reason: str, retryable: bool
+    ) -> None:
+        with lc.resource_lock("session", session_id):
+            operation = lc.state("session", session_id).get("operation") or {}
+            if operation.get("operation_id") != operation_id or operation.get("status") == "completed":
+                return
+            lc.update("session", session_id, status="failed", errors=[reason], retryable=retryable)
+            lc.set_visibility("session", session_id, blocked=not active.exists(), deleted=False)
 
     @staticmethod
     def _restore_hidden_project(project_id: str) -> None:

@@ -26,7 +26,7 @@ from jiuwenswarm.server.ipc.protocol import (
 )
 from jiuwenswarm.server.ipc.server import IpcServer
 from jiuwenswarm.server.ipc.session import IpcSessionSource
-from jiuwenswarm.server.worker.diagnostics import arm_stall_dump, cancel_stall_dump
+from jiuwenswarm.server.worker.diagnostics import arm_stall_dump, cancel_stall_dump, heartbeat_reply
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +113,7 @@ async def _serve_one(
             "data_scope": data_scope(),
             "deployment_scope": deployment_scope(),
             "shutdown_ack": True,
+            "heartbeat_probe": True,
             "process_created": psutil.Process().create_time(),
             "code_identity": code_identity_value if code_identity_value is not None else code_identity(),
         }
@@ -129,7 +130,7 @@ async def _serve_one(
             await send({"kind": KIND_SHUTDOWN_DONE, "ok": True})
             return True
         if kind == KIND_HEARTBEAT:
-            await send({"kind": KIND_HEARTBEAT, "pid": os.getpid()})
+            await send(heartbeat_reply(None, probe_id=message.get("probe_id")))
             continue
         if kind == KIND_GATEWAY_ATTACH:
             continue
