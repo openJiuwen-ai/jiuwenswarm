@@ -166,6 +166,16 @@ _SECRET_PATTERNS = (
     re.compile(r"(api[_-]?key\s*[=:]\s*)[^\s,;}\"']+", re.IGNORECASE),
 )
 
+# Internal transport wrappers prepend a numeric code and a generic phrase before
+# the real provider cause (e.g. "[181001] model call failed: ..." or
+# "[181001] internal wrapper: ..."). The code and phrase carry no actionable
+# information, so strip that leading prefix but keep the cause that follows it.
+_INTERNAL_WRAPPER_PREFIX = re.compile(
+    r"^\s*\[\d+\]\s*(?:model\s+call\s+failed|internal\s+wrapper|model\s+invoke\s+failed)"
+    r"(?:\s*,\s*reason)?\s*:\s*",
+    re.IGNORECASE,
+)
+
 
 def _redact_secrets(text: str) -> str:
     """Replace credentials echoed by SDKs inside error text with ``***``."""
@@ -185,6 +195,12 @@ def _error_cause_excerpt(error: Any, limit: int = _MAX_RAW_ERROR_CHARS) -> str:
     if not raw:
         return ""
     flat = " ".join(raw.split())
+    # Drop the leading internal wrapper (numeric code + generic phrase) so the
+    # excerpt starts at the real cause, not at noise like "[181001] model call
+    # failed:". If stripping would leave nothing, fall back to the full text.
+    stripped = _INTERNAL_WRAPPER_PREFIX.sub("", flat, count=1)
+    if stripped.strip():
+        flat = stripped
     flat = _redact_secrets(flat)
     if len(flat) > limit:
         flat = flat[:limit].rstrip() + "..."
