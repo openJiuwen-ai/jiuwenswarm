@@ -45,23 +45,28 @@ _LIBRARY_LIST_MARKERS = ("运行时探测", "runtime probe")
 def _prompt_has_library_list(builder: Any) -> bool:
     """Return True when *builder* already carries the runtime library list.
 
-    The list lives in the static identity section, which is absent for agents
-    that build their prompt elsewhere (e.g. code mode). The env section must
-    add it only in that case, otherwise the same list is injected twice.
+    库清单可能位于静态 identity 段（FlashPersonaRail 拆分前），或已迁到
+    runtime_environment@1001（拆分后）。env 段只在两处都缺失时补一份，否则同一份
+    清单会在同一 system prompt 里出现两次（第二轮起重复注入，评审 #1）。
     """
     get_section = getattr(builder, "get_section", None)
     if not callable(get_section):
         return False
-    try:
-        section = get_section("identity")
-    except Exception:  # noqa: BLE001 — 诊断能力缺失时按「没有」处理，宁可多注入一份
-        return False
-    content = getattr(section, "content", None)
-    texts = content.values() if isinstance(content, dict) else [content]
-    return any(
-        isinstance(text, str) and any(marker in text for marker in _LIBRARY_LIST_MARKERS)
-        for text in texts
-    )
+    for name in ("identity", "runtime_environment"):
+        try:
+            section = get_section(name)
+        except Exception:  # noqa: BLE001 — 诊断能力缺失时按「没有」处理，宁可多注入一份
+            continue
+        if section is None:
+            continue
+        content = getattr(section, "content", None)
+        texts = content.values() if isinstance(content, dict) else [content]
+        if any(
+            isinstance(text, str) and any(marker in text for marker in _LIBRARY_LIST_MARKERS)
+            for text in texts
+        ):
+            return True
+    return False
 
 
 class RuntimePromptRail(DeepAgentRail):

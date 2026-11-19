@@ -8,8 +8,6 @@
 
 from __future__ import annotations
 
-import re
-
 # ── 源段名 ──────────────────────────────────────────────
 _SECTION_TOOLS = "tools"           # SDK ContextAssembleRail 构建，priority 30
 _SECTION_EXEC = "execution_principles"  # FlashPersonaRail 拆出的 400
@@ -21,6 +19,14 @@ _NAME_BASH = "bash_discipline"
 _PRIO_BASH = 330
 _NAME_RESULT = "tool_result"
 _PRIO_RESULT = 340
+# 浏览器任务强制路由：独立动态段（评审 C1），不再并入静态 340——否则子代理/工具面变化
+# 时 340 正文变、被误判静态漂移。priority 345 未登记（resolve_carrier 归 attachment）。
+_NAME_BROWSER_ROUTING = "browser_routing"
+_PRIO_BROWSER_ROUTING = 345
+
+# 本域产出的派生段名（域禁用清理用，评审 A）：与源段名不同，禁用后上游每轮重注入源段、
+# 派生段残留，需显式清理。
+_TOOLS_PRODUCED_NAMES = (_NAME_SELECTION, _NAME_BASH, _NAME_RESULT, _NAME_BROWSER_ROUTING)
 
 # ── tools 段内的子标题（用于定位剥离边界）──────────────────
 _TOOLS_DEDUP_CN = "## 工具调用去重规则"
@@ -29,6 +35,42 @@ _TOOLS_BASH_CN = "## bash 使用原则"
 _TOOLS_BASH_EN = "## bash Guidelines"
 _TOOLS_TASKTOOL_CN = "## task_tool 使用原则"
 _TOOLS_TASKTOOL_EN = "## task_tool Guidelines"
+
+# 已知 SDK 去重/bash bullet 正文（评审 B1：剥离守卫逐行精确匹配，未知 bullet/正文触发
+# 回退、不盲删）。与上游 agent-core context.py build_tools_section 逐字一致。
+_TOOLS_DEDUP_BULLETS_CN = (
+    "调用工具前先检查本轮对话中是否已经用相同参数调用过同一工具；如果已有结果，优先基于已有结果继续推理，不要重复调用",
+    "如果上一次工具结果为空、无匹配或没有提供新信息，不要用完全相同的参数再次调用；应调整查询条件、换用更合适的工具，或直接说明当前结果不足",
+    "只有当任务确实需要分步执行、状态已经变化、参数不同，或前一次结果明确要求继续获取下一部分信息时，才可以再次调用同一工具",
+)
+_TOOLS_DEDUP_BULLETS_EN = (
+    "Before calling a tool, check whether the same tool has already been called with the same "
+    "arguments in this turn; if a result already exists, reason from that result instead of "
+    "repeating the call",
+    "If the previous tool result was empty, had no matches, or added no new information, do "
+    "not call again with identical arguments; adjust the query, use a better-suited tool, or "
+    "explain that the current result is insufficient",
+    "Call the same tool again only when the task genuinely requires multiple steps, state has "
+    "changed, arguments differ, or the previous result clearly asks you to fetch the next part "
+    "of the information",
+)
+_TOOLS_BASH_BULLETS_CN = (
+    "优先使用专用工具完成文件搜索、内容搜索、读取、编辑和写入，不要用 bash 替代 `glob` / `grep` / `read_file` / `edit_file` / `write_file`",
+    "独立命令尽量并行调用；多步依赖命令才在单次调用里用 `&&` 串联，仅在不关心前序失败时才用 `;`",
+    "长时间运行命令使用 `background: true`，不要用 `sleep` 轮询等待",
+    "尽量使用绝对路径并避免频繁 `cd`；路径包含空格时使用双引号",
+    "执行破坏性 Git 操作前先考虑更安全的替代方案",
+)
+_TOOLS_BASH_BULLETS_EN = (
+    "Prefer dedicated tools for file search, content search, reading, editing, and writing "
+    "instead of using bash as a substitute for `glob` / `grep` / `read_file` / `edit_file` / "
+    "`write_file`",
+    "Run independent commands in parallel; only chain dependent commands with `&&`, and use "
+    "`;` only when earlier failures do not matter",
+    "Use `background: true` for long-running commands instead of polling with `sleep`",
+    "Prefer absolute paths and avoid frequent `cd`; quote paths with spaces using double quotes",
+    "Consider safer alternatives before destructive Git operations",
+)
 
 
 # ═══ 目标正文（06-目标提示词-完整版.md §3xx）═══════════════════════
@@ -82,7 +124,6 @@ _BROWSER_ROUTING_CN = """## 浏览器任务强制路由
 - 严禁通过 bash 等工具用脚本、subprocess 或系统命令自建浏览器进程（如 playwright/selenium/puppeteer）。
 """
 
-_RESULT_CN = _RESULT_BASE_CN + "\n" + _BROWSER_ROUTING_CN
 
 _RESULT_BASE_EN = """# Tool Result and Specialized Routing
 
@@ -96,23 +137,20 @@ _BROWSER_ROUTING_EN = """## Mandatory Browser Task Routing
 - Never build a browser process yourself via bash or other tools using scripts, subprocess, or system commands (e.g. playwright/selenium/puppeteer).
 """
 
-_RESULT_EN = _RESULT_BASE_EN + "\n" + _BROWSER_ROUTING_EN
-
-
-_SUBSECTION_RE = re.compile(r"^##\s[^\n]*", re.MULTILINE)
-
 
 def _strip_tools_guide(
     content: str,
     dedup_header: str,
     bash_header: str,
     tasktool_header: str,
+    dedup_bullets: tuple[str, ...] = (),
+    bash_bullets: tuple[str, ...] = (),
 ) -> str | None:
     """从 tools 段内容剔除「工具调用去重规则 + bash 使用原则」两小节。
 
     保留 ``# 可用工具`` 目录与 ``task_tool 使用原则``（后者归 440，本 rail 不碰）。
-    以 dedup/bash/task_tool 三锚点确认剔除边界：dedup 缺失、或剔除区内出现未识别的
-    ``## `` 子标题（上游改文案/新增小节）时返回 None，不盲删。
+    以 dedup/bash/task_tool 三锚点确认剔除边界：dedup 缺失、或剔除区内出现未知的
+    子标题 / bullet / 正文（上游改文案或租户注入）时返回 None，不盲删（评审 B1）。
     """
     dedup_idx = content.find(dedup_header)
     if dedup_idx < 0:
@@ -122,17 +160,25 @@ def _strip_tools_guide(
 
     tasktool_idx = tail.find(tasktool_header)
     strip_zone = tail[:tasktool_idx] if tasktool_idx >= 0 else tail
-    if not _only_known_subsections(strip_zone, {dedup_header, bash_header}):
-        return None  # 守卫：剔除区出现未知子标题，上游漂移，不盲删
+    known_lines = {dedup_header, bash_header}
+    known_lines.update("- " + b for b in (*dedup_bullets, *bash_bullets))
+    if not _only_known_lines(strip_zone, known_lines):
+        return None  # 守卫：剔除区出现未知 bullet/正文，上游漂移/租户注入，不盲删
     if tasktool_idx >= 0:
         return catalog + tail[tasktool_idx:]
     return catalog
 
 
-def _only_known_subsections(zone: str, known_headers: set[str]) -> bool:
-    """zone 内每个 ``## `` 子标题都必须落在 known_headers；否则视为上游漂移。"""
-    for match in _SUBSECTION_RE.finditer(zone):
-        header = match.group(0).strip()
-        if header and header not in known_headers:
+def _only_known_lines(zone: str, known_lines: set[str]) -> bool:
+    """zone 内每个非空行都必须落在 known_lines（已知标题 + 已知 bullet）。
+
+    旧守卫只匹配 ``## `` 子标题，插入的 ``- bullet`` 或正文会被静默删；改为逐行精确匹配，
+    任何未知行（上游改文案 / 租户注入）都视为异常。
+    """
+    for line in zone.split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped not in known_lines:
             return False
     return True

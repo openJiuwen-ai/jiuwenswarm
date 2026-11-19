@@ -180,6 +180,10 @@ The following principles take effect when a task involves the corresponding scen
 _INTRO_NAME = "identity"
 _INTRO_PRIORITY = 0
 
+# 000 身份段段顶标题（intro 原以正文开头、无标题，拆分后按语言补 H1）。
+_INTRO_TITLE_CN = "# 身份"
+_INTRO_TITLE_EN = "# Identity"
+
 # ── 020 执行优先级（新段，06-目标提示词-完整版.md §020）。────────────────────
 _NAME_EXEC_PRIORITY = "execution_priority"
 _PRIO_EXEC_PRIORITY = 20
@@ -191,7 +195,7 @@ _EXEC_PRIORITY_CN = """# 执行优先级
 1. 安全与合法性（含拒绝）
 2. 用户显式确认的交互闸门（ask_user / 两轮卡）
 3. 外部注入的强制门禁（合规、资质、技能等，按其自身说明执行）
-4. 记忆检索（每轮强制检索，无例外）
+4. 记忆检索（任务开始时检索一次，后续仅在需要新的用户上下文时再检索）
 5. 正常执行
 6. 收尾与最终回复
 
@@ -208,7 +212,7 @@ When multiple rules all demand "do this first", adjudicate in this order:
 1. Safety and legality (including refusal)
 2. User-explicit confirmation gates (ask_user / two-turn confirmation)
 3. Externally injected mandatory gates (compliance, qualification, skills, etc.; follow their own instructions)
-4. Memory retrieval (mandatory every turn, no exceptions)
+4. Memory retrieval (retrieve once at task start, then only when new user context is needed)
 5. Normal execution
 6. Wrap-up and final reply
 
@@ -273,6 +277,10 @@ def _build_env_residual_entity(block: str, language: str) -> str:
 
     丢弃与 env@1000 重复的平台/Shell/命令差异表。两个锚点都缺失时**原样返回 block**
     （兜底不丢内容，只会在极端改文案时出现重复）。用一次性的确定性裁剪，无跨轮状态。
+
+    注意：库清单必须保留在此（1001 是库清单的新家），env 的去重逻辑
+    ``runtime_prompt_rail._prompt_has_library_list`` 会同时识别 identity 与本段，
+    避免第二轮重复注入。
     """
     if not block:
         return block

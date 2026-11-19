@@ -144,8 +144,17 @@ def build_prompt_snapshot(
         section for section in section_snapshots if section.carrier == "system"
     )
 
+    # 前缀 = 按实际渲染顺序（section_snapshots 已按 priority 升序）取「前导连续静态段」，
+    # 遇到第一个非 system 段（动态段）即截断——否则动态段（如 multimodal_image_policy）
+    # 排在静态段之间时会被跳过、后面的静态段又被拼回来，导致前缀长于真实共享前缀（评审 #7）。
+    prefix_sections: list[PromptSectionSnapshot] = []
+    for section in section_snapshots:
+        if section.carrier != "system":
+            break
+        prefix_sections.append(section)
+
     prefix_text = "\n\n".join(
-        section.text for section in static_sections if section.text.strip()
+        section.text for section in prefix_sections if section.text.strip()
     )
     return PromptSnapshot(
         language=normalized_language,

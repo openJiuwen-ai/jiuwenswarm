@@ -1938,6 +1938,29 @@ flash:
     b: 0.4
     name_weight: 0.5
 
+  # ── flash 静态提示词改造开关（FlashPromptComposerRail / FlashPromptAuditRail）────────
+  # 必须在模板声明：启动清理与配置合并（merge_template_with_override）会删除模板中
+  # 不存在的字段（评审 #1）。双读 flash.<key> 优先、react.<key> 兜底。
+  # 各域 enabled 控制 FlashPromptComposerRail 是否对对应域做静态文本重组；
+  # 缺省全开、不启用功能、也不影响其他 Agent mode。
+  audit:
+    # 严格审计：true 时审计失败（未渲染变量/静态漂移）直接中断模型调用；默认只告警。
+    fail_closed: false
+  persona:
+    enabled: true                 # identity 巨石拆分 + 2xx/400 改写
+  safety:
+    enabled: true                 # safety 巨石拆 030/100/110/120
+  tool_guide:
+    enabled: true                 # tools 拆 300/330 + 340 工具结果
+  response:
+    enabled: true                 # 410/500/510/520/540 迁号改写
+  composer:
+    # 声明式接管域；缺省接管 safety/response（与 rail 路径字节等价），空列表 = 全部关闭。
+    takeover_domains: [safety, response]
+    verify_only: false            # 仅漂移校验、不裁决
+  section_order:
+    enabled: true                 # 段序收口：旧段迁号/剥除 + 动态段 1000 带
+
 # ── 模型路由（model_routing rail）──────────────────────────────
 model_routing:
   enabled: false

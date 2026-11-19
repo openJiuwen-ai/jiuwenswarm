@@ -74,8 +74,8 @@ _SAFETY_SECTION_NAMES = {
 }
 
 _GOLDEN_OWNED_HASH = {
-    "cn": "4c98f8daab5818624a0038e1e2646a4fe6d82d778da670cb3d090c68e5a5c5f6",
-    "en": "18177cf31e95424d249ae4e5392d152d8051f7b17216fcc973fceeb27c76ea02",
+    "cn": "ffd10fae579388094305bebb9c6010468a28fc688d5c3ec2617d4f61bd90693c",
+    "en": "ddf6f5b0e505de53ba38d6c53be9913f6eeca4a7c559f477fd8d6327670f6485",
 }
 
 
@@ -96,6 +96,7 @@ _EXPECTED_ORDER = [
     (300, "tool_selection"),
     (330, "bash_discipline"),
     (340, "tool_result"),
+    (345, "browser_routing"),
     (410, "thinking_discipline"),
     (430, "todo"),
     (440, "task_tool"),
@@ -135,39 +136,33 @@ def test_reconcile_gates_tool_domains() -> None:
 
 
 def test_reconcile_gates_browser_routing_on_subagent_types() -> None:
-    # 空工具集（task_tool 也未启用）：340 仍产出，但不得残留 browser_agent 路由。
+    def _routing_names(sections) -> set[str]:
+        return {s.name for s in sections if s.name == "browser_routing"}
+
+    # 空工具集（task_tool 未启用）：不产出 browser_routing 动态段。
     empty = reconcile(PromptRenderContext(lang="cn", enabled_tools=frozenset()))
-    result = next(s for s in empty if s.name == "tool_result")
-    assert "browser_agent" not in result.content["cn"]
-    assert "浏览器任务强制路由" not in result.content["cn"]
+    assert "browser_routing" not in _routing_names(empty)
 
     # task_tool 启用、但可用子代理类型里没有 browser_agent（只注册 general-purpose）：
-    # 340 不得要求调用不存在的 browser_agent。
+    # 不得注入指向不存在 browser_agent 的路由。
     no_browser = reconcile(PromptRenderContext(
         lang="cn",
         enabled_tools=frozenset({"task_tool"}),
         subagent_types=frozenset({"general-purpose"}),
     ))
-    result = next(s for s in no_browser if s.name == "tool_result")
-    assert "browser_agent" not in result.content["cn"]
-    assert "浏览器任务强制路由" not in result.content["cn"]
+    assert "browser_routing" not in _routing_names(no_browser)
 
-    # task_tool 被禁用、但子代理配置里仍有 browser_agent：
-    # 340 不得要求调用已被禁用的 task_tool。
+    # task_tool 被禁用、但子代理配置里仍有 browser_agent：不得要求调用已禁用的 task_tool。
     disabled_task_tool = reconcile(PromptRenderContext(
         lang="cn",
         enabled_tools=frozenset(),
         subagent_types=frozenset({"browser_agent"}),
     ))
-    result = next(s for s in disabled_task_tool if s.name == "tool_result")
-    assert "browser_agent" not in result.content["cn"]
-    assert "浏览器任务强制路由" not in result.content["cn"]
+    assert "browser_routing" not in _routing_names(disabled_task_tool)
 
-    # 默认上下文（task_tool + browser_agent 都在）：browser_agent 路由保留。
+    # 默认上下文（task_tool + browser_agent 都在）：browser_routing 动态段保留。
     full = reconcile(build_default_context("cn"))
-    result = next(s for s in full if s.name == "tool_result")
-    assert "browser_agent" in result.content["cn"]
-    assert "浏览器任务强制路由" in result.content["cn"]
+    assert "browser_routing" in _routing_names(full)
 
 
 # ── 2. content.safety：_transform_safety 双语锚点命中 / 缺失回退 ─────────────
@@ -230,7 +225,7 @@ def test_strip_relay_duplicates_foreign_header_returns_none() -> None:
 @pytest.mark.parametrize("language", ["cn", "en"])
 def test_offline_assembly_matches_golden_hash(language: str) -> None:
     snapshot = build_prompt_snapshot(assemble(language), language=language)
-    assert len(snapshot.sections) == 14
+    assert len(snapshot.sections) == 15
     # safety 域源正文来自 SDK（openjiuwen dev-stable 浮动分支），只校验产出 4 段存在，
     # 不锁精确 hash，否则 CI 会随上游推进随机红。
     safety_names = {

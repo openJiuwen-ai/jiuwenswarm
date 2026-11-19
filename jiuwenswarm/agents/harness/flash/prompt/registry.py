@@ -62,6 +62,7 @@ from jiuwenswarm.agents.harness.flash.prompt.content.response import (
 from jiuwenswarm.agents.harness.flash.prompt.content.safety import (
     _ANCHORS_CN,
     _ANCHORS_EN,
+    _SAFETY_PRODUCED_NAMES,
     _transform_safety,
 )
 from jiuwenswarm.agents.harness.flash.prompt.content.subagent import FLASH_TASK_SECTION
@@ -74,9 +75,11 @@ from jiuwenswarm.agents.harness.flash.prompt.content.tools import (
     _BASH_CN,
     _BASH_EN,
     _NAME_BASH,
+    _NAME_BROWSER_ROUTING,
     _NAME_RESULT,
     _NAME_SELECTION,
     _PRIO_BASH,
+    _PRIO_BROWSER_ROUTING,
     _PRIO_RESULT,
     _PRIO_SELECTION,
     _BROWSER_ROUTING_CN,
@@ -115,6 +118,7 @@ class PromptRenderContext:
     subagent_types: frozenset[str] = frozenset()
     skill_catalog: str | None = None
     persona_override: str | None = None
+    safety_content: str | None = None
     extra: Mapping[str, Any] = field(default_factory=dict)
 
     @property
@@ -130,6 +134,9 @@ class FlashPromptBlock:
     owner: Literal["deep", "flash"] = "flash"
     carrier: Literal["system", "durable", "attachment"] = "system"
     supersedes: tuple[str, ...] = ()
+    # 该 block 正常会产出的段名；render 守卫命中（回退保留源段）时按此清理上一轮
+    # 已生成、但本轮不再产出的 stale 段，避免新旧指令同时进模型输入（评审 #2）。
+    produces: tuple[str, ...] = ()
     enabled_when: Callable[[PromptRenderContext], bool] | None = None
     render: Callable[[PromptRenderContext], tuple[PromptSection, ...]] | None = None
 
@@ -155,18 +162,23 @@ def _tool_enabled(tool: str) -> Callable[[PromptRenderContext], bool]:
 
 # ── 各域 render（与 flash 转换 rail / offline 组装同构，输出逐字节一致）──────────────
 def _render_safety(ctx: PromptRenderContext) -> tuple[PromptSection, ...]:
-    src = build_safety_section(ctx.lang)
-    if src is None:
-        raise AssertionError(
-            "build_safety_section returned None — upstream safety source missing"
-        )
-    content = _section_text(src, ctx.lang)
+    # 运行时接管：基于当前 builder 上的 safety 段正文转换（保留上游/租户追加的自定义规则，
+    # 见 FlashAgent设计/PR1/评审意见.md #6）；离线 reconcile 无 builder，回退 SDK 标准模板。
+    if ctx.safety_content is not None:
+        content = ctx.safety_content
+    else:
+        src = build_safety_section(ctx.lang)
+        if src is None:
+            raise AssertionError(
+                "build_safety_section returned None — upstream safety source missing"
+            )
+        content = _section_text(src, ctx.lang)
     anchors = _ANCHORS_CN if ctx.is_cn else _ANCHORS_EN
     result = _transform_safety(content, anchors)
     if result is None:
         raise AssertionError(
-            "safety transform guard hit on real Deep source — upstream safety content "
-            "drifted; flash split/rewrite anchors no longer match"
+            "safety transform guard hit — current safety content drifted or carries "
+            "unrecognized extensions; flash split/rewrite anchors no longer match"
         )
     return tuple(
         PromptSection(name=name, content={ctx.lang: text}, priority=priority)
@@ -192,21 +204,26 @@ def _render_response(ctx: PromptRenderContext) -> tuple[PromptSection, ...]:
 
 
 def _render_tools(ctx: PromptRenderContext) -> tuple[PromptSection, ...]:
-    """300/330/340 三段的 06 目标正文（content.tools 硬编码，无动态源）。
+    """300/330/340 三段 + 独立动态段 browser_routing@345 的 06 目标正文。
 
-    340 的「浏览器任务强制路由」子节同时依赖两个条件：task_tool 在启用工具面，
-    且 browser_agent 在可用子代理类型里——任一缺失都剔除，避免提示词要求调用
-    不可见/不存在的浏览器子代理。
+    340 只含静态 base；「浏览器任务强制路由」拆为独立动态段（评审 C1）——它依赖
+    task_tool 在启用工具面 且 browser_agent 在可用子代理类型里，子代理/工具面一变正文
+    就变，若并入静态 340 会被误判静态漂移。任一条件缺失即不注入该动态段。
     """
     cn = ctx.is_cn
-    result = _RESULT_BASE_CN if cn else _RESULT_BASE_EN
-    if "task_tool" in ctx.enabled_tools and "browser_agent" in ctx.subagent_types:
-        result += "\n" + (_BROWSER_ROUTING_CN if cn else _BROWSER_ROUTING_EN)
-    targets = (
+    targets = [
         (_NAME_SELECTION, _PRIO_SELECTION, _SELECTION_CN if cn else _SELECTION_EN),
         (_NAME_BASH, _PRIO_BASH, _BASH_CN if cn else _BASH_EN),
-        (_NAME_RESULT, _PRIO_RESULT, result),
-    )
+        (_NAME_RESULT, _PRIO_RESULT, _RESULT_BASE_CN if cn else _RESULT_BASE_EN),
+    ]
+    if "task_tool" in ctx.enabled_tools and "browser_agent" in ctx.subagent_types:
+        targets.append(
+            (
+                _NAME_BROWSER_ROUTING,
+                _PRIO_BROWSER_ROUTING,
+                _BROWSER_ROUTING_CN if cn else _BROWSER_ROUTING_EN,
+            )
+        )
     return tuple(
         PromptSection(name=name, content={ctx.lang: text}, priority=priority)
         for name, priority, text in targets
@@ -250,6 +267,7 @@ FLASH_PROMPT_REGISTRY: tuple[FlashPromptBlock, ...] = (
     FlashPromptBlock(
         key="safety",
         supersedes=("safety",),
+        produces=_SAFETY_PRODUCED_NAMES,
         render=_render_safety,
     ),
     FlashPromptBlock(

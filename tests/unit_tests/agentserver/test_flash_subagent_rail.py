@@ -21,13 +21,13 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from openjiuwen.core.single_agent.schema.agent_card import AgentCard
+from openjiuwen.harness.prompts.sections import SectionName
+from openjiuwen.harness.schema.config import SubAgentConfig
 
 from jiuwenswarm.agents.harness.flash.rails.flash_subagent_rail import (
     FlashSubagentRail,
 )
-from openjiuwen.core.single_agent.schema.agent_card import AgentCard
-from openjiuwen.harness.prompts.sections import SectionName
-from openjiuwen.harness.schema.config import SubAgentConfig
 
 
 class _FakeBuilder:
@@ -187,10 +187,11 @@ class TestFlashDescriptions:
         修复后 _inject_general_purpose_spec 主动构造 flash 变体传入。
         """
         from openjiuwen.harness.rails.sys_operation_rail import SysOperationRail
+
         from jiuwenswarm.agents.harness.flash import SlimSysOperationRail
 
         agent = _FakeAgent([])
-        rail = _make_rail(agent, inject=True)
+        _make_rail(agent, inject=True)
 
         specs = agent.deep_config.subagents
         assert len(specs) == 1
@@ -231,7 +232,7 @@ class TestFlashSection:
         section = builder.sections[-1]
         assert section.name == SectionName.TASK_TOOL
         content = section.content["cn"]
-        # flash 段标志：按上下文压力自主判断 + 无条件并行 + 单干快路径 carve-out
+        # flash 段标志：按上下文压力自主判断 + 需并行时一次发全 + 单干快路径 carve-out
         assert "按上下文压力自主判断" in content
         assert "在同一条消息中一次性发出全部 task_tool 调用" in content
         assert "直接执行更快" in content
@@ -256,7 +257,10 @@ class TestFlashCopyConstants:
         assert set(FLASH_TASK_SECTION) >= {"cn", "en"}
         assert set(FLASH_TASK_TOOL_DESCRIPTION) >= {"cn", "en"}
         for text in FLASH_TASK_SECTION.values():
-            assert "task_tool" in text
+            # 用语言无关的参数名 "task_description" 作为正文正确性的标志。
+            assert "task_description" in text
+            # 440 是独立顶层段，段顶标题必须 H1（# ），与其余 flash 段一致。
+            assert text.startswith("# ")
         for text in FLASH_TASK_TOOL_DESCRIPTION.values():
             assert "{available_agents}" in text
 
