@@ -207,6 +207,7 @@ generated: true
 | [B_20261103_1636_builtin-catalog-upgrade](jiuwenswarm/server/runtime/skill/builtin-catalog-upgrade.md) | B | 旧内置技能未归一与应用市场入口不明显 | kdgmpw | [D-20261103-1123-builtin-skill-catalog](../designs/active/D-20261103-1123-builtin-skill-catalog/design.md) |
 | [B_20261112_1716_affinity-status-read](jiuwenswarm/server/control/B_20261112_1716_affinity-status-read.md) | B | 控制面遗漏亲和状态导致开关与说明不一致 | MengHan18 | 无独立 D：修复 F_20261110_2026_affinity-settings 的读入口遗漏及用户反馈的开启交互。 |
 | [B_20261112_2025_permission-profile-refresh](jiuwenswarm/server/B_20261112_2025_permission-profile-refresh.md) | B | 刷新后智能审批档位错误回显为默认权限 | nypdmax | 无独立 D：补齐既有 config.get/config.set 权限档位回显契约，无独立设计；审批决策与持久化格式不变。 |
+| [B_20261119_2124_worker-log-reconfiguration](jiuwenswarm/common/B_20261119_2124_worker-log-reconfiguration.md) | B | Worker 默认日志初始化与后台处理器关闭的锁顺序修复 | 刘瑜 | 无独立 D：修复既有后台日志处理器生命周期中的锁顺序，保持日志配置、队列和 Worker 启动契约，无独立设计。 |
 
 <a id="module-jiuwenswarm-common-config_panel"></a>
 
@@ -324,6 +325,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261105_1518_worker-dispatch-slot-accounting](jiuwenswarm/server/worker/B_20261105_1518_worker-dispatch-slot-accounting.md) | B | Worker 派发容量排除已返回的 handler | kdgmpw | 无独立 D：按会话中确认的最小修复方案调整 Worker 内部计数。 |
+| [B_20261119_2124_worker-log-reconfiguration](jiuwenswarm/common/B_20261119_2124_worker-log-reconfiguration.md) | B | Worker 默认日志初始化与后台处理器关闭的锁顺序修复 | 刘瑜 | 无独立 D：修复既有后台日志处理器生命周期中的锁顺序，保持日志配置、队列和 Worker 启动契约，无独立设计。 |
 
 <a id="module-scripts"></a>
 
