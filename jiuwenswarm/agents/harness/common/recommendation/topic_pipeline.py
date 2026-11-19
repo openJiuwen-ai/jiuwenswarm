@@ -199,7 +199,7 @@ RID_DECISION_EVENT_TYPE = "rid_decision"
 _RID_THRESHOLD_VERSION = "icebreaker-api-proxy-threshold-v1"
 # The fallback reason of an RID receipt whose round left it nothing to judge.
 _RID_NOTHING_TO_JUDGE = "no_rid_input"
-GLOBAL_INTEREST_PROMPT_VERSION = "topic-starter-v6-global-interest-v26"
+GLOBAL_INTEREST_PROMPT_VERSION = "topic-starter-v6-global-interest-v27"
 PROJECT_CONTINUATION_PROMPT_VERSION = "topic-starter-v6-project-continuation-v15"
 MEMORY_INCREMENTAL_PROMPT_VERSION = "topic-starter-v6-memory-incremental-v10"
 RECENT_PLANNER_PROMPT_VERSION = "topic-starter-v6-recent-planner-v5"
@@ -220,6 +220,11 @@ UTILITY_CANDIDATE_BATCH_SIZE = 3
 # to fan out past common provider max_parallel_requests (~10) and fail with 429.
 # Match session-summary / native-search caps in this package.
 _TOPIC_ARK_STAGE_CONCURRENCY = 3
+# A released interest beyond the highest-ranked few is a candidate the pool is
+# unlikely to show, but diversity scores it pairwise against every other one, so
+# the tail costs a quadratic number of calls for no card. It also bounds what a
+# single generator call has to write.
+_MAX_INTEREST_CANDIDATES = 6
 SHORT_INTENT_SNAPSHOT_PREFIX = "v6-short"
 MAX_FROZEN_DOCUMENT_CHARS = 8_000
 _PROFILE_INTEREST_CATEGORY = "profile_interest_continuation"
@@ -1472,6 +1477,21 @@ def _carried_plan(plan: dict[str, Any], card: Mapping[str, Any]) -> dict[str, An
     }
 
 
+def _top_ranked_interests(
+    interests: Sequence[RankedStarterInterest],
+    limit: int = _MAX_INTEREST_CANDIDATES,
+) -> list[RankedStarterInterest]:
+    """The highest-ranked interests, kept in the order they were released."""
+
+    if len(interests) <= limit:
+        return list(interests)
+    kept = {
+        item.interest_summary_id
+        for item in sorted(interests, key=lambda item: item.rank)[:limit]
+    }
+    return [item for item in interests if item.interest_summary_id in kept]
+
+
 def _candidate_slots(
     interests: Sequence[RankedStarterInterest],
 ) -> list[dict[str, str]]:
@@ -2308,6 +2328,7 @@ direction：用户原兴趣里的短对象名，不写新知识点/收益/进度
    不虚构新目标/观察/行动。做事类与理解类都出题，做事不优先。
    “先定 A 再谈 B”：除非用户请助手做 A，否则 A/B 都不替用户出题；无条件事项照常可出。
 2. 找尚未讲清的知识/机制/判断/取舍。助手说法未经验证：可问成立条件或取舍，不问“为何起效”。
+   助手提到而用户未确认的计划、预测或传闻不能写成题面的既定前提；未发生的事只写假设或条件句，不写成既定事实。
    intent：前半用户对象，后半点开能学会/分辨/改善什么。理解型兴趣不要改成任务/工具推荐。
    同流程下一步不算新话题。already_offered 只去重。
    旧题必需核心答案已覆盖则 skip；换措辞/拆小/改问法不算新角度。
@@ -2477,11 +2498,23 @@ async def _invoke_batched_diversity_proxy(
         requested_marginal_ids = (
             marginal_batches[index] if index < len(marginal_batches) else []
         )
+        # Only the candidates this batch asks about decide its answer; sending
+        # the whole list to every pair batch repeats the same prompt tokens for
+        # nothing.
+        involved_ids = {
+            candidate_id for pair in requested_pairs for candidate_id in pair
+        }
+        involved_ids.update(requested_marginal_ids)
         request_payload = json.dumps(
             {
                 "input_snapshot_id": payload.get("input_snapshot_id"),
                 "discussion_coverage": payload.get("discussion_coverage", []),
-                "candidates": candidates,
+                "candidates": [
+                    candidate
+                    for candidate in candidates
+                    if isinstance(candidate, dict)
+                    and candidate.get("candidate_id") in involved_ids
+                ],
                 "requested_pairs": [
                     {
                         "left_candidate_id": left,
@@ -5196,8 +5229,10 @@ class TopicPipeline:
             return _empty_result(
                 trigger_key, trigger_origin, "generation_input_contract_failed"
             )
-        feedback = InterestFeedback.load(
-            self.store, snapshot.state, context_scope=context_scope, project_id=project_id, now=self._now(),
+        feedback = await asyncio.to_thread(
+            InterestFeedback.load,
+            self.store, snapshot.state,
+            context_scope=context_scope, project_id=project_id, now=self._now(),
         )
         scoped_negative_version = 0
         state_receipt = snapshot.state_maintenance_receipt
@@ -5371,7 +5406,9 @@ class TopicPipeline:
                     config=config,
                     invoke_stage=invoke_stage,
                 )
-                self._persist_session_summary_batch(latest_summary_batch)
+                await asyncio.to_thread(
+                    self._persist_session_summary_batch, latest_summary_batch,
+                )
             result = await self._generate_prepared(
                 snapshot=snapshot,
                 feedback=feedback,
@@ -5487,8 +5524,12 @@ class TopicPipeline:
                     "payload": abstention_receipt,
                     "created_at": float(abstention_receipt.get("decision_time", 0.0)),
                 }
-                if not self.store.record_event(abstention_event):
-                    existing = self.store.query_events(
+                recorded = await asyncio.to_thread(
+                    self.store.record_event, abstention_event,
+                )
+                if not recorded:
+                    existing = await asyncio.to_thread(
+                        self.store.query_events,
                         event_type="rid_abstention",
                         topic_id=abstention_event["topic_id"],
                         policy_id=POLICY_ID,
@@ -5609,8 +5650,10 @@ class TopicPipeline:
         ):
             return failed("generation_input_version_mismatch")
         snapshot = replace(snapshot, input_snapshot_id=str(predecessor["generation_input_snapshot_id"]))
-        feedback = InterestFeedback.load(
-            self.store, snapshot.state, context_scope=GLOBAL_NEW_CHAT_SCOPE, project_id=None, now=self._now(),
+        feedback = await asyncio.to_thread(
+            InterestFeedback.load,
+            self.store, snapshot.state,
+            context_scope=GLOBAL_NEW_CHAT_SCOPE, project_id=None, now=self._now(),
         )
         summaries = [
             SessionSummaryArtifact.from_payload(item)
@@ -5666,7 +5709,8 @@ class TopicPipeline:
             )
             [score] = utility.scores
             rejection = None if score.admitted else "news_utility_rejected"
-            self._record_quality_decision(
+            await asyncio.to_thread(
+                self._record_quality_decision,
                 snapshot, utility, utility_request_id=utility.receipt.request_id, diversity_scores=(),
                 selected_candidate_ids=[score.candidate_id] if score.admitted else [],
                 failure_reason=rejection,
@@ -5912,7 +5956,8 @@ class TopicPipeline:
                 "summary_provider_version": provider_version,
                 "summary_config_version": summary_config_version,
             }
-            cached = self._load_reusable_session_summary(
+            cached = await asyncio.to_thread(
+                self._load_reusable_session_summary,
                 summary_id=summary_id,
                 session_id=session_id,
                 context_scope=snapshot.context_scope,
@@ -6252,7 +6297,9 @@ class TopicPipeline:
                 summary_batch = await self._summarize_sessions(
                     snapshot, config=config, invoke_stage=owned_stage_invoker,
                 )
-                self._persist_session_summaries(summary_batch.artifacts)
+                await asyncio.to_thread(
+                    self._persist_session_summaries, summary_batch.artifacts,
+                )
         except TerminalGenerationRejection as exc:
             return exc.reason
         except Exception:  # noqa: BLE001 - the scope's generation summarizes what is still missing
@@ -6564,7 +6611,8 @@ class TopicPipeline:
         """
 
         receipts = getattr(invoke_stage, "invocation_receipts", None)
-        rows = self.store.query_events(
+        rows = await asyncio.to_thread(
+            self.store.query_events,
             event_type=RID_DECISION_EVENT_TYPE,
             slate_id=context_scope,
             policy_id=POLICY_ID,
@@ -6897,6 +6945,9 @@ class TopicPipeline:
             if units_holding_question.intersection(decision.source_profile_unit_ids):
                 continue
             ordinary_interests.append(item)
+        # Every extra candidate is one more pairwise comparison in scoring, so
+        # the tail past the best-ranked few is dropped before slots are made.
+        ordinary_interests = _top_ranked_interests(ordinary_interests)
         still_open = max(0, list_size - carried_over)
         interest_candidate_slots = _candidate_slots([
             ordinary_interests[index % len(ordinary_interests)]
@@ -9174,7 +9225,8 @@ class TopicPipeline:
                 news_rejection = "news_utility_rejected"
         news_lead_id = news_id if news_plan is not None and news_rejection is None else None
         if not regular:
-            self._record_quality_decision(
+            await asyncio.to_thread(
+                self._record_quality_decision,
                 snapshot, utility, utility_request_id=utility_receipt.request_id,
                 diversity_scores=(), selected_candidate_ids=(),
                 failure_reason="" if news_lead_id else "no_feasible_complete_list",
@@ -9221,7 +9273,8 @@ class TopicPipeline:
                     context_scope=snapshot.context_scope, leading_cards=leading_cards,
                 ),
             )
-        self._record_quality_decision(
+        await asyncio.to_thread(
+            self._record_quality_decision,
             snapshot, utility, utility_request_id=utility_receipt.request_id,
             diversity_scores=diversity.pairwise_scores,
             selected_candidate_ids=result.preferred_list, failure_reason=result.failure_reason,
@@ -9316,7 +9369,7 @@ class TopicPipeline:
                 return str(payload["manifest_id"])
         return None
 
-    def _assemble_result(
+    async def _assemble_result(
         self,
         *,
         selected_ids: Sequence[str],
@@ -9530,7 +9583,8 @@ class TopicPipeline:
                 dict(invocation) for invocation in component_invocations
             ],
             "generation_config_version": trigger_key["generation_config_version"],
-            "supersedes_manifest_id": self._latest_scope_manifest_id(
+            "supersedes_manifest_id": await asyncio.to_thread(
+                self._latest_scope_manifest_id,
                 snapshot.context_scope,
                 work_mode=trigger_key.get("work_mode"),
             ),
@@ -9735,7 +9789,7 @@ class TopicPipeline:
             )
         except TerminalGenerationRejection:
             return None
-        return self._assemble_result(
+        return await self._assemble_result(
             selected_ids=[news_lead_id],
             plans=grounding_batch.plans,
             selection=selection,
@@ -10082,7 +10136,7 @@ class TopicPipeline:
                         # cards still make a pool; the short trigger is not consumed
                         # and stays pending for the next pool.
                         interest_selection["short_trigger_delta_event_ids"] = []
-                return self._assemble_result(
+                return await self._assemble_result(
                     selected_ids=selected_ids,
                     plans=grounded,
                     selection=selection,

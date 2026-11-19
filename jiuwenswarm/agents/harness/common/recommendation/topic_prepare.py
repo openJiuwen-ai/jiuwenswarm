@@ -618,7 +618,7 @@ class TopicPreparePipeline:
 
         async def invoke_stage(stage: str, system_prompt: str, payload: str) -> Any:
             nonlocal provider_unavailable
-            attempt_id = audit.record("ark", stage)
+            attempt_id = await asyncio.to_thread(audit.record, "ark", stage)
             try:
                 with provider_invocation_context(host_attempt_id=attempt_id):
                     return await base_invoke_stage(stage, system_prompt, payload)
@@ -648,7 +648,13 @@ class TopicPreparePipeline:
                 else "state_refresh_failed"
             )
         if outcome.status == "ok":
-            state = outcome.state or history.load_latest_history_state(self.store) or {}
+            state = (
+                outcome.state
+                or await asyncio.to_thread(
+                    history.load_latest_history_state, self.store,
+                )
+                or {}
+            )
             ledger = state.get("history_ledger")
             if isinstance(ledger, dict) and not history.active_ledger_behaviors(ledger):
                 return "no_eligible_history"
@@ -666,7 +672,8 @@ class TopicPreparePipeline:
                 )
             )
             try:
-                persist_state_maintenance_receipt(
+                await asyncio.to_thread(
+                    persist_state_maintenance_receipt,
                     self.store,
                     state,
                     refresh_reason=refresh_reason,

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import math
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, fields
 from typing import Any, Literal
@@ -1721,21 +1722,31 @@ class NewPageOutcomeSignal:
 
 
 class NewPageOutcomeQueue:
-    """Queue outcome signals until the single production sink is attached."""
+    """Queue outcome signals until the single production sink is attached.
+
+    ``publish`` may run on a worker thread: the RPC keeps the store reads and
+    the sink write off the event loop. The lock keeps a publish from slipping
+    between ``attach_sink``'s swap and drain, where it would be stranded in the
+    replaced list; holding it across the sink call also keeps deliveries in
+    order.
+    """
 
     def __init__(self) -> None:
         self._pending: list[NewPageOutcomeSignal] = []
         self._sink: Callable[[NewPageOutcomeSignal], bool] | None = None
+        self._lock = threading.Lock()
 
     @property
     def pending_count(self) -> int:
-        return len(self._pending)
+        with self._lock:
+            return len(self._pending)
 
     def publish(self, signal: NewPageOutcomeSignal) -> DeliveryStatus:
-        if self._sink is None:
-            self._pending.append(signal)
-            return "queued"
-        return "recorded" if self._sink(signal) else "rejected"
+        with self._lock:
+            if self._sink is None:
+                self._pending.append(signal)
+                return "queued"
+            return "recorded" if self._sink(signal) else "rejected"
 
     def attach_sink(
         self,
@@ -1743,12 +1754,13 @@ class NewPageOutcomeQueue:
     ) -> list[bool] | None:
         """Attach once and synchronously drain the pre-attach snapshot in order."""
 
-        if self._sink is not None:
-            return None
-        self._sink = sink
-        pending = self._pending
-        self._pending = []
-        return [sink(signal) for signal in pending]
+        with self._lock:
+            if self._sink is not None:
+                return None
+            pending = self._pending
+            self._pending = []
+            self._sink = sink
+            return [sink(signal) for signal in pending]
 
 
 class TopicStarterStoreOutcomeSink:
