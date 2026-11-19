@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 from collections.abc import Callable, Mapping
 from urllib.parse import quote, urlencode, urlsplit, urlunsplit
@@ -53,6 +54,13 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
                  registry_client: RegistryClient | None = None,
                  auth_client: AgentOSAuthenticator | None = None) -> None:
         self._config = config
+        host = urlsplit(config.ingress_url).hostname
+        self._local_web_ingress = host == 'localhost'
+        if host and not self._local_web_ingress:
+            try:
+                self._local_web_ingress = ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                pass
         self._control = control_client or AdxControlClient(config)
         settings = config.router
         super().__init__(
@@ -120,7 +128,7 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
                 raise AgentPreCreateError(str(exc)) from exc
         return await super()._create_agent_impl(agent_info, operation)
 
-    async def _create_sandbox_for_agent(self, agent_info, *, reuse_existing, **kwargs):
+    async def _create_sandbox_for_agent(self, agent_info, *, reuse_existing, web_port=None, **kwargs):
         builtin = agent_info.agent_type == BUILTIN_AGENT_TYPE
         runtime_class = self._control.resolve_runtime_class(kwargs.get('runtime_spec') or {}, builtin=builtin)
         if reuse_existing and (runtime_class == 'runsc' or self._config.restart_policy is not None):
@@ -151,7 +159,7 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
             if available:
                 return await self._control._ready_sandbox_info(available[0])
         return await self._control.create_sandbox(
-            builtin=builtin, **kwargs)
+            builtin=builtin, web_port=web_port if self._local_web_ingress else None, **kwargs)
 
     def set_channel_manager(self, channel_manager) -> None:
         super().set_channel_manager(channel_manager)
@@ -208,11 +216,19 @@ class AdxRouterClient(AdxFileMixin, AgentOSRouterClient):
     def _agent_ws_url(self, instance_id: str, agent_port: int) -> str:
         return self._agent_url(instance_id, agent_port, 'ws')
 
+    def _web_url(self, instance_id: str, agent_port: int, protocol: str) -> str:
+        if not self._local_web_ingress:
+            return self._agent_url(instance_id, agent_port, protocol)
+        origin = urlsplit(self._config.ingress_url)
+        scheme = ('wss' if origin.scheme == 'https' else 'ws') if protocol == 'ws' else origin.scheme
+        path = f'/{quote(instance_id, safe="")}/{agent_port}'
+        return urlunsplit((scheme, origin.netloc, path, '', ''))
+
     def _agent_http_url(self, instance_id: str, agent_port: int) -> str:
-        return self._agent_url(instance_id, agent_port, 'http')
+        return self._web_url(instance_id, agent_port, 'http')
 
     def _agent_web_ws_url(self, instance_id: str, agent_port: int) -> str:
-        return self._agent_ws_url(instance_id, agent_port)
+        return self._web_url(instance_id, agent_port, 'ws')
 
     async def _connect_ws_until_ready(self, *, instance_id: str, agent_port: int,
                                       user_id: str = '', session_id: str = '', agent_type: str = ''):

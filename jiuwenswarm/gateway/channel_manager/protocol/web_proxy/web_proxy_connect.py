@@ -54,6 +54,7 @@ _HOP_BY_HOP_HEADERS = frozenset(
         "upgrade",
         # IAM credentials must not leak into the agent container.
         "authorization",
+        "x-auth",
         "cookie",
         "x-token",
         "x-user-id",
@@ -93,16 +94,19 @@ _BLOCKED_FORWARD_QUERY_KEYS = _TOKEN_QUERY_KEYS | frozenset(
 _TEST_NET_1 = str(ipaddress.ip_address(0xC0000201))
 
 
-def _append_tail(upstream_url: str, tail: str) -> str:
+def _append_tail(upstream_url: str, tail: str) -> str | None:
     """Join *tail* onto the upstream path; keep existing query as-is.
 
-    The ADX Environment HTTP endpoint keeps its routing query when a browser
-    request appends a relative path.
+    Return None for dot segments that would let the HTTP client normalize the
+    request outside the upstream service path.
     """
     if not tail:
         return upstream_url
     parsed = urllib.parse.urlsplit(upstream_url)
-    path = parsed.path.rstrip("/") + "/" + str(tail).lstrip("/")
+    parts = str(tail).lstrip("/").split("/")
+    if any(part in {".", ".."} for part in parts):
+        return None
+    path = parsed.path.rstrip("/") + "/" + urllib.parse.quote("/".join(parts), safe="/:@!$&'()*+,;=")
     return urllib.parse.urlunsplit(
         (parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment)
     )

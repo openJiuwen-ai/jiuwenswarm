@@ -222,7 +222,8 @@ class AdxControlClient:
         return runtime_spec.get('sandbox_type') or self.config.runtime_class
 
     def _creation_body(self, namespace: str, name: str, workspace: str, runtime_spec: dict,
-                       env_vars: dict | None, mounts: list | None, *, builtin: bool | None = None) -> dict:
+                       env_vars: dict | None, mounts: list | None, *, builtin: bool | None = None,
+                       web_port: int | None = None) -> dict:
         spec = copy.deepcopy(runtime_spec)
         rootfs = spec.get('rootfs') or {}
         if not isinstance(rootfs, dict):
@@ -295,6 +296,10 @@ class AdxControlClient:
                 action = probe.get('tcpSocket') or probe.get('httpGet')
                 if action and 'port' in action:
                     ports.append(str(action['port']))
+        if not builtin and web_port is not None:
+            ports.append(str(web_port))
+            # The Gateway uses the loopback listener after business authentication.
+            body['dataPlane'] = {'portForwardSecurityMode': 'tls'}
         body['ports'] = sorted(set(ports))
         if builtin and self.config.builtin_launch:
             launch = self.config.builtin_launch
@@ -368,7 +373,8 @@ class AdxControlClient:
 
     async def create_sandbox(self, *, namespace: str, name: str, workspace: str, runtime_spec: dict,
                              env_vars: dict | None = None, mounts: list | None = None,
-                             trace_id: str | None = None, builtin: bool | None = None) -> SandboxInfo:
+                             trace_id: str | None = None, builtin: bool | None = None,
+                             web_port: int | None = None) -> SandboxInfo:
         trace_id = _resolve_trace_id(trace_id)
         instance = f'{namespace}-{name}'
         existing = await self._lookup(instance, trace_id=trace_id)
@@ -387,7 +393,8 @@ class AdxControlClient:
             self._creates.pop(instance, None)
             self._confirmed_creates.discard(instance)
             self._terminal_creates.discard(instance)
-        body = self._creation_body(namespace, name, workspace, runtime_spec, env_vars, mounts, builtin=builtin)
+        body = self._creation_body(namespace, name, workspace, runtime_spec, env_vars, mounts,
+                                   builtin=builtin, web_port=web_port)
         digest = hashlib.sha256(json.dumps(body, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
         operation, original_digest = self._creates.setdefault(instance, ('create-' + uuid.uuid4().hex, digest))
         if digest != original_digest:

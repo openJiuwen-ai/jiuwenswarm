@@ -579,6 +579,8 @@ async def _proxy_http(
         held = True
         session = await _ensure_http_proxy_session(channel)
         upstream_url = _append_tail(endpoint, tail)
+        if upstream_url is None:
+            return PlainTextResponse("invalid service path", status_code=400)
         upstream_url = _merge_request_query(
             upstream_url, str(request.url.query or "")
         )
@@ -766,6 +768,10 @@ async def _proxy_ws(
         held = True
         session = await _ensure_proxy_session(channel)
         upstream_url = _append_tail(endpoint, tail)
+        if upstream_url is None:
+            await websocket.close(code=1008, reason="invalid service path")
+            return
+        upstream_url = _merge_request_query(upstream_url, str(websocket.url.query or ""))
         ws_headers = _forward_ws_headers(
             websocket.headers,
             client_host=str(getattr(websocket.client, "host", "") or ""),

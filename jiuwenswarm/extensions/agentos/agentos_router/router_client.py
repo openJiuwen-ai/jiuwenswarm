@@ -3286,7 +3286,7 @@ class AgentOSRouterClient(AgentServerClient):
         return sandbox
 
     async def _create_sandbox_for_agent(
-        self, agent_info: AgentInfo, *, reuse_existing: bool, **kwargs: Any,
+        self, agent_info: AgentInfo, *, reuse_existing: bool, web_port: int | None = None, **kwargs: Any,
     ) -> SandboxInfo:
         """Allow backend-owned persistence without bypassing replacement fencing."""
         return await self._backend.create_sandbox(**kwargs)
@@ -3330,6 +3330,7 @@ class AgentOSRouterClient(AgentServerClient):
             raise AgentPreCreateError(str(exc)) from exc
         # runtime_spec 获取方式因 agent_type 而异
         env_vars: dict[str, str] | None = None
+        web_port: int | None = None
         if agent_info.agent_type == BUILTIN_AGENT_TYPE:
             # jiuwenswarm: 不从注册中心获取镜像信息，使用内置 runtime_spec
             port = 18092
@@ -3427,6 +3428,7 @@ class AgentOSRouterClient(AgentServerClient):
         async def _create_sandbox_once() -> SandboxInfo:
             return await self._create_sandbox_for_agent(
                 agent_info, reuse_existing=not (lifecycle.retired_instance or lifecycle.attempt),
+                web_port=web_port,
                 namespace=namespace,
                 name=physical_name,
                 workspace=workspace,

@@ -106,6 +106,12 @@ def test_append_tail_yuanrong_query_url() -> None:
     )
 
 
+def test_append_tail_preserves_forwarded_port_path() -> None:
+    url = "http://localhost:8080/instance/18092"
+    assert _append_tail(url, "assets/name #1.js") == url + "/assets/name%20%231.js"
+    assert _append_tail(url, "../asset.js") is None
+
+
 def test_append_tail_plain_url_joins_path() -> None:
     assert _append_tail("http://127.0.0.1:8080", "assets/app.js") == (
         "http://127.0.0.1:8080/assets/app.js"
@@ -187,6 +193,7 @@ def test_forward_headers_sets_non_loopback_xff_and_strips_iam(monkeypatch) -> No
         {
             "Host": "1.95.65.197:19101",
             "Authorization": "Bearer secret",
+            "X-Auth": "credential",
             "Cookie": "access_token=x; dsh_session=abc",
             "X-User-Id": "test1",
             "X-Forwarded-User": "spoof",
@@ -199,6 +206,7 @@ def test_forward_headers_sets_non_loopback_xff_and_strips_iam(monkeypatch) -> No
     assert out["X-Forwarded-For"] == "172.31.12.19"
     assert out["X-Forwarded-User"] == "test1"
     assert "Authorization" not in out
+    assert "X-Auth" not in out
     assert "X-User-Id" not in out
     assert out["Accept"] == "text/html"
     # Host is preserved so agent Host/Origin checks (e.g. DSH) pass.
