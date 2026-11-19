@@ -156,7 +156,7 @@ permissions:
 
 AutoReviewer uses the configured model service, so an eligible request may incur one additional model call and a small amount of latency. If the service is unavailable or times out, or if it returns an invalid response, the request is escalated or denied—never silently allowed.
 
-JSON mode constrains response syntax, not the correctness of the approval decision. An unsupported format or invalid response uses the existing manual-review fallback without retrying.
+JSON mode constrains response syntax, not the correctness of the approval decision. An unsupported format or invalid response uses the existing manual-review fallback without retrying. The Reviewer must supply a valid outcome, reason code, and rationale. Host discards fields outside the Reviewer contract and still applies the allowed-outcome and approval checks.
 
 The reviewer returns only `outcome`, `reason_code`, and `rationale`. Manual display details are derived by the existing Host path; complete legacy manual details remain accepted. The generated `confidence` score is no longer requested or used as a threshold: an otherwise valid low-score allow can now allow, and a low-score deny retains its reason. Legacy `confidence` response values and `reviewer_min_confidence` configuration are ignored. JSON syntax, allowed outcomes, explicit manual/deny reasons, and final Host validation remain enforced.
 
