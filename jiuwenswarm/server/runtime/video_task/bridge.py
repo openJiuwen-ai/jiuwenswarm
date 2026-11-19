@@ -11,7 +11,7 @@ from jiuwenswarm.extensions.video_duplex.backend.tasks.diagnostics import trace_
 from jiuwenswarm.runtime.host_services import send_runtime_push
 
 _pending = {}
-ACK_TIMEOUT = 15
+ACK_TIMEOUT = 15  # Retry cadence, never an execution deadline.
 # Wire event shared with the Gateway writer (see the gateway half's ``EVENT``).
 EVENT = "voice.task.command"
 
@@ -36,14 +36,19 @@ class RemoteTaskEndpoint:
         if action != "status":
             trace_task("checkpoint_sent", **self.identity, command_id=command_id, action=action)
         try:
-            delivered = await send_runtime_push({
-                "request_id": self.identity["request_id"], "channel_id": "video_tool",
-                "session_id": self.identity["session_id"],
-                "payload": {"event_type": EVENT, **command},
-            })
-            if delivered is False:
-                raise RuntimeError("Task checkpoint could not reach Gateway")
-            result = await asyncio.wait_for(asyncio.shield(future), ACK_TIMEOUT)
+            while not future.done():
+                try:
+                    await send_runtime_push({
+                        "request_id": self.identity["request_id"], "channel_id": "video_tool",
+                        "session_id": self.identity["session_id"],
+                        "payload": {"event_type": EVENT, **command},
+                    })
+                except Exception as exc:
+                    trace_task("checkpoint_delivery_retry", **self.identity, command_id=command_id,
+                               action=action, error_type=type(exc).__name__)
+                # Reuse command_id: the Gateway replays the durable receipt, not the mutation.
+                await asyncio.wait({future}, timeout=ACK_TIMEOUT)
+            result = future.result()
             if result.get("error"):
                 raise RuntimeError(result["error"])
             if action != "status":

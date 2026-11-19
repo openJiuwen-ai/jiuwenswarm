@@ -9,7 +9,7 @@ from jiuwenswarm.server.jiuwenmate.execution_models import ConversationRef
 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 from jiuwenswarm.server.jiuwenmate.scheduled_requests import employee_conversation_id
 from jiuwenswarm.server.jiuwenmate.web_conversations import WebConversationStore
-from test_session_scheduler import NS, Host
+from test_session_scheduler import NS, Host, settle
 
 START = datetime(2026, 10, 14, 7, 30, tzinfo=timezone.utc)
 HOURLY = "0 * * * *"
@@ -45,6 +45,31 @@ def _requests(host: Host, plan_id: str):
     assert session is not None
     assert host.sessions.find_session(NS, "mate_dev", ConversationRef.web(f"schedule:{plan_id}")) is None
     return host.sessions.session_requests(NS, session.session_id)
+
+
+async def test_automatic_web_schedule_is_owned_by_web_manager_with_im_runtime_running(tmp_path):
+    clock = Clock()
+    web = Host(tmp_path, clock=clock)
+    im = Host(tmp_path, clock=clock, schedules_enabled=False)
+    plan = web.manager.schedules.create(NS, "mate_dev", name="早报", prompt="整理早报", cron_expr=HOURLY)
+    clock.now = START + timedelta(hours=1)
+    try:
+        await im.manager.start()
+        await web.manager.start()
+        await settle(lambda: bool(web.core.started or im.core.started))
+        assert im.core.started == []
+        assert web.core.started == ["整理早报"]
+        request = _requests(web, plan.plan_id)[0]
+        view = await web.manager.request_view(NS, request.record.request_id)
+        assert view.running
+        web.core.release("整理早报")
+        await web.scheduler.drain()
+        view = await web.manager.request_view(NS, request.record.request_id)
+        assert view.state.status == "ended"
+        assert view.state.outcome == "completed"
+    finally:
+        await im.manager.aclose()
+        await web.manager.aclose()
 
 
 async def test_each_due_occurrence_creates_one_request_and_a_restart_does_not_repeat_it(tmp_path):
@@ -214,3 +239,108 @@ async def test_a_due_plan_lands_in_each_colleagues_chat(host):
     assert chats.list(NS, "mate_other")[0].updated_at == clock.now
     assert opened.sessions.find_session(NS, "mate_dev", ConversationRef.web(f"schedule:{dev.plan_id}")) is None
     assert opened.sessions.find_session(NS, "mate_other", ConversationRef.web(f"schedule:{other.plan_id}")) is None
+
+
+@pytest.mark.parametrize("manual", [False, True])
+@pytest.mark.parametrize("approval_pinned", [False, True])
+async def test_schedule_skips_sharing_approval_chat(host, manual, approval_pinned):
+    opened, clock = host
+    chats = WebConversationStore(opened.sessions.db_path)
+    chats.touch(NS, "mate_dev", "chat-private", text="你好", now=START)
+    chats.notify(
+        NS, "mate_dev", "sharing-approvals", text="跨群分享审批",
+        now=START + timedelta(minutes=1), notification_key="share-test",
+    )
+    if approval_pinned:
+        chats.set_pinned(NS, "mate_dev", "sharing-approvals", True)
+    approval_chat = next(chat for chat in chats.list(NS, "mate_dev") if chat.conversation_id == "sharing-approvals")
+    service = opened.manager.schedules
+    plan = service.create(NS, "mate_dev", name="喝水", prompt="提醒喝水", cron_expr=HOURLY)
+    assert plan.to_dict()["conversation_id"] == "chat-private"
+    if manual:
+        request_id = await service.run(NS, plan.plan_id)
+    else:
+        clock.now = START + timedelta(hours=1)
+        assert await service.sweep() == 1
+        request_id = service.history(NS, plan.plan_id)["runs"][0]["request_id"]
+    state = opened.sessions.get_request(NS, request_id)
+    assert state.record.request_input.reply_target == "chat-private"
+    assert state.record.route_snapshot.target_id == "chat-private"
+    assert opened.sessions.find_session(NS, "mate_dev", ConversationRef.web("sharing-approvals")) is None
+    assert next(chat for chat in chats.list(NS, "mate_dev") if chat.conversation_id == "sharing-approvals") == approval_chat
+    opened.core.release("提醒喝水")
+    await opened.scheduler.drain()
+    assert (await opened.manager.request_view(NS, request_id)).state.outcome == "completed"
+
+
+@pytest.mark.parametrize("manual", [False, True])
+async def test_schedule_creates_private_chat_when_only_sharing_approvals_exist(host, manual):
+    opened, clock = host
+    chats = WebConversationStore(opened.sessions.db_path)
+    chats.notify(NS, "mate_dev", "sharing-approvals", text="跨群分享审批", now=START, notification_key="share-test")
+    service = opened.manager.schedules
+    plan = service.create(NS, "mate_dev", name="起身", prompt="提醒起身", cron_expr=HOURLY)
+    target = employee_conversation_id("mate_dev")
+    assert plan.to_dict()["conversation_id"] == target
+    if manual:
+        request_id = await service.run(NS, plan.plan_id)
+    else:
+        clock.now = START + timedelta(hours=1)
+        assert await service.sweep() == 1
+        request_id = service.history(NS, plan.plan_id)["runs"][0]["request_id"]
+    state = opened.sessions.get_request(NS, request_id)
+    assert state.record.request_input.reply_target == target
+    assert state.record.route_snapshot.target_id == target
+    assert target in {chat.conversation_id for chat in chats.list(NS, "mate_dev")}
+    assert opened.sessions.find_session(NS, "mate_dev", ConversationRef.web("sharing-approvals")) is None
+    opened.core.release("提醒起身")
+    await opened.scheduler.drain()
+    assert (await opened.manager.request_view(NS, request_id)).state.outcome == "completed"
+
+
+async def test_schedule_uses_latest_private_chat_without_pinning_it(host):
+    opened, clock = host
+    chats = WebConversationStore(opened.sessions.db_path)
+    chats.touch(NS, "mate_dev", "old-pinned", text="旧私聊", now=START)
+    chats.set_pinned(NS, "mate_dev", "old-pinned", True)
+    chats.touch(NS, "mate_dev", "latest-private", text="最近私聊", now=START + timedelta(minutes=1))
+    chats.notify(
+        NS, "mate_dev", "sharing-approvals", text="跨群分享审批",
+        now=START + timedelta(minutes=2), notification_key="share-new",
+    )
+    plan = opened.manager.schedules.create(NS, "mate_dev", name="喝水", prompt="提醒喝水", cron_expr=HOURLY)
+    assert plan.to_dict()["conversation_id"] == "latest-private"
+    clock.now += timedelta(minutes=3)
+    request_id = await opened.manager.schedules.run(NS, plan.plan_id)
+    state = opened.sessions.get_request(NS, request_id)
+    assert state.record.route_snapshot.target_id == "latest-private"
+    listed = {chat.conversation_id: chat for chat in chats.list(NS, "mate_dev")}
+    assert listed["latest-private"].pinned is False
+    assert listed["latest-private"].updated_at == clock.now
+    assert listed["old-pinned"].updated_at == START
+    opened.core.release("提醒喝水")
+    await opened.scheduler.drain()
+
+
+async def test_schedule_creates_new_private_chat_when_previous_default_was_deleted(host):
+    opened, clock = host
+    chats = WebConversationStore(opened.sessions.db_path)
+    deleted_id = employee_conversation_id("mate_dev")
+    chats.touch(NS, "mate_dev", deleted_id, text="已删除私聊", now=START)
+    chats.delete(NS, "mate_dev", deleted_id, now=START + timedelta(minutes=1))
+    chats.notify(
+        NS, "mate_dev", "sharing-approvals", text="跨群分享审批",
+        now=START + timedelta(minutes=2), notification_key="share-only",
+    )
+    plan = opened.manager.schedules.create(NS, "mate_dev", name="起身", prompt="提醒起身", cron_expr=HOURLY)
+    request_id = await opened.manager.schedules.run(NS, plan.plan_id)
+    state = opened.sessions.get_request(NS, request_id)
+    target = state.record.route_snapshot.target_id
+    assert target not in {deleted_id, "sharing-approvals"}
+    listed = {chat.conversation_id: chat for chat in chats.list(NS, "mate_dev")}
+    assert target in listed
+    assert listed[target].pinned is False
+    assert deleted_id not in listed
+    assert state.record.request_input.reply_target == target
+    opened.core.release("提醒起身")
+    await opened.scheduler.drain()

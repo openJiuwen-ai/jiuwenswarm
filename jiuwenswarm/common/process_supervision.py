@@ -114,7 +114,7 @@ def _upgrade_pending_for(pid: int) -> bool:
 def _breadcrumb_path():
     from jiuwenswarm.common.utils import get_logs_dir
 
-    return get_logs_dir() / "agent" / "service_exits.jsonl"
+    return get_logs_dir() / "service_exits.jsonl"
 
 
 def _record_exit_breadcrumb(

@@ -25,14 +25,17 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
+/** Whether the socket is open; while it is down, the attempts so far and when the next one starts. */
+export type ConnectionState = { kind: 'open' } | { kind: 'down'; attempt: number; retryAt: number };
+
 /** The pane's WebSocket to the Gateway: requests, events, and reconnecting after a drop. */
 export class GatewayClient {
   private socket: WebSocket | null = null;
   private connectPromise: Promise<void> | null = null;
-  private sequence = 0;
   private readonly pending = new Map<string, PendingRequest>();
   private readonly listeners = new Set<(event: GatewayEvent) => void>();
   private readonly reconnectListeners = new Set<() => void>();
+  private readonly connectionListeners = new Set<(state: ConnectionState) => void>();
   private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   private reconnectAttempt = 0;
   private everConnected = false;
@@ -59,7 +62,10 @@ export class GatewayClient {
         this.everConnected = true;
         this.reconnectAttempt = 0;
         resolve();
-        if (reconnected) this.reconnectListeners.forEach(listener => listener());
+        if (reconnected) {
+          this.connectionListeners.forEach(listener => listener({ kind: 'open' }));
+          this.reconnectListeners.forEach(listener => listener());
+        }
       }, { once: true });
       socket.addEventListener('error', () => {
         reject(new GatewayRequestError('无法连接 WorkSwarm'));
@@ -91,6 +97,12 @@ export class GatewayClient {
     return () => this.reconnectListeners.delete(listener);
   }
 
+  /** Called when the socket goes down or a reconnect is scheduled, and when it is open again. */
+  onConnectionChange(listener: (state: ConnectionState) => void): () => void {
+    this.connectionListeners.add(listener);
+    return () => this.connectionListeners.delete(listener);
+  }
+
   disconnect(): void {
     this.stopped = true;
     clearTimeout(this.reconnectTimer);
@@ -102,6 +114,8 @@ export class GatewayClient {
   private scheduleReconnect(): void {
     if (this.stopped || this.reconnectTimer !== undefined) return;
     const delay = Math.min(30_000, 1000 * 2 ** Math.min(this.reconnectAttempt++, 5));
+    const down: ConnectionState = { kind: 'down', attempt: this.reconnectAttempt, retryAt: Date.now() + delay };
+    this.connectionListeners.forEach(listener => listener(down));
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
       this.connect().catch(() => this.scheduleReconnect());
@@ -115,7 +129,7 @@ export class GatewayClient {
     await this.connect();
     const socket = this.socket;
     if (socket?.readyState !== WebSocket.OPEN) throw new GatewayRequestError('Gateway connection is not open');
-    const id = `office_${Date.now().toString(36)}_${++this.sequence}`;
+    const id = `office_${crypto.randomUUID()}`;
     const answered = new Promise<JsonObject>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
@@ -164,6 +178,9 @@ export class GatewayClient {
 }
 
 function getOrCreateOfficeUserId(appId: string): string {
+  // The desktop install puts one id for every host in the pane URL; a development sideload has none.
+  const installed = new URLSearchParams(window.location.search).get('u');
+  if (installed) return installed;
   const storageKey = `jiuwenswarm-office-user-id:${appId}`;
   const existing = window.localStorage.getItem(storageKey);
   if (existing) return existing;

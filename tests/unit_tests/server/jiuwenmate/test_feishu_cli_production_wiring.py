@@ -183,7 +183,14 @@ async def test_binding_changes_notify_both_previous_and_new_owner(tmp_path, monk
     _register_web_handlers(WebHandlersBindParams(channel=channel, channel_manager=cm,
                                                  agent_client=SimpleNamespace(send_request=send_request)))
     app = config("agent-b")["channels"]["feishu"]["apps"][0]
-    params = {**app, "config_id": "colleague-b"} if method.endswith("bind_agent") else {"apps": [app]}
+    if method == "channel.feishu.bind_agent":
+        await channel.methods["channel.feishu.unbind_agent"](
+            object(), "unbind-1", {"app_id": app["app_id"]}, "session-a",
+        )
+        assert channel.responses[-1]["ok"]
+        params = {**app, "config_id": "colleague-b"}
+    else:
+        params = {"apps": [app]}
     await channel.methods[method](object(), "bind-2", params, "session-a")
     assert channel.responses[-1]["ok"]
     assert set(forwarded) == {"agent-a", "agent-b"}

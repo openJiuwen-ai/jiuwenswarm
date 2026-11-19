@@ -138,6 +138,7 @@ export interface ChatInputProvenance {
 }
 
 export interface ModelEntry {
+  extensions?: { kv_cache?: { mode?: string; [key: string]: unknown }; [key: string]: unknown };
   /** Backend stable model ID. Zen free models may omit this field. */
   model_id?: string;
   model_name: string;
@@ -150,6 +151,8 @@ export interface ModelEntry {
   temperature?: number;
   reasoning_level?: string;
   context_window_tokens?: number;
+  /** Per-request maximum output tokens; null explicitly clears an existing limit. */
+  max_tokens?: number | null;
   /** 同 model_name 组内的默认勾选标识 */
   is_default?: boolean;
   /** 可选别名，用于快捷切换模型（如 "gpt" → "gpt-4o"） */

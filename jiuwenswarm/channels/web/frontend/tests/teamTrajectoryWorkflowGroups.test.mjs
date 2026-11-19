@@ -4,10 +4,15 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
+  attachWorkflowGroupsToHostLanes,
   groupTeamMemberLanesByWorkflowRun,
   memberNameOfSubjectId,
+  parseEngineSwarmflowMemberId,
   shortWorkflowRunId,
   slugifyRunId,
+  swarmflowIdentitiesOfMembers,
+  swarmflowLaneFullName,
+  swarmflowWorkerMemberName,
   workflowRunLaneStatus,
 } from '../node_modules/.cache/trajectory-workflow-groups/teamTrajectoryWorkflowGroups.mjs';
 
@@ -117,4 +122,90 @@ test('workflowRunLaneStatus maps run statuses onto lane statuses', () => {
 test('shortWorkflowRunId keeps ids within eight characters', () => {
   assert.equal(shortWorkflowRunId('wf_7e02a12cabdf'), 'wf_7e02a');
   assert.equal(shortWorkflowRunId('short'), 'short');
+});
+
+test('attachWorkflowGroupsToHostLanes binds each group to one lane per member', () => {
+  // Interleaved task runs of one member share a subjectId; the group must
+  // attach to the lane it matched, not render in every lane with that id.
+  const aliceT1 = lane('team-member:sess:t:alice', 'alice');
+  const bobT2 = lane('team-member:sess:t:bob', 'bob');
+  const aliceT3 = lane('team-member:sess:t:alice', 'alice');
+  const aliceGroup = { runId: 'wf_aaa', name: '调研', shortId: 'wf_aaa', status: 'completed', executor: 'alice', lanes: [] };
+  const bobGroup = { runId: 'wf_bbb', name: '评审', shortId: 'wf_bbb', status: 'running', executor: 'bob', lanes: [] };
+  const plan = attachWorkflowGroupsToHostLanes([aliceGroup, bobGroup], [aliceT1, bobT2, aliceT3]);
+  assert.deepEqual(plan.attached.get(aliceT1), [aliceGroup]);
+  assert.equal(plan.attached.get(aliceT3), undefined);
+  assert.deepEqual(plan.attached.get(bobT2), [bobGroup]);
+  assert.deepEqual(plan.trailing, []);
+});
+
+test('attachWorkflowGroupsToHostLanes trails groups with no matching lane', () => {
+  const leader = lane('team-member:sess:t:team-leader', 'leader');
+  const group = { runId: 'wf_ccc', name: '归档', shortId: 'wf_ccc', status: 'idle', executor: 'gone-member', lanes: [] };
+  const anonymous = { ...group, runId: 'wf_ddd', executor: undefined };
+  const plan = attachWorkflowGroupsToHostLanes([group, anonymous], [leader]);
+  assert.equal(plan.attached.size, 0);
+  assert.deepEqual(plan.trailing, [group, anonymous]);
+});
+
+test('parseEngineSwarmflowMemberId splits the wf_<run>:<call key> id', () => {
+  assert.deepEqual(parseEngineSwarmflowMemberId('wf_16515e37c7f4:[["call", 0]]'), {
+    runId: 'wf_16515e37c7f4',
+    callKey: '[["call", 0]]',
+  });
+  assert.deepEqual(
+    parseEngineSwarmflowMemberId('wf_f4742f4f0e47:[["par", 0, 1], ["call", 0]]'),
+    { runId: 'wf_f4742f4f0e47', callKey: '[["par", 0, 1], ["call", 0]]' },
+  );
+  assert.equal(parseEngineSwarmflowMemberId('team-leader'), null);
+  assert.equal(parseEngineSwarmflowMemberId('wf_16515e37c7f4:'), null);
+  assert.equal(parseEngineSwarmflowMemberId('wf_'), null);
+});
+
+test('swarmflowIdentitiesOfMembers keeps only engine call-key members', () => {
+  assert.deepEqual(
+    swarmflowIdentitiesOfMembers([
+      { member_id: 'wf_16515e37c7f4:[["call", 0]]', name: '算子1-写诗' },
+      { member_id: 'team-leader', name: '团队领导' },
+      { member_id: 'wf_f4742f4f0e47:[["par", 0, 0], ["call", 0]]' },
+    ]),
+    [
+      { memberId: 'wf_16515e37c7f4:[["call", 0]]', name: '算子1-写诗' },
+      { memberId: 'wf_f4742f4f0e47:[["par", 0, 0], ["call", 0]]', name: '' },
+    ],
+  );
+});
+
+test('swarmflowWorkerMemberName mirrors the backend mint', () => {
+  // 'eb2ad63f42da' is the real ident of the second parallel branch's first
+  // call: the label '算子2-户外' slugs down to '2'.
+  assert.equal(
+    swarmflowWorkerMemberName('wf_f4742f4f0e47', '算子2-户外', 'eb2ad63f42da'),
+    'wf-f4742f4f0e47-2-eb2ad63f42da',
+  );
+  assert.equal(
+    swarmflowWorkerMemberName('wf_x', '', 'abc123def456'),
+    'wf-x-worker-abc123def456',
+  );
+});
+
+test('swarmflowLaneFullName prefers the engine id, falls back to the worker name', () => {
+  const lane = {
+    subjectId: 'team-member:sess:t:wf-f4742f4f0e47-2-eb2ad63f42da',
+    label: '算子2-户外',
+    kind: 'team_member',
+    status: 'completed',
+    traceCount: 1,
+    recordCount: 1,
+  };
+  const index = new Map([
+    ['wf-f4742f4f0e47-2-eb2ad63f42da', 'wf_f4742f4f0e47:[["par", 0, 1], ["call", 0]]'],
+  ]);
+  assert.equal(
+    swarmflowLaneFullName(lane, index),
+    'wf_f4742f4f0e47:[["par", 0, 1], ["call", 0]]',
+  );
+  assert.equal(swarmflowLaneFullName(lane, new Map()), 'wf-f4742f4f0e47-2-eb2ad63f42da');
+  const leaderLane = { ...lane, subjectId: 'team-member:sess:t:team-leader' };
+  assert.equal(swarmflowLaneFullName(leaderLane, index), null);
 });

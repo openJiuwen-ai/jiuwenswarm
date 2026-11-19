@@ -22,6 +22,7 @@ import {
   processSummary,
   recordIconKind,
   recordLabel,
+  readableSummary,
   rewardOverview,
   rewardTier,
   signalEvidenceBody,
@@ -41,6 +42,45 @@ import {
   usesLegacyFindings,
 } from '../node_modules/.cache/trajectory-diagnosis/diagnosisView.mjs';
 
+test('readable summary replaces known agent headings and hides internal hash headings without editing stored text', () => {
+  const hash = '489ebd49201b4753bbc98c9bb6d25d9f';
+  const raw = `[team-member:session:leader]\n[${hash}]\nUsed approve_tool; saved index.html.`;
+  const visible = readableSummary(raw, new Map([['team-member:session:leader', 'Team leader']]));
+  assert.ok(visible.includes('Team leader:'));
+  assert.ok(visible.includes('approve_tool') && visible.includes('index.html'));
+  assert.ok(!visible.includes(hash) && !visible.includes('team-member:'));
+  assert.ok(raw.includes(hash));
+});
+
+test('readable summary converts escaped paragraph separators in prose without changing stored text', () => {
+  const raw = String.raw`Delivered the game.\n\nThen explained how to open it.\r\n\r\nVerification is incomplete.`;
+  assert.equal(readableSummary(raw, new Map()),
+    'Delivered the game.\n\nThen explained how to open it.\n\nVerification is incomplete.');
+  assert.ok(raw.includes(String.raw`\n\n`));
+  assert.equal(readableSummary('First.\n\nSecond.', new Map()), 'First.\n\nSecond.');
+  assert.equal(readableSummary(String.raw`One \n escape and /n/n stay literal.`, new Map()),
+    String.raw`One \n escape and /n/n stay literal.`);
+});
+
+test('readable summary preserves escaped separators inside code, links and paths', () => {
+  const examples = [
+    '`' + String.raw`text\n\nnext` + '`',
+    '```text\n' + String.raw`text\n\nnext` + '\n```',
+    '~~~text\n' + String.raw`text\n\nnext` + '\n~~~',
+    String.raw`C:\new\notes.txt`,
+    String.raw`C:\n\notes.txt`,
+    String.raw`"C:\My folder\n\notes.txt"`,
+    String.raw`\\server\n\notes.txt`,
+    String.raw`./folder\n\notes.txt`,
+    String.raw`https://example.com/a\n\next`,
+    String.raw`[file](C:\My folder\n\notes.txt)`,
+  ];
+  for (const example of examples) {
+    const raw = String.raw`Delivered.\n\n` + example + '\n\nActual paragraph.';
+    assert.equal(readableSummary(raw, new Map()), 'Delivered.\n\n' + example + '\n\nActual paragraph.');
+  }
+});
+
 const stage = (stageId, status) => ({ stage_id: stageId, title: stageId, status, output: '' });
 const nano = ms => `${BigInt(ms) * 1_000_000n}`;
 
@@ -54,6 +94,14 @@ test('a running diagnosis lists waiting stages for what has not started', () => 
       ['attribute', 'pending', true],
     ],
   );
+});
+
+test('new summary stage leads the plan and preserves its degraded status', () => {
+  const views = stageViews([stage('trajectory_summary', 'degraded')], true);
+  assert.deepEqual(views.map(view => [view.stageId, view.status]), [
+    ['trajectory_summary', 'degraded'], ['task_parse', 'pending'], ['diagnose', 'pending'], ['attribute', 'pending'],
+  ]);
+  assert.equal(isStageExpanded('degraded', undefined, false), true);
 });
 
 test('a running diagnosis keeps stages outside the plan after the planned ones', () => {

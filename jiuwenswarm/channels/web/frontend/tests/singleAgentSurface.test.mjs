@@ -71,6 +71,14 @@ test('trajectory host relies on native sidebar controls', () => {
     new URL('../src/features/trajectory/TrajectoryAnalysisToolbar.tsx', import.meta.url),
     'utf8',
   );
+  const analysisToolbarStyles = readFileSync(
+    new URL('../src/features/trajectory/TrajectoryAnalysisToolbar.module.css', import.meta.url),
+    'utf8',
+  );
+  const analysisPageStyles = readFileSync(
+    new URL('../src/features/trajectory/TrajectoryAnalysisPage.module.css', import.meta.url),
+    'utf8',
+  );
   assert.match(panelSource, /data-testid="trajectory-archive-import"/);
   assert.match(panelSource, /data-testid="trajectory-archive-export"/);
   assert.match(analysisToolbarSource, /data-testid="trajectory-archive-import"/);
@@ -78,6 +86,21 @@ test('trajectory host relies on native sidebar controls', () => {
   assert.doesNotMatch(panelSource, /preferBrowserFilePicker/);
   assert.match(panelSource, /data-testid="trajectory-archive-exit"/);
   assert.match(analysisToolbarSource, /data-testid="trajectory-archive-exit"/);
+  // Dropdown labels never wrap; squeezed panes wrap the toolbar instead of
+  // clipping its controls out of sight.
+  assert.match(
+    analysisToolbarStyles,
+    /\.menuButton\s*\{[\s\S]*?flex: none[\s\S]*?white-space: nowrap/,
+  );
+  assert.match(analysisToolbarStyles, /\.menu,\s*\.folds\s*\{[\s\S]*?flex: none/);
+  assert.match(analysisToolbarStyles, /\.root\s*\{[\s\S]*?flex-wrap: wrap/);
+  // The header summary stays one ellipsized line and the tab bar wraps under
+  // squeeze.
+  assert.match(
+    analysisPageStyles,
+    /\.summary\s*\{[\s\S]*?text-overflow: ellipsis[\s\S]*?white-space: nowrap/,
+  );
+  assert.match(analysisPageStyles, /\.tabBar\s*\{[\s\S]*?flex-wrap: wrap/);
   assert.doesNotMatch(panelSource, /if \(!active \|\| sessionId === 'new'/);
   assert.match(panelSource, /'harness\.session_finished'/);
   assert.match(panelSource, /subjectGroups\.groups\.map/);
@@ -118,10 +141,18 @@ test('trajectory host relies on native sidebar controls', () => {
     teamWorkspaceSource,
     /const selected = group\.lanes\.some\([\s\S]*?css\.workflowGroupSelected/,
   );
-  assert.match(teamWorkspaceStyles, /\.workflowGroupSelected\s*\{[\s\S]*?height: 100%[\s\S]*?flex: 0 0 100%/);
   assert.match(
     teamWorkspaceStyles,
-    /\.workflowGroupSelected \.workflowGroupLanes\s*\{[\s\S]*?min-height: 0[\s\S]*?flex: 1 1 0/,
+    /\.workflowGroupSelected \.laneRowExpanded\s*\{[\s\S]*?height: clamp\(360px, 52vh, 420px\)[\s\S]*?flex: 0 0 clamp\(360px, 52vh, 420px\)/,
+  );
+  // The selected group must size to its content: a 100%-pinned group spills its
+  // sibling operator lanes onto the next workflow group's header.
+  assert.doesNotMatch(teamWorkspaceStyles, /\.workflowGroupSelected\s*\{[\s\S]*?flex: 0 0 100%/);
+  // Folding a group closes the trajectory drawer opened inside it, so the
+  // header toggle keeps working while a lane is selected.
+  assert.match(
+    teamWorkspaceSource,
+    /const next = !expanded;\s*if \(!next && selected\) onSelectSubject\(null\);/,
   );
   assert.match(teamWorkspaceSource, /lanesElement\.scrollTop \+= rowBounds\.top - lanesBounds\.top/);
   assert.match(chatPanelSource, /export const ChatPanel = React\.memo/);
@@ -170,6 +201,66 @@ function click(element) {
     bubbles: true,
     cancelable: true,
   }));
+}
+
+// Advance past a string, template literal, or comment that starts at
+// `quoteIndex`, returning the index of its last character. Escapes inside a
+// string are skipped so a quote preceded by a backslash does not end it early.
+function skipQuoted(source, quoteIndex) {
+  const quote = source[quoteIndex];
+  for (let index = quoteIndex + 1; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === '\\') {
+      index += 1;
+      continue;
+    }
+    if (char === quote) return index;
+  }
+  return source.length - 1;
+}
+
+// Slice one `{ ... }` block out of source text by matching braces while
+// ignoring braces that sit inside strings or comments. A bare depth counter
+// would cut the block short (or run past it) the moment the block gains a brace
+// in a literal, so this keeps the source scans below honest as they grow.
+function sliceBraceBlock(source, openIndex) {
+  let depth = 0;
+  for (let index = openIndex; index < source.length; index += 1) {
+    const char = source[index];
+    const next = source[index + 1];
+    if (char === '/' && next === '/') {
+      const lineEnd = source.indexOf('\n', index);
+      if (lineEnd === -1) break;
+      index = lineEnd;
+      continue;
+    }
+    if (char === '/' && next === '*') {
+      const blockEnd = source.indexOf('*/', index + 2);
+      if (blockEnd === -1) break;
+      index = blockEnd + 1;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      index = skipQuoted(source, index);
+      continue;
+    }
+    if (char === '{') depth += 1;
+    else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) return source.slice(openIndex, index + 1);
+    }
+  }
+  return null;
+}
+
+// Slice the body of the `useCallback(...)` whose declaration starts at
+// `marker`, so an assertion cannot be satisfied by a call elsewhere in the file.
+function sliceCallbackBody(source, marker) {
+  const start = source.indexOf(marker);
+  if (start === -1) return null;
+  const openIndex = source.indexOf('{', start);
+  if (openIndex === -1) return null;
+  return sliceBraceBlock(source, openIndex);
 }
 
 test('single-Agent tabs keep chat mounted and load trajectory only after first request', async () => {
@@ -792,4 +883,39 @@ test('diagnosis sub-page folds finished stages and offers record management', ()
   assert.match(page, /<DiagnosisRecordSelect/);
   assert.match(select, /trajectory-diagnosis-record-search/);
   assert.match(select, /trajectory-diagnosis-record-delete-confirm/);
+});
+
+test('switching sessions drops a stale archive error and notice', () => {
+  const panelSource = readFileSync(
+    new URL('../src/features/trajectory/TrajectoryPanel.tsx', import.meta.url),
+    'utf8',
+  );
+  // A failed import or a replay-mode notice belongs to the session that raised
+  // it. The session-change branch resets the reader, so both banners must be
+  // cleared inside that branch, not only when a later import/export/exit
+  // happens to run. Slice the branch out first: a plain `[\s\S]*?` would reach
+  // the import/export handlers that also call these setters.
+  const start = panelSource.indexOf('if (sessionChanged) {');
+  assert.notEqual(start, -1, 'session-change branch not found');
+  const branch = sliceBraceBlock(panelSource, panelSource.indexOf('{', start));
+  assert.notEqual(branch, null, 'session-change branch does not close');
+  assert.match(branch, /setArchiveError\(null\)/);
+  assert.match(branch, /setArchiveNotice\(null\)/);
+});
+
+test('async archive results are dropped after a session switch', () => {
+  const panelSource = readFileSync(
+    new URL('../src/features/trajectory/TrajectoryPanel.tsx', import.meta.url),
+    'utf8',
+  );
+  // An import or export can still be running when the user switches sessions.
+  // The session-change branch runs synchronously at switch time, so it cannot
+  // catch a callback that fires afterwards: the writers must compare the
+  // session they started in against the one on screen now and drop the result.
+  for (const marker of ['const importArchive = useCallback', 'const exportArchive = useCallback']) {
+    const body = sliceCallbackBody(panelSource, marker);
+    assert.notEqual(body, null, `${marker} body not found`);
+    assert.match(body, /const originSession = sessionRef\.current;/);
+    assert.match(body, /sessionRef\.current !== originSession/);
+  }
 });

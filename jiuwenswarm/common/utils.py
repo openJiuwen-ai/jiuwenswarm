@@ -2,76 +2,29 @@
 
 """Path management for JiuWenSwarm.
 
-数据根 ``JIUWENSWARM_DATA_DIR``（默认 ``~/.jiuwenswarm``）按数据所有权拆为
-domain/（业务）与 infrastructure/（系统）两个分区目录，根自身仅作命名空间：
-不挂载、不留散落条目。
+根目录见 ``JIUWENSWARM_DATA_DIR``（默认 ``~/.jiuwenswarm``；可由环境变量 ``JIUWENSWARM_DATA_DIR`` 指定绝对路径）。
 
-背景：数据根原先整卷挂载，业务数据与程序运行时数据混居一处。企业版多 Pod 共享
-同一卷时，IPC socket 与文件锁跨 Pod 互踩、运行日志交错写、缓存并发下载；每新增
-一类数据都要重新评估该不该共享、挂载要不要调整（run/ 的 subPathExpr 遮蔽挂载即
-为此打的补丁），config/ 内部"业务配置不该共享、会话运行态必须共享"的冲突亦无解。
+Runtime layout:
+- <root>/config/config.yaml
+- <root>/config/.env
+- <root>/agent/home
+- <root>/agent/workspace（DeepAgent 标准工作空间）
+  - memory/
+  - skills/
+  - todo/
+  - messages/
+  - agents/
+  - AGENT.md
+  - IDENTITY.md
+  - SOUL.md
+  - USER.md
+- <root>/agent/sessions
+- <root>/agent/workspace/agent-data.json
+- <root>/agent/.checkpoint
+- <root>/agent/.logs（channel.log / agent_server.log / full.log；gateway.log 默认同目录，
+  可通过环境变量 AGENTOS_GATEWAY_LOG_DIR 指定独立目录，如 Linux 部署的 /var/log/agentos）
 
-划分依据是数据所有权，与部署形态无关：业务数据跟着用户与会话走，系统数据
-跟着程序与机器走。由此挂载语义唯一推导——业务挂共享卷、系统挂私有卷；个人版
-两区均为普通子目录，代码路径一致、无开关。
-
-    ├── domain/                          业务区：用户直接产生、需要留存
-    │                                    （企业版挂共享卷 PVC/NFS，跨 Pod 存活）
-    │   ├── agent/                       agent 根：会话、检查点、任务、团队库
-    │   │   ├── sessions/                会话轨迹（含 sessions_archived/ 归档）
-    │   │   ├── home/                    定时与心跳任务（懒创建）
-    │   │   ├── teams/                   团队控制库
-    │   │   ├── .checkpoint/             会话映射检查点
-    │   │   └── workspace/               DeepAgent 工作空间（企业版名 jiuwenclaw_workspace）
-    │   │       ├── AGENT.md             人设
-    │   │       ├── SOUL.md              灵魂
-    │   │       ├── IDENTITY.md          身份
-    │   │       ├── USER.md              用户
-    │   │       ├── skills/              技能库（skills_state.json）
-    │   │       ├── memory/              长期记忆
-    │   │       ├── projects/            项目工作区
-    │   │       ├── todo/                待办
-    │   │       ├── messages/            消息
-    │   │       ├── agents/              子代理
-    │   │       ├── interactions/        待交互上下文
-    │   │       ├── mcp/                 MCP：credentials/ + mcp_builtins/
-    │   │       └── plugins/             agent_templates/ 与 plugin_packages/
-    │   │           └── {built_in,local}/   内置/本地两个来源桶
-    │   ├── workspace_{tk}/              企业版租户根（内含各自的 agent/）
-    │   ├── runtime_state/               每会话运行态快照
-    │   ├── application_plugins/         运维部署的插件
-    │   ├── .agent_teams/                团队名册/任务/工作区
-    │   ├── .trace/                      观测轨迹库（每会话 SQLite）
-    │   └── .agent_history/              agent-core 工具历史
-    └── infra/                           系统区：程序自身维护、可重建或机器域
-                                         （企业版挂私有卷 emptyDir，随 Pod 生命周期）
-        ├── run/                         supervisor IPC socket 与锁
-        ├── config/                      服务配置（update_conf 生成）+ 业务配置副本
-        ├── logs/                        系统日志区（企业版经 stdout 采集留存）
-        │   ├── agent/                   业务日志：channel / agent_server / full / permissions /
-        │   │                            gateway / service_exits / context_usage / runtime_diagnostics
-        │   ├── core/                    openjiuwen 全家族：jiuwen / llm / server / session /
-        │   │                            runner / memory / context_engine / sys_operation +
-        │   │                            interface/ + performance/
-        │   ├── process_cli/             CLI 按次诊断转储
-        │   └── video/                   视频扩展事件流 jsonl
-        ├── runtime/                     本机安装的运行时资产（含安装锁）
-        │   ├── custom-agents/           自定义 agent runtime（wheel + site-packages/）
-        │   ├── npm/                     npm CLI（preserved/、installed/）
-        │   ├── external-cli/            外部 CLI 依赖（<cli>/site-packages/）
-        │   └── upgrade-config/          升级待办
-        ├── tokenizers/                  tokenizer 下载缓存
-        ├── auth/                        登录态凭据副本
-        ├── permission_audit/            自动权限审批审计流水
-        ├── instances.yaml               多实例注册表（实例名 → workspace + 端口组）
-        │                                仅本机启动流程消费，不可共享
-        └── *.lock/*.txt 等              散落系统态文件：.gateway.lock、last_file_picker_dir.txt
-
-归类规则（按数据所有权，版别无关）：
-   - 业务 = 用户直接产生、需要留存 → domain；
-   - 系统 = 程序自身维护的数据（含业务配置的程序副本与运行时产物）→ infrastructure；
-
-新增路径一律经``get_domain_data_dir()`` / ``get_infra_data_dir()`` 派生，挂载拓扑不随新增数据调整。
+内置模板位于包内 ``jiuwenswarm/resources/``（含 ``agent/`` 下各技能模板以及 ``skills_state.json``）。
 """
 
 import ctypes
@@ -80,31 +33,37 @@ import json
 import os
 import re
 import sys
+import uuid
 import datetime
 import shutil
 import socket
 import stat
+import threading
 import time
 import zipfile
 from pathlib import Path
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Optional
 import logging
-from logging.handlers import BaseRotatingHandler
+from logging.handlers import BaseRotatingHandler, RotatingFileHandler
 import portalocker
 from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
 
-from openjiuwen_protocol.logging_config import (
+from e2a.logging_config import (
     LOGGING_LEVEL_FIELDS,
     LOG_CONFIG_OP_DELETE,
     LOG_CONFIG_OP_FIELD,
 )
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
+from jiuwenswarm.common.log_exception import format_log_exception
 from jiuwenswarm.common.runtime_log_filter import install_runtime_log_filter
 from jiuwenswarm.enterprise import is_enterprise
 
 _LOG_FILE_MAX_BYTES = 20 * 1024 * 1024
 _LOG_FILE_BACKUP_COUNT = 20
+_JSONL_LOG_LOCK = threading.Lock()
+
 
 # gateway 支持独立的日志目录（与其余组件日志分离），轮转归档文件同样落在该目录下。
 # 默认不启用（gateway.log 与其它日志同目录），由环境变量 AGENTOS_GATEWAY_LOG_DIR 指定，
@@ -511,24 +470,13 @@ def get_user_workspace_dir() -> Path:
     return _workspace_base_dir
 
 
-# 分区目录名常量（布局与归类规则见模块 docstring）
-_DOMAIN_DIR_NAME = "domain"
-_INFRA_DIR_NAME = "infra"
-
-
-def get_domain_data_dir() -> Path:
-    """获取业务区根：会话/工作区/租户/运行态快照等用户产生、需留存的数据
-    一律经此派生；企业版挂共享卷（跨 Pod 存活），个人版为普通子目录。
-    """
-    return get_user_workspace_dir() / _DOMAIN_DIR_NAME
-
-
 def get_infra_data_dir() -> Path:
-    """获取系统区根：IPC socket/锁、业务 config 的程序副本、本机安装物、
-    缓存、日志等程序自维护数据一律经此派生；企业版挂私有卷（随 Pod 生命
-    周期），个人版为普通子目录。
+    """System-data root for code restored with enterprise team mode.
+
+    Develop keeps one data root. Sockets, update files, and team-control
+    paths stay under the user workspace instead of an ``infra/`` partition.
     """
-    return get_user_workspace_dir() / _INFRA_DIR_NAME
+    return get_user_workspace_dir()
 
 
 
@@ -633,6 +581,18 @@ def _resolve_preferred_language(
     return "zh"
 
 
+def _uses_jiuwen_memory(config_path: Path) -> bool:
+    """Read the builtin memory provider during workspace bootstrap."""
+    if not config_path.is_file():
+        return False
+    try:
+        with config_path.open(encoding="utf-8") as config_file:
+            config = YAML(typ="safe").load(config_file) or {}
+        return str(config["memory"]["builtin"]["provider"]).strip() == "jiuwen"
+    except (KeyError, TypeError, ValueError, OSError, YAMLError):
+        return False
+
+
 def _is_interactive() -> bool:
     """Check if stdin is connected to a terminal (interactive mode)."""
     try:
@@ -734,249 +694,59 @@ def _update_skills_state_for_builtin(
         logger.error(f"保存技能状态文件失败: {e}")
 
 
-def _repair_skill_creator_normal_frontmatter(normal_dir: Path) -> None:
-    """将 ``skill-creator-normal/SKILL.md`` 中残留的 ``name: skill-creator`` 改为目录名.
-
-    仅改目录、不改正文 name 时，skills.list 会扫出两个同名 ``skill-creator``，
-    前端 ``key={skill.name}`` 在切换「团队技能」等过滤时会叠出重复卡片。
-    """
-    skill_md = normal_dir / "SKILL.md"
-    if not skill_md.is_file():
-        return
-    try:
-        text = skill_md.read_text(encoding="utf-8")
-    except OSError:
-        return
-    if "name: skill-creator-normal" in text:
-        return
-    if "name: skill-creator" not in text:
-        return
-    # 新路由入口文案不应落在 normal 目录；若误判则跳过
-    router_markers = (
-        "Routes skill creation",
-        "Unified entry point",
-        "统一入口",
-    )
-    if any(marker in text for marker in router_markers):
-        return
-    updated = text.replace("name: skill-creator", "name: skill-creator-normal", 1)
-    if updated == text:
-        return
-    try:
-        skill_md.write_text(updated, encoding="utf-8")
-        logger.info("已修复 skill-creator-normal frontmatter name")
-    except OSError as exc:
-        logger.warning(f"修复 skill-creator-normal frontmatter 失败: {exc}")
-
-
-def _migrate_skill_creator_router_rename(user_skills_dir: Path) -> None:
-    """一次性迁移：skill-creator-router → skill-creator，旧 skill-creator → skill-creator-normal.
-
-    避免用户目录已有旧 ``skill-creator`` 时跳过安装，导致装不上新的路由入口。
-    迁移后删除旧 router 目录，由后续默认安装从内置资源拷贝新的 ``skill-creator``。
-    """
-    old_router = user_skills_dir / "skill-creator-router"
-    old_creator = user_skills_dir / "skill-creator"
-    normal = user_skills_dir / "skill-creator-normal"
-
-    def _looks_like_legacy_monadic_creator(skill_dir: Path) -> bool:
-        skill_md = skill_dir / "SKILL.md"
-        if not skill_md.is_file():
-            return False
-        try:
-            text = skill_md.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            return False
-        # 新路由 / 旧 router 文案
-        router_markers = (
-            "Routes skill creation",
-            "Unified entry point",
-            "统一入口",
-            "创建/修改的**路由**",
-            "创建/修改的**分发器**",
-        )
-        if any(marker in text for marker in router_markers):
-            return False
-        has_legacy_name = "name: skill-creator" in text
-        has_normal_name = "name: skill-creator-normal" in text
-        return has_legacy_name or has_normal_name
-
-    try:
-        if old_router.is_dir():
-            if old_creator.is_dir() and not normal.exists():
-                old_creator.rename(normal)
-                logger.info("已迁移默认技能: skill-creator -> skill-creator-normal")
-            elif old_creator.is_dir() and normal.exists():
-                shutil.rmtree(old_creator)
-                logger.info("已移除冲突的旧 skill-creator，将安装新的路由 skill-creator")
-            shutil.rmtree(old_router)
-            logger.info("已移除旧 skill-creator-router，将安装新的路由 skill-creator")
-        elif (
-            old_creator.is_dir()
-            and not normal.exists()
-            and _looks_like_legacy_monadic_creator(old_creator)
-        ):
-            # 仅有旧单体 skill-creator、尚无 skill-creator-normal
-            old_creator.rename(normal)
-            logger.info("已迁移默认技能: skill-creator -> skill-creator-normal（无 router 目录）")
-
-        # 无论本次是否刚改名：修复已存在的 normal 目录残留 name
-        if normal.is_dir():
-            _repair_skill_creator_normal_frontmatter(normal)
-    except OSError as exc:
-        logger.warning(f"skill-creator 重命名迁移失败，将尝试按默认列表安装: {exc}")
-
-
 def _install_default_builtin_skills(
     builtin_dir: Path,
     user_skills_dir: Path,
     overwrite: bool,
     cumulative_diff: CopyDiffResult,
 ) -> None:
-    """安装默认的内置技能到用户技能目录.
+    """Install the single catalog and migrate unchanged legacy builtin copies."""
+    from jiuwenswarm.common.builtin_skills import BUILTIN_CATALOG_NAME, migrate_builtin_catalog
 
-    默认安装的技能：
-    - skill-creator: 所有 Skill Creator 的统一入口（创建/修改路由）
-    - skill-creator-normal: 单体技能创建助手（由 skill-creator 路由选中）
-    - swarmskill-creator: Swarm技能创建助手（由 skill-creator 路由选中）
-    - skill-omni-creation: 链接/网页/视频技能创建助手（由 skill-creator 路由选中）
-    - huawei-cloud-maas-setup: 华为云MaaS购买与配置引导
-    - rsi-program-dataset-creator: 程序演进任务设计与评测编排
-    - agent-creator: Agent 模板包创建助手
-    - agent-group-creator: 专家团包创建助手
-    - plugin-creator: 插件能力扩展包创建助手
-    - baoyu-image-gen: AI 图像生成（多平台 API，文生图/参考图/批量生成）
-    - docx-pro: Word 富格式文档生成/Markdown 互转/目录水印
-    - local-doc-ocr: 本地离线 OCR（扫描件 PDF/图片提取文字）
-    - xlsx: 电子表格创建/读取/分析/编辑/修复（零格式损失，中文/CJK 友好）
-    - pdf-extraction: PDF 文本/表格/元数据提取
-    - pptx-generator: PowerPoint 演示文稿生成与编辑
-
-    Args:
-        builtin_dir: 内置技能目录路径
-        user_skills_dir: 用户技能目录路径
-        overwrite: 是否覆盖已存在的技能
-        cumulative_diff: 累积的文件变更追踪结果
-    """
-    # 定义默认安装的技能列表
-    default_skills = [
-        "skill-creator",
-        "skill-creator-normal",
-        "swarmskill-creator",
-        "skill-omni-creation",
-        "huawei-cloud-maas-setup",
-        "rsi-program-dataset-creator",
-        "agent-creator",
-        "agent-group-creator",
-        "plugin-creator",
-        "baoyu-image-gen",
-        "docx-pro",
-        "local-doc-ocr",
-        "xlsx",
-        "pdf-extraction",
-        "pptx-generator",
-    ]
-
-    if not builtin_dir.exists() or not builtin_dir.is_dir():
-        logger.warning(f"内置技能目录不存在，跳过默认技能安装: {builtin_dir}")
+    source = builtin_dir / BUILTIN_CATALOG_NAME
+    target = user_skills_dir / BUILTIN_CATALOG_NAME
+    if not source.is_dir():
+        logger.warning("Builtin catalog not found: %s", source)
         return
-
     user_skills_dir.mkdir(parents=True, exist_ok=True)
-    _migrate_skill_creator_router_rename(user_skills_dir)
-
-    # 记录成功安装的技能，用于后续更新状态文件
-    installed_skills = []
-
-    for skill_name in default_skills:
-        builtin_skill_path = builtin_dir / skill_name
-        user_skill_path = user_skills_dir / skill_name
-
-        # 检查内置技能是否存在
-        if not builtin_skill_path.exists() or not builtin_skill_path.is_dir():
-            logger.warning(f"内置技能不存在，跳过安装: {skill_name}")
-            continue
-
-        # 如果用户目录已存在该技能且不是覆盖模式，则跳过
-        if user_skill_path.exists() and not overwrite:
-            logger.info(f"技能已存在，跳过安装: {skill_name}")
-            continue
-
-        # 复制技能到用户目录
+    with portalocker.Lock(str(user_skills_dir / ".builtin-catalog.lock"), timeout=30):
+        installed = False
         try:
-            with TrackCopyDiff(
-                dest=user_skill_path,
-                cumulative=cumulative_diff,
-                overwrite=overwrite,
-            ):
-                if user_skill_path.exists() and overwrite:
-                    shutil.rmtree(user_skill_path)
-                shutil.copytree(builtin_skill_path, user_skill_path)
-            logger.info(f"已安装默认技能: {skill_name}")
-            installed_skills.append(skill_name)
-        except Exception as e:
-            logger.error(f"安装默认技能失败 {skill_name}: {e}")
-
-    # 更新 skills_state.json，记录已安装的技能
-    if installed_skills:
-        _update_skills_state_for_builtin(user_skills_dir, installed_skills)
+            with TrackCopyDiff(dest=target, cumulative=cumulative_diff, overwrite=overwrite):
+                if not target.exists():
+                    import tempfile
+                    with tempfile.TemporaryDirectory(prefix=".builtin-install-", dir=user_skills_dir) as directory:
+                        staged = Path(directory) / BUILTIN_CATALOG_NAME
+                        shutil.copytree(source, staged)
+                        staged.rename(target)
+                    installed = True
+                elif overwrite:
+                    # Preserve migration archives and preferences outside seed files.
+                    shutil.copytree(source, target, dirs_exist_ok=True)
+                    installed = True
+            if installed:
+                _update_skills_state_for_builtin(user_skills_dir, [BUILTIN_CATALOG_NAME])
+            state_file = user_skills_dir / "skills_state.json"
+            state = json.loads(state_file.read_text(encoding="utf-8")) if state_file.is_file() else {}
+            owned = any(
+                isinstance(item, dict) and item.get("name") == BUILTIN_CATALOG_NAME
+                and item.get("source", item.get("marketplace")) == "builtin"
+                for item in state.get("installed_plugins", [])
+            )
+            if owned:
+                migrate_builtin_catalog(builtin_dir, user_skills_dir)
+        except (OSError, ValueError) as exc:
+            logger.error("Builtin catalog installation/migration failed: %s", exc)
 
 
 def ensure_default_builtin_skills() -> None:
-    """确保所有默认内置技能已安装到用户技能目录（幂等）。
-
-    与 ``prepare_workspace`` 不同，本函数设计为每次启动都可安全调用：
-    仅复制用户目录中尚不存在的默认技能，已存在的技能不会被覆盖或修改，
-    从而让新增的默认技能在老用户工作区中也能自动补齐。
-    """
-    builtin_dir = get_builtin_skills_dir()
-    user_skills_dir = get_agent_skills_dir()
-
-    if not builtin_dir.exists() or not builtin_dir.is_dir():
-        logger.warning(f"内置技能目录不存在，跳过默认技能补齐: {builtin_dir}")
-        return
-
-    default_skills = [
-        "skill-creator",
-        "skill-creator-normal",
-        "swarmskill-creator",
-        "skill-omni-creation",
-        "huawei-cloud-maas-setup",
-        "rsi-program-dataset-creator",
-        "agent-creator",
-        "agent-group-creator",
-        "plugin-creator",
-        "baoyu-image-gen",
-        "docx-pro",
-        "local-doc-ocr",
-        "xlsx",
-        "pdf-extraction",
-        "pptx-generator",
-    ]
-
-    user_skills_dir.mkdir(parents=True, exist_ok=True)
-    _migrate_skill_creator_router_rename(user_skills_dir)
-
-    installed_skills = []
-    for skill_name in default_skills:
-        builtin_skill_path = builtin_dir / skill_name
-        user_skill_path = user_skills_dir / skill_name
-
-        if not builtin_skill_path.exists() or not builtin_skill_path.is_dir():
-            logger.warning(f"内置技能不存在，跳过补齐: {skill_name}")
-            continue
-
-        if user_skill_path.exists():
-            continue
-
-        try:
-            shutil.copytree(builtin_skill_path, user_skill_path)
-            logger.info(f"已补齐默认技能: {skill_name}")
-            installed_skills.append(skill_name)
-        except Exception as e:
-            logger.error(f"补齐默认技能失败 {skill_name}: {e}")
-
-    if installed_skills:
-        _update_skills_state_for_builtin(user_skills_dir, installed_skills)
+    """Install the builtin catalog on startup without replacing user edits."""
+    _install_default_builtin_skills(
+        builtin_dir=get_builtin_skills_dir(),
+        user_skills_dir=get_agent_skills_dir(),
+        overwrite=False,
+        cumulative_diff=CopyDiffResult([], [], []),
+    )
 
 
 def ensure_config_migrated_from_template(
@@ -1002,7 +772,7 @@ def ensure_config_migrated_from_template(
     from jiuwenswarm.common.version import get_runtime_version_label
 
     root = Path(workspace_dir) if workspace_dir else get_user_workspace_dir()
-    config_path = root / "infra" / "config" / "config.yaml"
+    config_path = root / "config" / "config.yaml"
 
     try:
         template_path = _find_config_template_path()
@@ -1039,18 +809,10 @@ def cleanup_team_files(workspace_dir: Path) -> None:
     Args:
         workspace_dir: JiuWenSwarm 用户工作空间根目录 (~/.jiuwenswarm)
     """
-    # agent 子树随分区改造落在 domain 区；数据根旧布局遗留（迁移后残留在
-    # 数据根的 workspace//team.db*）与 domain/ 内的旧版本产物一并清理。
-    agent_dir = get_domain_data_dir() / "agent"
+    agent_dir = workspace_dir / "agent"
 
-    for base in (workspace_dir, get_domain_data_dir()):
-        _cleanup_team_files_under(base, agent_dir)
-
-
-def _cleanup_team_files_under(base: Path, agent_dir: Path) -> None:
-    """清理 base（数据根或 domain/）下旧版本 team 遗留文件。"""
-    # 清理 {base}/workspace/ (旧版本 team workspace)
-    legacy_workspace = base / "workspace"
+    # 清理 {workspace_dir}/workspace/ (旧版本 team workspace)
+    legacy_workspace = workspace_dir / "workspace"
     if legacy_workspace.exists():
         try:
             shutil.rmtree(legacy_workspace)
@@ -1067,8 +829,8 @@ def _cleanup_team_files_under(base: Path, agent_dir: Path) -> None:
         except OSError as e:
             logger.warning(f"[Cleanup] Failed to remove legacy team_data directory: {e}")
 
-    # 清理 {base}/team.db* (旧版本 team 数据库文件)
-    legacy_team_db_root = base / "team.db"
+    # 清理 {workspace_dir}/team.db* (旧版本 team 数据库文件)
+    legacy_team_db_root = workspace_dir / "team.db"
     for suffix in ["", "-wal", "-shm"]:
         db_file = legacy_team_db_root.with_suffix(".db" + suffix)
         if db_file.exists():
@@ -1166,6 +928,164 @@ def cleanup_stale_openjiuwen_descs() -> None:
                 ) from exc
 
 
+def _read_previous_external_cli_state(config_path: Path) -> dict[str, Any]:
+    """读取 config.yaml 里用户的三方 agent 配置。
+
+    返回 external_cli_agents 列表、路径历史与 external_transport 节点。
+    文件缺失（全新数据目录）返回不含 agent 的空态；**读取/解析失败抛异常**，
+    由调用方区分"读取失败"与"确认无启用 agent"——旁路刷新不得把读取失败
+    当成空态覆盖唯一的恢复备份（!10406 第五轮检视）。
+    """
+    if not config_path.exists():
+        return {"agents": [], "histories": {}, "transport": None}
+    import yaml
+
+    with config_path.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    team = ((data.get("modes") or {}).get("team") or {}).get("jiuwen_team") or {}
+    agents = team.get("external_cli_agents")
+    histories = team.get("external_cli_path_histories")
+    if not isinstance(agents, list) or not agents:
+        return {"agents": [], "histories": {}, "transport": team.get("external_transport")}
+    return {
+        "agents": agents,
+        "histories": histories if isinstance(histories, dict) else {},
+        "transport": team.get("external_transport"),
+    }
+
+
+def _restore_previous_external_cli_state(config_path: Path, state: dict[str, Any]) -> None:
+    """把覆盖前的三方 agent 配置写回新 config.yaml（ruamel round-trip 保格式）。
+
+    直接对被覆盖的目标文件做节点级更新——不能用全局 CONFIG_YAML_PATH 的更新
+    函数：prepare_workspace 可能带着与默认数据目录不同的 workspace_dir 被调用。
+    条目按当前允许清单过滤：旧配置里已不被支持的 agent 若原样回写，会在后续
+    配置归一化时抛 ValueError 导致保存失败。任一失败仅记录告警并保留模板
+    默认值，不阻塞 init。
+    """
+    try:
+        from jiuwenswarm.common.config import _allowed_external_cli_agents
+
+        allowed = set(_allowed_external_cli_agents())
+
+        def _allowed_entry(item: Any) -> bool:
+            if isinstance(item, dict):
+                name = str(item.get("cli_agent") or "").strip()
+            elif isinstance(item, str):
+                name = item.strip()
+            else:
+                return False
+            return bool(name) and name in allowed
+
+        agents = [item for item in state["agents"] if _allowed_entry(item)]
+        if not agents:
+            logger.info("覆盖前没有仍受支持的三方 agent 配置可保留")
+            return
+        yaml_rt = YAML()
+        yaml_rt.preserve_quotes = True
+        with config_path.open("r", encoding="utf-8") as handle:
+            data = yaml_rt.load(handle) or {}
+        modes = data.setdefault("modes", {})
+        team = modes.setdefault("team", {})
+        jiuwen_team = team.setdefault("jiuwen_team", {})
+        jiuwen_team["external_cli_agents"] = agents
+        histories = state.get("histories") or {}
+        if histories:
+            jiuwen_team["external_cli_path_histories"] = histories
+        # 跨进程 transport 不变式随 agents 一起恢复：agents 需要跨进程而
+        # transport 节点缺失时，后续配置归一化会直接抛错（!10406 第五轮）。
+        transport = state.get("transport")
+        if transport is not None:
+            jiuwen_team["external_transport"] = transport
+        # 原子写回：恢复写一半崩溃会留下半截 config.yaml，启动直接失败
+        # （!10406 检视），与 config.py 的落盘出口保持同样的原子语义。
+        tmp = config_path.with_name(f"{config_path.stem}.{uuid.uuid4().hex}.yaml.tmp")
+        try:
+            with tmp.open("w", encoding="utf-8") as handle:
+                yaml_rt.dump(data, handle)
+            os.replace(tmp, config_path)
+        except BaseException:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+        logger.info("已保留覆盖前的三方 agent 配置与路径历史")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"保留覆盖前的三方 agent 配置失败: {exc}")
+
+
+def external_cli_state_sidecar_path(workspace_dir: Path) -> Path:
+    """三方 agent 启用状态的旁路文件路径（位于 .jiuwenswarm 数据目录之外）。
+
+    数据目录被整体删除（重装/重置）后 config.yaml 不复存在，启用态无处
+    保留；旁路文件落在用户级应用数据目录，重装不会清除，init 时用于恢复
+    三方 agent 的启用配置。文件名按 workspace_dir 的摘要区分——项目支持
+    多工作区/多实例（JIUWENSWARM_DATA_DIR），旁路不能互相串台。
+    """
+    try:
+        from jiuwenswarm.common._build_config import DISPLAY_NAME as display_name
+    except Exception:  # noqa: BLE001
+        display_name = "WorkSwarm"
+    identity = hashlib.sha1(str(Path(workspace_dir).resolve()).encode("utf-8")).hexdigest()[:10]
+    if os.name == "nt":
+        local_app_data = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+        return local_app_data / display_name / f"external_cli_state-{identity}.json"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / display_name / f"external_cli_state-{identity}.json"
+    return Path.home() / ".config" / display_name / f"external_cli_state-{identity}.json"
+
+
+def refresh_external_cli_state_sidecar(config_path: Path, workspace_dir: Path) -> None:
+    """把 config.yaml 里的三方 agent 配置镜像到数据目录之外的旁路文件。
+
+    配置里没有启用中的 agent 时写入空态，init 依据空态不做恢复。
+    **读取失败与空态语义不同**：读取/解析失败时跳过刷新并保留既有旁路，
+    避免瞬时读失败把唯一的恢复备份覆盖成空态（!10406 第五轮检视）；旁路
+    本身用临时文件 + os.replace 原子写回，避免写一半截断恢复数据。
+    """
+    try:
+        state = _read_previous_external_cli_state(config_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"读取三方 agent 配置失败，跳过旁路刷新（保留既有旁路）: {exc}")
+        return
+    payload = state or {"agents": [], "histories": {}, "transport": None}
+    sidecar = external_cli_state_sidecar_path(workspace_dir)
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    tmp = sidecar.with_name(f"{sidecar.stem}.{uuid.uuid4().hex}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False)
+        os.replace(tmp, sidecar)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _read_external_cli_state_sidecar(workspace_dir: Path) -> Optional[dict[str, Any]]:
+    """读取状态旁路文件；缺失/解析失败/无启用 agent 时返回 None。"""
+    try:
+        sidecar = external_cli_state_sidecar_path(workspace_dir)
+        if not sidecar.exists():
+            return None
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        agents = payload.get("agents") if isinstance(payload, dict) else None
+        if not isinstance(agents, list) or not agents:
+            return None
+        histories = payload.get("histories")
+        return {
+            "agents": agents,
+            "histories": histories if isinstance(histories, dict) else {},
+            "transport": payload.get("transport"),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"读取三方 agent 状态旁路文件失败: {exc}")
+        return None
+
+
 def prepare_workspace(
     overwrite: bool = True,
     preferred_language: Optional[str] = None,
@@ -1185,22 +1105,35 @@ def prepare_workspace(
     cumulative_diff = CopyDiffResult([], [], [])
     workspace_dir.mkdir(parents=True, exist_ok=True)
 
-    # Create logs directory in the infra zone (<root>/infra/logs)
-    (workspace_dir / "infra" / "logs").mkdir(parents=True, exist_ok=True)
+    # Create logs directory at workspace root (~/.jiuwenswarm/logs)
+    (workspace_dir / "logs").mkdir(parents=True, exist_ok=True)
 
     # ----- config: copy config.yaml -----
     resources_dir = package_root / "resources"
     config_yaml_src = _find_config_template_path()
 
-    config_dest_dir = workspace_dir / "infra" / "config"
+    config_dest_dir = workspace_dir / "config"
     config_dest_dir.mkdir(parents=True, exist_ok=True)
-    # Fresh initialization never saw the legacy layout, so the import-time
-    # partition migration was a no-op; ensure the compat link here as well.
-    _ensure_config_compat_symlink(workspace_dir)
     config_yaml_dest = config_dest_dir / "config.yaml"
 
     config_initialized = overwrite or not config_yaml_dest.exists()
     if config_initialized:
+        # init/重新部署用模板覆盖 config.yaml——三方 agent 的启用配置不取自被
+        # 覆盖的旧文件，而是从数据目录之外的状态旁路恢复（旁路在每次保存/清理
+        # 时镜像，见 dump_yaml_round_trip 的挂接点）。强制重置（init -f /
+        # overwrite）例外：重置语义完整生效——跳过恢复并清除旁路文件，否则
+        # "重置"名存实亡，且被恢复的 cli_path 指向已删除的安装。
+        if overwrite:
+            # 强制重置：跳过恢复并清除旁路文件（删除失败仅告警，不阻塞 init）
+            try:
+                external_cli_state_sidecar_path(workspace_dir).unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning(f"清除三方 agent 状态旁路失败: {exc}")
+        pre_restore_state = (
+            _read_external_cli_state_sidecar(workspace_dir)
+            if not overwrite and not config_yaml_dest.exists()
+            else None
+        )
         with TrackCopyDiff(
             dest=config_yaml_dest,
             is_file=True,
@@ -1208,6 +1141,8 @@ def prepare_workspace(
             overwrite=overwrite,
         ):
             shutil.copy2(config_yaml_src, config_yaml_dest)
+        if pre_restore_state is not None:
+            _restore_previous_external_cli_state(config_yaml_dest, pre_restore_state)
 
     resolved_lang = _resolve_preferred_language(config_yaml_dest, preferred_language)
 
@@ -1228,7 +1163,7 @@ def prepare_workspace(
             "env template source not found; tried: "
             + ", ".join(str(p) for p in env_template_src_candidates)
         )
-    env_dest = workspace_dir / "infra" / "config" / ".env"
+    env_dest = workspace_dir / "config" / ".env"
     if overwrite or not env_dest.exists():
         with TrackCopyDiff(
             dest=env_dest,
@@ -1238,10 +1173,11 @@ def prepare_workspace(
         ):
             shutil.copy2(env_template_src, env_dest)
 
-    # ----- copy runtime dirs (new layout; agent 子树落 domain 区) -----
-    agent_root = workspace_dir / "domain" / "agent"
+    # ----- copy runtime dirs (new layout) -----
+    agent_root = workspace_dir / "agent"
     agent_sessions = agent_root / "sessions"
     (agent_root / ".checkpoint").mkdir(parents=True, exist_ok=True)
+    (agent_root / ".logs").mkdir(parents=True, exist_ok=True)
 
     # ----- DeepAgent workspace (standard DeepAgents schema) -----
     deepagent_workspace = agent_root / "workspace"
@@ -1320,8 +1256,9 @@ def prepare_workspace(
         (f"AGENT{suffix}.md", "AGENT.md"),
         (f"IDENTITY{suffix}.md", "IDENTITY.md"),
         (f"SOUL{suffix}.md", "SOUL.md"),
-        (f"memory/MEMORY{suffix}.md", "memory/MEMORY.md"),
     ]
+    if not _uses_jiuwen_memory(config_yaml_dest):
+        multilang_files.append((f"memory/MEMORY{suffix}.md", "memory/MEMORY.md"))
     for src_name, dst_name in multilang_files:
         src_path = template_agent_workspace / src_name
         dst_path = deepagent_workspace / dst_name
@@ -1359,7 +1296,7 @@ def prepare_workspace(
         kind_root = deepagent_workspace / "plugins" / kind
         (kind_root / "built_in").mkdir(parents=True, exist_ok=True)
         (kind_root / "local").mkdir(parents=True, exist_ok=True)
-    agent_group_root = workspace_dir / "domain" / ".agent_teams" / "agent_groups"
+    agent_group_root = workspace_dir / ".agent_teams" / "agent_groups"
     (agent_group_root / "built_in").mkdir(parents=True, exist_ok=True)
     (agent_group_root / "local").mkdir(parents=True, exist_ok=True)
 
@@ -1631,12 +1568,9 @@ def prepare_runtime_workspace(
     if cleanup_stale_descs:
         cleanup_stale_openjiuwen_descs()
 
-    # 分区布局迁移先于任何路径读取（幂等）
-    migrate_partitioned_data_root_layout()
-
     workspace_dir = get_user_workspace_dir()
-    config_file = get_infra_data_dir() / "config" / "config.yaml"
-    new_workspace = get_domain_data_dir() / "agent" / "workspace"
+    config_file = workspace_dir / "config" / "config.yaml"
+    new_workspace = workspace_dir / "agent" / "workspace"
     mcp_builtins_dir = new_workspace / "mcp" / "mcp_builtins"
 
     cleanup_team_files(workspace_dir)
@@ -1717,10 +1651,9 @@ def init_user_workspace(
     - 数据模板:   <package_root>/resources/agent（含各技能模板）、skills_state.json
 
     上述内容会被复制到:
-    - ~/.jiuwenswarm/infra/config/config.yaml（含 preferred_language）
-    - ~/.jiuwenswarm/infra/config/.env
-    - ~/.jiuwenswarm/domain/agent/...
-    （分区前旧路径 <root>/config 由兼容 symlink 指向 infra/config）
+    - ~/.jiuwenswarm/config/config.yaml（含 preferred_language）
+    - ~/.jiuwenswarm/config/.env
+    - ~/.jiuwenswarm/agent/...
 
     注意：PRINCIPLE.md、TONE.md、HEARTBEAT.md 已被 SOUL.md 和新的心跳机制替代，
     不再由 JiuwenSwarm 复制到用户工作区。
@@ -1803,10 +1736,8 @@ def _resolve_paths() -> None:
 
     # 优先使用已初始化的用户工作区 (~/.jiuwenswarm)，
     # 保证源码运行与安装包运行后的读写路径完全一致。
-    # 业务 config 属系统区（infra/），DeepAgent workspace 属跨 Pod
-    # 业务态（domain/agent/workspace），分区见 get_infra_data_dir/get_domain_data_dir。
-    user_config_dir = get_infra_data_dir() / "config"
-    user_workspace_dir = get_domain_data_dir() / "agent" / "workspace"
+    user_config_dir = workspace_dir / "config"
+    user_workspace_dir = workspace_dir / "agent" / "workspace"
     if user_config_dir.exists():
         _root_dir = workspace_dir
         _config_dir = user_config_dir
@@ -1839,14 +1770,13 @@ def get_config_dir() -> Path:
 
 
 def get_runtime_state_path(session_id: str | None = None) -> Path:
-    """Per-session runtime_state.yaml path under the domain zone.
+    """Per-session runtime_state.yaml path under config dir.
 
     每个 session 独占一份文件，避免心跳/定时/并发 session 共用单文件互相覆盖
     channel/mode/model/git 等字段。session_id 为空时回退到 ``default``。
-    会话态跟会话走（Pod 重建/重路由后可恢复），故落 domain 区 domain/runtime_state。
     """
     sid = re.sub(r"[^A-Za-z0-9_.-]", "_", (session_id or "").strip())[:128] or "default"
-    return get_domain_data_dir() / "runtime_state" / f"{sid}.yaml"
+    return get_config_dir() / "runtime_state" / f"{sid}.yaml"
 
 
 def get_workspace_dir() -> Path:
@@ -1921,6 +1851,17 @@ def get_default_project_session_workspace_dir(session_id: str | None = None) -> 
     return workspace
 
 
+def get_domain_data_dir() -> Path:
+    """Get the root directory that hosts user-owned business data.
+
+    Sessions, agent workspaces, tenant data and runtime-state snapshots are
+    derived from this root, so it is the parent of :func:`get_agent_root_dir`.
+    Personal edition resolves to the user workspace, enterprise edition to the
+    tenant workspace currently bound in ``TenantContext``.
+    """
+    return get_agent_root_dir().parent
+
+
 def get_agent_root_dir(tenant_key: str | None = None) -> Path:
     """Get the agent root directory path.
 
@@ -1943,6 +1884,11 @@ def get_agent_root_dir(tenant_key: str | None = None) -> Path:
                 "tenant_context unavailable for agent root bind", exc_info=True
             )
     return get_multi_tenant_user_workspace_dir(tenant_key) / "agent"
+
+
+def get_package_avatar_cache_dir() -> Path:
+    """Return the tenant-scoped cache for HTTP-served package avatars."""
+    return get_agent_workspace_dir() / ".cache" / "package-avatars"
 
 
 def get_agent_home_dir() -> Path:
@@ -1969,6 +1915,36 @@ def get_agent_skills_dir() -> Path:
         Path to skills directory: ~/.jiuwenswarm/agent/workspace/skills
     """
     return get_agent_workspace_dir() / "skills"
+
+
+# Project-level Skill roots, relative to the project directory, in precedence
+# order. ``.agents/skills`` is the tool-neutral location, ``.claude/skills`` the
+# Claude Code one; both are scanned so a project set up for either tool works.
+PROJECT_SKILL_DIR_NAMES: tuple[tuple[str, str], ...] = (
+    (".agents", "skills"),
+    (".claude", "skills"),
+)
+
+
+def get_project_skills_dirs(project_dir: str | os.PathLike[str] | None) -> list[str]:
+    """Return the project-level Skill roots under *project_dir*.
+
+    The roots are returned whether or not they exist yet: the Skill rail skips
+    a missing root on every scan, so a directory created mid-session is picked
+    up by the next refresh without rebuilding the rail.
+
+    Args:
+        project_dir: The project directory selected from the frontend, or None.
+
+    Returns:
+        ``<project>/.agents/skills`` and ``<project>/.claude/skills`` as
+        absolute path strings, or an empty list when no project is set.
+    """
+    raw = str(project_dir or "").strip()
+    if not raw:
+        return []
+    root = Path(raw).expanduser().resolve(strict=False)
+    return [str(root.joinpath(*parts)) for parts in PROJECT_SKILL_DIR_NAMES]
 
 
 # Last directory handed to openJiuWen's ``configure_global_skills_dir``. Kept so
@@ -2529,300 +2505,68 @@ def resolve_git_branch(project_dir: str | None) -> str:
 _legacy_migration_done: bool = False
 
 
-def _move_if_absent(old: Path, new: Path) -> None:
-    """源路径存在且目标位置不存在时，将其移动到目标位置（幂等）。
-
-    并发进程可能已抢先搬迁同一源：源消失视为对方获胜，静默跳过。"""
-    if not old.exists() or new.exists():
-        return
-    new.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        shutil.move(str(old), str(new))
-    except FileNotFoundError:
-        pass
-
-
 def _migrate_legacy_checkpoint_and_logs() -> None:
-    """数据根旧平铺路径一次性搬迁。
-
-    - ``.checkpoint``（业务态）→ ``domain/agent/``
-    - ``.logs``（系统日志）→ ``infra/logs/agent/``
-    """
+    """One-time migration: move ~/.jiuwenswarm/.checkpoint and .logs to ~/.jiuwenswarm/agent/."""
     global _legacy_migration_done
     if _legacy_migration_done:
         return
     _legacy_migration_done = True
 
     workspace = get_user_workspace_dir()
-    _move_if_absent(workspace / ".checkpoint", get_agent_root_dir() / ".checkpoint")
-    _move_if_absent(workspace / ".logs", get_logs_dir() / "agent")
+    agent_root = workspace / "agent"
 
-
-_partition_migration_done: bool = False
-
-
-def migrate_partitioned_data_root_layout() -> None:
-    """One-time migration into the domain/infra partition layout.
-
-    旧布局（数据根平铺）→ 新布局（domain/ + infra/ 两分区），幂等：
-    仅当旧路径存在且新路径不存在时搬迁，可安全重复调用。覆盖两类起点：
-    - 个人版旧数据根（config/run/agent/... 平铺在数据根）
-    - 企业版：共享卷改挂后旧数据根内容位于 domain/，仅归位 runtime_state；
-      domain/ 下残留的系统数据由部署侧清理
-
-    失败仅降级告警，不抛出：迁移幂等，下次启动自动重试。
-    """
-    global _partition_migration_done
-    if _partition_migration_done:
-        return
-    _partition_migration_done = True
-    try:
-        _do_migrate_partitioned_data_root_layout()
-    except Exception:  # noqa: BLE001
-        logger.error(
-            "workspace partition migration failed; continuing with degraded layout"
-            " (retried on next start)",
-            exc_info=True,
-        )
-
-
-def _do_migrate_partitioned_data_root_layout() -> None:
-    # 旧平铺 .checkpoint/.logs 搬运（幂等）先于分区搬迁执行
-    _migrate_legacy_checkpoint_and_logs()
-
-    root = get_user_workspace_dir()
-    shared = get_domain_data_dir()
-    infra = get_infra_data_dir()
-    if not root.exists():
-        return
-
-    def _move(old: Path, new: Path) -> None:
-        _move_if_absent(old, new)
-
-    # 0) electron 侧车发现态（瞬态）：仅在无会话态竞争时并入 domain/runtime_state
-    session_state_exists = (
-        (shared / "runtime_state").exists()
-        or (root / "config" / "runtime_state").exists()
-        or (shared / "config" / "runtime_state").exists()
-    )
-    if (root / "runtime_state").exists() and not session_state_exists:
-        _move(root / "runtime_state", shared / "runtime_state")
-
-    # 1) 会话运行态：两个历史位置 → domain/runtime_state（优先保会话态）
-    _move(root / "config" / "runtime_state", shared / "runtime_state")
-    _move(shared / "config" / "runtime_state", shared / "runtime_state")
-
-    # 2) 业务态：agent/、application_plugins/、团队库、观测轨迹、工具历史 → domain/
-    _move(root / "agent", shared / "agent")
-    _move(root / "application_plugins", shared / "application_plugins")
-    _move(root / ".agent_teams", shared / ".agent_teams")
-    _move(root / ".organizations", shared / ".organizations")
-    _move(root / "jiuwenmate", shared / "jiuwenmate")
-    _move(root / ".trace", shared / ".trace")
-    _move(root / ".agent_history", shared / ".agent_history")
-    _move(root / "agents", shared / "agents")
-    _move(root / ".personal_context", shared / ".personal_context")
-    _move(root / "gateway", shared / "gateway")
-
-    # 3) 系统态：config/run/logs/runtime/tokenizers/auth/rsi/auto-harness → infra/
-    for name in (
-        "config",
-        "run",
-        "logs",
-        "runtime",
-        "tokenizers",
-        "auth",
-        "rsi",
-        "auto-harness",
-    ):
-        _move(root / name, infra / name)
-
-    # 4) 根上散落的机器态 → infra/（.gateway.lock 为按数据根的私有单例锁）
-    _move(root / ".gateway.lock", infra / ".gateway.lock")
-
-    # 4.1) 多实例注册表是机器级 HOME 语义：读取侧（instance_manager/dotenv_early）
-    # 均按 HOME/.jiuwenswarm 定位、不随 JIUWENSWARM_DATA_DIR 漂移，搬迁必须同语义，
-    # 否则 DATA_DIR 重定向部署下搬不到真身。
-    home_root = get_user_home() / ".jiuwenswarm"
-    _move(home_root / "instances.yaml", home_root / "infra" / "instances.yaml")
-
-    # 5) 根上历史散落目录归位分区：
-    #    - logs/ → infra/logs/（logs/logs/ 为 openjiwen core 家族，归 core/）
-    #    - agent/ → domain/agent/（其 .logs 子树归 infra/logs/agent/）
-    #    - .agent_teams/ → domain/.agent_teams/
-    #    - auth/、runtime/、config/ → infra/（步骤 3 整体搬迁因目标已存在被跳过的残留）
-    #    目标缺失照搬；文件冲突时分区正本不动，残留副本内容一致视为重复
-    #    丢弃、不一致改名（.migrated 序号）保留，因此根上目录必然清空。
-    #    symlink 一律跳过（兼容链接不是残留，沿链吸收会自清正本）。
-    def _absorb_file(old: Path, new: Path) -> None:
-        if not new.exists():
-            new.parent.mkdir(parents=True, exist_ok=True)
-            try:
-                shutil.move(str(old), str(new))
-            except FileNotFoundError:
-                pass
-            return
-        try:
-            is_duplicate = (
-                old.stat().st_size == new.stat().st_size
-                and old.stat().st_size <= 32 * 1024 * 1024
-                and old.read_bytes() == new.read_bytes()
-            )
-        except OSError:
-            is_duplicate = False
-        if is_duplicate:
-            old.unlink()
-            return
-        migrated = new.with_name(f"{new.name}.migrated")
-        index = 1
-        while migrated.exists():
-            index += 1
-            migrated = new.with_name(f"{new.name}.migrated.{index}")
-        new.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(old), str(migrated))
-
-    def _prune_empty_tree(top: Path) -> None:
-        if not top.is_dir():
-            return
-        # 尽力而为：任一目录剪除失败（如并发写入）即放弃本轮，
-        # 迁移幂等，下次启动重试
-        try:
-            for child in sorted(top.rglob("*"), reverse=True):
-                if child.is_dir() and not child.is_symlink() and not any(child.iterdir()):
-                    child.rmdir()
-            if not any(top.iterdir()):
-                top.rmdir()
-        except OSError:
-            pass
-
-    def _absorb_tree(old: Path, new: Path) -> None:
-        if not old.is_dir():
-            return
-        for entry in sorted(old.iterdir()):
-            target = new / entry.name
-            if entry.is_dir() and not entry.is_symlink():
-                if not target.exists():
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        shutil.move(str(entry), str(target))
-                    except FileNotFoundError:
-                        pass
-                else:
-                    _absorb_tree(entry, target)
-            else:
-                _absorb_file(entry, target)
-        _prune_empty_tree(old)
-
-    stray_logs = root / "logs"
-    if stray_logs.is_dir() and not stray_logs.is_symlink():
-        for entry in sorted(stray_logs.iterdir()):
-            if entry.name == "logs":
-                # openjiwen core 家族日志（run/、interface/、performance/）
-                _absorb_tree(entry, get_logs_dir() / "core")
-            elif entry.is_dir():
-                _absorb_tree(entry, get_logs_dir() / entry.name)
-            else:
-                _absorb_file(entry, get_logs_dir() / entry.name)
-        _prune_empty_tree(stray_logs)
-
-    stray_agent = root / "agent"
-    if stray_agent.is_dir() and not stray_agent.is_symlink():
-        for entry in sorted(stray_agent.iterdir()):
-            if entry.name == ".logs":
-                # gateway 旧日志目录
-                _absorb_tree(entry, get_logs_dir() / "agent")
-            elif entry.is_dir():
-                _absorb_tree(entry, shared / "agent" / entry.name)
-            else:
-                _absorb_file(entry, shared / "agent" / entry.name)
-        _prune_empty_tree(stray_agent)
-
-    stray_teams = root / ".agent_teams"
-    if stray_teams.is_dir() and not stray_teams.is_symlink():
-        _absorb_tree(stray_teams, shared / ".agent_teams")
-
-    # config 的兼容 symlink（<root>/config → infra/config）不是残留：
-    # 沿 symlink 吸收会以 infra/config 自身为"冲突副本"把正本清空
-    for stray_name in ("auth", "runtime", "config", "auto-harness"):
-        stray = root / stray_name
-        if stray.is_dir() and not stray.is_symlink():
-            _absorb_tree(stray, infra / stray_name)
-
-    # 旧路径写兼容：外部脚本/文档仍按 <root>/config 定位 .env
-    _ensure_config_compat_symlink(root)
-
-
-def _ensure_config_compat_symlink(workspace_dir: Path) -> None:
-    """Keep the pre-partition ``<root>/config`` path working after migration.
-
-    The domain/infra partition moved the config family to ``infra/config``;
-    external tooling and user scripts written against the historical
-    ``<root>/config/.env`` location (and documentation published before the
-    partition) still write and read that path. A relative symlink lets both
-    paths address the same files while the old location is phased out.
-
-    Best effort and idempotent: never touches a real legacy directory (the
-    migration owns moving it), replaces only a stale/wrong symlink, and
-    silently skips on platforms that forbid symlink creation (e.g. Windows
-    without developer mode).
-    """
-    infra_config = workspace_dir / _INFRA_DIR_NAME / "config"
-    if not infra_config.is_dir():
-        return
-    legacy = workspace_dir / "config"
-    if legacy.is_symlink():
-        try:
-            if legacy.resolve() == infra_config.resolve():
-                return
-        except OSError:
-            pass
-        try:
-            legacy.unlink()
-        except OSError:
-            logger.debug(
-                "[Compat] failed to replace stale config symlink: %s", legacy
-            )
-            return
-    elif legacy.exists():
-        # A real legacy directory is still in place; the partition migration
-        # owns moving it. Creating a symlink here would shadow user data.
-        return
-    try:
-        legacy.symlink_to(
-            Path(_INFRA_DIR_NAME) / "config", target_is_directory=True
-        )
-        logger.info(
-            "[Compat] linked legacy config path: %s -> %s",
-            legacy,
-            f"{_INFRA_DIR_NAME}/config",
-        )
-    except (OSError, NotImplementedError):
-        logger.debug(
-            "[Compat] config compat symlink not created at %s", legacy
-        )
+    for name in (".checkpoint", ".logs"):
+        legacy = workspace / name
+        new_path = agent_root / name
+        if legacy.exists() and not new_path.exists():
+            agent_root.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(legacy), str(new_path))
 
 
 def get_checkpoint_dir() -> Path:
+    _migrate_legacy_checkpoint_and_logs()
     return get_agent_root_dir() / ".checkpoint"
 
 
 def get_logs_dir() -> Path:
-    """日志根目录（系统区 infra/logs/），各组件桶经此派生。
+    _migrate_legacy_checkpoint_and_logs()
+    return get_agent_root_dir() / ".logs"
 
-    组件桶：agent/（应用运行日志）、core/（openjiwen 家族）、
-    runtime/（openjiuwen_runtime foundation）、video/、process_cli/。
-    运行日志为程序自维护数据：企业版容器内直接打印 stdout 由客户采集，
-    文件副本随 infra 卷按 Pod 生命周期留存；个人版本机持久。
+
+def append_jsonl_log(
+    path: Path,
+    record: dict[str, Any],
+    *,
+    max_bytes: int = _LOG_FILE_MAX_BYTES,
+    backup_count: int = _LOG_FILE_BACKUP_COUNT,
+) -> None:
+    """Append one JSON record with bounded backups and cross-process rotation.
+
+    Use the same numbered rotation as Worker logs. Open and close the handler
+    under the file lock so other processes cannot retain a rotated file handle.
+    A single oversized record is kept intact and rotated on the next append.
     """
-    return get_infra_data_dir() / "logs"
+    line = json.dumps(record, ensure_ascii=False, default=str, separators=(",", ":")) + "\n"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _JSONL_LOG_LOCK, portalocker.Lock(str(path) + ".lock", mode="a", timeout=1):
+        handler = RotatingFileHandler(path, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8")
+        try:
+            size = path.stat().st_size
+            added_bytes = len(line.encode("utf-8")) + len(os.linesep) - 1
+            rotation_enabled = max_bytes > 0 and backup_count > 0
+            if rotation_enabled and size and size + added_bytes > max_bytes:
+                handler.doRollover()
+            handler.stream.write(line)
+            handler.flush()
+        finally:
+            handler.close()
 
 
 def configure_openjiuwen_runtime_logging() -> None:
-    """把 openjiuwen_runtime foundation 文件日志钉到 infra/logs/runtime。
+    """Point openjiuwen_runtime file logs at the current log directory.
 
-    SDK 自带 logging.yaml 的 file handler filename 相对进程 cwd 解析，须在
-    首次 ``get_logger()`` 之前调用；入口进程应在模块顶部调用。
-    失败仅告警，不抛出。
+    The SDK resolves its file handler relative to the process cwd. Call this
+    before the first ``get_logger()``. Failures are logged and swallowed.
     """
     try:
         from openjiuwen_runtime.foundation.log import setup_logging
@@ -2835,33 +2579,31 @@ def configure_openjiuwen_runtime_logging() -> None:
 
 
 def configure_openjiuwen_core_logging(*, suppress_level: int | None = None) -> bool:
-    """把 openjiwen core LogManager 日志钉到 infra/logs/core。
+    """Point openjiwen core logs at the current log directory.
 
-    默认 ``log_path`` 相对进程 cwd 解析，须在任何 ``LogManager.get_logger()``
-    之前调用：``infra/config/logging.yaml`` 存在则整份加载，否则按备用 dict
-    配置（jiuwen.log 与 interface/、performance/ 子目录均相对 log_path 落盘）。
-    失败仅告警，不抛出。
+    When ``config/logging.yaml`` exists it is loaded as-is. Otherwise a
+    built-in config writes under :func:`get_logs_dir`. Failures are logged
+    and swallowed.
 
     Args:
-        suppress_level: 用户未自管 ``logging.yaml`` 时，将全部 openjiwen core
-            logger 级别压至该值；``None`` 表示不压制。
+        suppress_level: Level applied to every core logger when the user does
+            not manage ``logging.yaml``. ``None`` leaves the built-in level.
 
     Returns:
-        True 表示已应用用户自管的 ``logging.yaml``；yaml 缺失、加载失败
-        回退内置配置或整体失败时为 False。
+        True when the user's ``logging.yaml`` was applied.
     """
     user_managed = False
-    _logging_yaml = get_config_dir() / "logging.yaml"
-    if _logging_yaml.exists():
+    logging_yaml = get_config_dir() / "logging.yaml"
+    if logging_yaml.exists():
         try:
             from openjiuwen.core.common.logging.log_config import configure_log
 
-            configure_log(str(_logging_yaml))
+            configure_log(str(logging_yaml))
             user_managed = True
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "openjiwen core logging: failed to load %s; using built-in config: %s",
-                _logging_yaml,
+                logging_yaml,
                 exc,
             )
     if not user_managed:
@@ -2893,7 +2635,7 @@ def get_gateway_log_dir() -> Optional[Path]:
     """获取 gateway 独立日志目录；未配置时返回 ``None``（与其它日志同目录）。
 
     gateway.log 及其轮转归档文件可独立存放于该目录，与其它组件日志
-    （channel.log / agent_server.log / full.log 位于 infra/logs/agent/）分离。
+    （channel.log / agent_server.log / full.log 位于 ``agent/.logs``）分离。
     通过环境变量 ``AGENTOS_GATEWAY_LOG_DIR`` 指定（如 Linux 部署的
     ``/var/log/agentos``）；服务可能运行于 Windows 等系统，代码中不设默认值。
     """
@@ -2904,7 +2646,8 @@ def get_gateway_log_dir() -> Optional[Path]:
 
 
 def get_xy_tmp_dir() -> Path:
-    xy_tmp_dir = get_infra_data_dir() / "tmp" / "xiaoyi"
+    workspace_dir = get_user_workspace_dir()
+    xy_tmp_dir = workspace_dir / "tmp" / "xiaoyi"
     xy_tmp_dir.mkdir(parents=True, exist_ok=True)
     return xy_tmp_dir
 
@@ -3298,47 +3041,41 @@ def mask_sensitive(text: Any) -> str:
     return _sanitize_log_text(str(text))
 
 
+def _sanitize_log_record(record: logging.LogRecord) -> bool:
+    """Replace failed diagnostics with safe summaries and release raw inputs."""
+    successful = True
+    try:
+        record.msg = _sanitize_record_text(record.getMessage())
+    except Exception:
+        record.msg = "[log message omitted: redaction failed]"
+        successful = False
+    finally:
+        record.args = ()
+
+    try:
+        if record.exc_info or record.exc_text:
+            text = record.exc_text or format_log_exception(record.exc_info)
+            text = _sanitize_record_text(text)
+            if _record_text_exceeds_limit(text):
+                text = "[exception diagnostics omitted: redacted output exceeds UTF-8 byte limit]"
+            record.exc_text = text
+    except Exception:
+        record.exc_text = "[exception diagnostics omitted: formatting or redaction failed]"
+        successful = False
+    finally:
+        # A handler must never retry formatting a raw exception after failure,
+        # or retain its locals while a background sink is blocked.
+        record.exc_info = None
+    record.jiuwen_sensitive_sanitized = True
+    return successful
+
+
 class SensitiveDataFilter(logging.Filter):
     """Mask sensitive data in all log messages and tracebacks."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if getattr(record, "jiuwen_sensitive_sanitized", False):
-            return True
-
-        sanitized = True
-        try:
-            message = record.getMessage()
-            record.msg = _sanitize_record_text(message)
-            record.args = ()
-        except Exception:
-            # Never block logging because of desensitization failure.
-            sanitized = False
-
-        # Traceback 由 Formatter.formatException() 在 record.exc_text 中单独渲染，
-        # 不经过 record.getMessage()，因此 message 脱敏覆盖不到。这里提前把
-        # traceback 文本脱敏写入 record.exc_text 并清空 record.exc_info，
-        # 使 logger.exception()/exc_info=True 的异常栈也不会泄露 api_key 等。
-        try:
-            exc_info = record.exc_info
-            if exc_info and not record.exc_text:
-                import traceback as _traceback
-
-                # exc_info 是 (type, value, tb) 三元组。Python 3.10+ 的
-                # traceback.format_exception 新签名只接受单个异常实例：
-                # format_exception(exc, /, limit=None, chain=True)。
-                # 旧的 format_exception(*exc_info)（拆包成 3 个位置参数）依赖
-                # 兼容层，未来版本可能移除；改用 exc_info[1]（异常实例）是
-                # 官方推荐写法，面向未来且行为等价（None 时输出 "NoneType: None"）。
-                formatted = "".join(_traceback.format_exception(exc_info[1]))
-                record.exc_text = _sanitize_record_text(formatted)
-                record.exc_info = None
-            elif record.exc_text:
-                record.exc_text = _sanitize_record_text(record.exc_text)
-        except Exception:
-            # 同样不因脱敏失败而阻断日志输出。
-            sanitized = False
-        if sanitized:
-            record.jiuwen_sensitive_sanitized = True
+        if not getattr(record, "jiuwen_sensitive_sanitized", False):
+            _sanitize_log_record(record)
         return True
 
 
@@ -3364,6 +3101,9 @@ def install_source_record_masking() -> None:
     根 logger），在 LogRecord **创建瞬间**就被脱敏 message 与 traceback，
     保证任何来源的 api_key 都不明文落盘。
 
+    异常诊断只读取内存中的栈位置、异常链/组与备注，不查找源码行或捕获局部变量，
+    避免业务线程在 handler 接收日志前触发 linecache / 文件系统 IO。
+
     覆盖场景：
     - ``app_agentserver.py`` 用 ``logging.getLogger("openjiuwen.harness.security")``
       等 openjiuwen 命名空间 logger；
@@ -3382,37 +3122,11 @@ def install_source_record_masking() -> None:
 
     def _sanitizing_record_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
         record = old_factory(*args, **kwargs)
-        try:
-            # message 脱敏（含 %s/format 格式化后的最终文本）。
-            msg = record.getMessage()
-            record.msg = _sanitize_record_text(msg)
-            record.args = ()
-            # traceback 脱敏：traceback 由 Formatter.formatException 从
-            # record.exc_text 单独渲染，getMessage 覆盖不到。此处提前渲染并脱敏，
-            # 清空 exc_info 使 Formatter 复用已脱敏的 exc_text。
-            exc_info = record.exc_info
-            if exc_info and not record.exc_text:
-                import traceback as _tb
-
-                formatted = "".join(_tb.format_exception(exc_info[1]))
-                record.exc_text = _sanitize_record_text(formatted)
-                record.exc_info = None
-            elif record.exc_text:
-                record.exc_text = _sanitize_record_text(record.exc_text)
-            record.jiuwen_sensitive_sanitized = True
-        except Exception:
-            # 永不因脱敏失败而阻断日志输出。但记录失败（计数 + 首次 stderr 提示），
-            # 避免静默吞掉异常导致 api_key 在无感知下明文泄露。
+        if not _sanitize_log_record(record):
             global _source_masking_failures
             _source_masking_failures += 1
-            if _source_masking_failures == 1:
-                # 仅首次打 stderr（不用 logging，避免自循环），提示运维脱敏失效。
-                # 后续仅靠计数器累积，避免高频失败刷屏。
-                print(
-                    "[jiuwenswarm] source record masking failed — secrets may be "
-                    "exposed in logs; check _source_masking_failures counter",
-                    file=sys.stderr,
-                )
+            # The record already carries fixed safe summaries. Do not retry
+            # raw formatting or perform synchronous diagnostic IO here.
         return record
 
     logging.setLogRecordFactory(_sanitizing_record_factory)
@@ -3420,6 +3134,12 @@ def install_source_record_masking() -> None:
 
 
 _RECORD_BYTE_LIMIT = 64 * 1024
+
+
+def _record_text_exceeds_limit(text: str) -> bool:
+    return len(text) > _RECORD_BYTE_LIMIT or (
+        not text.isascii() and len(text.encode("utf-8", errors="replace")) > _RECORD_BYTE_LIMIT
+    )
 
 
 def _sanitize_record_text(text: str) -> str:
@@ -3431,9 +3151,7 @@ def _sanitize_record_text(text: str) -> str:
     its full-text behavior.
     """
     # Short-circuit on characters to avoid encoding unbounded input.
-    if len(text) > _RECORD_BYTE_LIMIT or (
-        not text.isascii() and len(text.encode("utf-8", errors="replace")) > _RECORD_BYTE_LIMIT
-    ):
+    if _record_text_exceeds_limit(text):
         if text.lstrip().startswith(("{", "[")):
             return json.dumps({
                 "log_payload_omitted": True,
@@ -3475,9 +3193,9 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
 
     channel / agent_server（含 permissions）日志同时汇总写入 ``full.log``；
     gateway 日志**不写入** full.log（无论 gateway.log 是否独立目录）。输出目录：
-    ``<数据根>/infra/logs/agent/``；gateway.log 默认同目录，可通过环境变量
+    ``~/.jiuwenswarm/agent/.logs/``；gateway.log 默认同目录，可通过环境变量
     ``AGENTOS_GATEWAY_LOG_DIR`` 指定独立目录（如 Linux 部署的 ``/var/log/agentos``；
-    目录不可写时降级回默认日志目录）。
+    目录不可写时降级回 ``agent/.logs``）。
 
     级别由 ``config.yaml`` 的 ``logging`` 段控制；环境变量 ``LOG_LEVEL`` 仅覆盖**控制台**级别
     （``log_level`` 参数为 ``None`` 时）。若传入 ``log_level``（如单测），则控制台与各文件级别均为该值。
@@ -3485,7 +3203,7 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     install_runtime_log_filter()
     # 必须在创建 StreamHandler 之前完成：cp1252 → UTF-8，否则中文日志会触发 UnicodeEncodeError。
     _reconfigure_stdio_utf8()
-    logs_root = get_logs_dir() / "agent"
+    logs_root = get_logs_dir()
     logs_root.mkdir(parents=True, exist_ok=True)
 
     levels = _resolve_logging_levels(log_level)
@@ -3765,7 +3483,4 @@ from jiuwenswarm.enterprise.tenant.tenant_paths import (  # noqa: E402
 )
 
 logger = logging.getLogger(__name__)
-# 分区迁移先于 setup_logger 等目录创建行为执行：
-# 旧平铺数据优先整体搬迁，而非退化为逐文件吸收
-migrate_partitioned_data_root_layout()
 setup_logger()

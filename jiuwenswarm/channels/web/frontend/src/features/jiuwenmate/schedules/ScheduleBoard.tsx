@@ -1,15 +1,15 @@
-import { ChevronDown, CircleAlert, CirclePlay, History, ListChecks, Search, Timer } from 'lucide-react';
+import { ChevronDown, CircleAlert, CirclePlay, History, ListChecks, Play, Search, Timer, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ActionMenu } from '../components/ActionMenu';
 import { ColleagueAvatar } from '../components/ColleagueAvatar';
 import type { JiuwenMateActivity, JiuwenMateCategory } from '../types';
-import { filterSchedules, scheduleSummary } from './state';
+import { canEnableSchedule, filterSchedules, scheduleDisplayStatus, scheduleSummary } from './state';
 import { ScheduleDialog } from './ScheduleDialog';
 import { ScheduleHistory } from './ScheduleHistory';
 import type { Schedule, ScheduleDraft, ScheduleRun } from './types';
 
-const STATUSES = ['', 'running', 'paused', 'failed', 'completed'] as const;
+const STATUSES = ['', 'running', 'paused', 'failed', 'expired'] as const;
 const TIME_RANGES = ['7d', '30d', ''] as const;
 
 type BoardColleague = {
@@ -30,6 +30,7 @@ export function ScheduleBoard({
   onUpdate,
   onSetEnabled,
   onDelete,
+  onRun,
   onLoadHistory,
 }: {
   schedules: readonly Schedule[];
@@ -40,6 +41,7 @@ export function ScheduleBoard({
   onUpdate: (planId: string, draft: ScheduleDraft) => void | Promise<void>;
   onSetEnabled: (planId: string, enabled: boolean) => void | Promise<void>;
   onDelete: (planId: string) => void | Promise<void>;
+  onRun: (planId: string) => void | Promise<void>;
   onLoadHistory: (planId: string) => Promise<{ plan: Schedule; runs: ScheduleRun[] }>;
 }) {
   const { t } = useTranslation();
@@ -151,9 +153,10 @@ export function ScheduleBoard({
               </tr>
             ) : visible.map((plan) => {
               const colleague = colleagueOf(plan.agentId);
+              const displayStatus = scheduleDisplayStatus(plan);
               const nextExecution = plan.nextFireAt ?? (plan.scheduleKind === 'once' ? plan.runAt : null);
               return (
-                <tr key={plan.id}>
+                <tr key={plan.id} data-testid="jiuwenmate-schedule-board-row" data-variant={plan.id}>
                   <td>{plan.name}</td>
                   <td>
                     <span className="jiuwenmate-schedule-board__executor">
@@ -180,21 +183,25 @@ export function ScheduleBoard({
                     </span>
                   </td>
                   <td>
-                    <span className="jiuwenmate-schedule-board__status" data-tone={plan.lastStatus}>
+                    <span className="jiuwenmate-schedule-board__status" data-tone={displayStatus} data-testid="jiuwenmate-schedule-board-status">
                       <i aria-hidden />
-                      {t(`jiuwenmate.schedule.status.${plan.lastStatus}`, { defaultValue: plan.lastStatus })}
+                      {t(`jiuwenmate.schedule.status.${displayStatus}`, { defaultValue: displayStatus })}
                     </span>
                   </td>
                   <td>{plan.runCount}</td>
                   <td>
                     <span className="jiuwenmate-schedule-board__actions">
-                      <button type="button" className="jiuwenmate-link-button jiuwenmate-link-button--blue" onClick={() => void onSetEnabled(plan.id, !plan.enabled)}>
+                      <button type="button" className="jiuwenmate-link-button jiuwenmate-link-button--blue"
+                        disabled={!plan.enabled && !canEnableSchedule(plan)}
+                        title={!plan.enabled && !canEnableSchedule(plan) ? t('jiuwenmate.schedule.error.enableExpired') : undefined}
+                        onClick={() => void onSetEnabled(plan.id, !plan.enabled)}>
                         {plan.enabled ? t('jiuwenmate.schedule.pause') : t('jiuwenmate.schedule.resume')}
                       </button>
                       <button type="button" className="jiuwenmate-link-button jiuwenmate-link-button--blue" onClick={() => setEditing(plan)}>{t('jiuwenmate.schedule.edit')}</button>
                       <ActionMenu
                         label={t('jiuwenmate.schedule.more')}
                         align="end"
+                        floating
                         className="jiuwenmate-schedule-board__more"
                         trigger={(
                           <>
@@ -203,7 +210,8 @@ export function ScheduleBoard({
                           </>
                         )}
                         items={[
-                          { key: 'delete', label: t('jiuwenmate.schedule.delete'), onSelect: () => void onDelete(plan.id) },
+                          { key: 'run', label: t('jiuwenmate.schedule.runNow'), icon: Play, onSelect: () => void onRun(plan.id) },
+                          { key: 'delete', label: t('jiuwenmate.schedule.delete'), icon: Trash2, onSelect: () => void onDelete(plan.id) },
                           { key: 'history', label: t('jiuwenmate.schedule.history'), icon: History, onSelect: () => void onLoadHistory(plan.id).then(setHistory).catch(() => undefined) },
                         ]}
                       />
@@ -225,6 +233,10 @@ export function ScheduleBoard({
           saving={saving}
           onClose={() => setEditing(undefined)}
           onSubmit={(agentId, draft) => (editing ? onUpdate(editing.id, draft) : onCreate(agentId, draft))}
+          onSubmitAndEnable={editing ? async (_agentId, draft) => {
+            await onUpdate(editing.id, draft);
+            await onSetEnabled(editing.id, true);
+          } : undefined}
         />
       ) : null}
     </section>

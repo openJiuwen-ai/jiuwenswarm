@@ -6,6 +6,7 @@ from collections.abc import Mapping, Sequence
 from contextlib import closing
 from pathlib import Path
 import sqlite3
+import threading
 from typing import Any
 
 from jiuwenswarm.common.config import get_config
@@ -13,6 +14,12 @@ from jiuwenswarm.common.sqlite_config import normalize_journal_mode, workspace_s
 
 _MAX_TOKEN_COUNT = (1 << 53) - 1
 _CATEGORIES = ("main", "others")
+_WRITE_LOCKS = tuple(threading.Lock() for _ in range(64))
+
+
+def _write_lock(path: Path):
+    """Serialize same-process journal transitions without retaining every session path."""
+    return _WRITE_LOCKS[hash(path.resolve()) % len(_WRITE_LOCKS)]
 
 
 def _token_count(value: Any) -> int | None:
@@ -85,40 +92,41 @@ class SessionTokenUsageLedger:
         safe_input = _token_count(input_tokens)
         safe_output = _token_count(output_tokens)
         self._path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(self._connect()) as connection:
-            connection.execute("PRAGMA busy_timeout = 10000")
-            connection.execute(f"PRAGMA journal_mode = {self._journal_mode}")
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS usage_events (
-                    request_id TEXT PRIMARY KEY,
-                    category TEXT NOT NULL CHECK (category IN ('main', 'others')),
-                    input_tokens INTEGER,
-                    output_tokens INTEGER
+        with _write_lock(self._path):
+            with closing(self._connect()) as connection:
+                connection.execute("PRAGMA busy_timeout = 10000")
+                connection.execute(f"PRAGMA journal_mode = {self._journal_mode}")
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS usage_events (
+                        request_id TEXT PRIMARY KEY,
+                        category TEXT NOT NULL CHECK (category IN ('main', 'others')),
+                        input_tokens INTEGER,
+                        output_tokens INTEGER
+                    )
+                    """
                 )
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS usage_state (
-                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-                    revision INTEGER NOT NULL
+                connection.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS usage_state (
+                        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                        revision INTEGER NOT NULL
+                    )
+                    """
                 )
-                """
-            )
-            connection.execute("INSERT OR IGNORE INTO usage_state VALUES (1, 0)")
-            connection.execute("BEGIN IMMEDIATE")
-            cursor = connection.execute(
-                """
-                INSERT OR IGNORE INTO usage_events
-                    (request_id, category, input_tokens, output_tokens)
-                VALUES (?, ?, ?, ?)
-                """,
-                (normalized_request_id, category, safe_input, safe_output),
-            )
-            if cursor.rowcount:
-                connection.execute("UPDATE usage_state SET revision = revision + 1 WHERE singleton = 1")
-            connection.commit()
+                connection.execute("INSERT OR IGNORE INTO usage_state VALUES (1, 0)")
+                connection.execute("BEGIN IMMEDIATE")
+                cursor = connection.execute(
+                    """
+                    INSERT OR IGNORE INTO usage_events
+                        (request_id, category, input_tokens, output_tokens)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (normalized_request_id, category, safe_input, safe_output),
+                )
+                if cursor.rowcount:
+                    connection.execute("UPDATE usage_state SET revision = revision + 1 WHERE singleton = 1")
+                connection.commit()
 
     def snapshot(self) -> dict[str, Any]:
         if not self._path.exists():

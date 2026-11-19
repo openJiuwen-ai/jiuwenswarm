@@ -140,19 +140,19 @@ def _configure_openjiuwen_logging() -> None:
         )
 
 
-def _start_team_mysql_before_traffic() -> None:
+def _start_team_store_before_traffic() -> None:
     """Create team tables before this process accepts chat.
 
-    Personal edition does not use Gateway MySQL, so this returns immediately.
+    Personal edition does not use the shared team store, so this returns immediately.
     """
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import (
-        get_team_mysql_actor,
-        use_team_mysql,
+    from jiuwenswarm.infrastructure.db.team_store_actor import (
+        get_team_store_actor,
+        use_shared_team_store,
     )
 
-    if not use_team_mysql():
+    if not use_shared_team_store():
         return
-    get_team_mysql_actor()
+    get_team_store_actor()
 
 
 async def _run(host: str, port: int) -> None:
@@ -163,6 +163,24 @@ async def _run(host: str, port: int) -> None:
 
     startup_t0 = time.monotonic()
     logger.info("[AgentServer] starting: ws://%s:%s", host, port)
+
+    # 企业版：冷加载 Manager 下发的日志级别（Pod 拉起/重建时 DB 行生效）。
+    # 放在其余冷加载之前，后续启动日志即按新级别输出。
+    try:
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if is_enterprise():
+            from jiuwenswarm.enterprise.capabilities.logging import (
+                reload_logging_levels_from_gateway_db,
+            )
+
+            await reload_logging_levels_from_gateway_db()
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[AgentServer] logging_config cold load skipped",
+            exc_info=True,
+        )
+
     for import_stage, marked_at in _STARTUP_IMPORT_PHASES:
         logger.info(
             "[AgentServer] startup import stage=%s process_elapsed=%.2fs",
@@ -176,7 +194,7 @@ async def _run(host: str, port: int) -> None:
         time.monotonic() - startup_t0,
     )
 
-    await asyncio.to_thread(_start_team_mysql_before_traffic)
+    await asyncio.to_thread(_start_team_store_before_traffic)
     front = AgentServerFront(host=host, port=port)
     from jiuwenswarm.server.startup_switches import resolve_websocket_enabled, ws_server_config
 

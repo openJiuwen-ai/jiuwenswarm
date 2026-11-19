@@ -12,6 +12,8 @@ import weakref
 from filelock import FileLock, Timeout as FileLockTimeout
 from mcp.types import CallToolResult, TextContent
 
+from jiuwenswarm.common.cua_config import cua_repl_unavailable_reason
+
 
 class DesktopLane:
     def __init__(self):
@@ -37,6 +39,10 @@ def desktop_lane() -> DesktopLane:
 
 
 def _prepare_native_driver() -> None:
+    reason = cua_repl_unavailable_reason()
+    if reason:
+        raise RuntimeError(f"Computer Use native backend is unavailable ({reason}).")
+
     from computer_use.paths import native_driver, repository_root
     from computer_use_native_tools.native import build_native
 

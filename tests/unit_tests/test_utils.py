@@ -18,6 +18,16 @@ import pytest
 from jiuwenswarm.common import utils
 
 
+@pytest.fixture(autouse=True)
+def _isolate_external_cli_state_sidecar(tmp_path, monkeypatch):
+    """旁路文件重定向到临时目录：任何用例都不得读写开发机/CI 的真实用户状态
+    （!10406 检视）。需要特定旁路内容的用例在用例内再次覆写即可。"""
+    sidecar = tmp_path / "sidecar" / "external_cli_state.json"
+    monkeypatch.setattr(
+        utils, "external_cli_state_sidecar_path", lambda *a, **k: sidecar
+    )
+
+
 class TestPathResolution:
     """Test path resolution functions."""
 
@@ -502,22 +512,143 @@ def test_prepare_workspace_copies_rsi_program_dataset_creator(
 
     assert (
         workspace_dir
-        / "domain"
         / "agent"
         / "workspace"
         / "skills"
+        / "workswarm-builtin"
+        / "references"
+        / "capabilities"
         / "rsi-program-dataset-creator"
         / "SKILL.md"
     ).is_file()
 
 
-@pytest.mark.parametrize("skill_name", ["rsi-program-dataset-creator", "agent-group-creator"])
+def test_prepare_workspace_restores_external_cli_agents_from_sidecar(tmp_path, monkeypatch):
+    """数据目录被整体删除（无旧 config 可保留）时，从状态旁路恢复三方 agent 配置。"""
+    import json as json_lib
+    import yaml
+
+    sidecar = tmp_path / "outside" / "external_cli_state.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(
+        json_lib.dumps({
+            "agents": [{"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}],
+            "histories": {"claude": ["D:/tools/claude-old.exe"]},
+            "transport": {"type": "hybrid", "params": {"external_publish_url": "http://hub"}},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda *a, **k: sidecar)
+
+    workspace_dir = tmp_path / ".jiuwenswarm"
+
+    utils.prepare_workspace(
+        overwrite=False,
+        preferred_language="en",
+        workspace_dir=workspace_dir,
+    )
+
+    restored = yaml.safe_load((workspace_dir / "config" / "config.yaml").read_text(encoding="utf-8"))
+    team = restored["modes"]["team"]["jiuwen_team"]
+    assert team["external_cli_agents"] == [
+        {"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}
+    ]
+    assert team["external_cli_path_histories"]["claude"] == ["D:/tools/claude-old.exe"]
+    assert team["external_transport"] == {
+        "type": "hybrid",
+        "params": {"external_publish_url": "http://hub"},
+    }
+
+
+def test_prepare_workspace_keeps_deliberately_empty_external_cli(tmp_path, monkeypatch):
+    """旧 config 存在但用户已全部禁用（空列表）时，不得从旁路把禁用状态翻回启用。"""
+    import json as json_lib
+    import yaml
+
+    sidecar = tmp_path / "outside" / "external_cli_state.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(
+        json_lib.dumps({
+            "agents": [{"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}],
+            "histories": {},
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda *a, **k: sidecar)
+
+    workspace_dir = tmp_path / ".jiuwenswarm"
+    config_dir = workspace_dir / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.yaml").write_text(
+        "\n".join([
+            "modes:",
+            "  team:",
+            "    jiuwen_team:",
+            "      external_cli_agents: []",
+        ]),
+        encoding="utf-8",
+    )
+
+    utils.prepare_workspace(
+        overwrite=False,
+        preferred_language="en",
+        workspace_dir=workspace_dir,
+    )
+
+    restored = yaml.safe_load((config_dir / "config.yaml").read_text(encoding="utf-8"))
+    team = restored["modes"]["team"]["jiuwen_team"]
+    assert not team.get("external_cli_agents")
+
+
+def test_sidecar_refreshes_through_the_config_write_exit(tmp_path, monkeypatch):
+    """agents/histories 更新走 config.py 的真实写出口（dump_yaml_round_trip
+    的挂接点）后，旁路必须同步——防住"写路径未刷新旁路"的回归（!10406 检视）。"""
+    import yaml
+    from jiuwenswarm.common import config as config_module
+    from jiuwenswarm.common.config import update_external_cli_path_histories_in_config
+
+    sidecar = tmp_path / "outside" / "external_cli_state.json"
+    monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda *a, **k: sidecar)
+
+    workspace_dir = tmp_path / ".jiuwenswarm"
+    utils.prepare_workspace(overwrite=True, preferred_language="en", workspace_dir=workspace_dir)
+    config_path = workspace_dir / "config" / "config.yaml"
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", config_path)
+    monkeypatch.setattr(utils, "get_user_workspace_dir", lambda: workspace_dir)
+
+    update_external_cli_agents_in_config = config_module.update_external_cli_agents_in_config
+    update_external_cli_agents_in_config([{"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}])
+    mirrored = yaml.safe_load(sidecar.read_text(encoding="utf-8"))
+    assert mirrored["agents"] == [{"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}]
+
+    update_external_cli_path_histories_in_config({"claude": ["D:/tools/claude-old.exe"]})
+    mirrored = yaml.safe_load(sidecar.read_text(encoding="utf-8"))
+    assert mirrored["histories"]["claude"] == ["D:/tools/claude-old.exe"]
+
+
+def test_refresh_external_cli_state_sidecar_keeps_sidecar_on_read_failure(tmp_path, monkeypatch):
+    """config.yaml 读取失败时跳过旁路刷新：瞬时读失败不得把恢复备份覆盖成空态。"""
+    config_dir = tmp_path / ".jiuwenswarm" / "config"
+    config_dir.mkdir(parents=True)
+    (config_dir / "config.yaml").mkdir()
+
+    existing = {"agents": [{"cli_agent": "claude", "cli_path": "D:/tools/claude.exe"}], "histories": {}}
+    sidecar = tmp_path / "outside" / "external_cli_state.json"
+    sidecar.parent.mkdir(parents=True)
+    sidecar.write_text(json.dumps(existing), encoding="utf-8")
+    monkeypatch.setattr(utils, "external_cli_state_sidecar_path", lambda *a, **k: sidecar)
+
+    utils.refresh_external_cli_state_sidecar(config_dir / "config.yaml", tmp_path / ".jiuwenswarm")
+
+    assert json.loads(sidecar.read_text(encoding="utf-8")) == existing
+
+
 def test_ensure_default_builtin_skills_installs_program_evolution_design(
     tmp_path: Path,
     monkeypatch,
-    skill_name,
 ) -> None:
-    """New built-in skills are copied into an existing workspace on startup."""
+    """The catalog is installed on startup and user edits survive restart."""
+    skill_name = "workswarm-builtin"
     builtin_dir = tmp_path / "builtin-skills"
     user_skills_dir = tmp_path / "user-skills"
     source_skill = builtin_dir / skill_name
@@ -526,6 +657,7 @@ def test_ensure_default_builtin_skills_installs_program_evolution_design(
         f"---\nname: {skill_name}\ndescription: test\n---\n",
         encoding="utf-8",
     )
+    (source_skill / "legacy_hashes.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(utils, "get_builtin_skills_dir", lambda: builtin_dir)
     monkeypatch.setattr(utils, "get_agent_skills_dir", lambda: user_skills_dir)
 
@@ -764,10 +896,10 @@ class TestHardcodedPathsPhase2:
 
         # Original hardcoded: get_user_workspace_dir() / "agent" / "home" / "cron_jobs.json"
         # New: get_agent_home_dir() / "cron_jobs.json"
-        # get_agent_home_dir() = get_user_workspace_dir() / "domain" / "agent" / "home"
+        # get_agent_home_dir() = get_user_workspace_dir() / "agent" / "home"
 
         workspace = get_user_workspace_dir()
-        expected_path = workspace / "domain" / "agent" / "home" / "cron_jobs.json"
+        expected_path = workspace / "agent" / "home" / "cron_jobs.json"
         actual_path = get_agent_home_dir() / "cron_jobs.json"
 
         assert str(actual_path.resolve()) == str(expected_path.resolve()), \
@@ -787,7 +919,7 @@ class TestHardcodedPathsPhase2:
         from jiuwenswarm.common.utils import get_user_workspace_dir
 
         workspace = get_user_workspace_dir()
-        expected_path = workspace / "domain" / "agent" / "workspace" / "task-data.json"
+        expected_path = workspace / "agent" / "workspace" / "task-data.json"
         actual_path = Path(_get_task_data_path())
 
         assert str(actual_path.resolve()) == str(expected_path.resolve()), \
@@ -806,7 +938,7 @@ class TestHardcodedPathsPhase2:
         from jiuwenswarm.common.utils import get_deepagent_user_md_path, get_user_workspace_dir
 
         workspace = get_user_workspace_dir()
-        expected_path = workspace / "domain" / "agent" / "workspace" / "USER.md"
+        expected_path = workspace / "agent" / "workspace" / "USER.md"
         actual_path = get_deepagent_user_md_path()
 
         assert str(actual_path.resolve()) == str(expected_path.resolve()), \
@@ -829,7 +961,7 @@ class TestAdditionalHardcodedPaths:
         monkeypatch.setattr(RailManager, "_instance", None)
 
         workspace = get_user_workspace_dir()
-        expected_path = workspace / "domain" / "agent" / "workspace" / "extensions"
+        expected_path = workspace / "agent" / "workspace" / "extensions"
         rail_manager = RailManager()
 
         extensions_dir = getattr(rail_manager, '_extensions_dir')
@@ -862,7 +994,7 @@ class TestAdditionalHardcodedPaths:
         from jiuwenswarm.common.utils import get_interactions_dir, get_user_workspace_dir
 
         workspace = get_user_workspace_dir()
-        expected_path = workspace / "domain" / "agent" / "workspace" / "interactions"
+        expected_path = workspace / "agent" / "workspace" / "interactions"
         actual_path = get_interactions_dir()
 
         assert str(actual_path.resolve()) == str(expected_path.resolve()), \

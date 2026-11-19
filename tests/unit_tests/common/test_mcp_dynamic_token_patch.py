@@ -372,23 +372,6 @@ async def test_strategy_returns_dynamic_provider_for_marked_server():
 # ---------------------------------------------------------------------------
 
 
-def _make_provider(token: str = "tok-1") -> DynamicTokenProvider:
-    _dispatch_credentials("demo_agent1", "demo-agent-secret1")
-    token_url = "http://token-svc.example/token"
-    provider = DynamicTokenProvider(
-        {"Authorization": "Bearer static", "X-Static": "s"},
-        {"qk": "qv"},
-        token_url,
-        "srv-1",
-    )
-
-    async def _fake_fetch() -> str:
-        return token
-
-    provider._fetch_token = _fake_fetch  # type: ignore[method-assign]
-    return provider
-
-
 @pytest.mark.asyncio
 async def test_auth_flow_static_headers_then_dynamic_actor_header():
     provider = _make_provider(token="tok-1")
@@ -724,7 +707,7 @@ def _patch_httpx(monkeypatch):
 async def test_preflight_dynamic_token_success_adds_header(monkeypatch, _patch_httpx):
     _dispatch_credentials("demo_agent1", "demo-agent-secret1")
 
-    async def _fake_fetch(token_url, creds, *, client=None, timeout_s=None):
+    async def _fake_fetch(token_url, creds, *, client=None, timeout_s=None, ssl_verify=True):
         return "fresh-tok"
 
     import jiuwenswarm.common.mcp_dynamic_token_patch as _mod
@@ -746,7 +729,7 @@ async def test_preflight_dynamic_token_success_adds_header(monkeypatch, _patch_h
 async def test_preflight_dynamic_token_failure_probes_with_empty_header(monkeypatch, _patch_httpx):
     _dispatch_credentials("demo_agent1", "demo-agent-secret1")
 
-    async def _failing_fetch(token_url, creds, *, client=None, timeout_s=None):
+    async def _failing_fetch(token_url, creds, *, client=None, timeout_s=None, ssl_verify=True):
         raise McpDynamicTokenUnavailableError(token_url, "connection refused")
 
     import jiuwenswarm.common.mcp_dynamic_token_patch as _mod
@@ -768,7 +751,7 @@ async def test_preflight_dynamic_token_failure_probes_with_empty_header(monkeypa
 async def test_preflight_default_does_not_fetch_token(monkeypatch, _patch_httpx):
     _dispatch_credentials("demo_agent1", "demo-agent-secret1")
 
-    async def _must_not_fetch(token_url, creds, *, client=None, timeout_s=None):
+    async def _must_not_fetch(token_url, creds, *, client=None, timeout_s=None, ssl_verify=True):
         raise AssertionError("dynamic_token_url=None 时不应取 token")
 
     import jiuwenswarm.common.mcp_dynamic_token_patch as _mod
@@ -1541,7 +1524,7 @@ def test_unmark_evicts_all_session_providers():
 async def test_preflight_dual_token_gateway_carries_turn_user_token(monkeypatch, _patch_httpx):
     _dispatch_credentials("demo_agent1", "demo-agent-secret1")
 
-    async def _fake_fetch(token_url, creds, *, client=None, timeout_s=None):
+    async def _fake_fetch(token_url, creds, *, client=None, timeout_s=None, ssl_verify=True):
         return "fresh-tok"
 
     import jiuwenswarm.common.mcp_dynamic_token_patch as _mod
@@ -1590,7 +1573,7 @@ async def test_preflight_marked_gateway_without_creds_keeps_static(_patch_httpx)
 async def test_preflight_dual_token_actor_failure_with_user_token(monkeypatch, _patch_httpx):
     _dispatch_credentials("demo_agent1", "demo-agent-secret1")
 
-    async def _failing_fetch(token_url, creds, *, client=None, timeout_s=None):
+    async def _failing_fetch(token_url, creds, *, client=None, timeout_s=None, ssl_verify=True):
         raise McpDynamicTokenUnavailableError(token_url, "connection refused")
 
     import jiuwenswarm.common.mcp_dynamic_token_patch as _mod
@@ -1678,7 +1661,12 @@ def _free_port() -> int:
 async def _serve(app: Any):
     """在独立端口运行真实 uvicorn 服务器，yield (base_url, records)。"""
     import uvicorn
+    from sse_starlette.sse import AppStatus
 
+    # A previous in-process Uvicorn shutdown leaves this process-wide flag set.
+    # Each probe server needs a fresh SSE lifetime; restore the caller's state.
+    previous_should_exit = AppStatus.should_exit
+    AppStatus.should_exit = False
     port = _free_port()
     config = uvicorn.Config(
         app, host="127.0.0.1", port=port, log_level="error", lifespan="on"
@@ -1698,6 +1686,8 @@ async def _serve(app: Any):
             await asyncio.wait_for(task, timeout=10)
         except Exception:  # noqa: BLE001 - 关停失败不影响断言结果
             task.cancel()
+        finally:
+            AppStatus.should_exit = previous_should_exit
 
 
 def _build_sse_gateway_app(records: list[dict[str, Any]]) -> Any:
@@ -1959,7 +1949,8 @@ async def test_real_sse_client_reconnect_uses_current_callers_token(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_real_streamable_http_client_switches_user_per_turn(monkeypatch):
+@pytest.mark.parametrize("previous_server_exited", [False, True])
+async def test_real_streamable_http_client_switches_user_per_turn(monkeypatch, previous_server_exited):
     """真实 StreamableHttpClient：建连/逐轮调用/重连都按当轮用户令牌出网。
 
     重连段为检视 ④ 回归：SDK 的 connect 与 reconnect 都经 ``_submit`` 提交
@@ -1973,15 +1964,16 @@ async def test_real_streamable_http_client_switches_user_per_turn(monkeypatch):
     provider 的 last-known），属旧连接自身的收尾，不是新连接握手；本组合
     （FastMCP + 真实 SDK）的 streamable 传输不开启新的 GET 事件流（首连后
     亦无），故握手断言落在 initialize / notifications/initialized 上。
-    注 2：所有重连段共用本用例的**同一个 client**——同进程在既有
-    streamable 会话关闭后新建第二个 client 会踩 SDK 已知问题（后续建连
-    在 initialize 响应处挂死，见 e2e 用例 docstring；CI Linux 实证），
-    拆成独立用例会复现。
+    注 2：覆盖进程中尚无服务器退出、以及上一个服务器已退出两种状态。
+    探针服务器必须隔离 SSE 的全局退出标记，否则新会话的 initialize
+    响应会被旧标记提前关闭，表现为客户端建连超时。
     """
     from openjiuwen.core.foundation.tool.mcp.client.streamable_http_client import (
         StreamableHttpClient,
     )
+    from sse_starlette.sse import AppStatus
 
+    monkeypatch.setattr(AppStatus, "should_exit", previous_server_exited)
     _enable_real_dynamic_gateway(monkeypatch, "srv-real-stream")
     records: list[dict[str, Any]] = []
 
@@ -2038,3 +2030,4 @@ async def test_real_streamable_http_client_switches_user_per_turn(monkeypatch):
             assert _auth_for(records, "notifications/initialized") == "Bearer static"
         finally:
             await client.disconnect(timeout=5)
+    assert AppStatus.should_exit is previous_server_exited

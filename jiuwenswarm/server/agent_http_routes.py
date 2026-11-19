@@ -20,11 +20,6 @@ from urllib.parse import parse_qs
 from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from openjiuwen_protocol.e2a.runtime_http_routes import (
-    RUNTIME_HTTP_API_PREFIX as API_PREFIX,
-    RUNTIME_HTTP_STREAM_OVERRIDES,
-    resolve_runtime_http_route,
-)
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -46,6 +41,7 @@ from jiuwenswarm.server.transports.http_sink import SSESink, UnaryHTTPSink
 logger = logging.getLogger(__name__)
 
 HTTP_CONNECTION_ID = "http"
+API_PREFIX = "/api/v1"
 
 
 class _RequestBodyTooLarge(Exception):
@@ -163,11 +159,11 @@ def build_http_app(app_services: AppServices) -> FastAPI:
         await invoke_unary(ctx, http_chat.handle_http_chat)
         return JSONResponse(ctx.sink.body or {}, status_code=ctx.sink.status_code)
 
-    @app.post(f"{API_PREFIX}{resolve_runtime_http_route(ReqMethod.CHAT_SEND.value).path}")
+    @app.post(f"{API_PREFIX}/chat/completions")
     async def chat_completions(request: Request):
         return await _runtime_chat(app_services, request, ReqMethod.CHAT_SEND)
 
-    @app.post(f"{API_PREFIX}{resolve_runtime_http_route(ReqMethod.CHAT_RESUME.value).path}")
+    @app.post(f"{API_PREFIX}/chat/resume")
     async def chat_resume(request: Request):
         return await _runtime_chat(app_services, request, ReqMethod.CHAT_RESUME)
 
@@ -191,15 +187,16 @@ def _register_declared_routes(app: FastAPI, app_services: AppServices) -> None:
     for method, verb, path in declared_http_routes():
         _add_declared_route(app, app_services, method, verb, path)
     _register_enterprise_expert_routes(app, app_services)
-    for method, verb, path in RUNTIME_HTTP_STREAM_OVERRIDES:
-        handler = _handler_for(method)
-        if handler is not None:
-            app.add_api_route(
-                f"{API_PREFIX}{path}",
-                _make_method_endpoint(app_services, method, handler, force_stream=True),
-                methods=[verb],
-                name=f"{verb} {path}",
-            )
+    history = _handler_for(ReqMethod.HISTORY_GET.value)
+    if history is not None:
+        app.add_api_route(
+            f"{API_PREFIX}/sessions/{{session_id}}/history/stream",
+            _make_method_endpoint(
+                app_services, ReqMethod.HISTORY_GET.value, history, force_stream=True
+            ),
+            methods=["GET"],
+            name="GET /sessions/{session_id}/history/stream",
+        )
 
 
 def _add_declared_route(app: FastAPI, app_services: AppServices, method: str, verb: str, path: str) -> None:

@@ -210,7 +210,10 @@ class DingTalkInboundHandler:
 
     def matches_connection(self, binding: DingTalkBinding) -> bool:
         connection = self._service.connection_of(binding.namespace_id, binding.agent_id)
-        return connection is not None and (connection.channel, connection.connection_key) == (
+        if connection is None:
+            self._service.get_config(binding.namespace_id, binding.agent_id)
+            return True
+        return (connection.channel, connection.connection_key) == (
             "dingtalk",
             binding.app_id,
         )
@@ -355,11 +358,12 @@ class DingTalkInboundHandler:
                 principal_ref=f"dingtalk:{binding.app_id}:{event.sender_staff_id}",
                 startup_scope=scope, source_scope=scope, policy_revision=policy_revision,
             )
-            if not is_history and await self._manager.handle_im_permission_reply(
+            if not is_history and not is_group and await self._manager.handle_im_permission_reply(
                 event.text, namespace_id=binding.namespace_id, agent_id=binding.agent_id,
                 access=access, channel="dingtalk", target_id=target_id,
                 app_id=binding.app_id, source_message_id=event.message_id,
                 is_direct_message=not is_group,
+                receiver_bot_mentioned=event.receiver_bot_mentioned,
             ):
                 return InboundDisposition.HANDLED
             if event.conversation_type == "2":
@@ -410,6 +414,18 @@ class DingTalkInboundHandler:
                         binding.namespace_id, binding.agent_id, group.group_chat_id,
                     )
                     if membership.status != "active":
+                        return InboundDisposition.HANDLED
+                    if received_at < membership.visible_from:
+                        logger.info("[JiuwenMate] stale DingTalk group trigger ignored: agent_id=%s message_id=%s",
+                                    binding.agent_id, event.message_id)
+                        return InboundDisposition.HANDLED
+                    if await self._manager.handle_im_permission_reply(
+                        event.text, namespace_id=binding.namespace_id, agent_id=binding.agent_id,
+                        access=access, channel="dingtalk", target_id=target_id, app_id=binding.app_id,
+                        source_message_id=event.message_id, is_direct_message=False,
+                        receiver_bot_mentioned=event.receiver_bot_mentioned,
+                        mentions_other=bool(event.mention_ids) and not event.receiver_bot_mentioned,
+                    ):
                         return InboundDisposition.HANDLED
                 if event.group_name:
                     await asyncio.to_thread(

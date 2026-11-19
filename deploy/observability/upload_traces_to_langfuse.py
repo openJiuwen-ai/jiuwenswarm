@@ -68,8 +68,8 @@ def _default_traces_dir() -> str:
     """
     data_dir = os.getenv("JIUWENSWARM_DATA_DIR")
     if data_dir:
-        return str(Path(data_dir) / "domain" / ".trace")
-    return str(Path.home() / ".jiuwenswarm" / "domain" / ".trace")
+        return str(Path(data_dir) / ".trace")
+    return str(Path.home() / ".jiuwenswarm" / ".trace")
 
 
 def _iter_lines(path: str):

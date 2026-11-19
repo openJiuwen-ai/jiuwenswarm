@@ -616,7 +616,7 @@ def test_reconcile_keeps_team_when_session_dir_exists(
     from jiuwenswarm.enterprise.team.session_cleanup import reconcile_teams_with_sessions
 
     volume = _use_personal_volume(tmp_path, monkeypatch)
-    (volume / "domain" / "agent" / "sessions" / "sess-keep").mkdir(parents=True)
+    (volume / "agent" / "sessions" / "sess-keep").mkdir(parents=True)
     control, svc = _bind_reconcile_stores(tmp_path)
     try:
         ident = _ident()
@@ -642,7 +642,7 @@ def test_reconcile_purges_team_when_session_dir_missing(
     from jiuwenswarm.enterprise.team.session_cleanup import reconcile_teams_with_sessions
 
     volume = _use_personal_volume(tmp_path, monkeypatch)
-    (volume / "domain" / "agent" / "sessions" / "sess-keep").mkdir(parents=True)
+    (volume / "agent" / "sessions" / "sess-keep").mkdir(parents=True)
     control, svc = _bind_reconcile_stores(tmp_path)
     try:
         ident = _ident()
@@ -731,7 +731,7 @@ def test_reconcile_purges_when_tenant_sessions_dir_missing(
     volume.mkdir()
     ident = _ident()
     key = build_tenant_key(ident.group_id, ident.bot_id, ident.user_id)
-    (volume / "domain" / f"workspace_{key}").mkdir(parents=True)
+    (volume / f"workspace_{key}").mkdir(parents=True)
     monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: volume)
     monkeypatch.setattr(
         "jiuwenswarm.enterprise.tenant.tenant_paths.is_enterprise", lambda: True,
@@ -757,7 +757,7 @@ def test_reconcile_purges_when_tenant_sessions_dir_missing(
         )) / "sessions" / "sess-wiped"
         assert not expected.is_dir()
         assert expected == (
-            volume / "domain" / f"workspace_{key}" / "agent" / "sessions" / "sess-wiped"
+            volume / f"workspace_{key}" / "agent" / "sessions" / "sess-wiped"
         )
     finally:
         _unbind_reconcile_stores()
@@ -805,7 +805,7 @@ async def test_list_and_create_wait_for_startup_sweep_once(
 
     monkeypatch.setattr(team_control, "_server_global", _global)
     monkeypatch.setattr(
-        "jiuwenswarm.infrastructure.db.team_mysql_actor.run_team_store",
+        "jiuwenswarm.infrastructure.db.team_store_actor.run_team_store",
         _stop_after_wait,
     )
     monkeypatch.setattr(
@@ -1249,6 +1249,12 @@ def test_mysql_reserve_counts_extra_teams_before_the_actor_transaction(monkeypat
     import threading
 
     svc = TeamQuotaService()
+    monkeypatch.setenv("GATEWAY_DB_TYPE", "mysql")
+    monkeypatch.setenv("GATEWAY_DB_HOST", "127.0.0.1")
+    monkeypatch.setenv("GATEWAY_DB_PORT", "3306")
+    monkeypatch.setenv("GATEWAY_DB_USER", "team")
+    monkeypatch.setenv("GATEWAY_DB_PASSWORD", "team")
+    monkeypatch.setenv("GATEWAY_DB_NAME", "team")
     monkeypatch.setattr(svc, "_use_mysql", lambda: True)
     monkeypatch.setattr(svc, "list_policies", lambda: [])
 

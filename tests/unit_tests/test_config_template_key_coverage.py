@@ -171,15 +171,6 @@ _ACCEPTED_KEYS: dict[tuple[str, ...], str] = {
         "an unconfigured main agent stays unbounded. Distributed team and "
         "yuanrong configs keep an explicit value as a per-deployment choice."
     ),
-    ("symphony", "fingerprint", "normalization"): (
-        "Retired. SymphonyConfig builds `fingerprint` from `scan` and "
-        "`extraction` only; no reader in this tree, in openjiuwen, or in the "
-        "frontend."
-    ),
-    ("symphony", "skill_retrieval", "retrieve"): (
-        "Retired. Nothing fetches skill_retrieval.retrieve; the block survives "
-        "only where a writer round-trips the file it sits in."
-    ),
     ("modes", "team", "jiuwen_team", "enable_permissions"): (
         "Retired deliberately. The team-level switch was removed from this "
         "template when _resolve_enable_permissions stopped reading it and took "
@@ -287,6 +278,29 @@ def test_template_covers_every_key_a_shipped_config_carries(relative: str):
         f"record beside _ACCEPTED_KEYS / _ACCEPTED_SUBTREES in this module why "
         f"it is not an option this template owes the operator."
     )
+
+
+def test_the_default_model_entry_names_vendor_key(monkeypatch):
+    """``VENDOR_KEY`` reached nothing but the env fallback.
+
+    ``get_default_models`` reads ``VENDOR_KEY`` only in its env-fallback branch,
+    which an operator whose config carries ``models.defaults`` never takes; this
+    template always ships one. So the default entry itself has to name the key:
+    a fresh installation copies the template verbatim, and an existing one gains
+    it through ``migrate_config_from_template``. ``.env.template`` alone only
+    documents the variable.
+    """
+    from jiuwenswarm.common.config import resolve_env_vars
+
+    template = _load(_TEMPLATE)
+    entry = template["models"]["defaults"][0]["model_client_config"]
+    assert "vendor_key" in entry
+
+    monkeypatch.delenv("VENDOR_KEY", raising=False)
+    assert resolve_env_vars(entry["vendor_key"]) == ""
+
+    monkeypatch.setenv("VENDOR_KEY", "opencode-go")
+    assert resolve_env_vars(entry["vendor_key"]) == "opencode-go"
 
 
 def test_every_accepted_divergence_is_still_a_divergence():

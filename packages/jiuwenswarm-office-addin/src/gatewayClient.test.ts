@@ -35,7 +35,7 @@ describe('GatewayClient', () => {
     FakeWebSocket.instances = [];
     vi.stubGlobal('WebSocket', FakeWebSocket);
     vi.stubGlobal('window', {
-      location: { protocol: 'https:', host: 'localhost:3001' },
+      location: { protocol: 'https:', host: 'localhost:3001', search: '' },
       localStorage: { getItem: () => 'office-test-owner' },
       addEventListener: vi.fn(),
     });
@@ -48,7 +48,7 @@ describe('GatewayClient', () => {
   async function connected(): Promise<{ client: GatewayClient; socket: FakeWebSocket }> {
     const client = new GatewayClient('office_powerpoint');
     const opening = client.connect();
-    const socket = FakeWebSocket.instances[0];
+    const socket = FakeWebSocket.instances.at(-1)!;
     socket.open();
     await opening;
     return { client, socket };
@@ -72,6 +72,15 @@ describe('GatewayClient', () => {
     client.disconnect();
   });
 
+  it.each([
+    ['', 'office-test-owner'],
+    ['?u=office-installed&_host_Info=PowerPoint', 'office-installed'],
+  ])('connects as the user in the pane URL %j, else the stored one', (search, userId) => {
+    window.location.search = search;
+    void new GatewayClient('office_word').connect();
+    expect(FakeWebSocket.instances[0].url).toBe(`wss://localhost:3001/ws?app_id=office_word&user_id=${userId}`);
+  });
+
   it('answers a request with its payload, and a refusal with the code of the frame', async () => {
     const { client, socket } = await connected();
     const renewed = client.request('client.renew', { attachment_id: 'att_1' });
@@ -93,6 +102,17 @@ describe('GatewayClient', () => {
     client.disconnect();
   });
 
+  it('gives the requests of panes sharing one Office user, sent in the same instant, different ids', async () => {
+    const panes = [await connected(), await connected()];
+    const attaches = panes.map(({ client }) => client.request('client.attach'));
+    await Promise.resolve();
+    const [first, second] = panes.map(({ socket }) => socket.sent[0].id);
+    expect(first).not.toBe(second);
+    panes.forEach(({ socket }) => socket.message({ type: 'res', id: socket.sent[0].id, ok: true, payload: {} }));
+    await Promise.all(attaches);
+    panes.forEach(({ client }) => client.disconnect());
+  });
+
   it('fails the requests of a dropped connection, reconnects, and stops for good on disconnect', async () => {
     const { client, socket } = await connected();
     const reconnected = vi.fn();
@@ -110,6 +130,23 @@ describe('GatewayClient', () => {
     client.disconnect();
     await vi.advanceTimersByTimeAsync(30_000);
     expect(FakeWebSocket.instances).toHaveLength(2);
+  });
+
+  it('tells when the connection is down, which attempt comes next and when, and when it is open again', async () => {
+    const { client, socket } = await connected();
+    const states = vi.fn();
+    client.onConnectionChange(states);
+    socket.close();
+    expect(states).toHaveBeenLastCalledWith({ kind: 'down', attempt: 1, retryAt: Date.now() + 1000 });
+    await vi.advanceTimersByTimeAsync(1000);
+    FakeWebSocket.instances[1].close();
+    await Promise.resolve();
+    expect(states).toHaveBeenLastCalledWith({ kind: 'down', attempt: 2, retryAt: Date.now() + 2000 });
+    await vi.advanceTimersByTimeAsync(2000);
+    FakeWebSocket.instances[2].open();
+    await Promise.resolve();
+    expect(states).toHaveBeenLastCalledWith({ kind: 'open' });
+    client.disconnect();
   });
 
   it('reports the recovery when the very first connection attempt failed', async () => {

@@ -4,8 +4,13 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
+
+import pytest
 
 from jiuwenswarm.agents.harness.common.tools.verified_download_assets import (
     VerifiedDownloadAsset,
@@ -22,6 +27,7 @@ def _stage_asset(
     *,
     now: float,
     expires_at: float,
+    reference_only: bool = False,
 ) -> tuple[VerifiedDownloadAssetOwner, VerifiedDownloadAsset]:
     source = tmp_path / "approved report.md"
     source.write_text("approved", encoding="utf-8")
@@ -34,6 +40,7 @@ def _stage_asset(
         source,
         file_name=source.name,
         expires_at=expires_at,
+        reference_only=reference_only,
     )
     return owner, asset
 
@@ -177,3 +184,75 @@ def test_verified_download_info_uses_sealed_asset_and_original_name(
     assert payload is not None
     assert payload["path"] == asset.sealed_path.as_posix()
     assert payload["name"] == "approved report.md"
+
+
+def test_reference_token_through_symlink_parent_survives_owner_reload(tmp_path: Path) -> None:
+    directory = tmp_path / "real-directory"
+    directory.mkdir()
+    alias = tmp_path / "directory-alias"
+    alias.symlink_to(directory, target_is_directory=True)
+    owner, asset = _stage_asset(alias, now=100, expires_at=0, reference_only=True)
+    manager = WebFileDownloadManager("s" * 32, asset_owner=owner)
+    token = manager.generate_verified_asset_token(asset, file_name="report.md", session_id="alias")
+
+    recovered_owner = VerifiedDownloadAssetOwner(
+        root=owner.root, now_fn=lambda: 100_000, start_sweeper=False,
+    )
+    recovered = WebFileDownloadManager("s" * 32, asset_owner=recovered_owner)
+    payload = recovered.validate_token(token, session_id="alias")
+
+    assert payload is not None
+    assert Path(payload["path"]) == directory / "approved report.md"
+    sidecar = json.loads((owner.root / f"{asset.asset_id}.json").read_text())
+    assert sidecar["sealed_path"] == payload["path"]
+    recovered_owner.prune()
+    assert recovered.validate_token(token, session_id="alias") is not None
+
+
+def test_reference_token_and_digest_restore_from_durable_history(tmp_path: Path) -> None:
+    from jiuwenswarm.server.control.history_service import load_history_page
+    from jiuwenswarm.server.runtime.session.session_history import (
+        append_history_record,
+        flush_history_writes,
+    )
+
+    owner, asset = _stage_asset(tmp_path, now=100, expires_at=0, reference_only=True)
+    manager = WebFileDownloadManager("s" * 32, asset_owner=owner)
+    token = manager.generate_verified_asset_token(asset, file_name="report.md", session_id="reference-history")
+    url = manager.generate_download_url(token)
+    append_history_record(
+        session_id="reference-history", request_id="reference-request", channel_id="web",
+        role="assistant", event_type="chat.file", content="", timestamp=100,
+        extra={"files": [{"download_token": token, "download_url": url}]},
+    )
+    flush_history_writes()
+    asset.sealed_path.write_bytes(b"different current content")
+    recovered_owner = VerifiedDownloadAssetOwner(root=owner.root, now_fn=lambda: 100_000, start_sweeper=False)
+    recovered = WebFileDownloadManager("s" * 32, asset_owner=recovered_owner)
+    records = load_history_page("reference-history", 1)["messages"]
+    saved = next(record for record in records if record.get("event_type") == "chat.file")["files"][0]
+    restored = parse_qs(urlsplit(saved["download_url"]).query)["token"][0]
+    assert restored == saved["download_token"] == token
+    payload = recovered.validate_token(restored, session_id="reference-history")
+    assert set(payload) == {"kind", "asset_id", "path", "exp", "size", "digest", "name", "sid"}
+    assert payload["exp"] == 0
+    assert payload["digest"] == "sha256:" + hashlib.sha256(b"approved").hexdigest()
+    assert recovered.validate_token(restored, session_id="other-session") is None
+    other_owner = VerifiedDownloadAssetOwner(root=tmp_path / "other-assets", start_sweeper=False)
+    assert WebFileDownloadManager("s" * 32, asset_owner=other_owner).validate_token(restored) is None
+    recovered_owner.revoke(asset)
+    assert recovered.validate_token(restored) is None
+    asset.sealed_path.unlink()
+    assert json.loads(base64.urlsafe_b64decode(restored.split(".")[0]))["digest"] == payload["digest"]
+
+
+@pytest.mark.parametrize("expiry", [False, None, "0", float("nan"), float("inf")])
+def test_invalid_reference_expiry_never_bypasses_registration(tmp_path: Path, expiry) -> None:
+    owner, asset = _stage_asset(tmp_path, now=100, expires_at=0, reference_only=True)
+    manager = WebFileDownloadManager("s" * 32, asset_owner=owner)
+    token = manager.generate_verified_asset_token(asset, file_name="report.md", session_id="reference")
+    payload = manager.validate_token(token)
+    payload["exp"] = expiry
+    invalid = manager._sign_payload(payload)
+    assert manager.validate_token(invalid) is None
+    assert manager.validate_token(invalid, check_expiry=False) is None

@@ -422,7 +422,13 @@ def main() -> None:
             api_key = validate_model_options(args)
         except ModelOptionsError as exc:
             parser.error(str(exc))
+        # Prewarm exec: credential references for the REPL path too (the
+        # single-command branch prewarms inside the streams block below).
         if args.prompt is None:
+            from jiuwenswarm.common.credentials import prewarm_from_config
+            from jiuwenswarm.common.config import get_config_raw
+
+            prewarm_from_config(get_config_raw())
             from jiuwenswarm.channels.process_cli.repl import run_repl
 
             code = asyncio.run(run_repl(args))
@@ -437,6 +443,13 @@ def main() -> None:
         ) as streams:
             diagnostic_log_path = streams.log_path
             try:
+                # Prewarm exec: credential references before the model client
+                # is built, so model probing and chat use the resolved values
+                # instead of raw reference strings.
+                from jiuwenswarm.common.credentials import prewarm_from_config
+                from jiuwenswarm.common.config import get_config_raw
+
+                prewarm_from_config(get_config_raw())
                 model_entry = prepare_model_options(args, api_key)
             except ModelOptionsError as exc:
                 _write_stderr(streams.stderr, f"jiuwenswarm-process: 错误：{exc}")

@@ -1,6 +1,7 @@
 """Disk-backed lifecycle scenarios; runtime calls are isolated from LLMs."""
 
 import asyncio
+import re
 import sys
 import threading
 import time
@@ -13,6 +14,7 @@ import pytest
 from jiuwenswarm.server.runtime.session import (
     lifecycle as lc,
     project_store,
+    session_archive,
     session_metadata as sm,
 )
 from jiuwenswarm.server.runtime.session.session_archive import SessionArchiveService
@@ -69,6 +71,16 @@ async def test_gateway_session_events_carry_project_id(archive, monkeypatch):
     await methods["session.archive"](
         object(), "req", {"session_ids": ["sess_a"]}, None, "alice"
     )
+    accepted = channel.send_response.await_args.kwargs["payload"]["results"][0]
+    assert accepted["project_id"] == "default"
+    assert accepted["stop_pending"] is True
+    assert events == []
+    # The fixture drains real finalizers, but the first response remains the
+    # acceptance snapshot. A repeated request now observes completed cleanup.
+    assert (root / "sessions_archived" / "sess_a").is_dir()
+    await methods["session.archive"](
+        object(), "req-completed", {"session_ids": ["sess_a"]}, None, "alice"
+    )
     # session.archived 直接事件必须符合 §5.10.11 契约：project_id 必返。
     assert len(events) == 1
     event, payload = events[0]
@@ -77,9 +89,8 @@ async def test_gateway_session_events_carry_project_id(archive, monkeypatch):
     assert payload["project_id"] == "default"
     assert payload["archived"] is True
     assert isinstance(payload["archived_at"], float)
-    # Archive now returns before the directory move; the event says cleanup is
-    # still pending instead of pretending it already finished.
-    assert payload["stop_pending"] is True
+    assert payload["stop_pending"] is False
+    assert payload["finalizing"] is False
     await methods["session.delete"](
         object(), "req", {"session_id": "sess_a"}, None, "alice"
     )
@@ -420,6 +431,37 @@ async def test_running_session_archive_and_delete_are_accepted(archive):
     assert deleted["ok"] is True
     assert deleted["finalizing"] is True
     runtime.delete_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_session_delete_completed_emits_fixed_format_log(archive, caplog):
+    service, create, _root, _runtime = archive
+    create("sess_del_log")
+
+    with caplog.at_level("INFO", logger=session_archive.logger.name):
+        deleted = await service.session("sess_del_log", "delete", "web")
+
+    assert deleted["ok"] is True
+    # Every completed delete must emit this fixed-format audit line exactly
+    # once: it is the only durable success trace outside the lifecycle state.
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == session_archive.logger.name
+    ]
+    completions = [
+        message
+        for message in messages
+        if message.startswith("session delete completed:")
+    ]
+    assert len(completions) == 1
+    # project_id is in the global log-masking key list, so it always renders
+    # as the masked+fingerprint form; session_id stays in clear text.
+    assert re.fullmatch(
+        r"session delete completed: session_id=sess_del_log "
+        r"project_id=\*{6}\(fp:[0-9a-f]{8}\)",
+        completions[0],
+    )
 
 
 @pytest.mark.parametrize("state", ["queued", "running", "waiting_for_control", "succeeded", "failed", "cancelled"])
@@ -1493,6 +1535,85 @@ async def test_non_terminal_without_waiters_skips_server_push(monkeypatch):
     )
 
     push.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_terminal_team_task_without_waiters_uses_session_live(monkeypatch):
+    """队长流的等待者走了之后，终态子任务仍进团队直播。"""
+    from e2a.wire_codec import parse_agent_server_wire_chunk
+
+    from jiuwenswarm.agents.harness.team import team_manager
+
+    manager = team_manager.TeamManager()
+    monkeypatch.setattr(team_manager, "_team_manager", manager)
+    server_push = AsyncMock()
+    monkeypatch.setattr(manager, "_push_event_without_waiter", server_push)
+    published: list[dict] = []
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.team.push_fanout.publish",
+        published.append,
+    )
+    manager.begin_round("sess_a", "req_1", terminal_armed=True)
+
+    await manager.broadcast_event(
+        "sess_a",
+        {"event_type": "team.task", "event": {
+            "type": "team.task.created", "task_id": "task_1", "status": "pending",
+        }},
+        channel_id="web",
+    )
+    await manager.broadcast_event(
+        "sess_a", {"event_type": "chat.delta", "content": "hi"}, channel_id="web",
+    )
+    completed = {
+        "event_type": "team.task",
+        "event": {
+            "type": "team.task.completed",
+            "task_id": "task_1",
+            "status": "completed",
+        },
+    }
+    await manager.broadcast_event("sess_a", completed, channel_id="web")
+
+    server_push.assert_not_awaited()
+    assert len(published) == 1
+    wire = published[0]
+    assert wire["metadata"]["delivery_scope"] == "session_live"
+    assert wire["session_id"] == "sess_a"
+    chunk = parse_agent_server_wire_chunk(wire)
+    assert chunk.request_id == "team-session-live:sess_a"
+    assert chunk.payload["event_type"] == "team.task"
+    assert chunk.payload["event"]["status"] == "completed"
+    assert chunk.payload["session_id"] == "sess_a"
+
+
+@pytest.mark.asyncio
+async def test_terminal_team_task_with_waiters_stays_on_the_queue(monkeypatch):
+    from jiuwenswarm.agents.harness.team import team_manager
+
+    manager = team_manager.TeamManager()
+    monkeypatch.setattr(team_manager, "_team_manager", manager)
+    published: list[dict] = []
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.team.push_fanout.publish",
+        published.append,
+    )
+    manager.begin_round("sess_a", "req_1", terminal_armed=True)
+    queue = asyncio.Queue()
+    manager.add_waiter("sess_a", "req_1", queue)
+
+    completed = {
+        "event_type": "team.task",
+        "event": {
+            "type": "team.task.completed",
+            "task_id": "task_1",
+            "status": "completed",
+        },
+    }
+    await manager.broadcast_event("sess_a", completed, channel_id="web")
+
+    assert published == []
+    assert queue.get_nowait()["event"]["status"] == "completed"
 
 
 @pytest.mark.asyncio

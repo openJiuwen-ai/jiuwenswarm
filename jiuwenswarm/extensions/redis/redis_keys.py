@@ -2,13 +2,13 @@
 """Gateway Redis Key / 频道命名（gateway-reliability-enhancement-design §3.3.7）.
 
 相对路径片段会与 ``RedisConfig.key_prefix`` 拼接为完整 Redis key 或 Pub/Sub 频道名。
-模板字面量以 ``openjiuwen_protocol.redis_keys`` 为唯一 source of truth；本模块只做
+模板字面量以 ``e2a.redis_keys`` 为唯一 source of truth；本模块只做
 prefix 归一化、空值校验与拼装。
 """
 
 from __future__ import annotations
 
-from openjiuwen_protocol.redis_keys import (
+from e2a.redis_keys import (
     GATEWAY_CRON_JOBS_HASH_TEMPLATE,
     GATEWAY_CRON_LIVE_CHANNEL_TEMPLATE,
     GATEWAY_CRON_LIVE_REPLAY_TEMPLATE,

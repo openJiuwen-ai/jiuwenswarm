@@ -202,8 +202,8 @@ def test_unrelated_doctor_failure_does_not_replace_known_child_failure(
         "status": "environment_error",
         "checks": [
             {
-                "name": "faiss",
-                "display_name": "FAISS Native 扩展",
+                "name": "bcrypt._bcrypt",
+                "display_name": "bcrypt Native 扩展",
                 "kind": "native_import",
                 "status": "failed",
                 "message": "ImportError: unrelated",
@@ -215,7 +215,7 @@ def test_unrelated_doctor_failure_does_not_replace_known_child_failure(
 
     assert status["component"] == "web"
     assert "port 7860" in status["message"]
-    assert "FAISS" not in status["message"]
+    assert "bcrypt" not in status["message"]
 
 
 def test_unrelated_doctor_failure_does_not_replace_native_child_failure(
@@ -234,8 +234,8 @@ def test_unrelated_doctor_failure_does_not_replace_native_child_failure(
         "status": "environment_error",
         "checks": [
             {
-                "name": "faiss",
-                "display_name": "FAISS Native 扩展",
+                "name": "bcrypt._bcrypt",
+                "display_name": "bcrypt Native 扩展",
                 "kind": "native_import",
                 "status": "failed",
                 "message": "ImportError: unrelated",
@@ -247,7 +247,7 @@ def test_unrelated_doctor_failure_does_not_replace_native_child_failure(
 
     assert status["component"] == "agent"
     assert "cygrpc" in status["message"]
-    assert "FAISS" not in status["message"]
+    assert "bcrypt" not in status["message"]
 
 
 def test_runtime_doctor_trigger_requires_native_evidence_or_unexplained_exit(

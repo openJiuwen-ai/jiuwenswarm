@@ -267,7 +267,7 @@ def attach_teammate_limit_guard(
                 get_team_quota_service,
             )
 
-            from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+            from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
             svc = get_team_quota_service()
             try:
@@ -316,7 +316,7 @@ def attach_teammate_limit_guard(
                 from jiuwenswarm.enterprise.team.quota import get_team_quota_service
 
                 if owner is not None:
-                    from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+                    from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
                     limits = await run_team_store(get_team_quota_service().resolve_limits, owner)
                     limit = limits.max_teammates_per_team
@@ -356,7 +356,7 @@ def attach_teammate_limit_guard(
                 try:
                     from jiuwenswarm.enterprise.team.quota import get_team_quota_service
 
-                    from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+                    from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
                     await run_team_store(
                         get_team_quota_service().release_teammate,

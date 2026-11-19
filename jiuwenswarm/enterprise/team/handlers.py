@@ -212,7 +212,7 @@ async def handle_team_create(ctx: RequestContext) -> None:
     try:
         async with TEAM_DELETION_GATE.mutation_lock(session_id):
             config_base = _server_global("get_config")()
-            from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store, use_team_mysql
+            from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store, use_shared_team_store
             from jiuwenswarm.enterprise.team.quota import (
                 QUOTA_EXCEEDED,
                 SessionAlreadyHasTeam,
@@ -225,7 +225,7 @@ async def handle_team_create(ctx: RequestContext) -> None:
 
             def _begin_team_create():
                 quota = get_team_quota_service()
-                if use_team_mysql():
+                if use_shared_team_store():
                     return quota.reserve_team_create(
                         identity,
                         session_id,
@@ -297,7 +297,7 @@ async def handle_team_create(ctx: RequestContext) -> None:
             )
             binding = binding_store.bind_session(team_name=binding.team_name, session_id=session_id)
     except (TeamBindingStoreError, TeamEntityStoreError, TeamControlStoreError) as exc:
-        from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+        from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
         await run_team_store(
             _rollback_create, control, binding_store, entity_store, binding, control_entity, quota_lease,
@@ -306,7 +306,7 @@ async def handle_team_create(ctx: RequestContext) -> None:
         return
     except Exception as exc:  # noqa: BLE001
         logger.exception("[TeamControl] team.create failed: session=%s", session_id)
-        from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+        from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
         await run_team_store(
             _rollback_create, control, binding_store, entity_store, binding, control_entity, quota_lease,
@@ -316,7 +316,7 @@ async def handle_team_create(ctx: RequestContext) -> None:
 
     if quota_lease is not None and control_entity is not None:
         try:
-            from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+            from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
             from jiuwenswarm.enterprise.team.quota import get_team_quota_service
 
             await run_team_store(
@@ -666,9 +666,9 @@ def ensure_session_team_occupancy(
     # to the caller; quota only starts once a user id is present.
     if not identity.user_id:
         return
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import use_team_mysql
+    from jiuwenswarm.infrastructure.db.team_store_actor import use_shared_team_store
 
-    if use_team_mysql():
+    if use_shared_team_store():
         _occupy_session_mysql(
             identity,
             session_id=session_id,
@@ -711,7 +711,7 @@ async def handle_team_quota_get(ctx: RequestContext) -> None:
         return
     from jiuwenswarm.enterprise.team.quota import get_team_quota_service
 
-    from jiuwenswarm.infrastructure.db.team_mysql_actor import run_team_store
+    from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
     await _reply(
         ctx,

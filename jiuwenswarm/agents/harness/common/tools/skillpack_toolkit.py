@@ -59,8 +59,8 @@ class SkillPackToolkit:
             scope=scope, source_refs=source_refs,
         )
 
-    def get_tools(self) -> list[Tool]:
-        if not skillpack_productization_enabled():
+    def get_tools(self, config: dict[str, Any] | None = None) -> list[Tool]:
+        if not skillpack_productization_enabled(config):
             return []
         return [LocalFunction(
             card=ToolCard(

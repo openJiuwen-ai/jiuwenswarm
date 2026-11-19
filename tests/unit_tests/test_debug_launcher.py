@@ -241,7 +241,18 @@ def test_is_debug_service_alive_false_when_dead(debug_root: Path):
         assert is_debug_service_alive(_state()) is False
 
 
-def test_is_debug_service_alive_rejects_recycled_pid(debug_root: Path):
+@pytest.mark.parametrize(
+    ("create_time", "expected"),
+    [
+        # PID was recycled: the live process was created long after our spawn.
+        pytest.param(1_500_000.0, False, id="recycled-pid"),
+        # Create time matches the recorded spawn: the process is ours.
+        pytest.param(1_000_000.4, True, id="matching-create-time"),
+    ],
+)
+def test_is_debug_service_alive_checks_process_create_time(
+    debug_root: Path, create_time: float, expected: bool
+):
     state = DebugState(
         pid=4242,
         started_at=1_000_000.0,
@@ -250,32 +261,13 @@ def test_is_debug_service_alive_rejects_recycled_pid(debug_root: Path):
         cwd="/tmp",
     )
     fake_proc = MagicMock()
-    # Unrelated process created long after our recorded spawn time.
-    fake_proc.create_time.return_value = 1_500_000.0
+    fake_proc.create_time.return_value = create_time
     fake_psutil = MagicMock()
     fake_psutil.Process.return_value = fake_proc
 
     with patch.object(debug_launcher, "is_process_alive", return_value=True):
         with patch.dict(sys.modules, {"psutil": fake_psutil}):
-            assert is_debug_service_alive(state) is False
-
-
-def test_is_debug_service_alive_accepts_matching_create_time(debug_root: Path):
-    state = DebugState(
-        pid=4242,
-        started_at=1_000_000.0,
-        log_file="/tmp/swarm.log",
-        command=["python"],
-        cwd="/tmp",
-    )
-    fake_proc = MagicMock()
-    fake_proc.create_time.return_value = 1_000_000.4
-    fake_psutil = MagicMock()
-    fake_psutil.Process.return_value = fake_proc
-
-    with patch.object(debug_launcher, "is_process_alive", return_value=True):
-        with patch.dict(sys.modules, {"psutil": fake_psutil}):
-            assert is_debug_service_alive(state) is True
+            assert is_debug_service_alive(state) is expected
 
 
 # --------------------------------------------------------------------------

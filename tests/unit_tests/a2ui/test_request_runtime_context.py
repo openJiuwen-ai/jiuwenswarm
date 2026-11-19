@@ -140,6 +140,7 @@ def test_request_context_preserves_existing_run_metadata(monkeypatch):
     assert run["context"]["session_id"] == "heartbeat-session"
     assert run["context"]["extra"] == {
         "existing": "kept",
+        "skills": [],
         JIUWENSWARM_CHANNEL_CONTEXT_KEY: "web",
         JIUWENSWARM_SKIP_A2UI_CONTEXT_KEY: True,
     }
@@ -166,6 +167,7 @@ def test_cron_context_keeps_channel_and_cron_payload(monkeypatch):
     assert inputs["run"]["kind"] == "cron"
     assert inputs["run"]["context"]["extra"] == {
         "cron": cron,
+        "skills": [],
         JIUWENSWARM_CHANNEL_CONTEXT_KEY: "feishu",
     }
 

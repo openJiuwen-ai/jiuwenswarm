@@ -1,8 +1,9 @@
 import { ChevronDown, Send, ShieldUser, Square } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useAdaptiveTooltip } from '../../../hooks/useAdaptiveTooltip';
 import { type JiuwenMateModelCatalog } from '../jiuwenmateApi';
-import { ModelLabel } from './ModelLabel';
+import { ColleagueModelPicker } from './ColleagueModelPicker';
 
 interface ConversationComposerProps {
   value: string;
@@ -18,6 +19,11 @@ interface ConversationComposerProps {
   modelCatalog: JiuwenMateModelCatalog;
   /** The model saved on the colleague. Empty means the server default. */
   modelId: string;
+  /** Updates the employee configuration shared with employee management. */
+  onModelChange?: (modelId: string) => void;
+  modelSaving?: boolean;
+  modelPending?: boolean;
+  onOpenModelSettings?: () => void;
   /** The permission profile saved on the colleague. */
   permissionProfile: 'default' | 'automatic' | 'full_access';
   /** Saves and publishes a new colleague permission profile. */
@@ -34,12 +40,17 @@ export function ConversationComposer({
   stopping = false,
   modelCatalog,
   modelId,
+  onModelChange,
+  modelSaving = false,
+  modelPending = false,
+  onOpenModelSettings,
   permissionProfile,
   onPermissionProfileChange,
   permissionProfileSaving = false,
 }: ConversationComposerProps) {
   const { t } = useTranslation();
   const [permissionMenuOpen, setPermissionMenuOpen] = useState(false);
+  const { tooltip: sendTooltip, handlers: sendTooltipHandlers } = useAdaptiveTooltip();
   const canSend = Boolean(onSend) && !sending && value.trim().length > 0;
   return (
     <div className="jiuwenmate-composer" data-testid="jiuwenmate-conversation-composer">
@@ -111,15 +122,21 @@ export function ConversationComposer({
           </div>
         </div>
         <span className="jiuwenmate-composer__right">
-          <span className="jiuwenmate-composer__model" data-testid="jiuwenmate-composer-model">
-            <ModelLabel catalog={modelCatalog} modelId={modelId} />
-          </span>
+          <ColleagueModelPicker
+            catalog={modelCatalog}
+            modelId={modelId}
+            pending={modelPending}
+            saving={modelSaving}
+            onChange={onModelChange}
+            onAddModel={onOpenModelSettings}
+          />
           {onStop ? (
             <button
               type="button"
               className="jiuwenmate-composer__send jiuwenmate-composer__send--stop"
               aria-label={t('jiuwenmate.workspace.stop')}
-              title={t('jiuwenmate.workspace.stop')}
+              data-tooltip={t('jiuwenmate.workspace.stop')}
+              {...sendTooltipHandlers}
               disabled={stopping}
               onClick={onStop}
               data-testid="jiuwenmate-composer-stop"
@@ -131,6 +148,8 @@ export function ConversationComposer({
               type="button"
               className="jiuwenmate-composer__send"
               aria-label={t('jiuwenmate.workspace.send')}
+              data-tooltip={t('jiuwenmate.workspace.send')}
+              {...sendTooltipHandlers}
               disabled={!canSend}
               onClick={onSend}
               data-testid="jiuwenmate-composer-send"
@@ -138,6 +157,7 @@ export function ConversationComposer({
               <Send aria-hidden />
             </button>
           )}
+          {sendTooltip}
         </span>
       </div>
     </div>

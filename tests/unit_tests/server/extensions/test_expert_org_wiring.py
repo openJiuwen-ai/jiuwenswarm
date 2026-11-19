@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -14,29 +15,22 @@ from jiuwenswarm.agents.harness.team.expert_org.wiring import install_expert_org
 
 class _OrgRuntime:
     def __init__(self, team_runtime_manager=None) -> None:
-        self.catalog = None
         self.launcher = None
         self._team_runtime_manager = team_runtime_manager
-
-    def set_expert_group_catalog(self, catalog) -> None:
-        self.catalog = catalog
 
     def set_expert_team_launcher(self, launcher) -> None:
         self.launcher = launcher
 
 
-def test_install_expert_org_adapters_injects_catalog_and_launcher() -> None:
+def test_install_expert_org_adapters_injects_launcher_without_a_group_catalog() -> None:
     team_runtime = object()
     org = _OrgRuntime(team_runtime_manager=team_runtime)
     install_expert_org_adapters(org)
-    assert org.catalog is not None
     assert org.launcher is not None
     assert org.launcher._runtime_manager is team_runtime
 
-    catalog_id = id(org.catalog)
     launcher_id = id(org.launcher)
     install_expert_org_adapters(org)
-    assert id(org.catalog) == catalog_id
     assert id(org.launcher) == launcher_id
 
 
@@ -138,8 +132,8 @@ async def test_launcher_shares_db_from_owner(monkeypatch: pytest.MonkeyPatch) ->
     launcher = JiuwenExpertTeamLauncher(runtime_manager=runtime)
     package_dir = object()
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_dir",
-        lambda _name: package_dir,
+        "openjiuwen.agent_teams.experts.catalog._process_catalog",
+        SimpleNamespace(locate_group=AsyncMock(return_value=SimpleNamespace(path=package_dir))),
     )
     monkeypatch.setattr(
         "openjiuwen.agent_teams.experts.load_agent_group_package_bundle",

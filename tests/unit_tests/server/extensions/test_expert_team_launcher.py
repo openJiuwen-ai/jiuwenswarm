@@ -98,7 +98,7 @@ async def test_organization_stream_keeps_round_id_through_web_gateway(source: st
     """Transport frames stay unique while browser chunks share one request boundary."""
     import json
 
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+    from e2a.wire_codec import parse_agent_server_wire_chunk
     from agent_gateway.channel_manager.web.web_connect import WebChannel
     from agent_gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
@@ -359,6 +359,13 @@ def agent_group_loader(monkeypatch: pytest.MonkeyPatch, tmp_path):
         assert path == package_dir
         return package
 
+    def locate(name):
+        return SimpleNamespace(name=name, path=_resolve(name))
+
+    monkeypatch.setattr(
+        "openjiuwen.agent_teams.experts.catalog._process_catalog",
+        SimpleNamespace(locate_group=AsyncMock(side_effect=locate)),
+    )
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_dir",
         _resolve,
@@ -416,8 +423,9 @@ async def test_expert_spec_snapshots_group_name_without_changing_team_alias(monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("explicit_team_id", [None, "org-expert-specified"])
 async def test_launch_creates_resolvable_team(
-    monkeypatch: pytest.MonkeyPatch, agent_group_loader
+    monkeypatch: pytest.MonkeyPatch, agent_group_loader, explicit_team_id,
 ) -> None:
     shared_db = _FakeDb()
     runtime = _FakeRuntime(shared_db)
@@ -433,10 +441,14 @@ async def test_launch_creates_resolvable_team(
         agent_group_name="sample-expert-group",
         session_id="sess-1",
         display_name="Sample",
+        team_id=explicit_team_id,
     )
 
     assert launched.team_id.startswith("org-expert-")
-    assert len(launched.team_id.removeprefix("org-expert-")) == 12
+    if explicit_team_id is None:
+        assert len(launched.team_id.removeprefix("org-expert-")) == 12
+    else:
+        assert launched.team_id == explicit_team_id
     assert launched.agent_group_name == "sample-expert-group"
     from jiuwenswarm.server.runtime.team_organization_identity_store import load_organization_team_identity
 
@@ -647,6 +659,58 @@ def test_verify_shared_database_rejects_mismatched_task_manager_db() -> None:
 
     with pytest.raises(ValueError, match="task_manager must use the shared TeamDatabase"):
         launcher._verify_shared_database(expert_agent, donor_backend)
+
+
+@pytest.mark.asyncio
+async def test_organization_turn_rejects_group_outside_current_expansion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openjiuwen.agent_teams.runtime.pool import RuntimeState
+
+    streamed: list[object] = []
+    interacted: list[object] = []
+
+    class _Agent:
+        spec = SimpleNamespace(metadata={
+            "expert_team": True,
+            "agent_group_name": "finance",
+            "channel_id": "web",
+        })
+
+        async def stream(self, inputs, session):
+            streamed.append(inputs)
+            yield SimpleNamespace(payload={"event_type": "chat.final"})
+
+    entry = SimpleNamespace(
+        agent=_Agent(),
+        current_session_id="sess-1",
+        state=RuntimeState.PAUSED,
+    )
+
+    class _Pool:
+        async def get(self, team_id):
+            assert team_id == "expert"
+            return entry
+
+    async def interact(*_args, **kwargs):
+        interacted.append(kwargs)
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.organization_packages.team_package_availability",
+        lambda *_args, **_kwargs: {"available": True, "agent_group_name": "finance"},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.capabilities.experts.request_packages.allows",
+        lambda kind, package_id: False,
+    )
+    launcher = JiuwenExpertTeamLauncher(
+        runtime_manager=SimpleNamespace(pool=_Pool(), interact=interact)
+    )
+
+    assert await launcher.run_organization_turn("expert", "sess-1", {"query": "next"}) is False
+    assert streamed == []
+    assert interacted == []
 
 
 @pytest.mark.asyncio
@@ -924,7 +988,7 @@ async def test_org_turn_closes_only_owner_processing(
     from openjiuwen.agent_teams.runtime.dispatch import RunActionKind
     from openjiuwen.agent_teams.runtime.pool import RuntimeState
 
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+    from e2a.wire_codec import parse_agent_server_wire_chunk
     from agent_gateway.channel_manager.web.web_connect import WebChannel
     from agent_gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
@@ -1005,7 +1069,7 @@ async def test_summary_turn_closes_reasoning_after_an_earlier_final(ending):
     from openjiuwen.agent_teams.runtime.dispatch import RunActionKind
     from openjiuwen.agent_teams.runtime.pool import RuntimeState
 
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+    from e2a.wire_codec import parse_agent_server_wire_chunk
     from agent_gateway.channel_manager.web.web_connect import WebChannel
     from agent_gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire

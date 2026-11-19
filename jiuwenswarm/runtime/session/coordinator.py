@@ -350,6 +350,7 @@ class RuntimeSessionCoordinator:
                 SessionWorkKind.CONTROL_INPUT,
                 parent_execution_id=parent.execution_id,
             )
+            handle.answered_control_ids = frozenset(answered)
             parent_was_waiting = (
                 parent.state is SessionExecutionState.WAITING_FOR_CONTROL
             )
@@ -507,6 +508,7 @@ class RuntimeSessionCoordinator:
                 SessionWorkKind.CONTROL_INPUT,
                 parent_execution_id=parent.execution_id,
             )
+            handle.answered_control_ids = frozenset(answered)
             if parent_was_waiting:
                 self._registry.resume_waiting(parent)
             handle.task = asyncio.current_task()

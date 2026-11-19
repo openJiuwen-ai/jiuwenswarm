@@ -16,6 +16,7 @@ $safeRoot=$false
 $script:pathWarning=''
 $script:progressValue=0
 $script:progressWritten=[DateTime]::MinValue
+$timings=[ordered]@{inventory_ms=0.0; copy_ms=0.0; verification_ms=0.0}
 
 # A separate, atomically replaced progress file keeps UI polling independent of
 # the recovery report. Progress is advisory: failures must never weaken backup.
@@ -32,11 +33,27 @@ function Report-Progress([int]$Percent, [string]$Status, [string]$Detail = '', [
     } catch { } # Installation success is determined by the recovery report/exit code.
 }
 
+# Runtime capability probe: injected protection components can trigger .NET path
+# APIs before AppContext switches load, locking legacy path handling in place
+# (observed as security-software injection on Win11 25H2 / .NET 4.8.9363; the
+# servicing revision is environment background, not the root cause). Legacy mode
+# rejects the device-path prefix during normalization. Fall back to plain paths
+# when unsupported.
+$script:DevicePathSupported=$true
+# Win32 probe handle; the P/Invoke type compiles on first use (Test-DevicePathExists).
+$script:NativePathProbe=$null
+try { [void][IO.File]::GetAttributes('\\?\'+$env:SystemRoot) }
+catch [ArgumentException] { $script:DevicePathSupported=$false }
+catch [NotSupportedException] { $script:DevicePathSupported=$false }
+catch { $script:DevicePathSupported=$true }
+
 function Full-Path([string]$Path) {
     [IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Path)).TrimEnd('\')
 }
 function Long-Path([string]$Path) {
     if ($Path.StartsWith('\\?\')) { return $Path }
+    # Runtime without device-path support: degrade to a normalized plain path.
+    if (-not $script:DevicePathSupported) { return [IO.Path]::GetFullPath($Path) }
     $full=[IO.Path]::GetFullPath($Path)
     if ($full.StartsWith('\\')) { return '\\?\UNC\'+$full.Substring(2) }
     '\\?\'+$full
@@ -45,6 +62,24 @@ function Normal-Path([string]$Path) {
     if ($Path.StartsWith('\\?\UNC\')) { return '\\'+$Path.Substring(8) }
     if ($Path.StartsWith('\\?\')) { return $Path.Substring(4) }
     $Path
+}
+function Test-DevicePathExists([string]$Path) {
+    # Win32 existence probe that bypasses .NET path normalization: the device-path
+    # form goes straight to the kernel, so legacy switches cannot hide long paths.
+    if (-not $script:NativePathProbe) {
+        $script:NativePathProbe=Add-Type -MemberDefinition '[DllImport("kernel32.dll", SetLastError=true, CharSet=CharSet.Unicode)] public static extern uint GetFileAttributesW(string lpFileName);' -Name 'NativePathProbe' -Namespace 'WorkSwarmInstaller' -PassThru
+    }
+    $device= if ($Path.StartsWith('\\')) { '\\?\UNC\'+$Path.Substring(2) } else { '\\?\'+$Path }
+    $attributes=$script:NativePathProbe::GetFileAttributesW($device)
+    # INVALID_FILE_ATTRIBUTES (0xFFFFFFFF) signals any failure, not only absence.
+    $invalidFileAttributes=[uint32]'0xFFFFFFFF'
+    if ($attributes -ne $invalidFileAttributes) { return $true }
+    # Only FILE_NOT_FOUND(2)/PATH_NOT_FOUND(3) count as absent; any other error
+    # keeps the conservative "exists" verdict so the guard aborts, never skips.
+    $errorCode=[Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    $fileNotFound=2    # Win32 ERROR_FILE_NOT_FOUND
+    $pathNotFound=3    # Win32 ERROR_PATH_NOT_FOUND
+    return ($errorCode -ne $fileNotFound) -and ($errorCode -ne $pathNotFound)
 }
 function Inside([string]$Path, [string]$Root) {
     $a=Full-Path $Path; $b=Full-Path $Root
@@ -83,8 +118,10 @@ function Bytes-Hash([byte[]]$Value) {
     finally { $sha.Dispose() }
 }
 function Text-Hash([string]$Value) { Bytes-Hash ($utf8.GetBytes($Value)) }
-function Inventory([string]$Root) {
+function Inventory([string]$Root, [switch]$Verify) {
     # Bundle identities cross machines; do not depend on the installing user's locale.
+    $timer=[Diagnostics.Stopwatch]::StartNew()
+    try {
     $files=@(Tree-Files $Root | Sort-Object FullName -Culture en-US)
     $completed=0
     $rows=@(foreach ($file in $files) {
@@ -93,6 +130,10 @@ function Inventory([string]$Root) {
         [pscustomobject]@{path=$file.FullName.Substring($Root.Length+1); length=$file.Length; sha256=(File-Hash $file.FullName)}
     })
     ConvertTo-Json -InputObject $rows -Depth 4 -Compress
+    } finally {
+        $phase=if ($Verify) { 'verification_ms' } else { 'inventory_ms' }
+        $timings[$phase]+=$timer.Elapsed.TotalMilliseconds
+    }
 }
 function Write-Json([string]$Path, $Value) {
     [IO.File]::WriteAllText((Long-Path $Path),(ConvertTo-Json -InputObject $Value -Depth 8),$utf8)
@@ -157,12 +198,18 @@ function Preserve-UpgradeConfig() {
 }
 function Copy-Tree([string]$Source, [string]$Target) {
     Report-Progress $script:progressValue 'Backing up CLI environment...' 'Copying files to the user data directory.'
+    $timer=[Diagnostics.Stopwatch]::StartNew()
+    try { Copy-TreeEntries $Source $Target }
+    finally { $timings.copy_ms+=$timer.Elapsed.TotalMilliseconds }
+}
+
+function Copy-TreeEntries([string]$Source, [string]$Target) {
     [IO.Directory]::CreateDirectory((Long-Path $Target)) | Out-Null
     foreach ($entry in [IO.Directory]::GetFileSystemEntries((Long-Path $Source))) {
         $attributes=[IO.File]::GetAttributes($entry)
         if ($attributes -band [IO.FileAttributes]::ReparsePoint) { throw "Linked content requires manual preservation: $entry" }
         $destination=Join-Path $Target ([IO.Path]::GetFileName($entry))
-        if ($attributes -band [IO.FileAttributes]::Directory) { Copy-Tree (Normal-Path $entry) $destination }
+        if ($attributes -band [IO.FileAttributes]::Directory) { Copy-TreeEntries (Normal-Path $entry) $destination }
         else { [IO.File]::Copy($entry,(Long-Path $destination),$false) }
     }
 }
@@ -184,7 +231,15 @@ function Preserve-Prefix([string]$Source, [string]$RuntimeName = '') {
     # Read attributes instead of suppressing access/long-path errors as absence.
     try { $attributes=[IO.File]::GetAttributes((Long-Path $Source)) }
     catch [IO.FileNotFoundException] { return $null }
-    catch [IO.DirectoryNotFoundException] { return $null }
+    catch [IO.DirectoryNotFoundException] {
+        # Plain-path degrade mode reports existing MAX_PATH-boundary directories as
+        # missing. Re-probe via Win32 device path: an existing directory must never
+        # be treated as absent, or cleanup could erase an unbacked-up CLI install.
+        if (-not $script:DevicePathSupported -and (Test-DevicePathExists $Source)) {
+            throw "Existing CLI directory is unreachable through plain paths on this runtime (path length at the MAX_PATH boundary): $Source -- skipping backup would risk cleanup data loss, aborting"
+        }
+        return $null
+    }
     if (-not ($attributes -band [IO.FileAttributes]::Directory)) { throw "Expected a runtime directory: $Source" }
     Check-Parents $Source
     Assert-PrefixIdle $Source
@@ -226,14 +281,14 @@ function Preserve-Prefix([string]$Source, [string]$RuntimeName = '') {
     })
     if (Test-Path -LiteralPath $target) {
         $manifest=Get-Content -LiteralPath (Join-Path $target 'manifest.json') -Raw | ConvertFrom-Json
-        if ($manifest.source -ne $Source -or $manifest.digest -ne $digest -or (Inventory $prefix) -ne $before) { throw "Existing preservation is incomplete or changed: $target" }
+        if ($manifest.source -ne $Source -or $manifest.digest -ne $digest -or (Inventory $prefix -Verify) -ne $before) { throw "Existing preservation is incomplete or changed: $target" }
     } else {
         $stage=Join-Path $store ('.pending-'+[guid]::NewGuid().ToString('N'))
         $copy=Join-Path $stage 'prefix'
         # Pending/failed copies are intentionally retained for diagnosis/recovery.
         Copy-Tree $Source $copy
         Report-Progress 35 'Verifying CLI backup...' 'Checking the recovery copy and original files.' -Force
-        if ((Inventory $copy) -ne $before -or (Inventory $Source) -ne $before) { throw "Source changed or preservation verification failed: $Source" }
+        if ((Inventory $copy -Verify) -ne $before -or (Inventory $Source -Verify) -ne $before) { throw "Source changed or preservation verification failed: $Source" }
         Assert-PrefixIdle $Source
         $manifest=[ordered]@{schema=1; source=$Source; target=$active; backup=$prefix; digest=$digest; files=($before | ConvertFrom-Json); created_utc=[DateTime]::UtcNow.ToString('o')}
         Write-Json (Join-Path $stage 'manifest.json') $manifest
@@ -254,7 +309,7 @@ function Preserve-Prefix([string]$Source, [string]$RuntimeName = '') {
                 [IO.Directory]::GetFileSystemEntries((Long-Path $active)).Count -eq 0) {
                 $stage=Join-Path $activeDirectory ('.migration-'+[guid]::NewGuid().ToString('N'))
                 Copy-Tree $prefix $stage
-                if ((Inventory $stage) -ne $before) { throw "SDK working copy verification failed: $Source" }
+                if ((Inventory $stage -Verify) -ne $before) { throw "SDK working copy verification failed: $Source" }
                 if ([IO.Directory]::Exists((Long-Path $active))) { [IO.Directory]::Delete((Long-Path $active),$false) }
                 [IO.Directory]::Move((Long-Path $stage),(Long-Path $active))
             }
@@ -271,7 +326,7 @@ function Preserve-Prefix([string]$Source, [string]$RuntimeName = '') {
         [IO.Directory]::CreateDirectory((Long-Path $installed)) | Out-Null
         $stage=Join-Path $installed ('.pending-'+[guid]::NewGuid().ToString('N'))
         Copy-Tree $prefix (Join-Path $stage 'prefix')
-        if ((Inventory (Join-Path $stage 'prefix')) -ne $before) { throw "Working copy verification failed: $Source" }
+        if ((Inventory (Join-Path $stage 'prefix') -Verify) -ne $before) { throw "Working copy verification failed: $Source" }
         Write-Json (Join-Path $stage 'origin.json') @{source=$Source; initial_digest=$digest}
         [IO.Directory]::Move((Long-Path $stage),(Long-Path $activeDirectory))
     }
@@ -404,7 +459,18 @@ try {
             foreach ($relative in @('runtime\node-runtime','resources\backend\runtime\node-runtime')) {
                 $candidate=Full-Path (Join-Path $InstallDir $relative)
                 Check-Parents $candidate
-                if ([IO.Directory]::Exists((Long-Path $candidate))) {
+                $candidateIsDirectory=$false
+                try { $candidateIsDirectory=(([IO.File]::GetAttributes((Long-Path $candidate)) -band [IO.FileAttributes]::Directory) -ne 0) }
+                catch [IO.FileNotFoundException] { }
+                catch [IO.DirectoryNotFoundException] {
+                    # Same plain-path degrade hazard as Preserve-Prefix: a bundled
+                    # Node runtime that really exists must never be silently dropped,
+                    # or Initialize would report success without a managed CLI.
+                    if (-not $script:DevicePathSupported -and (Test-DevicePathExists $candidate)) {
+                        throw "Existing bundled Node runtime is unreachable through plain paths on this runtime: $candidate -- initialization would be skipped, aborting"
+                    }
+                }
+                if ($candidateIsDirectory) {
                     $nodeSource += [pscustomobject]@{source=$candidate; digest=(Read-BundleDigest ($candidate+'.manifest.json'))}
                 }
             }
@@ -450,12 +516,13 @@ try {
                 if ($bundle.digest) { Register-Bundle $bundle.source $bundle.digest }
             }
             Add-UserPaths @() $paths
-            Write-Json $ReportPath @{success=$true; mode=$Mode; mappings=@(); sdk_mappings=@(); npm_root=$npmRoot; path_warning=$script:pathWarning}
+            Write-Json $ReportPath @{success=$true; mode=$Mode; device_path_supported=$script:DevicePathSupported; mappings=@(); sdk_mappings=@(); npm_root=$npmRoot; path_warning=$script:pathWarning}
             Report-Progress 100 'CLI environment ready.' '' -Force
             exit 0
         }
         $mappings=@()
         $bundledChecks=@()
+        $sdkMappings=@()
         foreach ($relative in @('runtime\node-runtime','resources\backend\runtime\node-runtime')) {
             $mapping=Preserve-Prefix (Join-Path $InstallDir $relative)
             if ($mapping) {
@@ -463,12 +530,18 @@ try {
                 else { $mappings += $mapping }
             }
         }
-        $sdkMappings=@()
         foreach ($relative in @('runtime\external-cli','resources\backend\runtime\external-cli')) {
             $sdkSource=Join-Path $InstallDir $relative
             try { $sdkAttributes=[IO.File]::GetAttributes((Long-Path $sdkSource)) }
             catch [IO.FileNotFoundException] { continue }
-            catch [IO.DirectoryNotFoundException] { continue }
+            catch [IO.DirectoryNotFoundException] {
+                # Same plain-path degrade hazard as the CLI root above: an existing
+                # SDK directory must not silently fall out of the backup inventory.
+                if (-not $script:DevicePathSupported -and (Test-DevicePathExists $sdkSource)) {
+                    throw "Existing SDK directory is unreachable through plain paths on this runtime: $sdkSource -- aborting to avoid cleanup data loss"
+                }
+                continue
+            }
             if (-not ($sdkAttributes -band [IO.FileAttributes]::Directory)) { throw "Expected an SDK directory: $sdkSource" }
             Check-Parents $sdkSource
             # Setup's /DIR argument names the application too. At this level
@@ -509,13 +582,20 @@ try {
         foreach ($mapping in @($mappings)+@($sdkMappings)+@($bundledChecks)) {
             Report-Progress 90 'Verifying CLI environment...' 'Final checks before installation can continue.' -Force
             Check-Parents $mapping.source
-            if ((Text-Hash (Inventory $mapping.source)) -ne $mapping.digest) { throw "Source changed before cleanup: $($mapping.source)" }
+            if ((Text-Hash (Inventory $mapping.source -Verify)) -ne $mapping.digest) { throw "Source changed before cleanup: $($mapping.source)" }
             Assert-PrefixIdle $mapping.source
         }
         if ($sdkMappings.Count) { Assert-PrefixIdle $InstallDir -ExecutableOnly }
         Add-UserPaths $mappings $paths
-        Write-Json $ReportPath @{success=$true; mode=$Mode; mappings=$mappings; sdk_mappings=$sdkMappings; unchanged_bundles=$bundledChecks; npm_root=$npmRoot; path_warning=$script:pathWarning}
+        Write-Json $ReportPath @{success=$true; mode=$Mode; device_path_supported=$script:DevicePathSupported; mappings=$mappings; sdk_mappings=$sdkMappings; unchanged_bundles=$bundledChecks; npm_root=$npmRoot; path_warning=$script:pathWarning; timings=$timings}
         Report-Progress 100 'CLI environment ready.' '' -Force
+        try {
+            [IO.File]::WriteAllLines("$ReportPath.timing", [string[]]@(
+                foreach ($phase in $timings.Keys) { "$phase=$([Math]::Round($timings[$phase], 1))" }
+            ), $utf8)
+        } catch {
+            Write-Warning "Could not save optional CLI timings: $($_.Exception.Message)"
+        }
     } finally { $lock.Dispose() }
 } catch {
     $message=$_.Exception.Message+"`r`n"+$_.ScriptStackTrace

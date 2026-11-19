@@ -35,9 +35,8 @@ from jiuwenswarm.agents.harness.common.prompt.shell_environment import (
 )
 from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
-    get_infra_data_dir,
     get_runtime_state_path,
-    get_domain_data_dir,
+    get_user_workspace_dir,
     logger,
 )
 
@@ -107,6 +106,7 @@ class RuntimePromptRail(DeepAgentRail):
         self._force_english: bool = False
         self._request_metadata: dict[str, Any] = {}
         self._a4p_authorizer_available: bool = False
+        self._a4p_preauthorization_active: bool | None = None
 
     def init(self, agent) -> None:
         """从 agent 获取 system_prompt_builder 引用。"""
@@ -126,6 +126,40 @@ class RuntimePromptRail(DeepAgentRail):
             return
         if self.system_prompt_builder is not None:
             apply_summary_policy(self.system_prompt_builder, self._session_id, ctx)
+
+    def fork_for_agent(self) -> RuntimePromptRail:
+        """Give a child agent its own prompt and attachment bindings.
+
+        A sub-agent spec is a reusable template. A child that reuses this rail
+        object also reuses the parent's attachment manager, so a model switch
+        on either side rewrites the other's rendered runtime prompt. Copy the
+        request state and leave the agent bindings for the child's own init.
+        """
+        rail = type(self)(language=self._language, channel=self._channel)
+        rail.set_model_name(self._model_name)
+        rail.set_mode(self._mode)
+        rail.set_session_id(self._session_id)
+        rail.set_force_english(self._force_english)
+        rail.set_request_metadata(self._request_metadata)
+        rail.set_a4p_authorizer_available(self._a4p_authorizer_available)
+        rail.set_trusted_dirs(
+            list(self._trusted_dirs) if self._trusted_dirs is not None else None
+        )
+        rail.set_runtime_paths(
+            cwd=self._cwd,
+            project_dir=self._project_dir,
+            workspace_dir=self._workspace_dir,
+            task_workspace_root=self._task_workspace_root,
+            task_work_dir=self._task_work_dir,
+            task_outputs_dir=self._task_outputs_dir,
+        )
+        if all((self._execution_cwd, self._execution_project_root, self._execution_workspace)):
+            rail.set_execution_paths(
+                cwd=self._execution_cwd,
+                project_root=self._execution_project_root,
+                workspace=self._execution_workspace,
+            )
+        return rail
 
     def uninit(self, agent) -> None:
         """清理注入的 section 并释放引用。"""
@@ -160,6 +194,10 @@ class RuntimePromptRail(DeepAgentRail):
     def set_a4p_authorizer_available(self, available: bool) -> None:
         """Record whether this request has an interactive Web authorizer route."""
         self._a4p_authorizer_available = bool(available)
+
+    def set_a4p_preauthorization_active(self, active: bool) -> None:
+        """Record whether A4P preauthorization is active for this request config."""
+        self._a4p_preauthorization_active = bool(active)
 
     def set_trusted_dirs(self, trusted_dirs: list[str] | None) -> None:
         """per-request 更新可信目录。"""
@@ -570,6 +608,7 @@ class RuntimePromptRail(DeepAgentRail):
         self.system_prompt_builder.remove_section("trusted_dirs_policy")
         if self._channel in ("tui", "web", "ws_client", "process_cli"):
             installed_workspace_dir = Path(get_agent_workspace_dir())
+            user_workspace_dir = Path(get_user_workspace_dir())
             # This agent's own workspace. Team members each own one; without
             # it (single-agent runs) the process-wide agent workspace is the
             # same directory anyway.
@@ -581,13 +620,13 @@ class RuntimePromptRail(DeepAgentRail):
                 installed_workspace_dir / "plugins" / "agent_templates" / "local"
             )
             installed_agent_groups_dir = (
-                get_domain_data_dir() / ".agent_teams" / "agent_groups" / "local"
+                user_workspace_dir / ".agent_teams" / "agent_groups" / "local"
             )
             installed_plugin_packages_dir = (
                 installed_workspace_dir / "plugins" / "plugin_packages" / "local"
             )
             installed_mcp_hub_dir = installed_workspace_dir / "mcp" / "mcp_hub"
-            config_dir = str(get_infra_data_dir() / "config")
+            config_dir = str(user_workspace_dir / "config")
             project_dir = self._existing_dir(self._project_dir)
             task_workspace_root = self._existing_dir(self._task_workspace_root)
             task_work_dir = self._existing_dir(self._task_work_dir)
@@ -956,6 +995,10 @@ class RuntimePromptRail(DeepAgentRail):
         ctx: AgentCallbackContext,
     ) -> None:
         section = "a4p.intent_authorization"
+        if self._request_metadata.get("cron"):
+            await self._clear_prompt_attachment(ctx, section=section)
+            self._log_a4p_prompt_injection(ctx, injected=False, reason="cron_execution")
+            return
         if self._channel != "web" or not self._a4p_authorizer_available:
             await self._clear_prompt_attachment(ctx, section=section)
             self._log_a4p_prompt_injection(
@@ -971,7 +1014,11 @@ class RuntimePromptRail(DeepAgentRail):
             )
             from jiuwenswarm.common.config import get_config
 
-            enabled = is_a4p_preauthorization_active(get_config())
+            # Prefer adapter-published flag (enterprise config_base); fall back to process config.
+            if self._a4p_preauthorization_active is not None:
+                enabled = bool(self._a4p_preauthorization_active)
+            else:
+                enabled = is_a4p_preauthorization_active(get_config())
             action_names = get_a4p_supported_action_names()
         except Exception as exc:
             logger.warning("Failed to resolve A4P intent authorization prompt: %s", exc)
@@ -1091,7 +1138,14 @@ class RuntimePromptRail(DeepAgentRail):
             )
             from jiuwenswarm.common.config import get_config
 
-            if not is_a4p_preauthorization_active(get_config()):
+            if self._a4p_preauthorization_active is not None:
+                cron_a4p_active = bool(self._a4p_preauthorization_active)
+            else:
+                cron_a4p_active = is_a4p_preauthorization_active(
+                    get_config(),
+                    session_id=self._session_id,
+                )
+            if not cron_a4p_active:
                 await self._clear_prompt_attachment(ctx, section=section)
                 return
             summary = get_a4p_runtime().cron_intent_authorization_summary(job_id)

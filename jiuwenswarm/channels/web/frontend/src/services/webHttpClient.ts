@@ -105,6 +105,14 @@ interface RouteRow {
 const ROUTES: Record<string, RouteRow> = {
   'media.persist': { verb: 'POST', path: '/sessions/{session_id}/media', kind: 'unary' },
   'media.discard': { verb: 'DELETE', path: '/sessions/{session_id}/media', kind: 'unary' },
+  // session.assets.remove 暂不提供 HTTP。 gateway中 DELETE 一条因协议枚举缺失不可达
+  'session.assets.list': { verb: 'GET', path: '/sessions/{session_id}/assets', kind: 'unary' },
+  'session.assets.register': { verb: 'POST', path: '/sessions/{session_id}/assets', kind: 'unary' },
+  'session.assets.rename': {
+    verb: 'PATCH',
+    path: '/sessions/{session_id}/assets/{asset_id}',
+    kind: 'unary',
+  },
   'document.persist': { verb: 'POST', path: '/sessions/{session_id}/documents', kind: 'unary' },
   'document.formats': { verb: 'GET', path: '/documents/formats', kind: 'unary' },
   'file.import_url': { verb: 'POST', path: '/sessions/{session_id}/files/import', kind: 'unary' },
@@ -228,6 +236,24 @@ const ROUTES: Record<string, RouteRow> = {
   'im.hosting.history': { verb: 'GET', path: '/im/hosting/targets/{id}/history', kind: 'unary' },
   'im.hosting.login.start': { verb: 'POST', path: '/im/hosting/login/start', kind: 'unary' },
   'im.hosting.login.status': { verb: 'GET', path: '/im/hosting/login/status', kind: 'unary' },
+  'a4p.config.get': { verb: 'GET', path: '/a4p/config', kind: 'unary' },
+  'a4p.config.update': { verb: 'PUT', path: '/a4p/config', kind: 'unary' },
+  'a4p.authorization.pending': { verb: 'GET', path: '/a4p/authorization/pending', kind: 'unary' },
+  'a4p.authorization.complete': {
+    verb: 'POST',
+    path: '/a4p/authorization/actions/complete',
+    kind: 'unary',
+  },
+  'a4p.authorization.reject': {
+    verb: 'POST',
+    path: '/a4p/authorization/actions/reject',
+    kind: 'unary',
+  },
+  'a4p.authorization.reprepare': {
+    verb: 'POST',
+    path: '/a4p/authorization/actions/reprepare',
+    kind: 'unary',
+  },
   'team.list': { verb: 'GET', path: '/teams', kind: 'unary' },
   'team.history.get': { verb: 'GET', path: '/sessions/{session_id}/team/history', kind: 'unary' },
   'team.snapshot': { verb: 'GET', path: '/sessions/{session_id}/team/snapshot', kind: 'unary' },
@@ -740,6 +766,9 @@ export class WebHttpClient {
       const error = this.createWebError(i18n.t('network.requestFailed'), 'METHOD_NOT_FOUND', requestId);
       error.httpRouteMissing = true;
       throw error;
+    }
+    if (method === 'chat.user_answer' && options.awaitUserAnswerResult === true) {
+      assembled.query = { ...assembled.query, wait_for_result: 'true' };
     }
 
     const controller = new AbortController();

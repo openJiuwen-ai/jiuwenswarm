@@ -265,7 +265,9 @@ class PlanModeController:
     ) -> list[dict[str, Any]]:
         """Detect an exit_plan_mode transition performed by a tool."""
         session_id = request.session_id
-        if not session_id:
+        # Inspection requests can finish before the first chat enters plan
+        # mode. Their snapshot cannot establish that a tool exited it.
+        if not session_id or not self.should_sync(request):
             return []
         resolved = resolve_request_runtime_mode(request)
         if isinstance(request.params, dict):

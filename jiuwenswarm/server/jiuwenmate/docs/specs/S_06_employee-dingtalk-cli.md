@@ -6,8 +6,8 @@
 | --- | --- |
 | 类型 | spec |
 | 编号 / slug | S_06 / employee-dingtalk-cli |
-| 关联模块 | `dingtalk_cli_runtime.py`、`dingtalk_cli_local_provider.py`、`dingtalk_cli_tool.py`、`agent_manager.py`、`execution_driver.py` 与钉钉渠道绑定 |
-| 最近一次修订日期 | 2026-10-30 |
+| 关联模块 | `dingtalk_cli_runtime.py`、`dingtalk_cli_local_provider.py`、`dingtalk_cli_distribution.py`、`dingtalk_cli_tool.py`、`agent_manager.py`、`execution_driver.py` 与钉钉渠道绑定 |
+| 最近一次修订日期 | 2026-11-11 |
 | 关联 feature | [F_27 钉钉 DWS CLI 应用身份接入](../features/F_27_employee-dingtalk-cli.md) |
 | 设计依据 | DWS CLI `dws api` 的 App Token 模式及 DingTalk InnerGroup 成员查询 SDK 契约 |
 
@@ -24,10 +24,15 @@
 
 ## 2. 能力和边界
 
-- DWS CLI 以固定版本通过 `npx --package` 按需运行；应用 Token 能力无需员工单独登录，用户能力需要员工连接授权。
+- DWS CLI 使用固定版本。应用 Token 能力无需员工单独登录，用户能力需要员工连接授权。
 - 所有员工在有效默认应用存在时获得自动注入的 `dingtalk_cli` 工具；没有默认应用时，只有绑定了唯一有效钉钉应用的员工获得工具。员工无需单独登录，命令 argv 不经过 shell 拼接。
 - 无员工 OAuth 的默认能力仅是 DWS CLI `api` 子命令所提供的应用级 Raw OpenAPI，且受应用已开通权限和 CLI 官方域名校验限制。
 - 团队版员工详情页提供按钉钉连接隔离的 DWS 用户 OAuth 设备码授权；授权 HOME、配置与缓存按 `(namespace_id, connection agent_id, app credential revision)` 隔离。前端只接收状态、授权 URL、用户码和脱敏账号/组织信息。员工未完成授权时，在线群文档操作失败关闭。个人版不增加授权入口。此授权生命周期不开放给模型工具。
+- 授权管理 RPC 校验可见配置员工及当前钉钉应用绑定，支持 YAML 直接绑定 canonical Agent，不要求新增历史连接行；历史连接必须同时属于该配置员工且仍是当前应用绑定。CLI Scope 由核验后的 Agent ID 和应用 ID 构造，不能回落到默认或其他员工的应用。只绑定机器人但未完成用户授权时返回真实 `not_connected`；状态查询失败时页面显示 error，不能无限保留 loading。状态、发起、轮询与取消要求有效启用绑定；断开可核验停用中的持久绑定，且兼容由历史运行 Agent ID 解析其可见配置员工。
+- 团队版解除钉钉连接须先清除该员工全部私有用户 OAuth 凭据版本并确认 `not_connected`，再删除应用配置；清理失败或无法确认时保留绑定并报错。设备进程尚活跃时保留 PID 跟踪，即使凭据已可读；重试设备授权须先停止旧流。断开须等待设备进程及已开始的用户 CLI 命令退出、核对私有授权目录已不存在后才报告成功，CLI 程序缺失不妨碍本地清理。解除连接不删除员工、聊天记录、其他员工授权或共享 CLI 程序。相同员工及应用重绑后不得复用已解除的用户登录态。发起授权与解绑共用应用锁，获得锁后复核绑定；用户 CLI 命令、状态查询与清理共用员工 OAuth 文件锁，凭据环境在锁内准备，覆盖同一私有目录的不同 provider 实例或进程。OAuth 锁等待总预算 15 秒，超时报告忙碌，不能跳过锁清理；Stream 重载不持有应用锁。同一 provider 实例按员工 OAuth 目录及绑定版本（应用、Client ID、Secret 摘要）缓存 `connected`／`not_connected` 授权状态：5 秒内直接复用；5 秒至 2 分钟内重新查询时最多等锁 2 秒，锁忙则返回该最近状态而非忙碌错误；无可用最近状态时仍按 15 秒预算报告 `DINGTALK_CLI_AUTH_BUSY`。`authorizing` 与错误状态不缓存；发起、取消、解除授权及删除员工运行态时清除该员工缓存，绑定版本变化自然失效。
+- 没有显式／本地缓存 CLI，且员工应用隔离的私有 OAuth 目录没有任何持久文件时，状态检查直接返回 `not_connected`，不为读取空状态而启动安装；已有私有资料或 CLI 时继续查询真实登录态，不凭目录存在推断已登录。
+- CLI 程序及 npm 缓存保存在操作系统用户缓存目录，独立于可重新初始化的项目数据；旧项目中的固定版本程序在复用时仅迁移二进制与最小版本元数据，不能复制账号数据。员工 OAuth、应用 profile 与操作记录仍保存在原项目私有路径，项目重置不恢复旧授权。用户点击授权时由前端同步打开等待窗口，当前有效 RPC 返回后跳转；弹窗被拦截或关闭时继续本次设备流并展开恢复链接，不要求重新授权。取消、明确失败、成功、连接移除和页面卸载清理本页持有的窗口，迟到响应不得跳转旧窗口。临时查询失败保留已知授权状态并允许继续核对。设备流使用 `--no-browser`，仅由前端打开本次授权页，避免重复使用设备码。
+- 授权状态和 profile 的单次 CLI 查询最多各 5 秒，补齐本人展示资料最多 4 秒；资料查询失败不撤销已核实登录。展示账号名不得用内部 userId 替代；账号名或组织名称缺失时，返回可见页面可重新只读查询，不创建新的授权操作。
 - 全群会议优先使用当前员工已授权且按连接隔离的 DWS 用户 profile，通过官方 `chat group members` 完整分页读取当前群名单。未授权时保留原 App Token 路径；不读取主机共享 DWS 登录态，不自动启动授权。
 - 钉钉群执行中的工具上下文只从已保存的 `RequestRouteSnapshot` 读取当前群目标；机器人回调从 `group_message` 来源读取 `senderStaffId`，用户历史摄入则保留 `dingtalk-open:` 开放身份，不当作 staffId。私聊和非钉钉请求不得带入群上下文。`senderStaffId` 不等同于经验证的 `unionId` / `operatorId`。
 - `create_calendar_event` 仅允许在可信钉钉 `group_message` 或 `direct_message` 中调用；创建者来自消息 source 的发送者 ID，后端通过通讯录 API 映射 unionId，日历固定为 `primary`。标题、带时区偏移的开始和结束时间、IANA 时区为必填；结束不晚于开始、时区格式错误或与时间不匹配时不得调用外部 API。描述、提醒、参与者及钉钉视频会议链接为可选项。
@@ -49,11 +54,13 @@
 
 - 宿主专用 `group_history_identity(scope)` 只返回当前员工 OAuth profile 的 SHA256 摘要或未授权空值；授权查询异常不能误报未授权。`read_group_history(scope, conversation_id, since)` 最多三页/150 条，要求带时区的时间边界，返回 readerKey、messages、complete、hasMore、nextCursor、botCodes、botSenders，不开放为模型工具。botSenders 仅包含群机器人列表中无歧义的 robotCode → botOpenDingTalkId 映射；缺失或歧义身份不得推断，不能以 openBotId 替代。
 - 读取消息前使用同一员工 profile 查询 `chat group bots`；以配置中精确员工绑定的 robot_code（缺省 client_id）匹配返回的 robotCode，不能使用默认应用或 openBotId 冒充。机器人缺席时不读取历史，查询失败或结构异常不得使用旧名单继续。轮询使用 botCodes 筛选同账号接收员工，确认缺席撤销缓存成员权。
-- 共享 IM runtime 的群读取约十秒间隔，全局每轮最多八次读取尝试；按 namespace、readerKey、群合并，只有原有 active、adaptive、启用且精确连接有效的员工可参与。进度在本地私有目录原子保存，完整批次保留三十秒重叠，部分或未完成的处理不跳过进度。普通新文字的保守过滤与生命周期见 [IM 规约](S_03_im-direct-message-and-delivery.md#8-钉钉普通群文字的保守摄入)。
+- 员工 OAuth 生效后，宿主 `discover_groups(scope, cursor?)` 按五个候选群一页读取账号群列表，并逐群核验当前员工精确 robotCode；只登记匹配群，不读取无关群正文。分页继续扫描，完整一轮后至少间隔一分钟重扫，单群失败保留其他已核实结果，不通过不完整列表撤权。登记前在同一应用绑定锁内复核当前绑定、启用／adaptive 模式和授权账号。新发现群最多补读最近五分钟，且不得早于本进程首次成功确认当前员工 OAuth 身份的时刻；verified_at 仍使用登记确认时间。读前或登记前确认授权失效时清除旧观察起点及接收边界，瞬态查询异常保留原起点；共享检查点领先也不能跳过新接收员工的有界窗口。确认退群再入群的可见边界仍从新的确认时刻开始。已有 active access 不因周期发现而更新版本。首次绑定发生在服务启动之后时，成功的授权状态／轮询／发起请求会启动共享 IM runtime，无须等待机器人回调。群内已核验 botOpenDingTalkId 对应消息统一作为机器人消息归档，即使平台 sendType=user 也不得成为人类任务。
+- 共享 IM runtime 的群读取约十秒间隔，全局每轮最多八次读取尝试；按 namespace、readerKey、群合并，只有 active、adaptive、启用且精确连接有效的员工可参与。进度在本地私有目录原子保存，完整批次保留三十秒重叠，部分或未完成的处理不跳过进度。普通新文字的保守过滤与生命周期见 [IM 规约](S_03_im-direct-message-and-delivery.md#8-钉钉普通群文字的保守摄入)。
+- 授权状态 RPC 的 connected 响应可附带独立 `group_monitor={status,group_count}`，status 为 discovering/listening/no_groups/error/disabled/mentions_only/unavailable；账号授权不代表群读取成功。listening 仅在当前有权群均已成功读取时返回，某群错误不能被另一群成功清除，换账号不继承旧账号的发现错误。渠道页可见时每五秒更新已绑定账号的群状态，不重新发起设备授权。English: OAuth success starts the shared IM runtime and bounded bot-verified discovery without a first mention. Group observation has an independent status; only messages after confirmed access can trigger new work, and current-reader/group errors remain isolated.
 - 共享读取仍分别保留当前进程内每位员工的处理边界，取已重新核验接收者的最早边界读取；临时身份查询失败保留该员工边界，其他员工推进共享检查点不能消耗其待处理消息。部分批次按已确认分页边界前进；确认解绑、撤权或更换账号时清除对应边界，重启不回放停机旧消息。确认尚未授权时下一轮重新检查，查询异常保留退避；诊断日志仅记录员工、群、时间边界和数量。
 
-- 每次执行时重新读取默认钉钉应用；优先复用运行时目录内与固定版本匹配的 CLI 二进制，缺失时由 `npx` 按需获取固定版本。
-- npm 包缓存位于 JiuwenMate 私有数据目录；应用 Token 缓存及配置按员工和凭证版本隔离。无有效绑定时不构建 CLI 工具，也不向进程环境传入 `DWS_CLIENT_ID` / `DWS_CLIENT_SECRET`。
+- 每次执行时重新读取钉钉应用。CLI 优先使用显式配置的程序，其次复用同版本缓存，之后沿用可用的 `npx` 安装路径。没有 `npx` 时，Windows、macOS 和 Linux 的 x64/ARM64 运行时按需下载对应的官方发行包，验证固定 SHA-256 后将可执行文件原子写入程序缓存。首次授权发起和应用 API 调用均可触发准备。无私有授权状态的首次状态查询返回 `not_connected`，查询本身不下载原生 CLI。
+- 程序缓存按 CLI 版本隔离，原生下载还按系统及架构隔离。应用 Token 缓存及配置按员工和凭证版本隔离。无有效绑定时不构建 CLI 工具，也不向进程环境传入 `DWS_CLIENT_ID` / `DWS_CLIENT_SECRET`。原生安装失败返回可重试的 `DINGTALK_CLI_PREPARE_FAILED`。
 - 用户 OAuth 命令使用独立员工 user-oauth 目录及当前配置应用的完整客户端凭据对；该应用须在组织CLI设置登记并获准使用。AppKey/AppSecret可以同时作为原App Token和自建OAuth客户端的身份，二者Token目录与用户profile仍隔离；不能因应用未登记而静默改走组织禁止的内置客户端。设备授权失败只返回安全归类后的错误，不把原始 CLI 输出或凭据送到页面。前端称“钉钉用户账号授权”，覆盖群消息、文档和日历用途；同一进行中 operation 的轮询若暂缺链接/设备码，保留本次已返回的值，结束或变更 operation 时不沿用。
 - 团队版授权等待页每秒检查进行中的操作，页面重新获得焦点或变为可见时立即检查；同一连接的状态请求不得重叠。设备码和授权链接默认收进备用帮助区域，不作为二次授权步骤；成功后同时显示后端返回的账号与组织并移除帮助区域。
 - 已绑定状态独立展示账号名和所属组织；缺少单个字段不能隐藏另一个字段，未取得名称时提示暂不可用。CLI profile未提供名称或使用ID代替名称时，可在相同员工OAuth环境及显式当前profile下只读查询contact +me（5秒HTTP超时），只投影name/org；与已知profile userId冲突时丢弃补充结果，查询失败不撤销已验证的登录态，不向前端返回手机号、邮箱，也不据此改变群访问权限。

@@ -12,10 +12,10 @@ interface ArrayRef {
  * Serialize a client tool result within `limit` characters while keeping it valid JSON.
  *
  * Tool results feed the model's context and server-side tools that `JSON.parse` them
- * (verify_slide_visual reads verify_slides and read_slide_image), so cutting the text
+ * (the visual review reads verify_slide_visual's geometry), so cutting the text
  * mid-string breaks every machine consumer. Instead, trailing items are dropped from the
  * largest leaf arrays (arrays whose items hold no non-empty array, such as a slide's
- * `shapes` or `small_text_warnings`), so a container like `slides` loses whole entries
+ * `shapes` or `overflows`), so a container like `slides` loses whole entries
  * only after its members' lists are exhausted. Each trimmed array gets a sibling
  * `<key>_omitted` count and the top level lists every trimmed path.
  */

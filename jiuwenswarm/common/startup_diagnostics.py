@@ -49,7 +49,6 @@ _NATIVE_IMPORT_CHECKS: tuple[tuple[str, str], ...] = (
     ("lxml.etree", "lxml Native 扩展"),
     ("PIL._imaging", "Pillow Native 扩展"),
     ("bcrypt._bcrypt", "bcrypt Native 扩展"),
-    ("faiss", "FAISS Native 扩展"),
     ("chromadb_rust_bindings", "ChromaDB Rust 扩展"),
 )
 
@@ -84,7 +83,7 @@ def _data_dir() -> Path:
 
 def default_doctor_output_path() -> Path:
     """Return the persistent diagnostic path used outside installer overrides."""
-    return _data_dir() / "infra" / "logs" / "agent" / "startup-doctor.json"
+    return _data_dir() / "agent" / ".logs" / "startup-doctor.json"
 
 
 def _check_result(

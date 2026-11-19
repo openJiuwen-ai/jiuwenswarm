@@ -58,7 +58,25 @@ SDK mode auto-assembles the memory kernel in-process. The three backends answer 
 
 ---
 
+### 1.4 Import video into memory from Web chat
+
+Enable the built-in JiuwenMemory SDK (`memory.engine: builtin`, `memory.builtin.provider: jiuwen`, and `memory.builtin.jiuwen.mode: sdk`) and turn on the agent's memory. Use a version of agent-memory with the automatic video assembly from `config_dict` introduced in commit `92e8624`.
+
+By default, Swarm passes a local 64-dimensional hashing embedder to the built-in JiuwenMemory SDK to vectorize text produced by video processing. This requires no embedding service configuration. To use a different embedder, set `memory.builtin.jiuwen.sdk.embedder.default` and the corresponding `globals.embedder_dim` in the SDK configuration.
+
+1. In **Settings → Agent → Tools**, configure and enable **Video Understanding** and **Audio Processing** for the capabilities your deployment does not already provide. Save the model, API URL, and API key for each. The video endpoint must support OpenAI-compatible vision chat. The audio endpoint must support OpenAI-compatible transcription with segment timestamps.
+2. In a local Web chat in Work mode, select **Full access**, click **+** next to the composer, choose a local video, and send “Remember this video.” Swarm saves the browser upload in the current session's upload directory and generates a `file:///` URI for `agent_memory_video_submit`. Use `agent_memory_video_status` with the returned `job_id` to check progress.
+3. You can also submit a URI manually. The file must be in a deployment-configured import directory or in the automatically authorized project directory or session workspace under **Full access**.
+
+Swarm forwards each enabled, complete model configuration under any permission profile. If the deployment already configures one model, set the other in the Web UI. Automatic workspace grants are bound to the current memory identity. Model and effective directory changes apply to subsequent turns. With the SDK's default in-memory job store, old video job IDs become unavailable after the memory rail is rebuilt.
+
 ## 2. Built-in Memory vs. JiuwenMemory
+
+When Swarm starts with the JiuwenMemory provider selected, it leaves `MEMORY.md` unseeded. The first long-term memory write in a session without a project uses the `default` project. With local Markdown storage, it creates `memory/default/MEMORY.md` under the configured Markdown root.
+
+When switching to the SDK with a Swarm-managed Markdown root, Swarm archives a leftover root `MEMORY.md` that matches a built-in template before starting the SDK. Edited files stay in place.
+
+For a selected project, Swarm derives its memory coordinate from the directory name and a hash of the normalized absolute path. Local long-term memory uses `memory/<directory-name>-<path-hash>/MEMORY.md`. Omit the memory tool's `project` argument to use the current session's coordinate. Existing memory stored under a bare directory name remains accessible by explicitly selecting that legacy coordinate.
 
 JiuwenSwarm defaults to **built-in memory** (`memory.engine: builtin`), based on local Markdown files; switching to JiuwenMemory uses remote structured backends. The key difference is not "tool names" but **how memory is triggered**:
 

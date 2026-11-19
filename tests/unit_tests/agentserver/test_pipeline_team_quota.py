@@ -73,7 +73,9 @@ async def _create(monkeypatch, tmp_path, exc: TeamQuotaExceeded) -> dict:
         def resolve_limits(self, _identity):
             return type("Limits", (), {"max_teammates_per_team": 5, "default_teammates": 5})()
 
-        def reserve_team_create(self, _identity, _session_id):
+        def reserve_team_create(
+            self, _identity, _session_id, *, pending_non_leaders=None, on_existing="ignore",
+        ):
             raise exc
 
     monkeypatch.setattr(
