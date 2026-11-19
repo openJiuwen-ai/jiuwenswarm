@@ -669,6 +669,26 @@ async def probe_mcp_live_connection(name: str) -> tuple[bool, str]:
     return True, ""
 
 
+async def discard_probed_mcp(name: str) -> None:
+    """Drop the instance a successful probe cached for a cancelled connect.
+
+    ``probe_mcp_live_connection`` keeps it in the process-level
+    ``Runner.resource_mgr``; after a cancel the record is rolled back, so the
+    cached connection (and its stdio child) must not outlive it.
+    """
+    from openjiuwen.core.runner import Runner
+
+    # Fresh task: closing an SSE client's anyio scope in the caller's task
+    # raises "exit cancel scope in a different task".
+    task = asyncio.create_task(
+        Runner.resource_mgr.remove_mcp_server(server_name=name, ignore_exception=True)
+    )
+    try:
+        await asyncio.wait_for(task, timeout=10.0)
+    except Exception as exc:  # noqa: BLE001 - cleanup is best-effort
+        logger.warning("[mcp-config] discard probed MCP '%s' failed: %s", name, exc)
+
+
 async def prewarm_connected_mcps(
     *, report_status: bool = False, settle_connecting: bool = False
 ) -> bool | None:

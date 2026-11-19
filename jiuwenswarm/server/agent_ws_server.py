@@ -11276,6 +11276,7 @@ class AgentWebSocketServer:
         self, name: str, *, rollback_on_probe_failure: bool = True
     ) -> dict[str, Any]:
         """Run the shared connect flow and return a frontend payload."""
+        from jiuwenswarm.common.mcp_config import discard_probed_mcp
         from jiuwenswarm.server.runtime.mcp.registry import (
             connect_mcp,
             was_connect_cancelled,
@@ -11299,6 +11300,7 @@ class AgentWebSocketServer:
         # rolled the record back, so a late result must not override it.
         if was_connect_cancelled(name):
             logger.info("[mcp] connect '%s' cancelled during probe", name)
+            await discard_probed_mcp(name)
             return {"type": "cancelled", "name": name}
         if not probe_ok:
             logger.warning("[mcp] probe failed for '%s': %s", name, probe_reason)
@@ -11813,6 +11815,7 @@ class AgentWebSocketServer:
         self, name: str, *, max_attempts: int = 200, delay: float = 1.0
     ) -> dict[str, Any]:
         """Poll locally stored OAuth credentials until the loopback callback lands."""
+        from jiuwenswarm.common.mcp_config import discard_probed_mcp
         from jiuwenswarm.server.runtime.mcp.oauth_flow import load_oauth_credentials
         from jiuwenswarm.server.runtime.mcp.registry import (
             complete_host_oauth_auth,
@@ -11831,6 +11834,7 @@ class AgentWebSocketServer:
                 # cancel_connect already rolled the record back.
                 if was_connect_cancelled(name):
                     logger.info("[mcp] host OAuth '%s' cancelled during probe", name)
+                    await discard_probed_mcp(name)
                     return {"type": "cancelled", "name": name}
                 if not probe_ok:
                     logger.warning(
