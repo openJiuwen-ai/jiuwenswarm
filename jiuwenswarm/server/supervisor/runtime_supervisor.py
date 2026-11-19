@@ -42,6 +42,7 @@ from jiuwenswarm.server.ipc.session import FRONT_LOOPBACK, runtime_ipc_mode
 from jiuwenswarm.server.lifecycle import Readiness, ReadinessState
 from jiuwenswarm.server.supervisor.affinity import SessionAffinity
 from jiuwenswarm.server.supervisor.diagnostics import dump_runtime_state
+from jiuwenswarm.server.supervisor.output_policy import event_type_of, load_output_policy, passes_gate
 from jiuwenswarm.server.supervisor.identity import WorkerIdentityError
 from jiuwenswarm.server.supervisor.worker_process import (
     WorkerProcess,
@@ -50,6 +51,13 @@ from jiuwenswarm.server.supervisor.worker_process import (
 from jiuwenswarm.server.supervisor.worker_registry import WorkerRegistry, WorkerSlot
 
 logger = logging.getLogger(__name__)
+
+# #6793: 治理门丢帧日志节流——单轮丢弃可达数万帧，逐帧 INFO 会淹没日志。
+# 首条必报，其后每 _OUTPUT_GATE_NOTICE_EVERY 条汇总一条；request 计数器由
+# 流终帧收尾弹出，并以 _OUTPUT_GATE_NOTICE_MAX_KEYS 封顶防泄漏。
+_OUTPUT_GATE_NOTICE_EVERY = 500
+_OUTPUT_GATE_NOTICE_MAX_KEYS = 1024
+_OUTPUT_GATE_TERMINAL_EVENTS = frozenset({"chat.final", "chat.error"})
 
 
 def _is_server_push(payload: dict[str, Any]) -> bool:
@@ -152,6 +160,7 @@ class RuntimeSupervisor:
         stub_exit_on_request: bool = False,
         max_restarts: int = 3,
         connect_timeout: float = 30.0,
+        output_policy: Any | None = None,
     ) -> None:
         self._readiness = readiness
         self._forwarder = forwarder
@@ -171,6 +180,10 @@ class RuntimeSupervisor:
         self._stub_exit_on_request = stub_exit_on_request
         self._max_restarts = max_restarts
         self._connect_timeout = connect_timeout
+        self._output_policy = output_policy if output_policy is not None else load_output_policy()
+        self._route_channels: dict[str, str] = {}
+        self._dropped_output_total = 0
+        self._gate_drop_notices: dict[str, int] = {}
         self._affinity = SessionAffinity()
         self._registry = WorkerRegistry()
         self._conn: IpcConnection | None = None
@@ -449,6 +462,21 @@ class RuntimeSupervisor:
         if request_id:
             self._pending[dispatch_id] = future
             self._routes[dispatch_id] = (ws, send_lock)
+            channel_id = str(request.channel_id or "").strip().lower()
+            # Only conversation STREAMS are attributed to a channel for the
+            # external output gate: the gate trims per-turn stream noise
+            # (S_01).  A unary call is a request/response contract whose
+            # answer frame (``e2a.complete``) the caller blocks on — keeping
+            # unconditional attribution here let the gate drop IM attachment
+            # persist answers (``im.file_persist``/``file.upload_chunk``,
+            # Gateway ``fetch-*`` calls) and the caller hung to its 600s
+            # non-stream timeout (GMK 2026-11-17: "附件处理失败（服务暂不可
+            # 用）").  Non-stream requests therefore stay unattributed and
+            # fail open at the gate — no request-id shape is special-cased.
+            if channel_id and request.is_stream:
+                self._route_channels[dispatch_id] = channel_id
+                if request_id:
+                    self._route_channels[request_id] = channel_id
             if request.is_stream and worker is not None and self._ipc_mode != FRONT_LOOPBACK:
                 stream = _InflightStream(payload, worker)
                 self._streams[dispatch_id] = stream
@@ -484,6 +512,9 @@ class RuntimeSupervisor:
             if self._pending.get(dispatch_id) is future:
                 self._pending.pop(dispatch_id, None)
                 self._routes.pop(dispatch_id, None)
+            self._route_channels.pop(dispatch_id, None)
+            if request_id:
+                self._route_channels.pop(request_id, None)
             self._streams.pop(dispatch_id, None)
             self._stream_queries = {key: value for key, value in self._stream_queries.items()
                                     if value != dispatch_id}
@@ -1363,6 +1394,9 @@ class RuntimeSupervisor:
         ws, send_lock = route
         route_key = str(message.get("dispatch_id") or request_id)
         stream = self._streams.get(route_key)
+        if self._output_gate_drops(payload, route_key, request_id):
+            await self._ack_delivery(message, True)
+            return
         sequence = message.get("sequence")
         if stream is not None and type(sequence) is int and sequence <= stream.after:
             await self._ack_delivery(message, True)
@@ -1397,6 +1431,60 @@ class RuntimeSupervisor:
             self._forward_started = 0.0
             self._forward_request_id = ""
             await self._ack_delivery(message, delivered is True)
+
+    def _output_gate_drops(self, payload: dict[str, Any], route_key: str, request_id: str) -> bool:
+        """External-channel output gate (S_01_external-output-policy).
+
+        Returns True when this frame must not reach the outside world under
+        the channel's verbosity. Frames without a recorded channel (server
+        pushes, ledger placeholders, control traffic) fail open — the gate
+        only trims traffic positively attributed to a gated conversation.
+        """
+        channel = self._route_channels.get(route_key)
+        if channel is None and (_is_server_push(payload) or payload.get("is_stream")):
+            # request_id 回退仅限无 dispatch 归属的流帧/服务端推送（atomgit
+            # 2026-11-18 #10309）：一元控制调用（Gateway fetch-*：
+            # im.file_persist / file.upload_chunk）可与同会话受门流共用同一
+            # request_id（渠道:消息 id 形态）；无条件回退会让一元应答帧命中
+            # 并发流的归属，其 e2a.complete 被判 unknown 在 final 下丢——调用方
+            # 挂到 600s 非流式超时，即 GMK 2026-11-17 附件事故的复发面。一元
+            # 应答保持无归属 fail-open。
+            channel = self._route_channels.get(request_id)
+        if not channel:
+            return False
+        verbosity = self._output_policy.gate_for(channel)
+        if verbosity is None:
+            return False
+        event = event_type_of(payload)
+        if event in _OUTPUT_GATE_TERMINAL_EVENTS:
+            # 流终汇总（#6793）：本轮被门丢弃的帧数一次性交代。
+            prior = self._gate_drop_notices.pop(request_id, 0)
+            if prior:
+                logger.info(
+                    "[Supervisor] output gate summary; request_id=%s channel=%s"
+                    " verbosity=%s dropped_request_total=%d dropped_total=%d",
+                    request_id, channel, verbosity, prior,
+                    self._dropped_output_total,
+                )
+        if passes_gate(verbosity, event):
+            return False
+        self._dropped_output_total += 1
+        noticed = self._gate_drop_notices.get(request_id, 0) + 1
+        if (
+            request_id not in self._gate_drop_notices
+            and len(self._gate_drop_notices) >= _OUTPUT_GATE_NOTICE_MAX_KEYS
+        ):
+            del self._gate_drop_notices[next(iter(self._gate_drop_notices))]
+        self._gate_drop_notices[request_id] = noticed
+        if noticed == 1 or (noticed - 1) % _OUTPUT_GATE_NOTICE_EVERY == 0:
+            # 首条 + 每 N 条汇总（#6793）；dropped_total 语义保持全量累计。
+            logger.info(
+                "[Supervisor] output gate dropped frame; request_id=%s channel=%s"
+                " verbosity=%s event=%r dropped_request_total=%d dropped_total=%d",
+                request_id, channel, verbosity, event, noticed,
+                self._dropped_output_total,
+            )
+        return True
 
     async def _ack_delivery(self, message: dict[str, Any], delivered: bool) -> None:
         if not message.get("wire_id") or self._conn is None:

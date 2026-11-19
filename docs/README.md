@@ -116,6 +116,11 @@
       <td width="50%">JiuwenSwarm 的多渠道接入与交互。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>外发消息分级</strong></td>
+      <td width="28%"><a href="zh/外发消息分级.md">外发消息分级</a></td>
+      <td width="50%">外部 IM 渠道外发内容量控制：final/progress/verbose 三档收敛，防过程噪音刷屏。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>配置信息</strong></td>
       <td width="28%"><a href="zh/配置信息.md">配置信息</a></td>
       <td width="50%">系统参数、大模型 API、运行环境相关配置。</td>
