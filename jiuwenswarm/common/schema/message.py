@@ -64,6 +64,8 @@ class ReqMethod(Enum):
     SWARMFLOW_STOP = "swarmflow.stop"
 
     CONFIG_GET = "config.get"
+    MODE_SET = "mode.set"
+    MODE_GET = "mode.get"
     CONFIG_MOA_STATUS = "config.moa_status"
     CONFIG_SET = "config.set"
     CONFIG_SAVE_ALL = "config.save_all"
@@ -291,6 +293,8 @@ class ReqMethod(Enum):
     SKILLS_PACK_MEMBER_INSTALL = "skills.pack_member.install"
     SKILLS_IMPORT_LOCAL = "skills.import_local"
     SKILLS_IMPORT_UPLOAD = "skills.import_upload"
+    SKILLS_UPLOAD_STAGE = "skills.upload.stage"
+    SKILLS_UPLOAD_FINALIZE = "skills.upload.finalize"
     SKILLS_CREATE_FROM_KNOWLEDGE = "skills.create_from_knowledge"
     SKILLS_MARKETPLACE_ADD = "skills.marketplace.add"
     SKILLS_MARKETPLACE_REMOVE = "skills.marketplace.remove"
