@@ -32,6 +32,7 @@ _TODO_NAME_REPLACEMENTS = (
     ("todo_get", "todo(action=get)"),
 )
 
+
 def _unified_todo_description(language: str) -> str:
     if str(language).lower().startswith("en"):
         return (
