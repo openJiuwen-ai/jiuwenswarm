@@ -160,6 +160,53 @@ async def team_progress_snapshot_db(
         return None
 
 
+async def team_unassigned_pending_count_db(
+        channel_id: str | None, session_id: str
+) -> int | None:
+    """Count PENDING tasks with no assignee (成员耗尽判死兜底读数).
+
+    成员耗尽回池的任务 = PENDING + 无 assignee。只看全团队非终态任务数
+    （``team_progress_snapshot_db`` 的第二元）会把其他成员合法的长任务也算
+    进来，600s 兜底会误杀健康回合；这里按"无人接棒"的精确语义读数。
+
+    返回 None = 读数不可得（团队名/DB 解析不到、瞬态失败）——调用方按
+    "不收口"处理；``TeamNotEstablishedError`` 原样上抛（确定性终结）。
+    """
+    from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
+        TeamMonitorHandler,
+        TeamNotEstablishedError,
+    )
+    from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+    try:
+        tm = get_team_manager(channel_id)
+        team_name = str(tm.get_active_team_name(session_id) or "").strip()
+        if not team_name:
+            team_name = str((get_session_metadata(session_id) or {}).get("team_name") or "").strip()
+        if not team_name:
+            return None
+        snapshot = await TeamMonitorHandler.get_team_snapshot_from_db(
+            session_id, team_name,
+        )
+        if not snapshot:
+            return None
+        return sum(
+            1
+            for t in snapshot.get("tasks", [])
+            if str(t.get("status") or "") == "pending"
+            and not str(t.get("assignee") or "").strip()
+        )
+    except TeamNotEstablishedError:
+        raise
+    except Exception:
+        logger.debug(
+            "[TeamStallWatchdog] unassigned pending count failed: session_id=%s",
+            session_id,
+            exc_info=True,
+        )
+        return None
+
+
 async def team_leader_in_flight(channel_id: str | None, session_id: str) -> bool | None:
     """leader 成员行执行态点查：True = leader 有回合在途（starting/running/completing）。
 
@@ -251,6 +298,34 @@ async def team_leader_in_flight(channel_id: str | None, session_id: str) -> bool
         return None
 
 
+def _runtime_is_alive(state: str, agent: Any) -> bool:
+    """leader kernel 是否仍有产出能力。
+
+    ``_lifecycle_state == 'running'`` 只说明协调内核在线——轮与轮之间的
+    空闲同样是 running。预算耗尽后成员侧会各自停轮，内核仍停在 running，
+    旧判定会让停摆看门狗永远看不到"死"。这里收窄：账本已耗尽且 leader
+    没有在途轮 = 本回合确定无预算继续推进，判为无产出能力；其余形态保持
+    原判定（running 即活着）。
+    """
+    if state != "running":
+        return False
+    exhausted = getattr(agent, "is_round_budget_exhausted", None)
+    if not callable(exhausted):
+        return True
+    try:
+        if not exhausted():
+            return True
+    except Exception:  # noqa: BLE001 - 探测失败保持旧判定
+        return True
+    in_flight = getattr(agent, "has_in_flight_round", None)
+    if not callable(in_flight):
+        return True
+    try:
+        return bool(in_flight())
+    except Exception:  # noqa: BLE001 - 探测失败保持旧判定
+        return True
+
+
 async def team_runtime_liveness(channel_id: str | None, session_id: str) -> bool | None:
     """leader kernel 协调循环活性：True = 回合仍在推进（含模型长考与 agentic
     迭代间隙——这两类场景成员/leader 的 DB 状态采样都是 ready，快照判定必误判）。
@@ -285,7 +360,7 @@ async def team_runtime_liveness(channel_id: str | None, session_id: str) -> bool
         state = getattr(coordination, "_lifecycle_state", None)
         if not isinstance(state, str) or not state:
             return None
-        return state == "running"
+        return _runtime_is_alive(state, getattr(active, "agent", None))
     except Exception:
         logger.debug(
             "[TeamStallWatchdog] team runtime liveness failed: session_id=%s",

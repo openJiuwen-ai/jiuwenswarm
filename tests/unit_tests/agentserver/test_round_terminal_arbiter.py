@@ -682,3 +682,44 @@ async def test_stream_end_forced_suppressed_when_pause_starts_during_settle_read
     assert h.terminals() == []
     assert arb.completion_signals == 0
     arb.close()
+
+
+@pytest.mark.asyncio
+async def test_iteration_exhausted_clean_terminal_no_cascade() -> None:
+    """迭代预算耗尽=干净完成帧，无 error、无级联（级联已在
+    agent-core 收尾序列内完成），scope 进提案。"""
+    h = _Harness()
+    arb = h.build()
+    outcome = await arb.propose(
+        {"source": ProposalSource.ITERATION_EXHAUSTED, "scope": "total"}
+    )
+    assert outcome == Outcome.EMITTED_CLEAN
+    terminal = h.terminals()[0]
+    assert not terminal.get("error")
+    assert h.cascades == []
+    assert h.terminal_marked
+
+
+@pytest.mark.asyncio
+async def test_iteration_exhausted_second_proposal_suppressed() -> None:
+    """同流二次提案被去重闸否决（裁决器单点语义对所有源一致）。"""
+    h = _Harness()
+    arb = h.build()
+    first = await arb.propose({"source": ProposalSource.ITERATION_EXHAUSTED})
+    second = await arb.propose({"source": ProposalSource.ITERATION_EXHAUSTED})
+    assert first == Outcome.EMITTED_CLEAN
+    assert second == Outcome.SUPPRESSED
+    assert len(h.terminals()) == 1
+
+
+@pytest.mark.asyncio
+async def test_member_exhausted_error_terminal_with_cascade() -> None:
+    """成员耗尽无人接棒 → 带 error 判死 + 级联收流。"""
+    h = _Harness()
+    arb = h.build()
+    outcome = await arb.propose(
+        {"source": ProposalSource.MEMBER_EXHAUSTED, "error": "成员 m1 耗尽后任务无人接棒"}
+    )
+    assert outcome == Outcome.EMITTED_ERROR
+    assert h.terminals()[0]["error"] == "成员 m1 耗尽后任务无人接棒"
+    assert h.cascades == ["member-exhausted"]

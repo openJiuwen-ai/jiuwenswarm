@@ -245,11 +245,23 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
         if not content or not content.strip():
             return None
 
+        # 预算耗尽打标透传：chat.final 携带 stop_reason，
+        # 消费侧据此分流（leader→裁决器 ITERATION_EXHAUSTED 提案）
+        stop_reason = (
+            payload.get("stop_reason") if isinstance(payload, dict) else None
+        )
+
         if _has_streamed_content and not is_chunked:
-            return {"event_type": "chat.final", "content": content}
+            result = {"event_type": "chat.final", "content": content}
+            if stop_reason:
+                result["stop_reason"] = stop_reason
+            return result
         if is_chunked:
             return {"event_type": "chat.delta", "content": content}
-        return {"event_type": "chat.final", "content": content}
+        result = {"event_type": "chat.final", "content": content}
+        if stop_reason:
+            result["stop_reason"] = stop_reason
+        return result
 
     if chunk_type == "tool_call":
         tool_info = (

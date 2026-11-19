@@ -2620,6 +2620,191 @@ def _schedule_leader_round_death_probe(
     return asyncio.create_task(_probe(), name=f"leader-death-probe-{session_id}")
 
 
+# 判死兜底**总时长**（从成员耗尽帧到达起算，不是接管提示后的追加时长）：
+# t=0 成员耗尽 → agent-core 摘牌+回池+通报，并武装 300s 接管提示
+# → t=300 注入接管提示 → t=600 本兜底判死提案（即提示后再留 300s 观察窗）。
+# 取值不变式：总时长 600s ≤ 客户端 600s 自救预算。
+_MEMBER_EXHAUSTED_KILL_FALLBACK_SEC = 600.0
+_member_exhaustion_timers: dict[str, asyncio.Task] = {}
+
+
+def _member_exhaustion_timer_key(
+        session_id: str,
+        round_id: Any,
+        member_name: str | None,
+) -> str:
+    """兜底定时器键：带回合号，避免跨回合复用流时互相误伤。
+
+    ``round_id`` 为空（旧调用/测试）时退回不带回合的旧键，兼容既有用例。
+    """
+    if round_id is None:
+        return f"{session_id}:{member_name or '?'}"
+    return f"{session_id}:{round_id}:{member_name or '?'}"
+
+
+def _arm_member_exhaustion_fallback(
+        channel_id: str | None,
+        session_id: str,
+        member_name: str | None,
+        *,
+        propose: Any,
+        round_id: Any = None,
+) -> None:
+    """武装成员耗尽兜底：仍有无主 PENDING 任务 → 裁决器判死提案。
+
+    读取口径 = 「PENDING 且无 assignee」的**回池任务**数
+    （``team_unassigned_pending_count_db``），不是全团队非终态任务数——
+    否则其他成员合法的长任务会被误判成"无人接棒"而误杀回合。
+    回合收尾时由 ``_cancel_member_exhaustion_fallbacks`` 主动撤表；
+    迟到的提案仍会被裁决器去重闸 SUPPRESSED。
+
+    定时器键带 ``round_id``：流跨回合复用时，下一回合的兜底不得被上一回合
+    的收尾/撤表误伤，上一回合的迟到 fire 也不得读到下一回合的回池任务。
+    """
+    key = _member_exhaustion_timer_key(session_id, round_id, member_name)
+    previous = _member_exhaustion_timers.pop(key, None)
+    if previous is not None and not previous.done():
+        previous.cancel()
+
+    async def _watch() -> None:
+        try:
+            await asyncio.sleep(_MEMBER_EXHAUSTED_KILL_FALLBACK_SEC)
+            from jiuwenswarm.server.runtime.agent_adapter.team_stall_watchdog import (
+                team_unassigned_pending_count_db,
+            )
+
+            unassigned = await team_unassigned_pending_count_db(
+                channel_id, session_id,
+            )
+            # None = 读数不可得：按"不收口"保守处理（信息缺失不判死）。
+            if unassigned is not None and unassigned > 0:
+                logger.warning(
+                    "[TeamHelpers] member exhaustion fallback fires: "
+                    "session_id=%s member=%s unassigned_pending=%d",
+                    session_id,
+                    member_name,
+                    unassigned,
+                )
+                await propose({
+                    "source": ProposalSource.MEMBER_EXHAUSTED,
+                    "error": (
+                        f"成员 {member_name or '?'} 耗尽后任务无人接棒"
+                    ),
+                })
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "[TeamHelpers] member exhaustion fallback failed: "
+                "session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+
+    task = asyncio.create_task(
+        _watch(), name=f"member-exhausted-kill-fallback-{session_id}",
+    )
+    task.add_done_callback(
+        lambda _t: _member_exhaustion_timers.pop(key, None)
+    )
+    _member_exhaustion_timers[key] = task
+    logger.info(
+        "[TeamHelpers] member exhaustion kill-fallback armed: "
+        "session=%s round=%s member=%s delay=%ds",
+        session_id,
+        round_id,
+        member_name,
+        int(_MEMBER_EXHAUSTED_KILL_FALLBACK_SEC),
+    )
+
+
+def _cancel_member_exhaustion_fallbacks(
+        session_id: str,
+        round_id: Any = None,
+) -> None:
+    """回合收尾撤掉该会话（指定回合）的成员耗尽兜底定时器。
+
+    兜底是"回合内成员耗尽后无人接棒"的安全网；回合已终态/流已结束，
+    任何迟到 fire 都只会在下一回合制造误判，必须主动取消。
+
+    ``round_id`` 非空时只撤该回合的定时器：流跨回合复用时，旧流的收尾
+    不得连带撤掉新流刚武装的兜底。
+    """
+    if round_id is None:
+        prefix = f"{session_id}:"
+    else:
+        prefix = f"{session_id}:{round_id}:"
+    for key in [k for k in _member_exhaustion_timers if k.startswith(prefix)]:
+        task = _member_exhaustion_timers.pop(key, None)
+        if task is not None and not task.done():
+            task.cancel()
+
+
+def _cancel_member_exhaustion_fallbacks_if_terminal(
+        outcome: Any,
+        session_id: str,
+        round_id: Any = None,
+) -> None:
+    """裁决器已发终态（emitted_*）时撤掉本回合的成员耗尽兜底。
+
+    settle 提案可能被推迟/否决（deferred/suppressed），此时保留兜底；
+    只有真正发出终态帧才撤，避免把安全网提前拆掉。
+    """
+    if isinstance(outcome, str) and outcome.startswith("emitted"):
+        _cancel_member_exhaustion_fallbacks(session_id, round_id)
+
+
+async def _handle_budget_stop_frame(
+        *,
+        parsed: dict[str, Any],
+        is_leader: bool,
+        chunk: Any,
+        channel_id: str | None,
+        session_id: str,
+        arbiter: Any,
+        round_id: Any = None,
+) -> bool:
+    """Handle a budget-tagged final frame.
+
+    agent-core 的收尾序列（停成员/回池/总结轮）已在域内完成：
+    - leader：只提案干净终态（ITERATION_EXHAUSTED），并即时收流；
+    - 成员：记账 + 武装判死兜底（回池任务 600s 内无人接棒才判死）。
+
+    Returns:
+        True = 回合应在该帧后立即收流（leader 预算耗尽）。
+    """
+    budget_stop = parsed.get("stop_reason")
+    if budget_stop not in ("max_rounds", "budget_total"):
+        return False
+    if is_leader:
+        # leader 触顶帧 = 收尾序列已进入终态边界。成员判死兜底
+        # 必须立即撤表——收尾轮会把在途任务回池，600s 后兜底会把
+        # “收尾自己造成的无主 PENDING”误读成无人接棒。
+        _cancel_member_exhaustion_fallbacks(session_id, round_id)
+        await arbiter.propose({
+            "source": ProposalSource.ITERATION_EXHAUSTED,
+            "scope": (
+                "total" if budget_stop == "budget_total" else "leader"
+            ),
+        })
+        return True
+    logger.warning(
+        "[TeamBudget] iteration-exhausted frame detected: member=%s "
+        "session=%s stop_reason=%s",
+        getattr(chunk, "source_member", None),
+        session_id,
+        budget_stop,
+    )
+    _arm_member_exhaustion_fallback(
+        channel_id,
+        session_id,
+        getattr(chunk, "source_member", None),
+        propose=arbiter.propose,
+        round_id=round_id,
+    )
+    return False
+
+
 _TERMINAL_CASCADE_PAUSE_TIMEOUT_SEC = 15.0
 _TERMINAL_CASCADE_STOP_TIMEOUT_SEC = 10.0
 
@@ -3371,20 +3556,27 @@ async def _consume_stream_with_query(
                     )
                     # 投递失败已广播 chat.error，收尾帧必须带 error——
                     # 由裁决器发（去重/打标/账本复位单点）
-                    await arbiter.propose(
+                    outcome = await arbiter.propose(
                         {"source": ProposalSource.INTERACT_FAILED, "error": error_msg}
+                    )
+                    _cancel_member_exhaustion_fallbacks_if_terminal(
+                        outcome, session_id, round_id,
                     )
                     continue
                 elif parsed.get("event_type") == "team.completed":
-                    # Team completed this round——SDK 三条件即真值（R6），
-                    # 统计键恒在（值可 None）；错误史携带（R13）、去重、
+                    # Team completed this round——SDK 三条件即真值，
+                    # 统计键恒在（值可 None）；错误史携带、去重、
                     # 打标、账本复位由裁决器收口
-                    await arbiter.propose(
+                    outcome = await arbiter.propose(
                         {
                             "source": ProposalSource.TEAM_COMPLETED,
                             "member_count": parsed.get("member_count"),
                             "task_count": parsed.get("task_count"),
                         }
+                    )
+                    # 回合已发终态：本回合的成员耗尽兜底不得跨到下一回合误杀。
+                    _cancel_member_exhaustion_fallbacks_if_terminal(
+                        outcome, session_id, round_id,
                     )
                     # 回合终态发出后复位流级轮次标记，
                     # 让后续纯文本追问轮仍有 finish_after_final 即时收尾资格
@@ -3426,6 +3618,16 @@ async def _consume_stream_with_query(
                             },
                             mode="team",
                         )
+                    if not is_leader and not _is_retry_notice(parsed) and not parsed.get("degraded"):
+                        # 成员模型重试穷尽（终结性 [181001] 透传）
+                        # → 判死兜底（agent-core 已摘牌+回池+通报）
+                        if "[181001]" in str(parsed.get("error") or ""):
+                            _arm_member_exhaustion_fallback(
+                                channel_id,
+                                session_id,
+                                parsed.get("member_name"),
+                                propose=arbiter.propose,
+                            )
                     if is_leader and not _is_retry_notice(parsed) and not parsed.get("degraded"):
                         # 注意：重试通知不进本分支——通知是 rail 过程性广播（马上自动重试），
                         # 不是"未恢复错误史"：挂探针会在重试回退窗口（0.5-2s 后还有一次
@@ -3486,6 +3688,19 @@ async def _consume_stream_with_query(
                             and str(parsed.get("content") or "") == leader_synth_text
                         ):
                             leader_synth_text = ""
+                            # 打标帧与合成帧同文被去重时，stop_reason 仍必须
+                            # 被消费——否则预算耗尽会被"同文双发去重"吞掉，
+                            # 裁决器收不到 ITERATION_EXHAUSTED 提案。
+                            if await _handle_budget_stop_frame(
+                                parsed=parsed,
+                                is_leader=is_leader,
+                                chunk=chunk,
+                                channel_id=channel_id,
+                                session_id=session_id,
+                                arbiter=arbiter,
+                                round_id=round_id,
+                            ):
+                                finish_after_final = True
                             continue
                         # 标记本周期已发 final（含合成），轮末 task_completion
                         # 据此跳过重复合成
@@ -3501,17 +3716,43 @@ async def _consume_stream_with_query(
                     # round is complete. Clients may stop consuming the stream
                     # as soon as processing_status(False) arrives.
                     await _broadcast_event(channel_id, session_id, parsed)
+                    # 迭代预算耗尽打标：agent-core 收尾序列
+                    # 已在域内完成（停成员/回池/总结轮），leader 帧只提案
+                    # 干净终态；成员帧武装判死兜底。
+                    if parsed.get("stop_reason") in ("max_rounds", "budget_total"):
+                        if await _handle_budget_stop_frame(
+                            parsed=parsed,
+                            is_leader=is_leader,
+                            chunk=chunk,
+                            channel_id=channel_id,
+                            session_id=session_id,
+                            arbiter=arbiter,
+                            round_id=round_id,
+                        ):
+                            # 收尾序列已级联停止成员，回合可即时收流
+                            finish_after_final = True
+                        continue
                     if not should_finish_round and is_leader:
                         # 零任务问答轮补判——team.completed 门禁
                         # 要求任务行存在（is_team_completed 条件①），消息制委派/
                         # 纯问答团从不建任务行，seen_team_events 又被成员状态帧
                         # 置位 → 没有任何终态帧、流永挂。settle 提案交裁决器。
-                        await arbiter.propose({"source": ProposalSource.SETTLE})
+                        outcome = await arbiter.propose(
+                            {"source": ProposalSource.SETTLE},
+                        )
+                        _cancel_member_exhaustion_fallbacks_if_terminal(
+                            outcome, session_id, round_id,
+                        )
                         continue
                     if should_finish_round:
                         # 即时收尾（纯文本轮/workflow 完成）——提案裁决器
                         #（去重/打标/账本复位/错误史携带单点）
-                        await arbiter.propose({"source": ProposalSource.INSTANT_FINAL})
+                        outcome = await arbiter.propose(
+                            {"source": ProposalSource.INSTANT_FINAL},
+                        )
+                        _cancel_member_exhaustion_fallbacks_if_terminal(
+                            outcome, session_id, round_id,
+                        )
                         # 即时收尾只限「纯文本回合」：本轮无团队事件、无工具调用、
                         # 无成员产出，且收尾信号来自 task_completion（leader 任务真实
                         # 完成）——运行时暂停，下次发送 resume_from_pause 热恢复，不再
@@ -3686,6 +3927,9 @@ async def _consume_stream_with_query(
                         session_id,
                     )
         finally:
+            # 回合结束：撤掉本回合的成员耗尽兜底定时器（迟到 fire 不得跨回合
+            # 误杀；按 round_id 限定，旧流收尾不撤新流刚武装的兜底）。
+            _cancel_member_exhaustion_fallbacks(session_id, round_id)
             # Registry release must run even if cancellation arrives while a
             # normal stream is delivering its final snapshot.
             team_manager = get_team_manager(channel_id)

@@ -413,12 +413,14 @@ agents:
   agent_leader:
     workspace:
       stable_base: true
+    # 团队链路此键被 task loop 遮蔽，实际作迭代预算（内层迭代口径）
     max_iterations: 200
     completion_timeout: 6000.0
 
   agent_teammate:
     workspace:
       stable_base: true
+    # 同上，成员单次派发的迭代预算
     max_iterations: 200
     completion_timeout: 6000.0
 
@@ -1312,6 +1314,8 @@ modes:
       teammate_mode: build_mode
       spawn_mode: inprocess
       enable_swarmflow: false
+      # 一轮主对话生命周期内 leader+全部成员轮数合计上限
+      max_total_rounds: 1000
 
       # Proactive reliability monitoring for team leaders and teammates.
       reliability:
@@ -1399,6 +1403,10 @@ modes:
 
       agents:
         leader: $agent_leader
+        # 显式引用全局模板，agent_teammate.max_iterations 才会成为
+        # 成员迭代预算；不写时 loader 用 _DEFAULT_MAX_ITERATIONS 兜底
+        # （顶层 agents.agent_teammate 的配置会被忽略）。
+        teammate: $agent_teammate
 
       workspace:
         enabled: true
