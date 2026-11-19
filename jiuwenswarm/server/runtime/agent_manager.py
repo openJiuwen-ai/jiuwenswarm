@@ -1724,16 +1724,22 @@ class AgentManager:
             clear_staged=True,
         )
 
+        aggregate = ReloadAggregateResult()
         # Catalog sync bypasses reload_agents_config. A pooled team can outlive its adapter.
         team_manager = peek_team_manager()
         if team_manager is not None:
             ns_token = bind_agent_env_ns(self.env_service_id, self.env_agent_id)
             try:
                 team_manager.update_leader_evolution_triggers(config, catalog_sync=True)
+            except Exception as exc:
+                logger.warning(
+                    "[AgentManager] team evolution policy sync failed: service=%s agent=%s error=%s",
+                    self.env_service_id, self.env_agent_id, exc,
+                )
+                aggregate.failed.append({"session": "", "error": f"Team evolution policy sync failed: {exc}"})
             finally:
                 reset_agent_env_ns(ns_token)
 
-        aggregate = ReloadAggregateResult()
         for channel_id, channel_agents in self.agents.items():
             if not isinstance(channel_agents, dict):
                 continue

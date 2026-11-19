@@ -134,6 +134,19 @@ async def test_update_evolution_config_updates_team_skill_review_trigger(
     assert rail.review_trigger is True
 
 
+def test_personal_catalog_preserves_leader_without_signal_trigger():
+    manager = TeamManager()
+    rail = _FakeTeamSkillEvolutionRail(review_trigger=True)
+    manager.register_team_skill_rail("legacy", rail)
+
+    manager.update_leader_evolution_triggers(
+        {"react": {"evolution": {"review_trigger": False}}}, catalog_sync=True,
+    )
+
+    assert rail.review_trigger is True
+    assert not hasattr(rail, "signal_trigger")
+
+
 @pytest.mark.asyncio
 async def test_catalog_and_scoped_reload_update_only_the_owning_mounted_leaders(monkeypatch):
     from jiuwenswarm.common.local_env_config import bind_agent_env_ns, clear_agent_env_ns, reset_agent_env_ns

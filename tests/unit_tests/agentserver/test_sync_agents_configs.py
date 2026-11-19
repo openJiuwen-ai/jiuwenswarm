@@ -815,6 +815,51 @@ async def test_sync_warmup_failure_identical_payload_retries_apply(mock_warmup):
 
 
 @pytest.mark.asyncio
+async def test_team_policy_failure_preserves_adapter_reload_and_allows_catalog_retry(monkeypatch):
+    from jiuwenswarm.agents.harness.common.tools import browser_tools
+    from jiuwenswarm.common.local_env_config import resolve_env_ns
+    from jiuwenswarm.server.runtime import agent_manager as runtime
+
+    pool = TenantAgentPool.get_instance()
+    await pool.sync_agents_configs(_sync_payload(revision="before"))
+    manager = await pool._ensure_agent_manager("office", "default", "default")
+    idle, busy = MagicMock(), MagicMock()
+    idle.is_working.return_value = False
+    busy.is_working.return_value = True
+    reload_idle = AsyncMock(return_value=None)
+    idle.ensure_adapter.return_value.reload_agent_config = reload_idle
+    queue_busy = busy.ensure_adapter.return_value.queue_pending_reload
+    manager.agents["web"] = {"idle": idle, "busy": busy}
+
+    teams = MagicMock()
+    teams.update_leader_evolution_triggers.side_effect = [RuntimeError("policy unavailable"), None]
+    monkeypatch.setattr(runtime, "peek_team_manager", lambda: teams)
+    notification_scopes = []
+    notify = MagicMock(side_effect=lambda **_: notification_scopes.append(resolve_env_ns()))
+    monkeypatch.setattr(browser_tools, "notify_browser_runtime_after_reload", notify)
+    payload = _sync_payload(revision="after")
+    payload["agents"][0]["config"]["react"]["evolution"] = {"team_signal_trigger": False}
+
+    caller_ns = resolve_env_ns()
+    result = await pool.sync_agents_configs(payload)
+    first = result["agents"][0]
+    reload_idle.assert_awaited_once()
+    queue_busy.assert_called_once()
+    notify.assert_called_once_with(idle=False, service_id="default", agent_id="office")
+    assert notification_scopes == [caller_ns]
+    assert first["ok"] is False
+    assert first["reload"]["applied"] == first["reload"]["deferred"] == 1
+    assert "policy unavailable" in first["reload"]["failed"][0]["error"]
+    assert TenantCatalogRegistry.get_instance().get("default", "office").revision == "before"
+
+    retried = await pool.sync_agents_configs(payload)
+    assert retried["agents"][0]["ok"] is True
+    assert teams.update_leader_evolution_triggers.call_count == 2
+    assert TenantCatalogRegistry.get_instance().get("default", "office").revision == "after"
+    assert resolve_env_ns() == caller_ns
+
+
+@pytest.mark.asyncio
 async def test_sync_reload_failed_does_not_commit_catalog(mock_warmup):
     pool = TenantAgentPool.get_instance()
     payload = _sync_payload(

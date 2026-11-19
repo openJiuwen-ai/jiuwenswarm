@@ -2046,7 +2046,7 @@ class TeamManager:
             if rail is None:
                 continue
             # Catalog sync historically leaves personal leaders alone. Restore only a disabled leader.
-            if catalog_sync and signal_trigger and rail.signal_trigger:
+            if catalog_sync and signal_trigger and getattr(rail, "signal_trigger", True):
                 continue
             state.leader_triggers = signal_trigger, review_trigger
             rail.signal_trigger = signal_trigger
