@@ -3961,7 +3961,6 @@ TOOL_CALL = {**THINKING, "seq": 2, "kind": "tool_call", "summary": "screenshot()
 @pytest.mark.parametrize("source", ["ask_user_interrupt", "permission_interrupt", "confirm_interrupt"])
 async def test_recovered_task_card_follows_original_runtime(tmp_path, monkeypatch, source):
     from unittest.mock import AsyncMock
-    from jiuwenswarm.common.schema.message import ReqMethod
     from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import until
     from jiuwenswarm.extensions.video_duplex.backend import task_adapter
     from jiuwenswarm.extensions.video_duplex.backend.tasks import service as module
