@@ -630,11 +630,15 @@
       "displayName": "Model display name",
       "displayNamePlaceholder": "Defaults to the model name; you can change it",
       "nameInvalid": "Enter a model display name between 1 and 100 characters",
-      "completeFields": "Complete the required model configuration fields.",
       "add": "Add multimodal model",
       "edit": "Edit multimodal model",
       "deleteTitle": "Delete model?",
       "changeTitle": "Change model capabilities?",
+      "enableTitle": "Enable matching tools?",
+      "enableTools": "These tools are currently off: {{tools}}. Enable them together and use the model “{{model}}”?",
+      "enableAndUse": "Enable and use this model",
+      "keepDisabled": "Keep off",
+      "keepDisabledRule": "Keeping tools off still saves the model. Existing model selections stay unchanged; tools without a selection will select this model.",
       "confirmDelete": "Delete",
       "confirmChanges": "Confirm changes",
       "deleteReferences": "This model is used by: {{tools}}.",
@@ -645,7 +649,7 @@
       "shortcutChanged": "Model added. It does not include {{tool}}, so this tool’s settings are unchanged.",
       "separator": ", ",
       "empty": "No multimodal models configured",
-      "emptyDescription": "Add a model and select its capabilities. Matching tools without a selected model will be enabled automatically.",
+      "emptyDescription": "Add a model and select its capabilities. If any matching tools are off, you can choose to enable them or keep them off when you save.",
       "tools": {
         "vision": "Image processing",
         "audio": "Audio processing",
@@ -654,7 +658,7 @@
         "video_gen": "Video generation"
       },
       "errors": {
-        "MM_VALIDATION_FAILED": "Check the model configuration and complete all required fields.",
+        "MM_VALIDATION_FAILED": "Model configuration validation failed. Check the configuration and try again.",
         "MM_CONFIRM_REQUIRED": "Model references have changed. Confirm the affected tools again.",
         "MM_MODEL_NOT_FOUND": "This model no longer exists. Select another model.",
         "MM_MODEL_ID_CONFLICT": "The model ID is already in use. Reopen the add dialog.",
@@ -2223,6 +2227,7 @@
   },
   "chat": {
     "recordingInProgress": "Recording. Select Stop to transcribe.",
+    "toolResultLabel": "Tool result",
     "duplexControls": {
       "sharingVideo": "WorkSwarm is receiving shared video",
       "screenOrWindow": "Screen or window",
@@ -2590,7 +2595,8 @@
     "empty": "No tasks",
     "inProgress": "In progress",
     "pending": "Pending",
-    "completed": "Completed"
+    "completed": "Completed",
+    "cancelled": "Cancelled"
   },
   "plan": {
     "toolbarTag": "Plan",
@@ -5667,6 +5673,7 @@
     "upload": {
       "hint": "Supports .zip and .tar files; once extracted, the folder must include manifest.json and README.md, and the .json file must declare packageType.",
       "dropHint": "Click or drag a file here",
+      "webHint": "Click to upload a file",
       "invalidType": "Only .zip / .tar files are supported",
       "importSuccess": "Plugin imported successfully",
       "missingManifest": "The plugin package is missing manifest.json, or the file is corrupt.",

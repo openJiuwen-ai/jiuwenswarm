@@ -4,22 +4,23 @@ import { useMultimodalSettings } from '../../services/useMultimodalSettings';
 import { MultimodalModelDialog } from '../models/MultimodalModelDialog';
 import { MultimodalSettingsFeedback } from '../models/MultimodalSettingsFeedback';
 
-function configurationFor(tool: MultimodalCapability) {
+function configurationFor(tool: MultimodalCapability, { enableToolOnSave = false } = {}) {
   return function ConfigureModel({ onClose }: { onClose: () => void }) {
     const { snapshot } = useMultimodalSettings();
-    return snapshot ? <MultimodalModelDialog defaultCapability={tool} onClose={onClose} /> : null;
+    return snapshot ? (
+      <MultimodalModelDialog defaultCapability={tool} enableToolOnSave={enableToolOnSave} onClose={onClose} />
+    ) : null;
   };
 }
 
 export function multimodalToolItems(tool: MultimodalCapability): SettingItemDefinition[] {
-  const Configure = configurationFor(tool);
   return [
     {
       id: `${tool}-enabled`,
       component: 'switch',
       key: `${tool}_enabled`,
       source: 'multimodal',
-      configure: Configure,
+      configure: configurationFor(tool, { enableToolOnSave: true }),
       subItems: {
         show: 'when-parent-checked',
         disabled: 'never',
@@ -30,7 +31,7 @@ export function multimodalToolItems(tool: MultimodalCapability): SettingItemDefi
             key: `${tool}_model_id`,
             options: [],
             optionsFromSource: true,
-            configure: Configure,
+            configure: configurationFor(tool),
           },
         ],
       },

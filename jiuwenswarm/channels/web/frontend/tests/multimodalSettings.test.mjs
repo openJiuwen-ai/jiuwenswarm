@@ -9,7 +9,7 @@ function snapshot(tools = {}) {
   return { schema_version: 1, models: [], tools };
 }
 
-test('tool options filter capability, retain list order and distinguish duplicate names', () => {
+test('tool options retain display names and move model details into hover titles', () => {
   const models = [
     { model_id: 'a', display_name: 'Shared', model_name: 'vision-a', api_base: 'https://a.invalid', capabilities: ['vision'] },
     { model_id: 'b', display_name: 'Shared', model_name: 'vision-b', api_base: 'https://b.invalid', capabilities: ['vision'] },
@@ -19,10 +19,14 @@ test('tool options filter capability, retain list order and distinguish duplicat
   ];
   const options = multimodalModelOptions(models, 'vision');
   assert.deepEqual(options.map((option) => option.value), ['a', 'b', 'd', 'e']);
-  assert.equal(new Set(options.map((option) => option.label)).size, 4);
-  assert.match(options[0].label, /vision-a.*https:\/\/a\.invalid/);
-  assert.equal(options[3].label, 'Unique');
-  assert.deepEqual(multimodalModelOptions(models, 'audio'), [{ value: 'c', label: 'Shared' }]);
+  assert.deepEqual(options.map((option) => option.label), ['Shared', 'Shared', 'Shared', 'Unique']);
+  assert.deepEqual(options.map((option) => option.title), [
+    'vision-a\nhttps://a.invalid\na', 'vision-b\nhttps://b.invalid\nb',
+    'vision-a\nhttps://a.invalid\nd', 'vision-e\nhttps://e.invalid\ne',
+  ]);
+  assert.deepEqual(multimodalModelOptions(models, 'audio'), [
+    { value: 'c', label: 'Shared', title: 'audio\nhttps://c.invalid\nc' },
+  ]);
 });
 
 test('all callers share the saved snapshot and queued writes send ordinary save parameters', async () => {
