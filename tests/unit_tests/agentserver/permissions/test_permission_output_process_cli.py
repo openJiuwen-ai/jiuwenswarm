@@ -325,9 +325,20 @@ async def test_cli_real_runtime_two_cards_do_not_finish_on_suspended_tail(cli_ho
 @pytest.mark.asyncio
 @pytest.mark.parametrize("ending,card", [("timeout", 1), ("cancel", 1), ("eof", 1),
                                          ("cancel", 2), ("timeout", 2)])
-async def test_cli_real_runtime_wait_is_cancellable_without_approval(cli_host, ending, card):
+async def test_cli_real_runtime_wait_is_cancellable_without_approval(cli_host, monkeypatch, ending, card):
     run = await cli_host(two_cards=card == 2)
-    run.start(timeout=2 if ending == "timeout" else 10)
+    deadline = None
+    original_timeout = asyncio.timeout
+
+    def observe_timeout(delay):
+        nonlocal deadline
+        scope = original_timeout(delay)
+        if deadline is None and asyncio.current_task() is run.task:
+            deadline = scope
+        return scope
+
+    monkeypatch.setattr(asyncio, "timeout", observe_timeout)
+    run.start()
     notice = await run.notice()
     if card == 2:
         run.answer(notice)
@@ -342,6 +353,10 @@ async def test_cli_real_runtime_wait_is_cancellable_without_approval(cli_host, e
                          "request_id": "external-cli-run"})
     elif ending == "eof":
         run.reader.send(None)
+    else:
+        # Expire only after reaching the suspended approval under test.
+        assert deadline is not None
+        deadline.reschedule(asyncio.get_running_loop().time())
     result = await run.finish()
     expected = {"timeout": ("TIMEOUT", 124), "cancel": ("CANCELLED", 130),
                 "eof": ("INPUT_CLOSED", 130)}
