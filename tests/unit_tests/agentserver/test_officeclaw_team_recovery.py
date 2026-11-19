@@ -188,7 +188,8 @@ async def test_restore_failure_rolls_back_metadata_and_snapshot(state, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_failed_readback_restores_original_artifacts(state, monkeypatch):
+@pytest.mark.parametrize("field", ["team_name", "runtime_team_name", "team_template_id"])
+async def test_failed_readback_restores_original_artifacts(state, monkeypatch, field):
     before = state.metadata.read_bytes(), state.store.path.read_bytes()
     update, read = session_metadata.update_session_metadata, session_metadata.get_session_metadata
     wrote = False
@@ -199,7 +200,7 @@ async def test_failed_readback_restores_original_artifacts(state, monkeypatch):
         return result
     def stale(*args, **kwargs):
         result = read(*args, **kwargs)
-        return {**result, "team_name": "wrong"} if wrote else result
+        return {**result, field: "wrong"} if wrote else result
     monkeypatch.setattr(session_metadata, "update_session_metadata", write)
     monkeypatch.setattr(session_metadata, "get_session_metadata", stale)
     with pytest.raises(TeamSessionBindingError) as error:
@@ -207,6 +208,28 @@ async def test_failed_readback_restores_original_artifacts(state, monkeypatch):
     assert error.value.reason == "TEAM_SESSION_BINDING_RESTORE_FAILED"
     assert (state.metadata.read_bytes(), state.store.path.read_bytes()) == before
     assert not state.snapshot.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["request", "metadata_team", "metadata_template"])
+async def test_restore_rejects_conflicting_identity_sources(state, source):
+    req = request()
+    metadata = json.loads(state.metadata.read_text(encoding="utf-8"))
+    if source == "request":
+        req.params["team_name"] = "other"
+    elif source == "metadata_team":
+        metadata["team_name"] = "other"
+    else:
+        metadata["team_template_id"] = "other"
+    state.metadata.write_text(json.dumps(metadata), encoding="utf-8")
+    before = state.metadata.read_bytes(), state.store.path.read_bytes(), state.snapshot.exists()
+
+    with pytest.raises(TeamSessionBindingError) as error:
+        team._restore_officeclaw_team_session(req, session_id=SID, sessions_root=state.sessions, skill_ids=[])
+
+    assert error.value.code == "CONFLICT"
+    assert error.value.reason == "TEAM_SESSION_BINDING_CONFLICT"
+    assert (state.metadata.read_bytes(), state.store.path.read_bytes(), state.snapshot.exists()) == before
 
 
 @pytest.mark.asyncio

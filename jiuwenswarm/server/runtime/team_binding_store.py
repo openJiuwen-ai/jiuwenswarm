@@ -106,6 +106,19 @@ def _replace_bound_sessions(
     )
 
 
+def _is_valid_binding_record(key: str, value: dict[str, Any]) -> bool:
+    session_ids = value.get("session_ids", [])
+    if not isinstance(session_ids, list):
+        return False
+    for session_id in session_ids:
+        if not isinstance(session_id, str) or not session_id.strip():
+            return False
+    if not str(value.get("template_id") or "").strip():
+        return False
+    team_name = value.get("team_name")
+    return not team_name or team_name == key
+
+
 def validate_team_name(team_name: str) -> str:
     normalized = str(team_name or "").strip()
     if not normalized:
@@ -339,12 +352,7 @@ class TeamBindingStore:
                 if strict:
                     raise TeamBindingStoreError("Invalid team binding record.", code="INTERNAL_ERROR")
                 continue
-            if strict and (
-                not isinstance(value.get("session_ids", []), list)
-                or any(not isinstance(sid, str) or not sid.strip() for sid in value.get("session_ids", []))
-                or not str(value.get("template_id") or "").strip()
-                or (value.get("team_name") and value["team_name"] != key)
-            ):
+            if strict and not _is_valid_binding_record(key, value):
                 raise TeamBindingStoreError("Invalid team binding record.", code="INTERNAL_ERROR")
             try:
                 binding = TeamBinding.from_dict(value)

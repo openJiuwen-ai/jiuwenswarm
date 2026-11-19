@@ -202,6 +202,13 @@ def test_strict_session_lookup_rejects_multiple_owners_without_writing(tmp_path)
 @pytest.mark.parametrize("payload", [
     [], {"teams": []}, {"teams": {"broken": 3}},
     {"teams": {"broken": {"template_id": "default", "created_at": "invalid"}}},
+    {"teams": {"broken": {"template_id": "default", "session_ids": "sess-a"}}},
+    {"teams": {"broken": {"template_id": "default", "session_ids": [None]}}},
+    {"teams": {"broken": {"template_id": "default", "session_ids": [0]}}},
+    {"teams": {"broken": {"template_id": "default", "session_ids": [""]}}},
+    {"teams": {"broken": {"template_id": "default", "session_ids": ["  "]}}},
+    {"teams": {"broken": {"template_id": ""}}},
+    {"teams": {"broken": {"template_id": "default", "team_name": "other"}}},
 ])
 @pytest.mark.parametrize("operation", ["lookup", "protected_bind"])
 def test_strict_session_lookup_rejects_invalid_store_structure(tmp_path, payload, operation):
@@ -216,6 +223,22 @@ def test_strict_session_lookup_rejects_invalid_store_structure(tmp_path, payload
     assert error.value.code == "INTERNAL_ERROR"
     assert error.value.reason == "TEAM_SESSION_BINDING_READ_FAILED"
     assert store.path.read_bytes() == before
+
+
+@pytest.mark.parametrize("team_name", [None, ""])
+def test_strict_binding_reads_keep_legacy_record_defaults(tmp_path, team_name):
+    store = TeamBindingStore(tmp_path / "bindings.json")
+    record = {"template_id": "default", "session_ids": ["sess-a"]}
+    if team_name is not None:
+        record["team_name"] = team_name
+    store.path.write_text(json.dumps({"teams": {"original": record}}), encoding="utf-8")
+    before = store.path.read_bytes()
+
+    assert store.find_by_session("sess-a", require_unique=True).team_name == "original"
+    assert store.path.read_bytes() == before
+    assert store.bind_session(team_name="original", session_id="sess-a", allow_rebind=False).team_name == "original"
+    # Updating last_session_id keeps the legacy record readable by both paths.
+    assert store.find_by_session("sess-a").team_name == "original"
 
 
 @pytest.mark.parametrize("operation", ["lookup", "protected_bind"])

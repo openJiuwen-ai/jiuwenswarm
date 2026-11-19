@@ -634,11 +634,9 @@ def _restore_officeclaw_team_session(
         session_dir = resolve_session_subdir(session_id, sessions_root=sessions_root)
         # Native Swarm openers can carry a provisional ID before session.create.
         # A resume, or any ID with an existing owner, must still recover strictly.
-        if (
-            session_dir is not None and not session_dir.exists()
-            and binding is None and swarm_ids and request.req_method == ReqMethod.CHAT_SEND
-        ):
-            return None
+        if session_dir is not None and not session_dir.exists():
+            if binding is None and swarm_ids and request.req_method == ReqMethod.CHAT_SEND:
+                return None
         _resolve_session_dir_for_bind(request, session_id=session_id, sessions_root=sessions_root)
         artifacts = capture_session_team_binding_artifacts(session_id, sessions_root=sessions_root)
         metadata = json.loads(artifacts[0]) if artifacts[0] is not None else {}
@@ -656,11 +654,9 @@ def _restore_officeclaw_team_session(
         session_id=session_id, team_name="", skill_ids=skill_ids, metadata=metadata,
     )
     if binding is None:
-        if (
-            swarm_ids and request.req_method == ReqMethod.CHAT_SEND
-            and not str(metadata.get("team_name") or "").strip() and not is_session_generated_team(metadata)
-        ):
-            return None
+        if swarm_ids and request.req_method == ReqMethod.CHAT_SEND:
+            if not str(metadata.get("team_name") or "").strip() and not is_session_generated_team(metadata):
+                return None
         raise TeamSessionBindingError(
             "The original team binding is missing; restore it or start a new team conversation.",
             code="NOT_FOUND", reason="TEAM_SESSION_BINDING_MISSING",
@@ -668,13 +664,17 @@ def _restore_officeclaw_team_session(
     requested = str((request.params or {}).get("team_name") or "").strip()
     prior_team = str(metadata.get("team_name") or "").strip()
     prior_template = str(metadata.get("team_template_id") or "").strip()
-    if (requested and requested != binding.team_name) or (prior_team and prior_team != binding.team_name) or (
-        prior_template and prior_template != binding.template_id
-    ):
-        raise TeamSessionBindingError(
-            "The requested team conflicts with the original session binding.",
-            code="CONFLICT", reason="TEAM_SESSION_BINDING_CONFLICT",
-        )
+    identity_pairs = (
+        (requested, binding.team_name),
+        (prior_team, binding.team_name),
+        (prior_template, binding.template_id),
+    )
+    for actual, expected in identity_pairs:
+        if actual and actual != expected:
+            raise TeamSessionBindingError(
+                "The requested team conflicts with the original session binding.",
+                code="CONFLICT", reason="TEAM_SESSION_BINDING_CONFLICT",
+            )
     # A generated team without its origin cannot safely be restored as an OA
     # catalog team: live-template refresh would reintroduce its skill whitelist.
     origin_known = (
@@ -726,11 +726,14 @@ def _restore_officeclaw_team_session(
             sync=True, sessions_root=sessions_root,
         )
         restored = get_session_metadata(session_id, cache_bust=True, sessions_root=sessions_root)
-        if any(restored.get(key) != expected for key, expected in (
-            ("team_name", binding.team_name), ("runtime_team_name", runtime_name),
-            ("team_template_id", binding.template_id),
-        )):
-            raise ValueError("team identity write was not confirmed")
+        expected_identity = {
+            "team_name": binding.team_name,
+            "runtime_team_name": runtime_name,
+            "team_template_id": binding.template_id,
+        }
+        for key, expected in expected_identity.items():
+            if restored.get(key) != expected:
+                raise ValueError("team identity write was not confirmed")
     except Exception as exc:
         try:
             restore_session_team_binding_artifacts(session_id, artifacts, sessions_root=sessions_root)
@@ -808,10 +811,9 @@ async def handle_team_session_bind(ctx: RequestContext) -> None:
                 allow_rebind = bool(
                     is_session_generated_team(prior) and owner is not None and owner.team_name == prior_name
                 )
-                if not allow_rebind and (
-                    (owner is not None and owner.team_name != team_name)
-                    or (prior_name and prior_name != team_name)
-                ):
+                owner_conflicts = owner is not None and owner.team_name != team_name
+                metadata_conflicts = bool(prior_name) and prior_name != team_name
+                if not allow_rebind and (owner_conflicts or metadata_conflicts):
                     raise TeamSessionBindingError(
                         "Session is already bound to another team; create a new conversation to change teams.",
                         code="CONFLICT", reason="TEAM_SESSION_BINDING_CONFLICT",
