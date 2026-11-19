@@ -422,32 +422,13 @@ def generate_daily_report(date: str = None, enable_ai: bool = True) -> str:
                 if item and not item.startswith("<!--"):
                     work_items.append(item)
 
-    # 查找 todo 文件
-    todo_file = None
-    session_dir = AGENT_ROOT / "sessions"
-    if session_dir.exists():
-        todo_files = list(session_dir.rglob("todo.md"))
-        if todo_files:
-            todo_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
-            todo_file = todo_files[0]
+    # 采集待办：与 DeepAgent workspace 一致，读取 workspace/todo/<session>/todo.json，
+    # 并兼容旧版 sessions/<session>/todo.md。
+    from collectors.todo_collector import TodoCollector
 
-    # 解析 todo
-    completed_tasks = []
-    pending_tasks = []
-
-    if todo_file and todo_file.exists():
-        todo_content = todo_file.read_text(encoding="utf-8")
-        for line in todo_content.split("\n"):
-            stripped = line.strip()
-            # Checkbox 格式
-            match = re.match(r"-\s*\[([xX ])\]\s*(.+)", stripped)
-            if match:
-                checked = match.group(1).lower() == "x"
-                task = match.group(2).strip()
-                if checked:
-                    completed_tasks.append(task)
-                else:
-                    pending_tasks.append(task)
+    todo_stats = TodoCollector(AGENT_ROOT).collect()
+    completed_tasks = [t.content for t in todo_stats.tasks if t.status == "completed"]
+    pending_tasks = [t.content for t in todo_stats.tasks if t.status in ("waiting", "running")]
 
     # 生成报告
     lines = [
