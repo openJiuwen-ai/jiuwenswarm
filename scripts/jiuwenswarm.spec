@@ -240,12 +240,12 @@ datas += collect_data_files(
     include_py_files=True,
     includes=EXTENSION_DATA_FILE_PATTERNS,
 )
-# Office app packages (manifest.json, persona/, rails/, skills/, tools.json, profile.json, review.md), read at runtime;
-# the template loads its rail from rails/*.py.
+# Office app packages (manifest.json, persona/, rails/, skills/, tools.json, profile.json, review.md) and the icon set
+# (fluent_icons/), read at runtime; the template loads its rail from rails/*.py.
 datas += collect_data_files(
     "jiuwenswarm.office",
     include_py_files=True,
-    includes=["powerpoint/**/*", "word/**/*", "excel/**/*"],
+    includes=["powerpoint/**/*", "word/**/*", "excel/**/*", "fluent_icons/*"],
 )
 # DesignRail 的 config.yaml + skills/ 树（SKILL.md / workflows / references / scripts）
 # 含 .mjs 脚本和 _templates/ 模板（脚本运行时读取），需额外 pattern

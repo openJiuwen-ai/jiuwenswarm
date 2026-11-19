@@ -10,6 +10,7 @@ import { powerPointReadRuntime } from './powerPointReadTools';
 import { powerPointSlideDeck, powerPointWriteRuntime } from './powerPointWriteTools';
 import { SlideSnapshots } from './slideSnapshots';
 import { openPane } from './startPane';
+import { rasterizeSvg } from './svgRaster';
 import { Tray } from './view/tray';
 import { presentationWithId, wpsApplication } from './wpsDocument';
 import { isolateTaskPaneInput } from './wpsInput';
@@ -35,7 +36,7 @@ async function start(): Promise<void> {
       powerPointPackageRuntime({ run, host: WPS_HOST, journal: callId => journals.journal(callId),
         sandbox: workerSandbox(() => new Worker(new URL('./ooxmlSandbox.worker.ts', import.meta.url),
           { type: 'module' })),
-        forgetUndo: () => journals.forget(), insertTakesDeckDesign: true })),
+        rasterize: rasterizeSvg, forgetUndo: () => journals.forget(), insertTakesDeckDesign: true })),
     // The shell shows the pane of the document the user works in; a question waits there.
     showPane: () => undefined,
   });

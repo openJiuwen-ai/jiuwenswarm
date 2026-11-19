@@ -2,7 +2,7 @@ import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 import { describe, expect, it } from 'vitest';
 
 import {
-  checkEdit, copyImage, createChart, editBuiltChart, editSlideText, findAndReplace, importedSlides,
+  checkEdit, copyImage, createChart, editBuiltChart, editSlideText, findAndReplace, importedSlides, insertIcon,
   normalizeMasterEdit, PackageRefused, readChartStyle, readSlideText, themeOf, type FindOptions,
 } from './presentationPackage';
 
@@ -299,6 +299,25 @@ describe('charts on a slide', () => {
     expect(() => editBuiltChart(created, COLUMN, 1)).toThrow(/chart_index 1 is past the slide's 1 charts/);
     expect(() => editBuiltChart(created, { ...COLUMN, position: { x: 0, y: 0, w: 914400, h: 914400 } }, 0))
       .toThrow(/keeps the chart where it is.*presentation_apply_patch update_shape/);
+  });
+});
+
+describe('an icon on a slide', () => {
+  it('is a picture of its SVG with a PNG fallback, both related and typed, which a code edit may also add', () => {
+    const before = slidePackage();
+    const edit = insertIcon(before, '<svg/>', new Uint8Array([9]), { x: 10, y: 20, size: 48, alt: 'R&D' });
+    expect(edit.result).toEqual({ shape_id: '3' });
+    const parts = unpack(edit.base64);
+    expect([strFromU8(parts['ppt/media/icon1.svg']), parts['ppt/media/icon1.png']]).toEqual(['<svg/>', new Uint8Array([9])]);
+    const slide = strFromU8(parts[SLIDE]);
+    expect(slide).toContain('<p:cNvPr id="3" name="Icon 3" descr="R&amp;D"/>');
+    expect(slide).toContain('<a:off x="127000" y="254000"/><a:ext cx="609600" cy="609600"/>');
+    const rels = strFromU8(parts['ppt/slides/_rels/slide1.xml.rels']);
+    const [png, svg] = [/<a:blip r:embed="(\w+)"/, /<asvg:svgBlip [^>]*r:embed="(\w+)"/].map(pattern => pattern.exec(slide)![1]);
+    expect(rels).toContain(`Id="${png}" Type="${R}/image" Target="../media/icon1.png"`);
+    expect(rels).toContain(`Id="${svg}" Type="${R}/image" Target="../media/icon1.svg"`);
+    expect(strFromU8(parts['[Content_Types].xml'])).toContain('<Default Extension="svg" ContentType="image/svg+xml"/>');
+    expect(() => checkEdit(before, edit.base64)).not.toThrow();
   });
 });
 

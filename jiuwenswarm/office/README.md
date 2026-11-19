@@ -21,6 +21,8 @@ rails.py               OfficeToolsRail：注册所在包的工具，第一次模
 excel_reminders.py     ExcelReminderRail：Excel 回合要结束时，写了没读回、改了图表没看、调用失败没重试，各提醒一次
 assets.py              publish_office_asset 与会话资产（office_assets/，经 /file-api/download 下发）
 documents.py           list_open_documents：同一用户其他已连接的文档及其对话
+icons.py               search_icons 与随包图标集（fluent_icons/：Fluent UI System Icons 24px regular+filled，MIT；
+                       aliases.json 中英文别名）；scripts/update_fluent_icons.py 从 npm 包重建
 runtime.py             会话目录、资产允许目录、把图片存进会话 uploads
 powerpoint/            合同 tools.json、profile.json（任务窗格构建时读取）；agent template：
                        manifest.json、persona/（替换默认身份）、rails/（指向 OfficeToolsRail）、skills/；
@@ -53,7 +55,7 @@ word/、excel/          同上的 Word、Excel 包；word/review.md 是 verify_d
 
 ## 工具执行
 
-- 合同里的 18 个工具都是 agent-core `ClientTool`。模型调用时先过所有 `before_tool_call`
+- 合同里的 19 个工具都是 agent-core `ClientTool`。模型调用时先过所有 `before_tool_call`
   rail（含权限），再以 `client_tool` 中断暂停；流里发 `chat.client_tool_request`，
   `arguments` 是本次调用的参数，`client_tool.downloads` 是参数里各资产 handle 的下载链接。
   任务窗格执行后用 `chat.send`（`source: "client_tool_interrupt"`）续跑。
@@ -78,6 +80,11 @@ word/、excel/          同上的 Word、Excel 包；word/review.md 是 verify_d
   用户的长期偏好（审稿拿不到）记 `could_not_verify`，不进审稿调用。审稿失败或答复不成形时，送审的依据都记
   `could_not_verify` 并写明原因。作者拿到每条计划修改及其 `verdicts`、`has_unverified_claims`。
 - 跨文档协作走 `list_open_documents` + 现有的 `session_send_message`，session 之间只传文字。
+- 图标：`search_icons` 在后端按图标名和别名查随包图标集，不调外部服务；合同里有 `insert_icon` 时才注册，
+  窗格不支持 `insert_icon` 时一并去掉。`insert_icon` 的 `build_request` 把该图标的 SVG 放进请求（`icon_svg`），
+  窗格着色、画出 PNG 回退，经整页往返插成带 `svgBlip` 的图片。
+- 耗时：每次窗格工具答复，日志记一行 `[office] <工具> <调用> in <会话>: <telemetry>`（排队、宿主导出/写入耗时），
+  与同一会话的 `llm_usage` 行（模型耗时）对照，可算出建一页时模型与宿主各占多少。
 
 ## 每回合的文档状态与 Excel 提醒
 
