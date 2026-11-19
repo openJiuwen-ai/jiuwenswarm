@@ -19,7 +19,6 @@ generated: true
 | [gateway/channel_manager/web](#module-gateway-channel_manager-web) |
 | [jiuwenswarm](#module-jiuwenswarm) |
 | [jiuwenswarm/agents/harness/code/rails/heartbeat](#module-jiuwenswarm-agents-harness-code-rails-heartbeat) |
-| [jiuwenswarm/agents/harness/common/a4p](#module-jiuwenswarm-agents-harness-common-a4p) |
 | [jiuwenswarm/agents/harness/common/rails](#module-jiuwenswarm-agents-harness-common-rails) |
 | [jiuwenswarm/agents/harness/common/rsi](#module-jiuwenswarm-agents-harness-common-rsi) |
 | [jiuwenswarm/agents/harness/common/tools/cron](#module-jiuwenswarm-agents-harness-common-tools-cron) |
@@ -96,14 +95,6 @@ generated: true
 |---|---|---|---|---|
 | [B_20261027_1553_reminder-tool-routing](jiuwenswarm/agents/harness/common/tools/cron/B_20261027_1553_reminder-tool-routing.md) | B | Code 模式中文提醒错误路由到 heartbeat | MengHan18 | 无独立 D：针对 Issue 5615 的局部工具选路缺陷修复，无独立设计。 |
 
-<a id="module-jiuwenswarm-agents-harness-common-a4p"></a>
-
-## jiuwenswarm/agents/harness/common/a4p
-
-| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
-|---|---|---|---|---|
-| [B_20261119_1118_a4p-config-without-chat-session](jiuwenswarm/channels/web/frontend/B_20261119_1118_a4p-config-without-chat-session.md) | B | 空白新建会话无法读取 A4P 开关 | yukuanj | 无独立 D：依据本次会话确认的跨仓修复方案实施，无独立设计文档。 |
-
 <a id="module-jiuwenswarm-agents-harness-common-rails"></a>
 
 ## jiuwenswarm/agents/harness/common/rails
@@ -119,7 +110,6 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261114_1302_terminal-metrics-and-model-errors](jiuwenswarm/agents/harness/common/rsi/B_20261114_1302_terminal-metrics-and-model-errors.md) | B | RSI 终态统计、侧栏运行态和论文模型错误修复 | l_x_d | 无独立 D：按用户确认修复现有行为及 Issue 6558、6539、6532，无独立设计。 |
-| [B_20261119_1104_paper-snapshot-restart](jiuwenswarm/agents/harness/common/rsi/B_20261119_1104_paper-snapshot-restart.md) | B | 论文优化历史快照的重启恢复 | l_x_d | 无独立 D：按确认的重启恢复用例修复既有行为，无独立设计。 |
 
 <a id="module-jiuwenswarm-agents-harness-common-tools-cron"></a>
 
@@ -182,7 +172,6 @@ generated: true
 | [B_20261117_1522_team-plan-toggle-lock](jiuwenswarm/B_20261117_1522_team-plan-toggle-lock.md) | B | 集群会话计划模式开关是假开关：建队后冻结并让位动态工作流 | chenchunzhou | 无独立 D：由 issue 6361 现象逆向定位，无独立设计文档；方案与取舍记录在 OpenSpec 变更 issue-6361-team-plan-toggle-lock 的 proposal/design/specs，修复范围限定 Web 前端开关闸门与提示文案。 |
 | [B_20261118_1527_session-delete-plan-runtime](jiuwenswarm/channels/web/frontend/B_20261118_1527_session-delete-plan-runtime.md) | B | 侧边栏删除会话漏清 planStore runtime，Plan 模式状态在内存永久残留 | gunner_beat | 无独立 D：会话生命周期清理的一致性补齐，复用 usePlanStore 既有 removeRuntime，无独立设计文档。缺陷检视清单 |
 | [B_20261119_1039_video-memory-submit-pending](jiuwenswarm/channels/web/frontend/B_20261119_1039_video-memory-submit-pending.md) | B | 视频记忆任务 pending 导致提交工具持续执行中 | ToNy_St4rk | 无独立 D：现有工具结果状态的局部修复，无独立设计。 |
-| [B_20261119_1118_a4p-config-without-chat-session](jiuwenswarm/channels/web/frontend/B_20261119_1118_a4p-config-without-chat-session.md) | B | 空白新建会话无法读取 A4P 开关 | yukuanj | 无独立 D：依据本次会话确认的跨仓修复方案实施，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-features-rsi"></a>
 
@@ -271,7 +260,6 @@ generated: true
 |---|---|---|---|---|
 | [B_20261029_0927_missing-supervisor-entry](jiuwenswarm/server/B_20261029_0927_missing-supervisor-entry.md) | B | 重启 AgentServer 时缺少 supervisor 启动函数 | xinyang_bali | 无独立 D：用户请求重启时发现当前工作区入口不完整，恢复既有 Front/Worker 启动契约。 |
 | [B_20261031_1042_pr9317-review](jiuwenswarm/server/B_20261031_1042_pr9317-review.md) | B | PR 9317 插件模式校验与 Front 遗留启动链清理 | xinyang_bali | 无独立 D：根据 openJiuwen-bot 检视意见清理现有实现，不引入新接口或架构方案，无独立 D。 |
-| [B_20261119_1118_a4p-config-without-chat-session](jiuwenswarm/channels/web/frontend/B_20261119_1118_a4p-config-without-chat-session.md) | B | 空白新建会话无法读取 A4P 开关 | yukuanj | 无独立 D：依据本次会话确认的跨仓修复方案实施，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-server-control"></a>
 
