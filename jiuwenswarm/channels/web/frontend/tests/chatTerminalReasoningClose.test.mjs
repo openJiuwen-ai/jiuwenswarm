@@ -51,3 +51,20 @@ test('harness.session_finished 终态处理器收口思考段', () => {
     'harness.session_finished must close the reasoning segment',
   );
 });
+
+test('chat.error 普通错误路径复位输入区 processing（防停止按钮卡在执行态）', () => {
+  const block = handlerBlock('chat.error');
+  // GATEWAY_FORWARD_FAILED 特例分支早就复位 processing；这里钉住的是「走到错误
+  // 展示路径的普通错误」也必须复位——否则 processing_status(false) 丢帧时
+  // isProcessing 永不复位，发送按钮一直显示停止/执行态（点它只会再发中断）。
+  assert.ok(
+    block.includes("setProcessing(sessionId, false)"),
+    'chat.error must reset processing on the ordinary error display path',
+  );
+  // 复位必须带 chat.final 兜底同款守卫：团队模式不关（后端团队仍运行时抑制
+  // final，交给 team.completed），Goal 活跃不关（可能只是问答子轮失败）。
+  assert.ok(
+    block.includes("?.mode !== 'team'") && block.includes('goalStillActive'),
+    'processing reset must carry the team-mode and goal-active guards (chat.final fallback parity)',
+  );
+});

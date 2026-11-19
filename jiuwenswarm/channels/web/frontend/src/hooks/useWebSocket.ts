@@ -5375,6 +5375,26 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         ) {
           return;
         }
+        // 错误是本轮终态：processing_status(false) 丢帧时这里是输入区唯一复位点，
+        // 不复位会停在「停止」态（错误气泡已出现但发送按钮仍是停止/执行态）。
+        // 口径对齐 chat.final 兜底分支：团队模式后端在团队仍运行时抑制 final，
+        // 这里同样不关 isProcessing（交给 team.completed 的 processing_status）；
+        // Goal 仍活跃时同理（可能只是普通问答子轮失败，Goal 还要继续跑）。
+        // 气泡级流式收尾不受影响，GATEWAY_FORWARD_FAILED 特例分支上面已复位过
+        // （此处幂等空操作）。
+        flushPendingStreamDelta(sessionId);
+        useChatStore.getState().stopStreaming(sessionId);
+        if (useSessionStore.getState().getRuntime(sessionId)?.mode !== 'team') {
+          const goalStillActive =
+            useGoalStore.getState().runtimes[sessionId]?.goal?.status === 'active';
+          if (!goalStillActive) {
+            useChatStore.getState().setProcessing(sessionId, false);
+            drainTaskQueueIfIdle(sessionId);
+            localSendPendingRef.current.delete(sessionId);
+            updateSession(sessionId, { is_processing: false });
+            useWorkspaceStore.getState().patchSession(sessionId, { is_processing: false });
+          }
+        }
         useChatStore.getState().setExecutionError(sessionId, errorMsg);
         onErrorRef.current?.(errorMsg);
         useChatStore.getState().setSessionError(sessionId, errorMsg);
