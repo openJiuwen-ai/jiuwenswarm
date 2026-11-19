@@ -4564,6 +4564,53 @@ async def test_diversity_batches_carry_only_the_candidates_they_score() -> None:
     assert any(len(request["candidates"]) < len(candidates) for request in sent)
 
 
+def test_outcome_queue_publish_and_attach_do_not_lose_thread_signals() -> None:
+    """The RPC publishes from a worker thread while the sink may still attach."""
+
+    from jiuwenswarm.agents.harness.common.recommendation.topic_outcomes import (
+        NewPageOutcomeQueue,
+        NewPageOutcomeSignal,
+    )
+
+    def signal(index: int) -> NewPageOutcomeSignal:
+        return NewPageOutcomeSignal(
+            outcome="accepted",
+            manifest_id=f"manifest-{index}",
+            generation_batch_id="batch-1",
+            exposure_id=f"exposure-{index}",
+            card_revision_id=f"revision-{index}",
+            context_scope="global_new_chat",
+            project_id=None,
+            component_request_ids=(),
+            provider_response_ids=(),
+            search_receipt=None,
+            occurred_at=1.0,
+            host_written=True,
+        )
+
+    queue = NewPageOutcomeQueue()
+    delivered: list[NewPageOutcomeSignal] = []
+
+    def sink(item: NewPageOutcomeSignal) -> bool:
+        delivered.append(item)
+        return True
+
+    items = [signal(index) for index in range(40)]
+    publishers = [
+        threading.Thread(target=queue.publish, args=(item,)) for item in items
+    ]
+    for publisher in publishers:
+        publisher.start()
+    assert queue.attach_sink(sink) is not None
+    for publisher in publishers:
+        publisher.join()
+
+    assert queue.pending_count == 0
+    assert sorted(item.exposure_id for item in delivered) == sorted(
+        item.exposure_id for item in items
+    )
+
+
 def test_global_pool_target_leaves_five_ordinary_slots_beside_the_news_card() -> None:
     from jiuwenswarm.agents.harness.common.recommendation.topic_selection import (
         GLOBAL_POOL_TARGET_SIZE,
