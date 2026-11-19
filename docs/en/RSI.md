@@ -6,4 +6,6 @@ Paper and Harness tasks display a pruning count when available. Explicit engine 
 
 When a task completes, fails, terminates, or pauses, detail polling also updates the sidebar and stops the running indicator. The result summary uses the final snapshot so stale live progress cannot override it.
 
+After an AgentServer restart, historical paper tasks can still show their saved token totals, progress, optimization tree, and best artifact. The token field shows `--` when the snapshot contains no usage record.
+
 For failed tasks, click the icon beside the failure status to inspect the reason returned by the service. Node details also show rejection or pruning reasons. Historical tasks that only stored a generic reason cannot recover an unrecorded model error.
