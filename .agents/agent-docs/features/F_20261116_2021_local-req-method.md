@@ -14,6 +14,8 @@ files:
   - jiuwenswarm/common/e2a/gateway_normalize.py
   - jiuwenswarm/server/dispatch.py
   - jiuwenswarm/extensions/video_duplex/backend/task_adapter.py
+  - jiuwenswarm/extensions/video_duplex/backend/video_live.py
+  - jiuwenswarm/extensions/video_duplex/backend/video_search.py
   - jiuwenswarm/extensions/video_duplex/extension.py
   - tests/unit_tests/common/test_local_req_method.py
   - tests/unit_tests/common/test_req_method_contract.py
@@ -176,3 +178,37 @@ Windows / Python 3.14 下同一定向组合得到 `676 passed, 1 deselected`。
 额外尝试视频会话追加用例时，采集在既有 `task_adapter.py` 导入不存在的
 `jiuwenswarm.common.e2a.constants` 处失败；该文件的导入不属于本次改动，
 因此不将该用例记为通过，也不扩大本次枚举修复范围。
+
+## 2026-11-19 最新基线遗漏核对
+
+按用户要求拉取最新 develop `3c3556f61` 并 rebase，保留线性提交历史。
+验证依赖随上游更新为 agent-protocol `defa6d8d8904eb3272a58fa0ad13f94f7adb4a51`
+与 agent-gateway `d68e80bf7abc5a6f28e7178ae79c2ea644308259`，通过独立临时
+checkout 固定源码版本，未修改其他任务的依赖环境或本仓依赖 pin。
+
+发现并处理以下遗漏：
+
+- 最新 develop 新增 `SKILLS_REBUILD_STATUS = "skills.rebuild_status"`，
+  已在 rebase 冲突处理中纳入静态本地枚举，保留新 dispatch 与 adapter 路由。
+- 最新锁定 Gateway 另有 `MODE_SET`、`MODE_GET`、`SKILLS_UPLOAD_STAGE`、
+  `SKILLS_UPLOAD_FINALIZE` 四项动态补齐，本地原先缺失。目录对照和完整转发
+  名单测试均实际失败后补齐，线协议值保持一致，当前共 545 个本地成员。
+- `video_live.py` 仍经 Gateway 间接引用 E2A 请求枚举，现统一改用本地枚举；
+  视频追加测试改为断言本地成员身份，跨仓 fetch 回归加入上述四个方法。
+- 为实际执行视频回归，修复两处生产代码及一处测试中已不存在的
+  `jiuwenswarm.common.e2a.constants` 导入，改用与其他调用方一致的
+  `e2a.constants`。这不改变常量归属，也不重新引入 E2A ReqMethod 引用。
+
+核对范围与实际证据：
+
+| 范围 | 结果 |
+| --- | --- |
+| 锁定 E2A 原始目录、Gateway 实际注册后目录、develop 本仓补齐及团队清单的并集 | 545 项与本地名称和值完全一致，无缺失、无值差异、无额外项 |
+| 1574 个生产 Python 文件中的 ReqMethod 直接成员与字面量 getattr/hasattr 引用 | 共 463 个不同成员，无未定义引用；无 E2A/Gateway ReqMethod 直接导入残留 |
+| 枚举、normalization、Front、IPC、方法契约、视频兼容、诊断、飞书回调及团队路由 | 686 passed，含此前未执行的完整转发名单用例，无 deselected |
+| 视频 live 和 task queue 两个完整模块 | 300 passed，使用 --asyncio-mode=auto |
+
+测试使用 Windows / Python 3.14、`--noconftest -o addopts= -o log_cli=false`。
+本次共 986 项定向测试通过；完整 dispatch 装配、全量 UT/ST 和端到端行为仍需
+完整 openjiuwen 依赖环境与 CI 验证，不将枚举可解析等同于业务 handler 已实现。
+上述并集对照与引用盘点只针对本次固定版本，依赖或业务方法变化时必须重验。

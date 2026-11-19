@@ -153,6 +153,7 @@ def test_gateway_string_request_resolves_to_local_member():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("name", [
     "FILE_READ_UPLOAD_CHUNK", "TRAJECTORY_USAGE_GET", "VIDEO_CONVERSATION_APPEND",
+    "MODE_SET", "MODE_GET", "SKILLS_UPLOAD_STAGE", "SKILLS_UPLOAD_FINALIZE",
 ])
 async def test_gateway_fetch_restores_host_method_and_routing_identity(name):
     from agent_gateway.common.protocol_methods import ReqMethod as GatewayReqMethod
