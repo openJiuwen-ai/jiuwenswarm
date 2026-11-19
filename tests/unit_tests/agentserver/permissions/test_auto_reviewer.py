@@ -1552,44 +1552,31 @@ async def test_complete_reason_survives_assessment_and_metadata(tmp_path, outcom
         assert "manual_reason_summary" not in metadata
 
 
-async def test_auto_reviewer_rejects_forbidden_privilege_fields(tmp_path: Path) -> None:
-    descriptor, candidate = _candidate(tmp_path)
+@pytest.mark.parametrize("outcome", ["allow_once", "manual", "deny"])
+async def test_auto_reviewer_ignores_all_non_protocol_fields(tmp_path: Path, outcome: str) -> None:
+    _, candidate = _candidate(tmp_path)
     request = _build_request(
         candidate=candidate,
         policy_reason="policy_ask",
     )
-    forbidden_fields = (
-        "grant",
-        "allow_always",
-        "config_update",
-        "permission_override",
-        "command_rewrite",
-        "tool_calls",
-    )
+    extra = {
+        "reason_note": "Additional commentary.",
+        "risk_level": "low",
+        "grant": {"scope": "always"},
+        "command_rewrite": "alternate command",
+        "permission_override": True,
+        "allow_always": True,
+        "config_update": {"mode": "allow"},
+        "tool_calls": [],
+    }
+    clean = StaticReviewerClient(_valid_response(request, outcome=outcome))
+    noisy = StaticReviewerClient(_valid_response(request, outcome=outcome, extra=extra))
 
-    for field_name in forbidden_fields:
-        client = StaticReviewerClient(
-            _valid_response(request, outcome="allow_once", extra={field_name: {}})
-        )
-        assessment = await AutoReviewer(client=client).assess(request)
-        assert assessment.outcome == ReviewerOutcome.MANUAL
-        assert assessment.fallback_reason == "forbidden_field"
+    clean_result = await AutoReviewer(client=clean).assess(request)
+    noisy_result = await AutoReviewer(client=noisy).assess(request)
 
-
-async def test_auto_reviewer_rejects_unknown_fields(tmp_path: Path) -> None:
-    descriptor, candidate = _candidate(tmp_path)
-    request = _build_request(
-        candidate=candidate,
-        policy_reason="policy_ask",
-    )
-    client = StaticReviewerClient(
-        _valid_response(request, outcome="allow_once", extra={"risk_level": "low"})
-    )
-
-    assessment = await AutoReviewer(client=client).assess(request)
-
-    assert assessment.outcome == ReviewerOutcome.MANUAL
-    assert assessment.fallback_reason == "unknown_field"
+    assert clean_result.outcome == outcome
+    assert noisy_result == clean_result
 
 
 def test_auto_review_request_is_locked_down_and_sanitized(tmp_path: Path) -> None:
@@ -1880,17 +1867,18 @@ async def test_compact_contract_rejects_partial_legacy_manual_fields(fields):
     assert result.outcome == "manual" and result.fallback_reason == "missing_manual_field"
 
 
-@pytest.mark.parametrize("outcome", ["manual", "deny"])
-@pytest.mark.parametrize("defect,expected", [("missing", "missing_field"), ("unknown", "unknown_field"), ("forbidden", "forbidden_field")])
-async def test_ignored_confidence_never_rescues_invalid_negative_output(outcome, defect, expected):
+@pytest.mark.parametrize("field", ["outcome", "reason_code", "rationale"])
+@pytest.mark.parametrize("defect", ["missing", "invalid"])
+async def test_extra_fields_never_rescue_invalid_required_fields(field, defect):
     view = ReviewerActionView({}, "ask", {})
-    payload = json.loads(_valid_response(view, outcome=outcome, confidence=0))
+    payload = json.loads(_valid_response(view, outcome="allow_once", confidence=0))
+    payload.update({"grant": True, "command_rewrite": "alternate command"})
     if defect == "missing":
-        payload.pop("rationale")
+        payload.pop(field)
     else:
-        payload["extra" if defect == "unknown" else "grant"] = True
+        payload[field] = []
     result = await AutoReviewer(client=StaticReviewerClient(json.dumps(payload))).assess(view)
-    assert result.outcome == "manual" and result.fallback_reason == expected
+    assert result.outcome == "manual" and result.fallback_reason == f"{defect}_field"
 
 
 @pytest.mark.parametrize("tool,key", [("bash", "command"), ("mcp_exec_command", "command"), ("code", "code")])
