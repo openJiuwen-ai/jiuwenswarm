@@ -7,7 +7,6 @@ from pathlib import Path
 
 import pytest
 
-from tests.unit_tests.extensions_v2.gateway_compat import require_gateway_module
 from openjiuwen.core.events import SessionContext
 
 import jiuwenswarm.extensions_v2.assembly as assembly
@@ -318,7 +317,7 @@ async def test_transport_addresses_an_application_frame_by_socket() -> None:
 
 @pytest.mark.asyncio
 async def test_gateway_forwards_the_socket_id(monkeypatch) -> None:
-    webui_handlers = require_gateway_module("agent_gateway.channel_manager.web.webui_handlers")
+    from agent_gateway.channel_manager.web import webui_handlers
     captured: dict = {}
 
     async def fake_proxy(**kwargs):

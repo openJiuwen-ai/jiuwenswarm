@@ -10,8 +10,6 @@ from unittest.mock import AsyncMock
 import pytest
 from openjiuwen.core.events import Event, EventHandlerOpsBuilder, SessionContext
 
-from tests.unit_tests.extensions_v2.gateway_compat import require_gateway_module
-
 ROOT = Path(__file__).resolve().parents[4]
 CASES = json.loads((ROOT / "jiuwenswarm/channels/web/frontend/tests/fixtures/webuiInstanceVisibilityCases.json").read_text())
 DOMAINS = ("extensions_v2", "gateway.extensions_v2")
@@ -19,7 +17,7 @@ DOMAINS = ("extensions_v2", "gateway.extensions_v2")
 
 def webui_module(domain, name):
     if domain == "gateway.extensions_v2":
-        return require_gateway_module(f"agent_gateway.extensions_v2.webui.{name}")
+        return import_module(f"agent_gateway.extensions_v2.webui.{name}")
     return import_module(f"jiuwenswarm.extensions_v2.webui.{name}")
 
 

@@ -8,7 +8,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.unit_tests.extensions_v2.gateway_compat import require_gateway_module
 from openjiuwen.core.events import OPS_BUILD_EVENT_TYPE, Event, ExtensionEventBus, SessionContext
 
 import jiuwenswarm.extensions_v2.assembly as assembly
@@ -323,7 +322,7 @@ async def test_closed_connection_cannot_recreate_a_view_after_waiting_for_its_lo
 
 @pytest.mark.asyncio
 async def test_gateway_disconnect_notification_reaches_the_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
-    register_webui_handlers = require_gateway_module("agent_gateway.channel_manager.web.webui_handlers").register_webui_handlers
+    from agent_gateway.channel_manager.web.webui_handlers import register_webui_handlers
     runtime, _ = await build_runtime()
     await runtime.render(UiRenderInput(target("sock-1"), RenderNode("Text")))
     monkeypatch.setattr(assembly, "get_webui_runtime", lambda: runtime)

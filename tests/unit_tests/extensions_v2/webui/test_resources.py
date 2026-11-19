@@ -14,7 +14,6 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from tests.unit_tests.extensions_v2.gateway_compat import require_gateway_module
 from fastapi import FastAPI
 from openjiuwen.core.events import PackageMetadata, SessionContext
 
@@ -376,8 +375,8 @@ async def test_file_changed_after_publication_is_not_served(tmp_path):
 @pytest.mark.asyncio
 async def test_http_uses_e2a_for_html_relative_css_head_and_revocation(tmp_path, monkeypatch):
     from jiuwenswarm.extensions_v2 import assembly
-    webui_resource_http = require_gateway_module("agent_gateway.channel_manager.web.webui_resource_http")
-    attach_browser_routes = require_gateway_module("agent_gateway.extensions_v2.webui.http").attach_browser_routes
+    from agent_gateway.channel_manager.web import webui_resource_http
+    from agent_gateway.extensions_v2.webui.http import attach_browser_routes
 
     service, ops, record, records = _service(tmp_path)
     monkeypatch.setattr(assembly, "get_webui_runtime", lambda: SimpleNamespace(resources=service))
@@ -479,7 +478,7 @@ async def test_publication_requires_the_actual_active_caller(tmp_path, identity)
     {"data": "A" * (4 * ((MAX_RESOURCE_BYTES + 2) // 3) + 4), "media_type": "image/png"},
 ])
 async def test_http_rejects_invalid_or_oversized_internal_file_responses(tmp_path, monkeypatch, payload):
-    webui_resource_http = require_gateway_module("agent_gateway.channel_manager.web.webui_resource_http")
+    from agent_gateway.channel_manager.web import webui_resource_http
     service, ops, record, records = _service(tmp_path)
     try:
         resource = await _publish(service, ops, {"page.html": "content"})
