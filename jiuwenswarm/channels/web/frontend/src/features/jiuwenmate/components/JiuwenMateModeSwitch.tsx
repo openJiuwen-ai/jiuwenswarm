@@ -9,7 +9,7 @@ export function JiuwenMateModeSwitch({ active, label, onToggle, iconOnly = false
   return (
     <button
       type="button"
-      className={`icon-rail-nav-item icon-rail-nav-item--mode-switch${active ? ' icon-rail-nav-item--active' : ''}${
+      className={`icon-rail-nav-item icon-rail-nav-item--mode-switch${
         iconOnly ? ' icon-rail-nav-item--icon-only' : ''
       }`}
       aria-pressed={active}
