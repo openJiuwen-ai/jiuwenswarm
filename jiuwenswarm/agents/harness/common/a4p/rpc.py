@@ -21,6 +21,7 @@ from jiuwenswarm.agents.harness.common.a4p.runtime import (
 from jiuwenswarm.common.config import update_a4p_in_config
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.enterprise.edition import is_enterprise
 
 
 _A4P_METHODS: frozenset[ReqMethod] = frozenset(
@@ -33,7 +34,7 @@ _A4P_METHODS: frozenset[ReqMethod] = frozenset(
         ReqMethod.A4P_CONFIG_UPDATE,
     }
 )
-# Configuration is available while disabled and requires an interactive Web route.
+# Configuration is available while disabled and uses the Web management ingress.
 _A4P_MANAGEMENT_METHODS: frozenset[ReqMethod] = frozenset(
     {
         ReqMethod.A4P_CONFIG_GET,
@@ -104,20 +105,28 @@ async def dispatch_a4p_request(request: AgentRequest) -> AgentResponse:
     params = request.params if isinstance(request.params, dict) else {}
     method = request.req_method
 
-    if method in {ReqMethod.A4P_CONFIG_GET, ReqMethod.A4P_CONFIG_UPDATE}:
+    if method in _A4P_MANAGEMENT_METHODS:
         if not isinstance(request.params, dict):
             return _err(request, "params must be object")
-        if authorizer_route_from_request(request) is None:
+        if (
+            request.channel_id != "web"
+            or (request.metadata or {}).get("cron")
+            or params.get("attach_goal") is True
+        ):
             return _err(
-                request, "A4P config RPC requires an interactive Web route",
-                code="A4P_WEB_SESSION_REQUIRED",
+                request, "A4P config RPC requires a Web management request",
+                code="FORBIDDEN",
             )
+        # Gateway authorizes access to the target application. Use only the
+        # forwarded request identity here, never identity fields in params.
+        if is_enterprise() and not (request.user_id or "").strip():
+            return _err(request, "A4P config RPC requires an authenticated Web user", code="FORBIDDEN")
         return await _dispatch_config(request)
 
     enabled = is_a4p_enabled()
     if not enabled and method == ReqMethod.A4P_AUTHORIZATION_PENDING:
         return _ok(request, {"ok": True, "pending": None})
-    if not enabled and method not in _A4P_MANAGEMENT_METHODS:
+    if not enabled:
         return _err(request, "A4P is disabled", code="A4P_DISABLED")
     route = authorizer_route_from_request(request)
     if route is None:
