@@ -442,7 +442,9 @@ async def execute_core_agent(
                                        detail="\n".join(q["question"] for q in pending_interaction["questions"])))
             continue
         if event_type == "chat.error":
-            raise RuntimeError(
+            from jiuwenswarm.extensions.video_duplex.backend.tasks.errors import CoreExecutionError
+
+            raise CoreExecutionError(
                 str(
                     payload.get("error")
                     or payload.get("content")

@@ -60,6 +60,24 @@
   gap: 8px;
 }
 
+.setting-row--select .setting-row__control {
+  min-width: 0;
+  max-width: 50%;
+}
+
+.settings-select {
+  min-width: 0;
+}
+
+.settings-select__label {
+  display: block;
+  min-width: 0;
+  max-width: min(32rem, calc(100vw - 48px));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .setting-row__unavailable-switch {
   display: inline-flex;
   cursor: not-allowed;
@@ -116,5 +134,9 @@
   .setting-row__control {
     align-self: stretch;
     justify-content: flex-end;
+  }
+
+  .setting-row--select .setting-row__control {
+    max-width: 100%;
   }
 }

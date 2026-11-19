@@ -646,11 +646,17 @@ test('the detection hint distinguishes PATH lookup from executable validation', 
   assert.match(section, /!onCommitAgent \|\| committing\[cliAgent\] \|\| installInFlight\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]/);
   assert.match(section, /loading=\{installInFlight\[cliAgent\]\}/);
   assert.doesNotMatch(section, /loading=\{committing\[cliAgent\]\}/);
-  // The enable switch is disabled only when the CLI is not installed AND the
-  // agent is already disabled — so a page reload (installed=false until the
-  // auto-detect runs) does not lock the user out of an enabled agent, and a
-  // disabled agent cannot be turned on before installing the CLI.
+  // The enable switch stays operable so the user can always disable a broken
+  // agent — 检测确认地址缺失时由手动检测的自动落闸把开关置回禁用，而不是
+  // 冻结开关堵死关闭入口；刷新窗口（尚无探测结果）也不锁。
   assert.match(section, /disabled=\{disabled \|\| \(!installed && !enabled\) \|\| committing\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]\}/);
+  assert.match(section, /检测确认当前配置的可执行文件不存在/);
+  // 自动落闸只认 missing/unsupported（地址不存在/不可执行）；unavailable
+  // （可执行文件在、版本命令失败）不落闸，保留手动关闭的能力。
+  assert.match(section, /result\.status === 'missing' \|\| result\.status === 'unsupported'/);
+  // 自动落闸只依据持久化快照决策与提交，不持久化未保存的草稿路径（!10406）。
+  assert.match(section, /probedPersistedChoice/);
+  assert.match(section, /await commit\(cliAgent, \{\s+enabled: false,\s+useBuiltin: persistedValues\[useBuiltinKey\] === 'true',/);
 });
 
 test('uploaded custom agents are listed after Claude and Codex', async () => {

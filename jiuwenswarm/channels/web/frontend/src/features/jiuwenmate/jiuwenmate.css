@@ -24,7 +24,7 @@
   --jm-radius: 12px;
 
   display: grid;
-  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-columns: var(--mode-rail-width) minmax(0, 1fr);
   width: 100vw;
   height: 100vh;
   min-width: 0;
@@ -119,11 +119,10 @@
 /* Rail */
 .jiuwenmate-rail {
   display: flex;
-  width: 72px;
+  width: var(--mode-rail-width);
   min-height: 0;
   flex-direction: column;
   align-items: center;
-  padding-bottom: 12px;
   border-right: 1px solid var(--jm-border);
   background: var(--color-sidebar-surface, #f7f7f7);
 }
@@ -1258,10 +1257,12 @@
 
 .jiuwenmate-colleague-card__description {
   display: -webkit-box;
+  max-width: 100%;
   overflow: hidden;
   color: var(--jm-text-2);
   font-size: 12px;
   line-height: 1.7;
+  overflow-wrap: anywhere;
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
 }
@@ -6161,14 +6162,6 @@
 }
 
 @media (max-width: 760px) {
-  .jiuwenmate-shell {
-    grid-template-columns: 56px minmax(0, 1fr);
-  }
-
-  .jiuwenmate-rail {
-    width: 56px;
-  }
-
   .jiuwenmate-workspace,
   .jiuwenmate-workspace--panel-open:not(.jiuwenmate-workspace--collapsed) {
     position: relative;

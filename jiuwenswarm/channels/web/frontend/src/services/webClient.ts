@@ -1,4 +1,5 @@
 import {
+  Session,
   WebConnectOptions,
   WebConnectionState,
   WebError,
@@ -21,6 +22,7 @@ import { RuntimeResume } from './runtimeResume';
 import { useChatStore } from '../stores/chatStore';
 
 type RuntimeResumeQuery = ReturnType<RuntimeResume['queries']>[number];
+type RuntimeRecoveryMetadata = Pick<Session, 'status' | 'is_processing'> & { runtime?: Record<string, unknown> };
 
 type EventHandler = (event: WsEvent) => void;
 type TypedEventHandler<TPayload> = (event: WsEvent & { payload: TPayload }) => void;
@@ -106,7 +108,7 @@ function logDevWsTraffic(entry: DevWsLogEntry): void {
 class WebClient {
   private readonly runtimeResume = new RuntimeResume();
   private resumeOwner = '';
-  private readonly resumeRequests = new Map<string, Promise<void>>();
+  private readonly resumeRequests = new Map<string, Promise<RuntimeRecoveryMetadata | undefined>>();
   private readonly resumeRetryTimers = new Map<string, number>();
   private connectedOnce = false;
   private ws: WebSocket | null = null;
@@ -372,19 +374,27 @@ class WebClient {
       }
     }).then(async (value) => {
       if (method === 'session.get_metadata' && !params?.runtime_resume && typeof params?.session_id === 'string') {
-        const runtime = (value as { runtime?: Record<string, unknown> } | null)?.runtime;
+        const metadata = value as RuntimeRecoveryMetadata | null;
+        const runtime = metadata?.runtime;
         if (
-          runtime?.recovery_pending === true ||
-          (runtime?.is_processing === true && typeof runtime.worker_instance === 'string') ||
-          (this.resumeRetryTimers.has(params.session_id) &&
-            runtime?.is_processing === false && runtime.history_required === true)
+          metadata &&
+          (runtime?.recovery_pending === true ||
+            (runtime?.is_processing === true && typeof runtime.worker_instance === 'string') ||
+            (this.resumeRetryTimers.has(params.session_id) &&
+              runtime?.is_processing === false && runtime.history_required === true))
         ) {
-          // A freshly loaded page has no stream cursor yet. Reattach to the
-          // existing execution through its snapshot, never by sending input.
-          await this.recoverSessionExecution(
+          // Recovery applies a newer snapshot. Return that same metadata so the
+          // caller cannot overwrite it with the state from the initial query.
+          const recovered = await this.recoverSessionExecution(
             params.session_id,
             typeof runtime.worker_instance === 'string' ? runtime.worker_instance : '',
+            options.signal,
           );
+          if (recovered) return recovered as T;
+
+          // Keep the session details. The first processing snapshot may already have been superseded.
+          const { status: _status, is_processing: _isProcessing, runtime: _runtime, ...session } = metadata;
+          return session as T;
         }
       }
       return value;
@@ -523,20 +533,32 @@ class WebClient {
     return null;
   }
 
-  private async resumeExecutions(queries = this.runtimeResume.queries()): Promise<void> {
-    await Promise.all(queries.map((query) => this.resumeExecution(query)));
+  private async resumeExecutions(queries = this.runtimeResume.queries(), retryDelayMs = 0): Promise<void> {
+    await Promise.allSettled(queries.map((query) => this.resumeExecution(query, retryDelayMs)));
   }
 
   isRecoveringExecution(sessionId: string): boolean {
     return this.resumeRequests.has(sessionId) || this.resumeRetryTimers.has(sessionId);
   }
 
-  private recoverSessionExecution(sessionId: string, workerInstance: string): Promise<void> {
+  private recoverSessionExecution(
+    sessionId: string,
+    workerInstance: string,
+    signal?: AbortSignal,
+  ): Promise<RuntimeRecoveryMetadata | undefined> {
+    if (signal?.aborted) return Promise.resolve(undefined);
     const query = this.runtimeResume.queries().find((item) => item.session_id === sessionId) ?? {
       session_id: sessionId,
       runtime_resume: { worker_instance: workerInstance, after: 0 },
     };
-    return this.resumeExecution(query);
+    const recovery = this.resumeExecution(query);
+    if (!signal) return recovery;
+    // A caller can cancel its wait independently of the session's shared subscription.
+    return new Promise((resolve, reject) => {
+      const onAbort = () => resolve(undefined);
+      signal.addEventListener('abort', onAbort, { once: true });
+      void recovery.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+    });
   }
 
   private clearExecutionRecovery(): void {
@@ -545,7 +567,7 @@ class WebClient {
     this.resumeRequests.clear();
   }
 
-  private resumeExecution(query: RuntimeResumeQuery, retryDelayMs = 0): Promise<void> {
+  private resumeExecution(query: RuntimeResumeQuery, retryDelayMs = 0): Promise<RuntimeRecoveryMetadata | undefined> {
     const sessionId = query.session_id;
     const existing = this.resumeRequests.get(sessionId);
     if (existing) return existing;
@@ -561,7 +583,10 @@ class WebClient {
     return request;
   }
 
-  private async queryExecutionRecovery(query: RuntimeResumeQuery, retryDelayMs: number): Promise<void> {
+  private async queryExecutionRecovery(
+    query: RuntimeResumeQuery,
+    retryDelayMs: number,
+  ): Promise<RuntimeRecoveryMetadata | undefined> {
     const sessionId = query.session_id;
     const socket = this.ws;
     const owner = this.resumeOwner;
@@ -569,27 +594,29 @@ class WebClient {
     const isCurrent = () =>
       this.ws === socket && this.resumeOwner === owner && this.state === 'ready' &&
       (useChatStore.getState().getRuntime(sessionId)?.turnRevision ?? 0) === turnRevision;
+    const shouldRetry = () =>
+      isCurrent() && useChatStore.getState().getRuntime(sessionId)?.foregroundIsProcessing;
     const retry = () => {
-      if (!isCurrent() || !useChatStore.getState().getRuntime(sessionId)?.foregroundIsProcessing) return;
+      if (!shouldRetry()) return;
       const delay = retryDelayMs === 0 ? MIN_RECOVERY_RETRY_MS : Math.min(retryDelayMs * 2, MAX_RECOVERY_RETRY_MS);
       const timer = window.setTimeout(() => {
         this.resumeRetryTimers.delete(sessionId);
-        if (!isCurrent() || !useChatStore.getState().getRuntime(sessionId)?.foregroundIsProcessing) return;
+        if (!shouldRetry()) return;
         const latest = this.runtimeResume.queries().find((item) => item.session_id === sessionId);
-        void this.resumeExecution(latest ?? query, delay);
+        void this.resumeExecutions([latest ?? query], delay);
       }, delay);
       this.resumeRetryTimers.set(sessionId, timer);
     };
     const attempts = retryDelayMs === 0 ? MAX_RECOVERY_ATTEMPTS : 1;
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
+    for (let attempt = 0; ; attempt += 1) {
       if (!isCurrent()) return;
       try {
-        const metadata = await this.request<{ runtime?: Record<string, unknown> }>('session.get_metadata', query, {
+        const metadata = await this.request<RuntimeRecoveryMetadata>('session.get_metadata', query, {
           timeoutMs: 10_000,
         });
         if (!isCurrent()) return;
         const runtime = metadata?.runtime;
-        if (!runtime) return;
+        if (!runtime) return metadata;
         this.dispatchEvent({
           type: 'event',
           event: 'runtime.snapshot',
@@ -607,7 +634,7 @@ class WebClient {
             continue;
           }
           retry();
-          return;
+          return metadata;
         }
         const localRuntime = useChatStore.getState().getRuntime(sessionId);
         const missingTerminal = runtime.is_processing === false && localRuntime?.foregroundIsProcessing === true;
@@ -661,7 +688,7 @@ class WebClient {
             payload: { session_id: sessionId },
           });
         }
-        return;
+        return metadata;
       } catch (error) {
         if ((error as WebError | undefined)?.code === 'REQUEST_TIMEOUT') retry();
         return;

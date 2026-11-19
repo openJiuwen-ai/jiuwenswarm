@@ -240,12 +240,12 @@ datas += collect_data_files(
     include_py_files=True,
     includes=EXTENSION_DATA_FILE_PATTERNS,
 )
-# Office app packages (manifest.json, persona/, rails/, skills/, tools.json, profile.json, review.md), read at runtime;
-# the template loads its rail from rails/*.py.
+# Office app packages (manifest.json, persona/, rails/, skills/, tools.json, profile.json, review.md) and the icon set
+# (fluent_icons/), read at runtime; the template loads its rail from rails/*.py.
 datas += collect_data_files(
     "jiuwenswarm.office",
     include_py_files=True,
-    includes=["powerpoint/**/*", "word/**/*", "excel/**/*"],
+    includes=["powerpoint/**/*", "word/**/*", "excel/**/*", "fluent_icons/*"],
 )
 # DesignRail 的 config.yaml + skills/ 树（SKILL.md / workflows / references / scripts）
 # 含 .mjs 脚本和 _templates/ 模板（脚本运行时读取），需额外 pattern
@@ -285,6 +285,11 @@ http2_submodules = [
 
 # 部分包需要显式声明隐藏导入
 lazy_runtime_submodules = []
+memory_bundle = runpy.run_path(os.path.join(project_root, "scripts", "memory_bundle.py"))
+lazy_runtime_submodules += list(memory_bundle["MEMORY_RUNTIME_MODULES"])
+for memory_package in memory_bundle["MEMORY_RUNTIME_PACKAGES"]:
+    lazy_runtime_submodules += collect_submodules(memory_package, on_error="raise")
+
 for lazy_package in (
     "agent_gateway",
     "jiuwenswarm.agents.harness.common.auto_harness",
@@ -316,7 +321,6 @@ hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdo
     "lxml.etree",
     "PIL._imaging",
     "bcrypt._bcrypt",
-    "faiss",
     "chromadb_rust_bindings",
     "tiktoken_ext",  # tiktoken 编码插件（cl100k_base 等）
     "tiktoken_ext.openai_public",
@@ -329,6 +333,8 @@ hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdo
     "aiosqlite",
     "croniter",
     "websockets",
+    # The extension loader opens extension.py from disk in frozen builds.
+    *collect_submodules("jiuwenswarm.extensions.app_market"),
     "loguru",
     "dotenv",
     "webview",

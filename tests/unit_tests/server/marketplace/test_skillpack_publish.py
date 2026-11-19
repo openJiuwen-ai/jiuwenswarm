@@ -102,7 +102,7 @@ class Hub:
 @pytest.fixture
 def skillpack_settings(monkeypatch):
     flow = {"enabled": True}
-    config = {"symphony": {"evolution": {"flow": flow}}}
+    config = {"symphony": {"orchestration": {"experience": flow}}}
     monkeypatch.setattr("jiuwenswarm.common.config.get_config", lambda: config)
     return flow
 

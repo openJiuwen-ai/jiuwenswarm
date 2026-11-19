@@ -498,8 +498,9 @@ if ($DoSign) {
 #    （resources\backend），冻结入口 jiuwenswarm_exe_entry.py 会在
 #    <后端 exe 目录>\runtime\ 下查找并前置 PATH，Agent 技能（ppt-creation
 #    等 node 脚本）因此不依赖用户机器的 Node.js。
+Import-Module (Join-Path $PSScriptRoot "build-inno-setup.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "build-runtimes.psm1") -Force
-$ElectronMinimumNodeVersion = [version]"22.12.0"
+$ElectronMinimumNodeVersion = [version]"22.13.0"
 $RuntimeSettings = Get-RuntimeBundleSettings -DefaultNodeVersion "v22.13.0"
 $BundleNode = $RuntimeSettings.BundleNode
 $BundleUv = $RuntimeSettings.BundleUv
@@ -563,6 +564,16 @@ try {
     }
     npm run build
     if ($LASTEXITCODE -ne 0) { $FrontendBuildExit = $LASTEXITCODE; throw "vite build failed" }
+    # Office task pane, served by the desktop at /office/ (inside the frontend dist built above).
+    Push-Location (Join-Path $ProjectRoot "packages\jiuwenswarm-office-addin")
+    try {
+        npm ci --prefer-offline --no-audit --no-fund
+        if ($LASTEXITCODE -ne 0) { $FrontendBuildExit = $LASTEXITCODE; throw "office add-in npm ci failed" }
+        npm run build:desktop
+        if ($LASTEXITCODE -ne 0) { $FrontendBuildExit = $LASTEXITCODE; throw "office add-in build failed" }
+    } finally {
+        Pop-Location
+    }
 } finally {
     Pop-Location
     if ($null -ne $PreviousElectronEnv) { $env:ELECTRON = $PreviousElectronEnv } else { Remove-Item Env:\ELECTRON -ErrorAction SilentlyContinue }
@@ -620,7 +631,9 @@ if ($FrontendOnly) {
     Write-Host "`n[4/6] Reusing existing PyInstaller backend: $BackendDist" -ForegroundColor Yellow
 } else {
     Write-Host "`n[4/6] Running PyInstaller (backend)..." -ForegroundColor Yellow
-    uv run pyinstaller scripts\jiuwenswarm.spec --noconfirm
+    # Use an extended local path when collecting deeply nested runtime data.
+    $CollectDir = "\\?\$ProjectRoot\dist"
+    uv run pyinstaller scripts\jiuwenswarm.spec --noconfirm --distpath $CollectDir
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     if (-not (Test-Path (Join-Path $BackendDist $BuildExecutableNameWindows))) {
         throw "PyInstaller output not found: $BackendDist\$BuildExecutableNameWindows"
@@ -690,6 +703,17 @@ if ($FrontendOnly) {
     }
 }
 
+# Also check reused backends so an older bundle with missing Memory modules
+# cannot silently pass through -ReuseBackend into a new installer.
+if (-not $FrontendOnly) {
+    $FrozenExe = Join-Path $BackendDist $BuildExecutableNameWindows
+    $MemoryVerifier = Join-Path $ProjectRoot "scripts\verify_memory_bundle.py"
+    uv run --no-sync python $MemoryVerifier --executable $FrozenExe
+    if ($LASTEXITCODE -ne 0) {
+        throw "Frozen JiuwenMemory SDK and video tool verification failed. See verifier output above."
+    }
+}
+
 # ── 5. Assemble final Electron app ────────────────────────────────────────────
 Write-Host "`n[5/6] Assembling Electron desktop app..." -ForegroundColor Yellow
 
@@ -752,6 +776,8 @@ Copy-Item -Path (Join-Path $DesktopDir "main.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "update_shutdown.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "cdp_port.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_panels.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "app_market_windows.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "app_market_resources.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_downloads.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_download_bubble.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "share_image_export.cjs") -Destination $AppDir -Force
@@ -921,36 +947,52 @@ if ($SkipInstaller) {
 # ── 6. Build installer (Inno Setup) ───────────────────────────────────────────
 Write-Host "`n[6/6] Building installer (Inno Setup)..." -ForegroundColor Yellow
 
-$IsccPaths = @(
-    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
-    "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
-    "C:\Program Files\Inno Setup 6\ISCC.exe"
-)
-$Iscc = $IsccPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+# Compiler discovery and the SHA-256-verified Inno Setup 7 bootstrap are shared
+# with build-exe.ps1 through build-inno-setup.psm1.
+$Iscc = Resolve-InnoSetupCompiler
 if (-not $Iscc) {
-    $Iscc = Get-Command iscc -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+    Install-InnoSetup7
+    $Iscc = Resolve-InnoSetupCompiler
+    if (-not $Iscc) {
+        throw "ISCC.exe was not found after installing Inno Setup 7. Install Inno Setup 7 and rerun the build."
+    }
 }
-if (-not $Iscc) {
-    $Winget = Get-Command winget -CommandType Application -ErrorAction SilentlyContinue
-    if (-not $Winget) {
-        throw "Inno Setup was not found and winget is unavailable. Install Inno Setup 6.7.1 and rerun the build."
+# The Office schema tree is the deepest payload path. Compress it before the
+# Inno Setup 6 MAX_PATH gate so the gate validates the payload that will
+# actually be packed, not the seed layout.
+$PayloadRoot = (Get-InnoSetupSourceRoot -ProjectRoot $ProjectRoot -SourceDir "$BuildDisplayName-Electron").TrimEnd('\')
+$OfficeSchemas = Join-Path $PayloadRoot 'resources\backend\_internal\jiuwenswarm\resources\agent\workspace\skills\workswarm-builtin\references\capabilities\ppt-creation\scripts\opc\schemas'
+if (Test-Path -LiteralPath $OfficeSchemas -PathType Container) {
+    $OfficeSchemas = (Resolve-Path -LiteralPath $OfficeSchemas).ProviderPath
+    $PayloadPrefix = (Resolve-Path -LiteralPath $PayloadRoot).ProviderPath.TrimEnd('\') + '\'
+    if (-not $OfficeSchemas.StartsWith($PayloadPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Office schemas are outside the Electron payload: $OfficeSchemas"
     }
-    # Use the versioned winget manifest and its installer SHA-256 verification.
-    # Never bypass a hash failure or execute an unverified direct download.
-    Write-Host "Installing Inno Setup 6.7.1 through winget..." -ForegroundColor Yellow
-    & $Winget.Source install --id JRSoftware.InnoSetup --exact --version 6.7.1 `
-        --source winget --scope user --silent --disable-interactivity `
-        --accept-package-agreements --accept-source-agreements
-    if ($LASTEXITCODE -ne 0) {
-        throw "Inno Setup installation failed (winget exit code: $LASTEXITCODE)."
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [IO.Compression.ZipFile]::CreateFromDirectory($OfficeSchemas, "$OfficeSchemas.zip")
+    Remove-Item -LiteralPath $OfficeSchemas -Recurse -Force
+}
+if (-not (Test-InnoSetup7OrNewer -IsccPath $Iscc)) {
+    # Inno Setup 6 fails late ("The system cannot find the path specified")
+    # whenever a payload path exceeds MAX_PATH. The assembled app is final here,
+    # so validate it before invoking the compiler and fail fast with an
+    # actionable message. This gate stays after the -SkipInstaller return above:
+    # directory-only builds must not resolve a compiler or care about payload
+    # path length.
+    $PayloadRoot = Get-InnoSetupSourceRoot -ProjectRoot $ProjectRoot -SourceDir "$BuildDisplayName-Electron"
+    $MaxPathViolation = Find-MaxPathViolation -SourceRoot $PayloadRoot
+    if ($null -ne $MaxPathViolation) {
+        throw (
+            "Inno Setup 6 cannot build this payload: $MaxPathViolation`n" +
+            "Install Inno Setup 7 (no MAX_PATH limit) or move the build tree " +
+            "to a shorter directory so every payload path stays within 260 chars."
+        )
     }
-    $Iscc = $IsccPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $Iscc) {
-        $Iscc = Get-Command iscc -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
-    }
-    if (-not $Iscc) {
-        throw "winget completed but ISCC.exe was not found. Install Inno Setup 6.7.1 and rerun the build."
-    }
+    Write-Host (
+        "Warning: Inno Setup 7 was not detected; continuing with Inno Setup 6. " +
+        "Inno Setup 6 cannot handle paths longer than MAX_PATH; all current " +
+        "payload paths are within 260 chars, but install Inno Setup 7 to stay safe."
+    ) -ForegroundColor Yellow
 }
 
 Write-Host "Using ISCC: $Iscc" -ForegroundColor Gray
@@ -970,7 +1012,11 @@ if (Test-Path -LiteralPath $InstallerPath) {
     Remove-Item -LiteralPath $InstallerPath -Force
 }
 
+$LongestPayloadPath = Get-ChildItem -LiteralPath $PayloadRoot -File -Recurse |
+    ForEach-Object { $_.FullName.Length - $PayloadRoot.Length - 1 } |
+    Measure-Object -Maximum
 $IsccArguments = @(
+    "/DMaxPayloadRelativePath=$($LongestPayloadPath.Maximum)",
     "/DMyAppName=$BuildDisplayName",
     "/DMyAppExeName=$ShellExeName",
     "/DMyAppVersion=$BuildVersion",
@@ -986,9 +1032,30 @@ if ($DoSign) {
         " /tr $TimestampUrl /td SHA256 /v " + '$f'
     $IsccArguments += "/Scertumsha256=$InnoSignCommand"
 }
-$IsccArguments += "$ProjectRoot\scripts\installer-electron.iss"
-& $Iscc @IsccArguments
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$InnoRoot = $ProjectRoot
+$InnoDrive = $null
+if (($PayloadRoot.Length + 1 + $LongestPayloadPath.Maximum) -gt 249) {
+    $UsedDrives = [System.IO.DriveInfo]::GetDrives().Name
+    $DriveName = 90..68 | ForEach-Object { "$([char]$_):\" } |
+        Where-Object { $_ -notin $UsedDrives } | Select-Object -First 1
+    if (-not $DriveName) {
+        throw 'Inno Setup needs a shorter checkout path or a free drive letter.'
+    }
+    $InnoDrive = $DriveName.TrimEnd('\')
+    & subst.exe $InnoDrive $ProjectRoot
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not map a short Inno Setup path for $ProjectRoot."
+    }
+    $InnoRoot = $DriveName
+}
+try {
+    $IsccArguments += Join-Path $InnoRoot 'scripts\installer-electron.iss'
+    & $Iscc @IsccArguments
+    $InnoExitCode = $LASTEXITCODE
+} finally {
+    if ($InnoDrive) { & subst.exe $InnoDrive /D }
+}
+if ($InnoExitCode -ne 0) { exit $InnoExitCode }
 
 if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) {
     throw "Inno Setup completed without creating the expected installer: $InstallerPath"

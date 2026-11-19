@@ -1,0 +1,18 @@
+/* The suite name is the product name: it gets the whole row and wraps rather than truncating.
+   Host logos live in the apps row under it, so the avatar slot stays out. */
+.office-addins-heading .entity-header__avatar {
+  display: none;
+}
+
+.office-addins-heading .entity-header__text {
+  height: auto;
+}
+
+.office-addins-heading .entity-header__title {
+  white-space: normal;
+}
+
+/* The detail cards stop at the width the house gives its detail lists (.detail-prompt-list, 696px). */
+.office-addins-detail-width {
+  max-width: 696px;
+}

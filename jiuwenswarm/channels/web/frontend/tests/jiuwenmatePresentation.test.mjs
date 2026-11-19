@@ -124,6 +124,24 @@ test('colleague tags paint above the portrait artwork when the tag list wraps', 
   dom.window.close();
 });
 
+test('colleague descriptions with unbroken text wrap within the card', () => {
+  const stylesheet = readFileSync(new URL('../src/features/jiuwenmate/jiuwenmate.css', import.meta.url), 'utf8');
+  const markup = renderToStaticMarkup(
+    React.createElement(ColleagueCard, {
+      colleague: { ...JIUWENMATE_TEMPLATES[0], description: 'W'.repeat(200) },
+    }),
+  );
+  const dom = new JSDOM(`<style>${stylesheet}</style>${markup}`);
+  try {
+    const description = dom.window.document.querySelector('[data-testid="jiuwenmate-colleague-description"]');
+    const style = dom.window.getComputedStyle(description);
+    assert.equal(style.maxWidth, '100%');
+    assert.equal(style.overflowWrap, 'anywhere');
+  } finally {
+    dom.window.close();
+  }
+});
+
 test('colleague card exposes the designed hover actions without nesting buttons', () => {
   const markup = renderToStaticMarkup(
     React.createElement(ColleagueCard, {

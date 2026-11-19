@@ -327,7 +327,9 @@ async def test_cli_real_runtime_two_cards_do_not_finish_on_suspended_tail(cli_ho
                                          ("cancel", 2), ("timeout", 2)])
 async def test_cli_real_runtime_wait_is_cancellable_without_approval(cli_host, ending, card):
     run = await cli_host(two_cards=card == 2)
-    run.start(timeout=2 if ending == "timeout" else 10)
+    # The run timeout spans every card before it fires; under parallel CI load two
+    # cards can take longer than 2s, so give the second card its own budget.
+    run.start(timeout=2 * card + 1 if ending == "timeout" else 10)
     notice = await run.notice()
     if card == 2:
         run.answer(notice)

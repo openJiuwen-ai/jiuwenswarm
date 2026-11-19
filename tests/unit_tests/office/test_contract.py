@@ -20,19 +20,21 @@ _SHIPPED_APPS = registry.APPS
 PACKAGES = {app.id: app.package_dir for app in registry.client_apps().values()}
 WORD_TOOLS = {"read_doc_section", "search_doc_text", "edit_doc_text", "edit_doc_list", "collapse_blank_paragraphs",
               "verify_doc", "verify_doc_visual", "propose_doc_edits", "withdraw_doc_edits", "explain_edits",
-              "execute_office_js", "read_surface_context"}
+              "execute_office_js", "execute_wps_js", "read_surface_context"}
 EXCEL_TOOLS = {"get_cell_ranges", "get_range_as_csv", "set_cell_range", "copy_paste_range", "execute_office_js",
-               "read_surface_context"}
-PRESENTATION = ({"app_id": "office_powerpoint", "domain": "presentation", "contract_version": 1}, 18,
+               "execute_wps_js", "read_surface_context"}
+PRESENTATION = ({"app_id": "office_powerpoint", "domain": "presentation", "contract_version": 1}, 19,
                 {"read_presentation_context", "list_slide_shapes", "read_slide_image", "read_slide_text",
                  "edit_slide_text", "find_and_replace"})
 # Each app: its profile, how many tools its contract has, and the ones offered directly.
 APPS = {
     CLIENT_APP: PRESENTATION,
     "wps-presentation": PRESENTATION,
-    "office-word": ({"app_id": "office_word", "domain": "document", "contract_version": 1}, 12, WORD_TOOLS),
-    "office-excel": ({"app_id": "office_excel", "domain": "workbook", "contract_version": 1}, 6, EXCEL_TOOLS),
+    "office-word": ({"app_id": "office_word", "domain": "document", "contract_version": 1}, 13, WORD_TOOLS),
+    "office-excel": ({"app_id": "office_excel", "domain": "workbook", "contract_version": 1}, 7, EXCEL_TOOLS),
 }
+APPS["wps-spreadsheet"] = APPS["office-excel"]
+APPS["wps-writer"] = APPS["office-word"]
 SUPPORTED = {"supported_tools": ["read_presentation_context", "read_slide_image", "presentation_apply_patch"]}
 
 
@@ -82,10 +84,18 @@ def test_each_contract_tool_is_a_client_tool_offered_as_its_annotations_say(app_
                                                          if platform in tool["host_requirements"]}
 
 
-def test_wps_presentation_runs_the_powerpoint_package_less_what_wps_cannot_do() -> None:
-    wps, powerpoint = registry.client_apps()["wps-presentation"], registry.client_apps()[CLIENT_APP]
-    assert wps.package_dir == powerpoint.package_dir
-    assert powerpoint.tool_names - wps.tool_names == {"edit_slide_master"}
+@pytest.mark.parametrize(("wps_app", "office_app", "office_only", "wps_only"), [
+    ("wps-presentation", CLIENT_APP, {"edit_slide_master", "insert_icon"}, set()),
+    # WPS runs no Office.js: its code runs on the WPS object model.
+    ("wps-spreadsheet", "office-excel", {"execute_office_js"}, {"execute_wps_js"}),
+    ("wps-writer", "office-word", {"execute_office_js"}, {"execute_wps_js"}),
+])
+def test_a_wps_app_runs_its_office_app_s_package_less_what_wps_cannot_do(wps_app, office_app, office_only,
+                                                                          wps_only) -> None:
+    wps, office = registry.client_apps()[wps_app], registry.client_apps()[office_app]
+    assert wps.package_dir == office.package_dir
+    assert office.tool_names - wps.tool_names == office_only
+    assert wps.tool_names - office.tool_names == wps_only
 
 
 def test_host_requirements_that_name_no_platform_are_refused(tmp_path) -> None:

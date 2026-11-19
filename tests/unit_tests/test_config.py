@@ -173,98 +173,33 @@ def test_extension_migration_preserves_null_when_dotenv_changes_in_child(tmp_pat
     assert migrated["team"]["runtime"]["mode"] == marker
 
 
-@pytest.mark.parametrize("enabled", [False, True])
-@pytest.mark.parametrize("evolution_enabled", [False, True])
-def test_discovery_switch_does_not_require_hidden_symphony_switch(
-    enabled: bool,
-    evolution_enabled: bool,
-) -> None:
-    config = {
-        "symphony": {"enabled": enabled, "evolution": {"enabled": evolution_enabled}}
-    }
-    assert get_symphony_evolution_enabled(config) is evolution_enabled
+@pytest.mark.parametrize("enabled", [False, True, None])
+@pytest.mark.parametrize("experience_enabled", [False, True, None])
+def test_skillpack_discovery_does_not_require_the_orchestration_switch(enabled, experience_enabled):
+    config = {"symphony": {"orchestration": {"enabled": enabled, "experience": {"enabled": experience_enabled}}}}
+    assert get_symphony_evolution_enabled(config) is (experience_enabled is True)
+    from jiuwenswarm.common.symphony_config import load_symphony_config
+
+    assert load_symphony_config(config).orchestration.enabled is (enabled is True or experience_enabled is True)
 
 
-@pytest.mark.parametrize("switch", ["symphony", "evolution"])
-@pytest.mark.parametrize(
-    ("value", "expected"),
-    [
-        (True, True),
-        (False, False),
-        (1, True),
-        (0, False),
-        (2, False),
-        (1.0, False),
-        ("1", True),
-        (" true ", True),
-        ("YES", True),
-        ("On", True),
-        ("0", False),
-        ("false", False),
-        ("NO", False),
-        (" off ", False),
-        ("enabled", False),
-        ("", False),
-        (None, False),
-    ],
-)
-def test_symphony_evolution_switch_matches_full_parser(
-    switch: str,
-    value: Any,
-    expected: bool,
-) -> None:
-    raw: dict[str, Any] = {"enabled": True, "evolution": {"enabled": True}}
-    target = raw if switch == "symphony" else raw["evolution"]
-    target["enabled"] = value
-    expected = True if switch == "symphony" else expected
-    parsed = symphony_config_module.symphony_config_from_dict(raw)
-    assert get_symphony_evolution_enabled({"symphony": raw}) is expected
-    # enabled 已移到 evolution.flow 下；evolution 层的旧位置靠回退兼容
-    assert expected is (parsed.enabled and parsed.evolution.flow.enabled)
+@pytest.mark.parametrize("field", ["orchestration.enabled", "orchestration.experience.enabled"])
+@pytest.mark.parametrize("value", [1, 0, "true", "false", [], {}])
+def test_symphony_rejects_invalid_switch_types(field, value):
+    from pydantic import ValidationError
+    orchestration = {"enabled": value} if field == "orchestration.enabled" else {"experience": {"enabled": value}}
+    with pytest.raises(ValidationError, match=f"symphony.{field}"):
+        get_symphony_evolution_enabled({"symphony": {"orchestration": orchestration}})
 
 
-@pytest.mark.parametrize("value", [None, {}, [], "invalid", True, 1])
-@pytest.mark.parametrize("level", ["config", "symphony", "evolution"])
-def test_symphony_evolution_missing_or_malformed_mapping_is_disabled(
-    level: str,
-    value: Any,
-) -> None:
-    config = value
-    if level == "symphony":
-        config = {"symphony": value}
-    elif level == "evolution":
-        config = {"symphony": {"enabled": True, "evolution": value}}
-    assert get_symphony_evolution_enabled(config) is False
-
-
-def test_symphony_evolution_getter_reads_only_passed_switches(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail(*args: Any, **kwargs: Any) -> None:
-        pytest.fail("Unexpected global config, full parser, or path lookup")
-
-    monkeypatch.setattr(config_module, "get_config", fail)
-    for name in (
-        "load_symphony_config",
-        "symphony_config_from_dict",
-        "get_agent_workspace_dir",
-        "_resolve_path",
-    ):
-        monkeypatch.setattr(symphony_config_module, name, fail)
+def test_symphony_evolution_getter_uses_passed_configuration(monkeypatch):
+    monkeypatch.setattr(config_module, "get_config", lambda: pytest.fail("Must not load global configuration"))
     assert get_symphony_evolution_enabled(None) is False
     assert get_symphony_evolution_enabled({}) is False
-    evolution_only = {"symphony": {"evolution": {"enabled": True}}}
-    assert get_symphony_evolution_enabled(evolution_only) is True
-    assert get_symphony_evolution_enabled({"symphony": {"enabled": True}}) is False
-    enabled_config = {
-        "symphony": {
-            "enabled": True,
-            "evolution": {"enabled": True},
-            "paths": "invalid",
-            "orchestration": {"mode": "invalid"},
-        },
-    }
-    assert get_symphony_evolution_enabled(enabled_config) is True
+    assert get_symphony_evolution_enabled({"symphony": {"orchestration": {"experience": {"enabled": True}}}}) is True
+    assert get_symphony_evolution_enabled({
+        "symphony": {"orchestration": {"enabled": True, "experience": {"enabled": True}}},
+    }) is True
 
 
 def test_saved_discovery_setting_controls_all_product_gates(temp_config_file, monkeypatch):
@@ -280,7 +215,7 @@ def test_saved_discovery_setting_controls_all_product_gates(temp_config_file, mo
     monkeypatch.delenv("SKILLPACK_HUB_DEPLOYMENT_SCOPE", raising=False)
 
     for enabled in [True, False, True]:
-        config_module.update_symphony_in_config({"evolution": {"flow": {"enabled": enabled}}})
+        config_module.update_symphony_in_config({"orchestration": {"experience": {"enabled": enabled}}})
         saved = config_module.get_config()
         assert get_symphony_evolution_enabled(saved) is enabled
         assert skillpack_productization_enabled() is enabled
@@ -290,7 +225,7 @@ def test_saved_discovery_setting_controls_all_product_gates(temp_config_file, mo
         else:
             with pytest.raises(ValueError):
                 skillpack_publish_profile()
-        assert symphony_config_module.load_symphony_config(saved).enabled is enabled
+        assert symphony_config_module.load_symphony_config(saved).orchestration.enabled is enabled
 
 
 def test_configured_read_image_multimodal_preserves_explicit_value() -> None:
@@ -1255,49 +1190,23 @@ class TestConfigFunctions:
         assert len(actual_keys & expected_keys) > 0, "Config should have at least some expected keys"
 
     @staticmethod
-    def test_migrate_config_from_template_deep_merges_symphony(
-        tmp_path: Path,
-    ):
+    def test_migrate_config_from_template_deep_merges_symphony(tmp_path):
         template_path = tmp_path / "template.yaml"
         user_config_path = tmp_path / "config.yaml"
-        template_path.write_text(
-            """
-preferred_language: zh
-symphony:
-  fingerprint:
-    scan:
-      max_depth:
-    extraction:
-      workers: 1
-      batch_size: 1
-      body_limit:
-    normalization:
-      workers: 1
-      batch_size: 1
-      duplicate_name_similarity_threshold: 0.86
-      max_vocab_size:
-""",
-            encoding="utf-8",
-        )
-        user_config_path.write_text(
-            """
-preferred_language: en
-symphony:
-  fingerprint:
-    extraction:
-      workers: 3
-""",
-            encoding="utf-8",
-        )
-
+        template_path.write_text(yaml.safe_dump({"preferred_language": "zh", "symphony": {
+            "capability": {"scan": {"max_depth": None}, "fingerprint": {"extraction": {"max_concurrency": 4, "batch_size": 2}}},
+            "orchestration": {"build": {"max_concurrency": 4}},
+        }}))
+        user_config_path.write_text(yaml.safe_dump({"preferred_language": "en", "symphony": {
+            "capability": {"fingerprint": {"extraction": {"max_concurrency": 3}}}}}))
         assert migrate_config_from_template(template_path, user_config_path) is True
-
-        migrated = yaml.safe_load(user_config_path.read_text(encoding="utf-8"))
+        migrated = yaml.safe_load(user_config_path.read_text())
         assert migrated["preferred_language"] == "en"
-        assert migrated["symphony"]["fingerprint"]["scan"]["max_depth"] is None
-        assert migrated["symphony"]["fingerprint"]["extraction"]["workers"] == 3
-        assert migrated["symphony"]["fingerprint"]["extraction"]["batch_size"] == 1
-        assert migrated["symphony"]["fingerprint"]["normalization"]["workers"] == 1
+        resolved = symphony_config_module.load_symphony_config(migrated)
+        assert resolved.capability.scan.max_depth is None
+        assert resolved.capability.fingerprint.extraction.max_concurrency == 3
+        assert resolved.capability.fingerprint.extraction.batch_size == 2
+        assert resolved.orchestration.build.max_concurrency == 4
 
     @staticmethod
     def test_migrate_config_preserves_canonical_evolution_settings(
@@ -1526,14 +1435,14 @@ react:
         template_path = tmp_path / "template.yaml"
         config_path = tmp_path / "config.yaml"
         template_path.write_text(
-            "symphony:\n  skill_retrieval:\n    enabled: false\n"
+            "symphony:\n  retrieval:\n    enabled: false\n"
             "gateway:\n  agentos:\n    wait_running_timeout_seconds: 90\n"
             "channels:\n  xiaoyi:\n    send_file_allowed: false\n"
             "new_option: true\n",
             encoding="utf-8",
         )
         config_path.write_text(
-            "symphony:\n  skill_retrieval:\n    enabled: true\n"
+            "symphony:\n  retrieval:\n    enabled: true\n"
             "gateway:\n  agentos:\n    wait_running_timeout_seconds: 60\n"
             "channels:\n  xiaoyi:\n    send_file_allowed: true\n",
             encoding="utf-8",
@@ -1541,7 +1450,7 @@ react:
 
         assert migrate_config_from_template(template_path, config_path) is True
         migrated = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        assert migrated["symphony"]["skill_retrieval"]["enabled"] is True
+        assert migrated["symphony"]["retrieval"]["enabled"] is True
         assert migrated["gateway"]["agentos"]["wait_running_timeout_seconds"] == 60
         assert migrated["channels"]["xiaoyi"]["send_file_allowed"] is True
         assert migrated["new_option"] is True
@@ -1808,85 +1717,34 @@ existing:
         }
 
     @staticmethod
-    def test_update_skill_retrieval_preserves_existing_hidden_config(
-        monkeypatch: pytest.MonkeyPatch,
-        temp_config_file: Path,
-    ):
-        temp_config_file.write_text(
-            """
-symphony:
-  skill_retrieval:
-    enabled: false
-    build:
-      branching_factor: 96
-      root_categories: old
-      max_depth: 7
-      request_timeout_seconds: 300
-      max_workers: 4
-      max_retries: 2
-      classification_batch_limit: 24
-      discovery_seed: 42
-      postprocess_enabled: true
-      postprocess_max_passes: 1
-      postprocess_min_skills: 6
-      equivalence_enabled: true
-    retrieve:
-      top_k: 8
-      compact_codes_enabled: true
-      flatten_tree: true
-      max_exposure_depth: 12
-      max_branch_choices: 3
-      max_parallel_branches: 4
-""",
-            encoding="utf-8",
-        )
-        monkeypatch.setattr("jiuwenswarm.common.config.CONFIG_YAML_PATH", temp_config_file)
-
-        update_skill_retrieval_in_config(
-            {
-                "build": {
-                    "root_categories": "new",
-                    "max_depth": 9,
-                    "max_workers": 8,
-                    "max_retries": 3,
-                    "classification_batch_limit": 12,
-                    "discovery_seed": 7,
-                    "postprocess_enabled": False,
-                    "postprocess_max_passes": 4,
-                    "postprocess_min_skills": 10,
-                    "equivalence_enabled": False,
-                },
-                "retrieve": {
-                    "top_k": 6,
-                    "max_branch_choices": 5,
-                },
-            }
-        )
-
-        raw = yaml.safe_load(temp_config_file.read_text(encoding="utf-8"))
-        section = raw["symphony"]["skill_retrieval"]
-        assert section["build"] == {
-            "branching_factor": 96,
-            "root_categories": "new",
-            "max_depth": 9,
-            "request_timeout_seconds": 300,
-            "max_workers": 8,
-            "max_retries": 3,
-            "classification_batch_limit": 12,
-            "discovery_seed": 7,
-            "postprocess_enabled": False,
-            "postprocess_max_passes": 4,
-            "postprocess_min_skills": 10,
-            "equivalence_enabled": False,
-        }
-        assert section["retrieve"] == {
-            "top_k": 6,
-            "compact_codes_enabled": True,
-            "flatten_tree": True,
-            "max_exposure_depth": 12,
-            "max_branch_choices": 5,
-            "max_parallel_branches": 4,
-        }
+    def test_update_skill_retrieval_preserves_existing_hidden_config(monkeypatch, temp_config_file):
+        initial = {"symphony": {"retrieval": {
+            "enabled": False,
+            "index_build": {"structure": {"branching_factor": 96, "max_depth": 7},
+                            "request": {"timeout_seconds": 300, "max_concurrency": 4}},
+            "output": {"max_chars": 12000, "incremental_notice_max_chars": 4000},
+            "prompt": {"preferred_capability_ids": ["skill-creator"]},
+        }}}
+        temp_config_file.write_text(yaml.safe_dump(initial))
+        monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", temp_config_file)
+        update_skill_retrieval_in_config({
+            "index_build": {"structure": {"max_depth": 9}, "request": {"max_concurrency": 8}},
+            "output": {"max_chars": 16000},
+        })
+        saved = yaml.safe_load(temp_config_file.read_text())
+        config = symphony_config_module.load_symphony_config(saved)
+        assert config.retrieval.enabled is False
+        assert config.retrieval.index_build.structure.branching_factor == 96
+        assert config.retrieval.index_build.structure.max_depth == 9
+        assert config.retrieval.index_build.request.timeout_seconds == 300
+        assert config.retrieval.index_build.request.max_concurrency == 8
+        assert config.retrieval.output.max_chars == 16000
+        assert config.retrieval.output.incremental_notice_max_chars == 4000
+        assert config.retrieval.prompt.preferred_capability_ids == ["skill-creator"]
+        before = temp_config_file.read_text()
+        with pytest.raises(ValueError, match="symphony.retrieval.index_build.max_workers"):
+            update_skill_retrieval_in_config({"index_build": {"max_workers": 3}})
+        assert temp_config_file.read_text() == before
 
 
 class TestTeamModesConfig:

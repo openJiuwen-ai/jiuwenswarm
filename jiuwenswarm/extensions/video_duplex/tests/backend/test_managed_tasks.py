@@ -405,11 +405,12 @@ async def test_cancelled_invocation_before_first_model_is_observed(tasks, monkey
     with pytest.raises(asyncio.CancelledError):
         async with module.bind_task_execution(request, adapter, {}):
             raise asyncio.CancelledError()
+    await until(lambda: service.store.read(task["id"])["execution_settled"])
     stopped = service.store.read(task["id"])
     assert stopped["execution_settled"] and stopped["execution_cancelled"]
 
 
-async def test_cancelled_invocation_captured_as_current_task_settles_inline(
+async def test_cancelled_invocation_captured_as_current_task_settles_after_unwind(
     tasks, monkeypatch
 ):
     from jiuwenswarm.server.runtime.video_task import execution as module
@@ -452,6 +453,7 @@ async def test_cancelled_invocation_captured_as_current_task_settles_inline(
             await task_checkpoint(rail, ctx, "before_model")
             raise asyncio.CancelledError()
 
+    await until(lambda: service.store.read(task["id"])["execution_settled"])
     stopped = service.store.read(task["id"])
     assert stopped["execution_settled"] and stopped["execution_cancelled"]
 
@@ -502,6 +504,7 @@ async def test_cancelled_invocation_ignores_stale_scheduler_handle(tasks, monkey
                 await task_checkpoint(rail, ctx, "before_model")
                 raise asyncio.CancelledError()
 
+        await until(lambda: service.store.read(task["id"])["execution_settled"])
         stopped = service.store.read(task["id"])
         assert stopped["execution_settled"] and stopped["execution_cancelled"]
         assert not stale.done()
@@ -1310,14 +1313,41 @@ async def test_recovery_dispatches_only_opened_owner_and_conversation(tasks):
 
 
 @pytest.mark.asyncio
-async def test_recovery_does_not_probe_or_change_other_conversations(tmp_path, monkeypatch):
+@pytest.mark.parametrize("first_failure", [None, "disconnect", "rejected", "invalid"])
+async def test_recovery_does_not_probe_or_change_other_conversations(tmp_path, monkeypatch, first_failure):
     from unittest.mock import AsyncMock
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import service as module
-
-    monkeypatch.setattr(module, "RECONCILE_INTERVAL", 0.01)
-
+    from jiuwenswarm.extensions.video_duplex.backend.task_adapter import AgentTaskExecutor
     store = TaskStore(tmp_path / "scoped-running.sqlite")
-    executor = SimpleNamespace(reconcile=AsyncMock(return_value={"status": "running"}))
+    failures = [] if first_failure is None else [
+        ConnectionError("temporary disconnect") if first_failure == "disconnect" else
+        SimpleNamespace(ok=first_failure == "invalid", payload={"error": "temporarily unavailable"}),
+    ]
+    executor = AgentTaskExecutor(None, store, None)
+    executor.reconciliation_ready = AsyncMock(return_value=True)
+    finished = False
+
+    async def query(env):
+        from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+        request = e2a_to_agent_request(env)
+        assert request.req_method in {ReqMethod.SESSION_GET_METADATA, ReqMethod.HISTORY_GET}
+        if failures:
+            failure = failures.pop()
+            if isinstance(failure, Exception):
+                raise failure
+            return failure
+        if request.req_method == ReqMethod.HISTORY_GET:
+            return SimpleNamespace(ok=True, payload={"messages": [{"event_type": "chat.final",
+                "request_id": current["request_id"], "content": "finished"}], "total_pages": 1})
+        task = current if request.session_id == current["core_session_id"] else other
+        return SimpleNamespace(ok=True, payload={"user_id": "alice", "runtime": {"executions": [{
+            "execution_id": task["id"], "request_id": task["request_id"],
+            "state": "succeeded" if finished and task["id"] == current["id"] else "running",
+        }]}})
+
+    expected_queries = 1 + len(failures)
+    from jiuwenswarm.common.schema.message import ReqMethod
+    executor.client = SimpleNamespace(send_request=AsyncMock(side_effect=query))
+    queries = executor.client.send_request
     service = TaskService(store, executor)
     current = service._new("alice", "current", "running", {})
     other = service._new("alice", "other", "running", {})
@@ -1328,15 +1358,25 @@ async def test_recovery_does_not_probe_or_change_other_conversations(tmp_path, m
             store.put(db, task)
     try:
         service.snapshot("alice", "current")
-        await until(lambda: executor.reconcile.await_count == 1)
-        assert executor.reconcile.await_args.args[0]["id"] == current["id"]
+        await until(lambda: queries.await_count >= 1)
+        await service.refresh("alice", "current")
+        await until(lambda: store.read(current["id"])["status"] == "running")
+        assert queries.await_count >= expected_queries
         assert store.read(current["id"])["status"] == "running"
         assert store.read(other["id"])["status"] == "running"
         service.snapshot("alice", "current")
-        await asyncio.sleep(0.04)
-        assert executor.reconcile.await_count == 1
+        await service.refresh("alice", "current")
+        from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+        assert all(e2a_to_agent_request(call.args[0]).session_id == current["core_session_id"]
+                   for call in queries.await_args_list)
+        finished = True
+        await service.refresh("alice", "current")
+        await until(lambda: store.read(current["id"])["status"] == "completed")
+        assert store.read(current["id"])["execution_settled"]
+        assert store.read(current["id"])["result"] == {"answer": "finished"}
         service.snapshot("alice", "other")
-        await until(lambda: executor.reconcile.await_count == 2)
+        await until(lambda: any(e2a_to_agent_request(call.args[0]).session_id == other["core_session_id"]
+                                for call in queries.await_args_list))
         assert store.read(other["id"])["status"] == "running"
     finally:
         await service.close()
@@ -1419,10 +1459,8 @@ async def test_unopened_scope_reserves_resources_without_consuming_capacity(task
 async def test_lost_settlement_push_is_recovered_by_read_only_core_probe(tmp_path, monkeypatch, stopping):
     from unittest.mock import AsyncMock
     from jiuwenswarm.extensions.video_duplex.backend import task_adapter
-    from jiuwenswarm.extensions.video_duplex.backend.tasks import service as module
-
-    monkeypatch.setattr(module, "RECONCILE_INTERVAL", 0.01)
-    monkeypatch.setattr(task_adapter, "task_agent_query", AsyncMock(return_value={"files": []}))
+    from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+    from jiuwenswarm.common.schema.message import ReqMethod
     store = TaskStore(tmp_path / "lost-settlement.sqlite")
     finish = asyncio.Event()
     calls, probes, stops = [], [], []
@@ -1437,30 +1475,43 @@ async def test_lost_settlement_push_is_recovered_by_read_only_core_probe(tmp_pat
                 await asyncio.Event().wait()
             return {"answer": task["instruction"]}
 
-    async def core_reply(task, *, probe):
-        if probe:
-            probes.append(task["request_id"])
+    async def core_reply(env):
+        request = e2a_to_agent_request(env)
+        if request.req_method == ReqMethod.SESSION_GET_METADATA:
+            probes.append(first["request_id"])
             if len(probes) == 1:
                 raise ConnectionError("Transient probe failure")
-        else:
-            stops.append(task["request_id"])
-        return SimpleNamespace(ok=True, payload={"success": True, "managed_task_settled": finish.is_set()})
+            return SimpleNamespace(ok=True, payload={"user_id": "alice", "runtime": {"executions": [{
+                "execution_id": first["id"], "request_id": first["request_id"],
+                "state": ("cancelled" if stopping else "succeeded") if finish.is_set() else "running",
+            }]}})
+        if request.req_method == ReqMethod.CHAT_CANCEL:
+            assert request.channel_id == "web"
+            assert request.params["target_request_id"] == first["request_id"]
+            stops.append(request.params["target_request_id"])
+            return SimpleNamespace(ok=True, payload={"success": True, "stop_confirmed": False})
+        assert request.req_method == ReqMethod.VOICE_TASK_FILES
+        return SimpleNamespace(ok=True, payload={"files": []})
 
-    executor = MissingPushExecutor(None, store, None)
+    executor = MissingPushExecutor(SimpleNamespace(send_request=core_reply), store, None)
     monkeypatch.setattr(executor, "reconciliation_ready", AsyncMock(return_value=True))
-    monkeypatch.setattr(executor, "_send_cancel_request", core_reply)
     service = TaskService(store, executor)
     try:
         first = submit(service, "first")
         second = submit(service, "second")
         await until(lambda: calls)
+        await until(lambda: store.read(first["id"])["execution_bound"])
         if stopping:
             await service.cancel("alice", "conversation", first["id"], "stop")
-        await until(lambda: len(probes) >= 2)
+            await until(lambda: stops)
+        await service.refresh("alice", "conversation")
+        await service.refresh("alice", "conversation")
+        assert len(probes) >= 2
         assert not store.read(first["id"])["execution_settled"]
         assert calls == [first["id"]]
         assert store.read(second["id"])["status"] == "queued"
         finish.set()
+        await service.refresh("alice", "conversation")
         expected = "cancelled" if stopping else "completed"
         await until(lambda: store.read(first["id"])["status"] == expected)
         await until(lambda: store.read(second["id"])["status"] == "completed")

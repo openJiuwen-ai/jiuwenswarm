@@ -99,6 +99,7 @@ async def test_vendor_reset_survives_list_and_detail(catalog_state, monkeypatch,
 
     initial = catalog_state["models"]["defaults"][0]
     client = initial["model_client_config"]
+    initial["model_config_obj"] = {"max_tokens": 16 * 1024}
     identity = initial if legacy else client
     identity.update({"vendor_key": "deepseek", "plan": "custom_api"})
     client["endpoint_profile"] = "deepseek"
@@ -126,6 +127,7 @@ async def test_vendor_reset_survives_list_and_detail(catalog_state, monkeypatch,
     assert response["ok"]
     row = response["payload"]["models"][0]
     assert all(row[key] == "" for key in metadata)
+    assert row["max_tokens"] == 16 * 1024
 
 
 @pytest.mark.parametrize("level", ["on", "off", "high", ""])
@@ -146,6 +148,22 @@ def test_reasoning_resource_round_trip_and_reset(catalog_state, level):
     catalog_state["models"]["defaults"][0] = loaded
     detail = ModelCatalog(catalog_state).get_public_model_detail("mdl_a")
     assert detail["model_config_obj"]["reasoning_level"] == level
+
+
+def test_output_tokens_resource_round_trip_and_unlimited_clear(catalog_state):
+    catalog_state["models"]["defaults"][0]["model_config_obj"] = {"max_tokens": 32 * 1024}
+
+    saved = config_module.upsert_model_resource({
+        "model_id": "mdl_a", "model_config_obj": {"max_tokens": 16 * 1024},
+    })
+    assert saved["model_config_obj"]["max_tokens"] == 16 * 1024
+
+    saved = config_module.upsert_model_resource({
+        "model_id": "mdl_a", "model_config_obj": {"max_tokens": None},
+    })
+    assert "max_tokens" not in saved["model_config_obj"]
+    detail = ModelCatalog(catalog_state).get_public_model_detail("mdl_a")
+    assert "max_tokens" not in detail["model_config_obj"]
 
 
 @pytest.mark.parametrize("level, expected", [(True, "on"), (False, "off")])

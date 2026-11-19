@@ -2,6 +2,7 @@
 
 """HTTP regression tests for the enterprise User Web proxy."""
 
+import os
 import threading
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -114,9 +115,26 @@ def test_enterprise_proxy_closes_truncated_sse_after_the_last_complete_event(pro
     assert response.content == b"data: ok\n\n"
 
 
+def test_enterprise_proxy_delegates_to_user_backend(proxy, monkeypatch):
+    client, requests = proxy
+    monkeypatch.setenv("USER_WEB_BACKEND_TARGET", os.environ["USER_WEB_IDP_TARGET"])
+    assert client.get("/idp/v1/auth/me").text == "/idp/v1/auth/me"
+    assert client.get("/manager-api/v1/user-console/agent-contexts?view=all").text == (
+        "/api/v1/user-console/agent-contexts?view=all"
+    )
+    assert client.get("/gateway-api/v1/chat").text == "/gateway-api/v1/chat"
+    assert client.get("/manager-api/v1/authz/me").status_code == 404
+    assert [path for path, _ in requests] == [
+        "/idp/v1/auth/me",
+        "/api/v1/user-console/agent-contexts?view=all",
+        "/gateway-api/v1/chat",
+    ]
+
+
 def test_personal_proxy_forwards_api_and_options_to_the_original_upstream(proxy, monkeypatch):
     client, requests = proxy
     monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
+    monkeypatch.setenv("USER_WEB_BACKEND_TARGET", "http://127.0.0.1:1")
     assert client.get("/api/v1/chat").text == "/api/v1/chat"
     assert client.options("/api/v1/chat").text == "/api/v1/chat"
     assert [path for path, _ in requests] == ["/api/v1/chat", "/api/v1/chat"]

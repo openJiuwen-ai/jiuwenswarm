@@ -9,7 +9,7 @@ import { strFromU8, strToU8, unzipSync, zipSync } from 'fflate';
 
 import { exportSlide, importSlides, type FakeDeck, type FakeShapeState, type FakeSlideState } from './fakePowerPoint';
 import { base64Of, bytesOf } from './presentationPackage';
-import type { WpsObject } from './wpsPowerPoint';
+import type { WpsObject } from './wpsDocument';
 
 type Bag = Record<string, unknown>;
 

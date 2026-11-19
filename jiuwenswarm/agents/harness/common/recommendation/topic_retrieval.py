@@ -19,6 +19,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_terminal import (
     LearnedComponentBinding,
     LearnedComponentReceipt,
 )
+from .topic_primitives import nonempty as _nonempty, plain_int as _plain_int, valid_scope as _valid_scope
 
 PA_RETRIEVER_COMPONENT_ID = "pa_bridge_fixed_retriever"
 PA_API_FALLBACK_PROVIDER_ID = "api-ranker-fallback"
@@ -46,25 +47,6 @@ GLOBAL_FIXED_CATEGORIES = frozenset(
     {"adjacent_explanation", "broad_timely_practical"}
 )
 _IGNORED_PROVIDER_TEXT_FIELDS = frozenset({"title", "text", "prompt"})
-
-
-def _plain_int(value: Any) -> bool:
-    # bool is an int subclass; a JSON boolean is never a version or a count.
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
-def _nonempty(value: Any) -> bool:
-    return isinstance(value, str) and bool(value.strip())
-
-
-def _valid_scope(value: Any) -> bool:
-    return value == "global_new_chat" or (
-        isinstance(value, str)
-        and value.startswith("project:")
-        and bool(value.removeprefix("project:").strip())
-        and value.removeprefix("project:")
-        == value.removeprefix("project:").strip()
-    )
 
 
 class TerminalRetrievalContractError(ValueError):
@@ -243,23 +225,6 @@ class PassiveStarterExample:
         ):
             raise TerminalRetrievalContractError("invalid_passive_starter_example")
 
-    def to_training_example(
-        self,
-        *,
-        positive_label: bool,
-        event_time: float,
-    ) -> PATrainingExample:
-        return PATrainingExample(
-            user_state_snapshot_id=self.user_state_snapshot_id,
-            query_text_locator=None,
-            query_source_starter_id=self.starter_id,
-            domain="passive",
-            positive_label=positive_label,
-            event_time=event_time,
-            context_scope=self.context_scope,
-            source_artifact_id=self.artifact_id,
-        )
-
     @property
     def artifact_id(self) -> str:
         return f"passive-starter:{self.exposure_id}:{self.card_revision_id}"
@@ -392,23 +357,6 @@ class ActiveExpressionExample:
             _rejected4
         ):
             raise TerminalRetrievalContractError("invalid_active_expression_example")
-
-    def to_training_example(
-        self,
-        *,
-        positive_label: bool,
-        event_time: float,
-    ) -> PATrainingExample:
-        return PATrainingExample(
-            user_state_snapshot_id=self.user_state_snapshot_id,
-            query_text_locator=self.source_locator,
-            query_source_starter_id=None,
-            domain="active",
-            positive_label=positive_label,
-            event_time=event_time,
-            context_scope=self.context_scope,
-            source_artifact_id=self.artifact_id,
-        )
 
     @property
     def artifact_id(self) -> str:

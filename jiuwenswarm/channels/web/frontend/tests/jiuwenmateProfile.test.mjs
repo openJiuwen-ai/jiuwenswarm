@@ -2050,7 +2050,7 @@ async function mountDashboard(extra = {}) {
 }
 
 test('employee cards reveal the full description only when it is clipped', async () => {
-  const fullDescription = '整理资料、撰写文档、总结讨论，并将结论整理为可跟进的行动清单。';
+  const fullDescription = 'W'.repeat(200);
   const view = await mountDashboard({
     colleagues: [{ ...dashboardProps.colleagues[0], description: fullDescription }],
   });

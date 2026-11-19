@@ -69,7 +69,7 @@ def test_agent_symphony_capture_enables_observability_without_manual_switch(
         lambda: {
             "react": {"evolution": {"skill_evolution": False}},
             "observability": {"agent": {"enabled": False}},
-            "symphony": {"enabled": True, "evolution": {"enabled": True}},
+            "symphony": {"orchestration": {"enabled": True, "experience": {"enabled": True}}},
         },
     )
     monkeypatch.setattr(
@@ -152,7 +152,7 @@ def test_team_symphony_capture_enables_observability_without_manual_switch(
         lambda: {
             "react": {"evolution": {"skill_evolution": False}},
             "observability": {"team": {"enabled": False}},
-            "symphony": {"enabled": True, "evolution": {"enabled": True}},
+            "symphony": {"orchestration": {"enabled": True, "experience": {"enabled": True}}},
         },
     )
     monkeypatch.setattr(

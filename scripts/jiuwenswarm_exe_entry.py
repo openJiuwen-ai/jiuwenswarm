@@ -138,6 +138,7 @@ _DESKTOP_RUN_GATEWAY = "--desktop-run-gateway"
 _DESKTOP_PREPARE_RUNTIME_WORKSPACE = "--desktop-prepare-runtime-workspace"
 _DESKTOP_INSTALL_EXTERNAL_CLI = "--desktop-install-external-cli"
 _DESKTOP_RESET_EXTERNAL_CLI_CONFIG = "--desktop-reset-external-cli-config"
+_DESKTOP_REMOVE_OFFICE_ADDINS = "--desktop-remove-office-addins"
 
 # 子进程 flag 集合，这些模式下需要将错误写入日志文件，
 # 因为 console=False 的 PyInstaller exe 在 Windows 上无法通过 stderr 捕获错误。
@@ -170,6 +171,7 @@ _CHILD_FLAGS = {
     _DESKTOP_PREPARE_RUNTIME_WORKSPACE,
     _DESKTOP_INSTALL_EXTERNAL_CLI,
     _DESKTOP_RESET_EXTERNAL_CLI_CONFIG,
+    _DESKTOP_REMOVE_OFFICE_ADDINS,
     _DESKTOP_INSTALL_UPDATE,
 }
 
@@ -198,6 +200,7 @@ def _should_hold_windows_app_mutex() -> bool:
         and _DESKTOP_INSTALL_UPDATE not in sys.argv
         and _DESKTOP_INSTALL_EXTERNAL_CLI not in sys.argv
         and _DESKTOP_RESET_EXTERNAL_CLI_CONFIG not in sys.argv
+        and _DESKTOP_REMOVE_OFFICE_ADDINS not in sys.argv
     )
 
 
@@ -579,6 +582,14 @@ def _dispatch() -> int | None:
         from jiuwenswarm.common.config import reset_external_cli_agents_in_config
 
         reset_external_cli_agents_in_config()
+        return 0
+    if _pop_flag(_DESKTOP_REMOVE_OFFICE_ADDINS):
+        if len(sys.argv) != 1:
+            raise ValueError("office add-in removal does not accept arguments")
+        from jiuwenswarm.channels.desktop.office_addins import remove_all
+        from jiuwenswarm.common.utils import get_user_workspace_dir
+
+        remove_all(get_user_workspace_dir())
         return 0
     if _pop_flag("--desktop-restore-upgrade-config"):
         if len(sys.argv) != 1:

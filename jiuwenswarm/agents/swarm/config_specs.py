@@ -419,15 +419,8 @@ def _skill_mode(config: dict[str, Any]) -> str:
 
 def _retrieval_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return whether agentic skill retrieval is enabled for this config."""
-    env_value = os.getenv("SYMPHONY_SKILL_RETRIEVAL_ENABLED")
-    if env_value is not None and env_value.strip():
-        return env_value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
-
-    symphony = _config_section(config or {}, "symphony")
-    retrieval = symphony.get("skill_retrieval")
-    if isinstance(retrieval, dict):
-        return bool(retrieval.get("enabled", False))
-    return False
+    from jiuwenswarm.common.symphony_config import load_symphony_config
+    return load_symphony_config(config or {}).retrieval.enabled
 
 
 def _team_skill_use_rail_spec(config: dict[str, Any], role: str) -> RailSpec:
@@ -1018,6 +1011,7 @@ def build_member_deep_agent_spec(
     *,
     enable_permissions: bool = False,
     mcp_configs: list[McpServerConfig] | None = None,
+    disable_code_todo_reminder: bool = False,
 ) -> DeepAgentSpec:
     """Fold the member capability specs onto *base_spec*.
 
@@ -1035,6 +1029,7 @@ def build_member_deep_agent_spec(
         base_spec: The base member ``DeepAgentSpec`` to extend.
         enable_permissions: Effective team permission toggle from TeamAgentSpec.
         mcp_configs: MCP server configs inherited from ``config.yaml``.
+        disable_code_todo_reminder: Suppress periodic Todo reminders for scheduled Code agents.
 
     Returns:
         A new ``DeepAgentSpec`` with the capability specs applied.
@@ -1048,6 +1043,12 @@ def build_member_deep_agent_spec(
 
     merged_rails = list(base_spec.rails or [])
     merged_rails.extend(rails_specs)
+    if disable_code_todo_reminder and _is_code_mode(mode):
+        merged_rails = [
+            rail.model_copy(update={"params": {**rail.params, "enable_task_reminders": False}})
+            if rail.type == registry.CODE_TASK_PLANNING else rail
+            for rail in merged_rails
+        ]
     merged_tools = list(base_spec.tools or [])
     merged_tools.extend(tool_specs)
     merged_mcps = _merge_mcp_configs(base_spec.mcps, mcp_configs)

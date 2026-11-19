@@ -35,7 +35,7 @@ describe('GatewayClient', () => {
     FakeWebSocket.instances = [];
     vi.stubGlobal('WebSocket', FakeWebSocket);
     vi.stubGlobal('window', {
-      location: { protocol: 'https:', host: 'localhost:3001' },
+      location: { protocol: 'https:', host: 'localhost:3001', search: '' },
       localStorage: { getItem: () => 'office-test-owner' },
       addEventListener: vi.fn(),
     });
@@ -70,6 +70,15 @@ describe('GatewayClient', () => {
     expect(listener).toHaveBeenCalledWith({ event: 'chat.client_tool_request',
       payload: { session_id: 'session-a', request_id: 'call-a' } });
     client.disconnect();
+  });
+
+  it.each([
+    ['', 'office-test-owner'],
+    ['?u=office-installed&_host_Info=PowerPoint', 'office-installed'],
+  ])('connects as the user in the pane URL %j, else the stored one', (search, userId) => {
+    window.location.search = search;
+    void new GatewayClient('office_word').connect();
+    expect(FakeWebSocket.instances[0].url).toBe(`wss://localhost:3001/ws?app_id=office_word&user_id=${userId}`);
   });
 
   it('answers a request with its payload, and a refusal with the code of the frame', async () => {

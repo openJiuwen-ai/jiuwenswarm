@@ -23,6 +23,7 @@ import {
   type NamedAsset,
 } from '../features/sessionAssets/sessionAssets';
 import { useEffect, useRef, useCallback, useState } from 'react';
+import { registerApplicationQuestionController } from '../applicationPlugins/taskProgressStore';
 import { toast } from '../components/ui/Toast/toastStore';
 import { isSkillPackagePrompt } from '../components/InteractionSlot/promptRouting';
 import { useTranslation } from 'react-i18next';
@@ -2471,6 +2472,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(inputMode ? { input_mode: inputMode } : {}),
           ...resolvePlanEntryPayload(sessionId, outgoingMode),
           ...(requestMetadata ? { metadata: requestMetadata } : {}),
+          ...(outgoingMode.startsWith('team') && getSessionWorkMode(sessionId) === 'code' && sessionRt?.independentGitIdentity !== undefined
+            ? { execution_settings: { independent_git_identity: sessionRt.independentGitIdentity } }
+            : {}),
           enable_swarmflow: Boolean(sessionRt?.enableSwarmflow),
           ...(sessionRt?.enableSwarmflow && sessionRt.swarmflowBudget != null
             ? { swarmflow_budget: sessionRt.swarmflowBudget }
@@ -3107,7 +3111,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
                 ? 'skillPackagePrompt.nameConflict'
                 : 'skillPackagePrompt.createFailed'),
               variant: 'error',
-              wide: true,
               duration: 8,
               testId: 'interaction-slot-skill-package-error',
             });
@@ -3141,7 +3144,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             id: `skill-package-answer-${sessionId}-${requestId}`,
             content: t('skillPackagePrompt.resultUnavailable'),
             variant: 'error',
-            wide: true,
             duration: 8,
             testId: 'interaction-slot-skill-package-error',
           });
@@ -3152,6 +3154,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     },
     [clearFailedAgentGroupBinding, markPendingAgentGroupBinding, reconcileAgentGroupBinding, request, t]
   );
+
+  useEffect(() => registerApplicationQuestionController(sendUserAnswer), [sendUserAnswer]);
 
   const respondActivate = useCallback(
     async (sessionId: string, interactionId: string, action: 'accept' | 'reject', feedback?: string) => {

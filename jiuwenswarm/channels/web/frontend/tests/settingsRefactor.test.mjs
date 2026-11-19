@@ -1100,6 +1100,7 @@ test('settings contract rejects unknown keys and normalizes supported values', (
       api_base: 'https://example.test',
       api_key: 'k',
       model_provider: 'OpenAI',
+      max_tokens: 32 * 1024,
       endpoint_profile: 'openrouter',
     }),
     {
@@ -1108,7 +1109,25 @@ test('settings contract rejects unknown keys and normalizes supported values', (
       model: 'm',
       model_provider: 'OpenAI',
       reasoning_level: undefined,
+      max_tokens: 32 * 1024,
       endpoint_profile: 'openrouter',
+    },
+  );
+  assert.deepEqual(
+    buildModelValidationPayload({
+      model_name: 'm',
+      api_base: 'https://example.test',
+      api_key: 'k',
+      model_provider: 'OpenAI',
+      max_tokens: null,
+    }),
+    {
+      api_base: 'https://example.test',
+      api_key: 'k',
+      model: 'm',
+      model_provider: 'OpenAI',
+      reasoning_level: undefined,
+      max_tokens: null,
     },
   );
   assert.equal(normalizePermissionLevel(' ASK '), 'ask');
@@ -1167,7 +1186,9 @@ test('every visible Settings control maps to an exact persistence field or RPC',
   assert.deepEqual(
     [...agentVisible].sort(),
     // These fields are persisted internally and have no independent Settings control.
-    [...contractByCategory('agent')].filter((key) => !['github_token', 'skill_retrieval_index_enabled'].includes(key) && !/^(vision|audio|video|video_gen|visual_gen)_/.test(key)).sort(),
+    [...contractByCategory('agent')]
+      .filter((key) => key !== 'github_token' && !/^(vision|audio|video|video_gen|visual_gen)_/.test(key))
+      .sort(),
   );
 
   const modelVisible = new Set(
@@ -1191,6 +1212,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
       'team_task_verification_enabled',
       'team_member_messaging_enabled',
       'team_member_subtasks_enabled',
+      'team_code_todo_reminder_disabled',
       'progressive_tool_optimize',
     ].sort(),
   );
@@ -1224,6 +1246,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'symphony_evolution_enabled',
     'task_asr_enabled',
     'task_full_duplex_enabled',
+    'team_code_todo_reminder_disabled',
     'team_member_messaging_enabled',
     'team_member_subtasks_enabled',
     'team_organization_ui_enabled',
@@ -2156,4 +2179,16 @@ test('A4P settings use dedicated RPCs and are absent from generic persistence', 
   assert.match(a4pSettings, /'a4p.config.get'/);
   assert.match(a4pSettings, /'a4p.config.update'/);
   assert.doesNotMatch(a4pSettings, /source\.save|useSettingsSource/);
+});
+
+
+test('Symphony settings save current nested configuration fields', () => {
+  const retrieval = SETTINGS_CONFIG_FIELDS.find((field) => field.key === 'skill_retrieval_enabled');
+  const experience = SETTINGS_CONFIG_FIELDS.find((field) => field.key === 'symphony_evolution_enabled');
+  assert.equal(retrieval.path, 'symphony.retrieval.enabled');
+  assert.equal(experience.path, 'symphony.orchestration.experience.enabled');
+  assert.equal(SETTINGS_CONFIG_FIELDS.some((field) => field.key === 'skill_retrieval_index_enabled'), false);
+  const payload = buildConfigSavePayload({ skill_retrieval_enabled: 'true', symphony_evolution_enabled: 'false' });
+  assert.equal(payload.config.skill_retrieval_enabled, 'true');
+  assert.equal(payload.config.symphony_evolution_enabled, 'false');
 });

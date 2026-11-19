@@ -2217,6 +2217,7 @@ class TeamManager:
             assembly is fully declarative, no imperative post-processing).
         """
         from jiuwenswarm.agents.swarm import enrich_team_spec_for_swarm
+        from jiuwenswarm.runtime.app_role import is_app_role_team
 
         # Callers pass the same snapshot single-agent chat already resolved
         # (enterprise model templates included). Falling back to raw
@@ -2224,7 +2225,11 @@ class TeamManager:
         # Team model validation then rejects the blank provider.
         if config_base is None:
             config_base = get_config()
-        self._team_evolution_enabled[session_id] = get_skill_evolution_enabled(config_base)
+        # Plain positional form: same contract as the other readers in this
+        # module, so session-scoped doubles of get_session_metadata keep working.
+        metadata = get_session_metadata(session_id)
+        npc_team = is_app_role_team(metadata)
+        self._team_evolution_enabled[session_id] = not npc_team and get_skill_evolution_enabled(config_base)
         await self._ensure_postgresql_for_leader(config_base)
         spec, has_binding = self._load_session_team_spec(
             session_id,
@@ -2235,6 +2240,16 @@ class TeamManager:
         )
         if not has_binding:
             self._apply_session_scoped_team_name(spec, session_id=session_id)
+        if npc_team:
+            from jiuwenswarm.agents.swarm.assembly import build_app_role_team_spec
+
+            return build_app_role_team_spec(spec, metadata)
+        if dispatch_mode is not None:
+            spec.dispatch_mode = dispatch_mode
+            if dispatch_mode != "scheduled":
+                spec.enable_task_verification = False
+                spec.enable_member_messaging = False
+                spec.max_subtask_depth = 0
         self.apply_team_plan_mode(spec, request_metadata=request_metadata)
         enrich_team_spec_for_swarm(
             spec,
@@ -2267,12 +2282,6 @@ class TeamManager:
                     spec.worktree = spec.worktree.model_copy(update={"enabled": True})
             elif worktree_flag is False:
                 spec.worktree = None
-        if dispatch_mode is not None:
-            spec.dispatch_mode = dispatch_mode
-            if dispatch_mode != "scheduled":
-                spec.enable_task_verification = False
-                spec.enable_member_messaging = False
-                spec.max_subtask_depth = 0
         if bootstrap_mode is not None:
             spec.bootstrap_mode = bootstrap_mode
         if spec.bootstrap_mode == "framework" and spec.dispatch_mode != "scheduled":

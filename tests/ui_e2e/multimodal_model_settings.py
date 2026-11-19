@@ -88,8 +88,20 @@ async def verify(base_url: str, data_dir: Path, output: Path, browser_executable
             await expect(metadata("display_name")).to_have_value(name)
             await metadata("display_name").fill(name)
 
-        async def save():
+        async def save(activation_tools=None, enabled=True):
+            before = config_path.read_bytes(), config_path.with_name(".env").read_bytes()
             await editor().locator('[data-testid$="-save-btn"]').click()
+            if activation_tools:
+                confirmation = page.get_by_role("dialog").last
+                await expect(confirmation).to_contain_text("开启对应工具")
+                labels = {"vision": "图片处理", "audio": "音频处理", "video": "视频理解",
+                          "visual_gen": "图像生成", "video_gen": "视频生成"}
+                for tool in activation_tools:
+                    await expect(page.get_by_test_id("settings-multimodal-activation-tools")).to_contain_text(labels[tool])
+                assert (config_path.read_bytes(), config_path.with_name(".env").read_bytes()) == before
+                await expect(confirmation.get_by_role("checkbox")).to_have_count(0)
+                await shot(f"activation-{'-'.join(activation_tools)}-{'on' if enabled else 'off'}.png")
+                await confirmation.get_by_role("button", name="开启并使用当前模型" if enabled else "保持关闭", exact=True).click()
             await expect(page.get_by_test_id("settings-multimodal-model-dialog")).to_have_count(0)
 
         async def edit_model(model_id):
@@ -147,15 +159,23 @@ async def verify(base_url: str, data_dir: Path, output: Path, browser_executable
             await page.get_by_test_id("settings-multimodal-add-btn").click()
             await fill("验证理解模型 B", ["vision", "video"])
             await shot("02-understanding-form.png")
-            await save()
+            before = state()
+            await editor().locator('[data-testid$="-save-btn"]').click()
+            await expect(page.get_by_test_id("settings-multimodal-activation-tools")).to_contain_text("视频理解")
+            await page.get_by_role("dialog").last.get_by_role("button", name="关闭", exact=True).click()
+            await expect(page.get_by_test_id("settings-multimodal-model-dialog")).to_be_visible()
+            assert state() == before
+            await save(["video"], enabled=False)
             current = state()
             b_id = next(m["model_id"] for m in current["models"] if m["display_name"] == "验证理解模型 B")
             assert current["tools"]["vision"]["model_id"] == legacy_id
             assert current["tools"]["audio"] == {"model_id": legacy_id, "enabled": False}
-            assert current["tools"]["video"] == {"model_id": b_id, "enabled": True}
-            record("create binds/enables only unbound capabilities and preserves existing selections")
+            assert current["tools"]["video"] == {"model_id": b_id, "enabled": False}
+            record("dismiss cancels save; keep off binds the unbound tool without enabling it")
 
             await nav("agent")
+            await expect(toggle("video")).to_have_attribute("aria-checked", "false")
+            await toggle("video").click()
             await expect(toggle("video")).to_have_attribute("aria-checked", "true")
             await page.locator('.settings-section').filter(has=toggle("vision")).evaluate('(element) => element.scrollIntoView({block: "start"})')
             await shot("03-tool-selections.png")
@@ -172,9 +192,9 @@ async def verify(base_url: str, data_dir: Path, output: Path, browser_executable
             await models()
             await edit_model(b_id)
             await capabilities(["vision", "audio", "video"])
-            await save()
+            await save(["audio"], enabled=False)
             assert state()["tools"]["audio"] == {"model_id": legacy_id, "enabled": False}
-            record("editing adds a candidate without overriding an already bound disabled tool")
+            record("editing asks about the added disabled capability and keep off preserves its old binding")
 
             await edit_model(b_id)
             await capabilities(["audio", "video"])
@@ -213,7 +233,7 @@ async def verify(base_url: str, data_dir: Path, output: Path, browser_executable
             await expect(page.get_by_test_id("settings-multimodal-capabilities-select")).to_contain_text("图像生成")
             await fill("验证生成模型 G", ["visual_gen", "video_gen"], "generation")
             await shot("06-generation-form.png")
-            await save()
+            await save(["visual_gen", "video_gen"])
             current = state()
             g_id = next(m["model_id"] for m in current["models"] if m["display_name"] == "验证生成模型 G")
             assert current["tools"]["visual_gen"] == {"model_id": g_id, "enabled": True}
@@ -258,26 +278,28 @@ async def verify(base_url: str, data_dir: Path, output: Path, browser_executable
             assert current["tools"]["video_gen"] == {"model_id": None, "enabled": False}
             record("generation deletion independently selects fallback or clears and disables each tool")
 
-            await page.get_by_test_id("settings-multimodal-add-btn").click()
-            await metadata("purpose").click()
-            await page.locator('[data-testid="ui-select-option"][data-variant="generation"]').click()
-            await capabilities(["video_gen"])
+            await nav("agent")
+            await toggle("video_gen").click()
+            await expect(metadata("purpose")).to_contain_text("多模态生成")
+            await expect(page.get_by_test_id("settings-multimodal-capabilities-select")).to_contain_text("视频生成")
             await page.get_by_test_id("settings-model-provider-select-trigger").click()
             await page.locator('[data-testid="settings-model-provider-select-option"][data-variant="custom_api:vllm-omni"]').click()
             await editor().locator('[data-variant="api_base"] input').fill("http://127.0.0.1:8000")
             await metadata("display_name").fill("vLLM Omni 本地")
             await shot("10-optional-generation-credentials.png")
             await save()
+            await expect(toggle("video_gen")).to_have_attribute("aria-checked", "true")
             current = state()
             omni = next(m for m in current["models"] if m["display_name"] == "vLLM Omni 本地")
             assert omni["connection"]["api_key"] == "" and omni["connection"]["model_name"] == ""
             assert current["tools"]["video_gen"] == {"model_id": omni["model_id"], "enabled": True}
-            record("vLLM Omni preserves optional key/model validation and automatically binds an unbound tool")
+            record("unchanged switch shortcut enables and binds the tool directly with optional vLLM Omni credentials")
 
+            await models()
             await edit_model(b_id)
             await capabilities(["vision", "audio", "video"])
             await editor().locator('[data-variant="api_base"] input').fill("https://updated.example.invalid/v1")
-            await save()
+            await save(["vision"])
             current = state()
             assert current["tools"]["vision"] == {"model_id": b_id, "enabled": True}
             assert not current["tools"]["audio"]["enabled"]
@@ -375,7 +397,11 @@ async def verify_exceptions(base_url: str, data_dir: Path, output: Path, browser
                      "capabilities": ["vision"], "connection": {"provider": "OpenAI", "protocol": "openai",
                      "api_base": "http://127.0.0.1:9/v1", "api_key": "verification", "model_name": "duplicate-model",
                      "context_window_tokens": 512}}
-            result = await rpc(ws, "multimodal.models.upsert", {"mode": "create", "model": model})
+            activation_tools = [] if snapshot["tools"]["vision"]["enabled"] else ["vision"]
+            result = await rpc(ws, "multimodal.models.upsert", {
+                "mode": "create", "model": model,
+                "tool_activation": {"tools": activation_tools, "enabled": False},
+            })
             snapshot = result["snapshot"]
             duplicates.append(model["model_id"])
 

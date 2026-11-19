@@ -99,6 +99,41 @@ test('an empty native path result reports an unsupported virtual file', async ()
   assert.equal(f.received.length, 0);
 });
 
+test('a drop while the chat composer is unmounted is not replayed into a later chat', async () => {
+  const previous = globalThis.document;
+  const dom = new JSDOM('<div id="skills"></div>');
+  globalThis.document = dom.window.document;
+  try {
+    const f = await fixture();
+    f.unregister();
+    f.target.__JIUWEN_INGEST_LOCAL_FILES__({ source: 'drop', files: picks, trusted: true });
+    const later = [];
+    f.picker.registerDesktopLocalFilesConsumer((_detail, files) => later.push(files[0].path));
+    assert.deepEqual(later, []);
+    assert.equal((f.target.__JIUWEN_DROP_QUEUE__ || []).length, 0);
+  } finally {
+    dom.window.close();
+    globalThis.document = previous;
+  }
+});
+
+test('a drop during composer remount stays queued while the shell is still mounted', async () => {
+  const previous = globalThis.document;
+  const dom = new JSDOM('<div class="chat-panel-shell"></div>');
+  globalThis.document = dom.window.document;
+  try {
+    const f = await fixture();
+    f.unregister();
+    f.target.__JIUWEN_INGEST_LOCAL_FILES__({ source: 'drop', files: picks, trusted: true });
+    const later = [];
+    f.picker.registerDesktopLocalFilesConsumer((_detail, files) => later.push(files[0].path));
+    assert.deepEqual(later, ['/tmp/bundle.zip']);
+  } finally {
+    dom.window.close();
+    globalThis.document = previous;
+  }
+});
+
 test('older Electron and pywebview shells keep their existing native delivery path', async () => {
   const f = await fixture();
   drop(f.target);

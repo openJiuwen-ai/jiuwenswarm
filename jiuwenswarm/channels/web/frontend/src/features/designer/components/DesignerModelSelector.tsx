@@ -1,23 +1,34 @@
 import { AlertTriangle, Info, Plus } from 'lucide-react';
-import { useState, type ReactNode } from 'react';
+import { useState, useSyncExternalStore, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import ChatModelSelector from '../../../components/ChatPanel/ChatModelSelector';
 import ModelPicker, { type ModelPickerPresentation } from '../../../components/ModelPicker';
-import { ModelProviderIcon } from '../../../components/ModelProviderIcon';
-import { Tabs, Tag } from '../../../components/ui';
+import { Tabs } from '../../../components/ui';
 import { useAdaptiveTooltip } from '../../../hooks/useAdaptiveTooltip';
 import { useChatStore } from '../../../stores/chatStore';
-import { resolveChatModelSelection, useSessionStore } from '../../../stores/sessionStore';
+import { useSessionStore } from '../../../stores/sessionStore';
 import { requestSettingsModule } from '../../settings/settingsNavigation';
-import { designGenerationModels, type DesignGenerationModel } from '../designerModelConfiguration';
+import {
+  DESIGN_GENERATION_SLOTS,
+  supportedModelsForSlot,
+  type DesignGenerationSlot,
+} from '../designerModelConfiguration';
+import { resolveDesignerDisplayedModel } from '../designerModelLabel';
+import {
+  getDesignModelGate,
+  requestDesignModelRestoreRetry,
+  subscribeDesignModelGate,
+} from '../designSessionModelRestore';
+import { useDesignerStore } from '../designerStore';
 import { useDesignerModelConfiguration } from '../useDesignerModelConfiguration';
+import DesignGenerationModelList from './DesignGenerationModelList';
 import './DesignerModelSelector.css';
 
-type Tab = 'chat' | 'video_gen' | 'visual_gen';
-const TABS: Tab[] = ['chat', 'video_gen', 'visual_gen'];
+type Tab = 'chat' | DesignGenerationSlot;
+const TABS: Tab[] = ['chat', ...DESIGN_GENERATION_SLOTS];
 
-function openGenerationSettings(model: DesignGenerationModel) {
-  if (model.status === 'disabled') requestSettingsModule('agent');
+function openModelSettings(tab: Tab) {
+  if (tab === 'chat') requestSettingsModule('models');
   else requestSettingsModule('models', 'multimodal');
 }
 
@@ -49,26 +60,80 @@ export default function DesignerModelSelector({
   sessionId, disabled = false, readOnly = false,
 }: { sessionId?: string; disabled?: boolean; readOnly?: boolean }) {
   const { t } = useTranslation();
+  const sessionRestore = useSyncExternalStore(
+    subscribeDesignModelGate,
+    getDesignModelGate,
+    getDesignModelGate,
+  );
   const [tab, setTab] = useState<Tab>('chat');
-  const { snapshot, loading, failed, reload } = useDesignerModelConfiguration();
+  const {
+    snapshot, selection, loading, failed, selectError, reload, select,
+  } = useDesignerModelConfiguration();
   const { tooltip, handlers } = useAdaptiveTooltip({ placement: 'top', maxWidth: 320, multiline: true });
   const activeSessionId = useChatStore((state) => state.activeSessionId);
   const boundSessionId = sessionId || activeSessionId || '';
   const models = useSessionStore((state) => state.chatAvailableModels);
   const modelName = useSessionStore((state) => state.runtimes[boundSessionId]?.selectedModelName ?? null);
+  const selectedModelId = useSessionStore((state) => {
+    const selection = state.runtimes[boundSessionId]?.selectedModelSelection;
+    return selection?.type === 'model' ? selection.id : null;
+  });
+  const graphModelId = useDesignerStore((state) => {
+    const raw = state.domainGraph?.metadata?.model_id;
+    return typeof raw === 'string' ? raw : null;
+  });
   const defaultModel = useSessionStore((state) => state.defaultModelName);
-  const selected = resolveChatModelSelection(models, modelName, defaultModel);
-  const generation = snapshot && !failed ? designGenerationModels(snapshot) : [];
-  const problems = generation.filter((item) => item.status !== 'ready');
-  const firstProblem = problems.find((item) => item.status === 'missing' || item.status === 'incomplete') ?? problems[0];
+  // Same-name rows differ by protocol. The canvas label and logo follow the
+  // stable id stored on the session, or on the graph when the session has not caught up.
+  const selected = resolveDesignerDisplayedModel(models, modelName, defaultModel, selectedModelId || graphModelId);
+  const pickerSelection = selected?.model_id?.trim()
+    ? { type: 'model' as const, id: selected.model_id.trim() }
+    : null;
+  const catalogue = snapshot?.models ?? [];
   const key = 'designer.modelConfiguration';
-  const problemText = problems.map((item) => t(`${key}.problem`, {
-    name: t(`${key}.${item.slot}`), status: t(`${key}.${item.status}`),
-  })).join(t(`${key}.separator`));
-  const warning = failed ? t(`${key}.loadFailed`) : problemText;
-  const actionLabel = (model: DesignGenerationModel) => t(`${key}.${model.status === 'disabled' ? 'enable' : 'configure'}`);
-  const warningActionLabel = failed ? t(`${key}.retry`) : firstProblem ? actionLabel(firstProblem) : '';
-  const current = generation.find((item) => item.slot === tab);
+  const emptySlots = failed || loading || !snapshot
+    ? []
+    : DESIGN_GENERATION_SLOTS.filter((slot) => supportedModelsForSlot(catalogue, slot).length === 0);
+  const problemText = emptySlots.map((slot) => t(`designer.models.${slot === 'video_gen' ? 'videoMissing' : 'imageMissing'}`))
+    .join(t(`${key}.separator`));
+  const nothingConfigured = emptySlots.length === DESIGN_GENERATION_SLOTS.length;
+  const warning = failed
+    ? t(`${key}.loadFailed`)
+    : nothingConfigured
+      ? t(`${key}.notConfigured`)
+      : problemText;
+  const warningActionLabel = failed ? t(`${key}.retry`) : emptySlots.length > 0 ? t(`${key}.configure`) : '';
+  const sessionRestorePending = sessionRestore?.sessionId === boundSessionId && sessionRestore.status !== 'ready';
+  if (sessionRestorePending) {
+    return (
+      <div className="designer-model-selector" data-testid="designer-model-selector" data-variant="session-restore">
+        {sessionRestore?.status === 'failed' ? (
+          <div
+            role="alert"
+            className="designer-model-selector__state"
+            data-testid="designer-model-selector-session-error"
+          >
+            <p>{t(`${key}.sessionLoadFailed`)}</p>
+            <button
+              type="button"
+              onClick={requestDesignModelRestoreRetry}
+              data-testid="designer-model-selector-session-retry"
+            >
+              {t(`${key}.retry`)}
+            </button>
+          </div>
+        ) : (
+          <span
+            role="status"
+            className="designer-model-selector__state"
+            data-testid="designer-model-selector-session-loading"
+          >
+            {t(`${key}.sessionLoading`)}
+          </span>
+        )}
+      </div>
+    );
+  }
 
   const renderMenu = (catalog: ReactNode, close: () => void) => (
     <section className="designer-model-selector__panel" data-testid="designer-model-config"
@@ -91,7 +156,7 @@ export default function DesignerModelSelector({
         className="designer-model-selector__tabs" wrapperTestId="designer-model-config-tabs"
         itemTestId="designer-model-config-tab" items={TABS.map((id) => ({
           value: id,
-          label: <>{t(`${key}.${id}`)}{problems.some((item) => item.slot === id) && (
+          label: <>{t(`${key}.${id}`)}{emptySlots.includes(id as DesignGenerationSlot) && (
             <AlertTriangle size={13} aria-hidden className="designer-model-selector__warning-icon"
               data-testid="designer-model-config-tab-warning" data-variant={id} />
           )}</>,
@@ -103,49 +168,29 @@ export default function DesignerModelSelector({
             <strong>{selected?.alias || selected?.model_name || t('designer.models.notSelected')}</strong>
             <p>{t('designer.models.lockedHint')}</p>
           </div>
-        ) : catalog : failed ? (
-          <div role="alert" className="designer-model-selector__state" data-testid="designer-model-config-error">
-            <p>{t(`${key}.loadFailed`)}</p>
-            <button type="button" onClick={() => void reload()} data-testid="designer-model-config-retry">{t(`${key}.retry`)}</button>
-          </div>
-        ) : loading ? (
-          <p role="status" className="designer-model-selector__state" data-testid="designer-model-config-loading">{t(`${key}.loading`)}</p>
-        ) : current ? (
-          <div className="designer-model-selector__state" data-testid="designer-generation-model" data-variant={current.slot}>
-            {current.model && <div className="designer-model-selector__binding-status">
-              <span data-testid="designer-generation-model-binding-label">{t(`${key}.bindingModel`)}</span>
-              {current.status === 'ready' && <Tag variant="neutral" data-testid="designer-generation-model-configured">
-                {t('settingsPanel.common.configured')}
-              </Tag>}
-            </div>}
-            {current.model && <div className="designer-model-selector__bound-model">
-              <span className="designer-model-selector__bound-icon">
-                <ModelProviderIcon model={{ model_name: current.model.model_name, model_provider: current.model.provider }} />
-              </span>
-              <div className="designer-model-selector__model-text"><strong data-testid="designer-generation-model-name">{current.model.display_name}</strong>
-                <p>{[current.model.provider, current.model.model_name].filter(Boolean).join(' · ')}</p></div>
-            </div>}
-            {current.status !== 'ready' && (
-              <div className="designer-model-selector__problem" role="status" data-testid="designer-generation-model-warning">
-                <span>{current.status === 'incomplete' ? t(`${key}.incomplete`)
-                  : t(`${key}.problem`, { name: t(`${key}.${current.slot}`), status: t(`${key}.${current.status}`) })}</span>
-                <button type="button" onClick={() => openGenerationSettings(current)}
-                  data-testid="designer-generation-model-settings">{actionLabel(current)}</button>
-              </div>
-            )}
-          </div>
-        ) : null}
+        ) : catalog : (
+          <DesignGenerationModelList
+            slot={tab}
+            models={catalogue}
+            selectedId={selection[tab]}
+            loading={loading}
+            failed={failed}
+            disabled={disabled}
+            selectError={selectError}
+            onSelect={(modelId) => { void select(tab, modelId); }}
+            onRetry={() => { void reload(); }}
+            testIdPrefix="designer-generation-model"
+          />
+        )}
       </div>
       <footer className="designer-model-selector__footer" data-testid="designer-model-config-footer">
-        {tab === 'chat' ? <button type="button" className="model-select__add-btn" onClick={() => {
+        <button type="button" className="model-select__add-btn" onClick={() => {
           close();
-          requestSettingsModule('models');
-        }} data-testid="designer-model-config-add">
+          openModelSettings(tab);
+        }} data-testid="designer-model-config-add" data-variant={tab}>
           <Plus size={14} aria-hidden />
-          {t('chat.modelSelector.addModel')}
-        </button> : <p className="designer-model-selector__binding-hint" data-testid="designer-generation-model-description">
-          {t(`${key}.bindingHint`)}
-        </p>}
+          {t(`${key}.addModel`)}
+        </button>
       </footer>
     </section>
   );
@@ -154,12 +199,19 @@ export default function DesignerModelSelector({
     menuMaxHeight: 480, hideAddModel: true,
   };
   return (
-    <div className="designer-model-selector" data-testid="designer-model-selector">
+    <div
+      className={`designer-model-selector${disabled ? ' designer-edit-control' : ''}`}
+      data-testid="designer-model-selector"
+    >
       {warning && <ModelConfigurationWarning key={warning} message={warning} actionLabel={warningActionLabel}
-        disabled={disabled} onAction={() => { if (failed) void reload(); else if (firstProblem) openGenerationSettings(firstProblem); }} />}
+        disabled={disabled} onAction={() => {
+          if (failed) void reload();
+          else if (emptySlots.length > 0) openModelSettings(emptySlots[0]);
+        }} />}
       {readOnly ? (
-        <ModelPicker {...presentation} value={selected?.model_name ?? modelName} onChange={() => undefined}
-          includeModelGroups={false} disabled={disabled} testIdPrefix="designer-model-selector" />
+        <ModelPicker {...presentation} value={selected?.model_name ?? modelName} selection={pickerSelection}
+          onChange={() => undefined} includeModelGroups={false} disabled={disabled}
+          testIdPrefix="designer-model-selector" />
       ) : (
         <ChatModelSelector sessionId={sessionId} disabled={disabled} allowModelGroups={false}
           includeModelGroups={false} showWhenEmpty pickerPresentation={presentation} testIdPrefix="designer-model-selector" />
