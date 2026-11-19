@@ -322,10 +322,10 @@ def test_build_inputs_gates_xiaoyi_user_interaction_by_app_ver(monkeypatch):
     """xiaoyi 交互能力按手机端 app_ver 判定（gateway 随 metadata.xiaoyi_app_ver
     透传，源自 systemVariables.app_ver）：
 
-    - >= 门限 ASK_USER_TABS_MIN_APP_VER（当前收紧为 99.99.99，如 99.99.99、
-      99.99.99.200、100.0.0.100）→ 交互开启（选项卡可渲染可回答）；
-    - 低于门限（现网 11.7.x 各版本均在门限之下）/ 未上报 → fail-closed 关闭
-      （旧端侧不识别选项卡契约字段）。
+    - >= 门限 ASK_USER_TABS_MIN_APP_VER（11.7.9.301 含等号，如 11.7.9.301、
+      11.7.10.200、11.7.10.900、11.7.11.100）→ 交互开启（选项卡可渲染可回答）；
+    - 低于门限（11.7.9.300 及更早，含裸三段 "11.7.9"）/ 未上报 → fail-closed
+      关闭（旧端侧不识别选项卡契约字段）。
     """
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 
@@ -342,26 +342,32 @@ def test_build_inputs_gates_xiaoyi_user_interaction_by_app_ver(monkeypatch):
             metadata=metadata,
         )
 
-    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("99.99.99"))
-    assert inputs["supports_user_interaction"] is True  # 门限等号（裸三段）
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.9.301"))
+    assert inputs["supports_user_interaction"] is True  # 门限等号（含等号边界）
 
-    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("99.99.99.200"))
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.9.302"))
+    assert inputs["supports_user_interaction"] is True
+
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.10.200"))
+    assert inputs["supports_user_interaction"] is True
+
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.10.900"))
+    assert inputs["supports_user_interaction"] is True
+
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.11.100"))
     assert inputs["supports_user_interaction"] is True
 
     inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("100.0.0.100"))
     assert inputs["supports_user_interaction"] is True
 
-    # 门限收紧为 99.99.99（临时口径）：现网 11.7.x 一律不放行
-    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.11.100"))
-    assert inputs["supports_user_interaction"] is False
-
-    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.10.900"))
+    # 门限下方（边界-1 与更早构建、裸三段前缀）一律不放行
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.9.300"))
     assert inputs["supports_user_interaction"] is False
 
     inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.9.200"))
     assert inputs["supports_user_interaction"] is False
 
-    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.9.301"))
+    inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build("11.7.9"))
     assert inputs["supports_user_interaction"] is False
 
     inputs, _, _ = interface_module.JiuWenSwarm().build_inputs(_build(""))
@@ -1443,7 +1449,7 @@ def test_deep_adapter_gates_xiaoyi_rails_by_app_ver(monkeypatch):
     assert permission_rail not in rails
 
     # 上报支持选项卡的版本（达到门限）：装配即挂载
-    adapter._client_app_ver = "99.99.99.200"
+    adapter._client_app_ver = "11.7.10.200"
     rails = adapter._build_agent_rails({}, {"models": {}}, mode="agent")
     assert ask_user_rail in rails
     assert permission_rail in rails

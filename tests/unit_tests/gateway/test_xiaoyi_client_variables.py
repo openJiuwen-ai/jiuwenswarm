@@ -70,11 +70,11 @@ def _make_channel(captured: list, sent: list) -> XiaoyiChannel:
     ch._session_heartbeat_tasks = {}
     ch._sessions_waiting_for_push = {}
     ch._pending_approvals = {}
-    # 默认按达到门限的手机端跑（app_ver=99.99.99.200，systemVariables 上报，
-    # 门限见 ASK_USER_TABS_MIN_APP_VER——现网 11.7.x 均在门限之下）：
+    # 默认按达到门限的手机端跑（app_ver=11.7.10.200，systemVariables 上报，
+    # 门限见 ASK_USER_TABS_MIN_APP_VER=11.7.9.301 含等号）：
     # AskUser 结构化选项卡出站/应答路径开启；版本开关相关用例显式覆盖本表
     # （未达门限 / 未上报 → 文本回退，见 test_ask_user_prompt_falls_back_*）。
-    ch._session_app_vers = {"conv-1": "99.99.99.200"}
+    ch._session_app_vers = {"conv-1": "11.7.10.200"}
     ch._session_model_names = {}
     ch._ws_connections = {"k": _FakeWs(sent)}
     ch._accumulated_texts = {}
@@ -114,7 +114,7 @@ def _make_channel(captured: list, sent: list) -> XiaoyiChannel:
     return ch
 
 
-def _build_stream_msg(text, client_vars=None, conv="conv-1", top="top-1", task="task-1", files=None, app_ver="99.99.99.200"):
+def _build_stream_msg(text, client_vars=None, conv="conv-1", top="top-1", task="task-1", files=None, app_ver="11.7.10.200"):
     parts = []
     if client_vars is not None:
         parts.append({
@@ -783,11 +783,11 @@ async def test_ask_user_app_ver_extracted_from_system_variables(cfg_file):
             "你好",
             client_vars={"workspace": None},
             task="task-11",
-            app_ver="99.99.99.200",
+            app_ver="11.7.10.200",
         ))
-        assert ch._session_app_vers["conv-1"] == "99.99.99.200"
+        assert ch._session_app_vers["conv-1"] == "11.7.10.200"
         m = captured[-1]
-        assert m.metadata["xiaoyi_app_ver"] == "99.99.99.200"
+        assert m.metadata["xiaoyi_app_ver"] == "11.7.10.200"
         assert ch._ask_user_tabs_enabled("conv-1") is True
     finally:
         _cleanup_tasks(ch)
