@@ -4,6 +4,7 @@ import {
   readGenerationSelection,
   selectionAfterPick,
   selectionForReload,
+  slotsToKeepOnReload,
 } from '../node_modules/.cache/designer-model-configuration/designerModelConfiguration.mjs';
 
 function model(overrides = {}) {
@@ -65,6 +66,27 @@ test('a config reload keeps an in-flight pick instead of restoring the stale sav
   );
   assert.deepEqual(
     selectionForReload(saved, current, [], models),
+    { visual_gen: 'visual-a', video_gen: 'video-a' },
+  );
+});
+
+test('a reload that started before a pick keeps that slot after the write is no longer pending', () => {
+  const lastPickEpoch = new Map([['visual_gen', 2]]);
+  const startedBeforePick = 1;
+  const keep = slotsToKeepOnReload([], lastPickEpoch, startedBeforePick);
+  assert.deepEqual(keep, ['visual_gen']);
+  const saved = { visual_gen: 'visual-a', video_gen: 'video-a' };
+  const current = { visual_gen: 'visual-b', video_gen: 'video-a' };
+  assert.deepEqual(
+    selectionForReload(saved, current, keep, models),
+    { visual_gen: 'visual-b', video_gen: 'video-a' },
+  );
+  assert.deepEqual(
+    slotsToKeepOnReload([], lastPickEpoch, 2),
+    [],
+  );
+  assert.deepEqual(
+    selectionForReload(saved, current, slotsToKeepOnReload([], lastPickEpoch, 2), models),
     { visual_gen: 'visual-a', video_gen: 'video-a' },
   );
 });

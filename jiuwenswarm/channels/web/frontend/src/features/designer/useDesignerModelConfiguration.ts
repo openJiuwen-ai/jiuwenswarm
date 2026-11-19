@@ -6,6 +6,7 @@ import { multimodalErrorDetails, type MultimodalSnapshot } from '../settings/ser
 import {
   selectionAfterPick,
   selectionForReload,
+  slotsToKeepOnReload,
   type DesignGenerationSelection,
   type DesignGenerationSlot,
 } from './designerModelConfiguration';
@@ -57,6 +58,7 @@ type DesignerGenerationState = {
 let reloadEpoch = 0;
 let selectionEpoch = 0;
 const pendingWrites = new Map<DesignGenerationSlot, number>();
+const lastPickEpoch = new Map<DesignGenerationSlot, number>();
 let subscribers = 0;
 let stopListening: (() => void) | null = null;
 
@@ -72,6 +74,7 @@ export const useDesignerGenerationStore = create<DesignerGenerationState>((set, 
   selectError: '',
   reload: async () => {
     const epoch = ++reloadEpoch;
+    const selectionAtStart = selectionEpoch;
     set({ loading: true, failed: false });
     try {
       const [snapshot, config] = await Promise.all([
@@ -88,7 +91,7 @@ export const useDesignerGenerationStore = create<DesignerGenerationState>((set, 
       next.selection = selectionForReload(
         selectionFromConfig(config),
         get().selection,
-        pendingWrites.keys(),
+        slotsToKeepOnReload(pendingWrites.keys(), lastPickEpoch, selectionAtStart),
         models,
       );
       set(next);
@@ -104,7 +107,7 @@ export const useDesignerGenerationStore = create<DesignerGenerationState>((set, 
         next.selection = selectionForReload(
           EMPTY_SELECTION,
           get().selection,
-          pendingWrites.keys(),
+          slotsToKeepOnReload(pendingWrites.keys(), lastPickEpoch, selectionAtStart),
           [],
         );
         set(next);
@@ -119,6 +122,7 @@ export const useDesignerGenerationStore = create<DesignerGenerationState>((set, 
     const epoch = ++selectionEpoch;
     const models = get().snapshot?.models ?? [];
     const previous = get().selection[slot];
+    lastPickEpoch.set(slot, epoch);
     pendingWrites.set(slot, epoch);
     set({
       selection: selectionAfterPick(get().selection, slot, modelId, models),
