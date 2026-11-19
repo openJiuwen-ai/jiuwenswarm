@@ -19,6 +19,9 @@ files:
   - jiuwenswarm/extensions/video_duplex/extension.py
   - tests/unit_tests/common/test_local_req_method.py
   - tests/unit_tests/common/test_req_method_contract.py
+  - tests/unit_tests/agentserver/fixtures/front_process.py
+  - tests/unit_tests/agentserver/test_agentserver_regressions.py
+  - tests/unit_tests/agentserver/test_front_process_fixture.py
 designs: []
 design_note: 按用户明确要求迁移现有枚举并独立提交 PR，保持线协议兼容，未单独建立设计文档。
 ---
@@ -212,3 +215,40 @@ checkout 固定源码版本，未修改其他任务的依赖环境或本仓依�
 本次共 986 项定向测试通过；完整 dispatch 装配、全量 UT/ST 和端到端行为仍需
 完整 openjiuwen 依赖环境与 CI 验证，不将枚举可解析等同于业务 handler 已实现。
 上述并集对照与引用盘点只针对本次固定版本，依赖或业务方法变化时必须重验。
+
+## 2026-11-19 Front 启动等待门禁修复
+
+用户反馈 `test_native_front_control_queries_do_not_load_runtime_dependencies`
+在 `assert ws is not None` 失败。该断言发生在任何业务请求发送之前，只能说明
+400 次连接尝试未成功，不能据此认定是 ReqMethod 缺失或控制面导入边界被破坏。
+原循环每次拒绝连接后等待 10ms，在快速拒绝连接的环境中只提供约 4 秒加连接
+开销的启动窗口；同时既不检查子进程退出状态，也不输出 `front.log`。
+
+本地原用例正常启动通过。为核实慢启动路径，在实际 Front 子进程的测试观察器
+前注入 8 秒延迟，并模拟此期间快速拒绝连接，旧代码在约 6.3 秒复现同一行
+AssertionError；修复后同一条件通过，四项真实控制请求均返回，观察器记录的
+新增禁止依赖均为空。该证据证明原等待逻辑存在启动竞态，但没有 CI 的
+`front.log`，仍无法断言门禁当次是慢启动而非子进程异常退出。
+
+- 将握手等待集中到测试 fixture `connect_front`，以 30 秒总超时等待连接与
+  `connection.ack`，不再使用固定重试次数；不修改生产启动逻辑。
+- 每轮检查子进程状态，退出立即失败；错误信息包含地址、PID、退出码、耗时、
+  阶段和启动日志尾部。握手、ack 等待均有界，失败或取消时关闭未交付的连接。
+- 保留四项业务请求、同一 Front PID、禁止运行时依赖增量的原断言，未通过
+  跳过测试、替换真实 Front 或放宽业务断言使测试通过。
+- 新增七项 fixture 回归，覆盖超过 400 次拒绝连接、握手超时重试、提前退出、
+  连接/ack 总超时、非法 ack 和取消时的连接清理。
+
+验证基于 `4f56060bd` 加本次工作区修改，Windows / Python 3.14：
+
+- 正常 pytest（保留 `tests/conftest.py`）执行原失败用例及七项 fixture 回归：
+  `8 passed`。
+- 组合本地 ReqMethod、Gateway normalization、方法契约与 Front 方法校验：
+  `649 passed`，参数为 `--asyncio-mode=auto -o addopts= -o log_cli=false -q --tb=short`。
+- 人工延迟场景直接执行从原测试提取的观察器与用例，实际启动 Front、发送
+  `session.list` / `project.list` / `config.get` / `history.get`，约 12.4 秒通过。
+
+本次环境已有 openjiuwen `2f4bedb9c5d85ab70d7c79d36183e6a98799e94e`，
+与本仓 pin 不同；协议/Gateway 沿用上节固定源码，A4P 从同一协议 checkout
+加入 PYTHONPATH，未安装或改写共享环境。全量 UT 与锁定依赖的 Linux 门禁
+仍待 CI，不将本地定向通过等同于门禁全绿。
