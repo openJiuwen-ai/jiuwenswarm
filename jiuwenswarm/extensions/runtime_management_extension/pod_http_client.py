@@ -51,9 +51,13 @@ _CONNECT_TIMEOUT_SECONDS = 10.0
 _STREAM_READ_TIMEOUT = 600.0
 _PUSH_RETRY_SECONDS = 3.0
 # 企业按 Pod 订阅：连续 TCP 失败才停，避免活 Pod 闪断被立刻 drop。
-_PUSH_MAX_CONNECT_FAILURES = 3
+_PUSH_MAX_CONNECT_FAILURES = _env_int("PUSH_MAX_CONNECT_FAILURES", 3)
 # 与 WebSocketAgentServerClient._delayed_cleanup_cancelled_request_id 对齐。
 _CANCELLED_RID_TTL_SECONDS = 2.0
+# 合成的"推送循环已终止"事件的 event_type。Gateway 识别此值后向前端 SSE
+# 发一条连接断开提示，让前端能感知并重建 SSE，而不是无限挂等（issue #115
+# 现象 1：events/stream 失败 3 次后直接丢弃客户端，前端无感知）。
+_PUSH_TERMINATED_EVENT_TYPE = "gateway.push_terminated"
 
 
 @dataclass(frozen=True)
@@ -541,6 +545,39 @@ class HttpSseAgentServerClient(AgentServerClient):
         finally:
             await self._mark_stream_cancelled(rid)
 
+    async def _emit_push_terminated(self, reason: str) -> None:
+        """Notify the upstream push handler that the push loop has terminated.
+
+        Without this, the frontend SSE stays attached to a gateway that no
+        longer has any source to push, so the user must manually refresh to
+        rebuild the SSE (issue #115 现象 1). The synthesised wire frame uses
+        the legacy chunk shape (``request_id``/``channel_id``/``payload``/
+        ``is_complete``) so ``parse_agent_server_wire_chunk`` accepts it,
+        and carries ``event_type=gateway.push_terminated`` for the gateway
+        to detect and forward as a session-live notice.
+        """
+        handler = self._on_server_push
+        if handler is None:
+            return
+        api_root = self._api_root or ""
+        wire = {
+            "request_id": f"push_terminated:{api_root}",
+            "channel_id": "web",
+            "is_complete": False,
+            "payload": {
+                "event_type": _PUSH_TERMINATED_EVENT_TYPE,
+                "reason": reason,
+                "api_root": api_root,
+                "failures": self._push_connect_failures,
+            },
+        }
+        try:
+            await handler(wire)
+        except Exception:
+            logger.exception(
+                "[HttpSseAgentServerClient] push_terminated 事件发送失败"
+            )
+
     async def _push_loop(self) -> None:
         while self._running and self._on_server_push is not None:
             api_root = self._api_root
@@ -548,6 +585,7 @@ class HttpSseAgentServerClient(AgentServerClient):
                 logger.warning(
                     "[HttpSseAgentServerClient] events/stream 缺少 API 根路径，停止推送循环"
                 )
+                await self._emit_push_terminated("missing_api_root")
                 return
             url = f"{api_root}/events/stream"
             try:
@@ -603,6 +641,7 @@ class HttpSseAgentServerClient(AgentServerClient):
                             url,
                             self._push_connect_failures,
                         )
+                        await self._emit_push_terminated("connect_failures_exceeded")
                         self._running = False
                         self._server_ready = False
                         return
