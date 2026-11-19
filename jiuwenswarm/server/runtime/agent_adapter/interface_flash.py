@@ -980,6 +980,15 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         """
         composer = self._read_composer_config()
         section_order = self._flash_config("section_order", {})
+        try:
+            disabled_tools = sorted(
+                resolve_string_or_list_config((self._config_cache or {}).get("disabled_tools"))
+            )
+        except Exception as exc:
+            logger.warning(
+                "[FlashAdapter] ignore malformed disabled_tools for prompt fingerprint: %s", exc
+            )
+            disabled_tools = []
         payload = {
             "persona_enabled": composer.get("persona_enabled"),
             "safety_enabled": composer.get("safety_enabled"),
@@ -994,9 +1003,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             # 让这类合法配置变更触发基线重设而非静态漂移。
             # 注：task_tool→440 已接线；todo→430 / skill_acceleration_exec→
             # skill_turbo_guide 两条撤段链路待线 B（C1 接线）迁入后生效。
-            "disabled_tools": sorted(
-                resolve_string_or_list_config((self._config_cache or {}).get("disabled_tools"))
-            ),
+            "disabled_tools": disabled_tools,
         }
         return hashlib.sha256(
             json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
