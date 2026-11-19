@@ -40,13 +40,43 @@ class FlashMemoryRail(MemoryRail):
     )
 
     # 内容松绑：deep 原样正文里的「每轮强制检索」→「任务开始检索一次」。
-    # 与工具名替换同序执行（先 5→1 再内容），命中守卫两套一起判。
-    _MEMORY_CONTENT_REPLACEMENTS = (
-        ("是每轮回答前的固定第一步，没有任何例外", "在任务开始时做一次，之后仅在需要新的用户上下文时再做"),
+    # 整块改写：标题、前置强制句、禁止跳过句、每轮第一步句四处一起改，
+    # 否则同一段里会同时出现「一次即可」与「任何问题前必须检索」的相反规则。
+    # 注意：内容替换在工具名替换之后执行，锚点须用统一入口后的 ``memory(mode=search)``。
+    # 与工具名替换同序执行（先 5→1 再内容），命中守卫分别检测。
+    _MEMORY_CONTENT_REPLACEMENTS_CN = (
+        ("## 强制检索（最高优先级）", "## 主动检索（任务开始时优先）"),
+        (
+            "在开始执行任何任务、回答任何问题之前，必须先调用 `memory(mode=search)` 检索工作区记忆",
+            "在开始一个新任务之前，先调用 `memory(mode=search)` 检索工作区记忆",
+        ),
+        (
+            "**禁止跳过检索**：即使问题看起来很简单、你自认为已经知道答案，也必须先检索。",
+            "**不要凭猜测跳过检索**：当任务可能涉及用户偏好、约定、约束或历史决策时，先检索。",
+        ),
+        (
+            "是每轮回答前的固定第一步，没有任何例外",
+            "在任务开始时做一次，之后仅在需要新的用户上下文时再做",
+        ),
+    )
+
+    _MEMORY_CONTENT_REPLACEMENTS_EN = (
+        ("## Mandatory Retrieval (Highest Priority)", "## Proactive Retrieval (Prefer at Task Start)"),
+        (
+            "Before starting any task or answering any question, you MUST first call "
+            "`memory(mode=search)` to retrieve workspace memory",
+            "Before starting a new task, first call "
+            "`memory(mode=search)` to retrieve workspace memory",
+        ),
+        (
+            "**Never skip the search**: even if the question seems simple or you think "
+            "you already know the answer, you must search first.",
+            "**Do not skip the search on a guess**: when a task may involve user "
+            "preferences, conventions, constraints, or past decisions, search first.",
+        ),
         (
             "is the mandatory first step before every answer, with no exceptions",
-            "should be done once at task start, then only when new user context "
-            "is needed",
+            "should be done once at task start, then only when new user context is needed",
         ),
     )
 
@@ -178,22 +208,36 @@ class FlashMemoryRail(MemoryRail):
                 for old, new in self._MEMORY_NAME_REPLACEMENTS:
                     text = text.replace(old, new)
                 names_missed = text == original
-                before_content = text
-                for old, new in self._MEMORY_CONTENT_REPLACEMENTS:
-                    text = text.replace(old, new)
+                pairs = (
+                    self._MEMORY_CONTENT_REPLACEMENTS_CN
+                    if lang_key in ("cn", "zh")
+                    else self._MEMORY_CONTENT_REPLACEMENTS_EN
+                )
+                hits = 0
+                for old, new in pairs:
+                    if old in text:
+                        text = text.replace(old, new)
+                        hits += 1
                 # 命中守卫：两套替换分别检测。上游只改其中一套时，合并检测会把
-                # 「工具名命中、检索句漂移」的半失效情形静默放过。
+                # 「工具名命中、检索句漂移」的半失效情形静默放过；整块松绑只命中
+                # 一部分时同样要告警——否则会留下互相矛盾的强制检索规则。
                 if names_missed:
                     logger.warning(
                         "[FlashMemoryRail] 记忆文案未命中五件套工具名（%s 段），"
                         "上游可能改了文案——统一名改写失效",
                         lang_key,
                     )
-                if text == before_content:
+                if hits == 0:
                     logger.warning(
-                        "[FlashMemoryRail] 记忆文案未命中每轮检索句（%s 段），"
+                        "[FlashMemoryRail] 记忆文案未命中强制检索块（%s 段），"
                         "上游可能改了文案——内容松绑失效",
                         lang_key,
+                    )
+                elif hits < len(pairs):
+                    logger.warning(
+                        "[FlashMemoryRail] 记忆强制检索块仅命中 %d/%d 处（%s 段），"
+                        "上游改了部分文案——松绑后可能残留相反规则，请同步锚点",
+                        hits, len(pairs), lang_key,
                     )
             new_content[lang_key] = text
         try:

@@ -33,8 +33,26 @@ from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.prompts.prompt_attachment_manager import PromptAttachmentKind
 from openjiuwen.harness.rails.base import DeepAgentRail
 
-# 会话内重复链键：一次性注入 sid 到 ctx.extra 供 after_tool_call 解析。
-_SID_KEY = "__jiuwenswarm_flash_repeat_guard_sid__"
+
+# 会话内重复链键：before_invoke 挂在 DeepAgent 外层、after_tool_call 桥接到内层
+# ReActAgent（deep_agent._BRIDGE_EVENTS），两者是不同的 ctx 对象、extra 不共享，
+# 故会话 ID 一律从 ctx.session 解析（与 PromptAttachmentContextWriter 同口径）。
+def _resolve_session_id(ctx: AgentCallbackContext) -> str:
+    """解析当前会话 ID：session.get_session_id() 优先，其次 session_id / conversation_id。"""
+    session = getattr(ctx, "session", None)
+    getter = getattr(session, "get_session_id", None)
+    if callable(getter):
+        sid = getter()
+        if sid:
+            return str(sid)
+    sid = getattr(session, "session_id", None)
+    if sid:
+        return str(sid)
+    inputs = getattr(ctx, "inputs", None)
+    sid = getattr(inputs, "conversation_id", None)
+    if sid:
+        return str(sid)
+    return "default"
 
 _SECTION = "repeat_call_reminder"
 _SOURCE = "jiuwenswarm.flash.repeat_call_guard"
@@ -159,10 +177,9 @@ class FlashRepeatCallGuardRail(DeepAgentRail):
 
     async def before_invoke(self, ctx: AgentCallbackContext) -> None:
         """每条新消息重置当前会话的重复链（用户插话 = 上下文改变，非循环）。"""
-        sid = getattr(getattr(ctx, "inputs", None), "conversation_id", None) or "default"
-        ctx.extra[_SID_KEY] = sid
+        sid = _resolve_session_id(ctx)
         self._remember_chain(sid, None)
-        await self._clear_reminder(ctx, sid)
+        await self._clear_reminder(ctx)
 
     def _remember_chain(self, sid: str, value: Any) -> None:
         """写入链状态；会话数超上限时按插入序淘汰最早条目（dict 保序）。"""
@@ -187,7 +204,7 @@ class FlashRepeatCallGuardRail(DeepAgentRail):
         arguments = getattr(tool_call, "arguments", None)
         key = json.dumps([tool_name, _canonicalize(arguments)], ensure_ascii=False)
 
-        sid = ctx.extra.get(_SID_KEY, "default")
+        sid = _resolve_session_id(ctx)
         chain = self._chains.get(sid)
         count = chain[1] + 1 if chain is not None and chain[0] == key else 1
         self._remember_chain(sid, (key, count))
@@ -202,10 +219,10 @@ class FlashRepeatCallGuardRail(DeepAgentRail):
                     language, tool_name, count,
                     _preview(canonical, self._arguments_preview_chars),
                 )
-            await self._upsert_reminder(ctx, sid, text)
+            await self._upsert_reminder(ctx, text)
         elif count == 1:
             # 链路断裂（换了工具或参数）：清空上一条提醒。
-            await self._clear_reminder(ctx, sid)
+            await self._clear_reminder(ctx)
 
     def _tracked(self, tool_name: str) -> bool:
         if self._include_patterns and not any(p.match(tool_name) for p in self._include_patterns):
@@ -225,29 +242,31 @@ class FlashRepeatCallGuardRail(DeepAgentRail):
             self._attachment_manager = manager
         return self._attachment_manager
 
-    async def _upsert_reminder(self, ctx: AgentCallbackContext, sid: str, text: str) -> None:
+    async def _upsert_reminder(self, ctx: AgentCallbackContext, text: str) -> None:
         manager = self._resolve_manager(ctx)
         if manager is None:
             return
         try:
-            await manager.add_section(
-                session_id=sid,
-                section=_SECTION,
-                kind=_KIND,
-                content=text,
+            # 用 bind_context 写：会话 ID 由 writer 按 ctx.session 解析，与消费端口径一致。
+            writer = manager.bind_context(ctx)
+            await writer.add_section(
+                _SECTION,
+                text,
+                _KIND,
+                _SOURCE,
                 priority=_ATTACHMENT_PRIORITY,
-                source=_SOURCE,
                 content_kind="text/markdown",
             )
         except Exception as exc:
             logger.warning("[FlashRepeatCallGuard] upsert reminder failed: %s", exc)
 
-    async def _clear_reminder(self, ctx: AgentCallbackContext, sid: str) -> None:
+    async def _clear_reminder(self, ctx: AgentCallbackContext) -> None:
         manager = self._resolve_manager(ctx)
         if manager is None:
             return
         try:
-            await manager.clear_section(session_id=sid, section=_SECTION)
+            writer = manager.bind_context(ctx)
+            await writer.clear_section(_SECTION)
         except Exception:
             logger.debug("[FlashRepeatCallGuard] clear reminder failed")
 

@@ -29,6 +29,9 @@ class _FakeAttachmentManager:
     def __init__(self) -> None:
         self.sections: dict[tuple[str, str], str] = {}
 
+    def bind_context(self, ctx) -> "_FakeAttachmentWriter":
+        return _FakeAttachmentWriter(self, ctx.session.get_session_id())
+
     async def add_section(self, *, session_id, section, content, kind, source,
                           priority=100, metadata=None, content_kind="text/plain",
                           expires_at=None) -> None:
@@ -36,6 +39,22 @@ class _FakeAttachmentManager:
 
     async def clear_section(self, *, session_id, section) -> None:
         self.sections.pop((session_id, section), None)
+
+
+class _FakeAttachmentWriter:
+    """模拟 PromptAttachmentContextWriter：会话 ID 由 ctx.session 解析。"""
+
+    def __init__(self, manager: _FakeAttachmentManager, session_id: str) -> None:
+        self._manager = manager
+        self._session_id = session_id
+
+    async def add_section(self, section, content, kind, source, *,
+                          priority=100, metadata=None, content_kind="text/plain",
+                          expires_at=None) -> None:
+        self._manager.sections[(self._session_id, section)] = content
+
+    async def clear_section(self, section) -> None:
+        self._manager.sections.pop((self._session_id, section), None)
 
 
 class _FakeAgent:
@@ -54,9 +73,19 @@ def _tool_call(name: str, args) -> SimpleNamespace:
     return SimpleNamespace(name=name, arguments=args)
 
 
+class _FakeSession:
+    def __init__(self, session_id: str = "s1") -> None:
+        self._session_id = session_id
+
+    def get_session_id(self) -> str:
+        return self._session_id
+
+
 def _ctx(conversation_id: str = "s1") -> SimpleNamespace:
     inputs = SimpleNamespace(tool_call=None, conversation_id=conversation_id)
-    return SimpleNamespace(inputs=inputs, extra={})
+    return SimpleNamespace(
+        inputs=inputs, extra={}, session=_FakeSession(conversation_id),
+    )
 
 
 async def _run(rail: FlashRepeatCallGuardRail, ctx, calls) -> None:
@@ -185,6 +214,23 @@ class TestRepeatChain:
         await rail.before_invoke(ctx)
         await _run(rail, ctx, [("read_file", {"path": "a.txt"})])
         assert _reminder(agent) is None
+
+    @pytest.mark.asyncio
+    async def test_inner_ctx_tool_calls_share_outer_session_chain(self) -> None:
+        """before_invoke 挂在外层 DeepAgent、after_tool_call 桥接到内层 ReActAgent：
+        两者是不同 ctx 对象、extra 不共享，会话必须按 session id 对齐到真实会话。"""
+        agent = _FakeAgent()
+        rail = _make_rail(agent)
+        outer = _ctx("s1")
+        await rail.before_invoke(outer)
+
+        inner = _ctx("s1")  # 内层 ctx：不同对象、extra 为空
+        await _run(rail, inner, [("read_file", {"path": "a.txt"})] * 3)
+
+        assert _reminder(agent, "s1") is not None
+        assert (
+            "default", "repeat_call_reminder"
+        ) not in agent.prompt_attachment_manager.sections
 
 
 class TestTracking:
