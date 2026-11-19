@@ -119,6 +119,92 @@ async def test_child_exception_preserves_cause_and_prevents_reuse(debug_capture,
     assert run.await_count == 1
 
 
+def _assistant(content, tool_calls=None):
+    return SimpleNamespace(role="assistant", content=content, tool_calls=tool_calls)
+
+
+def _child_with_context(child, messages):
+    engine = SimpleNamespace(
+        get_context=lambda session_id: SimpleNamespace(get_messages=lambda: list(messages)),
+    )
+    child._react_agent = SimpleNamespace(context_engine=engine)
+    return child
+
+
+# SQLAlchemy wraps the driver error with a "(sqlite3.OperationalError) ..." prefix and
+# inlines the failing statement, matching the [182505] texts seen in production logs.
+_PERSIST_FAILURE = (
+    "Subagent execution failed: (sqlite3.OperationalError) disk I/O error "
+    "[SQL: INSERT INTO kv_store (\"key\", value) VALUES (?, ?)]"
+)
+
+
+@pytest.mark.parametrize("task_loop", [False, True])
+async def test_checkpoint_save_failure_recovers_final_answer_with_degraded_note(
+    debug_capture, task_loop,
+):
+    run = AsyncMock(side_effect=RuntimeError(_PERSIST_FAILURE))
+    child = child_for(run, task_loop=task_loop)
+    _child_with_context(child, [
+        SimpleNamespace(role="user", content="generate the report file"),
+        _assistant("TASK-01 done, file written to /workspace/child_result.txt"),
+    ])
+    result = await dispatch(child)
+    assert result.success is True
+    assert "child_result.txt" in result.data["output"]
+    assert "checkpoint_degraded" in result.data["output"]
+    # 持久化失败同样永久退役该实例：checkpoint 可能已损坏，不能复用。
+    with pytest.raises(BaseError, match="unavailable"):
+        await dispatch(child)
+
+
+@pytest.mark.parametrize("messages", [
+    [_assistant("reading inputs", tool_calls=[{"id": "t1", "name": "write_file"}])],
+    [],
+])
+async def test_checkpoint_save_failure_without_final_answer_is_progress_unknown(
+    debug_capture, messages,
+):
+    run = AsyncMock(side_effect=RuntimeError(_PERSIST_FAILURE))
+    child = child_for(run)
+    _child_with_context(child, messages)
+    with pytest.raises(BaseError, match="subagent_progress_unknown") as error:
+        await dispatch(child)
+    # 错误必须保留存储层原始信息用于定位失败阶段，且不得声称业务未执行。
+    assert "disk I/O error" in str(error.value)
+    assert "workspace" in str(error.value)
+    with pytest.raises(BaseError, match="unavailable"):
+        await dispatch(child)
+
+
+async def test_checkpoint_save_failure_without_context_engine_is_progress_unknown(debug_capture):
+    run = AsyncMock(side_effect=RuntimeError(_PERSIST_FAILURE))
+    child = child_for(run)
+    with pytest.raises(BaseError, match="subagent_progress_unknown"):
+        await dispatch(child)
+
+
+async def test_non_persistence_failure_never_recovers_answer(debug_capture):
+    run = AsyncMock(side_effect=RuntimeError("provider unavailable"))
+    child = child_for(run)
+    _child_with_context(child, [_assistant("TASK-01 done, file written")])
+    with pytest.raises(BaseError, match="provider unavailable"):
+        await dispatch(child)
+
+
+async def test_recovered_degraded_note_truncates_huge_persist_error(debug_capture):
+    blob_params = "x" * 5000
+    run = AsyncMock(side_effect=RuntimeError(
+        f"(sqlite3.OperationalError) disk I/O error [parameters: ('agent_state_blobs', '{blob_params}')]"
+    ))
+    child = child_for(run)
+    _child_with_context(child, [_assistant("TASK-01 done")])
+    result = await dispatch(child)
+    assert result.success is True
+    assert len(result.data["output"]) < 2000
+    assert "x" * 5000 not in result.data["output"]
+
+
 async def test_debug_error_chunk_is_not_reduced_to_empty_success(debug_capture):
     if debug_capture is None:
         return
