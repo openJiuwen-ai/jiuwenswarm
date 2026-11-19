@@ -45,8 +45,7 @@ import sys
 import agent_gateway
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 import subprocess
-from websockets.legacy.client import connect
-from tests.unit_tests.agentserver.fixtures.front_process import free_port, receive, seed, terminate_owned
+from tests.unit_tests.agentserver.fixtures.front_process import connect_front, free_port, receive, seed, terminate_owned
 from jiuwenswarm.agents.harness.team.config_loader import load_team_spec_dict
 from openjiuwen.core.foundation.llm import ToolMessage
 from jiuwenswarm.agents.harness.common.session_ops_service import _build_context_messages_from_history
@@ -688,26 +687,7 @@ async def test_native_front_control_queries_do_not_load_runtime_dependencies(tmp
                                    cwd=root, env=env, stdout=log, stderr=log)
         ws = None
         try:
-            deadline = asyncio.get_running_loop().time() + 30
-            while asyncio.get_running_loop().time() < deadline:
-                if process.poll() is not None:
-                    break
-                try:
-                    ws = await connect(f"ws://127.0.0.1:{port}")
-                    acknowledgement = json.loads(await ws.recv())
-                    assert acknowledgement.get("event") == "connection.ack"
-                    break
-                except OSError:
-                    await asyncio.sleep(0.05)
-            if ws is None:
-                log.flush()
-                details = (tmp_path / "front.log").read_text(
-                    encoding="utf-8", errors="replace"
-                )
-                pytest.fail(
-                    f"native Front did not become ready (exit={process.poll()}):\n"
-                    f"{details[-16000:]}"
-                )
+            ws = await connect_front(process, port, tmp_path / "front.log")
             for method, params in (("session.list", {}), ("project.list", {}), ("config.get", {}),
                                    ("history.get", {"session_id": "acceptance-0", "page_idx": 1})):
                 await ws.send(json.dumps({"request_id": method, "channel_id": "web", "req_method": method,
