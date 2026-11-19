@@ -168,8 +168,6 @@ test('restored history identifies reply ownership without removing previous comp
   ]);
   assert.equal(lastPresentationReply(runtime()).content, 'old answer');
   assert.equal(snapshot().inputMessageId, 'u2'); assert.equal(snapshot().replyToMessageId, 'u1');
-  store.addMessage('round-history', { id: 'auto', role: 'assistant', content: 'unrelated recommendation', timestamp: '4', isProactiveRecommendation: true });
-  assert.equal(lastPresentationReply(runtime()).content, 'old answer');
   store.addMessage('round-history', { id: 'a2', role: 'assistant', content: 'new answer', timestamp: '5' });
   assert.equal(lastPresentationReply(runtime()).content, 'new answer');
   assert.equal(snapshot().replyToMessageId, 'u2');

@@ -469,6 +469,7 @@ test('the page only marks a session missing when metadata reports NOT_FOUND', as
   const missing = [];
   let code = 'WS_DISCONNECTED';
   const refresh = loadCallback('App.tsx', 'fetchSessionMetadata', {
+    browserClientCapabilities: { getEpoch: () => 0 },
     organizationOwnerStateRevision: () => 0,
     useChatStore,
     sessionIdRef: { current: sessionId },
