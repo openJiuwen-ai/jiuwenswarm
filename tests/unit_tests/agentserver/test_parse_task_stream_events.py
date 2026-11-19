@@ -4,6 +4,9 @@
 
 from types import SimpleNamespace
 
+import pytest
+from openjiuwen.core.session.stream import OutputSchema
+
 from jiuwenswarm.common.schema.message import EventType
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
@@ -16,6 +19,29 @@ def test_event_type_accepts_task_lifecycle_values() -> None:
     assert EventType("task.start") is EventType.TASK_START
     assert EventType("task.update") is EventType.TASK_UPDATE
     assert EventType("task.complete") is EventType.TASK_COMPLETE
+
+
+@pytest.mark.parametrize("payload,expected", [
+    ({"todos": []}, {"event_type": "todo.updated", "todos": []}),
+    ({"todos": [], "todo_meta": {"plan_id": "P", "revision": 5}},
+     {"event_type": "todo.updated", "todos": [], "todo_meta": {"plan_id": "P", "revision": 5}}),
+    ({"todos": [], "todo_meta": None}, {"event_type": "todo.updated", "todos": []}),
+    ("invalid", {"event_type": "todo.updated", "todos": []}),
+])
+def test_parse_stream_chunk_preserves_optional_todo_meta(payload, expected) -> None:
+    chunk = SimpleNamespace(type="todo.updated", payload=payload)
+    assert _parse_stream_chunk(chunk) == expected
+
+
+def test_public_and_team_parsers_preserve_typed_todo_meta() -> None:
+    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _parse_team_stream_chunk
+
+    chunk = OutputSchema(type="todo.updated", index=0, payload={
+        "todos": [], "todo_meta": {"plan_id": "P", "revision": 5},
+    })
+    expected = {"event_type": "todo.updated", "todos": [], "todo_meta": {"plan_id": "P", "revision": 5}}
+    assert parse_stream_chunk(chunk) == expected
+    assert _parse_team_stream_chunk(chunk) == expected
 
 
 def test_parse_stream_chunk_forwards_task_update_snapshot() -> None:

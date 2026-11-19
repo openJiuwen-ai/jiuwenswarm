@@ -75,6 +75,33 @@ async def env(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["en", "cn"])
+@pytest.mark.parametrize("task_id", [None, "stable-id"])
+async def test_flash_create_schema_accepts_optional_id_and_persists_it(env, language, task_id):
+    from jsonschema import Draft7Validator
+    from jiuwenswarm.agents.harness.flash.tools.flash_todo import UnifiedTodoTool
+
+    creator, _, session, path = env
+    creator.require_explicit_plan_action = True
+    tool = UnifiedTodoTool({"create": creator}, language)
+    task = {"content": "Create task"}
+    if task_id is not None:
+        task["id"] = task_id
+    inputs = {"action": "create", "tasks": [task]}
+    validator = Draft7Validator(tool.card.input_params)
+    validator.validate(inputs)
+    assert not validator.is_valid({"action": "create", "tasks": [{}]})
+    assert not validator.is_valid({"action": "create", "tasks": [{"content": ""}]})
+    result = await tool.invoke(inputs, session=session)
+    saved = json.loads(path.read_text())
+    assert saved == result.todo_snapshot
+    saved_id = saved["todos"][0]["id"]
+    assert isinstance(saved_id, str) and saved_id
+    if task_id is not None:
+        assert saved_id == task_id
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("language", ["en", "cn", "unsupported"])
 async def test_code_tools_preserve_native_creation_and_incremental_updates(env, language):
     from jiuwenswarm.agents.harness.code.tools.code_todo_tools import (
