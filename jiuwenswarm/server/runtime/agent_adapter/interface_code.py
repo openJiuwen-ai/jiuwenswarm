@@ -68,6 +68,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _AGENT_CARD_ID,
     _CRON_TOOL_CHANNEL_ID,
     _RailBuildInfo,
+    _await_ssas_init_tasks,
     _deep_agent_context_engine_config_for_model,
     _deep_agent_kv_cache_affinity_config,
     parse_int,
@@ -1178,6 +1179,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._instance.deep_config.tool_owner_id = tool_owner_id
         self._instance.ability_manager.set_owner_id(tool_owner_id)
         self._code_spec_rails = list(self._instance.configured_rails())
+        # AgentSSAS backend 初始化 Task 收口: spec 构建期间派发的初始化 Task
+        # 在 rail 生效前统一等待完成(异常已由 done callback 告警, fail-open)。
+        # await 为协作式挂起: 等待期间主事件循环保持可调度, esc/cancel 及
+        # 其它会话 IO 照常处理; 下方 ensure_initialized 走 executor 针对的是
+        # "同步阻塞段占住主循环线程", 本收口不含同步阻塞段, 不适用该契约
+        await _await_ssas_init_tasks()
         # Reloads never sync a caller-supplied Spec's tools, so the multimodal
         # config refresh must not track and rewrite them either.
         self._set_code_multimodal_runtime_state(
@@ -2002,6 +2009,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             ),
             _RailBuildInfo("_stream_event_rail", self._build_stream_event_rail),
             _RailBuildInfo("_security_rail", self._build_security_rail),
+            _RailBuildInfo(
+                "_ssas_rail",
+                self._build_ssas_rail,
+                {"config_base": config_base},
+            ),
             _RailBuildInfo("_heartbeat_rail", self._build_heartbeat_rail),
             _RailBuildInfo(
                 "_session_messaging_route_rail",
@@ -3462,6 +3474,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         added_tools = _merge_tool_cards(agent, tool_cards)
 
         rails = self._build_agent_rails(react_config, config_base, mode="code")
+        # AgentSSAS backend 初始化 Task 收口(团队子代理路径): 本方法为同步契约
+        # 无法 await。backend 按(事件循环, ssas 配置指纹)进程级复用, 仅首次装配
+        # 派发初始化 Task; 在途初始化由 rail 的 report_event 入口 _ensure_initialized
+        # 兜底(等待而非丢弃), 窗口期不会丢失安全事件, 已初始化 backend 无窗口期。
         added_rails = sum(1 for rail in rails if _queue_rail_if_missing(agent, rail))
 
         subagents, _should_add_general = self._build_configured_subagents(model, react_config, config_base)
