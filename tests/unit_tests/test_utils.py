@@ -680,6 +680,7 @@ def test_prepare_workspace_force_reset_restores_sidecar_agents(tmp_path, monkeyp
     assert team["external_cli_path_histories"]["claude"] == ["D:/tools/claude-old.exe"]
 
 
+@pytest.mark.skipif(os.name != "nt", reason="盘符/共享不可达语义仅 Windows（AI 检视 !10636）")
 def test_prepare_workspace_force_reset_keeps_offline_drive_entries(tmp_path, monkeypatch):
     """盘符/共享暂不可达（路径根不可达）的条目视为暂时不可用，保留不剔除。
     盘符语义仅 Windows，非 Windows 平台跳过（AI 检视 !10636）。"""
