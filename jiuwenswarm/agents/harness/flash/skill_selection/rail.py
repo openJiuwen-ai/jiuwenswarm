@@ -40,7 +40,7 @@ class SkillSelectionRail(DeepAgentRail):
     FALLBACK = STATE + ".fallback"
     REUSE = STATE + ".reuse"
     TOOL_NAMES = (SkillSearchTool.TOOL_NAME,)
-    HIDDEN_SECTIONS = ("skills",)
+    HIDDEN_SECTIONS = ("skills", "skill_accelerators")
     HIDDEN_TOOLS = frozenset(
         {
             "list_skill",

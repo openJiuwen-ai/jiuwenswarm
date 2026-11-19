@@ -62,7 +62,11 @@ def bind_skill_turbo_context(
             set_current_request_metadata,
         )
 
-        tokens["metadata"] = set_current_request_metadata(request_metadata)
+        metadata = request_metadata
+        inputs = getattr(ctx, 'inputs', None)
+        if isinstance(metadata, dict) and getattr(inputs, 'tool_name', '') == 'skill_acceleration_exec':
+            metadata = {**metadata, 'turbo_tool_call_id': str(getattr(getattr(inputs, 'tool_call', None), 'id', '') or '')}
+        tokens["metadata"] = set_current_request_metadata(metadata)
 
         # workspace / interactive_ask 与 metadata 同源、同条件（metadata 是 dict 才有）
         if isinstance(request_metadata, dict):

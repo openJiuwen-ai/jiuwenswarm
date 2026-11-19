@@ -1286,7 +1286,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             )
 
             # Keep a disabled rail so it can remove a stale guide, as the parent does.
-            return FlashTurboPromptRail(acceleration_disabled=_FLASH_TURBO_TOOL_NAME in disabled_tools)
+            return FlashTurboPromptRail(acceleration_disabled=_FLASH_TURBO_TOOL_NAME in disabled_tools, config=self._config_cache.get("skill_turbo", {}))
         except Exception as exc:
             logger.warning("[FlashAdapter] FlashTurboPromptRail create failed: %s", exc, exc_info=True)
             return None
@@ -1745,25 +1745,18 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         )
 
     def _refresh_flash_turbo_description(self) -> None:
-        """Reuse Turbo discovery after request env binding, before SDK snapshots.
-
-        The shared helper caches scans by skill roots with a TTL. Calling it
-        here once per request also precedes progressive-tool navigation caching.
-        """
+        """Keep navigation generic; model-call rails render request-specific cards."""
         if self._instance is None or not self._flash_turbo_enabled(self._config_cache):
             return
         card = self._instance.ability_manager.get(_FLASH_TURBO_TOOL_NAME)
         if card is None:
             return
 
-        from jiuwenswarm.server.runtime.skill_turbo import skill_turbo_tools
-
-        old_description = card.description
-        names = skill_turbo_tools.refresh_skill_acceleration_description()
-        # Update the live SDK card too, in case it was copied during registration.
-        card.description = skill_turbo_tools.skill_turbo.card.description
-        if card.description != old_description:
-            logger.info("[FlashTurboDiscovery] supported_skills=%s", names)
+        card.description = (
+            "Skill acceleration: use an exact visible skill and accelerator id. "
+            "Load the skill for schemas and progress. Standard tools and segments may alternate; "
+            "intermediate success is not final delivery."
+        )
 
     def _sync_unified_memory_tool_visibility(self) -> None:
         """按 TOOL_PERMISSION_CONTEXT 调整统一 memory 工具的可见性/只读。

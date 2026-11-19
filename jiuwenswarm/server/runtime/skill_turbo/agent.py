@@ -27,6 +27,42 @@ class SkillTurbo:
         self._env = SkillTurboEnvironment(config)
         self._planner = SkillTurboPlanner(self._env)
         self._executor = SkillTurboExecutor(self._env)
+        self._segment_result: dict[str, Any] = {}
+
+    def segment_result(self) -> dict[str, Any]:
+        import copy
+
+        return copy.deepcopy(self._segment_result)
+
+    async def run_accelerator_stream(self, **kwargs) -> AsyncIterator[AgentResponseChunk]:
+        """准确单段门面；复用台账、装配与执行器，不调用 planner。"""
+        from jiuwenswarm.server.runtime.skill_turbo.segment_execution import run_segment_stream
+
+        async for chunk in run_segment_stream(self, **kwargs):
+            yield chunk
+
+    @property
+    def artifact_holder(self):
+        return self._executor.node_artifacts
+
+    async def run_batch_stream(self, **kwargs):
+        from jiuwenswarm.server.runtime.skill_turbo.batch import run_batch_stream
+
+        async for chunk in run_batch_stream(self, **kwargs):
+            yield chunk
+
+    async def run_skill_stream(self, skill: str, inputs: dict, request_id: str, channel_id: str):
+        """指定技能整流程；精确构建入口后复用legacy执行和收尾。"""
+        import asyncio
+        from jiuwenswarm.server.runtime.skill_turbo.segment_execution import resolve_execution_skill
+
+        record, _ = await asyncio.to_thread(resolve_execution_skill, self._env, skill)
+        plan_code = self._planner.build_plan_code(record)
+        if not plan_code:
+            raise SkillTurboNotHandled('指定技能无整流程入口')
+        self._sync_skill_name_to_inputs(inputs)
+        async for chunk in self._executor.execute_plan_stream(plan_code, inputs, request_id, channel_id):
+            yield chunk
 
     @property
     def artifact_holder(self) -> dict[str, dict[str, Any]]:

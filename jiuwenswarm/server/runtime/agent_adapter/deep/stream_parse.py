@@ -48,6 +48,9 @@ def _propagate_stream_source_id(
     task_id = src_payload.get("task_id")
     if isinstance(task_id, str) and task_id.strip():
         result["task_id"] = task_id.strip()
+    for key in ('turbo_context', 'turbo_delivery'):
+        if isinstance(src_payload.get(key), dict):
+            result[key] = src_payload[key]
     return result
 
 
@@ -588,7 +591,7 @@ def _parse_stream_chunk(
                 # 只透传 stream_source_id：tool 帧带 task_id 会让前端
                 # 按它开一个假的 taskRuns 段，且 reasoning 帧与 tool 帧被拆开。
                 return _propagate_stream_source_id(
-                    {STREAM_SOURCE_ID_FIELD: payload.get(STREAM_SOURCE_ID_FIELD)}
+                    {key: payload[key] for key in (STREAM_SOURCE_ID_FIELD, 'turbo_context', 'turbo_delivery') if key in payload}
                     if isinstance(payload, dict)
                     else {},
                     {"event_type": "chat.tool_call", "tool_call": tool_info},
@@ -605,7 +608,7 @@ def _parse_stream_chunk(
                 else:
                     update_payload = {"content": str(payload)}
                 return _propagate_stream_source_id(
-                    {STREAM_SOURCE_ID_FIELD: payload.get(STREAM_SOURCE_ID_FIELD)}
+                    {key: payload[key] for key in (STREAM_SOURCE_ID_FIELD, 'turbo_context', 'turbo_delivery') if key in payload}
                     if isinstance(payload, dict)
                     else {},
                     {"event_type": "chat.tool_update", **update_payload},
@@ -618,7 +621,7 @@ def _parse_stream_chunk(
                 else:
                     result_payload = {"result": str(payload)}
                 return _propagate_stream_source_id(
-                    {STREAM_SOURCE_ID_FIELD: payload.get(STREAM_SOURCE_ID_FIELD)}
+                    {key: payload[key] for key in (STREAM_SOURCE_ID_FIELD, 'turbo_context', 'turbo_delivery') if key in payload}
                     if isinstance(payload, dict)
                     else {},
                     {"event_type": "chat.tool_result", **result_payload},

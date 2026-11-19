@@ -201,6 +201,7 @@ async def save_resume_ctx(
     pending_tool_call_id: str,
     task_states: list[dict[str, Any]] | None = None,
     outer_task_id: str | None = None,
+    segment: dict[str, Any] | None = None,
 ) -> None:
     """中断时保存断点上下文到 session state（checkpointer 持久化）。
 
@@ -215,6 +216,7 @@ async def save_resume_ctx(
         pending_tool_call_id=pending_tool_call_id,
         task_states=task_states,
         outer_task_id=outer_task_id,
+        segment=segment,
     )
 
 

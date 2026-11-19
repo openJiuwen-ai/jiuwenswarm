@@ -18,9 +18,12 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import time
 from typing import Any
+
+from jiuwenswarm.server.runtime.skill_turbo.resume_context import isolated_skill_state
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +55,7 @@ async def save_node_artifacts(
     nodes: dict[str, dict[str, Any]],
     plan_code_hash: str = "",
     skip_post_run: bool = False,
+    namespace: str | None = None,
 ) -> None:
     """持久化节点产物记录到 session state。
 
@@ -69,6 +73,18 @@ async def save_node_artifacts(
             会自行 post_run 持久化的场景（如中断路径与 save_resume_ctx 合并落盘），
             避免对主 session 重复 post_run 触发 close_stream。
     """
+    if namespace is not None:
+        # 新桶始终由独立Session提交，不post_run/关闭调用方；中断前也可安全保存。
+        if not namespace or not plan_code_hash:
+            raise ValueError("segment artifacts require namespace and plan_code_hash")
+        async with isolated_skill_state(session, write=True) as state:
+            book = _artifact_book(state.get(SKILL_TURBO_NODE_ARTIFACTS_KEY))
+            book["segments"][namespace] = {
+                "namespace": namespace, "skill": skill, "nodes": copy.deepcopy(nodes),
+                "plan_code_hash": plan_code_hash, "updated_at": time.time(),
+            }
+            state.replace(SKILL_TURBO_NODE_ARTIFACTS_KEY, book)
+        return
     if session is None:
         logger.warning("[SkillTurboArtifacts] save_node_artifacts: session is None, skipping")
         return
@@ -96,6 +112,10 @@ async def save_node_artifacts(
         )
         return
     try:
+        existing = session.get_state(SKILL_TURBO_NODE_ARTIFACTS_KEY)
+        if isinstance(existing, dict) and existing.get("version") == 2:
+            payload = {**copy.deepcopy(existing), "legacy": payload}
+            session.update_state({SKILL_TURBO_NODE_ARTIFACTS_KEY: None})
         session.update_state({SKILL_TURBO_NODE_ARTIFACTS_KEY: payload})
         logger.debug(
             "[SkillTurboArtifacts] save_node_artifacts: updated OK sid=%s, payload=%s",
@@ -123,13 +143,24 @@ async def save_node_artifacts(
         )
 
 
-async def load_node_artifacts(session: Any) -> dict[str, Any] | None:
+async def load_node_artifacts(session: Any, *, namespace: str | None = None,
+                              plan_code_hash: str = "") -> dict[str, Any] | None:
     """读取节点产物记录。返回 None 表示无可复用记录。
 
     与 ``clear_node_artifacts`` 范式一致：不自行 ``pre_run``，由调用方
     在已 ``pre_run`` 的上下文里调用（checkpointer state 需 pre_run 后
     才能 get_state 取到）。
     """
+    if namespace is not None:
+        if not namespace or not plan_code_hash:
+            return None
+        async with isolated_skill_state(session) as isolated:
+            raw = isolated.get(SKILL_TURBO_NODE_ARTIFACTS_KEY)
+        entry = _artifact_book(raw)["segments"].get(namespace)
+        if (not isinstance(entry, dict) or entry.get("namespace") != namespace
+                or entry.get("plan_code_hash") != plan_code_hash or not entry.get("nodes")):
+            return None
+        return copy.deepcopy(entry)
     if session is None:
         logger.warning("[SkillTurboArtifacts] load_node_artifacts: session is None")
         return None
@@ -146,6 +177,8 @@ async def load_node_artifacts(session: Any) -> dict[str, Any] | None:
             "[SkillTurboArtifacts] load_node_artifacts get_state failed: sid=%s err=%s", sid, e
         )
         return None
+    if isinstance(state, dict) and state.get("version") == 2:
+        state = state.get("legacy")
     if isinstance(state, dict) and state.get("nodes"):
         logger.info(
             "[SkillTurboArtifacts] load_node_artifacts: found records sid=%s skill=%s nodes=%d",
@@ -162,17 +195,25 @@ async def load_node_artifacts(session: Any) -> dict[str, Any] | None:
     return None
 
 
-async def clear_node_artifacts(session: Any) -> None:
+async def clear_node_artifacts(session: Any, *, namespace: str | None = None) -> None:
     """清除节点产物记录（任务最终成功后调用）。
 
     调用方应已 pre_run，并负责 post_run 持久化。
     此函数只 update in-memory state，不触发 post_run，
     避免与调用方自己的 post_run 重复（重复 post_run 可能导致事件重复触发）。
     """
+    if namespace is not None:
+        await clear_namespace(session, namespace)
+        return
     if session is None:
         return
     try:
+        existing = session.get_state(SKILL_TURBO_NODE_ARTIFACTS_KEY)
         session.update_state({SKILL_TURBO_NODE_ARTIFACTS_KEY: None})
+        if isinstance(existing, dict) and existing.get("version") == 2:
+            existing = copy.deepcopy(existing)
+            existing.pop("legacy", None)
+            session.update_state({SKILL_TURBO_NODE_ARTIFACTS_KEY: existing})
         logger.debug(
             "[SkillTurboArtifacts] clear_node_artifacts: persisted OK sid=%s",
             _resolve_session_id(session),
@@ -181,3 +222,24 @@ async def clear_node_artifacts(session: Any) -> None:
         logger.debug(
             "[SkillTurboArtifacts] clear_node_artifacts update_state failed: %s", exc
         )
+
+
+def segment_artifact_namespace(task_key: str, skill: str, accelerator: str) -> str:
+    if not all((task_key, skill, accelerator)) or any("/" in v or "\\" in v for v in (task_key, skill, accelerator)):
+        raise ValueError("namespace requires task_key, exact skill and accelerator")
+    return f"{task_key}/{skill}/{accelerator}"
+
+
+def _artifact_book(raw: Any) -> dict:
+    if isinstance(raw, dict) and raw.get("version") == 2:
+        return copy.deepcopy(raw)
+    return {"version": 2, "legacy": copy.deepcopy(raw) if isinstance(raw, dict) else {}, "segments": {}}
+
+
+async def clear_namespace(session: Any, namespace: str) -> None:
+    if not namespace:
+        raise ValueError("empty artifact namespace")
+    async with isolated_skill_state(session, write=True) as state:
+        book = _artifact_book(state.get(SKILL_TURBO_NODE_ARTIFACTS_KEY))
+        book["segments"].pop(namespace, None)
+        state.replace(SKILL_TURBO_NODE_ARTIFACTS_KEY, book)

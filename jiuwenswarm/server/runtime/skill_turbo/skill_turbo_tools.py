@@ -11,14 +11,18 @@
 
 from __future__ import annotations
 
+import copy
 import logging
 import time
 from contextvars import ContextVar, Token
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from openjiuwen.core.foundation.tool import tool
 
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import get_current_task_id
+from jiuwenswarm.server.runtime.skill_turbo.accelerator_manifest import AcceleratorSpec
 from jiuwenswarm.server.runtime.skill_turbo.task_slot_guard import (
     claim_task_slot,
     peek_leaked_task_slot,
@@ -36,51 +40,60 @@ logger = logging.getLogger(__name__)
 # _collect_skill_entries 扫盘（iterdir + meta.json 读 + glob，同步 IO 阻塞
 # 事件循环）。同一会话连续多轮调用间技能目录集合不变，重复扫描无意义。
 _ENTRIES_CACHE_TTL_SECONDS = 60.0
-_entries_cache: dict[frozenset[str], tuple[float, dict[str, str]]] = {}
 
 
-def _resolve_skill_roots() -> frozenset[str]:
-    """解析当前上下文可见的技能根目录集合（仅作清单缓存 key）。
-
-    与 discover_external_turbo_skills 内部解析同源；失败返回空集
-    （空集 key 只在"解析失败"的场景间共享，语义一致）。
-    """
-    try:
-        from jiuwenswarm.common.utils import resolve_agent_registered_skill_dirs
-
-        return frozenset(
-            str(p) for p in resolve_agent_registered_skill_dirs()
-        )
-    except Exception:
-        return frozenset()
+@dataclass(frozen=True)
+class AcceleratorCatalogSnapshot:
+    entries: dict[str, str] = field(default_factory=dict)
+    accelerators: dict[str, tuple[AcceleratorSpec, ...]] = field(default_factory=dict)
+    sources: dict[str, str] = field(default_factory=dict)
+    manifest_valid: dict[str, bool] = field(default_factory=dict)
+    manifest_errors: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    metadata_snapshot: tuple = ()
+    collected_at: float = 0.0
+    ok: bool = True
+    error: str = ""
+    failed_at: float | None = None
 
 
-def _collect_skill_entries() -> tuple[dict[str, str], bool]:
-    """双源扫描当前可见技能，返回 (external_name -> 条目文案, 外部源扫描是否成功)。
+_entries_cache: dict[tuple[str, ...], AcceleratorCatalogSnapshot] = {}
+_last_good_catalogs: dict[tuple[str, ...], AcceleratorCatalogSnapshot] = {}
+_catalog_failed_roots: set[tuple[str, ...]] = set()
 
-    内置 skill_codes 目录 + 外部技能目录（turbo/turbo_codes，经
-    ``turbo_package_loader.discover_external_turbo_skills`` 走
-    ``resolve_agent_registered_skill_dirs`` 标准链路）下的 meta.json；
-    external_name 同名时外部覆盖内置。外部源扫描异常时返回 ok=False
-    （调用方可据此沿用上次成功清单，避免瞬时故障导致清单闪断）。
 
-    带 TTL 缓存（见 ``_entries_cache``）：同一根目录集合在 TTL 窗口内的
-    重复调用直接返回上次成功结果，不重复扫盘；仅成功结果落缓存。
-    """
-    from pathlib import Path
+def _resolve_skill_roots() -> tuple[str, ...]:
+    from jiuwenswarm.common.utils import resolve_agent_registered_skill_dirs
 
-    from jiuwenswarm.server.runtime.skill_turbo.skill_meta import (
-        find_skill_root_file,
-        load_skill_meta,
+    return tuple(str(Path(p).resolve()) for p in resolve_agent_registered_skill_dirs())
+
+
+def _collect_catalog_snapshot() -> AcceleratorCatalogSnapshot:
+    from jiuwenswarm.server.runtime.skill_turbo.skill_meta import find_skill_root_file, load_skill_meta
+    from jiuwenswarm.server.runtime.skill_turbo.turbo_package_loader import (
+        discover_external_turbo_skills, external_metadata_snapshot,
     )
 
-    roots = _resolve_skill_roots()
     now = time.monotonic()
-    cached = _entries_cache.get(roots)
-    if cached is not None and now - cached[0] < _ENTRIES_CACHE_TTL_SECONDS:
-        return dict(cached[1]), True
+    roots = None
+    cached = None
+    try:
+        roots = _resolve_skill_roots()
+        cached = _entries_cache.get(roots)
+        metadata = external_metadata_snapshot([Path(p) for p in roots])
+        if (cached is not None and roots not in _catalog_failed_roots
+                and cached.metadata_snapshot == metadata
+                and now - cached.collected_at < _ENTRIES_CACHE_TTL_SECONDS):
+            return copy.deepcopy(cached)
+        discovered = discover_external_turbo_skills(skill_roots=[Path(p) for p in roots])
+    except Exception as exc:
+        # 声明扫描没有业务调用，异常仅记为当前无效，绝不授权执行旧快照。
+        if roots is not None:
+            _catalog_failed_roots.add(roots)
+            cached = _last_good_catalogs.get(roots, cached)
+        logger.warning("外部声明快照读取失败: %s", exc)
+        return replace(copy.deepcopy(cached) if cached is not None else AcceleratorCatalogSnapshot(),
+                       ok=False, error=str(exc), failed_at=now)
 
-    # external_name -> 条目文案（外部源后写入覆盖内置同名条目）
     entries_by_external: dict[str, str] = {}
 
     def _add_entry(external_name: str, description: str, match_keywords: list) -> None:
@@ -113,29 +126,42 @@ def _collect_skill_entries() -> tuple[dict[str, str], bool]:
             exc_info=True,
         )
 
-    # ─── 源二：外部 turbo同名覆盖内置 ──
-    external_ok = True
-    try:
-        from jiuwenswarm.server.runtime.skill_turbo.turbo_package_loader import (
-            discover_external_turbo_skills,
-        )
 
-        for item in discover_external_turbo_skills():
-            _add_entry(
-                item.external_name,
-                str(item.meta.get("description") or f"{item.skill_name} 任务流"),
-                list(item.meta.get("match_keywords") or [item.skill_name]),
-            )
-    except Exception:
-        external_ok = False
-        logger.warning(
-            "[ToolsLoader] external turbo description scan failed",
-            exc_info=True,
-        )
+    accelerators = {}
+    sources = {}
+    validity = {}
+    errors = {}
+    ambiguous = set()
+    for item in discovered:
+        _add_entry(item.external_name, str(item.meta.get("description") or f"{item.skill_name} 任务流"),
+                   list(item.meta.get("match_keywords") or [item.skill_name]))
+        name = item.external_name
+        if name in sources:
+            ambiguous.add(name)
+        sources[name] = item.manifest_source or item.turbo_codes_dir
+        accelerators[name] = item.accelerators
+        validity[name] = item.manifest_valid
+        errors[name] = item.manifest_errors
+    for name in ambiguous:
+        accelerators[name] = ()
+        validity[name] = False
+        errors[name] = ("external_name歧义",)
+    snapshot = AcceleratorCatalogSnapshot(entries_by_external, accelerators, sources, validity, errors,
+                                          metadata, now)
+    _entries_cache[roots] = copy.deepcopy(snapshot)
+    _last_good_catalogs[roots] = copy.deepcopy(snapshot)
+    _catalog_failed_roots.discard(roots)
+    return copy.deepcopy(snapshot)
 
-    if external_ok:
-        _entries_cache[roots] = (now, dict(entries_by_external))
-    return entries_by_external, external_ok
+
+def _collect_skill_entries() -> tuple[dict[str, str], bool]:
+    snapshot = _collect_catalog_snapshot()
+    return snapshot.entries, snapshot.ok
+
+
+def collect_accelerator_catalog() -> AcceleratorCatalogSnapshot:
+    """读取与旧描述同源的声明快照；ok及来源不能在消费时丢弃。"""
+    return _collect_catalog_snapshot()
 
 
 def _render_tool_description(entries: dict[str, str]) -> str:
@@ -180,8 +206,9 @@ def _build_tool_description() -> str:
     return _render_tool_description(entries) + _TEMPLATE_EXCLUSION_SUFFIX
 
 
-# 最近一次外部源扫描成功的技能条目（进程级；瞬时扫描失败时沿用，防清单闪断）
+# 最近一次外部源扫描成功的技能条目；整体异常时仅限同来源沿用。
 _last_good_entries: dict[str, str] = {}
+_last_good_roots: tuple[str, ...] | None = None
 
 
 def refresh_skill_acceleration_description() -> list[str]:
@@ -189,21 +216,20 @@ def refresh_skill_acceleration_description() -> list[str]:
 
     - 请求级上下文（session 绑定目录 / env）此时可见，外部发现能拿到真实清单；
     - 幂等：清单无变化时不产生 card 写入；
-    - 异常安全：外部源扫描失败时沿用最近一次成功清单（``_last_good_entries``），
-      绝不让描述闪断为"暂无"；整体异常时保留 card 旧值并返回最近已知清单；
+    - 异常安全：外部源扫描失败时仅沿用同来源的最近成功快照；
+      整体异常时同样禁止跨来源沿用；
     - 并发语义：ToolCard 为进程级共享对象，多请求并发下"最后写入生效"
       （per-user sidecar 内并发请求可见技能目录一致，无实际冲突）。
 
     Returns:
         当前可见技能的 external_name 列表（排序后；空列表表示无加速技能）。
     """
-    global _last_good_entries
+    global _last_good_entries, _last_good_roots
     try:
         entries, external_ok = _collect_skill_entries()
         if external_ok:
             _last_good_entries = dict(entries)
-        elif _last_good_entries:
-            entries = _last_good_entries
+            _last_good_roots = _resolve_skill_roots()
         card = globals().get("skill_turbo")
         card_obj = getattr(card, "card", None)
         if card_obj is not None:
@@ -213,10 +239,18 @@ def refresh_skill_acceleration_description() -> list[str]:
         return sorted(entries)
     except Exception:
         logger.warning(
-            "[ToolsLoader] refresh skill_acceleration_exec description failed, keep old",
+            "[ToolsLoader] refresh skill_acceleration_exec description failed",
             exc_info=True,
         )
-        return sorted(_last_good_entries)
+        try:
+            if _last_good_roots == _resolve_skill_roots():
+                return sorted(_last_good_entries)
+        except Exception:
+            pass
+        card_obj = getattr(globals().get("skill_turbo"), "card", None)
+        if card_obj is not None:
+            card_obj.description = _render_tool_description({}) + _TEMPLATE_EXCLUSION_SUFFIX
+        return []
 
 # 通用交付确认收尾：非 PPT 技能（docx/xlsx 等）交付节点产物 info 声明
 # send_file_status=sent 时使用（与 NEUTRAL 的区别：明确文件已发送，
@@ -365,7 +399,7 @@ _SKILL_TURBO_HITL_PLACEHOLDER_LEGACY_V2 = (
 # 同桶；且早于 skill_acceleration_exec 的 tool_result，RelayClaw 收集窗口会清空。
 # 由 SkillTurboDeliverySummaryRail.after_tool_call（晚于 StreamEventRail 发
 # tool_result）读取并发出。
-_pending_ppt_delivery_summary: ContextVar[str | None] = ContextVar(
+_pending_ppt_delivery_summary: ContextVar[str | dict | None] = ContextVar(
     "pending_ppt_delivery_summary", default=None
 )
 
@@ -766,17 +800,17 @@ def build_skill_turbo_hitl_result(tic: Any) -> dict[str, Any]:
     return {_SKILL_TURBO_HITL_RESULT_KEY: True, "request": dump}
 
 
-def set_pending_ppt_delivery_summary(summary: str) -> None:
-    text = str(summary or "").strip()
-    _pending_ppt_delivery_summary.set(text or None)
+def set_pending_ppt_delivery_summary(summary: str | dict) -> None:
+    value = copy.deepcopy(summary) if isinstance(summary, dict) else str(summary or '').strip()
+    _pending_ppt_delivery_summary.set(value or None)
 
 
 def clear_pending_ppt_delivery_summary() -> None:
     _pending_ppt_delivery_summary.set(None)
 
 
-def take_pending_ppt_delivery_summary() -> str:
-    text = str(_pending_ppt_delivery_summary.get() or "").strip()
+def take_pending_ppt_delivery_summary() -> str | dict:
+    text = _pending_ppt_delivery_summary.get() or ""
     _pending_ppt_delivery_summary.set(None)
     return text
 
@@ -809,17 +843,40 @@ def _ppt_delivery_summary_start() -> str:
         return ""
 
 
+def pending_summary_matches_result(pending, inputs):
+    result = inputs.tool_result
+    if not isinstance(result, dict) or result.get('mode') not in {'segment', 'batch'}:
+        return not isinstance(pending, dict)
+    if not isinstance(pending, dict):
+        return False
+    evidence = pending.get('delivery_evidence', {})
+    return (result.get('delivery_confirmed') is True and result.get('success') is True
+            and result.get('status') == 'ok' and not result.get('already_done')
+            and not any(result.get(key) for key in ('next_steps', 'remaining_steps', 'resume_remaining'))
+            and evidence == result.get('delivery_evidence')
+            and evidence.get('outer_tool_call_id') == str(getattr(inputs.tool_call, 'id', '') or ''))
+
+
 async def emit_pending_ppt_delivery_summary(session: "Session") -> bool:
     """在外层 tool_result 之后发出无 task_id 的交付总结 chat.delta。
 
     返回是否实际发出。session 为 None 或骨架非法时静默跳过。
     """
     from openjiuwen.core.session.stream.base import OutputSchema
+    from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError
 
     summary = take_pending_ppt_delivery_summary()
-    start_marker = _ppt_delivery_summary_start()
-    if not start_marker or not summary.startswith(start_marker):
-        return False
+    evidence = summary if isinstance(summary, dict) else None
+    if evidence is not None:
+        if evidence.get('delivery_confirmed') is not True or not evidence.get('delivery_evidence'):
+            return False
+        summary = evidence.get('summary', '')
+        if not summary:
+            return False
+    else:
+        start_marker = _ppt_delivery_summary_start()
+        if not start_marker or not summary.startswith(start_marker):
+            return False
     if session is None:
         logger.warning(
             "[SkillTurboTool] pending PPT delivery summary dropped: parent session is None"
@@ -830,7 +887,7 @@ async def emit_pending_ppt_delivery_summary(session: "Session") -> bool:
             OutputSchema(
                 type="llm_output",
                 index=0,
-                payload={"content": summary},
+                payload={"content": summary, **({"turbo_delivery": evidence} if evidence else {})},
             )
         )
         logger.info(
@@ -838,6 +895,8 @@ async def emit_pending_ppt_delivery_summary(session: "Session") -> bool:
             len(summary),
         )
         return True
+    except AbortError:
+        raise
     except Exception:
         logger.warning(
             "[SkillTurboTool] emit PPT delivery summary after tool_result failed",
@@ -1270,20 +1329,163 @@ async def _fresh_call_artifacts_guard(
             )
 
 
+def _wrap_segment_result(result, holder):
+    clear_pending_ppt_delivery_summary()
+    result = copy.deepcopy(result)
+    result['outer_work_remaining'] = bool(get_skill_turbo_outer_todo_active()) or bool((get_skill_turbo_outer_todo_pending() or {}).get('count'))
+    if (result.get('delivery_confirmed') is not True or result.get('success') is not True
+            or result.get('status') != 'ok' or result.get('already_done') or result.get('resume_remaining')
+            or result.get('remaining_steps') or result.get('next_steps')):
+        return result
+    owner = result.get('delivery_owner')
+    entry = holder.get(owner, {})
+    evidence = entry.get('delivery_evidence', {})
+    summary = entry.get('delivery_summary')
+    metadata = get_current_request_metadata() or {}
+    correlation = {
+        'skill': result.get('skill'), 'task_key': result.get('ledger', {}).get('task_key'),
+        'outer_tool_call_id': metadata.get('turbo_tool_call_id', ''),
+        'request_id': metadata.get('request_id', ''), 'batch_id': result.get('batch_id', ''), 'delivery_owner': owner,
+        'files': copy.deepcopy(entry.get('files', [])), 'receipt': copy.deepcopy(evidence),
+    }
+    result['delivery_evidence'] = correlation
+    if summary and evidence.get('new_delivery') is True and evidence.get('status') == 'sent':
+        pending = {'summary': summary, 'delivery_confirmed': True, 'delivery_evidence': correlation}
+        set_pending_ppt_delivery_summary(pending)
+    return result
+
+
+async def _invoke_segment_tool(*, adapter, skill, accelerator, params, inputs, parent_session,
+                               request_id, channel_id, external_session_id, outer_task_id, has_outer_todo, accelerators=None):
+    from openjiuwen.core.session.agent import create_agent_session
+    from openjiuwen.core.session.stream.base import OutputSchema
+    from jiuwenswarm.server.runtime.skill_turbo.agent import SkillTurbo
+    from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import extract_tool_interrupt
+    from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError
+    from jiuwenswarm.server.runtime.skill_turbo.resume_context import ResumeContextManager, set_skill_turbo_id
+    from jiuwenswarm.server.runtime.skill_turbo.segment_execution import _result
+
+    from functools import partial
+    mode_result = partial(_result, skill, accelerator)
+    if accelerators is not None:
+        from jiuwenswarm.server.runtime.skill_turbo.batch import _result as batch_result
+        mode_result = partial(batch_result, skill)
+
+    sid = _resolve_skill_turbo_resume_session_id(external_session_id, parent_session)
+    card = getattr(getattr(adapter, '_instance', None), 'card', None)
+    if not sid or card is None:
+        return mode_result('blocked', error='session_identity_missing')
+    session = create_agent_session(session_id=sid, card=card)
+    set_skill_turbo_id(session, card)
+    manager = ResumeContextManager(session)
+    answers = get_skill_turbo_resume_answers()
+    resume_ctx = None
+    instance = None
+    suppressed = None
+    try:
+        if answers is not None:
+            resume_ctx = await manager.load()
+            if resume_ctx is None:
+                return mode_result('failed', error='resume_context_unavailable')
+            if not isinstance(resume_ctx.get('segment'), dict):
+                return mode_result('failed', error='segment_control_missing')
+            if resume_ctx.get('resume_in_flight') is True:
+                return mode_result('busy', error='resume_in_flight')
+            try:
+                adapter.restore_skill_turbo_model_from_resume_ctx(resume_ctx)
+            except AbortError:
+                raise
+            except Exception as exc:
+                await manager.clear_matching(resume_ctx)
+                return mode_result('failed', error=f'resume_model_unavailable: {exc}')
+        config = adapter.build_skill_turbo_config()
+        instance = SkillTurbo(config)
+        method = instance.run_batch_stream if accelerators is not None else instance.run_accelerator_stream
+        selection = {'accelerators': accelerators} if accelerators is not None else {'accelerator': accelerator}
+        stream = method(
+            skill=skill, **selection, params=params, inputs=inputs, session=session,
+            request_id=request_id, channel_id=channel_id, task_id=outer_task_id,
+            resume_ctx=resume_ctx,
+            user_input=_resume_user_input_from_raw(answers, resume_ctx, adapter) if answers is not None else None,
+        )
+        async for chunk in stream:
+            payload = chunk.payload
+            if not payload:
+                continue
+            event_type = payload.get('event_type', 'unknown')
+            if event_type in _SKILL_TURBO_SKIP_EVENT_TYPES or event_type == 'chat.error':
+                continue
+            if has_outer_todo and event_type in _SKILL_TURBO_TASK_EVENT_TYPES:
+                if event_type == 'task.update':
+                    suppressed = dict(payload)
+                continue
+            if has_outer_todo:
+                payload = _without_inner_task_routing(payload)
+            if parent_session is None:
+                continue
+            payload = {**payload, 'turbo_context': {
+                'skill': skill, 'accelerator': payload.get('accelerator', accelerator), 'batch_id': payload.get('batch_id', ''),
+                'task_key': payload.get('task_key') or getattr(getattr(instance._executor, 'segment_context', None), 'task_key', ''),
+                'outer_tool_call_id': (get_current_request_metadata() or {}).get('turbo_tool_call_id', ''),
+            }}
+            output_type, forwarded = _prepare_parent_stream_output(event_type, payload)
+            await parent_session.write_stream(OutputSchema(type=output_type, index=0, payload=forwarded))
+            if event_type == 'task.update':
+                slot_key = _parent_session_slot_key(parent_session)
+                if _is_terminal_task_snapshot(payload):
+                    release_task_slot(slot_key)
+                else:
+                    claim_task_slot(slot_key, _task_ids_from_snapshot(payload))
+            if event_type in _SKILL_TURBO_OOB_TASK_EVENT_TYPES:
+                await _push_task_event_out_of_band(event_type, forwarded, request_id=str(request_id or ''),
+                                                  channel_id=str(channel_id or ''), session_id=sid)
+        await _settle_leaked_task_slot(parent_session, request_id, channel_id, external_session_id, suppressed)
+        result = instance.segment_result()
+        return _wrap_segment_result(result, instance._executor.node_artifacts)
+    except AbortError as exc:
+        tic = extract_tool_interrupt(exc)
+        if tic is None:
+            raise
+        set_skill_turbo_hitl_tic(tic)
+        return build_skill_turbo_hitl_result(tic)
+    finally:
+        await session.close_stream()
+        if instance is not None:
+            instance.release_registered_tools()
+
+
 @tool(
     name="skill_acceleration_exec",
-    description=_build_tool_description(),
+    description="Skill acceleration: select an exact visible skill and accelerator; load the skill for schemas and progress. Intermediate success is not final delivery.",
     stateless=True,
 )
-async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] | str:
+async def skill_turbo(
+    query: str, fresh_start: bool = False, skill: str = '', accelerator: str = '',
+    params: dict[str, Any] | None = None, accelerators: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | str:
     """执行 SkillAccelerationExec 任务。
 
     Args:
         query: 对单个任务的忠实总结，须严格基于用户原话与历史上下文中已有的信息，不得自行扩写、脑补或补充用户未提及的内容细节（如擅自罗列章节大纲、技术要点、子主题等）。仅在用户表达零散时做必要的凝练与指代消解，确保任务目标、产物与约束完整可执行，但不新增任何信息。每次调用只处理一个任务；若用户要求多个任务，必须串行调用：等待前一次调用完成并收到返回结果后，再发起下一次调用。
-        fresh_start: 显式确认全新任务。仅当用户明确要求一个与本会话已有加速产物完全无关的新任务时才设为
+        fresh_start: 仅legacy整流程的全新任务确认。段/批次忽略此参数，不换任务、目录或清状态。仅legacy中用户明确要求与已有产物无关的新任务时才设为
             true（将丢弃旧产物记录并从头执行）；默认 false。若调用被拒绝并提示"存在已完成节点产物"，
             继续旧任务应改用 skill_tool，不要靠本参数重试。
+        skill: 精确技能名；与 accelerator 执行单段，或与 accelerators 执行批次。
+        accelerator: 精确阶段 id；__full__ 执行指定技能整流程。
+        params: 单段参数；批次中为各段均须合法的共享参数。
+        accelerators: 同技能1至8段串行列表，元素仅含id、params、严格布尔force；与accelerator互斥。
     """
+    from jiuwenswarm.server.runtime.skill_turbo.segment_execution import _result
+
+    clear_pending_ppt_delivery_summary()
+    if accelerators is not None and (not skill or accelerator or not isinstance(accelerators, list) or not accelerators):
+        from jiuwenswarm.server.runtime.skill_turbo.batch import _result as batch_result
+        return batch_result(skill, 'invalid_args', error='invalid_batch_execution_mode')
+    if (accelerator and not skill) or (params is not None and (
+        not skill or (not accelerator and accelerators is None) or accelerator == '__full__' or not isinstance(params, dict)
+    )):
+        return _result(skill, accelerator, 'invalid_args', error='invalid_execution_mode')
+    ordinary_segment = bool(skill and accelerator != '__full__')
     # ── [TEMP-TEMPLATE-BYPASS] 模板请求拦截（临时措施，待 skill 加速器适配模板功能后删除整块）──
     # 拦截任何携带自定义模板路径的请求：前端选择自定义模板时会注入"模板目录路径/模板主文件路径"
     # 字段；LLM 引用历史中生成/上传的模板时会以自然语言包装路径（如"模板目录：D:\..."）。
@@ -1301,7 +1503,7 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
         r"(?:[A-Za-z]:[\\/]|/|~/|\.{0,2}/)"
     )
     template_keywords = ("模板目录路径", "模板主文件路径", "pack_dir")
-    if is_ppt_query and (template_path_pattern.search(query) or any(
+    if not ordinary_segment and is_ppt_query and (template_path_pattern.search(query) or any(
         kw in query for kw in template_keywords
     )):
         logger.info(
@@ -1330,7 +1532,7 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
     # user message）。两层引用同一份关键词（region_edit.py），叠加降低误进概率。
     # 删除方式：待 pptx-craft 流水线支持"编辑已有 PPT"短路分支后，搜索 [REGION-EDIT-BYPASS] 删除本块。
     from jiuwenswarm.server.runtime.skill_turbo.region_edit import REGION_EDIT_KEYWORDS
-    if is_ppt_query and any(kw in query for kw in REGION_EDIT_KEYWORDS):
+    if not ordinary_segment and is_ppt_query and any(kw in query for kw in REGION_EDIT_KEYWORDS):
         logger.info(
             "[SkillTurboTool] 检测到 PPT 选区/编辑已有 PPT 请求，跳过 skill 加速器，"
             "建议改用 skill_tool 走 pptx-craft 标准流程或直接编辑已有 PPT 文件"
@@ -1454,6 +1656,14 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
         _files = request_metadata.get("files")
         if _files is not None:
             inputs["files"] = _files
+
+    if ordinary_segment:
+        return await _invoke_segment_tool(
+            adapter=adapter, skill=skill, accelerator=accelerator, params=params, inputs=inputs,
+            parent_session=parent_session, request_id=request_id, channel_id=channel_id,
+            external_session_id=external_session_id, outer_task_id=outer_task_id,
+            has_outer_todo=has_outer_todo, accelerators=accelerators,
+        )
 
     turbo_session = None
     resume_ctx = None
@@ -1609,8 +1819,10 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
                 task_states=resume_ctx.get("task_states"),
             )
         else:
-            stream = skill_turbo_inst.run_stream(
-                query, inputs, request_id, channel_id
+            stream = (
+                skill_turbo_inst.run_skill_stream(skill, inputs, request_id, channel_id)
+                if skill and accelerator == '__full__'
+                else skill_turbo_inst.run_stream(query, inputs, request_id, channel_id)
             )
 
         async for chunk in stream:
@@ -1834,6 +2046,7 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
 # PPT 加速流水线经常超过 AbilityManager 默认 300s 工具超时；与 deepresearch_stream 一样
 # 豁免外层 deadline。timeout_s=None 后仍受 MAX_TOOL_CALL_TIMEOUT_HARD_LIMIT（默认 3600s）约束。
 skill_turbo.card.properties["resilience"] = {"timeout_s": None}
+skill_turbo.card.input_params['additionalProperties'] = False
 
 
 def get_skill_turbo_tools() -> list:

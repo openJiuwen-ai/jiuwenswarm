@@ -29,12 +29,15 @@
 from __future__ import annotations
 
 import logging
+import importlib.machinery
 import re
 import sys
 import threading
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from jiuwenswarm.server.runtime.skill_turbo.accelerator_manifest import AcceleratorSpec, load_manifest_record
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,33 @@ _PACKAGE_REGISTRY: dict[str, str] = {}
 # 拒绝后注册者，防止其重绑包导致先注册技能执行到错误代码。
 _PACKAGE_SKILL_NAMES: dict[str, str] = {}
 _REGISTRY_LOCK = threading.Lock()
+_EXECUTION_FINGERPRINTS: dict[str, tuple[str, str]] = {}
+
+
+class _ExecutionSourceLoader(importlib.machinery.SourceFileLoader):
+    def get_code(self, fullname):
+        # 内容指纹已经核验；不让同stat但内容变化的旧pyc覆盖本次源码。
+        filename = self.get_filename(fullname)
+        return self.source_to_code(self.get_data(filename), filename)
+
+
+def ensure_execution_package(skill_name: str, turbo_codes_dir: str, fingerprint: str) -> str:
+    package = ensure_turbo_package(skill_name, turbo_codes_dir)
+    if package is None:
+        raise ValueError('execution_package_collision')
+    definition = (str(Path(turbo_codes_dir).resolve()), fingerprint)
+    with _REGISTRY_LOCK:
+        if _EXECUTION_FINGERPRINTS.get(package) != definition:
+            for name in list(sys.modules):
+                if name.startswith(package + '.'):
+                    sys.modules.pop(name, None)
+            for directory in [Path(turbo_codes_dir), *Path(turbo_codes_dir).rglob('*')]:
+                if directory.is_dir() and '__pycache__' not in directory.parts:
+                    sys.path_importer_cache[str(directory)] = importlib.machinery.FileFinder(
+                        str(directory), (_ExecutionSourceLoader, importlib.machinery.SOURCE_SUFFIXES),
+                    )
+            _EXECUTION_FINGERPRINTS[package] = definition
+    return package
 
 # plan_code 形如 "from {pkg}.{skill}.{stem} import root"
 _PLAN_CODE_IMPORT_RE = re.compile(
@@ -74,6 +104,59 @@ class ExternalTurboSkill:
     external_name: str         # 技能目录名（如 "pptx-craft"）
     turbo_codes_dir: str       # turbo_codes 目录绝对路径
     meta: dict = field(default_factory=dict)  # turbo/meta.json 内容
+    accelerators: tuple[AcceleratorSpec, ...] = ()
+    manifest_fingerprint: str = ""
+    manifest_source: str = ""
+    manifest_valid: bool = True
+    manifest_errors: tuple[str, ...] = ()
+
+
+def external_metadata_snapshot(skill_roots: list[Path]) -> tuple:
+    """有序来源与文件集合/stat快照；真实IO异常不得伪装为空目录。"""
+    snapshot = []
+    for root in skill_roots:
+        root = Path(root).resolve()
+        try:
+            children = sorted(p for p in root.iterdir() if p.name not in {".git", "__pycache__"})
+        except FileNotFoundError:
+            snapshot.append((str(root), None))
+            continue
+        candidates = [root] + [p for p in children if p.is_dir() and p.name not in {".git", "__pycache__"}]
+        snapshot.append((str(root), tuple(p.name for p in children if p.is_dir())))
+        for skill in candidates:
+            turbo = skill / "turbo"
+            try:
+                turbo.stat()
+            except FileNotFoundError:
+                continue
+            for file in (turbo / "meta.json", turbo / "accelerators.json"):
+                try:
+                    info = file.stat()
+                    snapshot.append((str(file), info.st_mtime_ns, info.st_size))
+                except FileNotFoundError:
+                    snapshot.append((str(file), None))
+            codes = turbo / "turbo_codes"
+            try:
+                dirs = sorted(codes.iterdir())
+            except FileNotFoundError:
+                snapshot.append((str(codes), None))
+                continue
+            snapshot.append((str(codes), tuple(p.name for p in dirs if p.is_dir())))
+            for directory in dirs:
+                if not directory.is_dir() or directory.name.startswith(("_", ".")):
+                    continue
+                # 遍历器的OSError必须上抛；Path.rglob可能吞掉权限异常。
+                pending = [directory]
+                while pending:
+                    current = pending.pop()
+                    for file in sorted(current.iterdir()):
+                        if file.is_dir() and file.name not in {".git", "__pycache__"}:
+                            if not file.is_symlink():
+                                pending.append(file)
+                        elif file.suffix == ".py":
+                            info = file.stat()
+                            snapshot.append((str(file), info.st_mtime_ns, info.st_size))
+    return tuple(snapshot)
 
 
 def sanitize_skill_name(skill_name: str) -> str:
@@ -195,7 +278,7 @@ def _iter_skill_dir_candidates(skill_root: Path) -> list[Path]:
 def discover_external_turbo_skills(
     skill_roots: list[Path] | None = None,
 ) -> list[ExternalTurboSkill]:
-    """扫描技能目录，发现全部 turbo 技能（不注册包、不校验，纯发现）。
+    """扫描技能目录及阶段声明（不注册包、不导入或执行业务代码）。
 
     同一 skill_name 多源时按 roots 顺序取第一个
     （请求级绑定目录 > 共享目录 > 工作区，与 resolve_agent_registered_skill_dirs
@@ -230,16 +313,19 @@ def discover_external_turbo_skills(
             if not codes_root.is_dir():
                 continue
             meta = load_skill_meta(skill_dir.name, turbo_dir)
+            # 原meta解析器兼容性保持不变，但不能把不可读取误报为合法默认元数据。
+            try:
+                (turbo_dir / "meta.json").read_bytes()
+            except FileNotFoundError:
+                pass
             # enable_turbo 开关：true / 缺省 = 允许该技能走 turbo 加速（向后
             # 兼容，pptx-craft / xlsx-craft 等未声明字段的技能保持启用）；
             # 显式 false = 跳过该技能——既不出现在 skill_acceleration_exec 的
             # 描述清单（skill_turbo_tools._collect_skill_entries 源二），也不
             # 注册进 environment 的 skills 路由池（planner 无匹配 →
             # SkillTurboNotHandled → interface 层降级为标准流程）。
-            # 开关翻转即刻生效（无需重启）：发现阶段每次重扫（meta.json 每次
-            # 重读），技能从 discovered 消失/出现即改变 _external_scan_cache
-            # 的 mtime 快照 key 集合（必 miss 走全量重扫）；仅工具描述清单
-            # 受 _entries_cache 60s TTL 滞后。
+            # meta.json 的逐文件元数据变化会使注册和描述缓存失效；
+            # 下一次扫描按当前开关重新发现。
             if meta.get("enable_turbo") is False:
                 logger.info(
                     "[TurboPackageLoader] skip turbo-disabled skill "
@@ -259,6 +345,7 @@ def discover_external_turbo_skills(
                 if find_skill_root_file(name_dir) is None:
                     continue
                 seen_skill_names.add(skill_name)
+                manifest = load_manifest_record(skill_dir, skill_name=skill_name, meta=meta)
                 found.append(
                     ExternalTurboSkill(
                         skill_name=skill_name,
@@ -267,6 +354,11 @@ def discover_external_turbo_skills(
                         ),
                         turbo_codes_dir=str(codes_root.resolve()),
                         meta=meta,
+                        accelerators=manifest.accelerators,
+                        manifest_fingerprint=manifest.fingerprint,
+                        manifest_source=manifest.source,
+                        manifest_valid=manifest.valid,
+                        manifest_errors=manifest.errors,
                     )
                 )
     return found

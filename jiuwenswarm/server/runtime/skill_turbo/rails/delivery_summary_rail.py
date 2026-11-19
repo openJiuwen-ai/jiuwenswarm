@@ -7,8 +7,8 @@ P10 成功时 skill_turbo_tools 把骨架挂到 ContextVar；本 rail 在
 skill_acceleration_exec 的 after_tool_call 中、且晚于 StreamEventRail
 发出 tool_result 之后，再 write_stream(llm_output)。
 
-时序约束（openjiuwen：priority 越小越先执行）：
-StreamEventRail.priority=80 先发 tool_result；本 rail priority=90 后发骨架，
+时序约束（openjiuwen：priority 越大越先执行）：
+StreamEventRail.priority=80 先发 tool_result；本 rail after_tool_call priority=79 后发骨架，
 才能落入上层前端的 pptTurboSummary 收集窗口。
 """
 
@@ -17,8 +17,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ToolCallInputs
+from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, AgentCallbackEvent, ToolCallInputs
 from openjiuwen.harness.rails.base import DeepAgentRail
+from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +29,11 @@ _SKILL_ACCELERATION_TOOL = "skill_acceleration_exec"
 class SkillTurboDeliverySummaryRail(DeepAgentRail):
     """在 skill_acceleration_exec 成功结束后流式发出待投递的 PPT 交付总结。"""
 
-    # 必须 > StreamEventRail(80)，保证 tool_result 已发出后再发骨架。
-    priority = 90
+    # 本 rail 没有初始化副作用；兼容不支持 hook 级优先级的已安装 SDK。
+    priority = 79
+
+    def callback_priority(self, event):
+        return 79 if event == AgentCallbackEvent.AFTER_TOOL_CALL else self.priority
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         if not isinstance(ctx.inputs, ToolCallInputs):
@@ -47,6 +51,9 @@ class SkillTurboDeliverySummaryRail(DeepAgentRail):
             from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
                 clear_pending_ppt_delivery_summary,
                 emit_pending_ppt_delivery_summary,
+                take_pending_ppt_delivery_summary,
+                set_pending_ppt_delivery_summary,
+                pending_summary_matches_result,
             )
         except Exception:
             logger.debug(
@@ -56,7 +63,7 @@ class SkillTurboDeliverySummaryRail(DeepAgentRail):
             return
 
         # HITL / 审批中断：尚无真实 tool_result，清掉可能残留的 pending，勿发成功骨架。
-        if _is_tool_interrupt(ctx):
+        if _is_tool_interrupt(ctx) or ctx.exception is not None:
             clear_pending_ppt_delivery_summary()
             return
 
@@ -68,8 +75,14 @@ class SkillTurboDeliverySummaryRail(DeepAgentRail):
             )
             return
 
+        pending = take_pending_ppt_delivery_summary()
+        if not pending_summary_matches_result(pending, ctx.inputs):
+            return
+        set_pending_ppt_delivery_summary(pending)
         try:
             await emit_pending_ppt_delivery_summary(session)
+        except AbortError:
+            raise
         except Exception:
             logger.debug(
                 "[SkillTurboDeliverySummaryRail] emit after tool_result failed",
