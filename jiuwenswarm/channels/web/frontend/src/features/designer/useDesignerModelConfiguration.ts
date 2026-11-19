@@ -4,7 +4,8 @@ import { webRequest } from '../../services/webClient';
 import { SETTINGS_CONFIG_CHANGED_EVENT } from '../settings/services/settingsContract';
 import { multimodalErrorDetails, type MultimodalSnapshot } from '../settings/services/multimodalSettings';
 import {
-  readGenerationSelection,
+  selectionAfterPick,
+  selectionForReload,
   type DesignGenerationSelection,
   type DesignGenerationSlot,
 } from './designerModelConfiguration';
@@ -55,6 +56,7 @@ type DesignerGenerationState = {
 
 let reloadEpoch = 0;
 let selectionEpoch = 0;
+const pendingWrites = new Map<DesignGenerationSlot, number>();
 let subscribers = 0;
 let stopListening: (() => void) | null = null;
 
@@ -70,7 +72,6 @@ export const useDesignerGenerationStore = create<DesignerGenerationState>((set, 
   selectError: '',
   reload: async () => {
     const epoch = ++reloadEpoch;
-    const selectionAtStart = selectionEpoch;
     set({ loading: true, failed: false });
     try {
       const [snapshot, config] = await Promise.all([
@@ -84,9 +85,12 @@ export const useDesignerGenerationStore = create<DesignerGenerationState>((set, 
         loading: false,
         failed: false,
       };
-      if (selectionAtStart === selectionEpoch) {
-        next.selection = readGenerationSelection(selectionFromConfig(config), models);
-      }
+      next.selection = selectionForReload(
+        selectionFromConfig(config),
+        get().selection,
+        pendingWrites.keys(),
+        models,
+      );
       set(next);
       publishChange();
     } catch (error) {
@@ -97,7 +101,12 @@ export const useDesignerGenerationStore = create<DesignerGenerationState>((set, 
           loading: false,
           failed: false,
         };
-        if (selectionAtStart === selectionEpoch) next.selection = EMPTY_SELECTION;
+        next.selection = selectionForReload(
+          EMPTY_SELECTION,
+          get().selection,
+          pendingWrites.keys(),
+          [],
+        );
         set(next);
         publishChange();
         return;
@@ -108,23 +117,29 @@ export const useDesignerGenerationStore = create<DesignerGenerationState>((set, 
   select: async (slot, modelId) => {
     if (get().selection[slot] === modelId) return;
     const epoch = ++selectionEpoch;
-    set({ selectError: '' });
+    const models = get().snapshot?.models ?? [];
+    const previous = get().selection[slot];
+    pendingWrites.set(slot, epoch);
+    set({
+      selection: selectionAfterPick(get().selection, slot, modelId, models),
+      selectError: '',
+    });
+    publishChange();
     try {
       await webRequest(
         'config.set',
         { [DESIGN_GENERATION_CONFIG_KEY[slot]]: modelId },
         { timeoutMs: 30_000 },
       );
-      if (epoch !== selectionEpoch) return;
-      const models = get().snapshot?.models ?? [];
+      if (pendingWrites.get(slot) === epoch) pendingWrites.delete(slot);
+    } catch (error) {
+      if (pendingWrites.get(slot) !== epoch) return;
+      pendingWrites.delete(slot);
       set({
-        selection: readGenerationSelection({ ...get().selection, [slot]: modelId }, models),
-        selectError: '',
+        selection: { ...get().selection, [slot]: previous },
+        selectError: error instanceof Error ? error.message : String(error),
       });
       publishChange();
-    } catch (error) {
-      if (epoch !== selectionEpoch) return;
-      set({ selectError: error instanceof Error ? error.message : String(error) });
     }
   },
 }));
