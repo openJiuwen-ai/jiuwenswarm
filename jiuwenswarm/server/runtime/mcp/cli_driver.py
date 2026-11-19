@@ -98,17 +98,22 @@ def _pick_per_platform(spec: Any) -> str | None:
 CommandRunner = Callable[[str], "CommandResult"]
 
 
-def _credential_env(env: dict[str, str] | None) -> dict[str, str] | None:
-    """Return only the entries of *env* that differ from ``os.environ``.
+def _credential_env(
+    env: dict[str, str] | None, keys: list[str]
+) -> dict[str, str] | None:
+    """Return the token-schema entries of *env* (never host-only keys).
 
     ``_build_cred_env`` starts from ``dict(os.environ)`` and adds the tokens
-    from the connector's token-schema, so the diff is exactly the credential
-    variables — the part that has to follow the CLI into the sandbox.
+    declared by the connector's token-schema, so *keys* — not a diff against
+    ``os.environ`` — identify the variables that have to follow the CLI into
+    the sandbox. ``CliDriver.__init__`` also rewrites the host ``PATH`` after
+    the snapshot is taken, which a diff would mistake for a credential and
+    forward into the sandbox.
     """
     if not env:
         return None
-    diff = {k: v for k, v in env.items() if os.environ.get(k) != v}
-    return diff or None
+    picked = {k: env[k] for k in keys if k in env}
+    return picked or None
 
 
 # Injector for authWaitForExit non-blocking start (tests). Returns (proc, initial_output).
@@ -178,6 +183,19 @@ def _is_powershell_script_dep(output: str) -> bool:
     """True when a failed install's output shows its script needs PowerShell.
     Text-anchored only, so CLIs that don't depend on it are never misclassified."""
     return bool(_POWERSHELL_SCRIPT_DEP_RE.search(output or ""))
+
+
+# Sandbox login shells start even when the CLI is missing, so the missing
+# binary surfaces as shell text instead of the host runner's FileNotFoundError
+# / ENOENT. Used to classify a detached login that exited without an auth URL.
+_BINARY_NOT_FOUND_OUTPUT_RE = re.compile(
+    r"command not found|: not found\b|: No such file or directory"
+)
+
+
+def _is_binary_not_found_output(output: str) -> bool:
+    """True when the shell output says the command's binary does not exist."""
+    return bool(_BINARY_NOT_FOUND_OUTPUT_RE.search(output or ""))
 
 
 def _safe_split_command(command: str) -> list[str]:
@@ -471,6 +489,9 @@ class CliDriver:
     ) -> None:
         self.name = str(name or "").strip()
         self.manifest = manifest or load_cli_manifest(self.name) or CliManifest()
+        # token-schema keys whose values were merged into the environment;
+        # kept so the sandbox receives exactly those variables.
+        self._cred_keys: list[str] = []
         # Credential-derived env to inject into spawned CLI subprocesses. Some
         # CLI MCPs (gitcode) authenticate via an env-var token the CLI's own
         # ``auth status`` reads (gitcode reads GITCODE_TOKEN/GC_TOKEN from env)
@@ -540,7 +561,7 @@ class CliDriver:
             return None
         # Only the credential-derived keys travel into the sandbox; the rest of
         # the parent environ carries host paths that are meaningless there.
-        self._sandbox_env = _credential_env(cred_env)
+        self._sandbox_env = _credential_env(cred_env, self._cred_keys)
         logger.info(
             "[cli_driver] %s CLI lifecycle commands run inside the tool sandbox", self.name,
         )
@@ -569,6 +590,7 @@ class CliDriver:
             return None
         if not keys:
             return None
+        self._cred_keys = list(keys)
         try:
             stored = CredentialStore().get_all(self.name)
         except Exception:  # noqa: BLE001
@@ -799,6 +821,7 @@ class CliDriver:
         _PENDING_AUTH_PROCS[self.name] = proc
         url: str | None = None
         out = ""
+        exited = False
         deadline = time.time() + _AUTH_URL_WAIT_S
         while time.time() < deadline:
             text = cli_sandbox.read_text(log_path)
@@ -812,8 +835,23 @@ class CliDriver:
                 # The login exited on its own (e.g. it opened the browser
                 # itself); keep whatever the log holds and stop waiting.
                 out = cli_sandbox.read_text(log_path) or out
+                exited = True
                 break
             time.sleep(0.5)
+        if exited and url is None and _is_binary_not_found_output(out):
+            # ``start_detached`` hands the command to the sandbox shell, which
+            # starts fine even when the CLI is missing: the pid exists, but the
+            # login is already gone and the log only holds "command not found".
+            # Report the same binary_not_found the host Popen path gets from
+            # ENOENT, otherwise the frontend shows an OAuth step with no URL.
+            _PENDING_AUTH_PROCS.pop(self.name, None)
+            return AuthStepResult(
+                name=self.name, step_index=index, command=cmd,
+                succeeded=False, needs_user_action=False,
+                error=f"auth command not found: {out.strip()[-500:]}",
+                error_kind=ERR_BINARY_NOT_FOUND,
+                output=out,
+            )
         return AuthStepResult(
             name=self.name, step_index=index, command=cmd,
             succeeded=True, needs_user_action=True,
