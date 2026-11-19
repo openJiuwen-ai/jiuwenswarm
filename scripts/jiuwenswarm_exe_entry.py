@@ -589,8 +589,7 @@ def _dispatch() -> int | None:
         from jiuwenswarm.channels.desktop.office_addins import remove_all
         from jiuwenswarm.common.utils import get_user_workspace_dir
 
-        remove_all(get_user_workspace_dir())
-        return 0
+        return 0 if remove_all(get_user_workspace_dir()) else 1
     if _pop_flag("--desktop-restore-upgrade-config"):
         if len(sys.argv) != 1:
             raise ValueError("upgrade configuration restore does not accept arguments")

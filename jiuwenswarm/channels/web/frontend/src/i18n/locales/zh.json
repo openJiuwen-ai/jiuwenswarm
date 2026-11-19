@@ -198,9 +198,7 @@
     "confirm": {
       "install": "安装 {{name}}",
       "repair": "修复 {{name}}",
-      "remove": "移除 {{name}}？",
-      "removeNotice": "移除后 Office 不再加载 WorkSwarm；本机没有其他 WorkSwarm 加载项时，本机证书会一并删除。",
-      "trustNotice": "系统可能会请你信任一个本机证书（macOS 上需要输入登录密码），Office 靠它安全地连接本机 WorkSwarm。"
+      "remove": "移除 {{name}}？"
     },
     "suites": {
       "office": {
@@ -208,20 +206,38 @@
         "what": "在 Word、Excel 和 PowerPoint 里使用 WorkSwarm，直接修改打开的文档。",
         "requirement": "Microsoft 365 版，Windows 2504 及以上或 Mac 16.96 及以上；不支持网页版。",
         "data": "WorkSwarm for Office 只连接本机 WorkSwarm；文档内容由 WorkSwarm 发送给你在 WorkSwarm 中配置的模型服务。",
+        "installNotice": "系统可能会请你信任一个本机证书（macOS 上需要输入登录密码），Office 靠它安全地连接本机 WorkSwarm。",
+        "removeNotice": "移除后 Office 不再加载 WorkSwarm；本机没有其他 WorkSwarm 加载项时，本机证书会一并删除。",
         "steps": {
           "restart": "重启 Office",
           "openPane": "在「开始 → 加载项」里打开 WorkSwarm",
           "connect": "侧边栏会连接本机 WorkSwarm"
+        }
+      },
+      "wps": {
+        "title": "WorkSwarm for WPS",
+        "what": "在 WPS 演示、WPS 文字和 WPS 表格里使用 WorkSwarm，直接修改打开的文档。",
+        "requirement": "Mac 或 Windows 版 WPS Office（国际版或国内版）。",
+        "data": "WorkSwarm for WPS 只连接本机 WorkSwarm；文档内容由 WorkSwarm 发送给你在 WorkSwarm 中配置的模型服务。",
+        "installNotice": "WorkSwarm 会加入 WPS 的加载项列表，其他加载项不受影响。重启 WPS 后生效。",
+        "removeNotice": "移除后 WPS 不再加载 WorkSwarm，其他加载项不受影响。",
+        "steps": {
+          "restart": "重启 WPS",
+          "trust": "WPS 第一次加载 WorkSwarm 时会询问是否信任，选择信任（只问这一次）",
+          "openPane": "在「WorkSwarm」选项卡里点「打开 WorkSwarm」"
         }
       }
     },
     "apps": {
       "word": "Word",
       "excel": "Excel",
-      "powerpoint": "PowerPoint"
+      "powerpoint": "PowerPoint",
+      "wps-writer": "WPS 文字",
+      "wps-spreadsheet": "WPS 表格",
+      "wps-presentation": "WPS 演示"
     },
     "problems": {
-      "permission_denied": "系统没有允许 WorkSwarm 写入 Office 的加载项目录。请在系统弹窗或「隐私与安全性」设置里允许，再点「修复」。",
+      "permission_denied": "系统没有允许 WorkSwarm 写入加载项目录。请在系统弹窗或「隐私与安全性」设置里允许，再点「修复」。",
       "certificate_untrusted": "本机证书还没有被信任。点「修复」，并在系统询问时确认。",
       "certificate_expiring": "本机证书快要过期了。点「修复」换一张新的。",
       "tls_unavailable": "Office 要连接的本机服务没有启动。点「修复」重试，仍不行请重启 WorkSwarm。",
