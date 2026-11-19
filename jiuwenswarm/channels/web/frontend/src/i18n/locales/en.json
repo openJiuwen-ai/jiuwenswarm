@@ -7342,6 +7342,8 @@
     }
   },
   "groupChat": {
+    "colleagues": "AI colleagues",
+    "colleague": "AI colleague",
     "organizationInterrupted": "The organization task was interrupted by a service restart or process exit. Completed work is retained. Please submit a new request.",
     "externalRuntimeDisabled": "{{agents}} is not enabled. Enable it in Settings → Agents → External Agents, then add the member again.",
     "useTeam": "Use this team",

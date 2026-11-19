@@ -4178,6 +4178,23 @@ class AgentWebSocketServer:
         ``_cancel_targeted_expert`` 的 "never the owner turn" 相悖。
         """
         params = request.params if isinstance(request.params, dict) else {}
+        if params.get("intent", "cancel") == "cancel" and request.session_id:
+            # Colleague cancellation is additive: it must never block the existing
+            # expert / organization stop below, and groups without colleagues skip it.
+            try:
+                from jiuwenswarm.server.runtime.group_service import read_group
+
+                group = read_group(request.session_id)
+                if group is not None and any(item.get("kind") == "colleague" for item in group.get("members", [])):
+                    await self._jiuwenmate_web.stop_swarmchat_group(
+                        request.session_id, user_id=str(getattr(request, "user_id", "") or ""),
+                        channel_id=request.channel_id or "default",
+                    )
+            except Exception:
+                logger.warning(
+                    "[AgentWebSocketServer] SwarmChat colleague stop failed; continuing group cancel: session=%s",
+                    request.session_id, exc_info=True,
+                )
         if params.get("organization_owner_stop") is True or params.get("organization_stop") is True:
             resp = await self._cancel_organization(request)
         elif self._is_targeted_expert_cancel_request(request):

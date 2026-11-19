@@ -71,6 +71,14 @@ class CachedGroupContent:
         selected = []
         public_import = False
         known_imports = set()
+        resolver = getattr(self.sharing, "public_group_imports", None)
+        public_paths = await asyncio.to_thread(resolver, execution) if resolver is not None else ()
+        for path in public_paths:
+            _, separator, relative = normal(path).partition('/imports/')
+            if not separator:
+                continue
+            known_imports.add(relative)
+            public_import |= mentioned(path, text, execution.session_id)
         for receipt in receipts:
             snapshot = receipt['result']
             for artifact in snapshot.get('artifacts', ()):

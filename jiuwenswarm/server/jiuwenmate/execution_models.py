@@ -164,14 +164,14 @@ class RequestRecord:
 class RequestRouteSnapshot:
     """The trusted delivery destination captured when a Request was accepted."""
 
-    channel: Literal["web", "feishu", "dingtalk", "welink"]
+    channel: Literal["web", "feishu", "dingtalk", "welink", "swarmchat"]
     target_id: str
     app_id: str | None = None
     source_message_id: str | None = None
     source_reply_to: str | None = None
 
     def __post_init__(self) -> None:
-        if self.channel not in ("web", "feishu", "dingtalk", "welink"):
+        if self.channel not in ("web", "feishu", "dingtalk", "welink", "swarmchat"):
             raise PersistentContractError("invalid Request route channel")
         _require_text("route target_id", self.target_id)
         for name in ("app_id", "source_message_id", "source_reply_to"):
@@ -223,11 +223,12 @@ class ExecutionRecord:
         return cls(**data)
 
 
-ConversationKind = Literal["web_direct", "im_direct", "group"]
+ConversationKind = Literal["web_direct", "im_direct", "group", "swarm_group"]
 _REQUEST_KINDS: dict[str, frozenset[str]] = {
     "web_direct": frozenset({"direct_message", "scheduled"}),
     "im_direct": frozenset({"direct_message", "scheduled"}),
     "group": frozenset({"group_message", "scheduled"}),
+    "swarm_group": frozenset({"group_message", "scheduled"}),
 }
 RequestStatus = Literal["queued", "dispatched", "ended"]
 ENDED_OUTCOMES = frozenset({"completed", "ignored", "paused", "failed", "cancelled", "stopped"})
@@ -253,6 +254,8 @@ class ConversationRef:
         _require_text("conversation key", self.key)
         if self.kind == "web_direct" and self.channel != "web":
             raise PersistentContractError("a Web conversation uses the web channel")
+        if self.kind == "swarm_group" and self.channel != "swarmchat":
+            raise PersistentContractError("a SwarmChat session requires the swarmchat channel")
         if self.kind == "group" and self.channel != "group":
             raise PersistentContractError("a group conversation is keyed by group_chat_id")
         if self.kind == "im_direct" and self.channel in ("web", "group"):
