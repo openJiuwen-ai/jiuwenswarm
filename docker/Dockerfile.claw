@@ -30,8 +30,8 @@ RUN sed -E -i \
     -e '/^[[:space:]]*openjiuwen-runtime-foundation[[:space:]]*=/d' \
     -e '/^[[:space:]]*openjiuwen-runtime-management[[:space:]]*=/d' \
     pyproject.toml \
- && if grep -Eq '^[[:space:]]*("openjiuwen(\[|"| @ |[>=<!~;])|openjiuwen[[:space:]]*=)' pyproject.toml; then \
-      echo "[docker] pyproject 仍钉着 openjiuwen（deps/overrides/sources），CLI AGENT_CORE_* 会被 uv 丢掉" >&2; \
+ && if grep -Eq '^[[:space:]]*("(openjiuwen-runtime-foundation|openjiuwen-runtime-management|openjiuwen)(\[|"| @ |[>=<!~;])|(openjiuwen-runtime-foundation|openjiuwen-runtime-management|openjiuwen)[[:space:]]*=)' pyproject.toml; then \
+      echo "[docker] pyproject 仍钉着 CLI 注入包（openjiuwen/runtime-*），AGENT_CORE_*/AGENT_RUNTIME_* 会被 uv 丢掉" >&2; \
       grep -nE 'openjiuwen' pyproject.toml >&2 || true; \
       exit 1; \
     fi

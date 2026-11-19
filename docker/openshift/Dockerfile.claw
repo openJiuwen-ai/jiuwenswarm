@@ -45,9 +45,9 @@ RUN sed -E -i \
     -e '/^[[:space:]]*openjiuwen-runtime-management[[:space:]]*=/d' \
     -e '/^[[:space:]]*agent-gateway[[:space:]]*=/d' \
     pyproject.toml \
- && if grep -Eq '^[[:space:]]*("openjiuwen(\[|"| @ |[>=<!~;])|openjiuwen[[:space:]]*=)' pyproject.toml; then \
-      echo "[docker] pyproject 仍钉着 openjiuwen（deps/overrides/sources），CLI AGENT_CORE_* 会被 uv 丢掉" >&2; \
-      grep -nE 'openjiuwen' pyproject.toml >&2 || true; \
+ && if grep -Eq '^[[:space:]]*("(openjiuwen-runtime-foundation|openjiuwen-runtime-management|openjiuwen|e2a|agent-gateway)(\[|"| @ |[>=<!~;])|(openjiuwen-runtime-foundation|openjiuwen-runtime-management|openjiuwen|e2a|agent-gateway)[[:space:]]*=)' pyproject.toml; then \
+      echo "[docker] pyproject 仍钉着 CLI 注入包（openjiuwen/e2a/runtime-*/agent-gateway），构建参数会被 uv 丢掉" >&2; \
+      grep -nE 'openjiuwen|e2a|agent-gateway' pyproject.toml >&2 || true; \
       exit 1; \
     fi
 RUN if [ -f packages/jiuwenclaw-ee/gateway/extensions/runtime_management_extension/pyproject.toml ]; then \
@@ -75,6 +75,11 @@ RUN git init -q /tmp/build/agent-gateway \
         -e '/^[[:space:]]*openjiuwen-runtime-foundation[[:space:]]*=/d' \
         -e '/^[[:space:]]*openjiuwen-runtime-management[[:space:]]*=/d' \
         /tmp/build/agent-gateway/pyproject.toml \
+    && if grep -Eq '^[[:space:]]*("(openjiuwen-runtime-foundation|openjiuwen-runtime-management|openjiuwen|e2a)(\[|"| @ |[>=<!~;])|(openjiuwen-runtime-foundation|openjiuwen-runtime-management|openjiuwen|e2a)[[:space:]]*=)' /tmp/build/agent-gateway/pyproject.toml; then \
+         echo "[docker] agent-gateway pyproject 仍钉着 CLI 注入包（openjiuwen/e2a/runtime-*），会被 uv 丢掉" >&2; \
+         grep -nE 'openjiuwen|e2a' /tmp/build/agent-gateway/pyproject.toml >&2 || true; \
+         exit 1; \
+       fi \
     && uv pip install --system \
         -e . \
         "openjiuwen @ git+${AGENT_CORE_REPOS}@${AGENT_CORE_COMMIT}" \
