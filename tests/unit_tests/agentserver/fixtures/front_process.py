@@ -9,14 +9,26 @@ import shutil
 import socket
 import time
 from pathlib import Path
+from typing import Any
 
 import psutil
+
+from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 
 
 def free_port():
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return sock.getsockname()[1]
+
+
+async def receive_business_frame(ws: Any) -> str | bytes:
+    """Read a business response without counting unsolicited server pushes."""
+    while True:
+        raw = await ws.recv()
+        wire = json.loads(raw)
+        if wire.get("metadata", {}).get(E2A_WIRE_SERVER_PUSH_KEY) is not True:
+            return raw
 
 
 async def receive(ws, request_id):

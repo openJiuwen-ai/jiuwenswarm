@@ -3469,6 +3469,32 @@ def _chat_request(request_id: str) -> AgentRequest:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("mode", ["normal", "plan"])
+async def test_recovery_error_ends_code_request_without_a_second_cold_start(streaming, mode):
+    from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
+
+    manager = FakeAgentManager()
+    agent = manager.agent
+    agent.get_live_session_instance = lambda _sid: None
+    error = HistoryReplayError("restore queue full", code="HISTORY_RESTORE_BUSY")
+    agent.ensure_live_session_instance = AsyncMock(side_effect=error)
+    agent.ensure_instance = AsyncMock()
+    runtime = AgentRuntime(agent_manager=manager, initializer=AsyncMock(), plan_controller=PlanModeController())
+    request = _plan_turn_request("busy-code-session", "code")
+    request.params["mode"] = f"agent.code.{mode}"
+    if streaming:
+        events = [event async for event in runtime.stream(request, trigger_hook=False)]
+    else:
+        events = await runtime.invoke(request, trigger_hook=False)
+    assert events[-1].event_type == "runtime.error"
+    assert events[-1].payload["code"] == error.code
+    agent.ensure_live_session_instance.assert_awaited_once()
+    agent.ensure_instance.assert_not_awaited()
+    assert manager.foreground_calls == ["begin", "end"]
+
+
+@pytest.mark.asyncio
 async def test_plan_post_error_always_ends_foreground_chat() -> None:
     manager = FakeAgentManager()
 
