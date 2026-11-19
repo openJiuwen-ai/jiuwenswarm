@@ -18,6 +18,9 @@
     stages/         — 各阶段处理器（StageHandler 子类）
 """
 
+import importlib
+from types import ModuleType
+
 from jiuwenswarm.server.runtime.skill.skilldev.state_utils import (
     filter_visible_skill_names,
     get_registered_skill_names,
@@ -31,8 +34,46 @@ from jiuwenswarm.server.runtime.skill.skilldev.state_utils import (
     set_skill_enabled,
 )
 
+# Loaded on attribute access. The package is also imported for skill
+# enablement helpers; importing the request handler at module import time
+# would pull it into that path.
+_LAZY_EXPORTS: dict[str, tuple[str, str]] = {
+    "SkillDevDeps": (
+        "jiuwenswarm.server.runtime.skill.skilldev.deps",
+        "SkillDevDeps",
+    ),
+    "SkillDevService": (
+        "jiuwenswarm.server.runtime.skill.skilldev.service",
+        "SkillDevService",
+    ),
+    "StateStore": (
+        "jiuwenswarm.server.runtime.skill.skilldev.store",
+        "StateStore",
+    ),
+    "WorkspaceProvider": (
+        "jiuwenswarm.server.runtime.skill.skilldev.workspace",
+        "WorkspaceProvider",
+    ),
+}
+
+
+def __getattr__(name: str) -> object:
+    """Resolve service types when a skilldev request imports them."""
+    target = _LAZY_EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attr_name = target
+    module: ModuleType = importlib.import_module(module_name)
+    value = getattr(module, attr_name)
+    globals()[name] = value
+    return value
+
 
 __all__ = [
+    "SkillDevDeps",
+    "SkillDevService",
+    "StateStore",
+    "WorkspaceProvider",
     "filter_visible_skill_names",
     "get_registered_skill_names",
     "get_skill_enabled",
