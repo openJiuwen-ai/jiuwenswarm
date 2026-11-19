@@ -2,6 +2,7 @@
 """New Session inputs must neither wait for nor resume the current task."""
 
 import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -304,6 +305,61 @@ async def test_unowned_input_does_not_create_another_agent(setup_runtime):
     supplement.session_id = "other-runtime-session"
     with pytest.raises(RuntimeStateError, match="not owned"):
         await collect(runtime.stream(supplement))
+    runtime._prepare_chat_turn.assert_not_awaited()
+    assert not agent.delivered
+
+
+@pytest.mark.asyncio
+async def test_orphaned_session_input_degrades_to_ordinary_turn(
+    setup_runtime, tmp_path, monkeypatch,
+):
+    """Worker 重建清零内存归属后，持久会话的 steer 降级为普通回合而不是报错（#6860）。
+
+    反注册模拟进程内归属丢失；持久层存在（metadata.json）证明是真实会话——
+    降级走普通 CHAT_STREAM 准入（自会经 _register_session/claim_runtime 重采纳），
+    不再走 deliver_session_input 的 steer 语义。未知会话仍拒绝，见
+    test_unowned_input_does_not_create_another_agent。
+    """
+    # session_metadata 对 get_agent_sessions_dir 是模块级静态绑定（utils 属性补丁
+    # 读不到），且元数据缓存是进程级单例——两处都钉到本测试的 tmp 并清缓存，
+    # 否则要么读到真实主目录、要么吃到前序测试的缓存条目（假绿）。
+    from jiuwenswarm.server.runtime.session import session_metadata as sm
+
+    sessions = tmp_path / "agent" / "sessions"
+    monkeypatch.setattr(sm, "get_agent_sessions_dir", lambda: sessions)
+    for cache in (sm._METADATA_CACHE, sm._CACHE_DISK_STAMPS, sm._METADATA_CACHE_GENERATIONS):
+        cache.pop("input-session", None)
+
+    runtime, agent, _ = setup_runtime
+    # 归属表清零（worker 重建的进程内效果）。
+    runtime._session_coordinator._sessions.pop("input-session", None)
+    assert runtime._session_coordinator.snapshot_session("input-session") is None
+    # 持久会话仍在（真实存在的元数据文件）。
+    session_dir = sessions / "input-session"
+    session_dir.mkdir(parents=True)
+    (session_dir / "metadata.json").write_text(
+        json.dumps({"session_id": "input-session", "channel_id": "web", "mode": "agent"}),
+        encoding="utf-8",
+    )
+
+    agent.release.set()
+    events = await asyncio.wait_for(collect(runtime.stream(request("orphaned-1"))), 2)
+
+    assert [e.event_type for e in events] == ["chat.final"]
+    assert agent.delivered == []
+    runtime._prepare_chat_turn.assert_awaited_once()
+    degraded = runtime._prepare_chat_turn.await_args.args[0]
+    assert "input_mode" not in degraded.params and "runtime_mode" not in degraded.params
+    assert runtime._session_coordinator.snapshot_session("input-session") is not None
+
+
+@pytest.mark.asyncio
+async def test_orphaned_session_input_without_metadata_still_rejected(setup_runtime):
+    """无持久元数据的未知会话维持拒绝语义：steer 不得为伪造 session_id 造新 Agent。"""
+    runtime, agent, _ = setup_runtime
+    runtime._session_coordinator._sessions.pop("input-session", None)
+    with pytest.raises(RuntimeStateError, match="not owned"):
+        await collect(runtime.stream(request("orphaned-2")))
     runtime._prepare_chat_turn.assert_not_awaited()
     assert not agent.delivered
 
