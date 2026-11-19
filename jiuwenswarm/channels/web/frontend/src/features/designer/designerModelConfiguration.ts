@@ -58,3 +58,26 @@ export function readGenerationSelection(
     visual_gen: resolvedGenerationModelId(models, 'visual_gen', saved('visual_gen')),
   };
 }
+
+export function selectionAfterPick(
+  current: DesignGenerationSelection,
+  slot: DesignGenerationSlot,
+  modelId: string,
+  models: readonly PublicMultimodalModel[],
+): DesignGenerationSelection {
+  return readGenerationSelection({ ...current, [slot]: modelId }, models);
+}
+
+/** Keep in-flight picks when a later config reload would otherwise overwrite them. */
+export function selectionForReload(
+  saved: DesignGenerationSelection,
+  current: DesignGenerationSelection,
+  pendingSlots: Iterable<DesignGenerationSlot>,
+  models: readonly PublicMultimodalModel[],
+): DesignGenerationSelection {
+  const pending = new Set(pendingSlots);
+  return readGenerationSelection({
+    video_gen: pending.has('video_gen') ? current.video_gen : saved.video_gen,
+    visual_gen: pending.has('visual_gen') ? current.visual_gen : saved.visual_gen,
+  }, models);
+}
