@@ -259,7 +259,7 @@ async def test_delivery_summary_rail_emits_after_skill_acceleration_exec() -> No
             written.append(output)
 
     rail = SkillTurboDeliverySummaryRail()
-    assert rail.priority > 80
+    assert rail.priority < 80
     await rail.after_tool_call(
         _make_tool_call_ctx(
             tool_name="skill_acceleration_exec",
