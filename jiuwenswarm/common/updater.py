@@ -69,6 +69,21 @@ def _is_newer_version(candidate: str, current: str) -> bool:
     return release_sort_key(candidate) > release_sort_key(current)
 
 
+def _wheel_version_key(filename: str) -> tuple[tuple[int, ...], int, tuple[int, ...]] | None:
+    """Return the comparable version key of a wheel filename, or None.
+
+    Wheel names follow ``{distribution}-{version}(-{build})?-{python}-{abi}-
+    {platform}.whl`` (PEP 427), so the version is always the second segment.
+    The key is compared against :func:`release_sort_key`, which keeps
+    ``0.2.3.beta1`` and ``0.2.3b1`` equivalent across sources.
+    """
+    parts = filename.split("-")
+    if len(parts) < 5:
+        return None
+    from jiuwenswarm.common.version_source import release_sort_key
+    return release_sort_key(parts[1])
+
+
 def _is_newer_release(candidate_published_at: str, current_published_at: str) -> bool:
     """Compare desktop releases by publication time, independent of their names."""
     return release_timestamp_key(candidate_published_at) > release_timestamp_key(
@@ -308,8 +323,12 @@ class UpdaterService:
 
     def _check(self, config: dict[str, Any]) -> None:
         source = self._create_version_source(config)
+        # Daily wheels bump the distribution metadata without regenerating the
+        # checked-in _build_config constant, so every update decision must use
+        # the installed runtime version instead of the static __version__.
+        current_version = get_runtime_version()
         try:
-            release = source.fetch_latest(__version__)
+            release = source.fetch_latest(current_version)
         except Exception as exc:
             raise RuntimeError(
                 f"Failed to fetch latest release from {config['release_api_type']}: {exc}"
@@ -328,14 +347,14 @@ class UpdaterService:
             if not release.current_release_published_at:
                 raise RuntimeError(
                     "Current desktop release timestamp is missing for version "
-                    f"{__version__}."
+                    f"{current_version}."
                 )
             has_update = _is_newer_release(
                 release.published_at,
                 release.current_release_published_at,
             )
         else:
-            has_update = _is_newer_version(latest_version, __version__)
+            has_update = _is_newer_version(latest_version, current_version)
 
         if not has_update:
             if install_mode == "desktop":
@@ -485,12 +504,23 @@ class UpdaterService:
                 continue
 
     def _resolve_pip_asset(self, config: dict[str, Any], release: ReleaseInfo) -> None:
-        whl = next((a for a in release.assets if a.name.endswith(".whl")), None)
-        if not whl:
+        whls = [asset for asset in release.assets if asset.name.endswith(".whl")]
+        if not whls:
             raise RuntimeError(
                 "No .whl package found in the release assets. "
                 "For pip installations the release must include a .whl file."
             )
+        # The PyPI simple index lists every historical wheel, in index order, so
+        # pick the one whose version matches the resolved release instead of
+        # trusting list order (the update page used to show workswarm-0.2.5 for
+        # a 0.2.9b3 release). Fall back to the first wheel for sources whose
+        # asset names are arbitrary.
+        from jiuwenswarm.common.version_source import release_sort_key
+        target_key = release_sort_key(release.version)
+        whl = next(
+            (asset for asset in whls if _wheel_version_key(asset.name) == target_key),
+            whls[0],
+        )
 
         self._update_status(
             latest_version=release.version,
