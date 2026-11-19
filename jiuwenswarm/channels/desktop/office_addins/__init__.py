@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Installs the desktop's task panes into Office hosts on this machine.
+"""Installs the desktop's task panes into the Office and WPS apps on this machine.
 
 What is installed is never recorded here: each call reads the host's own
 registration and the certificate files again, and every step only fills in
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import os
 import re
 import sys
 import threading
@@ -29,8 +30,13 @@ from jiuwenswarm.channels.desktop.office_addins.registration import (
     Registration,
     WindowsRegistration,
     WinRegistry,
+    WpsRegistration,
+    WPS_MAC_EDITIONS,
+    WPS_TYPES,
+    WPS_WINDOWS_EDITIONS,
     manifest_name,
     render_manifest,
+    wps_url,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,9 +55,20 @@ Problem = Literal[
 # apps it finds, and installing again after the app has run once adds it.
 AppState = Literal["installed", "not_installed", "host_not_found"]
 
+
+@dataclass(frozen=True)
+class Suite:
+    apps: tuple[str, ...]
+    # Office loads panes only over HTTPS, from a certificate the system trusts; WPS loads them over HTTP from localhost.
+    https: bool
+
+
 # What the user installs is a suite: one card, one install for all of its apps. An app joins its
 # suite when its pane lands.
-SUITES: Mapping[str, tuple[str, ...]] = {"office": ("powerpoint", "word", "excel")}
+SUITES: Mapping[str, Suite] = {
+    "office": Suite(("powerpoint", "word", "excel"), https=True),
+    "wps": Suite(tuple(WPS_TYPES), https=False),
+}
 
 
 @dataclass(frozen=True)
@@ -93,13 +110,19 @@ def _user_id(path: Path) -> str:
 
 def _machine(workspace: Path) -> tuple[TlsFiles, TrustStore, dict[str, Registration]]:
     tls = TlsFiles(workspace / "office-addin" / "tls")
+    registrations: dict[str, Registration]
     if sys.platform == "win32":
         registry = WinRegistry()
-        return tls, certificate.WindowsTrustStore(), {
-            app: WindowsRegistration(workspace / "office-addin", registry, app) for app in HOSTS
-        }
-    home = Path.home()
-    return tls, certificate.MacTrustStore(home), {app: MacRegistration(home, app) for app in HOSTS}
+        trust: TrustStore = certificate.WindowsTrustStore()
+        registrations = {app: WindowsRegistration(workspace / "office-addin", registry, app) for app in HOSTS}
+        wps_base, wps_editions = Path(os.environ["APPDATA"]), WPS_WINDOWS_EDITIONS
+    else:
+        home = Path.home()
+        trust = certificate.MacTrustStore(home)
+        registrations = {app: MacRegistration(home, app) for app in HOSTS}
+        wps_base, wps_editions = home, WPS_MAC_EDITIONS
+    registrations.update({app: WpsRegistration(wps_base, wps_editions, app) for app in WPS_TYPES})
+    return tls, trust, registrations
 
 
 def _release_certificate(tls: TlsFiles, trust: TrustStore) -> bool:
@@ -113,24 +136,30 @@ def _release_certificate(tls: TlsFiles, trust: TrustStore) -> bool:
 
 
 def _per_app(apps: Iterable[str], step: Callable[[str], T], refused: list[str]) -> dict[str, T]:
-    """``step`` for each app; an app whose files or registry the system refuses joins ``refused``."""
+    """``step`` for each app; an app whose step fails (a refused or unreadable file or registry) joins ``refused``.
+
+    One app's failure never stops the others.
+    """
     results: dict[str, T] = {}
     for app in apps:
         try:
             results[app] = step(app)
-        except OSError as exc:
+        except Exception as exc:
             logger.warning("[office-addins] %s: %s", app, exc)
             refused.append(app)
     return results
 
 
-def remove_all(workspace: Path) -> None:
-    """Remove every host's registration, the certificate and the user id; the Windows uninstaller runs this."""
+def remove_all(workspace: Path) -> bool:
+    """What the Windows uninstaller runs; False, logging the certificate's path, while the system still trusts it."""
     tls, trust, registrations = _machine(workspace)
     for registration in registrations.values():
         registration.delete()
-    _release_certificate(tls, trust)
+    released = _release_certificate(tls, trust)
+    if not released:
+        logger.warning("[office-addins] %s is still a trusted root certificate; remove it by hand", tls.ca)
     _user_id_file(workspace).unlink(missing_ok=True)
+    return released
 
 
 class OfficeAddins:
@@ -143,26 +172,33 @@ class OfficeAddins:
         trust: TrustStore,
         registrations: Mapping[str, Registration],
         listener: TlsListener,
+        http_origin: str,
         office_dist: Path,
         user_id_file: Path,
     ) -> None:
         self._tls = tls
         self._trust = trust
         self._registrations = registrations
+        # The suites this machine knows where to register every app of.
+        self.suites = {name: suite for name, suite in SUITES.items() if set(suite.apps) <= registrations.keys()}
         self._listener = listener
+        self._http_origin = http_origin
         self._office_dist = office_dist
         self._user_id_file = user_id_file
         # Install, remove and the startup rewrite all change the same files and registrations.
         self._lock = threading.Lock()
 
     @classmethod
-    def for_this_machine(cls, workspace: Path, listener: TlsListener, office_dist: Path) -> OfficeAddins:
+    def for_this_machine(
+        cls, workspace: Path, listener: TlsListener, http_origin: str, office_dist: Path,
+    ) -> OfficeAddins:
         tls, trust, registrations = _machine(workspace)
         return cls(
             tls=tls,
             trust=trust,
             registrations=registrations,
             listener=listener,
+            http_origin=http_origin,
             office_dist=office_dist,
             user_id_file=_user_id_file(workspace),
         )
@@ -170,23 +206,14 @@ class OfficeAddins:
     def status(self) -> dict[str, SuiteStatus]:
         # Without the lock, which install holds through a trust prompt of up to minutes. Every file install
         # writes is replaced in one step, so a status read meanwhile shows how far that install has got.
-        return {suite: self._status(suite) for suite in SUITES}
+        return {suite: self._status(suite) for suite in self.suites}
 
     def install(self, suite: str) -> SuiteStatus:
         with self._lock:
             refused: list[str] = []
-            hosts = _per_app(SUITES[suite], lambda app: self._registrations[app].host_found(), refused)
+            hosts = _per_app(self.suites[suite].apps, lambda app: self._registrations[app].host_found(), refused)
             apps = [app for app, found in hosts.items() if found]
-            if not apps:
-                return self._status(suite, refused)
-            now = dt.datetime.now(dt.timezone.utc)
-            if not self._tls.exist():
-                certificate.generate(self._tls, now)
-            elif self._tls.expiring(now) and not self._renew(now):
-                return self._status(suite, refused)
-            if not self._trust.is_trusted(self._tls) and not self._trust.trust(self._tls):
-                return self._status(suite, refused)
-            if not self._listener.serve(self._tls):
+            if not apps or (self.suites[suite].https and not self._serve_https()):
                 return self._status(suite, refused)
             user_id = _user_id(self._user_id_file)
             _per_app(apps, lambda app: self._registrations[app].write(self._manifest(app, user_id)), refused)
@@ -194,34 +221,45 @@ class OfficeAddins:
 
     def remove(self, suite: str) -> SuiteStatus:
         with self._lock:
-            unreadable: list[str] = []
-            others = [app for app in self._registrations if app not in SUITES[suite]]
-            registered = _per_app(others, lambda app: self._registrations[app].read(), unreadable)
-            last = not unreadable and all(manifest is None for manifest in registered.values())
+            last = self.suites[suite].https and self._no_other_https_registered(suite)
             # Untrusting first: when the system keeps the trust (a declined prompt), the suite stays installed
             # and Remove can run again.
             if last and not _release_certificate(self._tls, self._trust):
                 return self._status(suite)
             refused: list[str] = []
-            _per_app(SUITES[suite], lambda app: self._registrations[app].delete(), refused)
+            _per_app(self.suites[suite].apps, lambda app: self._registrations[app].delete(), refused)
             if last:
                 self._listener.close()
             return self._status(suite, refused)
 
+    def _no_other_https_registered(self, suite: str) -> bool:
+        """Whether removing ``suite`` leaves no registration needing the certificate; an unreadable one might."""
+        unreadable: list[str] = []
+        certified = [other for name, other in self.suites.items() if other.https and name != suite]
+        others = [app for other in certified for app in other.apps]
+        registered = _per_app(others, lambda app: self._registrations[app].read(), unreadable)
+        return not unreadable and all(manifest is None for manifest in registered.values())
+
     def ensure_registered(self) -> None:
         """Serve the panes again after a restart and point every registration at this process's origin."""
         with self._lock:
-            if not self._tls.exist() or not self._listener.serve(self._tls):
-                return
-            user_id = _user_id(self._user_id_file)
-            _per_app(self._registrations, lambda app: self._restore(app, user_id), [])
+            serving = self._tls.exist() and self._listener.serve(self._tls)
+            suites = [suite for suite in self.suites.values() if serving or not suite.https]
+            _per_app([app for suite in suites for app in suite.apps], self._restore, [])
 
-    def _restore(self, app: str, user_id: str) -> None:
-        registration = self._registrations[app]
-        registered = registration.read()
-        manifest = self._manifest(app, user_id)
-        if registered is not None and registered != manifest:
-            registration.write(manifest)
+    def _restore(self, app: str) -> None:
+        self._registrations[app].rewrite(lambda: self._manifest(app, _user_id(self._user_id_file)))
+
+    def _serve_https(self) -> bool:
+        """A trusted certificate, renewed when expiring, and the HTTPS listener serving with it."""
+        now = dt.datetime.now(dt.timezone.utc)
+        if not self._tls.exist():
+            certificate.generate(self._tls, now)
+        elif self._tls.expiring(now) and not self._renew(now):
+            return False
+        if not self._trust.is_trusted(self._tls) and not self._trust.trust(self._tls):
+            return False
+        return self._listener.serve(self._tls)
 
     def _renew(self, now: dt.datetime) -> bool:
         """Trust a new certificate before untrusting the old one, so a declined prompt leaves the old one serving."""
@@ -236,40 +274,52 @@ class OfficeAddins:
         return True
 
     def _manifest(self, app: str, user_id: str) -> str:
+        """What ``app``'s registration holds while current: the Office manifest, or the URL WPS loads."""
+        if app in WPS_TYPES:
+            return wps_url(app, self._http_origin)
         template = (self._office_dist / manifest_name(app)).read_text(encoding="utf-8")
         return render_manifest(app, template, self._listener.origin, user_id)
 
-    def _observe(self, app: str) -> tuple[bool, str | None]:
+    def _observe(self, app: str, user_id: str | None) -> tuple[bool, str | None, bool]:
+        """Whether the host is here, its registration, and whether that points elsewhere than this process."""
         registration = self._registrations[app]
-        return registration.host_found(), registration.read()
+        registered = registration.read()
+        # WPS urls carry no user id; an Office manifest is current only with this install's one.
+        stale = registered is not None and registered != self._manifest(app, user_id or "")
+        return registration.host_found(), registered, stale
 
     def _status(self, suite: str, refused: Collection[str] = ()) -> SuiteStatus:
         """``refused``: apps whose registration the system refused to write or delete just now."""
         unreadable: list[str] = []
-        observed = _per_app(SUITES[suite], self._observe, unreadable)
         user_id = _read_user_id(self._user_id_file)
+        observed = _per_app(self.suites[suite].apps, lambda app: self._observe(app, user_id), unreadable)
         found: list[Problem] = []
         apps: dict[str, AppState] = {}
-        for app in SUITES[suite]:
-            host_found, registered = observed.get(app, (True, None))
+        for app in self.suites[suite].apps:
+            host_found, registered, stale = observed.get(app, (True, None, False))
             if app in refused or app in unreadable:
                 found.append("permission_denied")
             if not host_found:
                 apps[app] = "host_not_found"
                 continue
-            if registered is not None and (user_id is None or registered != self._manifest(app, user_id)):
+            if stale:
                 found.append("stale_origin")
             apps[app] = "not_installed" if registered is None else "installed"
-        if self._tls.exist():
-            if not self._trust.is_trusted(self._tls):
-                found.append("certificate_untrusted")
-            if self._tls.expiring(dt.datetime.now(dt.timezone.utc)):
-                found.append("certificate_expiring")
-            if not self._listener.serving:
-                found.append("tls_unavailable")
-        elif "installed" in apps.values():
-            # Registered panes cannot load without a trusted certificate; installing again makes and trusts one.
-            found.append("certificate_untrusted")
+        if self.suites[suite].https:
+            found += self._https_problems(registered="installed" in apps.values())
         states = set(apps.values())
         installed = "installed" in states and "not_installed" not in states
         return SuiteStatus(installed=installed, problems=tuple(dict.fromkeys(found)), apps=apps)
+
+    def _https_problems(self, *, registered: bool) -> list[Problem]:
+        if not self._tls.exist():
+            # Registered panes cannot load without a trusted certificate; installing again makes and trusts one.
+            return ["certificate_untrusted"] if registered else []
+        problems: list[Problem] = []
+        if not self._trust.is_trusted(self._tls):
+            problems.append("certificate_untrusted")
+        if self._tls.expiring(dt.datetime.now(dt.timezone.utc)):
+            problems.append("certificate_expiring")
+        if not self._listener.serving:
+            problems.append("tls_unavailable")
+        return problems

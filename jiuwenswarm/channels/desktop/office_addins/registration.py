@@ -1,16 +1,17 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Each Office host's per-user sideload registration.
+"""Each host's per-user add-in registration.
 
-macOS reads every manifest in the ``wef`` folder of the host's sandbox
-container; Windows reads the manifest paths under ``Wef\\Developer`` in the
+Office on macOS reads every manifest in the ``wef`` folder of the host's sandbox
+container; on Windows it reads the manifest paths under ``Wef\\Developer`` in the
 user's registry, one value per add-in Id. Both are where Microsoft's own
-sideload tooling (office-addin-dev-settings) registers.
+sideload tooling (office-addin-dev-settings) registers. WPS reads the add-ins
+it loads from its ``publish.xml``.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -64,8 +65,21 @@ class Registration(Protocol):
     def write(self, manifest: str) -> None:
         ...
 
+    def rewrite(self, manifest: Callable[[], str]) -> None:
+        """Point what is registered at ``manifest()``, registering nothing where nothing is."""
+        ...
+
     def delete(self) -> None:
         ...
+
+
+def _rewrite(registration: Registration | _WpsList, manifest: Callable[[], str]) -> None:
+    registered = registration.read()
+    if registered is None:
+        return
+    current = manifest()
+    if registered != current:
+        registration.write(current)
 
 
 class MacRegistration:
@@ -82,6 +96,9 @@ class MacRegistration:
 
     def write(self, manifest: str) -> None:
         write_atomic(self.path, manifest.encode("utf-8"))
+
+    def rewrite(self, manifest: Callable[[], str]) -> None:
+        _rewrite(self, manifest)
 
     def delete(self) -> None:
         self.path.unlink(missing_ok=True)
@@ -151,6 +168,152 @@ class WindowsRegistration:
         write_atomic(self.path, manifest.encode("utf-8"))
         self._registry.set(self.KEY, self._addin_id, str(self.path))
 
+    def rewrite(self, manifest: Callable[[], str]) -> None:
+        _rewrite(self, manifest)
+
     def delete(self) -> None:
         self._registry.delete(self.KEY, self._addin_id)
         self.path.unlink(missing_ok=True)
+
+
+# The add-in type WPS gives each of its apps, which is also the folder of that app's shell under ``/office/wps/``.
+WPS_TYPES: Mapping[str, str] = {"wps-presentation": "wpp", "wps-writer": "wps", "wps-spreadsheet": "et"}
+
+
+@dataclass(frozen=True)
+class WpsEdition:
+    # The folder the edition creates on its first launch, relative to the home folder on Mac and to %APPDATA% on
+    # Windows; nothing here creates it for an edition that has not run.
+    folder: str
+    # The edition's add-in list, inside ``folder``.
+    publish: str
+
+
+# Each WPS edition's add-in list. On Mac each edition has its own sandbox container.
+WPS_MAC_EDITIONS: Mapping[str, WpsEdition] = {
+    "international": WpsEdition(
+        "Library/Containers/com.kingsoft.wpsoffice.mac.global", "Data/.kingsoft/wps/jsaddons/publish.xml",
+    ),
+    "domestic": WpsEdition("Library/Containers/com.kingsoft.wpsoffice.mac", "Data/.kingsoft/wps/jsaddons/publish.xml"),
+}
+# On Windows the China edition keeps it in %APPDATA%\kingsoft, where WPS's own add-in tool (wpsjs) writes it. That the
+# international edition shares that vendor folder is inferred, not verified.
+WPS_WINDOWS_EDITIONS: Mapping[str, WpsEdition] = {
+    "international": WpsEdition("kingsoft", "wps/jsaddons/publish.xml"),
+    "domestic": WpsEdition("kingsoft", "wps/jsaddons/publish.xml"),
+}
+_WPS_NAME = "WorkSwarm"
+_WPS_ENTRY = re.compile(r"\s*<jspluginonline\b([^>]*?)/?>(?:\s*</jspluginonline>)?")
+_ATTRIBUTE = re.compile(r'([\w:-]+)\s*=\s*"([^"]*)"')
+_ENCODING = re.compile(r"""<\?xml[^>]*encoding=["']([\w.-]+)["']""")
+
+
+def wps_url(app: str, origin: str) -> str:
+    """The folder of ``app``'s shell (``ribbon.xml``, ``index.html``); WPS loads it over HTTP from localhost."""
+    return f"{origin}/office/wps/{WPS_TYPES[app]}/"
+
+
+class WpsRegistration:
+    """``app``'s entry in the add-in list of each WPS edition on this machine."""
+
+    def __init__(self, base: Path, editions: Mapping[str, WpsEdition], app: str) -> None:
+        # Editions sharing one list share its entry.
+        lists = dict.fromkeys((base / edition.folder, edition.publish) for edition in editions.values())
+        self._lists = [_WpsList(folder, folder / publish, WPS_TYPES[app]) for folder, publish in lists]
+
+    def host_found(self) -> bool:
+        return bool(self._found())
+
+    def read(self) -> str | None:
+        """The URL our entries load: None while no edition holds one, and stale ("") while editions disagree.
+
+        An edition that ran first after the install holds no entry, which leaves the app registered.
+        """
+        urls = {wps_list.read() for wps_list in self._found()} - {None}
+        if not urls:
+            return None
+        return urls.pop() if len(urls) == 1 else ""
+
+    def write(self, manifest: str) -> None:
+        _each(self._found(), lambda wps_list: wps_list.write(manifest))
+
+    def rewrite(self, manifest: Callable[[], str]) -> None:
+        _each(self._found(), lambda wps_list: _rewrite(wps_list, manifest))
+
+    def delete(self) -> None:
+        _each(self._lists, lambda wps_list: wps_list.delete())
+
+    def _found(self) -> list[_WpsList]:
+        return [wps_list for wps_list in self._lists if wps_list.folder.is_dir()]
+
+
+def _each(wps_lists: list[_WpsList], step: Callable[[_WpsList], None]) -> None:
+    """``step`` on every edition, so a list the system refuses leaves the others changed; then its error."""
+    failure: OSError | None = None
+    for wps_list in wps_lists:
+        try:
+            step(wps_list)
+        except OSError as exc:
+            failure = failure or exc
+    if failure is not None:
+        raise failure
+
+
+class _WpsList:
+    """One edition's ``publish.xml``, which lists every app's add-ins; only our entry of ``app_type`` changes."""
+
+    def __init__(self, folder: Path, path: Path, app_type: str) -> None:
+        self.folder = folder
+        self.path = path
+        self._type = app_type
+
+    def read(self) -> str | None:
+        """The URL our entry loads, or None without one."""
+        ours = self._ours(self._load()[0])
+        return dict(_ATTRIBUTE.findall(ours[0].group(1))).get("url", "") if ours else None
+
+    def write(self, manifest: str) -> None:
+        text, encoding = self._load()
+        text = self._without_ours(text)
+        close = text.rfind("</jsplugins>")
+        if close < 0:
+            # No list yet, or WPS's empty one (<jsplugins/>), which holds nothing to keep.
+            text = f'<?xml version="1.0" encoding="{encoding}"?>\n<jsplugins>\n</jsplugins>\n'
+            close = text.rfind("</jsplugins>")
+        entry = (
+            f'<jspluginonline enable="enable_dev" type="{self._type}" name="{_WPS_NAME}" install="null"'
+            f' url="{manifest}"/>'
+        )
+        # After the last entry, before the whitespace that ends it, so delete leaves the file as it was.
+        at = len(text[:close].rstrip())
+        write_atomic(self.path, f"{text[:at]}\n    {entry}{text[at:]}".encode(encoding))
+
+    def delete(self) -> None:
+        text, encoding = self._load()
+        kept = self._without_ours(text)
+        if kept != text:
+            write_atomic(self.path, kept.encode(encoding))
+
+    def _load(self) -> tuple[str, str]:
+        """The list's text and the encoding it declares; an empty list when WPS has not written one yet."""
+        try:
+            data = self.path.read_bytes()
+        except FileNotFoundError:
+            return "", "UTF-8"
+        declared = _ENCODING.search(data[:200].decode("ascii", errors="replace"))
+        encoding = declared.group(1) if declared else "UTF-8"
+        try:
+            return data.decode(encoding), encoding
+        except (UnicodeDecodeError, LookupError) as exc:
+            raise OSError(f"{self.path} is not {encoding}") from exc
+
+    def _ours(self, text: str) -> list[re.Match[str]]:
+        def ours(attributes: dict[str, str]) -> bool:
+            return attributes.get("type") == self._type and attributes.get("name") == _WPS_NAME
+
+        return [entry for entry in _WPS_ENTRY.finditer(text) if ours(dict(_ATTRIBUTE.findall(entry.group(1))))]
+
+    def _without_ours(self, text: str) -> str:
+        for entry in reversed(self._ours(text)):
+            text = text[: entry.start()] + text[entry.end():]
+        return text

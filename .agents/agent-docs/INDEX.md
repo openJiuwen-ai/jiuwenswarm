@@ -25,6 +25,7 @@ generated: true
 | [jiuwenswarm/agents/harness](#module-jiuwenswarm-agents-harness) |
 | [jiuwenswarm/agents/harness/code/rails/heartbeat](#module-jiuwenswarm-agents-harness-code-rails-heartbeat) |
 | [jiuwenswarm/agents/harness/common](#module-jiuwenswarm-agents-harness-common) |
+| [jiuwenswarm/agents/harness/common/memory](#module-jiuwenswarm-agents-harness-common-memory) |
 | [jiuwenswarm/agents/harness/common/prompt](#module-jiuwenswarm-agents-harness-common-prompt) |
 | [jiuwenswarm/agents/harness/common/rails](#module-jiuwenswarm-agents-harness-common-rails) |
 | [jiuwenswarm/agents/harness/common/recommendation](#module-jiuwenswarm-agents-harness-common-recommendation) |
@@ -177,6 +178,15 @@ generated: true
 | [F_20261104_1225_npc-team-member-sessions](features/F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 
+<a id="module-jiuwenswarm-agents-harness-common-memory"></a>
+
+## jiuwenswarm/agents/harness/common/memory
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [F-20261107-1700-coding-document-memory](features/F_20261107_1700_coding-document-memory.md) | F | Coding 接入 agent-memory 文档记忆 | Wang Tao | 无独立 D：依据已确认的跨仓 Coding 文档记忆方案；无独立仓内 D 文档。 |
+| [S_04_coding-document-memory](specs/jiuwenswarm/server/runtime/agent_adapter/S_04_coding-document-memory.md) | S | Coding 文档记忆接入契约 | Wang Tao | — |
+
 <a id="module-jiuwenswarm-agents-harness-common-prompt"></a>
 
 ## jiuwenswarm/agents/harness/common/prompt
@@ -191,6 +201,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [F-20261107-1700-coding-document-memory](features/F_20261107_1700_coding-document-memory.md) | F | Coding 接入 agent-memory 文档记忆 | Wang Tao | 无独立 D：依据已确认的跨仓 Coding 文档记忆方案；无独立仓内 D 文档。 |
 | [F_20261027_2015_bilingual-progressive-tool-discovery](features/jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 | [F_20261103_1124_sdk-web-retrieval](features/F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 | [B_20261117_2001_deferred-memory-failure](bugfix/jiuwenswarm/agents/harness/common/rails/B_20261117_2001_deferred-memory-failure.md) | B | 延迟调用记忆工具时传播失败状态 | ToNy_St4rk | 无独立 D：修复 Issue 6151 中已有工具结果契约的状态传播，无独立设计。 |
@@ -223,6 +234,9 @@ generated: true
 |---|---|---|---|---|
 | [F_20261027_2015_bilingual-progressive-tool-discovery](features/jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 | [F_20261103_1124_sdk-web-retrieval](features/F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
+| [F_20261116_0500_office-document-reader-tools](features/F_20261116_0500_office-document-reader-tools.md) | F | 补齐结构化办公文档只读工具 (read_docx 与 read_spreadsheet) | zhuxiangju | 无独立 D：补齐办公文档 Word 与 Excel/CSV 结构化只读能力的工程落地。 |
+| [F_20261116_2130_safe-archive-tools](features/F_20261116_2130_safe-archive-tools.md) | F | 补齐安全归档与压缩包工具集 (inspect_archive 与 extract_archive) | zhuxiangju | 无独立 D：安全高效的压缩包预览与解压工具落地，严密防范路径穿越。 |
+| [F_20261116_2200_pptx-reading-tool](features/F_20261116_2200_pptx-reading-tool.md) | F | read_pptx PowerPoint Presentation Reading Tool | zhuxiangju | 无独立 D：Atomic tool addition for PowerPoint presentation ingestion |
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | — |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 
@@ -547,6 +561,7 @@ generated: true
 |---|---|---|---|---|
 | [D-20261103-1444-app-role-session](designs/active/D-20261103-1444-app-role-session/design.md) | D | 应用角色会话的最小提示词运行配置 | kdgmpw | — |
 | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) | D | NPC 主从会话与按需搜索工具 | kdgmpw | — |
+| [F-20261107-1700-coding-document-memory](features/F_20261107_1700_coding-document-memory.md) | F | Coding 接入 agent-memory 文档记忆 | Wang Tao | 无独立 D：依据已确认的跨仓 Coding 文档记忆方案；无独立仓内 D 文档。 |
 | [F_20261027_1843_ttse-plugin-rail](features/F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 | [F_20261027_2015_bilingual-progressive-tool-discovery](features/jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 | [F_20261029_1757_mcp-app-agent-stack-refresh](features/F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
@@ -564,6 +579,7 @@ generated: true
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 | [S_03_native-plugin-runtime](specs/jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | — |
+| [S_04_coding-document-memory](specs/jiuwenswarm/server/runtime/agent_adapter/S_04_coding-document-memory.md) | S | Coding 文档记忆接入契约 | Wang Tao | — |
 
 <a id="module-jiuwenswarm-server-runtime-session"></a>
 

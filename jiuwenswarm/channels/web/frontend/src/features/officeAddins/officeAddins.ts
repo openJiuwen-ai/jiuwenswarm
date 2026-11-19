@@ -5,10 +5,10 @@ export type OfficeAddinProblem =
   | 'tls_unavailable'
   | 'stale_origin';
 
-export type SuiteId = 'office';
-export type AppId = 'word' | 'excel' | 'powerpoint';
+export type SuiteId = 'office' | 'wps';
+export type AppId = 'word' | 'excel' | 'powerpoint' | 'wps-writer' | 'wps-spreadsheet' | 'wps-presentation';
 export type InfoSection = 'requirement' | 'start' | 'data';
-export type StartStep = 'restart' | 'openPane' | 'connect';
+export type StartStep = 'restart' | 'openPane' | 'connect' | 'trust';
 
 /** The plugin plaza category of every suite card (办公效率). */
 export const SUITE_CATEGORY = 'Office Productivity';
@@ -26,6 +26,11 @@ export const SUITE_CATALOG: Record<
     sections: ['requirement', 'start', 'data'],
     steps: ['restart', 'openPane', 'connect'],
   },
+  wps: {
+    apps: ['wps-presentation', 'wps-writer', 'wps-spreadsheet'],
+    sections: ['requirement', 'start', 'data'],
+    steps: ['restart', 'trust', 'openPane'],
+  },
 };
 
 /** An app this computer does not have is not a problem of its suite: the suite installs into the apps it finds. */
@@ -34,7 +39,7 @@ export type AppState = 'installed' | 'not_installed' | 'host_not_found';
 export interface SuiteStatus {
   installed: boolean;
   problems: OfficeAddinProblem[];
-  apps: Record<AppId, AppState>;
+  apps: Partial<Record<AppId, AppState>>;
 }
 
 export type Suites = Partial<Record<SuiteId, SuiteStatus>>;

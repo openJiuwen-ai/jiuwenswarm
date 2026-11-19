@@ -263,6 +263,61 @@ async def test_cron_tools_create_job_does_not_persist_locally(tmp_path, monkeypa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["session", "selection_only_session", "explicit"])
+async def test_cron_backend_preserves_stable_model_selection(tmp_path, monkeypatch, source) -> None:
+    """Conversation-created jobs retain the selected configuration, not just its name."""
+    _setup_project_store(tmp_path, monkeypatch)
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+    selection = {"type": "model", "id": "mdl_selected"}
+    metadata = {} if source == "explicit" else {"model_selection": selection}
+    if source == "session":
+        metadata["model"] = "same-name"
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        lambda *args, **kwargs: metadata,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.cron.models.validate_cron_model",
+        lambda raw: pytest.fail("Stable selections must not be resolved by legacy name"),
+    )
+    params = {
+        "name": "stable-model",
+        "schedule": {"kind": "cron", "expr": "0 9 * * *"},
+        "payload": {"kind": "agentTurn", "message": "hello"},
+    }
+    if source == "explicit":
+        params["model_selection"] = selection
+    else:
+        params["model_selection"] = {"type": "model", "id": "mdl_other"}
+    backend = _CronToolsCronBackend(tools)
+    job = await backend.create_job(
+        params, context=CronToolContext(channel_id="web", session_id="web_stable_model"),
+    )
+    assert {key: job["model_selection"][key] for key in selection} == selection
+    assert job.get("model_name") == metadata.get("model")
+    assert push.payloads[0]["body"]["data"]["model_selection"] == job["model_selection"]
+    assert not (tmp_path / "cron_jobs.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_cron_backend_rejects_inherited_model_group(tmp_path, monkeypatch) -> None:
+    """Inheritance must preserve the existing single-model-only cron policy."""
+    _setup_project_store(tmp_path, monkeypatch)
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        lambda *args, **kwargs: {"model_selection": {"type": "model_group", "id": "mgp_selected"}},
+    )
+    backend = _CronToolsCronBackend(tools)
+    with pytest.raises(ValueError, match="Scheduled tasks only support a single model"):
+        await backend.create_job(
+            {"name": "group", "cron_expr": "0 9 * * *", "targets": "web", "description": "hello"},
+            context=CronToolContext(channel_id="web", session_id="web_group_model"),
+        )
+    assert not push.payloads
+
+
+@pytest.mark.asyncio
 async def test_cron_tools_create_job_normalizes_and_forwards_mcp(tmp_path, monkeypatch) -> None:
     """会话级 MCP 选择随 job 转发 Gateway 落库（strip/去空/去重后）。"""
     _setup_project_store(tmp_path, monkeypatch)
@@ -952,6 +1007,43 @@ async def test_cron_tools_update_job_validates_model(tmp_path, monkeypatch) -> N
     assert job["model_name"] == "checked-model"
     synced_patch = push.payloads[-1]["body"]["data"]["patch"]
     assert synced_patch["model_name"] == "checked-model"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested, target_id", [("B", "mdl_b"), ("C", "mdl_c"), ("same", None)])
+async def test_cron_tools_update_job_resolves_model_identity(tmp_path, monkeypatch, requested, target_id) -> None:
+    """Aliases must switch configuration IDs even when canonical names are equal."""
+    _setup_project_store(tmp_path, monkeypatch)
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+    await tools._local_store.create_job(
+        job_id="job-model-update", name="daily", cron_expr="0 9 * * *",
+        timezone="Asia/Shanghai", description="hello", targets="web",
+        model_name="same", model_selection={"type": "model", "id": "mdl_a"},
+    )
+    models = [
+        {"model_id": "mdl_a", "model_name": "same", "alias": "A"},
+        {"model_id": "mdl_b", "model_name": "same", "alias": "B"},
+        {"model_id": "mdl_c", "model_name": "other", "alias": "C"},
+    ]
+    monkeypatch.setattr(
+        "jiuwenswarm.common.model_catalog.ModelCatalog.list_public_models", lambda self: models,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.cron.models.validate_cron_model",
+        lambda raw: "other" if raw == "C" else "same",
+    )
+    if target_id is None:
+        with pytest.raises(ValueError, match="ambiguous"):
+            await tools.update_job("job-model-update", {"model_name": requested})
+        assert not push.payloads
+        return
+    job = await tools.update_job("job-model-update", {"model_name": requested})
+    assert job["model_selection"]["type"] == "model"
+    assert job["model_selection"]["id"] == target_id
+    assert job["model_name"] == ("other" if target_id == "mdl_c" else "same")
+    assert push.payloads[-1]["body"]["data"]["patch"]["model_selection"] == {
+        "type": "model", "id": target_id,
+    }
 
 
 @pytest.mark.asyncio

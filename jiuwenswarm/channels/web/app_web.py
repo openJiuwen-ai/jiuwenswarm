@@ -1173,8 +1173,6 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         """``/desktop-api/office-addins``: exists only for the desktop window, answers 404 to anyone else."""
         if not parsed.path.startswith(self._OFFICE_ADDINS_PATH):
             return False
-        from jiuwenswarm.channels.desktop.office_addins import SUITES
-
         route = parsed.path[len(self._OFFICE_ADDINS_PATH):]
         # A page on another local port shares the cookie; only the desktop window's own page may act.
         same_origin = self.headers.get("Sec-Fetch-Site") == "same-origin"
@@ -1185,7 +1183,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         match (self.command, route.split("/")):
             case ("GET", [""]):
                 self._write_json(200, {"suites": {name: asdict(status) for name, status in addins.status().items()}})
-            case ("POST", ["", suite, "install" | "remove" as action]) if same_origin and suite in SUITES:
+            case ("POST", ["", suite, "install" | "remove" as action]) if same_origin and suite in addins.suites:
                 self._write_json(200, asdict(addins.install(suite) if action == "install" else addins.remove(suite)))
             case _:
                 self._write_json(404, {"error": "not_found"})
@@ -1238,6 +1236,24 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if not is_enterprise():
             return False
         path = urlparse(self.path).path
+        backend = os.getenv("USER_WEB_BACKEND_TARGET", "").rstrip("/")
+        if backend:
+            if path.startswith("/manager-api/v1/user-console/"):
+                self._proxy_http(
+                    target=backend, path=self.path.replace("/manager-api", "/api", 1),
+                )
+                return True
+            if self._is_ws_route():
+                if self._is_websocket_upgrade():
+                    self._proxy_websocket_tunnel(target=backend)
+                else:
+                    self.send_error(400, "expected websocket upgrade")
+                return True
+            backend_api = path.startswith(("/idp/", "/gateway-api/")) or path == "/gateway-api"
+            resource_api = self._is_file_api_route() or self._is_share_api_route()
+            if backend_api or self._is_api_route() or resource_api:
+                self._proxy_http(target=backend, stream_sse=True)
+                return True
         if path.startswith("/idp/"):
             target = os.getenv("USER_WEB_IDP_TARGET", "")
             if target:
@@ -2988,6 +3004,18 @@ def _wait_for_tcp_port(
     return False
 
 
+def create_enterprise_app() -> Any:
+    """Create the enterprise user backend served by this module."""
+    from jiuwenswarm.enterprise import is_enterprise
+
+    if not is_enterprise():
+        raise RuntimeError("The enterprise user backend requires JIUWENSWARM_EDITION=enterprise")
+
+    from jiuwenswarm.channels.web.enterprise_backend import create_app
+
+    return create_app()
+
+
 def main() -> None:
     from jiuwenswarm.dotenv_early import get_parsed_dotenv
 
@@ -3112,10 +3140,10 @@ def main() -> None:
         from jiuwenswarm.channels.desktop.office_addins import OfficeAddins
         from jiuwenswarm.channels.desktop.office_addins.listener import TlsListener
 
-        # Office loads task panes only over HTTPS: the same handler, on its own port.
+        # Office loads task panes only over HTTPS: the same handler, on its own port. WPS loads them from this server.
         office_listener = TlsListener(int(os.getenv("OFFICE_TLS_PORT", "5443")), handler)
         _ConfiguredHandler.office_addins = OfficeAddins.for_this_machine(
-            project_root, office_listener, dist_dir / "office",
+            project_root, office_listener, f"http://127.0.0.1:{args.port}", dist_dir / "office",
         )
 
     # Windows has no SIGUSR1, so avoid importing debug_dump (which itself

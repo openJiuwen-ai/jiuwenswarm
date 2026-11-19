@@ -9,8 +9,10 @@ import { serializeConfigSettingValue } from './settingsSourceContract';
 import { useSettingsConfig } from './useSettingsConfig';
 import { applyBrowserDisplaySettings, browserDisplayRevision } from '../../desktopBrowserDisplay';
 
+export type SettingsSourceOption = { value: SettingValue; label: string; title?: string };
+
 export type SettingsSourceController = {
-  optionsFor?: (key: string) => readonly { value: SettingValue; label: string }[];
+  optionsFor?: (key: string) => readonly SettingsSourceOption[];
   requiresConfiguration?: (key: string) => boolean;
   values: Readonly<Record<string, unknown>>;
   savingKeys: ReadonlySet<string>;

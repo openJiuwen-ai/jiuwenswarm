@@ -169,13 +169,24 @@ def normalize_legacy_model(model: dict) -> dict:
     return result
 
 
-def _confirm(params: dict, affected: list[str]) -> None:
-    if not affected:
-        return
+def _matches_tools(confirmed: Any, tools: list[str]) -> bool:
+    return (isinstance(confirmed, list) and all(isinstance(tool, str) for tool in confirmed)
+            and sorted(confirmed) == sorted(tools))
+
+
+def _confirm(params: dict, affected: list[str], activation_tools: list[str] | None = None) -> None:
     confirmed = params.get("confirmed_tools", [])
-    if (not isinstance(confirmed, list) or any(not isinstance(tool, str) for tool in confirmed)
-            or sorted(confirmed) != sorted(affected)):
-        raise MultimodalError("MM_CONFIRM_REQUIRED", {"affected_tools": affected})
+    activation = params.get("tool_activation")
+    references_confirmed = not affected or _matches_tools(confirmed, affected)
+    activation_confirmed = not activation_tools or (
+        isinstance(activation, dict) and isinstance(activation.get("enabled"), bool)
+        and _matches_tools(activation.get("tools"), activation_tools)
+    )
+    if not references_confirmed or not activation_confirmed:
+        details = {"affected_tools": affected}
+        if activation_tools is not None:
+            details["activation_tools"] = activation_tools
+        raise MultimodalError("MM_CONFIRM_REQUIRED", details)
 
 
 def transition(state: dict, operation: str, params: dict) -> tuple[dict, dict]:
@@ -203,7 +214,9 @@ def transition(state: dict, operation: str, params: dict) -> tuple[dict, dict]:
         if mode == "create" and old is not None and old != model:
             raise MultimodalError("MM_MODEL_ID_CONFLICT", {"model_id": model_id})
         affected = [tool for tool in references(state, model_id) if tool not in model["capabilities"]]
-        _confirm(params, affected)
+        added = [tool for tool in model["capabilities"] if old is None or tool not in old["capabilities"]]
+        activation_tools = [tool for tool in added if not tools[tool]["enabled"]]
+        _confirm(params, affected, activation_tools)
         if old is None:
             models.append(model)
         else:
@@ -213,9 +226,10 @@ def transition(state: dict, operation: str, params: dict) -> tuple[dict, dict]:
             tools[tool]["model_id"] = replacement["model_id"] if replacement else None
             if replacement is None:
                 tools[tool]["enabled"] = False
-        added = set(model["capabilities"]) - set(old["capabilities"] if old else [])
         for tool in added:
             if tools[tool]["model_id"] is None:
+                tools[tool]["model_id"] = model_id
+            if tool in activation_tools and params["tool_activation"]["enabled"]:
                 tools[tool] = {"model_id": model_id, "enabled": True}
         result["model_id"] = model_id
     elif operation == "models.delete":

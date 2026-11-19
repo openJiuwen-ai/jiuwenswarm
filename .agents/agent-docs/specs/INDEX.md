@@ -16,6 +16,7 @@ generated: true
 |---|
 | [gateway/channel_manager/web](#module-gateway-channel_manager-web) |
 | [jiuwenswarm/agents/harness/common](#module-jiuwenswarm-agents-harness-common) |
+| [jiuwenswarm/agents/harness/common/memory](#module-jiuwenswarm-agents-harness-common-memory) |
 | [jiuwenswarm/agents/harness/common/prompt](#module-jiuwenswarm-agents-harness-common-prompt) |
 | [jiuwenswarm/agents/harness/common/rails](#module-jiuwenswarm-agents-harness-common-rails) |
 | [jiuwenswarm/agents/harness/common/recommendation](#module-jiuwenswarm-agents-harness-common-recommendation) |
@@ -59,6 +60,14 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [S_02_app-role-npc-team](jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
+
+<a id="module-jiuwenswarm-agents-harness-common-memory"></a>
+
+## jiuwenswarm/agents/harness/common/memory
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [S_04_coding-document-memory](jiuwenswarm/server/runtime/agent_adapter/S_04_coding-document-memory.md) | S | Coding 文档记忆接入契约 | Wang Tao | — |
 
 <a id="module-jiuwenswarm-agents-harness-common-prompt"></a>
 
@@ -255,6 +264,7 @@ generated: true
 | [S_02_app-role-npc-team](jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 | [S_02_web-retrieval](jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
 | [S_03_native-plugin-runtime](jiuwenswarm/server/runtime/agent_adapter/S_03_native-plugin-runtime.md) | S | 原生插件通用运行服务与生命周期 | xinyang_bali | — |
+| [S_04_coding-document-memory](jiuwenswarm/server/runtime/agent_adapter/S_04_coding-document-memory.md) | S | Coding 文档记忆接入契约 | Wang Tao | — |
 
 <a id="module-jiuwenswarm-server-runtime-session"></a>
 
