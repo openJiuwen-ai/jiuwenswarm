@@ -1,9 +1,9 @@
 # JiuwenSwarm Office add-in
 
-The task pane for PowerPoint, Word, Excel and WPS Presentation: it attaches the open document
+The task pane for PowerPoint, Word, Excel, WPS Presentation, WPS Spreadsheets and WPS Writer: it attaches the open document
 to a JiuwenSwarm conversation and runs the conversation's tools in the
 document. Each host is a client app of the backend (`office-powerpoint`,
-`office-word`, `office-excel`, `wps-presentation`, in `jiuwenswarm/office/`); the `tools.json`
+`office-word`, `office-excel`, `wps-presentation`, `wps-spreadsheet`, `wps-writer`, in `jiuwenswarm/office/`); the `tools.json`
 and `profile.json` of an app's package directory are the tool contract both
 halves read (`@office/<app>/`).
 
@@ -88,13 +88,20 @@ name, for each platform it runs on, the requirement sets it needs (`sets`,
 each at its version) and whether it needs a Worker. On PowerPoint 1.8, `presentation_apply_patch` refuses the
 row rules, row heights and column widths of `update_table`, which need 1.9.
 
-## WPS Presentation
+## WPS
 
-WPS Presentation loads the add-in's shell (`public/wps/wpp/`): its ribbon
-button writes the presentation's GUID into its custom document properties and
-opens a pane of its own for that presentation (`taskpane.wps-presentation.html?doc=<GUID>`).
-A copy of a file carries the file's GUID: of the open presentations that share
-one, the first opened keeps it and the shell gives the others new ones.
+Each WPS app loads the add-in's shell from its own folder (`public/wps/wpp/`
+for Presentation, `et/` for Spreadsheets, `wps/` for Writer): the folder's
+`index.html` loads the shared `public/wps/shell.js`, and its `main.js` names
+the app's documents and pane page. The ribbon button writes the document's GUID
+into its custom document properties and opens a pane of its own for that
+document (`taskpane.wps-<app>.html?doc=<GUID>`); the pane finds its document by
+that GUID (`documentWithId`) and starts through `startWpsPane`. A copy of a
+file carries the file's GUID: of the open documents that share one, the first
+opened keeps it and the shell gives the others new ones.
+
+### WPS Presentation
+
 The pane runs the PowerPoint tools unchanged over `wpsPowerPointRun`, which
 gives them the part of the PowerPoint object model they use on top of WPS's
 VBA-style one: a slide's package comes from a saved copy of the deck
@@ -111,6 +118,40 @@ they change when a design or layout is added or removed. WPS keeps its own undo:
 the pane offers no undo of a turn there and keeps no turn, though a write that
 fails part way is still put back. A dev server
 for WPS runs over HTTP: `JIUWENSWARM_PANE_HTTP=1 npm run dev`.
+
+### WPS Spreadsheets
+
+The pane runs the Excel tools unchanged over `wpsExcelRun`, which gives them
+the part of the Excel object model they use on top of WPS's VBA-style one.
+Notes are WPS's comments; a sheet's id is its name; a column width in points
+is turned into WPS's characters by the first column's ratio. A copy goes
+through `Range.Copy` for `all`, through plain writes of the values or of the
+R1C1 formulas for `values` and `formulas`, and for `formats` through a `Copy`
+that puts the destination's contents back, never through the clipboard. WPS
+raises no change events with the values before and after, so the messages
+carry no `<user_changes>`. WPS runs no Office.js: in place of
+`execute_office_js` the pane runs `execute_wps_js`, the model's code on the
+workbook's object model in the same locked-down runner. The code gets
+`workbook` and WPS's `xl…` constants; each write lands as it is made, so the
+runner screens it before it happens. The application and the way back to it
+(`Application`, `Parent`), files, links, queries and saving are out of reach
+(`WPS_SHEET_UNREACHABLE`).
+
+### WPS Writer
+
+The pane runs the Word tools unchanged over `wpsWordRun`, which gives them the
+part of the Word object model they use on top of WPS's VBA-style one. WPS gives
+paragraphs, comments and lists no ids: a paragraph's id is where it starts, a
+comment's a hash of its author, date and text. The suggestion cards keep their
+state in the document's variables, which are saved with it. `verify_doc_visual`
+draws the pages of a PDF that `ExportAsFixedFormat` writes to a temporary file.
+WPS raises no paragraph change events, so the messages carry no
+`<user_changes>`. In place of `execute_office_js` the pane runs
+`execute_wps_js` on the document's object model, as in Spreadsheets: the code
+gets `document` and WPS's `wd…` constants; the application, the shared
+templates, files, hyperlinks, saving and printing are out of reach
+(`WPS_WRITER_UNREACHABLE`), and fields or inserted markup that fetch from
+outside the document are refused before they land.
 
 ## Undo this turn
 
@@ -193,7 +234,10 @@ separate straight segments.
 | `excelApp`, `excelTools` | Excel's app (its answers run to 40,000 characters, as a sheet's cells need) and its tools on `Excel.run`: `get_cell_ranges` (values, formulas and notes keyed by cell, formatting by the blocks that share it, merged areas, at most `cellLimit` non-empty cells cut at a row with `nextRanges`), `get_range_as_csv`, `set_cell_range` (refuses to overwrite unless allowed, returns each formula's value), `copy_paste_range` (refuses to cut a merged area or overwrite), `execute_office_js` and `read_surface_context`. Notes need ExcelApi 1.18. |
 | `excelGuard` | What Excel refuses to write whatever the approval: the formula functions that reach outside the workbook, links to other workbooks or files, and, for code, hyperlinks, inserted workbooks and outside refreshes. |
 | `excelState` | The workbook's state each message carries: `<initial_state>` (sheets with ids and sizes, Excel tables and their columns) with a conversation's first message from this pane, `<user_changes>` (cell edits, sheets added, deleted and renamed, heard from the host's events from ExcelApi 1.14, renames from 1.17; this add-in's own edits left out), and `<user_context>` (active sheet, selected chart or ranges, names cleaned for display). Changes count as told only once `chat.send` took the message. |
-| `officeCodeRunner` | The runner of `execute_office_js` (see Code in Word and Excel above), host-neutral: each host gives its `run`, enums and write screen. |
+| `officeCodeRunner` | The runner of `execute_office_js` (see Code in Word and Excel above), host-neutral: each host gives its `run`, enums and write screen; `wpsCodeRuntime` runs `execute_wps_js` on a WPS document. |
+| `wpsDocument`, `wpsPane`, `wpsInput` | A WPS pane's document (`documentWithId`, by the GUID the shell wrote, in `Presentations`, `Workbooks` or `Documents`), its start (`startWpsPane`), and the paste WPS also sends the document while a pane field has the focus. |
+| `wpsPowerPoint`, `wpsExcel`, `wpsWriter` | The PowerPoint, Excel and Word object models the tools use, over WPS's (see WPS above). |
+| `wpsFiles` | Temporary files in WPS's temporary directory, through which an adapter hands a document to WPS and back (`withFile`, `written`). |
 | `wordApp`, `wordTools` | Word's app (its answers run to 200,000 characters, as the industry add-in allows) and its tools on `Word.run`: `read_doc_section` (by heading or paragraph range, at most 400 paragraphs a call, each with its index and markers, optionally its formatting), `search_doc_text` (each hit's paragraph index and a snippet), `edit_doc_text`, `edit_doc_list` (a new bulleted or numbered list by `startNewList`, as list style names are in Word's display language, or one item joining a list), `collapse_blank_paragraphs` (empty means only spaces and tabs, so page and line breaks stay; keeps empty paragraphs that hold a picture, shape, comment, tracked change, field or content control, list items and table cells), `verify_doc` (styles, list numbers, cells per table row), `execute_office_js`, `read_surface_context` (a note that the state was added at the turn's start), the card tools, and the capture `explain_edits`' reviewer checks claims against (final text and pending tracked changes). |
 | `wordText`, `wordPassage` | The text rules of the edit tools: quotes match either kind, a passage past Word's 255-character search limit is found by its first and last 255 characters, a text of several lines is that many whole paragraphs, and an edit replaces only the words that differ (a word-level diff), never across a field, note or picture. |
 | `wordParagraphs` | Paragraphs as the model reads them: final text after markers (`[Heading2]`, `[1.1.]`, `[tbl:1]`, `[page-break]`, `[has: …]`, `[img]`, `[field×2]`, `[fn]`, `[en]`). |
