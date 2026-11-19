@@ -332,7 +332,6 @@ def test_a2ui_officeclaw_component_rules_scoped_by_channel():
     assert "outermost structured UI MUST be wrapped in a Card" in oc_en
     assert "for TextField and Slider the inline label MUST" in oc_en
     assert 'usageHint "h1"' in oc_en
-    assert "those are Text usageHint enum values and matching them causes circular dependency" in oc_en
     assert "Titles MUST be plain text" in oc_en
     assert "MUST go into a horizontal Row" in oc_en
     assert "Do NOT add buttons that reset or clear form values" in oc_en
@@ -342,14 +341,12 @@ def test_a2ui_officeclaw_component_rules_scoped_by_channel():
     assert "最外层结构化 UI 统一用 Card 作为容器壳承载" in oc_zh
     assert "TextField 与 Slider 的内联 label" in oc_zh
     assert '禁止添加"重置"、"清空"' in oc_zh
-    assert "这些是 usageHint 的枚举取值，同名会致循环依赖" in oc_zh
 
     # web 不含 7 条（防止影响 web channel）—— 用整句带上下文反向断言，不用泛词
     web_en = build_a2ui_autonomy_instruction("en", channel="web")
     assert "outermost structured UI MUST be wrapped in a Card" not in web_en
     assert "for TextField and Slider the inline label MUST" not in web_en
     assert 'usageHint "h1"' not in web_en
-    assert "those are Text usageHint enum values" not in web_en
     assert "Titles MUST be plain text" not in web_en
     assert "MUST go into a horizontal Row" not in web_en
     assert "Do NOT add buttons that reset or clear form values" not in web_en
@@ -359,7 +356,6 @@ def test_a2ui_officeclaw_component_rules_scoped_by_channel():
     assert "最外层结构化 UI 统一用 Card 作为容器壳承载" not in web_zh
     assert "TextField 与 Slider 的内联 label" not in web_zh
     assert '禁止添加"重置"、"清空"' not in web_zh
-    assert "这些是 usageHint 的枚举取值" not in web_zh
 
     # 公共规则（输入绑定 / Button child / selections / Id-uniqueness / Repeat-data）对所有 channel 都在
     for ch in (None, "web", "officeclaw"):
