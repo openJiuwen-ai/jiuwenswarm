@@ -990,9 +990,10 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                 bool(section_order.get("enabled", True))
                 if isinstance(section_order, dict) else True
             ),
-            # 禁用 todo/task_tool/skill_acceleration_exec 会撤下对应 system 段
-            # （430/440/skill_turbo_guide），改静态 hash；把 disabled_tools 纳入指纹，
-            # 让这类合法配置变更触发基线重设，而不是被判成静态漂移。
+            # 禁用工具会撤下对应 system 段改静态 hash；把 disabled_tools 纳入指纹，
+            # 让这类合法配置变更触发基线重设而非静态漂移。
+            # 注：task_tool→440 已接线；todo→430 / skill_acceleration_exec→
+            # skill_turbo_guide 两条撤段链路待线 B（C1 接线）迁入后生效。
             "disabled_tools": sorted(
                 resolve_string_or_list_config((self._config_cache or {}).get("disabled_tools"))
             ),
