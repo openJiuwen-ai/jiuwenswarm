@@ -1280,8 +1280,8 @@
         "description": "Control automatic evolution and retention of local skills."
       },
       "symphony_evolution_enabled": {
-        "title": "Skill Pack Discovery",
-        "description": "Distill skill combinations from execution experience after tasks finish and discover skill packs automatically."
+        "title": "Discover SkillPack",
+        "description": "Record graph observations after tasks and distill reusable skill packs from successful executions."
       },
       "skill_retrieval_enabled": {
         "title": "Automatic Skill Retrieval",
@@ -1298,10 +1298,6 @@
       "ttse_enabled": {
         "title": "Local environment facts and task experience auto-evolution",
         "description": "Control the agent's learning of environment facts and task experience"
-      },
-      "skill_retrieval_index_enabled": {
-        "title": "Skill index",
-        "description": "Enable a tree of installed skills for structured skill discovery (may consume additional tokens)."
       },
       "free_search_ddg_enabled": {
         "title": "DuckDuckGo search",
@@ -4082,7 +4078,7 @@
       "buildFailed": "Failed to start the taxonomy build.",
       "cancelRequested": "Taxonomy build cancellation requested.",
       "cancelFailed": "Failed to cancel the taxonomy build.",
-      "disabledHint": "Enable symphony.skill_retrieval in configuration to expose the directory to agents. You may build the optional taxonomy independently.",
+      "disabledHint": "Enable Skill Retrieval in Settings to build and browse the skill directory.",
       "disabled": "Retrieval disabled",
       "statusLoadFailed": "Failed to load live retrieval status. Please retry.",
       "statusIncompatible": "The backend returned an incompatible Skill retrieval status. Update or restart the service, then retry.",

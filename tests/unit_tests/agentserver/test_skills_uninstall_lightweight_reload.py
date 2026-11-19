@@ -193,9 +193,6 @@ async def test_refresh_skill_rails_removes_deleted_skill_from_real_skill_use_rai
     adapter._skill_evolution_rail = None
     adapter._instance_overrides = {}
 
-    # refresh_skill_rails rebuilds scan roots via _skill_scan_dirs(), which
-    # always prepends get_agent_skills_dir() (the global skills dir). Point
-    # it at our temp skills_root so no real global skills leak into the rail.
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.agent_adapter.interface_deep.get_agent_skills_dir",
         lambda: skills_root,

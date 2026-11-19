@@ -680,7 +680,7 @@ def _start_process(
 # web 子进程 import 的大头是 jiuwenswarm 自身, 放在最前优先预热; openjiuwen
 # 与 C 扩展库主要服务 app 子进程。预读块加大到 64KB 以覆盖归档多页。
 _WARMUP_PACKAGES = (
-    "jiuwenswarm", "openjiuwen", "faiss", "pymilvus", "google", "a2ui",
+    "jiuwenswarm", "openjiuwen", "pymilvus", "google", "a2ui",
     "sqlite_vec", "tree_sitter", "tiktoken", "tiktoken_ext",
 )
 _WARMUP_READ_BYTES = 64 * 1024

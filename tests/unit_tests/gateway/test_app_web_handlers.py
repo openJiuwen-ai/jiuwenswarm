@@ -3227,27 +3227,18 @@ def test_config_panel_flatten_reads_external_cli_paths() -> None:
 
 
 def test_config_panel_flatten_reads_symphony_enabled_and_skill_retrieval():
-    raw = {
-        "symphony": {
-            "enabled": True,
-            "evolution": {"enabled": False},
-            "orchestration": {"mode": "fast"},
-            "skill_retrieval": {
-                "enabled": True,
-                "index": {"enabled": True},
-                "discovery": {"max_results": 17},
-            },
-        }
-    }
-
+    raw = {"symphony": {
+        "orchestration": {"enabled": True, "plan": {"mode": "fast"}, "experience": {"enabled": False}},
+        "retrieval": {"enabled": True, "output": {"max_results": 17}},
+    }}
     flat = _flatten_symphony_for_config_panel(raw)
-
     assert flat["symphony_enabled"] == "true"
+    assert flat["symphony_evolution_enabled"] == "false"
+    assert flat["skill_retrieval_enabled"] == "true"
+    assert "skill_retrieval_index_enabled" not in flat
+    assert flat["skill_retrieval_max_results"] == "17"
     assert "symphony_dynamic_graph_enabled" not in flat
     assert "symphony_orchestration_mode" not in flat
-    assert flat["skill_retrieval_enabled"] == "true"
-    assert flat["skill_retrieval_index_enabled"] == "true"
-    assert flat["skill_retrieval_max_results"] == "17"
     assert "skill_retrieval_build_branching_factor" not in flat
 
 
@@ -3281,16 +3272,15 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
         "req-3",
         {
             "symphony_enabled": "true",
-            "symphony_dynamic_graph_enabled": "false",
+            "symphony_evolution_enabled": "true",
             "skill_retrieval_enabled": "false",
-            "skill_retrieval_index_enabled": "true",
         },
         "sess-3",
     )
 
-    assert recorded_symphony == [{"enabled": True}]
+    assert recorded_symphony == [{"orchestration": {"enabled": True, "experience": {"enabled": True}}}]
     assert recorded_skill_retrieval == [
-        {"enabled": False, "index": {"enabled": True}}
+        {"enabled": False}
     ]
     assert channel.responses[-1] == {
         "id": "req-3",
@@ -3298,8 +3288,8 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
         "payload": {
             "updated": [
                 "symphony_enabled",
+                "symphony_evolution_enabled",
                 "skill_retrieval_enabled",
-                "skill_retrieval_index_enabled",
             ],
             "applied_without_restart": True,
         },
@@ -3954,3 +3944,59 @@ async def test_cron_session_selection_rpc_rejects_group_before_resolving(monkeyp
     assert response["ok"] is False
     assert response["code"] == "BAD_REQUEST"
     assert "only support a single model" in response["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("experience_enabled", [True, False])
+async def test_config_save_all_persists_new_symphony_nodes_and_preserves_hidden_values(
+    monkeypatch, tmp_path, experience_enabled,
+):
+    import yaml
+    from jiuwenswarm.common import config as host_config
+    from jiuwenswarm.common.symphony_config import load_symphony_config
+
+    path = tmp_path / "config.yaml"
+    sources = [
+        {"type": "skill", "root": str(tmp_path / "skills")},
+        {"type": "expert", "root": str(tmp_path / "experts")},
+    ]
+    path.write_text(yaml.safe_dump({"symphony": {
+        "capability": {"sources": sources},
+        "retrieval": {"enabled": False, "index_build": {"structure": {"max_depth": 9}}},
+        "orchestration": {
+            "enabled": None,
+            "min_edge_confidence": 0.73,
+            "plan": {"dynamic_graph_enabled": not experience_enabled},
+            "experience": {"enabled": not experience_enabled, "acceptance": {"min_successes": 5}},
+        },
+    }}))
+    read_config = lambda: yaml.safe_load(path.read_text())
+    monkeypatch.setattr(host_config, "CONFIG_YAML_PATH", path)
+    monkeypatch.setattr(config_set_handlers, "get_config_raw", read_config)
+    monkeypatch.setattr(config_set_handlers, "get_config", read_config)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
+    frozen = load_symphony_config(read_config())
+    await channel.methods["config.save_all"](
+        object(), "symphony-save", {"config": {
+            "symphony_enabled": True,
+            "symphony_evolution_enabled": experience_enabled,
+            "skill_retrieval_enabled": True,
+            "skill_retrieval_max_results": 17,
+        }}, "session-save",
+    )
+    assert channel.responses[-1]["ok"] is True
+    current = load_symphony_config(read_config())
+    assert current.orchestration.enabled is True
+    assert current.orchestration.plan.dynamic_graph_enabled is not experience_enabled
+    assert current.orchestration.experience.enabled is experience_enabled
+    assert current.orchestration.experience.acceptance.min_successes == 5
+    assert current.retrieval.enabled is True
+    assert current.orchestration.min_edge_confidence == 0.73
+    assert current.retrieval.index_build.structure.max_depth == 9
+    assert current.retrieval.output.max_results == 17
+    assert frozen.retrieval.enabled is False
+    assert frozen.orchestration.experience.enabled is not experience_enabled
+    saved = read_config()["symphony"]
+    assert set(saved) == {"capability", "retrieval", "orchestration"}
+    assert saved["capability"]["sources"] == sources

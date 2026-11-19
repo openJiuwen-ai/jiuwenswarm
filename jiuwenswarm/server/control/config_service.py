@@ -31,10 +31,6 @@ from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.common.kv_cache_affinity_config import get_affinity_status
 from jiuwenswarm.server.control.a2ui_config import get_a2ui_config
 from jiuwenswarm.server.control.responses import build_error_response
-from jiuwenswarm.common.symphony_config import (
-    resolve_symphony_enabled,
-    resolve_symphony_evolution_enabled,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -189,42 +185,8 @@ def _affinity_enabled(raw: dict[str, Any]) -> bool:
 
 
 def _flatten_symphony(raw: dict[str, Any]) -> dict[str, str]:
-    symphony = raw.get("symphony") if isinstance(raw.get("symphony"), dict) else {}
-    evolution = (
-        symphony.get("evolution") if isinstance(symphony.get("evolution"), dict) else {}
-    )
-    flow = evolution.get("flow") if isinstance(evolution.get("flow"), dict) else {}
-    flow_enabled = flow.get("enabled")
-    if flow_enabled is None:
-        flow_enabled = evolution.get("enabled")
-    retrieval = (
-        symphony.get("skill_retrieval")
-        if isinstance(symphony.get("skill_retrieval"), dict)
-        else {}
-    )
-    index = retrieval.get("index") if isinstance(retrieval.get("index"), dict) else {}
-    discovery = (
-        retrieval.get("discovery") if isinstance(retrieval.get("discovery"), dict) else {}
-    )
-    return {
-        "symphony_enabled": _bool_text(
-            resolve_symphony_enabled(symphony.get("enabled"))
-        ),
-        "symphony_evolution_enabled": _bool_text(
-            resolve_symphony_evolution_enabled(flow_enabled)
-        ),
-        "skill_retrieval_enabled": _bool_text(retrieval.get("enabled"), False),
-        "skill_retrieval_index_enabled": _bool_text(index.get("enabled"), False),
-        "skill_retrieval_index_recommendation_shown": _bool_text(
-            index.get("recommendation_shown"), False
-        ),
-        "skill_retrieval_max_results": str(discovery.get("max_results", 10)),
-        "skill_retrieval_max_output_chars": str(discovery.get("max_output_chars", 12000)),
-        "skill_retrieval_max_list_entries": str(discovery.get("max_list_entries", 40)),
-        "skill_retrieval_incremental_notice_max_chars": str(
-            discovery.get("incremental_notice_max_chars", 4000)
-        ),
-    }
+    from jiuwenswarm.common.config_panel.config_set_handlers import flatten_symphony_for_config_panel
+    return flatten_symphony_for_config_panel(raw)
 
 
 def _flatten_recommendation(raw: dict[str, Any]) -> dict[str, str]:

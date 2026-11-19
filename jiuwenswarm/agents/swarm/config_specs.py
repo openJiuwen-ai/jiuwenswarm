@@ -419,15 +419,8 @@ def _skill_mode(config: dict[str, Any]) -> str:
 
 def _retrieval_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return whether agentic skill retrieval is enabled for this config."""
-    env_value = os.getenv("SYMPHONY_SKILL_RETRIEVAL_ENABLED")
-    if env_value is not None and env_value.strip():
-        return env_value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
-
-    symphony = _config_section(config or {}, "symphony")
-    retrieval = symphony.get("skill_retrieval")
-    if isinstance(retrieval, dict):
-        return bool(retrieval.get("enabled", False))
-    return False
+    from jiuwenswarm.common.symphony_config import load_symphony_config
+    return load_symphony_config(config or {}).retrieval.enabled
 
 
 def _team_skill_use_rail_spec(config: dict[str, Any], role: str) -> RailSpec:

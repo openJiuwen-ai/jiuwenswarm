@@ -1,4 +1,6 @@
+import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import httpx
@@ -17,166 +19,17 @@ from openjiuwen.symphony import (
     SymphonyRuntime,
 )
 
-from jiuwenswarm.runtime.symphony.adapter import (
-    FingerprintArtifactCapabilityProvider,
-    model_from_config,
-    model_response_observer_from_config,
-    ScanResultCapabilityProvider,
-    fingerprint_settings_from_swarm,
-    graph_build_orchestration_config_from_swarm,
-    graph_config_from_swarm,
-)
 from jiuwenswarm.common.symphony_config import symphony_config_from_dict
-from jiuwenswarm.runtime.symphony.build import GraphBuildRuntimeFactory, build_graph, graph_status
+from jiuwenswarm.runtime.symphony.build import build_graph, graph_status
 from jiuwenswarm.runtime.symphony.graph_storage import resolve_graph_artifact_dir
 from jiuwenswarm.runtime.symphony.llm import LLMConfig, thinking_disabled_request_overrides
 from jiuwenswarm.runtime.symphony.service import SwarmSymphonyService
 
 
-@pytest.mark.asyncio
-async def test_core_fingerprint_service_builds_from_swarm_scan_adapter(tmp_path):
-    skills_root = tmp_path / "skills"
-    skill_dir = skills_root / "writer"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        """---
-name: Writer
-description: Write a markdown document.
-inputs:
-  - name: topic
-    type: string
-outputs:
-  - name: document
-    type: markdown
----
-Write a concise document for the supplied topic.
-""",
-        encoding="utf-8",
-    )
-    (skill_dir / "template.md").write_text("# {{ topic }}\n", encoding="utf-8")
-    scan_result = SkillFolderScanner(skills_root).scan()
-    config = symphony_config_from_dict(
-        {
-            "fingerprint": {
-                "extraction": {
-                    "workers": 2,
-                    "batch_size": 3,
-                }
-            }
-        }
-    )
-    artifact_root = tmp_path / "artifacts"
-
-    artifact = await FingerprintService(
-        ScanResultCapabilityProvider(scan_result),
-        artifact_root,
-        settings=fingerprint_settings_from_swarm(config, None),
-    ).build()
-
-    assert [item.capability_id for item in artifact.fingerprints] == ["writer"]
-    assert (
-        artifact.fingerprints[0].content_hash
-        == scan_result.capabilities[0].content_hash
-    )
-    assert artifact.fingerprints[0].quality is not None
-    artifact_path = artifact_root / FINGERPRINT_ARTIFACT_FILENAME
-    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "1.0"
-    assert payload["fingerprints"][0]["capability_id"] == "writer"
-    assert "id" not in payload["fingerprints"][0]
-    assert not (artifact_root / "fingerprints.json").exists()
-
-    provider = FingerprintArtifactCapabilityProvider(artifact)
-    provider_snapshot, provider_fingerprints = await provider.inventory_snapshot()
-    assert provider_snapshot == artifact.source_snapshot
-    assert provider_fingerprints == artifact.fingerprints
 
 
-def test_swarm_settings_map_only_supported_core_controls(tmp_path):
-    config = symphony_config_from_dict(
-        {
-            "paths": {
-                "skills_root": str(tmp_path / "skills"),
-                "graph_dir": str(tmp_path / "graph"),
-            },
-            "fingerprint": {
-                "extraction": {
-                    "workers": 7,
-                    "batch_size": 5,
-                    "body_limit": 1234,
-                }
-            },
-        }
-    )
-
-    settings = fingerprint_settings_from_swarm(config, None)
-
-    assert settings.enable_llm_extraction is False
-    assert settings.enable_llm_evaluation is False
-    assert settings.max_concurrency == 7
-    assert settings.batch_size == 5
-    assert settings.body_limit == 1234
 
 
-@pytest.mark.asyncio
-@pytest.mark.parametrize("finish_reason", ["stop", "length"])
-async def test_fingerprint_factory_wires_native_model_and_usage_observer(
-    monkeypatch,
-    tmp_path,
-    finish_reason,
-):
-    skill_dir = tmp_path / "skills" / "writer"
-    skill_dir.mkdir(parents=True)
-    (skill_dir / "SKILL.md").write_text(
-        "---\nname: Writer\ndescription: Write text.\n---\nWrite the supplied text.",
-        encoding="utf-8",
-    )
-    model = _CapturingFingerprintModel(finish_reason=finish_reason)
-    captured_configs = []
-    observed_responses = []
-    monkeypatch.setattr(
-        "jiuwenswarm.runtime.symphony.build.model_from_config",
-        lambda config: captured_configs.append(config) or model,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.runtime.symphony.build.model_response_observer_from_config",
-        lambda _config: (
-            lambda response, stage, operation: observed_responses.append(
-                (response, stage, operation, is_disabled_thinking_fallback_allowed())
-            )
-        ),
-    )
-    config = LLMConfig(
-        model="thinking-model",
-        model_config_obj={"max_tokens": 99, "extra_body": {"custom": True}},
-    )
-    runtime_config = symphony_config_from_dict({})
-    service = GraphBuildRuntimeFactory.fingerprint_service(
-        SkillFolderScanner(tmp_path / "skills").scan(),
-        tmp_path / "artifacts",
-        llm_config=config,
-        runtime_config=runtime_config,
-    )
-    if finish_reason == "length":
-        with pytest.raises(BaseError, match="finish_reason=length"):
-            await service.build()
-        assert not (tmp_path / "artifacts" / FINGERPRINT_ARTIFACT_FILENAME).exists()
-    else:
-        await service.build()
-
-    assert captured_configs == [config]
-    assert config.model_config_obj == {
-        "max_tokens": 99, "extra_body": {"custom": True},
-    }
-    settings = fingerprint_settings_from_swarm(runtime_config, config)
-    assert settings.llm_max_tokens is None
-    assert len(model.calls) == 1
-    assert "max_tokens" not in model.calls[0]
-    assert model.calls[0]["timeout"] == settings.llm_timeout
-    assert len(observed_responses) == 1
-    assert observed_responses[0][1:] == (
-        "fingerprint_extraction", "capability_extraction", False,
-    )
 
 
 @pytest.mark.asyncio
@@ -204,13 +57,12 @@ async def test_swarm_graph_build_consumes_canonical_core_artifact(
             f"---\nProcess the supplied {input_name}.\n",
             encoding="utf-8",
         )
-    graph_dir = tmp_path / "graph"
+    graph_dir = tmp_path / "runtime" / "graph"
     config = symphony_config_from_dict(
         {
-            "paths": {
-                "skills_root": str(skills_root),
-                "graph_dir": str(graph_dir),
-            }
+            "capability": {"sources": [{"type": "skill", "root": str(skills_root)}]},
+            "storage": {"artifact_root": str(tmp_path / "runtime")},
+            "orchestration": {"enabled": True}
         }
     )
     model = _FingerprintAndGraphModel()
@@ -280,24 +132,19 @@ async def test_swarm_graph_build_consumes_canonical_core_artifact(
         assert is_disabled_thinking_fallback_allowed() is False
         return
     assert first["success"] is True, first
-    second = await build_graph(
-        skills_root,
-        graph_dir,
-        llm_config=llm_config,
-        symphony_config=config,
-    )
+    second = await build_graph(config, llm_config)
 
     version_dir = resolve_graph_artifact_dir(graph_dir)
     graph_payload = json.loads((version_dir / "graph.json").read_text(encoding="utf-8"))
     assert first["extracted_count"] == 2
     assert second.reused_count == 2
-    assert rejected_phases == ["probe", "fingerprint", "matching"]
+    assert rejected_phases == ["probe", "fingerprint"]
     assert any(
         edge["source"] == "capability:summarizer"
         and edge["target"] == "capability:translator"
         for edge in graph_payload["edges"]
     )
-    assert (graph_dir / FINGERPRINT_ARTIFACT_FILENAME).is_file()
+    assert (tmp_path / "runtime" / "cache" / "fingerprints" / FINGERPRINT_ARTIFACT_FILENAME).is_file()
     assert (version_dir / FINGERPRINT_ARTIFACT_FILENAME).is_file()
     assert not (version_dir / "fingerprints.json").exists()
     assert graph_payload["provider_source_snapshot"]["snapshot_id"]
@@ -308,122 +155,11 @@ async def test_swarm_graph_build_consumes_canonical_core_artifact(
         )["source_snapshot"]["snapshot_id"]
     )
     assert (
-        graph_status(
-            skills_root,
-            graph_dir,
-            llm_config=llm_config,
-            symphony_config=config,
-        ).stale
+        graph_status(config, llm_config=llm_config).stale
         is False
     )
 
 
-@pytest.mark.asyncio
-async def test_swarm_full_build_artifact_is_immediately_mutation_ready(
-    monkeypatch,
-    tmp_path,
-):
-    skills_root = tmp_path / "skills"
-    summarizer_dir = skills_root / "summarizer"
-    summarizer_dir.mkdir(parents=True)
-    (summarizer_dir / "SKILL.md").write_text(
-        """---
-name: Summarizer
-description: Summarize supplied text.
-inputs:
-  - name: source_text
-    type: string
-outputs:
-  - name: summary
-    type: string
----
-Summarize the source faithfully.
-""",
-        encoding="utf-8",
-    )
-    graph_dir = tmp_path / "graph"
-    config = symphony_config_from_dict(
-        {
-            "paths": {
-                "skills_root": str(skills_root),
-                "graph_dir": str(graph_dir),
-            }
-        }
-    )
-    model = _FingerprintAndGraphModel()
-    monkeypatch.setattr(
-        "jiuwenswarm.runtime.symphony.llm.LLMConfig.create_model",
-        lambda _config: model,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.runtime.symphony.build.model_from_config",
-        lambda _config: model,
-    )
-    llm_config = LLMConfig(model="offline-test")
-
-    baseline_build = await build_graph(
-        skills_root,
-        graph_dir,
-        llm_config=llm_config,
-        symphony_config=config,
-    )
-    baseline = json.loads(
-        (resolve_graph_artifact_dir(graph_dir) / "graph.json").read_text(
-            encoding="utf-8"
-        )
-    )
-
-    translator_dir = skills_root / "translator"
-    translator_dir.mkdir()
-    (translator_dir / "SKILL.md").write_text(
-        """---
-name: Translator
-description: Translate supplied text.
-inputs:
-  - name: source_text
-    type: string
-outputs:
-  - name: translated_text
-    type: string
----
-Translate the source faithfully.
-""",
-        encoding="utf-8",
-    )
-    target_scan = SkillFolderScanner(skills_root).scan()
-    target_artifact = await FingerprintService(
-        ScanResultCapabilityProvider(target_scan),
-        tmp_path / "target-fingerprints",
-        llm=model_from_config(llm_config),
-        model_response_observer=model_response_observer_from_config(llm_config),
-        settings=fingerprint_settings_from_swarm(config, llm_config),
-    ).build(force=True)
-    runtime = SymphonyRuntime(
-        graph_artifact_root=graph_dir,
-        capability_provider=FingerprintArtifactCapabilityProvider(target_artifact),
-        model=model,
-        orchestration_config=graph_build_orchestration_config_from_swarm(config),
-        source_snapshot=baseline["source_snapshot"],
-        graph_config=graph_config_from_swarm(config),
-    )
-
-    result = await runtime.graph_engine.add_skills(
-        ["translator"],
-        request_id="consumer-full-build-add",
-        source_revision=target_artifact.source_snapshot.snapshot_id,
-    )
-    published = runtime.graph_engine.read().to_dict()
-
-    assert result.status == "published"
-    assert result.previous_version == baseline_build.version
-    assert {node["id"] for node in published["nodes"]} == {
-        "capability:summarizer",
-        "capability:translator",
-    }
-    assert (
-        published["provider_source_snapshot"]["snapshot_id"]
-        == target_artifact.source_snapshot.snapshot_id
-    )
 
 
 class _FingerprintAndGraphModel:
@@ -475,3 +211,108 @@ class _CapturingFingerprintModel:
             content='{"outputs": [{"name": "result", "type": "string"}]}',
             finish_reason=self.finish_reason,
         )
+
+
+def write_capability(root, name, body="Summarize supplied text."):
+    path = root / name / "SKILL.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"---\nname: {name}\ndescription: Summarize text.\n---\n{body}")
+    return path
+
+
+def runtime_config(tmp_path, **overrides):
+    return symphony_config_from_dict({
+        "capability": {"sources": [{"type": "skill", "root": str(tmp_path / "skills")}]},
+        "storage": {"artifact_root": str(tmp_path / "runtime")},
+        "orchestration": {"enabled": True},
+        **overrides,
+    })
+
+
+@pytest.mark.asyncio
+async def test_runtime_applies_fingerprint_concurrency_and_request_policy(tmp_path, monkeypatch):
+    root = tmp_path / "skills"
+    for index in range(5):
+        write_capability(root, f"capability-{index}", "a" * 200 + "TAIL_SHOULD_BE_TRUNCATED")
+    class Model(_FingerprintAndGraphModel):
+        active = 0
+        peak = 0
+        requests = []
+        async def invoke(self, messages, **kwargs):
+            if "Extract a capability fingerprint" in messages[0]["content"]:
+                self.requests.append((messages, kwargs))
+                self.active += 1
+                self.peak = max(self.peak, self.active)
+                try:
+                    await asyncio.sleep(0.01)
+                    return await super().invoke(messages, **kwargs)
+                finally:
+                    self.active -= 1
+            return await super().invoke(messages, **kwargs)
+    model = Model()
+    observed = []
+    model.symphony_response_observer = lambda response, stage, operation: observed.append(stage)
+    config = runtime_config(tmp_path,
+        capability={"sources": [{"type": "skill", "root": str(root)}], "fingerprint": {"extraction": {
+            "max_concurrency": 5, "batch_size": 3, "max_body_chars": 100,
+            "timeout_seconds": 7, "max_output_tokens": None}}},
+        orchestration={"enabled": True, "build": {"max_concurrency": 2}})
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.build.model_from_config", lambda _: model)
+    events = []
+    result = await build_graph(config, LLMConfig(model="test"), build_log=lambda event, **details: events.append(event))
+    assert result.success and result.extracted_count == 5
+    assert model.peak == 2 and model.active == 0
+    assert len(model.requests) == 5
+    assert all(kwargs["timeout"] == 7 and "max_tokens" not in kwargs for _, kwargs in model.requests)
+    assert all("TAIL_SHOULD_BE_TRUNCATED" not in str(messages) for messages, _ in model.requests)
+    assert observed.count("fingerprint_extraction") == 5
+    assert "fingerprint.extract.progress" in events
+    assert result.build_id and result.version
+
+
+@pytest.mark.asyncio
+async def test_runtime_build_and_status_own_inventory_and_incremental_fingerprints(tmp_path, monkeypatch):
+    root = tmp_path / "skills"
+    first_file = write_capability(root, "writer")
+    config = runtime_config(tmp_path)
+    model = _FingerprintAndGraphModel()
+    model.model_config = SimpleNamespace(model_name="test", temperature=0, max_tokens=2048)
+    model.model_client_config = SimpleNamespace(client_provider="openai", api_base="https://model.test", api_key="fake")
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.build.model_from_config", lambda _: model)
+    llm = LLMConfig(model="test")
+    first = await build_graph(config, llm)
+    assert first.extracted_count == 1
+    assert graph_status(config).stale is False
+    second_file = write_capability(root, "translator")
+    pending = graph_status(config)
+    assert pending.added_count == 1 and pending.stale
+    second = await build_graph(config, llm)
+    assert second.reused_count == 1 and second.extracted_count == 1
+    assert second.version != first.version
+    first_file.write_text(first_file.read_text() + "\nAdditional processing step.")
+    assert graph_status(config).changed_count == 1
+    second_file.unlink()
+    assert graph_status(config).removed_count == 1
+    changed = await build_graph(config, llm)
+    assert changed.removed_count == 1 and changed.extracted_count == 1
+    assert graph_status(config).stale is False
+    runtime = SymphonyRuntime(None, config)
+    payload = runtime.orchestration.read().to_dict()
+    assert {item["capability_id"] for item in payload["capabilities"]} == {"writer"}
+    await runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_failed_application_artifact_preserves_published_version(tmp_path, monkeypatch):
+    write_capability(tmp_path / "skills", "writer")
+    config = runtime_config(tmp_path)
+    model = _FingerprintAndGraphModel()
+    runtime = SymphonyRuntime(model, config)
+    first = await runtime.orchestration.build()
+    def fail(_path):
+        raise OSError("application output failed")
+    with pytest.raises(OSError, match="application output"):
+        await runtime.orchestration.build(force=True, prepare_artifact=fail)
+    assert runtime.orchestration.status().version == first.version
+    assert runtime.orchestration.read().get("build_id") == first.build_id
+    await runtime.aclose()

@@ -1281,7 +1281,7 @@
       },
       "symphony_evolution_enabled": {
         "title": "发现技能包",
-        "description": "任务结束后从执行经验中沉淀技能组合，自动发现技能包"
+        "description": "任务结束后记录图观测，从成功的执行经验中沉淀可复用技能包。"
       },
       "skill_retrieval_enabled": {
         "title": "技能自动检索",
@@ -1298,10 +1298,6 @@
       "ttse_enabled": {
         "title": "本地环境事实与任务经验自动演进",
         "description": "控制智能体对于环境事实和任务经验学习"
-      },
-      "skill_retrieval_index_enabled": {
-        "title": "技能索引",
-        "description": "启用已安装技能的树状目录，增强智能体的结构化技能发现能力（*可能消耗额外 Token）"
       },
       "free_search_ddg_enabled": {
         "title": "DuckDuckGo 搜索",
@@ -4079,7 +4075,7 @@
       "buildFailed": "分类目录构建启动失败。",
       "cancelRequested": "已请求取消分类目录构建。",
       "cancelFailed": "取消分类目录构建失败。",
-      "disabledHint": "请在配置中启用 symphony.skill_retrieval 以向 Agent 暴露目录；可独立构建可选的分类目录。",
+      "disabledHint": "请在配置中开启技能检索，再构建和浏览技能目录。",
       "disabled": "检索已关闭",
       "statusLoadFailed": "实时检索状态加载失败，请重试。",
       "statusIncompatible": "后端返回了不兼容的技能检索状态；请更新或重启服务后重试。",

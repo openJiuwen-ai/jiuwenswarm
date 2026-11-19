@@ -2418,46 +2418,27 @@ class SkillManager:
             "disabled_skills": sorted(disabled),
         }
 
-    def _skill_retrieval_records(self):
-        """Return the same live enabled inventory used by Agent discovery."""
-
-        from openjiuwen.symphony.discovery import scan_skill_directories
-        from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
-            skill_sources_from_manager,
-        )
-
-        return scan_skill_directories(
-            [str(self._skills_dir)],
-            disabled_skills=self.list_execution_disabled_skills(),
-            source_by_name=skill_sources_from_manager(self),
-        ).items
-
-    def _skill_taxonomy_runtime(self, records_provider=None):
-        from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
-            skill_retrieval_artifact_root,
-        )
+    @staticmethod
+    def _skill_taxonomy_runtime(*, model=None):
+        from jiuwenswarm.common.symphony_config import load_symphony_config
+        from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import skill_sources_from_directories
         from jiuwenswarm.runtime.symphony.skill_retrieval import SkillTaxonomyRuntime
 
+        from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
+
+        policy = load_symphony_config()
+        skills_root = policy.capability.require_single_source().root
         return SkillTaxonomyRuntime(
-            records_provider=records_provider or self._skill_retrieval_records,
-            index_root=skill_retrieval_artifact_root(),
+            config=policy, model=model,
+            disabled_capability_ids=lambda: load_execution_disabled_skills(skills_dir=skills_root),
+            source_by_id=lambda: skill_sources_from_directories([skills_root]),
         )
 
     @staticmethod
     def _skill_retrieval_mode() -> str:
-        from jiuwenswarm.common.config import get_config
+        from jiuwenswarm.common.symphony_config import load_symphony_config
 
-        config = get_config() or {}
-        symphony = config.get("symphony") if isinstance(config, dict) else {}
-        retrieval = (
-            symphony.get("skill_retrieval") if isinstance(symphony, dict) else {}
-        )
-        raw = (
-            str(retrieval.get("mode") or "auto").strip().lower()
-            if isinstance(retrieval, dict)
-            else "auto"
-        )
-        return "flat" if raw == "flat" else "auto"
+        return "auto" if load_symphony_config().retrieval.use_existing_index else "flat"
 
     async def handle_skills_retrieval_status(self, params: dict) -> dict:
         """Return the live flat/indexed directory and optional build status."""
@@ -2465,54 +2446,73 @@ class SkillManager:
         params = params if isinstance(params, dict) else {}
         session_profile = params.get("_session_profile")
         session_profile = session_profile if isinstance(session_profile, dict) else None
-        from dataclasses import replace
+        from types import SimpleNamespace
 
+        from openjiuwen.symphony import SymphonyRuntime
         from jiuwenswarm.common.config import get_config
+        from jiuwenswarm.common.symphony_config import load_symphony_config
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
-            build_discovery_settings,
-            is_skill_retrieval_enabled,
-            resolve_skill_retrieval_strategy,
-            skill_retrieval_artifact_root,
-            skill_sources_from_manager,
+            resolve_skill_retrieval_strategy, skill_sources_from_directories,
         )
-        from openjiuwen.symphony.discovery import SkillFS, scan_skill_directories
 
-        disabled = {str(name) for name in self.list_execution_disabled_skills()}
-        all_documents = await asyncio.to_thread(
-            scan_skill_directories,
-            [str(self._skills_dir)],
-            source_by_name=skill_sources_from_manager(self),
-        )
-        visible_documents = tuple(
-            record
-            for record in all_documents.items
-            if record.worker_id not in disabled
-        )
         config = get_config() or {}
-        configured_enabled = is_skill_retrieval_enabled(config)
+        from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
+
+        policy = load_symphony_config(config)
+        skills_root = policy.capability.require_single_source().root
+        configured_enabled = policy.retrieval.enabled
         enabled = configured_enabled
-        artifact_root = skill_retrieval_artifact_root()
-        settings = build_discovery_settings(config)
-        flat_directory = SkillFS(
-            lambda: visible_documents,
-            settings=replace(settings, use_existing_index=False),
-            artifact_root=artifact_root,
-            index_root=artifact_root,
-        )
-        snapshot = flat_directory.prompt_snapshot()
-        candidate_scale = "small" if snapshot.all_candidates_included else "large"
-        directory = flat_directory
-        if enabled and candidate_scale == "large":
-            directory = SkillFS(
-                lambda: visible_documents,
-                settings=replace(settings, use_existing_index=True),
-                artifact_root=artifact_root,
-                index_root=artifact_root,
-            )
-        build = await asyncio.to_thread(
-            self._skill_taxonomy_runtime(lambda: visible_documents).status,
-        )
-        artifact = directory.artifact
+        settings = policy.retrieval
+        visible_documents = ()
+        all_count = 0
+        installed_enabled_count = 0
+        snapshot = SimpleNamespace(estimated_candidate_tokens=0,
+                                   candidate_budget_tokens=settings.prompt.candidate_budget_tokens,
+                                   all_candidates_included=True)
+        artifact = SimpleNamespace(layout="flat", index_state="missing")
+        candidate_scale = "small"
+        if enabled:
+            runtime = SymphonyRuntime(None, policy)
+            try:
+                flat_config = settings.model_copy(update={"use_existing_index": False})
+                all_session = runtime.retrieval.create_session(config=flat_config)
+                all_count = len(all_session.records())
+                session = runtime.retrieval.create_session(
+                    config=flat_config,
+                    disabled_capability_ids=lambda: load_execution_disabled_skills(skills_dir=skills_root),
+                    source_by_id=lambda: skill_sources_from_directories([skills_root]),
+                )
+                visible_documents = session.records()
+                installed_enabled_count = len(visible_documents)
+                snapshot = session.environment.prompt_snapshot(refresh=False)
+                candidate_scale = "small" if snapshot.all_candidates_included else "large"
+                if candidate_scale == "large" and settings.use_existing_index:
+                    session = runtime.retrieval.create_session(
+                        config=settings,
+                        disabled_capability_ids=lambda: load_execution_disabled_skills(skills_dir=skills_root),
+                        source_by_id=lambda: skill_sources_from_directories([skills_root]),
+                    )
+                artifact = session.environment.artifact
+            finally:
+                await runtime.aclose()
+        else:
+            from jiuwenswarm.server.runtime.skill.skilldev.state_utils import load_skill_state
+
+            state = load_skill_state(skills_dir=skills_root)
+            identifiers = set()
+            for key in ("local_skills", "installed_plugins"):
+                items = state.get(key)
+                for item in items if isinstance(items, list) else []:
+                    if isinstance(item, dict):
+                        identifier = str(
+                            item.get("worker_id") or item.get("dir_name") or item.get("name") or "",
+                        ).strip()
+                        if identifier:
+                            identifiers.add(identifier)
+            all_count = len(identifiers)
+            installed_enabled_count = len(identifiers - set(load_execution_disabled_skills(skills_dir=skills_root)))
+        build = await asyncio.to_thread(self._skill_taxonomy_runtime().status,
+                                        build_id=str(params.get("build_id") or "") or None)
         profile_scope = "default"
         profile_session_id = ""
         profile_model_name = ""
@@ -2603,7 +2603,7 @@ class SkillManager:
         logs = build.get("logs") if isinstance(build.get("logs"), list) else []
         return {
             "enabled": enabled,
-            "index_enabled": enabled,
+            "index_enabled": enabled and settings.use_existing_index,
             "mode": self._skill_retrieval_mode(),
             "candidate_scale": candidate_scale,
             "estimated_candidate_tokens": estimated_candidate_tokens,
@@ -2620,12 +2620,14 @@ class SkillManager:
             "build_message": str(build.get("message") or ""),
             "build_error": str(build.get("error") or ""),
             "build_id": str(build.get("build_id") or ""),
+            "core_build_id": str(build.get("core_build_id") or ""),
+            "version": str(build.get("version") or ""),
             "build_logs": logs[-50:],
             "index_exists": bool(build.get("index_exists")),
             "fresh": bool(build.get("fresh")),
             "indexed_count": int(build.get("indexed_count") or 0),
-            "installed_count": all_documents.count,
-            "installed_enabled_count": len(visible_documents),
+            "installed_count": all_count,
+            "installed_enabled_count": installed_enabled_count,
             "searchable_count": searchable_count,
             "tool_name": "skill_index",
             "profile_scope": profile_scope,
@@ -2672,10 +2674,16 @@ class SkillManager:
             else bool(raw_force)
         )
         try:
-            payload = await asyncio.to_thread(
-                self._skill_taxonomy_runtime().start_build,
-                force=force,
-            )
+            from jiuwenswarm.common.symphony_config import load_symphony_config
+            from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
+
+            model = None
+            try:
+                model = get_swarm_symphony_service().runtime().model
+            except (RuntimeError, ValueError):
+                if not load_symphony_config(config).retrieval.index_build.task.allow_fallback_tree:
+                    raise
+            payload = self._skill_taxonomy_runtime(model=model).start_build(force=force)
         except Exception as exc:
             logger.exception("Unable to start Skill taxonomy build")
             return {
@@ -2705,10 +2713,7 @@ class SkillManager:
 
         build_id = str((params or {}).get("build_id") or "").strip() or None
         try:
-            payload = await asyncio.to_thread(
-                self._skill_taxonomy_runtime().cancel,
-                build_id=build_id,
-            )
+            payload = await self._skill_taxonomy_runtime().cancel(build_id=build_id)
         except Exception as exc:
             logger.exception("Unable to cancel Skill taxonomy build")
             return {
@@ -2731,7 +2736,7 @@ class SkillManager:
         """Search installed Skills through the same directory Tool used by Agents."""
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
             SkillRetrievalToolkit,
-            skill_sources_from_manager,
+            skill_sources_from_directories,
         )
 
         query = str((params or {}).get("query") or "").strip()
@@ -2742,19 +2747,30 @@ class SkillManager:
                 "detail": "query must not be empty",
                 "matches": [],
             }
+        from jiuwenswarm.common.config import get_config
+        from jiuwenswarm.common.symphony_config import load_symphony_config
+
+        config = get_config() or {}
+        from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
+
+        policy = load_symphony_config(config)
+        if not policy.retrieval.enabled:
+            return {"success": False, "mode": self._skill_retrieval_mode(),
+                    "error_code": "skill_retrieval_disabled", "matches": [],
+                    "detail": "Enable Skill retrieval before searching its directory."}
+        skills_root = policy.capability.require_single_source().root
         toolkit = SkillRetrievalToolkit(
-            skill_directories=[str(self._skills_dir)],
-            disabled_skills=self.list_execution_disabled_skills,
-            source_by_name=lambda: skill_sources_from_manager(self),
+            skill_directories=[skills_root], config_base=config,
+            disabled_skills=lambda: load_execution_disabled_skills(skills_dir=skills_root),
+            source_by_name=lambda: skill_sources_from_directories([skills_root]),
         )
-        result = await toolkit.skill_index(
-            operation="search",
-            query=query,
-            paths=["/"],
-            match="content",
-            result="files",
-            pipeline=[{"operation": "limit", "lines": 10}],
-        )
+        try:
+            result = await toolkit.skill_index(
+                operation="search", query=query, paths=["/"], match="content", result="files",
+                pipeline=[{"operation": "limit", "lines": 10}],
+            )
+        finally:
+            await toolkit.aclose()
         diagnostics = dict(result.detailed_output)
         return {
             "success": not bool(diagnostics.get("error")),

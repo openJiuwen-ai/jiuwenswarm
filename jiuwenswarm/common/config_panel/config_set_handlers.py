@@ -487,9 +487,9 @@ PERMISSIONS_PROFILES = frozenset({"default", "automatic", "full_access"})
 
 
 SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
-    "symphony_enabled": (("enabled",), "bool", DEFAULT_SYMPHONY_ENABLED),
+    "symphony_enabled": (("orchestration", "enabled"), "bool", DEFAULT_SYMPHONY_ENABLED),
     "symphony_evolution_enabled": (
-        ("evolution", "flow", "enabled"),
+        ("orchestration", "experience", "enabled"),
         "bool",
         DEFAULT_EVOLUTION_ENABLED,
     ),
@@ -497,22 +497,19 @@ SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
 SYMPHONY_CONFIG_KEYS = tuple(SYMPHONY_CONFIG_SPECS.keys())
 SKILL_RETRIEVAL_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
     "skill_retrieval_enabled": (("enabled",), "bool", False),
-    # Kept for compatibility with existing config-panel clients and older
-    # config.yaml files.  Newer runtimes may ignore this legacy switch.
-    "skill_retrieval_index_enabled": (("index", "enabled"), "bool", False),
-    "skill_retrieval_max_results": (("discovery", "max_results"), "int", 10),
+    "skill_retrieval_max_results": (("output", "max_results"), "int", 10),
     "skill_retrieval_max_output_chars": (
-        ("discovery", "max_output_chars"),
+        ("output", "max_chars"),
         "output_chars",
         12000,
     ),
     "skill_retrieval_max_list_entries": (
-        ("discovery", "max_list_entries"),
+        ("output", "max_list_entries"),
         "int",
         40,
     ),
     "skill_retrieval_incremental_notice_max_chars": (
-        ("discovery", "incremental_notice_max_chars"),
+        ("output", "incremental_notice_max_chars"),
         "int",
         4000,
     ),
@@ -588,15 +585,6 @@ def flatten_symphony_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
     flat: dict[str, str] = {}
     for key, (path, value_type, default) in SYMPHONY_CONFIG_SPECS.items():
         value = get_nested_config_value(symphony, path, default)
-        if key == "symphony_evolution_enabled":
-            # null 或缺失时回退旧配置；明确写 false 时保持关闭。
-            flow = get_nested_config_value(symphony, ("evolution", "flow"), {})
-            legacy = get_nested_config_value(symphony, ("evolution", "enabled"), None)
-            if (
-                (not isinstance(flow, dict) or flow.get("enabled") is None)
-                and legacy is not None
-            ):
-                value = legacy
         if value_type == "bool":
             if key == "symphony_enabled":
                 value = resolve_symphony_enabled(value)
@@ -611,7 +599,7 @@ def flatten_symphony_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
 
 def flatten_skill_retrieval_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
     symphony = raw.get("symphony") if isinstance(raw.get("symphony"), dict) else {}
-    section = symphony.get("skill_retrieval") if isinstance(symphony.get("skill_retrieval"), dict) else {}
+    section = symphony.get("retrieval") if isinstance(symphony.get("retrieval"), dict) else {}
     flat: dict[str, str] = {}
     for key, (path, value_type, default) in SKILL_RETRIEVAL_CONFIG_SPECS.items():
         value = get_nested_config_value(section, path, default)
