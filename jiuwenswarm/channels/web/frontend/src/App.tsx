@@ -2966,6 +2966,7 @@ function AppContent({
             useChatStore.getState().getRuntime(sessionId)?.messages ?? [],
             isTeamSessionLive(sessionId),
           ),
+          { preserveForegroundInput: recoveryRefresh && !cursorMeta.hasMore },
         );
         setHistoryPagerMeta(sessionId, {
           nextCursor: cursorMeta.nextCursor,
@@ -3004,6 +3005,7 @@ function AppContent({
             useChatStore.getState().getRuntime(sessionId)?.messages ?? [],
             isTeamSessionLive(sessionId),
           ),
+          { preserveForegroundInput: recoveryRefresh && !cursorMeta.hasMore },
         );
         setHistoryPagerMeta(sessionId, {
           nextCursor: cursorMeta.nextCursor,

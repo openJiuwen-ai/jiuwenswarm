@@ -486,6 +486,93 @@ test('an idle recovery response cannot settle a newer locally started turn', asy
   }
 });
 
+for (const { name, snapshot, shouldWait, shouldRestore, inputAccepted } of [
+  {
+    name: 'idle without its dispatch or a replay gap',
+    snapshot: { dispatches: [], history_required: false },
+    shouldWait: true,
+    shouldRestore: false,
+  },
+  {
+    name: 'idle with a replay gap and only an unrelated dispatch',
+    snapshot: { dispatches: [{ request_id: 'other-request' }], history_required: true },
+    shouldWait: true,
+    shouldRestore: true,
+  },
+  {
+    name: 'idle after Worker registration',
+    snapshot: { dispatches: [{ request_id: 'first-input' }] },
+    shouldWait: false,
+    shouldRestore: true,
+  },
+  {
+    name: 'idle after the input was acknowledged',
+    snapshot: { dispatches: [] },
+    inputAccepted: true,
+    shouldWait: false,
+    shouldRestore: true,
+  },
+  {
+    name: 'an explicit Worker interruption',
+    snapshot: { dispatches: [], interrupted: true },
+    shouldWait: false,
+    shouldRestore: true,
+  },
+]) {
+  test('first-input recovery handles ' + name, async () => {
+    const client = new webClient.constructor();
+    const store = useChatStore.getState();
+    const sessionId = 'first-input-recovery';
+    const statuses = [];
+    const history = [];
+    const errors = [];
+    client.on('chat.processing_status', ({ payload }) => statuses.push(payload.is_processing));
+    client.on('runtime.history_required', ({ payload }) => history.push(payload.session_id));
+    client.on('chat.error', ({ payload }) => errors.push(payload.code));
+    try {
+      store.ensureRuntime(sessionId);
+      store.addMessage(sessionId, {
+        id: 'local-input',
+        role: 'user',
+        content: 'First prompt',
+        timestamp: new Date().toISOString(),
+        requestId: 'first-input',
+        isAcceptedPending: !inputAccepted,
+      });
+      store.setProcessing(sessionId, true, { newTurn: true, inputMessageId: 'local-input' });
+      await client.connect();
+      const socket = FakeWebSocket.instance;
+      const send = socket.send;
+      socket.send = function (raw) {
+        send.call(this, raw);
+        const request = JSON.parse(raw);
+        const resuming = Boolean(request.params?.runtime_resume);
+        queueMicrotask(() => this.receive({
+          type: 'res',
+          id: request.id,
+          ok: true,
+          payload: resuming
+            ? { is_processing: false, runtime: { is_processing: false, ...snapshot } }
+            : { is_processing: true, runtime: { recovery_pending: true, worker_instance: 'worker' } },
+        }));
+      };
+
+      const metadata = await client.request('session.get_metadata', { session_id: sessionId });
+      assert.deepEqual(statuses, shouldWait ? [] : [false]);
+      assert.deepEqual(history, shouldRestore ? [sessionId] : []);
+      assert.deepEqual(errors, snapshot.interrupted ? ['WORKER_EXECUTION_INTERRUPTED'] : []);
+      if (shouldWait) assert.notEqual(metadata.is_processing, false);
+      assert.equal(client.isRecoveringExecution(sessionId), shouldWait);
+      assert.deepEqual(socket.sentRequests.map(({ method }) => method), [
+        'session.get_metadata', 'session.get_metadata',
+      ]);
+    } finally {
+      await client.disconnect();
+      store.removeRuntime(sessionId);
+    }
+  });
+}
+
 test('fresh metadata pending recovery reaches the later running snapshot without clearing processing', async () => {
   const fresh = new webClient.constructor();
   await fresh.connect();

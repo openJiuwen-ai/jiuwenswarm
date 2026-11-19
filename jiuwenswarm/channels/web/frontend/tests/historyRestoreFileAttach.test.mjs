@@ -7,6 +7,8 @@ import {
   parseHistoryJsonFileToTimelinePreview,
 } from '../node_modules/.cache/history-restore-file-attach/historyRestore.mjs';
 
+import { useChatStore } from '../node_modules/.cache/history-restore-file-attach/chatStore.mjs';
+
 const SESSION = 'sess';
 const T = 1_790_000_000;
 
@@ -32,6 +34,52 @@ const file = (id, ts, names) => ({
 
 const restore = (records) => parseHistoryJsonFileToTimelinePreview(records, SESSION).messages;
 const names = (message) => (message.fileItems ?? []).map((item) => item.name);
+
+test('recovery preserves newer local input and attachments until the same request appears in history', () => {
+  const sessionId = 'first-input-history';
+  const store = useChatStore.getState();
+  const mediaItems = [{ type: 'document', filename: 'input.md', path: '/tmp/input.md' }];
+  const timestamp = new Date((T + 2) * 1000).toISOString();
+  const input = { id: 'local-input', requestId: 'first-input', content: 'Review the file',
+    role: 'user', timestamp, mediaItems };
+  const reply = { id: 'local-reply', role: 'assistant', content: 'Live answer', timestamp };
+  const options = { preserveForegroundInput: true };
+  store.ensureRuntime(sessionId);
+  try {
+    store.addMessage(sessionId, input);
+    store.setProcessing(sessionId, true, { newTurn: true, inputMessageId: input.id });
+    store.addMessage(sessionId, reply);
+    store.setProcessing(sessionId, false);
+
+    store.replaceHistoryMessages(sessionId, [], options);
+    assert.deepEqual(store.getRuntime(sessionId).messages.map((message) => message.id), [
+      input.id, reply.id,
+    ]);
+    assert.deepEqual(store.getRuntime(sessionId).messages[0].mediaItems, mediaItems);
+
+    const olderHistory = restore([user('older', T, input.content)]);
+    store.replaceHistoryMessages(sessionId, olderHistory, options);
+    assert.deepEqual(store.getRuntime(sessionId).messages.map((message) => message.id), [
+      'older', input.id,
+    ]);
+
+    const persisted = restore([
+      user('older', T, input.content),
+      { ...user('saved-input', T + 2, input.content), request_id: input.requestId, media_items: mediaItems },
+    ]);
+    store.replaceHistoryMessages(sessionId, persisted, options);
+    assert.deepEqual(store.getRuntime(sessionId).messages.map((message) => message.id), [
+      'older', 'saved-input',
+    ]);
+    assert.deepEqual(store.getRuntime(sessionId).messages[1].mediaItems?.map((item) => item.filename), ['input.md']);
+
+    store.replaceHistoryMessages(sessionId, []);
+    assert.deepEqual(store.getRuntime(sessionId).messages, []);
+  } finally {
+    store.removeRuntime(sessionId);
+  }
+});
+
 
 test('restored chat.file stays in its own turn instead of the previous assistant', () => {
   const messages = restore([

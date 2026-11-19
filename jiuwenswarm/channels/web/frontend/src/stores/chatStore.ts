@@ -213,6 +213,7 @@ export interface ChatRuntime {
   isProcessing: boolean;
   foregroundIsProcessing: boolean;
   turnRevision: number;
+  foregroundInputMessageId: string | null;
   organizationIsProcessing: boolean;
   activeExecutionId: string | null;
   executionError: string | null;
@@ -292,6 +293,7 @@ function createEmptyRuntime(): ChatRuntime {
     isProcessing: false,
     foregroundIsProcessing: false,
     turnRevision: 0,
+    foregroundInputMessageId: null,
     organizationIsProcessing: false,
     activeExecutionId: null,
     executionError: null,
@@ -385,7 +387,11 @@ interface ChatState {
   removeRuntime: (sessionId: string) => void;
 
   addMessage: (sessionId: string, message: Message) => void;
-  replaceHistoryMessages: (sessionId: string, messages: Message[]) => void;
+  replaceHistoryMessages: (
+    sessionId: string,
+    messages: Message[],
+    options?: { preserveForegroundInput?: boolean },
+  ) => void;
   updateMessage: (sessionId: string, id: string, updates: Partial<Message>) => void;
   appendStreamContent: (sessionId: string, content: string, streamKey?: string) => void;
   appendReasoning: (
@@ -424,7 +430,11 @@ interface ChatState {
   bumpThinkingAnchor: (sessionId: string) => void;
   setExecutionError: (sessionId: string, error: string | null) => void;
   setAgentGroupUnavailable: (sessionId: string, unavailable: boolean) => void;
-  setProcessing: (sessionId: string, status: boolean, options?: { newTurn?: boolean }) => void;
+  setProcessing: (
+    sessionId: string,
+    status: boolean,
+    options?: { newTurn?: boolean; inputMessageId?: string },
+  ) => void;
   setOrganizationProcessing: (sessionId: string, status: boolean) => void;
   setActiveExecutionId: (sessionId: string, executionId: string) => void;
   setThinking: (sessionId: string, status: boolean) => void;
@@ -631,7 +641,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     });
   },
 
-  replaceHistoryMessages: (sessionId, messages) => {
+  replaceHistoryMessages: (sessionId, messages, options) => {
     if (!sessionId.includes(CONVERSATION_KEY_SEPARATOR)) {
       const teams = new Map<string, Message[]>();
       for (const message of messages) {
@@ -655,6 +665,20 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       if (!runtime) return state;
       if (runtime.evolutionStatusClearTimer) {
         clearTimeout(runtime.evolutionStatusClearTimer);
+      }
+      const input = options?.preserveForegroundInput
+        ? runtime.messages.find((message) => message.id === runtime.foregroundInputMessageId)
+        : undefined;
+      if (input?.requestId && messages.length === 0) {
+        // An empty recovery snapshot can predate persistence of the whole turn.
+        messages = runtime.messages;
+      } else if (input?.requestId && !messages.some((message) => message.role === 'user' &&
+        (message.id === input.id || message.requestId === input.requestId))) {
+        const inputAt = parseTimestampToMs(input.timestamp);
+        const nextIndex = messages.findIndex((message) => parseTimestampToMs(message.timestamp) > inputAt);
+        messages = nextIndex < 0
+          ? [...messages, input]
+          : [...messages.slice(0, nextIndex), input, ...messages.slice(nextIndex)];
       }
       const assigned = assignMessageRenderKeys(
         runtime, omitLiveQuestionHistory(sessionId, messages, runtime.pendingQuestions),
@@ -1121,7 +1145,10 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           [sessionId]: {
             ...runtime,
             foregroundIsProcessing: status,
-            ...(status && (turnStart || options?.newTurn) ? { turnRevision: runtime.turnRevision + 1 } : {}),
+            ...(status && (turnStart || options?.newTurn) ? {
+              turnRevision: runtime.turnRevision + 1,
+              foregroundInputMessageId: options?.inputMessageId ?? null,
+            } : {}),
             isProcessing: status || runtime.organizationIsProcessing,
             ...(!status ? {
               activeExecutionId: null,
