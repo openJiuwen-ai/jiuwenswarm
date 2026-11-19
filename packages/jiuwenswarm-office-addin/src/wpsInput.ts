@@ -2,7 +2,7 @@
  * WPS delivers Command/Ctrl+V to both its task pane and the presentation. While a text field of the pane has the
  * focus, the presentation's paste is cancelled; the field's own paste still runs.
  */
-import type { WpsObject } from './wpsPowerPoint';
+import type { WpsObject } from './wpsDocument';
 
 export function isolateTaskPaneInput(application: WpsObject, root: Pick<Document, 'activeElement' | 'hasFocus'>): void {
   application.ApiEvent?.AddApiEventListener?.('DocumentBeforePaste', (...args: unknown[]) => {
