@@ -17,6 +17,8 @@ from openjiuwen.core.common.exception.errors import BaseError
 from openjiuwen.core.foundation.tool.base import Tool, ToolCard
 from openjiuwen.harness.tools.base_tool import ToolOutput
 
+from .todo_arguments import MODIFY_ACTIONS, TODO_ACTIONS, TodoArgumentError, parse_todo_operation
+
 logger = logging.getLogger(__name__)
 
 _UNIFIED_TODO_NAME = "todo"
@@ -28,16 +30,6 @@ _TODO_NAME_REPLACEMENTS = (
     ("todo_modify", "todo(action=modify)"),
     ("todo_list", "todo(action=list)"),
     ("todo_get", "todo(action=get)"),
-)
-
-_UNIFIED_TODO_ACTIONS = ("create", "list", "get", "modify")
-_MODIFY_ACTIONS = (
-    "update",
-    "delete",
-    "cancel",
-    "append",
-    "insert_after",
-    "insert_before",
 )
 
 
@@ -105,7 +97,7 @@ def _unified_todo_input_params(language: str) -> dict:
         "properties": {
             "action": {
                 "type": "string",
-                "enum": list(_UNIFIED_TODO_ACTIONS),
+                "enum": list(TODO_ACTIONS),
                 "description": d("要执行的操作", "Operation to execute"),
             },
             "plan_action": {"type": "string", "enum": ["new", "rebuild"]},
@@ -133,7 +125,7 @@ def _unified_todo_input_params(language: str) -> dict:
             },
             "modify_action": {
                 "type": "string",
-                "enum": list(_MODIFY_ACTIONS),
+                "enum": list(MODIFY_ACTIONS),
                 "description": d(
                     "modify 必填：具体修改操作",
                     "modify: the mutation to apply",
@@ -217,7 +209,10 @@ class UnifiedTodoTool(Tool):
         if not isinstance(inputs, dict):
             return ToolOutput(success=False, error="todo inputs must be a JSON object")
         data = dict(inputs)
-        action = str(data.get("action") or "").strip().lower()
+        try:
+            action, modify_action = parse_todo_operation(data)
+        except TodoArgumentError as exc:
+            return ToolOutput(success=False, error=str(exc))
 
         if action == "create":
             tasks = data.get("tasks")
@@ -240,20 +235,6 @@ class UnifiedTodoTool(Tool):
             return await self._engines["get"].invoke({"id": task_id}, **kwargs)
 
         if action == "modify":
-            modify_action = str(data.get("modify_action") or "").strip().lower()
-            if not modify_action:
-                return ToolOutput(
-                    success=False, error="'modify_action' is required for action=modify"
-                )
-            if modify_action in ("update", "append") and not isinstance(data.get("todos"), list):
-                return ToolOutput(
-                    success=False,
-                    error="'todos' must be an array, including for a single task. "
-                    'Update example: {"action":"modify","modify_action":"update",'
-                    '"todos":[{"id":"env","status":"completed"}]}; '
-                    "for append, include id/content/status in each item. "
-                    "Top-level id/status does not update a task.",
-                )
             inner = {"action": modify_action}
             for key in ("todos", "ids", "todo_data"):
                 if data.get(key) is not None:
@@ -278,8 +259,6 @@ class UnifiedTodoTool(Tool):
                     "only if its work is done, then start the next task in the same todos array; "
                     "do not assume a failed update changed task status.",
                 )
-
-        return ToolOutput(success=False, error=f"unsupported todo action: {action!r}")
 
     async def stream(self, inputs, **kwargs):
         yield await self.invoke(inputs, **kwargs)
