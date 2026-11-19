@@ -72,8 +72,8 @@ function emit(event: string, payload: JsonObject, sessionId = 's1'): void {
 beforeEach(() => {
   vi.useFakeTimers();
   gateway = new ScriptedGateway();
-  let attaches = 0;
-  gateway.answer('client.attach', () => ({ attachment_id: `a${++attaches}`, renew_every_seconds: 30, pending: [] }));
+  // As the backend's: one id for every attach of the document by its user.
+  gateway.answer('client.attach', { attachment_id: 'a1', renew_every_seconds: 30, pending: [] });
   gateway.answer('client.conversations', { conversations: [
     { session_id: 's1', title: '改标题', last_message_at: 200 }, { session_id: 's0', title: '旧的', last_message_at: 100 },
   ] });
@@ -110,6 +110,16 @@ describe('opening the pane', () => {
 
     expect(gateway.sent('session.create')[0]).toMatchObject({ model_name: 'm-active', client_app: 'office-powerpoint' });
     expect(gateway.sent('client.attach').map(params => params.session_id)).toEqual(['s5']);
+  });
+
+  it('shows the turn the server still runs as running, so it can be stopped', async () => {
+    gateway.answer('session.get_metadata', { session_id: 's1', is_processing: true, runtime: {} });
+    const controller = pane();
+    await controller.open();
+    await settle();
+
+    expect(controller.state().conversation.turn).toBe('running');
+    expect(transcript(controller)).toEqual([{ kind: 'user', text: '改标题' }, { kind: 'assistant', text: '好了。' }]);
   });
 
   it('applies what streams in while the history loads after the history', async () => {
@@ -254,20 +264,28 @@ describe('chatting', () => {
     expect(controller.state()).toMatchObject({ models: ['m-new', 'm-third'], model: 'm-new' });
   });
 
-  it('shows the history again when it attaches again after a reconnect, as the turn may have ended meanwhile', async () => {
+  it('shows the history again after a reconnect, and the turn as ended when the server no longer runs it', async () => {
     const controller = pane();
     await controller.open();
     await settle();
     await controller.send('检查标题');
+    emit('chat.tool_call', { tool_call: { id: 't1', name: 'read_presentation_context' } });
+    // The server restarted mid-turn: the turn's history stops with no reply, and nothing ended it on this socket.
     gateway.answer('client.conversation.messages', { messages: [
-      { role: 'user', content: '检查标题' }, { role: 'assistant', content: '标题都检查过了。' }] });
+      { role: 'user', content: '检查标题' },
+      { event_type: 'chat.tool_call', tool_call: { id: 't1', name: 'read_presentation_context' } },
+      { event_type: 'chat.llm_call_start', content: '' },
+      { event_type: 'chat.request_completed', content: '', status: 'cancelled' }] });
+    gateway.answer('session.get_metadata', { session_id: 's1', is_processing: false, runtime: {} });
     gateway.connection({ kind: 'down', attempt: 1, retryAt: 1000 });
     gateway.connection({ kind: 'open' });
     await settle();
 
     expect(gateway.sent('client.conversation.messages')).toHaveLength(2);
     expect(controller.state().conversation.turn).toBe('idle');
-    expect(transcript(controller).at(-1)).toEqual({ kind: 'assistant', text: '标题都检查过了。' });
+    expect(transcript(controller)).toEqual([
+      { kind: 'user', text: '检查标题' }, { kind: 'tool', name: 'read_presentation_context', status: 'failed' },
+      { kind: 'notice', tone: 'info', text: '连接中断期间，这一轮已结束。' }]);
   });
 
   it('follows the connection: down with the next attempt, and open again', async () => {

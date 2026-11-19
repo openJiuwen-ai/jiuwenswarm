@@ -116,6 +116,16 @@ export class SessionFacade {
     return response.messages.filter(isRecord);
   }
 
+  /**
+   * Whether the conversation's turn runs now, as ``session.get_metadata`` reads it from the running agent and the web
+   * chat restores it; undefined while the server cannot tell yet.
+   */
+  async processing(sessionId: SessionId): Promise<boolean | undefined> {
+    const response = await this.gateway.request('session.get_metadata', { session_id: sessionId });
+    const recovering = isRecord(response.runtime) && response.runtime.recovery_pending === true;
+    return typeof response.is_processing === 'boolean' && !recovering ? response.is_processing : undefined;
+  }
+
   /** The user's attached documents (``client.list``), by the conversation each is attached to. */
   async openDocuments(sessionId: SessionId): Promise<Map<string, OpenDocument>> {
     const response = await this.gateway.request('client.list', { session_id: sessionId });
