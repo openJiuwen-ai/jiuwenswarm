@@ -2600,8 +2600,25 @@ async def list_agent_groups_with_hub(
         if item.kind != "agent_group":
             continue
         existing = by_id.get(item.asset_id)
+        if existing is None:
+            # The Hub keys assets by asset id while built-in packages are keyed
+            # by their directory name — the same expert team shipped both ways
+            # (same package name, different ids) used to appear twice in the
+            # plaza (issue #6750). Fall back to a package-name match against
+            # non-Hub cards and enrich that card instead of adding a duplicate.
+            package_name = str(item.package_name or "").strip()
+            if package_name:
+                existing = next(
+                    (
+                        card
+                        for card in by_id.values()
+                        if card.get("source") != "hub"
+                        and str(card.get("name") or "") == package_name
+                    ),
+                    None,
+                )
         if existing is not None:
-            by_id[item.asset_id] = {
+            by_id[existing["id"]] = {
                 **existing,
                 "displayName": _i18n(item.display_name, item.package_name or item.asset_id),
                 "displayDescription": _i18n(item.short_description),
