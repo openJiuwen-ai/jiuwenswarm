@@ -1270,6 +1270,66 @@ def _read_external_cli_state_sidecar(workspace_dir: Path) -> Optional[dict[str, 
         return None
 
 
+def _filter_restorable_external_cli_state(state: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """按 cli_path 存在性校验旁路恢复条目（AI 检视 !10636）。
+
+    - 字符串形式条目（配置层支持的合法形状）与 cli_path 为空（内置托管
+      模式）的条目保留。
+    - cli_path 指向的文件存在（含 expanduser 与 Windows 升级 preserved
+      路径翻译）→ 保留。
+    - 路径根不可达（盘符/共享离线）→ 视为暂时不可用，保留不剔除。
+    - 路径根可达且文件确实不存在 → 丢弃（init -f 重置后不会出现
+      "agent 已开启但路径不存在"）。全部条目被丢弃时返回 None（落回模板默认）。
+    剔除结果不回写旁路：旁路保留原始恢复备份。
+    """
+    from jiuwenswarm.common.windows_cli_paths import resolve_preserved_cli_path
+
+    agents = state.get("agents") if isinstance(state, dict) else None
+    if not isinstance(agents, list):
+        return None
+    kept = []
+    dropped = []
+    for item in agents:
+        if isinstance(item, str):
+            if item.strip():
+                kept.append(item)
+            else:
+                dropped.append(item)
+            continue
+        if not isinstance(item, dict):
+            dropped.append(item)
+            continue
+        cli_path = str(item.get("cli_path") or "").strip()
+        if not cli_path:
+            kept.append(item)
+            continue
+        expanded = Path(cli_path).expanduser()
+        translated = resolve_preserved_cli_path(str(expanded))
+        candidate = Path(translated) if translated else expanded
+        anchor = candidate.anchor
+        if anchor and not Path(anchor).exists():
+            # 盘符/共享暂不可达：视为暂时不可用，不剔除。
+            kept.append(item)
+            continue
+        if candidate.is_file():
+            kept.append(item)
+        else:
+            dropped.append(item)
+    if dropped:
+        # 剔除不静默：init 输出/日志明确列出被剔除的条目（AI 检视 !10636）。
+        logger.warning(
+            "init 恢复：剔除 cli_path 已失效的三方 agent 条目（旁路保留原始备份）: %s",
+            [
+                (str(d.get("cli_agent") or d), str(d.get("cli_path") or ""))
+                for d in dropped
+                if isinstance(d, dict)
+            ],
+        )
+    if not kept:
+        return None
+    return {**state, "agents": kept}
+
+
 def prepare_workspace(
     overwrite: bool = True,
     preferred_language: Optional[str] = None,
@@ -1304,20 +1364,16 @@ def prepare_workspace(
     if config_initialized:
         # init/重新部署用模板覆盖 config.yaml——三方 agent 的启用配置不取自被
         # 覆盖的旧文件，而是从数据目录之外的状态旁路恢复（旁路在每次保存/清理
-        # 时镜像，见 dump_yaml_round_trip 的挂接点）。强制重置（init -f /
-        # overwrite）例外：重置语义完整生效——跳过恢复并清除旁路文件，否则
-        # "重置"名存实亡，且被恢复的 cli_path 指向已删除的安装。
-        if overwrite:
-            # 强制重置：跳过恢复并清除旁路文件（删除失败仅告警，不阻塞 init）
-            try:
-                external_cli_state_sidecar_path(workspace_dir).unlink(missing_ok=True)
-            except OSError as exc:
-                logger.warning(f"清除三方 agent 状态旁路失败: {exc}")
-        pre_restore_state = (
-            _read_external_cli_state_sidecar(workspace_dir)
-            if not overwrite and not config_yaml_dest.exists()
-            else None
-        )
+        # 时镜像，见 dump_yaml_round_trip 的挂接点）。无论强制重置（init -f /
+        # overwrite）还是全新初始化，都从旁路恢复三方 agent 状态且保留旁路文件
+        # （2026-11-19 语义调整：init 后保持已安装/已开启状态；旁路缺失或为空
+        # 时自然落到模板默认；要彻底重置三方 agent，在 UI 里关闭对应 agent 并
+        # 保存，旁路即同步为空态，后续 init 恢复为空）。
+        pre_restore_state = _read_external_cli_state_sidecar(workspace_dir)
+        if pre_restore_state is not None:
+            # 强制重置/全新初始化都校验恢复条目：cli_path 已删除的安装被丢弃，
+            # 避免 init -f 后"agent 已开启但路径不存在"（AI 检视 !10636）。
+            pre_restore_state = _filter_restorable_external_cli_state(pre_restore_state)
         with TrackCopyDiff(
             dest=config_yaml_dest,
             is_file=True,
@@ -1861,6 +1917,10 @@ def init_user_workspace(
                 f"entire {workspace_dir} will be deleted for clean initialization."
             )
             print("[jiuwenswarm-init] WARNING: This will delete all historical configuration and memory information.")
+            print(
+                "[jiuwenswarm-init] NOTE: External CLI agent state is restored from the state sidecar; "
+                "entries whose CLI path no longer exists are dropped."
+            )
             print("[jiuwenswarm-init] This action cannot be undone.")
             if _is_interactive():
                 confirmation = input(
