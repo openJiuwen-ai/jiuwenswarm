@@ -3998,15 +3998,17 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         *,
         enable_read_image_multimodal: bool,
     ) -> dict[str, Any]:
-        """Add image file paths to the ReAct prompt when native image input is off."""
-        if enable_read_image_multimodal:
-            return inputs
+        """Steer the ReAct prompt towards the right image path for this model.
 
+        Native image input on: require ``read_file`` so the model actually gets
+        the pixels. Off: add the image file paths plus the vision-tool hint.
+        """
         query = inputs.get("query")
-        if not isinstance(query, str) or "jiuwenswarm_image_tool_context" in query:
+        if not isinstance(query, str):
             return inputs
 
         from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
+            append_read_file_image_directive,
             extract_image_tool_question,
             extract_multimodal_image_files,
         )
@@ -4015,6 +4017,19 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         if not isinstance(image_files, list) or not image_files:
             image_files = extract_multimodal_image_files(request.params)
         if not image_files:
+            return inputs
+
+        if enable_read_image_multimodal:
+            # 模型能原生看图，但附件像素不会自动进上下文——必须显式要求它先
+            # read_file，否则它会跳过 read_file 直接改用图像理解技能。
+            directed = append_read_file_image_directive(query, image_files)
+            if directed == query:
+                return inputs
+            updated = dict(inputs)
+            updated["query"] = directed
+            return updated
+
+        if "jiuwenswarm_image_tool_context" in query:
             return inputs
 
         params = request.params if isinstance(request.params, dict) else {}

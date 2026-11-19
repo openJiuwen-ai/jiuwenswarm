@@ -255,6 +255,40 @@ def render_current_turn_attachments(attachments: list[dict[str, Any]]) -> str:
     )
 
 
+# 多模态模型下附件的像素不会自动进上下文，模型必须自己调 read_file 才看得到图。
+# 技能清单里的图像理解技能描述与「描述图片」这类 query 高度同构，缺少显式规则时
+# 模型会跳过 read_file 直接改用该技能，最终只拿到文字 caption 而非像素。
+_READ_FILE_IMAGE_DIRECTIVE_MARKER = "本轮附件含图片，且当前模型支持原生图片输入。"
+_READ_FILE_IMAGE_DIRECTIVE = (
+    "\n\n"
+    + _READ_FILE_IMAGE_DIRECTIVE_MARKER
+    + "必须先 read_file 读取该图片路径以获取像素内容，"
+    "不要仅凭路径或文件名推断，"
+    "也不要跳过 read_file 直接改用图像理解技能。"
+)
+
+
+def append_read_file_image_directive(
+    query: str,
+    image_files: list[dict[str, Any]],
+) -> str:
+    """Route image attachments to ``read_file`` when the model can see pixels.
+
+    Args:
+        query: The user prompt already carrying the attachment block.
+        image_files: Normalized image attachments of the current turn.
+
+    Returns:
+        ``query`` with the directive appended, or unchanged when the turn has
+        no image attachment or the directive is already present.
+    """
+    if not image_files:
+        return query
+    if _READ_FILE_IMAGE_DIRECTIVE_MARKER in query:
+        return query
+    return query + _READ_FILE_IMAGE_DIRECTIVE
+
+
 def extract_multimodal_image_files(params: Any) -> list[dict[str, Any]]:
     """Use the same request attachments for image input and path context."""
     return _normalize_image_files(extract_current_turn_attachments(params))
