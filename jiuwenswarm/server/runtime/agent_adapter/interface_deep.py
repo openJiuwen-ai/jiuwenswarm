@@ -10894,7 +10894,12 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
 
         content = "".join(collected_content) if collected_content else ""
 
-        if not content and not error_text:
+        # 合法空标记：无错误文本且聚合为空 = 任务执行完成但模型未产出汇总文本。
+        # 随响应透传给上层（cron 调度器），使其可区分"提取失败空"（判失败）与
+        # "合法空"（判成功），见 gateway/cron/scheduler.py _run_unary_cron_job。
+        empty_final_answer = not content and not error_text
+
+        if empty_final_answer:
             # 非流式聚合结果为空且无错误文本——上层（如 cron 调度器）只能拿到空 content，
             # 最终显示「任务执行完成但未返回结果内容」。打出 chunk 分布定位根因。
             logger.warning(
@@ -10925,11 +10930,14 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             )
 
         self._mark_history_tail_synced(request.request_id)
+        success_payload: dict[str, Any] = {"content": content}
+        if empty_final_answer:
+            success_payload["empty_final_answer"] = True
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=True,
-            payload={"content": content},
+            payload=success_payload,
             metadata=request.metadata,
         )
 
