@@ -1461,9 +1461,10 @@ def apply_config_payload(
         value = params["team_leader_goal_enabled"]
         if not isinstance(value, bool) and value not in ("true", "false"):
             raise ConfigPanelBadRequest("team_leader_goal_enabled must be true or false")
-    goal_settings = {key: parse_config_bool(params[key]) for key in (
-        "team_scheduled_dispatch_enabled", "team_leader_goal_enabled"
-    ) if key in params}
+    goal_settings: dict[str, bool] = {}
+    for key in ("team_scheduled_dispatch_enabled", "team_leader_goal_enabled"):
+        if key in params:
+            goal_settings[key] = parse_config_bool(params[key])
     if goal_settings:
         raw_team = get_nested_config_value(get_config_raw(), ("modes", "team", "jiuwen_team"), {})
         try:
