@@ -1,5 +1,5 @@
 ---
-description: 给修改/检视 agents/harness 代码的 AI 助手与工程师：七子树地图、任务规划 / 可靠性 / subagent / 中断交互 / 事件流 / 原生多模态 specs 索引（S_01~S_23）、公开入口、架构铁律、装配点与配置消费、测试与提交约束
+description: 给修改/检视 agents/harness 代码的 AI 助手与工程师：七子树地图、任务规划 / 可靠性 / subagent / 中断交互 / 事件流 / 原生多模态 / DeepResearch 日志 specs 索引（S_01~S_24）、公开入口、架构铁律、装配点与配置消费、测试与提交约束
 ---
 
 # harness：代理执行挂件的多域聚合目录
@@ -20,7 +20,10 @@ common / code / flash——**spec 按改哪块机制切，不按目录树切**�
 同样遵循"机制横跨多个子树"的找代码方式（subagent 域横跨 openjiuwen SDK 机制主体与
 server 装配层；中断交互域的原语层在 agent-core `openjiuwen`、守卫与结算层在 server
 runtime——spec 关联模块按仓分列；事件流域的正向通道底层在 agent-core stream 队列、
-消费侧在 server runtime），新增 spec 从 S_24 起编（编号跨域连续，不复用）。
+消费侧在 server runtime），新增 spec 从 S_25 起编（编号跨域连续，不复用）。
+
+DeepResearch 主研究 SDK 与 runner 日志由 [[S_24]] 维护，包含日志路径、完整 stderr、
+调用关联、故障降级和跨仓收集契约；不改变研究 stdout 或交互协议。
 
 修改任何代码前先读对应 spec；改规约本身必须同步 specs（三条强制约束见文末）。
 
@@ -49,6 +52,7 @@ runtime——spec 关联模块按仓分列；事件流域的正向通道底层�
 - `docs/specs/S_21_pause-checkpoints-and-context-repair.md` — 暂停检查点与上下文修复：pause/resume/abort 状态机（shell 进程树击杀）、per-session 六字典、早 checkpoint（post_agent_execute 不关流）、取消结果收集、占位检测（legacy 7 类文案）、call_goal 注入剥离（deepcopy 防泄漏）、SkillTurbo HITL 改写、上下文修复四计数
 - `docs/specs/S_22_native-multimodal-image-input.md` — 原生多模态图片输入：引用行 / 上传清单通道、能力位单一真源（modalities）、发送前像素物化 / 视图剥离、预算与状态行、工具侧护栏、team 成员的 N10 三要素（能力位 + rail + 清单，含 leader 分发提示 dispatch_hint、成员确定性分发的边界提及判定与 attached/omitted 幂等、live 清单只在开新轮的请求绑定）
 - `docs/specs/S_23_rsi-scenarios-and-providers.md` — RSI 场景与 Provider 装配：Harness、论文、程序、优化模型接线与回归范围。
+- `docs/specs/S_24_deepresearch-sdk-diagnostics.md` — DeepResearch SDK 与 runner 日志：服务日志根、完整 stderr、调用关联、跨平台文件和故障降级。
 
 ## 统一术语表
 
