@@ -1115,6 +1115,8 @@ function parseSessionHistoryTimelineEntry(
     if (!content.trim() && mediaItems.length === 0) {
       return null;
     }
+    const requestId = pickFirstString(record, ['request_id', 'requestId']) ??
+      pickFirstString(eventPayload, ['request_id', 'requestId']);
     const restoredId =
       pickFirstString(record, ['id', 'message_id', 'msg_id']) ?? `hist-user-${sessionId}-${at}`;
     const isGoalObjectiveMessage =
@@ -1140,6 +1142,7 @@ function parseSessionHistoryTimelineEntry(
       message: {
         id,
         role: 'user',
+        ...(requestId ? { requestId } : {}),
         outputOrder: readOutputOrder(record) ?? readOutputOrder(eventPayload),
         content,
         timestamp: at,

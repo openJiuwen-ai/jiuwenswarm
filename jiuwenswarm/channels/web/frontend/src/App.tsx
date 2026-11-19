@@ -2918,7 +2918,8 @@ function AppContent({
               sessionId,
               mergeCronRunUserSeed(messages, sessionId, seed).map((message) => ({ ...message, historyBatchSeq: 1 })),
             ),
-          )
+          ),
+          { preserveForegroundInput: recoveryRefresh && !cursorMeta.hasMore },
         );
         setHistoryPagerMeta(sessionId, {
           nextCursor: cursorMeta.nextCursor,
@@ -2947,9 +2948,11 @@ function AppContent({
       onEmpty: (cursorMeta) => {
         const seed = pendingCronUserSeedsRef.current.get(sessionId);
         pendingCronUserSeedsRef.current.delete(sessionId);
-        replaceHistoryMessages(sessionId, mergePersistedGoalCompletionMessages(
-          sessionId, mergeCronRunUserSeed([], sessionId, seed),
-        ));
+        replaceHistoryMessages(
+          sessionId,
+          mergePersistedGoalCompletionMessages(sessionId, mergeCronRunUserSeed([], sessionId, seed)),
+          { preserveForegroundInput: recoveryRefresh && !cursorMeta.hasMore },
+        );
         setHistoryPagerMeta(sessionId, {
           nextCursor: cursorMeta.nextCursor,
           hasMore: cursorMeta.hasMore,

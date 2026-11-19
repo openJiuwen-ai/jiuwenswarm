@@ -636,11 +636,28 @@ class WebClient {
           retry();
           return metadata;
         }
-        const localRuntime = useChatStore.getState().getRuntime(sessionId);
-        const missingTerminal = runtime.is_processing === false && localRuntime?.foregroundIsProcessing === true;
+        const chatStore = useChatStore.getState();
+        const localRuntime = chatStore.getRuntime(sessionId);
+        const input = localRuntime?.messages.find((message) => message.id === localRuntime.foregroundInputMessageId);
+        const dispatches = Array.isArray(runtime.dispatches) ? runtime.dispatches : [];
+        const inputObserved = Boolean(input?.requestId && dispatches.some((dispatch) =>
+          dispatch?.request_id === input.requestId
+        ));
+        if (input && inputObserved && !input.runtimeInputObserved) {
+          chatStore.updateMessage(sessionId, input.id, { runtimeInputObserved: true });
+        }
+        // The Gateway receipt can precede Worker registration. An idle snapshot
+        // that has yet to observe this input cannot settle the local turn.
+        const awaitingInput = runtime.is_processing === false &&
+          localRuntime?.foregroundIsProcessing === true &&
+          runtime.interrupted !== true &&
+          input?.isAcceptedPending === true && !input.runtimeInputObserved && !inputObserved;
+        if (awaitingInput) retry();
+        const missingTerminal = runtime.is_processing === false &&
+          localRuntime?.foregroundIsProcessing === true && !awaitingInput;
         const segments = localRuntime?.reasoningSegments;
         const lastReasoning = segments?.[segments.length - 1];
-        if (typeof runtime.is_processing === 'boolean') {
+        if (!awaitingInput && typeof runtime.is_processing === 'boolean') {
           this.dispatchEvent({
             type: 'event',
             event: 'chat.processing_status',
@@ -667,7 +684,6 @@ class WebClient {
           });
         }
         if (runtime.history_required === true) {
-          const dispatches = Array.isArray(runtime.dispatches) ? runtime.dispatches : [];
           for (const dispatch of dispatches) {
             const interactions = Array.isArray(dispatch.pending_interactions) ? dispatch.pending_interactions : [];
             for (const interaction of interactions) {
@@ -688,7 +704,7 @@ class WebClient {
             payload: { session_id: sessionId },
           });
         }
-        return metadata;
+        return awaitingInput ? undefined : metadata;
       } catch (error) {
         if ((error as WebError | undefined)?.code === 'REQUEST_TIMEOUT') retry();
         return;

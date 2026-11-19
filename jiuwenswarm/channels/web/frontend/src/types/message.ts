@@ -121,6 +121,10 @@ export interface Message {
   role: MessageRole;
   content: string;
   timestamp: string;
+  /** Request identity used to reconcile a live user input with history. */
+  requestId?: string;
+  /** The Worker snapshot has included this input's dispatch. */
+  runtimeInputObserved?: boolean;
   /** True until the server confirms this optimistic input's timestamp. */
   isTimestampPending?: boolean;
   /** True until runtime.accepted confirms the server received this optimistic input. */

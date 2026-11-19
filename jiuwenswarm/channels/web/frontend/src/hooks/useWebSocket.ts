@@ -2292,7 +2292,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         flushPendingStreamDelta(sessionId);
         useChatStore.getState().stopStreaming(sessionId);
       }
-      useChatStore.getState().setProcessing(sessionId, true, { newTurn: true });
+      const trackForegroundInput = getWebTransport() !== 'http' && waitForInputTimestamp &&
+        useGoalStore.getState().getRuntime(sessionId)?.goal?.status !== 'active';
+      useChatStore.getState().setProcessing(sessionId, true, {
+        newTurn: true,
+        ...(trackForegroundInput ? { inputMessageId: userMessageId } : {}),
+      });
       useChatStore.getState().setThinking(sessionId, true);
       // A fresh user send starts a new turn: the previous interrupt settle
       // window no longer applies.
@@ -2472,6 +2477,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               if (oldest !== undefined) registry.delete(oldest);
             }
             registry.set(requestId, { sessionId, messageId: userMessageId });
+            if (trackForegroundInput && inputMode !== 'steer') {
+              useChatStore.getState().updateMessage(sessionId, userMessageId, { requestId });
+            }
           },
         });
         clearConnectionPresentationForUserAction(sessionId);
@@ -2488,6 +2496,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       } catch (error) {
         const webError = error as WebError;
         localSendPendingRef.current.delete(sessionId);
+        if (trackForegroundInput) {
+          useChatStore.getState().updateMessage(sessionId, userMessageId, { requestId: undefined });
+        }
         if (agentGroupSelectionPayload.agent_group_name) {
           clearFailedAgentGroupBinding(sessionId, agentGroupSelectionPayload.agent_group_name);
         }
