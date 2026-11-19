@@ -590,7 +590,13 @@ test('failed expert upload install rolls back the import and shows the error in 
   );
   assert.match(
     panelSource,
-    /\} else if \(installOutcomeUnknown\) \{\s*\n\s*if \(kind === 'group'\) setGroupUploadError\(t\('agentManagement\.states\.installOutcomeUnknown'\)\)/,
+    /\} else if \(installOutcomeUnknown\) \{\s*\n\s*if \(kind === 'group'\) setGroupUploadError\(t\('agentManagement\.states\.installUnconfirmed'\)\)/,
+  );
+  // A group upload install that dies in flight is unconfirmed, never failed:
+  // the server may still finish it, so nothing is rolled back (#6426).
+  assert.match(
+    panelSource,
+    /if \(isUncertainInstallError\(installError\)\) \{\s*\n\s*installOutcomeUnknown = true;/,
   );
   // The dialog must NOT be closed inside the installFailed branch —
   // setUploadDialogOpen(false) only appears in the success branch.
@@ -622,7 +628,14 @@ test('uncertain install errors are classified as transport failures', () => {
   // it also wraps codeless backend rejections, which are definite verdicts.
   assert.doesNotMatch(installOutcomeSource, /agent_management_request_failed/);
   assert.match(panelSource, /isUncertainInstallError,/);
-  assert.match(panelSource, /return isUncertainInstallError\(error\) \? 'uncertain' : 'failed';/);
+  assert.match(panelSource, /const uncertain = isUncertainInstallError\(error\);/);
+  assert.match(panelSource, /return uncertain \? 'uncertain' : 'failed';/);
+  // An unconfirmed install must re-read the catalog instead of reporting a
+  // definite failure: the server may still finish it (#6426).
+  assert.match(panelSource, /void refreshAfterAction\(id\);/);
+  assert.match(panelSource, /void refreshAfterGroupAction\(id\);/);
+  // Connector-gated retries follow the same rule instead of reporting failure.
+  assert.match(panelSource, /void refreshAfterAction\(job\.id\);/);
   assert.doesNotMatch(panelSource, /agent_management_request_failed'\) return true/);
   assert.doesNotMatch(panelSource, /installFailed = !\(await handleInstall/);
 });

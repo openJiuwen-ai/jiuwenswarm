@@ -851,12 +851,29 @@ export function AgentManagementPanel({
           await refreshAfterAction(job.id);
         }
       } catch (error) {
-        showActionError(formatActionError(error, t('agentManagement.states.actionError')));
+        if (isUncertainInstallError(error)) {
+          // Same rule as the catalog install path: a request that died in
+          // flight leaves the outcome unknown, so re-read the catalog instead
+          // of reporting a definite failure (#6426).
+          showActionNotice(t('agentManagement.states.installUnconfirmed'));
+          void refreshAfterAction(job.id);
+        } else {
+          showActionError(formatActionError(error, t('agentManagement.states.actionError')));
+        }
       } finally {
         clearBusy(job.id);
       }
     },
-    [clearBusy, client, formatActionError, loadCatalog, refreshAfterAction, showActionError, t],
+    [
+      clearBusy,
+      client,
+      formatActionError,
+      loadCatalog,
+      refreshAfterAction,
+      showActionError,
+      showActionNotice,
+      t,
+    ],
   );
 
   const refreshAfterReconnect = useCallback(
@@ -975,12 +992,23 @@ export function AgentManagementPanel({
       // The upload flow owns the final presentation: it shows the raw
       // backend error in the notice slot, so hand the message over before
       // the generic fallback toast here (#5678 PR review).
-      const friendly = formatActionError(error, t('agentManagement.states.actionError'));
+      const uncertain = isUncertainInstallError(error);
+      const friendly = uncertain
+        ? t('agentManagement.states.installUnconfirmed')
+        : formatActionError(error, t('agentManagement.states.actionError'));
       options.onError?.(error instanceof Error && error.message.trim() ? error.message : friendly);
-      showActionError(friendly, {
-        inline: !options.suppressInlineError,
-      });
-      return isUncertainInstallError(error) ? 'uncertain' : 'failed';
+      if (uncertain) {
+        // The request died after it was sent, so the server may still finish
+        // the install: report the unconfirmed result and re-read the catalog
+        // instead of claiming a failure (#6426).
+        if (!options.suppressInlineError) showActionNotice(friendly);
+        void refreshAfterAction(id);
+      } else {
+        showActionError(friendly, {
+          inline: !options.suppressInlineError,
+        });
+      }
+      return uncertain ? 'uncertain' : 'failed';
     } finally {
       if (!queuedForConnect) clearBusy(id);
     }
@@ -1066,7 +1094,15 @@ export function AgentManagementPanel({
       await groupClient.installGroup(id);
       await refreshAfterGroupAction(id);
     } catch (error) {
-      showActionError(formatActionError(error, t('agentManagement.group.states.actionError')));
+      if (isUncertainInstallError(error)) {
+        // Timeout after the request was sent: the server may still be
+        // installing, so report the unconfirmed result and re-read the group
+        // catalog rather than showing a definite failure (#6426).
+        showActionNotice(t('agentManagement.states.installUnconfirmed'));
+        void refreshAfterGroupAction(id);
+      } else {
+        showActionError(formatActionError(error, t('agentManagement.group.states.actionError')));
+      }
     } finally {
       clearBusy(id);
     }
@@ -1269,9 +1305,16 @@ export function AgentManagementPanel({
           // The package is already imported at this point; keep the imported
           // group visible and report "imported but install failed" instead of
           // bubbling up as a misleading upload failure (#5431 PR review).
-          installFailed = true;
-          installErrorMessage = formatActionError(installError, t('agentManagement.states.actionError'));
-          showActionError(installErrorMessage, { inline: false });
+          // A request that died in flight is not a verdict — the server may
+          // still finish the install — so it stays unconfirmed, exactly like
+          // the catalog install path (#6426).
+          if (isUncertainInstallError(installError)) {
+            installOutcomeUnknown = true;
+          } else {
+            installFailed = true;
+            installErrorMessage = formatActionError(installError, t('agentManagement.states.actionError'));
+            showActionError(installErrorMessage, { inline: false });
+          }
         }
         await loadGroups('mine');
         setMineKind('group');
@@ -1303,7 +1346,7 @@ export function AgentManagementPanel({
         if (kind === 'group') setGroupUploadError(installErrorMessage || t('agentManagement.states.actionError'));
         else setUploadError(installErrorMessage || t('agentManagement.states.actionError'));
       } else if (installOutcomeUnknown) {
-        if (kind === 'group') setGroupUploadError(t('agentManagement.states.installOutcomeUnknown'));
+        if (kind === 'group') setGroupUploadError(t('agentManagement.states.installUnconfirmed'));
         else setUploadError(t('agentManagement.states.installOutcomeUnknown'));
       } else {
         setUploadDialogOpen(false);
