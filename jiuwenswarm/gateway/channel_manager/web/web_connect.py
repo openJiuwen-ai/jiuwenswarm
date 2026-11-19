@@ -52,7 +52,7 @@ _WEB_CONNECTION_USER_ID_ATTR = "_web_connection_user_id"
 _HANDLER_BEFORE_CALLBACK_METHODS = frozenset({ReqMethod.CHAT_SEND.value})
 
 # PC(web) 渠道 ask_user 超时兜底：卡片下发后用户长时间不答则取消任务收口。
-# 与 xiaoyi 渠道对齐（48 小时；调试期曾临时 2 分钟）。
+# 与 xiaoyi 渠道对齐（48 小时）。
 _WEB_ASK_USER_EXPIRE_S = 48 * 60 * 60
 
 _STREAM_COALESCE_EVENT_TYPES = frozenset({"chat.delta", "chat.reasoning"})
