@@ -15,7 +15,6 @@ import jiuwenswarm.server.runtime.agent_adapter.interface_deep as m
 # agent-ssas 是必装依赖(uv.lock 固定): 缺失属安装/锁定失败, 本模块用例
 # 会在收集/运行期直接 error 硬红, 不设 skipif——避免依赖缺失时整模块跳过
 # 伪装成"通过"
-pytestmark = [pytest.mark.filterwarnings("ignore")]
 
 
 @pytest.fixture(autouse=True)
@@ -124,7 +123,7 @@ async def test_init_failure_evicts_cache_for_retry(tmp_path):
         raise RuntimeError("injected init failure")
 
     class _EvictedBackend:
-        """替身: 顶替缓存条目模拟初始化失败态, 记录后台 close 是否触达."""
+        """替身: 顶替缓存条目模拟初始化失败态, 记录 close 是否被误触达."""
 
         def __init__(self):
             self.closed = False
@@ -144,16 +143,9 @@ async def test_init_failure_evicts_cache_for_retry(tmp_path):
     with pytest.raises(RuntimeError, match="injected init failure"):
         await asyncio.wait_for(fail_task, timeout=5.0)
     assert m._SSAS_BACKEND_CACHE.get(key) is None
-    # 剔除的 backend 被后台关闭, 防构造期资源随重复失败装配累积泄漏
-    pending_close = [t for t in m._SSAS_CLOSE_TASKS if not t.done()]
-    if pending_close:
-        await asyncio.wait_for(
-            asyncio.gather(*pending_close, return_exceptions=True), timeout=5.0
-        )
-    # 协程完成与 done callback(_log_ssas_close_result)移出集合相差一个
-    # 循环节拍, 补一拍确定性等待后再断言
-    await asyncio.sleep(0)
-    assert evicted.closed is True
+    # 剔除契约: 初始化失败仅剔除缓存, 不主动关闭 backend(其可能由
+    # _ensure_initialized 兜底自愈, 已装配 rail 代理仍持有引用)
+    assert evicted.closed is False
     with m._SSAS_INIT_TASKS_LOCK:
         assert len(m._SSAS_CLOSE_TASKS) == 0
 
@@ -174,7 +166,7 @@ async def test_wait_timeout_cancels_and_evicts_hung_task(tmp_path):
         await asyncio.sleep(3600)
 
     class _HungBackend:
-        """替身: 记录超时剔除后的后台 close 是否触达."""
+        """替身: 记录超时剔除后 close 是否被误触达."""
 
         def __init__(self):
             self.closed = False
@@ -205,17 +197,10 @@ async def test_wait_timeout_cancels_and_evicts_hung_task(tmp_path):
     with m._SSAS_INIT_TASKS_LOCK:
         assert hung not in m._SSAS_INIT_TASKS
         assert key not in m._SSAS_BACKEND_CACHE
-    # 超时剔除的 backend 被后台关闭(防资源泄漏), 若 close Task 尚未完成
-    # 则确定性等待其结束
-    pending_close = [t for t in m._SSAS_CLOSE_TASKS if not t.done()]
-    if pending_close:
-        await asyncio.wait_for(
-            asyncio.gather(*pending_close, return_exceptions=True), timeout=5.0
-        )
-    # 协程完成与 done callback(_log_ssas_close_result)移出集合相差一个
-    # 循环节拍, 补一拍确定性等待后再断言
-    await asyncio.sleep(0)
-    assert fake_backend.closed is True
+    # 超时剔除契约: 仅取消 Task 并剔除缓存, 不主动关闭 backend(挂死
+    # backend 可能恰在超时后自行完成初始化, 关闭会与 _ensure_initialized
+    # 兜底竞态)
+    assert fake_backend.closed is False
     with m._SSAS_INIT_TASKS_LOCK:
         assert len(m._SSAS_CLOSE_TASKS) == 0
     t1 = time.monotonic()
