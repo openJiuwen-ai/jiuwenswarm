@@ -21,7 +21,10 @@
   },
   "enterpriseEntry": {
     "invalidIdentity": "Identity returned no user ID.",
-    "noContext": "No Agent is available for this account. Ask an administrator to grant access.",
+    "emptyTitle": "No Agent Available",
+    "backToLogin": "Back to Sign in",
+    "language": "Interface language",
+    "noContext": "No Agent is available for this account. Please grant access in the Manager console first.",
     "loadFailed": "Failed to load Agent contexts.",
     "switchFailed": "Failed to switch context.",
     "errorTitle": "Unable to enter workspace",
@@ -45,6 +48,10 @@
     "changed": "The installation plan changed. Select the SkillPack again to review the latest plan.",
     "refreshed": "The installation plan has changed. Review the members and confirm again.",
     "validationFailed": "SkillPack validation failed. Download it again and check its members."
+  },
+  "gitIdentity": {
+    "label": "Independent Git identity",
+    "hint": "Sign Git commits with each member name and an @jiuwenswarm.com email. Takes effect from the next message."
   },
   "common": {
     "searchName": "Search names",
@@ -94,6 +101,7 @@
     "work": "Tasks",
     "agent": "Experts",
     "design": "Design",
+    "teams": "Teams",
     "experiments": "RSI",
     "sessions": "Sessions",
     "cron": "Scheduled Tasks",
@@ -103,7 +111,127 @@
     "settings": "Settings",
     "logs": "Logs",
     "update": "Updates",
-    "personalContext": "Knowledge"
+    "personalContext": "Knowledge",
+    "appMarket": "Apps"
+  },
+  "appMarket": {
+    "pageResources": "Page",
+    "serviceResources": "Service",
+    "resourceMemory": "RAM",
+    "sharedProcess": "Shared process",
+    "webPageUnavailable": "Browser page usage unavailable",
+    "pageResourceHint": "Updates every 3 seconds. Estimates CPU (machine capacity) and resident memory of market main renderers. Totals deduplicate processes; excludes GPU, subframes, host and AI sessions. Shared processes cannot be split exactly. — means sampling or unavailable.",
+    "localMachineResources": "This computer",
+    "localServiceResources": "Service host (local connection)",
+    "serverResources": "Server",
+    "systemResourceHint": "Whole-machine CPU and physical memory usage, updated every 3 seconds. Includes all applications and the operating system. Reclaimable memory is excluded where available; OS estimates may differ. A warning appears after 3 samples at or above 85% CPU or memory, and clears when both fall below 75%.",
+    "serverResourceHint": "Measures the backend host, not the browser computer. A local connection usually targets this computer, but proxies and port forwarding may target a remote server; containers may report host statistics. Updates every 3 seconds. Warns after 3 samples at or above 85% CPU or memory; clears when both are below 75%.",
+    "highResourceUsage": "High system usage. Consider stopping unused apps or other tasks.",
+    "serviceResourceHint": "Updates every 3 seconds. Estimates CPU (machine capacity) and resident memory of market service process trees on the server machine. Excludes browser pages, host and AI sessions. — means sampling or unavailable.",
+    "title": "Apps",
+    "allApps": "All Apps",
+    "running": "Running",
+    "start": "Start",
+    "stop": "Stop",
+    "open": "Open",
+    "openRestore": "Open / restore",
+    "openPreview": "Open app preview",
+    "edit": "Edit",
+    "editSessionTitle": "Edit {{name}}",
+    "reloadPreview": "Reload app preview",
+    "reloadFailed": "Failed to reload app preview",
+    "editPrompt": "Help me modify the app “{{name}}”. Its source entry is: {{entryPath}}\nPlease keep its existing data and saves. Changes I want: ",
+    "expandPane": "Expand app panel",
+    "restorePane": "Restore split view",
+    "hidePane": "Hide app panel",
+    "closePane": "Close app page (keep running)",
+    "panelCloseFailed": "Failed to close app page",
+    "stopApp": "Stop app",
+    "paneHint": "Apps open in the right panel. Use “Open / restore” after hiding it. Closing the panel keeps the app running; use “Stop app” to end it.",
+    "desktopWindowHint": "Apps open in separate windows without taskbar buttons. Use “Open / restore” in App Market after minimizing. Closing a window keeps the app running; use “Stop app” to end it.",
+    "closeWindowFailed": "The app stopped, but its window could not close. Please close the app window manually",
+    "gotIt": "Got it",
+    "delete": "Delete",
+    "loading": "Loading...",
+    "empty": "Failed to load",
+    "noApps": "No apps available",
+    "noInstances": "No running apps",
+    "startSuccess": "App started",
+    "openFailed": "Failed to open app",
+    "desktopUpdateRequired": "Restart with the updated desktop app to use the built-in browser",
+    "startFailed": "Failed to start",
+    "stopSuccess": "App stopped",
+    "stopFailed": "Failed to stop",
+    "deleteSuccess": "App deleted",
+    "deleteFailed": "Failed to delete",
+    "deleteConfirm": "Are you sure you want to delete this app? Running instances will be stopped.",
+    "states": {
+      "stopped": "Not started",
+      "starting": "Starting",
+      "running": "Running",
+      "stopping": "Stopping"
+    }
+  },
+  "officeAddins": {
+    "appStatus": {
+      "installed": "Installed",
+      "notInstalled": "Not installed",
+      "needsRepair": "Needs repair",
+      "notFound": "Not found"
+    },
+    "sections": {
+      "about": "Basic info",
+      "apps": "Apps",
+      "guide": "Guide",
+      "requirement": "Requirements",
+      "start": "Get started",
+      "data": "Data"
+    },
+    "actions": {
+      "install": "Install",
+      "installPending": "Installing…",
+      "repair": "Repair",
+      "repairPending": "Repairing…",
+      "remove": "Remove",
+      "removing": "Removing…"
+    },
+    "confirm": {
+      "install": "Install {{name}}",
+      "repair": "Repair {{name}}",
+      "remove": "Remove {{name}}?",
+      "removeNotice": "Office stops loading WorkSwarm, and the local certificate is deleted once no other add-in remains installed.",
+      "trustNotice": "The system may ask you to trust a local certificate (on macOS, with your login password); Office uses it to connect securely to WorkSwarm on this computer."
+    },
+    "suites": {
+      "office": {
+        "title": "WorkSwarm for Office",
+        "what": "Use WorkSwarm in Word, Excel and PowerPoint to edit the open document.",
+        "requirement": "Microsoft 365: version 2504 or later on Windows, or 16.96 or later on Mac. Not on the web.",
+        "data": "WorkSwarm for Office connects only to WorkSwarm on this computer. WorkSwarm sends the document content to the model service you configured in WorkSwarm.",
+        "steps": {
+          "restart": "Restart Office",
+          "openPane": "Open WorkSwarm from Home → Add-ins",
+          "connect": "The pane connects to WorkSwarm on this computer"
+        }
+      }
+    },
+    "apps": {
+      "word": "Word",
+      "excel": "Excel",
+      "powerpoint": "PowerPoint"
+    },
+    "problems": {
+      "permission_denied": "The system didn't let WorkSwarm write to Office's add-in folder. Allow it in the system prompt or in Privacy & Security settings, then click Repair.",
+      "certificate_untrusted": "The local certificate isn't trusted yet. Click Repair and confirm when the system asks.",
+      "certificate_expiring": "The local certificate expires soon. Click Repair to replace it.",
+      "tls_unavailable": "The local service Office connects to isn't running. Click Repair to retry, or restart WorkSwarm if it still fails.",
+      "stale_origin": "The add-in still points to an old address. Click Repair to update it."
+    },
+    "appsNotFound": "Not found on this computer: {{apps}}. Open each once after installing it, then install from here.",
+    "listSeparator": ", ",
+    "errors": {
+      "actionFailed": "That didn't finish. Try again."
+    }
   },
   "experts": {
     "podStarting": "Starting the expert runtime, please wait",
@@ -120,6 +248,29 @@
     "noSettings": "This plugin does not provide a settings page."
   },
   "designer": {
+    "modelConfiguration": {
+      "title": "Model configuration",
+      "help": "Choose the chat, video and image models for Design. Generation models apply to every design canvas.",
+      "addModel": "Add custom model",
+      "bindingHint": "Uses the model bound in Settings → Agent → Tools. View only; change it there.",
+      "bindingModel": "Currently bound model",
+      "chat": "Chat",
+      "video_gen": "Video generation",
+      "visual_gen": "Image generation",
+      "missing": "Not configured",
+      "incomplete": "Missing required fields",
+      "disabled": "Not enabled",
+      "problem": "{{name}}: {{status}}",
+      "separator": "; ",
+      "configure": "Configure",
+      "enable": "Enable",
+      "retry": "Reload",
+      "loading": "Loading model configuration…",
+      "sessionLoading": "Loading the selected model…",
+      "sessionLoadFailed": "Could not load the selected model. Please retry.",
+      "notConfigured": "Generation models are not configured yet.",
+      "loadFailed": "Could not load generation model configuration. Please retry."
+    },
     "loading": "Loading design workflow…",
     "emptyTitle": "No design workflow yet",
     "emptyDescription": "Describe a project to create a dedicated Design workspace and workflow.",
@@ -129,9 +280,11 @@
     "models": {
       "chatMissing": "Chat model is not configured. Configure a model in Settings before using Design.",
       "videoOff": "Video generation is switched off in Settings > Agent.",
-      "videoMissing": "Video generation is not configured: set the API URL, API key and model in Settings > Agent.",
+      "videoMissing": "No supported video generation model yet. Add one in Settings → Models → Multimodal before using Design.",
       "imageOff": "Image generation is switched off in Settings > Agent.",
-      "imageMissing": "Image generation is not configured: set the API URL, API key and model in Settings > Agent.",
+      "imageMissing": "No supported image generation model yet. Add one in Settings → Models → Multimodal before using Design.",
+      "protocolUnsupported": "Design does not support the {{protocol}} protocol.",
+      "protocolUnsupportedEmpty": "Design does not support a generation model with no protocol.",
       "lockedHint": "This design runs on the model it was started with. Switching the model is not available on the canvas.",
       "notSelected": "No model",
       "openModelSettings": "Open Settings"
@@ -465,6 +618,61 @@
     "qwenOnly": "Only Qwen full-duplex is currently supported. Configure Qwen Omni Realtime in Settings."
   },
   "settingsPanel": {
+    "multimodal": {
+      "tab": "Multimodal models",
+      "tabHelp": "Manage models for image, audio and video understanding, and image and video generation. Adjust tool switches and model bindings in Settings → Agent → Tools.",
+      "purpose": "Model purpose",
+      "capabilities": "Model capabilities",
+      "understanding": "Multimodal understanding",
+      "generation": "Multimodal generation",
+      "selectCapabilities": "Select model capabilities",
+      "capabilityHint": "Select only capabilities that this model supports.",
+      "displayName": "Model display name",
+      "displayNamePlaceholder": "Defaults to the model name; you can change it",
+      "nameInvalid": "Enter a model display name between 1 and 100 characters",
+      "completeFields": "Complete the required model configuration fields.",
+      "add": "Add multimodal model",
+      "edit": "Edit multimodal model",
+      "deleteTitle": "Delete model?",
+      "changeTitle": "Change model capabilities?",
+      "confirmDelete": "Delete",
+      "confirmChanges": "Confirm changes",
+      "deleteReferences": "This model is used by: {{tools}}.",
+      "editReferences": "This change affects the model selections for: {{tools}}.",
+      "replacementRule": "After confirmation, affected tools will switch to another matching model and keep their current on/off state. Tools without a matching model will be turned off and their model configuration cleared.",
+      "deleteUnbound": "This model will be removed from the multimodal model list.",
+      "applyFailed": "Saved, but could not be applied. Please retry.",
+      "shortcutChanged": "Model added. It does not include {{tool}}, so this tool’s settings are unchanged.",
+      "separator": ", ",
+      "empty": "No multimodal models configured",
+      "emptyDescription": "Add a model and select its capabilities. Matching tools without a selected model will be enabled automatically.",
+      "tools": {
+        "vision": "Image processing",
+        "audio": "Audio processing",
+        "video": "Video understanding",
+        "visual_gen": "Image generation",
+        "video_gen": "Video generation"
+      },
+      "errors": {
+        "MM_VALIDATION_FAILED": "Check the model configuration and complete all required fields.",
+        "MM_CONFIRM_REQUIRED": "Model references have changed. Confirm the affected tools again.",
+        "MM_MODEL_NOT_FOUND": "This model no longer exists. Select another model.",
+        "MM_MODEL_ID_CONFLICT": "The model ID is already in use. Reopen the add dialog.",
+        "MM_CAPABILITY_MISMATCH": "The selected model does not support this tool. Select another model.",
+        "MM_MODEL_REQUIRED": "Add a model with the required capability first.",
+        "MM_STORAGE_FAILED": "Could not save the configuration. Please retry.",
+        "MM_RECOVERY_REQUIRED": "The configuration transaction could not be recovered. Check the configuration files before retrying.",
+        "MM_NOT_CONFIGURED": "Multimodal models are not configured yet.",
+        "MM_CONFIG_READ_FAILED": "Could not read the model configuration. Check the files and credentials.",
+        "MM_UNSUPPORTED_SCHEMA": "This configuration version is unsupported. Update the components.",
+        "MM_LEGACY_WRITE_UNSUPPORTED": "Use Multimodal models to change this configuration.",
+        "METHOD_NOT_FOUND": "Component versions do not match. Update Gateway, the protocol package, and AgentServer.",
+        "unknown": "The operation failed. Please retry."
+      }
+    },
+    "affinity": {
+      "noSupportingModel": "No configured model supports affinity. Configure one in Models first."
+    },
     "voice": {
       "connectionFailed": "Connection failed. Check the endpoint, API key and model, then try again.",
       "connectionSuccess": "Model connection verified",
@@ -623,6 +831,10 @@
       }
     },
     "models": {
+      "affinityCapability": "This service supports Ascend KV-Cache affinity",
+      "affinityCapabilityDescription": "Only for custom services implementing the agent_hint protocol. This is a manual declaration; connection tests do not verify affinity support.",
+      "affinityAutoDisabled": "Model configuration saved. KV-Cache affinity was automatically disabled because a control model no longer supports it. Restart if required.",
+
       "customModels": "Custom models",
       "tabsLabel": "Model settings categories",
       "modelsTab": "Models",
@@ -706,6 +918,11 @@
       "contextWindowPlaceholder": "For example, 256K, 1M, or 262144",
       "contextWindowHint": "Enter a positive token count; plain numbers and K/M units are supported case-insensitively. You can also choose a common value next to the field.",
       "contextWindowPresets": "Common context windows",
+      "outputTokens": "Maximum output per request",
+      "outputTokensPlaceholder": "For example, 32K or 32768",
+      "outputTokensHint": "Limits the maximum tokens generated by one model request, including reasoning tokens. OpenAI protocol can use Unlimited, subject to provider and model limits.",
+      "outputTokensPresets": "Common output limits",
+      "outputTokensUnlimited": "Unlimited",
       "vendorPlaceholder": "Select",
       "selectVendor": "Select model provider",
       "searchVendor": "Search model providers",
@@ -749,11 +966,15 @@
         "maas": "Maas Pangu",
         "minimax": "MiniMax",
         "mimo": "Xiaomi MiMo",
+        "opencode-go": "OpenCode Go",
         "openrouter": "OpenRouter",
         "vllm-omni": "vLLM-Omni",
         "volcengine": "Volcengine",
         "zhipu": "Zhipu GLM",
         "unrecognized": "Unrecognized provider ({{vendor}})"
+      },
+      "apiBasePlaceholders": {
+        "opencode-go": "e.g. https://opencode.ai/zen/go/v1"
       },
       "protocols": {
         "openai": "OpenAI",
@@ -779,12 +1000,14 @@
       "missingCustomName": "Unnamed configuration",
       "reloadAfterFailure": "Reload and verify",
       "modelsResponseInvalid": "The model-list response is invalid. Please try again.",
+      "modelsTemporarilyUnavailable": "The model service is recovering. Please wait.",
       "catalogResponseInvalid": "The model-provider catalog response is invalid. Please try again.",
       "catalogLoadingCustomAvailable": "Loading built-in model providers. You can still choose Custom to continue.",
       "catalogLoadFailedCustomAvailable": "Built-in model providers failed to load. You can still choose Custom to continue.",
       "catalogLoading": "Loading model providers and reasoning options. Please wait.",
       "catalogLoadFailed": "Model providers and reasoning options failed to load. Retry before saving.",
       "saveResponseInvalid": "The model-save response is invalid. Reload to verify the server state.",
+      "execResolveFailed": "The model was saved, but resolving its exec: reference command failed; model calls use an empty key until it succeeds. Check the secret-manager command, then re-save or probe.",
       "savedApplied": "Saved and applied",
       "savedRestartRequired": "Saved; takes effect after restart",
       "refreshTitle": "Background model refresh",
@@ -812,6 +1035,9 @@
         "reasoningUnsupported": "The reasoning option “{{value}}” is unsupported. Select another option or use the default",
         "reasoningUnavailable": "Reasoning options have not loaded. Retry before saving",
         "contextWindowInvalid": "Enter a valid positive context window, such as 256K, 1M, or 1310720",
+        "outputTokensRequired": "Anthropic protocol requires a maximum output per request",
+        "outputTokensInvalid": "Enter a valid positive output limit, such as 32K or 32768",
+        "outputTokensExceedsModelLimit": "The maximum output per request for this model cannot exceed {{limit}}",
         "aliasRequired": "Model display name is required",
         "aliasConflict": "Model display name must be globally unique and cannot match another model's display name",
         "modelGroupNameConflict": "Model group name must be globally unique and cannot match another model group name"
@@ -882,7 +1108,7 @@
       "rsi": "RSI · Recursive self-improvement",
       "trajectoryUi": "Trajectory diagnosis",
       "kvCacheAffinity": "Compute affinity",
-      "teamOrganization": "Team Organization",
+      "teamOrganization": "Swarm Organization",
       "teamScheduledDispatch": "Scheduled dispatch",
       "skillPack": "Skill Packs",
       "multiModelCollaboration": "Multi-model collaboration",
@@ -934,6 +1160,38 @@
       "requiredFields": "Fields marked * are required. Complete them to save. Saved API keys do not need to be entered again."
     },
     "fields": {
+      "vision_enabled": {
+        "title": "Image processing",
+        "description": "Use the selected model for this media type. Turning this off retains the model selection."
+      },
+      "audio_enabled": {
+        "title": "Audio processing",
+        "description": "Use the selected model for this media type. Turning this off retains the model selection."
+      },
+      "video_enabled": {
+        "title": "Video understanding",
+        "description": "Use the selected model for this media type. Turning this off retains the model selection."
+      },
+      "vision_model_id": {
+        "title": "Selected model",
+        "description": "Select a multimodal model with this capability"
+      },
+      "audio_model_id": {
+        "title": "Selected model",
+        "description": "Select a multimodal model with this capability"
+      },
+      "video_model_id": {
+        "title": "Selected model",
+        "description": "Select a multimodal model with this capability"
+      },
+      "visual_gen_model_id": {
+        "title": "Selected model",
+        "description": "Select a multimodal model with this capability"
+      },
+      "video_gen_model_id": {
+        "title": "Selected model",
+        "description": "Select a multimodal model with this capability"
+      },
       "preferred_language": {
         "title": "Language",
         "description": "Set the display language for the application interface."
@@ -1022,8 +1280,8 @@
         "description": "Control automatic evolution and retention of local skills."
       },
       "symphony_evolution_enabled": {
-        "title": "Skill Pack Discovery",
-        "description": "Distill skill combinations from execution experience after tasks finish and discover skill packs automatically."
+        "title": "Discover SkillPack",
+        "description": "Record graph observations after tasks and distill reusable skill packs from successful executions."
       },
       "skill_retrieval_enabled": {
         "title": "Automatic Skill Retrieval",
@@ -1040,10 +1298,6 @@
       "ttse_enabled": {
         "title": "Local environment facts and task experience auto-evolution",
         "description": "Control the agent's learning of environment facts and task experience"
-      },
-      "skill_retrieval_index_enabled": {
-        "title": "Skill index",
-        "description": "Enable a tree of installed skills for structured skill discovery (may consume additional tokens)."
       },
       "free_search_ddg_enabled": {
         "title": "DuckDuckGo search",
@@ -1175,8 +1429,8 @@
         "description": "Show the Diagnosis and Attribution view in a session to find why a run failed and get optimization suggestions. Turning it on records trajectory data automatically; only data recorded after it is turned on can be diagnosed. When off, trajectory pages are hidden."
       },
       "team_organization_ui_enabled": {
-        "title": "Enable Team Organization UI",
-        "description": "Show experimental multi-Team views and the organization task pool. This switch does not disable backend organization capabilities."
+        "title": "Enable Swarm Organization UI",
+        "description": "Show experimental multi-Team views and the organization task pool."
       },
       "comfyui_workflow_enabled": {
         "title": "ComfyUI workflow integration",
@@ -1206,13 +1460,17 @@
         "title": "Allow members to split tasks",
         "description": "Members can split the task they are working on into subtasks for themselves or other existing members. The task pauses until its subtasks finish, then resumes with their results. Subtasks can nest up to 2 levels."
       },
+      "team_code_todo_reminder_disabled": {
+        "title": "Disable Code Todo reminders",
+        "description": "Stop adding periodic Todo reminders to the context of Code agents in scheduled teams. Members can still use Todo tools."
+      },
       "task_full_duplex_enabled": {
         "title": "Enable Full-duplex in task chat",
         "description": "Full-duplex is only available in single-Agent mode; its entry is hidden in swarm/team mode. Show a Full-duplex action when the composer is empty. Start a continuous voice conversation; the switch below controls optional screen sharing."
       },
       "kv_cache_affinity_enabled": {
         "title": "Enable compute affinity",
-        "description": "Supported only for models deployed with Ascend vLLM inference services, not models accessed through third-party API keys."
+        "description": "Use affinity for declared endpoints; ordinary cloud models keep normal requests."
       },
       "external_cli_agent_claude_enabled": {
         "title": "Enable Claude",
@@ -1287,7 +1545,6 @@
     },
     "team": {
       "memberLanes": "Member trajectory lanes",
-      "members": "Members",
       "workflowGroupAria": "Workflow {{name}}, {{count}} operators",
       "workflowGroupOperators": "{{count}} operators",
       "schedule": {
@@ -1298,6 +1555,8 @@
         "anomalies": "{{count}} dispatch anomalies",
         "blockedLegend": "Light gray: waiting on dependencies",
         "blockedLegendHint": "A light gray segment means the task is waiting for prerequisite tasks and will continue when its dependencies clear.",
+        "subtaskWaitRange": "Waiting on subtasks {{start}} – {{end}}",
+        "subtaskWaitOngoing": "ongoing",
         "assignee": "Assignee",
         "assigneeValue": "Assignee: {{name}}",
         "unassigned": "Unassigned",
@@ -1307,11 +1566,13 @@
         "expandReviews": "Expand review records",
         "collapseReviews": "Collapse review records",
         "noReviews": "No reviews yet",
+        "directCompleted": "Completed directly without review",
         "reviewCount_one": "{{count}} Review",
         "reviewCount_other": "{{count}} Reviews",
         "phase": {
           "pending": "Pending",
           "blocked": "Waiting on dependencies",
+          "suspended": "Waiting on subtasks",
           "running": "Running",
           "in_review": "In review",
           "rework": "Rework",
@@ -1332,6 +1593,8 @@
           "updated": "Task updated",
           "unblocked": "Dependencies unblocked",
           "started": "Task started",
+          "suspended": "Split into subtasks, waiting",
+          "resumed": "Subtasks done, task resumed",
           "submitted": "Submitted for review",
           "vote": "Review vote",
           "revision": "Rework requested",
@@ -1420,6 +1683,7 @@
       "outletsPending": "Suggestions appear here once the diagnosis finishes",
       "detailsPending": "The evaluation and findings show up here",
       "stageStatus": {
+        "degraded": "Degraded",
         "pending": "Waiting",
         "running": "Running",
         "completed": "Done",
@@ -1453,6 +1717,7 @@
       "emptyHint": "No diagnosis yet. Select \"Diagnose trajectory\" at the top right to start.",
       "loadingRecord": "Loading diagnosis…",
       "plannedStage": {
+        "trajectory_summary": "Summarize trajectory",
         "task_parse": "Parse task",
         "diagnose": "Diagnose",
         "attribute": "Attribute causes"
@@ -1510,6 +1775,16 @@
       "objectExcludedRunning": "{{count}} steps were still running when the diagnosis started and are not included",
       "objectTask": "Task",
       "objectSummary": "Trajectory summary",
+      "summaryTree": {
+        "root": "Overall trajectory summary",
+        "agentsHint": "Agent summaries (team leader and members)",
+        "coverage": "Completed segments {{completed}} / {{total}}",
+        "download": "Download full summary JSON",
+        "warnings": "Warnings ({{count}})",
+        "unavailable": "Summary unavailable. See the downloaded file for trajectory details and evidence locations.",
+        "unmerged": "The overall summary could not be merged. Read the agent summaries below; the complete hierarchy remains in the download.",
+        "agentUnmerged": "This agent account could not be merged. All local turn summaries remain available in the full download."
+      },
       "sectionExpand": "Expand",
       "sectionCollapse": "Collapse",
       "findingCauses": "{{count}} artifact finding(s)",
@@ -1568,8 +1843,47 @@
       "showTasks": "Show tasks"
     }
   },
+  "teams": {
+    "title": "Team Management",
+    "subtitle": "View existing teams, or stop and delete them",
+    "teamList": "Existing teams",
+    "count": "{{count}} team(s)",
+    "quota": "{{used}} used / {{limit}} limit (default {{default}})",
+    "orgQuota": "Org {{used}} used / {{limit}} limit",
+    "quotaUnavailable": "Quota status unavailable",
+    "createUserFull": "Create failed. A user can have at most {{limit}} teams",
+    "createOrgFull": "Create failed. An organization can have at most {{limit}} teams",
+    "sessionCount": "{{count}} session(s)",
+    "listLabel": "Session for this team: {{title}}",
+    "untitledSession": "Untitled session",
+    "createdAt": "Created {{time}}",
+    "createdAtWithId": "Created {{time}} · …{{suffix}}",
+    "sessionSuffix": "…{{suffix}}",
+    "empty": "No teams",
+    "deleteTeam": "Delete team",
+    "deleting": "Deleting...",
+    "deleteConfirm": "Delete team {{team}}?\nThis will delete the team runtime, linked sessions, and directory.",
+    "stopTeam": "Stop",
+    "stopping": "Stopping...",
+    "humanMembers": "{{count}} human member(s)",
+    "status": {
+      "creating": "Creating",
+      "running": "Running",
+      "paused": "Paused",
+      "stopping": "Stopping",
+      "stopped": "Stopped",
+      "deleted": "Deleted"
+    },
+    "errors": {
+      "loadTeams": "Failed to load teams",
+      "deleteTeam": "Failed to delete team: {{team}}",
+      "stopTeam": "Failed to stop team"
+    }
+  },
   "team": {
     "members": "Team Members",
+    "quotaUsage": "Teams {{used}}/{{limit}}",
+    "orgQuotaUsage": "Org {{used}}/{{limit}}",
     "membersTab": "Team",
     "statusTab": "Status",
     "filesTab": "Files",
@@ -1721,6 +2035,14 @@
     "planning": {
       "tab": "Task Planning",
       "progressTitle": "Task Progress",
+      "taskCompletion": "Tasks completed",
+      "executionProgress": "Execution progress",
+      "estimatedProgress": "Execution progress (estimated)",
+      "agentProgress": "Loaded workflow nodes: {{ended}} / {{total}} ended",
+      "phaseAgentProgress": "Phase nodes: {{ended}} / {{total}} ended",
+      "agentProgressUnavailable": "Loaded workflow nodes: some workflow node counts are unavailable",
+      "teamMetricScope": "Task counts include team tasks and workflow phases, excluding application tasks. Progress combines ordinary tasks and workflows, using workflow node counts when available.",
+      "teamBoardMetricScope": "Progress includes team tasks and workflows only. Status counts include all board tasks, including application tasks.",
       "token": "Token",
       "taskList": "Task List",
       "taskListAria": "{{task}} task list",
@@ -1852,8 +2174,10 @@
     "previewUnsupported": "This file type cannot be previewed yet. Download it to view it.",
     "previewMissingPath": "No downloadable resource is available for this artifact preview",
     "previewFailed": "Failed to load the file preview",
+    "previewTooLarge": "This file is too large to preview (over 10 MB). Please download it instead.",
     "docxPreviewFailed": "Failed to load the Word document preview",
     "presentationPreviewFailed": "Failed to load the PowerPoint presentation preview",
+    "presentationLoadFailed": "Failed to download the PowerPoint presentation. Please try again.",
     "presentationResourceLimitExceeded": "The PowerPoint presentation content exceeds the browser preview limit. Download the file to view it.",
     "presentationTooLarge": "PowerPoint presentations larger than {{size}} cannot be previewed in the browser. Download the file to view it.",
     "presentationSlides": "Slides",
@@ -2275,6 +2599,7 @@
     "closeTagDisabled": "You can exit plan mode once the reply finishes or you cancel it",
     "toolbarUnavailableGoal": "A goal is already in progress, so Plan isn't available",
     "toolbarUnavailableProcessing": "A reply is in progress, so Plan isn't available",
+    "toolbarUnavailableTeamLocked": "The team has started; plan mode can no longer be changed",
     "approvalPrompt": "The plan is ready. Choose what to do next.",
     "executePrompt": "The plan is approved. Start executing it.",
     "approvalExecute": "Execute",
@@ -2548,7 +2873,8 @@
       "loadDiscord": "Failed to load Discord settings",
       "loadSlack": "Failed to load Slack settings",
       "loadWhatsApp": "Failed to load WhatsApp settings",
-      "saveGeneric": "Save failed, please try again later"
+      "saveGeneric": "Save failed, please try again later",
+      "boundToEmployee": "This bot is already bound to a team employee. Unbind it first or use another bot."
     },
     "xiaoyiApps": {
       "defaultAppName": "Default Xiaoyi App",
@@ -3298,9 +3624,10 @@
       "feishuPlaceholder": "Feishu fetch will be developed separately later",
       "localFiles": {
         "rootDirLabel": "Local folder path",
-        "rootDirPlaceholder": "D:/my-notes",
-        "rootDirHint": "Must be absolute",
-        "rootDirRequired": "Please enter the local folder path"
+        "rootDirPlaceholder": "/home/user/my-notes",
+        "rootDirHint": "Enter an absolute folder path on the machine running JiuwenSwarm.",
+        "rootDirRequired": "Please enter the local folder path",
+        "browse": "Choose a local folder"
       },
       "zhihu": {
         "columnUrlLabel": "Zhihu column URL",
@@ -3751,7 +4078,7 @@
       "buildFailed": "Failed to start the taxonomy build.",
       "cancelRequested": "Taxonomy build cancellation requested.",
       "cancelFailed": "Failed to cancel the taxonomy build.",
-      "disabledHint": "Enable symphony.skill_retrieval in configuration to expose the directory to agents. You may build the optional taxonomy independently.",
+      "disabledHint": "Enable Skill Retrieval in Settings to build and browse the skill directory.",
       "disabled": "Retrieval disabled",
       "statusLoadFailed": "Failed to load live retrieval status. Please retry.",
       "statusIncompatible": "The backend returned an incompatible Skill retrieval status. Update or restart the service, then retry.",
@@ -4054,6 +4381,7 @@
       "published": "Skill {{name}} published successfully",
       "publishFailed": "Publishing failed",
       "rebuilding": "Rebuilding skill, please wait…",
+      "rebuildStillRunning": "Rebuild is still running in the background. Check the version list later.",
       "rebuildCompleted": "Skill rebuild completed",
       "rebuildFailed": "Rebuild failed: {{detail}}"
     },
@@ -4186,6 +4514,7 @@
       "detailError": "Unable to load Expert details. Try again.",
       "hubAssetChanged": "This expert has changed or been removed on Hub. The catalog is refreshing; go back and select it again.",
       "actionError": "The action could not be completed. Try again in a moment.",
+      "agentAccessDenied": "You are outside the authorized scope. The action was denied.",
       "duplicateName": "An Expert with this name already exists. Choose a different name and try again.",
       "agentUnavailable": "This Expert is no longer available. Refresh the list and try again.",
       "agentDefinitionUnavailable": "This Expert definition is incomplete and cannot be used right now.",
@@ -4449,6 +4778,8 @@
     "historyPreviewEmpty": "No messages to show after the same filtering as history restore (or the file is empty). Turn off preview to see raw JSON.",
     "edit": "Edit",
     "unknownError": "Unknown error",
+    "saveFailedForPath": "Failed to save {{path}}: ",
+    "fileTooLarge": "This file is too large to preview (over 10 MB). Please download it instead.",
     "fileMissingPrefix": "This file does not exist. Create the file at",
     "fileMissingSuffix": "before editing.",
     "notPreviewable": "This file cannot be previewed. Only Markdown/JSON (.md/.mdx/.json) files are supported."
@@ -5111,7 +5442,10 @@
     "skippedSummary": "Skipped"
   },
   "skillPackagePrompt": {
-    "creating": "Creating…"
+    "creating": "Creating…",
+    "nameConflict": "Creation failed: a local skill or skill package has the same name. Its contents were not overwritten. Choose Later, or resolve the name conflict and retry.",
+    "createFailed": "Failed to create the skill package. The confirmation remains open. Retry later or choose Later.",
+    "resultUnavailable": "The skill package creation result is not yet confirmed. The confirmation remains open. Check My Skills before retrying, or choose Later."
   },
   "qaSummary": {
     "title": "Clarifications"
@@ -5314,7 +5648,7 @@
       "saving": "Saving...",
       "name": "Name",
       "type": "Type",
-      "typeStdio": "STUDIO",
+      "typeStdio": "STDIO",
       "typeHttp": "Streamable HTTP",
       "command": "Startup command",
       "args": "Arguments",
@@ -5787,6 +6121,7 @@
     "tagHint": "SwarmFlow is active for this session",
     "closeTag": "Close SwarmFlow",
     "closeTagDisabled": "Cannot close while processing",
+    "readonlyHint": "The team has started; the dynamic workflow can no longer be changed",
     "configTitle": "SwarmFlow Configuration",
     "configReadonlyHint": "Session is active, config is read-only",
     "budgetPanelTitle": "SwarmFlow Budget",
@@ -6059,6 +6394,7 @@
       "namePlaceholder": "For example: After-sales assistant",
       "description": "Abilities",
       "descriptionPlaceholder": "Describe what this employee is good at, what it owns and how it should work",
+      "descriptionTooLong": "The capability description must be {{limit}} characters or fewer. Shorten it before saving.",
       "role": "Work domains",
       "preview": "Card preview",
       "previewName": "New employee",
@@ -6100,6 +6436,10 @@
         "knowledge": "Add knowledge",
         "starterPrompts": "Add quick prompt"
       },
+      "starterPromptsLimit": "Up to {{count}} prompts",
+      "starterPromptDuplicate": "Duplicates an earlier prompt; edit or remove it.",
+      "starterPromptsDuplicateTitle": "Duplicate starter prompts",
+      "starterPromptsDuplicateMessage": "Starter prompts must be unique. Edit or remove the duplicates before creating the employee.",
       "empty": {
         "skills": "No skills",
         "connectors": "No connectors",
@@ -6132,6 +6472,7 @@
       "dingtalkHint": "Assign tasks through DingTalk direct messages. Text messages are supported.",
       "isolationHint": "Web, Feishu and DingTalk share one colleague and workspace. Sessions stay separate; cross-group sharing requires authorization.",
       "channelAlreadyBound": "This channel is already bound to another employee. Remove the existing binding first.",
+      "channelUsedInPersonalEdition": "This bot is already configured in the personal edition. Remove that configuration first or use another bot.",
       "robotCode": "Robot Code (optional)",
       "robotCodePlaceholder": "Use the app robot code; defaults to Client ID",
       "welinkTitle": "Bind WeLink",
@@ -6210,6 +6551,7 @@
       "editResources": "Edit skills and connectors",
       "resourcesHint": "Choose from skills installed on this machine and connectors that are already connected. A new task uses the selection after it is saved and published.",
       "saveResources": "Save and publish",
+      "saveSuccess": "Saved",
       "savingResources": "Saving",
       "saveSettingsFailed": "Could not save or publish the configuration. Please try again.",
       "modelEmptyHint": "Add a model in Settings → Models.",
@@ -6320,10 +6662,12 @@
       "cancelAuthorizationTitle": "Revoke channel authorization",
       "cancelAuthorizationWarning": "After revoking, this colleague stops receiving and replying on this channel.",
       "cancelAuthorizationMessage": "Revoke the “{{channel}}” authorization? It can be authorized again later.",
+      "cancelAuthorizationSuccess": "Authorization revoked",
       "addConnection": "Add connection",
       "removeConnection": "Disconnect",
       "removeConnectionWarning": "Messages to this app no longer reach the employee. The connection's workspace and history stay and return when the same app is bound again.",
       "removeConnectionConfirm": "Disconnect {{platform}} app {{app}} from the AI employee: ",
+      "removeConnectionSuccess": "Disconnected",
       "workLog": "Work log",
       "periods": {
         "7d": "Last 7 days",
@@ -6442,11 +6786,6 @@
       "webConnection": "Web",
       "connectionHint": "Files shared here can also be read by {{platform}} users.",
       "webResult": "New result in the Web workspace. View it",
-      "defaultPrompts": [
-        "Summarize today's hot questions",
-        "Review group reply quality",
-        "Export today's conversation summary"
-      ],
       "featuresTitle": "Features",
       "features": {
         "chat": {
@@ -6464,6 +6803,11 @@
       }
     },
     "schedule": {
+      "save": "Save",
+      "saveAndEnable": "Save and enable",
+      "pausedEditHint": "This task is paused. Saving keeps it paused; choose Save and enable to resume automatic execution.",
+      "actionFailed": "Scheduled task action failed",
+      "resumeExpired": "Enable (edit schedule first)",
       "add": "Add",
       "createTitle": "New scheduled task",
       "editTitle": "Edit scheduled task",
@@ -6531,10 +6875,11 @@
         "paused": "Paused",
         "failed": "Failed",
         "completed": "Completed",
-        "queued": "Queued"
+        "queued": "Queued",
+        "expired": "Expired"
       },
       "run": {
-        "success": "Succeeded",
+        "success": "Completed",
         "failed": "Failed",
         "stopped": "Stopped",
         "running": "Running"
@@ -6546,8 +6891,15 @@
         "running": "Running"
       },
       "error": {
+        "enableExpired": "This task has expired. Update its schedule before enabling it.",
+        "nameRequired": "Enter a task name.",
+        "promptRequired": "Enter a task description.",
         "required": "Enter a name and a description",
-        "executorRequired": "Choose an executor",
+        "executorRequired": "Select an AI employee to run this task.",
+        "onceDateRequired": "Select an execution date.",
+        "timeRequired": "Select an execution time.",
+        "monthDayInvalid": "Enter a day of the month between 1 and 31.",
+        "intervalRequired": "Enter an execution interval.",
         "intervalInvalid": "The interval must be a positive integer",
         "futureRequired": "A one-time run must be in the future",
         "rangeInvalid": "The effective end must be after the start"
@@ -6614,6 +6966,8 @@
       "periodStart": "Start date",
       "periodEnd": "End date",
       "periodTo": "to",
+      "periodLimit": "Up to {{count}} days can be shown; the start date was adjusted",
+      "periodLimitEnd": "Up to {{count}} days can be shown; the end date was adjusted",
       "metrics": {
         "members": "Members",
         "activeDays": "Active days",
@@ -6647,9 +7001,11 @@
       "minutesAgo": "{{count}} min ago",
       "hoursAgo": "{{count}} hr ago",
       "daysAgo": "{{count}} day ago",
+      "previous": "Previous",
       "next": "Next",
       "workRecord": "Work record",
-      "groupChats": "Group chats {{count}}",
+      "groupChats": "Group chats",
+      "groupChatsCount": "{{count}} total",
       "channelColumns": {
         "group": "Group chat",
         "channel": "Channel",
@@ -6691,6 +7047,7 @@
     }
   },
   "groupChat": {
+    "organizationInterrupted": "The organization task was interrupted by a service restart or process exit. Completed work is retained. Please submit a new request.",
     "externalRuntimeDisabled": "{{agents}} is not enabled. Enable it in Settings → Agents → External Agents, then add the member again.",
     "useTeam": "Use this team",
     "teamMembers": "Team members ({{count}})",
@@ -6698,6 +7055,10 @@
     "taskTitle": "Task",
     "unnamedTask": "Untitled subtask",
     "noSubtasks": "No subtask records",
+    "expertTasks": "Team tasks for this request",
+    "expertTasksProgress": "Completed {{completed}} / {{total}}",
+    "expertTasksUnavailable": "Team tasks could not be refreshed. Existing records may be out of date.",
+    "expertTaskUnassigned": "Unassigned",
     "generatingTasks": "Generating tasks",
     "organizationStage": {
       "starting": "Starting expert teams",
@@ -6723,6 +7084,11 @@
     "modelLocked": "The model cannot be changed after the group chat starts",
     "processing": "Processing…",
     "mentionPhase": {
+      "organizationFailed": "This request did not complete. Please send it again.",
+      "organizationPending": "Received, processing…",
+      "organizationClarification": "Waiting for clarification…",
+      "organizationReceived": "Organization received your request, processing…",
+      "organizationSummarizing": "Summarizing…",
       "dispatching": "Received, processing…",
       "planning": "Planning tasks…",
       "generating": "Generating task plan…",

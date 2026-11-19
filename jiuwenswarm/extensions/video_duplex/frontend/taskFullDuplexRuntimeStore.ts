@@ -4,6 +4,42 @@ import { toast } from "../../../channels/web/frontend/src/components/ui/Toast/to
 import type { VideoLivePanelHandle } from "./VideoLivePanel";
 import { isTaskDuplexScreenSharingEnabled } from "../../../channels/web/frontend/src/features/taskFullDuplex/mediaPreferences";
 import { describeDuplexError } from "./duplexErrorMessage";
+import { useChatStore } from "../../../channels/web/frontend/src/stores/chatStore";
+import { answerApplicationQuestion } from "../../../channels/web/frontend/src/applicationPlugins/taskProgressStore";
+import type { UserAnswer } from "../../../channels/web/frontend/src/types";
+
+export async function answerDuplexQuestion(sessionId: string, name: string, args: Record<string, unknown>) {
+  const card = useChatStore.getState().getRuntime(sessionId)?.pendingQuestions[0];
+  if (!card || (args.job_id && card.duplexJobId !== args.job_id)
+      || (args.interaction_id && card.request_id !== args.interaction_id))
+    throw new Error("This card is no longer pending; query again");
+  if (card.source === "permission_interrupt")
+    throw new Error("Permission requests require a manual click on the on-screen card");
+  if (card.source !== "confirm_interrupt" && !["", "ask_user", "ask_user_interrupt"].includes(card.source || ""))
+    throw new Error("This interaction requires the existing non-voice interaction channel");
+  if (name === "jiuwen_form_answer" && card.source !== "ask_user_interrupt")
+    throw new Error("Select a pending information form before answering");
+  if (!Array.isArray(args.answers)) throw new Error("answers must be an array");
+  const answers: UserAnswer[] = args.answers.map((item, index) => {
+    const question = card.questions[index];
+    if (!question) throw new Error("Answer does not match the pending question");
+    const answer = (typeof item === "string" ? { custom_input: item, selected_options: [] } : item) as
+      Partial<UserAnswer> & { answer?: string };
+    if (!answer || typeof answer !== "object") throw new Error("Invalid answer");
+    if (card.source === "confirm_interrupt") {
+      const selected = typeof item === "string" ? [item] : answer.selected_options;
+      const labels = question.options?.map(option => typeof option === "string" ? option : option.label) || [];
+      if (!Array.isArray(selected) || selected.length !== 1 || !labels.includes(selected[0]))
+        throw new Error("Approval answer must be one of the card options");
+      return { question: question.question, selected_options: selected, card_id: question.card_id };
+    }
+    return { question: question.question, card_id: question.card_id, selected_options: answer.selected_options || [],
+      custom_input: answer.custom_input ?? answer.answer ?? "" };
+  });
+  const accepted = await answerApplicationQuestion(sessionId, card.request_id, answers, card.source);
+  return { state: accepted ? "accepted" : "rejected", applied: false,
+    interaction_id: card.request_id, message: "Submission receipt only; completion follows the original chat events." };
+}
 
 export type TaskFullDuplexRuntimeState = "idle" | "starting" | "active";
 
@@ -173,6 +209,11 @@ export function toggleTaskDuplexSpeaker(): void {
 
 export function setTaskDuplexScreenSharing(sharing: boolean): void {
   publish({ screenSharing: sharing });
+}
+
+export function startTaskDuplexScreenSharing(): void {
+  if (!controller || snapshot.state !== "active" || snapshot.screenSharing) return;
+  void controller.startScreenSharing();
 }
 
 export function stopTaskDuplexScreenSharing(): void {

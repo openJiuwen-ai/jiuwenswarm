@@ -572,7 +572,7 @@ class WorkspaceFileAdapter(GatewayAdapter):
         self,
         request: AgentRequest,
     ) -> AgentResponse:
-        """Validate and read one bounded Smart Approval sealed-asset chunk."""
+        """Validate and read one bounded authorized-file chunk."""
         params = request.params if isinstance(request.params, dict) else {}
         token = str(params.get("token") or "").strip()
         try:
@@ -621,7 +621,8 @@ class WorkspaceFileAdapter(GatewayAdapter):
                 "verified asset claims are invalid",
                 code="FORBIDDEN",
             )
-        if claimed_size < 0 or offset > claimed_size:
+        reference_only = payload.get("exp") == 0
+        if claimed_size < 0 or (not reference_only and offset > claimed_size):
             return build_error_response(
                 request,
                 "verified asset range is invalid",
@@ -634,11 +635,19 @@ class WorkspaceFileAdapter(GatewayAdapter):
         try:
             file_descriptor = os.open(file_path, flags, 0o400)
             file_stat = os.fstat(file_descriptor)
+            if reference_only:
+                claimed_size = file_stat.st_size
             if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_size != claimed_size:
                 return build_error_response(
                     request,
                     "verified asset changed after authorization",
                     code="FORBIDDEN",
+                )
+            if offset > claimed_size:
+                return build_error_response(
+                    request,
+                    "verified asset range is invalid",
+                    code="BAD_REQUEST",
                 )
             os.lseek(file_descriptor, offset, os.SEEK_SET)
             data = os.read(file_descriptor, min(limit, claimed_size - offset))

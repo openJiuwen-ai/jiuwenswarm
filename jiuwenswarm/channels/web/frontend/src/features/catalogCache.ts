@@ -59,11 +59,11 @@ export function catalogScope(): string {
   }
 }
 const refreshes = new Map<string, { timer: ReturnType<typeof setTimeout>; count: number }>();
-/** Cold miss: poll quickly so the first paint is not delayed by a multi-second gap. */
-const MISS_POLL_MS = 400;
+/** Cold miss: 400ms hammered the catalog RPC; 1.5s still fills the page quickly. */
+const MISS_POLL_MS = 1500;
 /** Stale-while-revalidate: slower poll; cards are already visible. */
 const STALE_POLL_MS = 4000;
-const MISS_MAX_POLLS = 150; // ~60s at MISS_POLL_MS
+const MISS_MAX_POLLS = 40; // ~60s at MISS_POLL_MS
 const STALE_MAX_POLLS = 30; // ~120s at STALE_POLL_MS
 
 /** True when prefer_cache returned no payload and a background fill is in flight. */

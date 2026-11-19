@@ -63,6 +63,7 @@ from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     _build_context_processor_rail,
 )
 from jiuwenswarm.common.cron_session import is_cron_execution_context
+from jiuwenswarm.common.utils import get_domain_data_dir
 
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 
@@ -80,6 +81,26 @@ TEAM_WORKSPACE_REPORT_PATH = "swarm.team_workspace_report_path"
 ORGANIZATION_AVAILABILITY = "swarm.organization_availability"
 ORGANIZATION_MODEL = "swarm.organization_model"
 ORGANIZATION_OWNER_INBOX = "swarm.organization_owner_inbox"
+OPENCODE_SESSION = "swarm.opencode_session"
+
+
+@harness_element(kind=ElementKind.RAIL, name=OPENCODE_SESSION,
+                 description="Carry a stable OpenCode Go session header on member model calls.")
+def _build_opencode_session_rail(params: dict[str, Any], context: SwarmBuildContext) -> Any:
+    from jiuwenswarm.agents.harness.team.rails.opencode_session_rail import OpenCodeSessionRail
+
+    identity = str(
+        getattr(context, "member_card_id", None)
+        or getattr(context, "member_name", None)
+        or ""
+    )
+    session_id = str(getattr(context, "session_id", "") or "")
+    # Both halves of the scope must identify something. Without them the scope
+    # degenerates to "member::", so every session would share one header; the
+    # adapter's own recipe injection still covers scopes it can derive.
+    if not session_id.strip() or not identity.strip():
+        return None
+    return OpenCodeSessionRail(session_id, identity)
 
 
 @harness_element(kind=ElementKind.RAIL, name=ORGANIZATION_OWNER_INBOX,
@@ -233,7 +254,7 @@ def _build_personal_context_rail(
     """Mount even when disabled so live members observe subsequent switch changes."""
     del params, context
     try:
-        return PersonalContextRail(Path.home() / ".jiuwenswarm" / ".personal_context")
+        return PersonalContextRail(get_domain_data_dir() / ".personal_context")
     except Exception as exc:
         logger.warning(
             "[swarm.personal_context] optional Rail construction failed (%s)",
@@ -278,7 +299,11 @@ def _build_skill_retrieval_prompt_rail(
     if not is_skill_retrieval_enabled(context.config):
         return None
     SkillRetrievalPromptInput.resolve(params, context)
-    toolkit = skill_retrieval_toolkit_for_context(context)
+    try:
+        toolkit = skill_retrieval_toolkit_for_context(context)
+    except ValueError as exc:
+        logger.warning("[swarm.skill_retrieval_prompt] construction failed: %s", exc)
+        return None
     session_scope = toolkit.session_scope
     return SkillRetrievalPromptRail(
         toolkit=toolkit,

@@ -428,15 +428,20 @@ class PersistentGroupFanout:
             # that this is the receiving Bot echoing its own message.
             sender_app_id = event.sender_app_id.strip() if _present(event.sender_app_id) else None
             request_input = self._request_input(event, sender_kind)
-            if await self._agent_manager.handle_im_permission_reply(
-                request_input.text,
-                namespace_id=binding.namespace_id,
-                agent_id=binding.agent_id,
-                access=access,
-                channel="feishu",
-                target_id=event.chat_id,
-                app_id=event.receiving_app_id,
-                source_message_id=event.message_id,
+            if (
+                sender_kind == "human"
+                and event.chat_type != "group"
+                and await self._agent_manager.handle_im_permission_reply(
+                    request_input.text,
+                    namespace_id=binding.namespace_id,
+                    agent_id=binding.agent_id,
+                    access=access,
+                    channel="feishu",
+                    target_id=event.chat_id,
+                    app_id=event.receiving_app_id,
+                    source_message_id=event.message_id,
+                    receiver_bot_mentioned=event.receiver_bot_mentioned,
+                )
             ):
                 return InboundDisposition.HANDLED
             received_at = event.received_at.astimezone(timezone.utc)
@@ -471,6 +476,21 @@ class PersistentGroupFanout:
                 )
                 if binding.app_id not in await asyncio.to_thread(
                     self._groups.active_apps, binding.namespace_id, binding.agent_id, group.group_chat_id,
+                ):
+                    return InboundDisposition.HANDLED
+                membership = await asyncio.to_thread(
+                    self._groups.access_for, binding.namespace_id, binding.agent_id, group.group_chat_id,
+                )
+                if received_at < membership.visible_from:
+                    logger.info("[JiuwenMate] stale Feishu group trigger ignored: agent_id=%s message_id=%s",
+                                binding.agent_id, event.message_id)
+                    return InboundDisposition.HANDLED
+                if sender_kind == "human" and await self._agent_manager.handle_im_permission_reply(
+                    request_input.text, namespace_id=binding.namespace_id, agent_id=binding.agent_id,
+                    access=access, channel="feishu", target_id=event.chat_id, app_id=event.receiving_app_id,
+                    source_message_id=event.message_id, is_direct_message=False,
+                    receiver_bot_mentioned=event.receiver_bot_mentioned,
+                    mentions_other=bool(event.mention_ids) and not event.receiver_bot_mentioned,
                 ):
                     return InboundDisposition.HANDLED
                 from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError

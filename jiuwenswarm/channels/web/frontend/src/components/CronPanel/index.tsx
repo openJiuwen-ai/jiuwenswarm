@@ -13,6 +13,7 @@ import { CRON_TEMPLATES, KNOWN_TARGET_KEYS, SELECTABLE_TARGET_KEYS } from './con
 import { isTeamCronModeValue } from './cronMode';
 import { cronModelPayloadFields } from './cronModelSelection';
 import { normalizeWakeOffsetSeconds } from './cronWakeOffset';
+import { createSubmitGuard } from './drawerSubmitGuard';
 import { cronExprToSchedule, summarizeSchedule } from './scheduleConvert';
 import StatusBadge, { BoldRingIcon, RunningIcon } from './StatusBadge';
 import ConfirmDialog from './ConfirmDialog';
@@ -23,11 +24,33 @@ import SimpleSelect from './SimpleSelect';
 import { isCronTargetOptionDisabled } from './xiaoyiCronTarget';
 import emptyIllustration from '../../assets/cron-empty.svg';
 import { PageToolbarSearch, toast } from '../ui';
+import './CronPanel.css';
 
 // 任务列表分页：每页条数可选项（默认 20），纯前端本地分页——后端 cron.job.list 目前
 // 一次性返回全部任务、不支持 offset/limit，见 bug002 progress.md 的方案说明
 const PAGE_SIZE_OPTIONS = [10, 20, 50];
 const DEFAULT_PAGE_SIZE = 20;
+const CRON_ERROR_DURATION_SECONDS = 5;
+const CRON_REASON_ERROR_DURATION_SECONDS = 8;
+let cronErrorToastKey: number | null = null;
+
+function showCronError(message: string, duration = CRON_ERROR_DURATION_SECONDS) {
+  cronErrorToastKey = toast.open({
+    id: 'cron-error',
+    content: message,
+    variant: 'error',
+    wide: true,
+    testId: 'cron-error-toast',
+    duration,
+  });
+}
+
+function clearCronError() {
+  if (cronErrorToastKey !== null) {
+    toast.close(cronErrorToastKey);
+    cronErrorToastKey = null;
+  }
+}
 
 // 页码按钮列表：页数不多时全部展示，页数较多时只展示首页/尾页/当前页前后一页，其余用省略号折叠，
 // 避免页数很多时（比如上百页）把一整行按钮撑爆
@@ -282,6 +305,7 @@ function cronJobToUI(job: CronJobDTO, projects: ProjectInfo[]): CronTaskUI {
     id: job.id,
     name: job.name,
     projectId: job.project_id,
+    workMode: job.work_mode ?? 'work',
     projectName,
     description: job.description,
     modelName: job.model_name ?? null,
@@ -324,12 +348,17 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   const loadCronSessions = useCronStore((s) => s.loadCronSessions);
   // 手动创建未选项目时，后端以此把任务归入 default/default_code（Issue #5713）。
   const currentWorkMode = useWorkspaceStore((s) => s.workMode);
+  // 定时任务仅区分 work 与 code 两种模式；全局切到 design 时归并到 work，避免列表与创建抽屉落空。
+  const activeWorkMode: 'work' | 'code' = currentWorkMode === 'code' ? 'code' : 'work';
 
-  const [jobs, setJobs] = useState<CronTaskUI[]>([]);
+  const [allJobs, setAllJobs] = useState<CronTaskUI[]>([]);
+  const jobs = useMemo(
+    () => allJobs.filter((job) => job.workMode === activeWorkMode),
+    [allJobs, activeWorkMode],
+  );
   const [projects, setProjects] = useState<ProjectInfo[]>([]);
   const [enabledChannels, setEnabledChannels] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   const [activeTab, setActiveTab] = useState<TabKey>('list');
@@ -357,6 +386,9 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   const [rowMenuDirection, setRowMenuDirection] = useState<'up' | 'down'>('down');
   const rowMenuRef = useRef<HTMLDivElement>(null);
   const rowMenuPortalRef = useRef<HTMLDivElement>(null);
+  // 删除确认从行内菜单打开，菜单卸载后焦点无处可依；记住"更多"按钮，关闭弹窗时还焦
+  const rowMenuTriggerRef = useRef<HTMLElement | null>(null);
+  const confirmRestoreRef = useRef<HTMLElement | null>(null);
   // "触发的会话" / "预览"弹层：从"更多"菜单里的按钮打开，菜单关闭后弹层独立存在。
   // 与"更多"菜单一样 portal 到 body（fixed 定位）：absolute 弹层会被 overflow-x-auto 的
   // 表格容器裁剪（表格底部一行 + 横向滚动时必现）。锚点复用"更多"按钮的 rect，
@@ -437,6 +469,14 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     | { mode: 'edit'; initial: CronTaskFormValue; jobId: string }
     | null
   >(null);
+
+  // 抽屉提交中标记：cron.job.create/update 走 WebSocket（超时上限 15s），期间"确认"按钮必须
+  // 禁用，否则慢响应窗口内重复点击会发出第二个独立请求，创建出两个同名任务（对齐
+  // HeartbeatPanel 的 drawer.submitting 机制）。tryBegin 同步拦截兜底同一事件循环内的
+  // 双击（state 置位要等下一次渲染才反映到 disabled），state 驱动按钮禁用态；
+  // 拦截语义抽在 drawerSubmitGuard.ts，由 tests/cronDrawerSubmitGuard.test.mjs 锁定。
+  const [drawerSubmitting, setDrawerSubmitting] = useState(false);
+  const drawerSubmitGuard = useRef(createSubmitGuard()).current;
 
   const [confirmState, setConfirmState] = useState<{ type: 'delete' | 'stop' | 'runNow'; job: CronTaskUI } | null>(
     null,
@@ -542,7 +582,6 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       const silent = options?.silent ?? false;
       if (!silent) {
         setLoading(true);
-        setError(null);
       }
       try {
         const payload = await webRequest<{ jobs: CronJobDTO[] }>('cron.job.list');
@@ -554,14 +593,14 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         // cron.job.list 请求本身不依赖项目列表（仅本地映射需要）：先发请求再等
         // projects，挂载时才能与 project.list 真正并行；对传数组的调用方是 no-op
         const projectList = await projectListInput;
-        setJobs(allJobs.map((j) => cronJobToUI(j, projectList)));
+        setAllJobs(allJobs.map((j) => cronJobToUI(j, projectList)));
       } catch (loadError) {
         if (silent) {
           return;
         }
         const message = loadError instanceof Error ? loadError.message : t('cron.errors.loadJobs');
-        setError(message);
-        setJobs([]);
+        showCronError(message);
+        setAllJobs([]);
       } finally {
         if (!silent) {
           setLoading(false);
@@ -681,12 +720,6 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     return () => window.clearTimeout(timer);
   }, [success]);
 
-  useEffect(() => {
-    if (!error) return;
-    const timer = window.setTimeout(() => setError(null), 2000);
-    return () => window.clearTimeout(timer);
-  }, [error]);
-
   const filteredJobs = useMemo(
     () =>
       jobs.filter(
@@ -700,7 +733,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   // 搜索内容变化时重置回第 1 页，避免搜索结果变少后停留在一个已经越界的页码上看到空白
   useEffect(() => {
     setCurrentPage(1);
-  }, [search]);
+  }, [search, activeWorkMode]);
 
   const totalPages = useMemo(
     () => Math.max(1, Math.ceil(filteredJobs.length / pageSize)),
@@ -751,9 +784,19 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   const expiredCount = useMemo(() => jobs.filter((j) => jobStatusKey(j) === 'expired').length, [jobs]);
 
   async function handleCreateSubmit(value: CronTaskFormValue) {
-    // 选中真实项目时以项目自身模式为准；未选项目时用当前 UI 模式。
-    const submittingWorkMode = value.workMode
-      ?? (currentWorkMode === 'code' || currentWorkMode === 'work' ? currentWorkMode : null);
+    if (!drawerSubmitGuard.tryBegin()) return;
+    setDrawerSubmitting(true);
+    try {
+      await submitCreate(value);
+    } finally {
+      drawerSubmitGuard.end();
+      setDrawerSubmitting(false);
+    }
+  }
+
+  async function submitCreate(value: CronTaskFormValue) {
+    // 选中真实项目时以项目自身模式为准；未选项目时用当前定时任务有效模式（work/code）。
+    const submittingWorkMode = value.workMode ?? activeWorkMode;
     try {
       await webRequest<{ job: CronJobDTO }>('cron.job.create', {
         name: value.name.trim(),
@@ -786,6 +829,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         mode: value.mode,
         session_id: sessionId,
       });
+      clearCronError();
       setSuccess(t('cron.success.created'));
       setDrawer(null);
       setActiveTab('list');
@@ -803,11 +847,22 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       // 提交时也能看到后端到底为什么拒绝，而不是无从下手。
       const reason = createError instanceof Error ? createError.message.trim() : '';
       const message = reason ? t('cron.errors.createFailedWithReason', { reason }) : t('cron.errors.createFailed');
-      setError(message);
+      showCronError(message, reason ? CRON_REASON_ERROR_DURATION_SECONDS : CRON_ERROR_DURATION_SECONDS);
     }
   }
 
   async function handleEditSubmit(jobId: string, value: CronTaskFormValue) {
+    if (!drawerSubmitGuard.tryBegin()) return;
+    setDrawerSubmitting(true);
+    try {
+      await submitEdit(jobId, value);
+    } finally {
+      drawerSubmitGuard.end();
+      setDrawerSubmitting(false);
+    }
+  }
+
+  async function submitEdit(jobId: string, value: CronTaskFormValue) {
     try {
       const patch = {
         name: value.name.trim(),
@@ -826,6 +881,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         patch,
         session_id: sessionId,
       });
+      clearCronError();
       setSuccess(t('cron.success.updated'));
       setDrawer(null);
       await loadJobs(projects);
@@ -837,7 +893,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       // "更新任务失败"（见 bugfix 2026072401/bug010 第2轮分析）。
       const reason = updateError instanceof Error ? updateError.message.trim() : '';
       const message = reason ? t('cron.errors.updateFailedWithReason', { reason }) : t('cron.errors.updateFailed');
-      setError(message);
+      showCronError(message, reason ? CRON_REASON_ERROR_DURATION_SECONDS : CRON_ERROR_DURATION_SECONDS);
     }
   }
 
@@ -846,6 +902,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     setConfirmBusy(true);
     try {
       await webRequest<{ job: CronJobDTO }>('cron.job.toggle', { id: confirmState.job.id, enabled: false });
+      clearCronError();
       setSuccess(t('cron.success.statusUpdated'));
       await loadJobs(projects);
       // 停止也会经 store.update_job 刷新 updated_at、把任务顶到列表最前面，同"新建/编辑"一样跳回第 1 页
@@ -853,7 +910,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       void reloadCronStore();
     } catch (toggleError) {
       const message = toggleError instanceof Error ? toggleError.message : t('cron.errors.toggleFailed');
-      setError(message);
+      showCronError(message);
     } finally {
       setConfirmBusy(false);
       setConfirmState(null);
@@ -864,6 +921,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   async function handleStart(job: CronTaskUI) {
     try {
       await webRequest<{ job: CronJobDTO }>('cron.job.toggle', { id: job.id, enabled: true });
+      clearCronError();
       setSuccess(t('cron.success.statusUpdated'));
       await loadJobs(projects);
       // 同上：启动也会把任务顶到列表最前面，跳回第 1 页
@@ -871,7 +929,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       void reloadCronStore();
     } catch (toggleError) {
       const message = toggleError instanceof Error ? toggleError.message : t('cron.errors.toggleFailed');
-      setError(message);
+      showCronError(message);
     }
   }
 
@@ -900,6 +958,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         } catch {
           throw new Error(t('cron.errors.sessionOpenFailed'));
         }
+        clearCronError();
         toast.open({
           id: 'cron-run-now-success',
           content: t('cron.success.runNow'),
@@ -924,6 +983,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         });
       } else {
         // 后端未返回 session_id：面板不卸载，local state 提示生命周期足够
+        clearCronError();
         setSuccess(t('cron.success.runNow'));
       }
       // 刷新左侧栏该定时任务下展开的 session 列表（project.get_cron_sessions）
@@ -933,18 +993,25 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       }
     } catch (runNowError) {
       const message = runNowError instanceof Error ? runNowError.message : t('cron.errors.runNowFailed');
-      setError(message);
+      showCronError(message);
     } finally {
       setConfirmBusy(false);
       setConfirmState(null);
     }
   }
 
+  // 删除成功后原行已从列表移除，弹窗关闭时无法还原到原「更多」按钮，退到首行
+  const focusFallbackAfterDelete = useCallback(
+    () => tableRef.current?.querySelector<HTMLElement>('[data-testid="cron-job-more-btn"]') ?? null,
+    [],
+  );
+
   async function handleDeleteConfirm() {
     if (!confirmState || confirmBusy) return;
     setConfirmBusy(true);
     try {
       await webRequest<{ deleted: boolean }>('cron.job.delete', { id: confirmState.job.id });
+      clearCronError();
       setSuccess(t('cron.success.deleted'));
       await loadJobs(projects);
       void reloadCronStore();
@@ -953,7 +1020,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       const message = code === 'SESSION_BUSY'
         ? t('cron.errors.deleteSessionBusy')
         : (deleteError instanceof Error ? deleteError.message : t('cron.errors.deleteFailed'));
-      setError(message);
+      showCronError(message);
     } finally {
       setConfirmBusy(false);
       setConfirmState(null);
@@ -1044,7 +1111,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
       setPreviewRuns((prev) => ({ ...prev, [job.id]: payload.next || [] }));
     } catch (previewError) {
       const message = previewError instanceof Error ? previewError.message : t('cron.errors.previewFailed');
-      setError(message);
+      showCronError(message);
       setPreviewRuns((prev) => ({ ...prev, [job.id]: [] }));
     } finally {
       setPreviewLoading((prev) => ({ ...prev, [job.id]: false }));
@@ -1227,6 +1294,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                       return;
                     }
                     const rect = e.currentTarget.getBoundingClientRect();
+                    rowMenuTriggerRef.current = e.currentTarget;
                     setRowMenuDirection(window.innerHeight - rect.bottom >= 150 ? 'down' : 'up');
                     setRowMenuAnchor(rect);
                     setRowMenuJobId(job.id);
@@ -1242,7 +1310,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                   createPortal(
                     <div
                       ref={rowMenuPortalRef}
-                      className="w-28 rounded-lg border border-border bg-card py-1.5 shadow-lg"
+                      className="cron-popover-menu w-28 rounded-lg border border-border bg-card py-1.5 shadow-lg"
                       style={
                         rowMenuDirection === 'up'
                           ? {
@@ -1285,6 +1353,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                       </button>
                       <button
                         onClick={() => {
+                          confirmRestoreRef.current = rowMenuTriggerRef.current;
                           closeRowMenu();
                           setConfirmState({ type: 'delete', job });
                         }}
@@ -1315,7 +1384,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
               createPortal(
                 <div
                   ref={sessionsPopoverPortalRef}
-                  className="w-64 rounded-lg border border-border bg-card py-1.5 shadow-lg"
+                  className="cron-popover-menu w-64 rounded-lg border border-border bg-card py-1.5 shadow-lg"
                   style={
                     sessionsPopoverDirection === 'up'
                       ? {
@@ -1401,7 +1470,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
               createPortal(
                 <div
                   ref={previewPopoverPortalRef}
-                  className="w-64 rounded-lg border border-border bg-card py-1.5 shadow-lg"
+                  className="cron-popover-menu w-64 rounded-lg border border-border bg-card py-1.5 shadow-lg"
                   style={
                     previewPopoverDirection === 'up'
                       ? {
@@ -1472,7 +1541,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     // 翻转 → 高度又变 → 在临界宽度附近来回抖动（x 滚动条快速切换闪烁的根源）
     <div
       ref={panelRef}
-      className="flex-1 min-h-0 relative overflow-y-auto [scrollbar-gutter:stable]"
+      className="cron-panel flex-1 min-h-0 relative overflow-y-auto [scrollbar-gutter:stable]"
       onScroll={closeRowPopovers}
       data-testid="cron-panel"
       data-session-id={sessionId}
@@ -1483,14 +1552,6 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
           data-testid="cron-success-toast"
         >
           <div className="bg-ok px-4 py-2 text-sm text-text-inverse rounded-lg shadow-lg animate-rise">{success}</div>
-        </div>
-      )}
-      {error && (
-        <div
-          className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 z-20"
-          data-testid="cron-error-toast"
-        >
-          <div className="bg-danger px-4 py-2 text-sm text-text-inverse rounded-lg shadow-lg animate-rise">{error}</div>
         </div>
       )}
 
@@ -1887,7 +1948,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
           <CronTaskDrawer
             mode={drawer.mode}
             initial={drawer.initial}
-            projects={projects}
+            projects={projects.filter((project) => (project.work_mode || 'work') === activeWorkMode)}
             targetOptions={targetOptions}
             onClose={() => setDrawer(null)}
             onSwitchToManual={
@@ -1905,6 +1966,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
               if (drawer.mode === 'edit') void handleEditSubmit(drawer.jobId, value);
               else void handleCreateSubmit(value);
             }}
+            submitting={drawerSubmitting}
           />
         )}
 
@@ -1916,6 +1978,8 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
             onConfirm={() => void handleDeleteConfirm()}
             onCancel={() => setConfirmState(null)}
             loading={confirmBusy}
+            restoreFocusRef={confirmRestoreRef}
+            restoreFocusFallback={focusFallbackAfterDelete}
           />
         )}
 

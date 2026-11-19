@@ -39,6 +39,11 @@ call uv run pyinstaller scripts\jiuwenswarm.spec --noconfirm
 if errorlevel 1 exit /b 1
 
 echo.
+echo Verifying frozen JiuwenMemory SDK and video tools...
+call uv run --no-sync python scripts\verify_memory_bundle.py --executable "%cd%\dist\%BUILD_DIST_DIR_NAME%\%BUILD_EXECUTABLE_NAME_WINDOWS%"
+if errorlevel 1 exit /b 1
+
+echo.
 echo Verifying frozen A2UI v0.8 bundle...
 start "" /wait "%cd%\dist\%BUILD_DIST_DIR_NAME%\%BUILD_EXECUTABLE_NAME_WINDOWS%" "%cd%\scripts\verify_a2ui_bundle.py"
 if errorlevel 1 exit /b 1

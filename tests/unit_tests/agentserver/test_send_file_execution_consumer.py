@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import json
 import threading
@@ -108,11 +109,51 @@ async def test_authorized_send_captures_delivery_time_bytes(tmp_path: Path) -> N
     )
     assert current_send_file_execution_grant() is None
     payload = server.send_push.await_args.args[0]["payload"]["files"][0]
-    assert payload["path"] != source.as_posix()
+    assert payload["path"] == source.as_posix()
     assert Path(payload["path"]).read_text(encoding="utf-8") == "delivery-time"
     assert history.call_args.kwargs["extra"]["files"][0] == payload
     sidecar = next((tmp_path / "assets").glob("*.json"))
-    assert json.loads(sidecar.read_text(encoding="utf-8"))["state"] == "committed"
+    registration = json.loads(sidecar.read_text(encoding="utf-8"))
+    assert registration["state"] == "committed"
+    assert registration["expires_at"] == 0
+    assert registration["content_digest"] == "sha256:" + hashlib.sha256(b"delivery-time").hexdigest()
+    assert list(owner.root.iterdir()) == [sidecar]
+
+
+@pytest.mark.asyncio
+async def test_authorized_send_rejects_capture_path_redirect(tmp_path: Path) -> None:
+    approved = tmp_path / "approved"
+    approved.mkdir()
+    source = approved / "report.md"
+    source.write_bytes(b"approved")
+    redirected = tmp_path / "redirected"
+    redirected.mkdir()
+    redirected_source = redirected / source.name
+    redirected_source.write_bytes(b"different target")
+    owner = VerifiedDownloadAssetOwner(root=tmp_path / "assets", start_sweeper=False)
+    publish_send_file_execution_grant(
+        create_send_file_execution_grant((source,), target_channels=("web",))
+    )
+    server, history, patches = _delivery_patches(owner)
+    stage = owner.stage
+
+    def redirect_before_capture(*args, **kwargs):
+        approved.rename(tmp_path / "original-approved")
+        approved.symlink_to(redirected, target_is_directory=True)
+        return stage(*args, **kwargs)
+
+    with patches[0], patches[1], patches[2], patch.object(
+        owner, "stage", side_effect=redirect_before_capture,
+    ):
+        result = await _toolkit(owner).send_file(source.as_posix(), target_channels=("web",))
+
+    assert "send_file_asset_path_changed" in result
+    server.send_push.assert_not_awaited()
+    history.assert_not_called()
+    assert current_send_file_execution_grant() is None
+    assert list(owner.root.iterdir()) == []
+    assert redirected_source.read_bytes() == b"different target"
+    assert (tmp_path / "original-approved" / source.name).read_bytes() == b"approved"
 
 
 @pytest.mark.asyncio

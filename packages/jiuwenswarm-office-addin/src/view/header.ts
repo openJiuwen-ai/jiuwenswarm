@@ -1,6 +1,6 @@
 import type { SessionId } from '../clientAttachment';
 import { copy } from '../copy';
-import type { ResourceConversation } from '../presentationSessionFacade';
+import type { OpenDocument, ResourceConversation } from '../sessionFacade';
 import { h } from './dom';
 import { dropdown } from './dropdown';
 import { icon, type IconName } from './icons';
@@ -12,14 +12,19 @@ export interface HeaderState {
   enabled: boolean;
   /** Whether the shown conversation has anything to download. */
   canDownload: boolean;
+  /** The user's open documents, by conversation; Files lists the ones of this document's kind. */
+  documents: ReadonlyMap<string, OpenDocument>;
 }
 
 /**
- * The top bar: icons only, leaving the top right corner to the host's own menu. History lists the document's
- * conversations; More downloads the shown one.
+ * The top bar: icons only, leaving the top right corner to the host's own menu. Files lists the open documents of
+ * this one's kind; History lists the document's conversations; More downloads the shown one.
  */
 export class Header {
   readonly element: HTMLElement;
+  private readonly filesButton: HTMLButtonElement;
+  private readonly filesCount = h('span', { class: 'files-count' });
+  private readonly filesMenu = h('div', { class: 'menu', id: 'files-menu', role: 'group' });
   private readonly historyButton = iconButton('history', copy.history);
   private readonly newButton = iconButton('compose', copy.newConversation);
   private readonly historyMenu = h('div', { class: 'menu', id: 'history-menu', role: 'group', 'aria-label': copy.history });
@@ -29,16 +34,22 @@ export class Header {
   private readonly moreMenu: HTMLElement;
   private last: HeaderState | undefined;
 
-  constructor(private readonly actions: {
+  constructor(noun: string, private readonly actions: {
     switchTo: (sessionId: SessionId) => void; newConversation: () => void; downloadTranscript: () => void;
   }) {
+    this.filesButton = iconButton('files', copy.openFiles(noun));
+    this.filesButton.classList.add('files-button');
+    this.filesButton.append(this.filesCount);
+    this.filesMenu.setAttribute('aria-label', copy.openFiles(noun));
     this.downloadItem = h('button', { type: 'button', class: 'menu-item', onclick: () => {
       more.close();
       actions.downloadTranscript();
     } }, icon('download'), h('span', { class: 'menu-item-title' }, copy.downloadTranscript));
     this.moreMenu = h('div', { class: 'menu', id: 'more-menu', role: 'group', 'aria-label': copy.more }, this.downloadItem);
     this.element = h('header', { class: 'header' }, h('div', { class: 'header-actions' },
-      this.historyButton, this.newButton, this.moreButton, this.historyMenu, this.moreMenu));
+      this.filesButton, this.historyButton, this.newButton, this.moreButton, this.filesMenu, this.historyMenu,
+      this.moreMenu));
+    dropdown(this.filesButton, this.filesMenu, this.element);
     this.history = dropdown(this.historyButton, this.historyMenu, this.element);
     const more = dropdown(this.moreButton, this.moreMenu, this.element);
     this.newButton.addEventListener('click', () => {
@@ -51,7 +62,12 @@ export class Header {
     const { last } = this;
     if (last && (Object.keys(state) as (keyof HeaderState)[]).every(key => state[key] === last[key])) return;
     this.last = state;
-    const { conversations, shown, enabled, canDownload } = state;
+    const { conversations, shown, enabled, canDownload, documents } = state;
+    const files = sameKind(documents);
+    this.filesCount.textContent = files.length ? String(files.length) : '';
+    this.filesMenu.replaceChildren(...files.map(file => h('div', { class: 'menu-item' },
+      h('span', { class: 'menu-item-title' }, file.name),
+      file.current ? h('span', { class: 'menu-item-meta' }, copy.thisFile) : null)));
     this.downloadItem.disabled = !canDownload;
     this.historyButton.disabled = !enabled;
     this.newButton.disabled = !enabled;
@@ -71,6 +87,13 @@ export class Header {
       item.lastMessageAt ? h('span', { class: 'menu-item-meta' }, relativeTime(item.lastMessageAt)) : null);
     }));
   }
+}
+
+/** The open documents of the current one's kind, the current one first; none until the list names the current one. */
+function sameKind(documents: ReadonlyMap<string, OpenDocument>): OpenDocument[] {
+  const all = [...documents.values()];
+  const current = all.find(file => file.current);
+  return current ? [current, ...all.filter(file => file !== current && file.kind === current.kind)] : [];
 }
 
 function iconButton(name: IconName, label: string): HTMLButtonElement {

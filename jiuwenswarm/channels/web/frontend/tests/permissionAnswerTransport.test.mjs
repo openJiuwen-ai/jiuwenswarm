@@ -43,12 +43,15 @@ after(() => dom.window.close());
 
 const { useWebSocket } = await import('../node_modules/.cache/permission-answer-transport/hooks/useWebSocket.js');
 const { AuthorizationPrompt, AuthorizationQuestionDetails } = await import('../node_modules/.cache/permission-answer-transport/components/InteractionSlot/AuthorizationPrompt.js');
+const { InteractionPrompt } = await import('../node_modules/.cache/permission-answer-transport/components/InteractionSlot/InteractionPrompt.js');
+const { ToastStack } = await import('../node_modules/.cache/permission-answer-transport/components/ui/Toast/Toast.js');
+const { toast } = await import('../node_modules/.cache/permission-answer-transport/components/ui/Toast/toastStore.js');
 const { ToolCallDisplay } = await import('../node_modules/.cache/permission-answer-transport/components/ChatPanel/ToolCallDisplay.js');
 const { ToolGroupDisplay } = await import('../node_modules/.cache/permission-answer-transport/components/ChatPanel/ToolGroupDisplay.js');
-const { useChatStore, useSessionStore } = await import('../node_modules/.cache/permission-answer-transport/stores/index.js');
+const { useChatStore, useSessionStore, usePlanStore } = await import('../node_modules/.cache/permission-answer-transport/stores/index.js');
 const { default: i18n } = await import('../node_modules/.cache/permission-answer-transport/i18n/index.js');
 const { webClient } = await import('../node_modules/.cache/permission-answer-transport/services/webClient.js');
-const { evaluatePlanToggle } = await import('../node_modules/.cache/permission-answer-transport/features/planMode/planModeGate.js');
+const { evaluatePlanToggle, resolveRestoredPlanActive, enforceSwarmflowPlanPrecedence } = await import('../node_modules/.cache/permission-answer-transport/features/planMode/planModeGate.js');
 const sessionId = 'permission-transport';
 
 test('only enterprise cards display literal matched rules in both languages', async () => {
@@ -93,7 +96,8 @@ async function mounted(run, content = null) {
     observed.api = useWebSocket({ activeSessionId: sessionId, onError: (error) => observed.errors.push(error) });
     const pending = useChatStore((state) => state.runtimes[sessionId]?.pendingQuestions[0]);
     if (content) return content;
-    return pending ? createElement(AuthorizationPrompt, {
+    const Prompt = pending?.request_id?.startsWith('symphony_experience_') ? InteractionPrompt : AuthorizationPrompt;
+    return pending ? createElement(Prompt, {
       pending,
       onSubmit: async (...args) => {
         const result = await observed.api.sendUserAnswer(sessionId, ...args);
@@ -104,10 +108,12 @@ async function mounted(run, content = null) {
   }
   const root = createRoot(document.getElementById('root'));
   try {
-    await act(async () => root.render(createElement(I18nextProvider, { i18n }, createElement(Host))));
+    await act(async () => root.render(createElement(I18nextProvider, { i18n }, createElement('div', null,
+      createElement(Host), createElement(ToastStack)))));
     await run({ ...observed, observed, socket: MemoryWebSocket.instance });
   } finally {
     await act(async () => root.unmount());
+    toast.closeAll();
     await webClient.disconnect();
     useChatStore.getState().removeRuntime(sessionId);
     useSessionStore.getState().removeRuntime(sessionId);
@@ -378,3 +384,260 @@ test('a chat.user_answer echoes the event interrupt_id', async () => mounted(asy
   assert.equal(await result, true);
   assert.deepEqual(useChatStore.getState().getRuntime(sessionId).pendingQuestions, []);
 }, createElement('div')));
+
+const skillPackageQuestion = {
+  header: '发现可复用的技能包',
+  question: '**技能包名称**\nexcel-to-word-report',
+  options: [{ label: '创建技能包', value: 'install' }, { label: '暂不创建', value: 'defer' }],
+};
+const skillPackagePayload = {
+  session_id: sessionId, request_id: 'symphony_experience_tool_conflict',
+  source: 'skill_evolution_approval',
+  evolution_meta: { rail_kind: 'symphony_experience', recipe_id: 'recipe-conflict', recipe_version: 1 },
+  questions: [skillPackageQuestion],
+};
+const createPackageButton = () => document.querySelector('[data-testid="interaction-slot-skill-package-create-button"]');
+const deferPackageButton = () => document.querySelector('[data-testid="interaction-slot-skill-package-defer-button"]');
+const packageError = () => document.querySelector('[data-testid="interaction-slot-skill-package-error"]:not(.ui-toast--closing)');
+const packageReceipt = async (socket, receipt) => act(async () => socket.receive({
+  type: 'res', id: socket.requests.at(-1).id, ok: true, payload: receipt,
+}));
+
+for (const language of ['zh', 'en']) {
+  test(`a name conflict is visible in ${language}, preserves the card, and allows deferral`, async () => {
+    await i18n.changeLanguage(language);
+    await mounted(async ({ socket, observed }) => {
+      await deliver(socket, skillPackagePayload);
+      await act(async () => createPackageButton().click());
+      assert.equal(socket.requests.at(-1).method, 'chat.user_answer');
+      assert.equal(createPackageButton().disabled, true);
+      await packageReceipt(socket, { accepted: true, session_id: sessionId, request_id: skillPackagePayload.request_id });
+      assert.deepEqual(observed.results, [], 'the Gateway admission ACK is not an installation result');
+      assert.equal(createPackageButton().disabled, true);
+      await act(async () => socket.receive({
+        type: 'res', id: 'another-request', ok: true,
+        payload: { accepted: true, resolved: true, installed: true },
+      }));
+      assert.deepEqual(observed.results, [], 'only the same RPC can settle this submission');
+      await packageReceipt(socket, { accepted: false, resolved: false, installed: false, reason: 'skill_already_exists' });
+      assert.deepEqual(observed.results, [false]);
+      assert.equal(createPackageButton().disabled, false);
+      assert.equal(deferPackageButton().disabled, false);
+      assert.match(packageError().textContent, language === 'zh' ? /同名.*未覆盖/ : /same name.*not overwritten/);
+      assert.equal(useChatStore.getState().getRuntime(sessionId).pendingQuestions.length, 1);
+      await act(async () => deferPackageButton().click());
+      assert.deepEqual(socket.requests.at(-1).params.answers[0].selected_options, ['defer']);
+      await packageReceipt(socket, { accepted: true, resolved: true, installed: false, deferred: true });
+      assert.deepEqual(observed.results, [false, true]);
+      assert.equal(createPackageButton(), null);
+      assert.deepEqual(useChatStore.getState().getRuntime(sessionId).pendingQuestions, []);
+    });
+  });
+}
+
+test('a missing final installation receipt times out without dismissing the card', async () => mounted(async ({ socket, observed }) => {
+  const originalSetTimeout = window.setTimeout;
+  let expireRequest;
+  window.setTimeout = function (callback, delay, ...args) {
+    const timer = originalSetTimeout.call(this, callback, delay, ...args);
+    if (delay === 120000) expireRequest = () => { window.clearTimeout(timer); callback(...args); };
+    return timer;
+  };
+  try {
+    await i18n.changeLanguage('zh');
+    await deliver(socket, skillPackagePayload);
+    await act(async () => createPackageButton().click());
+    assert.equal(typeof expireRequest, 'function', 'installation review has its own bounded deadline');
+    await packageReceipt(socket, { accepted: true });
+    assert.deepEqual(observed.results, []);
+    await act(async () => expireRequest());
+    assert.deepEqual(observed.results, [false]);
+    assert.equal(createPackageButton().disabled, false);
+    assert.match(packageError().textContent, /暂未确认.*检查技能列表/);
+    assert.equal(useChatStore.getState().getRuntime(sessionId).pendingQuestions.length, 1);
+  } finally {
+    window.setTimeout = originalSetTimeout;
+  }
+}));
+
+test('disconnect while awaiting the installation receipt keeps the card actionable', async () => mounted(async ({ socket, observed }) => {
+  await i18n.changeLanguage('en');
+  await deliver(socket, skillPackagePayload);
+  await act(async () => createPackageButton().click());
+  await packageReceipt(socket, { accepted: true });
+  await act(async () => socket.close());
+  assert.deepEqual(observed.results, [false]);
+  assert.equal(createPackageButton().disabled, false);
+  assert.equal(deferPackageButton().disabled, false);
+  assert.match(packageError().textContent, /not yet confirmed.*Check My Skills/);
+  assert.equal(useChatStore.getState().getRuntime(sessionId).pendingQuestions.length, 1);
+}));
+
+test('a matching chat.error ends the installation wait without accepting the card', async () => mounted(async ({ socket, observed }) => {
+  await i18n.changeLanguage('zh');
+  await deliver(socket, skillPackagePayload);
+  await act(async () => createPackageButton().click());
+  const request = socket.requests.at(-1);
+  await packageReceipt(socket, { accepted: true });
+  await runtimeAck(socket, request.id);
+  await act(async () => socket.receive({
+    type: 'event', event: 'chat.error',
+    payload: { request_id: 'another-rpc', error: 'unrelated failure', code: 'INTERNAL_ERROR' },
+  }));
+  assert.deepEqual(observed.results, [], 'neither admission nor another request settles this answer');
+  assert.equal(createPackageButton().disabled, true);
+  await act(async () => socket.receive({
+    type: 'event', event: 'chat.error',
+    payload: { request_id: request.id, error: 'answer failed', code: 'INTERNAL_ERROR' },
+  }));
+  assert.deepEqual(observed.results, [false], 'the final error must not wait for the 120-second timeout');
+  assert.equal(createPackageButton().disabled, false);
+  assert.equal(deferPackageButton().disabled, false);
+  assert.ok(packageError());
+  assert.equal(useChatStore.getState().getRuntime(sessionId).pendingQuestions.length, 1);
+  await act(async () => createPackageButton().click());
+  await packageReceipt(socket, { accepted: true, resolved: true, installed: true });
+  assert.deepEqual(observed.results, [false, true]);
+  assert.equal(createPackageButton(), null);
+}));
+
+for (const receipt of [
+  { accepted: false, resolved: false, installed: false, reason: 'install_failed' },
+  { accepted: true, resolved: true, installed: false, reason: 'install_failed' },
+  { accepted: false, resolved: false, reason: 'members_changed_reconfirm' },
+]) {
+  test(`failed installation (${JSON.stringify(receipt)}) stays retryable`, async () => {
+    await i18n.changeLanguage('zh');
+    await mounted(async ({ socket, observed }) => {
+      await deliver(socket, skillPackagePayload);
+      await act(async () => createPackageButton().click());
+      await packageReceipt(socket, { ...receipt, details: ['sensitive internal path'] });
+      assert.deepEqual(observed.results, [false]);
+      assert.match(packageError().textContent, /创建技能包失败/);
+      assert.doesNotMatch(packageError().textContent, /sensitive internal path/);
+      await act(async () => createPackageButton().click());
+      assert.equal(socket.requests.at(-1).params.request_id, skillPackagePayload.request_id);
+      await packageReceipt(socket, { accepted: true, resolved: true, installed: true, newly_installed: true });
+      assert.deepEqual(observed.results, [false, true]);
+      assert.equal(createPackageButton(), null);
+    });
+  });
+}
+
+// ── #6361：集群会话建队后计划开关只读 ──────────────────────────────────────
+// 集群的计划能力由建队时的 mode 决定（config_specs.py 按 is_team_plan_mode 挂
+// leader 的 plan rails），且运行期 plan 状态同步显式跳过集群（plan.py 的
+// `if resolved.is_team: return`）。建队后拨动开关改不了队伍行为，只会绕过动态
+// 工作流的会话冻结锁，故建队后双向只读；单 agent 的 plan rails 常挂、每轮同步，
+// 行为不变。
+const teamLockSession = 'plan-gate-team-lock';
+const setupPlanSession = ({ sessionId: sid, mode, messageCount }) => {
+  const store = useSessionStore.getState();
+  store.ensureRuntime(sid);
+  store.setMode(sid, mode);
+  store.setSessions([{ session_id: sid, title: sid, message_count: messageCount }]);
+  useChatStore.getState().ensureRuntime(sid);
+};
+const cleanupPlanSession = (sid) => {
+  useSessionStore.getState().setSessions([]);
+  useSessionStore.getState().removeRuntime(sid);
+  useChatStore.getState().removeRuntime(sid);
+};
+const planReasons = (sid) => [true, false].map((next) => evaluatePlanToggle(sid, next));
+
+test('#6361 built team locks the plan toggle in both directions', () => {
+  try {
+    setupPlanSession({ sessionId: teamLockSession, mode: 'team', messageCount: 2 });
+    for (const decision of planReasons(teamLockSession)) {
+      assert.equal(decision.ok, false);
+      assert.equal(decision.reason, 'plan.toolbarUnavailableTeamLocked');
+    }
+  } finally {
+    cleanupPlanSession(teamLockSession);
+  }
+});
+
+test('#6361 loaded messages alone also lock a team session', () => {
+  try {
+    setupPlanSession({ sessionId: teamLockSession, mode: 'team', messageCount: 0 });
+    for (const decision of planReasons(teamLockSession)) assert.equal(decision.ok, true);
+    useChatStore.getState().addMessage(teamLockSession, { id: 'm1', role: 'user', content: 'hi' });
+    for (const decision of planReasons(teamLockSession)) {
+      assert.equal(decision.reason, 'plan.toolbarUnavailableTeamLocked');
+    }
+  } finally {
+    cleanupPlanSession(teamLockSession);
+  }
+});
+
+test('#6361 new-conversation team draft stays switchable', () => {
+  try {
+    setupPlanSession({ sessionId: 'new', mode: 'team', messageCount: 3 });
+    for (const decision of planReasons('new')) assert.equal(decision.ok, true);
+  } finally {
+    cleanupPlanSession('new');
+  }
+});
+
+test('#6361 single-agent sessions keep toggling plan across rounds', () => {
+  try {
+    setupPlanSession({ sessionId: teamLockSession, mode: 'agent', messageCount: 9 });
+    for (const decision of planReasons(teamLockSession)) assert.equal(decision.ok, true);
+  } finally {
+    cleanupPlanSession(teamLockSession);
+  }
+});
+
+test('#6361 the team lock outranks busy so the hint never promises a later retry', () => {
+  try {
+    setupPlanSession({ sessionId: teamLockSession, mode: 'team', messageCount: 2 });
+    useChatStore.getState().setProcessing(teamLockSession, true);
+    for (const decision of planReasons(teamLockSession)) {
+      assert.equal(decision.ok, false);
+      assert.equal(decision.reason, 'plan.toolbarUnavailableTeamLocked');
+    }
+  } finally {
+    cleanupPlanSession(teamLockSession);
+  }
+});
+
+test('#6361 busy still owns the hint on sessions the team lock does not cover', () => {
+  try {
+    setupPlanSession({ sessionId: teamLockSession, mode: 'agent', messageCount: 2 });
+    useChatStore.getState().setProcessing(teamLockSession, true);
+    assert.equal(evaluatePlanToggle(teamLockSession, true).reason, 'plan.toolbarUnavailableProcessing');
+    assert.equal(evaluatePlanToggle(teamLockSession, false).reason, 'plan.closeTagDisabled');
+  } finally {
+    cleanupPlanSession(teamLockSession);
+  }
+});
+
+test('#6361 restored plan toggle yields to swarmflow', () => {
+  // 恢复链路是 session.plan_status 的 in_plan；动态工作流是建队时冻结并落盘的
+  // 会话级配置，两者都声明时以它为准，修复前误开过计划的脏会话因此不再两个开关同亮。
+  assert.equal(resolveRestoredPlanActive(true, false), true);
+  assert.equal(resolveRestoredPlanActive(true, true), false);
+  assert.equal(resolveRestoredPlanActive(false, false), false);
+  assert.equal(resolveRestoredPlanActive(undefined, false), false);
+});
+
+test('#6361 enabling swarmflow on restore extinguishes an already-lit plan tag', () => {
+  // handleRestoreSession 先按 metadata.mode 点亮计划标签，swarmflow 配置要等
+  // loadSessionMetadata 回来才 hydrate——所以「不点亮」的守卫管不了这条链路，
+  // 必须在 swarmflow 置真的那一刻把计划灭掉，顺序才不影响结论。
+  try {
+    setupPlanSession({ sessionId: teamLockSession, mode: 'team', messageCount: 2 });
+    usePlanStore.getState().setActive(teamLockSession, true);
+    assert.equal(usePlanStore.getState().isActive(teamLockSession), true);
+
+    assert.equal(enforceSwarmflowPlanPrecedence(teamLockSession), false, '未开动态工作流时不插手');
+    assert.equal(usePlanStore.getState().isActive(teamLockSession), true);
+
+    useSessionStore.getState().setSwarmflowActive(teamLockSession, true);
+    assert.equal(enforceSwarmflowPlanPrecedence(teamLockSession), true);
+    assert.equal(usePlanStore.getState().isActive(teamLockSession), false, '动态工作流开 → 计划必须灭');
+  } finally {
+    usePlanStore.getState().removeRuntime(teamLockSession);
+    cleanupPlanSession(teamLockSession);
+  }
+});

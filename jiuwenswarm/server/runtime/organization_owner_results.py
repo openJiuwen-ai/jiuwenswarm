@@ -10,7 +10,6 @@ from datetime import datetime
 from typing import Any
 
 from jiuwenswarm.server.runtime.organization_owner_inbox import owner_inbox
-from jiuwenswarm.server.runtime.organization_execution import owner_is_stopped
 from jiuwenswarm.server.runtime.session import session_metadata
 
 
@@ -71,14 +70,13 @@ async def capture_child_completion(
 ) -> None:
     owner = str((session_metadata.get_session_metadata(session_id) or {}).get("team_name") or "")
     store = owner_inbox()
-    if not owner or owner == team_id:
+    manager = getattr(backend, "org_task_manager", None)
+    if not owner or owner == team_id or manager is None:
         return
     if await asyncio.to_thread(store.enabled_at, session_id, owner) is None:
-        if not owner_is_stopped(session_id, owner):
-            return
+        # Normal completion must be durable even when the Owner was never stopped.
         await asyncio.to_thread(store.enable, session_id, owner, 0.0)
     await capture_task_results(session_id, backend, team_id)
-    manager = getattr(backend, "org_task_manager", None)
     if content.strip() and manager is not None:
         await asyncio.to_thread(store.append, session_id, owner, {
             "kind": "team_result", "from_team_id": team_id,
@@ -126,9 +124,7 @@ async def queue_owner_notification(
         return None
     store = owner_inbox()
     if await asyncio.to_thread(store.enabled_at, session_id, owner_id) is None:
-        if not owner_is_stopped(session_id, owner_id):
-            return None
-        # Migrate the earlier stop-only implementation without losing older saved results.
+        # Initialize normal Owners as well as resumed, previously stopped Owners.
         await asyncio.to_thread(store.enable, session_id, owner_id, 0.0)
     match = re.search(r"(?:Leader message|completion notice|blocker notice) ([\w-]+)", query)
     native_id = match.group(1) if match else ""

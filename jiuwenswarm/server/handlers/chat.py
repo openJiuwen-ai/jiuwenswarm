@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from jiuwenswarm.common.e2a.constants import (
+from e2a.constants import (
     E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
 )

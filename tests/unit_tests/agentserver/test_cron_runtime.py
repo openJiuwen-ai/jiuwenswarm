@@ -1172,6 +1172,25 @@ class TestExtractLegacyParamsKindAt:
         assert out["timezone"] == "Asia/Tokyo"
         assert out["cron_expr"] == "0 0 9 1 1 ? 2026"
 
+    def test_kind_at_second_dst_occurrence_uses_utc(self) -> None:
+        context = SimpleNamespace(channel_id="web", session_id="sess-1")
+        payload = {
+            "schedule": {
+                "kind": "at",
+                "at": "2026-11-01T01:30:00-05:00",
+                "tz": "America/New_York",
+            },
+            "payload": {"kind": "agentTurn", "message": "提醒"},
+            "delivery": {"mode": "announce"},
+        }
+
+        out = _extract_legacy_params(payload, context=context, require_schedule=True)
+
+        # The second 01:30 in New York is 06:30Z; the local expression would
+        # have fired at the first one (05:30Z), an hour early.
+        assert out["cron_expr"] == "0 30 6 1 11 ? 2026"
+        assert out["timezone"] == "UTC"
+
     def test_kind_every_still_raises(self) -> None:
         context = SimpleNamespace(channel_id="web", session_id="sess-1")
         payload = {
@@ -1356,8 +1375,17 @@ class TestBuildToolsAllowCreate:
             await unified._func(action="add", job={"name": "spawned"})
 
     @pytest.mark.asyncio
-    async def test_unified_cron_tool_list_still_works_when_create_disabled(self) -> None:
-        tools = self._build(allow_create=False)
+    @pytest.mark.parametrize(
+        "build_kwargs",
+        [
+            pytest.param({"allow_create": False}, id="create-disabled"),
+            pytest.param({"allow_create": False, "allow_update": False}, id="update-disabled"),
+        ],
+    )
+    async def test_unified_cron_tool_list_still_works_when_create_or_update_disabled(
+        self, build_kwargs: dict
+    ) -> None:
+        tools = self._build(**build_kwargs)
         unified = next(tool for tool in tools if tool.card.name == "cron")
 
         result = await unified._func(action="list")
@@ -1462,15 +1490,6 @@ class TestBuildToolsAllowCreate:
 
         with pytest.raises(ValueError, match="not allowed"):
             await unified._func(action="update", jobId="job-1", patch={"name": "x"})
-
-    @pytest.mark.asyncio
-    async def test_unified_cron_tool_list_still_works_when_update_disabled(self) -> None:
-        tools = self._build(allow_create=False, allow_update=False)
-        unified = next(tool for tool in tools if tool.card.name == "cron")
-
-        result = await unified._func(action="list")
-
-        assert result == {"jobs": [{"id": "job-1"}]}
 
 
 class TestEnsureSchedulerStartedBackgroundTask:

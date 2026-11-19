@@ -8,9 +8,12 @@ await build({
   entryPoints: [
     'src/hooks/useWebSocket.ts', 'src/stores/index.ts', 'src/i18n/index.ts',
     'src/components/InteractionSlot/AuthorizationPrompt.tsx', 'src/services/webClient.ts',
+    'src/components/InteractionSlot/InteractionPrompt.tsx',
+    'src/components/ui/Toast/Toast.tsx', 'src/components/ui/Toast/toastStore.ts',
     'src/components/ChatPanel/ToolCallDisplay.tsx', 'src/components/ChatPanel/ToolGroupDisplay.tsx',
     'src/features/planMode/planModeGate.ts',
     'src/features/multiModelCollaboration/featureConfig.ts',
+    'src/features/teamOrganization/featureConfig.ts',
     'src/features/mcpApps/mcpAppContext.ts',
   ],
   outbase: 'src', outdir: 'node_modules/.cache/permission-answer-transport',
@@ -31,7 +34,9 @@ await build({
     },
   }],
 });
-const result = spawnSync(process.execPath, ['--test', 'tests/permissionAnswerTransport.test.mjs'], {
+const result = spawnSync(process.execPath, [
+  '--test', 'tests/permissionAnswerTransport.test.mjs', 'tests/skillPackageHttpTransport.test.mjs',
+], {
   cwd: root, stdio: 'inherit',
 });
 if (result.error) throw result.error;

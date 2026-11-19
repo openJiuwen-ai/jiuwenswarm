@@ -69,7 +69,7 @@ def _is_personal_flow(flow_root: Path | None) -> bool:
 
     if flow_root is None:
         return False
-    expected = get_agent_root_dir().resolve() / "workspace" / "symphony" / "flow"
+    expected = get_agent_root_dir().resolve() / "workspace" / "symphony" / "runtime" / "flow"
     return flow_root.resolve() == expected
 
 

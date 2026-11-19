@@ -66,6 +66,18 @@ function rawOtelRecord({ startMs, endMs, empty = false } = {}) {
 }
 
 const TRACE = 'a'.repeat(32);
+
+test('summary progress carries full text and all hierarchy before diagnosis completes', () => {
+  const before = record({ seq: 1 });
+  const tree = { trajectory_summary: 'key action '.repeat(100), turns: { main: [{ turn_id: 't1', segments: [] }] },
+    agent_summaries: {}, problems: [], warnings: [], status: 'completed' };
+  const result = applyProgressEvent(before, { diagnosis_id: before.diagnosis_id, seq: 2,
+    stage_id: 'trajectory_summary', kind: 'trajectory_summary', summary_tree: tree });
+  assert.equal(result.refetch, false);
+  assert.equal(result.record.summary_tree, tree);
+  assert.equal(result.record.trajectory_summary, tree.trajectory_summary);
+  assert.ok(result.record.trajectory_summary.length > 500);
+});
 const ref = (spanId, subject = 'main') => ({ trace_id: TRACE, span_id: spanId.padEnd(16, '0'), subject_id: subject });
 
 function record(overrides = {}) {

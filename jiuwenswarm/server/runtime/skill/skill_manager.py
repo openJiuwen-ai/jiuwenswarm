@@ -7,6 +7,7 @@ from __future__ import annotations
 import errno
 import logging
 import asyncio
+import threading
 import hashlib
 import io
 import json
@@ -27,6 +28,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Awaitable, Callable, Iterator
 from urllib.parse import quote, urlparse
 import yaml
+import portalocker
 import urllib3
 import httpx
 import requests
@@ -314,6 +316,267 @@ def _inventory_busy_result() -> dict[str, Any]:
     }
 
 
+# skills.toggle 在工作线程里等待这把锁。连续拨开关或与安装/卸载重叠时
+# 排队完成，而不是 timeout=0 立刻失败。事件循环上的其他调用仍用 timeout=0。
+_SKILL_TOGGLE_LOCK_TIMEOUT_SECONDS = 5.0
+
+# skills.rebuild 的静默改写可能超过 Gateway 的 600 秒非流式上限。任务状态写在
+# 技能目录里。进程内集合只说明本进程还有任务；多 pod 共享 workspace 时，
+# 别的进程靠任务文件里的 heartbeat_at 判断是否仍在跑，避免把别人的 running
+# 改成失败。
+_REBUILD_JOB_FILENAME = "rebuild-job.json"
+_REBUILD_INTERRUPTED_DETAIL = "重建任务已中断，请重试。"
+_REBUILD_HEARTBEAT_INTERVAL_SECONDS = 20.0
+_REBUILD_STALE_AFTER_SECONDS = 90.0
+_LIVE_REBUILD_IDS: set[str] = set()
+_REBUILD_JOBS_BY_ID: dict[str, dict[str, Any]] = {}
+_REBUILD_TASKS: dict[str, asyncio.Task[None]] = {}
+_REBUILD_FILE_LOCK = threading.Lock()
+
+
+def note_rebuild_live(rebuild_id: str, live: bool) -> None:
+    if live:
+        _LIVE_REBUILD_IDS.add(rebuild_id)
+    else:
+        _LIVE_REBUILD_IDS.discard(rebuild_id)
+
+
+def rebuild_is_live(rebuild_id: str) -> bool:
+    return rebuild_id in _LIVE_REBUILD_IDS
+
+
+def remember_rebuild_task(rebuild_id: str, task: asyncio.Task[None]) -> None:
+    _REBUILD_TASKS[rebuild_id] = task
+
+
+def pop_rebuild_task(rebuild_id: str) -> None:
+    _REBUILD_TASKS.pop(rebuild_id, None)
+
+
+async def wait_rebuild_task(rebuild_id: str) -> None:
+    task = _REBUILD_TASKS.get(rebuild_id)
+    if task is not None:
+        await task
+
+
+def get_rebuild_job(rebuild_id: str) -> dict[str, Any] | None:
+    job = _REBUILD_JOBS_BY_ID.get(rebuild_id)
+    return dict(job) if isinstance(job, dict) else None
+
+
+def _rebuild_job_path(skill_dir: Path) -> Path:
+    return skill_dir / ARCHIVE_DIRNAME / _REBUILD_JOB_FILENAME
+
+
+def read_rebuild_job(skill_dir: Path) -> dict[str, Any] | None:
+    path = _rebuild_job_path(skill_dir)
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def rebuild_heartbeat_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _store_rebuild_job(skill_dir: Path | None, job: dict[str, Any]) -> None:
+    stored = dict(job)
+    if skill_dir is not None:
+        stored["skill_dir"] = str(skill_dir)
+    rebuild_id = str(stored.get("rebuild_id") or "")
+    if rebuild_id:
+        _REBUILD_JOBS_BY_ID[rebuild_id] = stored
+    if skill_dir is None:
+        return
+    path = _rebuild_job_path(skill_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(stored, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+
+
+def write_rebuild_job(skill_dir: Path | None, job: dict[str, Any]) -> None:
+    with _REBUILD_FILE_LOCK:
+        _store_rebuild_job(skill_dir, job)
+
+
+def _parse_rebuild_timestamp(raw: str) -> datetime | None:
+    text = raw.strip()
+    if not text:
+        return None
+    try:
+        seen = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if seen.tzinfo is None:
+        seen = seen.replace(tzinfo=timezone.utc)
+    return seen.astimezone(timezone.utc)
+
+
+def rebuild_heartbeat_fresh(job: dict[str, Any]) -> bool:
+    """心跳还在有效期内，说明持有任务的进程仍在刷新，不能当成中断。"""
+    seen = _parse_rebuild_timestamp(str(job.get("heartbeat_at") or ""))
+    if seen is None:
+        return False
+    age = (datetime.now(timezone.utc) - seen).total_seconds()
+    return age <= _REBUILD_STALE_AFTER_SECONDS
+
+
+def _latest_rebuild_job(job: dict[str, Any], skill_dir: Path | None) -> dict[str, Any]:
+    rebuild_id = str(job.get("rebuild_id") or "")
+    if skill_dir is not None and rebuild_id:
+        disk = read_rebuild_job(skill_dir)
+        if isinstance(disk, dict) and str(disk.get("rebuild_id") or "") == rebuild_id:
+            return disk
+    if rebuild_id:
+        cached = _REBUILD_JOBS_BY_ID.get(rebuild_id)
+        if isinstance(cached, dict):
+            return cached
+    return job
+
+
+def rebuild_job_is_active(job: dict[str, Any], skill_dir: Path | None) -> bool:
+    """本进程仍持有任务，或共享目录上的心跳还新鲜。"""
+    if job.get("status") != "running":
+        return False
+    rebuild_id = str(job.get("rebuild_id") or "")
+    if rebuild_id and rebuild_is_live(rebuild_id):
+        return True
+    latest = _latest_rebuild_job(job, skill_dir)
+    return latest.get("status") == "running" and rebuild_heartbeat_fresh(latest)
+
+
+def touch_rebuild_heartbeat(skill_dir: Path | None, rebuild_id: str) -> bool:
+    """只在任务仍是 running 时刷新心跳，避免盖掉已经写完的 done/failed。"""
+    with _REBUILD_FILE_LOCK:
+        current: dict[str, Any] | None = None
+        if skill_dir is not None:
+            disk = read_rebuild_job(skill_dir)
+            if isinstance(disk, dict):
+                current = disk
+        if current is None:
+            cached = _REBUILD_JOBS_BY_ID.get(rebuild_id)
+            if isinstance(cached, dict):
+                current = cached
+        if not isinstance(current, dict):
+            return False
+        if str(current.get("rebuild_id") or "") != rebuild_id:
+            return False
+        if current.get("status") != "running":
+            return False
+        updated = dict(current)
+        updated["heartbeat_at"] = rebuild_heartbeat_now()
+        _store_rebuild_job(skill_dir, updated)
+        return True
+
+
+async def pulse_rebuild_heartbeat(
+    rebuild_id: str,
+    skill_dir: Path | None,
+    stop: asyncio.Event,
+) -> None:
+    """后台改写期间定期刷新心跳，让其他 pod 看到任务还活着。"""
+    while True:
+        try:
+            await asyncio.wait_for(stop.wait(), _REBUILD_HEARTBEAT_INTERVAL_SECONDS)
+            return
+        except TimeoutError:
+            if not touch_rebuild_heartbeat(skill_dir, rebuild_id):
+                return
+
+
+def lookup_rebuild_job(
+    rebuild_id: str,
+    skill_dir: Path | None,
+) -> dict[str, Any] | None:
+    if skill_dir is not None:
+        job = read_rebuild_job(skill_dir)
+        if isinstance(job, dict) and str(job.get("rebuild_id") or "") == rebuild_id:
+            _REBUILD_JOBS_BY_ID[rebuild_id] = job
+            return dict(job)
+    cached = _REBUILD_JOBS_BY_ID.get(rebuild_id)
+    if isinstance(cached, dict):
+        return dict(cached)
+    return None
+
+
+def reconcile_stale_rebuild(
+    job: dict[str, Any],
+    skill_dir: Path | None,
+) -> dict[str, Any]:
+    """心跳过期且本进程没有任务时，把磁盘上的 running 改成失败。"""
+    if job.get("status") != "running":
+        return job
+    if rebuild_job_is_active(job, skill_dir):
+        return _latest_rebuild_job(job, skill_dir)
+    latest = _latest_rebuild_job(job, skill_dir)
+    failed = {
+        **latest,
+        "status": "failed",
+        "success": False,
+        "code": "SKILL_REBUILD_FAILED",
+        "detail": _REBUILD_INTERRUPTED_DETAIL,
+    }
+    target = skill_dir
+    raw = str(latest.get("skill_dir") or "")
+    if target is None and raw:
+        candidate = Path(raw)
+        if candidate.is_dir():
+            target = candidate
+    write_rebuild_job(target, failed)
+    return failed
+
+
+def rebuild_job_payload(job: dict[str, Any]) -> dict[str, Any]:
+    rebuild_id = str(job.get("rebuild_id") or "")
+    status = str(job.get("status") or "failed")
+    if status == "running":
+        return {
+            "success": True,
+            "status": "running",
+            "pending": True,
+            "rebuild_id": rebuild_id,
+        }
+    if status == "done":
+        return {
+            "success": True,
+            "status": "done",
+            "pending": False,
+            "rebuild_id": rebuild_id,
+            "result": {"success": True},
+        }
+    return {
+        "success": False,
+        "status": "failed",
+        "pending": False,
+        "rebuild_id": rebuild_id,
+        "code": str(job.get("code") or "SKILL_REBUILD_FAILED"),
+        "detail": str(job.get("detail") or "技能重建失败。"),
+    }
+
+
+def take_active_rebuild(skill_dir: Path, name: str) -> dict[str, Any] | None:
+    """同一技能已有活着的重建时返回原任务，避免再清一次 evolutions。"""
+    existing = read_rebuild_job(skill_dir)
+    if not isinstance(existing, dict) or existing.get("status") != "running":
+        return None
+    rebuild_id = str(existing.get("rebuild_id") or "")
+    if rebuild_job_is_active(existing, skill_dir):
+        return {
+            "success": True,
+            "pending": True,
+            "status": "running",
+            "rebuild_id": rebuild_id,
+            "name": name,
+        }
+    reconcile_stale_rebuild(existing, skill_dir)
+    return None
+
+
 def _skillpack_validation_result(exc: SkillPackValidationError) -> dict[str, Any]:
     changed = exc.code == "SKILLPACK_PLAN_CHANGED"
     return {
@@ -363,6 +626,7 @@ _TEAM_SKILL_PLUGIN_TYPES = {"swarmskill", "swarm-skill", "teamskills", "team-ski
 _SINGLE_SKILL_PLUGIN_TYPES = {"skill", "skillpack"}
 
 _SKILL_DISPLAY_FILENAME = "skill_display.md"
+# 个人版 UI 白名单：扁平内置技能 + 迁移后的 workswarm-builtin 目录技能。
 _BUILTIN_SKILL_UI_WHITELIST = frozenset(
     {
         "advanced-daily-report",
@@ -371,6 +635,7 @@ _BUILTIN_SKILL_UI_WHITELIST = frozenset(
         "skill-gen-4-enterprise-doc",
         "skill-creator",
         "swarmskill-creator",
+        "workswarm-builtin",
     }
 )
 # 企业场景内置自动安装范围（个人版 UI 白名单不变）：
@@ -411,24 +676,6 @@ _ENTERPRISE_BUILTIN_AUTO_INSTALL = (
     _ENTERPRISE_CREATOR_BUILTIN_SKILLS
     | _ENTERPRISE_OFFICE_BUILTIN_SKILLS
     | _ENTERPRISE_KNOWLEDGE_BUILTIN_SKILLS
-)
-_SKILL_DISPLAY_KEYS = (
-    "display_name_zh",
-    "description_zh",
-    "display_name_en",
-    "description_en",
-)
-
-_SKILL_DISPLAY_FILENAME = "skill_display.md"
-_BUILTIN_SKILL_UI_WHITELIST = frozenset(
-    {
-        "advanced-daily-report",
-        "gitcode-api",
-        "financial-document-parser",
-        "skill-gen-4-enterprise-doc",
-        "skill-creator",
-        "swarmskill-creator",
-    }
 )
 _SKILL_DISPLAY_KEYS = (
     "display_name_zh",
@@ -1310,6 +1557,20 @@ class SkillManager:
         # 企业版不消费 marketplace，跳过 git clone/pull，避免列表被同步拖住。
         if refresh_marketplaces and not is_enterprise():
             await self._sync_marketplace_repos()
+        # Startup migration may have been followed by a stale manager write or
+        # a legacy installer. Reconcile against disk before projecting the UI.
+        from jiuwenswarm.common.builtin_skills import BUILTIN_CATALOG_NAME, migrate_builtin_catalog
+
+        if (self._skills_dir / BUILTIN_CATALOG_NAME / "SKILL.md").is_file():
+            self.reload_state()
+            if any(p.get("name") == BUILTIN_CATALOG_NAME and p.get("source") == "builtin"
+                   for p in self._get_installed_plugins()):
+                try:
+                    with portalocker.Lock(str(self._skills_dir / ".builtin-catalog.lock"), timeout=30):
+                        migrate_builtin_catalog(get_builtin_skills_dir(), self._skills_dir)
+                except (OSError, ValueError, portalocker.exceptions.LockException) as exc:
+                    logger.warning("Builtin catalog reconciliation failed; preserving skills: %s", exc)
+                self.reload_state()
         # 每次列举前，把手动拷入 skills 目录、尚未登记的本地技能补登记为 local，
         # 使其无需重启 server、刷新"我的技能"即可显示（与导入本地技能一致）。
         # 企业路径把登记放到线程里，workspace 文件锁不会占住事件循环。
@@ -1672,6 +1933,9 @@ class SkillManager:
         ``SKILL.md``。实现位于本类，不依赖 evolution_slash 模块。
         """
         params = params or {}
+        rebuild_id = str(params.get("rebuild_id") or "").strip()
+        if rebuild_id:
+            return await self.handle_skills_rebuild_status(params)
         if "version" not in params:
             raise ValueError("缺少参数: version（本地无版本 Skill 请显式传 null）")
         name = str(params.get("name") or "").strip()
@@ -1699,6 +1963,9 @@ class SkillManager:
         skill_dir = self._resolve_local_skill_dir(name)
         if skill_dir is None:
             raise SkillRpcError(ERROR_SKILL_NOT_FOUND, f"未找到 skill: {name}")
+        active = take_active_rebuild(skill_dir, name)
+        if active is not None:
+            return active
         self._ensure_skillpack_operation_supported(name, "skills.rebuild")
         if self._is_builtin_skill(name, self._get_installed_plugins(), skill_dir):
             raise SkillRpcError("SKILL_BUILTIN_READ_ONLY", f"内置 Skill 不可 rebuild: {name}")
@@ -1719,22 +1986,59 @@ class SkillManager:
             logger.warning("[SkillManager] skills.rebuild failed: skill=%s error=%s", name, exc)
             raise SkillRpcError("SKILL_REBUILD_FAILED", f"rebuild 失败: {exc}") from exc
 
+    async def handle_skills_rebuild_status(self, params: dict) -> dict:
+        """查询一次后台重建。任务文件还写着 running、进程里却没有任务时记为失败。"""
+        params = params or {}
+        rebuild_id = str(params.get("rebuild_id") or "").strip()
+        if not rebuild_id:
+            return {
+                "success": False,
+                "status": "failed",
+                "code": "SKILL_REBUILD_FAILED",
+                "detail": "缺少参数: rebuild_id",
+            }
+        name = str(params.get("name") or "").strip()
+        skill_dir: Path | None = None
+        if name:
+            try:
+                name = _safe_path_name(name, "skill")
+                skill_dir = self._resolve_local_skill_dir(name)
+            except (ValueError, SkillRpcError):
+                skill_dir = None
+        job = lookup_rebuild_job(rebuild_id, skill_dir)
+        if job is None:
+            return {
+                "success": False,
+                "status": "failed",
+                "code": "SKILL_REBUILD_FAILED",
+                "detail": "重建任务不存在或已过期。",
+                "rebuild_id": rebuild_id,
+            }
+        return rebuild_job_payload(reconcile_stale_rebuild(job, skill_dir))
+
     async def handle_skills_toggle(self, params: dict) -> dict:
         """切换已安装本地 skill 的 enabled 状态。
 
         支持 ``dry_run=True`` 探测：不落任何状态，仅返回该技能当前
         关联的技能包列表（parent_skillpacks）。前端在成员技能切换前
         先探测一次，以服务端实时结果决定是否弹出二次确认，避免依赖
-        页面缓存的列表数据。企业版在 workspace 锁里重载账本后再写，
-        避免并发安装被旧内存覆盖。
+        页面缓存的列表数据。调用发生在工作线程里，会短暂等待技能目录锁，
+        让连续开关和安装/卸载错开而不是立刻失败。企业版在 workspace 锁里
+        重载账本后再写，避免并发安装被旧内存覆盖。
         """
         try:
             return await asyncio.to_thread(self._toggle_skills_locked, params)
         except InventoryLockTimeout:
             return _inventory_busy_result()
 
-    @inventory_mutation
     def _toggle_skills_locked(self, params: dict) -> dict:
+        with inventory_mutex(self.skills_dir).acquire(
+            timeout=_SKILL_TOGGLE_LOCK_TIMEOUT_SECONDS,
+        ):
+            self.reload_state()
+            return self._toggle_skills_after_lock(params)
+
+    def _toggle_skills_after_lock(self, params: dict) -> dict:
         blocked = self._managed_skill_toggle_blocked(params)
         if blocked is not None:
             return blocked
@@ -2114,46 +2418,27 @@ class SkillManager:
             "disabled_skills": sorted(disabled),
         }
 
-    def _skill_retrieval_records(self):
-        """Return the same live enabled inventory used by Agent discovery."""
-
-        from openjiuwen.symphony.discovery import scan_skill_directories
-        from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
-            skill_sources_from_manager,
-        )
-
-        return scan_skill_directories(
-            [str(self._skills_dir)],
-            disabled_skills=self.list_execution_disabled_skills(),
-            source_by_name=skill_sources_from_manager(self),
-        ).items
-
-    def _skill_taxonomy_runtime(self, records_provider=None):
-        from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
-            skill_retrieval_artifact_root,
-        )
+    @staticmethod
+    def _skill_taxonomy_runtime(*, model=None):
+        from jiuwenswarm.common.symphony_config import load_symphony_config
+        from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import skill_sources_from_directories
         from jiuwenswarm.runtime.symphony.skill_retrieval import SkillTaxonomyRuntime
 
+        from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
+
+        policy = load_symphony_config()
+        skills_root = policy.capability.require_single_source().root
         return SkillTaxonomyRuntime(
-            records_provider=records_provider or self._skill_retrieval_records,
-            index_root=skill_retrieval_artifact_root(),
+            config=policy, model=model,
+            disabled_capability_ids=lambda: load_execution_disabled_skills(skills_dir=skills_root),
+            source_by_id=lambda: skill_sources_from_directories([skills_root]),
         )
 
     @staticmethod
     def _skill_retrieval_mode() -> str:
-        from jiuwenswarm.common.config import get_config
+        from jiuwenswarm.common.symphony_config import load_symphony_config
 
-        config = get_config() or {}
-        symphony = config.get("symphony") if isinstance(config, dict) else {}
-        retrieval = (
-            symphony.get("skill_retrieval") if isinstance(symphony, dict) else {}
-        )
-        raw = (
-            str(retrieval.get("mode") or "auto").strip().lower()
-            if isinstance(retrieval, dict)
-            else "auto"
-        )
-        return "flat" if raw == "flat" else "auto"
+        return "auto" if load_symphony_config().retrieval.use_existing_index else "flat"
 
     async def handle_skills_retrieval_status(self, params: dict) -> dict:
         """Return the live flat/indexed directory and optional build status."""
@@ -2161,54 +2446,73 @@ class SkillManager:
         params = params if isinstance(params, dict) else {}
         session_profile = params.get("_session_profile")
         session_profile = session_profile if isinstance(session_profile, dict) else None
-        from dataclasses import replace
+        from types import SimpleNamespace
 
+        from openjiuwen.symphony import SymphonyRuntime
         from jiuwenswarm.common.config import get_config
+        from jiuwenswarm.common.symphony_config import load_symphony_config
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
-            build_discovery_settings,
-            is_skill_retrieval_enabled,
-            resolve_skill_retrieval_strategy,
-            skill_retrieval_artifact_root,
-            skill_sources_from_manager,
+            resolve_skill_retrieval_strategy, skill_sources_from_directories,
         )
-        from openjiuwen.symphony.discovery import SkillFS, scan_skill_directories
 
-        disabled = {str(name) for name in self.list_execution_disabled_skills()}
-        all_documents = await asyncio.to_thread(
-            scan_skill_directories,
-            [str(self._skills_dir)],
-            source_by_name=skill_sources_from_manager(self),
-        )
-        visible_documents = tuple(
-            record
-            for record in all_documents.items
-            if record.worker_id not in disabled
-        )
         config = get_config() or {}
-        configured_enabled = is_skill_retrieval_enabled(config)
+        from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
+
+        policy = load_symphony_config(config)
+        skills_root = policy.capability.require_single_source().root
+        configured_enabled = policy.retrieval.enabled
         enabled = configured_enabled
-        artifact_root = skill_retrieval_artifact_root()
-        settings = build_discovery_settings(config)
-        flat_directory = SkillFS(
-            lambda: visible_documents,
-            settings=replace(settings, use_existing_index=False),
-            artifact_root=artifact_root,
-            index_root=artifact_root,
-        )
-        snapshot = flat_directory.prompt_snapshot()
-        candidate_scale = "small" if snapshot.all_candidates_included else "large"
-        directory = flat_directory
-        if enabled and candidate_scale == "large":
-            directory = SkillFS(
-                lambda: visible_documents,
-                settings=replace(settings, use_existing_index=True),
-                artifact_root=artifact_root,
-                index_root=artifact_root,
-            )
-        build = await asyncio.to_thread(
-            self._skill_taxonomy_runtime(lambda: visible_documents).status,
-        )
-        artifact = directory.artifact
+        settings = policy.retrieval
+        visible_documents = ()
+        all_count = 0
+        installed_enabled_count = 0
+        snapshot = SimpleNamespace(estimated_candidate_tokens=0,
+                                   candidate_budget_tokens=settings.prompt.candidate_budget_tokens,
+                                   all_candidates_included=True)
+        artifact = SimpleNamespace(layout="flat", index_state="missing")
+        candidate_scale = "small"
+        if enabled:
+            runtime = SymphonyRuntime(None, policy)
+            try:
+                flat_config = settings.model_copy(update={"use_existing_index": False})
+                all_session = runtime.retrieval.create_session(config=flat_config)
+                all_count = len(all_session.records())
+                session = runtime.retrieval.create_session(
+                    config=flat_config,
+                    disabled_capability_ids=lambda: load_execution_disabled_skills(skills_dir=skills_root),
+                    source_by_id=lambda: skill_sources_from_directories([skills_root]),
+                )
+                visible_documents = session.records()
+                installed_enabled_count = len(visible_documents)
+                snapshot = session.environment.prompt_snapshot(refresh=False)
+                candidate_scale = "small" if snapshot.all_candidates_included else "large"
+                if candidate_scale == "large" and settings.use_existing_index:
+                    session = runtime.retrieval.create_session(
+                        config=settings,
+                        disabled_capability_ids=lambda: load_execution_disabled_skills(skills_dir=skills_root),
+                        source_by_id=lambda: skill_sources_from_directories([skills_root]),
+                    )
+                artifact = session.environment.artifact
+            finally:
+                await runtime.aclose()
+        else:
+            from jiuwenswarm.server.runtime.skill.skilldev.state_utils import load_skill_state
+
+            state = load_skill_state(skills_dir=skills_root)
+            identifiers = set()
+            for key in ("local_skills", "installed_plugins"):
+                items = state.get(key)
+                for item in items if isinstance(items, list) else []:
+                    if isinstance(item, dict):
+                        identifier = str(
+                            item.get("worker_id") or item.get("dir_name") or item.get("name") or "",
+                        ).strip()
+                        if identifier:
+                            identifiers.add(identifier)
+            all_count = len(identifiers)
+            installed_enabled_count = len(identifiers - set(load_execution_disabled_skills(skills_dir=skills_root)))
+        build = await asyncio.to_thread(self._skill_taxonomy_runtime().status,
+                                        build_id=str(params.get("build_id") or "") or None)
         profile_scope = "default"
         profile_session_id = ""
         profile_model_name = ""
@@ -2299,7 +2603,7 @@ class SkillManager:
         logs = build.get("logs") if isinstance(build.get("logs"), list) else []
         return {
             "enabled": enabled,
-            "index_enabled": enabled,
+            "index_enabled": enabled and settings.use_existing_index,
             "mode": self._skill_retrieval_mode(),
             "candidate_scale": candidate_scale,
             "estimated_candidate_tokens": estimated_candidate_tokens,
@@ -2316,12 +2620,14 @@ class SkillManager:
             "build_message": str(build.get("message") or ""),
             "build_error": str(build.get("error") or ""),
             "build_id": str(build.get("build_id") or ""),
+            "core_build_id": str(build.get("core_build_id") or ""),
+            "version": str(build.get("version") or ""),
             "build_logs": logs[-50:],
             "index_exists": bool(build.get("index_exists")),
             "fresh": bool(build.get("fresh")),
             "indexed_count": int(build.get("indexed_count") or 0),
-            "installed_count": all_documents.count,
-            "installed_enabled_count": len(visible_documents),
+            "installed_count": all_count,
+            "installed_enabled_count": installed_enabled_count,
             "searchable_count": searchable_count,
             "tool_name": "skill_index",
             "profile_scope": profile_scope,
@@ -2368,10 +2674,16 @@ class SkillManager:
             else bool(raw_force)
         )
         try:
-            payload = await asyncio.to_thread(
-                self._skill_taxonomy_runtime().start_build,
-                force=force,
-            )
+            from jiuwenswarm.common.symphony_config import load_symphony_config
+            from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
+
+            model = None
+            try:
+                model = get_swarm_symphony_service().runtime().model
+            except (RuntimeError, ValueError):
+                if not load_symphony_config(config).retrieval.index_build.task.allow_fallback_tree:
+                    raise
+            payload = self._skill_taxonomy_runtime(model=model).start_build(force=force)
         except Exception as exc:
             logger.exception("Unable to start Skill taxonomy build")
             return {
@@ -2401,10 +2713,7 @@ class SkillManager:
 
         build_id = str((params or {}).get("build_id") or "").strip() or None
         try:
-            payload = await asyncio.to_thread(
-                self._skill_taxonomy_runtime().cancel,
-                build_id=build_id,
-            )
+            payload = await self._skill_taxonomy_runtime().cancel(build_id=build_id)
         except Exception as exc:
             logger.exception("Unable to cancel Skill taxonomy build")
             return {
@@ -2427,7 +2736,7 @@ class SkillManager:
         """Search installed Skills through the same directory Tool used by Agents."""
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
             SkillRetrievalToolkit,
-            skill_sources_from_manager,
+            skill_sources_from_directories,
         )
 
         query = str((params or {}).get("query") or "").strip()
@@ -2438,19 +2747,30 @@ class SkillManager:
                 "detail": "query must not be empty",
                 "matches": [],
             }
+        from jiuwenswarm.common.config import get_config
+        from jiuwenswarm.common.symphony_config import load_symphony_config
+
+        config = get_config() or {}
+        from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
+
+        policy = load_symphony_config(config)
+        if not policy.retrieval.enabled:
+            return {"success": False, "mode": self._skill_retrieval_mode(),
+                    "error_code": "skill_retrieval_disabled", "matches": [],
+                    "detail": "Enable Skill retrieval before searching its directory."}
+        skills_root = policy.capability.require_single_source().root
         toolkit = SkillRetrievalToolkit(
-            skill_directories=[str(self._skills_dir)],
-            disabled_skills=self.list_execution_disabled_skills,
-            source_by_name=lambda: skill_sources_from_manager(self),
+            skill_directories=[skills_root], config_base=config,
+            disabled_skills=lambda: load_execution_disabled_skills(skills_dir=skills_root),
+            source_by_name=lambda: skill_sources_from_directories([skills_root]),
         )
-        result = await toolkit.skill_index(
-            operation="search",
-            query=query,
-            paths=["/"],
-            match="content",
-            result="files",
-            pipeline=[{"operation": "limit", "lines": 10}],
-        )
+        try:
+            result = await toolkit.skill_index(
+                operation="search", query=query, paths=["/"], match="content", result="files",
+                pipeline=[{"operation": "limit", "lines": 10}],
+            )
+        finally:
+            await toolkit.aclose()
         diagnostics = dict(result.detailed_output)
         return {
             "success": not bool(diagnostics.get("error")),
@@ -3698,15 +4018,9 @@ class SkillManager:
                             "detail_key": "skills.clawhub.errors.skillMdNotFound",
                         }
 
-                    # 解析元数据
+                    # 安装前校验原始元数据，不使用展示兜底。
                     md = self._try_find_skill_file(skill_dir)
-                    meta = self._parse_skill_md(md) if md else None
-                    if meta is None:
-                        return {
-                            "success": False,
-                            "detail": "无法解析下载的技能文件",
-                            "detail_key": "skills.clawhub.errors.parseSkillFailed",
-                        }
+                    meta = self._assert_skill_package_safe(skill_dir)
 
                     # 删除已存在的
                     if _exists_long(dest):
@@ -3778,6 +4092,8 @@ class SkillManager:
                         },
                     }
 
+        except SkillRpcError as exc:
+            return {"success": False, "detail": str(exc), "code": exc.code}
         except httpx.HTTPStatusError as exc:
             logger.error("ClawHub 下载 HTTP 错误: %s", exc)
             detail = f"HTTP {exc.response.status_code}: {exc.response.text[:200]}"
@@ -4475,11 +4791,7 @@ class SkillManager:
                 # 触发类型识别（与导入路径一致）
                 detect_skill_type(skill_dir)
 
-                raw_skill_name = str(meta.get("name") or "").strip() or asset_id
-                try:
-                    skill_name = _safe_path_name(raw_skill_name, "skill")
-                except ValueError as exc:
-                    raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
+                skill_name = meta["name"]
 
                 product_version = (
                     str(artifact_data.get("version") or "").strip()
@@ -5077,24 +5389,13 @@ class SkillManager:
                         "detail_key": "skills.skillNet.errors.skillMdNotFound",
                     }
 
-                md = self._try_find_skill_file(skill_dir)
-                meta = self._parse_skill_md(md) if md else None
-                if meta is None:
-                    return {
-                        "ok": False,
-                        "detail": "无法解析下载的技能文件",
-                        "detail_key": "skills.skillNet.errors.parseSkillFailed",
-                    }
-
-                raw_skill_name = meta.get("name", skill_dir.name)
-                try:
-                    skill_name = _safe_path_name(raw_skill_name, "skill")
-                except ValueError as exc:
-                    _log_rejected_name("skills.skillnet.install", "skill", raw_skill_name, exc)
-                    return {"ok": False, "detail": str(exc)}
+                meta = self._assert_skill_package_safe(skill_dir)
+                skill_name = meta["name"]
                 return self._commit_skillnet_install(skill_dir, skill_name, meta, skill_url, force=force)
         except InventoryLockTimeout:
             return {**_inventory_busy_result(), "ok": False}
+        except SkillRpcError as exc:
+            return {"ok": False, "detail": str(exc), "code": exc.code}
         except SkillNetEmptyDownloadError as exc:
             logger.error("SkillNet 下载失败: %s", exc)
             out: dict[str, Any] = {
@@ -5198,14 +5499,21 @@ class SkillManager:
             if raw_name
             else None
         )
-        # 预置：各版本均不可卸载。内置：仅企业版不可卸载（个人版与 develop 一致，
-        # 由下方 _uninstall_skill_body 按源码内置目录判定是否真正不可删）。
+        # 预置与内置在各版本都不可卸载。内置安装副本和源码目录一样不能删；
+        # 账本已标明 user/prebuilt 的同名技能仍按原记录卸载。
         source_type = (
             str(installation.get("source_type") or "").strip()
             if installation is not None
             else ""
         )
-        if source_type == "prebuilt" or (is_enterprise() and source_type == "builtin"):
+        if installation is not None and self._is_builtin_installation_record(installation):
+            return {
+                "success": False,
+                "error_code": "prebuilt_not_removable",
+                "error_message": "内置技能不允许删除",
+                "detail": "内置技能不允许删除",
+            }
+        if source_type == "prebuilt":
             return {
                 "success": False,
                 "error_code": "prebuilt_not_removable",
@@ -5719,10 +6027,11 @@ class SkillManager:
             }
 
         output_dir = Path(tempfile.mkdtemp(prefix="jiuwenswarm_skill_from_knowledge_"))
-        skills = ["skill-omni-creation"] if has_link else ["skill-creator-router"]
+        skills = ["workswarm-builtin"]
         prompt_parts = [
             "请根据以下知识来源生成一个完整、可安装的 Skill，并写入指定输出目录。",
             f"输出目录（必须在此目录内生成含 SKILL.md 的 Skill 根目录）: {output_dir}",
+            "请先读取内置能力目录，再读取 skill-creator；链接来源按该入口选择 skill-omni-creation。",
             "要求：",
             "1. SKILL.md 必须含有效 YAML front matter，name 与 description 均为非空字符串；",
             "2. 不得创建根级 .archive/；",
@@ -5789,6 +6098,9 @@ class SkillManager:
             "and write it into the specified output directory.",
             "Output directory (the Skill root containing SKILL.md must be created "
             f"inside this directory): {output_dir}",
+            "Read the WorkSwarm built-in capability catalog first, then read "
+            "skill-creator; for link sources choose skill-omni-creation through "
+            "that entry.",
             "Requirements:",
             "1. SKILL.md must contain valid YAML front matter whose name and "
             "description are both non-empty strings;",
@@ -6066,18 +6378,53 @@ class SkillManager:
         if _is_dir_long(work_dir):
             shutil.rmtree(work_dir, ignore_errors=True)
 
+    @staticmethod
+    def _parse_skill_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+        """解析原始 frontmatter，不填充展示默认值。"""
+        match = _SKILL_FRONTMATTER_RE.match(text)
+        if not match:
+            raise ValueError("SKILL.md 开头必须是 --- frontmatter（仅允许前置空行）")
+        try:
+            metadata = yaml.safe_load(match.group(1))
+        except (yaml.YAMLError, RecursionError) as exc:
+            raise ValueError("SKILL.md frontmatter YAML 无效") from exc
+        if not isinstance(metadata, dict):
+            raise ValueError("SKILL.md frontmatter 必须是 YAML 对象")
+        return metadata, match.group(2).strip()
+
+    @staticmethod
+    def _validate_skill_metadata(path: Path) -> dict[str, Any]:
+        """在展示兜底前校验所有导入来源的元数据。"""
+        try:
+            metadata, _ = SkillManager._parse_skill_frontmatter(_read_text_long(path))
+        except (OSError, ValueError) as exc:
+            raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
+        name = metadata.get("name")
+        if not isinstance(name, str) or not name.strip():
+            raise SkillRpcError(
+                ERROR_SKILL_INVALID_METADATA,
+                "SKILL.md YAML 须明确包含非空字符串 name",
+            )
+        description = metadata.get("description")
+        if not isinstance(description, str) or not description.strip():
+            raise SkillRpcError(
+                ERROR_SKILL_INVALID_METADATA,
+                "SKILL.md YAML 须明确包含非空字符串 description",
+            )
+        try:
+            metadata["name"] = _validate_skill_name(name.strip())
+        except ValueError as exc:
+            raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
+        metadata["description"] = description.strip()
+        return metadata
+
     def _assert_skill_package_safe(
         self,
         skill_dir: Path,
         *,
-        source_trusted: bool = False,
         allow_skillpack: bool = False,
     ) -> dict[str, Any]:
-        """校验包结构：拒根级 .archive，要求有效 name；本地导入还要求 description.
-
-        ``source_trusted=True`` 用于远端归档等已过 host/解压校验的来源：
-        与主仓 develop 一致，仅要求非空 name，允许缺 description。
-        """
+        """校验包结构和元数据：拒根级 .archive，要求有效 name 与 description。"""
         if _exists_long(skill_dir / ARCHIVE_DIRNAME):
             raise SkillRpcError(
                 ERROR_SKILL_RESERVED_PATH,
@@ -6090,6 +6437,7 @@ class SkillManager:
             if found is None:
                 raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "缺少 SKILL.md")
             md = found
+        declared = self._validate_skill_metadata(md)
         meta = self._parse_skill_md(md)
         if meta is None:
             raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, "无法解析 SKILL.md")
@@ -6103,18 +6451,8 @@ class SkillManager:
                 load_skillpack(skill_dir)
             except SkillPackValidationError as exc:
                 raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
-        name = str(meta.get("name") or "").strip()
-        description = str(meta.get("description") or "").strip()
-        if not name:
-            raise SkillRpcError(
-                ERROR_SKILL_INVALID_METADATA,
-                "SKILL.md YAML 须包含非空 name",
-            )
-        if not source_trusted and not description:
-            raise SkillRpcError(
-                ERROR_SKILL_INVALID_METADATA,
-                "SKILL.md YAML 须包含非空 name 与 description",
-            )
+        meta["name"] = declared["name"]
+        meta["description"] = declared["description"]
         return meta
 
     def _install_imported_skill_dir(
@@ -6123,7 +6461,6 @@ class SkillManager:
         *,
         force: bool,
         origin: str,
-        source_trusted: bool = False,
         conflict_code: str = ERROR_SKILL_IMPORT_OVERWRITE_REQUIRED,
         allow_skillpack: bool = False,
     ) -> dict[str, Any]:
@@ -6131,7 +6468,7 @@ class SkillManager:
         with inventory_mutex(self._skills_dir):
             self.reload_state()
             return self._install_imported_skill_dir_locked(
-                src, force=force, origin=origin, source_trusted=source_trusted,
+                src, force=force, origin=origin,
                 conflict_code=conflict_code, allow_skillpack=allow_skillpack,
             )
 
@@ -6141,21 +6478,14 @@ class SkillManager:
         *,
         force: bool,
         origin: str,
-        source_trusted: bool,
         conflict_code: str,
         allow_skillpack: bool,
     ) -> dict[str, Any]:
         meta = self._assert_skill_package_safe(
             src,
-            source_trusted=source_trusted,
             allow_skillpack=allow_skillpack,
         )
-        raw_skill_name = str(meta.get("name") or "").strip()
-        try:
-            skill_name = _safe_path_name(raw_skill_name, "skill")
-        except ValueError as exc:
-            _log_rejected_name("skills.import_local", "skill", raw_skill_name, exc)
-            return {"success": False, "detail": str(exc)}
+        skill_name = meta["name"]
 
         dest = _safe_child_path(self._skills_dir, skill_name, "skill")
         existing = _exists_long(dest)
@@ -6349,7 +6679,6 @@ class SkillManager:
             source,
             force=False,
             origin=f"symphony:{package_id}",
-            source_trusted=False,
             conflict_code=ERROR_SKILL_ALREADY_EXISTS,
             allow_skillpack=True,
         )
@@ -6369,7 +6698,6 @@ class SkillManager:
         try:
             meta = self._assert_skill_package_safe(
                 source,
-                source_trusted=False,
                 allow_skillpack=True,
             )
             definition = load_skillpack(source)
@@ -6527,21 +6855,16 @@ class SkillManager:
                     skill_dir, force=force, origin=origin
                 )
 
-        if source_trusted:
-            # 远端归档导入：源已过 host 白名单 + 防 slip 解压（含拒符号链接），
-            # 直接复用本流程，name 沿用下方原宽松解析。
-            skill_name = None
-        else:
-            try:
-                skill_name = self._validate_local_skill_source(src)
-            except ValueError as exc:
-                logger.warning(
-                    "[SkillManager] import_local_from_path rejected skill: src=%s origin=%s error=%s",
-                    src,
-                    origin,
-                    exc,
-                )
-                return {"success": False, "detail": str(exc)}
+        try:
+            skill_name = self._validate_local_skill_source(src)
+        except ValueError as exc:
+            logger.warning(
+                "[SkillManager] import_local_from_path rejected skill: src=%s origin=%s error=%s",
+                src,
+                origin,
+                exc,
+            )
+            return {"success": False, "detail": str(exc), "code": ERROR_SKILL_INVALID_METADATA}
 
         if _is_file_long(src):
             meta = self._parse_skill_md(src)
@@ -6552,19 +6875,7 @@ class SkillManager:
                     ERROR_SKILL_OPERATION_UNSUPPORTED,
                     "暂不支持导入 SkillPack",
                 )
-            raw_skill_name = meta.get("name", src.stem)
-            description = str(meta.get("description") or "").strip()
-            if source_trusted:
-                try:
-                    skill_name = _safe_path_name(raw_skill_name, "skill")
-                except ValueError as exc:
-                    _log_rejected_name("skills.import_local", "skill", raw_skill_name, exc)
-                    return {"success": False, "detail": str(exc)}
-            elif not str(raw_skill_name or "").strip() or not description:
-                raise SkillRpcError(
-                    ERROR_SKILL_INVALID_METADATA,
-                    "SKILL.md YAML 须包含非空 name 与 description",
-                )
+            description = meta["description"].strip()
             dest = _safe_child_path(self._skills_dir, skill_name, "skill")
             if _exists_long(dest):
                 if self._is_builtin_skill(skill_name, self._get_installed_plugins(), dest):
@@ -6638,14 +6949,12 @@ class SkillManager:
             md = self._try_find_skill_file(src)
             if md is None:
                 return {"success": False, "detail": f"目录中未找到 SKILL.md: {origin}"}
-            # 统一走安装路径（保留 .archive / skill_type 等）；
-            # source_trusted 时放宽 description，兼容远端归档。
+            # 统一走安装路径（保留 .archive / skill_type 等）。
             try:
                 return self._install_imported_skill_dir(
                     src,
                     force=force,
                     origin=origin,
-                    source_trusted=source_trusted,
                 )
             except SkillRpcError as exc:
                 # 兼容旧调用方：部分路径场景仍返回 success=false
@@ -6928,18 +7237,15 @@ class SkillManager:
         body = text
 
         # 尝试解析 frontmatter
-        fm_match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)", text, re.DOTALL)
+        fm_match = _SKILL_FRONTMATTER_RE.match(text)
         if fm_match:
             fm_text = fm_match.group(1)
             body = fm_match.group(2).strip()
             # 优先完整 YAML（支持 description: >- 多行、嵌套等），与 Team Skills Hub register_skill 一致
             try:
-                loaded = yaml.safe_load(fm_text)
-                if isinstance(loaded, dict):
-                    loaded = SkillManager._convert_yaml_date(loaded)
-                    meta = {str(k): v for k, v in loaded.items()}
-                else:
-                    meta = {}
+                loaded, body = SkillManager._parse_skill_frontmatter(text)
+                loaded = SkillManager._convert_yaml_date(loaded)
+                meta = {str(k): v for k, v in loaded.items()}
             except Exception:
                 meta = {}
             if not meta:
@@ -8812,29 +9118,10 @@ class SkillManager:
         else:
             raise ValueError(f"不支持的路径类型: {src}")
         try:
-            text = _read_text_long(skill_file)
-        except (OSError, UnicodeError) as exc:
-            raise ValueError(f"无法读取 SKILL.md: {skill_file}") from exc
-        match = _SKILL_FRONTMATTER_RE.match(text)
-        if not match:
-            raise ValueError(f"SKILL.md 开头必须是 --- frontmatter（仅允许前置空行）: {skill_file}")
-        try:
-            loaded = yaml.safe_load(match.group(1))
-        except (yaml.YAMLError, RecursionError) as exc:
-            raise ValueError(f"SKILL.md frontmatter YAML 无效: {skill_file}") from exc
-        if not isinstance(loaded, dict):
-            raise ValueError(f"SKILL.md frontmatter 必须是 YAML 对象: {skill_file}")
-        raw_name = loaded.get("name")
-        if not raw_name:
-            raise ValueError(f"SKILL.md frontmatter 缺少 name: {skill_file}")
-        description = loaded.get("description")
-        if not description or not str(description).strip():
-            raise ValueError(f"SKILL.md frontmatter 缺少 description: {skill_file}")
-        try:
-            skill_name = _validate_skill_name(str(raw_name))
-        except ValueError as exc:
-            raise ValueError(f"invalid skill name: {exc}") from exc
-        return skill_name
+            metadata = SkillManager._validate_skill_metadata(skill_file)
+        except SkillRpcError as exc:
+            raise ValueError(str(exc)) from exc
+        return metadata["name"]
 
     @staticmethod
     def _team_skills_hub_host_matches_rule(host: str, rule: str) -> bool:
@@ -9004,14 +9291,19 @@ class SkillManager:
 
         同时限制解包总大小、文件数量、单文件大小和目录深度。
         """
+        # zipfile 会在 NUL 处截断文件名，须在写入任何成员前检查原始名称和路径。
+        for info in zf.infolist():
+            if "\0" in info.orig_filename:
+                raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, "ZIP 包含非法文件名")
+            raw = info.orig_filename.replace("\\", "/")
+            if raw.startswith("/") or re.match(r"^[A-Za-z]:", raw) or ".." in PurePosixPath(raw).parts:
+                raise RuntimeError("ZIP 包含非法路径")
         file_count = 0
         total_uncompressed = 0
         for info in zf.infolist():
             raw = (info.filename or "").replace("\\", "/")
             if not raw or raw.startswith("/"):
                 continue
-            if "\0" in raw:
-                raise RuntimeError("ZIP 包含非法文件名")
             is_dir = raw.endswith("/") or info.is_dir()
             rel_str = raw.rstrip("/")
             if not rel_str:
@@ -12192,9 +12484,15 @@ class SkillManager:
                 "error_code": "not_found",
                 "error_message": f"skill `{name}` is not installed",
             }
-        # 与 handle_skills_uninstall 同一分版策略，避免个人版 builtin 在此入口被误拒。
+        # 与 handle_skills_uninstall 一致：内置、预置在各版本都不可卸载。
         source_type = str(installation.get("source_type") or "").strip()
-        if source_type == "prebuilt" or (is_enterprise() and source_type == "builtin"):
+        if self._is_builtin_installation_record(installation):
+            return {
+                "success": False,
+                "error_code": "prebuilt_not_removable",
+                "error_message": "内置技能不允许删除",
+            }
+        if source_type == "prebuilt":
             return {
                 "success": False,
                 "error_code": "prebuilt_not_removable",

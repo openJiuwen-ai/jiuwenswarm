@@ -20,7 +20,7 @@ from openjiuwen.harness.rails.context_engineer.context_processor_rail import Con
 from openjiuwen.harness.tools.skills.list_skill import ListSkillTool
 from openjiuwen.harness.tools.goal import GetCurrentGoalTool
 from openjiuwen.harness.tools import compression_recall
-from openjiuwen.symphony.discovery import InstalledSkillsDirectoryToolkit
+from openjiuwen.symphony import DiscoverySession
 from jiuwenswarm.common.tool_display import extract_call_goal
 from jiuwenswarm.agents.harness.code.rails.heartbeat.runtime import HeartbeatRailRuntime
 from jiuwenswarm.agents.harness.code.rails.heartbeat.tools import HeartbeatRuntimeBridge
@@ -200,11 +200,11 @@ def _session_observation_binding(invocation, session_id: str, agent) -> bool:
             return False
         toolkit = wrapper._index_toolkit
         if not _methods_match(
-            toolkit, InstalledSkillsDirectoryToolkit, ("get_tools", "skill_index", "_execute", "_continue"),
+            toolkit, DiscoverySession, ("get_tools", "skill_index", "_execute", "_continue"),
         ):
             return False
         # The verified public factory supplies the concrete SDK executor without a private-module import.
-        reference = InstalledSkillsDirectoryToolkit.get_tools(toolkit)[0]
+        reference = DiscoverySession.get_tools(toolkit)[0]
         binding = _resolve_owned_readonly_tool(
             invocation, agent, tool_type=type(reference), rail_type=SkillRetrievalPromptRail,
             invoke_func=type(reference).invoke,
@@ -217,7 +217,7 @@ def _session_observation_binding(invocation, session_id: str, agent) -> bool:
             and rail._prompt_skillfs is wrapper._environment
             and toolkit._environment is wrapper._environment and not toolkit._closed
             and matches_bound_method(
-                tool._func, expected_owner=toolkit, expected_func=InstalledSkillsDirectoryToolkit.skill_index,
+                tool._func, expected_owner=toolkit, expected_func=DiscoverySession.skill_index,
             )
         )
     if name == "list_skill":

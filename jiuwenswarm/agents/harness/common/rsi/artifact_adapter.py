@@ -224,7 +224,7 @@ def provider_best_artifact(report: Any) -> dict[str, Any] | None:
     }
 
 
-def provider_report_to_web(report: Any, state: Any = None) -> dict[str, Any]:
+def provider_report_to_web(report: Any, state: Any = None, *, tree: Any = None) -> dict[str, Any]:
     """Project an artifact Provider report to ``rsi.report.get``."""
 
     raw = _plain(report)
@@ -240,8 +240,23 @@ def provider_report_to_web(report: Any, state: Any = None) -> dict[str, Any]:
     metrics = dict(raw_metrics) if isinstance(raw_metrics, dict) else {}
     metrics.setdefault("eval_passed", 0)
     metrics.setdefault("eval_total", 0)
-    metrics.setdefault("pruned_count", 0)
-    metrics.setdefault("iterations", _safe_int(state_raw.get("iteration")))
+    tree_raw = _plain(tree)
+    tree_raw = tree_raw if isinstance(tree_raw, dict) else {}
+    nodes = tree_raw.get("nodes")
+    # Missing statistics are unknown until a durable tree can supply them.
+    # Count through provider_node_to_dict so threshold-stop skips match the
+    # PRUNED nodes shown by the web tree projection.
+    metrics.setdefault(
+        "pruned_count",
+        sum(
+            provider_node_to_dict(node).get("type") == "PRUNED"
+            for node in nodes
+        ) if isinstance(nodes, list) else None,
+    )
+    iteration = state_raw.get("iteration")
+    if iteration is None:
+        iteration = tree_raw.get("iteration")
+    metrics.setdefault("iterations", _safe_int(iteration))
     best_artifact = provider_best_artifact(report)
     if not metrics.get("best_artifact_id"):
         metrics["best_artifact_id"] = best_artifact.get("artifact_id") if best_artifact else None

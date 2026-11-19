@@ -181,6 +181,9 @@ interface ChatPanelProps {
   historyPager?: ChatHistoryPagerProps | null;
   /** 历史会话首屏恢复中：保持聊天布局，避免短暂退回欢迎态 */
   isHistoryRestoring?: boolean;
+  /** Show an already-created empty conversation with the regular bottom composer. */
+  conversationCreated?: boolean;
+  headerActions?: React.ReactNode;
   /** 右侧面板展开状态：展开时隐藏对话框上方的活跃成员，null 表示面板隐藏 */
   teamAreaExpanded?: boolean | null;
   autoFocusKey?: string | null;
@@ -1204,6 +1207,8 @@ export const ChatPanel = React.memo(function ChatPanel({
   topicStarterProjectId = null,
   historyPager = null,
   isHistoryRestoring = false,
+  conversationCreated = false,
+  headerActions,
   teamAreaExpanded = false,
   autoFocusKey = null,
   onNavigateToSkills,
@@ -1296,7 +1301,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   const hasTimelineContent = messages.length > 0 || toolExecutionOrder.length > 0;
   // 还在等你点选时，不能退回首页欢迎语。提问卡片要留在普通聊天页里。
   const hasConversation = Boolean(
-    isHistoryRestoring || historyPager || hasTimelineContent || hasPendingQuestion,
+    conversationCreated || isHistoryRestoring || historyPager || hasTimelineContent || hasPendingQuestion,
   );
   const isGroupCreateWelcome = welcomeVariant === 'group-create';
   const historyLoadedBatchSeq = historyPager?.loadedBatchSeq ?? 0;
@@ -1923,7 +1928,9 @@ export const ChatPanel = React.memo(function ChatPanel({
     if (!keepSlateOnRefreshRef.current) setDynamicSlate(null);
     keepSlateOnRefreshRef.current = false;
     setTopicStarterErrorKey(null);
-    setRecommendationState(heldSwitchState ?? "");
+    // Disabling recommendations is global, not a project-specific loading state.
+    // Preserve it while the new scope is read so the bee hint does not change content/style.
+    setRecommendationState(current => heldSwitchState ?? (current === 'disabled' ? current : ""));
     // This read also serves a pool that became ready while the page was in the background.
     readyWhileHiddenRef.current = false;
     void webRequest<TopicStarterResponse>('topic_starters.get', {
@@ -2367,6 +2374,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   : <PanelBottomClose size={16} strokeWidth={2} aria-hidden />}
               </button>
             )}
+            {headerActions}
             {shouldShowShareExport && (
               <button
                 type="button"

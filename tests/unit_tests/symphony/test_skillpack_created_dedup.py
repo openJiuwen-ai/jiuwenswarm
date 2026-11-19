@@ -8,8 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from openjiuwen.symphony.flow import PackageReviewGate, SkillPackAdapter, SymphonyFlowEngine
-from openjiuwen.symphony.orchestration import SymphonyFlowConfig
+from openjiuwen.symphony import SymphonyRuntime
+from openjiuwen.symphony.flow import PackageReviewGate
 
 from jiuwenswarm.common.host_services import install_runtime_push_handler, restore_runtime_push_handler
 from jiuwenswarm.common.symphony_config import symphony_config_from_dict
@@ -48,7 +48,7 @@ async def created_pack_environment(tmp_path, monkeypatch, allow_macos_pytest_tem
     monkeypatch.delenv("JIUWENSWARM_RUNTIME_PROFILE", raising=False)
     monkeypatch.setattr(
         "jiuwenswarm.common.config.get_config",
-        lambda: {"symphony": {"evolution": {"flow": {"enabled": True}}}},
+        lambda: {"symphony": {"orchestration": {"experience": {"enabled": True}}}},
     )
     skills = tmp_path / "skills"
     for name in ("search", "writer"):
@@ -58,26 +58,26 @@ async def created_pack_environment(tmp_path, monkeypatch, allow_macos_pytest_tem
             f"---\nname: {name}\ndescription: ordinary member\n---\nDo the task.\n", encoding="utf-8",
         )
     config = symphony_config_from_dict({
-        "enabled": True, "paths": {"skills_root": str(skills), "graph_dir": str(tmp_path / "graph")},
-        "evolution": {"enabled": True},
+        "capability": {"sources": [{"type": "skill", "root": str(skills)}]},
+        "storage": {"artifact_root": str(get_agent_workspace_dir() / "symphony" / "runtime")},
+        "orchestration": {"experience": {"enabled": True}},
     })
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config)
-    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda: [])
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda **_kwargs: [])
     for session in ("local-a", "local-b"):
         init_session_metadata(session_id=session, channel_id="web", user_id="")
     services = []
     flows = []
 
     def start():
-        flow = SymphonyFlowEngine(
-            get_agent_workspace_dir() / "symphony" / "flow", config=SymphonyFlowConfig(min_successes=3),
-            gate=PackageReviewGate(review_agent=_Approver()), skill_adapter=SkillPackAdapter(),
-        )
+        runtime = SymphonyRuntime(None, config)
+        flow = runtime.flow
+        flow._get_engine().gate = PackageReviewGate(review_agent=_Approver())
 
         async def submit(planned, execution, *, session_id, capture_mode):
             return SimpleNamespace(new_candidates=await flow.submit(execution))
 
-        runtime = SimpleNamespace(flow_engine=flow, submit_evolution=submit)
+        runtime.submit_evolution = submit
         service = SwarmSymphonyService()
         monkeypatch.setattr(service, "_runtime_for", lambda _config: runtime)
         monkeypatch.setattr(service, "runtime", lambda: runtime)
@@ -184,7 +184,7 @@ async def test_same_composition_not_offered_when_existing_pack_disabled_or_renam
     service, _, document = await _create(environment)
     if change == "disabled":
         monkeypatch.setattr(
-            "jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda: ["writer-pack"],
+            "jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda **_kwargs: ["writer-pack"],
         )
     else:
         document.write_text(document.read_text(encoding="utf-8").replace("writer-pack", "renamed-pack"), encoding="utf-8")

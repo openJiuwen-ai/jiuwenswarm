@@ -39,7 +39,7 @@
   grid-template-areas: 'chev stat name metrics';
   align-items: center;
   column-gap: 0.5rem;
-  row-gap: 0.375rem;
+  row-gap: 0.5rem;
 }
 
 .swarmflow-run-header__chev {

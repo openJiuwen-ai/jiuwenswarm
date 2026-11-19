@@ -47,6 +47,35 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
+### Bundled Fluent UI System Icons
+
+The Office conversations insert icons from the 24 px regular and filled set, bundled in
+`jiuwenswarm/office/fluent_icons/` (built by `scripts/update_fluent_icons.py`).
+
+| Software | Version | License | Provenance |
+|---|---:|---|---|
+| Fluent UI System Icons | 1.1.345 | MIT | npm package `@fluentui/svg-icons` (`https://github.com/microsoft/fluentui-system-icons`) |
+
+**License:** MIT License
+
+Copyright (c) 2020 Microsoft Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
 ### Software: Python 3.11.x, 3.12.x, 3.13.x, 3.14.x
 
 **License:** Python Software Foundation License V2
@@ -81,7 +110,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 ### License: Apache License V2.0
 
-**Software:** @playwright/mcp, playwright, playwright-core, tenacity, pypdfium2, requests, pytest-asyncio, coverage, aiofiles, aiohttp, aiosignal, chromadb, fastmcp, frozenlist, grpcio, huggingface-hub, openai, opentelemetry-api, opentelemetry-sdk, pymilvus, py-key-value-aio, py-key-value-shared, python-multipart, tzdata, websocket-client, yarl, cryptography (Apache-2.0 OR BSD-3-Clause), cyclopts, dashscope, diskcache, distro, elasticsearch, elastic-transport, flatbuffers, googleapis-common-protos, hf-xet, importlib-metadata, importlib-resources, jsonschema-path, kubernetes, openapi-spec-validator, opentelemetry-proto, pathable, prometheus-client, propcache, safetensors, sortedcontainers, tokenizers, transformers
+**Software:** @playwright/mcp, playwright, playwright-core, pdfjs-dist, tenacity, pypdfium2, requests, pytest-asyncio, coverage, aiofiles, aiohttp, aiosignal, chromadb, fastmcp, frozenlist, grpcio, huggingface-hub, openai, opentelemetry-api, opentelemetry-sdk, pymilvus, py-key-value-aio, py-key-value-shared, python-multipart, tzdata, websocket-client, yarl, cryptography (Apache-2.0 OR BSD-3-Clause), cyclopts, dashscope, diskcache, distro, elasticsearch, elastic-transport, flatbuffers, googleapis-common-protos, hf-xet, importlib-metadata, importlib-resources, jsonschema-path, kubernetes, openapi-spec-validator, opentelemetry-proto, pathable, prometheus-client, propcache, safetensors, sortedcontainers, tokenizers, transformers
 
 **Apache License**
 **Version 2.0, January 2004**

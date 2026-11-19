@@ -1391,7 +1391,7 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             )
         except Exception:
             return False
-        return bool(config.enabled)
+        return bool(config.orchestration.enabled)
 
     def _resume_is_pending(self, ctx: AgentCallbackContext) -> bool:
         state = self._active_state_for_ctx(ctx)

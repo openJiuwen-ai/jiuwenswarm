@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { writeFileSync } from 'node:fs';
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { JSDOM } from 'jsdom';
@@ -23,6 +24,10 @@ await build({
     {
       name: 'isolate-services-panel-dependencies',
       setup(builder) {
+        builder.onResolve({ filter: /\.svg\?react$/ }, ({ path }) => ({ path, namespace: 'pc-react-test' }));
+        builder.onLoad({ filter: /.*/, namespace: 'pc-react-test' }, () => ({
+          contents: 'export default function SvgStub() { return null; }', loader: 'js',
+        }));
         const dependencies = new Map([
           ['../../stores', 'export const usePersonalContextStore = () => globalThis.__pcServiceStore;'],
           [
@@ -66,7 +71,7 @@ const { PersonalContextServicesPanel } = await import(
   new URL('../node_modules/.cache/personal-context-run-state/ServicesPanel.mjs', import.meta.url)
 );
 
-async function renderStatus({ runState, completed = 0, failed = 0, pending = false, result = {}, config = {}, runtime = 'RUNNING', reconciling = false, serviceState = 'STOPPED', currentRun }) {
+async function renderStatus({ runState, completed = 0, failed = 0, pending = false, result = {}, config = {}, runtime = 'RUNNING', reconciling = false, serviceState = 'STOPPED', currentRun, submit = false }) {
   const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost' });
   const globals = {
     window: dom.window,
@@ -139,7 +144,15 @@ async function renderStatus({ runState, completed = 0, failed = 0, pending = fal
         }),
       ),
     );
+    if (submit) {
+      const run = [...dom.window.document.querySelectorAll('button')]
+        .find(button => button.textContent === 'personalContext.services.actionRunNow');
+      await act(async () => run.click());
+    }
     return {
+      markup: dom.window.document.getElementById('root').innerHTML,
+      notice: dom.window.document.querySelector('[data-testid="personal-context-services-notice"]')?.textContent,
+      alert: dom.window.document.querySelector('[role="alert"]')?.textContent,
       card: dom.window.document.querySelector('.pc-services__status-text')?.textContent,
       activeCount: dom.window.document.querySelector('.pc-services__stat-card:last-child .pc-services__stat-number')?.textContent,
       result: dom.window.document.querySelector('[data-testid="personal-context-service-result"]')?.textContent,
@@ -162,6 +175,13 @@ test('a new request does not display the previous completed run', async () => {
     (await renderStatus({ runState: 'succeeded', pending: true })).card,
     'personalContext.services.stateCollecting',
   );
+});
+
+test('submitting collection displays a success status without an error alert', async () => {
+  const result = await renderStatus({ runState: 'idle', submit: true });
+  assert.equal(result.notice, 'personalContext.services.runSubmitted');
+  assert.equal(result.alert, undefined);
+  writeFileSync(new URL('../node_modules/.cache/personal-context-run-state/notice.html', import.meta.url), result.markup);
 });
 
 test('a genuinely completed empty run still displays completion', async () => {

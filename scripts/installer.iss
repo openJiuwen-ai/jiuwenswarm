@@ -83,6 +83,7 @@ Type: files; Name: "{app}\logo-*.ico"
 
 [UninstallRun]
 Filename: "{app}\{#MyAppExeName}"; Parameters: "--desktop-reset-external-cli-config"; Flags: runhidden waituntilterminated; RunOnceId: "ResetExternalCliConfig"
+Filename: "{app}\{#MyAppExeName}"; Parameters: "--desktop-remove-office-addins"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveOfficeAddins"
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\logo-{#MyAppVersion}.ico"

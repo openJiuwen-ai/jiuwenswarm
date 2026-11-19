@@ -7,6 +7,13 @@ loads its app's template, which declares the rail (the ``manifest.json`` of
 the app's package), so the rail serves one conversation. Which tools the
 document's host runs can change when the task pane attaches again (another
 host version), so each model call reads them anew.
+
+A task pane may send the document's state with the user's message
+(``client_state``, kept with the conversation). The model sees it as if it had
+called ``read_surface_context`` itself: the rail adds that call and its result
+to the conversation before the next model call, once per state, as the saved
+state records. They stay in the history, which keeps the system prompt the same
+from turn to turn.
 """
 
 from __future__ import annotations
@@ -15,13 +22,14 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from openjiuwen.core.foundation.llm import Model
+from openjiuwen.core.foundation.llm import AssistantMessage, Model, ToolCall, ToolMessage
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, AgentRail
 from openjiuwen.harness.rails._multimodal import should_enable_read_image_multimodal
 
 from jiuwenswarm.office.assets import OfficeAssetStore, PublishOfficeAssetTool
 from jiuwenswarm.office.client_tools import build_task_pane_tools
 from jiuwenswarm.office.documents import ListOpenDocumentsTool
+from jiuwenswarm.office.icons import SearchIconsTool
 from jiuwenswarm.office.runtime import session_id_of
 
 
@@ -29,9 +37,11 @@ class OfficeToolsRail(AgentRail):
     """Add the app's tools; keep registered only the task pane tools the document's host can run.
 
     The tools are the contract tools of the app's package, which the task pane
-    runs, ``publish_office_asset`` and ``list_open_documents``. At the first
-    model call after a task pane attached, the rail takes off the agent the task
-    pane tools the pane does not support (``client.attach`` saved them), so
+    runs, ``publish_office_asset``, ``list_open_documents`` and, beside
+    ``insert_icon``, ``search_icons``. At the first model call after a task
+    pane attached, the rail takes off the agent the task pane tools the pane
+    does not support (``client.attach`` saved them; ``search_icons`` goes with
+    ``insert_icon``), so
     neither the tools of a call nor ``tool_search`` and its catalog offer a tool
     the pane cannot run. That stays for the agent's life: a conversation runs
     in one host. It runs before the progressive tool rail (90), which reads the
@@ -54,9 +64,11 @@ class OfficeToolsRail(AgentRail):
 
     def init(self, agent: Any) -> None:
         store = OfficeAssetStore()
-        client_tools = build_task_pane_tools(self._package_dir, partial(_native_image_model, agent), store)
+        client_tools = build_task_pane_tools(self._package_dir, partial(_session_model, agent),
+                                             partial(_native_image_model, agent), store)
         self._client_tools = client_tools
-        self._tools = [*client_tools, PublishOfficeAssetTool(store), ListOpenDocumentsTool()]
+        icons = [SearchIconsTool()] if any(tool.card.name == "insert_icon" for tool in client_tools) else []
+        self._tools = [*client_tools, PublishOfficeAssetTool(store), ListOpenDocumentsTool(), *icons]
         for tool in self._tools:
             agent.ability_manager.add_ability(tool.card, tool)
 
@@ -71,6 +83,10 @@ class OfficeToolsRail(AgentRail):
         self._settled = False
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
+        await _show_client_state(ctx)
+        self._settle_tools(ctx)
+
+    def _settle_tools(self, ctx: AgentCallbackContext) -> None:
         """Once a task pane attached: take the tools it does not support off the agent."""
         if self._settled:
             return
@@ -79,6 +95,8 @@ class OfficeToolsRail(AgentRail):
             return
         self._settled = True
         hidden = {tool.card.name for tool in self._client_tools} - supported
+        if "insert_icon" in hidden:
+            hidden.add("search_icons")
         # Only the agent's list changes: the tools stay in the resource manager, which runs them.
         ctx.agent.ability_manager.remove(sorted(hidden))
         # This call's tools were taken from the agent's list before the change.
@@ -87,9 +105,32 @@ class OfficeToolsRail(AgentRail):
             ctx.inputs.tools = [tool for tool in tools if _tool_name(tool) not in hidden]
 
 
+async def _show_client_state(ctx: AgentCallbackContext) -> None:
+    """Add the state the task pane last sent as a ``read_surface_context`` call and result, unless already shown.
+
+    A resume or another conversation's message brings no newer state, so it adds nothing.
+    """
+    from jiuwenswarm.server.client_attachments import load_unshown_client_state, mark_client_state_shown
+
+    session_id = session_id_of(ctx.session)
+    saved = load_unshown_client_state(session_id) if session_id else None
+    if saved is None:
+        return
+    sequence, state = saved
+    call = ToolCall(id=f"client_state_{sequence}", type="function", name="read_surface_context", arguments="{}")
+    await ctx.context.add_messages([AssistantMessage(content="", tool_calls=[call]),
+                                    ToolMessage(content=state, tool_call_id=call.id)])
+    mark_client_state_shown(session_id, sequence)
+
+
+def _session_model(agent: Any) -> Model:
+    """The conversation's current model; a model switch replaces it."""
+    return agent.deep_config.model
+
+
 def _native_image_model(agent: Any) -> Model | None:
     """The conversation's current model when it takes images, else ``None``; a model switch replaces it."""
-    return agent.deep_config.model if should_enable_read_image_multimodal(agent) else None
+    return _session_model(agent) if should_enable_read_image_multimodal(agent) else None
 
 
 def _supported_tools(session_id: str) -> frozenset[str] | None:

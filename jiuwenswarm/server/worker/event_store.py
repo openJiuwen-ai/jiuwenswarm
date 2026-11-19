@@ -17,10 +17,10 @@ from dataclasses import dataclass, field, replace
 from typing import Any
 
 from agent_gateway.common.session_message import SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY
+from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
 from jiuwenswarm.server.ipc.protocol import request_scope
 
@@ -53,6 +53,9 @@ class DispatchRecord:
     entered_at_ns: int | None = None
     interactions: dict[str, dict[str, Any]] = field(default_factory=dict)
     terminal: dict[str, Any] | None = None
+    delivery_generation: int | None = None
+    completion: dict[str, Any] | None = None
+    expired_sequence: int = 0
 
     @property
     def is_passive_subscription(self) -> bool:
@@ -209,6 +212,9 @@ class WorkerEventStore:
             _expired_scope, expired, expired_size = self._frames.popleft()
             self._expired_sequence = expired["sequence"]
             self._bytes -= expired_size
+            expired_record = self.records.get(expired["dispatch_id"])
+            if expired_record is not None:
+                expired_record.expired_sequence = expired["sequence"]
         if record:
             body = wire.get("body") or wire.get("payload") or {}
             if isinstance(body, dict):

@@ -59,7 +59,7 @@ trap cleanup EXIT
 
 # 2. 构建 wheel
 echo "[build] 正在构建 wheel 包..."
-pip install -q --upgrade build wheel
+python -m pip install -q --upgrade build 'wheel>=0.46.3' 'setuptools>=70.1.0' 'packaging>=23.0'
 python -m build --wheel --no-isolation
 
 # 确保 dist 目录存在

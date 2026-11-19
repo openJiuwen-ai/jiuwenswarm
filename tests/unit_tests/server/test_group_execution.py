@@ -1189,3 +1189,23 @@ async def test_proxy_cannot_post_an_acknowledgement_after_delegating(service, to
     retry = call(tool_name, {"content": "Sorry, that failed"})
     await rail.before_tool_call(retry)
     assert not retry.extra
+
+
+@pytest.mark.asyncio
+async def test_nested_organization_progress_persists_without_changing_parent_counts(service):
+    group = await make_group(service)
+    store = ge.GroupExecutions(group['group_id'])
+    args = dict(title='Task', task='Task', organization_id='org', owner_member='advisor',
+                team_id='owner', root_task_id='root', tasks={'chapter': 'in_progress'},
+                status='running', phase='executing', organization_plan_id='plan')
+    child = dict(task_id='research', title='Research', status='in_progress', assignee='expert')
+    first = await store.upsert_organization_card('nested', **args,
+        task_details={'chapter': {'title': 'Chapter', 'expert_tasks': [child]}})
+    child['status'] = 'completed'
+    second = await store.upsert_organization_card('nested', **args,
+        task_details={'chapter': {'title': 'Chapter', 'expert_tasks': [child]}})
+    assert second['revision'] == first['revision'] + 1
+    assert second['progress'] == {'completed': 0, 'total': 1}
+    restored = ge.GroupExecutions(group['group_id']).get('nested')
+    assert restored['task_details']['chapter']['expert_tasks'][0]['status'] == 'completed'
+    assert restored['tasks'] == {'chapter': 'in_progress'}

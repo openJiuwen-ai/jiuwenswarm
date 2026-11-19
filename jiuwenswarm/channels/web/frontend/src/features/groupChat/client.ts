@@ -15,7 +15,16 @@ export interface GroupQuestion extends AskUserQuestionPayload {
   execution_id?: string | null;
 }
 
+export interface GroupRoute {
+  plan_id: string;
+  owner_member: string;
+  members: string[];
+  status: 'pending' | 'chat' | 'clarification' | 'task' | 'completed' | 'failed';
+  reply_message_id?: string | null;
+}
+
 export interface GroupInfo {
+  organization_routes?: GroupRoute[];
   pending_questions?: GroupQuestion[];
   group_id: string;
   session_id: string;
@@ -135,6 +144,13 @@ export const groupChatClient = {
     webRequest<{ group_id: string; deleted: boolean }>('group.delete', { group_id: groupId }),
 };
 
+export interface GroupExpertTask {
+  task_id: string;
+  title: string;
+  assignee: string;
+  status: string;
+}
+
 export interface GroupExecution {
   group_id?: string;
   execution_id: string;
@@ -144,6 +160,7 @@ export interface GroupExecution {
   execution_kind: 'agent' | 'team' | 'organization';
   organization_stage?: 'starting' | 'processing' | 'executing' | 'summarizing' | null;
   organization_plan_id?: string | null;
+  error_code?: string;
   title: string;
   task: string;
   status: string;
@@ -153,7 +170,11 @@ export interface GroupExecution {
   updated_at: number;
   progress: { completed: number; total: number } | null;
   tasks?: Record<string, string>;
-  task_details?: Record<string, { title?: string; content?: string; member_id?: string; status?: string }>;
+  task_details?: Record<string, {
+    title?: string; content?: string; member_id?: string; status?: string;
+    expert_tasks?: GroupExpertTask[];
+    expert_tasks_unavailable?: boolean;
+  }>;
   result?: string | null;
   message_id?: string | null;
   attachments?: Record<string, unknown>[];

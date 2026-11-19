@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""转发别名：实现已迁 ``openjiuwen_protocol.message``。
+"""转发别名：实现已迁 ``e2a.message``。
 
 仅保留 ``jiuwenswarm.common.schema.message`` 旧 import 路径兼容，re-export 协议包
 的同一对象——``Message`` / ``ReqMethod`` / ``EventType`` / ``Mode`` 及线协议事件名
@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from enum import Enum
 
-from openjiuwen_protocol.message import (  # noqa: F401
+from e2a.message import (  # noqa: F401
     PROMPT_SUGGESTION_READY_EVENT,
     SESSION_REQUEST_COMPLETED_EVENT,
     TEAM_ATTACH_ONLY_PARAM,
@@ -153,6 +153,9 @@ _ensure_req_method("WORKSPACE_TREE", "workspace.tree")
 _ensure_req_method("WORKSPACE_PREVIEW", "workspace.preview")
 _ensure_req_method("WORKSPACE_USAGE", "workspace.usage")
 _ensure_req_method("WORKSPACE_ENTRIES_DELETE", "workspace.entries.delete")
+# skills.rebuild 的静默改写没有稳定上限。状态查询走独立方法，避免继续占着
+# 600 秒的非流式请求。协议包尚未发布该成员时在这里补齐。
+_ensure_req_method("SKILLS_REBUILD_STATUS", "skills.rebuild_status")
 _ensure_req_method("SKILLS_SOURCE_PROVIDERS", "skills.source.providers")
 _ensure_req_method("SKILLS_SOURCE_SEARCH", "skills.source.search")
 _ensure_req_method("SKILLS_SOURCE_INSTALL", "skills.source.install")
@@ -197,6 +200,32 @@ _ensure_protocol_member(EventType, "CLIENT_ATTACHMENTS_CHANGED", "client.attachm
 
 _ensure_req_method("VOICE_SESSION_RECEIPTS", "voice.session.receipts")
 _ensure_req_method("VOICE_TASK_PENDING_INTERRUPT", "voice.task.pending_interrupt")
+
+_TEAM_CONTROL_REQ_METHODS = (
+    ("TEAM_CREATE", "team.create"),
+    ("TEAM_GET", "team.get"),
+    ("TEAM_STOP", "team.stop"),
+    ("TEAM_MEMBER_JOIN", "team.member.join"),
+    ("TEAM_MEMBER_LEAVE", "team.member.leave"),
+    ("TEAM_MEMBERS_LIST", "team.members.list"),
+    ("TEAM_QUOTA_GET", "team.quota.get"),
+)
+
+
+def ensure_team_control_req_methods() -> None:
+    """Register enterprise team-control methods missing from the pinned protocol."""
+    for name, value in _TEAM_CONTROL_REQ_METHODS:
+        _ensure_req_method(name, value)
+
+
+def _install_team_control_req_methods() -> None:
+    from jiuwenswarm.enterprise.edition import is_enterprise
+
+    if is_enterprise():
+        ensure_team_control_req_methods()
+
+
+_install_team_control_req_methods()
 
 __all__ = [
     "PROMPT_SUGGESTION_READY_EVENT",
