@@ -621,7 +621,6 @@ async function preflightGatewaySingleton() {
 const WARMUP_PACKAGES = [
   'jiuwenswarm',
   'openjiuwen',
-  'faiss',
   'pymilvus',
   'google',
   'a2ui',

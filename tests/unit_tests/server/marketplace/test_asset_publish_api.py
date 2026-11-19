@@ -496,7 +496,7 @@ async def test_pack_describe_retains_local_defaults_when_identity_check_fails(tm
     )
     monkeypatch.setattr(
         "jiuwenswarm.common.config.get_config",
-        lambda: {"symphony": {"evolution": {"flow": {"enabled": True}}}},
+        lambda: {"symphony": {"orchestration": {"experience": {"enabled": True}}}},
     )
     server = AssetPublishAPI(
         tmp_path / "state", resolver=lambda kind, local_id: root,

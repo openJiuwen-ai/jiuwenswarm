@@ -108,9 +108,8 @@ def test_candidate_question_uses_beginner_friendly_skill_package_copy() -> None:
 def _enable_evolution_config(monkeypatch, tmp_path: Path):
     config = symphony_config_from_dict(
         {
-            "enabled": True,
-            "paths": {"graph_dir": str(tmp_path / "graph"), "skills_root": str(tmp_path / "skills")},
-            "evolution": {"enabled": True},
+            "orchestration": {"enabled": True, "experience": {"enabled": True}},
+            "storage": {"artifact_root": str(tmp_path / "runtime")},
         }
     )
     monkeypatch.setattr(
@@ -123,21 +122,21 @@ def _install_service(monkeypatch, flow):
     from jiuwenswarm.runtime.symphony.service import load_symphony_config
 
     config = load_symphony_config()
-    _write_member_skills(config.paths.skills_root.parent)
+    _write_member_skills(Path(config.capability.sources[0].root).parent)
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.trusted_session_user", lambda _session: "")
-    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda: [])
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda **_kwargs: [])
     scope = CandidateEvidenceScope.resolve("session-1", "", "current_session", None)
     reviewed = flow.review_and_prepare_install.return_value.package or {}
     CandidateScopeStore(flow.store.root).grant(_scoped_request_id(), {
         "session_id": "session-1", "members": ["search", "writer"],
         "package_id": reviewed.get("package_id", "server-package"),
         "integrity": reviewed.get("integrity", "sha256:server"),
-        "member_snapshot": member_snapshot(config.paths.skills_root, ["search", "writer"], []),
+        "member_snapshot": member_snapshot(Path(config.capability.sources[0].root), ["search", "writer"], []),
         "evidence_scope": scope.to_dict(), "evidence_scope_key": scope.key,
         "evidence_trace_ids": ["server-trace"],
     })
     service = SwarmSymphonyService()
-    service._runtime = SimpleNamespace(flow_engine=flow)
+    service._runtime = SimpleNamespace(flow=flow)
     monkeypatch.setattr(service, "runtime", lambda: service._runtime)
     monkeypatch.setattr(service, "_runtime_for", lambda _config: service._runtime)
     monkeypatch.setattr(service, "_skillpack_candidate_flow", AsyncMock(return_value=flow))
@@ -249,19 +248,15 @@ def _reject_install_manager(message):
 
 
 def _patch_runtime_construction(monkeypatch, flow, runtime, model):
-    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.SymphonyFlowEngine", flow)
-    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.SymphonyRuntime", runtime)
-    monkeypatch.setattr(
-        "jiuwenswarm.runtime.symphony.service.model_from_config", lambda _: model
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.runtime.symphony.service.model_response_observer_from_config",
-        lambda _: None,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.runtime.symphony.service.LLMConfig.from_default_model",
-        lambda: LLMConfig(model="default"),
-    )
+    def create(**kwargs):
+        instance = runtime(**kwargs)
+        instance.flow = flow()
+        instance.flow.enabled = kwargs["config"].orchestration.experience_enabled
+        instance.flow.status = lambda: {"started": instance.flow.enabled}
+        return instance
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.SymphonyRuntime", create)
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.model_from_config", lambda _: model)
+    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.LLMConfig.from_default_model", lambda: LLMConfig(model="default"))
 
 
 @pytest.fixture
@@ -295,12 +290,10 @@ def rail_capture(monkeypatch):
     return install
 
 
-def test_evolution_is_the_only_core_experience_switch(tmp_path: Path) -> None:
-    config = symphony_config_from_dict({"paths": {"graph_dir": str(tmp_path)}})
-
-    assert config.evolution.flow.enabled is False
-    assert not hasattr(config.evolution, "backend")
-    assert not hasattr(config, "flow")
+def test_core_experience_is_disabled_by_default(tmp_path):
+    config = symphony_config_from_dict({"storage": {"artifact_root": str(tmp_path)}})
+    assert config.orchestration.experience_enabled is False
+    assert not hasattr(config, "evolution")
 
 
 def test_experience_candidate_server_methods_are_routable() -> None:
@@ -645,98 +638,35 @@ def test_published_capability_snapshot_rejects_invalid_contracts(
     assert [item.capability_id for item in identities] == ["valid"]
 
 
-def test_explicit_flow_enabled_false_skips_core_flow(monkeypatch, tmp_path: Path) -> None:
-    config = symphony_config_from_dict(
-        {
+@pytest.mark.asyncio
+async def test_disabled_experience_keeps_runtime_flow_lazy(tmp_path):
+    from openjiuwen.symphony import SymphonyRuntime
+    config = symphony_config_from_dict({
+        "storage": {"artifact_root": str(tmp_path / "runtime")},
+        "orchestration": {"enabled": True, "experience": {"enabled": False}},
+    })
+    runtime = SymphonyRuntime(None, config)
+    assert runtime.flow.status() == {"enabled": False, "started": False, "closed": False}
+    assert not (tmp_path / "runtime").exists()
+    await runtime.aclose()
+
+
+@pytest.mark.asyncio
+async def test_runtime_flow_consumes_nested_acceptance_without_host_assembly(tmp_path):
+    from openjiuwen.symphony import SymphonyRuntime
+    config = symphony_config_from_dict({
+        "storage": {"artifact_root": str(tmp_path / "runtime")},
+        "orchestration": {
             "enabled": True,
-            "paths": {"graph_dir": str(tmp_path / "graph")},
-            "evolution": {"enabled": True, "flow": {"enabled": False}},
-        }
-    )
-    service = SwarmSymphonyService()
-    model = object()
-    created: dict[str, object] = {}
-
-    class ReviewAgent:
-        def __init__(self, value) -> None:
-            created["review_model"] = value
-
-    class Gate:
-        def __init__(self, agent) -> None:
-            created["review_agent"] = agent
-
-    class Flow:
-        def __init__(self, root, **kwargs) -> None:
-            created["flow_root"] = root
-            created.update(kwargs)
-
-    class Runtime:
-        def __init__(self, **kwargs) -> None:
-            created["runtime"] = kwargs
-
-    _patch_runtime_construction(monkeypatch, Flow, Runtime, model)
-    monkeypatch.setattr(
-        "jiuwenswarm.runtime.symphony.service.LLMPackageReviewAgent", ReviewAgent
-    )
-    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.PackageReviewGate", Gate)
-    runtime = service._runtime_for(config)
-
-    assert runtime is service._runtime
-    assert "review_model" not in created
-    assert created["runtime"]["flow_engine"] is None
-
-
-def test_core_flow_uses_success_count_config_and_ignores_legacy_switch(
-    monkeypatch, tmp_path: Path
-) -> None:
-    config = symphony_config_from_dict(
-        {
-            "enabled": True,
-            "paths": {"graph_dir": str(tmp_path / "graph")},
-            "evolution": {
-                "enabled": False,
-                "flow": {"enabled": True, "min_successes": 6},
-            },
-        }
-    )
-    service = SwarmSymphonyService()
-    model = object()
-    created: dict[str, object] = {}
-
-    class ReviewAgent:
-        def __init__(self, value) -> None:
-            created["review_model"] = value
-
-    class Gate:
-        def __init__(self, agent) -> None:
-            created["review_agent"] = agent
-
-    class Flow:
-        def __init__(self, root, **kwargs) -> None:
-            created["flow_root"] = root
-            created.update(kwargs)
-
-    class Runtime:
-        def __init__(self, **kwargs) -> None:
-            created["runtime"] = kwargs
-
-    _patch_runtime_construction(monkeypatch, Flow, Runtime, model)
-    monkeypatch.setattr(
-        "jiuwenswarm.runtime.symphony.service.LLMPackageReviewAgent", ReviewAgent
-    )
-    monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.PackageReviewGate", Gate)
-    runtime = service._runtime_for(config)
-
-    assert runtime is service._runtime
-    assert created["review_model"] is model
-    assert created["review_agent"] is not None
-    assert created["flow_root"] == tmp_path / "flow"
-    assert created["llm_client"] is model
-    flow_config = created["config"]
-    assert flow_config.min_successes == 6
-    assert flow_config.min_pack_success_rate == config.evolution.flow.min_pack_success_rate
-    assert isinstance(created["skill_adapter"], SkillPackAdapter)
-    assert isinstance(created["runtime"]["flow_engine"], Flow)
+            "experience": {"enabled": True, "acceptance": {"min_successes": 6}, "narrative": {"max_examples": 2}},
+        },
+    })
+    runtime = SymphonyRuntime(None, config)
+    assert runtime.flow.config.acceptance.min_successes == 6
+    assert runtime.flow.config.narrative.max_examples == 2
+    assert runtime.flow._get_engine().config == config.orchestration.experience
+    assert runtime.flow.store.root == tmp_path / "runtime" / "flow"
+    await runtime.aclose()
 
 
 @pytest.mark.asyncio
@@ -748,12 +678,13 @@ async def test_service_start_recovers_candidates_when_flow_is_enabled(
     starts = 0
 
     class Flow:
+        enabled = True
         async def start(self):
             nonlocal starts
             starts += 1
             return (_candidate(),)
 
-    runtime = SimpleNamespace(flow_engine=Flow())
+    runtime = SimpleNamespace(flow=Flow())
     monkeypatch.setattr(service, "_runtime_for", lambda _config: runtime)
 
     await service.start()
@@ -777,12 +708,13 @@ async def test_partial_run_does_not_deliver_recovered_candidate(
         return True
 
     class Flow:
+        enabled = True
         @staticmethod
         async def start():
             return (candidate,)
 
     class Runtime:
-        flow_engine = Flow()
+        flow = Flow()
 
         @staticmethod
         async def submit_evolution(*args, **kwargs):
@@ -828,6 +760,7 @@ async def test_candidate_push_is_concurrency_idempotent(monkeypatch) -> None:
         return True
 
     class Flow:
+        enabled = True
         def __init__(self) -> None:
             self.acknowledged: list[tuple[str, int]] = []
 
@@ -836,7 +769,7 @@ async def test_candidate_push_is_concurrency_idempotent(monkeypatch) -> None:
             return True
 
     flow = Flow()
-    service._runtime = SimpleNamespace(flow_engine=flow)
+    service._runtime = SimpleNamespace(flow=flow)
     previous = install_runtime_push_handler(push)
     try:
         await asyncio.gather(
@@ -871,7 +804,7 @@ async def test_successful_candidate_push_stays_process_deduplicated(
         pushes.append(message)
         return True
 
-    service._runtime = SimpleNamespace(flow_engine=SimpleNamespace())
+    service._runtime = SimpleNamespace(flow=SimpleNamespace())
     previous = install_runtime_push_handler(push)
     try:
         await service._notify_candidate(_candidate(), session_id="s1", channel_id="web")
@@ -893,8 +826,8 @@ async def test_deferred_candidate_is_offered_by_a_later_successful_run(
         pushes.append(message)
         return True
 
-    flow = SimpleNamespace(release_candidate=Mock(return_value=True))
-    service._runtime = SimpleNamespace(flow_engine=flow)
+    flow = SimpleNamespace(enabled=True, release_candidate=Mock(return_value=True))
+    service._runtime = SimpleNamespace(flow=flow)
     previous = install_runtime_push_handler(push)
     try:
         await service._notify_candidate(_candidate(), session_id="s1", channel_id="web")
@@ -915,6 +848,7 @@ async def test_legacy_candidate_endpoints_require_scoped_confirmation(
     candidate = _candidate()
 
     class Flow:
+        enabled = True
         @staticmethod
         def list_candidates():
             return (candidate,)
@@ -928,7 +862,7 @@ async def test_legacy_candidate_endpoints_require_scoped_confirmation(
             return True
 
     service = SwarmSymphonyService()
-    service._runtime = SimpleNamespace(flow_engine=Flow())
+    service._runtime = SimpleNamespace(flow=Flow())
     service._runtime_key = ("stable",)
     monkeypatch.setattr(service, "_runtime_for", lambda _config: service._runtime)
     pushes: list[dict] = []
@@ -1452,8 +1386,7 @@ def test_skill_install_does_not_rebind_different_local_content(
 def test_team_graph_rail_spec_is_leader_only() -> None:
     config = {
         "symphony": {
-            "enabled": True,
-            "evolution": {"enabled": True},
+            "orchestration": {"enabled": True, "experience": {"enabled": True}},
         },
         "react": {"evolution": {"skill_evolution": False}},
     }
@@ -1470,8 +1403,7 @@ def test_team_graph_rail_provider_skips_members(monkeypatch) -> None:
         role="teammate",
         config={
             "symphony": {
-                "enabled": True,
-                "evolution": {"enabled": True},
+                "orchestration": {"enabled": True, "experience": {"enabled": True}},
             }
         },
     )
@@ -1485,9 +1417,8 @@ async def test_core_graph_plan_uses_runtime_graph_snapshot(
 ) -> None:
     config = symphony_config_from_dict(
         {
-            "enabled": True,
-            "paths": {"graph_dir": str(tmp_path)},
-            "evolution": {"enabled": True},
+            "orchestration": {"enabled": True, "experience": {"enabled": True}},
+            "storage": {"artifact_root": str(tmp_path / "runtime")},
         }
     )
     service = SwarmSymphonyService()
@@ -1504,7 +1435,7 @@ async def test_core_graph_plan_uses_runtime_graph_snapshot(
                 }
             )
 
-    runtime = SimpleNamespace(graph_engine=GraphEngine(), graph_scope_id="scope")
+    runtime = SimpleNamespace(orchestration=GraphEngine())
     monkeypatch.setattr(service, "_runtime_for", lambda _config: runtime)
     monkeypatch.setattr(
         service, "graph_status", lambda: _async_value({"success": True, "exists": True})
@@ -1521,7 +1452,7 @@ async def test_core_graph_plan_uses_runtime_graph_snapshot(
     result = await service.plan("query")
 
     assert result["success"] is True
-    assert calls[0]["graph_scope_id"] == "scope"
+    assert "graph_scope_id" not in calls[0]
 
 
 @pytest.mark.asyncio
@@ -1530,9 +1461,8 @@ async def test_evolution_disabled_gates_flow_service_operations(
 ) -> None:
     config = symphony_config_from_dict(
         {
-            "enabled": True,
-            "paths": {"graph_dir": str(tmp_path)},
-            "evolution": {"enabled": False},
+            "orchestration": {"enabled": True, "experience": {"enabled": False}},
+            "storage": {"artifact_root": str(tmp_path / "runtime")},
         }
     )
     service = SwarmSymphonyService()
@@ -1583,7 +1513,7 @@ async def test_flow_start_failure_does_not_block_graph_submission(
     calls: list[str] = []
 
     class Runtime:
-        flow_engine = object()
+        flow = object()
 
         async def submit_evolution(self, *args, **kwargs):
             calls.append("graph_submit")
@@ -1608,20 +1538,30 @@ async def test_flow_start_failure_does_not_block_graph_submission(
 
 
 @pytest.mark.asyncio
-async def test_agent_server_symphony_recovery_is_fail_soft(monkeypatch) -> None:
+@pytest.mark.parametrize("orchestration_enabled, experience_enabled", [(False, True), (True, False), (True, True)])
+async def test_agent_server_symphony_recovery_honors_switches_and_is_fail_soft(
+    monkeypatch, orchestration_enabled, experience_enabled,
+) -> None:
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
-    class Service:
-        @staticmethod
-        async def start():
-            raise OSError("flow store unavailable")
-
+    config = symphony_config_from_dict({
+        "orchestration": {"enabled": orchestration_enabled, "experience": {"enabled": experience_enabled}},
+    })
+    start = AsyncMock(side_effect=OSError("flow store unavailable"))
+    monkeypatch.setattr("jiuwenswarm.common.symphony_config.load_symphony_config", lambda: config)
     monkeypatch.setattr(
         "jiuwenswarm.runtime.symphony.service.get_swarm_symphony_service",
-        lambda: Service(),
+        lambda: SimpleNamespace(start=start),
     )
 
-    await AgentWebSocketServer._start_symphony_recovery()
+    result = await AgentWebSocketServer._start_symphony_recovery()
+
+    if experience_enabled:
+        assert result is False
+        start.assert_awaited_once()
+    else:
+        assert result is True
+        start.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1634,6 +1574,7 @@ async def test_request_model_plan_keeps_rail_runtime_and_single_flow_owner(
     submitted: list[object] = []
 
     class Flow:
+        enabled = True
         def __init__(self, *args, **kwargs):
             flow_instances.append(self)
 
@@ -1653,8 +1594,8 @@ async def test_request_model_plan_keeps_rail_runtime_and_single_flow_owner(
 
     class Runtime:
         def __init__(self, **kwargs):
-            self.flow_engine = kwargs["flow_engine"]
-            self.graph_engine = GraphEngine()
+            self.flow = None
+            self.orchestration = GraphEngine()
             self.graph_scope_id = "scope"
             self.closed = False
             runtimes.append(self)
@@ -1687,7 +1628,7 @@ async def test_request_model_plan_keeps_rail_runtime_and_single_flow_owner(
     assert result["success"] is True
     assert service.runtime() is rail_runtime
     assert submitted == [rail_runtime]
-    assert len(flow_instances) == 1
+    assert sum(runtime.flow.enabled for runtime in runtimes) == 1
     assert runtimes[1].closed is True
 
 
@@ -1742,10 +1683,8 @@ async def test_flow_owner_is_not_replaced_and_close_blocks_runtime_creation(
     config = _enable_evolution_config(monkeypatch, tmp_path)
     changed = symphony_config_from_dict(
         {
-            "enabled": True,
-            "paths": {"graph_dir": str(tmp_path / "graph")},
-            "orchestration": {"max_depth": 9},
-            "evolution": {"enabled": True},
+            "orchestration": {"enabled": True, "plan": {"max_depth": 9}, "experience": {"enabled": True}},
+            "storage": {"artifact_root": str(tmp_path / "runtime")},
         }
     )
     entered = asyncio.Event()
@@ -1753,6 +1692,7 @@ async def test_flow_owner_is_not_replaced_and_close_blocks_runtime_creation(
     flow_count = 0
 
     class Flow:
+        enabled = True
         def __init__(self, *args, **kwargs):
             nonlocal flow_count
             flow_count += 1
@@ -1763,7 +1703,7 @@ async def test_flow_owner_is_not_replaced_and_close_blocks_runtime_creation(
 
     class Runtime:
         def __init__(self, **kwargs):
-            self.flow_engine = kwargs["flow_engine"]
+            self.flow = None
 
         async def aclose(self):
             entered.set()
@@ -1790,8 +1730,7 @@ async def test_single_agent_rail_forwards_agent_capture(
     adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
     adapter._config_base_cache = {
         "symphony": {
-            "enabled": True,
-            "evolution": {"enabled": True},
+            "orchestration": {"enabled": True, "experience": {"enabled": True}},
         }
     }
     adapter._model = object()
@@ -1838,8 +1777,7 @@ async def test_team_leader_rail_forwards_team_capture(
         trajectory_span_processor="team-processor",
         config={
             "symphony": {
-                "enabled": True,
-                "evolution": {"enabled": True},
+                "orchestration": {"enabled": True, "experience": {"enabled": True}},
             }
         },
     )

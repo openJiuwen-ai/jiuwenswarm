@@ -80,7 +80,7 @@ async def test_default_code_create_syncs_symphony_before_rail_startup(
     config_base = {
         "react": {"agent_name": "code-agent"},
         "modes": {"code": {"rails": [], "tools": []}},
-        "symphony": {"enabled": True},
+        "symphony": {"orchestration": {"enabled": True}},
     }
     events: list[str] = []
     symphony_names = [

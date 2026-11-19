@@ -1189,3 +1189,225 @@ def test_bundle_identity_is_finalized_after_signed_and_unsigned_payloads(entrypo
     unsigned_branch = script.index("Skipping PE signing (unsigned local build).", signing)
     assert signing < unsigned_branch < finalizer < script.index("Building installer (Inno Setup)", finalizer)
     assert "}\n" in script[unsigned_branch:finalizer]
+
+
+def _windows_powershell() -> Path:
+    return Path(os.environ["SystemRoot"]) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+
+
+def test_device_path_probe_reports_existence_beyond_net_limits(tmp_path):
+    """The Win32 probe must see long directories that .NET normalization may hide."""
+    if sys.platform != "win32":
+        pytest.skip("requires Windows PowerShell")
+    existing = tmp_path / ("probe-fixture-" + "y" * 240)
+    Path("\\\\?\\" + str(existing)).mkdir(parents=True)
+    missing = tmp_path / "definitely-absent"
+    extraction = """
+$ast=[System.Management.Automation.Language.Parser]::ParseFile('{script}',[ref]$null,[ref]$null)
+$fn=$ast.FindAll({{ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'Test-DevicePathExists' }},$true)
+if ($fn.Count -ne 1) {{ Write-Output ('EXTRACT-FAIL ' + $fn.Count); exit 1 }}
+Invoke-Expression $fn[0].Extent.Text
+$script:NativePathProbe=$null
+Write-Output ((Test-DevicePathExists '{long}').ToString() + '/' + (Test-DevicePathExists '{missing}').ToString())
+""".format(script=SCRIPT, long=existing, missing=missing)
+    result = subprocess.run(
+        [str(_windows_powershell()), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", extraction],
+        capture_output=True, text=True, errors="replace", timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "True/False"
+
+
+def test_degraded_runtime_aborts_on_existing_max_path_cli_root(tmp_path, preservation_runner):
+    """A legacy runtime must not mistake an existing boundary-length CLI root for absence.
+
+    Only the host-dependent link (the plain-path layer going blind) is simulated,
+    at the attribute read itself; the guard decision, the Win32 re-probe, and the
+    real 260-character directory all execute for real, so the protective abort is
+    exercised on every Windows host.
+    """
+    if sys.platform != "win32":
+        pytest.skip("requires Windows PowerShell")
+    app = tmp_path / "app"
+    source = app / "runtime" / "node-runtime"
+    pad = 260 - len(str(source))
+    assert 0 < pad < 200, "unexpected tmp_path depth for the boundary fixture"
+    app = tmp_path / ("app" + "x" * pad)
+    source = app / "runtime" / "node-runtime"
+    assert len(str(source)) == 260
+    extended_source = Path("\\\\?\\" + str(source))
+    extended_source.mkdir(parents=True)
+    (extended_source / "node.exe").write_bytes(b"fixture node")
+    text = preservation_runner.script.read_text(encoding="utf-8")
+    probe_call = r"try { [void][IO.File]::GetAttributes('\\?\'+$env:SystemRoot) }"
+    assert text.count(probe_call) == 1
+    text = text.replace(probe_call, r"try { throw (New-Object ArgumentException('simulated legacy runtime rejects device paths')) }")
+    attribute_read = r"try { $attributes=[IO.File]::GetAttributes((Long-Path $Source)) }"
+    assert text.count(attribute_read) == 1
+    blind = r"try { if (-not $script:DevicePathSupported -and $Source.Length -ge 250) { throw (New-Object IO.DirectoryNotFoundException('simulated plain-path blindness')) }; $attributes=[IO.File]::GetAttributes((Long-Path $Source)) }"
+    text = text.replace(attribute_read, blind)
+    preservation_runner.script.write_text(text, encoding="utf-8")
+    completed, report, _, _ = preservation_runner(app)
+    assert completed.returncode != 0
+    # The outer catch writes the abort reason to the report file (not stderr).
+    report_text = report.read_text(encoding="utf-8")
+    assert "Existing CLI directory is unreachable through plain paths" in report_text
+    # Nothing was cleaned up: the unbacked-up CLI tree is still intact.
+    assert (extended_source / "node.exe").read_bytes() == b"fixture node"
+
+
+def test_device_path_probe_error_discrimination(tmp_path):
+    """Every probe decision branch is deterministic on a plain Windows host.
+
+    exists -> True (attribute read); missing leaf -> errno 2 -> False; missing
+    intermediate directory -> errno 3 -> False; invalid name syntax -> errno 123
+    (any non-2/3 error) -> conservative True so the guard aborts, never skips;
+    UNC form conversion executes; an unresolvable UNC host yields errno 53 (not 2/3) and keeps the conservative exists verdict.
+    The double call also exercises the compiled-handle reuse path.
+    """
+    if sys.platform != "win32":
+        pytest.skip("requires Windows PowerShell")
+    existing = tmp_path / "exists-dir"
+    Path("\\\\?\\" + str(existing)).mkdir()
+    missing_leaf = tmp_path / "no-such-leaf"
+    missing_middle = tmp_path / "no-such-middle" / "nested"
+    invalid_syntax = "C:\\foo<bar"
+    dead_unc = "\\\\nonexistent-host-xyz.invalid\\share\\dir"
+    extraction = """
+$ast=[System.Management.Automation.Language.Parser]::ParseFile('{script}',[ref]$null,[ref]$null)
+$fn=$ast.FindAll({{ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'Test-DevicePathExists' }},$true)
+if ($fn.Count -ne 1) {{ Write-Output ('EXTRACT-FAIL ' + $fn.Count); exit 1 }}
+Invoke-Expression $fn[0].Extent.Text
+$script:NativePathProbe=$null
+Write-Output ((Test-DevicePathExists '{exists}').ToString() + '/' + (Test-DevicePathExists '{exists}').ToString())
+Write-Output (Test-DevicePathExists '{leaf}').ToString()
+Write-Output (Test-DevicePathExists '{middle}').ToString()
+Write-Output (Test-DevicePathExists '{syntax}').ToString()
+Write-Output (Test-DevicePathExists '{unc}').ToString()
+""".format(script=SCRIPT, exists=existing, leaf=missing_leaf, middle=missing_middle, syntax=invalid_syntax, unc=dead_unc)
+    result = subprocess.run(
+        [str(_windows_powershell()), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", extraction],
+        capture_output=True, text=True, errors="replace", timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-5:] == ["True/True", "False", "False", "True", "True"]
+
+
+def test_not_supported_probe_engages_degrade_and_skips_absent_dirs(tmp_path, preservation_runner):
+    """NotSupportedException engages plain-path degrade; first install stays healthy.
+
+    Exercises the second named catch, the Long-Path degrade branch, and both
+    guards' degrade-plus-absent outcomes (return $null / continue): absent CLI
+    and SDK directories must still be skipped so a fresh install succeeds.
+    """
+    if sys.platform != "win32":
+        pytest.skip("requires Windows PowerShell")
+    app = tmp_path / "fresh install"
+    app.mkdir()
+    text = preservation_runner.script.read_text(encoding="utf-8")
+    probe_call = r"try { [void][IO.File]::GetAttributes('\\?\'+$env:SystemRoot) }"
+    assert text.count(probe_call) == 1
+    simulated = r"try { throw (New-Object NotSupportedException('simulated legacy runtime')) }"
+    text = text.replace(probe_call, simulated)
+    preservation_runner.script.write_text(text, encoding="utf-8")
+    completed, report, _, path_result = preservation_runner(app)
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["success"] is True
+    assert payload["mappings"] == []
+    assert payload["sdk_mappings"] == []
+    assert not path_result.exists()
+
+
+def test_unknown_probe_exception_keeps_device_paths_and_first_install(tmp_path, preservation_runner):
+    """Any other probe exception keeps the supported default; behavior unchanged.
+
+    Exercises the fallback catch: an IOException neither names a capability
+    verdict nor degrades anything, so a fresh install behaves exactly like the
+    unmodified script.
+    """
+    if sys.platform != "win32":
+        pytest.skip("requires Windows PowerShell")
+    app = tmp_path / "fresh install"
+    app.mkdir()
+    text = preservation_runner.script.read_text(encoding="utf-8")
+    probe_call = r"try { [void][IO.File]::GetAttributes('\\?\'+$env:SystemRoot) }"
+    assert text.count(probe_call) == 1
+    simulated = r"try { throw (New-Object System.IO.IOException('simulated unknown failure')) }"
+    text = text.replace(probe_call, simulated)
+    preservation_runner.script.write_text(text, encoding="utf-8")
+    completed, report, _, path_result = preservation_runner(app)
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["success"] is True
+    assert payload["mappings"] == []
+    assert not path_result.exists()
+
+
+def test_degraded_runtime_aborts_on_existing_max_path_sdk_dir(tmp_path, preservation_runner):
+    """An existing boundary-length SDK directory must also abort, never vanish.
+
+    Both CLI candidates are genuinely absent (fresh install), so the Preserve
+    loop skips them for real; the SDK scan then meets its boundary-length
+    external-cli directory and must abort instead of dropping it silently.
+    """
+    if sys.platform != "win32":
+        pytest.skip("requires Windows PowerShell")
+    app = tmp_path / "app"
+    sdk_source = app / "runtime" / "external-cli"
+    pad = 260 - len(str(sdk_source))
+    assert 0 < pad < 200, "unexpected tmp_path depth for the boundary fixture"
+    app = tmp_path / ("app" + "x" * pad)
+    sdk_source = app / "runtime" / "external-cli"
+    assert len(str(sdk_source)) == 260
+    extended_sdk = Path("\\\\?\\" + str(sdk_source))
+    extended_sdk.mkdir(parents=True)
+    text = preservation_runner.script.read_text(encoding="utf-8")
+    probe_call = r"try { [void][IO.File]::GetAttributes('\\?\'+$env:SystemRoot) }"
+    assert text.count(probe_call) == 1
+    text = text.replace(probe_call, r"try { throw (New-Object ArgumentException('simulated legacy runtime rejects device paths')) }")
+    attribute_read = r"try { $sdkAttributes=[IO.File]::GetAttributes((Long-Path $sdkSource)) }"
+    assert text.count(attribute_read) == 1
+    blind = r"try { if (-not $script:DevicePathSupported -and $sdkSource.Length -ge 250) { throw (New-Object IO.DirectoryNotFoundException('simulated plain-path blindness')) }; $sdkAttributes=[IO.File]::GetAttributes((Long-Path $sdkSource)) }"
+    text = text.replace(attribute_read, blind)
+    preservation_runner.script.write_text(text, encoding="utf-8")
+    completed, report, _, _ = preservation_runner(app)
+    assert completed.returncode != 0
+    report_text = report.read_text(encoding="utf-8")
+    assert "Existing SDK directory is unreachable through plain paths" in report_text
+    assert extended_sdk.exists()
+
+
+def test_degraded_initialize_aborts_on_existing_max_path_bundle(tmp_path, preservation_runner):
+    """Initialize must not report success while skipping an unreadable Node bundle.
+
+    Initialize runs before the Preserve loop and seeds the managed CLI from the
+    bundled runtime; a boundary-length bundle directory that the plain-path layer
+    cannot see must abort with an explicit report, never a success=true JSON.
+    """
+    if sys.platform != "win32":
+        pytest.skip("requires Windows PowerShell")
+    app = tmp_path / "app"
+    bundle = app / "runtime" / "node-runtime"
+    pad = 260 - len(str(bundle))
+    assert 0 < pad < 200, "unexpected tmp_path depth for the boundary fixture"
+    app = tmp_path / ("app" + "x" * pad)
+    bundle = app / "runtime" / "node-runtime"
+    assert len(str(bundle)) == 260
+    extended_bundle = Path("\\\\?\\" + str(bundle))
+    extended_bundle.mkdir(parents=True)
+    (extended_bundle / "node.exe").write_bytes(b"fixture node")
+    text = preservation_runner.script.read_text(encoding="utf-8")
+    probe_call = r"try { [void][IO.File]::GetAttributes('\\?\'+$env:SystemRoot) }"
+    assert text.count(probe_call) == 1
+    text = text.replace(probe_call, r"try { throw (New-Object ArgumentException('simulated legacy runtime rejects device paths')) }")
+    candidate_read = r"try { $candidateIsDirectory=(([IO.File]::GetAttributes((Long-Path $candidate)) -band [IO.FileAttributes]::Directory) -ne 0) }"
+    assert text.count(candidate_read) == 1
+    blind = r"try { if (-not $script:DevicePathSupported -and $candidate.Length -ge 250) { throw (New-Object IO.DirectoryNotFoundException('simulated plain-path blindness')) }; $candidateIsDirectory=(([IO.File]::GetAttributes((Long-Path $candidate)) -band [IO.FileAttributes]::Directory) -ne 0) }"
+    text = text.replace(candidate_read, blind)
+    preservation_runner.script.write_text(text, encoding="utf-8")
+    completed, report, _, _ = preservation_runner(app, mode="Initialize")
+    assert completed.returncode != 0
+    report_text = report.read_text(encoding="utf-8")
+    assert "Existing bundled Node runtime is unreachable through plain paths" in report_text
+    assert (extended_bundle / "node.exe").read_bytes() == b"fixture node"
