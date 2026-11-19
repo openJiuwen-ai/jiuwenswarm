@@ -952,14 +952,37 @@ def test_registered_local_rootfs_errors_are_readable(monkeypatch):
 
 def test_image_environment_literals_survive_actual_config_loading(tmp_path, monkeypatch):
     from jiuwenswarm.common import config
+
     monkeypatch.setenv("REVIEW_HOST_VALUE", "host-value")
-    literals = {"LITERAL": "${REVIEW_HOST_VALUE}", "DEFAULT": "${MISSING_IMAGE_VALUE:-image-default}"}
-    raw = {"sandbox": {"image_env": literals, "env": {"USER": "${REVIEW_HOST_VALUE}", "LITERAL": "user-value"}},
-        "gateway": {"adx": {"builtin_launch": {"image_env": literals, "env": {"USER": "${REVIEW_HOST_VALUE}"}}}}}
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_PROFILE", "")
-    monkeypatch.setattr(config, "_read_with_retry", lambda path: json.loads(json.dumps(raw)))
+    literals = {"LITERAL": "${REVIEW_HOST_VALUE}", "DEFAULT": "${MISSING_IMAGE_VALUE:-image-default}"}
+    raw = {
+        "sandbox": {
+            "type": "adx-environment",
+            "url": "https://worker.example",
+            "image_env": literals,
+            "env": {"USER": "${REVIEW_HOST_VALUE}", "LITERAL": "user-value"},
+        },
+        "gateway": {"adx": {"builtin_launch": {
+            "rootfs": {"type": "local", "path": "/prepared/agent/rootfs"},
+            "process": {"commands": [["/app/agentserver"]]},
+            "image_env": literals,
+            "env": {"USER": "${REVIEW_HOST_VALUE}", "DEFAULT": "configured-value"},
+        }}},
+    }
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(json.dumps(raw), encoding="utf-8")
+    monkeypatch.setattr(config, "get_config_file", lambda: config_path)
     resolved = config.get_config()
-    assert resolved["sandbox"]["env"] == {**literals, "LITERAL": "user-value", "USER": "host-value"}
-    assert resolved["gateway"]["adx"]["builtin_launch"]["env"] == {**literals, "USER": "host-value"}
+    assert config.get_sandbox_endpoint()["env"] == {**literals, "LITERAL": "user-value", "USER": "host-value"}
     assert "image_env" not in resolved["sandbox"]
-    assert raw["sandbox"]["image_env"] == literals
+    launch = resolved["gateway"]["adx"]["builtin_launch"]
+    assert "image_env" not in launch
+    control = AdxControlClient(_config(monkeypatch, runtime_class="runsc", builtin_launch=launch))
+    body = control._creation_body("test", "builtin", "/workspace", {}, {"USER": "request", "REQUEST": "keep"},
+                                  None, builtin=True)
+    assert body["env"]["LITERAL"] == literals["LITERAL"]
+    assert body["env"]["DEFAULT"] == "configured-value"
+    assert body["env"]["USER"] == "host-value"
+    assert body["env"]["REQUEST"] == "keep"
+    assert json.loads(config_path.read_text(encoding="utf-8")) == raw
