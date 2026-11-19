@@ -1238,6 +1238,24 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if not is_enterprise():
             return False
         path = urlparse(self.path).path
+        backend = os.getenv("USER_WEB_BACKEND_TARGET", "").rstrip("/")
+        if backend:
+            if path.startswith("/manager-api/v1/user-console/"):
+                self._proxy_http(
+                    target=backend, path=self.path.replace("/manager-api", "/api", 1),
+                )
+                return True
+            if self._is_ws_route():
+                if self._is_websocket_upgrade():
+                    self._proxy_websocket_tunnel(target=backend)
+                else:
+                    self.send_error(400, "expected websocket upgrade")
+                return True
+            backend_api = path.startswith(("/idp/", "/gateway-api/")) or path == "/gateway-api"
+            resource_api = self._is_file_api_route() or self._is_share_api_route()
+            if backend_api or self._is_api_route() or resource_api:
+                self._proxy_http(target=backend, stream_sse=True)
+                return True
         if path.startswith("/idp/"):
             target = os.getenv("USER_WEB_IDP_TARGET", "")
             if target:
@@ -2986,6 +3004,18 @@ def _wait_for_tcp_port(
             if attempts < max_attempts:
                 time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
     return False
+
+
+def create_enterprise_app() -> Any:
+    """Create the enterprise user backend served by this module."""
+    from jiuwenswarm.enterprise import is_enterprise
+
+    if not is_enterprise():
+        raise RuntimeError("The enterprise user backend requires JIUWENSWARM_EDITION=enterprise")
+
+    from jiuwenswarm.channels.web.enterprise_backend import create_app
+
+    return create_app()
 
 
 def main() -> None:
