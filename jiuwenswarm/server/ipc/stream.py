@@ -123,7 +123,9 @@ class IpcConnection:
             observer(message, issued_at, received_at)
         return received_at
 
-    def _recent_business_reply(self, request_since: float | None, generation: int | None) -> HeartbeatProbeResult | None:
+    def _recent_business_reply(
+        self, request_since: float | None, generation: int | None,
+    ) -> HeartbeatProbeResult | None:
         if request_since is None or type(generation) is not int:
             return None
         with self._stats_lock:
