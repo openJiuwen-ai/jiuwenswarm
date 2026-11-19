@@ -1,4 +1,4 @@
-import { scheduleCatalogRefresh, catalogScope } from '../features/catalogCache';
+import { scheduleCatalogRefresh, catalogScope, type CatalogItems } from '../features/catalogCache';
 import { create } from 'zustand';
 import i18n from '../i18n';
 import { connectorApi } from '../services/connectorApi';
@@ -246,6 +246,31 @@ function scheduleQuickRefresh(get: () => ConnectorState): void {
 // 直接丢弃、不覆盖任何东西——不管这次结果本身是好是坏。
 const listRequestSeq: Record<'builtin' | 'local', number> = { builtin: 0, local: 0 };
 
+// 静默轮询仅校准：内容与 cache 元数据都没变时保留原数组，避免整表重渲染。
+// cache 仍参与比较，否则刷新完成/失败时 CatalogCacheNotice 拿不到最新状态。
+function connectorListSignature(items: ConnectorSummary[]): string {
+  return items
+    .map((item) => [
+      item.id,
+      item.runtimePackageName,
+      item.displayName,
+      item.description,
+      item.category,
+      item.connectionState,
+      item.integrationType,
+      item.hasBundledSkills ? '1' : '0',
+      item.installed ? '1' : '0',
+      item.source,
+      item.version ?? '',
+      item.icon ?? '',
+    ].join('\u0001'))
+    .join('\u0002');
+}
+
+function connectorCacheSignature(items: ConnectorSummary[]): string {
+  return JSON.stringify((items as CatalogItems<ConnectorSummary>).cache ?? null);
+}
+
 export const useConnectorStore = create<ConnectorState>((set, get) => ({
   builtinConnectors: [],
   myConnectors: [],
@@ -276,6 +301,17 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
       );
       if (listRequestSeq[filter] !== mySeq) return; // 已有更新的同 filter 调用发起过，这次结果作废
       const fresh = response;
+      if (silent) {
+        const current = filter === 'builtin' ? get().builtinConnectors : get().myConnectors;
+        if (
+          connectorListSignature(current) === connectorListSignature(fresh)
+          && connectorCacheSignature(current) === connectorCacheSignature(fresh)
+        ) {
+          // 早些时候的非静默请求可能已被本次静默请求顶掉，收尾它的 loading 态。
+          if (get().isLoading) set({ isLoading: false });
+          return;
+        }
+      }
       set((state) => ({
         connectors: mergeByName(state.connectors, fresh),
         ...(filter === 'builtin' ? { builtinConnectors: fresh } : { myConnectors: fresh }),
