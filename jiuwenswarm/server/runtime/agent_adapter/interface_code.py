@@ -19,7 +19,7 @@ import logging
 import os
 from collections.abc import Iterator
 from contextlib import contextmanager
-from copy import deepcopy
+from copy import copy, deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -1381,7 +1381,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
         if previous_config is not None:
             try:
-                rollback_config = previous_config.model_copy(deep=False)
+                # DeepAgentConfig 是 dataclass（无 pydantic model_copy）；
+                # 兼容少数带 model_copy 的实现，否则用浅拷贝再改 rails。
+                if hasattr(previous_config, "model_copy"):
+                    rollback_config = previous_config.model_copy(deep=False)
+                else:
+                    rollback_config = copy(previous_config)
                 # External package/user rails were never removed and must not
                 # participate in DeepAgent's full-replacement branch.
                 rollback_config.rails = []
