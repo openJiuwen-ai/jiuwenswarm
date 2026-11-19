@@ -177,14 +177,23 @@ class FlashMemoryRail(MemoryRail):
                 original = text
                 for old, new in self._MEMORY_NAME_REPLACEMENTS:
                     text = text.replace(old, new)
+                names_missed = text == original
+                before_content = text
                 for old, new in self._MEMORY_CONTENT_REPLACEMENTS:
                     text = text.replace(old, new)
-                # 命中守卫：上游 build_memory_section 改文案（工具名/检索句变体）时，
-                # 盲替换会静默失效。这里检测「两套都无命中」，告警而非无声放行。
-                if text == original:
+                # 命中守卫：两套替换分别检测。上游只改其中一套时，合并检测会把
+                # 「工具名命中、检索句漂移」的半失效情形静默放过。
+                if names_missed:
                     logger.warning(
-                        "[FlashMemoryRail] 记忆文案未命中五件套工具名/每轮检索句，"
-                        "上游可能改了文案——统一名改写失效"
+                        "[FlashMemoryRail] 记忆文案未命中五件套工具名（%s 段），"
+                        "上游可能改了文案——统一名改写失效",
+                        lang_key,
+                    )
+                if text == before_content:
+                    logger.warning(
+                        "[FlashMemoryRail] 记忆文案未命中每轮检索句（%s 段），"
+                        "上游可能改了文案——内容松绑失效",
+                        lang_key,
                     )
             new_content[lang_key] = text
         try:

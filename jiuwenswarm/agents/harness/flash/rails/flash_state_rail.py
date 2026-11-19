@@ -75,6 +75,15 @@ class FlashStateRail(DeepAgentRail):
         # 820 时间事实：撤下静态段，转 attachment。
         await self._move_time_to_attachment(ctx, builder)
 
+    def _resolve_manager(self, ctx: AgentCallbackContext) -> Any:
+        """每轮优先取 ``ctx.agent`` 上的最新 manager（agent 热重建时不用 init 期旧引用）。"""
+        manager = getattr(
+            getattr(ctx, "agent", None), "prompt_attachment_manager", None,
+        )
+        if manager is not None:
+            self._attachment_manager = manager
+        return self._attachment_manager
+
     async def _move_time_to_attachment(self, ctx: AgentCallbackContext, builder: Any) -> None:
         time_section = self._get_section(builder, _SECTION_TIME)
         if time_section is None:
@@ -82,7 +91,7 @@ class FlashStateRail(DeepAgentRail):
             return
 
         content = self._extract_content(time_section, builder)
-        manager = self._attachment_manager
+        manager = self._resolve_manager(ctx)
         if manager is None:
             # 附件通道不可用：保留静态 time 段（不撤），避免运行事实静默丢失。
             logger.warning(

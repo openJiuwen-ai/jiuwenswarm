@@ -6,8 +6,8 @@
 换成五段常驻规则 + 精简清单：
 
 - 700 技能总则（存在方式 / 发现路径 / 触发语义）
-- 710 技能加载规则（入口统一 skill_tool + 强约束前置 + 经验查询/加载正文块）
-- 720 技能选择与互斥（互斥组 / 不误替换条款）
+- 710 技能选择与互斥（互斥组 / 不误替换条款）
+- 720 技能加载规则（入口统一 skill_tool + 强约束前置 + 经验查询/加载正文块）
 - 730 技能执行规范（执行纪律 9 条；取自 skill_protocol 段抽取，⚠️ 并入第 9 条）
 - 740 技能清单（manifest.yaml 启用集：名称 + 一句话描述，~5k）
 
@@ -299,6 +299,7 @@ class FlashSkillRail(DeepAgentRail):
         self._resolved_manifest: Optional[Path] = None
         self._manifest_missing: bool = False
         self._enabled_cache: Optional[tuple[tuple[int, int], list[tuple[str, str]]]] = None
+        self._warned_extract_miss = False
 
     def init(self, agent: Any) -> None:
         self._system_prompt_builder = getattr(agent, "system_prompt_builder", None)
@@ -329,7 +330,7 @@ class FlashSkillRail(DeepAgentRail):
         # 与 manifest 无关、恒注入，只有 730 清单依赖 manifest（缺失时注入空清单提示）。
         builder.remove_section(SectionName.SKILLS)
 
-        # 710 技能加载：常驻加载规则 + 「经验查询前置/加载 SKILL.md 正文」块（取自
+        # 720 技能加载：常驻加载规则 + 「经验查询前置/加载 SKILL.md 正文」块（取自
         # shared skill_protocol 抽取，单一事实源；抽取守卫命中则只保留常驻规则）。
         # 抽取块在协议源里是 H3（段内子标题），并入本段（段顶 H1）前提升一级为 H2，
         # 避免「H1 段顶 → H3 子块」跳级；收口器统一重锚 H2 后即为「## 加载 → ### 子块」。
@@ -344,6 +345,16 @@ class FlashSkillRail(DeepAgentRail):
         execution_rules = _extract_execution_rules(
             _build_skill_protocol_section_text(language), language,
         )
+
+        if (loading_extra is None or execution_rules is None) and not self._warned_extract_miss:
+            self._warned_extract_miss = True
+            logger.warning(
+                "[FlashSkillRail] skill_protocol 抽取未命中（加载块=%s，执行规范=%s）："
+                "上游锚点/标题可能已变——720 加载块降级、730 执行规范缺失，"
+                "请同步 _extract_loading_blocks / _extract_execution_rules 的锚点",
+                loading_extra is not None,
+                execution_rules is not None,
+            )
 
         builder.add_section(PromptSection(
             name=_SECTION_OVERVIEW,
@@ -434,12 +445,21 @@ class FlashSkillRail(DeepAgentRail):
             else "# Skill Catalog\n\nEnabled skills (name + one-line description). "
             "Load a skill's SKILL.md through skill_tool when you need it.\n"
         )
-        if not enabled:
+        if enabled is None:
             note = (
-                "当前没有可用的启用技能清单（manifest.yaml 缺失或解析失败）。"
+                "当前技能清单不可用（manifest.yaml 缺失或解析失败）。"
                 "需要用技能时，先用 search_skill 检索，再经 skill_tool 加载。"
                 if language == "cn"
-                else "No enabled-skill catalog is available (manifest.yaml missing or unparsable). "
+                else "The skill catalog is unavailable (manifest.yaml missing or unparsable). "
+                "To use a skill, search with search_skill first, then load it via skill_tool."
+            )
+            return header + note
+        if not enabled:
+            note = (
+                "当前没有默认启用的技能（manifest.yaml 中 default_enabled 均为关闭）。"
+                "需要用技能时，先用 search_skill 检索，再经 skill_tool 加载。"
+                if language == "cn"
+                else "No skills are enabled by default (all default_enabled entries are off). "
                 "To use a skill, search with search_skill first, then load it via skill_tool."
             )
             return header + note

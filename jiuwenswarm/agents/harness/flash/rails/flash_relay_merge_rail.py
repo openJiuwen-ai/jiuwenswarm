@@ -58,6 +58,7 @@ class FlashRelayMergeRail(DeepAgentRail):
     def __init__(self) -> None:
         super().__init__()
         self._system_prompt_builder: Any = None
+        self._warned_guard_miss = False
 
     def init(self, agent: Any) -> None:
         self._system_prompt_builder = getattr(agent, "system_prompt_builder", None)
@@ -95,10 +96,12 @@ class FlashRelayMergeRail(DeepAgentRail):
         if stripped is None:
             # 命中守卫（锚点缺失）——用原 content 重加，不盲切。
             stripped = content
-            logger.warning(
-                "[FlashRelayMergeRail] relay 去重剥除命中守卫（锚点缺失），原样重加到段号 %s",
-                _PRIO_REQUEST,
-            )
+            if not self._warned_guard_miss:
+                self._warned_guard_miss = True
+                logger.warning(
+                    "[FlashRelayMergeRail] relay 去重剥除命中守卫（锚点缺失），原样重加到段号 %s",
+                    _PRIO_REQUEST,
+                )
 
         builder.remove_section(_SECTION_REQUEST)
         builder.add_section(PromptSection(

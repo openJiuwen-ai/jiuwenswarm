@@ -43,6 +43,8 @@ _ATTACHMENT_PRIORITY = 70
 
 _DEFAULT_THRESHOLDS = (3, 5, 8)
 _DEFAULT_ARGUMENTS_PREVIEW_CHARS = 500
+# 链状态按会话累积、仅 uninit 清理；长驻进程里会话数无界，故设上限并按插入序淘汰。
+_MAX_CHAIN_SESSIONS = 256
 
 
 def _wildcard_to_regex(pattern: str) -> re.Pattern[str]:
@@ -159,8 +161,16 @@ class FlashRepeatCallGuardRail(DeepAgentRail):
         """每条新消息重置当前会话的重复链（用户插话 = 上下文改变，非循环）。"""
         sid = getattr(getattr(ctx, "inputs", None), "conversation_id", None) or "default"
         ctx.extra[_SID_KEY] = sid
-        self._chains[sid] = None  # type: ignore[assignment]
+        self._remember_chain(sid, None)
         await self._clear_reminder(ctx, sid)
+
+    def _remember_chain(self, sid: str, value: Any) -> None:
+        """写入链状态；会话数超上限时按插入序淘汰最早条目（dict 保序）。"""
+        self._chains[sid] = value
+        overflow = len(self._chains) - _MAX_CHAIN_SESSIONS
+        if overflow > 0:
+            for old_sid in list(self._chains)[:overflow]:
+                self._chains.pop(old_sid, None)
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         """观测一次工具调用；命中阈值则 upsert 提醒，链路断裂则清空。"""
@@ -180,7 +190,7 @@ class FlashRepeatCallGuardRail(DeepAgentRail):
         sid = ctx.extra.get(_SID_KEY, "default")
         chain = self._chains.get(sid)
         count = chain[1] + 1 if chain is not None and chain[0] == key else 1
-        self._chains[sid] = (key, count)
+        self._remember_chain(sid, (key, count))
 
         if count in self._threshold_set:
             language = self._resolve_language()
@@ -206,8 +216,17 @@ class FlashRepeatCallGuardRail(DeepAgentRail):
         lang = getattr(self._system_prompt_builder, "language", None) or "cn"
         return "cn" if lang in ("cn", "zh") else "en"
 
+    def _resolve_manager(self, ctx: AgentCallbackContext) -> Any:
+        """每轮优先取 ``ctx.agent`` 上的最新 manager（agent 热重建时不用 init 期旧引用）。"""
+        manager = getattr(
+            getattr(ctx, "agent", None), "prompt_attachment_manager", None,
+        )
+        if manager is not None:
+            self._attachment_manager = manager
+        return self._attachment_manager
+
     async def _upsert_reminder(self, ctx: AgentCallbackContext, sid: str, text: str) -> None:
-        manager = self._attachment_manager
+        manager = self._resolve_manager(ctx)
         if manager is None:
             return
         try:
@@ -224,7 +243,7 @@ class FlashRepeatCallGuardRail(DeepAgentRail):
             logger.warning("[FlashRepeatCallGuard] upsert reminder failed: %s", exc)
 
     async def _clear_reminder(self, ctx: AgentCallbackContext, sid: str) -> None:
-        manager = self._attachment_manager
+        manager = self._resolve_manager(ctx)
         if manager is None:
             return
         try:

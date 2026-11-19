@@ -364,9 +364,43 @@ class ContextOverflowRecoveryRail(DeepAgentRail):
     # ------------------------------------------------------------------
 
     @classmethod
-    def resolve_model_context_limit(cls, ctx: AgentCallbackContext) -> int:
-        """公开口径：真实模型上下文窗口；解析不到返回 0。"""
-        return cls._resolve_model_context_limit(ctx)
+    def resolve_real_model_context_limit(cls, ctx: AgentCallbackContext) -> int:
+        """公开水位口径：已登记模型的真实上下文窗口；未知模型 / 解析不到返回 0。
+
+        与 ``_resolve_model_context_limit`` 的差异：后者按上游策略，对未登记模型
+        兜底 ``DEFAULT_CONTEXT_MAX_TOKENS``（200000）以保住主动预压缩；水位提醒不能
+        把兜底值当真窗口（真实 1M 窗口在 15% 水位会被算成 75% 而误报），故这里对
+        「兜底值 且 模型不在窗口表」一律返回 0。显式配置的窗口视为真实窗口。
+        """
+        limit = cls._resolve_model_context_limit(ctx)
+        if limit <= 0:
+            return 0
+
+        context = getattr(ctx, "context", None)
+        explicit_limit = _coerce_positive_int(
+            getattr(context, "_context_window_tokens", None)
+        )
+        if explicit_limit <= 0:
+            explicit_limit = _get_config_context_limit(ctx)
+        if explicit_limit > 0:
+            return explicit_limit
+
+        from openjiuwen.core.context_engine.context.context_utils import (
+            DEFAULT_CONTEXT_MAX_TOKENS,
+            MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS,
+        )
+
+        if limit != DEFAULT_CONTEXT_MAX_TOKENS:
+            return limit
+        model_windows = getattr(context, "_model_context_window_tokens", None)
+        if not isinstance(model_windows, dict):
+            model_windows = None
+        model_name = cls._resolve_model_name(ctx)
+        if model_name and cls._is_known_model(
+            model_name, model_windows, MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS
+        ):
+            return limit
+        return 0
 
     @staticmethod
     def last_prompt_tokens(ctx: AgentCallbackContext) -> int:

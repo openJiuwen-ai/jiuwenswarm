@@ -8,10 +8,11 @@
 上下文（委派子代理 / 停止加载 / 摘要替换），在触到 90% 强制压缩前把水位压下去。
 
 - 与 90% 强制层共用同一套水位口径（复用 ContextOverflowRecoveryRail 的
-  ``_resolve_model_context_limit`` + ``_last_prompt_tokens``），保证 70/85/90
+  ``resolve_real_model_context_limit`` + ``last_prompt_tokens``），保证 70/85/90
   三档在同一把尺子上，不会因 tokenizer 估算偏差（751K vs 1.047M）错位。
 - turn 1 无 ``usage_metadata``（首轮无上一轮上报），静默跳过；turn 2+ 才有值。
-- 解析不到真实模型窗口时跳过（同强制层，避免用 200000 默认值误触发）。
+- 未知模型 / 解析不到真实窗口时跳过：上游对未登记模型兜底 200000 以保住主动
+  预压缩，但提醒层不能拿兜底值当真实窗口，否则会在真实 1M 窗口的 15% 水位误报。
 - 附件属瞬态（8xx 运行时区），不占段序表号位；水位回落（< warning）时清空提醒。
 
 本 rail 是「行为」不是「内容」，正文为提示层提醒文案（非 06 目标静态正文），
@@ -45,20 +46,20 @@ _KIND = PromptAttachmentKind.RUNTIME
 _ATTACHMENT_PRIORITY = 71
 
 _WARNING_CN = (
-    "当前上下文使用率约 70%。请开始精简上下文：大块独立工作优先委派给子代理"
+    "当前上下文使用率约 {pct}%。请开始精简上下文：大块独立工作优先委派给子代理"
     "（task_tool），避免继续加载大文件或长文档，并及时总结已完成部分、丢弃中间过程细节。"
 )
 _CRITICAL_CN = (
-    "当前上下文使用率约 85%，接近上限。请立即压缩：所有大块独立工作一律委派给子代理"
+    "当前上下文使用率约 {pct}%，接近上限。请立即压缩：所有大块独立工作一律委派给子代理"
     "（不要在主上下文执行），停止加载新内容，用简短摘要替换已完成的中间结果。"
 )
 _WARNING_EN = (
-    "Context usage is around 70%. Start trimming: prefer delegating large independent "
+    "Context usage is around {pct}%. Start trimming: prefer delegating large independent "
     "work to a subagent (task_tool), avoid loading more large files or long documents, "
     "and summarize completed parts while discarding intermediate details."
 )
 _CRITICAL_EN = (
-    "Context usage is around 85%, near the limit. Compress now: delegate ALL large "
+    "Context usage is around {pct}%, near the limit. Compress now: delegate ALL large "
     "independent work to a subagent (do not run it in the main context), stop loading "
     "new content, and replace completed intermediate results with brief summaries."
 )
@@ -109,7 +110,7 @@ class FlashPressureRail(DeepAgentRail):
 
     def _resolve_pressure_text(self, ctx: AgentCallbackContext) -> str | None:
         """纯函数：按上一轮真实 usage / 真实模型窗口算出应注入的提醒正文；无则 None。"""
-        limit = ContextOverflowRecoveryRail.resolve_model_context_limit(ctx)
+        limit = ContextOverflowRecoveryRail.resolve_real_model_context_limit(ctx)
         if limit <= 0:
             return None
         used = ContextOverflowRecoveryRail.last_prompt_tokens(ctx)
@@ -121,15 +122,28 @@ class FlashPressureRail(DeepAgentRail):
         critical = rate >= self._critical_ratio
         language = self._resolve_language()
         if critical:
-            return _CRITICAL_CN if language == "cn" else _CRITICAL_EN
-        return _WARNING_CN if language == "cn" else _WARNING_EN
+            template = _CRITICAL_CN if language == "cn" else _CRITICAL_EN
+            pct = int(round(self._critical_ratio * 100))
+        else:
+            template = _WARNING_CN if language == "cn" else _WARNING_EN
+            pct = int(round(self._warning_ratio * 100))
+        return template.format(pct=pct)
+
+    def _resolve_manager(self, ctx: AgentCallbackContext) -> Any:
+        """每轮优先取 ``ctx.agent`` 上的最新 manager（agent 热重建时不用 init 期旧引用）。"""
+        manager = getattr(
+            getattr(ctx, "agent", None), "prompt_attachment_manager", None,
+        )
+        if manager is not None:
+            self._attachment_manager = manager
+        return self._attachment_manager
 
     def _resolve_language(self) -> str:
         lang = getattr(self._system_prompt_builder, "language", None) or "cn"
         return "cn" if lang in ("cn", "zh") else "en"
 
     async def _inject(self, ctx: AgentCallbackContext, text: str) -> None:
-        manager = self._attachment_manager
+        manager = self._resolve_manager(ctx)
         if manager is None:
             return
         try:
@@ -147,7 +161,7 @@ class FlashPressureRail(DeepAgentRail):
 
     async def _clear(self, ctx: AgentCallbackContext) -> None:
         """水位回落时清空压力提醒（附件为 session 粘滞存储，需显式清除）。"""
-        manager = self._attachment_manager
+        manager = self._resolve_manager(ctx)
         if manager is None:
             return
         try:
