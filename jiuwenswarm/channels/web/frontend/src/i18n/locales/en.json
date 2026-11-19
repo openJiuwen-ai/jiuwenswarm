@@ -168,6 +168,67 @@
       "stopping": "Stopping"
     }
   },
+  "officeAddins": {
+    "appStatus": {
+      "installed": "Installed",
+      "notInstalled": "Not installed",
+      "needsRepair": "Needs repair",
+      "notFound": "Not found"
+    },
+    "sections": {
+      "about": "Basic info",
+      "apps": "Apps",
+      "guide": "Guide",
+      "requirement": "Requirements",
+      "start": "Get started",
+      "data": "Data"
+    },
+    "actions": {
+      "install": "Install",
+      "installPending": "Installing…",
+      "repair": "Repair",
+      "repairPending": "Repairing…",
+      "remove": "Remove",
+      "removing": "Removing…"
+    },
+    "confirm": {
+      "install": "Install {{name}}",
+      "repair": "Repair {{name}}",
+      "remove": "Remove {{name}}?",
+      "removeNotice": "Office stops loading WorkSwarm, and the local certificate is deleted once no other add-in remains installed.",
+      "trustNotice": "The system may ask you to trust a local certificate (on macOS, with your login password); Office uses it to connect securely to WorkSwarm on this computer."
+    },
+    "suites": {
+      "office": {
+        "title": "WorkSwarm for Office",
+        "what": "Use WorkSwarm in Word, Excel and PowerPoint to edit the open document.",
+        "requirement": "Microsoft 365: version 2504 or later on Windows, or 16.96 or later on Mac. Not on the web.",
+        "data": "WorkSwarm for Office connects only to WorkSwarm on this computer. WorkSwarm sends the document content to the model service you configured in WorkSwarm.",
+        "steps": {
+          "restart": "Restart Office",
+          "openPane": "Open WorkSwarm from Home → Add-ins",
+          "connect": "The pane connects to WorkSwarm on this computer"
+        }
+      }
+    },
+    "apps": {
+      "word": "Word",
+      "excel": "Excel",
+      "powerpoint": "PowerPoint"
+    },
+    "problems": {
+      "permission_denied": "The system didn't let WorkSwarm write to Office's add-in folder. Allow it in the system prompt or in Privacy & Security settings, then click Repair.",
+      "certificate_untrusted": "The local certificate isn't trusted yet. Click Repair and confirm when the system asks.",
+      "certificate_expiring": "The local certificate expires soon. Click Repair to replace it.",
+      "tls_unavailable": "The local service Office connects to isn't running. Click Repair to retry, or restart WorkSwarm if it still fails.",
+      "stale_origin": "The add-in still points to an old address. Click Repair to update it."
+    },
+    "appsNotFound": "Not found on this computer: {{apps}}. Open each once after installing it, then install from here.",
+    "listSeparator": ", ",
+    "errors": {
+      "actionFailed": "That didn't finish. Try again."
+    }
+  },
   "experts": {
     "podStarting": "Starting the expert runtime, please wait",
     "podStartTimeout": "The expert runtime did not start in time. Try again later"

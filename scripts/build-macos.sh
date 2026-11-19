@@ -106,6 +106,11 @@ pushd "$PROJECT_ROOT/jiuwenswarm/channels/web/frontend" >/dev/null
 npm install
 npm run build
 popd >/dev/null
+# Office task pane, served by the desktop at /office/ (inside the frontend dist built above).
+pushd "$PROJECT_ROOT/packages/jiuwenswarm-office-addin" >/dev/null
+npm ci --no-audit --no-fund
+npm run build:desktop
+popd >/dev/null
 
 TUI_BINARY=""
 printf '\n[3/9] Build TUI native binary (Bun)...\n'

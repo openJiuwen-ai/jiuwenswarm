@@ -372,6 +372,7 @@ BASE_PORT_NAME_MAP = {
     "web": "gatewayApi",
     "gateway": "gatewayInternal",
     "frontend": "frontend",
+    "office_tls": "officeTls",
 }
 
 
