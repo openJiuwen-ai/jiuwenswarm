@@ -412,6 +412,8 @@ def test_a2ui_prompt_bold_space_rule_present_cn_en():
     zh = build_a2ui_autonomy_instruction("zh")
 
     assert "[Text-bold]" in en
+    assert "ends with punctuation" in en
     assert "one space MUST come after the closing **" in en
     assert "[文本加粗]" in zh
+    assert "标点结尾" in zh
     assert "闭合 ** 后必须留一个空格" in zh
