@@ -8,7 +8,7 @@
 | 编号 / slug | S_07 / llm-call-failure-recovery |
 | 关联模块（jiuwenswarm 仓） | `jiuwenswarm/agents/harness/common/rails/llm_retry_notify_rail.py`、`context_overflow_recovery_rail.py`；装配点 `jiuwenswarm/server/runtime/agent_adapter/interface_deep.py`（`_build_llm_retry_rail` / `_build_context_overflow_recovery_rail`）、`interface_code.py`（`_FIXED_RAIL_NAMES`）、`jiuwenswarm/server/runtime/skill_turbo/executor.py`（`_build_llm_retry_rail`）、`jiuwenswarm/agents/swarm/config_specs.py` + `providers/builtin_rails.py`（成员 rail 投影） |
 | 关联模块（agent-core 仓，跨仓契约） | `openjiuwen/harness/rails/llm_retry_rail.py`（`LLMRetryRail` 父类：repeat 检测参数、`backoff_delay`、`_is_repeat_exception` / `_is_stream_timeout_exception` / `_is_transient_invoke_exception`）、`openjiuwen.harness.rails.base.DeepAgentRail`、`openjiuwen/core/session/stream.OutputSchema` |
-| 最近一次修订日期 | 2026-11-02 |
+| 最近一次修订日期 | 2026-11-19 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -17,7 +17,7 @@
 
 - **瞬时失败重试链**（`NotifyingLLMRetryRail` / `TeamMemberNotifyingLLMRetryRail`）：三类原因（repeat / stream_timeout / transient_invoke）的判定分流、per-call 预算、指数退避 + jitter、用户可见通知（重试中 / 耗尽）
 - **上下文溢出恢复链**（`ContextOverflowRecoveryRail`）：溢出异常检测（三家厂商格式）、FullCompact 强制压缩 + `threshold_override`、立即重试、连续溢出熔断
-- 配置消费契约：`execution_guard.llm_retry_rail` 节（deep / skill_turbo / swarm 成员三处装配共用）
+- 配置消费契约：`execution_guard.llm_retry_rail` 节（deep / flash / code 单代理 / skill_turbo / swarm 成员共用）
 - 通知 schema：`retry_notification` 与 `error` 两类 `OutputSchema` 事件的 payload 契约
 
 不管：
@@ -51,7 +51,7 @@
 
 ## 接口契约
 
-### NotifyingLLMRetryRail（deep / skill_turbo / swarm 成员通用）
+### NotifyingLLMRetryRail（deep / flash / code 单代理 / skill_turbo / swarm 成员通用）
 
 构造参数（`**kwargs` 全透传父类 `LLMRetryRail`）：
 
@@ -61,7 +61,7 @@
 | `notify_user_on_exhausted` | bool / True | 耗尽后是否推 `error` 事件 |
 | `retry_transient_invoke_errors` | bool / True | transient_invoke 类是否参与重试（经 `_parent_accepts_retry_transient_invoke_errors` 签名探测决定是否也传给父类——父类签名演进时的兼容垫片） |
 | `backoff_seconds`（kwargs） | list[float] / None | 显式序列精确执行；缺省 / None 生成（N6/N7） |
-| `max_retries` + repeat 检测六参数（kwargs） | —— | 透传父类；deep / skill_turbo / swarm 三处装配的取值表见"配置消费" |
+| `max_retries` + repeat 检测六参数（kwargs） | —— | 透传父类；装配取值见“配置消费” |
 
 挂点方法：
 
@@ -117,6 +117,7 @@
 |---|---|---|
 | deep 主链 retry | `interface_deep.py` `_build_llm_retry_rail`（:10113） | enabled 非 True → None；失败 → warning + None（不炸装配） |
 | flash 主链 retry | `interface_flash.py` `_FLASH_RAIL_KEEP` 保留 `_llm_retry_rail` | 复用 deep 构建；移出白名单会让工厂回退 SDK 原版 rail，重试耗尽无用户可见错误 |
+| code 单代理主链 retry | `interface_code.py` `_build_agent_rails` | normal 和 plan 复用 `deep/rail_factory.py` 的 `_build_llm_retry_rail`。SDK 工厂识别其为 `LLMRetryRail` 子类并跳过默认 Rail。通知 Rail 关闭时沿用 code 的 SDK 默认重试 |
 | deep 溢出 | `interface_deep.py` `_build_context_overflow_recovery_rail`（:9648） | `max_recovery_attempts=3` |
 | code 侧溢出 | `interface_code.py` `_FIXED_RAIL_NAMES`（:459）+ build callable | 固定名单去重挂载；断言传 3 |
 | skill_turbo | `executor.py` `_build_llm_retry_rail`（:946） | 同一配置节、同一参数集（与 DeepAgent 一致） |
@@ -132,7 +133,7 @@
 
 ## 执行路径全景
 
-- **P1 装配**：config 加载 → deep / skill_turbo 各自 `_build_llm_retry_rail`（同一节取参）→ swarm 侧 `_llm_retry_params` 投影进成员 rail spec → 成员实例化时 builder 造 `TeamMemberNotifyingLLMRetryRail`；溢出 rail 经 deep `_build_context_overflow_recovery_rail(3)` 或 code `_FIXED_RAIL_NAMES` 挂载。
+- **P1 装配**：deep / flash / code 单代理共用 `deep/rail_factory.py` 的 `_build_llm_retry_rail`。SkillTurbo 从同一配置节取参，swarm 经 `_llm_retry_params` 向成员工厂投影并构建 `TeamMemberNotifyingLLMRetryRail`。溢出 rail 经 deep `_build_context_overflow_recovery_rail(3)` 或 code `_FIXED_RAIL_NAMES` 挂载。
 - **P2 retry 判定**：模型调用抛异常 → 父类框架触发 `on_model_exception` → N2 分流 → `_peek_retry`（N3）→ 通知（N5）→ `_request_retry_or_reset`：未耗尽则 `counts+1` + mirror + `ctx.request_retry(delay)`（delay 走 `backoff_delay(count)` + jitter，N6/N7）；耗尽走 N4。
 - **P3 通知双形态**：will_retry → `retry_notification`（P2 内）；耗尽 → `error` + `llm_retry_exhausted`。
 - **P4 溢出检测与恢复**：`on_model_exception`（priority 100 先跑，N10）→ N9 检测 → 计数 +1 → 未超限 → N11 恢复（force_compact + override）→ `request_retry(0)`。
@@ -166,6 +167,7 @@
 | TeamMember async-stream 404（三标记全中） | 按瞬时错误重试 | wrapper 措辞漂移即静默失效（有意，N8） | 无专属用例（依赖 agent-core 措辞，改动需人工核对 wrapper 异常文本） |
 | ModelArts.81001 溢出 | 400 + 错误码 + 关键词三条件组合判定 | 词表 / 正则漂移漏检 | jiuwenswarm 仓无 `_parse_token_limits` / `_is_context_overflow_error` 专属单测——改词表须人工过三家错误样例 |
 | code 侧挂载 | `_FIXED_RAIL_NAMES` 固定名单（不走动态 build）+ `max_recovery_attempts=3` | 动态注册路径漏挂 | `test_code_adapter_context_overflow_recovery_rail.py` 四用例（固定名单含 / 动态名单不含 / build 含 entry / callable 返回 rail 或 None） |
+| code 单代理重试通知 | 工厂装配一个 `NotifyingLLMRetryRail`，发出重试中和耗尽事件 | 漏挂时回退基础 Rail，用户看不到重试提示 | `test_code_adapter_llm_retry_rail.py` |
 | forked FullCompactProcessor | 同名键 + 能力探测命中（N11） | isinstance 改回会漏判 forked 实例 | 无专属用例（改识别方式须过 forked 场景） |
 
 ## 修改检查单
@@ -179,7 +181,7 @@
 - 改 `max_recovery_attempts` 默认值 → deep（:9651）与 code callable 两处装配传值是否跟随
 - 改 `priority` → 与 StreamEventRail（80）/ ContextAssembleRail / ContextProcessorRail（均 85）的相对顺序重估（N10）
 - 改 `_parent_accepts_retry_transient_invoke_errors` 探测逻辑 → agent-core `LLMRetryRail.__init__` 签名同步核对
-- 改装配取参（`_build_llm_retry_rail` / `_llm_retry_params`）→ 三处装配点参数集保持一致（deep / skill_turbo / swarm 投影同源同默认）
+- 改装配取参（`_build_llm_retry_rail` / `_llm_retry_params`）→ 核对单代理共用工厂、SkillTurbo 和 swarm 成员的参数默认值
 
 ## 与其它 spec 的关系
 

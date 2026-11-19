@@ -50,6 +50,7 @@ from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
 
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.config import get_sandbox_runtime
+from jiuwenswarm.server.runtime.agent_adapter.deep.rail_factory import _build_llm_retry_rail
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
     _AGENT_CARD_ID,
@@ -479,6 +480,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         "PermissionInterruptRail",
         "ContextProcessorRail",
         "ContextOverflowRecoveryRail",
+        "NotifyingLLMRetryRail",
         "SysOperationRail", "CodingMemoryRail",
         "CodingArtifactPostProcessRail",
         "AgentModeRail", "StructuredAskUserRail", "ConfirmInterruptRail",
@@ -803,6 +805,14 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 _RailBuildInfo(
                     "_a2a_outbound_toolkit_rail",
                     self._build_a2a_outbound_toolkit_rail,
+                ),
+            )
+            # 团队成员由 swarm 装配自己的重试 Rail。
+            rail_infos.append(
+                _RailBuildInfo(
+                    "_llm_retry_rail",
+                    _build_llm_retry_rail,
+                    {"config_base": config_base},
                 ),
             )
             # 模型路由（ModelRoutingRail）只在单 agent code 模式挂载：auto 档
