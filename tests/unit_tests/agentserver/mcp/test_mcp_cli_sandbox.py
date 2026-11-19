@@ -430,6 +430,7 @@ class TestLifecycleRunnerRouting:
 
     def test_build_sandbox_runner_enabled_forwards_credentials(self) -> None:
         driver = self._driver([])
+        driver._cred_keys = ["MCP_TEST_TOKEN"]
         calls: list[tuple[str, dict]] = []
 
         def fake_run(command: str, **kwargs) -> CommandResult:
@@ -446,6 +447,29 @@ class TestLifecycleRunnerRouting:
 
         assert calls[0][0] == "gitcode version"
         assert calls[0][1]["extra_env"] == {"MCP_TEST_TOKEN": "secret"}
+
+    def test_sandbox_env_never_carries_host_only_keys(self) -> None:
+        """``__init__`` rewrites the host PATH after the env snapshot, so the
+        sandbox must be fed the token-schema keys — not everything that
+        differs from ``os.environ``."""
+        driver = self._driver([])
+        driver._cred_keys = ["GITCODE_TOKEN"]
+        env = {"PATH": "/host/bin", "HOME": "/host/home", "GITCODE_TOKEN": "t"}
+        calls: list[tuple[str, dict]] = []
+
+        def fake_run(command: str, **kwargs) -> CommandResult:
+            calls.append((command, kwargs))
+            return CommandResult(command, 0)
+
+        with (
+            patch.object(cli_sandbox, "sandbox_cli_enabled", return_value=True),
+            patch.object(cli_sandbox, "run_in_sandbox", side_effect=fake_run),
+        ):
+            runner = driver._build_sandbox_runner(env)
+            assert runner is not None
+            runner("gitcode version")
+
+        assert calls[0][1]["extra_env"] == {"GITCODE_TOKEN": "t"}
 
     def test_constructor_routes_every_command_into_sandbox(self) -> None:
         calls: list[str] = []
@@ -555,3 +579,52 @@ class TestSandboxAuthStep:
 
         assert result.succeeded is False
         assert "tool sandbox" in result.error
+
+    def test_missing_cli_fails_the_step_instead_of_reporting_auth(self, tmp_path) -> None:
+        """``start_detached`` starts a shell even when the CLI is absent: the
+        pid exists, but the login is gone and the log only holds "command not
+        found". That must fail the step like the host runner's ENOENT."""
+        driver = self._driver()
+        with (
+            patch.object(
+                cli_sandbox, "auth_paths",
+                return_value=(tmp_path / "a.pid", tmp_path / "a.log"),
+            ),
+            patch.object(cli_sandbox, "start_detached", return_value=9004),
+            patch.object(
+                cli_sandbox, "read_text",
+                return_value="bash: line 1: lark-cli: command not found\n",
+            ),
+            patch.object(cli_sandbox, "process_alive", return_value=False),
+            patch.object(cli_driver, "_AUTH_URL_WAIT_S", 0.05),
+        ):
+            result = driver.auth_step(0)
+
+        assert result.succeeded is False
+        assert result.needs_user_action is False
+        assert result.error_kind == ERR_BINARY_NOT_FOUND
+        assert "command not found" in result.error
+        assert "feishu" not in cli_driver._PENDING_AUTH_PROCS
+
+    def test_login_that_opened_the_browser_itself_still_succeeds(self, tmp_path) -> None:
+        """authSuppressBrowser CLIs open the browser and exit without printing
+        a URL; that must not be mistaken for a missing binary."""
+        driver = self._driver()
+        with (
+            patch.object(
+                cli_sandbox, "auth_paths",
+                return_value=(tmp_path / "a.pid", tmp_path / "a.log"),
+            ),
+            patch.object(cli_sandbox, "start_detached", return_value=9005),
+            patch.object(
+                cli_sandbox, "read_text",
+                return_value="opened the default browser\n",
+            ),
+            patch.object(cli_sandbox, "process_alive", return_value=False),
+            patch.object(cli_driver, "_AUTH_URL_WAIT_S", 0.05),
+        ):
+            result = driver.auth_step(0)
+
+        assert result.succeeded is True
+        assert result.needs_user_action is True
+        assert result.auth_url is None

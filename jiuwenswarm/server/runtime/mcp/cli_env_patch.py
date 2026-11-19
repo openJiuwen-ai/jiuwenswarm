@@ -25,6 +25,7 @@ operations; in any other deployment the process is left untouched.
 from __future__ import annotations
 
 import logging
+import re
 import shlex
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -33,6 +34,11 @@ logger = logging.getLogger(__name__)
 
 _SHELL_KEY = "shell"
 _PATCHED = False
+
+# Credential keys come from a package's token-schema.json, which is
+# marketplace-supplied data, so they must never be spliced into a shell
+# statement unchecked. Only plain shell identifiers are exported.
+_ENV_KEY_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
 def _prefix() -> str:
@@ -52,6 +58,11 @@ def _prefix() -> str:
     except Exception as exc:  # noqa: BLE001
         logger.debug("[mcp.cli_env] prefix unavailable: %s", exc)
     for key, value in _credential_env().items():
+        if not _ENV_KEY_RE.fullmatch(key):
+            logger.debug(
+                "[mcp.cli_env] skip non-identifier credential key: %r", key,
+            )
+            continue
         parts.append(f"export {key}={shlex.quote(value)}")
     return "; ".join(part for part in parts if part)
 
