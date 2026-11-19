@@ -16,15 +16,18 @@ from weakref import WeakValueDictionary
 from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
 
 from jiuwenswarm.agents.harness.team import get_team_manager
+from jiuwenswarm.agents.harness.team.team_manager import peek_team_manager
 from jiuwenswarm.common.config import get_config, get_default_models
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.local_env_config import (
     apply_env_overrides_to_active,
     apply_env_removals,
+    bind_agent_env_ns,
     bind_task_env_overlay,
     build_effective_env_overlay,
     promote_staged_env,
     replace_active_env,
+    reset_agent_env_ns,
     reset_task_env_overlay,
     seal_env_mapping,
     stage_env_overrides,
@@ -1830,9 +1833,10 @@ class AgentManager:
                                 "error": str(exc),
                             }
                         )
+                ns_token = bind_agent_env_ns(self.env_service_id, self.env_agent_id)
                 try:
                     team_config = effective_config if isinstance(effective_config, dict) else get_config()
-                    await get_team_manager(channel_id).update_evolution_config(team_config)
+                    await get_team_manager(channel_id).update_evolution_config(team_config, session_id=target_session)
                 except Exception as exc:
                     reload_completed = False
                     logger.warning(
@@ -1840,6 +1844,8 @@ class AgentManager:
                         channel_id,
                         exc,
                     )
+                finally:
+                    reset_agent_env_ns(ns_token)
                 logger.info(f"channel {channel_id} reload agent config success.")
             idle = not self.is_working()
             if idle:
@@ -1885,6 +1891,21 @@ class AgentManager:
         )
 
         aggregate = ReloadAggregateResult()
+        # Catalog sync bypasses reload_agents_config. A pooled team can outlive its adapter.
+        team_manager = peek_team_manager()
+        if team_manager is not None:
+            ns_token = bind_agent_env_ns(self.env_service_id, self.env_agent_id)
+            try:
+                team_manager.update_leader_evolution_triggers(config, catalog_sync=True)
+            except Exception as exc:
+                logger.warning(
+                    "[AgentManager] team evolution policy sync failed: service=%s agent=%s error=%s",
+                    self.env_service_id, self.env_agent_id, exc,
+                )
+                aggregate.failed.append({"session": "", "error": f"Team evolution policy sync failed: {exc}"})
+            finally:
+                reset_agent_env_ns(ns_token)
+
         for channel_id, channel_agents in self.agents.items():
             if not isinstance(channel_agents, dict):
                 continue
