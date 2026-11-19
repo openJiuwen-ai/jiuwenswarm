@@ -499,7 +499,7 @@
       "shortcutChanged": "Model added. It does not include {{tool}}, so this tool’s settings are unchanged.",
       "separator": ", ",
       "empty": "No multimodal models configured",
-      "emptyDescription": "Add a model and select its capabilities. Matching tools without a selected model will be enabled automatically.",
+      "emptyDescription": "Add a model and select its capabilities. If any matching tools are off, you can choose to enable them or keep them off when you save.",
       "tools": {
         "vision": "Image processing",
         "audio": "Audio processing",
