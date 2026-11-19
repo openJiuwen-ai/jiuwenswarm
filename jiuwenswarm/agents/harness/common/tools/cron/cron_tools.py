@@ -610,7 +610,12 @@ class CronTools:
             if inherited_model:
                 normalized["model_name"] = inherited_model
         model_name_raw = normalized.get("model_name")
-        if model_name_raw is not None and str(model_name_raw).strip():
+        if normalized.get("model_selection") is not None:
+            # Preserve stable identity; the name is compatibility/display data.
+            model_kw["model_selection"] = normalized["model_selection"]
+            if model_name_raw is not None and str(model_name_raw).strip():
+                model_kw["model_name"] = str(model_name_raw).strip()
+        elif model_name_raw is not None and str(model_name_raw).strip():
             model_kw["model_name"] = resolve_agent_cron_model(model_name_raw)
         # mcp：会话级 MCP 选择（backend 层已继承 chat-session 快照或显式传入），
         # 只做类型规范化（strip/去空/去重），不校验存在性——MCP 断连后 job 应降级运行。
@@ -704,7 +709,25 @@ class CronTools:
         if "mode" in normalized_patch:
             normalized_patch["mode"] = normalize_cron_job_mode(normalized_patch.get("mode"))
         if "model_name" in normalized_patch:
-            normalized_patch["model_name"] = resolve_agent_cron_model(normalized_patch.get("model_name"))
+            requested_model = str(normalized_patch.get("model_name") or "").strip()
+            normalized_patch["model_name"] = resolve_agent_cron_model(requested_model)
+            if "model_selection" not in normalized_patch:
+                from jiuwenswarm.enterprise import is_enterprise
+
+                if not is_enterprise():
+                    from jiuwenswarm.common.model_catalog import ModelCatalog
+
+                    matches = [
+                        model for model in ModelCatalog().list_public_models()
+                        if requested_model and requested_model in {model["model_name"], model["alias"]}
+                    ]
+                    if len(matches) > 1:
+                        raise ValueError("ambiguous model name; select a unique alias or model_selection")
+                    # Aliases can share a canonical name. Preserve the target ID
+                    # rather than letting an equal name retain the previous ID.
+                    normalized_patch["model_selection"] = (
+                        {"type": "model", "id": matches[0]["model_id"]} if matches else None
+                    )
         if "mcp" in normalized_patch:
             # 显式传 null/[] 归 None（清除选择）；元素不规范的非列表值同样归 None。
             normalized_patch["mcp"] = normalize_cron_job_mcp(normalized_patch.get("mcp"))
