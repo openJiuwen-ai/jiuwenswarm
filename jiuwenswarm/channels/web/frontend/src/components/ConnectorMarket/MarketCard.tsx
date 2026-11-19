@@ -4,7 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { PageCard } from '../ui';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import type { McpCardState } from './mcpState';
-import { busyLabelKey } from './mcpState';
+import { busyLabelKey, canCancelConnect } from './mcpState';
 import type { McpBusyKind } from '../../types/connector';
 
 interface MarketCardProps {
@@ -22,6 +22,8 @@ interface MarketCardProps {
   actionMode?: 'auto' | 'use';
   actionDisabled?: boolean;
   onUse?: () => void;
+  /** Cancel entry while the backend is still connecting; omitted for local busy kinds. */
+  onCancelConnect?: () => void;
 }
 
 export function MarketCard({
@@ -38,6 +40,7 @@ export function MarketCard({
   actionMode = 'auto',
   actionDisabled = false,
   onUse,
+  onCancelConnect,
 }: MarketCardProps) {
   const { t } = useTranslation();
   const { tooltip: errorTooltip, handlers: errorTooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
@@ -61,10 +64,24 @@ export function MarketCard({
   let actionSlot: React.ReactNode;
 
   if (state === 'connecting') {
+    const cancellable = onCancelConnect && canCancelConnect(busyKind);
     actionSlot = (
       <span className="flex items-center gap-1 text-[12px] text-text-muted">
         <Loader2 size={13} className="animate-spin" />
         {t(busyLabelKey(busyKind))}
+        {cancellable && (
+          <button
+            type="button"
+            className="font-medium text-text-link hover:opacity-80"
+            data-testid="connector-market-card-cancel-connect"
+            onClick={(event) => {
+              event.stopPropagation();
+              onCancelConnect?.();
+            }}
+          >
+            {t('connectorMarket.cliAuth.cancelConnect')}
+          </button>
+        )}
       </span>
     );
   } else if ((state === 'connected' || actionMode === 'use') && onUse) {
