@@ -132,6 +132,14 @@ def resolve_env_vars(value: Any) -> Any:
                 k: (v if k in mcp_credential_keys else resolve_env_vars(v))
                 for k, v in value.items()
             }
+        if "image_env" in value:
+            image_env = value["image_env"]
+            if not isinstance(image_env, dict) or any(not isinstance(k, str) or not isinstance(v, str)
+                                                      for k, v in image_env.items()):
+                raise ValueError("image_env must contain literal string environment values")
+            resolved = {k: resolve_env_vars(v) for k, v in value.items() if k != "image_env"}
+            resolved["env"] = {**image_env, **(resolved.get("env") or {})}
+            return resolved
         return {k: resolve_env_vars(v) for k, v in value.items()}
     elif isinstance(value, list):
         return [resolve_env_vars(item) for item in value]
@@ -4215,7 +4223,7 @@ def get_sandbox_endpoint() -> dict[str, Any]:
         "policy_file": str(sandbox.get("policy_file") or "").strip(),
     }
     if sandbox_type == "adx-environment":
-        for key in ("image", "rootfs_template", "runtime", "workdir", "mounts", "cpu", "cpu_limit",
+        for key in ("image", "rootfs", "runtime", "workdir", "mounts", "cpu", "cpu_limit",
                     "memory", "mem_limit", "idle_timeout", "user", "group", "network", "connection",
                     "env", "create_timeout", "schedule_timeout", "endpoint_file", "restart_policy"):
             if key in sandbox:

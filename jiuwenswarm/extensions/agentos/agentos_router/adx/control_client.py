@@ -15,7 +15,7 @@ from urllib.parse import quote, urljoin
 
 import httpx
 
-from jiuwenswarm.extensions.agentos.agentos_router.adx.config import AdxRouterConfig
+from jiuwenswarm.extensions.agentos.agentos_router.adx.config import AdxRouterConfig, validate_local_rootfs
 from jiuwenswarm.extensions.agentos.agentos_router.backend import (
     SandboxInfo, AgentApiError, AgentTimeoutError,
     AGENT_GENERATION_ENV, AgentNotFoundError, AgentNotVisibleError,
@@ -225,6 +225,8 @@ class AdxControlClient:
                        env_vars: dict | None, mounts: list | None, *, builtin: bool | None = None) -> dict:
         spec = copy.deepcopy(runtime_spec)
         rootfs = spec.get('rootfs') or {}
+        if not isinstance(rootfs, dict):
+            raise ValueError('launch-spec rootfs must be a mapping')
         image = rootfs.get('imageurl') or rootfs.get('image_url')
         if builtin is None:
             builtin = name.endswith('+jiuwenswarm') and image == 'jiuwenswarm-agent-runtime:latest'
@@ -236,15 +238,15 @@ class AdxControlClient:
                 'env': dict(env_vars or {}),
                 'mounts': [{'type': 'bind', 'host_path': workspace, 'target': self.config.workspace_target,
                             'options': ['rbind', 'rw']}]}
-        if image:
-            if runtime_class in ('runc', 'runsc') and self.config.local_images is not None:
-                template = self.config.local_images.get(image)
-                if not template:
-                    raise ValueError(f'Image {image} has no prepared local rootfs; offline deployment must prepare it first')
-                body['rootfs'] = {'type': 'template', 'name': template, 'runtime': runtime_class}
-            else:
-                body['rootfs'] = {'type': 'image', 'imageurl': image, 'runtime': runtime_class}
+        local_rootfs = rootfs if rootfs.get('type') == 'local' else None
+        if builtin and self.config.builtin_launch:
+            local_rootfs = self.config.builtin_launch.get('rootfs', local_rootfs)
+        if image and local_rootfs is None:
+            body['rootfs'] = {'type': 'image', 'imageurl': image, 'runtime': runtime_class}
             body['inheritEntrypoint'] = True
+        if local_rootfs is not None:
+            validate_local_rootfs(local_rootfs, 'Agent launch specification')
+            body['rootfs'] = {'type': 'local', 'path': local_rootfs['path'], 'runtime': runtime_class}
         if runtime_class == 'runsc':
             timeout = self.agent_idle_timeout_seconds
             if not math.isfinite(timeout):
@@ -309,7 +311,8 @@ class AdxControlClient:
                 body['mounts'][0]['options'] = ['rbind', *options]
             body['process'] = copy.deepcopy(launch['process'])
             body['mounts'].extend(copy.deepcopy(launch.get('mounts', [])))
-            body['env'].update(copy.deepcopy(launch.get('env', {})))
+            body['env'] = {**copy.deepcopy(launch.get('image_env', {})), **body['env'],
+                           **copy.deepcopy(launch.get('env', {}))}
             if 'network' in launch:
                 from jiuwenswarm.extensions.agentos.agentos_router.adx.network import agent_policy, http_policy, workspace_model_origins
                 network = launch['network']
@@ -327,6 +330,8 @@ class AdxControlClient:
             # Both Supervisor and runsc AgentServers execute authenticated tool
             # SDK calls. Never put this credential into custom agents or tools.
             body['env']['JIUWENSWARM_ADX_API_TOKEN'] = self.config.token
+        if local_rootfs is not None and not body.get('process', {}).get('commands'):
+            raise ValueError('Local Agent rootfs requires process commands in its launch specification')
         return body
 
     async def ensure_builtin_network(self, instance: str, workspace: str) -> None:
