@@ -192,7 +192,12 @@ def _later_activity_entries(rows, cutoff: str | None, covered: set[str]):
             break
         if owner in covered or record.get("role") in ("leader", "teammate"):
             continue
-        if not is_context_record(record) and record.get("event_type") != SESSION_REQUEST_COMPLETED_EVENT:
+        if not is_context_record(record) or record.get("event_type") == SESSION_REQUEST_COMPLETED_EVENT:
+            continue
+        if (record.get("event_type") == "context.compact_summary"
+                and (record.get("compact_metadata") or {}).get("trigger") != "manual_rewind"):
+            # Terminal receipts and automatic summaries are bookkeeping, not
+            # model continuation. Match the migration reader's semantic rows.
             continue
         if owner:
             yield "request", owner, row.end

@@ -218,6 +218,7 @@ class RuntimeSupervisor:
         self._peer_echoes_probe = False
         self._last_rx = 0.0
         self._worker_last_beat = 0.0
+        self._worker_beat_received_at = 0.0
         self._worker_stall_context: dict[str, Any] = {}
         self._stall_warned_at = 0.0
         self._forward_queue: _ForwardQueue | None = None
@@ -1022,9 +1023,10 @@ class RuntimeSupervisor:
         self._peer_generation = peer if isinstance(peer, int) else self._generation
         self._runtime_loaded = bool(hello.get("runtime_loaded"))
         self._peer_echoes_probe = hello.get("heartbeat_probe") is True
-        self._last_rx = time.monotonic()
+        self._last_rx = getattr(conn, "last_received_at", 0.0) or time.monotonic()
         # The hello itself was produced by the Worker's event loop.
         self._worker_last_beat = self._last_rx
+        self._worker_beat_received_at = self._last_rx
         self._worker_stall_context = {}
         self._stall_warned_at = 0.0
         self._worker_pid = validated_process.pid
@@ -1163,8 +1165,9 @@ class RuntimeSupervisor:
                 message = await conn.recv()
                 if generation != self._generation or conn is not self._conn:
                     return
-                self._last_rx = time.monotonic()
-                await self._handle(message)
+                received_at = getattr(conn, "last_received_at", 0.0) or time.monotonic()
+                self._last_rx = max(self._last_rx, received_at)
+                await self._handle(message, received_at=received_at)
                 # Buffered IPC reads may not suspend; let the Gateway writer drain
                 # replay bursts before the next frame fills the bounded queue.
                 await asyncio.sleep(0)
@@ -1328,9 +1331,9 @@ class RuntimeSupervisor:
             }
         )
 
-    async def _handle(self, message: dict[str, Any]) -> None:
+    async def _handle(self, message: dict[str, Any], *, received_at: float | None = None) -> None:
         kind = str(message.get("kind") or "")
-        self._note_worker_beat(message)
+        self._note_worker_beat(message, received_at=received_at)
         if kind == KIND_WIRE:
             if not self._accepts_peer_generation(message):
                 logger.warning(
@@ -1497,6 +1500,9 @@ class RuntimeSupervisor:
         counts as a fresh beat, keeping old Workers outside stall detection.
         """
         observed_at = time.monotonic() if received_at is None else received_at
+        if observed_at < self._worker_beat_received_at:
+            return
+        self._worker_beat_received_at = observed_at
         age = message.get("loop_beat_age")
         if isinstance(age, (int, float)) and age >= 0:
             self._worker_last_beat = observed_at - float(age)
@@ -1833,7 +1839,7 @@ class RuntimeSupervisor:
                         # The I/O reader confirmed the peer even if the pump is still busy.
                         if self._last_rx < probe.received_at:
                             self._last_rx = probe.received_at
-                            self._note_worker_beat(probe.frame, received_at=probe.received_at)
+                        self._note_worker_beat(probe.frame, received_at=probe.received_at)
                         continue
                 else:
                     # A normal wakeup may precede delivery of a completed receive.

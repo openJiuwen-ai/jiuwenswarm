@@ -1118,11 +1118,14 @@ class SessionArchiveService:
         return self._accepted_payload(session_id, action, project_id, operation)
 
     def _begin_unarchive(
-        self, session_id: str, project_id: str, pin_reindex_required: bool
+        self, session_id: str, project_id: str, pin_reindex_required: bool, accepted: dict
     ) -> dict:
-        lc.begin(
+        operation = lc.begin(
             "session", session_id, "unarchive", block_execution=True
         )
+        # The drained I/O may commit admission and then propagate cancellation
+        # instead of returning. Preserve this exact operation for its cleanup.
+        accepted.update(operation)
         operation = lc.claim_operation("session", session_id, self._owner_id)
         pin_reindex_required = bool(
             pin_reindex_required or operation.get("pin_reindex_required")
@@ -1174,11 +1177,12 @@ class SessionArchiveService:
                 restored=took_over_failed_archive,
                 project_id=project_id,
             )
-        operation = await _run_lifecycle_io(
-            self._begin_unarchive, session_id, project_id, pin_reindex_required
-        )
-        pin_reindex_required = bool(operation.get("pin_reindex_required"))
+        operation = {}
         try:
+            operation = await _run_lifecycle_io(
+                self._begin_unarchive, session_id, project_id, pin_reindex_required, operation
+            )
+            pin_reindex_required = bool(operation.get("pin_reindex_required"))
             # 项目被移除时,归档区是它唯一还能被看到的内容。先把项目
             # 恢复出来,否则会话离开归档页后在工作区里也找不到。
             await _run_lifecycle_io(self._restore_hidden_project, project_id)
@@ -1224,10 +1228,13 @@ class SessionArchiveService:
                 "SESSION_ID_CONFLICT", "BAD_REQUEST", "PROJECT_NAME_CONFLICT",
             }
             reason = str(exc) if isinstance(exc, Exception) else "operation cancelled"
-            await _run_lifecycle_io(
-                self._save_unarchive_failure, session_id, operation["operation_id"], active, reason, retryable
-            )
-            self._poke_recovery()
+            if operation.get("operation_id"):
+                try:
+                    await _run_lifecycle_io(
+                        self._save_unarchive_failure, session_id, operation["operation_id"], active, reason, retryable
+                    )
+                finally:
+                    self._poke_recovery()
             if not isinstance(exc, Exception) or isinstance(exc, lc.LifecycleError):
                 raise
             raise lc.LifecycleError("RESTORE_FAILED", str(exc)) from exc
