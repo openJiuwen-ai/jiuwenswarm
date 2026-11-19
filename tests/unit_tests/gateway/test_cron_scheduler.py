@@ -1,4 +1,4 @@
-﻿"""Unit tests for CronSchedulerService: store file deletion and event validation bugs."""
+"""Unit tests for CronSchedulerService: store file deletion and event validation bugs."""
 from __future__ import annotations
 
 import asyncio
