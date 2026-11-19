@@ -312,3 +312,44 @@ test('scheduled control requires explicit scheduled dispatch mode', () => {
   assert.equal(shouldUseScheduledTeamControl(false, 'scheduled', model), false);
   assert.equal(shouldUseScheduledTeamControl(true, 'scheduled', null), false);
 });
+
+test('a member-split subtask suspends its parent until the parent resumes', () => {
+  const assignee = attribute('agentteam.task.assignee', 'dev-1');
+  const subAssignee = attribute('agentteam.task.assignee', 'dev-2');
+  const parentOf = attribute('agentteam.task.parent_id', 'parent');
+  const model = buildTeamControlModel([
+    record('00000000000000a1', 'task.parent.created', 1_000, {}, [assignee]),
+    record('00000000000000a2', 'event.task.started', 2_000, { task_id: 'parent', member_name: 'dev-1', resumed: false }),
+    record('00000000000000a3', 'task.s1.created', 3_000, {}, [subAssignee, parentOf]),
+    record('00000000000000a4', 'task.s2.created', 3_000, {}, [subAssignee, parentOf]),
+    record('00000000000000a5', 'event.task.started', 3_500, { task_id: 's1', member_name: 'dev-2', resumed: false }),
+    record('00000000000000a6', 'task.s1.completed', 5_000, { task_id: 's1' }),
+    record('00000000000000a7', 'task.s2.cancelled', 5_500, { task_id: 's2' }),
+    record('00000000000000a8', 'task.parent.unblocked', 6_000, { task_id: 'parent', status: 'pending' }),
+    record('00000000000000a9', 'event.task.started', 6_100, { task_id: 'parent', member_name: 'dev-1', resumed: true }),
+    record('00000000000000aa', 'task.parent.completed', 8_000, { task_id: 'parent' }),
+  ]);
+
+  const parent = model.tasks.find(task => task.taskId === 'parent');
+  assert.deepEqual(parent.events.map(event => event.kind), [
+    'created', 'started', 'suspended', 'unblocked', 'resumed', 'completed',
+  ]);
+  assert.deepEqual(parent.waits, [{ startMs: 3_000, endMs: 6_000 }]);
+  assert.equal(parent.assignee, 'dev-1');
+  assert.equal(parent.phase, 'completed');
+  assert.equal(parent.events.find(event => event.kind === 'suspended').phase, 'suspended');
+  assert.deepEqual(model.tasks.find(task => task.taskId === 's1').waits, []);
+});
+
+test('a parent still waiting on its subtasks keeps an open wait', () => {
+  const model = buildTeamControlModel([
+    record('00000000000000b1', 'task.parent.created', 1_000, {}),
+    record('00000000000000b2', 'event.task.started', 2_000, { task_id: 'parent', member_name: 'dev-1' }),
+    record('00000000000000b3', 'task.s1.created', 3_000, {}, [attribute('agentteam.task.parent_id', 'parent')]),
+  ]);
+
+  const parent = model.tasks.find(task => task.taskId === 'parent');
+  assert.equal(parent.phase, 'suspended');
+  assert.deepEqual(parent.waits, [{ startMs: 3_000 }]);
+  assert.equal(parent.events.filter(event => event.kind === 'started').length, 1);
+});

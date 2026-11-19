@@ -17,15 +17,15 @@ import {
 import { downloadAsset, type AssetDescriptor } from './presentationAssetClient';
 import { ChartSpecError } from './presentationChart';
 import {
-  checkEdit, copyImage, createChart, editBuiltChart, editSlideText, findAndReplace, importedSlides,
-  normalizeMasterEdit, PackageRefused, readChartStyle, readSlideText, slideShapeIds, type FindOptions,
+  checkEdit, copyImage, createChart, editBuiltChart, editSlideText, findAndReplace, importedSlides, insertIcon,
+  normalizeMasterEdit, PackageRefused, readChartStyle, readSlideText, recolorSvg, slideShapeIds, type FindOptions,
   type ImageGeometry, type ReplacementPair, type SkippedMatch,
 } from './presentationPackage';
 import type { SlideJournal } from './presentationScenePatch';
 
 type PackageTool = 'read_slide_text' | 'edit_slide_text' | 'find_and_replace' | 'duplicate_slide' | 'import_slides'
-  | 'copy_image_between_slides' | 'read_chart_style' | 'create_slide_chart' | 'edit_built_chart' | 'edit_slide_xml'
-  | 'edit_slide_chart' | 'edit_slide_master';
+  | 'copy_image_between_slides' | 'insert_icon' | 'read_chart_style' | 'create_slide_chart' | 'edit_built_chart'
+  | 'edit_slide_xml' | 'edit_slide_chart' | 'edit_slide_master';
 
 /** Runs the model's code on a slide package away from the pane: what it left of the package and what it returned. */
 export type Sandbox = (code: string, base64: string) => Promise<Exclude<SandboxReply, { error: string }>>;
@@ -54,6 +54,9 @@ const SANDBOX_ERRORS: Record<SandboxFailure, [string, ClientToolError['category'
   worker: ['OOXML_WORKER_FAILED', 'host'],
 };
 
+/** The side of an icon's PNG fallback; PowerPoint draws the SVG, so the fallback only has to be legible. */
+const ICON_PNG_PIXELS = 256;
+
 const NO_CHANGES = 'Nothing was written: the code never called markDirty() and returned nothing. Call markDirty() '
   + 'after writing parts with zip.file(path, xml), or return what you read.';
 
@@ -79,6 +82,7 @@ export function workerSandbox(createWorker: () => SandboxWorker, timeoutMs = 90_
 interface Call extends SlideWrite {
   input: JsonObject;
   downloads: Readonly<Record<string, string>>;
+  iconSvg?: string;
   /** Set once the call changed the deck: a failure after that rolls the call back. */
   started: boolean;
   batch<T>(work: (batch: Batch) => Promise<T>): Promise<T>;
@@ -87,12 +91,14 @@ interface Call extends SlideWrite {
 /** A slide and the edited package that replaces it; ``refit`` are the shapes whose frames fit their text again. */
 interface Replacement { id: string; before: string; after: string; refit: string[] }
 
-export function powerPointPackageRuntime({ run, host, journal, sandbox, forgetUndo, insertTakesDeckDesign = false,
-  fetcher }: {
+export function powerPointPackageRuntime({ run, host, journal, sandbox, rasterize, forgetUndo,
+  insertTakesDeckDesign = false, fetcher }: {
   run: PowerPointRun;
   host: OfficeHost;
   journal: (callId: string) => SlideJournal;
   sandbox: Sandbox;
+  /** A PNG of the SVG, ``pixels`` on a side. */
+  rasterize: (svg: string, pixels: number) => Promise<Uint8Array>;
   /** Clears the pane's undo, after an edit of the slide master that no turn can put back. */
   forgetUndo: () => void;
   /** The host gives a slide it inserts the deck's theme, master and layouts, not the package's (WPS). */
@@ -344,6 +350,23 @@ export function powerPointPackageRuntime({ run, host, journal, sandbox, forgetUn
       return applied(b, { ref: `${copies.get(to)}:${edit.result.shape_id}` }, copies);
     }),
 
+    async insert_icon(call) {
+      const { input, iconSvg } = call;
+      if (!iconSvg?.startsWith('<svg')) {
+        return notApplied('ICON_NOT_SENT', 'The request carried no SVG for this icon; nothing was inserted', 'transport');
+      }
+      const svg = input.color === undefined ? iconSvg : recolorSvg(iconSvg, input.color as string);
+      const png = await rasterize(svg, ICON_PNG_PIXELS);
+      return call.batch(async b => {
+        const id = input.slide_id as string;
+        const { order, exports: [before] } = await exportSlides(b, call.timings, [id]);
+        const edit = insertIcon(before, svg, png, { x: input.x as number, y: input.y as number,
+          size: (input.size as number | undefined) ?? 48, alt: (input.alt_text ?? input.icon) as string });
+        const copies = await replaceSlides(call, b, order, [{ id, before, after: edit.base64, refit: [] }]);
+        return applied(b, { ref: `${copies.get(id)}:${edit.result.shape_id}` }, copies);
+      });
+    },
+
     read_chart_style: ({ input, timings, batch }) => batch(async b => {
       const [exported] = (await exportSlides(b, timings, [input.slide_id as string])).exports;
       return { ok: true, result: { charts: readChartStyle(exported) } };
@@ -373,13 +396,13 @@ export function powerPointPackageRuntime({ run, host, journal, sandbox, forgetUn
 
   return {
     tools: new Set(Object.keys(handlers) as PackageTool[]),
-    async execute({ callId, toolName, input, downloads }) {
+    async execute({ callId, toolName, input, downloads, iconSvg }) {
       const handler = handlers[toolName as PackageTool];
       if (!handler) throw new Error(`${toolName} is not a slide package tool of this pane`);
       const problem = POWERPOINT.contract.checkInput(toolName, input);
       if (problem) return notApplied('INVALID_ARGUMENT', problem);
       const timings: HostTimings = { sync_count: 0 };
-      const call: Call = { input, downloads, timings, journal: journal(callId), started: false,
+      const call: Call = { input, downloads, iconSvg, timings, journal: journal(callId), started: false,
         batch: work => run(context => work({ presentation: context.presentation, sync: () => {
           timings.sync_count = (timings.sync_count ?? 0) + 1;
           return context.sync();

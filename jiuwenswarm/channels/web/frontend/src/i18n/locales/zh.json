@@ -49,6 +49,10 @@
     "refreshed": "安装计划已更新，请重新检查成员并确认。",
     "validationFailed": "技能包校验失败，请重新下载并检查成员状态。"
   },
+  "gitIdentity": {
+    "label": "独立 Git 身份",
+    "hint": "使用成员名称和 @jiuwenswarm.com 邮箱署名 Git 提交；切换后从下一条消息起生效。"
+  },
   "common": {
     "searchName": "搜索名称",
     "noData": "暂无数据",
@@ -107,7 +111,127 @@
     "settings": "设置",
     "logs": "日志",
     "update": "更新",
-    "personalContext": "知识"
+    "personalContext": "知识",
+    "appMarket": "应用"
+  },
+  "appMarket": {
+    "pageResources": "页面",
+    "serviceResources": "服务",
+    "resourceMemory": "内存",
+    "sharedProcess": "共享进程",
+    "webPageUnavailable": "浏览器页面占用不可获取",
+    "pageResourceHint": "每 3 秒更新应用市场主页面进程的 CPU 和驻留内存估算；CPU 按整机容量计。合计按进程去重，不含 GPU、子框架、主程序和 AI 会话。共享进程无法精确分摊。— 表示采样中或暂不可用。",
+    "localMachineResources": "本机",
+    "localServiceResources": "服务端（本地连接）",
+    "serverResources": "服务器",
+    "systemResourceHint": "每 3 秒更新整机 CPU 与物理内存占用，包含所有应用和操作系统。可获取时排除可回收内存，各系统估算口径可能不同。CPU 或内存连续 3 次达到 85% 时提醒，两项均低于 75% 时解除。",
+    "serverResourceHint": "统计后端服务所在机器，不是浏览器所在电脑。本地连接通常指向本机，但代理、端口转发可能指向远程服务器；容器可能返回宿主机指标。每 3 秒更新，CPU 或内存连续 3 次达到 85% 时提醒，两项均低于 75% 时解除。",
+    "highResourceUsage": "整机资源占用偏高，建议停止暂时不用的应用或其他任务。",
+    "serviceResourceHint": "每 3 秒更新应用市场后端服务进程树的 CPU 和驻留内存估算；CPU 按整机容量计。数据属于服务所在机器，不含浏览器页面、主程序和 AI 会话。— 表示采样中或暂不可用。",
+    "title": "应用",
+    "allApps": "全部应用",
+    "running": "运行中",
+    "start": "启动",
+    "stop": "停止",
+    "open": "打开",
+    "openRestore": "打开／恢复应用",
+    "openPreview": "打开应用预览",
+    "edit": "编辑",
+    "editSessionTitle": "编辑 {{name}}",
+    "reloadPreview": "重新加载应用预览",
+    "reloadFailed": "重新加载应用预览失败",
+    "editPrompt": "帮我修改应用“{{name}}”，源码入口：{{entryPath}}\n请保留应用已有的数据和存档。我要修改的内容是：",
+    "expandPane": "展开应用面板",
+    "restorePane": "恢复分栏",
+    "hidePane": "收起应用面板",
+    "closePane": "关闭应用页面（保持运行）",
+    "panelCloseFailed": "关闭应用页面失败",
+    "stopApp": "停止应用",
+    "paneHint": "应用在右侧面板中打开。收起后可点击“打开／恢复应用”；关闭面板不会停止应用，结束运行请点击“停止应用”。",
+    "desktopWindowHint": "应用在独立窗口中打开，不显示任务栏按钮。最小化后可从应用市场“打开／恢复应用”；关闭窗口不停止应用，结束运行请点击“停止应用”。",
+    "closeWindowFailed": "应用已停止，但窗口未能关闭，请手动关闭应用窗口",
+    "gotIt": "知道了",
+    "delete": "删除",
+    "loading": "加载中...",
+    "empty": "加载失败",
+    "noApps": "暂无应用",
+    "noInstances": "暂无运行中的应用",
+    "startSuccess": "应用已启动",
+    "openFailed": "打开应用失败",
+    "desktopUpdateRequired": "请使用更新后的桌面端重启，以使用内置浏览器",
+    "startFailed": "启动失败",
+    "stopSuccess": "应用已停止",
+    "stopFailed": "停止失败",
+    "deleteSuccess": "应用已删除",
+    "deleteFailed": "删除失败",
+    "deleteConfirm": "确定要删除此应用吗？相关实例将被停止。",
+    "states": {
+      "stopped": "未启动",
+      "starting": "启动中",
+      "running": "运行中",
+      "stopping": "退出中"
+    }
+  },
+  "officeAddins": {
+    "appStatus": {
+      "installed": "已安装",
+      "notInstalled": "未安装",
+      "needsRepair": "需修复",
+      "notFound": "未检测到"
+    },
+    "sections": {
+      "about": "基本信息",
+      "apps": "应用",
+      "guide": "使用说明",
+      "requirement": "要求",
+      "start": "开始使用",
+      "data": "数据"
+    },
+    "actions": {
+      "install": "安装",
+      "installPending": "正在安装…",
+      "repair": "修复",
+      "repairPending": "正在修复…",
+      "remove": "移除",
+      "removing": "正在移除…"
+    },
+    "confirm": {
+      "install": "安装 {{name}}",
+      "repair": "修复 {{name}}",
+      "remove": "移除 {{name}}？",
+      "removeNotice": "移除后 Office 不再加载 WorkSwarm；本机没有其他 WorkSwarm 加载项时，本机证书会一并删除。",
+      "trustNotice": "系统可能会请你信任一个本机证书（macOS 上需要输入登录密码），Office 靠它安全地连接本机 WorkSwarm。"
+    },
+    "suites": {
+      "office": {
+        "title": "WorkSwarm for Office",
+        "what": "在 Word、Excel 和 PowerPoint 里使用 WorkSwarm，直接修改打开的文档。",
+        "requirement": "Microsoft 365 版，Windows 2504 及以上或 Mac 16.96 及以上；不支持网页版。",
+        "data": "WorkSwarm for Office 只连接本机 WorkSwarm；文档内容由 WorkSwarm 发送给你在 WorkSwarm 中配置的模型服务。",
+        "steps": {
+          "restart": "重启 Office",
+          "openPane": "在「开始 → 加载项」里打开 WorkSwarm",
+          "connect": "侧边栏会连接本机 WorkSwarm"
+        }
+      }
+    },
+    "apps": {
+      "word": "Word",
+      "excel": "Excel",
+      "powerpoint": "PowerPoint"
+    },
+    "problems": {
+      "permission_denied": "系统没有允许 WorkSwarm 写入 Office 的加载项目录。请在系统弹窗或「隐私与安全性」设置里允许，再点「修复」。",
+      "certificate_untrusted": "本机证书还没有被信任。点「修复」，并在系统询问时确认。",
+      "certificate_expiring": "本机证书快要过期了。点「修复」换一张新的。",
+      "tls_unavailable": "Office 要连接的本机服务没有启动。点「修复」重试，仍不行请重启 WorkSwarm。",
+      "stale_origin": "加载项还指向旧的地址。点「修复」更新。"
+    },
+    "appsNotFound": "未检测到 {{apps}}。装好并打开一次后，回到这里安装。",
+    "listSeparator": "、",
+    "errors": {
+      "actionFailed": "操作没有完成，请重试。"
+    }
   },
   "experts": {
     "podStarting": "正在启动专家运行环境，请稍候",
@@ -126,7 +250,8 @@
   "designer": {
     "modelConfiguration": {
       "title": "模型配置",
-      "help": "选择对话模型，以及任务中可调用的生成模型。",
+      "help": "选择本次设计使用的对话模型、视频生成模型和图片生成模型。生成模型对所有设计画布生效。",
+      "addModel": "添加自定义模型",
       "bindingHint": "使用「设置 → 智能体 → 工具」当前绑定的模型。此处仅展示，更换请前往该设置。",
       "bindingModel": "当前绑定的模型",
       "chat": "对话",
@@ -141,6 +266,9 @@
       "enable": "去开启",
       "retry": "重新读取",
       "loading": "正在读取模型配置…",
+      "sessionLoading": "正在读取模型选择…",
+      "sessionLoadFailed": "模型选择读取失败，请重试。",
+      "notConfigured": "生成模型尚未配置",
       "loadFailed": "生成模型配置读取失败，请重试。"
     },
     "loading": "正在加载设计工作流…",
@@ -152,9 +280,11 @@
     "models": {
       "chatMissing": "对话模型未配置，请先在「设置」中配置模型后再使用设计。",
       "videoOff": "视频生成已在「设置 > Agent」中关闭。",
-      "videoMissing": "视频生成未配置：请在「设置 > Agent」中填写 API 地址、API 密钥和模型名称。",
+      "videoMissing": "还没有受支持的视频生成模型。请在「设置 → 模型 → 多模态」中添加后再使用设计。",
       "imageOff": "图像生成已在「设置 > Agent」中关闭。",
-      "imageMissing": "图像生成未配置：请在「设置 > Agent」中填写 API 地址、API 密钥和模型名称。",
+      "imageMissing": "还没有受支持的图片生成模型。请在「设置 → 模型 → 多模态」中添加后再使用设计。",
+      "protocolUnsupported": "设计模式不支持 {{protocol}} 协议。",
+      "protocolUnsupportedEmpty": "设计模式不支持未填写协议的生成模型。",
       "lockedHint": "本次设计使用创建时选定的模型，画布上不提供切换模型。",
       "notSelected": "未选择模型",
       "openModelSettings": "去设置"
@@ -532,6 +662,7 @@
         "MM_MODEL_REQUIRED": "请先添加对应能力的模型。",
         "MM_STORAGE_FAILED": "配置保存失败，请重试。",
         "MM_RECOVERY_REQUIRED": "配置事务无法恢复，请检查配置文件后重试。",
+        "MM_NOT_CONFIGURED": "尚未配置多模态模型。",
         "MM_CONFIG_READ_FAILED": "模型配置读取失败，请检查配置文件及凭据。",
         "MM_UNSUPPORTED_SCHEMA": "当前组件不支持此配置版本，请更新组件。",
         "MM_LEGACY_WRITE_UNSUPPORTED": "请通过多模态模型设置修改这些配置。",
@@ -787,6 +918,11 @@
       "contextWindowPlaceholder": "例如 256K、1M 或 262144",
       "contextWindowHint": "请输入正整数，支持纯数字以及 K/M 单位（不区分大小写）；也可以直接选择字段旁边的常用值。",
       "contextWindowPresets": "常用上下文窗口",
+      "outputTokens": "模型单次最大输出",
+      "outputTokensPlaceholder": "例如 32K 或 32768",
+      "outputTokensHint": "限制模型单次请求可生成的最大 Token 数，包含推理 Token。OpenAI 协议可选择不限，由服务商或模型自身限制。",
+      "outputTokensPresets": "常用最大输出",
+      "outputTokensUnlimited": "不限",
       "vendorPlaceholder": "请选择",
       "selectVendor": "选择模型提供商",
       "searchVendor": "搜索模型提供商",
@@ -864,6 +1000,7 @@
       "missingCustomName": "未命名配置",
       "reloadAfterFailure": "重新加载核对",
       "modelsResponseInvalid": "模型列表响应格式不正确，请重试。",
+      "modelsTemporarilyUnavailable": "模型服务正在恢复，请稍候。",
       "catalogResponseInvalid": "模型提供商目录响应格式不正确，请重试。",
       "catalogLoadingCustomAvailable": "正在加载内置模型提供商；仍可选择“自定义”继续配置。",
       "catalogLoadFailedCustomAvailable": "内置模型提供商加载失败；仍可选择“自定义”继续配置。",
@@ -898,6 +1035,9 @@
         "reasoningUnsupported": "当前推理选项“{{value}}”不受支持，请重新选择或使用默认值",
         "reasoningUnavailable": "推理选项尚未加载，请重试后保存",
         "contextWindowInvalid": "请输入有效的正整数上下文窗口，例如 256K、1M 或 1310720",
+        "outputTokensRequired": "Anthropic 协议必须设置模型单次最大输出",
+        "outputTokensInvalid": "请输入有效的正整数最大输出，例如 32K 或 32768",
+        "outputTokensExceedsModelLimit": "当前模型的单次最大输出不能超过 {{limit}}",
         "aliasRequired": "模型展示名称为必填项",
         "aliasConflict": "模型展示名称必须全局唯一，不能与其他模型的展示名称重复",
         "modelGroupNameConflict": "模型组名称必须全局唯一，不能与其他模型组名称重复"
@@ -969,7 +1109,7 @@
       "trajectoryUi": "轨迹诊断",
       "kvCacheAffinity": "算力亲和",
       "teamMessageDelivery": "团队消息交互",
-      "teamOrganization": "Team Organization",
+      "teamOrganization": "Swarm Organization",
       "teamScheduledDispatch": "调度模式",
       "skillPack": "技能包",
       "multiModelCollaboration": "多模型协同",
@@ -1298,8 +1438,8 @@
         "description": "统一启用私信 steer / follow_up / abort、广播与群聊的 Jev 路由，以及 steer 合并待处理消息上下文。默认关闭，关闭时使用原有交互规则。对新建团队会话生效。"
       },
       "team_organization_ui_enabled": {
-        "title": "启用 Team Organization 界面",
-        "description": "显示实验性的多 Team 视图和组织任务池。此开关不关闭后端组织能力。"
+        "title": "启用 Swarm Organization 界面",
+        "description": "显示实验性的多 Team 视图和组织任务池。"
       },
       "comfyui_workflow_enabled": {
         "title": "ComfyUI 工作流集成",
@@ -1328,6 +1468,10 @@
       "team_member_subtasks_enabled": {
         "title": "允许成员拆分子任务",
         "description": "成员可以把正在执行的任务拆成子任务，交给自己或其他已有成员。拆分后原任务暂停，子任务全部结束后带着结果恢复执行。子任务最多嵌套 2 层。"
+      },
+      "team_code_todo_reminder_disabled": {
+        "title": "禁用 Code Todo 提醒",
+        "description": "停止向调度模式下的 Code Agent 上下文注入周期性 Todo 提醒，成员仍可使用 Todo 工具。"
       },
       "task_full_duplex_enabled": {
         "title": "启用任务对话全双工入口",
@@ -1420,6 +1564,8 @@
         "anomalies": "{{count}} 个调度异常",
         "blockedLegend": "浅灰段：等待依赖",
         "blockedLegendHint": "浅灰时间轴表示任务正在等待前置任务完成，依赖解除后会继续执行。",
+        "subtaskWaitRange": "等待子任务 {{start}} – {{end}}",
+        "subtaskWaitOngoing": "进行中",
         "assignee": "承担者",
         "assigneeValue": "承担者：{{name}}",
         "unassigned": "未指派",
@@ -1435,6 +1581,7 @@
         "phase": {
           "pending": "待处理",
           "blocked": "等待依赖",
+          "suspended": "等待子任务",
           "running": "执行中",
           "in_review": "验收中",
           "rework": "返工中",
@@ -1455,6 +1602,8 @@
           "updated": "任务更新",
           "unblocked": "依赖解除",
           "started": "任务开工",
+          "suspended": "拆分子任务，等待子任务完成",
+          "resumed": "子任务完成，任务恢复",
           "submitted": "提交验收",
           "vote": "Review 投票",
           "revision": "要求返工",
@@ -2459,6 +2608,7 @@
     "closeTagDisabled": "回答完成或取消后才能退出计划模式",
     "toolbarUnavailableGoal": "当前已有进行中的目标，暂不可选择计划",
     "toolbarUnavailableProcessing": "对话进行中，暂不可选择计划",
+    "toolbarUnavailableTeamLocked": "团队已启动，计划模式不可修改",
     "approvalPrompt": "计划已生成，请选择下一步。",
     "executePrompt": "计划已批准，请按计划开始执行。",
     "approvalExecute": "执行",
@@ -2732,7 +2882,8 @@
       "loadDiscord": "获取 Discord 配置失败",
       "loadSlack": "获取 Slack 配置失败",
       "loadWhatsApp": "获取 WhatsApp 配置失败",
-      "saveGeneric": "保存失败，请稍后重试"
+      "saveGeneric": "保存失败，请稍后重试",
+      "boundToEmployee": "该机器人已绑定团队版员工。请先解除原绑定，或使用另一个机器人。"
     },
     "xiaoyiApps": {
       "defaultAppName": "默认小艺应用",
@@ -5976,6 +6127,7 @@
     "tagHint": "本次会话已启用动态工作流",
     "closeTag": "关闭动态工作流",
     "closeTagDisabled": "会话进行中，无法关闭",
+    "readonlyHint": "团队已启动，动态工作流不可修改",
     "configTitle": "动态工作流配置",
     "configReadonlyHint": "会话已开启，配置不可修改",
     "budgetPanelTitle": "SwarmFlow 预算",
@@ -6326,6 +6478,7 @@
       "dingtalkHint": "绑定后可通过钉钉单聊分派任务，当前支持文本消息。",
       "isolationHint": "Web、飞书和钉钉共用同一员工与工作空间；各会话独立，跨群分享须按授权处理。",
       "channelAlreadyBound": "该渠道已绑定其他员工，请先解除原绑定。",
+      "channelUsedInPersonalEdition": "该机器人已用于个人版渠道。请先移除原配置，或使用另一个机器人。",
       "robotCode": "Robot Code（可选）",
       "robotCodePlaceholder": "按应用配置填写，留空沿用 Client ID",
       "welinkTitle": "绑定 WeLink",

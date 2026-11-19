@@ -37,6 +37,11 @@ export function isWebChannelJob(targets?: string): boolean {
 const CRON_UNREAD_KEY = 'jiuwenswarm_cron_unread';
 let cronSessionsRequestId = 0;
 const pendingCronSessionRequests = new Map<string, number>();
+// loadJobs 的请求序号：触发点全是 fire-and-forget（面板每次操作、归档事件、
+// 连接建立的重试梯），两个并发请求的响应顺序不保证，旧快照后落会整表覆盖
+// 新列表（刚建的任务"消失"、已删的任务"复活"）。守卫模式与下方
+// pendingCronSessionRequests 同构，只是 jobs 是单一列表，用不到按 key 分桶。
+let loadJobsRequestId = 0;
 
 interface CronState {
   runUpdates: Record<string, CronRunUpdate & { firstSeenAt: number }>;
@@ -149,9 +154,14 @@ export const useCronStore = create<CronState>((set, get) => ({
   },
 
   loadJobs: async () => {
+    const requestId = ++loadJobsRequestId;
+    const isCurrent = () => requestId === loadJobsRequestId;
     set({ isLoading: true });
     try {
       const payload = await webRequest<{ jobs: SidebarCronJob[] }>('cron.job.list');
+      // 旧请求的响应直接丢弃：它拍的是更早的快照，写回会把新列表整表回退。
+      // 返回 true 让调用方的重试梯停掉——已有更新的请求接管了加载状态。
+      if (!isCurrent()) return true;
       // 侧边栏是 Web 端工作区,只展示 targets 含 "web" 的定时任务
       const webJobs = (payload.jobs || []).filter((j) => isWebChannelJob(j.targets));
       set({ jobs: webJobs, isLoading: false });
@@ -171,8 +181,13 @@ export const useCronStore = create<CronState>((set, get) => ({
     } catch {
       // 瞬时失败（Gateway/Agent Pod 尚未就绪）不要清空已有列表，
       // 否则首屏失败后要等手动刷新才会再出现定时任务。
-      set({ isLoading: false });
-      return false;
+      // 旧请求的失败同样不碰 isLoading——加载中状态归最新请求管，且让调用方
+      // 的重试梯停下（更新的请求已接管，旧梯继续重试只会制造更多并发）。
+      if (isCurrent()) {
+        set({ isLoading: false });
+        return false;
+      }
+      return true;
     }
   },
 

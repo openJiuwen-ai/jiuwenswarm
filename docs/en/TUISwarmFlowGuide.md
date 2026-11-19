@@ -281,17 +281,17 @@ The Leader Agent will:
 
 When a workflow orchestration is meant to be reused, you can turn it into a reusable Swarm Skill (including its `workflow.py` script) with the built-in **`swarmskill-creator`** Skill. Once created, just have the Leader invoke that Skill in later sessions — no need to regenerate the script every time.
 
-`swarmskill-creator` is a built-in Skill and is installed by default. If it is missing from your environment, install it first:
+`swarmskill-creator` is included in the default `workswarm-builtin` catalog. The model reads Skill Creator before loading this capability. If the catalog is missing, install it first:
 
 ```
-/skills search swarmskill-creator
-/skills install swarmskill-creator
+/skills search workswarm-builtin
+/skills install workswarm-builtin
 ```
 
 Then invoke the Skill directly in a Team session and describe the workflow to persist. It supports three modes: **CREATE** (build from scratch), **CONVERT** (turn a single-agent Skill into a Swarm Skill), and **MODIFY** (edit an existing Swarm Skill):
 
 ```
-/swarmskill-creator Turn the "research → analysis → writing → review" workflow into a reusable Swarm Skill
+/skills use workswarm-builtin Turn the "research → analysis → writing → review" workflow into a reusable Swarm Skill
 ```
 
 The resulting Swarm Skill can be reused locally or published to the Skills Hub for other teams to install. See `docs/en/SwarmSkills.md` for details.

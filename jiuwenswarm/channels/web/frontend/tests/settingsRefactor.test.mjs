@@ -1100,6 +1100,7 @@ test('settings contract rejects unknown keys and normalizes supported values', (
       api_base: 'https://example.test',
       api_key: 'k',
       model_provider: 'OpenAI',
+      max_tokens: 32 * 1024,
       endpoint_profile: 'openrouter',
     }),
     {
@@ -1108,7 +1109,25 @@ test('settings contract rejects unknown keys and normalizes supported values', (
       model: 'm',
       model_provider: 'OpenAI',
       reasoning_level: undefined,
+      max_tokens: 32 * 1024,
       endpoint_profile: 'openrouter',
+    },
+  );
+  assert.deepEqual(
+    buildModelValidationPayload({
+      model_name: 'm',
+      api_base: 'https://example.test',
+      api_key: 'k',
+      model_provider: 'OpenAI',
+      max_tokens: null,
+    }),
+    {
+      api_base: 'https://example.test',
+      api_key: 'k',
+      model: 'm',
+      model_provider: 'OpenAI',
+      reasoning_level: undefined,
+      max_tokens: null,
     },
   );
   assert.equal(normalizePermissionLevel(' ASK '), 'ask');
@@ -1191,6 +1210,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
       'team_task_verification_enabled',
       'team_member_messaging_enabled',
       'team_member_subtasks_enabled',
+      'team_code_todo_reminder_disabled',
       'progressive_tool_optimize',
     ].sort(),
   );
@@ -1224,6 +1244,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'symphony_evolution_enabled',
     'task_asr_enabled',
     'task_full_duplex_enabled',
+    'team_code_todo_reminder_disabled',
     'team_member_messaging_enabled',
     'team_member_subtasks_enabled',
     'team_organization_ui_enabled',

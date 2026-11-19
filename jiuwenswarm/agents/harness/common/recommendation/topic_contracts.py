@@ -16,6 +16,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_selection import (
     FIRST_SCREEN_CARD_TARGET,
     LIST_SEARCH_VERSION,
 )
+from .topic_primitives import nonempty as _nonempty
 
 _CARD_TITLE_MAX_CHARS = 60
 _CARD_PROMPT_MAX_CHARS = 180
@@ -45,10 +46,6 @@ _REQUIRED_MANIFEST_FIELDS = frozenset(
         "payload_version",
     }
 )
-
-
-def _nonempty(value: Any) -> bool:
-    return isinstance(value, str) and bool(value.strip())
 
 
 def _has_secret_field(value: Any) -> bool:

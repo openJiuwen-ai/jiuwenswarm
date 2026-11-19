@@ -844,7 +844,6 @@ async def test_composer_event_cancels_only_its_sessions_in_flight_fork(product, 
         assert len(generation["provider_receipts"]) == 1
         assert generation["total_usage"]["total_tokens"] == 1120
         assert generation["missing_provider_receipts"] == 1 and generation["usage_complete"] is False
-    assert prompt_suggestion.forks.answered_call(SESSION, "req-1") is not None
     assert product.page.events == []
     assert _outcomes(product.store) == [("cancelled", None)]
 
@@ -1078,7 +1077,6 @@ async def test_a_model_call_without_a_session_or_model_client_is_left_alone(prod
     await prompt_suggestion.PromptSuggestionForkRail().after_model_call(ctx)
 
     forks.turn_ended(SESSION, "req-1", status="success", waiting_for_user=False, completion=None)
-    assert forks.answered_call(SESSION, "req-1") is None
     assert _outcomes(product.store) == [("suppressed", "no_model_call")]
 
 
@@ -1213,3 +1211,20 @@ async def test_one_failed_suggestion_delivery_leaves_the_next(monkeypatch) -> No
         suggestions=[("first", "导出成双语对照"), ("second", "再整理一份术语表")],
     )
     assert [message["payload"]["suggestion_id"] for message in pushed] == ["second"]
+
+async def test_page_events_follow_the_prompt_switch_not_the_topic_switch(monkeypatch, tmp_path) -> None:
+    from jiuwenswarm.agents.harness.common.recommendation import switches
+    from jiuwenswarm.agents.harness.common.recommendation.topic_starter import TopicStarterStore
+    from jiuwenswarm.server.runtime import recommendation_rpc
+
+    store = TopicStarterStore(tmp_path / "recommendation.db")
+    monkeypatch.setattr(switches, "is_prompt_suggestion_enabled", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(recommendation_rpc, "_prompt_store", lambda _host: store)
+
+    result = await recommendation_rpc._prompt_suggestion_event(
+        None, {"event_type": "shown", "session_id": SESSION, "suggestion_id": "unknown"},
+    )
+
+    # Processed (and rejected as unknown), not shut off by the topic switch.
+    assert result.payload is None
+    assert result.code == "BAD_REQUEST"

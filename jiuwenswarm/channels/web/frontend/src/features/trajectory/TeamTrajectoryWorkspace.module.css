@@ -424,6 +424,17 @@
   flex: 0 0 clamp(360px, 52vh, 420px);
 }
 
+/* An attached workflow group shares its task body with the review rounds.
+   Let it take its content height so an expanded operator cannot cover R1. */
+.taskBody .workflowGroupSelected {
+  height: auto;
+  flex: 0 0 auto;
+}
+
+.taskBody .workflowGroupSelected .workflowGroupLanes {
+  flex: 0 0 auto;
+}
+
 .workflowGroupHeader {
   display: flex;
   width: 100%;

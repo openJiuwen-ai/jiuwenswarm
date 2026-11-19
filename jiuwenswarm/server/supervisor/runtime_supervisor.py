@@ -74,6 +74,7 @@ _SNAPSHOT_WAIT_ATTEMPTS = 3
 _WATCHDOG_INTERVAL = 5.0
 _FORWARD_QUEUE_SIZE = 256
 _FORWARD_TIMEOUT = 10.0
+_MODELS_READY_RETRY_INITIAL = 1.0
 _FORWARD_DRAIN_TIMEOUT = 1.0
 # Transport stays alive (pongs flow) but the Worker's business loop has not
 # run: warn once it outlasts a heartbeat window, replace the Worker only when
@@ -191,6 +192,7 @@ class RuntimeSupervisor:
         self._retired_streams: OrderedDict[str, None] = OrderedDict()
         self._routes: dict[str, tuple[Any, asyncio.Lock]] = {}
         self._queries: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._snapshot_send_task: asyncio.Task[None] | None = None
         self._shutdown_done: asyncio.Future[dict[str, Any]] | None = None
         self._gateway_ws: Any = None
         self._gateway_lock: asyncio.Lock | None = None
@@ -211,6 +213,7 @@ class RuntimeSupervisor:
         self._worker_reached_ready = False
         self._crash_retry_at = 0.0
         self._generation = 0
+        self._models_ready_notification: tuple[int, Any] | None = None
         self._peer_generation: int | None = None
         self._last_rx = 0.0
         self._worker_last_beat = 0.0
@@ -231,8 +234,11 @@ class RuntimeSupervisor:
 
     async def get_runtime_snapshot(self, request: AgentRequest) -> dict[str, Any]:
         conn = self._conn
-        if conn is None:
+        if conn is None or self._validated_conn is not conn:
             return self._recovery_pending("worker_disconnected")
+        if self._snapshot_send_task is not None and not self._snapshot_send_task.done():
+            # Do not queue abandoned observer writes behind a slow native write.
+            return self._recovery_pending("snapshot_transport_pending")
         query_id = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future()
         self._queries[query_id] = future
@@ -240,12 +246,25 @@ class RuntimeSupervisor:
         resume = resume if isinstance(resume, dict) else {}
         try:
             after = max(0, int(resume.get("after") or 0))
-            await asyncio.wait_for(conn.send({"kind": KIND_SUBSCRIBE, "query_id": query_id,
-                                              "generation": self._peer_generation,
-                                              "payload": dump_agent_request(request),
-                                              "subscribe": bool(resume), "after": after,
-                                              "worker_instance": resume.get("worker_instance")}),
-                                   timeout=_SNAPSHOT_WAIT_SECONDS)
+            sending = asyncio.create_task(self._send_snapshot(conn, {
+                "kind": KIND_SUBSCRIBE, "query_id": query_id,
+                "generation": self._peer_generation,
+                "payload": dump_agent_request(request),
+                "subscribe": bool(resume), "after": after,
+                "worker_instance": resume.get("worker_instance"),
+            }), name="runtime-snapshot-send")
+            self._snapshot_send_task = sending
+            self._side_tasks.append(sending)
+            sending.add_done_callback(self._snapshot_send_done)
+            # Observer cancellation must not cancel the native write. Owner
+            # cancellation retires the write but leaves this query recoverable.
+            done, _ = await asyncio.wait({sending}, timeout=_SNAPSHOT_WAIT_SECONDS)
+            if not done:
+                logger.info("[Supervisor] runtime snapshot write pending query_id=%s", query_id)
+                return self._recovery_pending("snapshot_transport_timeout")
+            if sending.cancelled():
+                return self._recovery_pending("snapshot_transport_cancelled")
+            await sending
             # Retry the wait on the same query. Sending another subscription
             # would replay the journal twice and could race the first recovery.
             for _ in range(_SNAPSHOT_WAIT_ATTEMPTS):
@@ -257,8 +276,6 @@ class RuntimeSupervisor:
             logger.warning("[Supervisor] runtime snapshot pending query_id=%s session_id=%s",
                            query_id, request.session_id)
             return self._recovery_pending("snapshot_timeout")
-        except asyncio.TimeoutError:
-            return self._recovery_pending("snapshot_transport_timeout")
         except (OSError, RuntimeError, ValueError) as exc:
             logger.info("[Supervisor] runtime snapshot unavailable: %s", exc)
             return self._recovery_pending("snapshot_unavailable")
@@ -266,6 +283,24 @@ class RuntimeSupervisor:
             self._queries.pop(query_id, None)
             if not future.done():
                 future.cancel()
+
+    async def _send_snapshot(self, conn: IpcConnection, message: dict[str, Any]) -> None:
+        try:
+            await conn.send(message)
+        except (OSError, RuntimeError):
+            if self._conn is conn:
+                await self._close_failed_connection(conn)
+            raise
+
+    def _snapshot_send_done(self, task: asyncio.Task[None]) -> None:
+        if self._snapshot_send_task is task:
+            self._snapshot_send_task = None
+        if task in self._side_tasks:
+            self._side_tasks.remove(task)
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                logger.warning("[Supervisor] runtime snapshot write failed: %s", type(error).__name__)
 
     def _recovery_pending(self, reason: str) -> dict[str, Any]:
         return {"recovery_pending": True, "recovery_reason": reason,
@@ -314,6 +349,7 @@ class RuntimeSupervisor:
         self._gateway_ws = ws
         self._gateway_lock = send_lock
         self._schedule(self._notify_gateway(attached=True))
+        self._notify_models_when_ready()
 
     async def on_gateway_disconnect(self, ws: Any, remote: Any) -> None:
         if self._gateway_ws is ws:
@@ -1328,6 +1364,7 @@ class RuntimeSupervisor:
             return
         if kind == KIND_READINESS:
             self._apply_readiness(message)
+            self._notify_models_when_ready()
             return
         if kind == KIND_HEARTBEAT:
             return
@@ -1450,6 +1487,54 @@ class RuntimeSupervisor:
             if not message.get("ok", False) and dispatch_id in self._streams:
                 self._retire_stream(dispatch_id)
             future.set_result(message)
+
+    def _notify_models_when_ready(self) -> None:
+        """Invalidate model reads once per ready IPC generation and Gateway."""
+        ws, lock = self._gateway_ws, self._gateway_lock
+        if self._stopping or self._closing:
+            return
+        if not self._readiness.snapshot()["agent_ready"] or self._validated_conn is None:
+            return
+        if self._forwarder is None or ws is None or lock is None:
+            return
+        notification = (self._generation, ws)
+        if self._models_ready_notification == notification:
+            return
+        self._models_ready_notification = notification
+        self._side_tasks.append(asyncio.create_task(
+            self._send_models_ready(notification, lock), name="runtime-models-ready",
+        ))
+
+    async def _send_models_ready(self, notification: tuple[int, Any], lock: asyncio.Lock) -> None:
+        from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+
+        generation, ws = notification
+        connection = self._validated_conn
+        delivered = False
+        delay = _MODELS_READY_RETRY_INITIAL
+        wire = build_server_push_wire({
+            "request_id": f"runtime-models-ready-{generation}",
+            "channel_id": "web",
+            "payload": {"event_type": "models.updated"},
+        })
+        try:
+            while (not self._stopping and not self._closing
+                    and generation == self._generation and ws is self._gateway_ws
+                    and connection is self._validated_conn and connection is self._conn
+                    and self._models_ready_notification == notification
+                    and self._readiness.snapshot()["agent_ready"]):
+                try:
+                    async with asyncio.timeout(_FORWARD_TIMEOUT):
+                        delivered = await self._forwarder.send(wire, ws=ws, send_lock=lock)
+                    if delivered:
+                        return
+                except Exception:
+                    logger.warning("[Supervisor] ready model invalidation push failed; retrying", exc_info=True)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 10.0)
+        finally:
+            if not delivered and self._models_ready_notification == notification:
+                self._models_ready_notification = None
 
     def _apply_readiness(self, message: dict[str, Any]) -> None:
         state = str(message.get("state") or "")

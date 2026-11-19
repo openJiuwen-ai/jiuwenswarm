@@ -5,6 +5,11 @@ import {
   resolveDraftContextWindowTokens,
 } from './contextWindow';
 import {
+  defaultOutputTokens,
+  normalizeOutputTokens,
+  resolveDraftOutputTokens,
+} from './outputTokens';
+import {
   isReasoningLevelSupported,
   parseReasoningCapabilities,
   parseReasoningCatalog,
@@ -30,6 +35,8 @@ export type ModelDraft = {
   api_base: string;
   reasoning_level: string;
   context_window_tokens: string;
+  max_tokens: string;
+  max_tokens_is_default: boolean;
   is_default: boolean;
 };
 
@@ -44,6 +51,8 @@ const MODEL_DRAFT_FIELDS: readonly (keyof ModelDraft)[] = [
   'api_base',
   'reasoning_level',
   'context_window_tokens',
+  'max_tokens',
+  'max_tokens_is_default',
   'is_default',
 ];
 
@@ -154,6 +163,13 @@ export function reconcileModelReasoning(draft: ModelDraft, catalog: VendorPreset
     : draft;
 }
 
+/** Reconcile only an untouched protocol default when its selected model changes. */
+export function reconcileModelOutputTokens(draft: ModelDraft): ModelDraft {
+  if (!draft.max_tokens_is_default) return draft;
+  const maxTokens = defaultOutputTokens(draft.protocol, draft.model_name);
+  return draft.max_tokens === maxTokens ? draft : { ...draft, max_tokens: maxTokens };
+}
+
 export function normalizeModelOptions(options: readonly string[]): string[] {
   return Array.from(new Set(options.map((option) => option.trim()).filter(Boolean)));
 }
@@ -200,6 +216,8 @@ export function createModelDraft(model: ModelEntry | undefined, catalog: VendorP
       api_base: '',
       reasoning_level: '',
       context_window_tokens: normalizeContextWindowTokens(DEFAULT_CONTEXT_WINDOW_TOKENS),
+      max_tokens: defaultOutputTokens('openai', ''),
+      max_tokens_is_default: true,
       is_default: false,
     };
   }
@@ -220,6 +238,8 @@ export function createModelDraft(model: ModelEntry | undefined, catalog: VendorP
       api_base: model.api_base,
       reasoning_level: model.reasoning_level ?? '',
       context_window_tokens: contextWindowTokens,
+      max_tokens: normalizeOutputTokens(model.max_tokens),
+      max_tokens_is_default: model.max_tokens === undefined,
       is_default: model.is_default ?? false,
     };
   }
@@ -242,6 +262,10 @@ export function createModelDraft(model: ModelEntry | undefined, catalog: VendorP
     api_base: model.api_base,
     reasoning_level: vendorSelection === CUSTOM_VENDOR_SELECTION ? '' : (model.reasoning_level ?? ''),
     context_window_tokens: contextWindowTokens,
+    max_tokens: model.max_tokens === undefined
+      ? defaultOutputTokens(protocol, model.model_name)
+      : normalizeOutputTokens(model.max_tokens),
+    max_tokens_is_default: model.max_tokens === undefined,
     is_default: model.is_default ?? false,
   };
 }
@@ -287,11 +311,11 @@ export function applyVendorSelection(draft: ModelDraft, selection: string, catal
 
 export function applyModelProtocol(draft: ModelDraft, protocol: ModelProtocol, catalog: VendorPresetMap): ModelDraft {
   const preset = findVendorPreset(catalog, draft.vendor_selection);
-  return {
+  return reconcileModelOutputTokens({
     ...draft, kv_cache_affinity: false,
     protocol,
     api_base: preset ? (protocol === 'anthropic' ? (preset.anthropic_base ?? '') : preset.api_base) : draft.api_base,
-  };
+  });
 }
 
 /**
@@ -337,6 +361,7 @@ export function modelDraftToEntry(
     model_provider: existing?.model_provider ?? '',
     reasoning_level: normalizedDraft.reasoning_level,
     context_window_tokens: resolveDraftContextWindowTokens(draft.context_window_tokens),
+    max_tokens: resolveModelMaxTokens(draft, existing),
     is_default: draft.is_default,
   };
 
@@ -387,6 +412,17 @@ export function modelDraftToEntry(
 
 export function displayModelProtocol(model: ModelEntry): ModelProtocol {
   return model.model_provider === 'Anthropic' ? 'anthropic' : 'openai';
+}
+
+function resolveModelMaxTokens(draft: ModelDraft, existing: ModelEntry | undefined): number | null | undefined {
+  const maxTokens = resolveDraftOutputTokens(draft.max_tokens);
+  const preservesLegacyAnthropicDefault =
+    existing !== undefined &&
+    existing.max_tokens === undefined &&
+    displayModelProtocol(existing) === 'anthropic' &&
+    draft.protocol === 'anthropic' &&
+    draft.max_tokens_is_default;
+  return preservesLegacyAnthropicDefault ? undefined : maxTokens;
 }
 
 function applyDraftAffinity(next: ModelEntry, draft: ModelDraft, existing: ModelEntry | undefined): ModelEntry {

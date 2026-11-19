@@ -29,6 +29,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
 from jiuwenswarm.agents.harness.common.recommendation.topic_terminal import (
     SessionSummaryArtifact,
 )
+from .topic_primitives import plain_int as _plain_int
 
 RID_SUMMARY_PAIR_MATCHER_ID = "icebreaker-specific-interest-ark-api-proxy"
 RID_SUMMARY_PAIR_MATCHER_VERSION = "icebreaker-table5-summary-pair-prompt-v1"
@@ -59,11 +60,6 @@ Use only the supplied summaries. Return MATCH only when both refer to the same \
 specific interest or subject; paraphrases are allowed. A shared generic theme such \
 as music, travel, technology, or entertainment is insufficient unless the specific \
 subject also aligns. Otherwise return NO_MATCH. Return only the required JSON object."""
-
-
-def _plain_int(value: Any) -> bool:
-    # bool is an int subclass; a JSON boolean is never a version or a count.
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _validate_config(config: ArkBackgroundConfig) -> None:

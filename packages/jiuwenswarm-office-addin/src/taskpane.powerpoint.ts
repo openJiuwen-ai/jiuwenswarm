@@ -6,6 +6,7 @@ import { powerPointReadRuntime, type PowerPointRun } from './powerPointReadTools
 import { powerPointSlideDeck, powerPointWriteRuntime } from './powerPointWriteTools';
 import { SlideSnapshots } from './slideSnapshots';
 import { startPane } from './startPane';
+import { rasterizeSvg } from './svgRaster';
 
 startPane(POWERPOINT, ({ office, host, writes, displayName }) => {
   const run: PowerPointRun = batch => PowerPoint.run(batch);
@@ -16,6 +17,6 @@ startPane(POWERPOINT, ({ office, host, writes, displayName }) => {
     powerPointPackageRuntime({ run, host, journal: callId => snapshots.journal(callId),
       sandbox: workerSandbox(() => new Worker(new URL('./ooxmlSandbox.worker.ts', import.meta.url),
         { type: 'module' })),
-      forgetUndo: () => snapshots.forget() }));
+      rasterize: rasterizeSvg, forgetUndo: () => snapshots.forget() }));
   return { runtime, snapshots };
 });

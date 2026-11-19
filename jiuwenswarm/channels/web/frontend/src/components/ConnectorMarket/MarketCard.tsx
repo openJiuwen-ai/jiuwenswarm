@@ -21,6 +21,8 @@ interface MarketCardProps {
   actionMode?: 'auto' | 'use';
   actionDisabled?: boolean;
   onUse?: () => void;
+  /** 错误态红点的提示文案；不传为"连接失败"。 */
+  errorLabel?: string;
 }
 
 export function MarketCard({
@@ -37,6 +39,7 @@ export function MarketCard({
   actionMode = 'auto',
   actionDisabled = false,
   onUse,
+  errorLabel,
 }: MarketCardProps) {
   const { t } = useTranslation();
   const { tooltip: errorTooltip, handlers: errorTooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
@@ -46,7 +49,7 @@ export function MarketCard({
   const titleEndNode = state === 'error' ? (
     <>
       <span
-        data-tooltip={t('connectorMarket.card.stateError')}
+        data-tooltip={errorLabel ?? t('connectorMarket.card.stateError')}
         className="flex shrink-0 items-center justify-center text-danger"
         {...errorTooltipHandlers}
       >

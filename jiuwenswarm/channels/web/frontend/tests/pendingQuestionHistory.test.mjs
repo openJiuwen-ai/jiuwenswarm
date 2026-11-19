@@ -12,12 +12,13 @@ function seed(sessionId, messages) {
   chat().replaceHistoryMessages(sessionId, messages);
 }
 
-function questionHistory(sessionId, requestId, answered = false) {
+function questionHistory(sessionId, requestId, answered = false, source = 'ask_user_interrupt') {
   const question = { question: 'Choose a SkillPack', header: 'SkillPack', options: [{ label: 'Use pack' }] };
   const records = [{
     id: `ask-${requestId}`, role: 'assistant', event_type: 'chat.ask_user_question',
-    request_id: requestId, source: 'ask_user_interrupt', questions: [question], timestamp: 1,
+    request_id: requestId, source, questions: [question], timestamp: 1,
   }];
+  if (source === null) delete records[0].source;
   if (answered) records.push({
     id: `answer-${requestId}`, role: 'assistant', event_type: 'chat.ask_user_answer',
     request_id: requestId, answers: [{ question: question.question, selected_options: ['Use pack'] }], timestamp: 2,
@@ -29,6 +30,24 @@ const pendingQuestion = (requestId) => ({
   request_id: requestId, source: 'ask_user_interrupt',
   questions: [{ question: 'Choose a SkillPack', header: 'SkillPack', options: [{ label: 'Use pack' }] }],
 });
+
+for (const source of [null, 'legacy_question']) {
+  test(`answered history cleanup does not depend on optional source (${source})`, () => {
+    const sid = `answered_history_source_${source}`;
+    seed(sid, questionHistory(sid, 'done', false, source));
+    assert.equal(messagesOf(sid).length, 1, 'unanswered cold history stays visible');
+    chat().markQuestionsAnswered(sid, ['done']);
+    assert.equal(messagesOf(sid).length, 0, 'answering removes the already restored unanswered echo');
+    chat().replaceHistoryMessages(sid, questionHistory(sid, 'done', false, source));
+    assert.equal(messagesOf(sid).length, 0, 'replace must reject a late unanswered echo');
+    chat().prependMessages(sid, questionHistory(sid, 'done', false, source));
+    assert.equal(messagesOf(sid).length, 0, 'pagination must reject a late unanswered echo');
+    chat().replaceHistoryMessages(sid, questionHistory(sid, 'done', true, source));
+    assert.equal(messagesOf(sid).length, 1, 'the answered summary remains visible');
+    seed(`${sid}_other`, questionHistory(`${sid}_other`, 'done', false, source));
+    assert.equal(messagesOf(`${sid}_other`).length, 1, 'another session is not affected');
+  });
+}
 
 test('switching back keeps the live question without its unanswered history echo', () => {
   const sid = 'pending_question_restore';

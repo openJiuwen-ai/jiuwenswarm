@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check } from 'lucide-react';
+import { webClient } from '../../../../services/webClient';
 import { useTranslation } from 'react-i18next';
 import type { ModelEntry, ModelGroup, VendorPresetMap } from '../../../../types';
 import { Button, Tag } from '../../../../components/ui';
@@ -51,6 +52,11 @@ const MODEL_REFRESH_MESSAGES = {
   unavailable: 'settingsPanel.models.refreshUnavailable',
 } as const;
 
+const MODEL_LIST_RECOVERY_DELAYS_MS = [1000, 2000, 4000, 10000];
+const MODEL_LIST_RECOVERY_CODES = new Set([
+  'WORKER_CLOSED', 'WORKER_UNSTABLE', 'RUNTIME_WARMING', 'RUNTIME_FAILED', 'SERVICE_UNAVAILABLE',
+]);
+
 type ModelConfirmation =
   | { type: 'delete-model'; model: ModelEntry; message: string }
   | { type: 'delete-group'; group: ModelGroup; message: string }
@@ -69,6 +75,10 @@ type ModelResourceResult = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isOptionalNumberOrNull(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === 'number';
 }
 
 export function parseModelResource(payload: unknown): ModelEntry {
@@ -92,6 +102,7 @@ export function parseModelResource(payload: unknown): ModelEntry {
     temperature: typeof config.temperature === 'number' ? config.temperature : undefined,
     reasoning_level: typeof config.reasoning_level === 'string' ? config.reasoning_level : '',
     context_window_tokens: typeof config.context_window === 'number' ? config.context_window : undefined,
+    max_tokens: typeof config.max_tokens === 'number' ? config.max_tokens : undefined,
     is_default: model.is_default === true,
     vendor_key: typeof client.vendor_key === 'string' ? client.vendor_key : undefined,
     plan:
@@ -122,6 +133,7 @@ export function buildModelResourcePayload(model: ModelEntry): Record<string, unk
   if (model.temperature !== undefined) config.temperature = model.temperature;
   config.reasoning_level = model.reasoning_level ?? '';
   if (model.context_window_tokens !== undefined) config.context_window = model.context_window_tokens;
+  if (model.max_tokens !== undefined) config.max_tokens = model.max_tokens;
   return {
     ...(model.model_id ? { model_id: model.model_id } : {}),
     alias: model.alias ?? '',
@@ -162,7 +174,8 @@ export function parseModelsPayload(payload: unknown): {
         ((model as ModelEntry).api_key === undefined || typeof (model as ModelEntry).api_key === 'string') &&
         ((model as ModelEntry).has_api_key === undefined || typeof (model as ModelEntry).has_api_key === 'boolean') &&
         typeof (model as ModelEntry).model_provider === 'string' &&
-        typeof (model as ModelEntry).reasoning_level === 'string',
+        typeof (model as ModelEntry).reasoning_level === 'string' &&
+        isOptionalNumberOrNull((model as ModelEntry).max_tokens),
     )
   ) {
     throw new Error('INVALID_MODELS_LIST');
@@ -173,6 +186,7 @@ export function parseModelsPayload(payload: unknown): {
   const normalizedModels = (models as ModelEntry[]).map((model) => ({
     ...model,
     api_key: typeof model.api_key === 'string' ? model.api_key : '',
+    max_tokens: typeof model.max_tokens === 'number' ? model.max_tokens : undefined,
   }));
   return { models: normalizedModels, modelGroups, activeModel };
 }
@@ -189,6 +203,8 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
   const [modelsLoading, setModelsLoading] = useState(true);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [modelsError, setModelsError] = useState('');
+  const [modelsRetryable, setModelsRetryable] = useState(false);
+  const [modelsRetryCount, setModelsRetryCount] = useState(0);
   const [catalogError, setCatalogError] = useState('');
   const [saveError, setSaveError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -230,13 +246,20 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
       const payload = await request('models.list');
       if (currentRequestId !== modelsRequestId.current) return;
       applyCatalog(parseModelsPayload(payload));
+      setModelsRetryable(false);
+      setModelsRetryCount(0);
     } catch (error) {
       if (currentRequestId === modelsRequestId.current) {
-        setModelsError(
-          error instanceof Error && error.message !== 'INVALID_MODELS_LIST'
-            ? error.message
-            : t('settingsPanel.models.modelsResponseInvalid'),
-        );
+        const retryable = isRecord(error) && typeof error.code === 'string' && MODEL_LIST_RECOVERY_CODES.has(error.code);
+        setModelsRetryable(retryable);
+        setModelsRetryCount((count) => retryable ? count + 1 : 0);
+        if (retryable) {
+          setModelsError(t('settingsPanel.models.modelsTemporarilyUnavailable'));
+        } else if (error instanceof Error && error.message !== 'INVALID_MODELS_LIST') {
+          setModelsError(error.message);
+        } else {
+          setModelsError(t('settingsPanel.models.modelsResponseInvalid'));
+        }
       }
     } finally {
       if (currentRequestId === modelsRequestId.current) setModelsLoading(false);
@@ -271,8 +294,21 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
 
   const reloadModels = useCallback(async () => {
     setSaveError('');
+    setModelsRetryCount(0);
     await loadModels();
   }, [loadModels]);
+
+  useEffect(() => {
+    if (!isConnected || modelsLoading || !modelsError || !modelsRetryable || modelsRetryCount === 0) return;
+    const delay = MODEL_LIST_RECOVERY_DELAYS_MS[Math.min(modelsRetryCount - 1, MODEL_LIST_RECOVERY_DELAYS_MS.length - 1)];
+    const timer = setTimeout(() => void loadModels(), delay);
+    return () => clearTimeout(timer);
+  }, [isConnected, loadModels, modelsError, modelsLoading, modelsRetryable, modelsRetryCount]);
+
+  useEffect(() => webClient.on('models.updated', () => {
+    void loadModels();
+    checkRefreshStatus();
+  }), [loadModels, checkRefreshStatus]);
 
   const closeModelDialog = useCallback(() => {
     catalogRequestId.current += 1;

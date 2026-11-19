@@ -5,15 +5,19 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+from contextvars import ContextVar
 import logging
 import math
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Iterable
 from urllib.parse import urlsplit
 
@@ -30,13 +34,19 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
     _read_user_memory,
     compute_interest_drift,
 )
+from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.server.runtime.session import (
     session_history as _session_history_module,
 )
-from jiuwenswarm.server.runtime.session.session_history import load_history_records
+from jiuwenswarm.server.runtime.session.session_history import (
+    get_read_history_path,
+    iter_history_jsonl_rows,
+    load_history_records,
+)
 from jiuwenswarm.server.runtime.session.session_metadata import (
     get_all_sessions_metadata,
 )
+from .topic_primitives import plain_int as _plain_int
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +80,50 @@ _EXPERT_RESERVED_OUTPUT_TOKENS = 6144
 # receives `topic_starters.get`.  It never cancels an in-flight profile stage.
 GENERATION_DEADLINE_SECONDS = 55.0
 
-_ALL_SESSIONS_LIMIT = 1_000_000
+# Newest-by-last_message_at cap for recommendation history I/O. Model-side
+# summarizer/RID windows are applied after this load; without a hard read cap,
+# every completion would pull every visible history.jsonl into memory (OOM).
+# 50 covers the revision/profile window; RID's summary slice is 30. Byte
+# budgets below still bound total memory when those sessions are large.
+_ALL_SESSIONS_LIMIT = 50
+
+# Recommendation only needs the newest conversations. These budgets bound one
+# scan even when a stability run accumulated very long histories: a single
+# pathological file is skipped, and later (older) sessions are not opened once
+# the total read budget is spent. The newest session is always read.
+_MAX_SESSION_FILE_BYTES = 64 * 1024 * 1024
+_MAX_SCAN_BYTES = 128 * 1024 * 1024
+
+# One conversation turn enters the profile/summarizer far below this; the cap
+# only stops a pathological turn from being retained whole. The ledger witness
+# is compared under the same cap, so clipping is stable across rescans.
+_MAX_RETAINED_CONTENT_CHARS = 32_768
+
+# Choosing the newest sessions is the only step that still walks every session
+# directory. A completion drops the window so the next scan is fresh; the enable
+# seed and concurrent scopes then share one enumeration instead of each paying
+# for it. The window is tiny (session ids only) and safe to hold for seconds.
+_SESSION_WINDOW_TTL_SECONDS = 2.0
+_SESSION_WINDOW_CACHE: dict[tuple[str, int], tuple[float, tuple[str, ...]]] = {}
+_SESSION_WINDOW_LOCK = threading.Lock()
+# One burst (one run, or the enable seed fanning out to every scope) reads the
+# same histories several times: revision, state preparation, summaries, short
+# intent. Hold the projected records for the same short window; row dicts are
+# shared read-only, list containers are copied per caller.
+_SESSION_RECORDS_CACHE: dict[
+    tuple[str, int], tuple[float, dict[str, list[dict[str, Any]]]]
+] = {}
+_SESSION_RECORDS_LOCK = threading.Lock()
+# A clear must not wait for an in-flight scan. The epoch lets a scan that
+# started before the clear finish without repopulating the just-cleared cache.
+_SESSION_CACHE_EPOCH = 0
+_SESSION_EPOCH_LOCK = threading.Lock()
+# One successor run must see one history snapshot from revision through
+# summaries, short intent and generation. The TTL cache below only covers
+# calls that start together; model stages can put minutes between them.
+_RUN_RECORDS: ContextVar[dict[str, list[dict[str, Any]]] | None] = ContextVar(
+    "topic_run_records", default=None
+)
 
 TAXONOMY_VERSION = "v4-conversation-taxonomy-1"
 _MAPPING_PROMPT_VERSION = "v4-mapping-prompt-3"
@@ -102,6 +155,26 @@ TAXONOMY_TAGS: dict[str, str] = {
     "society-news-current": "社会时事与新闻",
     "language-writing": "语言与写作表达",
     "psychology-self": "心理与自我成长",
+}
+TAXONOMY_TAGS_EN: dict[str, str] = {
+    "tech-ai-ml": "AI and machine learning",
+    "tech-software-dev": "Software development and engineering",
+    "tech-hardware-devices": "Hardware and smart devices",
+    "science-math-research": "Mathematics and basic research",
+    "science-life-medicine": "Life sciences and medicine",
+    "finance-investment": "Finance and investing",
+    "business-career": "Business and career",
+    "education-learning": "Learning and education",
+    "culture-history-humanities": "History and humanities",
+    "arts-media-entertainment": "Arts, media and entertainment",
+    "gaming-interactive": "Games and interactive media",
+    "sports-fitness": "Sports and fitness",
+    "travel-outdoor": "Travel and the outdoors",
+    "food-cooking": "Food and cooking",
+    "home-lifestyle": "Home and lifestyle",
+    "society-news-current": "Society and current news",
+    "language-writing": "Language and writing",
+    "psychology-self": "Psychology and self-growth",
 }
 _ACTION_TYPES = (
     "natural_question",
@@ -204,11 +277,6 @@ _MEMORY_INCREMENTAL_SYSTEM_PROMPT = (
 )
 
 
-def _plain_int(value: Any) -> bool:
-    # bool is an int subclass; a JSON boolean is never a version or a count.
-    return isinstance(value, int) and not isinstance(value, bool)
-
-
 class ContextCountingUnverified(Exception):
     """Raised when the strict tiktoken counting protocol cannot be verified."""
 
@@ -249,17 +317,127 @@ def _normalized_role(record: dict[str, Any]) -> str:
     return "user" if role in {"user", "human"} else role
 
 
+_WITNESS_DIGEST_PREFIX = "witness-sha256:v1:"
+_WITNESS_DIGEST = re.compile(r"^witness-sha256:v1:[0-9a-f]{64}$")
+
+
+def witness_content(value: Any) -> str:
+    """The content view the ledger compares; long turns are clipped."""
+
+    text = value if isinstance(value, str) else str(value)
+    return text[:_MAX_RETAINED_CONTENT_CHARS]
+
+
+def witness_digest(value: Any) -> str:
+    """The stored witness: a digest of the clipped view, never the text."""
+
+    clipped = witness_content(value)
+    return _WITNESS_DIGEST_PREFIX + hashlib.sha256(clipped.encode("utf-8")).hexdigest()
+
+
+def _witness_value(witness: Any) -> str:
+    """Normalize a stored witness value to a digest.
+
+    Ledgers written before digests stored the clipped/full text. Hashing that
+    value on read lets old and new witnesses compare equal without a schema
+    migration; the next save persists the digest and drops the text.
+    """
+
+    content = witness.get("content") if isinstance(witness, dict) else None
+    if isinstance(content, str) and _WITNESS_DIGEST.fullmatch(content):
+        return content
+    return witness_digest(content)
+
+
+def normalize_witness(witness: Any) -> dict[str, Any]:
+    """Bring a stored witness onto the current digest before comparison.
+
+    Witness content is only an equality companion (D10), never a model payload.
+    """
+
+    value = dict(witness) if isinstance(witness, dict) else {}
+    value["content"] = _witness_value(value)
+    return value
+
+
 def record_witness(record: dict[str, Any], supported: bool) -> dict[str, Any]:
     return {
         "role": _normalized_role(record),
         "timestamp_or_0": timestamp_or_zero(record),
-        "content": record.get("content") if isinstance(record.get("content"), str) else str(record.get("content")),
+        "content": witness_digest(record.get("content")),
         "supported": bool(supported),
     }
 
 
 def _empty_ledger() -> dict[str, Any]:
     return {"history_revision": 0, "next_behavior_index": 1, "sessions": {}}
+
+
+# The recommendation lane reads a history row only through these fields: the
+# completed-request boundary, consent filtering, witness/rescan identity, and
+# user content. The rest (model prompts, KV-cache and usage telemetry, subagent
+# scratch state) is transcript/UI data; keeping it would inflate the peak of a
+# scan that runs on every completion. Every row is retained so physical
+# ordinals stay aligned with the persisted ledger.
+_RECOMMENDATION_RECORD_FIELDS = (
+    "id",
+    "role",
+    "request_id",
+    "timestamp",
+    "event_type",
+    "content",
+    "input_origin",
+    "assistance_origin",
+    "status",
+    "feedback_only",
+    "is_goal_objective_message",
+    "message_origin",
+    "compact_metadata",
+    "channel_id",
+    "mode",
+    "member_name",
+    "prompt_suggestion",
+)
+
+
+def _recommendation_record(record: Any) -> Any:
+    if not isinstance(record, dict):
+        return record
+    role = str(record.get("role") or "").strip().lower()
+    projected = {
+        key: record[key]
+        for key in _RECOMMENDATION_RECORD_FIELDS
+        if key in record
+    }
+    if "content" in projected:
+        event_type = record.get("event_type")
+        # Only a user turn and the final answer are read. Tool results,
+        # subagent progress, and llm-call bodies are transcript-only.
+        if role not in {"user", "human"} and event_type not in {None, "chat.final"}:
+            projected.pop("content")
+        else:
+            projected["content"] = witness_content(projected["content"])
+    if role in {"user", "human"} and "metadata" in record:
+        # Consent filtering reads ``metadata.automation.kind``.
+        projected["metadata"] = record["metadata"]
+    return projected
+
+
+def _read_recommendation_jsonl(path: Path) -> list[dict[str, Any]]:
+    """Stream one JSONL history, retaining only recommendation fields.
+
+    The row parsing is the shared JSONL reader; the projection is what keeps a
+    recommendation scan's peak memory below a full transcript.
+    """
+
+    try:
+        return [
+            _recommendation_record(item)
+            for item in iter_history_jsonl_rows(path)
+        ]
+    except (OSError, UnicodeError) as exc:
+        logger.warning("读取 history 失败，已跳过: %s", exc)
+        return []
 
 
 def load_session_records(session_id: str) -> list[dict[str, Any]]:
@@ -270,12 +448,113 @@ def load_session_records(session_id: str) -> list[dict[str, Any]]:
         return []
     _session_history_module.WRITE_QUEUE.join()
     with _session_history_module.FILE_LOCK:
-        records = load_history_records(sid)
-    return records if isinstance(records, list) else []
+        path = get_read_history_path(sid)
+        if path.suffix.lower() != ".jsonl":
+            # Legacy array files are rare and rewritten per append; keep the
+            # shared reader rather than duplicating its format handling.
+            records = load_history_records(sid)
+            if not isinstance(records, list):
+                return []
+            return [_recommendation_record(record) for record in records]
+        return _read_recommendation_jsonl(path)
 
 
-def load_all_session_records() -> dict[str, list[dict[str, Any]]]:
-    """Read every session under the history write lock (narrow snapshot read).
+def load_recommendation_source_records(session_id: str) -> list[dict[str, Any]]:
+    """Read one locator-source session under the scan's per-file budget.
+
+    A source is named by physical ordinal, so it cannot be read from the tail
+    alone; this still streams the file through the recommendation projection and
+    reads it under the same write lock a scan uses. A file above
+    ``_MAX_SESSION_FILE_BYTES`` is skipped exactly as a scan skips it, leaving
+    the source unresolved rather than retaining a pathological transcript whole.
+    """
+
+    try:
+        size = get_read_history_path(session_id).stat().st_size
+    except OSError:
+        size = 0
+    if size > _MAX_SESSION_FILE_BYTES:
+        logger.warning(
+            "[Topic] source history skipped as oversized: session_id=%s bytes=%d limit=%d",
+            session_id,
+            size,
+            _MAX_SESSION_FILE_BYTES,
+        )
+        return []
+    return load_session_records(session_id)
+
+
+def set_run_records_snapshot(records: dict[str, list[dict[str, Any]]]) -> object:
+    """Pin one history snapshot for the current run's copied contexts."""
+
+    return _RUN_RECORDS.set(records)
+
+
+def reset_run_records_snapshot(token: object) -> None:
+    _RUN_RECORDS.reset(token)  # type: ignore[arg-type]
+
+
+def _session_cache_epoch() -> int:
+    with _SESSION_EPOCH_LOCK:
+        return _SESSION_CACHE_EPOCH
+
+
+def clear_session_window_cache() -> None:
+    """Drop the short-window session ids and records; a completion makes them stale.
+
+    The epoch changes before the dictionaries are cleared, and scans never hold
+    these locks while reading history: a completion on the event loop must not
+    wait for an in-flight scan.
+    """
+
+    global _SESSION_CACHE_EPOCH
+    with _SESSION_EPOCH_LOCK:
+        _SESSION_CACHE_EPOCH += 1
+    with _SESSION_RECORDS_LOCK:
+        _SESSION_RECORDS_CACHE.clear()
+    with _SESSION_WINDOW_LOCK:
+        _SESSION_WINDOW_CACHE.clear()
+
+
+def _newest_session_ids(cap: int) -> tuple[str, ...]:
+    """The newest visible session ids, shared across one burst of scans."""
+
+    key = (str(get_agent_sessions_dir()), cap)
+    now = time.monotonic()
+    with _SESSION_WINDOW_LOCK:
+        cached = _SESSION_WINDOW_CACHE.get(key)
+        if cached is not None and now - cached[0] < _SESSION_WINDOW_TTL_SECONDS:
+            return cached[1]
+    epoch = _session_cache_epoch()
+    sessions, _ = get_all_sessions_metadata(limit=cap, offset=0)
+    ids = []
+    for item in sessions:
+        session_id = str(item.get("session_id") or "").strip()
+        if session_id:
+            ids.append(session_id)
+    ids = tuple(ids)
+    with _SESSION_WINDOW_LOCK:
+        cached = _SESSION_WINDOW_CACHE.get(key)
+        if cached is not None and now - cached[0] < _SESSION_WINDOW_TTL_SECONDS:
+            return cached[1]
+        if _session_cache_epoch() == epoch:
+            _SESSION_WINDOW_CACHE[key] = (time.monotonic(), ids)
+        return ids
+
+
+def load_all_session_records(
+    *,
+    limit: int | None = None,
+) -> dict[str, list[dict[str, Any]]]:
+    """Read the newest visible sessions under the history write lock.
+
+    Caps how many ``history.jsonl`` files enter memory (default
+    ``_ALL_SESSIONS_LIMIT``). ``get_all_sessions_metadata`` already returns
+    newest-first by ``last_message_at``, so the slice is the recent window
+    recommendation uses for revision and prepare — not every visible session.
+    The newest session is always read; later (older) sessions stop contributing
+    once ``_MAX_SCAN_BYTES`` is spent, and a file above
+    ``_MAX_SESSION_FILE_BYTES`` is skipped.
 
     Supported rewrites replace history files non-atomically; reading a file
     mid-rewrite would present a partial prefix as a real rewrite and force a
@@ -283,14 +562,60 @@ def load_all_session_records() -> dict[str, list[dict[str, Any]]]:
     the write side uses.
     """
 
-    sessions, _ = get_all_sessions_metadata(limit=_ALL_SESSIONS_LIMIT, offset=0)
+    try:
+        cap = _ALL_SESSIONS_LIMIT if limit is None else int(limit)
+    except (TypeError, ValueError):
+        cap = _ALL_SESSIONS_LIMIT
+    if cap < 0:
+        cap = 0
+    run_snapshot = _RUN_RECORDS.get()
+    if run_snapshot is not None:
+        return {
+            session_id: list(rows) for session_id, rows in run_snapshot.items()
+        }
+    key = (str(get_agent_sessions_dir()), cap)
+    with _SESSION_RECORDS_LOCK:
+        cached = _SESSION_RECORDS_CACHE.get(key)
+        if (
+            cached is not None
+            and time.monotonic() - cached[0] < _SESSION_WINDOW_TTL_SECONDS
+        ):
+            return {session_id: list(rows) for session_id, rows in cached[1].items()}
+    epoch = _session_cache_epoch()
     result: dict[str, list[dict[str, Any]]] = {}
-    for metadata in sessions:
-        session_id = str(metadata.get("session_id") or "").strip()
-        if not session_id:
+    scanned_bytes = 0
+    for session_id in _newest_session_ids(cap):
+        try:
+            size = get_read_history_path(session_id).stat().st_size
+        except OSError:
+            size = 0
+        if size > _MAX_SESSION_FILE_BYTES:
+            logger.warning(
+                "[Topic] history skipped as oversized: session_id=%s bytes=%d limit=%d",
+                session_id,
+                size,
+                _MAX_SESSION_FILE_BYTES,
+            )
             continue
+        if result and scanned_bytes + size > _MAX_SCAN_BYTES:
+            logger.info(
+                "[Topic] history scan budget reached: sessions=%d bytes=%d",
+                len(result),
+                scanned_bytes,
+            )
+            break
+        scanned_bytes += size
         result[session_id] = load_session_records(session_id)
-    return result
+    with _SESSION_RECORDS_LOCK:
+        cached = _SESSION_RECORDS_CACHE.get(key)
+        if (
+            cached is not None
+            and time.monotonic() - cached[0] < _SESSION_WINDOW_TTL_SECONDS
+        ):
+            return {session_id: list(rows) for session_id, rows in cached[1].items()}
+        if _session_cache_epoch() == epoch:
+            _SESSION_RECORDS_CACHE[key] = (time.monotonic(), result)
+        return {session_id: list(rows) for session_id, rows in result.items()}
 
 
 def _upto_boundary_ordinals(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -396,7 +721,7 @@ def rescan_history(
                 divergence_ordinal is None and (
                     _normalized_role(record) != str(witness.get("role") or "")
                     or timestamp_or_zero(record) != witness.get("timestamp_or_0")
-                    or content != witness.get("content")
+                    or witness_digest(content) != _witness_value(witness)
                     or currently_supported != bool(witness.get("supported"))
                 )
             )
@@ -471,6 +796,10 @@ def rescan_history(
         )
 
     for state in new_sessions.values():
+        for entry in state["entries"]:
+            if "witness" in entry:
+                # Persist the digest; surviving pre-digest entries lose their text here.
+                entry["witness"] = normalize_witness(entry["witness"])
         state["entries"].sort(
             key=lambda item: (bool(item.get("retracted")), int(item.get("ordinal", 0)))
         )
@@ -509,7 +838,7 @@ def active_ledger_behaviors(ledger: dict[str, Any]) -> list[CanonicalBehavior]:
                     behavior_index=int(entry.get("behavior_index", 0)),
                     session_id=str(session_id),
                     ordinal=int(entry.get("ordinal", 0)),
-                    content=str(witness.get("content") or ""),
+                    content=_witness_value(witness),
                     timestamp_or_0=float(witness.get("timestamp_or_0") or 0.0),
                 )
             )
@@ -2766,6 +3095,69 @@ def load_history_state_at(store: TopicStarterStore, at: float) -> dict[str, Any]
     return None
 
 
+_LEGACY_NEGATIVE_PREFERENCE_SCRUB_EVENT = "legacy_negative_preferences_scrubbed"
+_LEGACY_NEGATIVE_PREFERENCE_EVENT_TYPES = ("not_interested", "not_interested_undone")
+
+
+def scrub_legacy_negative_preferences(store: TopicStarterStore, *, now: float) -> bool:
+    """Remove the dismissals no code reads any more, once.
+
+    The not-interested entry point is gone and generation ignores
+    ``memory_sidecar.negative_preferences``. Old snapshots and ledger rows still
+    hold that data, so one migration clears every snapshot's sidecar and drops
+    the legacy events, then records a marker that keeps later starts idle.
+    """
+
+    if store.query_events(
+        event_type=_LEGACY_NEGATIVE_PREFERENCE_SCRUB_EVENT,
+        policy_id=_V4_POLICY_ID,
+        limit=1,
+    ):
+        return False
+    snapshots = 0
+    with sqlite3.connect(store.path) as connection:
+        connection.row_factory = sqlite3.Row
+        for row in connection.execute(
+            "SELECT version, snapshot_json FROM profile_snapshot"
+        ):
+            try:
+                state = json.loads(row["snapshot_json"])
+            except (TypeError, ValueError):
+                continue
+            sidecar = state.get("memory_sidecar")
+            if not isinstance(sidecar, dict):
+                continue
+            if (
+                not sidecar.get("negative_preferences")
+                and not sidecar.get("negative_preference_version")
+            ):
+                continue
+            sidecar["negative_preferences"] = []
+            sidecar["negative_preference_version"] = 0
+            connection.execute(
+                "UPDATE profile_snapshot SET snapshot_json = ? WHERE version = ?",
+                (json.dumps(state, ensure_ascii=False), row["version"]),
+            )
+            snapshots += 1
+        placeholders = ",".join("?" for _ in _LEGACY_NEGATIVE_PREFERENCE_EVENT_TYPES)
+        events = connection.execute(
+            f"DELETE FROM recommendation_event WHERE event_type IN ({placeholders})",
+            _LEGACY_NEGATIVE_PREFERENCE_EVENT_TYPES,
+        ).rowcount
+    store.record_event({
+        "session_id": "maintenance",
+        "slate_id": "maintenance",
+        "event_type": _LEGACY_NEGATIVE_PREFERENCE_SCRUB_EVENT,
+        "topic_id": f"maintenance:{int(now)}",
+        "policy_id": _V4_POLICY_ID,
+        "selection_mode": "usage_retention",
+        "propensity_reason": "not_applicable",
+        "payload": {"snapshots": snapshots, "events": events},
+        "created_at": now,
+    })
+    return True
+
+
 def save_history_state(
     store: TopicStarterStore,
     state: dict[str, Any],
@@ -2933,10 +3325,24 @@ def _resolve_context_limit(
 def _effective_model_config_obj(entry: dict[str, Any]) -> dict[str, Any]:
     """D44: the v4 request pins ``temperature=0`` on a request-scoped copy of
     the entry's decoding config; the shared entry is never mutated, and
-    provenance records this effective value rather than the entry default."""
+    provenance records this effective value rather than the entry default.
+
+    Endpoints with mandated sampling (Kimi) reject any other temperature, so
+    their required values override the pinned default here too — the same rule
+    the chat path applies in ``inject_reasoning_params``.
+    """
+
+    from jiuwenswarm.common.reasoning_config import resolve_sampling_override
 
     mco = dict(entry.get("model_config_obj") or {})
     mco["temperature"] = 0.0
+    client = entry.get("model_client_config") or {}
+    override = resolve_sampling_override(
+        client.get("api_base") or client.get("base_url"),
+        client.get("model_name") or client.get("model"),
+    )
+    if override:
+        mco.update(override)
     return mco
 
 
@@ -4005,13 +4411,23 @@ def build_v4_stage_invoker(model: Any) -> StageInvoker:
             disabled_thinking_fallback_scope,
         )
 
-        with disabled_thinking_fallback_scope():
-            response = await model.invoke(
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": payload},
-                ]
-            )
+        from .topic_model import _required_temperature_from_error
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": payload},
+        ]
+        try:
+            with disabled_thinking_fallback_scope():
+                response = await model.invoke(messages)
+        except Exception as exc:
+            # Endpoints that accept one sampling value refuse the pinned
+            # deterministic decode; retry once with the value they name.
+            required = _required_temperature_from_error(exc)
+            if required is None:
+                raise
+            with disabled_thinking_fallback_scope():
+                response = await model.invoke(messages, temperature=required)
         content = getattr(response, "content", None)
         if isinstance(content, list):
             # Official AssistantMessage.content is str | list[str | dict];

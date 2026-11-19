@@ -30,6 +30,8 @@ export type ModelValidationPayload = {
   model: string;
   model_provider: string;
   reasoning_level: string | undefined;
+  /** Output limit from the unsaved draft; null explicitly tests the unlimited setting. */
+  max_tokens?: number | null;
   endpoint_profile?: string;
   /** 供应商预设标识（与模型条目同源，仅透传）。缺失表示自定义供应商；
    *  后端据此判断探测是否应回退持久化 endpoint_profile（与保存合并同口径）。 */
@@ -184,6 +186,12 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
     'experimental',
     'boolean',
     'modes.team.jiuwen_team.max_subtask_depth',
+  ),
+  yamlField(
+    'team_code_todo_reminder_disabled',
+    'experimental',
+    'boolean',
+    'modes.team.jiuwen_team.disable_code_todo_reminder',
   ),
   yamlField('task_full_duplex_enabled', 'experimental', 'boolean', 'experimental.task_full_duplex_enabled'),
   yamlField('task_asr_enabled', 'experimental', 'boolean', 'experimental.task_asr_enabled'),
@@ -367,6 +375,7 @@ export function buildModelValidationPayload(model: ModelEntry): ModelValidationP
     model_provider: model.model_provider,
     reasoning_level: model.reasoning_level,
   };
+  if (model.max_tokens !== undefined) payload.max_tokens = model.max_tokens;
   if (model.endpoint_profile) payload.endpoint_profile = model.endpoint_profile;
   if (model.vendor_key) payload.vendor_key = model.vendor_key;
   return payload;

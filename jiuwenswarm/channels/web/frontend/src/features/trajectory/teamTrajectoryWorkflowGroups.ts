@@ -10,6 +10,9 @@ export interface WorkflowRunLaneSummary {
   id: string;
   name?: string;
   status?: string;
+  /** Member currently hosting the run (leader included); null/absent = no
+   * team context (legacy events) — the group header renders no badge. */
+  executor?: string | null;
 }
 
 export interface TeamTrajectoryWorkflowGroup {
@@ -17,6 +20,7 @@ export interface TeamTrajectoryWorkflowGroup {
   name: string;
   shortId: string;
   status: TeamMemberLaneStatus;
+  executor?: string | null;
   lanes: TeamMemberLaneModel[];
 }
 
@@ -178,6 +182,13 @@ export function groupTeamMemberLanesByWorkflowRun(
       name,
       shortId,
       status: workflowRunLaneStatus(run?.status),
+      // Run attribution rides the store's run summary: a known run carries its
+      // executor (empty string / null normalize to undefined so the header
+      // badge hides); an untracked run (archive replay, pattern match only)
+      // has no summary and therefore no attribution.
+      executor: typeof run?.executor === 'string' && run.executor.trim() !== ''
+        ? run.executor
+        : undefined,
       lanes: [],
     };
     groupByRunId.set(runId, group);
@@ -210,4 +221,48 @@ export function groupTeamMemberLanesByWorkflowRun(
   }
 
   return { ungrouped, groups };
+}
+
+export interface WorkflowGroupHostPlan {
+  /** Groups keyed by the host lane object they matched (issue #6381). */
+  attached: Map<TeamMemberLaneModel, TeamTrajectoryWorkflowGroup[]>;
+  /** Groups whose executor matched no host lane. */
+  trailing: TeamTrajectoryWorkflowGroup[];
+}
+
+/**
+ * Attach each workflow run group under the lane of the member who executed it.
+ *
+ * Host lanes are the standalone member lanes plus the member lanes nested
+ * inside scheduled task-run rows — a task assignee's lane lives there, not in
+ * `ungrouped`. The map is keyed by the host lane object, not its subjectId: a
+ * scheduled member can own several interleaved (non-adjacent) task runs whose
+ * member lanes share one subjectId, and the group must render in the one lane
+ * it attached to, never in every lane with that subjectId (AI review CR-001
+ * on !10269/!10271). Consumers therefore look the map up with the very lane
+ * object they render.
+ */
+export function attachWorkflowGroupsToHostLanes(
+  workflowGroups: readonly TeamTrajectoryWorkflowGroup[],
+  hostLanes: readonly TeamMemberLaneModel[],
+): WorkflowGroupHostPlan {
+  const attached = new Map<TeamMemberLaneModel, TeamTrajectoryWorkflowGroup[]>();
+  const trailing: TeamTrajectoryWorkflowGroup[] = [];
+  for (const group of workflowGroups) {
+    const executor = group.executor;
+    const host = executor === undefined
+      ? undefined
+      : hostLanes.find(lane => (
+        memberNameOfSubjectId(lane.subjectId) === executor
+        || lane.label === executor
+      ));
+    if (host === undefined) {
+      trailing.push(group);
+      continue;
+    }
+    const hosted = attached.get(host);
+    if (hosted === undefined) attached.set(host, [group]);
+    else hosted.push(group);
+  }
+  return { attached, trailing };
 }

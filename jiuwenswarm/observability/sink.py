@@ -47,6 +47,7 @@ _SESSION_WRITER_IDLE_SECONDS = 300.0
 # and each is small, so frames are drained well past the record batch size
 # rather than left to accumulate a growing lag.
 _MAX_FRAMES_PER_BATCH = 512
+_DROP_WARNING_INTERVAL_SECONDS = 30.0
 
 # What a queued item is, so the router can hand it to the right sink entry
 # point. Three kinds share one queue because they share one routing decision:
@@ -119,6 +120,8 @@ class TrajectoryRecordSink:
         self._dropped_final = 0
         self._stale_ignored = 0
         self._dropped_frames = 0
+        self._reported_drops = 0
+        self._next_drop_warning_at = 0.0
 
     def start(self, *, timeout: float = 10.0) -> None:
         """Initialize SQLite on the writer thread and enable fast consumption.
@@ -178,7 +181,6 @@ class TrajectoryRecordSink:
         with self._state_lock:
             if not self._accepting:
                 self._increment("dropped")
-                logger.warning("Trajectory record dropped because the sink is not accepting records")
                 return
             identity = (
                 str(getattr(record, "trace_id", "") or "").strip().lower(),
@@ -195,13 +197,6 @@ class TrajectoryRecordSink:
             except queue.Full:
                 self._increment("dropped")
                 self._increment("dropped_final")
-                logger.warning(
-                    "Trajectory queue is full; SQLite fan-out dropped the record "
-                    "while other configured exporters remain unaffected: "
-                    "trace_id=%s span_id=%s",
-                    getattr(record, "trace_id", None),
-                    getattr(record, "span_id", None),
-                )
                 return
             self._work_available.set()
         self._increment("accepted")
@@ -278,12 +273,6 @@ class TrajectoryRecordSink:
             except queue.Full:
                 self._increment("dropped")
                 self._increment("dropped_frames")
-                logger.warning(
-                    "Trajectory frame queue is full; the live stream will show a gap "
-                    "until the span's complete output arrives: trace_id=%s span_id=%s",
-                    getattr(record, "trace_id", None),
-                    getattr(record, "span_id", None),
-                )
                 return
             self._work_available.set()
         self._increment("accepted")
@@ -343,6 +332,7 @@ class TrajectoryRecordSink:
                 evicted_provisional=self._evicted_provisional,
                 dropped_final=self._dropped_final,
                 stale_ignored=self._stale_ignored,
+                dropped_frames=self._dropped_frames,
             )
 
     def set_commit_callback(self, on_commit: CommitCallback | None) -> None:
@@ -390,6 +380,7 @@ class TrajectoryRecordSink:
                         self._write_batch(batch, frames)
                 finally:
                     self._writing.clear()
+                self._report_drops()
                 if time.monotonic() >= next_retention_at:
                     try:
                         self._store.delete_expired()
@@ -397,7 +388,39 @@ class TrajectoryRecordSink:
                         logger.exception("Trajectory retention cleanup failed")
                     next_retention_at = time.monotonic() + _RETENTION_INTERVAL_SECONDS
         finally:
-            self._store.close()
+            try:
+                self._report_drops(force=True)
+            finally:
+                self._store.close()
+
+    def _report_drops(self, *, force: bool = False) -> None:
+        """Summarize loss on the writer, never under a producer's state lock.
+
+        Logging can block on a handler lock, rotation or stderr. Even one
+        rate-limited warning on the model callback thread could stall its
+        event loop and heartbeat. Keep exact counters on ingress and perform
+        all overflow logging here, without allocating a queue of warnings.
+        """
+        now = time.monotonic()
+        if not force and now < self._next_drop_warning_at:
+            return
+        with self._stats_lock:
+            dropped = self._dropped
+            final = self._dropped_final
+            frames = self._dropped_frames
+        if dropped == self._reported_drops:
+            return
+        delta = dropped - self._reported_drops
+        self._reported_drops = dropped
+        self._next_drop_warning_at = now + _DROP_WARNING_INTERVAL_SECONDS
+        logger.warning(
+            "Trajectory sink dropped %d records since the last warning "
+            "(total=%d final=%d frames=%d); live output may have gaps",
+            delta,
+            dropped,
+            final,
+            frames,
+        )
 
     def _take_batch(
         self,
@@ -701,6 +724,7 @@ class TrajectorySessionSinkRouter:
             evicted_provisional=sum(item.evicted_provisional for item in child_stats),
             dropped_final=dropped_final + sum(item.dropped_final for item in child_stats),
             stale_ignored=sum(item.stale_ignored for item in child_stats),
+            dropped_frames=sum(item.dropped_frames for item in child_stats),
         )
 
     def set_commit_callback(self, on_commit: CommitCallback | None) -> None:

@@ -49,12 +49,15 @@ function pane(deck = new FakeDeck(twoSlides())) {
       languages: { displayLanguage: 'zh-CN', contentLanguage: 'zh-CN' } }),
     powerPointWriteRuntime({ run: deck.run, host: deck.host, journal: id => snapshots.journal(id) }),
     powerPointPackageRuntime({ run: deck.run, host: deck.host, journal: id => snapshots.journal(id), sandbox,
+      rasterize: async (svg, pixels) => new TextEncoder().encode(`png ${pixels} ${svg}`),
       forgetUndo: () => snapshots.forget(), fetcher }));
   const dispatcher = new ClientToolDispatcher(POWERPOINT, runtime, writes);
   let calls = 0;
-  const call = async (toolName: string, input: JsonObject = {}, downloads: Record<string, string> = {}) => {
+  const call = async (toolName: string, input: JsonObject = {}, downloads: Record<string, string> = {},
+    iconSvg?: string) => {
     calls += 1;
-    return answer(await dispatcher.execute({ requestId: `c${calls}`, interruptId: 'i', toolName, input, downloads }));
+    return answer(await dispatcher.execute({ requestId: `c${calls}`, interruptId: 'i', toolName, input, downloads,
+      iconSvg }));
   };
   const callIds = () => Array.from({ length: calls }, (_call, at) => `c${at + 1}`);
   /** Ends the turn: how many slides its undo puts back, as the undo icon under its reply says. */
@@ -82,7 +85,7 @@ describe('the slide package tools', () => {
     const declared = (api: string) => attachDeclaration(POWERPOINT, { documentId: 'd' as never, displayName: 'x',
       host: new FakeDeck({ api }).host, implemented: runtime.tools }).capabilities.supported_tools;
     const tools = ['read_slide_text', 'edit_slide_text', 'find_and_replace', 'duplicate_slide', 'import_slides',
-      'copy_image_between_slides', 'read_chart_style', 'create_slide_chart', 'edit_built_chart', 'edit_slide_xml',
+      'copy_image_between_slides', 'insert_icon', 'read_chart_style', 'create_slide_chart', 'edit_built_chart', 'edit_slide_xml',
       'edit_slide_chart', 'edit_slide_master'];
     expect(declared('1.8')).toEqual(expect.arrayContaining(tools));
     expect(declared('1.7').filter(tool => tools.includes(tool))).toEqual([]);
@@ -389,6 +392,34 @@ describe('copy_image_between_slides', () => {
     await undoTurn();
     expect(deck.content()).toEqual(before);
   });
+});
+
+describe('insert_icon', () => {
+  it('puts the icon the backend sent on the slide in the colour asked, as an SVG picture with a PNG fallback',
+    async () => {
+      const { deck, call, undoTurn } = pane();
+      const before = deck.content();
+      const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#212121" d="M1 1h22"/></svg>';
+      const result = await call('insert_icon', { slide_id: '257#', icon: 'people_team', x: 40, y: 120, size: 36,
+        color: '#C0392B' }, {}, svg);
+      const target = deck.slides[1];
+      expect(result).toMatchObject({ success: true, result: { ref: `${target.id}:3` },
+        mutation: { replacement_slide_ids: { '257#': target.id } } });
+      expect(target.shapes[1]).toMatchObject({ id: '3', name: 'Icon 3', type: 'Image', left: 40, top: 120, width: 36,
+        height: 36 });
+      expect(target.shapes[1].xml).toMatch(/descr="people_team".*<asvg:svgBlip/);
+      const recolored = '<svg fill="#C0392B" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M1 1h22"/>'
+        + '</svg>';
+      expect(Object.fromEntries(Object.entries(target.parts!).map(([path, part]) => [path,
+        [part.contentType, atob(part.base64)]]))).toEqual({
+        'ppt/media/icon1.png': ['image/png', `png 256 ${recolored}`],
+        'ppt/media/icon1.svg': ['image/svg+xml', recolored],
+      });
+      expect(await call('insert_icon', { slide_id: target.id, icon: 'x', x: 0, y: 0 })).toMatchObject({
+        success: false, code: 'ICON_NOT_SENT', mutation: { state: 'not_applied' } });
+      await undoTurn();
+      expect(deck.content()).toEqual(before);
+    });
 });
 
 describe('edit_slide_xml and edit_slide_chart', () => {

@@ -106,6 +106,11 @@ pushd "$PROJECT_ROOT/jiuwenswarm/channels/web/frontend" >/dev/null
 npm install
 npm run build
 popd >/dev/null
+# Office task pane, served by the desktop at /office/ (inside the frontend dist built above).
+pushd "$PROJECT_ROOT/packages/jiuwenswarm-office-addin" >/dev/null
+npm ci --no-audit --no-fund
+npm run build:desktop
+popd >/dev/null
 
 TUI_BINARY=""
 printf '\n[3/9] Build TUI native binary (Bun)...\n'
@@ -152,6 +157,10 @@ if [[ ! -x "$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" ]]; then
   printf 'Error: bundle main executable missing or not executable\n' >&2
   exit 1
 fi
+
+printf 'Verifying frozen JiuwenMemory SDK and video tools...\n'
+uv run --no-sync python "$PROJECT_ROOT/scripts/verify_memory_bundle.py" \
+    --executable "$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME"
 
 printf 'Verifying frozen A2UI v0.8 bundle...\n'
 "$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_a2ui_bundle.py"

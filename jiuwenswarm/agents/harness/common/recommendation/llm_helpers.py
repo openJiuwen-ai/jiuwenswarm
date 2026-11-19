@@ -47,6 +47,8 @@ def get_recommendation_model(temperature: float = 0.0) -> Any:
         )
     except ImportError:
         return None
+    from jiuwenswarm.common.reasoning_config import resolve_sampling_override
+
     entries = get_default_models()
     if not entries:
         return None
@@ -54,12 +56,19 @@ def get_recommendation_model(temperature: float = 0.0) -> Any:
     mcc = entry.get("model_client_config", {})
     model_name = mcc.get("model_name", "")
     mcc_fields = {k: v for k, v in mcc.items() if k != "model_name"}
+    # Endpoints with mandated sampling (Kimi) reject any other temperature.
+    sampling = resolve_sampling_override(mcc.get("api_base"), model_name) or {}
+    request_config: dict[str, Any] = {
+        "model": model_name,
+        "temperature": float(sampling.get("temperature", temperature)),
+    }
+    if "top_p" in sampling:
+        request_config["top_p"] = float(sampling["top_p"])
     try:
         return Model(
             model_client_config=ModelClientConfig(**mcc_fields),
             model_config=ModelRequestConfig(
-                model=model_name,
-                temperature=temperature,
+                **request_config,
                 extra_body={
                     "thinking": {"type": "disabled"},
                     "chat_template_kwargs": {"enable_thinking": False},
