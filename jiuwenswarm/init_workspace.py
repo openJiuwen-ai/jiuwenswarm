@@ -10,7 +10,8 @@
   源文件使用 _ZH/_EN 后缀，目标文件不带后缀。
 
 使用方式:
-- jiuwenswarm-init -f: 强制清理，删除整个用户数据根目录后重新初始化
+- jiuwenswarm-init -f: 强制清理，删除整个用户数据根目录后重新初始化（三方
+  agent 状态会从数据目录之外的状态旁路恢复，指向已删除安装的条目自动剔除）
 - jiuwenswarm-init: 保留原有数据，执行迁移合并
 - jiuwenswarm-init --name alice: 创建命名实例 alice
 - jiuwenswarm-init -f --name alice: 强制重建命名实例 alice
