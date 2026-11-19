@@ -14,6 +14,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from jiuwenswarm.common.version import __version__
+from jiuwenswarm.common.version_source import is_prerelease_version
 from jiuwenswarm.common.utils import get_user_workspace_dir
 
 
@@ -325,10 +326,18 @@ class PipExecutor(UpgradeExecutor):
 
     def _build_install_args(self, package: str, timeout: int) -> list[str]:
         pypi_mirror = self._config.get("pypi_mirror", "").strip()
+        # The check can resolve a pre-release target (beta channel); pip and uv
+        # skip pre-releases by default, which silently no-ops the upgrade. Only
+        # opt in when the offered release is a pre-release.
+        allow_prerelease = is_prerelease_version(
+            str(self._config.get("latest_version") or "")
+        )
 
         uv_cmd = self._resolve_uv_command()
         if uv_cmd:
             args = [uv_cmd, "pip", "install", "--upgrade", package]
+            if allow_prerelease:
+                args.extend(["--prerelease", "allow"])
             if pypi_mirror:
                 args.extend(["--index-url", pypi_mirror])
             return args
@@ -338,6 +347,8 @@ class PipExecutor(UpgradeExecutor):
             "--timeout", str(timeout),
             package,
         ]
+        if allow_prerelease:
+            args.append("--pre")
         if pypi_mirror:
             args.extend(["-i", pypi_mirror])
         return args
