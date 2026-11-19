@@ -146,14 +146,20 @@ def _persistence_failure_reason(exc: BaseException) -> str | None:
     """Return bounded storage-error text when *exc* is a checkpoint-save failure.
 
     沿异常链做类型判定，命中即返回脱敏摘要；只有存储层故障才进入降级分支。
+    单节点判定/推进包保护：链上异常 ``__str__`` 或属性损坏时按「非存储层」
+    处理返回 None，走原样 re-raise 路径——边界判定不得引入新的失败模式
+    掩盖原异常（与 _recover_last_assistant_text 同一口径）。
     """
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        if _is_sqlite_storage_error(current):
-            return _storage_error_summary(current)
-        current = current.__cause__ or current.__context__
+        try:
+            if _is_sqlite_storage_error(current):
+                return _storage_error_summary(current)
+            current = current.__cause__ or current.__context__
+        except Exception:  # noqa: BLE001 — 判定失败 = 非存储层，原样 re-raise 不掩盖
+            return None
     return None
 
 

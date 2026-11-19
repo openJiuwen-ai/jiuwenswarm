@@ -210,6 +210,25 @@ async def test_non_persistence_failure_never_recovers_answer(debug_capture):
         await dispatch(child)
 
 
+class _BrokenStrSqliteError(sqlite3.OperationalError):
+    def __str__(self) -> str:
+        raise RuntimeError("__str__ is broken")
+
+
+async def test_broken_str_exception_chain_never_masks_original(debug_capture):
+    # 判定链上任一节点 __str__ 损坏时按非存储层处理：原样 re-raise，不得让
+    # 边界判定引入新的失败模式掩盖原异常（CR-1 回归钉）。
+    def broken_cause(*args, **kwargs):
+        err = RuntimeError("business failure")
+        err.__cause__ = _BrokenStrSqliteError("disk I/O error")
+        raise err
+
+    child = child_for(broken_cause)
+    _child_with_context(child, [_assistant("TASK-01 done")])
+    with pytest.raises(BaseError, match="business failure"):
+        await dispatch(child)
+
+
 async def test_sqlite_text_in_business_error_is_not_degraded(debug_capture):
     # 业务异常文本恰好携带 "(sqlite3." 字样时不得按存储层降级（文本嗅探误判回归钉）。
     run = AsyncMock(side_effect=RuntimeError(
