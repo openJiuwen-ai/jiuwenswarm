@@ -121,7 +121,7 @@ class SubagentTTSEConsultRail(DeepAgentRail):
                 or self._agent.ability_manager.get(TOOL_NAME) is not self._tool.card
             ):
                 self._drop_tool()
-                from openjiuwen.agent_evolving.ttse.consult import (
+                from openjiuwen.agent_evolving.ttse.recall.consult import (
                     create_ttse_consult_tools,
                 )
 
@@ -312,7 +312,7 @@ class SubagentTTSEConsultRail(DeepAgentRail):
             catalog_available = False
             if session_id and manager is not None:
                 try:
-                    from openjiuwen.agent_evolving.ttse.catalog import (
+                    from openjiuwen.agent_evolving.ttse.bank.catalog import (
                         render_catalog_markdown,
                     )
                     from openjiuwen.harness.prompts.prompt_attachment_manager import (

@@ -6,6 +6,8 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
+import sys
 import threading
 import weakref
 from collections import OrderedDict
@@ -16,6 +18,8 @@ from openjiuwen.harness.security.skill_authorization import (
     is_skill_authorization_enabled,
 )
 
+logger = logging.getLogger(__name__)
+
 _publishers = weakref.WeakValueDictionary()
 _publishers_lock = threading.RLock()
 # Only unleased compiled policies are cacheable/evictable. Active requests and
@@ -24,12 +28,42 @@ MAX_IDLE_PERMISSION_SESSIONS = 128
 _idle_sessions = OrderedDict()
 
 
+def _note_finalize_cleanup_failure(op: str, key, exc: BaseException) -> None:
+    """Record finalize cleanup failure without raising (weakref contract + G.ERR.07)."""
+    detail = f"[published_scopes] finalize {op} failed"
+    if key is not None:
+        detail = f"{detail} key={key}"
+    detail = f"{detail} err={exc!r}"
+    try:
+        logger.warning("%s", detail)
+        return
+    except Exception as log_exc:
+        # Logging handlers may already be closed at weakref.finalize time.
+        try:
+            sys.__stderr__.write(f"{detail}; logger_unavailable={log_exc!r}\n")
+            return
+        except Exception:
+            # Interpreter teardown: no safe sink left; finalize must still return
+            # so remaining orphan-key cleanup / GC can continue.
+            return
+
+
 def _release_orphaned_keys(manager, keys):
     # No reference to the publisher/rail: GC must be able to collect their
     # host callback cycle even when normal Agent uninit was missed.
+    # Finalize callbacks must not raise (logging may already be shut down).
     for key in tuple(keys):
-        manager.remove_config(key)
-    keys.clear()
+        try:
+            manager.remove_config(key)
+        except Exception as exc:
+            _note_finalize_cleanup_failure("remove_config", key, exc)
+            # Keep releasing remaining keys instead of aborting the whole pass.
+            continue
+    try:
+        keys.clear()
+    except Exception as exc:
+        _note_finalize_cleanup_failure("keys.clear", None, exc)
+        return
 
 
 def _publisher_snapshot():

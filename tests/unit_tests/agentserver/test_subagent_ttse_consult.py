@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from openjiuwen.agent_evolving.ttse.config import TTSEConfig
-from openjiuwen.agent_evolving.ttse.stores import TTSERecordStore
+from openjiuwen.agent_evolving.ttse.bank.stores import TTSERecordStore
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.single_agent.ability_manager import AbilityManager
 from openjiuwen.core.single_agent.prompts.builder import SystemPromptBuilder
