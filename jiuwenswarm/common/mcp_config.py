@@ -1185,10 +1185,12 @@ async def _run_mcp_worker(
             except BaseException as exc:
                 # 即使 cancel/keyboard 也要解除 caller，避免 invoke 永挂死 worker。
                 mapped: BaseException = exc
-                if isinstance(exc, asyncio.CancelledError) and worker.close_reason:
+                if isinstance(exc, asyncio.CancelledError):
                     mapped = McpWorkerStoppedError(
                         "MCP worker stopped: "
                         f"server={worker.server_name} reason={worker.close_reason}"
+                        if worker.close_reason
+                        else f"MCP transport cancelled internally: server={worker.server_name}"
                     )
                 if not req.future.done():
                     req.future.set_exception(mapped)
@@ -1513,6 +1515,14 @@ async def shutdown_pooled_mcp_worker(
         except (asyncio.CancelledError, Exception):
             pass
     except asyncio.CancelledError:
+        current = asyncio.current_task()
+        if task.done() and not (current is not None and current.cancelling()):
+            logger.warning(
+                "MCP worker owner task ended cancelled server=%s reason=%s",
+                worker.server_name,
+                worker.close_reason,
+            )
+            return
         # 清理路径自身被 cancel：仍 cancel worker 以免 stdio 进程/浏览器泄漏。
         task.cancel()
         try:
