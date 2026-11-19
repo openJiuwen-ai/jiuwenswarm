@@ -154,9 +154,10 @@ class TeamBindingStore:
         if not normalized:
             return None
         with self._lock:
+            data = self._read_session_bindings_unlocked() if require_unique else self._read_unlocked()
             hits = [
                 binding
-                for binding in self._read_unlocked(strict=require_unique).values()
+                for binding in data.values()
                 if normalized in binding.session_ids
             ]
         if not hits:
@@ -213,7 +214,7 @@ class TeamBindingStore:
             raise TeamBindingStoreError("session_id is required", code="BAD_REQUEST")
 
         with self._lock:
-            data = self._read_unlocked(strict=not allow_rebind)
+            data = self._read_unlocked() if allow_rebind else self._read_session_bindings_unlocked()
             binding = data.get(normalized_name)
             if binding is None:
                 raise TeamBindingStoreError("team binding not found", code="NOT_FOUND")
@@ -305,6 +306,17 @@ class TeamBindingStore:
                 data.pop(normalized, None)
                 self._write_unlocked(data)
             return existed
+
+    def _read_session_bindings_unlocked(self) -> dict[str, TeamBinding]:
+        """Keep strict binding read failures classified across session entrypoints."""
+        try:
+            return self._read_unlocked(strict=True)
+        except TeamSessionBindingError:
+            raise
+        except TeamBindingStoreError as exc:
+            raise TeamSessionBindingError(
+                str(exc), code=exc.code, reason="TEAM_SESSION_BINDING_READ_FAILED",
+            ) from exc
 
     def _read_unlocked(self, *, strict: bool = False) -> dict[str, TeamBinding]:
         if not self._path.exists():

@@ -286,13 +286,33 @@ async def test_swarm_resume_cannot_open_a_replacement_session(state):
 
 
 @pytest.mark.asyncio
-async def test_bad_or_ambiguous_binding_store_never_falls_through_to_generation(state):
+@pytest.mark.parametrize("payload", ["broken-json", {"teams": []}, {"teams": {"broken": 3}}])
+async def test_bad_or_ambiguous_binding_store_never_falls_through_to_generation(state, payload):
     before = state.metadata.read_bytes()
-    state.store.path.write_text("broken-json", encoding="utf-8")
+    state.store.path.write_text(payload if isinstance(payload, str) else json.dumps(payload), encoding="utf-8")
     with pytest.raises(TeamSessionBindingError) as error:
         await chat._ensure_auto_team_binding_for_chat(None, request())
-    assert error.value.reason == "TEAM_SESSION_BINDING_READ_FAILED"
+    assert error.value.payload == {
+        "error": "Unable to read the original team session binding.",
+        "code": "INTERNAL_ERROR", "reason": "TEAM_SESSION_BINDING_READ_FAILED",
+    }
     assert state.metadata.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_chat_recovery_preserves_ambiguous_owner_classification(state):
+    state.store.create(team_name="other", template_id=TEAM)
+    data = json.loads(state.store.path.read_text(encoding="utf-8"))
+    data["teams"]["other"]["session_ids"] = [SID]
+    state.store.path.write_text(json.dumps(data), encoding="utf-8")
+    before = state.metadata.read_bytes(), state.store.path.read_bytes()
+
+    with pytest.raises(TeamSessionBindingError) as error:
+        await chat._ensure_auto_team_binding_for_chat(None, request())
+
+    assert error.value.code == "CONFLICT"
+    assert error.value.reason == "TEAM_SESSION_BINDING_AMBIGUOUS"
+    assert (state.metadata.read_bytes(), state.store.path.read_bytes()) == before
 
 
 @pytest.mark.asyncio
@@ -313,6 +333,46 @@ async def test_naming_rejects_unusable_owner_before_network_or_persistence(state
 class Sink:
     def __init__(self): self.sent = []
     async def send_wire(self, wire): self.sent.append(wire)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [
+    "broken-json", {"teams": []}, {"teams": {"broken": 3}},
+    {"teams": {"broken": {"template_id": TEAM, "created_at": "invalid"}}},
+])
+async def test_explicit_bind_classifies_binding_read_failures_without_writes(state, payload):
+    state.store.path.write_text(payload if isinstance(payload, str) else json.dumps(payload), encoding="utf-8")
+    before = state.store.path.read_bytes(), state.metadata.read_bytes(), state.snapshot.exists()
+    sink = Sink()
+    req = request(req_method=ReqMethod.TEAM_SESSION_BIND, params={"session_id": SID})
+
+    await team.handle_team_session_bind(RequestContext(req, sink, "isolated"))
+
+    details = sink.sent[0]["body"]["details"]
+    assert details["code"] == "INTERNAL_ERROR"
+    assert details["reason"] == "TEAM_SESSION_BINDING_READ_FAILED"
+    assert (state.store.path.read_bytes(), state.metadata.read_bytes(), state.snapshot.exists()) == before
+
+
+@pytest.mark.asyncio
+async def test_protected_bind_read_failure_keeps_classification_after_rollback(state, monkeypatch):
+    before = state.metadata.read_bytes()
+    bind = state.store.bind_session
+    def corrupt_before_commit(**kwargs):
+        state.store.path.write_text("broken-json", encoding="utf-8")
+        return bind(**kwargs)
+    monkeypatch.setattr(state.store, "bind_session", corrupt_before_commit)
+    sink = Sink()
+    req = request(req_method=ReqMethod.TEAM_SESSION_BIND, params={"session_id": SID})
+
+    await team.handle_team_session_bind(RequestContext(req, sink, "isolated"))
+
+    details = sink.sent[0]["body"]["details"]
+    assert details["code"] == "INTERNAL_ERROR"
+    assert details["reason"] == "TEAM_SESSION_BINDING_READ_FAILED"
+    assert state.metadata.read_bytes() == before
+    assert not state.snapshot.exists()
+    assert state.store.path.read_text(encoding="utf-8") == "broken-json"
 
 
 @pytest.mark.asyncio

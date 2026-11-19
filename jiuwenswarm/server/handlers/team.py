@@ -644,9 +644,9 @@ def _restore_officeclaw_team_session(
         metadata = json.loads(artifacts[0]) if artifacts[0] is not None else {}
         if not isinstance(metadata, dict):
             raise ValueError("invalid metadata object")
-    except TeamSessionBindingError:
-        raise
     except (TeamBindingStoreError, OSError, ValueError, TypeError) as exc:
+        if isinstance(exc, TeamSessionBindingError) and exc.reason != "TEAM_SESSION_BINDING_READ_FAILED":
+            raise
         raise TeamSessionBindingError(
             "Unable to read the original team session binding.",
             code=getattr(exc, "code", "INTERNAL_ERROR"), reason="TEAM_SESSION_BINDING_READ_FAILED",
