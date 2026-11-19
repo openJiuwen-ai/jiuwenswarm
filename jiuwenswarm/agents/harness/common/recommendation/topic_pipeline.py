@@ -220,6 +220,11 @@ UTILITY_CANDIDATE_BATCH_SIZE = 3
 # to fan out past common provider max_parallel_requests (~10) and fail with 429.
 # Match session-summary / native-search caps in this package.
 _TOPIC_ARK_STAGE_CONCURRENCY = 3
+# A released interest beyond the highest-ranked few is a candidate the pool is
+# unlikely to show, but diversity scores it pairwise against every other one, so
+# the tail costs a quadratic number of calls for no card. It also bounds what a
+# single generator call has to write.
+_MAX_INTEREST_CANDIDATES = 6
 SHORT_INTENT_SNAPSHOT_PREFIX = "v6-short"
 MAX_FROZEN_DOCUMENT_CHARS = 8_000
 _PROFILE_INTEREST_CATEGORY = "profile_interest_continuation"
@@ -1472,6 +1477,21 @@ def _carried_plan(plan: dict[str, Any], card: Mapping[str, Any]) -> dict[str, An
     }
 
 
+def _top_ranked_interests(
+    interests: Sequence[RankedStarterInterest],
+    limit: int = _MAX_INTEREST_CANDIDATES,
+) -> list[RankedStarterInterest]:
+    """The highest-ranked interests, kept in the order they were released."""
+
+    if len(interests) <= limit:
+        return list(interests)
+    kept = {
+        item.interest_summary_id
+        for item in sorted(interests, key=lambda item: item.rank)[:limit]
+    }
+    return [item for item in interests if item.interest_summary_id in kept]
+
+
 def _candidate_slots(
     interests: Sequence[RankedStarterInterest],
 ) -> list[dict[str, str]]:
@@ -2477,11 +2497,23 @@ async def _invoke_batched_diversity_proxy(
         requested_marginal_ids = (
             marginal_batches[index] if index < len(marginal_batches) else []
         )
+        # Only the candidates this batch asks about decide its answer; sending
+        # the whole list to every pair batch repeats the same prompt tokens for
+        # nothing.
+        involved_ids = {
+            candidate_id for pair in requested_pairs for candidate_id in pair
+        }
+        involved_ids.update(requested_marginal_ids)
         request_payload = json.dumps(
             {
                 "input_snapshot_id": payload.get("input_snapshot_id"),
                 "discussion_coverage": payload.get("discussion_coverage", []),
-                "candidates": candidates,
+                "candidates": [
+                    candidate
+                    for candidate in candidates
+                    if isinstance(candidate, dict)
+                    and candidate.get("candidate_id") in involved_ids
+                ],
                 "requested_pairs": [
                     {
                         "left_candidate_id": left,
@@ -6897,6 +6929,9 @@ class TopicPipeline:
             if units_holding_question.intersection(decision.source_profile_unit_ids):
                 continue
             ordinary_interests.append(item)
+        # Every extra candidate is one more pairwise comparison in scoring, so
+        # the tail past the best-ranked few is dropped before slots are made.
+        ordinary_interests = _top_ranked_interests(ordinary_interests)
         still_open = max(0, list_size - carried_over)
         interest_candidate_slots = _candidate_slots([
             ordinary_interests[index % len(ordinary_interests)]

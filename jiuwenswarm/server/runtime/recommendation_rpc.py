@@ -322,7 +322,10 @@ async def _get(host: Any, params: dict[str, Any], session_id: str) -> Recommenda
             wanted = is_topic_recommendation_enabled()
             if bool(host.topic_service.configuration_status()["enabled"]) != wanted:
                 await host.topic_service.set_enabled(wanted, persist=False)
-            payload = host.topic_service.serve(
+            # The read decodes whole pool payloads from SQLite; keep it off the
+            # worker loop the RPC is served on.
+            payload = await asyncio.to_thread(
+                host.topic_service.serve,
                 requested_session_id,
                 context_scope=context_scope,
                 project_id=project_id,
@@ -399,10 +402,12 @@ async def _event(
             return _fail("failed to record event", "INTERNAL_ERROR")
     if policy_id != TOPIC_POLICY_ID:
         return _fail("unsupported policy_id", "BAD_REQUEST")
-    return _product_event(host, event, selection_mode)
+    return await _product_event(host, event, selection_mode)
 
 
-def _product_event(host: Any, event: dict[str, Any], selection_mode: str) -> RecommendationResult:
+async def _product_event(
+    host: Any, event: dict[str, Any], selection_mode: str,
+) -> RecommendationResult:
     from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
         project_id_for_scope,
     )
@@ -427,7 +432,8 @@ def _product_event(host: Any, event: dict[str, Any], selection_mode: str) -> Rec
     event_type = str(event.get("event_type") or "").strip()
     service = host.topic_service
     if event_type == "dynamic_exposure" and service is not None:
-        recorded = service.record_exposure(
+        recorded = await asyncio.to_thread(
+            service.record_exposure,
             {
                 "session_id": event["session_id"],
                 "slate_id": str(event["slate_id"]),
@@ -445,7 +451,8 @@ def _product_event(host: Any, event: dict[str, Any], selection_mode: str) -> Rec
         and service is not None
         and host.topic_outcome_queue is not None
     ):
-        return _ok(service.record_interaction(
+        return _ok(await asyncio.to_thread(
+            service.record_interaction,
             event,
             outcome_queue=host.topic_outcome_queue,
             created_at=time.time(),
@@ -455,7 +462,8 @@ def _product_event(host: Any, event: dict[str, Any], selection_mode: str) -> Rec
             record_terminal_slate_outcome,
         )
 
-        recorded = record_terminal_slate_outcome(
+        recorded = await asyncio.to_thread(
+            record_terminal_slate_outcome,
             service.store,
             event_type=event_type,
             manifest_id=manifest_id,
@@ -472,7 +480,8 @@ def _product_event(host: Any, event: dict[str, Any], selection_mode: str) -> Rec
                 record_terminal_session_start,
             )
 
-            recorded = record_terminal_session_start(
+            recorded = await asyncio.to_thread(
+                record_terminal_session_start,
                 service.store,
                 manifest_id=manifest_id,
                 generation_batch_id=generation_batch_id,

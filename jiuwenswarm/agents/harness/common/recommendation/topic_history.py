@@ -3067,13 +3067,19 @@ def evaluate_v5_memory_update_gate(
 
 
 def _latest_v4_row(connection: sqlite3.Connection) -> dict[str, Any] | None:
-    for row in connection.execute(
-        "SELECT version, snapshot_json FROM profile_snapshot ORDER BY version DESC"
-    ):
-        value = json.loads(row["snapshot_json"])
-        if isinstance(value, dict) and value.get("schema_version") == _V4_SCHEMA_VERSION:
-            return value
-    return None
+    # Legacy snapshots share this table; older ones are large and are never the
+    # answer, so the schema version is matched inside the store and only the one
+    # chosen document is decoded here.
+    row = connection.execute(
+        "SELECT snapshot_json FROM profile_snapshot "
+        "WHERE json_extract(snapshot_json, '$.schema_version') = ? "
+        "ORDER BY version DESC LIMIT 1",
+        (_V4_SCHEMA_VERSION,),
+    ).fetchone()
+    if row is None:
+        return None
+    value = json.loads(row["snapshot_json"])
+    return value if isinstance(value, dict) else None
 
 
 def load_latest_history_state(store: TopicStarterStore) -> dict[str, Any] | None:
@@ -3086,14 +3092,18 @@ def load_history_state_at(store: TopicStarterStore, at: float) -> dict[str, Any]
     """The v4 state in force at ``at``: the newest snapshot saved no later."""
 
     with sqlite3.connect(store.path) as connection:
-        for (snapshot_json,) in connection.execute(
-            "SELECT snapshot_json FROM profile_snapshot WHERE created_at <= ? ORDER BY version DESC",
-            (float(at),),
-        ):
-            value = json.loads(snapshot_json)
-            if isinstance(value, dict) and value.get("schema_version") == _V4_SCHEMA_VERSION:
-                return value
-    return None
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            "SELECT snapshot_json FROM profile_snapshot "
+            "WHERE created_at <= ? "
+            "AND json_extract(snapshot_json, '$.schema_version') = ? "
+            "ORDER BY version DESC LIMIT 1",
+            (float(at), _V4_SCHEMA_VERSION),
+        ).fetchone()
+        if row is None:
+            return None
+        value = json.loads(row["snapshot_json"])
+        return value if isinstance(value, dict) else None
 
 
 _LEGACY_NEGATIVE_PREFERENCE_SCRUB_EVENT = "legacy_negative_preferences_scrubbed"
