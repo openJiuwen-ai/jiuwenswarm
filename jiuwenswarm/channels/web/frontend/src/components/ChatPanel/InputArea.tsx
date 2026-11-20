@@ -2111,6 +2111,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             // 新会话尚无服务器侧会话路径：浏览器端无法获得 persistedMediaItem.path，
             // 需携带 base64 作为发送载体，否则附件进不了 ready 列表、发送按钮保持灰色。
             const base64Payload = browserFile ? await readBinaryFileAsBase64(browserFile) : null;
+            if (browserFile && !base64Payload?.base64Data) {
+              updateAttachment(attachment.id, {
+                status: 'error',
+                error: t('chat.inputAttachment.uploadFailed'),
+              });
+              return;
+            }
             updateAttachment(attachment.id, {
               persistedMediaItem: {
                 type: 'document',
