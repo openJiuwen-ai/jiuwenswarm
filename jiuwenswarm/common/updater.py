@@ -24,6 +24,7 @@ from jiuwenswarm.common.version_source import (
     normalize_pypi_index_url,
     pypi_project_url,
     release_timestamp_key,
+    strip_build_suffix,
 )
 from jiuwenswarm.common.utils import get_user_workspace_dir
 
@@ -314,8 +315,12 @@ class UpdaterService:
         # and comparing different bases made the panel advertise an "upgrade" to
         # an older release (#6849).
         current_version = get_runtime_version()
+        # A dated build suffix (``0.2.9.beta5.dev20261119``) identifies the
+        # artifact, not a newer release; ordering it raw ranks the installed
+        # build below an obsolete pre-release of the same base.
+        comparison_version = strip_build_suffix(current_version)
         try:
-            release = source.fetch_latest(current_version)
+            release = source.fetch_latest(comparison_version)
         except Exception as exc:
             raise RuntimeError(
                 f"Failed to fetch latest release from {config['release_api_type']}: {exc}"
@@ -341,7 +346,7 @@ class UpdaterService:
                 release.current_release_published_at,
             )
         else:
-            has_update = _is_newer_version(latest_version, current_version)
+            has_update = _is_newer_version(latest_version, comparison_version)
 
         if not has_update:
             if install_mode == "desktop":

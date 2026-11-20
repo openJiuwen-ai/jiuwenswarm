@@ -288,6 +288,11 @@ def test_pypi_source_keeps_only_latest_version_files(monkeypatch):
     [
         ("0.2.9", False, ""),
         ("0.2.8", True, "workswarm-0.2.9b3-py3-none-any.whl"),
+        # A dated build suffix marks the artifact, not a newer release, so the
+        # installed daily build must not rank below an obsolete pre-release.
+        ("0.2.9.dev20261119", False, ""),
+        ("0.2.9.beta5.dev20261119", False, ""),
+        ("0.2.9.beta1.dev20261119", True, "workswarm-0.2.9b3-py3-none-any.whl"),
     ],
 )
 def test_pip_check_compares_installed_build_version(
@@ -322,4 +327,24 @@ def test_pip_check_compares_installed_build_version(
     assert status["latest_version"] == "0.2.9b3"
     assert status["has_update"] is has_update
     assert status["matched_asset"] == matched_asset
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("0.2.9.beta5.dev20261119", "0.2.9.beta5"),
+        ("0.2.9.dev20261119", "0.2.9"),
+        ("0.2.5.beta1.dev20261009+local", "0.2.5.beta1"),
+        ("0.2.9.post20261119", "0.2.9"),
+        # Release and pre-release versions keep their meaning.
+        ("0.2.9b3", "0.2.9b3"),
+        ("0.2.9.beta5", "0.2.9.beta5"),
+        ("0.2.9.dev1", "0.2.9.dev1"),
+        ("", ""),
+    ],
+)
+def test_strip_build_suffix_keeps_release_version(raw, expected):
+    """#6849 review: only build-time suffixes are dropped before ordering."""
+    assert version_source.strip_build_suffix(raw) == expected
+
 

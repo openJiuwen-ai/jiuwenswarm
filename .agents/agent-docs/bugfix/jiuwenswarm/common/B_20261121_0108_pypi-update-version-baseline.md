@@ -47,6 +47,12 @@ design_note: 仅修正更新检查的版本基线取值与 PyPI 源对最新版�
 
 - `_check` 统一以 `get_runtime_version()`（与 `current_version` 展示一致）作为
   比较基线，并把它传给 `fetch_latest` 用于桌面端按版本查时间戳。
+- 评审补充：每日构建的分发版本可能带构建时间后缀
+  （`0.2.9.beta5.dev20261119`、`0.2.9+local`）。`_detect_prerelease_type`
+  按固定顺序返回最先命中的标记，会把这类版本判成 `dev`（rank 0），反而低于
+  同基线的旧 beta。新增 `strip_build_suffix`，在比较前剥离结尾的
+  `.dev<8位日期>` / `.post<8位日期>` / `+local` 段，桌面端按 tag 匹配也使用
+  归一化后的版本；展示的 `current_version` 仍保留原始分发版本。
 - `PyPIVersionSource.fetch_latest` 在解析文件名版本时记录「文件名 → 版本」，
   `release.assets` 只保留版本号与 `latest_version` **完全相等**的文件；时间戳
   也从该文件的上传时间取得，不再使用子串匹配。
@@ -65,11 +71,16 @@ design_note: 仅修正更新检查的版本基线取值与 PyPI 源对最新版�
 - `test_pip_check_compares_installed_build_version`：已安装 `0.2.9` 时
   `has_update=False`、`matched_asset=""`；已安装 `0.2.8` 时 `has_update=True`
   且 `matched_asset` 为 `0.2.9b3` 对应的 whl。
+- 带构建后缀的已安装版本（`0.2.9.dev20261119`、`0.2.9.beta5.dev20261119`）
+  面对索引中的旧 `0.2.9b3` 时 `has_update=False`；而
+  `0.2.9.beta1.dev20261119` 仍能识别到 `0.2.9b3` 是升级。
+- `test_strip_build_suffix_keeps_release_version`：覆盖 `.dev<日期>`、`.post<日期>`、
+  `+local`、多段后缀，以及 `0.2.9b3` / `0.2.9.beta5` / `0.2.9.dev1` 保持不变。
 
 `tests/unit_tests/test_updater_install_mode.py` 中依赖 `updater.__version__`
 的用例改为注入 `updater.get_runtime_version`。
 
-两个文件共 59 个用例全部通过，新增定向用例 3 passed。
+三个测试文件共 84 个用例全部通过（含本次新增定向用例）。
 
 ## 遗留
 
