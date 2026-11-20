@@ -311,3 +311,22 @@ begin
     FinishCliProgress;
   end;
 end;
+
+#ifndef ELECTRON_FRONTEND_ONLY
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
+begin
+  if CurUninstallStep <> usUninstall then
+    Exit;
+
+  // UninstallRun would continue deleting files even on a nonzero exit code.
+  if Exec(ExpandConstant('{app}\resources\backend\{#BackendExecutableName}'),
+    '--desktop-stop-bundled-email-mcp', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0) then
+    Exit;
+
+  Log(Format('Bundled email-mcp cleanup failed (code %d). Uninstall stopped before deleting files.', [ResultCode]));
+  SuppressibleMsgBox('Could not confirm that email-mcp exited. Close it and retry uninstalling.', mbError, MB_OK, IDOK);
+  Abort;
+end;
+#endif
