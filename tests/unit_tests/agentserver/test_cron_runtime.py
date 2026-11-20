@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from zoneinfo import ZoneInfo
 import time
 
@@ -259,6 +260,61 @@ async def test_cron_tools_create_job_does_not_persist_locally(tmp_path, monkeypa
     assert push.payloads[0]["body"]["action"] == "create"
     # 本地 cron_jobs.json 未被写入（单源）
     assert not (tmp_path / "cron_jobs.json").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["session", "selection_only_session", "explicit"])
+async def test_cron_backend_preserves_stable_model_selection(tmp_path, monkeypatch, source) -> None:
+    """Conversation-created jobs retain the selected configuration, not just its name."""
+    _setup_project_store(tmp_path, monkeypatch)
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+    selection = {"type": "model", "id": "mdl_selected"}
+    metadata = {} if source == "explicit" else {"model_selection": selection}
+    if source == "session":
+        metadata["model"] = "same-name"
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        lambda *args, **kwargs: metadata,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.cron.models.validate_cron_model",
+        lambda raw: pytest.fail("Stable selections must not be resolved by legacy name"),
+    )
+    params = {
+        "name": "stable-model",
+        "schedule": {"kind": "cron", "expr": "0 9 * * *"},
+        "payload": {"kind": "agentTurn", "message": "hello"},
+    }
+    if source == "explicit":
+        params["model_selection"] = selection
+    else:
+        params["model_selection"] = {"type": "model", "id": "mdl_other"}
+    backend = _CronToolsCronBackend(tools)
+    job = await backend.create_job(
+        params, context=CronToolContext(channel_id="web", session_id="web_stable_model"),
+    )
+    assert {key: job["model_selection"][key] for key in selection} == selection
+    assert job.get("model_name") == metadata.get("model")
+    assert push.payloads[0]["body"]["data"]["model_selection"] == job["model_selection"]
+    assert not (tmp_path / "cron_jobs.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_cron_backend_rejects_inherited_model_group(tmp_path, monkeypatch) -> None:
+    """Inheritance must preserve the existing single-model-only cron policy."""
+    _setup_project_store(tmp_path, monkeypatch)
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        lambda *args, **kwargs: {"model_selection": {"type": "model_group", "id": "mgp_selected"}},
+    )
+    backend = _CronToolsCronBackend(tools)
+    with pytest.raises(ValueError, match="Scheduled tasks only support a single model"):
+        await backend.create_job(
+            {"name": "group", "cron_expr": "0 9 * * *", "targets": "web", "description": "hello"},
+            context=CronToolContext(channel_id="web", session_id="web_group_model"),
+        )
+    assert not push.payloads
 
 
 @pytest.mark.asyncio
@@ -954,6 +1010,43 @@ async def test_cron_tools_update_job_validates_model(tmp_path, monkeypatch) -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("requested, target_id", [("B", "mdl_b"), ("C", "mdl_c"), ("same", None)])
+async def test_cron_tools_update_job_resolves_model_identity(tmp_path, monkeypatch, requested, target_id) -> None:
+    """Aliases must switch configuration IDs even when canonical names are equal."""
+    _setup_project_store(tmp_path, monkeypatch)
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+    await tools._local_store.create_job(
+        job_id="job-model-update", name="daily", cron_expr="0 9 * * *",
+        timezone="Asia/Shanghai", description="hello", targets="web",
+        model_name="same", model_selection={"type": "model", "id": "mdl_a"},
+    )
+    models = [
+        {"model_id": "mdl_a", "model_name": "same", "alias": "A"},
+        {"model_id": "mdl_b", "model_name": "same", "alias": "B"},
+        {"model_id": "mdl_c", "model_name": "other", "alias": "C"},
+    ]
+    monkeypatch.setattr(
+        "jiuwenswarm.common.model_catalog.ModelCatalog.list_public_models", lambda self: models,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.runtime.cron.models.validate_cron_model",
+        lambda raw: "other" if raw == "C" else "same",
+    )
+    if target_id is None:
+        with pytest.raises(ValueError, match="ambiguous"):
+            await tools.update_job("job-model-update", {"model_name": requested})
+        assert not push.payloads
+        return
+    job = await tools.update_job("job-model-update", {"model_name": requested})
+    assert job["model_selection"]["type"] == "model"
+    assert job["model_selection"]["id"] == target_id
+    assert job["model_name"] == ("other" if target_id == "mdl_c" else "same")
+    assert push.payloads[-1]["body"]["data"]["patch"]["model_selection"] == {
+        "type": "model", "id": target_id,
+    }
+
+
+@pytest.mark.asyncio
 async def test_cron_tools_create_job_tool_preserves_explicit_empty_project_dir(
     tmp_path, monkeypatch
 ) -> None:
@@ -1171,6 +1264,25 @@ class TestExtractLegacyParamsKindAt:
         assert out["timezone"] == "Asia/Tokyo"
         assert out["cron_expr"] == "0 0 9 1 1 ? 2026"
 
+    def test_kind_at_second_dst_occurrence_uses_utc(self) -> None:
+        context = SimpleNamespace(channel_id="web", session_id="sess-1")
+        payload = {
+            "schedule": {
+                "kind": "at",
+                "at": "2026-11-01T01:30:00-05:00",
+                "tz": "America/New_York",
+            },
+            "payload": {"kind": "agentTurn", "message": "提醒"},
+            "delivery": {"mode": "announce"},
+        }
+
+        out = _extract_legacy_params(payload, context=context, require_schedule=True)
+
+        # The second 01:30 in New York is 06:30Z; the local expression would
+        # have fired at the first one (05:30Z), an hour early.
+        assert out["cron_expr"] == "0 30 6 1 11 ? 2026"
+        assert out["timezone"] == "UTC"
+
     def test_kind_every_still_raises(self) -> None:
         context = SimpleNamespace(channel_id="web", session_id="sess-1")
         payload = {
@@ -1355,8 +1467,17 @@ class TestBuildToolsAllowCreate:
             await unified._func(action="add", job={"name": "spawned"})
 
     @pytest.mark.asyncio
-    async def test_unified_cron_tool_list_still_works_when_create_disabled(self) -> None:
-        tools = self._build(allow_create=False)
+    @pytest.mark.parametrize(
+        "build_kwargs",
+        [
+            pytest.param({"allow_create": False}, id="create-disabled"),
+            pytest.param({"allow_create": False, "allow_update": False}, id="update-disabled"),
+        ],
+    )
+    async def test_unified_cron_tool_list_still_works_when_create_or_update_disabled(
+        self, build_kwargs: dict
+    ) -> None:
+        tools = self._build(**build_kwargs)
         unified = next(tool for tool in tools if tool.card.name == "cron")
 
         result = await unified._func(action="list")
@@ -1462,11 +1583,50 @@ class TestBuildToolsAllowCreate:
         with pytest.raises(ValueError, match="not allowed"):
             await unified._func(action="update", jobId="job-1", patch={"name": "x"})
 
+
+class TestEnsureSchedulerStartedBackgroundTask:
+    """issue #6286：后台启动 Task 须持强引用且内部异常须记日志。"""
+
+    def _make_bridge_with_backend(self, ensure_coro_factory):
+        bridge = CronRuntimeBridge()
+        backend = MagicMock(spec=_CronToolsCronBackend)
+        backend.ensure_scheduler_started = ensure_coro_factory
+        bridge.set_backend(backend)
+        return bridge
+
     @pytest.mark.asyncio
-    async def test_unified_cron_tool_list_still_works_when_update_disabled(self) -> None:
-        tools = self._build(allow_create=False, allow_update=False)
-        unified = next(tool for tool in tools if tool.card.name == "cron")
+    async def test_holds_task_reference_and_releases_on_done(self) -> None:
+        started = asyncio.Event()
 
-        result = await unified._func(action="list")
+        async def slow_start():
+            await started.wait()
 
-        assert result == {"jobs": [{"id": "job-1"}]}
+        bridge = self._make_bridge_with_backend(slow_start)
+        bridge.ensure_scheduler_started()
+
+        assert len(bridge._scheduler_start_tasks) == 1
+        task = next(iter(bridge._scheduler_start_tasks))
+        assert not task.done()
+
+        started.set()
+        await task
+        assert bridge._scheduler_start_tasks == set()
+
+    @pytest.mark.asyncio
+    async def test_background_exception_is_logged_not_silent(self, caplog) -> None:
+        async def boom():
+            raise RuntimeError("scheduler-start-exploded")
+
+        bridge = self._make_bridge_with_backend(boom)
+        bridge.ensure_scheduler_started()
+
+        with caplog.at_level(logging.WARNING, logger="jiuwenswarm.common.utils"):
+            await asyncio.wait_for(
+                asyncio.gather(*bridge._scheduler_start_tasks), timeout=5
+            )
+
+        assert any(
+            "Background scheduler start failed" in rec.message
+            for rec in caplog.records
+            if rec.levelno == logging.WARNING
+        )

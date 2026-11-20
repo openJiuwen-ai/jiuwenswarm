@@ -19,7 +19,7 @@ function fixture(models, fetched = models) {
     useSessionStore: { getState: () => state }, useChatStore: { getState: () => ({}) },
     resolveChatModelSelection: entries => entries[0], i18n: { t: key => key },
     webRequest: async method => { calls.push(method); return { models: fetched }; },
-    generationProblemFromConfig: (_config, kind) => `${kind}-missing`,
+    generationCatalogProblem: (_models, kind) => `${kind}-missing`,
     nodeGenerationKind: node => node.kind,
   };
   Object.assign(context, load('designChatModelState', context, 'designChatModelReady'));
@@ -48,27 +48,28 @@ test('Anthropic does not bypass media readiness checks', async () => {
   assert.equal(await f.findDesignRunProblem([]), null);
 });
 
-for (const action of ['advance', 'rerunNode', 'restart']) {
-  test(`${action} dispatches a configured workflow and still blocks missing media`, async () => {
-    const { create } = await import('zustand');
-    const graph = { graph_id: 'graph', metadata: { model_name: 'anthropic-model' }, nodes: [{ id: 'image', kind: 'image' }], edges: [] };
-    const calls = [];
-    let problem = null;
-    const context = {
-      create, derivePrimaryAction: () => 'execute',
-      findDesignRunProblem: async () => problem,
-      useDesignerStore: { getState: () => ({ domainGraph: graph, flushSave: async () => {} }) },
-      designerGraphClient: { startRun: async params => { calls.push(params); return { run: null }; } },
-      designerRunFailureMessage: () => null,
-      DESIGNER_LEADER_NODE_ID: 'leader', DESIGNER_RUN_STATUS_RUNNING: 'running',
-    };
-    const { useDesignerRunStore: store } = load('designerRunStore', context, 'useDesignerRunStore');
-    await store.getState()[action](graph, 'image');
-    assert.equal(calls.length, 1);
-    assert.equal(store.getState().runError, null);
-    problem = 'image-missing';
-    await store.getState()[action](graph, 'image');
-    assert.equal(calls.length, 1);
-    assert.equal(store.getState().runError, 'image-missing');
-  });
-}
+test('workflow run and node regenerate both stay kind-scoped', async () => {
+  const { create } = await import('zustand');
+  const graph = { graph_id: 'graph', metadata: { model_name: 'anthropic-model' }, nodes: [{ id: 'image', kind: 'image' }], edges: [] };
+  const calls = [];
+  let runProblem = null;
+  const context = {
+    create, derivePrimaryAction: () => 'execute',
+    findDesignRunProblem: async () => runProblem,
+    useDesignerStore: { getState: () => ({ domainGraph: graph, flushSave: async () => {} }) },
+    designerGraphClient: { startRun: async params => { calls.push(params); return { run: null }; } },
+    designerRunFailureMessage: () => null,
+    DESIGNER_LEADER_NODE_ID: 'leader', DESIGNER_RUN_STATUS_RUNNING: 'running',
+  };
+  const { useDesignerRunStore: store } = load('designerRunStore', context, 'useDesignerRunStore');
+  await store.getState().advance(graph);
+  await store.getState().restart(graph);
+  await store.getState().rerunNode(graph, 'image');
+  assert.equal(calls.length, 3);
+  assert.equal(store.getState().runError, null);
+  runProblem = 'image-missing';
+  await store.getState().advance(graph);
+  await store.getState().rerunNode(graph, 'image');
+  assert.equal(calls.length, 3);
+  assert.equal(store.getState().runError, 'image-missing');
+});

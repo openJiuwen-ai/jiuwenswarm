@@ -302,6 +302,14 @@ test('draft settings trim blanks, drop uploaded images and keep only listed mode
   assert.deepEqual(settings.capabilities.starter_prompts, ['写一份周报']);
   assert.equal('persona' in settings, false);
   assert.equal(withColleagueEdit(toColleague(wireColleague), models, { persona: '新的人设' }).persona, '新的人设');
+  assert.deepEqual(
+    withColleagueEdit(toColleague(wireColleague), models, { persona: '新的人设' }).capabilities.starter_prompts,
+    ['帮我整理本周工作进展。'],
+  );
+  assert.deepEqual(
+    withColleagueEdit(toColleague(wireColleague), models, { starterPrompts: [] }).capabilities.starter_prompts,
+    [],
+  );
 
   const unlisted = toWireSettings({ ...draft, capabilities: { ...draft.capabilities, model: 'deepseek-v3.2' } }, models);
   assert.equal(unlisted.capabilities.model, null);
@@ -657,7 +665,7 @@ test('activity payload keeps counts and drops a member without an id', () => {
         failures: 1,
         companion_days: 16,
         last_response_at: '2026-10-16T10:00:00+00:00',
-        days: [{ date: '2026-10-16', tasks: 2, minutes: 90, calls: 2, tokens: 65 }],
+        days: [{ date: '2026-10-16', tasks: 2, replies: 1, minutes: 90, calls: 2, tokens: 65 }],
         hours: [{ date: '2026-10-16', hour: 10, minutes: 0, tasks: 1, tokens: 65 }],
         channels: [{ channel: 'web', calls: 2, tokens: 65, tasks: 2, replies: 1, failures: 1 }],
         groups: [],
@@ -682,6 +690,7 @@ test('activity payload keeps counts and drops a member without an id', () => {
   assert.equal(activity.members[0].tokens, 65);
   assert.equal(activity.members[0].replies, 1);
   assert.equal(activity.members[0].failures, 1);
+  assert.deepEqual(activity.members[0].days, [{ date: '2026-10-16', tasks: 2, replies: 1, minutes: 90, calls: 2, tokens: 65 }]);
   assert.deepEqual(activity.members[0].hours, [{ date: '2026-10-16', hour: 10, minutes: 0, tasks: 1, tokens: 65 }]);
   assert.deepEqual(activity.members[0].kinds, [{ date: '2026-10-16', conversation: 1, channel: 0, schedule: 1 }]);
   assert.deepEqual(activity.members[0].history, [
@@ -809,6 +818,21 @@ test('channel records map public messages and execution trace rows', async () =>
   ]);
 });
 
+test('an in-flight terminal schedule stays running instead of flashing paused', async () => {
+  const api = createJiuwenMateApi(async () => ({
+    plans: [{
+      plan_id: 'once-1', agent_id: 'a1', name: '提醒', prompt: '提醒我', cron_expr: '',
+      timezone: 'Asia/Shanghai', schedule_kind: 'once', interval_seconds: null,
+      run_at: '2026-10-18T01:00:00Z', starts_at: null, ends_at: null,
+      enabled: false, next_fire_at: null, conversation_id: 'schedule:once-1',
+      run_count: 1, last_status: 'running',
+    }],
+  }));
+  const [plan] = await api.listSchedules();
+  assert.equal(plan.enabled, false);
+  assert.equal(plan.lastStatus, 'running');
+});
+
 test('schedule API preserves interval, validity, completed state and real run history', async () => {
   const calls = [];
   const wire = {
@@ -923,8 +947,8 @@ test('binding and unbinding an IM app name the colleague configuration and the a
       config_id: 'agent-1', client_id: 'ding-app', client_secret: 'test-secret', robot_code: 'robot',
     }],
     ['channel.feishu.bind_agent', { config_id: 'agent-1', app_id: 'cli-app', app_secret: 'test-secret' }],
-    ['channel.dingtalk.unbind_agent', { client_id: 'ding-app' }],
-    ['channel.feishu.unbind_agent', { app_id: 'cli-app' }],
+    ['channel.dingtalk.unbind_agent', { client_id: 'ding-app', persistent_agent_id: 'agent-ding' }],
+    ['channel.feishu.unbind_agent', { app_id: 'cli-app', persistent_agent_id: 'agent-feishu' }],
   ]);
 });
 

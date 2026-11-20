@@ -117,6 +117,30 @@ function batch(state, cursor, records, nextCursor, extra = {}) {
   emit(state.sessionId, 'history.message', { ...meta, status: 'done' });
 }
 
+test('discarding a superseded history recovery releases buffered live output', async () => {
+  const live = [];
+  const unsubscribe = webClient.on('chat.final', ({ payload }) => live.push(payload.content));
+  let currentTurn = true;
+  let discarded = 0;
+  const state = restore({
+    shouldApply: () => currentTurn,
+    onDiscard: () => { discarded += 1; },
+  });
+  try {
+    currentTurn = false;
+    emit(state.sessionId, 'chat.final', { content: 'New turn output' });
+    batch(state, null, visibleRecords, null);
+    await flush();
+    assert.equal(discarded, 1);
+    assert.deepEqual(state.calls.ready, []);
+    assert.deepEqual(state.calls.empty, []);
+    assert.deepEqual(live, ['New turn output']);
+  } finally {
+    unsubscribe();
+    state.handle.dispose();
+  }
+});
+
 test('initial restore skips filtered batches and publishes older messages before buffered live events', async () => {
   const state = restore();
   const live = [];

@@ -20,7 +20,7 @@ interface ScheduleEditorProps {
   /** 提前唤醒秒数（后端 wake_offset_seconds）；UI 以分钟展示 */
   wakeOffsetSeconds?: number;
   onWakeOffsetSecondsChange?: (seconds: number) => void;
-  /** 仅锁定提前唤醒（proactive.tick 等不允许改 wake_offset） */
+  /** Optionally lock the wake-offset control. */
   wakeOffsetDisabled?: boolean;
 }
 

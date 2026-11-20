@@ -97,6 +97,7 @@ import {
   groupTrajectorySubjects,
   MAIN_TRAJECTORY_SUBJECT_ID,
 } from './trajectorySubjects';
+import { swarmflowIdentitiesOfMembers } from './teamTrajectoryWorkflowGroups';
 import {
   buildTeamControlModel,
   shouldUseScheduledTeamControl,
@@ -364,6 +365,7 @@ const EMPTY_PUBLISHED_WINDOW: PublishedTrajectoryWindow = {
 };
 
 const EMPTY_WORKFLOW_RUNS: readonly never[] = [];
+const EMPTY_TEAM_MEMBERS: readonly never[] = [];
 
 /**
  * Tool-panel visibility and other App chrome state must not rebuild the
@@ -398,6 +400,15 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const workflowRuns = useSessionStore(
     (s) => s.runtimes[sessionId]?.workflowRuns ?? EMPTY_WORKFLOW_RUNS,
   );
+  const teamMembers = useSessionStore(
+    (s) => s.runtimes[sessionId]?.teamMembers ?? EMPTY_TEAM_MEMBERS,
+  );
+  // Same-label swarmflow operators are told apart on hover by their engine
+  // member id (call key); see TeamTrajectoryWorkspace's swarmflowMembers prop.
+  const swarmflowMembers = useMemo(
+    () => swarmflowIdentitiesOfMembers(teamMembers),
+    [teamMembers],
+  );
   const sessionTeamDispatchMode = useSessionStore(
     state => state.runtimes[sessionId]?.teamDispatchMode,
   );
@@ -412,6 +423,12 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const windowStateRef = useRef(createTrajectoryWindowState());
   const operationCoordinatorRef = useRef(createTrajectoryOperationCoordinator());
   const loadedSessionRef = useRef<string | null>(null);
+  // The session the panel is showing right now. Long-running archive actions
+  // read it before and after an await so a result that lands after a session
+  // switch is dropped instead of drawn on the session that replaced the one
+  // that asked for it.
+  const sessionRef = useRef(sessionId);
+  sessionRef.current = sessionId;
   const requestControllerRef = useRef<AbortController | null>(null);
   const refreshPromiseRef = useRef<Promise<void> | null>(null);
   const terminalCatchUpPromiseRef = useRef<Promise<void> | null>(null);
@@ -1101,6 +1118,12 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       // Content hashes stay valid across epochs of one session, but another
       // session's content is only memory this reader will not use again.
       sequenceCacheRef.current = createSequenceCache();
+      // Archive banners describe the previous session's last import/export.
+      // clearPublishedWindow() resets the rest of this reader's display state;
+      // these two live outside it, so the switch must drop them too or a failed
+      // import keeps hanging over the session that replaced it.
+      setArchiveError(null);
+      setArchiveNotice(null);
     }
     if (sessionId === 'new') {
       setLoading(false);
@@ -1594,6 +1617,10 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     if (exporting || (replayArchive === null && sessionId === 'new')) return;
     const signal = requestControllerRef.current?.signal;
     if (replayArchive === null && (signal === undefined || signal.aborted)) return;
+    // Saving can outlive the session that started it; a result that lands after
+    // a switch belongs to the old session and must not become the new one's
+    // banner.
+    const originSession = sessionRef.current;
     setExporting(true);
     setArchiveError(null);
     setArchiveNotice(null);
@@ -1618,6 +1645,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         `trajectory-${safeSession}.trajectory.${extension}`,
       );
       if (result.outcome === 'failed') throw new Error(copy.exportFailed);
+      if (sessionRef.current !== originSession) return;
       setArchiveNotice(result.outcome === 'cancelled'
         ? copy.exportCancelled
         : result.transport === 'desktop'
@@ -1626,7 +1654,8 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
             ? copy.exportBrowserSaved
             : copy.exportBrowserStarted);
     } catch (exportError) {
-      if (!(exportError instanceof DOMException && exportError.name === 'AbortError')) {
+      if (sessionRef.current === originSession
+        && !(exportError instanceof DOMException && exportError.name === 'AbortError')) {
         setArchiveError(errorMessage(exportError, chinese));
       }
     } finally {
@@ -1641,6 +1670,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     if (file === undefined) return;
     importGenerationRef.current += 1;
     const generation = importGenerationRef.current;
+    // The read can outlive the session that started it, so remember where it
+    // began and drop the result if the panel moved on before it landed.
+    const originSession = sessionRef.current;
     setArchiveError(null);
     setArchiveNotice(null);
     setImportProgress({ bytesRead: 0, totalBytes: file.size, spans: 0 });
@@ -1649,6 +1681,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         if (importGenerationRef.current === generation) setImportProgress(progress);
       });
       if (importGenerationRef.current !== generation) return;
+      if (sessionRef.current !== originSession) return;
       replayArchiveFileRef.current = file;
       replayV2ReducerRef.current = createTrajectoryV2Reducer();
       replayV2ReducerRef.current.seed(archive.checkpoints.v2Seeds);
@@ -1663,6 +1696,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       setRawError(null);
     } catch (importError) {
       if (importGenerationRef.current !== generation) return;
+      if (sessionRef.current !== originSession) return;
       if (isTrajectoryArchiveLimitError(importError)) {
         setArchiveError(copy.archiveTooLarge);
       } else if (isTrajectoryArchiveFormatError(importError)) {
@@ -1908,6 +1942,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         groups={subjectGroups}
         messages={copy.toolbar}
         workflowRuns={workflowRuns}
+        swarmflowMembers={swarmflowMembers}
         selectedSubjectId={laneSelectedId}
         onSelectSubject={selectLane}
         hideToolbar={sharedTimeAxis}
@@ -1921,6 +1956,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                 ? {}
                 : { mapTime: timeAxis.mapSharedTime }),
               live: active && replayArchive === null && sessionIsProcessing,
+              ...(timeAxis.domain === null || timeAxis.toWall === undefined
+                ? {}
+                : { recordedWallEndMs: timeAxis.toWall(timeAxis.domain.endMs) }),
             },
           }
           : {})}

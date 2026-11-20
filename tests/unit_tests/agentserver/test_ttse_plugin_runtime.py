@@ -176,7 +176,7 @@ async def environment(tmp_path, monkeypatch, ttse_plugin_source):
     config = {
         "react": {"ttse": {"enabled": False}, "evolution": {"skill_evolution": False}},
         "modes": {"code": {"memory": {"enabled": False}}},
-        "agent_observability": {"enabled": False},
+        "observability": {"agent": {"enabled": False}},
         "progressive_tool_enabled": True,
     }
     acquired, released, saved = [], [], []

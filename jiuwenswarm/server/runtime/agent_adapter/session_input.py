@@ -10,12 +10,14 @@ from uuid import uuid4
 
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.session.stream import OutputSchema
-from openjiuwen.core.single_agent.rail.base import AgentCallbackEvent, AgentRail
+from openjiuwen.core.single_agent.ability_manager import resolve_tool_message
+from openjiuwen.core.single_agent.rail.base import AgentCallbackEvent, AgentRail, ToolCallInputs
 from openjiuwen.core.foundation.llm.schema.message import (
     OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER,
     OPENJIUWEN_MESSAGE_ORIGIN_HARNESS_INTERNAL,
     OPENJIUWEN_MESSAGE_ORIGIN_METADATA,
     OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA,
+    ToolMessage,
     UserMessage,
 )
 from openjiuwen.harness.schema.interaction import InputDispatchMode
@@ -264,6 +266,7 @@ class SessionInputGuard(AgentRail):
 
     async def on_user_message(self, ctx):
         parts = ctx.inputs.parts
+        admitted_parts = tuple(parts)
         if ctx.inputs.source == "steering":
             ctx.extra["session_input_parts"] = list(parts)
             self._retain_undelivered_reply(ctx, parts)
@@ -306,6 +309,42 @@ class SessionInputGuard(AgentRail):
                     ))
             await ctx.context.add_messages(messages)
             parts.clear()
+
+        self._record_consumed_inputs(ctx, admitted_parts)
+
+    def _record_consumed_inputs(self, ctx: Any, parts: tuple[str, ...]) -> None:
+        """Record final admission, using the same owner as input delivery."""
+        session = getattr(ctx, "session", None)
+        context = getattr(ctx, "context", None)
+        active_round = getattr(self.owner, "active_round", None)
+        if session is None or context is None or active_round is None:
+            return
+        if (
+            getattr(ctx, "agent", None) is not getattr(self.owner, "react_agent", None)
+            or session is not getattr(self.owner, "loop_session", None)
+        ):
+            return
+        request_ids = []
+        if ctx.inputs.source == "query" and parts:
+            work = getattr(active_round, "work", None)
+            if getattr(work, "kind", None) == "user":
+                request_ids.append(getattr(work, "request_id", None))
+        elif ctx.inputs.source == "steering":
+            for part in parts:
+                if not isinstance(part, QueuedSessionInput):
+                    continue
+                if (
+                    not part.boundary_ready.is_set() or part.boundary_error is not None
+                    or part.delivery_round is not active_round
+                ):
+                    continue
+                request_ids.append(part.request_id)
+        consumed = {
+            value for value in request_ids
+            if isinstance(value, str) and value.strip() and len(value) <= 256
+        }
+        if consumed:
+            context.history_recovery_covered = set(getattr(context, "history_recovery_covered", ())) | consumed
 
     def _retain_undelivered_reply(self, ctx, parts) -> None:
         """Keep a hidden answer as reference data, not a completed assistant turn.
@@ -566,6 +605,39 @@ class SessionInputGuard(AgentRail):
         # running tools. A subsequent serial tool also reopens its own window.
         self._active_tools = max(0, self._active_tools - 1)
         self.accepting = self._model_allows_steer and self._active_tools > 0
+        self._tag_continuation_result(ctx)
+
+    def _tag_continuation_result(self, ctx: Any) -> None:
+        """Let the snapshot owner cover only continuation results it stores."""
+        active_round = getattr(self.owner, "active_round", None)
+        work = getattr(active_round, "work", None)
+        query = getattr(work, "query", None)
+        request_id = getattr(work, "request_id", None)
+        if (
+            getattr(ctx, "agent", None) is not getattr(self.owner, "react_agent", None)
+            or getattr(ctx, "session", None) is None
+            or ctx.session is not getattr(self.owner, "loop_session", None)
+        ):
+            return
+        if getattr(work, "kind", None) != "user" or not isinstance(query, InteractiveInput):
+            return
+        if query.raw_inputs is not None or not (query.user_inputs or query.interrupt_answers):
+            return
+        if not isinstance(request_id, str) or not request_id.strip() or len(request_id) > 256:
+            return
+        if not isinstance(ctx.inputs, ToolCallInputs):
+            return
+        message = resolve_tool_message(ctx.inputs, getattr(ctx, "exception", None))
+        call_id = getattr(ctx.inputs.tool_call, "id", None)
+        if not isinstance(message, ToolMessage) or not call_id or message.tool_call_id != call_id:
+            return
+        metadata = dict(message.metadata or {})
+        request_ids = metadata.get("jiuwenswarm_request_ids", [])
+        if not isinstance(request_ids, list) or request_id in request_ids:
+            return
+        metadata["jiuwenswarm_request_ids"] = [*request_ids, request_id]
+        metadata.pop("jiuwenswarm_recovery_recorded", None)
+        message.metadata = metadata
 
     async def on_model_exception(self, ctx):
         self.accepting = False

@@ -1,15 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { attachDeclaration } from './appContract';
 import { ClientAttachment, type SessionId } from './clientAttachment';
+import { ClientToolDispatcher, type ClientToolRuntime } from './clientToolDispatcher';
 import type { Entry } from './conversationModel';
 import type { DocumentId } from './documentIdentity';
 import { GatewayRequestError, type JsonObject } from './gatewayClient';
 import { HostWriteQueue } from './hostWriteQueue';
 import { TaskPaneController } from './paneController';
-import { PowerPointToolDispatcher, type PresentationToolRuntime } from './powerPointToolDispatcher';
-import { presentationAttachDeclaration } from './presentationContract';
-import { PresentationSessionFacade } from './presentationSessionFacade';
+import { POWERPOINT } from './powerPointApp';
 import { ScriptedGateway } from './scriptedGateway';
+import { SessionFacade } from './sessionFacade';
 import type { SlideSnapshots, UndoResult } from './slideSnapshots';
 import type { Timer } from './workerTimer';
 
@@ -25,7 +26,7 @@ const PERMISSION: JsonObject = {
 };
 
 let gateway: ScriptedGateway;
-let execute: ReturnType<typeof vi.fn<PresentationToolRuntime['execute']>>;
+let execute: ReturnType<typeof vi.fn<ClientToolRuntime['execute']>>;
 let snapshots: {
   closeTurn: ReturnType<typeof vi.fn<SlideSnapshots['closeTurn']>>;
   undoable: ReturnType<typeof vi.fn<SlideSnapshots['undoable']>>;
@@ -34,13 +35,13 @@ let snapshots: {
 
 /** The pane as the task pane wires it, against a scripted Gateway and a stand-in PowerPoint. */
 function pane(): TaskPaneController {
-  execute = vi.fn<PresentationToolRuntime['execute']>(async () => ({ ok: true, result: { slide_count: 3 } }));
-  const runtime: PresentationToolRuntime = { tools: new Set(['read_presentation_context']), execute };
-  const sessions = new PresentationSessionFacade(gateway);
+  execute = vi.fn<ClientToolRuntime['execute']>(async () => ({ ok: true, result: { slide_count: 3 } }));
+  const runtime: ClientToolRuntime = { tools: new Set(['read_presentation_context']), execute };
+  const sessions = new SessionFacade(gateway, POWERPOINT.clientApp);
   const attachment = new ClientAttachment({
     gateway,
-    executor: new PowerPointToolDispatcher(runtime, new HostWriteQueue()),
-    declaration: async () => presentationAttachDeclaration({
+    executor: new ClientToolDispatcher(POWERPOINT, runtime, new HostWriteQueue()),
+    declaration: async () => attachDeclaration(POWERPOINT, {
       documentId: DOCUMENT, displayName: '季度汇报.pptx', host: { isSetSupported: () => true, worker: true },
       implemented: runtime.tools,
     }),
@@ -52,7 +53,8 @@ function pane(): TaskPaneController {
     undoable: vi.fn(() => ({ slides: 2 })),
     undo: vi.fn(async (): Promise<UndoResult> => ({ kind: 'undone', turns: 1, positions: [2, 3] })),
   };
-  return new TaskPaneController({ attachment, sessions, documentId: DOCUMENT, connection: gateway, snapshots });
+  return new TaskPaneController(
+    { attachment, sessions, documentId: DOCUMENT, connection: gateway, contract: POWERPOINT.contract, snapshots });
 }
 
 const settle = async (): Promise<void> => {
@@ -70,8 +72,8 @@ function emit(event: string, payload: JsonObject, sessionId = 's1'): void {
 beforeEach(() => {
   vi.useFakeTimers();
   gateway = new ScriptedGateway();
-  let attaches = 0;
-  gateway.answer('client.attach', () => ({ attachment_id: `a${++attaches}`, renew_every_seconds: 30, pending: [] }));
+  // As the backend's: one id for every attach of the document by its user.
+  gateway.answer('client.attach', { attachment_id: 'a1', renew_every_seconds: 30, pending: [] });
   gateway.answer('client.conversations', { conversations: [
     { session_id: 's1', title: '改标题', last_message_at: 200 }, { session_id: 's0', title: '旧的', last_message_at: 100 },
   ] });
@@ -96,7 +98,7 @@ describe('opening the pane', () => {
     expect(gateway.sent('session.create')).toEqual([]);
     expect(controller.state().conversations.map(item => item.sessionId)).toEqual(['s1', 's0']);
     expect(transcript(controller)).toEqual([{ kind: 'user', text: '改标题' }, { kind: 'assistant', text: '好了。' }]);
-    expect(controller.state().documents.get('s9')).toBe('市场分析.pptx');
+    expect(controller.state().documents.get('s9')?.name).toBe('市场分析.pptx');
   });
 
   it('starts a conversation on the server\'s active model when the document has none', async () => {
@@ -108,6 +110,16 @@ describe('opening the pane', () => {
 
     expect(gateway.sent('session.create')[0]).toMatchObject({ model_name: 'm-active', client_app: 'office-powerpoint' });
     expect(gateway.sent('client.attach').map(params => params.session_id)).toEqual(['s5']);
+  });
+
+  it('shows the turn the server still runs as running, so it can be stopped', async () => {
+    gateway.answer('session.get_metadata', { session_id: 's1', is_processing: true, runtime: {} });
+    const controller = pane();
+    await controller.open();
+    await settle();
+
+    expect(controller.state().conversation.turn).toBe('running');
+    expect(transcript(controller)).toEqual([{ kind: 'user', text: '改标题' }, { kind: 'assistant', text: '好了。' }]);
   });
 
   it('applies what streams in while the history loads after the history', async () => {
@@ -142,6 +154,27 @@ describe('chatting', () => {
     expect(gateway.sent('chat.send')).toHaveLength(1);
     expect(transcript(controller).filter(entry => entry.kind === 'user')).toEqual(
       ['改标题', '检查标题', '只看前 3 页'].map(text => ({ kind: 'user', text })));
+  });
+
+  it('sends the images picked with the message, and shows them in it; during a turn they wait', async () => {
+    const path = { filename: 'logo.png', mime_type: 'image/png', path: '/u/logo.png' };
+    gateway.answer('media.persist', { media_items: [{ type: 'image', ...path }] });
+    const controller = pane();
+    await controller.open();
+    await settle();
+    const logo = { filename: 'logo.png', mimeType: 'image/png', base64Data: 'QUJD' };
+
+    expect(await controller.send('', [logo])).toBe(true);
+    expect(gateway.sent('chat.send')).toEqual(
+      [expect.objectContaining({ content: '', files: { uploaded_images: [path] } })]);
+    expect(transcript(controller).at(-1)).toEqual(
+      { kind: 'user', text: '', images: [{ filename: 'logo.png', src: 'data:image/png;base64,QUJD' }] });
+
+    expect(controller.state().conversation.turn).toBe('running');
+    const shown = transcript(controller);
+    expect(await controller.send('照这个改', [logo])).toBe(false);
+    expect(gateway.sent('chat.interrupt')).toEqual([]);
+    expect(transcript(controller)).toEqual(shown);
   });
 
   it('says why a message did not go out, takes it off the transcript and leaves the turn idle', async () => {
@@ -231,20 +264,28 @@ describe('chatting', () => {
     expect(controller.state()).toMatchObject({ models: ['m-new', 'm-third'], model: 'm-new' });
   });
 
-  it('shows the history again when it attaches again after a reconnect, as the turn may have ended meanwhile', async () => {
+  it('shows the history again after a reconnect, and the turn as ended when the server no longer runs it', async () => {
     const controller = pane();
     await controller.open();
     await settle();
     await controller.send('检查标题');
+    emit('chat.tool_call', { tool_call: { id: 't1', name: 'read_presentation_context' } });
+    // The server restarted mid-turn: the turn's history stops with no reply, and nothing ended it on this socket.
     gateway.answer('client.conversation.messages', { messages: [
-      { role: 'user', content: '检查标题' }, { role: 'assistant', content: '标题都检查过了。' }] });
+      { role: 'user', content: '检查标题' },
+      { event_type: 'chat.tool_call', tool_call: { id: 't1', name: 'read_presentation_context' } },
+      { event_type: 'chat.llm_call_start', content: '' },
+      { event_type: 'chat.request_completed', content: '', status: 'cancelled' }] });
+    gateway.answer('session.get_metadata', { session_id: 's1', is_processing: false, runtime: {} });
     gateway.connection({ kind: 'down', attempt: 1, retryAt: 1000 });
     gateway.connection({ kind: 'open' });
     await settle();
 
     expect(gateway.sent('client.conversation.messages')).toHaveLength(2);
     expect(controller.state().conversation.turn).toBe('idle');
-    expect(transcript(controller).at(-1)).toEqual({ kind: 'assistant', text: '标题都检查过了。' });
+    expect(transcript(controller)).toEqual([
+      { kind: 'user', text: '检查标题' }, { kind: 'tool', name: 'read_presentation_context', status: 'failed' },
+      { kind: 'notice', tone: 'info', text: '连接中断期间，这一轮已结束。' }]);
   });
 
   it('follows the connection: down with the next attempt, and open again', async () => {
@@ -399,6 +440,32 @@ describe('the document\'s conversations', () => {
     expect(gateway.sent('client.attach').map(params => params.session_id)).toEqual(['s1', 's2']);
     expect(controller.state().conversations.map(item => item.sessionId)).toEqual(['s2']);
     expect(transcript(controller)).toEqual([]);
+  });
+
+  it('stays in a conversation nobody has written in yet, however fast new conversation is clicked', async () => {
+    gateway.answer('session.create', { session_id: 's2' });
+    const controller = pane();
+    await controller.open();
+    await settle();
+    gateway.answer('client.conversation.messages', () => new Promise<JsonObject>(() => undefined));
+    await Promise.all([controller.newConversation(), controller.newConversation()]);
+    await controller.newConversation();
+    await settle();
+
+    expect(gateway.sent('session.create')).toHaveLength(1);
+    expect(gateway.sent('client.attach').map(params => params.session_id)).toEqual(['s1', 's2']);
+  });
+
+  it('starts a new conversation from one whose history could not be read', async () => {
+    gateway.answer('client.conversation.messages', new GatewayRequestError('down', 'UNAVAILABLE'));
+    gateway.answer('session.create', { session_id: 's2' });
+    const controller = pane();
+    await controller.open();
+    await settle();
+    await controller.newConversation();
+    await settle();
+
+    expect(gateway.sent('client.attach').map(params => params.session_id)).toEqual(['s1', 's2']);
   });
 });
 

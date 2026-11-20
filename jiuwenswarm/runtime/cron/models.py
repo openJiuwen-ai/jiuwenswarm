@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from openjiuwen_protocol.cron_models import (
+from e2a.cron_models import (
     CronJob as _ProtocolCronJob,
     CronRunState as _ProtocolCronRunState,
     CronTarget as _ProtocolCronTarget,
@@ -26,7 +26,7 @@ from jiuwenswarm.runtime.cron.cron_expr import validate_cron_expression
 logger = logging.getLogger(__name__)
 
 # CronTargetChannel / CronTarget / CronJob / CronRunState 的字段定义以
-# ``openjiuwen_protocol.cron_models`` 为唯一 source of truth；本模块只保留
+# ``e2a.cron_models`` 为唯一 source of truth；本模块只保留
 # 序列化/归一化等行为（to_dict / from_dict / normalize_*）。
 
 
@@ -91,8 +91,7 @@ CRON_JOB_MODES: frozenset[str] = frozenset(
         "code.normal",
         "code.plan",
         "team.code",
-        # 不走 chat.send，scheduler 消费时直接发 PROACTIVE_TICK WS 请求
-        # 触发 AgentServer ProactiveEngine.tick_now()。由 proactive_cron_sync 自动注册。
+        # Kept for gateway packages; AgentServer proactive.tick is a soft no-op.
         "proactive.tick",
         # 新三段命名 canonical（与 message_handler /mode 同源）。
         "agent.work.normal",
@@ -368,7 +367,7 @@ def normalize_tenant_id(raw: Any) -> str:
 
 
 class CronTarget(_ProtocolCronTarget):
-    """Where to push cron results.（字段定义见 ``openjiuwen_protocol.cron_models``）"""
+    """Where to push cron results.（字段定义见 ``e2a.cron_models``）"""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -389,7 +388,7 @@ class CronTarget(_ProtocolCronTarget):
 
 
 class CronJob(_ProtocolCronJob):
-    """Cron job persisted in cron_jobs.json.（字段定义见 ``openjiuwen_protocol.cron_models``）"""
+    """Cron job persisted in cron_jobs.json.（字段定义见 ``e2a.cron_models``）"""
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {

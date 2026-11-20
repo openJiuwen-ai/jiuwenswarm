@@ -11,6 +11,7 @@ import type {
   ScheduledTask,
   TeamControlModel,
 } from './teamControlTimeline';
+import { noReviewMessageKey } from './scheduledTrajectoryLanes';
 import css from './ScheduledControlTimeline.module.css';
 
 export interface ScheduledControlTimelineProps {
@@ -27,6 +28,8 @@ export interface ScheduledControlTimelineProps {
   compactKey?: string | null;
   /** Extend active task bars to the current wall clock. */
   live?: boolean;
+  /** Last recorded wall-clock time in the shared trajectory. */
+  recordedWallEndMs?: number;
 }
 
 interface VisibleWindow {
@@ -63,6 +66,7 @@ function fractionAt(
 function taskCanElapse(task: ScheduledTask): boolean {
   return task.phase === 'pending'
     || task.phase === 'blocked'
+    || task.phase === 'suspended'
     || task.phase === 'running'
     || task.phase === 'in_review'
     || task.phase === 'rework'
@@ -73,6 +77,7 @@ function taskInterval(
   task: ScheduledTask,
   live: boolean,
   nowMs: number,
+  recordedWallEndMs?: number,
 ): { startMs: number; endMs: number } | null {
   const startMs = task.createdAtMs ?? task.events[0]?.timestampMs;
   if (startMs === undefined) return null;
@@ -80,7 +85,11 @@ function taskInterval(
     ?? task.updatedAtMs
     ?? task.events[task.events.length - 1]?.timestampMs
     ?? startMs;
-  const endMs = live && taskCanElapse(task) ? Math.max(recordedEndMs, nowMs) : recordedEndMs;
+  const endMs = live && taskCanElapse(task)
+    ? Math.max(recordedEndMs, nowMs)
+    : task.phase === 'running' && recordedWallEndMs !== undefined
+      ? Math.max(recordedEndMs, recordedWallEndMs)
+      : recordedEndMs;
   return { startMs, endMs: Math.max(startMs, endMs) };
 }
 
@@ -177,7 +186,7 @@ function TaskDetail({
       <div className={css.detailScroll}>
         <div className={css.rounds}>
           {rounds.length === 0 ? (
-            <span className={css.muted}>{t('trajectory.team.schedule.noReviews')}</span>
+            <span className={css.muted}>{t(noReviewMessageKey(task.phase, task.reviews.length))}</span>
           ) : rounds.map(([round, reviews]) => (
             <div
               className={css.round}
@@ -232,6 +241,7 @@ export const ScheduledControlTimeline = memo(function ScheduledControlTimeline({
   compact = false,
   compactKey = null,
   live = false,
+  recordedWallEndMs,
 }: ScheduledControlTimelineProps) {
   const { t } = useTranslation();
   const hasLiveTasks = live && model.tasks.some(taskCanElapse);
@@ -325,13 +335,13 @@ export const ScheduledControlTimeline = memo(function ScheduledControlTimeline({
           <div className={css.taskColumn}>
             <div className={css.taskList} role="list" data-testid="team-trajectory-control-task-list">
           {model.tasks.map((task, index) => {
-            const interval = taskInterval(task, hasLiveTasks, nowMs);
+            const interval = taskInterval(task, hasLiveTasks, nowMs, recordedWallEndMs);
             if (interval === null || !overlaps(interval, window, mapTime)) return null;
             const selected = task.taskId === selectedTaskId;
             const start = fractionAt(interval.startMs, window, mapTime);
             const end = fractionAt(interval.endMs, window, mapTime);
             const left = Math.min(start, end);
-            const width = Math.max(0.006, Math.abs(end - start));
+            const width = Math.max(task.phase === 'running' ? 0.02 : 0.006, Math.abs(end - start));
             const barStyle = {
               '--control-task-left': `${left * 100}%`,
               '--control-task-width': `${width * 100}%`,
@@ -354,6 +364,30 @@ export const ScheduledControlTimeline = memo(function ScheduledControlTimeline({
                 <span className={css.taskLabel}>T{index + 1}</span>
                 <span className={css.taskTrack}>
                   <span className={css.taskBar} data-phase={task.phase} style={barStyle} />
+                  {(task.phase === 'suspended' ? task.waits : []).map(wait => {
+                    const waitEndMs = wait.endMs ?? interval.endMs;
+                    const waitStart = fractionAt(wait.startMs, window, mapTime);
+                    const waitEnd = fractionAt(waitEndMs, window, mapTime);
+                    const waitStyle = {
+                      '--control-task-left': `${Math.min(waitStart, waitEnd) * 100}%`,
+                      '--control-task-width': `${Math.abs(waitEnd - waitStart) * 100}%`,
+                    } as CSSProperties;
+                    return (
+                      <span
+                        key={wait.startMs}
+                        className={css.taskSubtaskWait}
+                        style={waitStyle}
+                        title={t('trajectory.team.schedule.subtaskWaitRange', {
+                          start: formatAxisClock(wait.startMs),
+                          end: wait.endMs === undefined
+                            ? t('trajectory.team.schedule.subtaskWaitOngoing')
+                            : formatAxisClock(wait.endMs),
+                        })}
+                        data-testid="team-trajectory-control-task-subtask-wait"
+                        data-variant={`${task.taskId}:${wait.startMs}`}
+                      />
+                    );
+                  })}
                   {task.events.map(event => (
                     <span
                       key={event.eventId}

@@ -212,7 +212,9 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
           ) : (
             <div className="flex h-full w-full flex-col items-center justify-center gap-2">
               <UploadCloud size={22} />
-              <span className="text-[13px]">{t('connectorMarket.upload.dropHint')}</span>
+              <span className="text-[13px]" data-testid="connector-market-upload-placeholder">
+                {t(desktopReady ? 'connectorMarket.upload.dropHint' : 'connectorMarket.upload.webHint')}
+              </span>
             </div>
           )}
         </div>

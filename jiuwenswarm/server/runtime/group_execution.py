@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import hashlib
 import json
@@ -115,6 +116,7 @@ class GroupExecutions:
         message_id: str | None = None,
         organization_stage: str | None = None,
         organization_plan_id: str | None = None,
+        organization_run_id: str | None = None,
         only_if_missing: bool = False,
     ) -> dict:
         """Write one organization card. Re-entry updates that record and never posts."""
@@ -125,6 +127,10 @@ class GroupExecutions:
         async with group_lock(self.group_id):
             records = self.read()
             current = records.get(execution_id)
+            plan = next((p for p in (read_group(self.group_id) or {}).get("organization_plans", [])
+                         if p.get("plan_id") == organization_plan_id), {})
+            if plan.get("cleanup_status") or (plan.get("run_id") and plan["run_id"] != organization_run_id):
+                return copy.deepcopy(current or {})
             if only_if_missing and current is not None:
                 return copy.deepcopy(current)
             if (
@@ -152,6 +158,7 @@ class GroupExecutions:
                 "phase": phase,
                 "organization_stage": organization_stage,
                 "organization_plan_id": organization_plan_id,
+                "organization_run_id": organization_run_id,
                 "progress": {
                     "completed": sum(value == "completed" for value in tasks.values()),
                     "total": len(tasks),
@@ -190,6 +197,9 @@ class GroupExecutions:
 
     async def reconcile(self) -> None:
         """Release orphaned executions without rerunning work or disturbing live owners."""
+        from jiuwenswarm.agents.swarm.group_org_recovery import reconcile_group, close_card
+
+        await reconcile_group(self.group_id)
         changed = []
         async with group_lock(self.group_id):
             records = self.read()
@@ -202,11 +212,10 @@ class GroupExecutions:
                     # An early card can outlive a failed startup before the Owner
                     # background exists. Reconcile only its explicit plan binding.
                     plan = plans.get(record.get("organization_plan_id"), {})
-                    if record["status"] not in TERMINAL and plan.get("status") in {"failed", "expired"}:
-                        record.update(status="failed", phase="failed", organization_stage=None)
-                        record["revision"] += 1
-                        record["updated_at"] = time.time()
-                        changed.append(copy.deepcopy(record))
+                    if record["status"] != "completed" and plan.get("status") in {"failed", "expired"}:
+                        status = "interrupted" if plan.get("runtime_interrupted") else "failed"
+                        if close_card(record, status):
+                            changed.append(copy.deepcopy(record))
                     continue
                 if record["status"] in TERMINAL:
                     continue
@@ -267,7 +276,7 @@ class GroupExecutions:
 
         if record.get("presentation", "card") != "card":
             return
-        group = read_group(self.group_id)
+        group = await asyncio.to_thread(read_group, self.group_id)
         if group is None or group["status"] == "deleting":
             return
         payload = {

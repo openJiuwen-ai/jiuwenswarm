@@ -985,8 +985,13 @@ def build_smart_video_graph(
             prompt = compose_character_sheet_prompt(cfg=seed_cfg, graph=None, seed="")
         except Exception:  # noqa: BLE001
             prompt = (
-                f"One person only: {display}, full or three-quarter body on a plain "
-                "empty studio backdrop. Solid neutral background, identity and costume only. "
+                f"One person only: {display}, as a three-view turnaround with a head close-up "
+                "— four views in one row from left to right on one continuous pure white "
+                "background: a front head-and-shoulders close-up as tall as the sheet, then "
+                "full-body front, side (facing left), and back views; open white space between "
+                "the figures; the background is one unbroken white field, borderless, with no "
+                "frames and no dividing lines. "
+                "Identity and costume only. "
                 + (f"Wearing {wardrobe}. " if wardrobe else "")
                 + "One clear image."
             )
@@ -1019,7 +1024,11 @@ def build_smart_video_graph(
                     "delegate": "agent",
                     "director_task": (
                         f"Solo character specs for {display}. "
-                        "Write a positive Qwen-ready studio portrait from the locks "
+                        "Write a positive Qwen-ready character sheet of this one person: "
+                        "four views left to right — a front head close-up as tall as the "
+                        "sheet, then full-body front, side facing left, and back — on one "
+                        "continuous pure white background, figures apart in open white space, one "
+                        "unbroken white field with no frames and no dividing lines, from the locks "
                         "(face, clothing, style) — no LOCK banners or negatives. "
                         "Then call_image_model with that prompt only."
                     ),

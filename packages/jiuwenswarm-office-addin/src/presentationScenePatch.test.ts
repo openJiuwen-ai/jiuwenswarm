@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { FakeDeck, type FakeDeckOptions } from './fakePowerPoint';
 import type { JsonObject } from './gatewayClient';
+import type { Batch } from './powerPointReadTools';
+import { exportSlides, replaceSlide } from './powerPointWriteTools';
 import {
   applyScenePatch, parseScenePatch, PatchRefused, type DesignSystem, type ScenePatch, type SlideJournal,
 } from './presentationScenePatch';
@@ -31,6 +33,7 @@ function journal(deck: FakeDeck) {
       told.push({ order: [...order], before: [...slides], exported, contentThen: deck.content() });
     },
     created: id => { created.push(id); },
+    replaced: () => undefined,
     rollback: async () => new Map(),
   };
   return { recorder, told, created };
@@ -38,9 +41,14 @@ function journal(deck: FakeDeck) {
 
 async function apply(deck: FakeDeck, patch: ScenePatch, images: Record<string, string> = {}) {
   const { recorder, told, created } = journal(deck);
-  const evidence = await deck.run(context => applyScenePatch({ presentation: context.presentation, sync: () => context.sync() },
-    patch, { images: new Map(Object.entries(images)), page: deck.size, supports: version => deck.supports(version),
-      journal: recorder }));
+  const evidence = await deck.run(context => {
+    const batch: Batch = { presentation: context.presentation, sync: () => context.sync() };
+    return applyScenePatch(batch, patch, { images: new Map(Object.entries(images)), page: deck.size,
+      supports: version => deck.supports(version), journal: recorder, packages: {
+        export: async id => (await exportSlides(batch, {}, [id])).exports[0],
+        replace: (id, base64) => replaceSlide({ journal: recorder, timings: {} }, batch, id, base64),
+      } });
+  });
   return { evidence, told, created };
 }
 
@@ -120,17 +128,23 @@ describe('reading a patch', () => {
       .toMatchObject({ deleteSlide: true, operations: [] });
   });
 
-  it('says connectors are not drawn by this pane yet, so the model leaves them out', () => {
-    const refused = (() => {
-      try {
-        parse([{ slide_ref: 'S1', operations: [{ op: 'add_connector', left: 0, top: 0, width: 10, height: 0 }] }]);
-      } catch (error) {
-        return error;
-      }
-      return undefined;
-    })();
-    expect(refused).toBeInstanceOf(PatchRefused);
-    expect(refused).toMatchObject({ code: 'CAPABILITY_UNAVAILABLE', message: expect.stringMatching(/add_connector/) });
+  it('takes a connector between two anchors, or as a free line, but not both or half of either', () => {
+    const anchor = { shape_name: 'A', side: 'right' };
+    const connector = (fields: JsonObject) => parse([{ slide_ref: 'S1', operations: [{ op: 'add_connector',
+      ...fields }] }]).slides[0].operations[0];
+    expect(connector({ start_anchor: anchor, end_anchor: { shape_id: '5', side: 'top', offset: 0.2 } }))
+      .toMatchObject({ connectorType: 'Straight', endArrow: false, route: { start: { shape: { name: 'A' },
+        offset: 0.5 }, end: { shape: { id: '5' }, side: 'top', offset: 0.2 } } });
+    expect(connector({ left: 10, top: 10, width: -5, height: 0 })).toMatchObject({ route: { line: { width: -5 } } });
+    expect(() => connector({ start_anchor: anchor })).toThrow(/start_anchor and end_anchor together/);
+    expect(() => connector({ start_anchor: anchor, end_anchor: anchor, left: 1 })).toThrow(/not both/);
+    expect(() => connector({ start_anchor: { ...anchor, shape_id: '5' }, end_anchor: anchor }))
+      .toThrow(/by shape_name or shape_id/);
+    expect(() => connector({ start_anchor: anchor, end_anchor: anchor, connector_type: 'Elbow',
+      waypoints: [{ x: 1, y: 1 }] })).toThrow(/waypoints need connector_type Straight/);
+    expect(() => connector({ left: 10, top: 10, width: 5, height: 0, waypoints: [{ x: 1, y: 1 }] }))
+      .toThrow(/waypoints need start_anchor/);
+    expect(() => connector({ left: 10, top: 10, width: 0, height: 0 })).toThrow(/zero length/);
   });
 });
 
@@ -186,6 +200,73 @@ describe('applying a patch', () => {
       { id: '257#', content: true }, { id: '258#', content: false }, { id: '256#', content: true }]);
     expect(told[0].contentThen).toEqual(before);
     expect(told[0].exported).toHaveLength(2);
+  });
+
+  it('draws connectors into the slide\'s package between the shapes they anchor to, behind the shapes added after '
+    + 'them, with the arrowhead at the end of the route', async () => {
+    const deck = deckWith();
+    const box = (name: string, left: number, top: number) => ({ op: 'add_shape', shape_type: 'Rectangle', name,
+      text: name, left, top, width: 100, height: 50 });
+    const { evidence, created } = await apply(deck, parse([{ slide_ref: 'S2', operations: [
+      box('A', 100, 100), box('B', 400, 300),
+      { op: 'add_connector', name: 'flow', connector_type: 'Elbow', end_arrow: true, line: { color: 'accent',
+        dash_style: 'DashDotDot' }, start_anchor: { shape_name: 'A', side: 'right' },
+      end_anchor: { shape_name: 'B', side: 'left' } },
+      { op: 'add_connector', left: 300, top: 500, width: -200, height: -20 },
+      box('C', 700, 100),
+    ] }]));
+
+    const slide = deck.slides[1];
+    expect(created).toEqual([expect.any(String), slide.id]);
+    expect(slide.shapes.map(shape => [shape.type, shape.name])).toEqual([['GeometricShape', 'A'],
+      ['GeometricShape', 'B'], ['Line', 'flow::segment-1'], ['Line', 'flow::segment-2'], ['Line', 'flow::segment-3'],
+      ['Line', expect.stringMatching(/^Connector \d+$/)], ['GeometricShape', 'C']]);
+    // Out of A's right edge at (200, 125), across at the middle, into B's left edge at (400, 325).
+    expect(slide.shapes.slice(2, 5).map(shape => [shape.left, shape.top, shape.width, shape.height]))
+      .toEqual([[200, 125, 100, 0], [300, 125, 0, 200], [300, 325, 100, 0]]);
+    const xml = slide.shapes.slice(2, 6).map(shape => shape.xml as string);
+    expect(xml.map(item => item.includes('<a:tailEnd type="triangle"/>'))).toEqual([false, false, true, false]);
+    expect(xml[0]).toMatch(/prst="line".*<a:srgbClr val="18B7A0"\/>.*<a:prstDash val="sysDashDotDot"\/>/);
+    // From (300, 500) left and up to (100, 480): flipped, the box starting at (100, 480).
+    expect(xml[3]).toMatch(/<a:xfrm flipH="1" flipV="1"[^>]*><a:off x="1270000" y="6096000"\/><a:ext cx="2540000" /);
+    expect(evidence).toMatchObject({ created_slide_ids: [slide.id], slides: [{ slide_id: slide.id }] });
+    expect((evidence.shapes as JsonObject[]).map(shape => [shape.kind, shape.operation_index, shape.ref])).toEqual([
+      ...[0, 1].map(at => ['add_shape', at, `${slide.id}:${slide.shapes[at].id}`]),
+      ['add_shape', 4, `${slide.id}:${slide.shapes[6].id}`],
+      ...[2, 3, 4, 5].map(at => ['add_connector', at < 5 ? 2 : 3, `${slide.id}:${slide.shapes[at].id}`])]);
+    expect(evidence).not.toHaveProperty('slide_id_updates');
+  });
+
+  it('anchors to a shape the slide has where the patch leaves it, and names the slide\'s new id', async () => {
+    const deck = new FakeDeck({ slides: [{ id: '256#', shapes: [{ id: '5', left: 100, top: 100, width: 100,
+      height: 100 }, { id: '6', left: 600, top: 100, width: 100, height: 100 }] }] });
+    const { evidence } = await apply(deck, parse([{ slide_ref: 'S1', slide_id: '256#', operations: [
+      { op: 'update_shape', shape_id: '6', top: 300 },
+      { op: 'add_connector', start_anchor: { shape_id: '5', side: 'bottom' }, end_anchor: { shape_id: '6', side: 'top',
+        offset: 0.15 } }] }]));
+    const [slide] = deck.slides;
+    expect(slide.id).not.toBe('256#');
+    expect(slide.shapes[2]).toMatchObject({ type: 'Line', left: 150, top: 200, width: 465, height: 100 });
+    expect(evidence).toMatchObject({ slide_id_updates: [{ old_slide_id: '256#', new_slide_id: slide.id }],
+      affected_slide_ids: [slide.id], verification_targets: [slide.id], slides: [{ slide_id: slide.id }] });
+  });
+
+  it('refuses a connector whose anchor names no shape of its slide, or that leaves the page, changing nothing',
+    async () => {
+    const deck = new FakeDeck({ slides: [{ id: '256#', shapes: [{ id: '5' }] }] });
+    const before = deck.content();
+    const connector = (fields: JsonObject, operations: JsonObject[] = []) => failure(apply(deck, parse([
+      { slide_ref: 'S1', slide_id: '256#', operations: [...operations, { op: 'add_connector', ...fields }] }])));
+    const anchors = { start_anchor: { shape_id: '5', side: 'top' }, end_anchor: { shape_name: 'X', side: 'top' } };
+    expect(await connector(anchors)).toMatchObject({ message: /shape_name X names no shape this slide patch adds/ });
+    expect(await connector({ ...anchors, end_anchor: { shape_id: '5', side: 'left' } },
+      [{ op: 'delete_shape', shape_id: '5' }])).toMatchObject({ message: /shape_id 5 is not a shape on this slide/ });
+    expect(await connector({ left: 900, top: 10, width: 100, height: 0 })).toMatchObject({
+      message: /runs to \(1000, 10\), off the 960x540 point canvas/ });
+    expect(await connector({ ...anchors, end_anchor: { shape_name: 'E', side: 'top', offset: 0.2 } }, [{
+      op: 'add_shape', shape_type: 'Ellipse', name: 'E', left: 0, top: 0, width: 10, height: 10 }]))
+      .toMatchObject({ message: /offset must be 0.5 on Ellipse E/ });
+    expect(deck.content()).toEqual(before);
   });
 
   it('checks every slide and shape it refers to before the first change', async () => {

@@ -648,7 +648,7 @@ class TestAgentObservabilityForce:
             calls["init"] += 1
             return False
 
-        monkeypatch.setattr(ao, "get_config", lambda: {"agent_observability": {"enabled": False}})
+        monkeypatch.setattr(ao, "get_config", lambda: {"observability": {"agent": {"enabled": False}}})
         monkeypatch.setattr(ao, "acquire_observability", fake_acquire)
         monkeypatch.setattr(
             ao, "shutdown_agent_observability",
@@ -671,7 +671,7 @@ class TestAgentObservabilityForce:
         # simulate a config-gated active provider (force never used)
         ao._agent_observability_active = True
         ao._force_ever_enabled = False
-        monkeypatch.setattr(ao, "get_config", lambda: {"agent_observability": {"enabled": False}})
+        monkeypatch.setattr(ao, "get_config", lambda: {"observability": {"agent": {"enabled": False}}})
         monkeypatch.setattr(
             ao, "shutdown_agent_observability",
             lambda: calls.__setitem__("shutdown", calls["shutdown"] + 1),

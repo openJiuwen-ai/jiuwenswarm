@@ -39,92 +39,75 @@ a4p:
   enabled: false
 
 symphony:
-  enabled: null  # null = 跟随程序默认；用户切换后保存 true/false
-  paths:
-    skills_root: ""
-    graph_dir: ""
-
-  fingerprint:
+  capability:
+    # sources 缺省时使用工作区 skills 目录。当前运行入口使用单个来源。
+    # sources:
+    #   - type: skill
+    #     root: /path/to/skills
     scan:
-      max_depth: 1
-    extraction:
-      workers: 4
-      batch_size: 2
-      body_limit:
-
-  build:
-    workers: 4
-    batch_size: 16
-    max_candidates_per_skill_relation: 32
-    require_consensus: false
-    min_edge_confidence: 0.5
-
-  evolution:
-    # Core Flow 沉淀：分组签名 = 轨迹全部成功边（确定性、不漂移），
-    # 一条新轨迹最多触发一个技能包的完整蒸馏；达标（成功次数 + 成功率）即 verified。
-    flow:
-      enabled: null              # null = 跟随程序默认；true = 由 Core Graph-Evolution Rail 学习动态图并沉淀经验
-      min_successes: 3           # 同一结构至少成功几次且成功率达标后才可安装
-      min_pack_success_rate: 0.8  # pack 成功率阈值
-
-  orchestration:
-    # fast is the default one-shot path; beam enables bidirectional search.
-    mode: fast
-    # Beam-only candidate count retained after each search round.
-    top_k: 3
-    max_depth: 4
-    min_edge_confidence: 0.5
-
-  skill_retrieval:
+      max_depth: null
+    fingerprint:
+      extraction:
+        llm_enabled: true
+        max_concurrency: 4
+        batch_size: 2
+        max_body_chars: 16000
+        max_output_tokens: null  # 沿用宿主默认模型的输出预算
+  storage:
+    artifact_root: ${SYMPHONY_ARTIFACT_ROOT:-}  # 默认工作区 symphony/runtime；旧产物需重新构建
+  retrieval:
     enabled: false
-    artifact_root: ${SYMPHONY_SKILL_RETRIEVAL_ROOT:-}
-    discovery:
-      # Strictly below the fixed 1% context threshold, a new session receives
-      # a complete metadata snapshot; larger inventories use skill_index.
-      max_output_chars: 12000
-      incremental_notice_max_chars: 4000
-      prompt_preferred_skills:
+    index_build:
+      structure:
+        max_depth: 6
+        branching_factor: 128
+        root_categories: null
+      request:
+        max_concurrency: 2
+        max_retries: 2
+        timeout_seconds: 420.0
+        classification_batch_limit: 32
+      task:
+        preserve_previous_index_on_failure: true
+      prompt:
+        discovery_seed: 42
+      postprocess:
+        enabled: true
+        max_passes: 1
+        min_capabilities: 6
+      equivalence:
+        enabled: false
+    use_existing_index: true
+    prompt:
+      candidate_budget_ratio: 0.01
+      # context_window_tokens 缺省从当前会话模型解析；显式值优先。
+      preferred_capability_ids:
         - skill-creator
         - swarmskill-creator
         - symphony-assistant
+    output:
+      max_chars: 12000
+      incremental_notice_max_chars: 4000
+  orchestration:
+    enabled: null  # null 继承程序默认；用户切换后保存 true/false
+    min_edge_confidence: 0.5  # 构图与规划共用的关系阈值
     build:
-      # A failed refresh keeps the last usable taxonomy available to discovery.
-      preserve_previous_index_on_failure: true
-      # Everything below is forwarded to SkillIndexBuildConfig, which accepts
-      # only the field names it declares and silently drops the rest. The
-      # values here are that dataclass's own defaults, so listing them changes
-      # nothing on its own; they are listed because a key this template omits
-      # is deleted from an operator's config on the next start, and these were
-      # being deleted while the builder was still reading them.
-      # Taxonomy shape: how deep the tree may go and how wide one node may get.
-      max_depth: 6
-      branching_factor: 128
-      # Classification concurrency, retries and per-request budget.
-      max_workers: 2
-      max_retries: 2
-      request_timeout_seconds: 420.0
-      # Skills classified per model call.
-      classification_batch_limit: 32
-      # Fixed root categories. Empty lets the builder discover its own.
-      root_categories:
-      # Seed for the discovery pass, so a rebuild reproduces its predecessor.
-      discovery_seed: 42
-      # Post-processing pass that merges thin branches back together.
-      postprocess_enabled: true
-      postprocess_max_passes: 1
-      postprocess_min_skills: 6
-      # Group skills that do the same job under one equivalence node.
-      equivalence_enabled: false
-    # Index construction uses the default configured model. An optional llm
-    # mapping can override model, api_key, base_url and seed for this builder.
-    # Left empty rather than {} on purpose: a mapping here would be treated as
-    # the complete set of allowed sub-keys when a config is upgraded against
-    # this template, and every override an operator added would be dropped.
-    llm:
+      max_concurrency: 4
+      matching:
+        batch_size: 16
+        max_candidates_per_capability_relation: 32
+        require_consensus: false
+    plan:
+      mode: fast
+      top_k: 3  # 仅 beam 束搜索使用
+      max_depth: 4
+      dynamic_graph_enabled: null  # 规划是否采用已有动态观测
+    experience:
+      enabled: null  # null 继承 Core 默认值；设置面板保存 true/false
 
-# Auto Memory：对话结束后自动提取记忆，按项目隔离存储
-# 存储路径：~/.jiuwenswarm/projects/{sanitized-project-path}/memory/
-# 类似 Claude Code 的 auto-memory 功能
+# Auto Memory：对话结束后自动提取，存到 {agent_workspace}/coding_memory/{项目键}/。
+# agent.code.* 沿用此全局开关；历史 code.* 入口读 modes.code.memory.auto_coding_memory。
+# 启用 jiuwen 不跳过此任务；它仍写旧主题文件，与新文档记忆的 sync_turn 独立。
 auto_memory_enabled: false
 
 # 日志目录：~/.jiuwenswarm/agent/.logs/
@@ -162,40 +145,43 @@ memory:
 
   # ------------------------------------------------------------
   # 内置记忆的 jiuwen 变体（engine ∈ {builtin, both} 且 provider=jiuwen 时生效）
-  # 用 JiuwenMemoryRail + AgentMemoryMemoryProvider 替换原生 MemoryRail；
-  # modes.agent.memory.enabled 仍是总开关。模板缺省 ''（原生文件记忆）：
-  # jiuwen 变体依赖 site-packages 的 jiuwen_memory_adapter 包，按需显式开启。
-  # 两种挂载模式（memory.builtin.jiuwen.mode）：
-  #   http — 连远程 agent-memory HTTP 服务（需服务在跑）
-  #   sdk  — 进程内装配 agent-memory 内核，内核配置统一由 provider 内置
-  #          agent 场景默认装配（F09：md 真源 + shadow 索引 + agent_llm 抽取，
-  #          serve-doc 的代码化副本，随 adapter 部署）
+  # Work 选择 JiuwenMemoryRail；单人 Code 选择 JiuwenMemoryCodingRail。
+  # 各自仍受 modes.agent/code.memory.enabled 控制，且 memory.mode 必须为 local。
+  # 模板默认使用 jiuwen；core 与 JiuwenMemory 依赖须包含对应接入功能。
+  # 两种连接方式（memory.builtin.jiuwen.mode）：
+  #   http — 连远程 agent-memory 服务；Runtime、模型、文档与看门狗由服务端配置和持有。
+  #   sdk  — 进程内装配 Runtime/看门狗，以下 sdk 段覆盖 Provider 场景默认配置；
+  #          模板使用本地 hashing 向量，LLM 凭证留空时从 Swarm 默认对话模型注入。
+  # 选中 jiuwen 后编码 Rail 创建失败则清空编码槽位，不回退旧 Rail；ProjectMemoryRail 独立。
+  # 配置示例、工具和目录见 docs/zh/编码记忆.md。
   # ------------------------------------------------------------
   builtin:
-    provider: ""                  # '' / 缺省 = 原生 MemoryRail；jiuwen = AgentMemory 外接引擎
+    provider: jiuwen              # jiuwen = agent-memory 文档记忆；空 = 原生 Work/Code 记忆
     jiuwen:
       mode: ${JIUWEN_MEMORY_MODE:-sdk}   # http = HTTP 服务；sdk = 进程内内核
       base_url: ${JIUWEN_MEMORY_BASE_URL:-http://127.0.0.1:8137}  # http：AgentMemory HTTP 服务
       api_key: ${JIUWEN_MEMORY_API_KEY:-}                          # http：可选 Bearer
       user_id: ${MEMORY_USER_ID:-__default__}     # 数据隔离标识（与 memory.external 共用 env）
       scope_id: ${MEMORY_SCOPE_ID:-__default__}
-      session_id: ""               # 空 = 跨会话共享；显式传值 = 按会话隔离
-      agent_id: jiuwenswarm        # AgentMemory scope 的 agent 轴
+      session_id: ""               # 记忆 session，原样透传；不自动绑定聊天会话，影子搜索跨 session
+      agent_id: jiuwenswarm        # Work/Code 优先运行 Agent 名称；无名称时以此兜底
       space: ""                    # 只认显式传入，不从 scope_id 猜测
       identity_org: local          # http 模式认证身份 org（对齐 dev 认证器缺省）
       identity_user: developer     # http 模式认证身份 user
-      session_end_extract: false   # uninit 时批量 EXTRACT（infer 模式下冗余，保持关）
+      session_end_extract: false   # Work uninit 时批量 EXTRACT；Code 不使用此项
 
       # ---- sdk 模式专用（mode=sdk）----
-      # 进程内装配 agent-memory 内核，直连后端。sdk 下只贴"上层必须显式覆盖"的
-      # 关键内核装配项：globals 里的凭证/维度 + markdown_store 落盘根目录；其余
-      # namespace（extractor/engine/dedup 等算子）由 provider 内置的 agent 场景
-      # 默认装配补齐（AssemblyContext 深合并），不必重复贴。凭证字段留空 = 由
-      # provider 从 jiuwenswarm 顶层 models.defaults[is_default=true] + embed.*
-      # 注入真值（空串会被内置默认覆盖成空，所以这里显式占位）。
+      # SDK 配置会与 provider 内置的 agent 场景默认装配深合并。
+      # 默认使用本地 hashing 生成文本向量，无需配置 embedding 服务。
+      # LLM 凭证留空时从 Swarm 的默认对话模型注入。
       sdk:
+        embedder:
+          default:
+            target: hashing
+            params:
+              tokenizer: default
         globals:
-          embedder_dim: 1024        # 与 embedding 模型维度绑定（bge-m3 → 1024），须与向量库 dim 一致
+          embedder_dim: 64          # 文本向量维度，须与向量索引一致
           llm_base_url: ""          # LLM base_url；留空由 provider 从 models.defaults 注入
           llm_api_key: ""           # LLM api_key；留空由 provider 从 models.defaults 注入
           llm_model: ""             # LLM 模型名（如 deepseek-v4-pro）；留空由 provider 注入
@@ -208,7 +194,7 @@ memory:
           default:
             target: local           # md 真源落本地文件系统
             params:
-              root: ""              # 记忆文档根目录；留空由 provider 设为 {user_workspace}/agent
+              root: ""              # 记忆文档根；空 = {user_workspace}/agent/workspace，Work/Code 共用
 
   forbidden_memory_definition:
     enabled: false
@@ -331,11 +317,6 @@ memory:
         # 可选覆盖（缺省复用顶层 embed 配置）
         embedder_dim: ${JIUWEN_EMBEDDER_DIM:-1024}     # 须与向量库 dim 一致
 
-proactive_recommendation:
-  enabled: false                # 总开关
-  max_recommend_per_day: 10               # 每天最多推荐次数
-  max_rounds_per_tick: 20                # 每次 Tick 读取最近几轮对话
-
 # 自建网关方言覆盖表：api_base 的 host -> agent-core endpoint_profile。
 # 自建推理服务（如 vLLM/SGLang 起的 DashScope 风格服务，思考开关认
 # enable_thinking / thinking_budget、忽略官方 thinking.type）无法从域名
@@ -346,14 +327,25 @@ proactive_recommendation:
 # 留空表示不做任何推断；模型条目里显式配置的 endpoint_profile 始终优先。
 endpoint_profile_overrides:
 
+multimodal: null
+
 models:
   defaults:
     - model_id: mdl_default_primary
       model_client_config:
         api_base: ${API_BASE}
+        # api_key 支持三种写法：明文、${VAR}（环境变量）、exec: 引用式声明（详见
+        # docs/配置信息.md「引用式密钥声明」）。exec:<命令> 启动时执行一次、取 stdout
+        # 作密钥，明文不落盘；轮换需重启；仅 config.yaml 支持（企业模板不解析）。
         api_key: ${API_KEY}
         model_name: ${MODEL_NAME}
         client_provider: ${MODEL_PROVIDER}
+        # vendor_key：供应商方言标识，对应 .env 的 VENDOR_KEY；只有特定网关需要
+        # （例如 OpenCode Go 填 opencode-go），一般留空即"不声明"。
+        # 写在模板里而不是只写 .env.template：新装直接拷贝模板，已有配置靠
+        # migrate_config_from_template 从模板补键；而 get_default_models 只在
+        # 配置里没有 models.defaults 时才读 VENDOR_KEY 环境变量。
+        vendor_key: ${VENDOR_KEY:-}
         # endpoint_profile：仅 OpenAI 协议(client_provider=OpenAI)生效的端点方言。
         #   openai(官方/默认)、deepseek、openrouter、siliconflow、dashscope、
         #   openai_compatible(KV释放/亲和)、ollama、lmstudio、vllm、sglang。
@@ -396,6 +388,16 @@ models:
         # 未显式填写时，JiuwenSwarm 使用固定的 256K 上下文默认值。
         # 如需覆盖默认值，可在 model_config_obj 下配置 context_window。
       is_default: true
+    # OpenCode Go（可选，默认不启用）：client_provider 固定 OpenAI，
+    # vendor_key 标识供应商方言；api_base 必填且无默认地址，模型名手填。
+    # 会话头由程序按会话/成员自动派生，无需手工配置 custom_headers。
+    # - model_client_config:
+    #     api_base: https://opencode.ai/zen/go/v1
+    #     api_key: ${OPENCODE_GO_API_KEY}
+    #     model_name: <model-name>
+    #     client_provider: OpenAI
+    #     vendor_key: opencode-go
+    #   model_config_obj: {}
   # 备份模型条目，与 defaults 同构、同等可选可切换，但 is_default 恒为 false，
   # 绝不抢启动主对话默认；前端置灰只读展示。get_agentos_models 读取本字段，
   # 每条需自行填入 model_client_config.model_name 等凭证才生效。
@@ -481,6 +483,12 @@ models:
   #       client_provider: ""
   #       verify_ssl: true
   #       timeout: 1800
+  #       # 可选：仅当服务确实支持 Ascend KV-Cache 算力亲和时填写，client_provider 使用 OpenAI。
+  #       # 此处只声明模型能力；仍需在实验功能中手动开启算力亲和，总开关默认关闭。
+  #       extensions:
+  #         kv_cache:
+  #           mode: affinity
+  #           affinity_field: agent_hint
   #     model_config_obj:
   #       temperature: 0.95
   #       context_window: 262144
@@ -578,54 +586,33 @@ telemetry:
     headers:                        # metrics headers，默认回退到 telemetry.headers；留空而非 {}，理由同上
 
 # ============================================================
-# Team 可观测性配置（OTel + Langfuse）
+# 可观测性配置（OTel；Team 与单 Agent / Coding Agent 共用）
 # ============================================================
-# 与 telemetry 不同，team_observability 专门用于 TeamAgent 的
-# 可观测性追踪，包括 team/member/task/message 级别的 span。
-# 启用后会自动将 OtelTeamMonitorHandler 注册到 TeamAgent，
-# 将事件转为 OTel span 导出到 Langfuse / OTLP Collector。
+# 与 telemetry 不同，本段专门用于 Agent 运行轨迹的 OTel span 采集：
+#   - team.enabled  ：TeamAgent 路径，产生 team/member/task/message 级 span
+#                     （自动注册 OtelTeamMonitorHandler）
+#   - agent.enabled ：非 team 路径（Runner.run_agent / run_agent_streaming，
+#                     即 agent.* 与 code.* 模式），为 LLM 调用与工具调用生成 span
+# 其余字段是两条路径共用的导出配置。OTel 一个进程只允许一个全局
+# TracerProvider，所以导出配置只有一份；两个开关各自登记 demand，
+# 一方关闭不会拆掉另一方仍在使用的 provider。
 #
-# 前置条件：
-#   1. 启动 OTel Collector + Langfuse
-#   2. 在用户配置中设置 team_observability.enabled: true
-# ============================================================
-team_observability:
-  enabled: true                    # Team observability 总开关
-  exporter: file                    # otlp_grpc / otlp_http / file
-  endpoint: http://localhost:4317   # OTLP gRPC endpoint（file 模式不需要）
-  service_name: jiuwenswarm         # 服务名称（OTel resource service.name）
-  sample_rate: 1.0                  # 采样率 (0.0-1.0)
-  redact_prompts: false             # 是否脱敏 prompt 内容
-  redact_completions: false         # 是否脱敏 completion 内容
-  attribute_value_max_length: 10240 # OTel attribute value 最大长度
-  langfuse_public_key: ""           # Langfuse OTLP 认证 public key（可选）
-  langfuse_secret_key: ""           # Langfuse OTLP 认证 secret key（可选）
-  traces_dir: ""                    # file exporter 输出目录，默认 ~/.jiuwenswarm/.trace
-  file_retention_days: 7            # file exporter 文件保留天数
-
-# ============================================================
-# 单 Agent / Coding Agent 可观测性配置
-# ============================================================
-# 与 team_observability 对应，但作用于非 team 的运行路径
-#（Runner.run_agent / Runner.run_agent_streaming，即 agent.* 与 code.* 模式）。
-# 启用后会调用 init_observability() 注册全局 OtelCallbackHandler，
-# 自动为 LLM 调用与工具调用生成 span（不含 team/member/task 级 span，
-# 那是 team 模式专属）。
+# 旧版的 team_observability / agent_observability 两段会在升级时自动迁移到
+# 本段（各自的 enabled 迁到 team.enabled / agent.enabled）。
 #
-# 注意：OTel 一个进程只允许一个全局 TracerProvider。若本进程内 team 与
-# agent 可观测性同时开启，先初始化的一方生效，另一方复用同一个 provider
-#（其 exporter/endpoint 会被忽略）。代码层面用 demand 状态保证
-# 关闭时不会误拆对方依赖的 provider。
-#
-# 前置条件（otlp 模式）：启动 OTel Collector + Langfuse。
+# 前置条件（otlp 模式）：启动 OTLP 后端（OTel Collector + Langfuse，或
+# 直接使用 Jaeger 等原生支持 OTLP 的后端）。
 # skill_evolution / symphony evolution / react.ttse.enabled 任一开启时，
-# 即使本开关为 false，也会自动 acquire 以采集演进所需轨迹 span。
+# 即使 agent.enabled 为 false，也会自动 acquire 以采集演进所需轨迹 span。
 # ============================================================
-agent_observability:
-  enabled: false                    # 单 agent 可观测性总开关
-  exporter: file                    # otlp_grpc / otlp_http / file
-  endpoint: http://localhost:4317   # OTLP gRPC endpoint（file 模式不需要）
-  service_name: jiuwenswarm-agent   # 服务名称（OTel resource service.name）
+observability:
+  team:
+    enabled: true                   # Team 可观测性开关
+  agent:
+    enabled: false                  # 单 Agent / Coding Agent 可观测性开关
+  exporter: file                    # otlp_grpc / otlp_http / langfuse / console / file
+  endpoint: http://localhost:4317   # OTLP endpoint（file 模式不需要）
+  service_name: jiuwenswarm         # 服务名称（OTel resource service.name）
   sample_rate: 1.0                  # 采样率 (0.0-1.0)
   redact_prompts: false             # 是否脱敏 prompt 内容
   redact_completions: false         # 是否脱敏 completion 内容
@@ -644,7 +631,7 @@ session_cleanup:
 # 单 Agent 轨迹观测 Web 数据面
 # ============================================================
 # enabled=true 会作为 Agent / Team OTel provider 的额外 demand，但仍完整复用
-# agent_observability / team_observability 的 exporter、采样、脱敏、字段长度
+# observability 段的 exporter、采样、脱敏、字段长度
 # 与 Langfuse 配置。Processor 后的数据由 AgentServer 有界队列写入 SQLite；
 # Gateway 只读查询。Agent 与 Team 会话均向 Web 暴露轨迹。
 # auto_harness 不向 Web 暴露轨迹。
@@ -678,14 +665,14 @@ experimental:
 #   debug_enabled = 请求带 /debug OR debug_trace.<mode>.enabled
 #   dump_enabled  = debug_enabled AND debug_trace.<mode>.dump_enabled != false
 # dump 写入 ~/.jiuwenswarm/.agent/traces/ 或 .code/traces/（按模式）。
-# 与 agent_observability（OTel span）相互独立：本块只管本地文本 dump，
+# 与 observability（OTel span）相互独立：本块只管本地文本 dump，
 # OTel 接入在后续阶段。
 # ============================================================
 debug_trace:
   agent:                            # agent 模式（agent.plan / agent.fast …）
     enabled: false                  # 仅 agent 模式开关
     dump_enabled: true              # debug 开启时是否写本地 dump
-    otel_enabled: false             # debug 时是否顺带 force-enable agent_observability（产 OTel span）
+    otel_enabled: false             # debug 时是否顺带 force-enable observability.agent（产 OTel span）
     include_model_output: true      # 记录模型文本输出
     include_reasoning: true         # 记录推理片段
     include_tool_args: true         # 记录工具参数
@@ -694,7 +681,7 @@ debug_trace:
   code:                             # code 模式（code.normal / code.plan …）
     enabled: false
     dump_enabled: true
-    otel_enabled: false             # debug 时是否顺带 force-enable agent_observability（产 OTel span）
+    otel_enabled: false             # debug 时是否顺带 force-enable observability.agent（产 OTel span）
     include_model_output: true
     include_reasoning: true
     include_tool_args: true
@@ -763,6 +750,28 @@ react:
   answer_chunk_size: 500
   stream_chunk_threshold: 50
   stream_character_threshold: 2000
+  # ============ 用户超长输入拦截（默认关闭）============
+  # 在消息进入上下文和历史之前，快速拒绝"即使压缩/裁剪全部历史也装不下"的单条输入。
+  # 只判输入本身，不扣减可压缩的历史；真正的兜底仍是 SDK 的 PTL 恢复机制。
+  input_guard_config:
+    enabled: false               # 总开关；关闭时零额外开销
+    # 单条输入上限 = (模型窗口 - 系统提示词 - 工具定义 - 预留输出) × 比例
+    # 启发式计数（无精确 tokenizer）时的保守比例。
+    max_input_ratio: 0.95
+    # 精确 tokenizer 计数时的比例；计数误差小，可用更紧的余量。
+    precise_max_input_ratio: 0.99
+    # 绝对上限（tokens）；0 = 不启用。与比例上限取更小值。
+    max_input_tokens: 0
+    # 为模型输出预留的 tokens；0 = 不预留。
+    reserved_output_tokens: 0
+    # true 时在 reserved_output_tokens=0 的情况下用模型配置的 max_tokens 作为预留。
+    # 注意 max_tokens 常是模型最大输出能力，可能明显大于实际请求，默认关闭。
+    use_model_max_tokens_as_reserve: false
+    # 拿不到实时 system/tools 且没有实测缓存时的固定开销估算。
+    fixed_overhead_tokens: 30000
+    # 拦截文案；支持 {tokens} 与 {limit} 占位符，按 preferred_language 选择中/英。
+    # message_zh: "本次输入约 {tokens} tokens，超过当前模型可用输入上限（约 {limit} tokens），已拦截，未发送。请拆分为多次发送，或把长文保存到文件后告诉我路径，我按需读取。"
+    # message_en: "This input is about {tokens} tokens, which exceeds the model's available input limit (~{limit} tokens). It was not sent. Please split it into multiple messages, or save the long text to a file and tell me the path so I can read it on demand."
   # ============ 上下文引擎（上下文压缩/召回/会话记忆）============
   context_engine_config:
     enabled: true # 全局开关：false 时整个上下文引擎（含下列所有处理器）不生效
@@ -843,7 +852,7 @@ react:
   # 默认关闭；enabled 只控制 agent/work 的内置 TTSE；code 只通过会话插件挂载。
   # dream_interval /
   # dream_min_hours / dream_ttl_days 由实现固定（50 / 24.0 / 90），不对用户开放。
-  # enabled=true 时 Host 会自动拉起 agent_observability（轨迹采集依赖 LLM/工具 span）。
+  # enabled=true 时 Host 会自动拉起单 Agent 可观测性（轨迹采集依赖 LLM/工具 span）。
   ttse:
     enabled: false           # 仅控制 agent/work 内置 TTSE，不在 code 注入 Rail
     evolve_enabled: true    # 是否从轨迹归纳 FACT/TIP
@@ -1683,10 +1692,11 @@ modes:
     rails:
     tools:
   code:
-    # 记忆开关 — 控制 CodingMemoryRail 和 ProjectMemoryRail 加载
-    # 关闭后，coding_memory_read/write/edit 工具不可用，项目记忆文件不自动加载
+    # 记忆总开关 — 控制编码 Rail（原生或 jiuwen）和 ProjectMemoryRail。
+    # 关闭后不注册对应记忆工具，也不自动加载项目说明书。
     memory:
       enabled: true
+      auto_coding_memory: false  # 历史 code.* 入口；agent.code.* 仍读全局 auto_memory_enabled
 
     # SDD 开关 — 控制 DesignRail 加载（wave1：需求分析与设计阶段）
     # 开启后对 Agent 说"需求分析"即进入 SDD 流程，按阶段产出 RAS/RDS
@@ -1699,8 +1709,8 @@ modes:
     #   RuntimePromptRail, ResponsePromptRail, JiuSwarmStreamEventRail, SecurityRail,
     #   PermissionInterruptRail, SysOperationRail(FileSystemRail), LspRail,
     #   AgentModeRail, StructuredAskUserRail, ConfirmInterruptRail, ContextProcessorRail
-    # 注意：ProjectMemoryRail, CodingMemoryRail 受 memory.enabled 开关控制，
-    #       开关关闭时不加载，开关开启时固定挂载。
+    # 注意：ProjectMemoryRail 及编码 Rail 受 memory.enabled 控制，无需列入动态 rails。
+    #       provider=jiuwen 选 JiuwenMemoryCodingRail；空值保留 CodingMemoryRail。
     #       TTSERail 受 react.ttse.enabled 控制（与 agent 模式同一开关），
     #       开启后挂载 FACT/TIP 双轨自演进；不要放进下方动态 rails 列表。
     rails:
@@ -1709,7 +1719,8 @@ modes:
 
     # 动态 Tools — 列表中出现的 = 启用
     # send_file_to_user 由运行时 _update_session_tools 注册，不在此配置
-    # coding_memory_read/write/edit 由 CodingMemoryRail 在 subagent 内部注册，不在此配置
+    # 原生 coding_memory_read/write/edit 或 jiuwen 的 agent_memory_coding_memory_*
+    # （read/write/edit/search）由所选编码 Rail 注册，不在此配置。
     tools:
       - web_free_search
       - web_fetch_webpage
@@ -1851,6 +1862,9 @@ modes:
       # 第 0 层，成员拆出的子任务为第 1 层……）。设置页开关打开时写入 2。
       # autonomous 模式下忽略。见 core F_128。
       max_subtask_depth: 0
+
+      # Suppress periodic Todo reminders for Code agents in scheduled teams.
+      disable_code_todo_reminder: false
 
       leader:
         member_name: team-leader

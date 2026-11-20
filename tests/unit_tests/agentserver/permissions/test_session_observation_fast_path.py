@@ -72,7 +72,9 @@ async def installed(tmp_path, monkeypatch):
             rail = ToolRetrievalPromptRail(toolkit=toolkit)
         elif name == "skill_index":
             toolkit = SkillRetrievalToolkit(
-                skill_directories=[], session_scope="session-a", artifact_root=tmp_path / "index",
+                skill_directories=[], session_scope="session-a", config_base={"symphony": {
+                    "retrieval": {"enabled": True}, "storage": {"artifact_root": str(tmp_path / "index")},
+                }},
             )
             toolkits.append(toolkit)
             tool = toolkit.get_tools()[0]
@@ -105,7 +107,7 @@ async def installed(tmp_path, monkeypatch):
             await owner.unregister_rail(rail)
         owner.ability_manager.teardown_tools()
     for toolkit in toolkits:
-        toolkit._index_toolkit.close()
+        await toolkit.aclose()
 
 
 def _trusted(env):

@@ -5,8 +5,10 @@
 from __future__ import annotations
 
 import builtins
+import asyncio
 import json
 from pathlib import Path
+from contextvars import ContextVar
 
 import pytest
 
@@ -84,8 +86,9 @@ async def test_missing_or_corrupt_marketplace_lists_nothing(roots: dict) -> None
 
 
 @pytest.mark.asyncio
-async def test_catalog_does_no_blocking_file_io(roots: dict, monkeypatch: pytest.MonkeyPatch) -> None:
-    marketplace, local, _ = roots["agent_template"]
+@pytest.mark.parametrize("kind", ["agent_template", "agent_group"])
+async def test_catalog_does_no_blocking_file_io(roots: dict, monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
+    marketplace, local, _ = roots[kind]
     _package(local, "mine")
     _marketplace(marketplace, {"id": "mine", "installed": True})
 
@@ -95,10 +98,45 @@ async def test_catalog_does_no_blocking_file_io(roots: dict, monkeypatch: pytest
     monkeypatch.setattr(builtins, "open", _refuse)
     for name in ("read_text", "is_dir", "is_file", "exists", "iterdir", "resolve"):
         monkeypatch.setattr(Path, name, _refuse)
-    assert [item.name for item in await JiuwenExpertCatalog().list_expert_packages()] == ["mine"]
+    catalog = JiuwenExpertCatalog()
+    reader = catalog.list_group_packages if kind == "agent_group" else catalog.list_expert_packages
+    assert [item.name for item in await reader()] == ["mine"]
 
 
-def test_install_injects_the_catalog_and_tolerates_an_older_openjiuwen(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_group_allowlist_keeps_concurrent_request_contexts_separate(roots, monkeypatch):
+    from jiuwenswarm.enterprise.capabilities.experts import request_packages as package_allowlist
+
+    marketplace, local, _ = roots["agent_group"]
+    for name in ("alpha", "beta"):
+        _package(local, name)
+    _marketplace(marketplace, {"id": "alpha", "installed": True}, {"id": "beta", "installed": True})
+    permitted = ContextVar("permitted_group", default="")
+    monkeypatch.setattr(package_allowlist, "allows", lambda kind, name: name == permitted.get())
+
+    async def read_as(name):
+        token = permitted.set(name)
+        try:
+            return [item.name for item in await JiuwenExpertCatalog().list_group_packages()]
+        finally:
+            permitted.reset(token)
+
+    assert await asyncio.gather(read_as("alpha"), read_as("beta")) == [["alpha"], ["beta"]]
+
+
+@pytest.mark.asyncio
+async def test_locate_group_denies_before_resolving_a_package(roots, monkeypatch):
+    from jiuwenswarm.enterprise.capabilities.experts import request_packages as package_allowlist
+
+    def denied(kind, name):
+        raise ValueError("package not allowed")
+
+    monkeypatch.setattr(package_allowlist, "require_allowed", denied)
+    with pytest.raises(ValueError, match="not allowed"):
+        await JiuwenExpertCatalog().locate_group("hidden")
+
+
+def test_install_injects_the_catalog_and_tolerates_an_older_openjiuwen(monkeypatch, caplog) -> None:
     from openjiuwen.agent_teams.runtime import TeamRuntimeManager
 
     try:
@@ -108,4 +146,18 @@ def test_install_injects_the_catalog_and_tolerates_an_older_openjiuwen(monkeypat
         TeamRuntimeManager.set_expert_catalog(None)
 
     monkeypatch.delattr(TeamRuntimeManager, "set_expert_catalog")
-    install_expert_catalog()  # older openjiuwen: silently skipped
+    install_expert_catalog()
+    assert "AGENT_GROUP_CATALOG_NOT_CONFIGURED" in caplog.text
+    assert "does not support expert catalog registration" in caplog.text
+
+
+def test_install_reports_registration_that_does_not_take_effect(monkeypatch, caplog):
+    from openjiuwen.agent_teams.runtime import TeamRuntimeManager
+
+    monkeypatch.setattr("openjiuwen.agent_teams.experts.catalog._process_catalog", None)
+    monkeypatch.setattr(TeamRuntimeManager, "set_expert_catalog", lambda _catalog: None)
+
+    install_expert_catalog()
+
+    assert "AGENT_GROUP_CATALOG_NOT_CONFIGURED" in caplog.text
+    assert "registration did not take effect" in caplog.text

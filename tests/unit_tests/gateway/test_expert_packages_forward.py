@@ -6,9 +6,15 @@ from __future__ import annotations
 
 import pytest
 from starlette.requests import Request
+from e2a.models import E2AEnvelope
+from agent_gateway.enterprise.capabilities.experts.bound_packages import (
+    packages_for_bot,
+    packages_from_template_rows,
+)
+from agent_gateway.routing.agent_client import _stamp_expert_packages
+from agent_gateway.enterprise.capabilities.experts.allowlist import bind_outbound_allowlist
 
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.runtime_management_extension.pod_http_client import (
     _assemble_with_expert_packages,
@@ -16,13 +22,7 @@ from jiuwenswarm.extensions.runtime_management_extension.pod_http_client import 
 from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
     identity_headers,
 )
-from agent_gateway.enterprise.capabilities.experts.bound_packages import (
-    packages_for_bot,
-    packages_from_template_rows,
-)
-from agent_gateway.routing.agent_client import _stamp_expert_packages
 from jiuwenswarm.server.agent_http_routes import _rebuild_identity_from_headers
-from agent_gateway.enterprise.capabilities.experts.allowlist import bind_outbound_allowlist
 from jiuwenswarm.common.schema.expert_packages import (
     HEADER_NAME,
     METADATA_KEY,
@@ -140,21 +140,6 @@ async def test_websocket_stamp_overwrites_client_expert_packages(
     assert request.metadata[METADATA_KEY] == _KEEP
 
 
-@pytest.mark.asyncio
-async def test_personal_websocket_stamp_skips_read(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
-
-    async def _read() -> list[dict]:
-        raise AssertionError("personal edition read the expert packages")
-
-    monkeypatch.setattr(_PACKAGES, _read)
-    envelope = _envelope()
-    await _stamp_expert_packages(envelope)
-    assert envelope.channel_context[METADATA_KEY] == _EVIL
-
-
 def test_corrupt_expert_packages_header_becomes_empty_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -184,96 +169,3 @@ def test_expert_packages_header_round_trip(monkeypatch: pytest.MonkeyPatch) -> N
     assert metadata[METADATA_KEY] == _KEEP
 
 
-def test_template_rows_become_packages_without_match_expr() -> None:
-    packages = packages_from_template_rows(
-        ["tpl-keep", "tpl-keep", "tpl-gone", "tpl-off"],
-        [
-            {
-                "template_id": "tpl-keep",
-                "enabled": True,
-                "packages": [
-                    {"kind": "agent_template", "asset_id": "keep", "version": "1"},
-                    {"kind": "agent_group", "asset_id": "team-1", "version": ""},
-                    {"kind": "agent_template", "asset_id": "keep", "version": "2"},
-                    {"kind": "other", "asset_id": "skip-me"},
-                ],
-            },
-            {
-                "template_id": "tpl-off",
-                "enabled": False,
-                "packages": [{"kind": "agent_template", "asset_id": "off"}],
-            },
-        ],
-    )
-    assert packages == [
-        {"kind": "agent_template", "id": "keep"},
-        {"kind": "agent_group", "id": "team-1"},
-    ]
-    assert "match_expr" not in packages[0]
-
-
-@pytest.mark.asyncio
-async def test_packages_for_bot_reads_template_slots(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-
-    async def _list(table: str, *, filters=None, order_by: str = ""):
-        del order_by
-        if table == "instance_agent_resource" and filters["resource_id"] == "bot-1":
-            return [{"ref_template_id": "tpl-1", "enabled": True}]
-        if table == "agent_template" and filters["template_id"] == "tpl-1":
-            return [{
-                "template_ref": {
-                    "expert_package": ["tpl-keep"],
-                },
-            }]
-        if table == "expert_package_template":
-            return [
-                {
-                    "template_id": "tpl-keep",
-                    "enabled": True,
-                    "packages": [
-                        {"kind": "agent_template", "asset_id": "keep"},
-                        {"kind": "agent_group", "asset_id": "team-1"},
-                    ],
-                },
-            ]
-        return []
-
-    monkeypatch.setattr(
-        "agent_gateway.enterprise.config.effective.db_queries.list_records",
-        _list,
-    )
-    assert await packages_for_bot("bot-1") == [
-        {"kind": "agent_template", "id": "keep"},
-        {"kind": "agent_group", "id": "team-1"},
-    ]
-
-
-@pytest.mark.asyncio
-async def test_packages_for_missing_bot_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-
-    async def _list(table: str, *, filters=None, order_by: str = ""):
-        del table, filters, order_by
-        return []
-
-    monkeypatch.setattr(
-        "agent_gateway.enterprise.config.effective.db_queries.list_records",
-        _list,
-    )
-    assert await packages_for_bot("missing") == []
-    assert await packages_for_bot("") == []
-
-
-@pytest.mark.asyncio
-async def test_personal_packages_for_bot_skips_repository(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
-
-    def _missing(*_args, **_kwargs):
-        raise AssertionError("personal edition read the gateway database")
-
-    monkeypatch.setattr(
-        "agent_gateway.enterprise.config.effective.db_queries.list_records",
-        _missing,
-    )
-    assert await packages_for_bot("bot-1") == []

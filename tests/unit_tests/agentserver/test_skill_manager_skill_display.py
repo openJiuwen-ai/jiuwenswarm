@@ -9,12 +9,19 @@ import pytest
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager, SkillRpcError
 
 
-@pytest.fixture(params=["en", "zh"], autouse=True)
-def preferred_language(request, monkeypatch, tmp_path):
-    """Read the language from an isolated config.yaml, never the developer's file."""
-    config_file = tmp_path / "config.yaml"
+@pytest.fixture
+def config_file(monkeypatch, tmp_path):
+    """Create an explicit, isolated config file for tests that read settings."""
+    path = tmp_path / "config.yaml"
+    path.write_text("{}\n", encoding="utf-8")
+    monkeypatch.setattr("jiuwenswarm.common.config.get_config_file", lambda: path)
+    return path
+
+
+@pytest.fixture(params=["en", "zh"])
+def preferred_language(request, config_file):
+    """Set the preferred language in the isolated config file."""
     config_file.write_text(f"preferred_language: {request.param}\n", encoding="utf-8")
-    monkeypatch.setattr("jiuwenswarm.common.config.get_config_file", lambda: config_file)
     return request.param
 
 
@@ -225,7 +232,7 @@ async def test_skills_get_rejects_uninstalled_builtin_outside_whitelist(
         await manager.handle_skills_get({"name": "hidden-builtin"})
 
 
-def test_builtin_scan_whitelist_filters_non_listed(monkeypatch, tmp_path):
+def test_builtin_scan_whitelist_filters_non_listed(monkeypatch, tmp_path, config_file):
     skills_dir = tmp_path / "skills"
     builtin_dir = tmp_path / "builtin"
     _make_skill_dir(builtin_dir, "skill-creator", description="Creator")
@@ -302,10 +309,9 @@ def test_selected_language_missing_fields_preserve_original_metadata(
 
 @pytest.mark.parametrize(
     ("configured_language", "expected_language"),
-    [(None, "en"), ("", "en"), ("unsupported", "en"), (" EN-us ", "en"), ("zh-CN", "zh"), ("cn", "zh")],
+    [(None, "zh"), ("", "zh"), ("unsupported", "zh"), (" EN-us ", "en"), ("en", "en"), ("zh-CN", "zh"), ("cn", "zh")],
 )
-def test_skill_display_config_language_normalization(tmp_path, configured_language, expected_language):
-    config_file = tmp_path / "config.yaml"
+def test_skill_display_config_language_normalization(tmp_path, config_file, configured_language, expected_language):
     content = "{}\n" if configured_language is None else f'preferred_language: "{configured_language}"\n'
     config_file.write_text(content, encoding="utf-8")
     skill_dir = _make_skill_dir(tmp_path, "normalized", display={
@@ -320,7 +326,7 @@ def test_skill_display_config_language_normalization(tmp_path, configured_langua
     assert meta["description"] == ("English description" if expected_language == "en" else "中文简介")
 
 
-def test_skill_display_unreadable_config_defaults_to_english(monkeypatch, tmp_path):
+def test_skill_display_unreadable_config_defaults_to_chinese(monkeypatch, tmp_path):
     def unreadable_config():
         raise OSError("config unavailable")
 
@@ -333,12 +339,14 @@ def test_skill_display_unreadable_config_defaults_to_english(monkeypatch, tmp_pa
 
     SkillManager._apply_skill_display(meta, skill_dir)
 
-    assert meta["display_name"] == "English name"
-    assert meta["description"] == "English description"
+    assert meta["display_name"] == "中文名称"
+    assert meta["description"] == "中文简介"
 
 
 @pytest.mark.asyncio
-async def test_skills_list_and_detail_follow_config_changes_without_recreating_manager(monkeypatch, tmp_path):
+async def test_skills_list_and_detail_follow_config_changes_without_recreating_manager(
+    monkeypatch, tmp_path, config_file,
+):
     skills_dir = tmp_path / "skills"
     builtin_dir = tmp_path / "builtin"
     skill_dir = _make_skill_dir(skills_dir, "subtraction", display={
@@ -353,7 +361,6 @@ async def test_skills_list_and_detail_follow_config_changes_without_recreating_m
         ("zh", "减法助手", "精确完成减法"),
         ("en", "Subtraction Helper", "Subtract exactly"),
     ):
-        config_file = tmp_path / "config.yaml"
         next_stamp = config_file.stat().st_mtime_ns + 1_000_000_000
         config_file.write_text(f"preferred_language: {language}\n", encoding="utf-8")
         # Make separate config edits deterministic on filesystems with coarse timestamps.
@@ -388,3 +395,102 @@ def test_marketplace_scan_uses_configured_display_language(monkeypatch, tmp_path
     skill = next(item for item in listed if item["name"] == "market-demo")
     assert skill["display_name"] == ("Market Demo" if preferred_language == "en" else "市场演示")
     assert skill["description"] == ("Market English description" if preferred_language == "en" else "市场中文简介")
+
+
+@pytest.mark.parametrize("failure", ["missing", "invalid_yaml", "not_mapping"])
+def test_skill_display_invalid_config_defaults_to_chinese(tmp_path, config_file, failure):
+    if failure == "missing":
+        config_file.unlink()
+    else:
+        config_file.write_text("[" if failure == "invalid_yaml" else "- invalid\n", encoding="utf-8")
+    skill_dir = _make_skill_dir(tmp_path, "invalid-config", display={
+        "display_name_zh": "中文名称", "description_zh": "中文简介",
+        "display_name_en": "English name", "description_en": "English description",
+    })
+    meta = {"name": "invalid-config", "description": "Trigger"}
+
+    SkillManager._apply_skill_display(meta, skill_dir)
+
+    assert meta["display_name"] == "中文名称"
+    assert meta["description"] == "中文简介"
+
+
+def _make_display_scan_manager(monkeypatch, tmp_path):
+    """Build several real skills across every supported scan source."""
+    skills_dir = tmp_path / "skills"
+    builtin_dir = tmp_path / "builtin"
+    display = {
+        "display_name_zh": "中文名称", "description_zh": "中文简介",
+        "display_name_en": "English name", "description_en": "English description",
+    }
+    for name in ("local-one", "local-two"):
+        _make_skill_dir(skills_dir, name, display=display)
+    for name in ("skill-creator", "gitcode-api"):
+        _make_skill_dir(builtin_dir, name, display=display)
+    mcp_dir = tmp_path / "mcp"
+    for name in ("mcp-one", "mcp-two"):
+        _make_skill_dir(mcp_dir, name, display=display)
+    manager = _init_manager(monkeypatch, skills_dir, builtin_dir)
+    monkeypatch.setattr(manager, "_mcp_skills_dirs", lambda: [{"dir": str(mcp_dir)}])
+    manager._state["marketplaces"] = [{
+        "name": "demo-market", "url": "https://example.invalid/demo.git", "enabled": True,
+    }]
+    for name in ("market-one", "market-two"):
+        _make_skill_dir(manager._marketplace_dir / "demo-market" / "skills", name, display=display)
+    return manager
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enterprise", [False, True])
+async def test_skills_list_reads_language_once_per_request(
+    monkeypatch, tmp_path, config_file, enterprise, mocker,
+):
+    from jiuwenswarm.common import config
+
+    manager = _make_display_scan_manager(monkeypatch, tmp_path)
+    monkeypatch.setattr("jiuwenswarm.server.runtime.skill.skill_manager.is_enterprise", lambda: enterprise)
+    read_config = mocker.spy(config, "get_config")
+    expected_names = {"local-one", "local-two", "mcp-one", "mcp-two"}
+    if not enterprise:
+        expected_names.update({"skill-creator", "gitcode-api", "market-one", "market-two"})
+
+    for language, name, description in (
+        ("en", "English name", "English description"),
+        ("zh", "中文名称", "中文简介"),
+        ("en", "English name", "English description"),
+    ):
+        next_stamp = config_file.stat().st_mtime_ns + 1_000_000_000
+        config_file.write_text(f"preferred_language: {language}\n", encoding="utf-8")
+        os.utime(config_file, ns=(next_stamp, next_stamp))
+        read_config.reset_mock()
+
+        response = await manager.handle_skills_list({})
+
+        assert read_config.call_count == 1
+        assert {skill["name"] for skill in response["skills"]} == expected_names
+        for skill in response["skills"]:
+            assert skill["display_name"] == name
+            assert skill["description"] == description
+
+
+@pytest.mark.parametrize("source", ["local", "builtin", "marketplace"])
+def test_standalone_scans_read_language_once(
+    monkeypatch, tmp_path, preferred_language, source, mocker,
+):
+    from jiuwenswarm.common import config
+
+    manager = _make_display_scan_manager(monkeypatch, tmp_path)
+    read_config = mocker.spy(config, "get_config")
+    scans = {
+        "local": manager._scan_local_skills,
+        "builtin": manager._scan_builtin_skills,
+        "marketplace": manager._scan_marketplace_skills,
+    }
+
+    skills = scans[source]()
+
+    assert len(skills) == (4 if source == "local" else 2)
+    assert read_config.call_count == 1
+    for skill in skills:
+        assert skill["display_name"] == ("English name" if preferred_language == "en" else "中文名称")
+        assert skill["description"] == ("English description" if preferred_language == "en" else "中文简介")

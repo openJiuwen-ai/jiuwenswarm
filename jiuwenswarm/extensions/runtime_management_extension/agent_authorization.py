@@ -3,7 +3,7 @@
 import logging
 from datetime import datetime, timezone
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
+from e2a.models import E2AEnvelope
 from jiuwenswarm.extensions.runtime_management_extension.invoke_ids import (
     routing_triple_from_envelope,
 )
@@ -14,11 +14,22 @@ from jiuwenswarm.extensions.runtime_management_extension.session_route_client im
 logger = logging.getLogger(__name__)
 _enterprise_absent_logged = False
 
-# 本单约束发起/继续 Agent 执行的对话入口。会话管理、历史查询与中断
-# 沿用各自接口契约，不在这里按前缀扩大授权范围。
+# 对话入口，以及专家、专家团的查看、安装和本地管理。会话历史不在这里，
+# 也不按路径前缀扩大。
 CHAT_METHODS = frozenset({
     "chat.send", "chat.resume", "chat.user_answer", "chat.swarmflow_reply",
 })
+_EXPERT_KINDS = ("agent_templates", "agent_groups")
+_EXPERT_ACTIONS = (
+    "list", "show", "file.list", "file.read", "install", "uninstall",
+    "create", "import_local",
+)
+EXPERT_PACKAGE_METHODS = frozenset(
+    f"{kind}.{action}" for kind in _EXPERT_KINDS for action in _EXPERT_ACTIONS
+) | frozenset({
+    "agent_templates.update", "agent_templates.delete",
+})
+ADMITTED_METHODS = CHAT_METHODS | EXPERT_PACKAGE_METHODS
 
 
 def _enterprise_checkers():
@@ -38,7 +49,7 @@ def _enterprise_checkers():
 
 
 async def authorize_agent(envelope: E2AEnvelope) -> tuple[str, str, str] | None:
-    if envelope.method not in CHAT_METHODS:
+    if envelope.method not in ADMITTED_METHODS:
         return None
     checkers = _enterprise_checkers()
     if checkers is None:

@@ -7,9 +7,13 @@ interface DatePickerProps {
   value: string; // "YYYY-MM-DD"，空字符串表示未选择
   onChange: (v: string) => void;
   placeholder?: string;
+  /** 输入框的可访问名称；没有可见 label 关联时必须传入。 */
+  ariaLabel?: string;
   className?: string;
   /** 最早可选日期 "YYYY-MM-DD"（含），早于它的日期禁用点选、手动输入也会被拒绝；不传则不限制。 */
   minDate?: string;
+  /** 最晚可选日期 "YYYY-MM-DD"（含），晚于它的日期禁用点选、手动输入也会被拒绝；不传则不限制。 */
+  maxDate?: string;
 }
 
 function buildMonthList(centerYear: number, centerMonth: number): { year: number; month: number }[] {
@@ -39,7 +43,8 @@ function calendarDate(value: string): Date {
   return new Date(year, month - 1, day);
 }
 
-export default function DatePicker({ value, onChange, placeholder, className = 'flex-1 min-w-0', minDate }: DatePickerProps) {
+export default function DatePicker({ value, onChange, placeholder, ariaLabel, className = 'flex-1 min-w-0', minDate, maxDate }: DatePickerProps) {
+  const outOfRange = (date: string) => Boolean((minDate && date < minDate) || (maxDate && date > maxDate));
   const { t } = useTranslation();
   // minDate is the caller's "today" in the schedule timezone, which may be in another month.
   const anchorDate = value || minDate;
@@ -69,7 +74,7 @@ export default function DatePicker({ value, onChange, placeholder, className = '
 
   function commitText(raw: string) {
     const parsed = parseFlexibleDate(raw);
-    if (parsed && !(minDate && parsed < minDate)) {
+    if (parsed && !outOfRange(parsed)) {
       onChange(parsed);
       const d = calendarDate(parsed);
       setCursor({ year: d.getFullYear(), month: d.getMonth() });
@@ -113,6 +118,7 @@ export default function DatePicker({ value, onChange, placeholder, className = '
         <input
           type="text"
           data-testid="cron-date-picker-input"
+          aria-label={ariaLabel}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onFocus={() => setOpen(true)}
@@ -218,7 +224,7 @@ export default function DatePicker({ value, onChange, placeholder, className = '
                   selectedDate.getMonth() === cursor.month &&
                   selectedDate.getDate() === day;
                 const cellDateStr = `${cursor.year}-${String(cursor.month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-                const disabled = Boolean(minDate && cellDateStr < minDate);
+                const disabled = outOfRange(cellDateStr);
                 return (
                   <button
                     key={idx}

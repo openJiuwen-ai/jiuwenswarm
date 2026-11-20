@@ -32,7 +32,6 @@ export type ConnectionState = { kind: 'open' } | { kind: 'down'; attempt: number
 export class GatewayClient {
   private socket: WebSocket | null = null;
   private connectPromise: Promise<void> | null = null;
-  private sequence = 0;
   private readonly pending = new Map<string, PendingRequest>();
   private readonly listeners = new Set<(event: GatewayEvent) => void>();
   private readonly reconnectListeners = new Set<() => void>();
@@ -130,7 +129,7 @@ export class GatewayClient {
     await this.connect();
     const socket = this.socket;
     if (socket?.readyState !== WebSocket.OPEN) throw new GatewayRequestError('Gateway connection is not open');
-    const id = `office_${Date.now().toString(36)}_${++this.sequence}`;
+    const id = `office_${crypto.randomUUID()}`;
     const answered = new Promise<JsonObject>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
@@ -179,6 +178,9 @@ export class GatewayClient {
 }
 
 function getOrCreateOfficeUserId(appId: string): string {
+  // The desktop install puts one id for every host in the pane URL; a development sideload has none.
+  const installed = new URLSearchParams(window.location.search).get('u');
+  if (installed) return installed;
   const storageKey = `jiuwenswarm-office-user-id:${appId}`;
   const existing = window.localStorage.getItem(storageKey);
   if (existing) return existing;

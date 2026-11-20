@@ -1,6 +1,7 @@
 """Private-team background ownership, interaction, continuation and provenance."""
 
 import asyncio
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -985,11 +986,16 @@ async def test_idle_after_the_reminder_falls_back_to_the_reply_with_output_files
 
     async def stream(child, inputs, *, session):
         key = next(t.params["key"] for t in child.agents["leader"].tools if t.type == gc.COMPLETE_RUN)
-        execution_id = gc._private_runs[key]["execution_id"]
+        run_state = gc._private_runs[key]
+        execution_id = run_state["execution_id"]
         outputs = tmp_path / "outputs"
         outputs.mkdir()
-        gc._private_runs[key]["outputs_dir"] = str(outputs)
-        (outputs / "note.md").write_text("deliverable", encoding="utf-8")
+        run_state["outputs_dir"] = str(outputs)
+        note = outputs / "note.md"
+        note.write_text("deliverable", encoding="utf-8")
+        # Model an output from this run independently of filesystem timestamp resolution.
+        written_at = run_state["started_at"] + 1
+        os.utime(note, (written_at, written_at))
         assert (await gc.BeginTeamTask(key).invoke({"execution_id": execution_id})).success
         yield _leader("llm_output", content="Interim note.")
         yield IDLE
@@ -1140,3 +1146,53 @@ async def test_idle_guard_does_not_expire_after_progress_or_while_waiting(privat
     monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
     accepted = await run.proxy.invoke({"run_id": "one", "task": "Write it"})
     assert (await wait_worker(run, accepted))["status"] == "completed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['typed', 'dict', 'sentinel', 'retry_idle', 'stream_error'])
+async def test_failed_private_response_never_completes_card(private_run, monkeypatch, failure):
+    run = private_run
+
+    async def stream(child, inputs, *, session):
+        key = next(t.params['key'] for t in child.agents['leader'].tools if t.type == gc.COMPLETE_RUN)
+        await gc.BeginTeamTask(key).invoke({'execution_id': gc._private_runs[key]['execution_id']})
+        yield _leader('llm_output', content='About to create the tasks. ')
+        if failure == 'typed':
+            from openjiuwen.core.stream.schema import CustomSchema
+            yield SimpleNamespace(type='custom', role=gc.TeamRole.LEADER,
+                                  payload=CustomSchema(type='task_failed', data=[]))
+        elif failure == 'dict':
+            yield _leader('custom', type='task_failed', data=[])
+        elif failure == 'sentinel':
+            yield _leader('llm_output', content='[Request interrupted by ')
+            yield _leader('llm_output', content='an unexpected error]')
+        elif failure == 'retry_idle':
+            yield _leader('llm_output', content='Retrying', retrying=True)
+        else:
+            raise RuntimeError('stream disconnected')
+        yield IDLE
+
+    monkeypatch.setattr(gc.Runner, 'run_agent_team_streaming', stream)
+    accepted = await run.proxy.invoke({'run_id': 'failed', 'task': 'Research'})
+    record = await wait_worker(run, accepted)
+    assert record['status'] == 'failed'
+    assert record['presentation'] == 'card'
+    assert not record.get('result')
+    assert all(text.startswith('执行失败：') for text in posted_errors(run))
+
+
+@pytest.mark.asyncio
+async def test_retry_then_success_uses_only_recovered_reply(private_run, monkeypatch):
+    run = private_run
+
+    async def stream(child, inputs, *, session):
+        yield _leader('llm_output', content='Incomplete failed attempt. ')
+        yield _leader('llm_output', content='Retrying', retrying=True)
+        yield _leader('llm_output', content='Recovered final answer.')
+        yield IDLE
+
+    monkeypatch.setattr(gc.Runner, 'run_agent_team_streaming', stream)
+    accepted = await run.proxy.invoke({'run_id': 'recover', 'task': 'Research'})
+    record = await wait_worker(run, accepted)
+    assert record['status'] == 'completed'
+    assert record['result'] == 'Recovered final answer.'

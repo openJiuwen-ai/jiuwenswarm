@@ -3,10 +3,7 @@ import type { SettingsModuleDefinition } from '../../registry/types';
 import {
   A2UISetting,
   ExternalCliCustomAgentsItem,
-  ProactiveLimitsSetting,
   RSISetting,
-  TaskAsrSetting,
-  TaskFullDuplexSetting,
   TrajectoryDiagnosisSetting,
 } from './ExperimentalSettings';
 import { CollaborationVerifierInterval } from './MultiModelCollaborationSettings';
@@ -19,16 +16,6 @@ export const experimentalModule: SettingsModuleDefinition = {
   icon: settingsNavigationIcons.experimental,
   source: 'config',
   sections: [
-    {
-      id: 'asr',
-      titleKey: 'settingsPanel.experimental.taskAsr',
-      items: [{ id: 'task-asr-enabled', component: 'custom', render: TaskAsrSetting }],
-    },
-    {
-      id: 'task-full-duplex',
-      titleKey: 'settingsPanel.experimental.taskFullDuplex',
-      items: [{ id: 'task-full-duplex-enabled', component: 'custom', render: TaskFullDuplexSetting }],
-    },
     {
       id: 'external-cli-custom-agents',
       titleKey: 'settingsPanel.experimental.externalCliAgents',
@@ -76,6 +63,8 @@ export const experimentalModule: SettingsModuleDefinition = {
           id: 'kv-cache-affinity-enabled',
           component: 'switch',
           key: 'kv_cache_affinity_enabled',
+          optimistic: false,
+          errorDisplay: 'toast',
         },
       ],
     },
@@ -100,23 +89,8 @@ export const experimentalModule: SettingsModuleDefinition = {
               { id: 'team-task-verification-enabled', component: 'switch', key: 'team_task_verification_enabled' },
               { id: 'team-member-messaging-enabled', component: 'switch', key: 'team_member_messaging_enabled' },
               { id: 'team-member-subtasks-enabled', component: 'switch', key: 'team_member_subtasks_enabled' },
+              { id: 'team-code-todo-reminder-disabled', component: 'switch', key: 'team_code_todo_reminder_disabled' },
             ],
-          },
-        },
-      ],
-    },
-    {
-      id: 'proactive-recommendation',
-      titleKey: 'settingsPanel.experimental.proactive',
-      items: [
-        {
-          id: 'proactive-recommendation',
-          component: 'switch',
-          key: 'proactive_recommendation_enabled',
-          subItems: {
-            show: 'always',
-            disabled: 'when-parent-unchecked',
-            items: [{ id: 'proactive-limits', component: 'custom', render: ProactiveLimitsSetting }],
           },
         },
       ],
@@ -160,6 +134,7 @@ export const experimentalModule: SettingsModuleDefinition = {
           component: 'switch',
           key: 'cua_agent_enabled',
           availableWhen: 'cua_backend_available',
+          unavailableReasonKey: 'cua_backend_unavailable_reason',
         },
       ],
     },
