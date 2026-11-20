@@ -106,6 +106,32 @@ async def create(service, token="one", **params):
 
 
 @pytest.mark.asyncio
+async def test_colleague_create_and_add_retries_keep_the_original_request(service, monkeypatch):
+    from jiuwenswarm.server.jiuwenmate.service import PersistentAgentService
+
+    colleague = SimpleNamespace(name="Authoritative name", description="Profile", enabled=True,
+                                avatar_url="", category="custom", is_default=False)
+    monkeypatch.setattr(PersistentAgentService, "create_default",
+                        lambda: SimpleNamespace(get_colleague=lambda *_: colleague))
+    first = {"kind": "colleague", "id": "one", "member_name": "assistant"}
+    group = await create(service, members=[dict(first)])
+    assert group["members"][0]["display_name"] == colleague.name
+    assert await create(service, members=[dict(first)]) == group
+    with pytest.raises(gs.GroupError, match="different group"):
+        await create(service, members=[{**first, "id": "different"}])
+
+    second = {"kind": "colleague", "id": "two", "member_name": "reviewer", "display_name": "Old"}
+    args = {"user_id": "owner", "channel_id": "web", "request_id": "add"}
+    response = await service.add_member(group["group_id"], {"member": dict(second)}, **args)
+    assert response["member"]["display_name"] == colleague.name
+    assert await service.add_member(group["group_id"], {"member": dict(second)}, **args) == response
+    persisted = gs.read_group(group["group_id"])
+    assert persisted["receipts"]["add"] == second
+    with pytest.raises(gs.GroupError, match="different member"):
+        await service.add_member(group["group_id"], {"member": {**second, "id": "different"}}, **args)
+
+
+@pytest.mark.asyncio
 async def test_create_list_update_and_owner_isolation(service):
     group = await create(service)
     assert not {"compiled", "user_id", "receipts"} & group.keys()

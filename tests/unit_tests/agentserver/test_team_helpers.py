@@ -10000,3 +10000,24 @@ async def test_leader_goal_blocked_ends_request_without_ending_resident_stream(
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+@pytest.mark.asyncio
+async def test_public_group_ready_skips_enterprise_occupancy_and_quota_reconciliation(monkeypatch):
+    from jiuwenswarm.enterprise.team import member_limits
+
+    backend = SimpleNamespace(conversation_mode="group_chat")
+    leader = SimpleNamespace(team_backend=backend)
+    monkeypatch.setattr(team_helpers, "_current_pool_team_agent", AsyncMock(return_value=leader))
+    occupancy = Mock()
+    detach = Mock()
+    actor = AsyncMock()
+    monkeypatch.setattr(team_helpers, "_record_session_team_occupancy", occupancy)
+    monkeypatch.setattr(member_limits, "detach_teammate_limit_guard", detach)
+    monkeypatch.setattr("jiuwenswarm.infrastructure.db.team_store_actor.run_team_store", actor)
+    await team_helpers._apply_enterprise_runtime_ready_hooks(
+        channel_id="web", session_id="group", runtime_team_name="group-team", parsed={},
+    )
+    detach.assert_called_once_with(leader)
+    occupancy.assert_not_called()
+    actor.assert_not_awaited()
