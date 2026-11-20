@@ -1,5 +1,6 @@
 """Swarm product defaults, explicit YAML and strict Core configuration contract."""
 
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -51,13 +52,17 @@ symphony:
         root: ./shared-skills
       - type: expert
         root: ./experts
+      - type: connector
+        root: ./mcp_hub
 """)
     cfg = symphony_config.load_symphony_config(raw)
     assert [source.model_dump() for source in cfg.capability.sources] == [
         {"type": "skill", "root": str(tmp_path / "skills")},
         {"type": "skill", "root": str(tmp_path / "shared-skills")},
         {"type": "expert", "root": str(tmp_path / "experts")},
+        {"type": "mcp", "root": str(tmp_path / "mcp_hub")},
     ]
+    assert raw["symphony"]["capability"]["sources"][-1]["type"] == "connector"
 
 
 @pytest.mark.parametrize("sources", [None, []])
@@ -103,11 +108,149 @@ def test_experience_switch_inherits_core_default_or_uses_explicit_value(value):
     assert cfg.orchestration.experience.enabled is (False if value is None else value)
 
 
-@pytest.mark.parametrize("field", ["enabled", "paths", "fingerprint", "build", "evolution", "skill_retrieval"])
-def test_retired_yaml_fields_are_rejected_with_full_path(field):
+def test_legacy_symphony_values_migrate_without_mutating_input():
+    raw = {
+        "enabled": True,
+        "fingerprint": {"scan": {"max_depth": 2}, "extraction": {
+            "workers": 3, "batch_size": 5, "body_limit": 8000,
+        }},
+        "build": {"workers": 6, "batch_size": 9, "max_candidates_per_skill_relation": 17,
+                  "require_consensus": True, "min_edge_confidence": 0.6},
+        "evolution": {"flow": {"enabled": True, "min_successes": 5, "min_pack_success_rate": 0.9}},
+        "orchestration": {"mode": "beam", "top_k": 7, "max_depth": 8},
+        "skill_retrieval": {
+            "enabled": True,
+            "discovery": {"use_existing_index": False, "candidate_budget_ratio": 0.02,
+                          "context_window_tokens": 12000, "prompt_preferred_skills": ["custom-skill"],
+                          "max_output_chars": 3000, "incremental_notice_max_chars": 500},
+            "build": {"max_workers": 3, "max_depth": 8, "branching_factor": 32, "max_retries": 0,
+                      "request_timeout_seconds": 150.0, "classification_batch_limit": 10,
+                      "root_categories": ["custom"], "discovery_seed": 7, "strict_failure": True,
+                      "postprocess_enabled": False, "postprocess_min_skills": 4,
+                      "skill_profiles_enabled": True, "skill_profile_batch_size": 8,
+                      "equivalence_enabled": True, "equivalence_allow_singleton_groups": False,
+                      "incremental_max_change_ratio": 0.1, "generate_tree_html": True},
+        },
+    }
+    original = deepcopy(raw)
+    converted = symphony_config.migrate_legacy_symphony_config(raw)
+    cfg = symphony_config.symphony_config_from_dict(converted)
+
+    assert raw == original
+    assert symphony_config.migrate_legacy_symphony_config(converted) == converted
+    assert set(converted) == {"capability", "retrieval", "orchestration"}
+    assert cfg.capability.scan.max_depth == 2
+    assert cfg.capability.fingerprint.extraction.max_concurrency == 3
+    assert cfg.capability.fingerprint.extraction.batch_size == 5
+    assert cfg.capability.fingerprint.extraction.max_body_chars == 8000
+    assert cfg.orchestration.enabled is True
+    assert cfg.orchestration.build.max_concurrency == 6
+    assert cfg.orchestration.build.matching.batch_size == 9
+    assert cfg.orchestration.build.matching.max_candidates_per_capability_relation == 17
+    assert cfg.orchestration.build.matching.require_consensus is True
+    assert cfg.orchestration.min_edge_confidence == 0.6
+    assert cfg.orchestration.plan.mode == "beam"
+    assert cfg.orchestration.plan.top_k == 7
+    assert cfg.orchestration.plan.max_depth == 8
+    assert cfg.orchestration.experience.enabled is True
+    assert cfg.orchestration.experience.acceptance.min_successes == 5
+    assert cfg.orchestration.experience.acceptance.min_pack_success_rate == 0.9
+    assert cfg.retrieval.enabled is True
+    assert cfg.retrieval.use_existing_index is False
+    assert cfg.retrieval.prompt.preferred_capability_ids == ["custom-skill"]
+    assert cfg.retrieval.prompt.candidate_budget_tokens == 240
+    assert cfg.retrieval.output.max_chars == 3000
+    assert cfg.retrieval.output.incremental_notice_max_chars == 500
+    index = cfg.retrieval.index_build
+    assert index.structure.max_depth == 8
+    assert index.structure.branching_factor == 32
+    assert index.structure.root_categories == ["custom"]
+    assert index.request.max_concurrency == 3
+    assert index.request.max_retries == 0
+    assert index.request.timeout_seconds == 150.0
+    assert index.request.classification_batch_limit == 10
+    assert index.prompt.discovery_seed == 7
+    assert index.task.allow_fallback_tree is False
+    assert index.postprocess.enabled is False
+    assert index.postprocess.min_capabilities == 4
+    assert index.profiles.enabled is True
+    assert index.profiles.batch_size == 8
+    assert index.equivalence.enabled is True
+    assert index.equivalence.allow_singleton_groups is False
+    assert index.incremental.max_change_ratio == 0.1
+    assert index.output.generate_tree_html is True
+
+
+@pytest.mark.parametrize("enabled", [None, False, True])
+def test_new_fields_win_over_legacy_values_including_null_and_false(enabled):
+    raw = {
+        "enabled": True,
+        "fingerprint": {"extraction": {"workers": 5}},
+        "paths": {"skills_root": "./old-skills", "graph_dir": "./old-graph"},
+        "skill_retrieval": {"enabled": True, "build": {"max_workers": 8}},
+        "evolution": {"flow": {"enabled": True}},
+        "capability": {"sources": [{"type": "skill", "root": "./new-skills"}]},
+        "storage": {"artifact_root": ""},
+        "retrieval": {"enabled": enabled, "index_build": {"request": {"max_concurrency": 2}}},
+        "orchestration": {"enabled": enabled, "experience": {"enabled": False},
+                          "mode": "beam", "top_k": 9, "plan": {"mode": "fast"}},
+    }
+    converted = symphony_config.migrate_legacy_symphony_config(raw)
+    assert converted["storage"]["artifact_root"] == ""
+    assert converted["retrieval"]["enabled"] is enabled
+    assert converted["orchestration"]["enabled"] is enabled
+    cfg = symphony_config.symphony_config_from_dict(raw)
+    assert cfg.retrieval.enabled is (enabled is True)
+    assert cfg.orchestration.enabled is (enabled is True)
+    assert cfg.orchestration.experience.enabled is False
+    assert cfg.capability.require_single_source().root == str(Path("./new-skills").resolve())
+    assert cfg.capability.fingerprint.extraction.max_concurrency == 5
+    assert cfg.retrieval.index_build.request.max_concurrency == 2
+    assert cfg.orchestration.plan.mode == "fast"
+    assert cfg.orchestration.plan.top_k == 9
+
+
+def test_legacy_flow_null_inherits_old_evolution_switch():
+    cfg = symphony_config.symphony_config_from_dict({
+        "enabled": False, "evolution": {"enabled": True, "flow": {"enabled": None}},
+    })
+    assert cfg.orchestration.experience.enabled is True
+    assert cfg.orchestration.enabled is True
+
+
+@pytest.mark.parametrize("section, field", [("paths", "graph_dir"), ("skill_retrieval", "artifact_root")])
+def test_legacy_artifacts_stay_separate_from_runtime(tmp_path, monkeypatch, section, field):
+    old_root = tmp_path / "old-artifacts"
+    old_root.mkdir()
+    old_artifact = old_root / "legacy.json"
+    old_artifact.write_text('{"legacy": true}', encoding="utf-8")
+    monkeypatch.setenv("SYMPHONY_LEGACY_ROOT", str(old_root))
+    monkeypatch.setenv("SYMPHONY_LEGACY_SKILLS", str(tmp_path / "custom-skills"))
+    raw = {"paths": {"skills_root": "${SYMPHONY_LEGACY_SKILLS}"}}
+    raw.setdefault(section, {})[field] = "${SYMPHONY_LEGACY_ROOT:-}"
+    cfg = symphony_config.symphony_config_from_dict(raw)
+    assert cfg.storage.artifact_root == str(old_root / "runtime")
+    assert cfg.capability.require_single_source().root == str(tmp_path / "custom-skills")
+    assert old_artifact.read_text(encoding="utf-8") == '{"legacy": true}'
+    assert not (old_root / "runtime").exists()
+
+
+def test_legacy_empty_paths_and_body_limit_use_current_defaults(monkeypatch):
+    monkeypatch.delenv("SYMPHONY_LEGACY_ROOT", raising=False)
+    cfg = symphony_config.symphony_config_from_dict({
+        "paths": {"skills_root": "", "graph_dir": ""},
+        "skill_retrieval": {"artifact_root": "${SYMPHONY_LEGACY_ROOT:-}", "llm": None},
+        "fingerprint": {"extraction": {"body_limit": None}},
+    })
+    assert cfg.storage.artifact_root.endswith("/symphony/runtime")
+    assert cfg.capability.require_single_source().root.endswith("/skills")
+    assert cfg.capability.fingerprint.extraction.max_body_chars == 16000
+
+
+def test_migration_preserves_unknown_current_fields_for_strict_validation():
     with pytest.raises(ValidationError) as exc:
-        symphony_config.symphony_config_from_dict({field: {}})
-    assert ("symphony", field) in [error["loc"] for error in exc.value.errors()]
+        symphony_config.symphony_config_from_dict({"enabled": True, "retrieval": {"unknown": True}})
+    assert exc.value.errors()[0]["loc"] == ("symphony", "retrieval", "unknown")
 
 
 def test_unknown_nested_fields_and_strict_values_fail_at_exact_path():

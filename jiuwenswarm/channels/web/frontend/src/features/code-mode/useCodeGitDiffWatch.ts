@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { WebConnectionState, WebError, WsEvent } from '../../types';
 import { gitClient } from './gitClient';
 import { gitWatchClient } from './gitWatchClient';
@@ -53,6 +54,7 @@ function acceptRevision(ref: { current: string | null }, revision: unknown): boo
 }
 
 export function useCodeGitDiffWatch({ projectId, sessionId, enabled }: UseCodeGitDiffWatchOptions): CodeGitDiffWatchController {
+  const { t } = useTranslation();
   const [connectionState, setConnectionState] = useState<WebConnectionState>(gitWatchClient.getState());
   const [summary, setSummary] = useState<GitDiffWatchSnapshot | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
@@ -166,7 +168,7 @@ export function useCodeGitDiffWatch({ projectId, sessionId, enabled }: UseCodeGi
         setSummary(response.snapshot);
       } catch (error) {
         if (disposed || lifecycleSequenceRef.current !== requestSequence) return;
-        setSummaryError(errorMessage(error, '加载 Git 变更统计失败'));
+        setSummaryError(errorMessage(error, t('codeMode.watch.loadSummaryFailed')));
         await loadSummaryFallback(requestSequence);
       } finally {
         if (!disposed && lifecycleSequenceRef.current === requestSequence) setSummaryLoading(false);
@@ -229,7 +231,7 @@ export function useCodeGitDiffWatch({ projectId, sessionId, enabled }: UseCodeGi
       void gitWatchClient.connect().catch(error => {
         if (disposed) return;
         setSummaryLoading(false);
-        setSummaryError(errorMessage(error, '连接 Git 变更服务失败'));
+        setSummaryError(errorMessage(error, t('codeMode.watch.connectFailed')));
         void loadSummaryFallback(lifecycleSequenceRef.current);
       });
     }
@@ -252,7 +254,7 @@ export function useCodeGitDiffWatch({ projectId, sessionId, enabled }: UseCodeGi
           .catch(() => undefined);
       }
     };
-  }, [enabled, projectId, sessionId]);
+  }, [enabled, projectId, sessionId, t]);
 
   useEffect(() => () => gitWatchClient.disconnect(), []);
 
@@ -276,7 +278,7 @@ export function useCodeGitDiffWatch({ projectId, sessionId, enabled }: UseCodeGi
       })
       .catch(error => {
         if (disposed) return;
-        setSummaryError(errorMessage(error, '刷新 Git 变更统计失败'));
+        setSummaryError(errorMessage(error, t('codeMode.watch.refreshFailed')));
       })
       .finally(() => {
         if (!disposed) setSummaryLoading(false);
@@ -287,7 +289,7 @@ export function useCodeGitDiffWatch({ projectId, sessionId, enabled }: UseCodeGi
     return () => {
       disposed = true;
     };
-  }, [enabled, projectId, refreshSequence, sessionId]);
+  }, [enabled, projectId, refreshSequence, sessionId, t]);
 
   useEffect(() => {
     const requestSequence = filesRequestSequenceRef.current + 1;
@@ -325,12 +327,12 @@ export function useCodeGitDiffWatch({ projectId, sessionId, enabled }: UseCodeGi
       })
       .catch(error => {
         if (filesRequestSequenceRef.current !== requestSequence) return;
-        setFilesError(errorMessage(error, '加载工作区文件列表失败'));
+        setFilesError(errorMessage(error, t('codeMode.watch.loadFilesFailed')));
       })
       .finally(() => {
         if (filesRequestSequenceRef.current === requestSequence) setFilesLoading(false);
       });
-  }, [connectionState, filesEnabled, projectId, refreshSequence, watchId]);
+  }, [connectionState, filesEnabled, projectId, refreshSequence, t, watchId]);
 
   const detailPathKey = useMemo(() => detailPaths.join('\n'), [detailPaths]);
 
@@ -373,12 +375,12 @@ export function useCodeGitDiffWatch({ projectId, sessionId, enabled }: UseCodeGi
       })
       .catch(error => {
         if (detailRequestSequenceRef.current !== requestSequence) return;
-        setDetailError(errorMessage(error, '加载文件差异详情失败'));
+        setDetailError(errorMessage(error, t('codeMode.watch.loadDetailFailed')));
       })
       .finally(() => {
         if (detailRequestSequenceRef.current === requestSequence) setDetailLoading(false);
       });
-  }, [connectionState, detailPathKey, detailPaths, filesEnabled, projectId, refreshSequence, watchId]);
+  }, [connectionState, detailPathKey, detailPaths, filesEnabled, projectId, refreshSequence, t, watchId]);
 
   return {
     connectionState,

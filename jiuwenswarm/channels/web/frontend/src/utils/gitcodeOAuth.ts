@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../services/gatewayFetch';
 /** SkillHub 托管的 GitCode/GitHub 授权与当前会话凭据。 */
 
 // ── sessionStorage keys ──
@@ -67,7 +68,7 @@ export function clearHubOAuthSession(): void {
 }
 
 export async function beginHubOAuth(provider: OAuthProvider): Promise<HubOAuthAttempt> {
-  const response = await fetch('/marketplace-oauth/hub/start', {
+  const response = await gatewayFetch('/marketplace-oauth/hub/start', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ provider }),
@@ -92,7 +93,7 @@ export async function waitForHubOAuth(
     await new Promise<void>((resolve) => window.setTimeout(resolve, 1000));
     if (signal?.aborted) break;
     if (windowClosedAt === undefined && authorizationWindowClosed?.()) windowClosedAt = Date.now();
-    const response = await fetch('/marketplace-oauth/hub/result', {
+    const response = await gatewayFetch('/marketplace-oauth/hub/result', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ flow: attempt.flow, claim: attempt.claim }),

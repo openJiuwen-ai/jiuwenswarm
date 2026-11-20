@@ -48,7 +48,9 @@ from jiuwenswarm.runtime.symphony.adapter import (
 from jiuwenswarm.runtime.symphony.llm import LLMConfig, probe_model_connection
 from jiuwenswarm.common.symphony_config import (
     SymphonyConfig,
+    configured_skill_roots,
     load_symphony_config,
+    require_graph_skill_root,
 )
 from jiuwenswarm.runtime.symphony.build import build_graph as service_build_graph
 from jiuwenswarm.runtime.symphony.build import graph_status
@@ -255,7 +257,7 @@ class SwarmSymphonyService:
         """Start or reuse a process-local background graph build."""
 
         config = load_symphony_config()
-        skills_root = Path(config.capability.require_single_source().root)
+        skills_root = require_graph_skill_root(config)
         graph_dir = (Path(config.storage.artifact_root) / "graph")
         async with self._build_guard:
             if self._closing:
@@ -364,7 +366,7 @@ class SwarmSymphonyService:
         """Return the public graph artifact in the shape consumed by the Web UI."""
 
         config = load_symphony_config()
-        skills_root = Path(config.capability.require_single_source().root)
+        skills_root = require_graph_skill_root(config)
         graph_dir = (Path(config.storage.artifact_root) / "graph")
         await self._repair_interrupted_build_state(graph_dir)
         try:
@@ -455,7 +457,7 @@ class SwarmSymphonyService:
                 if llm_config is not None
                 else self._runtime_for(config)
             )
-            skills_root = Path(config.capability.require_single_source().root)
+            skills_root = require_graph_skill_root(config)
             public_payload = await runtime.orchestration.plan(
                 query,
                 candidate_ids=candidate_ids,
@@ -510,7 +512,7 @@ class SwarmSymphonyService:
         config: SymphonyConfig | None = None,
     ) -> dict[str, Any]:
         config = config or load_symphony_config()
-        skills_root = Path(config.capability.require_single_source().root)
+        skills_root = require_graph_skill_root(config)
         graph_dir = (Path(config.storage.artifact_root) / "graph")
         current_task = asyncio.current_task()
         async with self._build_guard:
@@ -732,12 +734,12 @@ class SwarmSymphonyService:
         """Submit one Rail graph pair and deliver any new install candidates."""
 
         config = load_symphony_config()
-        if not config.orchestration.experience_enabled:
+        if not config.orchestration.experience_enabled or len(configured_skill_roots(config)) != 1:
             return
         runtime = self._runtime_for(config)
         if isinstance(execution_graph.get("graph"), dict):
             execution_graph = annotate_member_types(
-                execution_graph, Path(config.capability.require_single_source().root),
+                execution_graph, require_graph_skill_root(config),
             )
         await runtime.submit_evolution(
             planned_graph,
@@ -751,7 +753,7 @@ class SwarmSymphonyService:
         trace_recorded = False
         if evidence is not None and session_id:
             try:
-                skills_root = Path(config.capability.require_single_source().root)
+                skills_root = require_graph_skill_root(config)
                 snapshot = member_snapshot(
                     skills_root,
                     list(evidence.graph.get("nodes", {})),
@@ -946,7 +948,7 @@ class SwarmSymphonyService:
         """Reuse at most eight idle/active scope workers under the candidate lock."""
         if self._closing:
             raise RuntimeError("Symphony service is closing")
-        skills_root = Path(config.capability.require_single_source().root)
+        skills_root = require_graph_skill_root(config)
         key = (str(source.store.root.resolve()), scope.key)
         cached = self._skillpack_candidate_flows.get(key)
         if cached is not None:
@@ -988,7 +990,7 @@ class SwarmSymphonyService:
             return {"success": False, "reason": "flow_or_session_unavailable"}
         if scope not in {"current_user", "current_session"}:
             return {"success": False, "reason": "invalid_scope"}
-        skills_root = Path(config.capability.require_single_source().root)
+        skills_root = require_graph_skill_root(config)
         user_id = trusted_session_user(session_id)
         source = self._runtime_for(config).flow
         if source is None:
@@ -1128,7 +1130,7 @@ class SwarmSymphonyService:
             # Review awaited external work; a different session may have
             # installed this combination meanwhile. Do not issue another card.
             installed_structures = await asyncio.to_thread(
-                installed_candidate_structures, Path(load_symphony_config().capability.require_single_source().root),
+                installed_candidate_structures, require_graph_skill_root(load_symphony_config()),
             )
             if tuple(sorted(candidate.structure)) in installed_structures:
                 logger.info("SkillPack automatic offer suppressed after concurrent installation")
@@ -1211,7 +1213,7 @@ class SwarmSymphonyService:
                 return {"installed": False, "reason": "flow_disabled"}
             source_flow = flow
             if from_tool:
-                skills_root = Path(config.capability.require_single_source().root)
+                skills_root = require_graph_skill_root(config)
                 approval = CandidateScopeStore(flow.store.root).approval(request_id)
                 if not approval or approval.get("session_id") != session_id:
                     return {"installed": False, "reason": "invalid_request_id"}

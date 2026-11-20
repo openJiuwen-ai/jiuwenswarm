@@ -40,10 +40,12 @@ a4p:
 
 symphony:
   capability:
-    # sources 缺省时使用工作区 skills 目录。当前运行入口使用单个来源。
+    # sources 缺省时使用工作区 skills 目录。Skill 和专家来源可以共用一棵分类树。
     # sources:
     #   - type: skill
     #     root: /path/to/skills
+    #   - type: expert
+    #     root: /path/to/agent_templates/local
     scan:
       max_depth: null
     fingerprint:
@@ -54,7 +56,7 @@ symphony:
         max_body_chars: 16000
         max_output_tokens: null  # 沿用宿主默认模型的输出预算
   storage:
-    artifact_root: ${SYMPHONY_ARTIFACT_ROOT:-}  # 默认工作区 symphony/runtime；旧产物需重新构建
+    artifact_root: ${SYMPHONY_ARTIFACT_ROOT:-}  # 默认工作区 symphony/runtime；混合分类树单独存放
   retrieval:
     enabled: false
     index_build:
@@ -1607,6 +1609,18 @@ extensions:
   # 扩展包搜索目录（字符串），用 ';' 分割多个目录：
   # EXTENSION_DIRS="E:/a;D:/b"
   extension_dirs: ${EXTENSION_DIRS:-jiuwenswarm/extensions}
+  # V2 扩展包安装目录；相对路径相对于用户工作目录（可由 JIUWENSWARM_DATA_DIR 改变）。
+  install_dir: ${EXTENSION_INSTALL_DIR:-extension_pkgs}
+  # V2 extension runtime data; report filename is fixed by the host.
+  data_dir: ${EXTENSION_DATA_DIR:-extension}
+  install_report:
+    poll_interval_ms: 500
+    dependency_timeout_seconds: 300
+    lock_timeout_seconds: 5
+  # 包级 JSON store；相对路径相对于用户工作目录。
+  store_dir: ${EXTENSION_STORE_DIR:-extension/store}
+  # 包级 durable state；相对路径相对于用户工作目录。
+  state_dir: ${EXTENSION_STATE_DIR:-extension/state}
 
 # ============================================================
 # Hooks 配置
@@ -1866,7 +1880,13 @@ modes:
       # Suppress periodic Todo reminders for Code agents in scheduled teams.
       disable_code_todo_reminder: false
 
+      # Member goal policy is YAML-only. Null keeps it disabled.
+      member_goal: null
+
       leader:
+        # Scheduled dispatch only. An object enables hybrid assessment and 10
+        # continuation rounds by default. No token budget is configured.
+        goal: null
         member_name: team-leader
         display_name: 团队领导
         persona: "天才项目管理专家，擅长任务分解和团队协调"

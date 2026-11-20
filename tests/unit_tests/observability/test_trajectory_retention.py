@@ -52,6 +52,7 @@ def _record(
     mode: str = "agent.work.normal",
     start: int = 100,
     running: bool = False,
+    purpose: str | None = None,
 ) -> TraceRecordData:
     """Build one span record stating the turn and subject it belongs to.
 
@@ -67,6 +68,12 @@ def _record(
     if subject is not None:
         for key, value in zip(("id", "display_name", "kind", "parent_id"), subject):
             attributes.append({"key": f"openjiuwen.execution.subject.{key}", "value": {"stringValue": value}})
+    if purpose is not None:
+        attributes.extend([
+            {"key": "openjiuwen.request.purpose", "value": {"stringValue": purpose}},
+            {"key": "openjiuwen.trajectory.record.kind", "value": {"stringValue": "inference"}},
+            {"key": "gen_ai.input.messages", "value": {"stringValue": '[{"role":"user","content":"input"}]'}},
+        ])
     span_body: dict[str, Any] = {
         "traceId": _hex(trace, 32),
         "spanId": _hex(span, 16),
@@ -538,3 +545,20 @@ def test_committed_retention_fixtures_are_current() -> None:
             "python tests/unit_tests/observability/retention_fixture_builder.py"
         )
     test_logger.info("the cross-language retention fixtures match the store")
+
+
+def test_retention_preserves_physical_counts_but_not_assessment_conversation_seeds(tmp_path: Path) -> None:
+    database_path = tmp_path / "trajectory.sqlite3"
+    _write(database_path, [
+        _record(trace="T", span="execute", turn="t1", number=1, created_at=1, start=100, purpose="assistant"),
+        _record(trace="T", span="assess", turn="t1", number=1, created_at=1, start=110, purpose="goal_assessment"),
+        _record(trace="T", span="next-turn", turn="t2", number=2, created_at=5000, start=200),
+    ])
+    assert _retire(database_path, now=_DAY_SECONDS + 100) == 2
+    state = _checkpoint_states(database_path, _SESSION_ID)["main"]
+    seeds = state["lineage"]
+    assert len(seeds) == 1
+    span = seeds[0]["record"]["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+    assert span["name"] == "execute"
+    assert sum(state["requests"].values()) == 2
+    test_logger.info("assessment counts retained without seeding the execution conversation")

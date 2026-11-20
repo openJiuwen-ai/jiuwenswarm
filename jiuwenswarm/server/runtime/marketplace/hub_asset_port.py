@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-HubAssetKind = Literal["agent_template", "agent_group", "plugin", "mcp"]
+HubAssetKind = Literal["agent_template", "agent_group", "plugin", "mcp", "system_plugin"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +22,7 @@ class HubSearchRequest:
 class HubAssetQuery:
     kind: HubAssetKind
     asset_id: str
+    version: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,9 +81,11 @@ class HubAssetDetail:
     icon_uri: str
     tags: tuple[str, ...]
     package_name: str = ""
+    preview_url: str = ""
     # Published package profile from the version endpoint; renders detail cards without
     # downloading the package archive.
     package_profile: dict[str, Any] | None = None
+    versions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

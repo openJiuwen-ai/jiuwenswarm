@@ -1,4 +1,5 @@
-import { createContext, useContext, useMemo, type AnchorHTMLAttributes, type HTMLAttributes } from 'react';
+import { createContext, useContext, useMemo, type AnchorHTMLAttributes, type HTMLAttributes, type ImgHTMLAttributes } from 'react';
+import { GatewayImage } from '../../features/webui/client/GatewayResources';
 import ReactMarkdown from 'react-markdown';
 import type { Element as HastElement } from 'hast';
 import { unescapeLiteralNewlines } from '../../utils/finalContent';
@@ -89,6 +90,7 @@ function MarkdownTable({ children, ...props }: HTMLAttributes<HTMLTableElement>)
 }
 
 const MARKDOWN_COMPONENTS = {
+  img: ({ node: _node, ...props }: ImgHTMLAttributes<HTMLImageElement> & { node?: HastElement }) => <GatewayImage data-testid="markdown-image" {...props} />,
   a: MarkdownLink,
   pre: MarkdownPre,
   table: MarkdownTable,

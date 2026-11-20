@@ -2421,18 +2421,18 @@ class SkillManager:
 
     @staticmethod
     def _skill_taxonomy_runtime(*, model=None):
-        from jiuwenswarm.common.symphony_config import load_symphony_config
-        from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import skill_sources_from_directories
+        from jiuwenswarm.common.symphony_config import configured_skill_roots, load_symphony_config
+        from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
+            disabled_skills_from_directories, skill_sources_from_directories,
+        )
         from jiuwenswarm.runtime.symphony.skill_retrieval import SkillTaxonomyRuntime
 
-        from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
-
         policy = load_symphony_config()
-        skills_root = policy.capability.require_single_source().root
+        roots = configured_skill_roots(policy)
         return SkillTaxonomyRuntime(
             config=policy, model=model,
-            disabled_capability_ids=lambda: load_execution_disabled_skills(skills_dir=skills_root),
-            source_by_id=lambda: skill_sources_from_directories([skills_root]),
+            disabled_capability_ids=lambda: disabled_skills_from_directories(roots),
+            source_by_id=lambda: skill_sources_from_directories(roots),
         )
 
     @staticmethod
@@ -2450,17 +2450,19 @@ class SkillManager:
         from types import SimpleNamespace
 
         from openjiuwen.symphony import SymphonyRuntime
+        from openjiuwen.symphony.discovery import CAPABILITY_SEARCH_TOOL_NAME
         from jiuwenswarm.common.config import get_config
-        from jiuwenswarm.common.symphony_config import load_symphony_config
+        from jiuwenswarm.common.symphony_config import configured_skill_roots, load_symphony_config
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
+            disabled_skills_from_directories,
             resolve_skill_retrieval_strategy, skill_sources_from_directories,
         )
 
         config = get_config() or {}
-        from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
 
         policy = load_symphony_config(config)
-        skills_root = policy.capability.require_single_source().root
+        roots = configured_skill_roots(policy)
+        has_expert_sources = any(source.type == "expert" for source in policy.capability.sources)
         configured_enabled = policy.retrieval.enabled
         enabled = configured_enabled
         settings = policy.retrieval
@@ -2476,42 +2478,42 @@ class SkillManager:
             runtime = SymphonyRuntime(None, policy)
             try:
                 flat_config = settings.model_copy(update={"use_existing_index": False})
-                all_session = runtime.retrieval.create_session(config=flat_config)
-                all_count = len(all_session.records())
-                session = runtime.retrieval.create_session(
+                all_count = len(runtime.retrieval.bind_search(config=flat_config).records())
+                directory = runtime.retrieval.bind_search(
                     config=flat_config,
-                    disabled_capability_ids=lambda: load_execution_disabled_skills(skills_dir=skills_root),
-                    source_by_id=lambda: skill_sources_from_directories([skills_root]),
+                    disabled_capability_ids=lambda: disabled_skills_from_directories(roots),
+                    source_by_id=lambda: skill_sources_from_directories(roots),
                 )
-                visible_documents = session.records()
+                visible_documents = directory.records()
                 installed_enabled_count = len(visible_documents)
-                snapshot = session.environment.prompt_snapshot(refresh=False)
+                snapshot = directory.prompt_snapshot(refresh=False)
                 candidate_scale = "small" if snapshot.all_candidates_included else "large"
                 if candidate_scale == "large" and settings.use_existing_index:
-                    session = runtime.retrieval.create_session(
+                    directory = runtime.retrieval.bind_search(
                         config=settings,
-                        disabled_capability_ids=lambda: load_execution_disabled_skills(skills_dir=skills_root),
-                        source_by_id=lambda: skill_sources_from_directories([skills_root]),
+                        disabled_capability_ids=lambda: disabled_skills_from_directories(roots),
+                        source_by_id=lambda: skill_sources_from_directories(roots),
                     )
-                artifact = session.environment.artifact
+                artifact = directory.artifact
             finally:
                 await runtime.aclose()
         else:
             from jiuwenswarm.server.runtime.skill.skilldev.state_utils import load_skill_state
 
-            state = load_skill_state(skills_dir=skills_root)
             identifiers = set()
-            for key in ("local_skills", "installed_plugins"):
-                items = state.get(key)
-                for item in items if isinstance(items, list) else []:
-                    if isinstance(item, dict):
-                        identifier = str(
-                            item.get("worker_id") or item.get("dir_name") or item.get("name") or "",
-                        ).strip()
-                        if identifier:
-                            identifiers.add(identifier)
+            for root in roots:
+                state = load_skill_state(skills_dir=root)
+                for key in ("local_skills", "installed_plugins"):
+                    items = state.get(key)
+                    for item in items if isinstance(items, list) else []:
+                        if isinstance(item, dict):
+                            identifier = str(
+                                item.get("worker_id") or item.get("dir_name") or item.get("name") or "",
+                            ).strip()
+                            if identifier:
+                                identifiers.add(identifier)
             all_count = len(identifiers)
-            installed_enabled_count = len(identifiers - set(load_execution_disabled_skills(skills_dir=skills_root)))
+            installed_enabled_count = len(identifiers - set(disabled_skills_from_directories(roots)))
         build = await asyncio.to_thread(self._skill_taxonomy_runtime().status,
                                         build_id=str(params.get("build_id") or "") or None)
         profile_scope = "default"
@@ -2600,7 +2602,7 @@ class SkillManager:
                     index_state=public_index_state,
                 )
             )
-        build_supported = configured_enabled and candidate_scale == "large"
+        build_supported = configured_enabled and (candidate_scale == "large" or has_expert_sources)
         logs = build.get("logs") if isinstance(build.get("logs"), list) else []
         return {
             "enabled": enabled,
@@ -2626,11 +2628,11 @@ class SkillManager:
             "build_logs": logs[-50:],
             "index_exists": bool(build.get("index_exists")),
             "fresh": bool(build.get("fresh")),
-            "indexed_count": int(build.get("indexed_count") or 0),
+            "indexed_count": int(build.get("indexed_skill_count", build.get("indexed_count")) or 0),
             "installed_count": all_count,
             "installed_enabled_count": installed_enabled_count,
             "searchable_count": searchable_count,
-            "tool_name": "skill_index",
+            "tool_name": CAPABILITY_SEARCH_TOOL_NAME,
             "profile_scope": profile_scope,
             "profile_session_id": profile_session_id,
             "profile_model_name": profile_model_name,
@@ -2656,7 +2658,7 @@ class SkillManager:
                 "build_status": status["build_status"],
                 "detail": "Enable Skill retrieval before building its taxonomy.",
             }
-        if status["candidate_scale"] == "small":
+        if not status["build_supported"]:
             return {
                 "success": False,
                 "error_code": "skill_index_not_needed",
@@ -2736,7 +2738,7 @@ class SkillManager:
     async def handle_skills_retrieval_search(self, params: dict) -> dict:
         """Search installed Skills through the same directory Tool used by Agents."""
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
-            SkillRetrievalToolkit,
+            SkillRetrievalToolkit, disabled_skills_from_directories,
             skill_sources_from_directories,
         )
 
@@ -2749,27 +2751,23 @@ class SkillManager:
                 "matches": [],
             }
         from jiuwenswarm.common.config import get_config
-        from jiuwenswarm.common.symphony_config import load_symphony_config
+        from jiuwenswarm.common.symphony_config import configured_skill_roots, load_symphony_config
 
         config = get_config() or {}
-        from jiuwenswarm.server.runtime.skill import load_execution_disabled_skills
 
         policy = load_symphony_config(config)
         if not policy.retrieval.enabled:
             return {"success": False, "mode": self._skill_retrieval_mode(),
                     "error_code": "skill_retrieval_disabled", "matches": [],
                     "detail": "Enable Skill retrieval before searching its directory."}
-        skills_root = policy.capability.require_single_source().root
+        roots = configured_skill_roots(policy)
         toolkit = SkillRetrievalToolkit(
-            skill_directories=[skills_root], config_base=config,
-            disabled_skills=lambda: load_execution_disabled_skills(skills_dir=skills_root),
-            source_by_name=lambda: skill_sources_from_directories([skills_root]),
+            skill_directories=roots, config_base=config,
+            disabled_skills=lambda: disabled_skills_from_directories(roots),
+            source_by_name=lambda: skill_sources_from_directories(roots),
         )
         try:
-            result = await toolkit.skill_index(
-                operation="search", query=query, paths=["/"], match="content", result="files",
-                pipeline=[{"operation": "limit", "lines": 10}],
-            )
+            result = await toolkit.runtime.retrieval.search(query=query, type="skill", top_k=10)
         finally:
             await toolkit.aclose()
         diagnostics = dict(result.detailed_output)
@@ -2791,7 +2789,7 @@ class SkillManager:
             "unsupported": True,
             "tree_supported": False,
             "nodes": [],
-            "detail": "Browse the Skill taxonomy through skill_index list operations.",
+            "detail": 'Browse the Skill taxonomy with capability_search, type=["skill"] and operation=list.',
         }
 
     async def handle_skills_graph_build(self, params: dict) -> dict:

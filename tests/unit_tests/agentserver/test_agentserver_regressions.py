@@ -694,14 +694,19 @@ async def test_native_front_control_queries_do_not_load_runtime_dependencies(tmp
                         try:
                             ws = await connect(f"ws://127.0.0.1:{port}")
                             break
-                        except ConnectionRefusedError:
-                            await asyncio.sleep(.05)
+                        except OSError:
+                            await asyncio.sleep(0.05)
             except TimeoutError:
                 pass
-            assert ws is not None, (
-                f"Front did not become reachable (exit={process.poll()}):\n"
-                + (tmp_path / "front.log").read_text(encoding="utf-8", errors="replace")[-4000:]
-            )
+            if ws is None:
+                log.flush()
+                details = (tmp_path / "front.log").read_text(
+                    encoding="utf-8", errors="replace"
+                )
+                pytest.fail(
+                    f"native Front did not become ready (exit={process.poll()}):\n"
+                    f"{details[-16000:]}"
+                )
             acknowledgement = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
             assert acknowledgement.get("event") == "connection.ack"
             for method, params in (("session.list", {}), ("project.list", {}), ("config.get", {}),

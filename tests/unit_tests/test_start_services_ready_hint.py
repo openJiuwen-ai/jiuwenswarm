@@ -7,10 +7,12 @@ from __future__ import annotations
 import logging
 import os
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+import jiuwenswarm.start_services as start_services
 from jiuwenswarm.start_services import (
     _resolve_runtime_ports,
     _start_process,
@@ -116,6 +118,41 @@ def test_start_process_passes_resolved_ports_to_child(
     assert child_env["FRONTEND_PORT"] == "6173"
     # Stale URL from parent shell must not override the remapped agent port.
     assert "AGENT_SERVER_URL" not in child_env
+
+
+def test_service_stop_uses_the_existing_worker_preserving_service_helper(monkeypatch):
+    stopped = []
+    monkeypatch.setattr(start_services, "terminate_service_tree", lambda pid, **kwargs: stopped.append(pid))
+    start_services._terminate_processes({
+        "app": SimpleNamespace(pid=100, poll=lambda: None),
+        "web": SimpleNamespace(pid=200, poll=lambda: 0),
+    })
+    assert stopped == [100]
+
+
+def test_application_worker_is_retired_only_after_front_cleanup(tmp_path, monkeypatch):
+    from jiuwenswarm.server.supervisor import shutdown
+
+    order = []
+    monkeypatch.setattr(start_services, "_terminate_processes", lambda processes: order.append("services-stopped"))
+    monkeypatch.setattr(shutdown, "shutdown_application_worker",
+                        lambda **kwargs: order.append(("worker-retired", kwargs["workspace"])) or True)
+    assert start_services._shutdown_services({}, [("app", [], tmp_path)], tmp_path)
+    assert order == ["services-stopped", ("worker-retired", tmp_path)]
+
+
+def test_failed_front_cleanup_prevents_worker_retirement(tmp_path, monkeypatch):
+    from jiuwenswarm.server.supervisor import shutdown
+
+    calls = []
+
+    def stop(processes):
+        raise RuntimeError("Front is still attached")
+
+    monkeypatch.setattr(start_services, "_terminate_processes", stop)
+    monkeypatch.setattr(shutdown, "shutdown_application_worker", lambda **kwargs: calls.append(True))
+    assert not start_services._shutdown_services({}, [("app", [], tmp_path)], tmp_path)
+    assert calls == []
 
 
 def test_wait_for_services_ready_prints_access_url_for_web_dev(caplog: pytest.LogCaptureFixture):

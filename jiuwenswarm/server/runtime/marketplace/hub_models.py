@@ -62,6 +62,7 @@ class HubCatalogItem:
     publisher_name: str
     install_count: int
     category_name: str = ""
+    all_versions: tuple[str, ...] = ()
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "HubCatalogItem":
@@ -89,6 +90,7 @@ class HubCatalogItem:
             publisher_name=_optional_string(payload, "publisher_name"),
             install_count=install_count,
             category_name=_optional_string(payload, "category_name"),
+            all_versions=_string_tuple(payload, "all_versions"),
         )
 
 
@@ -107,6 +109,7 @@ class HubVersionDetail:
     publisher_id: str
     publisher_name: str
     changelog: str
+    preview_url: str = ""
     # Published package profile (capabilities/quick inputs/persona); absent on old versions.
     package_profile: dict[str, Any] | None = None
 
@@ -129,6 +132,7 @@ class HubVersionDetail:
             publisher_id=_optional_string(payload, "publisher_id"),
             publisher_name=_optional_string(payload, "publisher_name"),
             changelog=_optional_string(payload, "changelog"),
+            preview_url=_optional_string(payload, "preview_url"),
             package_profile=profile if isinstance(profile, dict) else None,
         )
 

@@ -95,7 +95,7 @@ class SwarmBuildContext(BuildContext):
             reacquired from the receiving JiuwenSwarm process.
         config: The resolved ``config.yaml`` mapping (``get_config()``).
         skill_retrieval_toolkit: Per-member, non-serializable Symphony
-            discovery runtime shared by skill_index and its prompt rail.
+            discovery runtime shared by capability_search and its prompt rail.
 
     Note:
         Backward incompatible: the ``team_skills_dir`` field and its seed key

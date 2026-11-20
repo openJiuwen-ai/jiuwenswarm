@@ -1,0 +1,99 @@
+.webui-file-tree {
+  position: relative;
+  display: flex;
+  flex: 0 1 240px;
+  flex-direction: column;
+  align-self: stretch;
+  min-width: 0;
+  max-width: calc(100% - min(160px, 50%));
+  min-height: 0;
+  overflow: hidden;
+  border-right: 1px solid var(--color-border-default);
+  color: var(--color-text-primary);
+}
+
+.webui-file-tree__resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  touch-action: none;
+  user-select: none;
+}
+
+.webui-file-tree__resize:hover,
+.webui-file-tree__resize:focus-visible {
+  background: var(--color-border-default);
+}
+
+.webui-file-tree__header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  min-height: 36px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border-default);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.webui-file-tree__body {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  padding: 8px 4px;
+  overflow: auto;
+}
+
+.webui-file-tree__body .ant-tree {
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: 12px;
+}
+
+.webui-file-tree__body .ant-tree-treenode {
+  min-width: 0;
+}
+
+.webui-file-tree__body .ant-tree-node-content-wrapper {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.webui-file-tree__body .ant-tree .ant-tree-node-content-wrapper .ant-tree-iconEle,
+.webui-file-tree__body .ant-tree .ant-tree-switcher {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.webui-file-tree__body .ant-tree-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.webui-file-tree__body .ant-tree-node-content-wrapper:hover,
+.webui-file-tree__body .ant-tree-node-content-wrapper.ant-tree-node-selected {
+  background: var(--color-action-secondary);
+  color: var(--color-text-primary);
+}
+
+.webui-file-tree__body .ant-tree-switcher,
+.webui-file-tree__body .ant-tree-treenode-disabled .ant-tree-node-content-wrapper {
+  color: var(--color-text-tertiary);
+}
+
+.webui-file-tree__notice {
+  padding: 8px 12px;
+  color: var(--color-text-tertiary);
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  line-height: 20px;
+}

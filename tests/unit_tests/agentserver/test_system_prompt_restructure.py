@@ -356,7 +356,7 @@ async def test_symphony_orchestration_rail_injects_when_tool_visible(
     assert "an ordered or dependent workflow" in normalized_prompt
     assert "selected exact Skill IDs are sufficient evidence" in normalized_prompt
     assert (
-        "Calling `skill_index` alone is also not a compose trigger"
+        "Capability discovery alone does not trigger composition."
         in normalized_prompt
     )
     assert "never pass all retrieval results" in normalized_prompt
@@ -391,7 +391,7 @@ def test_symphony_orchestration_guidance_has_precise_compose_boundaries():
         "Skill or 技能."
     ) in normalized_prompt
 
-    assert "`skill_index`" in prompt
+    assert "Capability discovery alone does not trigger composition." in normalized_prompt
     assert "skill_branch_explore" not in prompt
     assert "only the selected exact Skill IDs" in prompt
     assert "do not call `skill_tool`" in prompt
@@ -1068,6 +1068,45 @@ async def test_runtime_environment_section_participates_in_priority_order():
     assert not builder.has_section("language_output")
     assert not builder.has_section("runtime")
     assert "# 运行时状态" not in prompt
+
+
+@pytest.mark.parametrize(("language", "heading", "required"), [
+    (
+        "cn",
+        "# 系统插件包查询",
+        (
+            "`jiuwenswarm extension query --json`",
+            "`JIUWENSWARM_EXECUTABLE` 指向的后端程序",
+            "不得把 `extension` 单独作为系统命令执行",
+        ),
+    ),
+    (
+        "en",
+        "# System Extension Package Query",
+        (
+            "`jiuwenswarm extension query --json`",
+            "backend program identified by `JIUWENSWARM_EXECUTABLE`",
+            "Do not invoke `extension` as a standalone system command",
+        ),
+    ),
+])
+def test_runtime_prompt_adds_bilingual_extension_package_query_guidance(
+    language,
+    heading,
+    required,
+):
+    builder = SystemPromptBuilder(language=language)
+    agent = _FakeAgent(builder)
+    runtime_rail = RuntimePromptRail(language=language, channel="web")
+
+    runtime_rail.init(agent)
+
+    prompt = builder.build()
+    assert heading in prompt
+    assert all(item in prompt for item in required)
+
+    runtime_rail.uninit(agent)
+    assert not builder.has_section("extension_package_management")
 
 
 @pytest.mark.asyncio
@@ -2228,7 +2267,7 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
             tools=[
                 SimpleNamespace(name="list_skill"),
                 SimpleNamespace(name="list_skills"),
-                SimpleNamespace(name="skill_index"),
+                SimpleNamespace(name="capability_search"),
             ],
         ),
         session=_FakeSession(),
@@ -2244,7 +2283,7 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
     rail.init(agent)
     await rail.before_model_call(ctx)
 
-    assert [tool.name for tool in ctx.inputs.tools] == ["skill_index"]
+    assert [tool.name for tool in ctx.inputs.tools] == ["capability_search"]
     assert agent.ability_manager.get("list_skill") is None
     assert "旧 list_skill 提示" not in builder.build()
     rendered = agent.prompt_attachment_manager.render(

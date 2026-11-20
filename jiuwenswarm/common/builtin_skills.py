@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import shutil
 from pathlib import Path
 import tempfile
 
@@ -51,11 +52,36 @@ def skill_tree_digest(directory: Path) -> str:
     return digest.hexdigest()
 
 
+def _install_missing_catalog_capabilities(builtin_dir: Path, catalog: Path) -> None:
+    """Publish new bundled capabilities without replacing any existing leaf."""
+    source_root = builtin_dir / BUILTIN_CATALOG_NAME / "references" / "capabilities"
+    if not source_root.is_dir():
+        return
+    destination_root = catalog / "references" / "capabilities"
+    if destination_root.is_symlink() or not destination_root.resolve().is_relative_to(catalog.resolve()):
+        raise ValueError("Catalog capability directory escapes workspace")
+    destination_root.mkdir(parents=True, exist_ok=True)
+    for source in sorted(source_root.iterdir()):
+        if not source.is_dir() or source.is_symlink() or not (source / "SKILL.md").is_file():
+            continue
+        target = destination_root / source.name
+        if target.exists() or target.is_symlink():
+            continue
+        # The caller holds the install lock. Publish the complete leaf on the
+        # same filesystem so interrupted copies never become discoverable.
+        with tempfile.TemporaryDirectory(prefix=".builtin-capability-", dir=destination_root) as directory:
+            staged = Path(directory) / source.name
+            shutil.copytree(source, staged)
+            staged.rename(target)
+
+
 def _refresh_catalog_navigation(builtin_dir: Path, catalog: Path, versions: dict) -> None:
     """Refresh only navigation files that exactly match a known shipped version."""
-    for name in ("SKILL.md", "skill_display.md"):
+    for name in ("SKILL.md", "skill_display.md", "references/catalog.md"):
         target = catalog / name
         source = builtin_dir / BUILTIN_CATALOG_NAME / name
+        if not target.resolve().is_relative_to(catalog.resolve()):
+            raise ValueError("Catalog navigation escapes workspace")
         if not target.is_file() or not source.is_file() or target.is_symlink():
             continue
         previous = target.read_bytes()
@@ -108,6 +134,7 @@ def migrate_builtin_catalog(builtin_dir: Path, skills_dir: Path) -> None:
     hashes = json.loads((builtin_dir / BUILTIN_CATALOG_NAME / "legacy_hashes.json").read_text(encoding="utf-8"))
     versions_file = builtin_dir / BUILTIN_CATALOG_NAME / "legacy_versions.json"
     versions = json.loads(versions_file.read_text(encoding="utf-8")) if versions_file.is_file() else {}
+    _install_missing_catalog_capabilities(builtin_dir, catalog)
     _refresh_catalog_navigation(builtin_dir, catalog, versions)
     plugins = state.get("installed_plugins", [])
     configs = state.get("skill_configs", {})

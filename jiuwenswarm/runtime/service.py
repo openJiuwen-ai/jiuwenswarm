@@ -68,6 +68,8 @@ from jiuwenswarm.runtime.session_lifecycle import (
     SessionKind,
     SessionLifecycleTarget,
     SessionRuntimeLifecyclePort,
+    SessionRunEndEvent,
+    SessionRunEndReason,
 )
 from jiuwenswarm.runtime.session_lifecycle import (
     SessionDescriptor as LifecycleSessionDescriptor,
@@ -428,6 +430,8 @@ class AgentRuntime:
             tuple[str, str],
             tuple[SessionLifecycleTarget, tuple[Any, ...]],
         ] = {}
+        self._session_run_end_tasks: dict[str, tuple[int, asyncio.Task[None]]] = {}
+        self._session_runtime_locks: dict[str, asyncio.Lock] = {}
         if team_execution_controller is not None:
             set_reporter = getattr(
                 team_execution_controller,
@@ -1255,12 +1259,14 @@ class AgentRuntime:
                 generation=snapshot.generation,
                 stop_runner=True,
             )
-        claim_runtime(session_id)
-        await self._session_coordinator.register_session(
-            session_id,
-            channel_id,
-            SessionPersistencePolicy.PERSISTENT,
-        )
+        lock = self._session_runtime_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            claim_runtime(session_id)
+            await self._session_coordinator.register_session(
+                session_id,
+                channel_id,
+                SessionPersistencePolicy.PERSISTENT,
+            )
 
     def _owns_session(self, session_id: str | None) -> bool:
         """Return whether the Coordinator owns the current Session generation."""
@@ -3224,6 +3230,7 @@ class AgentRuntime:
         session_id: str,
         reset_plan_state: bool = True,
         request: AgentRequest | None = None,
+        end_reason: SessionRunEndReason = SessionRunEndReason.OTHER,
     ) -> bool:
         """Release in-memory resources owned by one Runtime session.
 
@@ -3238,12 +3245,31 @@ class AgentRuntime:
         steps have committed.  Ordinary disconnect and process-CLI cleanup use
         the default and release both resources together.
         """
+        reason = SessionRunEndReason(end_reason)
+        lock = self._session_runtime_locks.setdefault(session_id, asyncio.Lock())
+        async with lock:
+            return await self._cleanup_session_run(
+                channel_id=channel_id, session_id=session_id,
+                reset_plan_state=reset_plan_state, reason=reason, request=request,
+            )
+
+    async def _cleanup_session_run(
+        self,
+        *,
+        channel_id: str,
+        session_id: str,
+        reset_plan_state: bool,
+        reason: SessionRunEndReason,
+        request: AgentRequest | None,
+    ) -> bool:
+        """Keep a resumed generation out until old-run cleanup finishes."""
         if self._closed:
             raise RuntimeStateError("runtime is already closed")
         if self._owns_session(session_id):
             result = await self._session_coordinator.close_session(session_id)
             if result.timed_out:
                 raise SessionCloseTimeoutError(session_id, result.timed_out)
+        await self._notify_session_run_end(session_id, reason=reason)
         if request is not None:
             managers = [await self.resolve_manager(request)]
         else:
@@ -3266,6 +3292,50 @@ class AgentRuntime:
         if reset_plan_state:
             self._plan_controller.reset_session(session_id)
         return cleaned
+
+    async def _notify_session_run_end(
+        self,
+        session_id: str,
+        *,
+        reason: SessionRunEndReason,
+    ) -> None:
+        """Join the single notification attempt for a closed session generation."""
+        snapshot = self._session_coordinator.snapshot_session(session_id)
+        if snapshot is None or snapshot.state is not RuntimeSessionState.CLOSED:
+            return
+        ending = self._session_run_end_tasks.get(session_id)
+        if ending is None or ending[0] != snapshot.generation:
+            target = self._participant_registry.target(session_id)
+            if target is None:
+                team = any(execution.team for execution in snapshot.executions)
+                target = SessionLifecycleTarget(
+                    LifecycleSessionDescriptor(
+                        session_id=session_id, channel_id=snapshot.channel_id,
+                        mode="team" if team else "agent", work_mode="",
+                    ),
+                    SessionKind.TEAM if team else SessionKind.AGENT,
+                )
+            event = SessionRunEndEvent(target, snapshot.generation, reason)
+            task = asyncio.create_task(self._dispatch_session_run_end(event), name="runtime-session-run-end")
+            ending = (snapshot.generation, task)
+            self._session_run_end_tasks[session_id] = ending
+        elif ending[1].done():
+            # Cancellation ends this attempt too. A later cleanup must still
+            # release resources without replaying or re-raising that attempt.
+            return
+        try:
+            await asyncio.shield(ending[1])
+        except asyncio.CancelledError:
+            ending[1].cancel()
+            raise
+
+    async def _dispatch_session_run_end(self, event: SessionRunEndEvent) -> None:
+        """Observe a real run end without giving observers ownership of release."""
+        for participant in self._participant_registry.snapshot_run_end():
+            try:
+                await participant.session_run_ended(event)
+            except Exception as exc:
+                logger.warning("Runtime session run-end participant failed: %s", exc, exc_info=True)
 
     def begin_chat_request(self, session_id: str, request_id: str) -> None:
         self._pending_chat_requests.setdefault(session_id, set()).add(request_id)
@@ -3616,6 +3686,7 @@ class AgentRuntime:
                 "STOP_TIMEOUT",
                 "runtime executions have not stopped",
             )
+        await self._notify_session_run_end(session_id, reason=SessionRunEndReason.OTHER)
 
     async def _dispose_agent_session_after_resource_release(
         self,
@@ -3639,7 +3710,11 @@ class AgentRuntime:
             reset_plan_state=False,
         )
 
-    async def close(self) -> None:
+    async def close(
+        self,
+        *,
+        end_reason: SessionRunEndReason = SessionRunEndReason.OTHER,
+    ) -> None:
         """Release resources unless a Session provision is unfinished.
 
         The check is fail-fast rather than a wait or implicit abort: only the
@@ -3650,6 +3725,7 @@ class AgentRuntime:
         Runtime releases only its non-owning application-resource lease. The
         application composition root remains responsible for shared shutdown.
         """
+        reason = SessionRunEndReason(end_reason)
         async with self._lifecycle_lock:
             if self._closed:
                 return
@@ -3709,8 +3785,6 @@ class AgentRuntime:
                 await self._session_provisioner.close_background_tasks()
             except BaseException as exc:
                 cleanup_errors.append(exc)
-            self._activity_executions.clear()
-            self._participant_registry.clear_targets()
             try:
                 for manager in self._tenant.iter_managers_for_host_event():
                     await manager.cancel_all_inflight_work("[runtime close] ")
@@ -3718,6 +3792,18 @@ class AgentRuntime:
                 BaseException
             ) as exc:  # preserve cancellation until cleanup completes
                 cleanup_errors.append(exc)
+            # All execution and manager-owned work has stopped, while extension
+            # handlers and platform resources are still available. Share the
+            # notification budget across sessions before releasing their targets.
+            try:
+                await asyncio.gather(*(
+                    self._notify_session_run_end(snapshot.session_id, reason=reason)
+                    for snapshot in self._session_coordinator.snapshot_sessions()
+                ))
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+            self._activity_executions.clear()
+            self._participant_registry.clear_targets()
             if self._resource_lease is not None:
                 try:
                     await self._resource_lease.release()
@@ -4573,6 +4659,10 @@ class AgentRuntime:
 
     async def _ensure_extensions(self) -> None:
         self._shared_extensions_acquired = await _acquire_process_runtime_extensions()
+        if not self._participant_registry.snapshot_run_end():
+            from jiuwenswarm.server.runtime.session.end_notifications import ExtensionSessionEndParticipant
+
+            self._participant_registry.register_host_run_end(ExtensionSessionEndParticipant())
         # Shipped AgentGroups must be usable on first start; a bad package only warns.
         try:
             from jiuwenswarm.server.runtime.extension_package_manager import (

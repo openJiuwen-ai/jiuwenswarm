@@ -58,6 +58,16 @@ export function multimodalPurpose(tool: MultimodalCapability): MultimodalPurpose
   return MULTIMODAL_CAPABILITIES.indexOf(tool) < 3 ? 'understanding' : 'generation';
 }
 
+/** List label for a catalogue row's provider.
+ *
+ * vLLM-Omni still saves ``provider`` as OpenAI (the vendor preset's
+ * ``client_provider``, a value ``ProviderType`` will accept). The protocol is
+ * what distinguishes it, so the multimodal model list must not show OpenAI.
+ */
+export function multimodalProviderLabel(model: Pick<PublicMultimodalModel, 'provider' | 'protocol'>): string {
+  return String(model.protocol ?? '').trim().toLowerCase() === 'vllm-omni' ? 'vLLM-Omni' : model.provider;
+}
+
 export function capabilitiesFor(purpose: MultimodalPurpose): MultimodalCapability[] {
   return MULTIMODAL_CAPABILITIES.filter((tool) => multimodalPurpose(tool) === purpose);
 }

@@ -156,6 +156,7 @@ def test_jiuwen_selection_never_falls_back_to_legacy(monkeypatch, tmp_path, bloc
         obj._eternal_conversation_enabled = True
     else:
         monkeypatch.setattr(interface_code, "build_jiuwen_memory_rail", lambda *a, **kw: None)
+
     def legacy(**kw):
         pytest.fail("selected jiuwen must not initialize legacy memory")
     monkeypatch.setattr(interface_code, "create_coding_memory_rail", legacy)
@@ -356,8 +357,10 @@ async def test_v01_v05_mode_update_preserves_exact_memory_rail_set(monkeypatch, 
     cfg = config()
     obj = adapter(monkeypatch, tmp_path, cfg)
     registered = []
+
     async def register(rail):
         registered.append(rail)
+
     async def unregister(rail):
         registered.remove(rail)
     obj._instance = SimpleNamespace(register_rail=register, unregister_rail=unregister,
@@ -433,7 +436,11 @@ async def test_http_root_change_keeps_client_through_full_spec_reload(monkeypatc
         candidate = obj._build_coding_memory_rail()
         assert candidate is rail
         parts = DeepAgentParts(
-            config=copy(agent.deep_config), rails=[candidate], tool_cards=[], tool_instances=[],
+            config=copy(agent.deep_config),
+            rails=[candidate],
+            tool_cards=[],
+            tool_instances=[],
+            extension_bus=agent._extension_bus,
         )
         spec = MagicMock()
         spec.resolve_parts.return_value = parts
