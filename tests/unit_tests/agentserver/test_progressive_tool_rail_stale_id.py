@@ -469,3 +469,74 @@ def test_rail_init_preserves_session_scoped_meta_tool_owner_id():
     assert any("_s_session_b" in tool_id for tool_id in id_b)
     assert not any("_s_session_b" in tool_id for tool_id in id_a)
     assert not any("_s_session_a" in tool_id for tool_id in id_b)
+
+
+_LAZY_OPEN = "office-claw-request-e68cc29270ca6a3001e2.pptx-lazy.open_pptx"
+_REAL_OPEN = "office-claw-request-e68cc29270ca6a3001e2.pptx-mcp.open_pptx"
+
+
+@pytest.mark.asyncio
+async def test_invoke_owned_id_prefers_live_instance_after_lazy_open_swap():
+    """Lazy open_pptx swaps in the real pptx-mcp catalog and drops its own card.
+
+    The pin then owns both ``pptx-lazy.open_pptx`` (instance gone) and
+    ``pptx-mcp.open_pptx`` (live). Picking the dead one from the frozenset made
+    every retry fail with "无法获取工具 'open_pptx' 的实例".
+    """
+    card = SimpleNamespace(
+        name="open_pptx",
+        id=_LAZY_OPEN,
+        description="d",
+        input_params={},
+        properties={"resilience": {"timeout_s": None}},
+    )
+    real_tool = SimpleNamespace(invoke=AsyncMock(return_value={"opened": True}))
+    rail = ProgressiveToolRail(eager_tools=["tools_search", "invoke_tool"])
+    rail.set_office_claw_active_tool_ids([_LAZY_OPEN, _REAL_OPEN])
+    rail._cached_deferred_tool_infos = [card]
+
+    def _get_tool_side_effect(tool_id, session=None):
+        return real_tool if tool_id == _REAL_OPEN else None
+
+    with patch.object(Runner.resource_mgr, "get_tool", side_effect=_get_tool_side_effect):
+        result = await rail._invoke_target_tool(
+            None,
+            InvokeToolInput(
+                tool_name="open_pptx",
+                arguments={"workingPath": "D:/w/a.pptx", "requestId": "r1"},
+            ),
+        )
+
+    assert result == {"success": True, "tool_name": "open_pptx", "result": {"opened": True}}
+    real_tool.invoke.assert_awaited_once()
+
+
+def test_owned_id_choice_is_deterministic_when_all_instances_missing():
+    """With no live instance the choice must not depend on frozenset order."""
+    rail = ProgressiveToolRail(eager_tools=["tools_search", "invoke_tool"])
+    rail.set_office_claw_active_tool_ids([_REAL_OPEN, _LAZY_OPEN])
+
+    with patch.object(Runner.resource_mgr, "get_tool", return_value=None):
+        assert rail._owned_office_claw_tool_id("open_pptx") == min(_LAZY_OPEN, _REAL_OPEN)
+
+
+@pytest.mark.asyncio
+async def test_search_no_match_tells_model_to_ask_before_substituting():
+    """open_pptx 未注册时，模型曾据此直接改交 HTML。无匹配结果须要求先告知用户、征得同意。"""
+    from jiuwenswarm.agents.harness.common.tools.tools_search_tool import (
+        ToolsSearchInput,
+    )
+
+    rail = ProgressiveToolRail(eager_tools=["tools_search", "invoke_tool"])
+    rail._cached_deferred_tool_infos = []
+
+    result = await rail._search_tools(None, ToolsSearchInput(tool_name="open_pptx"))
+
+    assert result["success"] is False
+    assert result["matches"] == []
+    assert "未找到名为 'open_pptx' 的按需可见工具" in result["message"]
+    # 只约束交付格式；换用其他工具重试不在此限制（技能内由技能规则处理）。
+    assert "不要因此改交用户没要求的交付格式" in result["message"]
+    assert "改用其他" not in result["message"]
+    assert "不要把替代品说成已完成" in result["message"]
+    assert "等用户同意后再继续" in result["message"]
