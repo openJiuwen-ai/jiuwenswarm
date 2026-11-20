@@ -162,6 +162,7 @@ export function MarketplacePage({
   const builtinConnectors = useConnectorStore((s) => s.builtinConnectors);
   const myConnectors = useConnectorStore((s) => s.myConnectors);
   const connectAction = useConnectorStore((s) => s.connect);
+  const cancelConnectAction = useConnectorStore((s) => s.cancelConnectAction);
   const installConnector = useConnectorStore((s) => s.installPackage);
   const busyMap = useConnectorStore((s) => s.busyMap);
   const connectorIsLoading = useConnectorStore((s) => s.isLoading);
@@ -785,6 +786,7 @@ export function MarketplacePage({
                     onUse={onUse ? () => onUse?.({ kind: 'mcp', id: connector.runtimePackageName }) : undefined}
                     onQuickInstall={cs === 'connected' ? undefined : () => handleConnectorQuickAdd(connector.id)}
                     quickAction={mcpInstalled ? 'connect' : 'install'}
+                    onCancelConnect={() => void cancelConnectAction(connector.runtimePackageName)}
                   />
                 );
               })
@@ -856,6 +858,7 @@ export function MarketplacePage({
                     onOpenDetail={() => onOpenConnectorDetail(connector.id)}
                     onQuickAdd={() => handleConnectorQuickAdd(connector.id)}
                     quickAction={mcpInstalled ? 'connect' : 'install'}
+                    onCancelConnect={() => void cancelConnectAction(connector.runtimePackageName)}
                     onUse={onUse ? () => onUse?.({ kind: 'mcp', id: connector.runtimePackageName }) : undefined}
                   />
                 );

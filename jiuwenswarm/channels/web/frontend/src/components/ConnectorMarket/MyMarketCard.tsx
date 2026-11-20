@@ -22,6 +22,7 @@ interface MyMarketCardProps {
   titleEnd?: ReactNode;
   headerAction?: ReactNode;
   hideConnectedAction?: boolean;
+  onCancelConnect?: () => void;
 }
 
 export function MyMarketCard({
@@ -43,6 +44,7 @@ export function MyMarketCard({
   titleEnd,
   headerAction,
   hideConnectedAction,
+  onCancelConnect,
 }: MyMarketCardProps) {
   return (
     <MarketCard
@@ -59,6 +61,7 @@ export function MyMarketCard({
       quickAction={quickAction}
       actionMode={actionMode}
       actionDisabled={actionDisabled}
+      onCancelConnect={onCancelConnect}
       connectedLabel={connectedLabel}
       onConnectedAction={onConnectedAction}
       titleEnd={titleEnd}
