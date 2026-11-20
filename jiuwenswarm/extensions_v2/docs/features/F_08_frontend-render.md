@@ -32,6 +32,9 @@
 
 当前生产入口使用 `WebUIAppRoot`、`WebUIProvider`、`WebUIHost`、`useWebUIPanels` 与
 `WebUINavigationHost`/`WebUIPageHost`，由组件、协议、运行时、传输与渲染测试共同覆盖。
+右侧工作区插件不再自动占用页签：`useWebUIPanels` 只提供发现结果，用户从加号创建的空白页签中选择插件，
+选择后空白页签原地转为插件页签；规则与验证见
+[右侧工作区插件页签与空白页](../../../channels/web/frontend/src/features/webui/docs/features/F_03_plugin-panel-launcher.md)。
 
 组件契约模块包含独立目录、事件数据规则和属性校验器。模块职责见
 [F_01 组件目录与属性校验](../../../channels/web/frontend/src/features/webui/docs/features/F_01_antd-components.md)，
@@ -93,7 +96,7 @@ flowchart LR
 | --- | --- | --- |
 | `conversation.input.above` | `list` | `ChatPanel` 消息列表下方、输入区上方 |
 | `conversation.input.below` | `single` | 输入区下方 |
-| `conversation.panel.right` | `list` | `App` 主区域右侧工作区 |
+| `conversation.panel.right` | `list` | `App` 主区域右侧工作区，插件经加号空白页签选择后成为页签 |
 | `message.assistant.meta` | `list` | `MessageItem` 的助手消息 meta 行，消息级宿主按实例键过滤 |
 
 - `list` 槽位展示范围内全部实例，每个实例对应一个独立的 `WebUIInstanceView`。
@@ -143,7 +146,7 @@ React 宿主接口：
 
 当前状态：`main.tsx` 用 `WebUIAppRoot` 创建唯一运行时，并由 `WebUIEntryHost` 承接 `application.entry`；
 15 个已登记槽位全部由 `WebUIHost` 承载，位置为：ChatPanel（输入区、头部）、MessageItem（单轮内容、meta）、
-ToolPanel（右侧页签）、SettingsPageLayout（设置页）、SessionSidebar（应用菜单与底部用户入口）、ConversationSidebar（任务功能区）、
+ToolPanel（右侧页签，经空白页签选择）、SettingsPageLayout（设置页）、SessionSidebar（应用菜单与底部用户入口）、ConversationSidebar（任务功能区）、
 `WebUIPageHost`（菜单主页面与任务页面）。
 
 ### 3.5 渲染代次、显示确认与失败反馈
@@ -296,7 +299,8 @@ Iframe 的 URL 校验允许相对路径与 HTTP(S) 地址，但这只检查地�
 
 前端目录下执行 `npm run test:webui-protocol`、`npm run test:webui-runtime`、
 `npm run test:webui-events`、`npm run test:webui-transport`、`npm run test:webui-renderer`
-与 `npm run test:webui-components`。
+与 `npm run test:webui-components`。右侧页签添加/关闭的状态规则使用
+`npm run test:webui-plugin-panels`。
 
 2026-11-06 补充包变更恢复验证：`npm run test:webui-runtime` 的 19 项和
 `npm run test:webui-transport` 的 9 项通过，分别覆盖指定包的 ready 重放和通知参数校验。
@@ -339,3 +343,14 @@ transport、renderer、i18n-locales）通过，Vite 生产打包通过。
 右侧内容仍按选择挂载，保持隐藏面板的内容不执行；后台渲染只更新目录，不自动展开面板。会话切换和不支持面板导航的模式会消费不适用的旧请求。ToolPanel 等待面板发现完成后再消费有效请求，避免初次挂载时丢失选择。
 
 验证：254 项 WebUI 组件和插件设置测试、7 项面板页面测试及 Vite 生产打包通过。真实插件在浏览器 1100 px 窄视口、ToolPanel 自动隐藏时，点击“打开详情”能展开并选中“用量详情”。本次只有 Web Client 的发现与导航所有权调整；Gateway、Server、Agent Harness、Team 没有相关代码改动。已撤回此前暖黄背景恢复的全部修改，状态条沿用原有灰底。未运行格式化、lint 或类型检查。
+### 2026-11-06 右侧插件页签与空白页
+
+右侧工作区改为“发现 + 主动创建”：加号先创建一个不属于任何插件的空白页签，空白页签列出已注册插件，
+选择后原地转为该插件页签；已有插件时关闭空白页签并激活已有页签。空白页签与插件页签共用关闭逻辑，
+关闭激活页签按右侧、左侧相邻页签回退，全部关闭后回到原生页签；无插件时空态显示“暂时没有可用的插件”。
+插件声明与渲染树 `title` 契约不变，详细规则见
+[F_03](../../../channels/web/frontend/src/features/webui/docs/features/F_03_plugin-panel-launcher.md)。
+`npm run test:webui-plugin-panels` 19 项与 `npm run test:i18n-locales` 4 项通过；Edge 真实浏览器已验收
+插件列表、添加、关闭和相邻页签回退，空白页签创建与原地转换、空态、长标题、多页签溢出、窄屏、
+会话切换与键盘焦点仍待补充。Panel / Iframe 新增可选 `icon`（白名单图标名）用于页签图标，
+共享组件用例已补充合法与非法取值，前端契约 152 项及两端 `validate_props` 定向校验通过；Vite 构建未执行。

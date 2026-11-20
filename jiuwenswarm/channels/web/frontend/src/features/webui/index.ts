@@ -25,6 +25,14 @@ export { WebUINavigationHost, WebUIPageHost } from './react/WebUINavigation.tsx'
 export type { WebUIPageTarget } from './react/WebUISlotContext.ts';
 export { useWebUIPanels } from './react/useWebUIPanels.tsx';
 export type { WebUIPanelEntry } from './react/useWebUIPanels.tsx';
+export { useWebUIPluginPanelTabs } from './react/useWebUIPluginPanelTabs.tsx';
+export type {
+  UseWebUIPluginPanelTabsOptions,
+  WebUIPluginPanelTab,
+  WebUIPluginPanelTabs,
+} from './react/useWebUIPluginPanelTabs.tsx';
+export { WebUIPluginPanelHome } from './react/WebUIPluginPanelHome.tsx';
+export type { WebUIPluginPanelHomeProps } from './react/WebUIPluginPanelHome.tsx';
 
 export { createRendererRegistry } from './renderer/index.ts';
 export { createComponentRendererRegistry } from './renderer/adapters/componentRegistry.ts';

@@ -2680,7 +2680,17 @@
     "contextCompression": "Context window",
     "memoryUsage": "Memory usage",
     "poweredBy": "Powered by openJiuwen",
-    "fileNotPreviewable": "This file type is not previewable"
+    "fileNotPreviewable": "This file type is not previewable",
+    "plugins": {
+      "title": "New tab",
+      "description": "Choose a plugin to open as a tab in this panel.",
+      "empty": "No plugins are available yet",
+      "added": "Added",
+      "add": "New tab",
+      "addTab": "Add",
+      "draftTab": "New tab",
+      "closeTab": "Close plugin tab"
+    }
   },
   "todoList": {
     "title": "Task list",

@@ -74,10 +74,14 @@ test('Icon and icon-bearing components accept every whitelist icon and alias, an
   for (const icon of ['not-an-icon', 'Camera', 'constructor', '__proto__', '', null]) {
     assert.equal(typeof checkProps('Icon', { name: icon }).error, 'string', String(icon));
   }
-  for (const component of ['Button', 'Dropdown']) {
+  const iconComponentProps = {
+    Button: { 'aria-label': 'Action' },
+    Dropdown: { items: [{ key: 'action', label: 'Action' }], ariaLabel: 'Actions' },
+    Panel: { title: 'Panel' },
+    Iframe: { title: 'Preview', src: '/preview' },
+  };
+  for (const [component, props] of Object.entries(iconComponentProps)) {
     assert.deepEqual(componentCatalog.getComponent(component).props.icon.values, names);
-    const props = component === 'Button' ? { 'aria-label': 'Action' }
-      : { items: [{ key: 'action', label: 'Action' }], ariaLabel: 'Actions' };
     for (const icon of names) assert.equal(checkProps(component, { ...props, icon }).error, undefined, icon);
     for (const icon of ['not-an-icon', 'Camera', 'constructor', '__proto__', '', null]) {
       assert.equal(typeof checkProps(component, { ...props, icon }).error, 'string', String(icon));
