@@ -2718,6 +2718,25 @@ function AppContent({
     void loadSessionMetadata(routeSessionId);
   }, [isConnected, loadSessionMetadata, routeSessionId]);
 
+  // A segment final can make the UI idle while the request is still running.
+  useEffect(() => {
+    if (!isConnected || !sessionId) return;
+    let refreshTimer: number | undefined;
+    const unsubscribe = webClient.on('chat.processing_status', ({ payload }) => {
+      if (payload.session_id !== sessionId || payload.is_processing !== false || payload.is_complete !== true) return;
+      const turnRevision = useChatStore.getState().getRuntime(sessionId)?.turnRevision;
+      window.clearTimeout(refreshTimer);
+      refreshTimer = window.setTimeout(() => {
+        if (useChatStore.getState().getRuntime(sessionId)?.turnRevision !== turnRevision) return;
+        setHistoryRecoveryRevision((revision) => revision + 1);
+      }, 500);
+    });
+    return () => {
+      unsubscribe();
+      window.clearTimeout(refreshTimer);
+    };
+  }, [isConnected, sessionId]);
+
   useEffect(() => {
     if (!isConnected || !sessionId) return;
     // A recovered old request must not clear a newer turn's stream buffers.
@@ -2733,7 +2752,6 @@ function AppContent({
     historyRecoveryRevision,
     isConnected,
     isLoadingHistory,
-    isProcessing,
     sessionId,
     setHistoryPagerMeta,
   ]);
