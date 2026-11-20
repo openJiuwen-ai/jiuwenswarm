@@ -221,6 +221,20 @@ def test_history_wire_keeps_deep_mcp_app_data_intact():
     assert tool_result["structuredContent"] == deep  # no "<truncated>" at depth > 8
     assert len(tool_result["items"]) == 150  # no 100-item list cap
 
+    # The block is restored verbatim, so nothing inside it may leave a marker:
+    # a truncated flag here would describe data the client actually received in
+    # full, and the extra bytes could push a near-budget record into collapse.
+    def marker_keys(value):
+        if isinstance(value, dict):
+            return [
+                key for key in value if key == "truncated" or key.endswith("_truncated")
+            ] + [marker for item in value.values() for marker in marker_keys(item)]
+        if isinstance(value, list):
+            return [marker for item in value for marker in marker_keys(item)]
+        return []
+
+    assert marker_keys(wire) == []
+
 
 def test_history_wire_oversized_mcp_app_record_still_collapses():
     from jiuwenswarm.server import wire_truncate
