@@ -8,8 +8,6 @@
 
 from __future__ import annotations
 
-import hashlib
-
 import pytest
 
 from flash_offline_stub import install_offline_import_stubs
@@ -44,29 +42,6 @@ from openjiuwen.harness.prompts.sections.safety import (  # noqa: E402
     build_safety_section,
 )
 
-# ── 本仓自有段 golden hash（排除 safety 的 SDK 源段，源正文来自 openjiuwen dev-stable 浮动分支）──
-_SAFETY_SECTION_NAMES = {
-    "uncertainty_failure",
-    "safety_general",
-    "refusal_behavior",
-    "deletion_protocol",
-}
-
-_GOLDEN_OWNED_HASH = {
-    "cn": "ffd10fae579388094305bebb9c6010468a28fc688d5c3ec2617d4f61bd90693c",
-    "en": "ddf6f5b0e505de53ba38d6c53be9913f6eeca4a7c559f477fd8d6327670f6485",
-}
-
-
-def _repo_owned_hash(snapshot) -> str:
-    """按 snapshot 段 hash 同款拼接格式，对本仓自有段（排除 safety）算 hash。"""
-    payload = "\n".join(
-        f"{priority}\0{name}\0{sha256}"
-        for priority, name, sha256 in snapshot.section_hashes
-        if name not in _SAFETY_SECTION_NAMES
-    )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
 _EXPECTED_ORDER = [
     (30, "uncertainty_failure"),
     (100, "safety_general"),
@@ -96,7 +71,7 @@ def _section_text(section, language: str) -> str:
     return str(content or "")
 
 
-# ── 1. registry：reconcile 领号对账 + 工具域门控（全开 14 段 / 关闭 12 段）──
+# ── 1. registry：reconcile 领号对账 + 工具域门控──
 def test_reconcile_outputs_registered_priorities() -> None:
     sections = reconcile(build_default_context("cn"))
     assert [(s.priority, s.name) for s in sections] == _EXPECTED_ORDER
@@ -200,19 +175,12 @@ def test_strip_relay_duplicates_foreign_header_returns_none() -> None:
     assert _strip_relay_duplicates(content) is None
 
 
-# ── 4. snapshot / offline：本仓自有段 golden hash 锁定（零漂移）────────────────
 @pytest.mark.parametrize("language", ["cn", "en"])
-def test_offline_assembly_matches_golden_hash(language: str) -> None:
-    snapshot = build_prompt_snapshot(assemble(language), language=language)
-    assert len(snapshot.sections) == 15
-    # safety 域源正文来自 SDK（openjiuwen dev-stable 浮动分支），只校验产出 4 段存在，
-    # 不锁精确 hash，否则 CI 会随上游推进随机红。
-    safety_names = {
-        name for _priority, name, _sha in snapshot.section_hashes
-        if name in _SAFETY_SECTION_NAMES
-    }
-    assert safety_names == _SAFETY_SECTION_NAMES
-    assert _repo_owned_hash(snapshot) == _GOLDEN_OWNED_HASH[language]
+def test_offline_assembly_contract(language: str) -> None:
+    sections = assemble(language)
+    assert [(s.priority, s.name) for s in sections] == _EXPECTED_ORDER
+    for section in sections:
+        assert section.content[language].strip(), section.name
 
 
 def test_offline_assembly_is_deterministic() -> None:

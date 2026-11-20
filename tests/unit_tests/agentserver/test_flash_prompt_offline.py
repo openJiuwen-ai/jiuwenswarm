@@ -1,14 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""M0 S1: flash 离线组装 + golden 快照 drift 检测。
-
-用真实 Deep 提示词构建函数 + flash content 域常量/纯函数，离线重建 flash 自有静态段
-（v2 = safety/response/tools/todo/subagent 域），与落盘 golden 快照逐级比对，
-锁定任何上游内容或 flash 改写逻辑的漂移。
-
-导入隔离见 :mod:`flash_offline_stub`：本地缺 ``agent_shield`` 时由公共入口在 import
-flash 子模块之前打桩，CI 装了依赖时为空操作。
-"""
+"""Flash 离线组装、双语快照导出和注册表行为测试。"""
 
 from __future__ import annotations
 
@@ -36,49 +28,12 @@ from jiuwenswarm.agents.harness.flash.prompt.registry import (  # noqa: E402
 )
 from jiuwenswarm.agents.harness.flash.prompt.snapshot import (  # noqa: E402
     build_prompt_snapshot,
+    write_prompt_snapshot,
 )
 from jiuwenswarm.agents.harness.flash.sections import (  # noqa: E402
     FLASH_SECTION_BANDS,
-    FLASH_SECTION_REGISTRY,
     section_in_band,
 )
-
-_SNAPSHOT_DIR = Path(__file__).resolve().parent / "flash_snapshot"
-
-# v2 目标段序（段号即 priority，与 sections.py 领号一致）。
-_EXPECTED_SECTIONS = [
-    (30, "uncertainty_failure"),
-    (100, "safety_general"),
-    (110, "refusal_behavior"),
-    (120, "deletion_protocol"),
-    (300, "tool_selection"),
-    (330, "bash_discipline"),
-    (340, "tool_result"),
-    (410, "thinking_discipline"),
-    (430, "todo"),
-    (440, "task_tool"),
-    (500, "language_output"),
-    (510, "response"),
-    (520, "final_visible_reply"),
-    (540, "runtime.model_answer_policy"),
-]
-
-
-def _golden(language: str) -> dict:
-    return json.loads(
-        (_SNAPSHOT_DIR / f"flash_prompt.{language}.json").read_text(encoding="utf-8")
-    )
-
-
-@pytest.mark.parametrize("language", LANGUAGES)
-def test_offline_section_order_matches_registry(language: str) -> None:
-    sections = assemble(language)
-    # 段名/段号序与期望一致（段名对账依赖 content 常量，见下）。
-    assert [(s.priority, s.name) for s in sections] == _EXPECTED_SECTIONS
-    # 每个段号都已在领号表登记（段号单一真相源 = FLASH_SECTION_REGISTRY）。
-    # 若 registry 改段号/增删段未同步领号表，这里会失败——而不是测试继续用旧硬编码通过。
-    for s in sections:
-        assert s.priority in FLASH_SECTION_REGISTRY, f"段号 {s.priority} 未在领号表登记"
 
 
 def _band_of(priority: int) -> str | None:
@@ -109,30 +64,22 @@ def test_offline_assembly_is_deterministic(language: str) -> None:
 
 
 @pytest.mark.parametrize("language", LANGUAGES)
-def test_offline_assembly_matches_golden_snapshot(language: str) -> None:
+def test_offline_snapshot_export_matches_sections(language: str, tmp_path: Path) -> None:
+    sections = assemble(language)
+    snapshot = build_prompt_snapshot(sections, language=language)
+    output, _ = write_prompt_snapshot(snapshot, tmp_path)
+    exported = json.loads(output.read_text(encoding="utf-8"))
+    assert [(s["priority"], s["name"], s["text"]) for s in exported["sections"]] == [
+        (s.priority, s.name, s.content[language]) for s in sections
+    ]
+
+
+@pytest.mark.parametrize("language", LANGUAGES)
+def test_offline_section_carriers(language: str) -> None:
     snapshot = build_prompt_snapshot(assemble(language), language=language)
-    golden = _golden(language)
-
-    assert snapshot.full_hash == golden["full_hash"]
-    assert snapshot.static_hash == golden["static_hash"]
-    assert snapshot.band_hashes == {b["name"]: b["sha256"] for b in golden["bands"]}
-    assert snapshot.section_hashes == tuple(
-        (s["priority"], s["name"], s["sha256"]) for s in golden["sections"]
-    )
-    # 段名/段号/区级归属逐项一致。
-    assert [s.priority for s in snapshot.sections] == [s["priority"] for s in golden["sections"]]
-    assert [s.name for s in snapshot.sections] == [s["name"] for s in golden["sections"]]
-    assert [s.band for s in snapshot.sections] == [s["band"] for s in golden["sections"]]
-
-
-def test_offline_sections_are_registered_and_static() -> None:
-    for language in LANGUAGES:
-        snapshot = build_prompt_snapshot(assemble(language), language=language)
-        assert snapshot.sections, "v1 快照不应为空"
-        for section in snapshot.sections:
-            assert section.registered is True
-            assert section.carrier == "system"
-            assert section.priority < 800  # 全为静态区
+    for section in snapshot.sections:
+        assert section.registered
+        assert section.carrier == ("attachment" if section.name == "browser_routing" else "system")
 
 
 def test_safety_relay_merge_present() -> None:

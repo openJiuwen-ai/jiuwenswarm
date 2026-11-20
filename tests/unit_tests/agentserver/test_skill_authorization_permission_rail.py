@@ -194,7 +194,7 @@ async def test_plain_chat_resume_does_not_emit_decision() -> None:
 
 
 @pytest.fixture
-def active_skill_permissions(tmp_path, monkeypatch):
+def active_skill_permissions(tmp_path, monkeypatch, request):
     from jiuwenswarm.agents.harness.common.rails.skill_authorization_rail import SkillAuthorizationRail
     from openjiuwen.harness.security import skill_authorization
 
@@ -228,6 +228,7 @@ def active_skill_permissions(tmp_path, monkeypatch):
         "skill_authorization": {"enabled": True},
     }
     rail = SkillAuthorizationPermissionRail(config=baseline)
+    request.addfinalizer(lambda: rail.uninit(None))
     # 会话 publish 已停用：Skill overlay 在 _check_tool_permission 里临时 config=。
     gate = SkillAuthorizationRail(permission_key=rail.permission_key, grant_store=store)
     rail.set_skill_scope_resolver(gate.resolve_scope)
@@ -359,7 +360,7 @@ async def test_missing_session_or_unbound_resolver_keeps_baseline(active_skill_p
 @pytest.mark.parametrize("session_id, expected", [("session-1", None), ("session-2", None)])
 @pytest.mark.parametrize("overlay_permission", ["ask", "deny"])
 async def test_owner_allow_cannot_skip_active_skill_overlay(
-    active_skill_permissions, monkeypatch, tmp_path, session_id, expected, overlay_permission,
+    active_skill_permissions, monkeypatch, tmp_path, request, session_id, expected, overlay_permission,
 ):
     from openjiuwen.harness.security.host import PermissionSceneHookInput
     from openjiuwen.harness.security import skill_authorization
@@ -377,6 +378,7 @@ async def test_owner_allow_cannot_skip_active_skill_overlay(
         lambda **kwargs: config,
     )
     rail = build_permission_rail({})
+    request.addfinalizer(lambda: rail.uninit(None))
     rail.set_skill_scope_resolver(original_rail._skill_scope_resolver)
     rail.update_session_config("session-1", config)
     skill_dir = tmp_path / "permission-probe"

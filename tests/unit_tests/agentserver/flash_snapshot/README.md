@@ -1,27 +1,26 @@
 # Flash 提示词离线快照（M0 S1）
 
-本目录是 flash 提示词重构的**离线组装 + golden 快照基线**：用真实 Deep 提示词构建函数
-+ flash 转换 rail 的纯函数/常量，离线重建 flash 自有静态段，落盘 golden JSON/text，
-CI 用 `test_flash_prompt_offline.py` 逐级比对 hash，锁定任何上游内容或 flash 改写逻辑的漂移。
+本目录用真实 Deep 提示词构建函数与 Flash 转换 rail 的纯函数和常量，生成可逐段比较的中英文快照。
+仓内 JSON 和 TXT 记录历史输出。普通文案修改只需更新提示词源码。
 
 ## 文件
 
 | 文件 | 作用 |
 |------|------|
-| `flash_prompt.{cn,en}.json` | golden 快照（段级/区级/整段 SHA256 + 正文） |
-| `flash_prompt.{cn,en}.txt` | golden 正文（人读，逐段带 hash 头） |
-| `_generate.py` | 本地（重）生成 golden 的脚本（CI 不需要） |
+| `flash_prompt.{cn,en}.json` | 历史快照（段级/区级/整段 SHA256 + 正文） |
+| `flash_prompt.{cn,en}.txt` | 历史正文（人读，逐段带 hash 头） |
+| `_generate.py` | 将当前快照写入指定目录 |
 
 组装逻辑在 `jiuwenswarm/agents/harness/flash/prompt/offline.py`，hash/序列化在
 `jiuwenswarm/agents/harness/flash/prompt/snapshot.py`。
 
 ## v2 覆盖与排除
 
-**覆盖（确定性、平台无关）**：五域，共 14 段：
+**覆盖（确定性、平台无关）**：默认上下文覆盖五域，包括 14 个静态段和一个按工具面启用的动态段：
 
 - safety：`build_safety_section` → `_transform_safety` → 030/100/110/120
 - response：`_THINKING_CN/EN`（410 三矛盾修正正文，修复.md ①-⑤）+ flash 改写常量 500/510/520/540
-- tools：300/330/340（content.tools 六份 CN/EN 目标正文）
+- tools：300/330/340，另有按工具面启用的 browser_routing（345）
 - todo：430（`_TODO_DISCIPLINE_*` + `NO_MODEL_SELECTION_PROMPT`）
 - subagent：440（`FLASH_TASK_SECTION`）
 
@@ -39,18 +38,11 @@ CI 用 `test_flash_prompt_offline.py` 逐级比对 hash，锁定任何上游内�
 （dev-stable openjiuwen）与本仓同级，可用 `AGENT_CORE` 环境变量覆盖：
 
 ```bash
-cd <jiuwenswarm-1102>
-python tests/unit_tests/agentserver/flash_snapshot/_generate.py
+python tests/unit_tests/agentserver/flash_snapshot/_generate.py <output-dir>
 ```
 
 ## CI 验证
 
-`tests/unit_tests/agentserver/test_flash_prompt_offline.py` 在 CI（`agent_shield` 已装、
-`openjiuwen` 为 dev-stable）下直接 `import offline`，重新组装并与 golden 比对：
+默认单测检查双语段序、注册信息、载体、正文非空、工具门控及组装确定性。导出测试逐段比较当前源码的组装结果与 JSON 的段名、优先级和正文。
 
-- 段序（段号即 priority）与 `sections.py` 领号一致；
-- 组装确定性（两次 hash 相等）；
-- `full_hash` / `static_hash` / `band_hashes` / `section_hashes` 与 golden 一致。
-
-**漂移即失败**：上游安全正文、思考纪律红线措辞、或任何 flash 拆分/改写逻辑改动后，
-golden 比对失配，提示更新 golden 前先走「是否刻意」裁决。
+需要审查文案变化时，分别用目标版本和候选版本锁定的依赖生成快照，比较同一语言的逐段文本。要求逐字保持输出的重构可用该差异作为合入条件。
