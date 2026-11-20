@@ -115,6 +115,7 @@ generated: true
 | [F-20261107-1700-coding-document-memory](F_20261107_1700_coding-document-memory.md) | F | Coding 接入 agent-memory 文档记忆 | Wang Tao | 无独立 D：依据已确认的跨仓 Coding 文档记忆方案；无独立仓内 D 文档。 |
 | [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 | [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
+| [F_20261117_1710_parse-test-failure-tool](F_20261117_1710_parse-test-failure-tool.md) | F | 新增测试失败诊断与结构化提取工具 (parse_test_failure) | zhuxiangju | 无独立 D：新增测试失败输出结构化解析与去噪工具 parse_test_failure，无独立前置设计文档。 |
 
 <a id="module-jiuwenswarm-agents-harness-common-recommendation"></a>
 

@@ -717,6 +717,9 @@ from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
     xiaoyi_gui_agent,
     image_reading,
 )
+from jiuwenswarm.agents.harness.common.tools.test_failure_tools import (
+    parse_test_failure,
+)
 from jiuwenswarm.common.config import (
     get_config,
     get_available_models,
@@ -13438,6 +13441,9 @@ class JiuWenSwarmDeepAdapter:
             )
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] skill tools registration failed: %s", exc)
+
+        self._register_shared_tool(parse_test_failure)
+        tool_cards.append(parse_test_failure.card)
 
         if self._skill_retrieval_tools_enabled_for_runtime(
             self._config_base_cache

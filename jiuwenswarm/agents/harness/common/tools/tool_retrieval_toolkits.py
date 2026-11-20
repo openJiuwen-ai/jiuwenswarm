@@ -215,6 +215,15 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
         ),
     ),
     ToolCategory(
+        path="testing",
+        description="结构化解析测试失败输出，提取失败用例、异常类型与精简堆栈。",
+        tools=("parse_test_failure",),
+        description_en=(
+            "Parse test runner failure output into failing tests, "
+            "exception types, and compacted tracebacks."
+        ),
+    ),
+    ToolCategory(
         path="skill-evolution",
         description=(
             "本地技能与经验的演进：经用户确认创建演进评审、启动受限评审并接受"

@@ -141,6 +141,7 @@ def test_unknown_mcp_is_high_flex() -> None:
     "cron_list_jobs", "cron_get_job", "cron_preview_job",
     "heartbeat_list_jobs", "heartbeat_get_job", "heartbeat_preview_job",
     "read_terminal_output", "wait_for_terminal_exit", "convert_timestamp_to_utc8_time",
+    "parse_test_failure",
 ])
 def test_readonly_capabilities_require_exact_builtin_names(name, monkeypatch):
     info = classify_tool(name)

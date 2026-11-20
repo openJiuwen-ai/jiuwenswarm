@@ -28,12 +28,22 @@ from jiuwenswarm.agents.harness.common.tools import acp_output_tools as acp
 from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import _CronToolsCronBackend, _RestrictedCronBackend
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronTools
 from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools.timestamp_tool import convert_timestamp_to_utc8_time
+from jiuwenswarm.agents.harness.common.tools.test_failure_tools import parse_test_failure
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_binding import matches_bound_method, resolve_tool_binding
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_decision import tool_search_args_valid
 from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.models import ToolInvocation
 
 # LocalFunction exposes no public callable-identity API; pin the executable, not its name.
-_TIMESTAMP_FUNC = convert_timestamp_to_utc8_time._func  # pylint: disable=protected-access
+_STATELESS_READONLY = {
+    "convert_timestamp_to_utc8_time": (
+        convert_timestamp_to_utc8_time,
+        convert_timestamp_to_utc8_time._func,  # pylint: disable=protected-access
+    ),
+    "parse_test_failure": (
+        parse_test_failure,
+        parse_test_failure._func,  # pylint: disable=protected-access
+    ),
+}
 _ACP_DELEGATES = {name: getattr(acp, name) for name in ("read_terminal_output", "wait_for_terminal_exit")}
 _RECALL_DELEGATE = compression_recall.recall_compressed_context
 _SESSION_OBSERVATION_TOOLS = {
@@ -275,10 +285,9 @@ def trusted_readonly_binding(invocation, session_id: str, *, owner_agent=None) -
         resource = resolve_tool_binding(invocation.ctx.agent, invocation.tool_name, LocalFunction)
         if resource is None or not _invoke_matches(resource):
             return False
-        # Compare the currently installed callable with the verified implementation.
         name, func = invocation.tool_name, resource._func  # pylint: disable=protected-access
-        if name == "convert_timestamp_to_utc8_time":
-            return resource is convert_timestamp_to_utc8_time and func is _TIMESTAMP_FUNC
+        if name in _STATELESS_READONLY:
+            return resource is _STATELESS_READONLY[name][0] and func is _STATELESS_READONLY[name][1]
         if not session_id:
             return False
         if name.startswith("cron_"):
