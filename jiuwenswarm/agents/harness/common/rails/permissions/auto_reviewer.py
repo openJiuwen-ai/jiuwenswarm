@@ -9,7 +9,7 @@ import inspect
 import json
 from copy import deepcopy
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Protocol
 
@@ -601,6 +601,15 @@ def _intent_view(
 
 
 @dataclass(frozen=True)
+class ReviewerRecommendation:
+    """Validated model output captured before the Host applies its policy."""
+
+    outcome: str
+    reason_code: str = field(repr=False)
+    rationale: str = field(repr=False)
+
+
+@dataclass(frozen=True)
 class AutoReviewAssessment:
     """Parsed final reviewer assessment after schema and policy checks."""
 
@@ -612,6 +621,7 @@ class AutoReviewAssessment:
     manual_reason_code: str = ""
     manual_reason_summary: str = ""
     user_review_hint: str = ""
+    recommendation: ReviewerRecommendation | None = field(default=None, repr=False)
 
 
 class AutoReviewer:
@@ -705,20 +715,26 @@ class AutoReviewer:
         }:
             return self._manual("unknown_outcome")
 
+        incomplete_manual_fields = (
+            outcome == ReviewerOutcome.MANUAL
+            and OPTIONAL_REVIEWER_FIELDS.intersection(payload)
+            and not OPTIONAL_REVIEWER_FIELDS.issubset(payload)
+        )
+        recommendation = None
+        if not incomplete_manual_fields:
+            recommendation = ReviewerRecommendation(outcome, payload["reason_code"], payload["rationale"])
+
         if outcome != ReviewerOutcome.DENY and outcome not in request.allowed_outcomes:
             return self._manual_outcome_not_allowed(
                 request,
                 requested_outcome=outcome,
+                recommendation=recommendation,
             )
+        if incomplete_manual_fields:
+            return self._manual("missing_manual_field")
 
         reason_code = _sanitize_reason_code(payload["reason_code"])
         reason_summary = _sanitize_reason_summary(payload["rationale"])
-        if (
-            outcome == ReviewerOutcome.MANUAL
-            and OPTIONAL_REVIEWER_FIELDS.intersection(payload)
-            and not OPTIONAL_REVIEWER_FIELDS.issubset(payload)
-        ):
-            return self._manual("missing_manual_field")
         manual_reason_code = ""
         manual_reason_summary = ""
         user_review_hint = ""
@@ -741,6 +757,7 @@ class AutoReviewer:
             manual_reason_code=manual_reason_code,
             manual_reason_summary=manual_reason_summary,
             user_review_hint=user_review_hint,
+            recommendation=recommendation,
         )
 
     @staticmethod
@@ -763,6 +780,7 @@ class AutoReviewer:
         request: ReviewerActionView,
         *,
         requested_outcome: str,
+        recommendation: ReviewerRecommendation | None,
     ) -> AutoReviewAssessment:
         allowed = " or ".join(request.allowed_outcomes) or "none"
         no_auto_allow_reason = request.no_auto_allow_reason or "host_policy"
@@ -783,6 +801,7 @@ class AutoReviewer:
                 "Review the request manually because host policy does not allow "
                 "automatic approval for this candidate."
             ),
+            recommendation=recommendation,
         )
 
     @staticmethod

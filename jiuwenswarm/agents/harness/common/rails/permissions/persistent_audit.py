@@ -7,15 +7,23 @@ from __future__ import annotations
 import json
 import os
 import re
+import stat
+import sys
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_redaction import (
+    redact_reviewable_payload_text,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_decision_facts import (
     ToolDecisionFacts,
 )
+
+if TYPE_CHECKING:
+    from jiuwenswarm.agents.harness.common.rails.permissions.auto_reviewer import ReviewerRecommendation
 
 AUDIT_SCHEMA_VERSION = "auto_permission_audit_v1"
 AUDIT_SUBDIRECTORY = "permission_audit"
@@ -23,6 +31,7 @@ AUDIT_FILENAME = "auto_permission.jsonl"
 AUDIT_DIGEST_ALGORITHM = "sha256"
 DATA_DIR_ENV_NAME = "JIUWENSWARM_DATA_DIR"
 MAX_AUDIT_TEXT_LENGTH = 160
+MAX_MODEL_RATIONALE_LENGTH = 1024
 AUDIT_TEXT_REDACTED = "[redacted]"
 EXTRA_ALLOWLIST = frozenset(
     {
@@ -45,8 +54,8 @@ _SAFE_AUDIT_TEXT_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.: -]{0,159}$")
 _SAFE_NATURAL_LANGUAGE_AUDIT_TEXT_PATTERN = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9$_.: -]{0,159}$"
 )
-_POSIX_ABSOLUTE_PATH_PATTERN = re.compile(r"(?<!\w)/(?:[^\s'\"\\]+/?)+")
-_WINDOWS_ABSOLUTE_PATH_PATTERN = re.compile(r"\b[A-Za-z]:\\[^\s'\"]+")
+_POSIX_ABSOLUTE_PATH_PATTERN = re.compile(r"(?<![A-Za-z0-9_])/(?:[^\s'\"\\]+/?)+")
+_WINDOWS_ABSOLUTE_PATH_PATTERN = re.compile(r"(?<![A-Za-z0-9_])[A-Za-z]:[/\\][^\s'\"]+")
 _SECRET_LIKE_PATTERN = re.compile(
     r"(?i)(bearer\s+[A-Za-z0-9._~+/-]{8,}|"
     r"sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9_]{8,}|"
@@ -65,6 +74,14 @@ _CONTEXTUAL_PRICE_PATTERN = re.compile(
     r"(?i)\b(?:amount(?:s)?(?:\s+of)?|budget(?:ed)?|costs?|for|price(?:d)?"
     r"(?:\s+at)?|totals?|worth)\s+\$(?:0|[1-9]\d*)(?:\.\d{1,2})?\b"
 )
+
+
+@dataclass(frozen=True)
+class LocalAuditDetails:
+    """Host invocation identity and an optional model recommendation for local audit."""
+
+    invocation_id: str
+    recommendation: ReviewerRecommendation | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True)
@@ -104,6 +121,7 @@ class PersistentAuditWriter:
         grant_id: str = "",
         grant_reason: str = "",
         extra: Mapping[str, object] | None = None,
+        local_details: LocalAuditDetails | None = None,
     ) -> PersistentAuditWriteResult:
         """Append one sanitized audit record without changing permission outcome."""
         if self.data_root is None:
@@ -126,7 +144,9 @@ class PersistentAuditWriter:
                 extra=extra,
             )
             audit_path.parent.mkdir(parents=True, exist_ok=True)
-            with audit_path.open("a", encoding="utf-8") as file_obj:
+            with open(audit_path, "a", encoding="utf-8", opener=_open_audit_file) as file_obj:
+                if local_details is not None and _is_private_audit_file(file_obj.fileno()):
+                    _add_local_details(record, local_details)
                 file_obj.write(
                     json.dumps(
                         record,
@@ -175,6 +195,49 @@ class PersistentAuditWriter:
         record["schema_version"] = AUDIT_SCHEMA_VERSION
         record["timestamp"] = time.time()
         return record
+
+
+def _open_audit_file(path: str, flags: int) -> int:
+    return os.open(path, flags | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0), 0o600)
+
+
+def _is_private_audit_file(fd: int) -> bool:
+    # On Linux, the mode also bounds the effective POSIX ACL mask. Other
+    # platforms' access controls are not established by these checks.
+    if sys.platform != "linux":
+        return False
+    info = os.fstat(fd)
+    return (
+        stat.S_ISREG(info.st_mode)
+        and info.st_uid == os.geteuid()
+        and info.st_nlink == 1
+        and not info.st_mode & 0o077
+    )
+
+
+def _add_local_details(record: dict[str, Any], details: LocalAuditDetails) -> None:
+    invocation_id = _sanitize_audit_text(details.invocation_id)
+    if not invocation_id or invocation_id == AUDIT_TEXT_REDACTED:
+        return
+    record["invocation_id"] = invocation_id
+    recommendation = details.recommendation
+    if recommendation is not None and record.get("record_kind") == "permission_reviewer_assessment":
+        record["model_recommendation"] = {
+            "outcome": recommendation.outcome,
+            "reason_code": _sanitize_audit_text(_sanitize_model_rationale(recommendation.reason_code)),
+            "rationale": _sanitize_model_rationale(recommendation.rationale),
+        }
+
+
+def _sanitize_model_rationale(value: str) -> str:
+    # Redact the complete value before truncating. Do not accept residual
+    # sensitive patterns or invisible control characters as audit prose.
+    text = redact_reviewable_payload_text(value, max_length=sys.maxsize)
+    if not text.isprintable() or _audit_text_contains_sensitive_content(text):
+        return AUDIT_TEXT_REDACTED
+    if len(text) > MAX_MODEL_RATIONALE_LENGTH:
+        return text[: MAX_MODEL_RATIONALE_LENGTH - 3] + "..."
+    return text
 
 
 def resolve_persistent_audit_root(config: Mapping[str, Any] | None) -> Path | None:
