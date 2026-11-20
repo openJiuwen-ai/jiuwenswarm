@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from contextlib import nullcontext
 
 import pytest
 
@@ -40,12 +41,12 @@ def test_update_permission_rail_publishes_global_policy_before_engine_update(
         compose,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers.load_user_permissions",
-        lambda: {},
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers.permission_storage_lock",
+        lambda _session_id: nullcontext(),
     )
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers.load_session_permissions",
-        lambda _session_id: {},
+        "jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers.read_permission_layers_locked",
+        lambda _session_id, *, global_permissions: (global_permissions, {}, {}),
     )
 
     adapter._update_permission_rail({
