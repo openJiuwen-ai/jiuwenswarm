@@ -6,6 +6,10 @@ export class HistoryRefreshQueue {
     this.pending.add(sessionId);
   }
 
+  has(sessionId: string): boolean {
+    return this.pending.has(sessionId);
+  }
+
   take(sessionId: string, busy: boolean): boolean {
     if (busy || !this.pending.has(sessionId)) return false;
     this.pending.delete(sessionId);

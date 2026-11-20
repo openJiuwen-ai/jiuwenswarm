@@ -2723,7 +2723,12 @@ function AppContent({
     if (!isConnected || !sessionId) return;
     let refreshTimer: number | undefined;
     const unsubscribe = webClient.on('chat.processing_status', ({ payload }) => {
-      if (payload.session_id !== sessionId || payload.is_processing !== false || payload.is_complete !== true) return;
+      if (
+        payload.session_id !== sessionId ||
+        payload.is_processing !== false ||
+        typeof payload.runtime_recovery_revision === 'number' ||
+        !historyRefreshQueueRef.current.has(sessionId)
+      ) return;
       const turnRevision = useChatStore.getState().getRuntime(sessionId)?.turnRevision;
       window.clearTimeout(refreshTimer);
       refreshTimer = window.setTimeout(() => {
