@@ -165,7 +165,7 @@ def test_url_fragments_cannot_bypass_the_official_sha_gate(tmp_path, repository,
         validate_release_dependencies(tmp_path)
 
 
-@pytest.mark.parametrize("name", ["agent-gateway", "agent_gateway"])
+@pytest.mark.parametrize("name", ["openjiuwen-agent-gateway", "openjiuwen_agent_gateway"])
 def test_release_rejects_candidate_gateway_even_with_an_official_sdk(tmp_path, name):
     _project(tmp_path)
     config = tmp_path / "pyproject.toml"
@@ -176,7 +176,7 @@ def test_release_rejects_candidate_gateway_even_with_an_official_sdk(tmp_path, n
         ),
         encoding="utf-8",
     )
-    with pytest.raises(ValueError, match="must pin agent-gateway"):
+    with pytest.raises(ValueError, match="must pin openjiuwen-agent-gateway"):
         validate_release_dependencies(tmp_path)
 
 
@@ -188,16 +188,16 @@ def test_release_normalizes_gateway_names_in_sources_and_lock(tmp_path, location
         config = tmp_path / "pyproject.toml"
         config.write_text(
             config.read_text(encoding="utf-8")
-            + f'[tool.uv.sources]\nagent_gateway = {{ git = "{repository}", rev = "{REVISION}" }}\n',
+            + f'[tool.uv.sources]\nopenjiuwen_agent_gateway = {{ git = "{repository}", rev = "{REVISION}" }}\n',
             encoding="utf-8",
         )
     else:
         (tmp_path / "uv.lock").write_text(
-            '[[package]]\nname = "agent_gateway"\n'
+            '[[package]]\nname = "openjiuwen_agent_gateway"\n'
             f'source = {{ git = "{repository}?rev={REVISION}#{REVISION}" }}\n',
             encoding="utf-8",
         )
-    with pytest.raises(ValueError, match="must pin agent-gateway"):
+    with pytest.raises(ValueError, match="must pin openjiuwen-agent-gateway"):
         validate_release_dependencies(tmp_path)
 
 
