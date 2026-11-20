@@ -9,14 +9,35 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
+import os
+import sys
+import types
+from pathlib import Path
 
 import pytest
 
-from flash_offline_stub import install_offline_import_stubs
+# ── 本地开发 import 桩（CI 有 agent_shield 时自动跳过）──────────────────────
+# 数据面测试不应被 flash 包 ``__init__`` 的 rails 导入链拖累；缺 agent_shield 时
+# 给 flash 包打空命名空间，避开 ``flash/__init__.py`` 对 rails 的 eager import。
+if importlib.util.find_spec("agent_shield") is None:
+    if "openjiuwen.harness.rails.base" not in sys.modules:
+        _rails_base = types.ModuleType("openjiuwen.harness.rails.base")
+        _rails_base.DeepAgentRail = type("DeepAgentRail", (), {})
+        sys.modules["openjiuwen.harness.rails.base"] = _rails_base
 
-# 必须在 import 任何 flash 子模块之前执行：flash 包 ``__init__`` 会 eager import
-# rails，缺 agent_shield 时直接拉起 openjiuwen.harness.security 而断链。
-install_offline_import_stubs()
+    _flash_dir = str(
+        Path(__file__).resolve().parents[3]
+        / "jiuwenswarm" / "agents" / "harness" / "flash"
+    )
+    for _name, _path in (
+        ("jiuwenswarm.agents.harness.flash", [_flash_dir]),
+        ("jiuwenswarm.agents.harness.flash.rails", [os.path.join(_flash_dir, "rails")]),
+    ):
+        if _name not in sys.modules:
+            _pkg = types.ModuleType(_name)
+            _pkg.__path__ = _path
+            sys.modules[_name] = _pkg
 
 from jiuwenswarm.agents.harness.flash.prompt.content.relay import (  # noqa: E402
     _ANCHOR_MEMORY_CORRECTION,
