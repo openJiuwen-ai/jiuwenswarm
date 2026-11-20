@@ -10,6 +10,9 @@ SHELL := /bin/bash
 PY := uv run python
 UV := uv
 
+# Forward stop options, e.g. make restart-debug STOP_ARGS="--legacy-worker-pid 12345".
+STOP_ARGS ?=
+
 # Color output when stdout is a tty.
 ifneq (, $(shell test -t 1 && echo 1))
 	C_RESET := \033[0m
@@ -112,17 +115,17 @@ start-debug-rebuild: ## Start services in debug mode, rebuilding the frontend fi
 
 restart-debug: ## Stop the debug service, then start it again with a frontend rebuild
 	@printf "$(C_INFO)Restarting debug service (stop + full build)...$(C_RESET)\n"
-	$(UV) run jiuwenswarm-stop
+	$(UV) run jiuwenswarm-stop $(STOP_ARGS)
 	$(UV) run jiuwenswarm-start debug
 
 restart-debug-fast: ## Stop the debug service, then start it again reusing the existing frontend build
 	@printf "$(C_INFO)Restarting debug service (stop + skip build)...$(C_RESET)\n"
-	$(UV) run jiuwenswarm-stop
+	$(UV) run jiuwenswarm-stop $(STOP_ARGS)
 	$(UV) run jiuwenswarm-start debug --skip-build
 
 stop: ## Stop the background debug service started by start-debug
 	@printf "$(C_INFO)Stopping debug service...$(C_RESET)\n"
-	$(UV) run jiuwenswarm-stop
+	$(UV) run jiuwenswarm-stop $(STOP_ARGS)
 
 # ----------------------------------------------------------------------
 # Testing — wraps the run_tests.sh helper for richer flags
