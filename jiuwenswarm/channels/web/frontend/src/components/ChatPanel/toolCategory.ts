@@ -93,6 +93,16 @@ register(['send_file_to_user'], {
   actionKey: 'chatUi.toolAction.sendFile',
   iconKey: 'wrench',
 });
+register(['diff_files'], {
+  category: 'file',
+  actionKey: 'chatUi.toolAction.read',
+  iconKey: 'read',
+});
+register(['generate_chart'], {
+  category: 'file',
+  actionKey: 'chatUi.toolAction.write',
+  iconKey: 'write',
+});
 
 // 搜索类：搜索内容（grep/记忆检索）
 register(['grep', 'memory_search'], {

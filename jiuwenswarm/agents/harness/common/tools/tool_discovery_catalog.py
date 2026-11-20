@@ -68,6 +68,14 @@ BUILTIN_TOOL_DISCOVERY: dict[str, ToolDiscoveryMetadata] = {
     "check_video_status": _entry("Check a video generation task and download its result.", "查询 视频生成 进度 下载结果"),
     "lsp": _entry("Use a language server for definitions, references, and diagnostics.", "代码定义 查找引用 代码诊断 LSP"),
     "switch_mode": _entry("Switch the current session between normal and plan modes.", "切换模式 计划模式 普通模式"),
+    "diff_files": _entry(
+        "Compute unified diff with line numbers between two files or text blocks.",
+        "文件对比 文本对比 差异比较 代码差异 diff 补丁",
+    ),
+    "generate_chart": _entry(
+        "Generate vector SVG charts (bar, line, pie, donut, metric card) from data.",
+        "生成图表 数据可视化 柱状图 折线图 饼图 环形图 指标看板 svg",
+    ),
     "cron": _entry("Manage standalone scheduled tasks and reminders.", "定时任务 提醒 闹钟 周期通知"),
     "cron_create_job": _entry(
         "Create a standalone scheduled task, one-time reminder, daily notification, or periodic notification.",

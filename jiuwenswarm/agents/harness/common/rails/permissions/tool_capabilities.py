@@ -139,6 +139,7 @@ _MEMORY_WRITE_TOOLS = {
     "coding_memory_write",
     "coding_memory_edit",
 }
+_PATH_TOOLS.update({"diff_files", "generate_chart"})
 _LOCAL_MEMORY_READ_TOOLS = {
     "memory_get",
     "memory_search",
@@ -610,6 +611,7 @@ def _is_path_write_tool(tool_name: str) -> bool:
         "write_text_file",
         "write",
         "search_replace",
+        "generate_chart",
     }
 
 

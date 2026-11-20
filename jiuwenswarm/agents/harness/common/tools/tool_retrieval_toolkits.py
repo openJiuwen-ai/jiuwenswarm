@@ -120,6 +120,24 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
         description_en="Extract text from images with OCR and answer questions about images.",
     ),
     ToolCategory(
+        path="file-diff",
+        description="对比两个工作区文件或两段文本的差异，输出带行号和统计的统一补丁。",
+        tools=("diff_files",),
+        description_en=(
+            "Compare two workspace files or text blocks and output a numbered "
+            "unified diff with change statistics."
+        ),
+    ),
+    ToolCategory(
+        path="visualization",
+        description="生成矢量 SVG 格式的数据可视化图表（柱状图、折线图、饼图、指标卡等）。",
+        tools=("generate_chart",),
+        description_en=(
+            "Generate vector SVG data visualization charts (bar, line, pie, "
+            "donut, metric cards)."
+        ),
+    ),
+    ToolCategory(
         path="audio-processing",
         description="使用音频模型处理音频：语音转写、音频问答与元数据提取。",
         tools=(
