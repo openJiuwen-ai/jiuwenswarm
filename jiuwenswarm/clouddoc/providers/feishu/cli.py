@@ -216,6 +216,24 @@ def _store_lock(store: tuple[str, str]) -> asyncio.Lock:
     return locks.setdefault(store, asyncio.Lock())
 
 
+def _process_group_members(pgid: int) -> list[psutil.Process]:
+    """Processes still in ``pgid``, including after the session leader has exited."""
+    members: list[psutil.Process] = []
+    try:
+        for p in psutil.process_iter(["pid"]):
+            pid = p.info["pid"]
+            if pid is None or pid == pgid:
+                continue
+            try:
+                if os.getpgid(pid) == pgid:
+                    members.append(psutil.Process(pid))
+            except (psutil.Error, ProcessLookupError, PermissionError, OSError):
+                continue
+    except psutil.Error:
+        pass
+    return members
+
+
 async def _stop_tree(proc: asyncio.subprocess.Process) -> None:
     """Stop a command and everything it started.
 
@@ -223,22 +241,29 @@ async def _stop_tree(proc: asyncio.subprocess.Process) -> None:
     as a child, so killing the launcher alone leaves the binary running. JiuwenMate's
     CLI runtime stops its commands the same way.
     """
+    launcher_pid = proc.pid
     children: list[psutil.Process] = []
-    if proc.returncode is None:
-        try:
-            children = psutil.Process(proc.pid).children(recursive=True)
-        except psutil.Error:
-            pass
-    if os.name != "nt":
+    # Prefer the live parent's child list; if the launcher already exited, fall back
+    # to anyone still sitting in its process group (same id as the launcher pid when
+    # start_new_session made it a session leader).
+    try:
+        children = psutil.Process(launcher_pid).children(recursive=True)
+    except psutil.Error:
+        if os.name != "nt" and launcher_pid:
+            children = _process_group_members(launcher_pid)
+    if os.name != "nt" and launcher_pid:
         # Killed whether or not the launcher is still alive: a launcher that exited
         # after starting a child leaves that child in the group, holding the output
         # pipes the timeout fired on. The group is this command's own (a new session
         # at start, so its id is the launcher's pid), and a group that still has a
         # member keeps that id from being reused; an empty one raises and is skipped.
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
+            os.killpg(launcher_pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
             pass
+        # killpg can race with a just-exited leader; sweep survivors by pgid too.
+        if not children:
+            children = _process_group_members(launcher_pid)
     for child in reversed(children):
         try:
             child.kill()
@@ -349,8 +374,11 @@ class LarkCli:
                     "transport", f"{self._binary} 超时（{limit:.0f}s）"
                 ) from exc
             except asyncio.CancelledError:
-                # A cancelled turn or watcher tick stops its command too.
-                await _stop_tree(proc)
+                # A cancelled turn or watcher tick stops its command too. Shield so
+                # the tree is actually killed before CancelledError propagates --
+                # otherwise a child can outlive the await and the next call shares
+                # its token cache with a zombie.
+                await asyncio.shield(_stop_tree(proc))
                 raise
         return LarkResult(
             stdout=(out or b"").decode("utf-8", errors="replace"),

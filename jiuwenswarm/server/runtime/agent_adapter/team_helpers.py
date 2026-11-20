@@ -4333,10 +4333,14 @@ async def _process_team_message_stream(
         # AgentServer 的 config.yaml 只有 ${MODEL_PROVIDER} 占位；不套用模板时
         # 集群会把空 provider 交给 ModelClientConfig，报 181000。
         from jiuwenswarm.enterprise.config.config_provider import resolve_agent_config
+        from jiuwenswarm.server.runtime.a2ui.config import refresh_a2ui_config_source
 
         team_runtime_config = (
             await resolve_agent_config(get_config(), request=request)
         ).config
+        # Leader/Teammate 共享这份快照里的 a2ui；刷新 A2UI 请求级读源，
+        # 让 rail/finalizer/client_event 读到与 resolve_agent_config 一致的开关。
+        refresh_a2ui_config_source(team_runtime_config)
         swarmflow_config = _resolve_session_swarmflow_config(
             params_obj if isinstance(params_obj, dict) else None,
             team_runtime_config,

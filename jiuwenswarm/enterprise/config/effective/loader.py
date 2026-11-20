@@ -500,6 +500,11 @@ async def load_effective_enterprise_config(
         )
         result.advanced_config = None
 
+    result.a2ui_config = await _fetch_a2ui_config_safe(
+        ref_template_id,
+        resource_id=rid,
+    )
+
     if not _any_requested_slot_loaded(result, load_slots):
         logger.warning(
             "[enterprise_config] no template entities loaded for resource_id=%r "
@@ -513,7 +518,7 @@ async def load_effective_enterprise_config(
 
     logger.info(
         "[enterprise_config] loaded enterprise config by resource_id=%r slots=%s "
-        "a4p_enabled=%s",
+        "a4p_enabled=%s a2ui_enabled=%s",
         rid,
         sorted(load_slots),
         (
@@ -521,8 +526,32 @@ async def load_effective_enterprise_config(
             if isinstance(result.advanced_config, dict)
             else None
         ),
+        (
+            result.a2ui_config.get("enabled")
+            if isinstance(result.a2ui_config, dict)
+            else None
+        ),
     )
     return result
+
+
+async def _fetch_a2ui_config_safe(
+    agent_template_id: str,
+    *,
+    resource_id: str,
+) -> dict[str, Any] | None:
+    """读取 a2ui_config；查询失败返回 None（后续 apply fail closed）。"""
+    try:
+        return await db_queries.fetch_a2ui_config(agent_template_id)
+    except Exception:
+        logger.warning(
+            "[enterprise_config] a2ui_config load failed: resource_id=%r "
+            "agent_template_id=%r",
+            resource_id,
+            agent_template_id,
+            exc_info=True,
+        )
+        return None
 
 
 __all__ = (

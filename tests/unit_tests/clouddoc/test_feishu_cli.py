@@ -206,6 +206,38 @@ async def _child_of_a_hung_command(tmp_path, stop, *, launcher_waits=True):
         "the stand-in never started its child; the check below would prove nothing"
     )
     child = int(pidfile.read_text())
+    import psutil
+
+    if not launcher_waits:
+        # The interesting path is "launcher already gone, child still holding the
+        # pipes". Wait until the stand-in shell exits (child reparented to init /
+        # a subreaper) so the stop must find the orphan via the process group.
+        try:
+            launcher = psutil.Process(child).ppid()
+        except psutil.NoSuchProcess:
+            return False
+        # ppid 1 (or already reparented) means the shell is gone; only wait when
+        # the child still names a real launcher pid.
+        if launcher > 1:
+            for _ in range(250):
+                try:
+                    if (
+                        not psutil.pid_exists(launcher)
+                        or psutil.Process(child).ppid() != launcher
+                    ):
+                        break
+                except (psutil.Error, ProcessLookupError):
+                    break
+                if task.done():
+                    break
+                await asyncio.sleep(0.02)
+            try:
+                assert (
+                    not psutil.pid_exists(launcher)
+                    or psutil.Process(child).ppid() != launcher
+                ), "launcher never exited; the outliving-child path was not exercised"
+            except psutil.NoSuchProcess:
+                return False
     if stop.get("cancel"):
         task.cancel()
     # Each stop has its own outcome, and the two must not be confused: a timeout
@@ -218,11 +250,10 @@ async def _child_of_a_hung_command(tmp_path, stop, *, launcher_waits=True):
         with pytest.raises(ProviderError) as caught:
             await task
         assert caught.value.kind == "transport"
-    import psutil
 
     # A killed child can linger briefly as a zombie until its new parent reaps it;
-    # that is not running.
-    for _ in range(50):
+    # that is not running. CI hosts can be slow to reap; give them a few seconds.
+    for _ in range(150):
         try:
             if psutil.Process(child).status() == psutil.STATUS_ZOMBIE:
                 return False
