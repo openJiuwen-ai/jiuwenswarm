@@ -158,14 +158,6 @@ _INTERNAL_MESSAGE = (
     "模型调用失败，请检查 API 地址、API Key 与模型名称是否正确"
 )
 
-# Patterns for credentials that some SDKs echo inside transport errors.  These
-# are stripped from any raw cause excerpt shown to the user (FR-003).
-_SECRET_PATTERNS = (
-    re.compile(r"sk-[A-Za-z0-9_-]{8,}"),
-    re.compile(r"Bearer\s+[A-Za-z0-9._~-]{6,}", re.IGNORECASE),
-    re.compile(r"(api[_-]?key\s*[=:]\s*)[^\s,;}\"']+", re.IGNORECASE),
-)
-
 # Internal transport wrappers prepend a numeric code and a generic phrase before
 # the real provider cause (e.g. "[181001] model call failed: ..." or
 # "[181001] internal wrapper: ..."). The code and phrase carry no actionable
@@ -178,10 +170,31 @@ _INTERNAL_WRAPPER_PREFIX = re.compile(
 
 
 def _redact_secrets(text: str) -> str:
-    """Replace credentials echoed by SDKs inside error text with ``***``."""
-    for pattern in _SECRET_PATTERNS:
-        text = pattern.sub("***", text)
-    return text
+    """Mask credentials echoed by SDKs inside error text.
+
+    Delegate to the repo's single stable desensitization entry point
+    (``jiuwenswarm.common.utils.mask_sensitive``) instead of maintaining a
+    second, narrower set of patterns here.  That helper already covers sk-/JWT/
+    ghp_ tokens, Bearer values, dict-repr and CLI-flag forms, and 15+ sensitive
+    key names (including prefixed variants such as ``OPENAI_API_KEY``), so any
+    credential that reaches the user-facing excerpt is masked consistently.
+    Import is deferred to keep this lightweight error-formatting module from
+    pulling in the heavier logging/utility dependency graph at import time.
+    """
+    from jiuwenswarm.common.utils import mask_sensitive
+
+    return mask_sensitive(text)
+
+
+def _strip_internal_wrapper(text: str) -> str:
+    """Drop a leading ``[181001] model call failed:``-style wrapper if present.
+
+    Shared by both the long-error excerpt path and the short-error path so a
+    short unknown error never exposes the internal numeric code / generic
+    phrase to the user.  If stripping would leave nothing, keep the original.
+    """
+    stripped = _INTERNAL_WRAPPER_PREFIX.sub("", text, count=1)
+    return stripped if stripped.strip() else text
 
 
 def _error_cause_excerpt(error: Any, limit: int = _MAX_RAW_ERROR_CHARS) -> str:
@@ -195,12 +208,7 @@ def _error_cause_excerpt(error: Any, limit: int = _MAX_RAW_ERROR_CHARS) -> str:
     if not raw:
         return ""
     flat = " ".join(raw.split())
-    # Drop the leading internal wrapper (numeric code + generic phrase) so the
-    # excerpt starts at the real cause, not at noise like "[181001] model call
-    # failed:". If stripping would leave nothing, fall back to the full text.
-    stripped = _INTERNAL_WRAPPER_PREFIX.sub("", flat, count=1)
-    if stripped.strip():
-        flat = stripped
+    flat = _strip_internal_wrapper(flat)
     flat = _redact_secrets(flat)
     if len(flat) > limit:
         flat = flat[:limit].rstrip() + "..."
@@ -317,9 +325,10 @@ def user_facing_model_error(
     if len(raw) > _MAX_RAW_ERROR_CHARS or "\n" in raw:
         excerpt = _error_cause_excerpt(raw)
         return f"{_INTERNAL_MESSAGE}：{excerpt}" if excerpt else _INTERNAL_MESSAGE
-    # Short errors keep their original wording, but credentials echoed by some
-    # SDKs must still be redacted before the text is shown to the user.
-    return _redact_secrets(raw)
+    # Short errors keep their original wording, but any leading internal
+    # wrapper must be stripped and credentials echoed by some SDKs redacted
+    # before the text is shown to the user (consistent with the long path).
+    return _redact_secrets(_strip_internal_wrapper(raw))
 
 
 def is_non_retryable_model_error(error: Any) -> bool:
