@@ -52,12 +52,12 @@ def resolve_subagent_registration_plan(
     if not supported or extension_bus is None:
         return SubagentRegistrationPlan("legacy", configured, [])
 
-    event_subagents = [
-        item
-        for item in configured
-        if isinstance(item, SubAgentConfig)
-        and item.agent_card.name in event_names
-    ]
+    event_subagents = []
+    for item in configured:
+        if not isinstance(item, SubAgentConfig):
+            continue
+        if item.agent_card.name in event_names:
+            event_subagents.append(item)
     # Keep event mode selected even when this startup has no event-managed
     # defaults.  A later turn must still use the same event-capable adapter
     # for ``ops.agent.register`` instead of silently reverting to legacy mode.
