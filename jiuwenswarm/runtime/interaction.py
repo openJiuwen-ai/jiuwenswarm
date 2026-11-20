@@ -88,20 +88,27 @@ ANSWER_SOURCE_WHITELIST = frozenset(INTERRUPT_RESUME_SOURCES) | frozenset(
 
 
 def validate_answer_source(params: object) -> None:
-    """Reject answers carried under a source no transport defines (#6285).
+    """Reject answers carried under a source no transport defines (#6285, #6857).
 
-    A ``chat.send`` with ``request_id`` + ``answers`` but a typo'd/unknown
-    ``source`` is not an interrupt resume: it is classified as a plain turn
-    and queues behind the interaction still waiting for that answer,
-    deadlocking the session without a terminal frame. Rejecting here —
-    before lane admission — guarantees the client an error response.
+    A ``chat.send`` carrying ``answers`` but a typo'd/unknown ``source`` is not
+    an interrupt resume: it is classified as a plain turn and queues behind the
+    interaction still waiting for that answer, deadlocking the session without
+    a terminal frame. Rejecting here — before lane admission — guarantees the
+    client an error response.
+
+    The answered question's ``request_id`` is not required for this check: a
+    payload whose ``answers`` is a mapping rather than the answer list (#6857)
+    can never be a resume either, and without the rejection it is admitted as a
+    plain turn and hangs the same way.
     """
     if not isinstance(params, Mapping):
         return
-    if not str(params.get("request_id") or "").strip():
-        return
     answers = params.get("answers")
-    if isinstance(answers, (str, bytes)) or not isinstance(answers, Sequence) or not answers:
+    if (
+        isinstance(answers, (str, bytes))
+        or not isinstance(answers, (Mapping, Sequence))
+        or not answers
+    ):
         return
     source = str(params.get("source") or "").strip()
     if not source:
