@@ -236,6 +236,13 @@ test('toggling off keeps the agent choice and toggling on resolves an empty choi
   // Empty choices go through PATH resolution before the built-in fallback.
   assert.match(sectionSource, /if \(useBuiltin \|\| !requestedPath\.trim\(\)\) \{/);
   assert.match(sectionSource, /await resolveEnabledChoice\(cliAgent, useBuiltin, requestedPath\)/);
+  // Selecting the managed built-in path switches back to built-in mode
+  // (use_builtin=true, no custom path) instead of pinning the installer-
+  // managed path as a custom cli_path, and mirrors the post-commit echo
+  // bookkeeping so the config echo never flashes "not installed" (!10307).
+  assert.match(sectionSource, /next === builtinPaths\[cliAgent\]/);
+  assert.match(sectionSource, /toggleAgentEnabled\(cliAgent, true, true, ''\)/);
+  assert.match(sectionSource, /observedCliPathsRef\.current\[cliAgent\] = ''/);
 });
 
 test('re-detecting keeps the card layout stable instead of unmounting the path block', () => {
