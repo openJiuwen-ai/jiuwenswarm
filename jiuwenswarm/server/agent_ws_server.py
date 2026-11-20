@@ -280,6 +280,8 @@ def _fit_sessions_page_bytes(
         sessions = sessions[:max(1, keep)]
         size = _size(sessions)
     return sessions
+
+
 # session.delete 前先等在途的会话预热（warm pool 前台 prepare）落地：create 回包时
 # 适配器注册与 prepare 仍在后台续跑，delete 抢在该尾巴之前会 cancel 空转、cleanup
 # 撞上"刚注册"的运行态而误判 DELETE_FAILED。超时后照常拆，仍失败则诚实报错。
@@ -3966,7 +3968,7 @@ class AgentWebSocketServer:
         try:
             sessions, total = get_all_sessions_metadata(limit=limit, offset=offset)
         except Exception as exc:
-            logger.warning("[AgentWebSocketServer] 鑾峰彇浼氳瘽鍒楀崟澶辫触: %s", exc)
+            logger.warning("[AgentWebSocketServer] 获取会话列表失败: %s", exc)
             sessions, total = [], 0
 
         # 字节预算收缩：页序列化超预算时截断行数、保真 total，客户端按 total 续翻
