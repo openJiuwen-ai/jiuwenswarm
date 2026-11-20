@@ -1610,3 +1610,189 @@ def get_conversation_history_cursor(
         result["subagent_id"] = normalized_subagent_id
     return result
 
+# ---------------------------------------------------------------------------
+# Session default equipment (web): global default MCP set for fresh sessions
+# ---------------------------------------------------------------------------
+
+# Default equipment size cap: keeps tool schemas from flooding fresh
+# session context with too many default MCPs.
+_EQUIPMENT_DEFAULTS_MAX = 10
+
+
+class EquipmentDefaultsError(ValueError):
+    """Validation failure carrying a stable machine-readable code."""
+
+    def __init__(self, message: str, *, code: str = "BAD_REQUEST") -> None:
+        super().__init__(message)
+        self.code = code
+
+
+async def read_session_equipment_defaults_payload() -> dict[str, Any]:
+    """Assemble the effective default-equipment view (shared WS/HTTP core).
+
+    Consumed by ``handle_session_equipment_defaults_get`` (dispatch.py HTTP
+    route) and by ``JiuWenSwarm._handle_session_equipment_defaults_request``
+    (WS chat wire, see ``agent_adapter/interface.py``). Returns the merged
+    effective list (yaml preset ∪ live state.json ``is_default`` flags), the
+    runtime-flagged set, and the flagged-but-not-live subset (``unavailable``)
+    so the settings UI can warn about dropped connections. ``inherit=False``
+    means the feature is disabled by config.
+    """
+    from jiuwenswarm.common.config import (
+        get_default_equipment_mcp_names,
+        get_session_equipment_config,
+    )
+    from jiuwenswarm.server.runtime.mcp.state_store import (
+        list_default_flagged_mcps,
+        list_default_mcps,
+    )
+
+    cfg = await asyncio.to_thread(get_session_equipment_config)
+    effective = await asyncio.to_thread(get_default_equipment_mcp_names)
+    flagged = await asyncio.to_thread(list_default_flagged_mcps)
+    live = set(await asyncio.to_thread(list_default_mcps))
+    unavailable = sorted(name for name in flagged if name not in live)
+    return {
+        "type": "session_equipment_defaults",
+        "mcp": effective,
+        "preset": cfg["mcp"],
+        "runtime": flagged,
+        "unavailable": unavailable,
+        "inherit": cfg["inherit"],
+        "max": _EQUIPMENT_DEFAULTS_MAX,
+    }
+
+
+async def apply_session_equipment_defaults_payload(params: dict) -> dict[str, Any]:
+    """Validate and atomically replace the runtime default set (WS/HTTP core).
+
+    ``params.mcp`` is the full desired default list (state.json ``is_default``
+    flags are replaced atomically). Every name must have a live
+    (connected/connecting) state.json record — a default entry for a
+    disconnected MCP would silently no-op at restore time, so reject it here
+    where the user can see the error. The config.yaml preset layer is not
+    touched (operator-managed).
+    """
+    raw = params.get("mcp")
+    if not isinstance(raw, list):
+        raise EquipmentDefaultsError("mcp (list of names) is required")
+    names: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            raise EquipmentDefaultsError("mcp entries must be strings")
+        name = item.strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        names.append(name)
+    if len(names) > _EQUIPMENT_DEFAULTS_MAX:
+        raise EquipmentDefaultsError(
+            f"too many default mcps: {len(names)} > {_EQUIPMENT_DEFAULTS_MAX}"
+        )
+
+    from jiuwenswarm.server.runtime.mcp.state_store import (
+        get_mcp_record,
+        replace_default_mcps,
+    )
+
+    invalid: list[str] = []
+    for name in names:
+        rec = await asyncio.to_thread(get_mcp_record, name)
+        if not isinstance(rec, dict):
+            invalid.append(f"{name} (not installed)")
+            continue
+        if rec.get("state") not in ("connected", "connecting"):
+            invalid.append(f"{name} (state={rec.get('state')})")
+    if invalid:
+        raise EquipmentDefaultsError(
+            "default mcps must be connected first: " + ", ".join(invalid)
+        )
+
+    await asyncio.to_thread(replace_default_mcps, names)
+
+    from jiuwenswarm.common.config import get_default_equipment_mcp_names
+
+    effective = await asyncio.to_thread(get_default_equipment_mcp_names)
+    return {
+        "type": "session_equipment_defaults",
+        "mcp": effective,
+        "runtime": sorted(names),
+    }
+
+
+async def handle_session_equipment_defaults_get(ctx: RequestContext) -> None:
+    """Handle ``session_equipment.defaults.get`` (dispatch.py HTTP route).
+
+    Thin wrapper: the shared core lives in ``read_session_equipment_defaults_payload``.
+    """
+    request = ctx.request
+    try:
+        payload = await read_session_equipment_defaults_payload()
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload=payload,
+            metadata=request.metadata,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "[AgentWebSocketServer] session_equipment.defaults.get failed: %s", exc,
+        )
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=False,
+            payload={"error": str(exc), "code": "INTERNAL"},
+            metadata=request.metadata,
+        )
+    await ctx.sink.send_response(resp)
+
+
+async def handle_session_equipment_defaults_set(ctx: RequestContext) -> None:
+    """Handle ``session_equipment.defaults.set`` (dispatch.py HTTP route).
+
+    Thin wrapper over ``apply_session_equipment_defaults_payload``: PUT
+    semantics, connection validation, preset layer untouched. Error codes
+    match the shared core (KeyError → MCP_NOT_FOUND, ValueError → BAD_REQUEST).
+    """
+    request = ctx.request
+    params = request.params if isinstance(request.params, dict) else {}
+    try:
+        payload = await apply_session_equipment_defaults_payload(params)
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload=payload,
+            metadata=request.metadata,
+        )
+    except KeyError as exc:
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=False,
+            payload={"error": str(exc), "code": "MCP_NOT_FOUND"},
+            metadata=request.metadata,
+        )
+    except ValueError as exc:
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=False,
+            payload={"error": str(exc), "code": "BAD_REQUEST"},
+            metadata=request.metadata,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "[AgentWebSocketServer] session_equipment.defaults.set failed: %s", exc,
+        )
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=False,
+            payload={"error": str(exc), "code": "INTERNAL"},
+            metadata=request.metadata,
+        )
+    await ctx.sink.send_response(resp)

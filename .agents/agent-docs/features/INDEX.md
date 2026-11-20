@@ -1,7 +1,7 @@
 ---
 title: 实施与决策 F索引
-author: xinyang_bali
-author_email: 835397263@qq.com
+author: StoneChan_
+author_email: chensitong2@huawei.com
 generated: true
 ---
 
@@ -16,13 +16,14 @@ generated: true
 | 模块 |
 |---|
 | [gateway/channel_manager/web](#module-1) |
-| [jiuwenswarm/agents/harness](#module-2) |
-| [jiuwenswarm/agents/harness/common/rails](#module-3) |
-| [jiuwenswarm/agents/harness/common/tools](#module-4) |
-| [jiuwenswarm/channels/web/frontend](#module-5) |
-| [jiuwenswarm/extensions/sdk](#module-6) |
-| [jiuwenswarm/resources/plugins/ttse](#module-7) |
-| [jiuwenswarm/server/runtime/agent_adapter](#module-8) |
+| [jiuwenswarm](#module-2) |
+| [jiuwenswarm/agents/harness](#module-3) |
+| [jiuwenswarm/agents/harness/common/rails](#module-4) |
+| [jiuwenswarm/agents/harness/common/tools](#module-5) |
+| [jiuwenswarm/channels/web/frontend](#module-6) |
+| [jiuwenswarm/extensions/sdk](#module-7) |
+| [jiuwenswarm/resources/plugins/ttse](#module-8) |
+| [jiuwenswarm/server/runtime/agent_adapter](#module-9) |
 
 <a id="module-1"></a>
 
@@ -34,13 +35,22 @@ generated: true
 
 <a id="module-2"></a>
 
+## jiuwenswarm
+
+| ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
+|---|---|---|---|---|---|---|
+| [F_20261030_2018_teammate-swarmflow-adaptation](F_20261030_2018_teammate-swarmflow-adaptation.md) | F | 集群模式teammate支持swarmflow工具（jiuwenswarm 侧适配） | @xiajing | jiuwenswarm | jiuwenswarm/agents/harness/team/handlers/workflow_state.py, jiuwenswarm/server/runtime/agent_adapter/team_helpers.py | 无独立 D：本仓侧为 teammate 接入 swarmflow 的适配与硬化，无独立设计文档。 |
+| [F_20261120_1534_session-default-equipment](F_20261120_1534_session-default-equipment.md) | F | 全局默认装备（SDD-0030）：新会话自动挂载默认 MCP | @StoneChan_ | jiuwenswarm | jiuwenswarm/server/runtime/mcp/state_store.py, jiuwenswarm/common/config.py, jiuwenswarm/common/schema/message.py, jiuwenswarm/server/dispatch.py, jiuwenswarm/server/handlers/session.py, jiuwenswarm/server/runtime/agent_adapter/interface.py, jiuwenswarm/channels/web/frontend/src/services/equipmentDefaultsApi.ts, jiuwenswarm/channels/web/frontend/src/stores/sessionStore.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/ExtensionPickerPanel.tsx, jiuwenswarm/channels/web/frontend/src/components/ConnectorMarket/McpDetailPage.tsx, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, tests/unit_tests/agentserver/mcp/test_mcp_state_store.py, tests/unit_tests/server/extensions/test_session_equipment_defaults.py, docs/zh/MCP配置.md, docs/en/MCPConfiguration.md | [SDD-0030](../designs/proposals/SDD-0030-session-default-equipment/design.md) |
+
+<a id="module-3"></a>
+
 ## jiuwenswarm/agents/harness
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness, jiuwenswarm/extensions/sdk, jiuwenswarm/resources/plugins/ttse | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/extensions/sdk/plugin_runtime.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/resources/plugins/ttse/manifest.json, scripts/package_ttse_plugin.py | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 
-<a id="module-3"></a>
+<a id="module-4"></a>
 
 ## jiuwenswarm/agents/harness/common/rails
 
@@ -48,7 +58,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, tests/unit_tests/agentserver/test_tool_discovery_language.py | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 
-<a id="module-4"></a>
+<a id="module-5"></a>
 
 ## jiuwenswarm/agents/harness/common/tools
 
@@ -56,7 +66,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261027_2015_bilingual-progressive-tool-discovery](jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | jiuwenswarm/agents/harness/common/tools, jiuwenswarm/agents/harness/common/rails, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/agents/harness/common/tools/tool_discovery_catalog.py, jiuwenswarm/agents/harness/common/tools/tool_retrieval_toolkits.py, jiuwenswarm/agents/harness/common/rails/tool_retrieval_prompt_rail.py, jiuwenswarm/agents/harness/code/rails/heartbeat_rail.py, jiuwenswarm/agents/harness/team/rails/team_member_skill_toolkit_rail.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, tests/unit_tests/agentserver/test_tool_discovery_language.py | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 
-<a id="module-5"></a>
+<a id="module-6"></a>
 
 ## jiuwenswarm/channels/web/frontend
 
@@ -64,7 +74,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261029_1757_mcp-app-agent-stack-refresh](F_20261029_1757_mcp-app-agent-stack-refresh.md) | F | MCP App 到 Agent 的 stacked PR 更新 | LI Jinyang | jiuwenswarm/channels/web/frontend, jiuwenswarm/server/runtime/agent_adapter | jiuwenswarm/channels/web/frontend/src/features/mcpApps/mcpAppContext.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/McpAppView.tsx, jiuwenswarm/channels/web/frontend/src/App.tsx, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, jiuwenswarm/server/runtime/agent_adapter/user_turn.py | 无独立 D：本次迁移已有 follow-up 实现，不新建方案；需求依据为主仓库 issue 4944 和原 MR !1。 |
 
-<a id="module-6"></a>
+<a id="module-7"></a>
 
 ## jiuwenswarm/extensions/sdk
 
@@ -72,7 +82,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness, jiuwenswarm/extensions/sdk, jiuwenswarm/resources/plugins/ttse | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/extensions/sdk/plugin_runtime.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/resources/plugins/ttse/manifest.json, scripts/package_ttse_plugin.py | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 
-<a id="module-7"></a>
+<a id="module-8"></a>
 
 ## jiuwenswarm/resources/plugins/ttse
 
@@ -80,7 +90,7 @@ generated: true
 |---|---|---|---|---|---|---|
 | [F_20261027_1843_ttse-plugin-rail](F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | jiuwenswarm/server/runtime/agent_adapter, jiuwenswarm/agents/harness, jiuwenswarm/extensions/sdk, jiuwenswarm/resources/plugins/ttse | jiuwenswarm/server/runtime/agent_adapter/plugin_runtime.py, jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/server/runtime/agent_adapter/interface_code.py, jiuwenswarm/extensions/sdk/plugin_runtime.py, jiuwenswarm/agents/harness/agent_observability.py, jiuwenswarm/resources/plugins/ttse/manifest.json, scripts/package_ttse_plugin.py | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 
-<a id="module-8"></a>
+<a id="module-9"></a>
 
 ## jiuwenswarm/server/runtime/agent_adapter
 

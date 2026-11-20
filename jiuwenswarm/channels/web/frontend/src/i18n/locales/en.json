@@ -5267,6 +5267,14 @@
         "skillOnly": "Skills only",
         "hub": "OpenJiuwen Agentic Hub"
       },
+      "defaultSwitch": {
+        "label": "Default for new sessions",
+        "hint": "When on, new sessions will have this connector pre-checked",
+        "unavailableHint": "Marked as default, but currently disconnected — new sessions will skip it",
+        "disabledDisconnected": "Connect first to set as default",
+        "disabledMax": "Default equipment limit reached ({{max}})",
+        "loadError": "Failed to load default equipment, please retry later"
+      },
       "cliSpecPresentHint": "Supports CLI-driven setup",
       "config": {
         "transport": "Transport",

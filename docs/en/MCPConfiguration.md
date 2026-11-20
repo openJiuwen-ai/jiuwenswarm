@@ -86,6 +86,30 @@ Use `/mcp` commands during conversations to manage MCP servers:
 
 ---
 
+## Default Equipment (Auto-Mount in New Sessions)
+
+Frequently used MCPs no longer need to be re-checked in every new session. Two ways to set defaults:
+
+1. **Web UI**: toggle **Default for new sessions** on the connector detail page. Once on, new sessions without a saved snapshot pre-check this connector in the extensions panel and mount it with the first message.
+2. **config.yaml preset** (for deployment-level rollout):
+
+   ```yaml
+   session:
+     equipment:
+       inherit: true            # false = disable the feature; per-session manual selection is restored
+       defaults:
+         mcp: ["my-local-tool"]  # MCP names mounted by default in new sessions (limit 10)
+   ```
+
+Semantics:
+
+- Priority: explicit request params > session equipment snapshot > global defaults. Defaults seed a session only when it has **no snapshot** and the message omits `mcp`; after the first successful turn the snapshot takes over, so later default-list changes never affect existing sessions.
+- Manually clearing equipment inside a session (sending `mcp: []`) is never back-filled by defaults.
+- Disconnected default MCPs are silently skipped in new sessions and resume automatically once reconnected.
+- The default set is capped at 10 to keep default tool schemas from flooding fresh session context.
+
+---
+
 ## MCP Apps and Agent Interaction
 
 MCP Apps servers can display interactive views inside Web chat tool results without a separate MCP connection configuration.

@@ -149,6 +149,12 @@ _ensure_protocol_member(EventType, "CLIENT_ATTACHMENTS_CHANGED", "client.attachm
 _ensure_req_method("VOICE_SESSION_RECEIPTS", "voice.session.receipts")
 _ensure_req_method("VOICE_TASK_PENDING_INTERRUPT", "voice.task.pending_interrupt")
 
+# Session default equipment (web): read/replace the global default MCP set
+# that fresh sessions inherit. The pinned protocol package does not define
+# these members yet.
+_ensure_req_method("SESSION_EQUIPMENT_DEFAULTS_GET", "session_equipment.defaults.get")
+_ensure_req_method("SESSION_EQUIPMENT_DEFAULTS_SET", "session_equipment.defaults.set")
+
 _TEAM_CONTROL_REQ_METHODS = (
     ("TEAM_CREATE", "team.create"),
     ("TEAM_GET", "team.get"),

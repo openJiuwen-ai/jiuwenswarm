@@ -255,3 +255,64 @@ def test_record_to_mcp_entry_carries_enabled_when_present(tmp_path: Path) -> Non
         entry3 = ss.record_to_mcp_entry("legacy", legacy)
         assert "enabled" not in entry3
 
+
+def test_set_mcp_default_flips_flag_without_touching_state(tmp_path: Path) -> None:
+    """is_default is the web-session default-equipment switch; flipping it
+    keeps the connection state untouched."""
+    with patch("jiuwenswarm.server.runtime.mcp.state_store.get_workspace_dir", return_value=tmp_path):
+        ss.upsert_mcp_record("baidu", _mk_entry(), state="connected")
+        ss.set_mcp_default("baidu", default=True)
+        rec = ss.get_mcp_record("baidu")
+        assert rec["is_default"] is True
+        assert rec["state"] == "connected"
+        ss.set_mcp_default("baidu", default=False)
+        assert ss.get_mcp_record("baidu")["is_default"] is False
+
+
+def test_set_mcp_default_missing_record_raises(tmp_path: Path) -> None:
+    with patch("jiuwenswarm.server.runtime.mcp.state_store.get_workspace_dir", return_value=tmp_path):
+        with pytest.raises(KeyError):
+            ss.set_mcp_default("ghost", default=True)
+
+
+def test_list_default_mcps_filters_to_live_states(tmp_path: Path) -> None:
+    """Only connected/connecting defaults are effective; a default flag on a
+    disconnected or registered record is inert but still visible via
+    list_default_flagged_mcps (settings UI warning)."""
+    with patch("jiuwenswarm.server.runtime.mcp.state_store.get_workspace_dir", return_value=tmp_path):
+        ss.upsert_mcp_record("live", _mk_entry("live"), state="connected")
+        ss.upsert_mcp_record("joining", _mk_entry("joining"), state="connecting")
+        ss.upsert_mcp_record("dead", _mk_entry("dead"), state="disconnected")
+        ss.upsert_mcp_record("fresh", _mk_entry("fresh"), state="registered")
+        ss.set_mcp_default("live", default=True)
+        ss.set_mcp_default("joining", default=True)
+        ss.set_mcp_default("dead", default=True)
+        ss.set_mcp_default("fresh", default=True)
+
+        assert ss.list_default_mcps() == ["joining", "live"]
+        assert ss.list_default_flagged_mcps() == ["dead", "fresh", "joining", "live"]
+
+
+def test_replace_default_mcps_swaps_set_atomically(tmp_path: Path) -> None:
+    with patch("jiuwenswarm.server.runtime.mcp.state_store.get_workspace_dir", return_value=tmp_path):
+        for name in ("a", "b", "c"):
+            ss.upsert_mcp_record(name, _mk_entry(name), state="connected")
+        ss.set_mcp_default("a", default=True)
+        ss.set_mcp_default("b", default=True)
+
+        ss.replace_default_mcps(["b", "c"])
+
+        assert ss.get_mcp_record("a")["is_default"] is False
+        assert ss.get_mcp_record("b")["is_default"] is True
+        assert ss.get_mcp_record("c")["is_default"] is True
+        assert ss.list_default_mcps() == ["b", "c"]
+
+
+def test_replace_default_mcps_unknown_name_raises(tmp_path: Path) -> None:
+    with patch("jiuwenswarm.server.runtime.mcp.state_store.get_workspace_dir", return_value=tmp_path):
+        ss.upsert_mcp_record("a", _mk_entry("a"), state="connected")
+        with pytest.raises(KeyError):
+            ss.replace_default_mcps(["a", "ghost"])
+        # failed replace leaves the prior set untouched
+        assert ss.get_mcp_record("a").get("is_default") in (None, False)
+

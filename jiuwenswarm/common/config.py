@@ -3144,6 +3144,73 @@ def get_config_yaml_mcp_servers() -> list[dict[str, Any]]:
     return [item for item in mcp_cfg.get("servers", []) if isinstance(item, dict)]
 
 
+def get_session_equipment_config() -> dict[str, Any]:
+    """Read config.yaml's ``session.equipment`` block (default equipment).
+
+    Layout::
+
+        session:
+          equipment:
+            inherit: true            # false disables default equipment entirely
+            defaults:
+              mcp: ["name1", ...]    # deployment-preset default MCP names
+
+    Returns ``{"inherit": bool, "mcp": [str, ...]}``. Missing block reads as
+    ``inherit=True`` + empty defaults (feature on, no presets).
+    """
+    data = get_config_raw()
+    session = data.get("session")
+    if not isinstance(session, dict):
+        return {"inherit": True, "mcp": []}
+    equipment = session.get("equipment")
+    if not isinstance(equipment, dict):
+        return {"inherit": True, "mcp": []}
+    inherit = equipment.get("inherit", True)
+    defaults = equipment.get("defaults")
+    mcp_raw = defaults.get("mcp") if isinstance(defaults, dict) else None
+    mcp: list[str] = []
+    if isinstance(mcp_raw, list):
+        seen: set[str] = set()
+        for item in mcp_raw:
+            if not isinstance(item, str):
+                continue
+            name = item.strip()
+            if name and name not in seen:
+                seen.add(name)
+                mcp.append(name)
+    return {"inherit": bool(inherit), "mcp": mcp}
+
+
+def get_default_equipment_mcp_names() -> list[str]:
+    """Effective global default MCP set for fresh web sessions.
+
+    Merge of two sources (dedup by name, sorted for stability):
+
+    * config.yaml ``session.equipment.defaults.mcp`` — deployment presets
+      (operator vouches for validity; no liveness filter);
+    * state.json records flagged ``is_default`` — runtime UI toggles,
+      filtered to live (connected/connecting) records by
+      ``list_default_mcps``.
+
+    ``session.equipment.inherit: false`` short-circuits to ``[]`` (feature
+    off; per-session manual selection behavior restored). Read by
+    ``restore_chat_send_equipment_params`` when a session has no equipment
+    snapshot yet.
+    """
+    cfg = get_session_equipment_config()
+    if not cfg["inherit"]:
+        return []
+    names: set[str] = set(cfg["mcp"])
+    try:
+        from jiuwenswarm.common.external_providers import provider
+        for name in provider("mcp_state").list_default_mcps():
+            if isinstance(name, str) and name.strip():
+                names.add(name.strip())
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[config] failed to merge state.json default mcps: %s", exc)
+    return sorted(names)
+
+
 def upsert_mcp_server_in_config(server: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     """新增或更新 mcp.servers 条目，返回（条目, 是否创建）。"""
     name = str(server.get("name", "")).strip()

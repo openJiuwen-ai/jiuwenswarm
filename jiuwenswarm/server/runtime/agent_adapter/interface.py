@@ -236,6 +236,15 @@ def restore_chat_send_equipment_params(
 
     Explicit empty values are never overwritten: omission means "keep", while
     ``""`` / ``[]`` mean "clear".
+
+    Third-level source: when the session has no equipment snapshot at all
+    (``get_session_equipment`` returns ``{}`` — a fresh session that never
+    persisted one) and ``mcp`` is omitted, the global default equipment set
+    (``session.equipment.defaults`` in config.yaml ∪ state.json
+    ``is_default`` flags) seeds the field once. The first successful mount
+    persists it as the session snapshot, so later default-list changes never
+    retro-apply to this session. A snapshot that exists but is empty
+    (explicit clear) is truthy here, so the escape hatch is preserved.
     """
     if not session_id:
         return params
@@ -251,6 +260,12 @@ def restore_chat_send_equipment_params(
         if key not in params and key in saved:
             value = saved[key]
             params[key] = list(value) if isinstance(value, list) else value
+    if not saved and "mcp" not in params:
+        from jiuwenswarm.common.config import get_default_equipment_mcp_names
+
+        default_mcp = get_default_equipment_mcp_names()
+        if default_mcp:
+            params["mcp"] = list(default_mcp)
     return params
 
 
@@ -1403,6 +1418,17 @@ _SESSION_ASSET_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SESSION_ASSETS_RENAME: "handle_session_assets_rename",
     ReqMethod.SESSION_ASSETS_REMOVE: "handle_session_assets_remove",
 }
+
+# Session default equipment (web, SDD-0030): read/replace the global default
+# MCP set that fresh sessions inherit. Stateless RPCs answered before adapter
+# setup in process_message — an unrouted legal ReqMethod would otherwise fall
+# through to the chat path as an empty query (same trap as _SKILL_SYNC_*).
+_SESSION_EQUIPMENT_DEFAULTS_ROUTES: frozenset[ReqMethod] = frozenset(
+    {
+        ReqMethod.SESSION_EQUIPMENT_DEFAULTS_GET,
+        ReqMethod.SESSION_EQUIPMENT_DEFAULTS_SET,
+    }
+)
 
 # Handlers that persist a Skill visibility document; every one of them must
 # trigger a rail refresh so a grant or a revocation takes effect on the next
@@ -2749,6 +2775,67 @@ class JiuWenSwarm:
             metadata=request.metadata,
         )
 
+    async def _handle_session_equipment_defaults_request(
+        self, request: AgentRequest
+    ) -> AgentResponse | None:
+        """Handle ``session_equipment.defaults.*`` on the WS wire; None = not ours.
+
+        Stateless (config/state.json reads + one atomic swap) and must be
+        answered before the chat fallthrough. Shares the payload core with
+        the dispatch.py HTTP handlers (``handlers/session.py``), so the two
+        transports can never drift apart.
+        """
+        if request.req_method not in _SESSION_EQUIPMENT_DEFAULTS_ROUTES:
+            return None
+        from jiuwenswarm.server.handlers.session import (
+            apply_session_equipment_defaults_payload,
+            read_session_equipment_defaults_payload,
+        )
+
+        try:
+            if request.req_method == ReqMethod.SESSION_EQUIPMENT_DEFAULTS_GET:
+                payload = await read_session_equipment_defaults_payload()
+            else:
+                params = request.params if isinstance(request.params, dict) else {}
+                payload = await apply_session_equipment_defaults_payload(params)
+        except KeyError as exc:
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc), "code": "MCP_NOT_FOUND"},
+                metadata=request.metadata,
+            )
+        except ValueError as exc:
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc), "code": "BAD_REQUEST"},
+                metadata=request.metadata,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "[JiuWenSwarm] session_equipment.defaults request failed: "
+                "method=%s error=%s",
+                request.req_method,
+                exc,
+            )
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": str(exc), "code": "INTERNAL"},
+                metadata=request.metadata,
+            )
+        return AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload=payload,
+            metadata=request.metadata,
+        )
+
     @staticmethod
     def _is_skills_rebuild_followup(payload: Any) -> bool:
         """判断 skills.rebuild 响应是否需要静默 follow-up."""
@@ -3585,6 +3672,14 @@ class JiuWenSwarm:
         session_asset_response = await self._handle_session_asset_request(request)
         if session_asset_response is not None:
             return session_asset_response
+
+        # Session default equipment RPCs must be answered before adapter
+        # creation and the chat fallthrough (stateless, no session runtime).
+        equipment_defaults_response = await self._handle_session_equipment_defaults_request(
+            request
+        )
+        if equipment_defaults_response is not None:
+            return equipment_defaults_response
 
         plugins_response = await self._handle_plugins_request(request)
         if plugins_response is not None:

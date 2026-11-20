@@ -19,6 +19,7 @@ import { Switch } from '../Switch';
 import { Tabs } from '../ui';
 import { resolvePluginPickerIdentifiers } from '../../features/equipmentMarketplace';
 import { pruneEnabledExtensions } from '../../utils/enabledExtensions';
+import { getEquipmentDefaults } from '../../services/equipmentDefaultsApi';
 import PlusIcon from '../../assets/agent-management/agent-plus.svg?react';
 import { PickerSearchInput } from './PickerSearchInput';
 
@@ -72,6 +73,34 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
   const busyMap = useConnectorStore((s) => s.busyMap);
   const loadConnectorList = useConnectorStore((s) => s.loadList);
   const connectMcp = useConnectorStore((s) => s.connect);
+
+  // SDD-0030 阶段二：无快照新会话的默认装备预勾选。仅在会话未 hydrate 时触发一次——
+  // 已 hydrate 说明后端快照已恢复（App.tsx restoreSessionEquipment）或用户已手动改过，
+  // 默认集不得覆盖；团队模式不适用（装备走 team spec 级，后端 restore 对 team 直接跳过，
+  // 这里保持一致）。预填即 hydrate：首条消息带显式默认数组，所见即所发。默认集为空或
+  // 读取失败时不动——保持省略字段，后端第三级回填在发送时兜底（活读取，晚于面板打开
+  // 的新增默认仍能生效），行为与旧前端完全一致。
+  const extensionsHydrated = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.extensionsHydrated ?? false,
+  );
+  const runtimeMode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? '');
+  useEffect(() => {
+    const sid = activeSessionId;
+    if (!sid || extensionsHydrated || runtimeMode.startsWith('team')) return;
+    let cancelled = false;
+    getEquipmentDefaults()
+      .then((view) => {
+        if (cancelled || !view.mcp?.length) return;
+        useSessionStore.getState().prefillDefaultMcps(sid, view.mcp);
+      })
+      .catch(() => {
+        // 默认装备读取失败不影响面板正常使用；后端回填兜底仍然有效。
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeSessionId, extensionsHydrated, runtimeMode]);
 
   const [tokenTarget, setTokenTarget] = useState<{ name: string; response: ConnectorConnectResponse } | null>(null);
   const [authTarget, setAuthTarget] = useState<{ name: string; response: ConnectorConnectResponse } | null>(null);
