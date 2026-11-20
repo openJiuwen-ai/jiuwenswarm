@@ -252,3 +252,37 @@ AssertionError；修复后同一条件通过，四项真实控制请求均返回
 与本仓 pin 不同；协议/Gateway 沿用上节固定源码，A4P 从同一协议 checkout
 加入 PYTHONPATH，未安装或改写共享环境。全量 UT 与锁定依赖的 Linux 门禁
 仍待 CI，不将本地定向通过等同于门禁全绿。
+
+## 2026-11-20 最新 develop rebase 与遗漏复核
+
+按用户要求，将原分支 `0712e7d6a` 的七个提交 rebase 到 develop
+`defa975d3f0b607a6a41b54e4d79fe91f9ec0528`，无冲突、无 merge 提交。
+`git range-diff` 确认七项补丁逐一等价；重放后代码候选为 `837d8dd0a`。
+恢复任务后再次 fetch，develop 仍为该版本。
+
+本次未发现新的 ReqMethod 遗漏，也未重新引入生产代码对上游请求枚举的依赖：
+
+- E2A 原始目录 434 项、Gateway 实际注册后目录 517 项，加上当前 develop
+  本仓补齐和团队清单的并集为 545 项，与本地名称和值完全一致；缺失、值差异
+  及额外项均为空。
+- 盘点 1588 个生产 Python 文件，直接成员及字面量 getattr/hasattr 引用
+  涉及 463 个不同成员，无未定义引用；未发现直接或别名导入 E2A/Gateway
+  ReqMethod 的残留，原请求枚举动态补齐入口也未恢复。
+- 最新上游 E2A/Gateway pin 仍分别为 `defa6d8d8904eb3272a58fa0ad13f94f7adb4a51`
+  和 `d68e80bf7abc5a6f28e7178ae79c2ea644308259`，未修改依赖文件。
+- 上游 core 已升级为 `f5ecfd7435400fafc4e4b4d399c921a134c4358c`；旧环境
+  最初因缺少 DiscoverySession 采集失败。通过独立临时 checkout 并配置
+  PYTHONPATH 使用锁定 core 源码后，组合回归通过，未改写共享 Python 环境。
+
+Windows / Python 3.14 组合结果为 `994 passed in 62.00s`，保留仓库 conftest，
+使用 `--asyncio-mode=auto -o addopts= -o log_cli=false -q --tb=short`，覆盖：
+
+- 本地枚举完整目录、全成员 Front/IPC 往返、Gateway normalization、转发契约
+  与 Front 方法校验。
+- 视频扩展兼容、video live/task queue 完整模块、诊断 HTTP、飞书回调与团队路由。
+- Front 启动 fixture 七项回归及原生 Front 控制查询导入边界用例。
+
+测试主进程使用上述锁定 core/E2A/Gateway 源码；原生 Front 用例自行重设子进程
+PYTHONPATH，因此其子进程 core 仍来自环境已安装的 `2f4bedb9c5d85ab70d7c79d36183e6a98799e94e`。
+本次未运行全量 UT/ST 或统一锁定依赖的 Linux 门禁，最终 CI 状态仍待确认。
+本次仅追加复核证据，不因未发现遗漏而制造额外生产代码改动。
