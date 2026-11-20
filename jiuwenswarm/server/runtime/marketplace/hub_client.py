@@ -105,6 +105,8 @@ class HttpHubTransport:
         )
         self.token = (token or "").strip()
         self.system_token = (system_token or "").strip()
+        # Default True keeps existing callers (Skill plaza / MCP / publish) unchanged.
+        # Connector SPI may pass SourceConfig.verify_ssl explicitly.
         self.verify = bool(verify)
 
     def _headers(self) -> dict[str, str] | None:

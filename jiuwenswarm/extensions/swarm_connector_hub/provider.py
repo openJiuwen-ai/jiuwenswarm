@@ -8,7 +8,6 @@ from typing import Any, Mapping, Sequence
 
 from jiuwenswarm.extensions.sdk.connector_source import (
     ConnectorArtifactDescriptor,
-    ConnectorArtifactRef,
     ConnectorCandidate,
     ConnectorDetail,
     ConnectorRef,
@@ -78,7 +77,7 @@ class SwarmConnectorHubProvider(ConnectorSourceProvider):
                 asset_id=item.asset_id,
                 package_name=item.package_name or item.asset_id,
                 display_name=item.display_name or item.package_name or item.asset_id,
-                public_latest_version=str(item.public_latest_version or "").strip(),
+                version_id=str(item.public_latest_version or "").strip(),
                 short_description=item.short_description,
                 icon_uri=item.icon_uri,
                 tags=tuple(item.tags),
@@ -96,13 +95,12 @@ class SwarmConnectorHubProvider(ConnectorSourceProvider):
             items=items,
             total=page.total,
             next_page=next_page,
-            page=page.page,
-            page_size=page.page_size,
         )
 
     async def get_detail(
         self,
         connector_ref: ConnectorRef,
+        version_id: str,
         context: ProviderInvocationContext,
     ) -> ConnectorDetail:
         del context
@@ -117,17 +115,19 @@ class SwarmConnectorHubProvider(ConnectorSourceProvider):
         package_profile = getattr(detail, "package_profile", None)
         if isinstance(package_profile, Mapping):
             metadata["package_profile"] = dict(package_profile)
-        version = str(detail.version or "").strip()
+        requested = str(version_id or "").strip()
+        version = requested or str(detail.version or "").strip()
         return ConnectorDetail(
             source_id=self.source_id,
             asset_id=detail.asset_id,
             package_name=detail.package_name or detail.asset_id,
             display_name=detail.display_name or detail.package_name or detail.asset_id,
-            version=version,
+            version_id=version,
             short_description=detail.short_description,
             detail_description=detail.detail_description,
             icon_uri=detail.icon_uri,
             tags=tuple(detail.tags),
+            category_name=detail.category_name,
             metadata=metadata,
         )
 
@@ -158,13 +158,9 @@ class SwarmConnectorHubProvider(ConnectorSourceProvider):
             )
         )
         return ConnectorArtifactDescriptor(
-            artifact_ref=ConnectorArtifactRef(
-                connector_ref=ConnectorRef(
-                    source_id=self.source_id,
-                    asset_id=resolved.asset_id,
-                ),
-                version_id=resolved.version,
-            ),
+            source_id=self.source_id,
+            asset_id=resolved.asset_id,
+            version_id=resolved.version,
             download_url=resolved.download_url,
             content_sha256=resolved.checksum_sha256 or None,
             package_name=resolved.package_name,

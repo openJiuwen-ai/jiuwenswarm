@@ -10,7 +10,6 @@ import pytest
 
 from jiuwenswarm.extensions.sdk.connector_source import (
     ConnectorArtifactDescriptor,
-    ConnectorArtifactRef,
     ConnectorCandidate,
     ConnectorSearchResult,
     ConnectorSourceConfig,
@@ -56,9 +55,9 @@ class _StubProvider(ConnectorSourceProvider):
     async def get_artifact(self, connector_ref, version_id, context):
         del context
         return ConnectorArtifactDescriptor(
-            artifact_ref=ConnectorArtifactRef(
-                connector_ref=connector_ref, version_id=version_id
-            ),
+            source_id=connector_ref.source_id,
+            asset_id=connector_ref.asset_id,
+            version_id=version_id,
             download_url="https://example.invalid/pkg.zip",
         )
 

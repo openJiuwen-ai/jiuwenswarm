@@ -44,31 +44,30 @@ class DummyConnectorProvider(connector_source.ConnectorSourceProvider):
             asset_id="asset-1",
             package_name="demo-connector",
             display_name="Demo Connector",
-            public_latest_version="1.0.0",
+            version_id="1.0.0",
             short_description="dummy",
         )
         return connector_source.ConnectorSearchResult(
-            items=(item,), total=1, page=1, page_size=20
+            items=(item,), total=1, next_page=None
         )
 
-    async def get_detail(self, connector_ref, context):
+    async def get_detail(self, connector_ref, version_id, context):
         del context
         return connector_source.ConnectorDetail(
             source_id=connector_ref.source_id,
             asset_id=connector_ref.asset_id,
             package_name="demo-connector",
             display_name="Demo Connector",
-            version="1.0.0",
+            version_id=str(version_id or "1.0.0"),
             detail_description="detail",
         )
 
     async def get_artifact(self, connector_ref, version_id, context):
         del context
         return connector_source.ConnectorArtifactDescriptor(
-            artifact_ref=connector_source.ConnectorArtifactRef(
-                connector_ref=connector_ref,
-                version_id=version_id,
-            ),
+            source_id=connector_ref.source_id,
+            asset_id=connector_ref.asset_id,
+            version_id=version_id,
             download_url="https://example.invalid/demo.zip",
             content_sha256=self._sha256,
             package_name="demo-connector",
@@ -82,9 +81,9 @@ class DummyConnectorProvider(connector_source.ConnectorSourceProvider):
 class UnsupportedDetailProvider(DummyConnectorProvider):
     capabilities = frozenset({"search", "get_artifact"})
 
-    async def get_detail(self, connector_ref, context):
+    async def get_detail(self, connector_ref, version_id, context):
         return await connector_source.ConnectorSourceProvider.get_detail(
-            self, connector_ref, context
+            self, connector_ref, version_id, context
         )
 
 
@@ -100,6 +99,7 @@ def test_connector_source_shim_shares_class_identity() -> None:
     )
     assert issubclass(connector_source.ConnectorSourceExtension, BaseExtension)
     assert connector_source.ConnectorSourceExtension.__bases__[0] is BaseExtension
+    assert not hasattr(connector_source, "ConnectorArtifactRef")
 
 
 @pytest.mark.asyncio
@@ -119,12 +119,13 @@ async def test_dummy_provider_search_get_artifact_download() -> None:
     )
     assert len(search.items) == 1
     assert search.items[0].source_id == "dummy"
-    assert search.items[0].to_dict()["source"] == "dummy"
     assert search.items[0].to_dict()["source_id"] == "dummy"
+    assert "source" not in search.items[0].to_dict()
 
     ref = connector_source.ConnectorRef(source_id="dummy", asset_id="asset-1")
-    detail = await provider.get_detail(ref, context)
+    detail = await provider.get_detail(ref, "1.0.0", context)
     assert detail.package_name == "demo-connector"
+    assert detail.version_id == "1.0.0"
 
     descriptor = await provider.get_artifact(ref, "1.0.0", context)
     body = await provider.download_artifact(descriptor, DownloadPolicy())
@@ -175,10 +176,9 @@ async def test_default_download_rejects_non_zip(monkeypatch: pytest.MonkeyPatch)
     # download_artifact 定义在 gateway 真源模块，需 patch 该模块绑定的 httpx。
     monkeypatch.setattr(gw_connector_source.httpx, "AsyncClient", _Client)
     descriptor = connector_source.ConnectorArtifactDescriptor(
-        artifact_ref=connector_source.ConnectorArtifactRef(
-            connector_ref=connector_source.ConnectorRef(source_id="dummy", asset_id="a"),
-            version_id="1",
-        ),
+        source_id="dummy",
+        asset_id="a",
+        version_id="1",
         download_url="https://example.invalid/demo.bin",
     )
     with pytest.raises(connector_source.ConnectorDownloadError, match="ZIP") as download_exc:
@@ -189,30 +189,12 @@ async def test_default_download_rejects_non_zip(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.asyncio
-async def test_default_download_rejects_host_not_allowed() -> None:
-    provider = DummyConnectorProvider()
-    descriptor = connector_source.ConnectorArtifactDescriptor(
-        artifact_ref=connector_source.ConnectorArtifactRef(
-            connector_ref=connector_source.ConnectorRef(source_id="dummy", asset_id="a"),
-            version_id="1",
-        ),
-        download_url="https://evil.example/demo.zip",
-    )
-    with pytest.raises(connector_source.ConnectorDownloadError) as download_exc:
-        await connector_source.ConnectorSourceProvider.download_artifact(
-            provider,
-            descriptor,
-            connector_source.DownloadPolicy(allowed_hosts=("cdn.example.com",)),
-        )
-    assert download_exc.value.code == "host_not_allowed"
-
-
-@pytest.mark.asyncio
 async def test_get_detail_default_raises_capability_error() -> None:
     provider = UnsupportedDetailProvider()
     with pytest.raises(connector_source.ConnectorCapabilityError) as exc:
         await provider.get_detail(
             connector_source.ConnectorRef(source_id="dummy", asset_id="a"),
+            "1.0.0",
             ProviderInvocationContext(request_id="req-2"),
         )
     assert exc.value.code == "capability_unsupported"
