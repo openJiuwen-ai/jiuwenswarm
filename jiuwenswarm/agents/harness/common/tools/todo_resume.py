@@ -329,7 +329,7 @@ def has_pending_step_resume(session: Any) -> bool:
         return False
     try:
         resume = peek()
-    except Exception:
+    except Exception:  # noqa: BLE001 - a broken peek must read as "no resume", never break the turn
         return False
     return isinstance(getattr(resume, "iteration", None), int)
 
