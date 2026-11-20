@@ -481,6 +481,14 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
     # 默认关闭。主配置入口是 config.yaml 的 http_server.enabled，
     # 完整优先级与各场景说明见 resolve_http_server_settings 的 docstring。
     http_server = None
+    http_enabled = False
+    http_host = host
+    http_port = 0
+    from jiuwenswarm.server.http_startup_policy import (
+        abort_if_http_required_missing,
+        handle_http_startup_exception,
+    )
+
     try:
         from jiuwenswarm.server.agent_http_server import (
             AgentHTTPServer,
@@ -490,22 +498,29 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
         http_enabled, http_host, http_port = resolve_http_server_settings(host)
         if http_enabled or link_mtls.enforced:
             candidate = AgentHTTPServer(server, host=http_host, port=http_port)
-            # start() 自身不抛异常；失败返回 False，WebSocket 主链路不受影响。
+            # start() 自身对个人版不抛；失败返回 False。企业版/enforce 见下方致命处理。
             http_server = candidate if await candidate.start() else None
         else:
             logger.info(
                 "[AgentServer] HTTP 入口未开启（config.yaml http_server.enabled 或 AGENT_HTTP_ENABLED）"
             )
-    except Exception as exc:  # noqa: BLE001 - HTTP 入口不可用不应阻断 WS 主链路
-        if link_mtls.enforced:
-            await server.stop()
-            raise RuntimeError("AgentServer enforce HTTPS startup failed; no WS fallback") from exc
-        logger.error("[AgentServer] HTTP 入口启动失败，仅 WebSocket 可用: %s", exc, exc_info=True)
+    except Exception as exc:  # noqa: BLE001 - 个人版 HTTP 失败不阻断 WS；企业版/enforce 上抛
+        await handle_http_startup_exception(
+            server,
+            exc,
+            http_enabled=http_enabled,
+            link_mtls_enforced=link_mtls.enforced,
+        )
         http_server = None
 
-    if link_mtls.enforced and http_server is None:
-        await server.stop()
-        raise RuntimeError("AgentServer enforce requires a working HTTPS listener")
+    await abort_if_http_required_missing(
+        server,
+        http_server=http_server,
+        http_enabled=http_enabled,
+        http_host=http_host,
+        http_port=http_port,
+        link_mtls_enforced=link_mtls.enforced,
+    )
 
     if link_mtls.enforced:
         logger.info("[AgentServer] ready: https://%s:%s/api/v1; plaintext WS disabled",
