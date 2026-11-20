@@ -12,6 +12,8 @@ from jiuwenswarm.agents.harness.common.rails.permissions.tool_decision_facts imp
     ToolDecisionFacts,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.persistent_audit import (
+    LocalAuditDetails,
+    PersistentAuditWriter,
     build_sanitized_audit_fields,
 )
 
@@ -28,6 +30,7 @@ def emit_permission_audit(
     grant_reason: str = "",
     extra: dict[str, object] | None = None,
     persistent_writer: Any | None = None,
+    local_details: LocalAuditDetails | None = None,
 ) -> Any | None:
     """Emit an auto-permission audit event without raw tool arguments."""
     try:
@@ -51,6 +54,19 @@ def emit_permission_audit(
     if persistent_writer is None:
         return None
     try:
+        # Keep private model reasons out of subclass overrides and __class__ proxies.
+        # pylint: disable-next=huawei-unidiomatic-typecheck
+        if local_details is not None and type(persistent_writer) is PersistentAuditWriter:
+            return persistent_writer.write(
+                facts,
+                decision=decision,
+                reason=reason,
+                degraded=degraded,
+                grant_id=grant_id,
+                grant_reason=grant_reason,
+                extra=extra,
+                local_details=local_details,
+            )
         return persistent_writer.write(
             facts,
             decision=decision,

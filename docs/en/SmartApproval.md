@@ -156,7 +156,11 @@ permissions:
 
 AutoReviewer uses the configured model service, so an eligible request may incur one additional model call and a small amount of latency. If the service is unavailable or times out, or if it returns an invalid response, the request is escalated or denied—never silently allowed.
 
-JSON mode constrains response syntax, not the correctness of the approval decision. An unsupported format or invalid response uses the existing manual-review fallback without retrying.
+For Web file delivery, the Reviewer receives the requested recipient scope. An omitted target or Web-only target means the current session user. Explicit alternate targets remain subject to authorization checks. A delivery request does not establish that the file was sent.
+
+With persistent audit enabled, a private Linux audit file can keep the redacted model recommendation alongside the Host decision. Both records use the same invocation ID. Other platforms and existing shared files keep the standard audit fields. The additional recommendation stays in local audit.
+
+JSON mode constrains response syntax, not the correctness of the approval decision. An unsupported format or invalid response uses the existing manual-review fallback without retrying. The Reviewer must supply a valid outcome, reason code, and rationale. Host discards fields outside the Reviewer contract and still applies the allowed-outcome and approval checks.
 
 The reviewer returns only `outcome`, `reason_code`, and `rationale`. Manual display details are derived by the existing Host path; complete legacy manual details remain accepted. The generated `confidence` score is no longer requested or used as a threshold: an otherwise valid low-score allow can now allow, and a low-score deny retains its reason. Legacy `confidence` response values and `reviewer_min_confidence` configuration are ignored. JSON syntax, allowed outcomes, explicit manual/deny reasons, and final Host validation remain enforced.
 
