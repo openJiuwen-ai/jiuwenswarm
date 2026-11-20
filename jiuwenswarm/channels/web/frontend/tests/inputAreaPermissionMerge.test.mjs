@@ -413,6 +413,94 @@ for (const [filename, mime, limit] of [['image.png', 'image/png', 10], ['documen
   }
 }
 
+for (const [size, allowed] of [
+  [50 * 1024 * 1024, true],
+  [50 * 1024 * 1024 + 1, false],
+  [51 * 1024 * 1024, false],
+]) {
+  test(`enterprise document picker ${allowed ? 'accepts' : 'rejects'} ${size} bytes`, async () => {
+    window.__JIUWENSWARM_EDITION__ = 'enterprise';
+    try {
+      await mount({}, async ({ props, render }) => {
+        const received = [];
+        props.onPersistDocuments = async (_text, items) => {
+          received.push(...items);
+          return { media_items: items.map((item) => ({ ...item, path: `/uploads/${item.filename}` })) };
+        };
+        await render();
+        await click(byId('chat-panel-input-attach-trigger'));
+        assert.match(byId('chat-panel-input-attach-menu-file').getAttribute('data-tooltip'), /50 MiB/);
+        await click(byId('chat-panel-input-attach-menu-file'));
+
+        const file = new dom.window.File(['fixture'], 'document.txt', { type: 'text/plain' });
+        // Stub File.size here; the OBS preflight test exercises real encoded length.
+        Object.defineProperty(file, 'size', { value: size });
+        const input = byId('chat-panel-input-file-input');
+        Object.defineProperty(input, 'files', { value: [file] });
+        await act(async () => {
+          input.dispatchEvent(new dom.window.Event('change', { bubbles: true }));
+          if (allowed) {
+            for (let attempts = 0; received.length === 0 && attempts < 100; attempts += 1) {
+              await new Promise((resolve) => setTimeout(resolve, 5));
+            }
+          }
+        });
+        assert.equal(received.length, allowed ? 1 : 0);
+        if (!allowed) {
+          assert.match(document.body.textContent, /size exceeds limit: document\.txt \(max 50 MiB\)/);
+          await click(byId('chat-panel-input-attachment-retry'));
+          assert.equal(received.length, 0);
+        }
+      });
+    } finally {
+      delete window.__JIUWENSWARM_EDITION__;
+    }
+  });
+}
+
+test('enterprise welcome composer rejects a 51 MiB document before the first send', async () => {
+  window.__JIUWENSWARM_EDITION__ = 'enterprise';
+  try {
+    await mount({ sessionId: 'new' }, async () => {
+      const file = new dom.window.File(['fixture'], 'document.txt', { type: 'text/plain' });
+      Object.defineProperty(file, 'size', { value: 51 * 1024 * 1024 });
+      const input = byId('chat-panel-input-file-input');
+      Object.defineProperty(input, 'files', { value: [file] });
+      await act(async () => input.dispatchEvent(new dom.window.Event('change', { bubbles: true })));
+      assert.match(document.body.textContent, /size exceeds limit: document\.txt \(max 50 MiB\)/);
+      await typeInput('Read this document');
+      assert.ok(byId('chat-panel-input-send').disabled);
+    });
+  } finally {
+    delete window.__JIUWENSWARM_EDITION__;
+  }
+});
+
+test('enterprise OBS preflight measures decoded bytes at the 50 MiB boundary', async () => {
+  const { persistEnterpriseAttachments } = await import('../node_modules/.cache/input-area-permission-merge/services/obsUpload.js');
+  const originalFetch = globalThis.fetch;
+  const transfers = [];
+  const records = [{ path: '/uploads/document.txt', filename: 'document.txt' }];
+  globalThis.fetch = async (_url, options) => {
+    transfers.push(options.method);
+    return { ok: true, json: async () => ({ ok: true, url: 'https://example.invalid/attachment', name: 'document.txt' }) };
+  };
+  const request = async (method) => method === 'file.import_url' ? { files: records } : { media_items: records };
+  const max = 50 * 1024 * 1024;
+  const encodedPrefix = 'AAAA'.repeat(Math.floor(max / 3));
+  const upload = (base64Data) => persistEnterpriseAttachments(
+    request, '', 'enterprise-attachment', [{ filename: 'document.txt', base64Data }], 'document',
+  );
+  try {
+    await assert.rejects(upload(encodedPrefix + 'AAAA'), /File exceeds 50 MiB/);
+    assert.deepEqual(transfers, []);
+    assert.deepEqual(await upload(encodedPrefix + 'AAA='), { media_items: records });
+    assert.deepEqual(transfers, ['POST', 'DELETE']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('native image picks above 10 MiB are rejected before persist', async () => {
   await mount({}, async ({ props, render, inputAreaRef }) => {
     props.onPersistMedia = async () => assert.fail('oversized image must not upload');
