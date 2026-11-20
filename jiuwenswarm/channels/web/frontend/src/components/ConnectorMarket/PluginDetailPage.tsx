@@ -144,6 +144,11 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
 
   const title = localizedText(detail.displayName, i18n.language);
   const linked = connectionState === 'connected';
+  const examples = [...new Set((detail.quickInputs ?? []).map((input) => {
+    if (typeof input === 'string') return input.trim();
+    if (!input) return '';
+    return localizedText(input, i18n.language)?.trim() || input.zh?.trim() || input.en?.trim() || '';
+  }).filter(Boolean))];
   const installBusy = installing || storeBusy || installFlow.active;
 
   async function handleInstall() {
@@ -305,21 +310,14 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
           <p>{localizedText(detail.displayDescription, i18n.language)}</p>
         </DetailSection>
 
-        {/* "试试这样用"——照抄 McpDetailPage.tsx 同款示例区，2026-08-21 后端 show 接口新增
-          quickInputs（双语对象数组，跟 MCP 的 examples: string[] 不同，要过 localizedText()）。
-          未就绪（installed && !linked）时这个插件在会话里根本用不了，示例点了也没意义，跟 MCP
-          那边"onUseExample && linked 才可点，否则渲染成不可点的纯展示 span"是同一个门控。
-          药丸底样式与 icon/文案布局统一走共享组件 ui/DetailPromptChip（与专家详情快捷输入
-          完全同款）；容器 .detail-prompt-list 每项独占一行、限宽 696px。 */}
-        {detail.quickInputs && detail.quickInputs.length > 0 && (
+        {examples.length > 0 && (
           <DetailSection
             titleTestId="connector-market-plugin-detail-examples-title"
             title={t('connectorMarket.detail.sections.examples')}
           >
             <div className="detail-prompt-list" data-testid="connector-market-plugin-detail-examples">
-              {detail.quickInputs.map((quickInput) => {
-                const text = localizedText(quickInput, i18n.language);
-                return onUseExample && linked ? (
+              {examples.map((text) => {
+                return onUseExample && installed && linked ? (
                   <DetailPromptChip
                     key={text}
                     text={text}
