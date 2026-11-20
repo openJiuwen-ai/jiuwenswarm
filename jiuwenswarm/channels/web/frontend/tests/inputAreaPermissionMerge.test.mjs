@@ -484,6 +484,47 @@ async function mount(
   }
 }
 
+test('enterprise welcome composer shows upload failure for an empty document and preserves the draft', async () => {
+  window.__JIUWENSWARM_EDITION__ = 'enterprise';
+  try {
+    await mount({ sessionId: 'new' }, async ({ props, render }) => {
+      const sent = [];
+      props.onSubmit = (text, attachments) => sent.push({ text, attachments });
+      await render();
+      await typeInput('Check this document');
+      const input = byId('chat-panel-input-file-input');
+      async function waitForDocumentRead() {
+        for (let attempt = 0; attempt < 50; attempt += 1) {
+          const status = document.querySelector('[data-testid="chat-panel-input-attachment-status"]');
+          if (status?.getAttribute('data-variant') !== 'uploading') break;
+          await act(async () => new Promise((resolve) => setTimeout(resolve, 5)));
+        }
+      }
+      async function chooseDocument(content) {
+        const file = new dom.window.File([content], 'document.txt', { type: 'text/plain' });
+        Object.defineProperty(input, 'files', { configurable: true, value: [file] });
+        await act(async () => input.dispatchEvent(new dom.window.Event('change', { bubbles: true })));
+        await waitForDocumentRead();
+      }
+      await chooseDocument('');
+      assert.equal(byId('chat-panel-input-attachment-status', 'error').textContent, i18n.t('chat.uploadFailed'));
+      assert.ok(byId('chat-panel-input-send').disabled);
+      await click(byId('chat-panel-input-attachment-retry'));
+      await waitForDocumentRead();
+      assert.ok(byId('chat-panel-input-attachment-status', 'error'));
+      assert.equal(byId('chat-panel-input').textContent, 'Check this document');
+      assert.equal(sent.length, 0);
+      await click(byId('chat-panel-input-attachment-remove'));
+      await chooseDocument('test');
+      await click(byId('chat-panel-input-send'));
+      assert.equal(sent[0]?.text, 'Check this document');
+      assert.equal(sent[0]?.attachments[0]?.base64Data, 'dGVzdA==');
+    });
+  } finally {
+    delete window.__JIUWENSWARM_EDITION__;
+  }
+});
+
 test('pasted image in a historical session restores after InputArea unmounts on the new conversation', async () => {
   await mount({}, async ({ inputAreaRef, sessionId, render, unmountInputArea }) => {
     await act(async () => {
