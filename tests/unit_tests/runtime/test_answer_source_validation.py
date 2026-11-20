@@ -6,9 +6,9 @@
 拒绝，分类为普通回合后排在仍在等待该答案的交互之后，会话死锁且客户端收不
 到任何结束帧。校验必须在 lane 准入之前完成，保证客户端必然收到错误帧。
 
-#6857 补充：answers 为 mapping 时同样会绕过恢复识别并卡住（运行时只把非空
-list 识别为中断恢复），因此 mapping 载荷无论 source 是什么一律拒绝；
-request_id 也不再作为校验前提。
+#6857 补充：answers 为非空 mapping 时同样会绕过恢复识别并卡住（运行时只把非空
+list 识别为中断恢复），因此非空 mapping 载荷无论 source 是什么一律拒绝；
+request_id 也不再作为校验前提。空 mapping 与空 list 一样视为「无 answers」。
 """
 
 from __future__ import annotations
@@ -83,6 +83,10 @@ class TestValidateAnswerSource:
     def test_unknown_source_without_answers_passes(self) -> None:
         """Ordinary turns may tag themselves (e.g. video_tool); only answers are checked."""
         validate_answer_source({"query": "hi", "source": "video_tool"})
+
+    def test_empty_mapping_answers_are_ignored(self) -> None:
+        """An empty mapping carries no answers; only content is rejected."""
+        validate_answer_source(_answer_params(answers={}, source="not_a_source"))
 
     def test_empty_answers_are_ignored(self) -> None:
         validate_answer_source(_answer_params(answers=[], source="not_a_source"))
