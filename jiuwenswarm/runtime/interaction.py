@@ -90,30 +90,31 @@ ANSWER_SOURCE_WHITELIST = frozenset(INTERRUPT_RESUME_SOURCES) | frozenset(
 def validate_answer_source(params: object) -> None:
     """Reject answers no transport could treat as an interrupt resume (#6285, #6857).
 
-    An interrupt resume is recognised only when ``answers`` is a non-empty
-    ``list`` and ``source`` is a known interrupt source
-    (``has_interrupt_resume_payload``). A ``chat.send`` carrying answers in any
-    other shape is classified as a plain turn and queues behind the interaction
-    still waiting for that answer, deadlocking the session without a terminal
-    frame. Rejecting here — before lane admission — guarantees the client an
-    error response.
+    The runtime resumes a suspended turn only on a non-empty ``list`` of
+    answers under a resume ``source`` (``answers_paused_calls``). A
+    ``chat.send`` whose answers that check cannot accept is classified as a
+    plain turn and queues behind the interaction still waiting for that
+    answer, deadlocking the session without a terminal frame. This guard
+    rejects the shapes it can decide before lane admission, so the client gets
+    an error response instead of silence.
 
-    A mapping ``answers`` payload is rejected whatever its ``source`` is
-    (#6857): the runtime only resumes on a list, so a whitelisted source must
-    not launder a shape that can never be a resume.
+    Only content-bearing answers are inspected: an empty ``answers`` (``[]``,
+    ``""`` or ``{}``) resumes nothing and stays an ordinary turn. A non-empty
+    mapping is rejected whatever its ``source`` is (#6857) — a whitelisted
+    source must not launder a shape no resume accepts — while any other
+    non-empty sequence is rejected only when its ``source`` is not
+    whitelisted.
     """
     if not isinstance(params, Mapping):
         return
     answers = params.get("answers")
+    if not answers:
+        return
     if isinstance(answers, Mapping):
         raise InteractionAnswerError(
             "answers must be a sequence of answers, not a mapping"
         )
-    if (
-        isinstance(answers, (str, bytes))
-        or not isinstance(answers, Sequence)
-        or not answers
-    ):
+    if isinstance(answers, (str, bytes)) or not isinstance(answers, Sequence):
         return
     source = str(params.get("source") or "").strip()
     if not source:
