@@ -36,13 +36,10 @@ def _mgr():
     return get_manager()
 
 
-class CreateSandboxRequest(BaseModel):
+class CreateSandboxRequest(SandboxSpec):
     command: list[str] = Field(default_factory=list)
-    env: dict[str, str] = Field(default_factory=dict)
     policy: dict[str, Any] | None = None
     policy_mode: PolicyMode = PolicyMode.OVERRIDE
-    sandbox_id: str | None = None
-    sandbox_runtime: str | None = None
 
     @field_validator("env")
     @classmethod
@@ -84,7 +81,13 @@ async def create_sandbox(request: CreateSandboxRequest, response: Response):
         sandbox_id = None
     else:
         sandbox_id = request.sandbox_id
-    spec = SandboxSpec(env=request.env, sandbox_id=sandbox_id, sandbox_runtime=request.sandbox_runtime)
+    spec = SandboxSpec(
+        env=request.env,
+        sandbox_id=sandbox_id,
+        sandbox_runtime=request.sandbox_runtime,
+        stdout=request.stdout,
+        stderr=request.stderr,
+    )
     sandbox = await _mgr().create_sandbox(
         spec,
         policy_data=request.policy,

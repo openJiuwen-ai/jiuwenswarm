@@ -63,6 +63,8 @@ class RuntimeAdapter(abc.ABC):
         sandbox_id: str,
         policy_path: Path,
         env: dict[str, str] | None = None,
+        stdout: str = "",
+        stderr: str = "",
     ) -> int | None:
         """Create and start a sandboxed process.  Returns the OS pid."""
         ...
