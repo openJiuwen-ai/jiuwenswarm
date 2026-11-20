@@ -672,6 +672,8 @@ class AgentManager:
             self._idle_root_sweep_task = None
 
     async def _idle_root_sweep_loop(self) -> None:
+        # CancelledError 属 BaseException,不会被 except Exception 吞掉,
+        # 取消(cleanup)自然传播终止循环,无需显式捕获重抛(G.ERR.13)。
         while True:
             await asyncio.sleep(self._idle_root_sweep_interval)
             try:
@@ -681,8 +683,6 @@ class AgentManager:
                         "[AgentManager] idle root sweep retired %d project root(s)",
                         retired,
                     )
-            except asyncio.CancelledError:
-                raise
             except Exception:
                 logger.exception(
                     "[AgentManager] idle root sweep failed"
