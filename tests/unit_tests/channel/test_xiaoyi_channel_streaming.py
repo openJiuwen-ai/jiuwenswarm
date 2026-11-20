@@ -16,6 +16,8 @@ from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.format
     should_send_as_status_update,
 )
 from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from jiuwenswarm.gateway.routing.keys import XiaoyiDeliveryTarget
+from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
 
 
 def _build_channel(*, enable_streaming: bool = True) -> tuple[XiaoyiChannel, list[dict[str, Any]]]:
@@ -631,4 +633,35 @@ async def test_html_card_flushes_held_text_before_artifact() -> None:
     assert _text_frames(sent) == [("xiaoyi-task-1", "用户。\n")]
     await _send_tool_phase(channel)
     assert _text_frames(sent) == [("xiaoyi-task-1", "用户。\n")]
+
+
+@pytest.mark.asyncio
+async def test_team_terminal_status_falls_back_to_metadata_session() -> None:
+    """GodView 自动订阅的 delivery 无 agent_id 时，终态 processing_status
+    仍要用请求 metadata 里的物理回发地址把 completed 发出去——否则手机/
+    云端任务一直 working、报告管线收不了口。"""
+    channel, sent = _build_channel()
+    msg = _message(
+        EventType.CHAT_PROCESSING_STATUS,
+        {
+            "event_type": "chat.processing_status",
+            "session_id": "desktop-team-session",
+            "rid": 2,
+            "is_processing": False,
+            "is_complete": True,
+        },
+    )
+    # 模拟 GodView 订阅的 delivery：agent_id / xiaoyi_session_id 均为空。
+    delivery = XiaoyiDeliveryTarget(channel_id="xiaoyi")
+    routing_target = RoutingTarget(intent="godview", delivery=delivery)
+    await channel._send_team(msg, routing_target)
+
+    assert sent, "终态 processing_status 必须经 metadata 兜底下发"
+    wrapper = sent[-1]
+    result = _result(wrapper)
+    assert result["kind"] == "status-update"
+    assert result["final"] is True
+    assert result["status"]["state"] == "completed"
+    assert wrapper["sessionId"] == "xiaoyi-session-1"
+    assert wrapper["taskId"] == "xiaoyi-task-1"
 
