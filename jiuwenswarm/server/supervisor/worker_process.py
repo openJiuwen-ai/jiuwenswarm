@@ -189,6 +189,7 @@ class WorkerProcess:
 
     async def spawn(self) -> None:
         from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, launch_identity_payload
+        from jiuwenswarm.server.worker.output_logs import STDERR_LOG_ENV, cleanup_worker_logs, open_worker_stderr
 
         # Verify source once before the spawn, then hand that exact observation
         # to the child. Reattached resident Workers still require fresh checks.
@@ -212,10 +213,13 @@ class WorkerProcess:
         # process session and also stop on IPC EOF.
         try:
             self._stderr_path.parent.mkdir(parents=True, exist_ok=True)
-            with self._stderr_path.open("ab") as stderr:
+            await asyncio.to_thread(cleanup_worker_logs, self._stderr_path.parent)
+            environment = os.environ.copy()
+            environment[STDERR_LOG_ENV] = str(self._stderr_path.resolve())
+            with open_worker_stderr(self._stderr_path) as stderr:
                 self._proc = subprocess.Popen(
                     command,
-                    env=os.environ.copy(),
+                    env=environment,
                     start_new_session=self._ipc_listener is None,
                     stdin=subprocess.PIPE,
                     stderr=stderr,

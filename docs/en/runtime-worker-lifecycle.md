@@ -64,3 +64,13 @@ If both IPC send and close fail, Front retains the original recovery waiters. A 
 Both resident and `front_loopback` Workers use the original output routing: stdout inherits the launching process's output, while stderr is appended directly to `worker-logs/runtime-worker-*.stderr.log`. Supervisor startup logs and runtime diagnostics expose the stderr file path. Exception tracebacks remain in that file.
 
 The Supervisor does not read and relabel individual Worker output lines or create a separate stdout log file. Stderr can contain ordinary INFO records. Diagnose failures using the original log levels, exception tracebacks, and process exit code.
+
+Worker stderr reuses the application logging limits: rotate at 20 MiB and retain at most 20 archives. A Worker-owned background thread checks every five seconds, copies the output into archives, and truncates the original file without replacing its descriptor. A resident Worker continues rotation after its Front exits. Archives are named `runtime-worker-<UUID>.stderr_<UTC-date>_<UTC-time>_<nanoseconds>.log`, each at most 20 MiB. Bursts spanning multiple chunks produce multiple archives. If output exceeds the full archive budget, only its most recent 400 MiB is retained. The active file can temporarily exceed the threshold between checks.
+
+Worker launch and a 60-second Worker maintenance interval also clean up historical files in the same directory:
+
+- Closed Worker stderr, historical stdout, and their archives share a limit of the newest 20 files and 400 MiB.
+- `supervisor-<PID>-<timestamp>.txt` snapshots separately retain the newest 20 files and at most 400 MiB.
+- Files modified within the last 60 seconds are temporarily protected. Worker base output files still open in a process owned by the current user are protected, including other Workers and tool children inheriting stderr. When process handles cannot be inspected, unproven base logs are retained while completed archives can still be pruned. Archives that cannot be deleted while open in a viewer are retried later without blocking active-file rotation.
+
+Copy/truncate follows the application logger's existing policy; writes concurrent with the interval between the copied snapshot and truncation can be lost. Maintenance runs outside the business event loop, failures produce warnings, and shutdown waits at most 0.2 seconds for the maintenance thread. Limits reuse `_LOG_FILE_MAX_BYTES` and `_LOG_FILE_BACKUP_COUNT` in `common/utils.py`; no `config.yaml` option is added.

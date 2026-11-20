@@ -81,6 +81,26 @@ def test_worker_main_activates_external_cli_paths_before_runtime_load(
     assert signal.getsignal(signal.SIGINT) == previous_handler
 
 
+def test_worker_main_starts_output_rotation_before_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    restore_process_state: None,
+) -> None:
+    from jiuwenswarm.server.worker import output_logs
+    from jiuwenswarm.server.worker import service
+
+    order = []
+    _patch_scaffolding(monkeypatch)
+    monkeypatch.setattr(output_logs, "start_worker_log_rotation", lambda: order.append("rotation"))
+    monkeypatch.setattr(worker_main, "_activate_managed_external_cli_paths", lambda: None)
+
+    async def serve(*_args, **_kwargs):
+        order.append("runtime")
+
+    monkeypatch.setattr(service, "serve_worker", serve)
+    worker_main.main()
+    assert order == ["rotation", "runtime"]
+
+
 def test_worker_main_survives_activation_failure(
     monkeypatch: pytest.MonkeyPatch,
     restore_process_state: None,

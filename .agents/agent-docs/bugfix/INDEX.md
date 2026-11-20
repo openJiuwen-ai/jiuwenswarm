@@ -113,6 +113,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261114_1302_terminal-metrics-and-model-errors](jiuwenswarm/agents/harness/common/rsi/B_20261114_1302_terminal-metrics-and-model-errors.md) | B | RSI 终态统计、侧栏运行态和论文模型错误修复 | l_x_d | jiuwenswarm/agents/harness/common/rsi, jiuwenswarm/channels/web/frontend/src/features/rsi | jiuwenswarm/agents/harness/common/rsi/services.py, jiuwenswarm/agents/harness/common/rsi/artifact_adapter.py, jiuwenswarm/channels/web/frontend/src/features/rsi/rsiStore.ts | 无独立 D：按用户确认修复现有行为及 Issue 6558、6539、6532，无独立设计。 |
+| [B_20261119_1104_paper-snapshot-restart](jiuwenswarm/agents/harness/common/rsi/B_20261119_1104_paper-snapshot-restart.md) | B | 论文优化历史快照的重启恢复 | l_x_d | jiuwenswarm/agents/harness/common/rsi | jiuwenswarm/agents/harness/common/rsi/paper_workspace_provider.py, jiuwenswarm/agents/harness/common/rsi/provider_factory.py, tests/unit_tests/rsi/test_provider_snapshot_restart.py | 无独立 D：按确认的重启恢复用例修复既有行为，无独立设计。 |
 
 <a id="module-9"></a>
 
@@ -261,6 +262,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261107_1505_6226-forwarding-replay](jiuwenswarm/server/supervisor/B_20261107_1505_6226-forwarding-replay.md) | B | 历史回放触发转发队列溢出及前端计时不收尾 | kdgmpw | jiuwenswarm/server/supervisor, jiuwenswarm/channels/web/frontend | jiuwenswarm/server/supervisor/runtime_supervisor.py, jiuwenswarm/channels/web/frontend/src/hooks/useWebSocket.ts, tests/unit_tests/agentserver/test_supervisor_forwarding.py, jiuwenswarm/channels/web/frontend/tests/sessionInput.test.mjs | 无独立 D：对现有有界转发及前端终态处理的小范围修复，无独立设计。 |
+| [B_20261120_1622_worker-output-log-retention](jiuwenswarm/server/worker/B_20261120_1622_worker-output-log-retention.md) | B | 限制 Worker stderr 与历史诊断文件的磁盘累积 | 刘瑜 | jiuwenswarm/server/worker, jiuwenswarm/server/supervisor | jiuwenswarm/server/worker/output_logs.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/supervisor/worker_process.py, tests/unit_tests/agentserver/test_worker_output_logs.py, tests/unit_tests/agentserver/test_worker_entrypoint.py | 无独立 D：用户明确要求参考现有日志规则为 worker-logs 增加轮转，属于现有输出链路的局部修复，无独立设计。 |
 
 <a id="module-25"></a>
 
@@ -269,6 +271,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
 | [B_20261105_1518_worker-dispatch-slot-accounting](jiuwenswarm/server/worker/B_20261105_1518_worker-dispatch-slot-accounting.md) | B | Worker 派发容量排除已返回的 handler | kdgmpw | jiuwenswarm/server/worker | jiuwenswarm/server/worker/event_store.py | 无独立 D：按会话中确认的最小修复方案调整 Worker 内部计数。 |
+| [B_20261120_1622_worker-output-log-retention](jiuwenswarm/server/worker/B_20261120_1622_worker-output-log-retention.md) | B | 限制 Worker stderr 与历史诊断文件的磁盘累积 | 刘瑜 | jiuwenswarm/server/worker, jiuwenswarm/server/supervisor | jiuwenswarm/server/worker/output_logs.py, jiuwenswarm/server/worker/main.py, jiuwenswarm/server/supervisor/worker_process.py, tests/unit_tests/agentserver/test_worker_output_logs.py, tests/unit_tests/agentserver/test_worker_entrypoint.py | 无独立 D：用户明确要求参考现有日志规则为 worker-logs 增加轮转，属于现有输出链路的局部修复，无独立设计。 |
 
 <a id="module-26"></a>
 

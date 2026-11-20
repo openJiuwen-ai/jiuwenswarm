@@ -85,6 +85,9 @@ def _activate_managed_external_cli_paths() -> None:
 
 
 def main() -> None:
+    from jiuwenswarm.server.worker.output_logs import start_worker_log_rotation
+
+    start_worker_log_rotation()
     logging.basicConfig(level=logging.INFO)
     from jiuwenswarm.common.background_logging import (
         enable_background_logging,
