@@ -12,9 +12,9 @@ files: [jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/
 
 # Coding 文档记忆接入
 
-最近一次修订日期：2026-11-19。
+最近一次修订日期：2026-11-23。
 
-## 配置与选择
+## 单人 Coding 配置与选择
 
 | 配置 | 作用 |
 |---|---|
@@ -25,11 +25,11 @@ files: [jiuwenswarm/server/runtime/agent_adapter/interface_deep.py, jiuwenswarm/
 | `memory.builtin.jiuwen.mode` | 模板缺省 `sdk`；`http` 连接服务；配置和环境变量均空时回落 `http` |
 | `memory.builtin.jiuwen.sdk` | SDK 内核配置；模板使用本地 hashing 向量、64 维，LLM 沿用 Swarm 默认模型；可覆盖 embedder、模型、根目录及看门狗配置 |
 | `memory.builtin.jiuwen.user_id/scope_id/space/session_id` | 沿用已有身份配置；session 默认空字符串，不自动绑定聊天会话 ID |
-| `memory.builtin.jiuwen.agent_id` | 无运行 Agent 名称时的兜底值，最终默认 `jiuwenswarm` |
+| `memory.builtin.jiuwen.agent_id` | Work/Code/Team 共用的记忆身份，默认 `main_agent`；不取运行 Agent 名称 |
 
 永恒会话不挂新 Rail。选中 jiuwen 后，条件不满足或初始化失败均不回退旧 CodingMemoryRail；ProjectMemoryRail 独立遵循总开关。Code 不挂工作模式 MemoryRail/JiuwenMemoryRail/ExternalMemoryRail。
 
-冷启动、模式变化、Spec 热重载都使用 `_build_coding_memory_rail` 的选择，项目或身份等输入改变时替换；替换同时更新未来 code_agent 的配置。AutoMemory 保持原设计：`agent.code.*` 读全局 `auto_memory_enabled`，历史 `code.*` 读 `modes.code.memory.auto_coding_memory`，同时受记忆总开关控制；不因选择 jiuwen 跳过。抽取子任务继续用旧工具和 `coding_memory/{项目键}/`，不继承 Jiuwen 编码 Rail 或其工具，避免对子任务再次触发 `sync_turn`；因此 Jiuwen 场景的模型前缀缓存复用可能减少。`sync_turn` 不受 AutoMemory 开关控制，两者分别抽取、分别落盘，不自动合并或迁移。Dreaming 不变，Team Code 保持原路径。
+冷启动、模式变化、Spec 热重载都使用 `_build_coding_memory_rail` 的选择，项目或身份等输入改变时替换；替换同时更新未来 code_agent 的配置。AutoMemory 保持原设计：`agent.code.*` 读全局 `auto_memory_enabled`，历史 `code.*` 读 `modes.code.memory.auto_coding_memory`，同时受记忆总开关控制；不因选择 jiuwen 跳过。抽取子任务继续用旧工具和 `coding_memory/{项目键}/`，不继承 Jiuwen 编码 Rail 或其工具，避免对子任务再次触发 `sync_turn`；因此 Jiuwen 场景的模型前缀缓存复用可能减少。`sync_turn` 不受 AutoMemory 开关控制，两者分别抽取、分别落盘，不自动合并或迁移。Dreaming 不变；Team Jiuwen 路线见下节。
 
 在现有工作模式 jiuwen 配置上启用 Coding 的最小示例（模型配置沿用现有 sdk / Swarm 配置）：
 
@@ -47,7 +47,7 @@ memory:
       mode: sdk
       user_id: my-user
       scope_id: my-org
-      agent_id: jiuwenswarm  # 仅在无运行 Agent 名称时兜底
+      agent_id: main_agent  # 三种模式统一使用此记忆身份
       sdk:
         markdown_store:
           default:
@@ -58,11 +58,11 @@ memory:
 
 ## 身份和存储
 
-Work/Code 都优先以运行 Agent 名称绑定记忆；没有名称时才回落配置 agent_id，再回落 jiuwenswarm。普通创建按实例 agent_name、react.agent_name、main_agent 依次解析；SDK Agent 定义的 name 优先。Code 继续支持调用方 Spec 中的名称。初始化和热更新保持有效名称一致，实际名称改变会重建记忆 Rail。session_id 如实传入，默认空字符串，不强制清空显式配置。Team 保持既有路径。
+Jiuwen 路线的 Work/Code/Team 统一以 memory.builtin.jiuwen.agent_id 绑定记忆，未配置或空值时使用 main_agent。运行 Agent 的名称、角色及其原解析方式不变；实例参数、Agent 定义和成员名称不覆盖记忆身份。配置身份改变会重建记忆 Rail，仅运行名称变化不会。session_id 如实传入，默认空字符串，不强制清空显式配置。公共 builder 的 agent_name 参数保留调用兼容，但不再参与记忆身份解析。
 
-单人 Work/Code 共用 markdown 根（默认用户工作区下 agent/workspace），显式 root 优先。共用根目录与身份解析独立。在 SDK 路径，org/user/space 相同、Agent 同名时可跨模式共享画像；不同 Agent 名称按 Scope 查询隔离，包括画像。普通聊天的新建和刷新不生成新的记忆 Agent 名称。文档读取仍匹配 session；现有影子索引搜索跨 session，不能把显式 session 视为所有查询的隔离开关。
+单人 Work/Code 共用 markdown 根（默认用户工作区下 agent/workspace），显式 root 优先。共用根目录与身份解析独立。在 SDK 路径，org/user/space 及配置的 agent_id 相同即可跨模式共享画像；不同运行名称的自定义助手也共享。不同配置身份仍按 Scope 过滤。普通聊天的新建、刷新和成员替换不改变配置身份。文档读取仍匹配 session；现有影子索引搜索跨 session，不能把显式 session 视为所有查询的隔离开关。
 
-既有数据保留写入时的 Scope；变更 Agent 身份不会自动迁移记忆。
+既有数据保留写入时的 Scope，不自动迁移或跨 Agent 兜底搜索。默认 main_agent 与原默认写入身份对齐；其他维度不变时可继续访问原默认身份数据。已有配置若显式设置其他 agent_id，则仍使用该值；需访问旧 main_agent 数据时应调整为 main_agent。配置统一作用于三种模式，不合并多个旧身份。
 
 Work/Code 项目键统一使用 `resolve_coding_memory_project_name`：规范绝对路径的目录名 + 12 位摘要，同名不同目录隔离；未指定项目为 default。Code 工具不能覆盖该键；Work 自动回调及工具默认值取当前所选项目，未选项目归入 default，显式项目坐标仍可访问既有记忆。相同文档根或服务、相同允许访问的身份下，两种模式选择同一项目路径即可共享项目记忆；不同路径保持隔离。共享画像为 USER.md，项目内容在 memory/{项目键}/；详见 agent-memory 的 S11。
 
@@ -114,11 +114,25 @@ Jiuwen 编码 Rail 创建或重建失败时清空编码槽位，不保留旧实�
 
 ## 场景装配扩展
 
-`build_jiuwen_memory_rail` 是 Jiuwen 记忆专用装配入口，不负责其他功能 Rail。公开参数和默认值保持不变；通过场景工厂获得 Rail 类型、Provider 参数及 Rail 参数，再执行公共身份解析和 SDK/HTTP 装配。
+`build_jiuwen_memory_rail` 是 Jiuwen 记忆专用装配入口，不负责其他功能 Rail。既有参数和默认值保持不变，追加可选 team_binding；通过场景工厂获得 Rail 类型、Provider 参数及 Rail 参数，再执行公共身份解析和 SDK/HTTP 装配。
 
 内置 `agent` 工厂延迟导入 Work Rail，并选择上游增强版 `SwarmJiuwenMemoryRail`，保留按实际项目路径解析与 `session_end_extract`；`code` 工厂仅导入 Coding Rail，并传递绑定的 `scene/project`。工厂每次返回独立参数，不缓存 Provider 或 Rail。未注册场景、依赖缺失或创建失败返回 None，由现有调用方执行停用策略。
 
 扩展接入时新增场景工厂并注册；若记忆行为不同，同时在 agent-memory 注册对应场景策略。新 Rail 沿用现有 Provider 协议，调用时机仍由 Core Rail 定义。该注册机制不增加用户配置键，也不改变原生记忆、项目身份、热更新或 AutoMemory 规则。
 
 
-SDK 装配保留上游视频/音频模型与获准媒体目录的透传；Work 重建指纹同时包含运行 Agent 名称和媒体配置。启动看门狗前，仅归档受管文档根中未修改的默认 MEMORY.md 模板，保留用户编辑内容与自定义根目录文件。
+SDK 装配保留视频/音频模型与获准媒体目录的透传；首次装配在配置允许时绑定当前用户／租户的稳定 sessions 父目录，Work/Code/Team 的创建顺序不影响后续会话视频导入。Work 重建指纹包含配置中的记忆身份和媒体配置，目录授权绑定同一身份；部署者显式配置的目录授权保留。创建新会话不新增授权配置，共享 Runtime 仍采用首份配置；权限与模型变化不因此获得热更新能力。媒体授权范围及门禁见同目录 S_01_multimodal-tool-loading。启动看门狗前，仅归档受管文档根中未修改的默认 MEMORY.md 模板，保留用户编辑内容与自定义根目录文件。
+
+## Team 扩展
+
+team.work、team.code 仅按 memory.builtin.provider=jiuwen 选择并启用新团队记忆，不受 modes.team.*.memory.enabled、modes.agent/code.memory.enabled 或 memory.mode/engine 控制；旧开关关闭或未配置时仍挂载 Team Rail。SDK/HTTP 参数及宿主团队坐标仍须有效；缺少团队坐标时记录告警并跳过 Rail，初始化失败不回退旧记忆。team.design 和 provider 为空时保持原生路线；单人 Work/Code 的开关和门禁不变。
+
+团队入口将配置身份 memory_agent_name、memory_project、memory_team 写入 SwarmBuildContext 及其 seed；恢复时重新按当前配置解析记忆身份，不使用 seed 中旧运行名称。Leader 和成员沿用同一记忆身份，各持独立 Rail/Provider/缓存。入口自身不执行记忆预取与回写，不装原生 TeamMemoryManager。SDK 按规范根目录共享 Runtime，首份配置生效，后续差异告警；身份在每次请求解析。HTTP 不创建本地 Runtime。builder 的 shared_document_root 仅作兼容参数保留，SDK 始终提供共享根目录，HTTP 忽略该参数。
+
+团队键为项目键加 -- 和 org/user/项目/专家团 JSON 数组 SHA-256 前 24 位；无项目 default，无专家团空字符串。不以会话、成员、sidebar 拆分。USER.md 画像共享；项目事实按项目隔离；memory/teams/{team}/MEMORY.md 只供同团队查询，单人排除团队类别。
+
+Team 的四个工具为 team_memory_search/read/write/edit。项目、团队均由宿主绑定；项目和团队搜索各最多 5 条，画像及兜底文档不受此限制。自动抽取分别生成画像/项目事实和团队结论；未确认草稿不落盘。敏感内容过滤沿用原开关，同时覆盖 Team write/edit、自动 sync_turn 和结论写入。
+
+租约构造成功才计入引用；首次绑定失败清理无人持有的实例，已有实例的借用失败不增加引用、不影响原持有者。成员退出归还租约；最后一个引用退出前等待已接受操作结束。正常关闭期间的新申请等待完成后重新查找或创建实例，等待不阻塞其他根目录；关闭失败继续隔离，不新建覆盖旧实例。进程退出清理资源。独立 Provider 未使用宿主持有者时保持原生命周期；SDK continuity 池的配置和主体冲突规则不变。
+
+Jiuwen Team 入口不挂 ProjectMemoryRail，冷启动、模式切换和重建都遵循这一限制；切回单人 Code 后按原开关恢复。此限制不移除编码回答者上的 ProjectMemoryRail；provider 为空的原生路线不变。

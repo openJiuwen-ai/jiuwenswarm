@@ -6,7 +6,9 @@ Single-agent Code mode supports native file memory or agent-memory document memo
 
 Edit the active `config.yaml`; the template is `jiuwenswarm/resources/config.yaml`. `modes.code.memory.enabled` controls Coding memory and `ProjectMemoryRail`, which reads local project instructions. It defaults to `true`. The repository template defaults `memory.builtin.provider` to `jiuwen` for document memory. An explicitly empty value, or a missing field in an older configuration, selects the native `CodingMemoryRail`.
 
-To select Jiuwen SDK document memory:
+The switches above apply to single-agent mode. For `team.work` and `team.code`, selecting `memory.builtin.provider=jiuwen` enables Team memory regardless of `modes.team.*.memory.enabled`, single-agent Work/Code switches or `memory.mode/engine`. Valid SDK/HTTP and model configuration is still required. An empty provider and `team.design` retain their existing behavior.
+
+To select Jiuwen SDK document memory for single-agent Code:
 
 ```yaml
 modes:
@@ -22,7 +24,7 @@ memory:
       mode: sdk
       user_id: my-user
       scope_id: my-org
-      agent_id: jiuwenswarm  # Fallback when no runtime Agent name exists
+      agent_id: main_agent  # Shared memory identity for Work/Code/Team
       session_id: ""        # Not automatically bound to the chat session
       space: ""
       sdk:
@@ -46,7 +48,7 @@ jiuwen:
   identity_user: developer
   user_id: my-user
   scope_id: my-org
-  agent_id: jiuwenswarm
+  agent_id: main_agent
   session_id: ""
   space: ""
 ```
@@ -71,7 +73,9 @@ Normal Jiuwen turns read the user profile and retrieve project memories. Empty r
 
 ## Identity and Storage
 
-Work and Code prefer the runtime Agent name, falling back to configured `agent_id`. With SDK, matching org/user/space and Agent name permit shared profiles; different Agents remain filtered by Scope. `session_id` is passed through and defaults to an empty string. Document reads match session, while existing shadow-index searches span sessions. HTTP identity mapping follows the service protocol and must match its authentication configuration.
+The Jiuwen route uses `memory.builtin.jiuwen.agent_id` for Work, Code and Team, defaulting to `main_agent`. Runtime Agent names do not override it. With SDK, matching org/user/space and configured identity permit shared profiles, including assistants with different runtime names. Project facts stay project-scoped; team conclusions stay team-scoped. Different users or configured identities remain filtered by Scope. `session_id` is passed through and defaults to an empty string. Document reads match session, while existing shadow-index searches span sessions. HTTP identity mapping follows the service protocol and must match its authentication configuration.
+
+The default `main_agent` retains the previous default memory identity. An explicit `agent_id` still takes precedence; change it to `main_agent` if access to that legacy identity is required. Existing data is not migrated or merged automatically.
 
 Work and Code use the same project key: the canonical path's directory name plus a 12-character digest. Same-named projects at different paths remain separate; no project means `default`. Both modes can share project memories when connected to the same memory store, permitted by the identity filters, and using the same project path. Code tools cannot override this key. Work tools default to the current project and retain explicit coordinates for accessing existing memories.
 
@@ -99,3 +103,5 @@ Dreaming retains its existing behavior; this integration does not redirect it to
 - [Modes](Modes.md)
 - [Task Memory](TaskMemory.md)
 - [Documentation home](../README.md)
+
+With Jiuwen Team selected, the entry agent does not load project instructions. Coding responders may retain `ProjectMemoryRail`. Switching back to single-agent Code restores entry-level project instructions according to the existing memory switch.
