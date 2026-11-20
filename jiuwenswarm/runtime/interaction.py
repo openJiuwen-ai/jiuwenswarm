@@ -88,25 +88,30 @@ ANSWER_SOURCE_WHITELIST = frozenset(INTERRUPT_RESUME_SOURCES) | frozenset(
 
 
 def validate_answer_source(params: object) -> None:
-    """Reject answers carried under a source no transport defines (#6285, #6857).
+    """Reject answers no transport could treat as an interrupt resume (#6285, #6857).
 
-    A ``chat.send`` carrying ``answers`` but a typo'd/unknown ``source`` is not
-    an interrupt resume: it is classified as a plain turn and queues behind the
-    interaction still waiting for that answer, deadlocking the session without
-    a terminal frame. Rejecting here — before lane admission — guarantees the
-    client an error response.
+    An interrupt resume is recognised only when ``answers`` is a non-empty
+    ``list`` and ``source`` is a known interrupt source
+    (``has_interrupt_resume_payload``). A ``chat.send`` carrying answers in any
+    other shape is classified as a plain turn and queues behind the interaction
+    still waiting for that answer, deadlocking the session without a terminal
+    frame. Rejecting here — before lane admission — guarantees the client an
+    error response.
 
-    The answered question's ``request_id`` is not required for this check: a
-    payload whose ``answers`` is a mapping rather than the answer list (#6857)
-    can never be a resume either, and without the rejection it is admitted as a
-    plain turn and hangs the same way.
+    A mapping ``answers`` payload is rejected whatever its ``source`` is
+    (#6857): the runtime only resumes on a list, so a whitelisted source must
+    not launder a shape that can never be a resume.
     """
     if not isinstance(params, Mapping):
         return
     answers = params.get("answers")
+    if isinstance(answers, Mapping):
+        raise InteractionAnswerError(
+            "answers must be a sequence of answers, not a mapping"
+        )
     if (
         isinstance(answers, (str, bytes))
-        or not isinstance(answers, (Mapping, Sequence))
+        or not isinstance(answers, Sequence)
         or not answers
     ):
         return
