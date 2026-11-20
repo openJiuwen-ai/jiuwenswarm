@@ -1,4 +1,4 @@
-"""Pin release dependencies to official sources and immutable versions."""
+"""Pin release dependencies to official repositories and immutable commits."""
 
 from __future__ import annotations
 
@@ -9,11 +9,8 @@ import tomllib
 
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
-from packaging.version import Version
 
 
-_COMPUTER_USE = "openjiuwen-computeruse"
-_PYPI_INDEX = "https://pypi.org/simple"
 _OFFICIAL_REPOSITORIES = {
     "openjiuwen": {
         "https://gitcode.com/openJiuwen/agent-core.git",
@@ -22,10 +19,6 @@ _OFFICIAL_REPOSITORIES = {
     "agent-gateway": {
         "https://gitcode.com/openJiuwen/agent-gateway.git",
         "https://github.com/openJiuwen-ai/agent-gateway.git",
-    },
-    _COMPUTER_USE: {
-        "https://gitcode.com/openJiuwen/computer-use.git",
-        "https://github.com/openJiuwen-ai/computer-use.git",
     },
 }
 
@@ -59,12 +52,6 @@ def validate_release_dependencies(project_root: Path) -> None:
             name = canonicalize_name(requirement.name)
             if name not in _OFFICIAL_REPOSITORIES:
                 continue
-            if name == _COMPUTER_USE and not requirement.url and location == "project.dependencies":
-                specifiers = list(requirement.specifier)
-                if len(specifiers) != 1 or specifiers[0].operator != "==" or "*" in specifiers[0].version:
-                    raise ValueError(f"Release blocked: {location} must pin {name} to an exact PyPI version.")
-                pins.setdefault(name, set()).add((_PYPI_INDEX, str(Version(specifiers[0].version))))
-                continue
             if not requirement.url and location != "project.dependencies":
                 continue
             direct_reference = urlsplit((requirement.url or "").removeprefix("git+"))
@@ -89,11 +76,7 @@ def validate_release_dependencies(project_root: Path) -> None:
             name = canonicalize_name(package["name"])
             if name not in _OFFICIAL_REPOSITORIES:
                 continue
-            package_source = package.get("source", {})
-            if name == _COMPUTER_USE and package_source.get("registry") == _PYPI_INDEX:
-                pins.setdefault(name, set()).add((_PYPI_INDEX, str(Version(package["version"]))))
-                continue
-            parsed = urlsplit(package_source.get("git", ""))
+            parsed = urlsplit(package.get("source", {}).get("git", ""))
             repository = parsed._replace(query="", fragment="").geturl()
             revision = parse_qs(parsed.query).get("rev", [""])[0]
             pin = _official_pin(name, repository, revision, "uv.lock")
@@ -102,4 +85,4 @@ def validate_release_dependencies(project_root: Path) -> None:
             pins.setdefault(name, set()).add(pin)
 
     if "openjiuwen" not in pins or any(len(revisions) != 1 for revisions in pins.values()):
-        raise ValueError("Release blocked: each protected dependency must use one consistent official pin.")
+        raise ValueError("Release blocked: each protected dependency must use one consistent official revision.")

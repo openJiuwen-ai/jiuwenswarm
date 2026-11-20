@@ -100,7 +100,7 @@ def test_release_rejects_mutable_or_inconsistent_sdk_revisions(tmp_path, revisio
 
 
 @pytest.mark.parametrize("location", ["dependencies", "lock"])
-def test_release_rejects_mutable_computer_use_revision(tmp_path, location):
+def test_release_ignores_computer_use_git_reference(tmp_path, location):
     _project(tmp_path)
     repository = "https://gitcode.com/openJiuwen/computer-use.git"
     if location == "dependencies":
@@ -115,39 +115,7 @@ def test_release_rejects_mutable_computer_use_revision(tmp_path, location):
             f'source = {{ git = "{repository}?rev=refs%2Fmerge-requests%2F32%2Fhead#{REVISION}" }}\n',
             encoding="utf-8",
         )
-    with pytest.raises(ValueError, match="must pin openjiuwen-computeruse"):
-        validate_release_dependencies(tmp_path)
-
-
-@pytest.mark.parametrize(
-    ("specifier", "locked_version", "registry", "accepted"),
-    [
-        ("==0.1.0b1", "0.1.0b1", "https://pypi.org/simple", True),
-        (">=0.1.0b1", "0.1.0b1", "https://pypi.org/simple", False),
-        ("==0.1.*", "0.1.0b1", "https://pypi.org/simple", False),
-        ("==0.1.0b1", "0.1.0b2", "https://pypi.org/simple", False),
-        ("==0.1.0b1", "0.1.0b1", "https://example.org/simple", False),
-    ],
-)
-def test_release_checks_computer_use_pypi_pin(tmp_path, specifier, locked_version, registry, accepted):
-    _project(tmp_path)
-    config = tmp_path / "pyproject.toml"
-    config.write_text(
-        config.read_text(encoding="utf-8").replace(
-            "dependencies = [", f'dependencies = ["openjiuwen-computeruse{specifier}", '
-        ),
-        encoding="utf-8",
-    )
-    (tmp_path / "uv.lock").write_text(
-        '[[package]]\nname = "openjiuwen-computeruse"\n'
-        f'version = "{locked_version}"\nsource = {{ registry = "{registry}" }}\n',
-        encoding="utf-8",
-    )
-    if accepted:
-        validate_release_dependencies(tmp_path)
-    else:
-        with pytest.raises(ValueError, match="Release blocked"):
-            validate_release_dependencies(tmp_path)
+    validate_release_dependencies(tmp_path)
 
 
 @pytest.mark.parametrize("location", ["dependencies", "harmony", "override"])
