@@ -1,5 +1,6 @@
 import { copy } from '../copy';
-import { imageDataUrl, type OutgoingImageAttachment } from '../sessionFacade';
+import type { QueuedMessage } from '../paneController';
+import { attachmentBytes, imageDataUrl, isImage, type OutgoingAttachment } from '../sessionFacade';
 import { h } from './dom';
 import { dropdown } from './dropdown';
 import { icon } from './icons';
@@ -11,28 +12,68 @@ export type Waiting = 'document' | 'displaced' | 'offline' | 'prompt' | 'history
 /** The tallest the message box grows before it scrolls. */
 const MAX_INPUT_PX = 160;
 
-/** The images a message takes, by extension, as the web chat and ``media.persist`` take them. */
-const IMAGE_TYPES: Readonly<Record<string, string>> = {
+/**
+ * The files a message takes, by extension: images as ``media.persist`` takes them, and the documents the agent reads
+ * by their path once ``document.persist`` stores them.
+ */
+const FILE_TYPES: Readonly<Record<string, string>> = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif',
+  '.pdf': 'application/pdf', '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.potx': 'application/vnd.openxmlformats-officedocument.presentationml.template',
+  '.csv': 'text/csv', '.txt': 'text/plain', '.json': 'application/json', '.md': 'text/markdown',
 };
 const MAX_IMAGE_MB = 10;
+const MAX_DOCUMENT_MB = 30;
 /** ``media.persist`` keeps the first eight images of a message. */
 const MAX_IMAGES = 8;
-/** A read the host never ends is given up after this long, so the image stops holding the message. */
+const MAX_FILES = 20;
+/** A read the host never ends is given up after this long, so the file stops holding the message. */
 const READ_TIMEOUT_MS = 10_000;
 
-/** An image in the box: shown from the moment it is added, sendable once read. */
-interface BoxImage {
+/** A file in the box: shown from the moment it is added, sendable once read. */
+interface BoxFile {
   filename: string;
-  read?: OutgoingImageAttachment;
+  size: number;
+  image: boolean;
+  read?: OutgoingAttachment;
+}
+
+interface Candidate { name: string; size: number; mimeType: string | undefined }
+
+/** Which of ``candidates`` the box can take besides what it ``holds``, and why it cannot take the others. */
+function admit<C extends Candidate>(
+  holds: readonly BoxFile[], candidates: readonly C[],
+): { taken: (C & { mimeType: string })[]; refusals: string[] } {
+  const refusals: string[] = [];
+  const taken: (C & { mimeType: string })[] = [];
+  let images = holds.filter(file => file.image).length;
+  for (const candidate of candidates) {
+    const { name, size, mimeType } = candidate;
+    const image = mimeType?.startsWith('image/');
+    if (!mimeType) refusals.push(copy.fileType(name));
+    else if (image && size > MAX_IMAGE_MB * 1024 * 1024) refusals.push(copy.imageSize(name, MAX_IMAGE_MB));
+    else if (!image && size > MAX_DOCUMENT_MB * 1024 * 1024) refusals.push(copy.documentSize(name, MAX_DOCUMENT_MB));
+    else if (holds.length + taken.length >= MAX_FILES) {
+      refusals.push(copy.fileCount(MAX_FILES));
+      break;
+    } else if (image && images >= MAX_IMAGES) refusals.push(copy.imageCount(MAX_IMAGES));
+    else {
+      taken.push({ ...candidate, mimeType });
+      if (image) images += 1;
+    }
+  }
+  return { taken, refusals: [...new Set(refusals)] };
 }
 
 /**
  * The message box: Enter sends, Shift+Enter breaks the line. Send and Stop
  * share one button: while a turn runs and the box is empty it stops the turn,
- * and a message typed meanwhile stops it and goes on as a supplement. Images
- * picked, pasted or dropped go with the next message; a supplement carries
- * text only, so a message with images waits for the turn to end. Below the
+ * and a message written meanwhile waits in the queue above the box. Images
+ * and documents picked, pasted or dropped go with the next message. Below the
  * box, the model the next message runs on.
  */
 export class Composer {
@@ -41,14 +82,16 @@ export class Composer {
   });
   private readonly button = h('button', { type: 'button', class: 'send-button' });
   private readonly picker = h('input', {
-    type: 'file', accept: [...new Set(Object.values(IMAGE_TYPES))].join(','), multiple: true, hidden: true,
+    type: 'file', accept: Object.keys(FILE_TYPES).join(','), multiple: true, hidden: true,
   });
   private readonly attachButton = h('button', {
-    type: 'button', class: 'icon-button attach-button', 'aria-label': copy.addImages, title: copy.addImages,
+    type: 'button', class: 'icon-button attach-button', 'aria-label': copy.addFiles, title: copy.addFiles,
     onclick: () => this.picker.click(),
-  }, icon('image'));
+  }, icon('attach'));
   private readonly thumbnails = h('ul', { class: 'composer-images', hidden: true });
   private readonly note = h('p', { class: 'composer-note', role: 'status', hidden: true });
+  private readonly queueList = h('ul', { class: 'queue', 'aria-label': copy.queue, hidden: true });
+  private shownQueue: { queue: readonly QueuedMessage[]; running: boolean } | undefined;
   private readonly card = h('div', { class: 'composer-card' },
     this.thumbnails, this.attachButton, this.picker, this.input, this.button);
   private readonly modelName = h('span', { class: 'model-name' });
@@ -56,19 +99,20 @@ export class Composer {
     this.modelName, icon('chevron'));
   private readonly modelMenu = h('div', { class: 'menu', id: 'model-menu', role: 'group', 'aria-label': copy.model });
   private readonly modelBar = h('div', { class: 'composer-foot' }, this.modelButton, this.modelMenu);
-  readonly element = h('footer', { class: 'composer' }, this.card, this.note, this.modelBar);
+  readonly element = h('footer', { class: 'composer' }, this.queueList, this.card, this.note, this.modelBar);
   private readonly models = dropdown(this.modelButton, this.modelMenu, this.modelBar);
   private shownModels: { models: readonly string[]; model: string | undefined } | undefined;
   private state = { enabled: false, running: false };
   /** The box had the focus when it was disabled, as when a question came; it gets it back when enabled. */
   private refocus = false;
-  private images: readonly BoxImage[] = [];
-  /** Why the last images added were not all taken. */
+  private files: readonly BoxFile[] = [];
+  /** Why the last files added were not all taken. */
   private refusal = '';
 
   constructor(private readonly noun: string, private readonly actions: {
-    send: (text: string, images: readonly OutgoingImageAttachment[]) => Promise<boolean>;
+    send: (text: string, attachments: readonly OutgoingAttachment[]) => Promise<boolean>;
     stop: () => void; chooseModel: (model: string) => void;
+    sendNow: (id: string) => void; unqueue: (id: string) => QueuedMessage | undefined;
   }) {
     this.button.addEventListener('click', () => (this.stops() ? actions.stop() : void this.submit()));
     this.input.addEventListener('keydown', event => {
@@ -82,7 +126,7 @@ export class Composer {
       this.paint();
     });
     this.picker.addEventListener('change', () => {
-      void this.addImages([...this.picker.files ?? []]);
+      void this.addFiles([...this.picker.files ?? []]);
       this.picker.value = '';
     });
     this.input.addEventListener('paste', event => {
@@ -92,7 +136,7 @@ export class Composer {
       const files = clipboardFiles(data);
       if (!files.length) return;
       event.preventDefault();
-      void this.addImages(files);
+      void this.addFiles(files);
     });
     this.card.addEventListener('dragover', event => {
       if (!event.dataTransfer?.types.includes('Files')) return;
@@ -108,15 +152,17 @@ export class Composer {
       const files = [...event.dataTransfer?.files ?? []];
       if (!files.length) return;
       event.preventDefault();
-      if (this.state.enabled) void this.addImages(files);
+      if (this.state.enabled) void this.addFiles(files);
     });
   }
 
   /** ``waiting`` says why a disabled box is disabled. */
-  update({ enabled, running, waiting = 'document', models, model }: {
+  update({ enabled, running, waiting = 'document', models, model, queue }: {
     enabled: boolean; running: boolean; waiting?: Waiting; models: readonly string[]; model: string | undefined;
+    queue: readonly QueuedMessage[];
   }): void {
     this.showModels(models, model);
+    this.showQueue(queue, running);
     this.state = { enabled, running };
     if (!enabled && !this.input.disabled) this.refocus = document.activeElement === this.input;
     const reenabled = enabled && this.input.disabled;
@@ -149,6 +195,45 @@ export class Composer {
     }, h('span', { class: 'menu-item-title' }, name), name === model ? icon('check', 'menu-check') : null)));
   }
 
+  /**
+   * The waiting messages: one goes back to the box for editing, goes now, or is dropped. While the turn runs, one
+   * with files cannot go now, as a supplement carries text only.
+   */
+  private showQueue(queue: readonly QueuedMessage[], running: boolean): void {
+    if (this.shownQueue?.queue === queue && this.shownQueue.running === running) return;
+    this.shownQueue = { queue, running };
+    this.queueList.hidden = !queue.length;
+    this.queueList.replaceChildren(...queue.map(item => {
+      const preview = item.text.trim() || item.attachments.map(file => file.filename).join('、');
+      return h('li', { class: 'queue-item' },
+        h('button', {
+          type: 'button', class: 'queue-text', title: copy.editQueued, onclick: () => this.edit(item.id),
+        }, preview),
+        item.attachments.length ? h('span', { class: 'chip' }, icon('attach'), String(item.attachments.length)) : null,
+        running && item.attachments.length ? null : h('button', {
+          type: 'button', class: 'icon-button', 'aria-label': copy.sendNow, title: copy.sendNow,
+          onclick: () => this.actions.sendNow(item.id),
+        }, icon('send')),
+        h('button', {
+          type: 'button', class: 'icon-button', 'aria-label': copy.removeQueued(preview),
+          title: copy.removeQueued(preview), onclick: () => this.actions.unqueue(item.id),
+        }, icon('close')));
+    }));
+  }
+
+  /** A waiting message back in the box, after what the box already holds. */
+  private edit(id: string): void {
+    const item = this.actions.unqueue(id);
+    if (!item) return;
+    const { taken, refusals } = admit(this.files, item.attachments.map(read => (
+      { read, name: read.filename, size: attachmentBytes(read), mimeType: read.mimeType })));
+    this.refusal = refusals.join('；');
+    this.files = [...this.files, ...taken.map(({ read }) => (
+      { filename: read.filename, size: attachmentBytes(read), image: isImage(read), read }))];
+    this.paintFiles();
+    this.fill(this.input.value.trim() ? `${this.input.value}\n${item.text}` : item.text);
+  }
+
   /** Put a suggestion in the box for the user to send or change. */
   fill(text: string): void {
     this.input.value = text;
@@ -157,71 +242,70 @@ export class Composer {
     this.input.focus();
   }
 
-  /** Take the images a message can carry; say why the others were refused. */
-  private async addImages(files: readonly File[]): Promise<void> {
-    const refusals: string[] = [];
-    const taken: { file: File; mimeType: string }[] = [];
-    for (const file of files) {
-      const mimeType = imageType(file);
-      if (!mimeType) refusals.push(copy.imageType(file.name));
-      else if (file.size > MAX_IMAGE_MB * 1024 * 1024) refusals.push(copy.imageSize(file.name, MAX_IMAGE_MB));
-      else if (this.images.length + taken.length >= MAX_IMAGES) {
-        refusals.push(copy.imageCount(MAX_IMAGES));
-        break;
-      } else taken.push({ file, mimeType });
-    }
+  /** Take the files a message can carry; say why the others were refused. */
+  private async addFiles(files: readonly File[]): Promise<void> {
+    const { taken, refusals } = admit(this.files, files.map(file => (
+      { file, name: file.name, size: file.size, mimeType: fileType(file) })));
     this.refusal = refusals.join('；');
-    const added: BoxImage[] = taken.map(({ file }) => ({ filename: file.name || 'image' }));
-    this.images = [...this.images, ...added];
-    this.paintImages();
-    const unread = new Set<BoxImage>();
-    await Promise.all(added.map(async (image, index) => {
+    const added: BoxFile[] = taken.map(({ file, mimeType }) => (
+      { filename: file.name || 'image', size: file.size, image: mimeType.startsWith('image/') }));
+    this.files = [...this.files, ...added];
+    this.paintFiles();
+    const unread = new Set<BoxFile>();
+    await Promise.all(added.map(async (box, index) => {
       try {
-        image.read = await readImage(taken[index].file, taken[index].mimeType);
+        box.read = await readFile(taken[index].file, taken[index].mimeType);
       } catch {
-        unread.add(image);
+        unread.add(box);
       }
-      this.paintImages();
+      this.paintFiles();
     }));
-    // An image removed meanwhile is not reported.
-    const failed = added.filter(image => unread.has(image) && this.images.includes(image));
-    this.images = this.images.filter(image => !unread.has(image));
-    if (failed.length) this.refusal = [...refusals, ...failed.map(image => copy.imageRead(image.filename))].join('；');
-    this.paintImages();
+    // A file removed meanwhile is not reported.
+    const failed = added.filter(box => unread.has(box) && this.files.includes(box));
+    this.files = this.files.filter(box => !unread.has(box));
+    if (failed.length) {
+      this.refusal = [...refusals, ...failed.map(box => (
+        box.image ? copy.imageRead(box.filename) : copy.fileRead(box.filename)))].join('；');
+    }
+    this.paintFiles();
   }
 
-  private removeImage(image: BoxImage): void {
-    this.images = this.images.filter(item => item !== image);
+  private removeFile(box: BoxFile): void {
+    this.files = this.files.filter(item => item !== box);
     this.refusal = '';
-    this.paintImages();
+    this.paintFiles();
     this.input.focus();
   }
 
-  private paintImages(): void {
-    this.thumbnails.hidden = !this.images.length;
-    this.thumbnails.replaceChildren(...this.images.map(image => h('li', {
-      class: image.read ? 'composer-image' : 'composer-image is-reading', title: image.filename,
-    },
-      image.read ? h('img', { src: imageDataUrl(image.read), alt: image.filename }) : icon('spinner'),
-      h('button', {
-        type: 'button', class: 'icon-button', 'aria-label': copy.removeImage(image.filename),
-        title: copy.removeImage(image.filename), onclick: () => this.removeImage(image),
-      }, icon('close')))));
+  /** An image shows as its thumbnail, a document as its name and size. */
+  private paintFiles(): void {
+    this.thumbnails.hidden = !this.files.length;
+    this.thumbnails.replaceChildren(...this.files.map(box => {
+      const remove = box.image ? copy.removeImage(box.filename) : copy.removeFile(box.filename);
+      const removeButton = h('button', {
+        type: 'button', class: 'icon-button', 'aria-label': remove, title: remove, onclick: () => this.removeFile(box),
+      }, icon('close'));
+      if (!box.image) {
+        return h('li', { class: 'composer-file', title: box.filename },
+          icon(box.read ? 'files' : 'spinner'), h('span', { class: 'composer-file-name' }, box.filename),
+          h('span', { class: 'composer-file-size' }, copy.fileSize(box.size)), removeButton);
+      }
+      return h('li', { class: box.read ? 'composer-image' : 'composer-image is-reading', title: box.filename },
+        box.read ? h('img', { src: imageDataUrl(box.read), alt: box.filename }) : icon('spinner'), removeButton);
+    }));
     this.paint();
   }
 
   private hasMessage(): boolean {
-    return Boolean(this.input.value.trim() || this.images.length);
+    return Boolean(this.input.value.trim() || this.files.length);
   }
 
-  /** Images the turn cannot take leave Stop in place; they wait in the box. */
   private stops(): boolean {
-    return this.state.running && !this.input.value.trim();
+    return this.state.running && !this.hasMessage();
   }
 
   private sendable(): boolean {
-    const { enabled, running } = this.state;
-    return enabled && this.hasMessage() && this.images.every(image => image.read) && !(running && this.images.length);
+    return this.state.enabled && this.hasMessage() && this.files.every(box => box.read);
   }
 
   private paint(): void {
@@ -232,8 +316,7 @@ export class Composer {
     this.button.title = label;
     this.button.classList.toggle('is-stop', stops);
     this.button.disabled = stops ? false : !this.sendable();
-    const waits = this.state.running && this.images.length > 0;
-    this.note.textContent = this.refusal || (waits ? copy.imagesWait : '');
+    this.note.textContent = this.refusal;
     this.note.classList.toggle('is-error', Boolean(this.refusal));
     this.note.hidden = !this.note.textContent;
   }
@@ -246,31 +329,29 @@ export class Composer {
   private async submit(): Promise<void> {
     if (!this.sendable()) return;
     const text = this.input.value;
-    const { images } = this;
-    const read = images.flatMap(image => (image.read ? [image.read] : []));
+    const { files } = this;
+    const read = files.flatMap(box => (box.read ? [box.read] : []));
     this.input.value = '';
-    this.images = [];
+    this.files = [];
     this.refusal = '';
     this.fit();
-    this.paintImages();
+    this.paintFiles();
     // A message that did not go out comes back to the box.
     if (await this.actions.send(text, read)) return;
     if (!this.input.value) {
       this.input.value = text;
       this.fit();
     }
-    if (!this.images.length) this.images = images;
-    this.paintImages();
+    if (!this.files.length) this.files = files;
+    this.paintFiles();
   }
 }
 
-/** The image type a file is, by its MIME type, or by its name when the browser gives none. */
-function imageType(file: File): string | undefined {
-  const known = Object.values(IMAGE_TYPES);
-  if (known.includes(file.type)) return file.type;
-  if (file.type && file.type !== 'application/octet-stream') return undefined;
+/** The type a file is: an image by its MIME type, as a pasted one may have no name; any file by its extension. */
+function fileType(file: File): string | undefined {
+  if (Object.values(FILE_TYPES).includes(file.type) && file.type.startsWith('image/')) return file.type;
   const dot = file.name.lastIndexOf('.');
-  return dot < 0 ? undefined : IMAGE_TYPES[file.name.slice(dot).toLowerCase()];
+  return dot < 0 ? undefined : FILE_TYPES[file.name.slice(dot).toLowerCase()];
 }
 
 /** The files pasted: ``items`` first, as the web chat reads them, since Chromium puts a screenshot in ``files`` too. */
@@ -280,7 +361,7 @@ function clipboardFiles(data: DataTransfer): File[] {
   return items.length ? items : [...data.files ?? []];
 }
 
-function readImage(file: File, mimeType: string): Promise<OutgoingImageAttachment> {
+function readFile(file: File, mimeType: string): Promise<OutgoingAttachment> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     const timer = setTimeout(() => {

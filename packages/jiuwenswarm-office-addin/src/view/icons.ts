@@ -24,6 +24,7 @@ const ICONS = {
   incoming: '<path d="M17 7L7 17"/><path d="M15 17H7V9"/>',
   download: '<path d="M12 4.5v10"/><path d="M7.5 10.5l4.5 4.5 4.5-4.5"/><path d="M5 19.5h14"/>',
   undo: '<path d="M9 14L4.5 9.5 9 5"/><path d="M4.5 9.5H15a4.5 4.5 0 0 1 0 9h-3.5"/>',
+  attach: '<path d="M18.5 11.5l-6.4 6.4a4.5 4.5 0 0 1-6.4-6.4l6.9-6.9a3 3 0 0 1 4.2 4.2l-6.9 6.9a1.5 1.5 0 0 1-2.1-2.1l6.2-6.2"/>',
   image: '<rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="9" cy="10" r="1.5"/>'
     + '<path d="M20 15.5l-4.5-4.5L6 19"/>',
 } as const;
