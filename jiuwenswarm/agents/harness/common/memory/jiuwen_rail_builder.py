@@ -38,7 +38,7 @@ Config shape (config.yaml)::
           user_id: "__default__"            # 数据隔离标识
           scope_id: "__default__"
           session_id: ""                    # Passed through; not the chat session ID
-          agent_id: "jiuwenswarm"           # AgentMemory scope 的 agent 轴
+          agent_id: "main_agent"           # AgentMemory scope 的 agent 轴
           space: ""                         # 只认显式传入
           identity_org: "local"             # http 模式认证身份 org
           identity_user: "developer"        # http 模式认证身份 user
@@ -128,13 +128,15 @@ def _custom_sdk_config_dict(j: Dict[str, Any]) -> Dict[str, Any]:
     return {k: v for k, v in sdk.items() if k != "config_path"}
 
 
-def _memory_scope(config: dict[str, Any], agent_name: str | None) -> dict[str, str]:
+def get_jiuwen_memory_scope(config: dict[str, Any] | None = None) -> dict[str, str]:
+    """Resolve the shared document-memory scope independently of runtime Agent names."""
+    config = get_jiuwen_builtin_config(config)
     session_id = config.get("session_id")
     return {
         "org": str(config.get("scope_id") or _DEFAULT_SCOPE),
         "space": str(config.get("space") or ""),
         "user": str(config.get("user_id") or _DEFAULT_USER),
-        "agent": str(agent_name or config.get("agent_id") or "jiuwenswarm"),
+        "agent": str(config.get("agent_id") or "main_agent"),
         "session": str(session_id) if session_id is not None else "",
     }
 
@@ -147,7 +149,11 @@ def get_jiuwen_sdk_media_globals(
     agent_name: str | None,
     session_upload_root: Path | None = None,
 ) -> dict[str, Any]:
-    """Forward Web models and bind a workspace when the host grants access."""
+    """Forward Web models and bind a workspace to the configured memory identity.
+
+    ``agent_name`` is accepted for caller compatibility; it does not set the scope.
+    """
+    del agent_name
     video = get_enabled_multimodal_model_config(runtime_config, "video")
     audio = get_enabled_multimodal_model_config(runtime_config, "audio")
     has_web_models = bool(video or audio)
@@ -167,7 +173,7 @@ def get_jiuwen_sdk_media_globals(
                 root = root.resolve(strict=True)
                 if root != root.parent and not str(root).startswith(("//", "\\\\")) and root.is_dir():
                     globals_config["local_media_roots"] = [
-                        {"scope": _memory_scope(jiuwen, agent_name), "root": str(root)},
+                        {"scope": get_jiuwen_memory_scope(config), "root": str(root)},
                     ]
         except (OSError, ValueError, RuntimeError):
             logger.debug("[JiuwenRailBuilder] workspace unavailable for media import")
@@ -179,7 +185,7 @@ def get_jiuwen_sdk_media_globals(
             except json.JSONDecodeError:
                 roots = None
         if isinstance(roots, list):
-            binding = {"scope": _memory_scope(jiuwen, agent_name), "root": str(session_upload_root)}
+            binding = {"scope": get_jiuwen_memory_scope(config), "root": str(session_upload_root)}
             globals_config["local_media_roots"] = roots if binding in roots else [*roots, binding]
     for prefix, model in (("video", video), ("asr", audio)):
         if not model:
@@ -375,9 +381,24 @@ def _coding_memory_spec(_settings: Mapping[str, Any], project: str) -> MemoryRai
     )
 
 
+def _team_memory_spec(settings: Mapping[str, Any], project: str) -> MemoryRailSpec:
+    from openjiuwen.harness.rails import JiuwenTeamMemoryRail
+    from .forbidden import contains_forbidden_memory_content
+
+    binding = settings.get("_team_binding") or {}
+    if not binding.get("team"):
+        raise ValueError("Team scene requires host-bound coordinates")
+    return MemoryRailSpec(
+        JiuwenTeamMemoryRail,
+        provider_options={"scene": "team", "project": project, **binding},
+        rail_options={"content_allowed": lambda text: not contains_forbidden_memory_content(text)},
+    )
+
+
 SCENE_FACTORIES: dict[str, Callable[[Mapping[str, Any], str], MemoryRailSpec]] = {
     "agent": _work_memory_spec,
     "code": _coding_memory_spec,
+    "team": _team_memory_spec,
 }
 
 
@@ -389,12 +410,12 @@ def build_jiuwen_memory_rail(
     scene: str = "agent",
     project: str = "default",
     shared_document_root: bool = False,
+    team_binding: Mapping[str, str] | None = None,
 ) -> Optional[Any]:
     """Build a JiuwenMemoryRail + AgentMemoryMemoryProvider from config.
 
-    ``agent_name``（当前运行 agent 的唯一 name）优先作为 scope 的 agent 轴——
-    使记忆按 agent 隔离，而非所有 agent 共享 config 里固定的 ``agent_id``。
-    缺省回落 config 的 ``agent_id``，再缺省固定 ``"jiuwenswarm"``。
+    Work、Code、Team 统一使用配置 ``agent_id``，缺省为 ``"main_agent"``，兼容原默认运行身份。
+    ``agent_name`` 保留调用兼容，不覆盖记忆身份，也不改变运行 Agent 名称。
     ``shared_document_root=True`` supplies the common SDK document root without
     overriding agent/session identity. ``scene="code"`` selects the Coding Rail
     with a host-bound project.
@@ -403,12 +424,13 @@ def build_jiuwen_memory_rail(
     explicit config file missing) — callers treat None as "memory disabled",
     never as an error.
     """
+    del agent_name
     j = get_jiuwen_builtin_config(config)
     try:
         factory = SCENE_FACTORIES.get(scene)
         if factory is None:
             raise ValueError(f"Unknown memory scene: {scene}")
-        spec = factory(j, project)
+        spec = factory({**j, "_team_binding": dict(team_binding or {})}, project)
     except Exception as exc:
         logger.warning("[JiuwenRailBuilder] memory scene %r unavailable: %s", scene, exc)
         return None
@@ -446,10 +468,25 @@ def build_jiuwen_memory_rail(
             return await super().prefetch(query, **kwargs)
 
         async def sync_turn(self, user_msg: str, assistant_msg: str, **kwargs: Any) -> dict | None:
+            if scene == "team":
+                from .forbidden import contains_forbidden_memory_content
+                if contains_forbidden_memory_content(user_msg + "\n" + assistant_msg):
+                    return None
             kwargs["project"] = kwargs.get("project") or _DEFAULT_PROJECT
             return await super().sync_turn(user_msg, assistant_msg, **kwargs)
 
+        async def add_team_memories(self, items: list[dict[str, str]]) -> int:
+            from .forbidden import contains_forbidden_memory_content
+            allowed = [item for item in items
+                       if not contains_forbidden_memory_content(item.get("content", ""))]
+            return await super().add_team_memories(allowed)
+
         async def handle_tool_call(self, tool_name: str, args: dict) -> str:
+            if tool_name in {"team_memory_write", "team_memory_edit"}:
+                from .forbidden import contains_forbidden_memory_content
+                text = args.get("content", "") if tool_name.endswith("write") else args.get("new_text", "")
+                if contains_forbidden_memory_content(text):
+                    return json.dumps({"error": "Sensitive memory content blocked"})
             project = args.get("project")
             legacy_document = tool_name in _DOCUMENT_TOOLS and project == ""
             if tool_name in _PROJECT_TOOLS and not project and not legacy_document:
@@ -473,7 +510,7 @@ def build_jiuwen_memory_rail(
             return result
 
     mode = get_jiuwen_builtin_mode(config)
-    scope = _memory_scope(j, agent_name)
+    scope = get_jiuwen_memory_scope(config)
     user_id, scope_id, agent_id, session_id = (
         scope["user"], scope["org"], scope["agent"], scope["session"]
     )
@@ -488,7 +525,7 @@ def build_jiuwen_memory_rail(
             # 时 provider.is_available() 为 False，rail 静默降级（memory 停用）。
             # 身份由本装配层产出（composition root），不从业务 user_id/scope_id 自述。
             security_provider = _build_security_provider(scope_id, user_id)
-            inline = _sdk_inline_config(j, shared_document_root=shared_document_root)
+            inline = _sdk_inline_config(j, shared_document_root=True)
             if inline:
                 _inject_sdk_creds_and_root(inline, config)
             markdown = inline.get("markdown_store")
@@ -498,7 +535,10 @@ def build_jiuwen_memory_rail(
                 markdown_root = str(params["root"])
             if sdk_media_globals:
                 inline.setdefault("globals", {}).update(deepcopy(sdk_media_globals))
+            from .document_runtime_holder import DOCUMENT_RUNTIME_HOLDER
+
             provider = SwarmMemoryProvider(
+                document_runtime_holder=DOCUMENT_RUNTIME_HOLDER,
                 config_dict=inline or None,
                 user_id=user_id,
                 agent_id=agent_id,
@@ -568,18 +608,20 @@ def jiuwen_builtin_config_fingerprint(
     时固定 ``builtin-default`` 标记）以及会话多模态模型与导入目录的哈希；
     http 指纹 = base_url/api_key hash/identity 轴。两模式
     共享的 scope 轴（user/scope/session/agent/space）与 session_end_extract 恒参与。
-    ``agent_name`` follows the builder priority so runtime identity changes rebuild rails.
+    ``agent_name`` is compatibility-only; configured identity changes rebuild rails.
     """
+    del agent_name
+    scope = get_jiuwen_memory_scope(config)
     j = get_jiuwen_builtin_config(config)
     mode = get_jiuwen_builtin_mode(config)
     parts = [
         "jiuwen",
         mode,
-        str(j.get("user_id") or _DEFAULT_USER),
-        str(j.get("scope_id") or _DEFAULT_SCOPE),
-        str(j.get("session_id") if j.get("session_id") is not None else ""),
-        str(agent_name or j.get("agent_id") or "jiuwenswarm"),
-        str(j.get("space") or ""),
+        scope["user"],
+        scope["org"],
+        scope["session"],
+        scope["agent"],
+        scope["space"],
         str(bool(j.get("session_end_extract", False))),
     ]
     if mode == "sdk":
