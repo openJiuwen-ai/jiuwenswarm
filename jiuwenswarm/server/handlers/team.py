@@ -625,7 +625,9 @@ async def handle_team_snapshot(ctx: RequestContext) -> None:
                 team_name=snapshot_team_name,
                 session_id=session_id,
             )
-            runtime_available = scoped_monitor is not None
+            if runtime_available is None:
+                # A running session monitor already proved the runtime is up.
+                runtime_available = scoped_monitor is not None
             if scoped_monitor is not None:
                 scoped_snapshot = await TeamMonitorHandler(scoped_monitor, session_id).get_team_snapshot()
                 if scoped_snapshot is not None:

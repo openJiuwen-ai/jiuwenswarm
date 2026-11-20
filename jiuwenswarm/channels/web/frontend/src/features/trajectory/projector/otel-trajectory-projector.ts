@@ -28,6 +28,7 @@ import type {
   OtlpExportTraceServiceRequest, OtlpSpan, OtlpSpanEvent,
 } from '../shared/otlp.ts'
 import type {
+  TrajectoryGoalAssessment,
   TrajectoryPromptSnapshot,
   TrajectoryDiagnostic,
   TrajectoryGroupModel,
@@ -1440,6 +1441,7 @@ function projectInferenceInputs(
   for (const seed of lineageSeeds) {
     const span = soleSpan(seed.record)
     const attributes = normalizeTrajectoryAttributes(span.attributes)
+    if (attributes.requestPurpose === 'goal_assessment') continue
     const sessionKey = behaviorSessionKey({ attributes, traceId: span.traceId }, [])
     previousOutputsBySession.set(sessionKey, structuredMessages(attributes.outputMessages))
     if (seed.handledByV2) continue
@@ -1598,7 +1600,7 @@ function compactionGroups(
 
 function requestFor(
   span: ProjectedSpan,
-  purpose: 'assistant' | 'compaction',
+  purpose: 'assistant' | 'compaction' | 'goal_assessment',
   rootAttributes: NormalizedTrajectoryAttributes | undefined,
   sessionCumulativeUsageByRequestIdentity: ReadonlyMap<string, TrajectoryUsage> | undefined,
 ): TrajectoryRequest {
@@ -1611,7 +1613,7 @@ function requestFor(
     // The request's own record, so its raw data stays reachable from the
     // request detail even when no row in the trajectory carries it.
     traceDetail: span.request,
-    group: purpose === 'compaction' ? 'Compaction' : `Step ${step}`,
+    group: purpose === 'goal_assessment' ? 'Goal assessment' : purpose === 'compaction' ? 'Compaction' : `Step ${step}${span.attributes.goalId === undefined ? '' : ` · Goal #${nonNegativeSafeInteger(span.attributes.goalAttemptNumber) ?? '—'}`}`,
     number: requestNumber,
     status: status(span),
     startedAt: startedAt(span),
@@ -1996,7 +1998,9 @@ export function projectOtelTrajectory(
     [...subject.handledInferenceIds]
   )))
   const turnIndex = resolveTurns(records, options.checkpoint?.turns)
-  const spans = normalize(legacyRecords, options, turnIndex)
+  const allSpans = normalize(legacyRecords, options, turnIndex)
+  const assessmentSpans = allSpans.filter(span => isInference(span) && span.attributes.requestPurpose === 'goal_assessment')
+  const spans = allSpans.filter(span => span.attributes.requestPurpose !== 'goal_assessment')
   const mutableTurns = new Map<string, MutableTurn>()
   const requests: TrajectoryRequest[] = []
   const inputProjection = projectInferenceInputs(spans, v2InferenceIds, options.checkpoint?.lineage ?? [])
@@ -2087,6 +2091,9 @@ export function projectOtelTrajectory(
       }
       conversationTurnKeys.add(span.turnKey)
       const target = group(turn, step, span.attributes.stepId, startedAt(span))
+      if (span.attributes.goalId !== undefined) {
+        target.title = `Step ${step} · Goal #${nonNegativeSafeInteger(span.attributes.goalAttemptNumber) ?? '—'}`
+      }
       const inputs = inputProjection.inputsBySpanId.get(span.span.spanId)
         ?? { messages: [], prompts: [] }
       target.cells.push(
@@ -2309,8 +2316,27 @@ export function projectOtelTrajectory(
     ...inputProjection.diagnostics,
   ]
 
+  const goalAssessments: TrajectoryGoalAssessment[] = assessmentSpans.map(span => {
+    // Each assessor request owns its input baseline; it never contributes to execution deltas.
+    const inputs = projectInferenceInputs([span], new Set(), []).inputsBySpanId.get(span.span.spanId)
+      ?? { messages: [], prompts: [] }
+    const answer = assistantCell(span)
+    const assessment = object(parsedJson(answer.outputDetail ?? answer.text ?? ''))
+    const result = assessment?.status
+    return {
+      id: span.attributes.goalAssessmentId ?? spanIdentity(span),
+      goalId: span.attributes.goalId,
+      attempt: nonNegativeSafeInteger(span.attributes.goalAttemptNumber),
+      strategy: span.attributes.goalStrategy,
+      ...(result === 'complete' || result === 'continue' || result === 'blocked' ? { result } : {}),
+      request: requestFor(span, 'goal_assessment', rootByTrace.get(span.traceId)?.attributes, options.sessionCumulativeUsageByRequestIdentity),
+      turns: [{ turn: span.turn, groups: [{ title: 'Goal assessment', cells: [...inputCells(span, inputs), answer] }] }],
+    }
+  })
+
   return {
     turns,
+    ...(goalAssessments.length === 0 ? {} : { goalAssessments }),
     requests: finalizeRequests(requests),
     ...(diagnostics.length === 0 ? {} : { diagnostics }),
   }

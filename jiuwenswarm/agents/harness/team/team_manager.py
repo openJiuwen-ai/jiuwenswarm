@@ -2250,6 +2250,9 @@ class TeamManager:
                 spec.enable_task_verification = False
                 spec.enable_member_messaging = False
                 spec.max_subtask_depth = 0
+        if spec.dispatch_mode != "scheduled":
+            # Session dispatch overrides must not revive a template leader goal.
+            spec.leader.goal = None
         self.apply_team_plan_mode(spec, request_metadata=request_metadata)
         enrich_team_spec_for_swarm(
             spec,

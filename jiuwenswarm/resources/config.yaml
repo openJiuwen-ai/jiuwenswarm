@@ -1866,7 +1866,13 @@ modes:
       # Suppress periodic Todo reminders for Code agents in scheduled teams.
       disable_code_todo_reminder: false
 
+      # Member goal policy is YAML-only. Null keeps it disabled.
+      member_goal: null
+
       leader:
+        # Scheduled dispatch only. An object enables hybrid assessment and 10
+        # continuation rounds by default. No token budget is configured.
+        goal: null
         member_name: team-leader
         display_name: 团队领导
         persona: "天才项目管理专家，擅长任务分解和团队协调"
