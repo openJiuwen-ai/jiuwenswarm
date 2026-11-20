@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -663,7 +664,13 @@ class AgentManager:
         if task is not None and not task.done():
             return
         try:
-            self._idle_root_sweep_task = asyncio.create_task(
+            # 空上下文创建(CR-10670-02):create_task 拷贝当前上下文,而本方法
+            # 由 _create_agent 在请求处理上下文内调用(租户 env overlay 等
+            # ContextVar 已绑定)。后台清扫不得继承这些请求级快照——所有
+            # ContextVar 读值回落默认,与 session_manager 的 copy_context
+            # 显式管理上下文同一原则。
+            self._idle_root_sweep_task = contextvars.Context().run(
+                asyncio.create_task,
                 self._idle_root_sweep_loop(),
                 name="agent-idle-root-sweep",
             )
@@ -2468,9 +2475,22 @@ class AgentManager:
     async def cleanup(self) -> None:
         """清理所有 agent 实例."""
         await self.warm_pool.close()
+        # 先取消并**等待**清扫任务退出(CR-10670-01):cancel() 不是同步抢占,
+        # 若清扫正挂在 agent.cleanup() 上,不等待就继续清理 self.agents 会与
+        # 清扫并发二次 cleanup 同一实例;句柄置 None 防止后续误判重启。
         sweep_task = self._idle_root_sweep_task
+        self._idle_root_sweep_task = None
         if sweep_task is not None and not sweep_task.done():
             sweep_task.cancel()
+            try:
+                await sweep_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.warning(
+                    "[AgentManager] idle root sweep task teardown failed",
+                    exc_info=True,
+                )
         retirement_tasks = [
             task
             for task in self._retirement_tasks.values()

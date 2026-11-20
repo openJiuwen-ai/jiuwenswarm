@@ -816,3 +816,60 @@ async def test_get_agent_enforces_session_agent_cap_on_entry() -> None:
         "agent:::session:session-c",
         "agent:::session:session-d",
     }
+
+
+@pytest.mark.asyncio
+async def test_idle_root_sweep_task_starts_with_fresh_context() -> None:
+    """CR-10670-02: 清扫任务不得继承创建者(请求)上下文中的 ContextVar."""
+    import contextvars
+
+    marker = contextvars.ContextVar(
+        "issue6787_sweep_probe", default="background-default"
+    )
+    manager = AgentManager()
+    seen: list[str] = []
+
+    async def probe_loop() -> None:
+        seen.append(marker.get())
+
+    manager._idle_root_sweep_loop = probe_loop  # type: ignore[method-assign]
+    token = marker.set("request-scoped")
+    try:
+        manager._ensure_idle_root_sweep_started()
+        task = manager._idle_root_sweep_task
+        assert task is not None
+        await task
+    finally:
+        marker.reset(token)
+
+    assert seen == ["background-default"]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_awaits_cancelled_sweep_and_clears_handle() -> None:
+    """CR-10670-01: cleanup() 必须等待被取消的清扫任务退出并清空句柄."""
+    manager = AgentManager()
+    started = asyncio.Event()
+    cancel_handled = asyncio.Event()
+
+    async def busy_loop() -> None:
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0)  # 取消后的收尾步骤
+            cancel_handled.set()
+            raise
+
+    manager._idle_root_sweep_loop = busy_loop  # type: ignore[method-assign]
+    manager._ensure_idle_root_sweep_started()
+    task = manager._idle_root_sweep_task
+    assert task is not None
+    await started.wait()
+
+    await manager.cleanup()
+
+    assert manager._idle_root_sweep_task is None
+    assert task.done()
+    # cleanup() 返回时清扫的取消收尾已执行完毕,证明是 await 而非 fire-and-forget
+    assert cancel_handled.is_set()
