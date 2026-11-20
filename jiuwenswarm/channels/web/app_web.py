@@ -515,6 +515,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     _WS_CONNECT_TIMEOUT = 10
     _WS_HANDSHAKE_TIMEOUT = 10
     _WS_SELECT_TIMEOUT = 60
+    # 隧道向浏览器回写时的最长等待。浏览器在渲染大段历史时会短暂停止读取
+    # socket（远程访问尤其明显），内核发送缓冲满后 send 返回 EAGAIN；这只是
+    # 接收端背压，不是对端已死。1 秒即判死会把正在回放的历史和 config.get
+    # 响应一起丢掉，因此这里给足 30 秒，只有持续无法写入才关闭隧道。
+    _WS_WRITE_STALL_TIMEOUT = 30.0
     _WS_RECV_BUFFER = 65536
     _WS_HANDSHAKE_MAX_SIZE = 65536
     _WS_HANDSHAKE_RECV_SIZE = 4096
@@ -1051,9 +1056,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                             )
                             if not would_block:
                                 raise
-                            _, writable, _ = select.select([], [target], [], 1.0)
+                            _, writable, _ = select.select(
+                                [], [target], [], self._WS_WRITE_STALL_TIMEOUT
+                            )
                             if not writable:
-                                # 长时间不可写，对端疑似卡死，关闭隧道避免空转
+                                # 持续无法写入，对端疑似卡死，关闭隧道避免空转
                                 self.log_error(
                                     "proxy ws write stalled, closing tunnel: %s",
                                     _format_ws_diagnostics(
