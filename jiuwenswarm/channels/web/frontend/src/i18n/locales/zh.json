@@ -53,6 +53,43 @@
     "label": "独立 Git 身份",
     "hint": "使用成员名称和 @jiuwenswarm.com 邮箱署名 Git 提交；切换后从下一条消息起生效。"
   },
+  "extensionCommand": {
+    "invalidArgs": "命令参数有误，用法如下：",
+    "singleLineOnly": "扩展包命令每次只能输入一行。请执行 /extension 查看用法。",
+    "usageTitle": "扩展包命令：",
+    "usageInstall": "/extension install <ZIP 文件的绝对路径>",
+    "packageIdHint": "package_id 是扩展包标识，可通过 /extension query 查看。",
+    "installZipOnly": "安装只支持 ZIP 扩展包，请提供 .zip 文件的绝对路径。",
+    "installSourceInvalid": "无法安装，请检查 .zip 文件是否存在、路径是否完整。目录不能作为安装来源。",
+    "packageIdRule": "请提供有效的 package_id：1～128 位，以英文字母或数字开头，只允许英文字母、数字、点、下划线和连字符，不能包含连续两个点。",
+    "install": "安装",
+    "query": "查询",
+    "uninstall": "卸载",
+    "reload": "热重载",
+    "operationSuccess": "扩展包{{action}}成功",
+    "operationFailed": "扩展包{{action}}失败",
+    "packageId": "package_id：{{packageId}}",
+    "domain": "域：{{domain}}",
+    "activeVersion": "当前生效版本：{{version}}",
+    "failureReason": "失败原因：{{reason}}",
+    "version": "版本：{{version}}",
+    "installPath": "安装目录：{{path}}",
+    "activeState": "状态：已生效",
+    "inactiveState": "状态：已安装，未生效",
+    "packageIdUnavailable": "未取得 package_id，请检查扩展包的 manifest.json。",
+    "reloadHint": "修改上述目录内的代码后，执行：{{command}}",
+    "pathUnavailable": "未取得对应安装目录，请通过查询核对。",
+    "queryHint": "请先执行 {{command}} 查看当前状态，再决定是否重试。",
+    "empty": "未查询到扩展包或安装副本。",
+    "invalidResponse": "未取得有效响应，结果尚未确认。",
+    "noErrorDetails": "未提供详细原因。",
+    "unknownOutcome": "操作结果未确认，请勿直接重复操作。",
+    "requestFailed": "扩展包管理请求失败。",
+    "connectionLost": "请求超时或连接中断。",
+    "serviceUnavailable": "扩展服务暂不可用，请稍后再试。",
+    "currentState": "以下是核对时的当前状态，不代表原操作成功：",
+    "queryFailed": "状态核对失败：{{reason}}"
+  },
   "common": {
     "searchName": "搜索名称",
     "noData": "暂无数据",
@@ -95,6 +132,14 @@
     "unavailableTitle": "界面内容暂时无法显示",
     "retry": "请稍后重试或重新生成结果",
     "unsupportedProtocol": "不支持的 A2UI 协议版本：{{version}}"
+  },
+  "webui": {
+    "entryLabel": "应用界面",
+    "menuLabel": "打开操作菜单",
+    "clientOperationError": "无法执行浏览器操作。",
+    "clientConfigurationError": "无法启用浏览器扩展能力。",
+    "settingsLoadFailed": "无法加载插件设置，请重新进入设置页面。",
+    "settingsContributionError": "部分插件设置无法显示，请检查插件的设置位置配置。"
   },
   "nav": {
     "chat": "对话",
@@ -731,6 +776,7 @@
       "personalContext": "知识",
       "archivedTasks": "已归档的任务",
       "experimental": "实验功能",
+      "systemPluginRecovery": "系统插件还原",
       "appearance": "外观"
     },
     "appearance": {
@@ -810,6 +856,11 @@
       },
       "designModeNote": "Design 模式暂不支持归档。"
     },
+    "systemPluginRecovery": {
+      "description": "查看最近 50 条系统插件状态记录。每次应用启动及成功的安装、卸载、启用、禁用和还原操作都会记录。",
+      "restartNote": "还原会保留当前已安装的系统插件，恢复所选时刻的系统插件启用状态，并自动重启后台服务。",
+      "unavailable": "系统插件还原服务暂不可用。"
+    },
     "dialog": {
       "discardTitle": "放弃未保存的修改",
       "discardConfirm": "当前修改尚未保存，确定放弃吗？",
@@ -830,6 +881,7 @@
       "topicModelSave": "保存并启用",
       "topicModelProtocol": "话题推荐仅支持 OpenAI 兼容协议的模型。",
       "topicModelDelete": "将删除话题推荐模型配置并关闭话题推荐。",
+      "display": "显示设置",
       "preferences": "界面与连接",
       "language": "Language",
       "languageDescription": "设置应用程序界面的界面显示语言。",
@@ -1476,6 +1528,10 @@
         "title": "启用成员间通信",
         "description": "允许成员之间直接发送消息（点对点、多播、广播），无需经 Leader 转达；任务指派与交接仍由 Leader 和调度框架负责。"
       },
+      "team_leader_goal_enabled": {
+        "title": "领导目标驱动",
+        "description": "仅调度模式生效。任务暂时结束后，领导会继续检查原始目标并按需组织后续工作。默认最多自动续跑 10 次，仅对新建团队生效。"
+      },
       "team_member_subtasks_enabled": {
         "title": "允许成员拆分子任务",
         "description": "成员可以把正在执行的任务拆成子任务，交给自己或其他已有成员。拆分后原任务暂停，子任务全部结束后带着结果恢复执行。子任务最多嵌套 2 层。"
@@ -1558,6 +1614,20 @@
     }
   },
   "trajectory": {
+    "goalAssessment": {
+      "label": "Goal 评估",
+      "title": "Goal 评估 · 第 {{attempt}} 轮",
+      "summary": "独立评估：{{count}} 次调用 · {{tokens}} tokens",
+      "isolated": "仅用于复核目标，不属于执行 Agent 的对话上下文",
+      "status": {
+        "running": "评估中",
+        "complete": "完成",
+        "continue": "继续执行",
+        "blocked": "阻塞",
+        "error": "失败",
+        "unknown": "无有效结论"
+      }
+    },
     "loading": "正在加载轨迹界面…",
     "tabs": {
       "aria": "Agent 与团队内容视图",
@@ -2387,6 +2457,11 @@
       "free": "限时免费模型",
       "getFreeModels": "获取限时免费模型",
       "addModel": "添加自定义模型/模型组",
+      "errors": {
+        "CONVERSATION_BUSY": "会话正在运行，请结束当前操作后切换模型",
+        "MODEL_UNAVAILABLE": "这个模型已不可用，请重新选择",
+        "TARGET_INACTIVE": "这个会话已不可用，请重新选择"
+      },
       "selectionFailed": "模型选择未能生效，请重新选择",
       "empty": "暂无可用模型，请先在设置中添加模型",
       "placeholder": "选择模型",
@@ -2539,6 +2614,7 @@
     "inputAttachment": {
       "imageLimitTooltip": "图片：单张最大 {{limit}}M",
       "fileLimitTooltip": "文件：单个最大 {{limit}}M",
+      "enterpriseDocumentLimitTooltip": "文档：单个最大 {{limit}} MiB",
       "countLimitTooltip": "每条消息最多 {{limit}} 个附件",
       "unnamedFile": "未命名文件",
       "unsupportedFileType": "文件类型不支持：{{name}}",
@@ -4050,7 +4126,7 @@
       "flatReady": "候选目录达到或超过 1% 预算阈值；新会话使用实时平铺检索。",
       "indexedReady": "分类目录已就绪；新会话会自动使用。",
       "indexedStale": "现有分类目录已过期但仍可用；新增 Skill 会出现在 /newly_installed_skills 下。",
-      "description": "开启 Skill 发现后，系统按 1% 阈值为新会话选择完整候选快照或实时 skill_index 检索；分类索引是否构建由单独的索引开关控制。已有会话保持创建时冻结的策略。",
+      "description": "开启 Skill 发现后，系统按 1% 阈值为新会话选择完整候选快照或实时目录检索。分类索引是否构建由单独的索引开关控制。已有会话沿用创建时的策略。",
       "globalDisabledHint": "全局发现开关已关闭。Agent 使用 JiuwenSwarm 原有 Skill 逻辑；已有分类索引文件会保留但不使用。",
       "indexNotNeeded": "完整候选快照低于 1% 阈值时无需分类索引；即使已保存索引偏好，也不会启动构建。",
       "indexDisabled": "分类索引开关已关闭。实时平铺检索仍可用，已有索引文件会保留。",
@@ -5249,7 +5325,162 @@
     "codeDescription": "在项目目录中查看并修改代码",
     "environment": "环境信息",
     "changes": "变更",
-    "review": "审核"
+    "review": "审核",
+    "common": {
+      "cancel": "取消",
+      "confirm": "确定",
+      "close": "关闭",
+      "dismiss": "关闭提示",
+      "creating": "创建中…"
+    },
+    "branchSelector": {
+      "notGitRepo": "该目录还不是 Git 仓库",
+      "initGit": "初始化 Git",
+      "loadingBranch": "加载分支",
+      "searchBranch": "搜索分支",
+      "branches": "分支",
+      "noMatchingBranch": "没有匹配的本地分支",
+      "transientBlocked": "仓库正在合并或变基，暂时不能切换分支。",
+      "detachedBlocked": "当前处于 detached HEAD，暂时不能切换分支。",
+      "createAndCheckout": "创建并检出新分支",
+      "unbornHint": "空仓库需要完成首次提交后才能创建其他分支",
+      "createBranchTitle": "创建并检出分支",
+      "branchNamePlaceholder": "请输入分支名称，如：jiuwen/xxx，分支名不能以“/”结尾"
+    },
+    "branchErrors": {
+      "worktreeDirty": "工作区存在未提交修改，请处理后再切换分支。",
+      "transientState": "仓库正在合并或变基，暂时不能切换分支。",
+      "branchNotFound": "分支不存在，请刷新后重试。",
+      "branchAlreadyExists": "分支名称已存在。",
+      "gitNotFound": "当前环境未安装 Git，无法使用代码模式分支能力。",
+      "operationFailed": "Git 操作失败，请稍后重试。"
+    },
+    "publish": {
+      "title": "提交或推送",
+      "busyProcessing": "当前任务执行中，请停止后再操作",
+      "notGitRepoTitle": "当前项目不是 Git 仓库",
+      "repoBusy": "仓库正在执行其他 Git 操作",
+      "loadStatusFailed": "加载 Git 状态失败，请重试。",
+      "createBranchFailed": "创建分支失败，请重试。",
+      "commitFailed": "提交失败，请重试。",
+      "pushFailed": "推送失败，请重试。",
+      "commitSucceeded": "提交成功",
+      "pushSucceeded": "推送成功",
+      "commitPushSucceeded": "提交并推送成功",
+      "commitOkPushFailed": "提交已成功（{{hash}}），但推送失败：",
+      "loadingGitStatus": "正在加载 Git 状态…",
+      "targetBranch": "目标分支",
+      "newBranch": "新建分支",
+      "branchNameExample": "例如：feature/code-mode",
+      "newBranchName": "新分支名称",
+      "creatingShort": "创建中",
+      "createShort": "创建",
+      "remote": "远程仓库",
+      "commitMessage": "提交信息",
+      "messagePlaceholder": "留空将自动使用：{{example}}",
+      "operationType": "操作类型",
+      "operationCommit": "提交",
+      "operationCommitPush": "提交并推送",
+      "operationPush": "推送",
+      "includeUnstaged": "包含未暂存的更改",
+      "setUpstream": "设置为上游分支",
+      "pushing": "推送中",
+      "processing": "处理中"
+    },
+    "publishErrors": {
+      "nothingToCommit": "没有可提交的修改。若修改尚未暂存，请勾选“包含未暂存的更改”。",
+      "transientState": "仓库正在合并、变基或执行其他 Git 操作，请完成后重试。",
+      "detachedHead": "当前处于 detached HEAD，请选择一个本地分支后再推送。",
+      "branchAlreadyExists": "分支名称已存在，请换一个名称。",
+      "branchInvalid": "分支名称不符合 Git 规范，请检查后重试。",
+      "remoteNotFound": "远程仓库不存在，请检查远程名称或 Git 配置。",
+      "pushRejected": "远程仓库拒绝了推送，请先同步远程修改并检查分支保护或权限。",
+      "gitTimeout": "Git 操作超时，请检查仓库状态和网络后重试。",
+      "notGitRepository": "当前项目不是 Git 仓库。",
+      "gitNotFound": "当前环境未安装 Git。",
+      "projectDirMissing": "项目目录不存在。"
+    },
+    "reviewPanel": {
+      "loadingResults": "正在加载审核结果…",
+      "repoUnavailable": "当前项目不是可用的 Git 仓库，无法查看分支修改。",
+      "repoTransient": "仓库正在执行 Git 操作，处理完成后再查看工作区差异。",
+      "reload": "重新加载",
+      "noUncommittedChanges": "当前分支没有未提交修改。",
+      "noRecentChanges": "暂无最近一轮代码修改可供审核。",
+      "staleContentKept": "{{error}}，当前保留上次成功加载的内容。",
+      "filesTruncated": "实际变更 {{total}} 个文件，预览仅显示前 {{shown}} 个。",
+      "searchFiles": "搜索文件",
+      "loadingFileDiff": "正在加载文件差异…",
+      "waitingFileDiff": "正在等待文件差异…",
+      "ariaLabel": "审核代码修改",
+      "toggleFilesSidebar": "切换文件侧边栏",
+      "sourceBranch": "分支",
+      "sourceLastTurn": "上一轮",
+      "filesChanged": "{{n}} 个文件已更改",
+      "changeDiscarded": "此修改已撤销",
+      "collapseAll": "全部收起",
+      "expandAll": "全部展开",
+      "switchToUnified": "切换到统一差异视图",
+      "switchToSplit": "切换到拆分差异视图",
+      "binaryFile": "二进制文件不能显示文本差异。",
+      "largeFileSkipped": "该文件差异超过 1MB，已跳过内容预览。",
+      "noDiffContent": "该文件没有可显示的差异内容。",
+      "repoParentNotice": "当前 Git 仓库位于项目目录的上级（{{repoRoot}}），“分支”变更会统计项目目录之外的文件。",
+      "openReview": "打开代码审核",
+      "discardedSuffix": "（已撤销）",
+      "footerSnapshotTurn": "当前展示第 {{turn}} 轮 Agent 修改的历史快照{{discarded}}，后续修改不会覆盖该轮差异。",
+      "footerSnapshot": "上一轮使用固定历史快照，后续修改不会覆盖该轮差异。",
+      "footerWorkingTree": "当前展示工作区相对 HEAD 的修改，文件变化会实时更新。"
+    },
+    "reviewErrors": {
+      "historyExpired": "该轮差异历史已过期，无法恢复详情。",
+      "turnNotFound": "没有找到该轮代码修改记录。",
+      "transientState": "仓库正在合并或变基，暂时无法加载审核详情。",
+      "loadFailed": "加载审核结果失败"
+    },
+    "changesCard": {
+      "ariaLabel": "已编辑文件",
+      "title": "已编辑文件",
+      "discard": "撤销",
+      "reapply": "重新应用",
+      "refreshHistory": "刷新修改历史",
+      "discarding": "撤销中",
+      "applying": "应用中",
+      "review": "审核",
+      "collapseFiles": "收起文件",
+      "showAllFiles": "显示全部 {{n}} 个文件"
+    },
+    "turnChangeErrors": {
+      "sessionBusy": "当前任务正在执行，请停止后再操作",
+      "sessionNotBound": "当前会话尚未绑定代码项目，无法操作修改",
+      "projectSessionMismatch": "当前会话与代码项目不匹配，请刷新后重试",
+      "noTurnToDiscard": "当前会话没有可撤销的修改",
+      "noTurnToRedo": "当前会话没有可重新应用的修改",
+      "nothingToDiscard": "最后一轮修改已撤销，无需重复撤销",
+      "nothingToRedo": "最后一轮修改尚未撤销，无需重新应用",
+      "targetChanged": "修改目标已变化，请刷新后重试",
+      "historyExpired": "修改记录已过期，无法定位该轮修改，请刷新后重试",
+      "redoHistoryMissing": "撤销记录不完整，无法重新应用修改",
+      "partialRestoreFailed": "部分文件撤销失败，请重试",
+      "partialRedoFailed": "部分文件重新应用失败，请重试",
+      "notFound": "代码项目不存在或已被移除",
+      "forbidden": "当前项目不支持撤销和重新应用",
+      "wsDisconnected": "Git 变更服务连接已断开，请重试",
+      "wsNotReady": "Git 变更服务暂不可用，请重试",
+      "requestTimeout": "操作超时，请检查文件状态后重试",
+      "loadHistoryFailed": "加载逐轮修改历史失败",
+      "discarded": "已撤销修改",
+      "redone": "已重新应用修改",
+      "discardFailed": "撤销修改失败，请重试",
+      "redoFailed": "重新应用修改失败，请重试"
+    },
+    "watch": {
+      "loadSummaryFailed": "加载 Git 变更统计失败",
+      "connectFailed": "连接 Git 变更服务失败",
+      "refreshFailed": "刷新 Git 变更统计失败",
+      "loadFilesFailed": "加载工作区文件列表失败",
+      "loadDetailFailed": "加载文件差异详情失败"
+    }
   },
   "multiSession": {
     "title": "工作",
@@ -5477,6 +5708,8 @@
       "applicationPlugins": "应用插件",
       "mcp": "连接器",
       "pluginMarket": "插件广场",
+      "agentPlugin": "Agent插件",
+      "systemPlugin": "系统插件",
       "mcpMarket": "连接器广场",
       "my": "我的扩展"
     },
@@ -5684,14 +5917,53 @@
       "addJsonHint": "请从 MCP Servers 的介绍页面复制配置 JSON（优先使用 NPX 或 UVX 配置），并粘贴到输入框中。"
     },
     "upload": {
-      "hint": "支持.zip和.tar文件，解压后的文件夹需要至少包含 manifest.json 文件和 README.md，.json 文件需包含 packageType 声明包类型。",
+      "hint": "支持 .zip 包，按 manifest.json 中的 package_type 自动识别：Agent 插件（plugin）与 系统插件（extension）。",
       "dropHint": "点击或拖动文件到此处",
       "webHint": "点击上传文件",
-      "invalidType": "仅支持 .zip / .tar 文件",
+      "invalidType": "仅支持 .zip 文件",
       "importSuccess": "插件导入成功",
       "missingManifest": "插件包缺少 manifest.json，或文件已损坏",
       "missingReadme": "插件包缺少 README.md 文件",
       "skillPathNotRelative": "包内技能路径须为相对路径（如 ./skills/xxx），不能写本机绝对路径"
+    },
+    "systemPlugin": {
+      "badge": "系统插件",
+      "sourceHub": "OpenJiuwen Agentic Hub",
+      "sourceLocal": "本地",
+      "install": "安装",
+      "uninstall": "卸载",
+      "reload": "重载",
+      "enable": "启用",
+      "multiEnableTitle": "开启多个系统插件",
+      "multiEnableMessage": "同时开启多个系统插件可能导致功能冲突，是否确认开启此插件？",
+      "multiEnableConfirm": "确认开启",
+      "enableFailedTitle": "无法更新系统插件状态",
+      "enableFailedMessage": "操作失败，请稍后重试。插件开关状态未更改。",
+      "disable": "禁用",
+      "detail": "查看详情",
+      "enabled": "已启用",
+      "statusActive": "已生效",
+      "statusInstalled": "已安装",
+      "statusDisabled": "已禁用",
+      "statusAvailable": "未安装",
+      "preview": "预览",
+      "previewHint": "点击查看大图",
+      "ability": "能力介绍",
+      "howItWorks": "生效机制",
+      "events": "依赖事件",
+      "contentTab": "内容详情",
+      "filesTab": "文件预览",
+      "tabsLabel": "插件详情分区",
+      "noDetails": "暂无内容详情",
+      "expandReadme": "展开全文",
+      "version": "版本",
+      "installedVersion": "已安装 v{{version}}",
+      "switchVersion": "切换版本",
+      "switchVersionConfirm": "将「{{name}}」从 v{{installed}} 切换到 v{{target}}？切换后当前版本将停止生效，但文件会保留在工作区（不会删除），之后可随时切回。",
+      "publish": "发布",
+      "uninstallConfirm": "请选择卸载方式：「仅卸载 v{{version}}」只删除该版本，其他已安装版本会保留但不再生效；「全部卸载」会删除「{{name}}」留在工作区的所有版本文件，不可恢复。",
+      "uninstallVersion": "仅卸载 v{{version}}",
+      "uninstallAll": "全部卸载"
     },
     "common": {
       "back": "返回",
@@ -7067,6 +7339,8 @@
     }
   },
   "groupChat": {
+    "colleagues": "AI 同事",
+    "colleague": "AI 同事",
     "organizationInterrupted": "服务重启或执行进程退出，组织任务已中断。已完成成果保留，请重新发起任务。",
     "externalRuntimeDisabled": "{{agents}} 尚未启用。请在设置的「智能体 → 三方 Agent」中打开对应开关，再重新添加成员。",
     "useTeam": "使用该专家团",
@@ -7206,6 +7480,71 @@
       "in_progress": "执行中",
       "blocked": "等待中",
       "stopped": "已停止"
+    }
+  },
+  "webuiFileImport": {
+    "uploading": "正在上传 {{percent}}%",
+    "failed": "导入失败，请重试",
+    "tooLarge": "文件太大，无法导入",
+    "inactive": "页面已更新，请重新选择文件"
+  },
+  "webuiSplash": {
+    "holdToSkip": "长按空格跳过"
+  },
+  "webuiPresentation": {
+    "enter": "进入{{title}}",
+    "opening": "正在打开桌面形态…",
+    "desktopRequired": "请在桌面客户端使用应用形态",
+    "newConversation": "新对话",
+    "openFailed": "桌面形态未能打开，工作台仍可继续使用",
+    "updateFailed": "桌面形态更新失败，请返回工作台检查连接",
+    "actionFailed": "操作未完成，请检查会话状态",
+    "restored": "桌面形态已结束，工作台已恢复",
+    "errors": {
+      "DISCONNECTED": "连接已断开，请返回工作台",
+      "TARGET_INACTIVE": "这个会话已不可用，请重新选择",
+      "CONVERSATION_BUSY": "会话正在运行或等待确认，请先完成当前操作",
+      "SEND_FAILED": "发送未确认成功，请检查对话后再决定是否重发",
+      "REQUEST_CONFLICT": "请求编号重复且内容不同，操作已拒绝",
+      "STALE_REQUEST": "请求已过期，操作未重复执行",
+      "MODEL_UNAVAILABLE": "这个模型已不可用，请重新选择",
+      "REPLY_CHANGED": "回复已更新，请重新展开查看",
+      "REQUEST_BUSY": "操作尚在执行，请稍后再试"
+    },
+    "choose": "切换应用形态"
+  },
+  "webuiIframe": {
+    "pluginPage": "插件页面",
+    "loading": "页面加载中...",
+    "slow": "页面加载较慢，可重新加载或在新标签页打开",
+    "error": "页面加载失败",
+    "inactive": "页面已停止，恢复后将重新加载",
+    "reload": "重新加载页面",
+    "openSource": "在新标签页打开原始地址"
+  },
+  "webuiFiles": {
+    "treeLabel": "工作区文件",
+    "treeTitle": "文件",
+    "resizeTree": "调整文件树宽度",
+    "emptyTree": "目录中没有文件",
+    "tree": {
+      "unavailable": "当前会话尚无可用工作目录",
+      "unsupported": "此会话模式暂不支持文件浏览",
+      "error": "目录操作失败，请重新展开目录或选择文件",
+      "limit": "已达到目录展开或请求大小限制，请先收起部分目录",
+      "readFailed": "部分目录未能读取，可以重新展开目录重试",
+      "truncated": "目录内容超过显示预算，当前仅显示部分文件"
+    },
+    "previewTitle": "预览",
+    "preview": {
+      "empty": "选择文件以预览",
+      "loading": "正在读取文件…",
+      "missing": "文件已不存在",
+      "unsupported": "暂不支持预览此文件格式",
+      "too_large": "文件超过文本预览大小限制（1 MiB）",
+      "forbidden": "无法访问此会话目录范围以外的文件",
+      "unavailable": "当前会话的文件预览暂不可用",
+      "error": "文件读取失败，请重新选择文件"
     }
   }
 }

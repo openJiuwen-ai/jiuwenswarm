@@ -1,0 +1,14 @@
+/* Below every in-flow layer of the application, above the canvas background. */
+.webui-background-host {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.webui-background-host__slot,
+.webui-background-host__instance {
+  position: absolute;
+  inset: 0;
+}

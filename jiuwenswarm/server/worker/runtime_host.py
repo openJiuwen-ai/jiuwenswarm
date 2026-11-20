@@ -75,6 +75,12 @@ class WorkerRuntime:
         stop = getattr(self.server, "stop", None)
         if callable(stop):
             await stop()
+        try:
+            from jiuwenswarm.extensions_v2.assembly import shutdown_extensions
+
+            await shutdown_extensions()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[Worker] extension v2 shutdown failed: %s", exc)
         # A stopped server can still have queued persistence writes. Join both
         # stores before closing application owners or reporting shutdown done.
         from jiuwenswarm.server.runtime.session.session_history import flush_pending_writes as flush_history

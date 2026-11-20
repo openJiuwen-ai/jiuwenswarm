@@ -255,3 +255,42 @@ def test_record_to_mcp_entry_carries_enabled_when_present(tmp_path: Path) -> Non
         entry3 = ss.record_to_mcp_entry("legacy", legacy)
         assert "enabled" not in entry3
 
+
+def test_settle_connecting_mcp_promotes_or_degrades(tmp_path: Path, monkeypatch) -> None:
+    """Startup probe result settles a leftover hidden record without touching a
+    connect that already completed."""
+    from jiuwenswarm.server.runtime.mcp import registry
+    from tests.unit_tests.agentserver.mcp.manifest_helpers import write_manifest
+
+    monkeypatch.setattr(ss, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(registry, "get_workspace_dir", lambda: tmp_path)
+
+    for name in ("hub-ok", "hub-fail"):
+        package = tmp_path / "mcp" / "mcp_hub" / name
+        package.mkdir(parents=True)
+        write_manifest(package, "stdio-mcp")
+        (package / "mcp.json").write_text(
+            f'{{"mcpServers":{{"{name}":{{"command":"npx","args":[]}}}}}}',
+            encoding="utf-8",
+        )
+
+    for name in ("hub-ok", "hub-fail", "custom-mcp"):
+        ss.upsert_mcp_record(
+            name,
+            {"name": name, "transport": "stdio", "command": "npx", "args": [],
+             "server_id_scope": f"mcp:{name}"},
+            state="connecting",
+            integration_type="stdio-mcp",
+        )
+
+    registry.settle_connecting_mcp("hub-ok", probe_ok=True)
+    assert ss.get_mcp_record("hub-ok")["state"] == "connected"
+
+    # A completed connect must not be lowered by a late probe result.
+    registry.settle_connecting_mcp("hub-ok", probe_ok=False)
+    assert ss.get_mcp_record("hub-ok")["state"] == "connected"
+
+    registry.settle_connecting_mcp("hub-fail", probe_ok=False)
+    assert ss.get_mcp_record("hub-fail")["state"] == "disconnected"
+    registry.settle_connecting_mcp("custom-mcp", probe_ok=False)
+    assert ss.get_mcp_record("custom-mcp")["state"] == "registered"

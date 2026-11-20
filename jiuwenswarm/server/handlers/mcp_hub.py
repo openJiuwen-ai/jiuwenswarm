@@ -258,6 +258,7 @@ async def _run_mcp_connect_flow(
     services, name: str, *, rollback_on_probe_failure: bool = True
 ) -> dict[str, Any]:
     """Run the shared connect flow and return a frontend payload."""
+    from jiuwenswarm.common.mcp_config import discard_probed_mcp
     from jiuwenswarm.server.runtime.mcp.registry import (
         connect_mcp,
         was_connect_cancelled,
@@ -276,8 +277,15 @@ async def _run_mcp_connect_flow(
         # Required-token fields are metadata, not secrets.
         return {"type": "credentials_required", **item}
     # Confirm server-bearing MCPs are actually usable before connected.
-    probe_ok, _probe_reason = await services.agent_manager.probe_mcp_live_connection(name)
+    probe_ok, probe_reason = await services.agent_manager.probe_mcp_live_connection(name)
+    # Cancel may land while the probe is in flight; cancel_connect already
+    # rolled the record back, so a late result must not override it.
+    if was_connect_cancelled(name):
+        logger.info("[mcp] connect '%s' cancelled during probe", name)
+        await discard_probed_mcp(name)
+        return {"type": "cancelled", "name": name}
     if not probe_ok:
+        logger.warning("[mcp] probe failed for '%s': %s", name, probe_reason)
         if rollback_on_probe_failure:
             try:
                 from jiuwenswarm.server.runtime.mcp.registry import (

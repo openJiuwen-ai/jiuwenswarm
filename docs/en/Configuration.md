@@ -434,11 +434,11 @@ The user configuration is `~/.jiuwenswarm/config/config.yaml`. The `symphony` no
 - The Orchestration Experience switch saves `orchestration.experience.enabled`. Set `orchestration.plan.dynamic_graph_enabled` independently to use existing dynamic observations in planning.
 - Tree and graph builds use the host default model. Online planning uses the current session model. There is no retrieval-specific `llm` configuration. Fingerprint `max_output_tokens: null` inherits the host model output budget.
 - Discovery derives `retrieval.prompt.context_window_tokens` from the actual session model unless explicitly configured. Saved settings affect new sessions; existing sessions retain their frozen budget and index version. Tools and prompt Rails share one Discovery session.
-- `capability.sources` declares the global collection as a list of directories, each with a `type` and `root`. The current runtime consumes a single source. Plugin and selected MCP capabilities belong only to their session views. Session visibility and dynamic disabled filters still apply.
+- `capability.sources` lists Skill and standalone expert directories by `type` and `root`. They share a taxonomy. Graph and Flow require exactly one Skill source. Plugin and selected MCP capabilities belong only to their session views. Session visibility and disabled filters still apply.
 
 ### Directories and rebuilding
 
-If `capability.sources` is omitted, Swarm uses a single `skill` source in the workspace `skills` directory. An explicit list replaces that default. An empty `storage.artifact_root` resolves to workspace `symphony/runtime`. The template supports `SYMPHONY_ARTIFACT_ROOT`. Artifacts are separated into `inventory/`, `cache/`, `tree/`, `graph/` and `flow/`; Core validates layout version and collection identity.
+If `capability.sources` is omitted, Swarm uses the workspace `skills` directory. An explicit list replaces that default. An empty `storage.artifact_root` resolves to workspace `symphony/runtime`, overridable through `SYMPHONY_ARTIFACT_ROOT`. Collections with multiple directories or expert sources build their taxonomy under `taxonomy_collections/<scope_id>` inside that root. Existing single-Skill artifacts retain their paths.
 
 Old top-level `paths`, `fingerprint`, `build`, `skill_retrieval`, `evolution` and model-backend nodes are rejected. Old signatures and layouts are not reused. Rebuild with the new configuration; old directories are neither migrated nor deleted automatically. Failed refreshes preserve the last published version; cancellation prevents publication.
 

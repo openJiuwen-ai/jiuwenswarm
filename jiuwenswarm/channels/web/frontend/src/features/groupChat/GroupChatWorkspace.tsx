@@ -1,3 +1,4 @@
+import { colleaguePortrait, customAvatarHue } from '../jiuwenmate/colleaguePortraits';
 import { Fragment, useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   AtSign, Bot, ChevronLeft, Folder, MessagesSquare, PencilLine, Plus, Search, Send, Settings, UserRound, X,
@@ -250,7 +251,8 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
         void refresh();
         return;
       }
-      if (type === 'chat.ask_user_question' && payload.source === 'ask_user_interrupt') {
+      if (type === 'chat.ask_user_question'
+        && (payload.source === 'ask_user_interrupt' || payload.source === 'colleague_permission')) {
         const pending = payload as unknown as GroupQuestion;
         if (answeredQuestions.current.has(pending.request_id)) return;
         setQuestions((current) => [...current.filter((item) => item.request_id !== pending.request_id), pending]);
@@ -480,7 +482,18 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
 
   const visibleMembers = filterGroupMembers(group?.members ?? [], memberQuery);
   const showSelf = matchesMemberQuery(t('groupChat.you'), memberQuery);
-  const memberAvatar = (member: string) => <TeamMemberAvatar member={member} className="group-chat-assignee-avatar" alt="" />;
+  const memberAvatar = (member: string) => {
+    const colleague = group?.members.find((item) => item.member_name === member && item.kind === 'colleague');
+    if (colleague) {
+      const portrait = { id: colleague.id, name: colleague.display_name || member,
+        category: colleague.colleague_category || 'custom' as const, avatarUrl: colleague.avatar_url,
+        isDefault: colleague.is_default };
+      const hue = customAvatarHue(portrait);
+      return <img src={colleaguePortrait(portrait)} className="group-chat-assignee-avatar" alt=""
+        style={hue === null ? undefined : { filter: `hue-rotate(${hue}deg)` }} />;
+    }
+    return <TeamMemberAvatar member={member} className="group-chat-assignee-avatar" alt="" />;
+  };
   const agentCount = group?.members.length ?? 0;
 
   // 每条带 @ 的用户消息，各自记录尚未回音的被 @ 成员：
@@ -626,6 +639,7 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
                 disabled={sending} onClick={() => mention(member.member_name)}
                 data-testid="group-chat-mention-option" data-variant={member.member_name}>
                 {memberAvatar(member.member_name)}<span>{member.display_name || member.member_name}</span>
+                {member.kind === 'colleague' && <small className="group-chat-tag" data-testid="group-chat-colleague-tag">{t('groupChat.colleague')}</small>}
                 {member.kind === 'agent_group' && <small className="group-chat-tag is-team">{t('groupChat.team')}</small>}
               </button>)}
             </div>}
@@ -727,7 +741,8 @@ export function GroupChatWorkspace({ groupId, directory, onBack }: {
             {member.cli_agent && <small className="group-chat-provider" data-testid="group-chat-member-provider">
               {member.cli_agent === 'claude' ? 'Claude Code' : 'Codex'}
             </small>}
-            {member.kind === 'agent_group' && <small className="group-chat-tag is-team">{t('groupChat.team')}</small>}
+            {member.kind === 'colleague' && <small className="group-chat-tag" data-testid="group-chat-colleague-tag">{t('groupChat.colleague')}</small>}
+                {member.kind === 'agent_group' && <small className="group-chat-tag is-team">{t('groupChat.team')}</small>}
           </button>;
           })}
           {!showSelf && !visibleMembers.length && <p className="group-chat-muted" data-testid="group-chat-no-member-match">

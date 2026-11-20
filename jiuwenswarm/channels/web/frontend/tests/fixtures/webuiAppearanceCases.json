@@ -1,0 +1,173 @@
+[
+  {
+    "name": "Box uses shared host styling",
+    "component": "Box",
+    "props": {
+      "direction": "row",
+      "gap": "sm"
+    },
+    "valid": true
+  },
+  {
+    "name": "Box rejects custom background descriptors",
+    "component": "Box",
+    "props": {
+      "background": {
+        "color": {
+          "r": 249,
+          "g": 250,
+          "b": 253,
+          "alpha": 0.42
+        },
+        "borderColor": {
+          "r": 251,
+          "g": 252,
+          "b": 254,
+          "alpha": 0.72
+        },
+        "blur": 20,
+        "radius": 16,
+        "layers": [
+          {
+            "kind": "linear",
+            "angle": 180,
+            "stops": [
+              {
+                "position": 0,
+                "color": {
+                  "r": 251,
+                  "g": 252,
+                  "b": 254,
+                  "alpha": 0.52
+                }
+              },
+              {
+                "position": 100,
+                "color": {
+                  "r": 251,
+                  "g": 252,
+                  "b": 254,
+                  "alpha": 0
+                }
+              }
+            ]
+          },
+          {
+            "kind": "radial",
+            "x": 12,
+            "y": -110,
+            "stops": [
+              {
+                "position": 0,
+                "color": {
+                  "r": 151,
+                  "g": 221,
+                  "b": 209,
+                  "alpha": 0.55
+                }
+              },
+              {
+                "position": 100,
+                "color": {
+                  "r": 151,
+                  "g": 221,
+                  "b": 209,
+                  "alpha": 0
+                }
+              }
+            ]
+          },
+          {
+            "kind": "linear",
+            "angle": 112,
+            "stops": [
+              {
+                "position": 0,
+                "color": {
+                  "r": 151,
+                  "g": 221,
+                  "b": 209,
+                  "alpha": 0.22
+                }
+              },
+              {
+                "position": 100,
+                "color": {
+                  "r": 169,
+                  "g": 184,
+                  "b": 242,
+                  "alpha": 0.36
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "padding": "sm"
+    },
+    "valid": false
+  },
+  {
+    "name": "Box rejects component visibility binding",
+    "component": "Box",
+    "props": {
+      "visibleWhen": {
+        "key": "visible",
+        "default": true
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "preference switch",
+    "component": "Switch",
+    "props": {
+      "preference": {
+        "key": "visible",
+        "default": true
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "blank preference key",
+    "component": "Switch",
+    "props": {
+      "preference": {
+        "key": " ",
+        "default": true
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "preference checked conflict",
+    "component": "Switch",
+    "props": {
+      "preference": {
+        "key": "visible",
+        "default": true
+      },
+      "checked": false
+    },
+    "valid": false
+  },
+  {
+    "name": "Box rejects inline styles",
+    "component": "Box",
+    "props": {
+      "style": {
+        "backgroundColor": "#ffffff"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "Box rejects custom classes",
+    "component": "Box",
+    "props": {
+      "className": "plugin-glass"
+    },
+    "valid": false
+  }
+]

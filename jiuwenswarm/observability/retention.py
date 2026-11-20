@@ -1753,6 +1753,8 @@ def advance_checkpoint(
     )
     seeds = list(checkpoint.lineage)
     for item in behavior_order:
+        if _string_value(item.attributes, "openjiuwen.request.purpose") == "goal_assessment":
+            continue
         if _has_tool_ancestor(item, by_identity):
             continue
         inference_id = _string_value(item.attributes, _INFERENCE_ID)

@@ -187,12 +187,13 @@ def test_deleting_the_ordinary_app_never_promotes_a_jm_robot_to_default():
     assert "last_sender_id" not in deleted
 
 
-def test_a_converted_default_app_stays_default_and_keeps_its_cron_identity():
+def test_converting_a_default_app_to_an_employee_binding_clears_default_and_cron_identity():
     current = {"apps": [{"client_id": "ordinary", "client_secret": "fake"}], "last_sender_id": "staff-old"}
     converted = merge_dingtalk_config(current, {"apps": [
         {"client_id": "ordinary", "persistent_agent_id": "agent-dingtalk"},
     ]})
-    assert converted["apps"][0]["is_default"] and converted["last_sender_id"] == "staff-old"
+    assert converted["apps"][0]["is_default"] is False
+    assert "last_sender_id" not in converted
 
 
 def test_app_list_rejects_duplicates_a_second_ordinary_app_and_missing_ids():

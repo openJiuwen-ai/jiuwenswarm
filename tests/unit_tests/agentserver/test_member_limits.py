@@ -17,6 +17,11 @@ from jiuwenswarm.enterprise.team.quota import TeamQuotaExceeded
 class _Roster:
     def __init__(self, rows):
         self.rows = rows
+        self.roles = {}
+
+    async def get_team_members(self, team_name):
+        return [SimpleNamespace(member_name=name, role=self.roles.get(name, "teammate"))
+                for name, _display, _status in self.rows]
 
     async def get_member_roster(self, team_name):
         return list(self.rows)
@@ -280,3 +285,103 @@ def test_explicit_team_size_blocks_only_a_single_over_limit_reading():
         "无法创建：你要求的是 4 人团队，该团队最多 3 人（含 Leader）。"
     )
     assert "无法再添加队员" in member_limits.teammate_quota_user_message(3)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("leased", [False, True])
+async def test_host_managed_registration_does_not_reserve_team_quota(monkeypatch, leased):
+    svc = _QuotaSvc(fail=True, limit=1)
+    monkeypatch.setattr("jiuwenswarm.enterprise.team.quota.get_team_quota_service", lambda: svc)
+    agent, backend = _leader([("team-leader", "Leader", "ready")])
+    member_limits.attach_teammate_limit_guard(agent, max_teammates=1, team_id="tid" if leased else "")
+    registered = await backend.spawn_member("colleague", "Colleague", object(), role=TeamRole.HOST_MANAGED)
+    assert registered.ok
+    assert backend.calls == ["colleague"]
+    assert svc.reserved == [] and svc.committed == []
+    blocked = await backend.spawn_member("expert", "Expert", object())
+    assert not blocked.ok
+
+
+@pytest.mark.asyncio
+async def test_existing_host_managed_members_do_not_reduce_expert_capacity():
+    rows = [("team-leader", "Leader", "ready"), ("colleague", "Colleague", "ready")]
+    agent, backend = _leader(rows)
+    backend.db.member.roles["colleague"] = "host_managed"
+    member_limits.attach_teammate_limit_guard(agent, max_teammates=2)
+    assert await member_limits.quota_member_names(backend) == ["team-leader"]
+    assert await member_limits.count_team_members(backend) == 1
+    assert await member_limits.count_non_leader_members(backend) == 0
+    assert (await backend.spawn_member("expert", "Expert", object())).ok
+    rows.append(("expert", "Expert", "ready"))
+    assert not (await backend.spawn_member("second", "Second", object())).ok
+
+
+@pytest.mark.asyncio
+async def test_real_host_managed_api_registers_multiple_identities_at_capacity():
+    from unittest.mock import AsyncMock
+    from openjiuwen.agent_teams.context import set_session_id, reset_session_id
+    from openjiuwen.agent_teams.tools.database import DatabaseConfig, DatabaseType, TeamDatabase
+    from openjiuwen.agent_teams.tools.team import TeamBackend
+
+    token = set_session_id("quota-host-members")
+    database = TeamDatabase(DatabaseConfig(db_type=DatabaseType.SQLITE, connection_string=":memory:"))
+    try:
+        await database.initialize()
+        backend = TeamBackend("quota-team", "leader", True, database, AsyncMock())
+        await backend.build_team(display_name="Group", desc="", leader_display_name="Leader", leader_desc="")
+        agent = SimpleNamespace(role=TeamRole.LEADER, team_backend=backend)
+        member_limits.attach_teammate_limit_guard(agent, max_teammates=1)
+        for name in ("colleague-a", "colleague-b"):
+            assert (await backend.spawn_host_managed_member(member_name=name, display_name=name)).ok
+        assert await member_limits.quota_member_names(backend) == ["leader"]
+        assert await member_limits.count_team_members(backend) == 1
+        assert not (await backend.spawn_host_managed_member(member_name="colleague-a", display_name="Duplicate")).ok
+        blocked = await backend.spawn_member("expert", "Expert", object())
+        assert not blocked.ok
+        assert blocked.reason.startswith(member_limits.TEAM_MEMBER_QUOTA_EXCEEDED)
+    finally:
+        await database.close()
+        reset_session_id(token)
+
+
+@pytest.mark.asyncio
+async def test_public_group_roster_skips_guard_and_detaches_an_older_guard(monkeypatch):
+    svc = _QuotaSvc(fail=True, limit=1)
+    monkeypatch.setattr("jiuwenswarm.enterprise.team.quota.get_team_quota_service", lambda: svc)
+    agent, backend = _leader([("team-leader", "Leader", "ready")])
+    member_limits.attach_teammate_limit_guard(agent, max_teammates=1, team_id="team")
+    assert not (await backend.spawn_member("blocked", "Blocked", object())).ok
+    svc.reserved.clear()
+    backend.conversation_mode = "group_chat"
+    assert not member_limits.attach_teammate_limit_guard(agent, max_teammates=1, team_id="team")
+    for name in ("expert", "expert-group", "colleague"):
+        assert (await backend.spawn_member(name, name, object())).ok
+    assert svc.reserved == []
+    assert backend.calls == ["expert", "expert-group", "colleague"]
+
+
+@pytest.mark.asyncio
+async def test_real_group_roster_can_register_experts_above_team_limit():
+    from unittest.mock import AsyncMock
+    from openjiuwen.agent_teams.context import set_session_id, reset_session_id
+    from openjiuwen.agent_teams.tools.database import DatabaseConfig, DatabaseType, TeamDatabase
+    from openjiuwen.agent_teams.tools.team import TeamBackend
+    from openjiuwen.core.single_agent.schema.agent_card import AgentCard
+
+    token = set_session_id("public-group-quota")
+    database = TeamDatabase(DatabaseConfig(db_type=DatabaseType.SQLITE, connection_string=":memory:"))
+    try:
+        await database.initialize()
+        backend = TeamBackend("public-group", "leader", True, database, AsyncMock())
+        backend.conversation_mode = "group_chat"
+        await backend.build_team(display_name="Group", desc="", leader_display_name="Leader", leader_desc="")
+        agent = SimpleNamespace(role=TeamRole.LEADER, team_backend=backend)
+        assert not member_limits.attach_teammate_limit_guard(agent, max_teammates=5)
+        for index in range(8):
+            name = f"expert-{index}"
+            assert (await backend.spawn_member(name, name, AgentCard(id=name, name=name))).ok
+        assert (await backend.spawn_host_managed_member(member_name="colleague", display_name="Colleague")).ok
+        assert len(await backend.db.member.get_member_roster(backend.team_name)) == 10
+    finally:
+        await database.close()
+        reset_session_id(token)

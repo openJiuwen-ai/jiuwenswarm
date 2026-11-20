@@ -3636,3 +3636,65 @@ test('projecting a schema-v2 record never reads an attribute it does not use', (
 
   assert.equal(reads, 0);
 });
+
+
+function goalRequest(sequence, purpose, answer, { failed = false, subjectId = 'leader', attempt = 1 } = {}) {
+  const record = compactionAttemptRecord({ sequence, compactionNumber: 0, failed, subjectId });
+  const span = spansOf([record])[0];
+  setStringAttribute(span, 'openjiuwen.request.purpose', purpose);
+  setStringAttribute(span, 'openjiuwen.goal.id', 'goal-1');
+  span.attributes.push(v2Attribute('openjiuwen.goal.attempt.number', attempt, true));
+  setStringAttribute(span, 'openjiuwen.goal.assessment.id', `assessment-${sequence}`);
+  setStringAttribute(span, 'openjiuwen.goal.strategy', 'hybrid');
+  setStringAttribute(span, 'gen_ai.system_instructions', JSON.stringify([{ type: 'text', content: purpose === 'goal_assessment' ? 'ASSESSOR ONLY' : 'EXECUTOR ONLY' }]));
+  setStringAttribute(span, 'gen_ai.input.messages', JSON.stringify([{ role: 'user', parts: [{ type: 'text', content: purpose === 'goal_assessment' ? 'judge the work' : 'deliver the work' }] }]));
+  setStringAttribute(span, 'gen_ai.output.messages', JSON.stringify([{ role: 'assistant', parts: [{ type: 'text', content: answer }] }]));
+  span.attributes.push(v2Attribute('gen_ai.usage.input_tokens', 11, true));
+  span.attributes.push(v2Attribute('gen_ai.usage.output_tokens', 3, true));
+  return record;
+}
+
+test('goal assessor has its own request and input baseline without entering execution steps', () => {
+  const before = goalRequest(1, 'assistant', 'first output');
+  const assessment = goalRequest(2, 'goal_assessment', '{"status":"continue","evidence":"missing report"}');
+  const after = goalRequest(3, 'assistant', 'report delivered');
+  const snapshot = projectOtelTrajectory([before, assessment, after]);
+  const main = cellsOf(snapshot);
+  assert.equal(snapshot.requests.length, 2);
+  assert.ok(main.some(cell => cell.text === 'first output'));
+  assert.ok(main.some(cell => cell.text === 'report delivered'));
+  assert.ok(!main.some(cell => (cell.text ?? '').includes('ASSESSOR ONLY')));
+  assert.ok(!main.some(cell => (cell.text ?? '').includes('missing report')));
+  assert.ok(snapshot.turns[0].groups.some(group => group.title.includes('Goal #1')));
+  assert.equal(snapshot.goalAssessments.length, 1);
+  const isolated = snapshot.goalAssessments[0];
+  assert.equal(isolated.result, 'continue');
+  assert.equal(isolated.attempt, 1);
+  assert.equal(isolated.goalId, 'goal-1');
+  assert.equal(isolated.strategy, 'hybrid');
+  assert.equal(isolated.request.purpose, 'goal_assessment');
+  assert.ok(isolated.request.traceDetail);
+  assert.ok(cellsOf(isolated).some(cell => (cell.text ?? '').includes('ASSESSOR ONLY')));
+  assert.ok(cellsOf(isolated).some(cell => (cell.text ?? '').includes('missing report')));
+  assert.equal(isolated.request.usage.input, 11);
+  assert.equal(isolated.request.usage.output, 3);
+});
+
+test('multiple goal rounds and failed evaluator requests remain isolated on replay', () => {
+  const records = [
+    goalRequest(1, 'assistant', 'work'),
+    goalRequest(2, 'goal_assessment', '{"status":"continue","evidence":"more work"}'),
+    goalRequest(3, 'assistant', 'more work done', { attempt: 2 }),
+    goalRequest(4, 'goal_assessment', '', { failed: true, attempt: 2 }),
+    goalRequest(5, 'goal_assessment', '{"status":"complete","evidence":"all done"}', { attempt: 2 }),
+  ];
+  const projector = createTrajectoryV2Reducer();
+  projectOtelTrajectory(records.slice(0, 3), { v2Reducer: projector });
+  const live = projectOtelTrajectory(records, { v2Reducer: projector });
+  const replay = projectOtelTrajectory(records);
+  assert.deepEqual(live, replay);
+  assert.equal(live.requests.length, 2);
+  assert.equal(live.goalAssessments.length, 3);
+  assert.equal(live.goalAssessments[1].request.status, 'error');
+  assert.equal(live.goalAssessments[2].result, 'complete');
+});

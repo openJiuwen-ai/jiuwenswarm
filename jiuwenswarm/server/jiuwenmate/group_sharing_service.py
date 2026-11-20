@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from pathlib import Path
 import logging
 from datetime import datetime, timezone
 from typing import Any
@@ -95,6 +96,39 @@ class GroupSharingService:
         self._verify_membership = verify_membership
         self._cli = cli
 
+    def public_group_imports(self, execution) -> tuple[str, ...]:
+        """Recheck imported SwarmChat files without weakening the IM file consent path."""
+        from jiuwenswarm.server.jiuwenmate.swarmchat.consumption import SwarmChatFileImports
+        from jiuwenswarm.server.jiuwenmate.swarmchat.membership import require_membership
+        from jiuwenswarm.server.jiuwenmate.swarmchat.files import published_files
+
+        imports = SwarmChatFileImports(self.repository.db_path).for_session(execution)
+        if not imports:
+            return ()
+        connection = self._service.connection_of(execution.namespace_id, execution.agent_id)
+        agent_id = connection.config_id if connection is not None else execution.agent_id
+        import_root = self._service.workspaces.ensure_session_imports(
+            execution.namespace_id, execution.agent_id, execution.session_id,
+        )
+        allowed = []
+        for row in imports:
+            target = import_root / Path(row["imported_path"]).name
+            valid = False
+            try:
+                group, _ = require_membership(row["group_id"], agent_id)
+                source = next((file["path"] for file in published_files(group)
+                               if str(file["path"]) == row["source_path"]), None)
+                if source is not None and not target.is_symlink() and target.is_file():
+                    valid = (hashlib.sha256(source.read_bytes()).hexdigest() == row["digest"]
+                             and hashlib.sha256(target.read_bytes()).hexdigest() == row["digest"])
+            except (PersistentAgentError, OSError, ValueError):
+                valid = False
+            if valid:
+                allowed.append(row["imported_path"])
+            elif target.is_file() or target.is_symlink():
+                target.unlink()
+        return tuple(allowed)
+
     def is_owner_direct(self, execution) -> bool:
         state = self.sessions.get_request(execution.namespace_id, execution.request_id)
         record = state.record
@@ -115,6 +149,10 @@ class GroupSharingService:
         ):
             raise PersistentAgentError("sharing request identity mismatch", code="FORBIDDEN")
         session = self.sessions.get_session(execution.namespace_id, execution.session_id)
+        if getattr(record, "source_ref", execution.source_ref) != execution.source_ref:
+            raise PersistentAgentError("sharing request source mismatch", code="FORBIDDEN")
+        if getattr(session, "agent_id", execution.agent_id) != execution.agent_id:
+            raise PersistentAgentError("sharing Session identity mismatch", code="FORBIDDEN")
         route = record.route_snapshot
         if route is None:
             raise PersistentAgentError("sharing destination unavailable", code="FORBIDDEN")
@@ -196,6 +234,37 @@ class GroupSharingService:
                     approval["requester_name"] = ""
 
     async def authorize(self, execution, query, result, source_groups):
+        """Release authorized messages directly; retain consent for files and online documents."""
+        if result.status not in {"found", "empty", "incomplete"}:
+            return result
+        try:
+            result.assert_matches(execution)
+        except Exception:
+            return _safe_result(execution, "Search result identity mismatch.")
+        if not await asyncio.to_thread(
+            self.repository.request_window_is_current, execution.namespace_id, execution.request_id,
+        ):
+            return _safe_result(execution, "Group access changed; submit a new request.", status="unavailable")
+        authorized = {item["group_id"] for item in source_groups}
+        if any(hit.group_id not in authorized for hit in (*result.hits, *result.artifacts)):
+            return _safe_result(execution, "Source authorization changed.", status="unavailable")
+        try:
+            await asyncio.to_thread(self.scope, execution, query)
+        except PersistentAgentError:
+            return _safe_result(execution, "Request destination could not be verified.")
+        if not await self._unchanged(execution.namespace_id, result.model_copy(update={"artifacts": ()})):
+            return _safe_result(execution, "Source messages changed while reading.", status="unavailable")
+        if not result.artifacts:
+            return result
+        messages = result.hits
+        artifact_result = result.model_copy(update={"hits": ()})
+        released = await self._authorize_artifacts(execution, query, artifact_result, source_groups)
+        if released.status in {"found", "empty", "incomplete"}:
+            released = released.model_copy(update={"hits": messages,
+                "status": "incomplete" if not released.query_complete else "found" if messages else released.status})
+        return released
+
+    async def _authorize_artifacts(self, execution, query, result, source_groups):
         if not await asyncio.to_thread(
             self.repository.request_window_is_current, execution.namespace_id, execution.request_id,
         ):

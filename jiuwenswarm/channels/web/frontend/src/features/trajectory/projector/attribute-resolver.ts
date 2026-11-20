@@ -102,6 +102,10 @@ export interface NormalizedTrajectoryAttributes {
   inferenceId?: string
   inferenceInputObserved?: boolean
   trajectoryKind?: string
+  goalId?: string
+  goalAttemptNumber?: bigint
+  goalAssessmentId?: string
+  goalStrategy?: string
   requestPurpose?: string
   requestNumber?: bigint
   compactionNumber?: bigint
@@ -842,6 +846,10 @@ function normalizeAttributeEntries(
   assign(target, 'trajectoryKind', resolveClosedString(raw, [
     OPENJIUWEN_ATTRIBUTES.trajectoryKind,
   ], TRAJECTORY_KINDS))
+  assign(target, 'goalId', resolveString(raw, [OPENJIUWEN_ATTRIBUTES.goalId]))
+  assign(target, 'goalAssessmentId', resolveString(raw, [OPENJIUWEN_ATTRIBUTES.goalAssessmentId]))
+  assign(target, 'goalStrategy', resolveString(raw, [OPENJIUWEN_ATTRIBUTES.goalStrategy]))
+  assign(target, 'goalAttemptNumber', resolveNonNegativeInt64(raw, [OPENJIUWEN_ATTRIBUTES.goalAttemptNumber]))
   assign(target, 'requestPurpose', resolveClosedString(raw, [
     OPENJIUWEN_ATTRIBUTES.requestPurpose,
   ], REQUEST_PURPOSES))

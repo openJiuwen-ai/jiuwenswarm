@@ -3,10 +3,12 @@
  *
  * 从 index.tsx 抽取；路径/文件选择为弹窗内部状态（关闭即重置，与原实现一致）。
  */
-import { useState } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import TipIcon from '../../assets/tip.svg?react';
 import UpFileIcon from '../../assets/upFile.svg?react';
+import { registerDesktopLocalFilesSuppressor } from '../../features/workspace/localFilePicker';
+import { useDesktopLocalFilePickerReady } from '../../hooks';
 import { CloseButton } from '../ui';
 
 interface UploadSkillModalProps {
@@ -15,10 +17,45 @@ interface UploadSkillModalProps {
   onClose: () => void;
 }
 
+const SKILL_UPLOAD_DROP_ZONE_CLASS = 'skill-panel-upload-skill-dropzone';
+const DUPLICATE_DROP_SUPPRESSION_MS = 1200;
+
 export function UploadSkillModal({ actionTarget, onUpload, onClose }: UploadSkillModalProps) {
   const { t } = useTranslation();
   const [uploadSkillPath, setUploadSkillPath] = useState('');
   const [uploadSkillFile, setUploadSkillFile] = useState<File | null>(null);
+  const desktopReady = useDesktopLocalFilePickerReady();
+  const duplicateDropRef = useRef<{ filename: string; size: number; expiresAt: number } | null>(null);
+
+  const markDesktopDropHandled = useCallback((file: File) => {
+    duplicateDropRef.current = {
+      filename: file.name,
+      size: file.size,
+      expiresAt: Date.now() + DUPLICATE_DROP_SUPPRESSION_MS,
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!desktopReady) return undefined;
+    // 系统级拖拽会同时产生浏览器 File 和桌面桥接事件。前者已由下方 onDrop
+    // 用于上传技能；只抑制落在本上传框内的后者，不能接管或清空其他页面的待处理文件。
+    return registerDesktopLocalFilesSuppressor((detail, files) => {
+      if (detail.source !== 'drop') return false;
+      const duplicateDrop = duplicateDropRef.current;
+      if (
+        duplicateDrop
+        && Date.now() <= duplicateDrop.expiresAt
+        && files.some((file) => file.filename === duplicateDrop.filename && file.size === duplicateDrop.size)
+      ) {
+        return true;
+      }
+      if (typeof detail.clientX !== 'number' || typeof detail.clientY !== 'number') return false;
+      return Boolean(
+        document.elementFromPoint(detail.clientX, detail.clientY)?.closest(`.${SKILL_UPLOAD_DROP_ZONE_CLASS}`),
+      );
+    });
+  }, [desktopReady]);
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <button
@@ -59,11 +96,14 @@ export function UploadSkillModal({ actionTarget, onUpload, onClose }: UploadSkil
               e.preventDefault();
               const file = e.dataTransfer.files[0];
               if (file && file.name.endsWith('.zip')) {
+                markDesktopDropHandled(file);
                 setUploadSkillPath(file.name);
                 setUploadSkillFile(file);
               }
             }}
-            className="flex flex-col items-center justify-center gap-2 rounded-[12px] border border-dashed border-border cursor-pointer bg-[var(--color-skill-dropzone-surface)] hover:bg-[var(--color-skill-dropzone-hover-surface)]"
+            className={
+              `${SKILL_UPLOAD_DROP_ZONE_CLASS} flex flex-col items-center justify-center gap-2 rounded-[12px] border border-dashed border-border cursor-pointer bg-[var(--color-skill-dropzone-surface)] hover:bg-[var(--color-skill-dropzone-hover-surface)]`
+            }
             style={{ width: '502px', height: '160px' }}
           >
             <UpFileIcon className="w-6 h-6 text-text-muted" />

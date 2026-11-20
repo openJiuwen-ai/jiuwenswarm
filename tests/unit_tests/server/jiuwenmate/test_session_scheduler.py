@@ -511,9 +511,59 @@ async def test_direct_message_gets_search_port_without_group_trigger_preflight(h
     from jiuwenswarm.server.jiuwenmate.group_sharing_service import GuardedGroupChatPort
 
     assert isinstance(port, GuardedGroupChatPort)
-    assert isinstance(port._delegate, HostGroupChatPort)
-    assert port._delegate._search is not None and port._delegate._cursors is not None
+    assert port.scope[0] == NS
+    assert callable(port.search_content)
     assert trigger_calls == []
+
+
+@pytest.mark.parametrize("missing_im_dependency", ["groups", "group_archive"])
+async def test_swarmchat_keeps_its_history_port_without_im(tmp_path, monkeypatch, missing_im_dependency):
+    from unittest.mock import AsyncMock
+    from openjiuwen.agent_teams.schema.conversation import ConversationMessage
+    from jiuwenswarm.server.jiuwenmate import agent_manager, execution_driver
+    from jiuwenswarm.server.jiuwenmate.execution_models import RequestRouteSnapshot
+    from jiuwenswarm.server.jiuwenmate.swarmchat import membership, port
+    from jiuwenswarm.server.runtime.group_service import GroupService
+
+    def build_driver(**kwargs):
+        kwargs[missing_im_dependency] = None
+        return execution_driver.ExecutionDriver(**kwargs)
+
+    monkeypatch.setattr(agent_manager, "ExecutionDriver", build_driver)
+    colleague = SimpleNamespace(enabled=True, agent_id="mate_dev")
+    monkeypatch.setattr(FakeService, "get_colleague", lambda *_: colleague)
+    monkeypatch.setattr(FakeService, "get_config", lambda *_: colleague, raising=False)
+    monkeypatch.setattr(FakeService, "connection_of", lambda *_: None, raising=False)
+    group = {"group_id": "group", "name": "Research", "team_name": "team",
+             "user_id": ACCESS.principal_ref, "channel_id": "web", "members": []}
+    for module in (membership, port):
+        monkeypatch.setattr(module, "require_membership", lambda *_: (group, {}))
+    message = ConversationMessage(
+        message_id="trigger", team_name="team", session_id="group", client_message_id="client",
+        sender="user", sender_name="User", content="Fresh", timestamp=int(NOW.timestamp() * 1000),
+    )
+    read = AsyncMock(return_value=[message])
+    monkeypatch.setattr(GroupService, "public_messages", read)
+    host = Host(tmp_path)
+    await host.manager.start()
+    try:
+        host.core.release("Fresh")
+        session = host.sessions.resolve_session("local", "mate_dev", ConversationRef(
+            kind="swarm_group", channel="swarmchat", key="group",
+        ), now=NOW)
+        await host.scheduler.accept(
+            session, snapshot=host.service.snapshot("local", "mate_dev", "v1"), source_ref="swarmchat:trigger",
+            access=ACCESS, request_input=core.RequestInput(
+                kind="group_message", text="Stale", reply_target="group",
+                source=core.GroupMessage(message_id="trigger", sender_id="user", sender_name="User",
+                                         sender_kind="human", received_at=NOW, text="Stale"),
+            ), received_at=NOW, route_snapshot=RequestRouteSnapshot(channel="swarmchat", target_id="group"),
+        )
+        await settle(lambda: "Fresh" in host.core.ended)
+        assert isinstance(host.core.contexts["Fresh"].ports.group_chat, port.SwarmChatGroupChatPort)
+        read.assert_awaited_once_with("group", user_id=ACCESS.principal_ref, channel_id="web")
+    finally:
+        await host.manager.aclose()
 
 
 async def test_scheduled_execution_does_not_get_group_search_port(host):
@@ -573,8 +623,8 @@ async def test_group_message_keeps_current_trigger_preflight_and_search_port(hos
     from jiuwenswarm.server.jiuwenmate.group_sharing_service import GuardedGroupChatPort
 
     assert isinstance(port, GuardedGroupChatPort)
-    assert isinstance(port._delegate, HostGroupChatPort)
-    assert port._delegate._search is not None and port._delegate._cursors is not None
+    assert port.scope[0] == NS
+    assert callable(port.search_content)
     assert trigger_calls == ["group-trigger"]
     assert host.status(state) == ("ended", "completed")
 

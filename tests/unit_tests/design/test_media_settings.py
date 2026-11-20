@@ -152,6 +152,27 @@ def test_capabilities_list_the_active_model_values(monkeypatch: pytest.MonkeyPat
     assert with_graph["settings"]["image"] == {"aspect_ratio": "16:9", "resolution": "1K"}
 
 
+@pytest.mark.parametrize(
+    "model,resolutions,duration",
+    [
+        ("MiniMax-H3", ["768P", "2K"], (4, 15, 5)),
+        ("MiniMax-H3-Highspeed", ["480P", "768P"], (4, 15, 5)),
+        ("MiniMax-H3-Lite", ["480P", "768P"], (4, 15, 5)),
+        ("MiniMax-H3-Max", ["480P", "768P"], (5, 15, 6)),
+    ],
+)
+def test_minimax_h3_video_menu_ranges_follow_official_docs(
+    monkeypatch: pytest.MonkeyPatch, model, resolutions, duration
+) -> None:
+    """Regenerate secondary menu options come from media_capabilities."""
+    _use_model(monkeypatch, model)
+    caps = media_capabilities()["video"]
+    assert caps["model_id"] == model
+    assert caps["resolutions"] == resolutions
+    assert caps["default_resolution"] == "768P"
+    assert (caps["min_sec"], caps["max_sec"], caps["default_sec"]) == duration
+
+
 def test_graph_patch_updates_settings_for_the_whole_canvas(
     designer_store: DesignerGraphStore,
 ) -> None:

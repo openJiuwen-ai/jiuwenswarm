@@ -181,7 +181,7 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
             webRequest,
             'agent_templates.list',
             params,
-            !options.query,
+            { preferCache: !options.query },
           );
         const payload = isEnterprise()
           ? await retryWhilePodStarting(loadCatalog, { onWaiting: options.onPodStarting })

@@ -59,6 +59,10 @@ class GroupQuestions:
                 continue
             if record["target"] not in _targets:
                 continue
+            if record.get("source") == "colleague_permission":
+                target = _targets.get(record["target"])
+                if target is None or not target.is_swarmchat_approval_pending(record["native_request_id"]):
+                    continue
             if member_name is not None and record["member_name"] != member_name:
                 continue
             execution_id = record.get("execution_id")
@@ -88,7 +92,7 @@ class GroupQuestions:
             logger.warning("Group question push failed group=%s", self.group_id, exc_info=True)
 
     async def ask(self, payload: dict, target: str, member_name: str, execution_id: str | None,
-                  *, client_message_id: str | None = None) -> None:
+                  *, client_message_id: str | None = None, source: str = "ask_user_interrupt") -> None:
         native_id = payload["request_id"]
         request_id = hashlib.sha256(json.dumps([self.group_id, target, execution_id, native_id]).encode()).hexdigest()
         async with group_lock(self.group_id):
@@ -98,7 +102,7 @@ class GroupQuestions:
                 return
             record = {
                 "request_id": request_id, "native_request_id": native_id,
-                "questions": payload["questions"], "source": "ask_user_interrupt",
+                "questions": payload["questions"], "source": source,
                 "target": target, "member_name": member_name, "execution_id": execution_id,
                 "created_at": previous["created_at"] if previous else time.time(), "status": "pending",
             }
@@ -139,36 +143,52 @@ class GroupQuestions:
             for answer in answers:
                 if answer.get("question") not in question_texts:
                     raise GroupError("BAD_REQUEST", "answer does not match a pending question")
-            native_id = record["native_request_id"]
-            query = build_ask_user_interactive_input(native_id, answers)
-            if record.get("client_message_id") and record.get("execution_id") is None:
-                # A routing guard, not authority: the receiver must still
-                # verify the persisted question. Missing storage cannot turn
-                # a known organization answer into an ordinary team request.
-                query.user_inputs[native_id][ORGANIZATION_RESUME_KEY] = record["client_message_id"]
-            if not query.user_inputs[native_id]["answers"]:
-                raise GroupError("BAD_REQUEST", "answer must contain nonempty text")
-            from jiuwenswarm.server.runtime.group_execution import GroupExecutions
-
-            execution_id = record.get("execution_id")
-            execution = GroupExecutions(self.group_id).get(execution_id) if execution_id else {}
-            session_id = execution.get("team_session_id") or self.group_id
-            # The resumed proxy can call run_team immediately; activation must
-            # see the accepted answers before the native runtime is woken.
-            async with group_lock(self.group_id):
+            if record.get("source") == "colleague_permission":
+                choices = [choice for answer in answers for choice in answer.get("selected_options", [])]
+                labels = [option["label"] for option in record["questions"][0]["options"]]
+                if len(choices) != 1 or choices[0] not in labels:
+                    raise GroupError("BAD_REQUEST", "choose one permission decision")
+                selected = next(option for option in record["questions"][0]["options"] if option["label"] == choices[0])
+                tool_call_id = selected.get("tool_call_id")
+                decision = "approve" if tool_call_id is not None else "reject"
+                await target.answer_swarmchat_approval(
+                    self.group_id, record["native_request_id"], decision, tool_call_id=tool_call_id,
+                )
+                record.update(status="answered", answers=copy.deepcopy(answers))
                 records = self.read()
-                records[request_id].update(status="answered", answers=answers)
+                records[request_id] = record
                 self.save(records)
-            token = set_session_id(session_id)
-            try:
-                await target.send(query)
-            except BaseException:
+            else:
+                native_id = record["native_request_id"]
+                query = build_ask_user_interactive_input(native_id, answers)
+                if record.get("client_message_id") and record.get("execution_id") is None:
+                    # A routing guard, not authority: the receiver must still
+                    # verify the persisted question. Missing storage cannot turn
+                    # a known organization answer into an ordinary team request.
+                    query.user_inputs[native_id][ORGANIZATION_RESUME_KEY] = record["client_message_id"]
+                if not query.user_inputs[native_id]["answers"]:
+                    raise GroupError("BAD_REQUEST", "answer must contain nonempty text")
+                from jiuwenswarm.server.runtime.group_execution import GroupExecutions
+
+                execution_id = record.get("execution_id")
+                execution = GroupExecutions(self.group_id).get(execution_id) if execution_id else {}
+                session_id = execution.get("team_session_id") or self.group_id
+                # The resumed proxy can call run_team immediately; activation must
+                # see the accepted answers before the native runtime is woken.
                 async with group_lock(self.group_id):
                     records = self.read()
-                    records[request_id] = record
+                    records[request_id].update(status="answered", answers=answers)
                     self.save(records)
-                raise
-            finally:
-                reset_session_id(token)
+                token = set_session_id(session_id)
+                try:
+                    await target.send(query)
+                except BaseException:
+                    async with group_lock(self.group_id):
+                        records = self.read()
+                        records[request_id] = record
+                        self.save(records)
+                    raise
+                finally:
+                    reset_session_id(token)
         await self.publish({"event_type": "chat.ask_user_answer", "request_id": request_id})
         return {"request_id": request_id, "accepted": True}

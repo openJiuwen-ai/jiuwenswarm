@@ -2,12 +2,13 @@
 import { joinRuntimes } from './clientToolDispatcher';
 import { DocEditReview } from './docEditReview';
 import { hostEnums } from './officeCodeRunner';
+import { officeSelectionMoves, selectionLine } from './selectionLine';
 import { startPane } from './startPane';
 import { editCards } from './view/editCards';
 import { WORD } from './wordApp';
 import { exportPdf, workerPages } from './wordPages';
 import type { WordRun } from './wordPassage';
-import { WordState } from './wordState';
+import { selectedText, WordState } from './wordState';
 import { wordRuntime } from './wordTools';
 
 startPane(WORD, ({ office, host, writes }) => {
@@ -22,5 +23,6 @@ startPane(WORD, ({ office, host, writes }) => {
     runtime: joinRuntimes(wordRuntime({ run, host, enums: hostEnums(Word), reviews, pages })),
     clientState: sessionId => state.forMessage(sessionId),
     cards: editCards(reviews),
+    selection: selectionLine(officeSelectionMoves(office.document), () => selectedText(run)),
   };
 });

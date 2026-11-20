@@ -5,7 +5,7 @@ ARG AGENT_RUNTIME_REPOS=https://gitcode.com/openJiuwen/agent-runtime.git
 ARG AGENT_RUNTIME_BRANCH=develop
 ARG AGENT_CORE_REPOS=https://gitcode.com/openJiuwen/agent-core.git
 # agent-core 用 commit 钉死，不跟踪分支
-ARG AGENT_CORE_COMMIT=f5ecfd7435400fafc4e4b4d399c921a134c4358c
+ARG AGENT_CORE_COMMIT=55756c5590b8b72b04be5c6c0f3c0b8b4353633d
 ARG PIP_EXTRA_ARGS="-i https://mirrors.aliyun.com/pypi/simple/"
 
 # uid/gid 固定 1000：与部署侧 CLAW_USER/CLAW_GROUP/CLAW_FS_GROUP(=1000) 及
@@ -19,11 +19,22 @@ RUN groupadd --gid 1000 app \
 WORKDIR /app/jiuwenswarm
 COPY --chown=app:app . /app/jiuwenswarm/
 
-RUN sed -i '/openjiuwen_runtime_foundation/d' pyproject.toml
-
-# 删除主依赖中的 openjiuwen（仅首次出现，保留 harmony 组与 extras 引用），
-# 改由 AGENT_CORE_REPOS/AGENT_CORE_COMMIT 构建参数安装
-RUN sed -i '0,/"openjiuwen @ git+/{/"openjiuwen @ git+/d;}' pyproject.toml
+# 删除源码依赖声明，改由 AGENT_CORE_*/AGENT_RUNTIME_* 构建参数安装。
+# 必须同时清 dependencies/overrides（含 openjiuwen[extra]）与 [tool.uv.sources]，
+# 否则 uv 可能静默丢掉 CLI 的裸 openjiuwen（镜像无包、运行期 ModuleNotFoundError）。
+RUN sed -E -i \
+    -e '/^[[:space:]]*"openjiuwen(\[|"| @ |[>=<!~;])/d' \
+    -e '/^[[:space:]]*"openjiuwen-runtime-foundation(\[|"| @ |[>=<!~;])/d' \
+    -e '/^[[:space:]]*"openjiuwen-runtime-management(\[|"| @ |[>=<!~;])/d' \
+    -e '/^[[:space:]]*openjiuwen[[:space:]]*=/d' \
+    -e '/^[[:space:]]*openjiuwen-runtime-foundation[[:space:]]*=/d' \
+    -e '/^[[:space:]]*openjiuwen-runtime-management[[:space:]]*=/d' \
+    pyproject.toml \
+ && if grep -Eq '^[[:space:]]*("(openjiuwen-runtime-foundation|openjiuwen-runtime-management|openjiuwen)(\[|"| @ |[>=<!~;])|(openjiuwen-runtime-foundation|openjiuwen-runtime-management|openjiuwen)[[:space:]]*=)' pyproject.toml; then \
+      echo "[docker] pyproject 仍钉着 CLI 注入包（openjiuwen/runtime-*），AGENT_CORE_*/AGENT_RUNTIME_* 会被 uv 丢掉" >&2; \
+      grep -nE 'openjiuwen' pyproject.toml >&2 || true; \
+      exit 1; \
+    fi
 
 RUN if [ -f jiuwenswarm/extensions/runtime_management_extension/pyproject.toml ]; then \
         sed -i '/openjiuwen_runtime_management/d' jiuwenswarm/extensions/runtime_management_extension/pyproject.toml; \

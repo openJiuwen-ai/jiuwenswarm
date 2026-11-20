@@ -58,3 +58,43 @@ export function readGenerationSelection(
     visual_gen: resolvedGenerationModelId(models, 'visual_gen', saved('visual_gen')),
   };
 }
+
+export function selectionAfterPick(
+  current: DesignGenerationSelection,
+  slot: DesignGenerationSlot,
+  modelId: string,
+  models: readonly PublicMultimodalModel[],
+): DesignGenerationSelection {
+  return readGenerationSelection({ ...current, [slot]: modelId }, models);
+}
+
+/** Slots that a reload started at ``reloadStartedEpoch`` must not overwrite.
+
+A write may finish (and drop its pending mark) before a previously issued
+``config.get`` resolves; any pick made after that reload started still has
+to keep the current UI value.
+*/
+export function slotsToKeepOnReload(
+  pendingSlots: Iterable<DesignGenerationSlot>,
+  lastPickEpoch: ReadonlyMap<DesignGenerationSlot, number>,
+  reloadStartedEpoch: number,
+): DesignGenerationSlot[] {
+  const pending = new Set(pendingSlots);
+  return DESIGN_GENERATION_SLOTS.filter(
+    (slot) => pending.has(slot) || (lastPickEpoch.get(slot) ?? 0) > reloadStartedEpoch,
+  );
+}
+
+/** Keep in-flight picks when a later config reload would otherwise overwrite them. */
+export function selectionForReload(
+  saved: DesignGenerationSelection,
+  current: DesignGenerationSelection,
+  pendingSlots: Iterable<DesignGenerationSlot>,
+  models: readonly PublicMultimodalModel[],
+): DesignGenerationSelection {
+  const pending = new Set(pendingSlots);
+  return readGenerationSelection({
+    video_gen: pending.has('video_gen') ? current.video_gen : saved.video_gen,
+    visual_gen: pending.has('visual_gen') ? current.visual_gen : saved.visual_gen,
+  }, models);
+}

@@ -48,6 +48,7 @@ import { MessageList } from './MessageList';
 import { ContextCompressionLines } from './MessageItem';
 import { activeMoaPhase, MoaProgress } from './MoaProgress';
 import { InputArea, type InputAreaHandle } from './InputArea';
+import { WebUIHost, type WebUIStyleOverrides } from '../../features/webui';
 import ChatOverviewIcon from '../../assets/chat-overview.svg?react';
 import PanelCollapseIcon from '../../assets/panel-collapse.svg?react';
 import lineUpIcon from '../../assets/lineUp.svg';
@@ -111,6 +112,11 @@ import {
   type TopicStarterTopic,
   type TopicStarterVisibleSlate,
 } from '../../features/topicStarterVisibility';
+
+const pluginHeaderActionStyles: WebUIStyleOverrides = {
+  Button: { className: 'shrink-0' },
+  Box: { unstyled: true, className: 'flex min-w-0 items-center gap-2' },
+};
 
 export interface ChatHistoryPagerProps {
   loadedBatchSeq: number;
@@ -2325,8 +2331,10 @@ export const ChatPanel = React.memo(function ChatPanel({
       {shouldShowChatHeader && (
         <div className="chat-panel-header" data-testid="chat-panel-header">
           <div className="chat-panel-header__meta" data-testid="chat-panel-header-meta">
-            <div className="chat-panel-header__title" title={sessionTitle} data-testid="chat-panel-header-title">
-              {sessionTitle}
+            <div className="flex min-w-0 items-center gap-2" data-testid="chat-panel-header-title-row">
+              <div className="chat-panel-header__title" title={sessionTitle} data-testid="chat-panel-header-title">
+                {sessionTitle}
+              </div>
             </div>
             {sessionProjectName && (
               <div
@@ -2338,6 +2346,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                 <span>{sessionProjectName}</span>
               </div>
             )}
+            <WebUIHost slotId="conversation.header.title.after" sessionId={activeSessionId} layout="row" />
           </div>
           <div className="chat-panel-header__actions" data-testid="chat-panel-header-actions">
             {diagnosisEntryAvailable && onToggleDiagnosis && (
@@ -2353,6 +2362,13 @@ export const ChatPanel = React.memo(function ChatPanel({
                 <ClipboardList size={16} strokeWidth={2} aria-hidden />
               </button>
             )}
+            <WebUIHost
+              slotId="conversation.header.actions"
+              sessionId={activeSessionId}
+              layout="row"
+              instanceClassName="flex min-w-0 items-center gap-2"
+              styles={pluginHeaderActionStyles}
+            />
             {composerDockVisible && onToggleComposerCollapsed && (
               <button
                 type="button"
@@ -2594,6 +2610,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                     />
                   </>
                 )}
+                <WebUIHost slotId="conversation.input.above" className="chat-input-webui-above" />
                 <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
                 <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onContinueQueuedSessionMessages={onContinueQueuedSessionMessages} />
                 <InterruptResultBubble />
@@ -2623,6 +2640,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   onRefreshGoal={onRefreshGoal}
                   onClearGoal={onClearGoal}
                 />
+                <WebUIHost slotId="conversation.input.below" className="mt-1 px-1 min-h-10 max-h-none" />
               </div>
               {topicStartersEnabled && <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
                 {recommendationState !== 'disabled' && topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? (
@@ -2700,6 +2718,7 @@ export const ChatPanel = React.memo(function ChatPanel({
 
       {hasConversation && (
         <div ref={composeRef} className="chat-compose" data-testid="chat-panel-compose">
+          <WebUIHost slotId="conversation.input.above" className="chat-input-webui-above" />
           <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
           <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onContinueQueuedSessionMessages={onContinueQueuedSessionMessages} />
           <InterruptResultBubble />
@@ -2740,6 +2759,7 @@ export const ChatPanel = React.memo(function ChatPanel({
             onClearGoal={onClearGoal}
             onDrainTaskQueueIfIdle={onDrainTaskQueueIfIdle}
           />
+          <WebUIHost slotId="conversation.input.below" className="mt-1 px-1 min-h-10 max-h-none" />
         </div>
       )}
       <div className="chat-ai-disclaimer" data-testid="chat-panel-ai-disclaimer">
