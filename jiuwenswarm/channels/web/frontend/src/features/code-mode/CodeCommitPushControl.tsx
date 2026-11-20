@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useTranslation } from 'react-i18next';
 import { CheckCircle2, LoaderCircle, Plus, Upload, X } from 'lucide-react';
 import type { ProjectInfo } from '../../types';
 import { gitClient } from './gitClient';
@@ -38,6 +39,7 @@ export function CodeCommitPushControl({
   variant,
   onSuccess,
 }: CodeCommitPushControlProps) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState<GitRepoStatus | null>(null);
   const [loading, setLoading] = useState(false);
@@ -82,7 +84,7 @@ export function CodeCommitPushControl({
         setOperation(nextStatus.working_tree.is_dirty ? (nextStatus.repo.detached ? 'commit' : 'commit_push') : 'push');
       })
       .catch(nextError => {
-        if (!disposed) setError(gitPublishErrorMessage(nextError, '加载 Git 状态失败，请重试。'));
+        if (!disposed) setError(gitPublishErrorMessage(nextError, t('codeMode.publish.loadStatusFailed'), t));
       })
       .finally(() => {
         if (!disposed) setLoading(false);
@@ -90,7 +92,7 @@ export function CodeCommitPushControl({
     return () => {
       disposed = true;
     };
-  }, [open, project.project_id]);
+  }, [open, project.project_id, t]);
 
   useEffect(() => {
     if (!open) return;
@@ -120,12 +122,12 @@ export function CodeCommitPushControl({
   const isUnbornHead = Boolean(status?.repo.is_git && currentBranch && !status.repo.head);
   const triggerDisabled = isProcessing || !isGit || transient;
   const disabledReason = isProcessing
-    ? '当前任务执行中，请停止后再操作'
+    ? t('codeMode.publish.busyProcessing')
     : !isGit
-      ? '当前项目不是 Git 仓库'
+      ? t('codeMode.publish.notGitRepoTitle')
       : transient
-        ? '仓库正在执行其他 Git 操作'
-        : '提交或推送';
+        ? t('codeMode.publish.repoBusy')
+        : t('codeMode.publish.title');
   const canSubmit = Boolean(
     status && !loading && !submitting && !creatingBranch && (!includesCommit || repositoryHasChanges) && (!includesPush || (selectedBranch && remote.trim())),
   );
@@ -144,7 +146,7 @@ export function CodeCommitPushControl({
       setBranchDraft('');
       void Promise.resolve(onSuccess()).catch(() => undefined);
     } catch (nextError) {
-      setError(gitPublishErrorMessage(nextError, '创建分支失败，请重试。'));
+      setError(gitPublishErrorMessage(nextError, t('codeMode.publish.createBranchFailed'), t));
     } finally {
       setCreatingBranch(false);
     }
@@ -176,14 +178,14 @@ export function CodeCommitPushControl({
 
       void Promise.resolve(onSuccess()).catch(() => undefined);
       setOpen(false);
-      const hashSuffix = committedHash ? `（${committedHash}）` : '';
-      setNotice(operation === 'commit' ? `提交成功${hashSuffix}` : operation === 'push' ? '推送成功' : `提交并推送成功${hashSuffix}`);
+      const hashSuffix = committedHash ? ` (${committedHash})` : '';
+      setNotice(operation === 'commit' ? `${t('codeMode.publish.commitSucceeded')}${hashSuffix}` : operation === 'push' ? t('codeMode.publish.pushSucceeded') : `${t('codeMode.publish.commitPushSucceeded')}${hashSuffix}`);
     } catch (nextError) {
-      const detail = gitPublishErrorMessage(nextError, phase === 'commit' ? '提交失败，请重试。' : '推送失败，请重试。');
+      const detail = gitPublishErrorMessage(nextError, phase === 'commit' ? t('codeMode.publish.commitFailed') : t('codeMode.publish.pushFailed'), t);
       if (committedHash && phase === 'push') {
         void Promise.resolve(onSuccess()).catch(() => undefined);
         setOperation('push');
-        setError(`提交已成功（${committedHash}），但推送失败：${detail}`);
+        setError(`${t('codeMode.publish.commitOkPushFailed', { hash: committedHash })}${detail}`);
       } else {
         setError(detail);
       }
@@ -205,11 +207,11 @@ export function CodeCommitPushControl({
           data-variant="environment"
         >
           <Upload size={15} />
-          <span>提交或推送</span>
+          <span>{t('codeMode.publish.title')}</span>
         </button>
       ) : (
         <button type="button" className="code-review__publish-button" onClick={() => setOpen(true)} disabled={triggerDisabled} title={disabledReason} data-testid="code-mode-publish-trigger" data-variant="review">
-          提交或推送
+          {t('codeMode.publish.title')}
         </button>
       )}
 
@@ -243,8 +245,8 @@ export function CodeCommitPushControl({
                 data-testid="code-mode-publish-dialog"
               >
                 <header className="code-publish-dialog__header" data-testid="code-mode-publish-dialog-header">
-                  <h3 id="code-publish-title" data-testid="code-mode-publish-dialog-title">提交或推送</h3>
-                  <button type="button" onClick={() => setOpen(false)} disabled={submitting || creatingBranch} aria-label="关闭" data-testid="code-mode-publish-dialog-close">
+                  <h3 id="code-publish-title" data-testid="code-mode-publish-dialog-title">{t('codeMode.publish.title')}</h3>
+                  <button type="button" onClick={() => setOpen(false)} disabled={submitting || creatingBranch} aria-label={t('codeMode.common.close')} data-testid="code-mode-publish-dialog-close">
                     <X size={18} />
                   </button>
                 </header>
@@ -252,12 +254,12 @@ export function CodeCommitPushControl({
                 {loading ? (
                   <div className="code-publish-dialog__loading" data-testid="code-mode-publish-dialog-loading">
                     <LoaderCircle className="code-mode-spin" size={18} />
-                    <span>正在加载 Git 状态…</span>
+                    <span>{t('codeMode.publish.loadingGitStatus')}</span>
                   </div>
                 ) : (
                   <div className="code-publish-dialog__fields" data-testid="code-mode-publish-dialog-fields">
                     <div className="code-publish-field" data-testid="code-mode-publish-field-branch">
-                      <span>目标分支</span>
+                      <span>{t('codeMode.publish.targetBranch')}</span>
                       <div className="code-publish-branch-picker">
                         <select
                           value={selectedBranch}
@@ -266,7 +268,7 @@ export function CodeCommitPushControl({
                             if (event.target.value !== currentBranch) setSetUpstream(true);
                           }}
                           disabled={submitting || creatingBranch || includesCommit}
-                          aria-label="目标分支"
+                          aria-label={t('codeMode.publish.targetBranch')}
                           data-testid="code-mode-publish-field-branch-select"
                         >
                           {localBranches.map(localBranch => (
@@ -283,11 +285,11 @@ export function CodeCommitPushControl({
                             setError(null);
                           }}
                           disabled={submitting || creatingBranch || Boolean(status?.repo.transient) || isUnbornHead}
-                          title={isUnbornHead ? '空仓库需要完成首次提交后才能创建其他分支' : '创建并检出新分支'}
+                          title={isUnbornHead ? t('codeMode.branchSelector.unbornHint') : t('codeMode.branchSelector.createAndCheckout')}
                           data-testid="code-mode-publish-branch-create-trigger"
                         >
                           <Plus size={15} />
-                          <span>新建分支</span>
+                          <span>{t('codeMode.publish.newBranch')}</span>
                         </button>
                       </div>
                       {branchCreateOpen ? (
@@ -301,10 +303,10 @@ export function CodeCommitPushControl({
                                 void createBranch();
                               }
                             }}
-                            placeholder="例如：feature/code-mode"
+                            placeholder={t('codeMode.publish.branchNameExample')}
                             maxLength={255}
                             disabled={creatingBranch || submitting}
-                            aria-label="新分支名称"
+                            aria-label={t('codeMode.publish.newBranchName')}
                             autoFocus
                             data-testid="code-mode-publish-branch-create-input"
                           />
@@ -318,7 +320,7 @@ export function CodeCommitPushControl({
                             disabled={creatingBranch}
                             data-testid="code-mode-publish-branch-create-cancel"
                           >
-                            取消
+                            {t('codeMode.common.cancel')}
                           </button>
                           <button
                             type="button"
@@ -328,7 +330,7 @@ export function CodeCommitPushControl({
                             data-testid="code-mode-publish-branch-create-submit"
                           >
                             {creatingBranch ? <LoaderCircle className="code-mode-spin" size={14} /> : null}
-                            {creatingBranch ? '创建中' : '创建'}
+                            {creatingBranch ? t('codeMode.publish.creatingShort') : t('codeMode.publish.createShort')}
                           </button>
                         </div>
                       ) : null}
@@ -336,7 +338,7 @@ export function CodeCommitPushControl({
 
                     {includesPush ? (
                       <label className="code-publish-field" data-testid="code-mode-publish-field-remote">
-                        <span>远程仓库</span>
+                        <span>{t('codeMode.publish.remote')}</span>
                         <select value={remote} onChange={event => setRemote(event.target.value)} disabled={submitting} data-testid="code-mode-publish-field-remote-select">
                           {remotes.map(remoteName => (
                             <option key={remoteName} value={remoteName} data-testid="code-mode-publish-field-remote-option" data-variant={remoteName}>
@@ -349,11 +351,11 @@ export function CodeCommitPushControl({
 
                     {includesCommit ? (
                       <label className="code-publish-field code-publish-field--message" data-testid="code-mode-publish-field-message">
-                        <span>提交信息</span>
+                        <span>{t('codeMode.publish.commitMessage')}</span>
                         <textarea
                           value={message}
                           onChange={event => setMessage(event.target.value)}
-                          placeholder={`留空将自动使用：${defaultCommitMessage(filesChanged)}`}
+                          placeholder={t('codeMode.publish.messagePlaceholder', { example: defaultCommitMessage(filesChanged) })}
                           maxLength={200}
                           disabled={submitting}
                           data-testid="code-mode-publish-field-message-input"
@@ -363,12 +365,12 @@ export function CodeCommitPushControl({
                     ) : null}
 
                     <fieldset className="code-publish-operations" data-testid="code-mode-publish-operations">
-                      <legend data-testid="code-mode-publish-operations-legend">操作类型</legend>
+                      <legend data-testid="code-mode-publish-operations-legend">{t('codeMode.publish.operationType')}</legend>
                       {(
                         [
-                          ['commit', '提交'],
-                          ['commit_push', '提交并推送'],
-                          ['push', '推送'],
+                          ['commit', t('codeMode.publish.operationCommit')],
+                          ['commit_push', t('codeMode.publish.operationCommitPush')],
+                          ['push', t('codeMode.publish.operationPush')],
                         ] as const
                       ).map(([value, label]) => (
                         <label key={value} data-testid="code-mode-publish-operation" data-variant={value}>
@@ -391,13 +393,13 @@ export function CodeCommitPushControl({
                       {includesCommit ? (
                         <label data-testid="code-mode-publish-option-include-unstaged">
                           <input type="checkbox" checked={includeUnstaged} onChange={event => setIncludeUnstaged(event.target.checked)} disabled={submitting} />
-                          <span>包含未暂存的更改</span>
+                          <span>{t('codeMode.publish.includeUnstaged')}</span>
                         </label>
                       ) : null}
                       {includesPush ? (
                         <label data-testid="code-mode-publish-option-set-upstream">
                           <input type="checkbox" checked={setUpstream} onChange={event => setSetUpstream(event.target.checked)} disabled={submitting} />
-                          <span>设置为上游分支</span>
+                          <span>{t('codeMode.publish.setUpstream')}</span>
                         </label>
                       ) : null}
                     </div>
@@ -412,11 +414,11 @@ export function CodeCommitPushControl({
 
                 <footer className="code-publish-dialog__actions" data-testid="code-mode-publish-dialog-actions">
                   <button type="button" className="code-mode-button" onClick={() => setOpen(false)} disabled={submitting || creatingBranch} data-testid="code-mode-publish-dialog-cancel">
-                    取消
+                    {t('codeMode.common.cancel')}
                   </button>
                   <button type="submit" className="code-mode-button code-mode-button--primary" disabled={!canSubmit} data-testid="code-mode-publish-dialog-submit">
                     {submitting ? <LoaderCircle className="code-mode-spin" size={15} /> : null}
-                    {submitting ? (operation === 'push' ? '推送中' : '处理中') : '确定'}
+                    {submitting ? (operation === 'push' ? t('codeMode.publish.pushing') : t('codeMode.publish.processing')) : t('codeMode.common.confirm')}
                   </button>
                 </footer>
               </form>
