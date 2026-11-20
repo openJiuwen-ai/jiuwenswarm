@@ -90,6 +90,25 @@ def test_chat_error_records_are_restorable():
     )
 
 
+def test_team_mode_user_records_allow_xiaoyi_channel():
+    """手机端(xiaoyi)发起的团队追问 query 必须可恢复——否则 PC 端重进会话
+    看不到该轮问题（用户记录 channel 白名单只放行 web/tui/desktop 的缺口）。"""
+    from jiuwenswarm.server.agent_ws_server import _is_restorable_history_record
+
+    assert _is_restorable_history_record(
+        {
+            "role": "user",
+            "mode": "team",
+            "channel_id": "xiaoyi",
+            "content": "把md 文件转换为pdf 发送给我",
+        }
+    )
+    # 回归：非白名单渠道的团队用户记录仍被过滤
+    assert not _is_restorable_history_record(
+        {"role": "user", "mode": "team", "channel_id": "feishu", "content": "问题"}
+    )
+
+
 def test_load_history_records_keeps_independent_final_segments(tmp_path, monkeypatch):
     """同 id 的独立正文段（非终稿前缀）读侧全部保留——穿插时间线重建依赖
     中间正文段（多次尝试各自的正文）；累计快照仍收敛为终稿，重试同稿不重复。"""
