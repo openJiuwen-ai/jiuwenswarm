@@ -266,6 +266,42 @@ def _fetch_via_jina_reader_sync(
     }
 
 
+def _extract_html_with_trafilatura(raw_html: str, url: str) -> tuple[str, str]:
+    """Extract clean article Markdown and title using trafilatura."""
+    try:
+        # pylint: disable=import-outside-toplevel
+        import trafilatura
+    except ImportError:
+        return "", ""
+
+    try:
+        extracted = trafilatura.extract(
+            raw_html,
+            url=url,
+            output_format="markdown",
+            include_comments=False,
+            include_tables=True,
+            favor_precision=True,
+        )
+        if not extracted or not extracted.strip():
+            return "", ""
+        metadata = trafilatura.extract_metadata(raw_html, default_url=url)
+        meta_title = (
+            str(getattr(metadata, "title", "") or "").strip() if metadata else ""
+        )
+        return extracted.strip(), meta_title
+    except Exception:  # pylint: disable=broad-exception-caught
+        return "", ""
+
+
+def _extract_html_fallback(raw_html: str) -> str:
+    """Fallback plain-text HTML extraction when article parsing yields nothing."""
+    flags = re.IGNORECASE | re.DOTALL
+    cleaned = re.sub(r"<script[^>]*>.*?</script>", " ", raw_html, flags=flags)
+    cleaned = re.sub(r"<style[^>]*>.*?</style>", " ", cleaned, flags=flags)
+    return strip_tags(cleaned)
+
+
 def _fetch_webpage_sync(
     url: str, timeout_seconds: int, *, public_https: bool = False,
 ) -> dict[str, str | int]:
@@ -281,9 +317,14 @@ def _fetch_webpage_sync(
     title = strip_tags(title_match.group(1)) if title_match else ""
 
     if "html" in content_type.lower():
-        text = re.sub(r"<script[^>]*>.*?</script>", " ", text, flags=re.IGNORECASE | re.DOTALL)
-        text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.IGNORECASE | re.DOTALL)
-        text = strip_tags(text)
+        target_url = str(response.url or url)
+        extracted, meta_title = _extract_html_with_trafilatura(text, target_url)
+        if extracted:
+            text = extracted
+            if not title and meta_title:
+                title = meta_title
+        else:
+            text = _extract_html_fallback(text)
     else:
         text = re.sub(r"\s+", " ", text).strip()
 
@@ -345,7 +386,8 @@ mcp_fetch_webpage = _PermissionAwareFetch(
     card=tool(
         name="mcp_fetch_webpage",
         description=(
-            "Fetch webpage text content from URL. Returns status/title/plain text content. "
+            "Fetch webpage content from URL. Extracts clean article Markdown with "
+            "plain-text fallback, and returns status/title/content. "
             "Set max_chars=0 to disable output clipping. "
             "Use a larger timeout_seconds for slow websites."
         ),
