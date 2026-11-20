@@ -636,19 +636,17 @@ class PyPIVersionSource(VersionSource):
         if not whl_entries:
             raise RuntimeError("No .whl files found in PyPI simple API response.")
 
-        versions = set()
         versions_by_filename: dict[str, str] = {}
         for entry in whl_entries:
             fn = str(entry.get("filename", ""))
             m = re.match(rf"{re.escape(self._name)}-([\d.]+(?:[.\-_]?(?:alpha|beta|rc|dev|pre|a|b)(?:\.?\d+)?)*)-", fn)
             if m:
-                versions.add(m.group(1))
                 versions_by_filename[fn] = m.group(1)
-        if not versions:
+        if not versions_by_filename:
             raise RuntimeError("Could not parse any version from .whl filenames.")
 
         # Pick the newest version overall, including pre-releases (beta channel).
-        latest_version = max(versions, key=release_sort_key)
+        latest_version = max(set(versions_by_filename.values()), key=release_sort_key)
         # The simple index lists every upload of the project, oldest first, so
         # only the files whose parsed version equals the newest one belong to
         # this release. Substring matching would also let 0.2.9 claim 0.2.9b3.
@@ -657,7 +655,7 @@ class PyPIVersionSource(VersionSource):
             for entry in whl_entries
             if versions_by_filename.get(str(entry.get("filename", ""))) == latest_version
         ]
-        latest_whl = latest_whls[-1] if latest_whls else whl_entries[-1]
+        latest_whl = latest_whls[-1]
 
         published_at = str(latest_whl.get("upload-time") or "")
         if not published_at:
@@ -671,7 +669,7 @@ class PyPIVersionSource(VersionSource):
                 download_url=self._resolve_url(str(e.get("url", ""))),
                 size=int(e.get("size", 0)),
             )
-            for e in (latest_whls or whl_entries)
+            for e in latest_whls
         ]
 
         return ReleaseInfo(
