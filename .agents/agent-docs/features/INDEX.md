@@ -72,6 +72,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F_20261104_1225_npc-team-member-sessions](F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](../designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
+| [F_20261120_1707_multica_acp](F_20261120_1707_multica_acp.md) | F | Multica 本地 ACP 运行时接入 | alan_cheng | 无独立 D：DEV-3 的首版接入方案记录在事项讨论中。 |
 
 <a id="module-gateway-channel_manager-web"></a>
 
@@ -437,6 +438,7 @@ generated: true
 |---|---|---|---|---|
 | [F_20261103_1124_sdk-web-retrieval](F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 | [F_20261111_1528_unified-observability-config](F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
+| [F_20261120_1707_multica_acp](F_20261120_1707_multica_acp.md) | F | Multica 本地 ACP 运行时接入 | alan_cheng | 无独立 D：DEV-3 的首版接入方案记录在事项讨论中。 |
 
 <a id="module-tests"></a>
 
