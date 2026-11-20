@@ -979,6 +979,38 @@ def test_sync_flash_todo_disabled_tools_noop_without_update_method():
     adapter._sync_flash_todo_disabled_tools()  # 不抛异常
 
 
+def test_reload_resyncs_todo_disabled_tools_after_disabled_rail_rebuild(monkeypatch):
+    """reload 入口必须在 DisabledToolsRail 重建后同步 todo rail 的 disabled_tools。
+
+    上面 4 个用例只测了 helper 自身分支；本用例覆盖真正要保证的契约——reload 路径
+    （``_get_current_agent_rails``）会恰好调用一次同步，且入参是重建后的列表。若接线
+    漏调或提前调用（在 ``_disabled_tools_rail`` 重建前同步），todo 被禁后仍会注入
+    430 todo 纪律段（提示词要求调 todo、工具面却没有），而前 4 个用例会静默通过。
+    """
+    adapter = object.__new__(JiuwenSwarmFlashAdapter)
+    adapter._disabled_tools_rail = SimpleNamespace(_disabled_tools=["todo", "bash"])
+    calls = []
+    adapter._task_planning_rail = SimpleNamespace(
+        update_disabled_tools=lambda d: calls.append(list(d))
+    )
+    adapter._flash_skill_selection_rail = None
+
+    # 隔离出 reload 的同步逻辑：父类 rail 表返回空、skill_selection 返回 None。
+    monkeypatch.setattr(
+        JiuWenSwarmDeepAdapter, "_get_current_agent_rails",
+        lambda self, config, config_base: ([], []),
+    )
+    monkeypatch.setattr(
+        JiuwenSwarmFlashAdapter, "_build_flash_skill_selection_rail",
+        lambda self, config_base: None,
+    )
+
+    adapter._get_current_agent_rails({}, {})
+
+    # 恰好调用一次，且入参是 DisabledToolsRail 重建后的列表。
+    assert calls == [["todo", "bash"]]
+
+
 # ---------------------------------------------------------------------------
 # #3a resolve_agent_request_mode: flash injection / direct dispatch
 # ---------------------------------------------------------------------------
