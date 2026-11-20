@@ -17,7 +17,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_flash import (
 
 
 @pytest.fixture
-def permission_adapter(tmp_path):
+def permission_adapter(tmp_path, request):
     def create(tools, **options):
         config = {
             "enabled": True,
@@ -36,6 +36,7 @@ def permission_adapter(tmp_path):
         adapter._workspace_dir = tmp_path
         rail = adapter._build_permission_rail_for_agent(config={})
         assert rail is not None
+        request.addfinalizer(lambda: rail.uninit(None))
         rail._host.permission_scene_hook = None
         rail._host.request_permission_confirmation = None
         return adapter, rail

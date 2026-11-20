@@ -49,7 +49,7 @@ def _probe():
     "failure", ["missing_key", "metadata_failure", "scene_failure"]
 )
 async def test_native_ordinary_tool_never_executes_without_complete_permission_validation(
-    rail_type, failure
+    rail_type, failure, request
 ):
     config = {
         "enabled": True,
@@ -57,6 +57,7 @@ async def test_native_ordinary_tool_never_executes_without_complete_permission_v
         "defaults": {"*": "allow"},
     }
     rail = rail_type(config=config, permission_key="callback-test-" + uuid4().hex)
+    request.addfinalizer(lambda: rail.uninit(None))
     if failure == "missing_key":
         get_permission_manager().remove_config(rail.permission_key)
     elif failure == "metadata_failure":
@@ -166,7 +167,7 @@ async def test_subagent_scope_errors_stop_native_tool(monkeypatch, failure):
 
 
 @pytest.mark.asyncio
-async def test_plain_rail_factory_preserves_owner_restrictions():
+async def test_plain_rail_factory_preserves_owner_restrictions(request):
     from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
         PermissionRailBuildOptions,
         build_permission_rail,
@@ -192,6 +193,7 @@ async def test_plain_rail_factory_preserves_owner_restrictions():
         {}, PermissionRailBuildOptions(permission_config=config, rail_factory=factory)
     )
     assert rail is not None
+    request.addfinalizer(lambda: rail.uninit(None))
     body, tool, session, call = _probe()
     token = TOOL_PERMISSION_CONTEXT.set(
         PermissionContext(channel_id="web", principal_user_id="fixture-user")
