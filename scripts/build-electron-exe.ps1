@@ -543,7 +543,7 @@ Write-Host "Test: $Test  FrontendOnly: $FrontendOnly`n" -ForegroundColor Gray
 # ── 1. Install Python dependencies ────────────────────────────────────────────
 if (-not $FrontendOnly) {
     Write-Host "`n[1/6] Installing Python dependencies for Windows x64..." -ForegroundColor Yellow
-    uv sync --locked --python 3.11 --extra dev --extra cua --python-platform x86_64-pc-windows-msvc
+    uv sync --locked --extra dev --extra cua --python-platform x86_64-pc-windows-msvc
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 } else {
     Write-Host "`n[1/6] Skipping Python dependencies (FrontendOnly)" -ForegroundColor Gray

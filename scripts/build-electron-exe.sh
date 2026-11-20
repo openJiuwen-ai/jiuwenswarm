@@ -137,7 +137,7 @@ echo ""
 # ── 1. Install Python dependencies ───────────────────────────────────────────
 if [ "$FRONTEND_ONLY" = false ]; then
     echo "[1/6] Installing locked Python dependencies (uv sync --locked --extra dev)..."
-    uv sync --locked --python 3.11 --extra dev
+    uv sync --locked --extra dev
 else
     echo "[1/6] Skipping Python dependencies (FrontendOnly)"
 fi

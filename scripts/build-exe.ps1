@@ -345,7 +345,7 @@ Write-Host "Build identity: $BuildDisplayName $BuildVersion" -ForegroundColor Gr
 
 # 1. Install dependencies
 Write-Host "[1/4] Installing Python dependencies (uv sync --extra dev --extra cua)..." -ForegroundColor Yellow
-uv sync --python 3.11 --extra dev --extra cua
+uv sync --extra dev --extra cua
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 # 2. Build frontend
