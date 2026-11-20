@@ -80,6 +80,7 @@ from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     filter_todos_for_display,
     filter_todos_for_execution,
     get_todo_generation_token,
+    has_pending_step_resume,
     snapshot_includes_persistent_todos,
 )
 from jiuwenswarm.common.todo_snapshot import versioned_todo_output
@@ -1157,6 +1158,11 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         if raw_conv_id:
             self._conversation_ids[sid] = raw_conv_id
         self._main_sessions[sid] = ctx.session
+        if raw_conv_id and has_pending_step_resume(ctx.session):
+            # Platform relaunch with the original session never fetches history,
+            # so replay the todo list the resumed context carries. The inner
+            # invoke has not begun yet, which is what keeps the resume visible.
+            await self._emit_todo_updated(ctx.session, raw_conv_id)
         # Carry session_id through ctx.extra so checkpoints (before_model_call,
         # before_tool_call) within this invoke can look up per-session state.
         # Sub-agents inherit this from the parent's invoke since they don't

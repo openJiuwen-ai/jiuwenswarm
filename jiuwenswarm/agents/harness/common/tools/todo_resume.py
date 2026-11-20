@@ -317,6 +317,23 @@ def read_turn_user_query(session: Any) -> str:
     return ""
 
 
+def has_pending_step_resume(session: Any) -> bool:
+    """Whether this session will resume from a persisted agent step.
+
+    Duck-typed on purpose: this module stays free of agent-core step-storage
+    types. Anything that is not a real ``StepResume`` (a bare mock, a session
+    from an older agent-core) counts as "no resume".
+    """
+    peek = getattr(session, "peek_agent_step_resume", None)
+    if not callable(peek):
+        return False
+    try:
+        resume = peek()
+    except Exception:
+        return False
+    return isinstance(getattr(resume, "iteration", None), int)
+
+
 def snapshot_includes_persistent_todos(
     tool_name: str,
     arguments: Any,
