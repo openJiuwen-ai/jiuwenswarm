@@ -488,4 +488,8 @@ Web 仅在用户查看原文时读取内容，本地只保留最多 64 KiB 的�
 
 `session.get_metadata` 的运行时快照通过共享 Worker IPC 查询。等待发送超时或连接回收取消发送时，元数据请求仍返回 `runtime.recovery_pending=true`；对应的 `recovery_reason` 分别为 `snapshot_transport_timeout`、`snapshot_transport_cancelled`。这类响应保留持久化元数据中的 `is_processing` 和 `status`，不能把尚未取得快照解释为会话已经空闲。查询等待超时不会取消共享管道写；连接回收仍负责取消和清理发送任务。
 
+替换 Worker 启动时，新聊天请求会等待该 Worker 完成 IPC 握手。等待超时时，请求在分发前返回 `RUNTIME_WARMING`。冷会话的恢复队列已满或排队超时时，返回 `HISTORY_RESTORE_BUSY`。收到这两种错误时，客户端均可稍后重试。历史迁移返回 `HISTORY_RESTORE_LIMIT` 表示超出了恢复预算，对未变化的历史重复同一请求可能再次触及该限制。
+
+Team 聊天在分发前因历史恢复失败时，如果会话内没有其他进行中的团队任务，客户端会先收到 `chat.processing_status`（`is_processing=false`、`is_complete=true`），再收到带恢复错误码的请求错误。如果还有其他团队任务在执行，本次请求仍会返回该错误，会话继续显示处理中。
+
 模型设置页在保持连接且页面可用时，对 `models.list` 返回的 `WORKER_CLOSED`、`WORKER_UNSTABLE`、`RUNTIME_WARMING`、`RUNTIME_FAILED` 和 `SERVICE_UNAVAILABLE` 自动重试：先等待 1、2、4 秒，之后每 10 秒继续查询。`RUNTIME_FAILED` 也可能表示后端正在等待自动恢复，因此不能仅凭该错误码停止观察。成功后更新列表、清除临时错误并恢复添加按钮；断开连接或离开页面会清理重试定时器。该恢复流程不需要手动重新加载入口。
