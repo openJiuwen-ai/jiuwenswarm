@@ -227,7 +227,6 @@ class AcpOutputManager:
         try:
             return await asyncio.wait_for(future, timeout=timeout)
         except asyncio.TimeoutError:
-            self._pending.pop(jsonrpc_id, None)
             logger.warning(
                 "[AcpOutput] request timed out: jsonrpc_id=%s method=%s timeout=%.1fs",
                 jsonrpc_id,
@@ -235,6 +234,8 @@ class AcpOutputManager:
                 timeout,
             )
             raise
+        finally:
+            self._pending.pop(jsonrpc_id, None)
 
 
 def get_acp_output_manager() -> AcpOutputManager:

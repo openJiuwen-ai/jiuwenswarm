@@ -238,7 +238,12 @@ async def _run(gateway_url: str) -> None:
             }
             await super()._clear_request_context(request_id)
 
-    channel = NativeAcpChannel()
+    from jiuwenswarm.acp.session_mcp import SessionMcpChannelMixin
+
+    class SessionMcpAcpChannel(SessionMcpChannelMixin, NativeAcpChannel):
+        pass
+
+    channel = SessionMcpAcpChannel()
     try:
         await channel.start()
     finally:
