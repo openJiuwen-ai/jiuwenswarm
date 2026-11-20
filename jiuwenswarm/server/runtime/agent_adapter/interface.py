@@ -4752,6 +4752,26 @@ class JiuWenSwarm:
         adapter_cleaned = bool(await cleanup_fn(session_id))
         return processor_cleaned or adapter_cleaned
 
+    async def evict_idle_session_adapters(self) -> int:
+        """Best-effort TTL eviction of idle session adapters on the root adapter.
+
+        Manager-level idle-root sweeps (issue#6787) call this so per-project
+        roots with no recent traffic still get their expired session adapters
+        released; TTL/lock/approval rules stay owned by the adapter itself.
+        """
+        adapter = self._adapter
+        evict_fn = getattr(adapter, "_evict_idle_session_adapters", None)
+        if not callable(evict_fn):
+            return 0
+        try:
+            return int(await evict_fn() or 0)
+        except Exception:
+            logger.warning(
+                "[JiuWenSwarm] idle session adapter eviction failed",
+                exc_info=True,
+            )
+            return 0
+
     def has_session_runtime(self, session_id: str | None = None) -> bool:
         """Return whether this facade still owns session-scoped runtime."""
         if self._session_manager.has_session_runtime(session_id):

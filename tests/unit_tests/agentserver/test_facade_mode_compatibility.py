@@ -284,7 +284,7 @@ def resume_routes(facades, monkeypatch, tmp_path):
     manager = object.__new__(AgentManager)
     manager.agents = {"officeclaw": {}}
     manager._agent_borrowers = {}
-    manager._pending_tui_retirements = {}
+    manager._pending_idle_retirements = set()
     manager.wait_for_session_prewarm = AsyncMock()
     pool = object.__new__(TenantAgentPool)
     pool.require_officeclaw_agent = Mock(return_value=None)
