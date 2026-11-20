@@ -100,7 +100,7 @@ def test_release_rejects_mutable_or_inconsistent_sdk_revisions(tmp_path, revisio
 
 
 @pytest.mark.parametrize("location", ["dependencies", "lock"])
-def test_release_rejects_mutable_computer_use_revision(tmp_path, location):
+def test_release_ignores_computer_use_git_reference(tmp_path, location):
     _project(tmp_path)
     repository = "https://gitcode.com/openJiuwen/computer-use.git"
     if location == "dependencies":
@@ -115,8 +115,7 @@ def test_release_rejects_mutable_computer_use_revision(tmp_path, location):
             f'source = {{ git = "{repository}?rev=refs%2Fmerge-requests%2F32%2Fhead#{REVISION}" }}\n',
             encoding="utf-8",
         )
-    with pytest.raises(ValueError, match="must pin openjiuwen-computeruse"):
-        validate_release_dependencies(tmp_path)
+    validate_release_dependencies(tmp_path)
 
 
 @pytest.mark.parametrize("location", ["dependencies", "harmony", "override"])

@@ -20,10 +20,6 @@ _OFFICIAL_REPOSITORIES = {
         "https://gitcode.com/openJiuwen/agent-gateway.git",
         "https://github.com/openJiuwen-ai/agent-gateway.git",
     },
-    "openjiuwen-computeruse": {
-        "https://gitcode.com/openJiuwen/computer-use.git",
-        "https://github.com/openJiuwen-ai/computer-use.git",
-    },
 }
 
 
