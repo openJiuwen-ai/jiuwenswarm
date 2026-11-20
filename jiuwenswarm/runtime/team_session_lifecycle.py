@@ -12,6 +12,7 @@ from jiuwenswarm.runtime.session.model import (
     ExecutionLifecycleContext,
     SessionLifecycleContext,
 )
+from jiuwenswarm.server.runtime.session.history_io import run_history_io
 from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata_async
 
 logger = logging.getLogger(__name__)
@@ -199,10 +200,11 @@ class TeamSessionLifecycleAdapter:
             logger.warning("Team pause completion push not delivered: session_id=%s", session_id)
 
     async def _publish_paused_members(self, session_id: str, *, channel_id: str | None) -> None:
-        """Push persisted pause states independently of the Gateway's chat streams."""
+        """Record paused member states for replay and push them to live clients."""
         from openjiuwen.agent_teams.schema.status import MemberStatus
 
         from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
+        from jiuwenswarm.server.runtime.agent_adapter.team_helpers import _persist_team_history_event
 
         metadata = await get_session_metadata_async(session_id, enable_writeback=False)
         team_name = str(metadata.get("team_name") or "").strip()
@@ -213,20 +215,26 @@ class TeamSessionLifecycleAdapter:
         for member in members or ():
             if member["status"] != MemberStatus.PAUSED.value:
                 continue
-            await self._push_pause_event(
-                session_id,
-                {
-                    "event_type": "team.member",
-                    "session_id": session_id,
-                    "event": {
-                        "type": "team.member.status_changed",
-                        "team_id": team_name,
-                        "member_id": member["member_id"],
-                        "new_status": member["status"],
-                    },
+            event = {
+                "event_type": "team.member",
+                "session_id": session_id,
+                "event": {
+                    "type": "team.member.status_changed",
+                    "team_id": team_name,
+                    "member_id": member["member_id"],
+                    "new_status": member["status"],
                 },
-                channel_id=channel_id,
-            )
+            }
+            try:
+                await run_history_io(_persist_team_history_event, channel_id, session_id, event)
+            except Exception:
+                logger.warning(
+                    "Failed to record paused Team member: session_id=%s member_id=%s",
+                    session_id,
+                    member["member_id"],
+                    exc_info=True,
+                )
+            await self._push_pause_event(session_id, event, channel_id=channel_id)
 
     @staticmethod
     async def _push_pause_event(
