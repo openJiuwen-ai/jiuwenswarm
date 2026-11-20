@@ -94,6 +94,8 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("mcp.register_custom", "POST", "/mcp/actions/register-custom"),
     ("mcp.delete_custom", "POST", "/mcp/actions/delete-custom"),
     ("mcp.save_credentials", "POST", "/mcp/actions/save-credentials"),
+    # Enterprise connector square needs source_id from providers before mcp.list.
+    ("mcp.sources.providers", "POST", "/mcp/actions/sources-providers"),
     ("command.sandbox", "POST", "/sessions/{session_id}/commands/sandbox"),
     ("command.btw", "POST", "/sessions/{session_id}/commands/btw"),
     ("command.add_dir", "POST", "/sessions/{session_id}/commands/add-dir"),
