@@ -327,11 +327,21 @@ async def preflight_mcp_server_reachable(
     if isinstance(auth_headers, dict):
         headers.update({str(k): str(v) for k, v in auth_headers.items()})
     # auth_query_params goes to the URL query string, matching the real connect.
+    # httpx *replaces* the URL's own query with the ``params`` argument — even
+    # an empty dict drops a configured ``?appId=...`` from server_path. The real
+    # connect merges instead (``URL.copy_merge_params`` in the auth provider), so
+    # merge here too: the URL query survives, auth keys win on collisions, and
+    # an empty auth_query_params leaves the URL untouched.
     query_params = getattr(cfg, "auth_query_params", None)
-    if isinstance(query_params, dict):
-        query_params = {str(k): str(v) for k, v in query_params.items()}
-    else:
-        query_params = None
+    if isinstance(query_params, dict) and query_params:
+        try:
+            url = str(
+                httpx.URL(url).copy_merge_params(
+                    {str(k): str(v) for k, v in query_params.items()}
+                )
+            )
+        except httpx.InvalidURL as exc:
+            return False, f"invalid url: {exc}"
 
     # Body must mirror the mcp SDK's initialize exactly: some gateways (e.g.
     # GitHub Copilot) return a body-format 400 before auth, masking a real 401.
@@ -402,7 +412,7 @@ async def preflight_mcp_server_reachable(
                 # healthy SSE endpoint answers 2xx plus an endless event
                 # stream, so the body must never be fully read.
                 headers["Accept"] = "text/event-stream"
-                request = http.build_request("GET", url, headers=headers, params=query_params)
+                request = http.build_request("GET", url, headers=headers)
                 resp = await http.send(request, stream=True)
                 try:
                     if resp.status_code in (401, 403):
@@ -418,7 +428,7 @@ async def preflight_mcp_server_reachable(
                     return True, f"ok (http {resp.status_code})"
                 finally:
                     await resp.aclose()
-            resp = await http.post(url, headers=headers, params=query_params, content=body)
+            resp = await http.post(url, headers=headers, content=body)
     except httpx.TimeoutException as exc:
         return False, f"http probe timed out after {read_t}s (server not responding): {type(exc).__name__}"
     except (httpx.ConnectError, httpx.NetworkError, httpx.UnsupportedProtocol) as exc:
