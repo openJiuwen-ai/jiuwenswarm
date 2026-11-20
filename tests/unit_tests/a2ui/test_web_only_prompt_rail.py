@@ -16,6 +16,7 @@ from jiuwenswarm.common.context_keys import (
     JIUWENSWARM_SKIP_A2UI_CONTEXT_KEY,
 )
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import LocalSectionName
+from jiuwenswarm.agents.harness.common.rails.browser_task_prompt_rail import BrowserTaskPromptRail
 from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
 from jiuwenswarm.server.runtime.a2ui.config import A2UIConfig
 
@@ -330,6 +331,25 @@ async def test_response_prompt_rail_keeps_tui_runtime_channel_disabled(monkeypat
 
     assert {"input", "output"} <= rail.system_prompt_builder.sections.keys()
     assert LocalSectionName.A2UI not in rail.system_prompt_builder.sections
+
+
+@pytest.mark.parametrize("enable_subagent_runtime", [False, True])
+def test_browser_task_prompt_rail_accepts_runtime_channel_updates(enable_subagent_runtime):
+    """The browser task rail must accept the same runtime channel sync used by other prompt rails."""
+    rail = BrowserTaskPromptRail(
+        enable_subagent_runtime=enable_subagent_runtime,
+        cua_agent_enabled=True,
+    )
+    assert rail._channel is None
+    assert rail._deep_agent is None
+    assert rail._cua_agent_enabled is True
+    assert {"browser_agent", "cua_agent"} <= rail.synchronous_subagent_types
+
+    rail.set_channel("web")
+    assert rail._channel == "web"
+
+    rail.set_channel(None)
+    assert rail._channel is None
 
 
 @pytest.mark.asyncio

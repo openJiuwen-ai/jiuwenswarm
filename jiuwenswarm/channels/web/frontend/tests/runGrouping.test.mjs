@@ -6,7 +6,7 @@ import i18next from 'i18next';
 import { I18nextProvider } from 'react-i18next';
 import { JSDOM } from 'jsdom';
 
-import { groupByWorkflowRun, shortRunId } from '../node_modules/.cache/run-grouping/runGrouping.js';
+import { clusterByWorkflowRun, groupByWorkflowRun, shortRunId } from '../node_modules/.cache/run-grouping/runGrouping.js';
 import { RunGroupHeader } from '../node_modules/.cache/run-grouping/RunGroupHeader.js';
 
 function installGlobals(values) {
@@ -44,6 +44,7 @@ function createI18n() {
             statusStopped: 'Stopped',
             statusWaitingForHuman: 'Waiting for human input',
             runIdTooltip: 'Run ID: {{id}}',
+            executorTooltip: 'currently hosted by {{name}}',
           },
         },
       },
@@ -53,7 +54,7 @@ function createI18n() {
 }
 
 const RUNS = [
-  { id: 'wf-aaa-bbb-ccc', name: 'Market research', status: 'running' },
+  { id: 'wf-aaa-bbb-ccc', name: 'Market research', status: 'running', executor: 'alice' },
   { id: 'wf-ddd-eee-fff', name: 'Code review', status: 'completed' },
 ];
 
@@ -98,6 +99,44 @@ test('run missing from the summary source falls back to run id name and empty st
   assert.equal(groups[0].name, 'run-unknown-12345');
   assert.equal(groups[0].status, '');
   assert.equal(groups[0].shortId, 'run-unkn');
+  assert.equal(groups[0].executor, null);
+});
+
+test('group carries the run executor; runs without one fall back to null', () => {
+  const items = [
+    { task_id: 't1', workflow_run_id: 'wf-aaa-bbb-ccc' },
+    { task_id: 't3', workflow_run_id: 'wf-ddd-eee-fff' },
+  ];
+  const { groups } = groupByWorkflowRun(items, RUNS);
+  assert.equal(groups[0].executor, 'alice');
+  assert.equal(groups[1].executor, null);
+});
+
+test('group follows the executor after a recovery relaunch', () => {
+  const items = [{ task_id: 't1', workflow_run_id: 'wf-aaa-bbb-ccc' }];
+  const runs = RUNS.map((run) =>
+    run.id === 'wf-aaa-bbb-ccc' ? { ...run, executor: 'team-leader' } : run,
+  );
+  const { groups } = groupByWorkflowRun(items, runs);
+  assert.equal(groups[0].executor, 'team-leader');
+});
+
+test('clusterByWorkflowRun clusters same-run items by first appearance', () => {
+  const items = [
+    { id: 'a' },
+    { id: 'b', workflow_run_id: 'run-1' },
+    { id: 'c', workflow_run_id: 'run-2' },
+    { id: 'd' },
+    { id: 'e', workflow_run_id: 'run-1' },
+    { id: 'f', workflow_run_id: 'run-2' },
+  ];
+  assert.deepEqual(clusterByWorkflowRun(items).map((item) => item.id), ['a', 'b', 'e', 'c', 'f', 'd']);
+  // No workflow items at all -> order untouched.
+  assert.deepEqual(
+    clusterByWorkflowRun([{ id: 'x' }, { id: 'y' }]).map((item) => item.id),
+    ['x', 'y'],
+  );
+  assert.deepEqual(clusterByWorkflowRun([]), []);
 });
 
 test('shortRunId truncates to 8 chars and passes shorter ids through', () => {
@@ -148,6 +187,108 @@ test('RunGroupHeader renders name, short id, and status badge', async () => {
     const statusBadge = container.querySelector('[data-testid="team-area-run-group-header-status"]');
     assert.equal(statusBadge?.getAttribute('data-variant'), 'running');
     assert.match(statusBadge?.textContent ?? '', /Running/);
+    // No executor (legacy data without the field) -> no badge, no error.
+    assert.equal(container.querySelector('[data-testid="team-area-run-group-header-executor"]'), null);
+  } finally {
+    if (root) await act(async () => root.unmount());
+    restore();
+    dom.window.close();
+  }
+});
+
+test('RunGroupHeader renders an executor badge when the run has one', async () => {
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
+  const restore = installGlobals({
+    IS_REACT_ACT_ENVIRONMENT: true,
+    Node: dom.window.Node,
+    HTMLElement: dom.window.HTMLElement,
+    document: dom.window.document,
+    navigator: dom.window.navigator,
+    window: dom.window,
+    requestAnimationFrame: (callback) => setTimeout(callback, 0),
+    cancelAnimationFrame: (id) => clearTimeout(id),
+  });
+  const container = dom.window.document.querySelector('#root');
+  const i18n = createI18n();
+  let root;
+  try {
+    root = createRoot(container);
+    await act(async () => {
+      root.render(
+        createElement(
+          I18nextProvider,
+          { i18n },
+          createElement(RunGroupHeader, {
+            name: 'Market research',
+            shortId: 'wf-aaa-bb',
+            status: 'running',
+            runId: 'wf-aaa-bbb-ccc',
+            executor: 'alice',
+          }),
+        ),
+      );
+    });
+
+    const badge = container.querySelector('[data-testid="team-area-run-group-header-executor"]');
+    assert.notEqual(badge, null);
+    assert.match(badge?.textContent ?? '', /alice/);
+    assert.equal(badge?.getAttribute('title'), 'currently hosted by alice');
+  } finally {
+    if (root) await act(async () => root.unmount());
+    restore();
+    dom.window.close();
+  }
+});
+
+test('RunGroupHeader renders the executor badge the run card follows', async () => {
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
+  const restore = installGlobals({
+    IS_REACT_ACT_ENVIRONMENT: true,
+    Node: dom.window.Node,
+    HTMLElement: dom.window.HTMLElement,
+    document: dom.window.document,
+    navigator: dom.window.navigator,
+    window: dom.window,
+    requestAnimationFrame: (callback) => setTimeout(callback, 0),
+    cancelAnimationFrame: (id) => clearTimeout(id),
+  });
+  const container = dom.window.document.querySelector('#root');
+  const i18n = createI18n();
+  let root;
+  try {
+    root = createRoot(container);
+    const renderHeader = async (executor) => {
+      await act(async () => {
+        root.render(
+          createElement(
+            I18nextProvider,
+            { i18n },
+            createElement(RunGroupHeader, {
+              name: 'Market research',
+              shortId: 'wf-aaa-bb',
+              status: 'running',
+              runId: 'wf-aaa-bbb-ccc',
+              executor,
+            }),
+          ),
+        );
+      });
+    };
+
+    await renderHeader('team-leader');
+    let badge = container.querySelector('[data-testid="team-area-run-group-header-executor"]');
+    assert.notEqual(badge, null);
+    assert.match(badge?.textContent ?? '', /team-leader/);
+    assert.equal(badge?.getAttribute('title'), 'currently hosted by team-leader');
+
+    // A relaunch by another member re-stamps the single badge — no second one.
+    await renderHeader('alice');
+    badge = container.querySelector('[data-testid="team-area-run-group-header-executor"]');
+    assert.match(badge?.textContent ?? '', /alice/);
+    assert.equal(
+      container.querySelectorAll('[data-testid="team-area-run-group-header-executor"]').length,
+      1,
+    );
   } finally {
     if (root) await act(async () => root.unmount());
     restore();

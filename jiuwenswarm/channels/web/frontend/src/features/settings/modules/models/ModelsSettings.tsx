@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Check } from 'lucide-react';
+import { webClient } from '../../../../services/webClient';
 import { useTranslation } from 'react-i18next';
 import type { ModelEntry, ModelGroup, VendorPresetMap } from '../../../../types';
 import { Button, Tag } from '../../../../components/ui';
 import { settingsActionIcons, settingsEmptyBoxIllustration } from '../../../../assets/settings';
 import { getModelLogoUrl } from '../../../../assets/providers';
-import { buildModelValidationPayload } from '../../services/settingsContract';
+import { SETTINGS_CONFIG_CHANGED_EVENT, buildModelValidationPayload } from '../../services/settingsContract';
 import type { SettingsSaveErrorScope } from '../../services/SettingsSaveQueue';
 import {
   SettingsConfirmDialog,
+  SettingRow,
   SettingsSection,
   SettingsTabLayout,
   type SettingsTabDefinition,
@@ -18,9 +20,10 @@ import { FreeModelsSettings } from './FreeModelsSettings';
 import { ModelDialog } from './ModelDialog';
 import { ModelGroupDialog } from './ModelGroupDialog';
 import { ModelGroupsSettings } from './ModelGroupsSettings';
-import { JevSettings } from './JevSettings';
 import { parseVendorCatalog, withoutGenerationOnlyPresets } from './modelAdapters';
 import { formatModelMetadata, getModelDisplayName } from './modelPresentation';
+import { MultimodalModelsSettings } from './MultimodalModelsSettings';
+import { JevSettings } from './JevSettings';
 import {
   extractModelSelectionReferences,
   formatModelSelectionReferenceScopes,
@@ -33,6 +36,7 @@ import {
 } from './modelGroupAdapters';
 import { useSessionStore } from '../../../../stores/sessionStore';
 import { getEditableModels, isRuntimeGrantedModel } from './modelListOperations';
+import { useModelRefreshStatus } from './useModelRefreshStatus';
 
 const EMPTY_VENDOR_CATALOG: VendorPresetMap = {
   reasoning: null,
@@ -40,6 +44,18 @@ const EMPTY_VENDOR_CATALOG: VendorPresetMap = {
   coding_plan: [],
   custom_api: [],
 };
+
+const MODEL_REFRESH_MESSAGES = {
+  pending: 'settingsPanel.models.refreshPending',
+  applied: 'settingsPanel.models.refreshApplied',
+  failed: 'settingsPanel.models.refreshFailed',
+  unavailable: 'settingsPanel.models.refreshUnavailable',
+} as const;
+
+const MODEL_LIST_RECOVERY_DELAYS_MS = [1000, 2000, 4000, 10000];
+const MODEL_LIST_RECOVERY_CODES = new Set([
+  'WORKER_CLOSED', 'WORKER_UNSTABLE', 'RUNTIME_WARMING', 'RUNTIME_FAILED', 'SERVICE_UNAVAILABLE',
+]);
 
 type ModelConfirmation =
   | { type: 'delete-model'; model: ModelEntry; message: string }
@@ -49,10 +65,20 @@ type ModelConfirmation =
 type ValidationToast = { success: boolean; message: string };
 type SaveModelsOptions = { errorScope?: SettingsSaveErrorScope };
 
-type ModelResourceResult = { model?: unknown; applied_without_restart?: unknown };
+type ModelResourceResult = {
+  model?: unknown;
+  applied_without_restart?: unknown;
+  kv_cache_affinity_auto_disabled?: boolean;
+  /** Present when the saved api_key is an exec: reference whose command failed to resolve. */
+  exec_resolve_error?: unknown;
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isOptionalNumberOrNull(value: unknown): boolean {
+  return value === undefined || value === null || typeof value === 'number';
 }
 
 export function parseModelResource(payload: unknown): ModelEntry {
@@ -76,6 +102,7 @@ export function parseModelResource(payload: unknown): ModelEntry {
     temperature: typeof config.temperature === 'number' ? config.temperature : undefined,
     reasoning_level: typeof config.reasoning_level === 'string' ? config.reasoning_level : '',
     context_window_tokens: typeof config.context_window === 'number' ? config.context_window : undefined,
+    max_tokens: typeof config.max_tokens === 'number' ? config.max_tokens : undefined,
     is_default: model.is_default === true,
     vendor_key: typeof client.vendor_key === 'string' ? client.vendor_key : undefined,
     plan:
@@ -83,6 +110,7 @@ export function parseModelResource(payload: unknown): ModelEntry {
         ? client.plan
         : undefined,
     endpoint_profile: typeof client.endpoint_profile === 'string' ? client.endpoint_profile : undefined,
+    extensions: isRecord(client.extensions) ? client.extensions as ModelEntry['extensions'] : undefined,
     is_agentos: model.is_agentos === true,
     source: typeof model.source === 'string' ? model.source : undefined,
     read_only: model.read_only === true,
@@ -97,13 +125,15 @@ export function buildModelResourcePayload(model: ModelEntry): Record<string, unk
   };
   if (model.api_key.trim()) client.api_key = model.api_key;
   if (model.timeout !== undefined) client.timeout = model.timeout;
-  if (model.vendor_key) client.vendor_key = model.vendor_key;
-  if (model.plan) client.plan = model.plan;
-  if (model.endpoint_profile) client.endpoint_profile = model.endpoint_profile;
+  client.vendor_key = model.vendor_key ?? null;
+  client.plan = model.plan ?? null;
+  client.endpoint_profile = model.endpoint_profile ?? '';
+  if (model.extensions) client.extensions = model.extensions;
   const config: Record<string, unknown> = {};
   if (model.temperature !== undefined) config.temperature = model.temperature;
   config.reasoning_level = model.reasoning_level ?? '';
   if (model.context_window_tokens !== undefined) config.context_window = model.context_window_tokens;
+  if (model.max_tokens !== undefined) config.max_tokens = model.max_tokens;
   return {
     ...(model.model_id ? { model_id: model.model_id } : {}),
     alias: model.alias ?? '',
@@ -113,7 +143,7 @@ export function buildModelResourcePayload(model: ModelEntry): Record<string, unk
   };
 }
 
-export type ModelSettingsTabId = 'models' | 'groups' | 'jev';
+export type ModelSettingsTabId = 'models' | 'groups' | 'jev' | 'multimodal';
 
 type ModelsSettingsProps = {
   tabs: readonly SettingsTabDefinition<ModelSettingsTabId>[];
@@ -144,7 +174,8 @@ export function parseModelsPayload(payload: unknown): {
         ((model as ModelEntry).api_key === undefined || typeof (model as ModelEntry).api_key === 'string') &&
         ((model as ModelEntry).has_api_key === undefined || typeof (model as ModelEntry).has_api_key === 'boolean') &&
         typeof (model as ModelEntry).model_provider === 'string' &&
-        typeof (model as ModelEntry).reasoning_level === 'string',
+        typeof (model as ModelEntry).reasoning_level === 'string' &&
+        isOptionalNumberOrNull((model as ModelEntry).max_tokens),
     )
   ) {
     throw new Error('INVALID_MODELS_LIST');
@@ -155,13 +186,15 @@ export function parseModelsPayload(payload: unknown): {
   const normalizedModels = (models as ModelEntry[]).map((model) => ({
     ...model,
     api_key: typeof model.api_key === 'string' ? model.api_key : '',
+    max_tokens: typeof model.max_tokens === 'number' ? model.max_tokens : undefined,
   }));
   return { models: normalizedModels, modelGroups, activeModel };
 }
 
 export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSettingsProps) {
   const { t } = useTranslation();
-  const { isConnected, request, saveQueue } = useSettingsServices();
+  const { isConnected, request, saveQueue, navigationTarget } = useSettingsServices();
+  const { refreshStatus, checkRefreshStatus } = useModelRefreshStatus(isConnected, request);
   const setAvailableModels = useSessionStore((state) => state.setAvailableModels);
   const setAvailableModelGroups = useSessionStore((state) => state.setAvailableModelGroups);
   const [models, setModels] = useState<ModelEntry[]>([]);
@@ -170,6 +203,8 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
   const [modelsLoading, setModelsLoading] = useState(true);
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [modelsError, setModelsError] = useState('');
+  const [modelsRetryable, setModelsRetryable] = useState(false);
+  const [modelsRetryCount, setModelsRetryCount] = useState(0);
   const [catalogError, setCatalogError] = useState('');
   const [saveError, setSaveError] = useState('');
   const [saving, setSaving] = useState(false);
@@ -211,13 +246,20 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
       const payload = await request('models.list');
       if (currentRequestId !== modelsRequestId.current) return;
       applyCatalog(parseModelsPayload(payload));
+      setModelsRetryable(false);
+      setModelsRetryCount(0);
     } catch (error) {
       if (currentRequestId === modelsRequestId.current) {
-        setModelsError(
-          error instanceof Error && error.message !== 'INVALID_MODELS_LIST'
-            ? error.message
-            : t('settingsPanel.models.modelsResponseInvalid'),
-        );
+        const retryable = isRecord(error) && typeof error.code === 'string' && MODEL_LIST_RECOVERY_CODES.has(error.code);
+        setModelsRetryable(retryable);
+        setModelsRetryCount((count) => retryable ? count + 1 : 0);
+        if (retryable) {
+          setModelsError(t('settingsPanel.models.modelsTemporarilyUnavailable'));
+        } else if (error instanceof Error && error.message !== 'INVALID_MODELS_LIST') {
+          setModelsError(error.message);
+        } else {
+          setModelsError(t('settingsPanel.models.modelsResponseInvalid'));
+        }
       }
     } finally {
       if (currentRequestId === modelsRequestId.current) setModelsLoading(false);
@@ -252,8 +294,21 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
 
   const reloadModels = useCallback(async () => {
     setSaveError('');
+    setModelsRetryCount(0);
     await loadModels();
   }, [loadModels]);
+
+  useEffect(() => {
+    if (!isConnected || modelsLoading || !modelsError || !modelsRetryable || modelsRetryCount === 0) return;
+    const delay = MODEL_LIST_RECOVERY_DELAYS_MS[Math.min(modelsRetryCount - 1, MODEL_LIST_RECOVERY_DELAYS_MS.length - 1)];
+    const timer = setTimeout(() => void loadModels(), delay);
+    return () => clearTimeout(timer);
+  }, [isConnected, loadModels, modelsError, modelsLoading, modelsRetryable, modelsRetryCount]);
+
+  useEffect(() => webClient.on('models.updated', () => {
+    void loadModels();
+    checkRefreshStatus();
+  }), [loadModels, checkRefreshStatus]);
 
   const closeModelDialog = useCallback(() => {
     catalogRequestId.current += 1;
@@ -322,15 +377,22 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
       if (typeof result.applied_without_restart !== 'boolean') {
         throw new Error(t('settingsPanel.models.saveResponseInvalid'));
       }
+      window.dispatchEvent(new window.Event(SETTINGS_CONFIG_CHANGED_EVENT));
+      checkRefreshStatus();
       const refreshedPayload = await request('models.list');
       applyCatalog(parseModelsPayload(refreshedPayload));
+      const execResolveFailed = Boolean(result.exec_resolve_error);
       showValidationToast({
-        success: true,
-        message: t(
-          result.applied_without_restart
-            ? 'settingsPanel.models.savedApplied'
-            : 'settingsPanel.models.savedRestartRequired',
-        ),
+        success: !execResolveFailed,
+        message: execResolveFailed
+          ? t('settingsPanel.models.execResolveFailed')
+          : t(
+              result.kv_cache_affinity_auto_disabled
+                ? 'settingsPanel.models.affinityAutoDisabled'
+                : result.applied_without_restart
+                ? 'settingsPanel.feedback.saved'
+                : 'settingsPanel.models.savedRestartRequired',
+            ),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed');
@@ -360,9 +422,13 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
     try {
       const result = await saveQueue.enqueue(
         group.model_group_id ? 'model_group.edit' : 'model_group.add',
-        () => request<{ group?: unknown }>('model_groups.upsert', { group }, { timeoutMs: 600_000 }),
+        () => request<{ group?: unknown; applied_without_restart?: boolean; kv_cache_affinity_auto_disabled?: boolean }>(
+          'model_groups.upsert', { group }, { timeoutMs: 600_000 },
+        ),
         { errorScope: 'caller' },
       );
+      window.dispatchEvent(new window.Event(SETTINGS_CONFIG_CHANGED_EVENT));
+      checkRefreshStatus();
       const savedGroup = parseModelGroup(result?.group);
       if (savedGroup) {
         setModelGroups((current) => {
@@ -374,7 +440,10 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
       applyCatalog(parseModelsPayload(refreshedPayload));
       showValidationToast({
         success: true,
-        message: t('settingsPanel.models.savedApplied'),
+        message: t(result?.kv_cache_affinity_auto_disabled
+          ? 'settingsPanel.models.affinityAutoDisabled'
+          : result?.applied_without_restart === false
+          ? 'settingsPanel.models.savedRestartRequired' : 'settingsPanel.feedback.saved'),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed');
@@ -404,14 +473,19 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
       if (confirmation.type === 'delete-model') {
         if (!confirmation.model.model_id) throw new Error(t('settingsPanel.feedback.saveFailed'));
         setSaving(true);
-        await saveQueue.enqueue(
+        const result = await saveQueue.enqueue<ModelResourceResult>(
           'model.delete',
           () => request('models.delete', { model_id: confirmation.model.model_id }, { timeoutMs: 600_000 }),
           { errorScope: 'page' },
         );
+        window.dispatchEvent(new window.Event(SETTINGS_CONFIG_CHANGED_EVENT));
+        checkRefreshStatus();
         const refreshedPayload = await request('models.list');
         applyCatalog(parseModelsPayload(refreshedPayload));
-        showValidationToast({ success: true, message: t('settingsPanel.models.savedApplied') });
+        showValidationToast({ success: true, message: t(result?.kv_cache_affinity_auto_disabled
+          ? 'settingsPanel.models.affinityAutoDisabled'
+          : result?.applied_without_restart === false
+          ? 'settingsPanel.models.savedRestartRequired' : 'settingsPanel.feedback.saved') });
       } else if (confirmation.type === 'remove-group-route') {
         const nextGroup = removeGroupRoute(confirmation.group, confirmation.routeId);
         if (nextGroup.routes.length === 0) {
@@ -420,21 +494,40 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
         await saveModelGroup(nextGroup);
       } else if (confirmation.group.model_group_id) {
         setSaving(true);
-        await saveQueue.enqueue(
-          'model_group.delete',
-          () =>
-            request(
-              'model_groups.delete',
-              { model_group_id: confirmation.group.model_group_id },
-              {
-                timeoutMs: 600_000,
-              },
-            ),
-          { errorScope: 'page' },
-        );
+        let result: ModelResourceResult | undefined;
+        try {
+          result = await saveQueue.enqueue(
+            'model_group.delete',
+            () =>
+              request<ModelResourceResult>(
+                'model_groups.delete',
+                { model_group_id: confirmation.group.model_group_id },
+                {
+                  timeoutMs: 600_000,
+                },
+              ),
+            { errorScope: 'page' },
+          );
+          window.dispatchEvent(new window.Event(SETTINGS_CONFIG_CHANGED_EVENT));
+          checkRefreshStatus();
+        } catch (error) {
+          const referenced = extractModelSelectionReferences(error);
+          if (referenced.length > 0 || (error as { code?: string })?.code === 'MODEL_SELECTION_REFERENCED') {
+            throw new Error(
+              t('settingsPanel.models.modelGroupReferenced', {
+                count: referenced.length || 1,
+                scopes: referenced.map((item) => item.scope).join(', ') || 'unknown',
+              }),
+            );
+          }
+          throw error;
+        }
         const refreshedPayload = await request('models.list');
         applyCatalog(parseModelsPayload(refreshedPayload));
-        showValidationToast({ success: true, message: t('settingsPanel.models.savedApplied') });
+        showValidationToast({ success: true, message: t(result?.kv_cache_affinity_auto_disabled
+          ? 'settingsPanel.models.affinityAutoDisabled'
+          : result?.applied_without_restart === false
+          ? 'settingsPanel.models.savedRestartRequired' : 'settingsPanel.feedback.saved') });
       }
       setConfirmation(null);
     } catch (error) {
@@ -581,7 +674,36 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
 
   return (
     <>
+      {refreshStatus && !(refreshStatus.status === 'applied' && refreshStatus.generation === 0) ? (
+        <SettingsSection separatedRows>
+          <div
+            role={refreshStatus.status === 'failed' || refreshStatus.status === 'unavailable' ? 'alert' : 'status'}
+            aria-live="polite"
+            data-testid="settings-models-refresh-status"
+            data-variant={refreshStatus.status}
+          >
+            <SettingRow
+              title={<span data-testid="settings-models-refresh-title">{t('settingsPanel.models.refreshTitle')}</span>}
+              description={<span data-testid="settings-models-refresh-description">
+                {t(MODEL_REFRESH_MESSAGES[refreshStatus.status])}
+              </span>}
+            >
+              {refreshStatus.status === 'failed' || refreshStatus.status === 'unavailable' ? (
+                <Button
+                  size="sm"
+                  disabled={!isConnected}
+                  onClick={checkRefreshStatus}
+                  data-testid="settings-models-refresh-retry-btn"
+                >
+                  {t('settingsPanel.models.refreshCheckStatus')}
+                </Button>
+              ) : null}
+            </SettingRow>
+          </div>
+        </SettingsSection>
+      ) : null}
       <SettingsTabLayout
+        requestedTab={navigationTarget?.moduleId === 'models' ? navigationTarget : undefined}
         tabs={tabs}
         defaultTab={defaultTab}
         ariaLabelKey="settingsPanel.models.tabsLabel"
@@ -589,7 +711,7 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
         testIdPrefix="settings-models"
         renderPanel={(activeTab) => activeTab === 'models' ? (
         <div className={'settings-models__models-pane'}>
-          <FreeModelsSettings />
+          <FreeModelsSettings onSaved={checkRefreshStatus} />
           <SettingsSection
             title={t('settingsPanel.models.customModels')}
             separatedRows
@@ -648,6 +770,8 @@ export function ModelsSettings({ tabs, defaultTab, disabled = false }: ModelsSet
         </div>
         ) : activeTab === 'jev' ? (
         <JevSettings disabled={disabled} />
+        ) : activeTab === 'multimodal' ? (
+        <MultimodalModelsSettings disabled={disabled} />
         ) : (
         <ModelGroupsSettings
           models={models}

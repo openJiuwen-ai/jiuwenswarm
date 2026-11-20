@@ -33,6 +33,7 @@ import { isEnterprise } from '../../edition';
 import {
   formatSkillVersionLabel,
   isAdminManagedSkill,
+  resolveSkillFileReference,
   shouldShowEnableSwitch,
   shouldShowSkillPublish,
 } from './skillPanelUtils';
@@ -123,7 +124,10 @@ function PackMembersGrid({
                 ? [`${t('skills.memberUnavailable')}${reasonKey ? ` · ${t(reasonKey)}` : ''}`]
                 : undefined
             }
-            description={member.description || t('skills.noDescription')}
+            description={[
+              member.description || t('skills.noDescription'),
+              member.version ? `${member.version} · ${member.asset_id || ''}` : '',
+            ].filter(Boolean).join('\n')}
             onClick={interactable ? () => onOpenMember?.(member.name) : undefined}
           />
         );
@@ -156,7 +160,7 @@ export interface InstalledSkillDetailViewProps extends SkillDetailCommonProps {
   previewTreeNodes: FilePreviewTreeNode[];
   filePreview: SkillFilePreview | null;
   onSelectSkillFile: (filePath: string) => void;
-  onFetchSkillFiles: (skillName: string) => void;
+  onFetchSkillFiles: (skillName: string, preferredPath?: string) => void;
   evolutionMessage: string | null;
   evolutionMessageType: 'success' | 'error' | null;
   evolutionFormatError: string | null;
@@ -403,6 +407,21 @@ export function SkillDetailView(props: SkillDetailViewProps) {
     allowVersionId: true,
   });
   const currentVersionLabel = formatSkillVersionLabel(selectedSkill);
+  const contentSourcePath = selectedSkill.file_path.split(/[\\/]/).pop() || 'SKILL.md';
+  const previewSourcePath =
+    filePreviewStatus === 'loading' && filePreview?.path ? filePreview.path : filePreviewPath;
+  const openReferencedSkillFile = (href: string, sourcePath: string | null) => {
+    if (!sourcePath) return true;
+    const filePath = resolveSkillFileReference(sourcePath, href);
+    if (!filePath) return true;
+    setDetailTab('files');
+    if (filesLoadState === 'success') {
+      onSelectSkillFile(filePath);
+    } else {
+      onFetchSkillFiles(selectedSkill.name, filePath);
+    }
+    return true;
+  };
   return renderShell(
     {
       avatar: { name: skillDisplayName, testId: 'skill-panel-my-detail-avatar' },
@@ -505,7 +524,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
           <Switch
             checked={selectedSkill.enabled !== false}
             onChange={() => onToggleSkillDisabled(selectedSkill.name)}
-            disabled={actionTarget === `toggle:${selectedSkill.name}` || isPackBlocked}
+            disabled={Boolean(actionTarget?.startsWith('toggle:')) || isPackBlocked}
           />
           <span
             className="text-sm text-text whitespace-nowrap"
@@ -534,13 +553,15 @@ export function SkillDetailView(props: SkillDetailViewProps) {
           className="ml-2 flex items-center justify-center rounded-[16px] text-sm text-text-inverse bg-control-emphasis hover:opacity-80 whitespace-nowrap"
           style={{ width: '96px', height: '32px' }}
           data-testid="skill-panel-my-detail-publish-btn"
-          onClick={() => openAssetPublish({ kind: 'skill', local_id: selectedSkill.name })}
+          onClick={() => openAssetPublish({ kind: selectedSkill.skill_type === 'skillpack' ? 'skillpack' : 'skill', local_id: selectedSkill.name })}
         >
           {t('skills.actions.publish')}
         </button>
       ) : null}
     </div>,
-    selectedSkill.description || t('skills.noDescription'),
+    <div className="whitespace-pre-line">
+      {selectedSkill.description || t('skills.noDescription')}
+    </div>,
     <>
       {/* 企业版：只展示当前版本；社区版保留版本管理（可切换历史副本） */}
       <DetailSection
@@ -673,6 +694,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
             testId={`${tid}-content`}
             content={selectedSkill.content ? detailContent : null}
             emptyText={t('skills.noContent')}
+            onLinkClick={(href) => openReferencedSkillFile(href, contentSourcePath)}
           />
         )}
 
@@ -718,6 +740,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
                     : null
                 }
                 status={filePreviewStatus}
+                onLinkClick={(href) => openReferencedSkillFile(href, previewSourcePath)}
                 labels={{
                   selectPrompt: t('skills.detail.selectFileToPreview'),
                   notPreviewable: t('skills.detail.notPreviewable'),

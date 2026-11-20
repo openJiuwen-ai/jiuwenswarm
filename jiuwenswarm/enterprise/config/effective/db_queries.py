@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from jiuwenswarm.common.utils import logger
-from gateway.storage.backends.db import reader as _db_reader
+from agent_gateway.storage.backends.db import reader as _db_reader
 
+from jiuwenswarm.common.utils import logger
 from .schemas import SLOT_ENTITY_TABLE, TemplateRefSlot
 
 
@@ -82,7 +82,25 @@ async def list_records(
     return await _db_reader.list_records(table, query=filters, order_by=order_by)
 
 
+async def fetch_advanced_config(
+    agent_template_id: str,
+) -> dict[str, Any] | None:
+    """按 ``agent_template_id`` 读取 advanced_config 一行。"""
+    tid = str(agent_template_id or "").strip()
+    if not tid:
+        return None
+    rows = await list_records(
+        "advanced_config",
+        filters={"agent_template_id": tid},
+    )
+    if not rows:
+        return None
+    row = rows[0]
+    return dict(row) if isinstance(row, dict) else None
+
+
 __all__ = (
+    "fetch_advanced_config",
     "fetch_template_by_slot",
     "fetch_templates_by_slot",
     "list_records",

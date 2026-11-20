@@ -19,7 +19,10 @@ from openjiuwen.core.single_agent.rail.base import ToolCallInputs
 from openjiuwen.harness.tools.base_tool import ToolOutput
 
 from jiuwenswarm.agents.harness.team.expert_org.launcher import JiuwenExpertTeamLauncher
-from jiuwenswarm.agents.harness.team.rails.organization_availability_rail import OrganizationAvailabilityRail
+from jiuwenswarm.agents.harness.team.rails.organization_availability_rail import (
+    OrganizationAvailabilityRail,
+    resolve_required_claim_capabilities,
+)
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server import agent_ws_server
@@ -506,3 +509,126 @@ async def test_roster_serialization_accepts_duck_results_and_preserves_message_o
     else:
         assert json.loads(message.content)["data"] == data
         warning.assert_not_called()
+
+
+_INSIGHT = "group-member:member-eedf0d90-ae96-4f55-a8e7-b7ec90e4d7c6"
+_ARCHITECTURE = "group-member:member-c6551d21-ba1c-4668-ae66-318d56a1065d"
+_MEMBERS = [
+    {"agent_group_name": "technology-insight", "claim_capabilities": [_INSIGHT, "group-coordination"]},
+    {"agent_group_name": "software-architecture-design", "claim_capabilities": [_ARCHITECTURE]},
+]
+
+
+def test_package_id_claim_capability_is_rewritten_to_the_registered_member():
+    rewritten, error = resolve_required_claim_capabilities(
+        ["group-member:technology-insight"],
+        _MEMBERS,
+    )
+    assert error is None
+    assert rewritten == [_INSIGHT]
+    bare, bare_error = resolve_required_claim_capabilities(["software-architecture-design"], _MEMBERS)
+    assert bare_error is None
+    assert bare == [_ARCHITECTURE]
+
+
+def test_registered_member_capability_and_ordinary_labels_stay_unchanged():
+    rewritten, error = resolve_required_claim_capabilities(
+        [_INSIGHT, "analysis"],
+        _MEMBERS,
+    )
+    assert error is None
+    assert rewritten == [_INSIGHT, "analysis"]
+
+
+def test_unknown_group_member_capability_is_rejected():
+    rewritten, error = resolve_required_claim_capabilities(
+        ["group-member:not-a-member"],
+        _MEMBERS,
+    )
+    assert rewritten is None
+    assert error is not None
+    assert _INSIGHT in error
+    assert _ARCHITECTURE in error
+
+
+def test_ambiguous_package_id_is_not_rewritten():
+    members = [
+        {"agent_group_name": "technology-insight", "claim_capabilities": [_INSIGHT]},
+        {"agent_group_name": "technology-insight", "claim_capabilities": [_ARCHITECTURE]},
+    ]
+    rewritten, error = resolve_required_claim_capabilities(
+        ["group-member:technology-insight"],
+        members,
+    )
+    assert rewritten is None
+    assert error is not None
+
+
+@pytest.mark.asyncio
+async def test_create_task_rewrites_a_package_id_before_the_tool_runs():
+    rail = OrganizationAvailabilityRail("owner", "session")
+    rail._claim_members = AsyncMock(return_value=_MEMBERS)
+    inputs = ToolCallInputs(
+        tool_name="org_create_task",
+        tool_args={"title": "insight", "required_capabilities": ["group-member:technology-insight"]},
+        tool_call=SimpleNamespace(id="create-insight"),
+    )
+    ctx = SimpleNamespace(inputs=inputs, extra={})
+    await rail.before_tool_call(ctx)
+    assert inputs.tool_args["required_capabilities"] == [_INSIGHT]
+    assert "_skip_tool" not in ctx.extra
+
+
+@pytest.mark.asyncio
+async def test_create_task_rejects_one_parallel_call_without_skipping_the_others():
+    rail = OrganizationAvailabilityRail("owner", "session")
+    rail._claim_members = AsyncMock(return_value=_MEMBERS)
+    inputs = ToolCallInputs(
+        tool_name="org_create_task",
+        tool_args={"required_capabilities": ["group-member:not-a-member"]},
+        tool_call=SimpleNamespace(id="create-bad"),
+    )
+    ctx = SimpleNamespace(inputs=inputs, extra={})
+    await rail.before_tool_call(ctx)
+    assert ctx.extra["_skip_tool_calls"]["create-bad"] is True
+    assert "_skip_tool" not in ctx.extra
+    assert inputs.tool_result["success"] is False
+    assert _INSIGHT in inputs.tool_msg.content
+
+
+@pytest.mark.asyncio
+async def test_availability_snapshot_names_the_claim_capability(monkeypatch):
+    rail = OrganizationAvailabilityRail("owner", "session")
+    leader = SimpleNamespace(
+        team_id="expert-insight",
+        capabilities=[_INSIGHT],
+    )
+    manager = SimpleNamespace(get_organization=AsyncMock(return_value=SimpleNamespace(leaders=[leader])))
+    entry = SimpleNamespace(
+        current_session_id="session",
+        agent=SimpleNamespace(
+            spec=SimpleNamespace(metadata={
+                "expert_team": True,
+                "agent_group_name": "technology-insight",
+                "capabilities": [_INSIGHT],
+            }),
+            team_backend=SimpleNamespace(org_task_manager=manager),
+        ),
+    )
+    monkeypatch.setattr(
+        GLOBAL_RUNNER,
+        "_team_runtime_manager",
+        SimpleNamespace(pool=SimpleNamespace(get=AsyncMock(return_value=entry))),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.rails.organization_availability_rail.team_package_availability",
+        lambda team_id, group="": {"agent_group_name": group or "technology-insight", "available": True},
+    )
+    builder = SimpleNamespace(remove_section=Mock(), add_section=Mock())
+    rail.init(SimpleNamespace(system_prompt_builder=builder))
+    await rail.before_model_call(SimpleNamespace())
+    notice = builder.add_section.call_args.args[0].content["en"]
+    assert _INSIGHT in notice
+    assert "claim_capability" in notice
+    assert "agent_group_name is the package id" in notice

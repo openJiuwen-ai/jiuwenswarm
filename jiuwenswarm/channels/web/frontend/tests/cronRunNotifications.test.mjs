@@ -127,7 +127,11 @@ for (const completedReply of [false, true]) {
       request_id: requestId, live_seq, content: 'live output', session_id: sid,
     })}\n\n`).join('');
     const expected = completedReply ? ['cron.run.updated'] : ['chat.delta', 'team.state_changed', 'cron.run.updated'];
-    const { received } = await collectLiveEvents(frames, () => watchCronExecutionSession(sid, true), expected.length);
+    const { received } = await collectLiveEvents(
+      frames,
+      () => watchCronExecutionSession(sid, { hasCronMetadata: true }),
+      expected.length,
+    );
     assert.deepEqual(received.map((event) => event.event), expected);
   });
 }

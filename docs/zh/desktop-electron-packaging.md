@@ -76,7 +76,7 @@ Electron 启动时 `findAvailablePorts()` 按组扫描（最多 20 组），整�
        node_modules/           ← 内置 @playwright/mcp 运行时（见 §5）
      backend/                  ← PyInstaller COLLECT 产物（workswarm.exe + _internal）
    ```
-6. Inno Setup `scripts/installer-electron.iss`：版本与后端 exe 名经 `/DMyAppVersion=` / `/DBackendExecutableName=` 传入（`#ifndef` 兜底）；`PrivilegesRequired=lowest` per-user 安装、`AppMutex` 四互斥体（运行中拒绝安装/卸载，同 installer.iss）、卸载执行 `--desktop-reset-external-cli-config` 并清理 `{app}\resources`（FrontendOnly 无后端，跳过该步）
+6. Inno Setup `scripts/installer-electron.iss`：版本与后端 exe 名经 `/DMyAppVersion=` / `/DBackendExecutableName=` 传入（`#ifndef` 兜底）；`PrivilegesRequired=lowest` per-user 安装、`AppMutex` 四互斥体（运行中拒绝安装/卸载，同 installer.iss）、卸载执行 `--desktop-reset-external-cli-config` 并清理 `{app}\resources`（FrontendOnly 无后端，跳过该步）。编译器优先 Inno Setup 7（支持扩展长度路径，不受 `MAX_PATH` 限制），未安装时回退 Inno Setup 6；两者都缺失时复用 `scripts/build-inno-setup.psm1` 中带 SHA-256 校验的流程安装 7.1.1。仅回退到 6 时，脚本在压缩前扫描 `dist/<应用名>-Electron`：路径超过 `MAX_PATH`（260 字符）直接报错并提示安装 7 或改用更短的构建目录；`-SkipInstaller` 目录包不触发该检查。
 
 版本号硬编码位置已全部消除：ps1/iss/组装 package.json 均来自 `build_config.py`（即 pyproject.toml）。
 
@@ -135,6 +135,7 @@ app.whenReady
 JIUWENSWARM_DESKTOP=1  JIUWENSWARM_ELECTRON=1
 WEB_PORT=<gatewayApi>  GATEWAY_PORT=<gatewayInternal>
 AGENT_SERVER_PORT=AGENT_PORT=<agentServer>  FRONTEND_PORT=<frontend>
+OFFICE_TLS_PORT=<officeTls>（Office 加载项任务窗格的 HTTPS 监听端口）
 JIUWENSWARM_RUNTIME_WORKSPACE_READY=1
 删除 AGENT_SERVER_URL（防 .env 里的陈旧 URL 绕过重映射端口）
 ```
@@ -326,7 +327,7 @@ uv run pytest tests/unit/deep_agent/test_browser_subagent_integration.py -q  # i
 
 ## 9. 已知遗留（按优先级）
 
-1. **macOS 构建与更新**：沿用 `build-electron-exe.sh` 入口。本地构建使用 `NOSIGN=1 bash scripts/build-electron-exe.sh`，正式签名、公证使用 `NOTARIZE=1 bash scripts/build-electron-exe.sh`。构建前解析 Node ≥22.12.0 并统一工具链；`NODE_DIR` 可指定运行时，否则自动下载。正式产物沿用 `build_config.py` 定义的 `<显示名>-<版本>-macos.dmg`，测试模式使用 `electron-test` / `electron-frontend-test` 专用名称。正式 macOS Release 只发布一个 ARM64 Electron DMG；x86_64 仅用于本地验证，不上传至正式 Release。保留后端原有选包策略，不阻止 pywebview 客户端选择首版 Electron。Electron 安装 helper 校验新包架构、签名和 Gatekeeper，暂存后退出 Electron、等待后端及端口释放、替换并重启；替换或启动命令失败回滚旧包。挂载卷内启动或测试包不支持自动更新，应先安装至可写目录。日志位于 `<数据目录>/logs/electron-update.log`。公共打包不包含信息收集协议及日活接入。
+1. **macOS 构建与更新**：沿用 `build-electron-exe.sh` 入口。本地构建使用 `NOSIGN=1 bash scripts/build-electron-exe.sh`，正式签名、公证使用 `NOTARIZE=1 bash scripts/build-electron-exe.sh`。构建前解析 Node ≥22.12.0 并统一工具链；`NODE_DIR` 可指定运行时，否则自动下载。正式产物沿用 `build_config.py` 定义的 `<显示名>-<版本>-macos.dmg`，测试模式使用 `electron-test` / `electron-frontend-test` 专用名称。当前 macOS 仅提供 ARM64 Electron DMG，不支持 Intel（x86_64）Mac 包，也不提供 Universal 包；构建和验收使用 Apple Silicon Mac 的原生 arm64 环境。保留后端原有选包策略，不阻止 pywebview 客户端选择首版 Electron。Electron 安装 helper 校验新包架构、签名和 Gatekeeper，暂存后退出 Electron、等待后端及端口释放、替换并重启；替换或启动命令失败回滚旧包。挂载卷内启动或测试包不支持自动更新，应先安装至可写目录。日志位于 `<数据目录>/logs/electron-update.log`。公共打包不包含信息收集协议及日活接入。
    旧 pywebview 的 macOS helper 整体替换 App，不依赖新 App 的 UI 框架。需分别用实际支持的旧客户端验收 pywebview → Electron，以及 Electron → Electron；签名、公证、ARM64、BrowserAgent 和完整升级仍需产物验收。
 2. **CDP 无认证**：已声明为已接受风险（§5）。
 3. **Windows 强杀关闭**：与 Python 桌面一致；gateway 单例锁需依赖 PID 存活检查自愈。

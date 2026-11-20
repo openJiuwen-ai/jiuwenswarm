@@ -10,8 +10,8 @@ import pytest
 
 # 生产侧 xiaoyi_connect 使用 gateway.common.host_services 注册/读取 provider；
 # 母仓 phone tools 走 jiuwenswarm.common.host_services，两侧互不相通，按执行侧分别引用。
-from gateway.channel_manager.im_platforms.xiaoyi import xiaoyi_connect
-from gateway.common import host_services
+from agent_gateway.channel_manager.im_platforms.xiaoyi import xiaoyi_connect
+from agent_gateway.common import host_services
 from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
     utils,
     xiaoyi_gui_tool,

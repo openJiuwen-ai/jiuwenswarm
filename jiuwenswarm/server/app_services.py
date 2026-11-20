@@ -70,7 +70,6 @@ class AppServices:
         self.agent_manager: Any = None
         self.runtime: Any = None
         self.session_message_service: Any = None
-        self.proactive_engine: Any = None
         self.scheduler_service: Any = None
         self.scheduler_agent: Any = None
         self.jiuwenbox_runner: Any = None

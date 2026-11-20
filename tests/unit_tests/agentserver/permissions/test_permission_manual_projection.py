@@ -114,7 +114,7 @@ async def test_public_permission_question_resumes_exactly_once(answer_host, monk
     assert bool(h.verified_projection.call_count) is (mode == "auto")
     if mode == "auto":
         verified_card = h.verified_projection.call_args.args[1]
-        assert question["questions"][0]["card_id"] == verified_card.key.invocation_id
+        assert question["questions"][0]["card_id"] == verified_card.key.tool_call_id
         assert question["request_id"] == verified_card.key.tool_call_id
     await _stream_request(h, **_answer(question, action))
     _questions_once(h, 0)
@@ -167,6 +167,20 @@ async def test_public_question_names_the_interrupt_it_answers(answer_host, monke
     assert question["interrupt_id"]
     assert [question["interrupt_id"]] == [request.interrupt_id for request in pending]
     assert question["kind"] == ("ask_user" if kind == "ask" else "permission")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+async def test_public_ask_question_is_answered_by_the_interrupt_id_it_names(answer_host, monkeypatch, mode):
+    h = answer_host
+    question = await _start(h, monkeypatch, mode=mode, kind="ask")
+    item = question["questions"][0]
+    await _stream_request(h, source=question["source"], request_id=question["request_id"],
+                          interrupt_id=question["interrupt_id"],
+                          answers=[{"question": item["question"], "custom_input": "blue"}])
+    _questions_once(h, 0)
+    assert list(h.dispatches[-1].inputs["query"].interrupt_answers) == [question["interrupt_id"]]
+    assert "blue" in repr(h.script.calls[-1]) and h.executions == []
 
 
 def _manual_interaction(call_id="manual-call"):
@@ -223,7 +237,7 @@ def test_live_smart_locator_is_not_downgraded_to_manual(producer):
     queue, card, interaction = _smart_interaction()
     question = _project(producer, [interaction], queue)
     assert question["request_id"] == card.key.tool_call_id
-    assert question["questions"][0]["card_id"] == card.key.invocation_id
+    assert question["questions"][0]["card_id"] == card.key.tool_call_id
     assert question["source"] == "permission_interrupt"
     assert queue.get(card.key) == card
 

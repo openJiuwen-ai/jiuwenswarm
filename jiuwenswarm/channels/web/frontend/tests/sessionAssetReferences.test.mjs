@@ -3,6 +3,7 @@ import test from 'node:test';
 import {
   displayFileName,
   findReferencedAssets,
+  normalizePath,
   resolveAssetDisplayNames,
   samePath,
   validateAssetName,
@@ -46,6 +47,30 @@ test('validates asset names like the backend', () => {
 test('compares Windows paths ignoring case and slash direction', () => {
   assert.equal(samePath('C:\\A\\b.png', 'c:/a/B.PNG'), true);
   assert.equal(samePath('C:\\A\\b.png', 'C:\\A\\c.png'), false);
+});
+
+test('preserves POSIX paths and compares them case-sensitively', () => {
+  assert.equal(normalizePath('/a/B.png'), '/a/B.png');
+  assert.equal(samePath('/a/B.png', '/a/b.png'), false);
+  assert.equal(samePath('/a/B.png', '/a/B.png'), true);
+});
+
+test('preserves relative paths without a Windows prefix', () => {
+  assert.equal(normalizePath('assets/Img.png'), 'assets/Img.png');
+  assert.equal(normalizePath('assets\\Img.png'), 'assets\\Img.png');
+  assert.equal(samePath('assets\\Img.png', 'assets/Img.png'), false);
+});
+
+test('normalizes Windows drive paths with either slash direction', () => {
+  assert.equal(normalizePath('C:\\A\\b.png'), 'c:/a/b.png');
+  assert.equal(normalizePath('c:/A/B.PNG'), 'c:/a/b.png');
+});
+
+test('compares UNC paths ignoring case and slash direction', () => {
+  assert.equal(normalizePath('\\\\Server\\Share\\B.PNG'), '//server/share/b.png');
+  assert.equal(normalizePath('//Server/Share/B.PNG'), '//server/share/b.png');
+  assert.equal(samePath('\\\\Server\\Share\\B.PNG', '//server/share/b.png'), true);
+  assert.equal(samePath('//server/share/B.png', '//server/share/C.png'), false);
 });
 
 test('display name adds the extension back without an @ prefix', () => {
@@ -113,6 +138,30 @@ test('never overrides a displayName that is already present', () => {
   const item = { ...SERUM_HISTORY_ITEM, displayName: 'kept' };
   const [resolved] = resolveAssetDisplayNames([item], [SERUM_ASSET]);
   assert.equal(resolved.displayName, 'kept');
+});
+
+test('two messages that attached the same path each keep their OWN asset name, matched by client_id', () => {
+  // Same path, two separate attach actions (each its own draft/client_id) -- the
+  // backend gives each its own distinctly-named asset (session_assets.py no longer
+  // dedupes uploads by path). Resolving purely by path would make BOTH messages
+  // show whichever asset is iterated last ("1-1" for both), silently renaming the
+  // first message's chip whenever a second attach of the same file happens later
+  // in the SAME live session (no reload needed to see it).
+  const path = 'C:\\Users\\Administrator\\Desktop\\1.json';
+  const firstMessageItem = { type: 'document', filename: '1.json', path, clientId: 'draft-A' };
+  const secondMessageItem = { type: 'document', filename: '1.json', path, clientId: 'draft-B' };
+  const assets = [
+    { asset_id: 'asset_1', name: '1', kind: 'document', path, source: 'upload', created_at: 0, client_id: 'draft-A' },
+    { asset_id: 'asset_2', name: '1-1', kind: 'document', path, source: 'upload', created_at: 1, client_id: 'draft-B' },
+  ];
+  const [firstResolved, secondResolved] = resolveAssetDisplayNames([firstMessageItem, secondMessageItem], assets);
+  assert.equal(firstResolved.displayName, '1', 'the first message must keep showing its OWN asset\'s name');
+  assert.equal(secondResolved.displayName, '1-1');
+});
+
+test('falls back to the path guess when an item has no client_id (older message, no idempotency key)', () => {
+  const [resolved] = resolveAssetDisplayNames([SERUM_HISTORY_ITEM], [SERUM_ASSET]);
+  assert.equal(resolved.displayName, 'serum');
 });
 
 test('resolves several attachments and leaves unmatched ones untouched', () => {

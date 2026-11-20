@@ -1,5 +1,7 @@
+import { maintainBrowserSession } from './auth/manager/federation';
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Button } from './components/ui/Button/Button';
 import { isEnterprise } from './edition';
 import { isLoginAuthSimulateEnabled } from './auth/config';
 import { resolveEnterpriseAuthProvider } from './auth/providerRegistry';
@@ -74,27 +76,24 @@ async function ensureActiveCluster(provider: EnterpriseAuthProvider, jiuwenclawI
 }
 
 export function EnterpriseEntry({ children }: { children: ReactNode }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const enterprise = isEnterprise();
   const simulateLogin = enterprise && isLoginAuthSimulateEnabled();
   const provider = useMemo(
     () => enterprise ? resolveEnterpriseAuthProvider(simulateLogin) : null,
     [enterprise, simulateLogin],
   );
-  const [phase, setPhase] = useState<'loading' | 'ready' | 'error'>(enterprise ? 'loading' : 'ready');
-  const [error, setError] = useState('');
+  const [phase, setPhase] = useState<'loading' | 'ready' | 'empty' | 'error'>(enterprise ? 'loading' : 'ready');
+  const [error, setError] = useState<
+    string | { key: 'enterpriseEntry.invalidIdentity' | 'enterpriseEntry.loadFailed' }
+  >('');
   const [context, setContext] = useState<EnterpriseContextSnapshot | null>(null);
   const [contextError, setContextError] = useState('');
   const [contextSwitching, setContextSwitching] = useState(false);
-  const [managerAccess, setManagerAccess] = useState(false);
 
   const logout = useCallback(() => {
     if (provider) void provider.logout();
   }, [provider]);
-
-  const switchToManager = useCallback(() => {
-    window.location.href = '/manager';
-  }, []);
 
   useEffect(() => {
     if (!enterprise || !provider) return;
@@ -112,14 +111,11 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
           '';
         const debug = new URLSearchParams(window.location.search).get('debug_context') === '1';
         const user = await provider.getCurrentUser();
-        if (!user.user_id) throw new Error(t('enterpriseEntry.invalidIdentity'));
-        try {
-          const canManage = provider.getManagerAccess ? await provider.getManagerAccess() : false;
-          if (!cancelled) {
-            setManagerAccess(canManage);
-          }
-        } catch {
-          if (!cancelled) setManagerAccess(false);
+        if (cancelled) return;
+        if (!user.user_id) {
+          setError({ key: 'enterpriseEntry.invalidIdentity' });
+          setPhase('error');
+          return;
         }
         const listed = await provider.listAgentContexts();
         const contexts = listed
@@ -142,7 +138,10 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
             jiuwenclawId: preferredCluster,
           });
         }
-        if (!selected) throw new Error(t('enterpriseEntry.noContext'));
+        if (!selected) {
+          setPhase('empty');
+          return;
+        }
         await ensureActiveCluster(provider, selected.jiuwenclaw_id);
         if (cancelled) return;
         applyScope(selected);
@@ -159,7 +158,9 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
           provider.redirectToLogin();
           return;
         }
-        setError(bootstrapError instanceof Error ? bootstrapError.message : t('enterpriseEntry.loadFailed'));
+        setError(
+          bootstrapError instanceof Error ? bootstrapError.message : { key: 'enterpriseEntry.loadFailed' },
+        );
         setPhase('error');
       }
     };
@@ -167,13 +168,26 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [enterprise, provider, t]);
+  }, [enterprise, provider]);
+
+  useEffect(() => {
+    if (!enterprise || simulateLogin || phase !== 'ready') return;
+    let disposed = false;
+    let stop: (() => void) | undefined;
+    void maintainBrowserSession().then((cleanup) => {
+      if (disposed) cleanup();
+      else stop = cleanup;
+    }).catch(() => undefined);
+    return () => {
+      disposed = true;
+      stop?.();
+    };
+  }, [enterprise, simulateLogin, phase]);
 
   const contextValue = useMemo<EnterpriseContextValue | null>(() => {
     if (!context || !provider) return null;
     return {
       ...context,
-      managerAccess,
       contextError,
       contextSwitching,
       onContextChange: (key) => {
@@ -222,15 +236,79 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
             setContextError(switchError instanceof Error ? switchError.message : t('enterpriseEntry.switchFailed'));
           });
       },
-      onSwitchToManager: switchToManager,
       onLogout: logout,
     };
-  }, [context, contextError, contextSwitching, logout, managerAccess, provider, switchToManager, t]);
+  }, [context, contextError, contextSwitching, logout, provider, t]);
 
   if (!enterprise) return <>{children}</>;
   if (phase === 'ready' && contextValue) {
     return <EnterpriseContext.Provider value={contextValue}>{children}</EnterpriseContext.Provider>;
   }
+  if (phase === 'empty') {
+    const isZh = i18n.language.startsWith('zh');
+    return (
+      <main
+        className="enterprise-entry-empty"
+        data-testid="enterprise-entry"
+        aria-labelledby="enterprise-entry-empty-title"
+        lang={isZh ? 'zh' : 'en'}
+      >
+        <div className="enterprise-entry-empty__card">
+          <div className="enterprise-entry-empty__header">
+            <div className="enterprise-entry-empty__brand">
+              JIUWEN<span>SWARM</span>
+            </div>
+            <div
+              className="enterprise-entry-empty__language"
+              role="group"
+              aria-label={t('enterpriseEntry.language')}
+            >
+              <Button
+                size="sm"
+                variant={isZh ? 'primary' : 'quiet'}
+                aria-pressed={isZh}
+                lang="zh"
+                onClick={() => void i18n.changeLanguage('zh')}
+              >
+                中
+              </Button>
+              <Button
+                size="sm"
+                variant={isZh ? 'quiet' : 'primary'}
+                aria-pressed={!isZh}
+                lang="en"
+                onClick={() => void i18n.changeLanguage('en')}
+              >
+                En
+              </Button>
+            </div>
+          </div>
+          <div className="enterprise-entry-empty__eyebrow" lang="en">ENTERPRISE WORKSPACE</div>
+          <h1 id="enterprise-entry-empty-title" data-testid="enterprise-entry-title">
+            {t('enterpriseEntry.emptyTitle')}
+          </h1>
+          <p data-testid="enterprise-entry-status">{t('enterpriseEntry.noContext')}</p>
+          <button
+            className="enterprise-entry-empty__login"
+            type="button"
+            data-testid="enterprise-entry-login"
+            onClick={() => provider?.redirectToLogin()}
+          >
+            {t('enterpriseEntry.backToLogin')}
+          </button>
+          <button
+            className="enterprise-entry-empty__retry"
+            type="button"
+            data-testid="enterprise-entry-retry"
+            onClick={() => window.location.reload()}
+          >
+            {t('enterpriseEntry.retry')}
+          </button>
+        </div>
+      </main>
+    );
+  }
+  const errorMessage = typeof error === 'string' ? error : t(error.key);
   return (
     <div
       data-testid="enterprise-entry"
@@ -247,7 +325,7 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
           {t(phase === 'error' ? 'enterpriseEntry.errorTitle' : 'enterpriseEntry.loadingTitle')}
         </h1>
         <p data-testid="enterprise-entry-status" style={{ margin: 0, lineHeight: 1.6 }}>
-          {phase === 'error' ? error : t('enterpriseEntry.loading')}
+          {phase === 'error' ? errorMessage : t('enterpriseEntry.loading')}
         </p>
         {phase === 'error' && (
           <>

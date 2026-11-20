@@ -35,7 +35,7 @@ from typing import Any
 
 from openjiuwen.core.foundation.llm import ProviderType
 
-from jiuwenswarm.common.permission_mode import is_auto_permission_mode
+from jiuwenswarm.common.permission_mode import canonical_permission_facade, permission_profile
 from jiuwenswarm.common.config import (
     DEFAULT_SWARMFLOW_ENABLED,
     DEFAULT_SWARMFLOW_WORKTREE_ENABLED,
@@ -53,10 +53,12 @@ from jiuwenswarm.common.config import (
     coerce_subtask_depth,
     get_config,
     get_config_raw,
+    get_team_code_todo_reminder_disabled,
     resolve_env_vars,
     replace_teams_in_config,
     update_a2ui_in_config,
     update_context_engine_enabled_in_config,
+    update_cua_agent_enabled_in_config,
     update_default_model_provider_in_config,
     update_enable_free_models_in_config,
     update_external_cli_agents_in_config,
@@ -66,7 +68,6 @@ from jiuwenswarm.common.config import (
     update_memory_forbidden_enabled_in_config,
     update_permissions_profile_in_config,
     update_progressive_tool_optimize_in_config,
-    update_proactive_recommendation_in_config,
     update_rsi_enabled_in_config,
     update_setup_guide_enabled_in_config,
     update_skill_evolution_enabled_in_config,
@@ -80,13 +81,13 @@ from jiuwenswarm.common.config import (
     update_comfyui_workflow_enabled_in_config,
     update_task_asr_in_config,
     update_team_scheduled_dispatch_in_config,
+    update_team_code_todo_reminder_disabled_in_config,
     update_team_member_messaging_in_config,
     update_team_member_subtasks_in_config,
     update_team_task_verification_in_config,
     update_trajectory_diagnosis_in_config,
     update_default_models_in_config,
     update_login_model_settings_in_config,
-    validate_persisted_kv_cache_affinity,
 )
 from jiuwenswarm.common.recommendation_switches import (
     flatten_recommendation_for_config_panel,
@@ -107,6 +108,7 @@ from jiuwenswarm.common.config_panel.models_handlers import (
     build_models_defaults_from_frontend,
 )
 from jiuwenswarm.common.context_window import parse_positive_int
+from jiuwenswarm.common.cua_config import cua_backend_settings, is_cua_agent_enabled
 from jiuwenswarm.common.moa_config import (
     MOA_CONFIG_KEYS,
     build_moa_config_from_frontend,
@@ -115,13 +117,9 @@ from jiuwenswarm.common.moa_config import (
 )
 from jiuwenswarm.common.kv_cache_affinity_config import (
     ASCEND_AFFINITY_PROVIDER,
-    KVC_CONFIG_KEYS,
-    default_model_client_config_from_entries,
-    has_kv_cache_affinity_capability,
-    is_affinity_enabled,
     normalize_affinity_request,
     parse_bool as parse_kvc_bool,
-    set_default_model_provider_in_entries,
+    get_affinity_status,
 )
 from jiuwenswarm.common.utils import get_env_file
 from jiuwenswarm.common.version import get_runtime_version
@@ -146,6 +144,7 @@ class ConfigPanelInternalError(RuntimeError):
 WEB_CONFIG_RELOAD_CHANNEL_ID = "web"
 SEARCH_RELOAD_ENV_KEYS = {
     "BOCHA_API_KEY", "PERPLEXITY_API_KEY", "SERPER_API_KEY", "JINA_API_KEY",
+    "FREE_SEARCH_DDG_ENABLED", "FREE_SEARCH_BING_ENABLED",
 }
 MODEL_RELOAD_ENV_KEYS = {
     "MODEL_PROVIDER",
@@ -189,6 +188,12 @@ MULTIMODAL_RELOAD_ENV_KEYS = {
     "VISUAL_GEN_PROVIDER",
     "VISUAL_GEN_PROTOCOL",
     "VISUAL_GEN_CONTEXT_WINDOW_TOKENS",
+    "MUSIC_GEN_ENABLED",
+    "MUSIC_GEN_API_BASE",
+    "MUSIC_GEN_API_KEY",
+    "MUSIC_GEN_MODEL_NAME",
+    "MUSIC_GEN_PROVIDER",
+    "MUSIC_GEN_PROTOCOL",
 }
 ASR_ENV_KEYS = {
     "ASR_API_BASE",
@@ -234,8 +239,6 @@ class ConfigChangeSet:
                 scopes.add("team")
             elif key_text.startswith("permissions"):
                 scopes.add("permissions")
-            elif key_text.startswith("proactive_recommendation"):
-                scopes.add("proactive")
             elif key_text.startswith("symphony") or key_text.startswith("skill_retrieval"):
                 scopes.add("agent_runtime")
             elif key_text == "trajectory_ui_diagnosis_enabled":
@@ -316,6 +319,13 @@ CONFIG_SET_ENV_MAP = {
     "visual_gen_protocol": "VISUAL_GEN_PROTOCOL",
     "visual_gen_context_window_tokens": "VISUAL_GEN_CONTEXT_WINDOW_TOKENS",
     "visual_gen_enabled": "VISUAL_GEN_ENABLED",
+    # music generation - Design BGM slot.
+    "music_gen_api_base": "MUSIC_GEN_API_BASE",
+    "music_gen_api_key": "MUSIC_GEN_API_KEY",
+    "music_gen_model": "MUSIC_GEN_MODEL_NAME",
+    "music_gen_provider": "MUSIC_GEN_PROVIDER",
+    "music_gen_protocol": "MUSIC_GEN_PROTOCOL",
+    "music_gen_enabled": "MUSIC_GEN_ENABLED",
     # audio 模型
     "audio_api_base": "AUDIO_API_BASE",
     "audio_api_key": "AUDIO_API_KEY",
@@ -389,6 +399,7 @@ CONFIG_YAML_KEYS = frozenset({
     "memory_forbidden_description",
     "a2ui_enabled",
     "rsi_enabled",
+    "cua_agent_enabled",
     "trajectory_ui_diagnosis_enabled",
     "task_full_duplex_enabled",
     "team_organization_ui_enabled",
@@ -396,15 +407,13 @@ CONFIG_YAML_KEYS = frozenset({
     "task_asr_enabled",
     "topic_recommendation_enabled",
     "prompt_suggestion_enabled",
-    "proactive_recommendation_enabled",
-    "proactive_recommendation_max_recommend_per_day",
-    "proactive_recommendation_max_rounds_per_tick",
     "swarmflow_enabled",
     "swarmflow_budget",
     "team_scheduled_dispatch_enabled",
     "team_task_verification_enabled",
     "team_member_messaging_enabled",
     "team_member_subtasks_enabled",
+    "team_code_todo_reminder_disabled",
     "external_cli_agent_claude_enabled",
     "external_cli_agent_claude_use_builtin",
     "external_cli_agent_claude_cli_path",
@@ -419,13 +428,13 @@ CONFIG_YAML_KEYS = frozenset({
     "enable_free_models",
     "progressive_tool_optimize",
 })
-# 调度模式开关（modes.team.jiuwen_team.dispatch_mode / enable_task_verification /
-# enable_member_messaging / max_subtask_depth），改动后需重载 team。
+# Scheduled dispatch settings require a team reload.
 TEAM_DISPATCH_CONFIG_KEYS = frozenset({
     "team_scheduled_dispatch_enabled",
     "team_task_verification_enabled",
     "team_member_messaging_enabled",
     "team_member_subtasks_enabled",
+    "team_code_todo_reminder_disabled",
 })
 # Settings toggles that only change YAML; AgentServer reads the file next turn.
 RECOMMENDATION_UI_CONFIG_KEYS = frozenset({
@@ -437,6 +446,8 @@ WEB_UI_YAML_KEYS = frozenset({
     "team_organization_ui_enabled",
     "comfyui_workflow_enabled",
     "setup_guide_enabled",
+    "design_generation_video_gen",
+    "design_generation_visual_gen",
     *RECOMMENDATION_UI_CONFIG_KEYS,
 })
 # Scopes that must reach AgentServer before config.save_all returns.
@@ -447,7 +458,6 @@ AGENT_RELOAD_SCOPES = frozenset({
     "team",
     "permissions",
     "agent_runtime",
-    "proactive",
 })
 
 
@@ -476,23 +486,10 @@ UNSUPPORTED_WINDOWS_CLI_SUFFIXES = {".bat", ".cmd", ".ps1"}
 PERMISSIONS_PROFILES = frozenset({"default", "automatic", "full_access"})
 
 
-def permission_profile(permission_config: object) -> str:
-    if not isinstance(permission_config, dict) or permission_config.get("enabled") is not True:
-        return "full_access"
-    return "automatic" if is_auto_permission_mode(permission_config) else "default"
-
-
-def canonical_permission_facade(profile: str) -> dict[str, str]:
-    return {
-        "permissions_profile": profile,
-        "permissions_enabled": "false" if profile == "full_access" else "true",
-    }
-
-
 SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
-    "symphony_enabled": (("enabled",), "bool", DEFAULT_SYMPHONY_ENABLED),
+    "symphony_enabled": (("orchestration", "enabled"), "bool", DEFAULT_SYMPHONY_ENABLED),
     "symphony_evolution_enabled": (
-        ("evolution", "flow", "enabled"),
+        ("orchestration", "experience", "enabled"),
         "bool",
         DEFAULT_EVOLUTION_ENABLED,
     ),
@@ -500,22 +497,19 @@ SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
 SYMPHONY_CONFIG_KEYS = tuple(SYMPHONY_CONFIG_SPECS.keys())
 SKILL_RETRIEVAL_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
     "skill_retrieval_enabled": (("enabled",), "bool", False),
-    # Kept for compatibility with existing config-panel clients and older
-    # config.yaml files.  Newer runtimes may ignore this legacy switch.
-    "skill_retrieval_index_enabled": (("index", "enabled"), "bool", False),
-    "skill_retrieval_max_results": (("discovery", "max_results"), "int", 10),
+    "skill_retrieval_max_results": (("output", "max_results"), "int", 10),
     "skill_retrieval_max_output_chars": (
-        ("discovery", "max_output_chars"),
+        ("output", "max_chars"),
         "output_chars",
         12000,
     ),
     "skill_retrieval_max_list_entries": (
-        ("discovery", "max_list_entries"),
+        ("output", "max_list_entries"),
         "int",
         40,
     ),
     "skill_retrieval_incremental_notice_max_chars": (
-        ("discovery", "incremental_notice_max_chars"),
+        ("output", "incremental_notice_max_chars"),
         "int",
         4000,
     ),
@@ -591,15 +585,6 @@ def flatten_symphony_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
     flat: dict[str, str] = {}
     for key, (path, value_type, default) in SYMPHONY_CONFIG_SPECS.items():
         value = get_nested_config_value(symphony, path, default)
-        if key == "symphony_evolution_enabled":
-            # null 或缺失时回退旧配置；明确写 false 时保持关闭。
-            flow = get_nested_config_value(symphony, ("evolution", "flow"), {})
-            legacy = get_nested_config_value(symphony, ("evolution", "enabled"), None)
-            if (
-                (not isinstance(flow, dict) or flow.get("enabled") is None)
-                and legacy is not None
-            ):
-                value = legacy
         if value_type == "bool":
             if key == "symphony_enabled":
                 value = resolve_symphony_enabled(value)
@@ -614,7 +599,7 @@ def flatten_symphony_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
 
 def flatten_skill_retrieval_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
     symphony = raw.get("symphony") if isinstance(raw.get("symphony"), dict) else {}
-    section = symphony.get("skill_retrieval") if isinstance(symphony.get("skill_retrieval"), dict) else {}
+    section = symphony.get("retrieval") if isinstance(symphony.get("retrieval"), dict) else {}
     flat: dict[str, str] = {}
     for key, (path, value_type, default) in SKILL_RETRIEVAL_CONFIG_SPECS.items():
         value = get_nested_config_value(section, path, default)
@@ -663,6 +648,7 @@ def flatten_team_dispatch_for_config_panel(raw: dict[str, Any]) -> dict[str, str
         "team_member_messaging_enabled": "true" if parse_config_switch_bool(member_messaging) else "false",
         # The depth doubles as the switch (core F_128): on means any depth > 0.
         "team_member_subtasks_enabled": "true" if coerce_subtask_depth(subtask_depth) > 0 else "false",
+        "team_code_todo_reminder_disabled": "true" if get_team_code_todo_reminder_disabled(raw) else "false",
     }
 
 
@@ -950,10 +936,14 @@ def detect_external_cli_agent(
     cli_agent: str, cli_path: str = "", use_builtin: bool = False
 ) -> dict[str, Any]:
     normalized_agent = cli_agent.strip().lower()
+    # 每次探测都携带内置（托管安装）CLI 路径：配置本地可执行文件后探测结果与
+    # PATH 扫描都不再指向内置路径，前端路径下拉框需要它作为常驻选项，
+    # 否则内置路径会从下拉框消失且会被历史清理剪掉（#6647）。
+    builtin_path = external_cli_managed_cli_path(normalized_agent)
     if normalized_agent not in EXTERNAL_CLI_AGENT_KINDS and normalized_agent in external_cli_agent_kinds():
-        return _detect_custom_agent_cli(normalized_agent, cli_path)
-    if normalized_agent not in EXTERNAL_CLI_AGENT_KINDS:
-        return {
+        result = _detect_custom_agent_cli(normalized_agent, cli_path)
+    elif normalized_agent not in EXTERNAL_CLI_AGENT_KINDS:
+        result = {
             "cli_agent": normalized_agent,
             "status": "unavailable",
             "path": "",
@@ -961,8 +951,10 @@ def detect_external_cli_agent(
             "reference_version": "",
             "message": f"unsupported cli_agent: {cli_agent}",
         }
-
-    return _detect_cli_at(normalized_agent, cli_path, use_builtin)
+    else:
+        result = _detect_cli_at(normalized_agent, cli_path, use_builtin)
+    result["builtin_path"] = builtin_path
+    return result
 
 
 def _detect_custom_agent_cli(cli_agent: str, cli_path: str) -> dict[str, Any]:
@@ -1030,6 +1022,21 @@ def _detect_cli_at(normalized_agent: str, cli_path: str, use_builtin: bool = Fal
             "version": "",
             "reference_version": reference_version,
             "message": version_error or "version command failed",
+        }
+
+    identity_patterns = {
+        "claude": r"\bClaude Code\b",
+        "codex": r"\bcodex(?:-cli)?\s+\d",
+    }
+    identity_pattern = identity_patterns.get(normalized_agent)
+    if identity_pattern and not re.search(identity_pattern, version_output, re.IGNORECASE):
+        return {
+            "cli_agent": normalized_agent,
+            "status": "unavailable",
+            "path": resolved_path,
+            "version": version,
+            "reference_version": reference_version,
+            "message": f"version output does not identify the selected program as {normalized_agent}",
         }
 
     status = "ok"
@@ -1239,20 +1246,42 @@ def external_cli_path_histories_from_switches(raw: dict[str, Any], params: dict[
     return merged
 
 
-def refresh_external_cli_builtin_models(external_cli_agents: list[dict[str, str]]) -> None:
+def newly_enabled_external_cli_agents(raw: dict[str, Any], external_cli_agents: list[dict[str, Any]]) -> list[str]:
+    """Return the kinds enabled by this save: absent before it, present after."""
+    persisted = get_nested_config_value(raw, EXTERNAL_CLI_AGENTS_CONFIG_PATH, [])
+    before: set[str] = set()
+    if isinstance(persisted, list):
+        for item in persisted:
+            name = item.get("cli_agent") if isinstance(item, dict) else item
+            if isinstance(name, str) and name.strip():
+                before.add(name.strip())
+    return [
+        str(item.get("cli_agent"))
+        for item in external_cli_agents
+        if isinstance(item, dict) and item.get("cli_agent") and item.get("cli_agent") not in before
+    ]
+
+
+def refresh_external_cli_builtin_models(
+    external_cli_agents: list[dict[str, str]],
+    *,
+    enabled_now: list[str] | None = None,
+) -> None:
     """Check the configured built-in model catalogs against the enabled CLIs.
 
     Runs after the dependency check, so the SDK of every enabled kind is
     installed and its cli_path resolved. A catalog naming a model the CLI
     does not offer would only fail later, when the leader picks it, so the
-    facts are corrected here. Failure never blocks the switch.
+    facts are corrected here. A kind in ``enabled_now`` lost its catalog when
+    it was turned off, so it gets one from the models its CLI reports now.
+    Failure never blocks the switch.
     """
     if not external_cli_agents:
         return
     try:
         from jiuwenswarm.common.external_cli_catalog import refresh_external_cli_builtin_models as _refresh
 
-        _refresh()
+        _refresh(enabled_now=enabled_now or ())
     except Exception as exc:  # noqa: BLE001 - a health check must not fail the switch
         logger.warning("[config.set] external CLI builtin model check failed: %s", exc)
 
@@ -1269,56 +1298,15 @@ def build_external_cli_publish_url() -> str:
 
 
 def persist_env_updates(updates: dict[str, str]) -> None:
-    """把已更新的环境变量写回 .env（仅覆盖或追加对应 KEY=value 行）。"""
-    env_path = ENV_FILE
+    """Persist settings atomically; callers must observe disk failures."""
     if not updates:
         return
-    try:
-        lines: list[str] = []
-        if env_path.is_file():
-            with open(env_path, "r", encoding="utf-8") as f:
-                lines = f.readlines()
-        new_lines: list[str] = []
-        for line in lines:
-            stripped = line.strip()
-            found = False
-            for env_key, value in updates.items():
-                if stripped.startswith(env_key + "="):
-                    new_lines.append(f'{env_key}="{value}"\n' if value else f"{env_key}=\n")
-                    found = True
-                    break
-            if not found:
-                new_lines.append(line)
-        for env_key, value in updates.items():
-            if not any(s.strip().startswith(env_key + "=") for s in new_lines):
-                new_lines.append(f'{env_key}="{value}"\n' if value else f"{env_key}=\n")
-        env_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(env_path, "w", encoding="utf-8") as f:
-            f.writelines(new_lines)
-    except OSError as e:
-        logger.warning("[config.set] 写回 .env 失败: %s", e)
+    from jiuwenswarm.common.config import config_write_lock
+    from jiuwenswarm.common.config_persistence import atomic_write, env_content
 
-
-def validate_proactive_int(
-    val: Any, *, name: str, lo: int = 1, hi: int = 50,
-) -> int:
-    """校验 proactive 数值配置项：必须是 [lo, hi] 的正整数字符串。
-
-    挡住负数、零、浮点数(3.5)、字符串(abc)、科学计数(1e5)、空值。
-    校验失败抛 ConfigPanelBadRequest（携带中文提示），由外层返回前端。
-    """
-    raw = str(val if val is not None else "").strip()
-    if not raw:
-        raise ConfigPanelBadRequest(f"{name} 不能为空，需为 {lo}-{hi} 的正整数")
-    # 正则一次挡住浮点、负数、科学计数、非数字
-    if not re.fullmatch(r"[0-9]+", raw):
-        raise ConfigPanelBadRequest(
-            f"{name} 必须是正整数（{lo}-{hi}），当前值无效：{raw!r}"
-        )
-    n = int(raw)
-    if n < lo or n > hi:
-        raise ConfigPanelBadRequest(f"{name} 需为 {lo}-{hi} 的正整数，当前：{n}")
-    return n
+    with config_write_lock(config_path=ENV_FILE.with_name("config.yaml")):
+        original = ENV_FILE.read_text(encoding="utf-8") if ENV_FILE.exists() else ""
+        atomic_write(ENV_FILE, env_content(original, updates).encode())
 
 
 def parse_config_bool(value: Any) -> bool:
@@ -1371,10 +1359,21 @@ def encrypt_config_params(params: dict[str, Any]) -> dict[str, Any]:
     if crypto is None:
         return dict(params)
     encrypted = dict(params)
+    from jiuwenswarm.common.credentials.resolver import is_reference
+
     for key, val in list(encrypted.items()):
         if key.endswith("_context_window_tokens"):
             continue
         if "api_key" in key.lower() or "token" in key.lower():
+            # exec: references are config declarations, not secrets — encrypting
+            # one corrupts it irreversibly; store verbatim.
+            if is_reference(str(val or "")):
+                continue
+            # An empty value means "clear the stored credential" (e.g. the Jev
+            # delete flow). Encrypting it would persist a non-empty ciphertext,
+            # so the credential would keep looking configured and never clear.
+            if val is None or str(val).strip() == "":
+                continue
             encrypted[key] = crypto.encrypt(val)
     return encrypted
 
@@ -1445,6 +1444,10 @@ def apply_config_payload(
         raise ConfigPanelBadRequest(
             "permissions_profile and permissions_enabled are mutually exclusive"
         )
+    if "cua_agent_enabled" in params:
+        value = params["cua_agent_enabled"]
+        if value is not None and not isinstance(value, bool) and value not in ("true", "false"):
+            raise ConfigPanelBadRequest("cua_agent_enabled must be true, false or null")
     moa_params = {key: value for key, value in params.items() if key in MOA_CONFIG_KEYS}
     if moa_params:
         try:
@@ -1524,6 +1527,16 @@ def apply_config_payload(
             raise ConfigPanelInternalError("failed to update modes.team") from exc
 
     external_cli_agents_updated = False
+    try:
+        from jiuwenswarm.common.design_generation_selection import (
+            DesignSelectionError,
+            apply_design_generation_config,
+        )
+
+        yaml_updated.extend(apply_design_generation_config(params))
+    except DesignSelectionError as exc:
+        raise ConfigPanelBadRequest(str(exc)) from exc
+
     for param_key in (*CONFIG_YAML_KEYS, *custom_external_cli_config_keys()):
         if param_key not in params:
             continue
@@ -1533,13 +1546,15 @@ def apply_config_payload(
             if param_key == "context_engine_enabled":
                 update_context_engine_enabled_in_config(parsed)
             elif param_key == "kv_cache_affinity_enabled":
-                update_kv_cache_affinity_enabled_in_config(parsed)
+                continue  # Defer until the remaining payload has passed validation.
             elif param_key == "permissions_enabled":
                 continue
             elif param_key == "setup_guide_enabled":
                 update_setup_guide_enabled_in_config(parsed)
             elif param_key == "rsi_enabled":
                 update_rsi_enabled_in_config(parsed)
+            elif param_key == "cua_agent_enabled":
+                update_cua_agent_enabled_in_config(None if val is None else parsed)
             elif param_key == "enable_free_models":
                 update_enable_free_models_in_config(parsed)
             elif param_key == "memory_forbidden_enabled":
@@ -1554,17 +1569,20 @@ def apply_config_payload(
             elif param_key == "team_scheduled_dispatch_enabled":
                 update_team_scheduled_dispatch_in_config(parsed)
                 if not parsed:
-                    # 验证者、成员间通信与成员子任务只在调度模式下生效，关闭调度模式时一并关闭。
+                    # Reset the child switches when scheduled dispatch is disabled.
                     update_team_task_verification_in_config(False)
                     yaml_updated.append("team_task_verification_enabled")
                     update_team_member_messaging_in_config(False)
                     yaml_updated.append("team_member_messaging_enabled")
                     update_team_member_subtasks_in_config(False)
                     yaml_updated.append("team_member_subtasks_enabled")
+                    update_team_code_todo_reminder_disabled_in_config(False)
+                    yaml_updated.append("team_code_todo_reminder_disabled")
             elif param_key in (
                 "team_task_verification_enabled",
                 "team_member_messaging_enabled",
                 "team_member_subtasks_enabled",
+                "team_code_todo_reminder_disabled",
             ):
                 scheduled = (
                     parse_config_bool(params["team_scheduled_dispatch_enabled"])
@@ -1575,8 +1593,10 @@ def apply_config_payload(
                     update_team_task_verification_in_config(parsed and scheduled)
                 elif param_key == "team_member_messaging_enabled":
                     update_team_member_messaging_in_config(parsed and scheduled)
-                else:
+                elif param_key == "team_member_subtasks_enabled":
                     update_team_member_subtasks_in_config(parsed and scheduled)
+                else:
+                    update_team_code_todo_reminder_disabled_in_config(parsed and scheduled)
             elif is_external_cli_agent_config_key(param_key):
                 if not external_cli_agents_updated:
                     try:
@@ -1620,7 +1640,10 @@ def apply_config_payload(
                     update_external_cli_path_histories_in_config(
                         external_cli_path_histories_from_switches(raw, params)
                     )
-                    refresh_external_cli_builtin_models(external_cli_agents)
+                    refresh_external_cli_builtin_models(
+                        external_cli_agents,
+                        enabled_now=newly_enabled_external_cli_agents(raw, external_cli_agents),
+                    )
                     external_cli_agents_updated = True
             elif param_key == "skill_evolution":
                 update_skill_evolution_enabled_in_config(parsed)
@@ -1655,20 +1678,21 @@ def apply_config_payload(
                 save_recommendation_switches(topic_enabled=parsed, now=time.time())
             elif param_key == "prompt_suggestion_enabled":
                 save_recommendation_switches(prompt_enabled=parsed, now=time.time())
-            elif param_key == "proactive_recommendation_enabled":
-                update_proactive_recommendation_in_config({"enabled": parsed})
-            elif param_key == "proactive_recommendation_max_recommend_per_day":
-                n = validate_proactive_int(val, name="每日推荐上限(max_recommend_per_day)")
-                update_proactive_recommendation_in_config({"max_recommend_per_day": n})
-            elif param_key == "proactive_recommendation_max_rounds_per_tick":
-                n = validate_proactive_int(val, name="每次检查对话轮数(max_rounds_per_tick)")
-                update_proactive_recommendation_in_config({"max_rounds_per_tick": n})
+            elif param_key in (
+                "proactive_recommendation_enabled",
+                "proactive_recommendation_max_recommend_per_day",
+                "proactive_recommendation_max_rounds_per_tick",
+            ):
+                # Ignored: proactive recommendation removed.
+                pass
             yaml_updated.append(param_key)
         except ConfigPanelBadRequest:
             # proactive 数值校验等：直接返回前端，不被外层吞成 warning
             raise
         except Exception as e:  # noqa: BLE001
             logger.warning("[config.set] 写回 config.yaml 失败 %s: %s", param_key, e)
+            if param_key == "cua_agent_enabled":
+                raise ConfigPanelInternalError("failed to update cua_agent.enabled") from e
             if param_key == "swarmflow_enabled":
                 raise ConfigPanelInternalError("failed to update enable_swarmflow") from e
             if is_external_cli_agent_config_key(param_key):
@@ -1712,24 +1736,24 @@ def apply_config_payload(
             # A crypto provider may include credentials in exception text.
             raise ConfigPanelInternalError("failed to save MoA configuration") from None
 
-    for env_key, value in env_updates.items():
-        os.environ[env_key] = value
+    if "kv_cache_affinity_enabled" in params:
+        try:
+            update_kv_cache_affinity_enabled_in_config(
+                parse_config_bool(params["kv_cache_affinity_enabled"])
+            )
+        except ValueError as exc:
+            raise ConfigPanelBadRequest(str(exc)) from exc
+        yaml_updated.append("kv_cache_affinity_enabled")
+
     if env_updates:
-        persist_env_updates(env_updates)
+        try:
+            persist_env_updates(env_updates)
+        except OSError:
+            raise ConfigPanelInternalError("failed to save environment settings") from None
+        os.environ.update(env_updates)
         logger.info("[config.set] 已更新 .env: %s", list(env_updates.keys()))
     if yaml_updated:
         logger.info("[config.set] 已更新 config.yaml: %s", yaml_updated)
-
-    kvc_config_changed = any(key in params for key in KVC_CONFIG_KEYS)
-    if kvc_config_changed:
-        valid, failures = validate_persisted_kv_cache_affinity()
-        if not valid:
-            # Do not leave a persisted half-success state active. This is a
-            # narrow fail-closed correction, not a cross-file transaction.
-            update_kv_cache_affinity_enabled_in_config(False)
-            raise ConfigPanelInternalError(
-                "KV cache affinity saved but not applied: " + "; ".join(failures)
-            )
 
     return ConfigApplyResult(
         env_updates=env_updates,
@@ -1824,6 +1848,7 @@ async def config_get_handler(
     runtime_platform = (os.getenv("JIUWENSWARM_RUNTIME_PLATFORM") or "").strip().lower() or "default"
     payload["runtime_platform"] = runtime_platform
     payload["external_cli_agents_supported"] = "false" if runtime_platform == "harmony" else "true"
+    payload.update(cua_backend_settings())
     # 合并 config.yaml 中的配置项
     try:
         raw = get_config_raw()
@@ -1840,11 +1865,17 @@ async def config_get_handler(
                     payload[key] = crypto_provider.decrypt(val)
         payload.update(flatten_moa_for_config_panel(raw, resolve_value=resolve_env_vars))
         react_cfg = raw.get("react") or {}
+        payload["cua_agent_enabled"] = (
+            "true" if is_cua_agent_enabled(
+                get_nested_config_value(raw, ("react", "subagents", "cua_agent"), {})
+            ) else "false"
+        )
         ctx_cfg = react_cfg.get("context_engine_config") or {}
         payload["context_engine_enabled"] = "true" if ctx_cfg.get("enabled", False) else "false"
-        payload["kv_cache_affinity_enabled"] = (
-            "true" if is_affinity_enabled(raw) else "false"
-        )
+        status = get_affinity_status(resolve_env_vars(raw))
+        payload["kv_cache_affinity_enabled"] = str(status["enabled"]).lower()
+        payload["kv_cache_affinity_can_enable"] = status["can_enable"]
+        payload["kv_cache_affinity_status"] = status
         perm_cfg = raw.get("permissions") or {}
         payload.update(canonical_permission_facade(permission_profile(perm_cfg)))
         # Skill evolution is controlled solely by the canonical nested YAML key.
@@ -1893,14 +1924,11 @@ async def config_get_handler(
         payload.update(flatten_modes_team_for_config_panel(raw))
         # Proactive recommendation — use resolved config (env vars expanded)
         resolved = get_config()
-        proactive_cfg = resolved.get("proactive_recommendation") or {}
-        payload["proactive_recommendation_enabled"] = "true" if proactive_cfg.get("enabled", False) else "false"
-        payload["proactive_recommendation_max_recommend_per_day"] = str(
-            proactive_cfg.get("max_recommend_per_day", 10))
-        payload["proactive_recommendation_max_rounds_per_tick"] = str(
-            proactive_cfg.get("max_rounds_per_tick", 20))
         models_cfg = resolved.get("models") or {}
         payload["enable_free_models"] = "true" if models_cfg.get("enable_free_models", False) else "false"
+        from jiuwenswarm.common.design_generation_selection import saved_generation_config
+
+        payload.update(saved_generation_config())
     except Exception:  # noqa: BLE001
         for key, value in flatten_moa_for_config_panel({}).items():
             payload.setdefault(key, value)
@@ -1908,6 +1936,7 @@ async def config_get_handler(
         payload.setdefault("kv_cache_affinity_enabled", "false")
         payload.setdefault("permissions_enabled", "false")
         payload.setdefault("rsi_enabled", "true")
+        payload.setdefault("cua_agent_enabled", "true" if is_cua_agent_enabled(None) else "false")
         payload.setdefault("permissions_profile", "full_access")
         payload.setdefault("setup_guide_enabled", "true")
         payload.setdefault("skill_evolution", "false")
@@ -1925,6 +1954,7 @@ async def config_get_handler(
             "true" if DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED else "false",
         )
         payload.setdefault("team_member_subtasks_enabled", "false")
+        payload.setdefault("team_code_todo_reminder_disabled", "false")
         for key, value in _default_a2ui_config_payload().items():
             payload.setdefault(key, value)
         payload.setdefault("trajectory_ui_enabled", "false")
@@ -1945,12 +1975,11 @@ async def config_get_handler(
             payload.setdefault(key, default_text)
         payload.setdefault("free_search_ddg_enabled", "false")
         payload.setdefault("free_search_bing_enabled", "false")
-        payload.setdefault("proactive_recommendation_enabled", "false")
         payload.setdefault("topic_recommendation_enabled", "false")
         payload.setdefault("prompt_suggestion_enabled", "false")
-        payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
-        payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
         payload.setdefault("enable_free_models", "false")
+        payload.setdefault("design_generation_video_gen", "")
+        payload.setdefault("design_generation_visual_gen", "")
     await channel.send_response(ws, req_id, ok=True, payload=payload)
 
 
@@ -2085,14 +2114,9 @@ async def config_save_all_handler(
         if "team" in params:
             config_params["team"] = params.get("team")
 
-        affinity_requested = parse_config_bool(config_params.get("kv_cache_affinity_enabled"))
-        if affinity_requested and new_models is not None:
-            if set_default_model_provider_in_entries(
-                new_models,
-                ASCEND_AFFINITY_PROVIDER,
-            ):
-                yaml_updated.append("models.default_provider")
-
+        before_affinity = get_affinity_status(resolve_env_vars(get_config_raw()))
+        affinity_value = config_params.pop("kv_cache_affinity_enabled", None)
+        affinity_requested = parse_config_bool(affinity_value) if affinity_value is not None else None
         if config_params:
             apply_result = apply_config_payload(
                 config_params,
@@ -2104,33 +2128,32 @@ async def config_save_all_handler(
         else:
             apply_result = ConfigApplyResult({}, [])
 
-        if new_models is not None:
-            if (
-                is_affinity_enabled(get_config_raw())
-                and not has_kv_cache_affinity_capability(
-                    default_model_client_config_from_entries(new_models)
-                )
-            ):
-                update_kv_cache_affinity_enabled_in_config(False)
-                yaml_updated.append("kv_cache_affinity_enabled")
-            update_default_models_in_config(new_models)
-            yaml_updated.append("models.defaults")
-            models_count = len(new_models)
+        try:
+            if new_models is not None:
+                if affinity_requested is None:
+                    update_default_models_in_config(new_models)
+                else:
+                    update_default_models_in_config(new_models, affinity_enabled=affinity_requested)
+                yaml_updated.append("models.defaults")
+                models_count = len(new_models)
+            elif affinity_requested is not None:
+                update_kv_cache_affinity_enabled_in_config(affinity_requested)
+        except ValueError as exc:
+            raise ConfigPanelBadRequest(str(exc)) from exc
+        if affinity_requested is not None:
+            yaml_updated.append("kv_cache_affinity_enabled")
 
         if login_model_settings:
             update_login_model_settings_in_config(login_model_settings)
             yaml_updated.append("models.login_model_settings")
 
-        kvc_config_changed = new_models is not None or any(
-            key in config_params for key in KVC_CONFIG_KEYS
+        status = get_affinity_status(resolve_env_vars(get_config_raw()))
+        auto_disabled = (
+            before_affinity["requested_enabled"] and not status["requested_enabled"]
+            and affinity_requested is None
         )
-        if kvc_config_changed:
-            valid, failures = validate_persisted_kv_cache_affinity()
-            if not valid:
-                update_kv_cache_affinity_enabled_in_config(False)
-                raise ConfigPanelInternalError(
-                    "KV cache affinity saved but not applied: " + "; ".join(failures)
-                )
+        if auto_disabled:
+            yaml_updated.append("kv_cache_affinity_enabled")
 
         commit_pending_permission_profile(apply_result)
         yaml_updated.extend(apply_result.yaml_updated)
@@ -2157,6 +2180,9 @@ async def config_save_all_handler(
             "applied_without_restart": applied_without_restart,
             "models_count": models_count,
         }
+        if new_models is not None or affinity_requested is not None:
+            payload["kv_cache_affinity_status"] = status
+            payload["kv_cache_affinity_auto_disabled"] = auto_disabled
         if apply_result.codex_dependency_install is not None:
             payload["codex_dependency_install"] = apply_result.codex_dependency_install
         if apply_result.external_cli_dependency_installs is not None:

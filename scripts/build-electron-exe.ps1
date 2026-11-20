@@ -244,6 +244,121 @@ function Invoke-SignToolBatchVerification {
     }
 }
 
+function Get-EmbeddedSigningThumbprint {
+    param([string]$Path)
+
+    $Certificate = [System.Security.Cryptography.X509Certificates.X509Certificate]::CreateFromSignedFile($Path)
+    return $Certificate.GetCertHashString()
+}
+
+function Get-PESigningState {
+    param(
+        [string]$Path,
+        [string]$ResolvedSignTool,
+        [string]$CertificateThumbprint,
+        [hashtable]$OriginalFileHashes = @{}
+    )
+
+    # Only an unchanged, explicitly forced input may retain its original signature.
+    # Once its bytes change, require the release certificate and full verification.
+    if ($OriginalFileHashes.ContainsKey($Path) -and
+        (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash -eq $OriginalFileHashes[$Path]) {
+        return 'unsigned'
+    }
+    if (-not (Test-EmbeddedAuthenticodeSignature -Path $Path)) { return 'unsigned' }
+    if ((Get-EmbeddedSigningThumbprint -Path $Path) -ne $CertificateThumbprint) {
+        throw "Unexpected embedded signing certificate for '$Path'."
+    }
+    $Result = Invoke-PESigningCommand -ResolvedSignTool $ResolvedSignTool `
+        -Arguments @('verify', '/pa', '/all', '/tw', $Path)
+    if ($Result.ExitCode -eq 0) { return 'complete' }
+    if ($Result.ExitCode -eq 2) {
+        # /tw exit 2 means warnings, not necessarily a missing timestamp.
+        # Accept that interpretation only if verification without /tw passes.
+        $Result = Invoke-PESigningCommand -ResolvedSignTool $ResolvedSignTool `
+            -Arguments @('verify', '/pa', '/all', $Path)
+        if ($Result.ExitCode -eq 0) { return 'timestamp' }
+    }
+    throw "Timestamp verification failed for '$Path' (SignTool exit code $($Result.ExitCode))."
+}
+
+function Invoke-PESigningCommand {
+    param([string]$ResolvedSignTool, [string[]]$Arguments)
+
+    # Capture native stderr on Windows PowerShell as well as PowerShell 7.
+    # These preference overrides are local to this function.
+    $ErrorActionPreference = 'Continue'
+    $PSNativeCommandUseErrorActionPreference = $false
+    $global:LASTEXITCODE = $null
+    $CommandOutput = @(& $ResolvedSignTool @Arguments 2>&1)
+    $ExitCode = $LASTEXITCODE
+    $CommandOutput | Out-Host
+    if ($null -eq $ExitCode) { throw "Unable to execute SignTool: $ResolvedSignTool" }
+
+    # Retry only explicit timeout, busy, retry, or provider-not-ready errors.
+    # Unknown errors and certificate/key errors remain fatal, regardless of locale.
+    $TransientCodes = @('800705B4', '800700AA', '800704D5', '80090030', '80072EE2', '80072EFD', '80072EFF')
+    $ErrorCodes = @([regex]::Matches(($CommandOutput -join "`n"), '(?i)\b0x(8[0-9a-f]{7})\b') |
+        ForEach-Object { $_.Groups[1].Value.ToUpperInvariant() })
+    $Retryable = ($ErrorCodes.Count -gt 0) -and
+        (@($ErrorCodes | Where-Object { $_ -notin $TransientCodes }).Count -eq 0)
+    return [pscustomobject]@{
+        ExitCode = $ExitCode
+        Retryable = $Retryable
+        HasErrorCodes = $ErrorCodes.Count -gt 0
+    }
+}
+
+function Repair-PESigningBatch {
+    param(
+        [string[]]$Paths,
+        [string]$ResolvedSignTool,
+        [string]$CertificateThumbprint,
+        [string]$TimestampServer,
+        [hashtable]$OriginalFileHashes = @{}
+    )
+
+    $PendingPaths = @($Paths)
+    $RetryDelays = @(5, 15)
+    foreach ($Delay in $RetryDelays) {
+        Write-Warning "Retrying signing for up to $($PendingPaths.Count) PE files in $Delay seconds."
+        Start-Sleep -Seconds $Delay
+        $IncompletePaths = @()
+        foreach ($Path in $PendingPaths) {
+            $State = Get-PESigningState -Path $Path -ResolvedSignTool $ResolvedSignTool `
+                -CertificateThumbprint $CertificateThumbprint -OriginalFileHashes $OriginalFileHashes
+            if ($State -eq 'complete') { continue }
+            if ($State -eq 'unsigned') {
+                $Result = Invoke-PESigningCommand -ResolvedSignTool $ResolvedSignTool `
+                    -Arguments @('sign', '/sha1', $CertificateThumbprint, '/fd', 'SHA256', '/v', $Path)
+                if ($Result.ExitCode -ne 0) {
+                    if (-not $Result.Retryable) { throw "SignTool signing failed for '$Path'." }
+                    $IncompletePaths += $Path
+                    continue
+                }
+            }
+            $Result = Invoke-PESigningCommand -ResolvedSignTool $ResolvedSignTool `
+                -Arguments @('timestamp', '/tr', $TimestampServer, '/td', 'SHA256', $Path)
+            if ($Result.ExitCode -ne 0 -and $Result.HasErrorCodes -and -not $Result.Retryable) {
+                throw "SignTool timestamping failed for '$Path'."
+            }
+            if ($Result.ExitCode -ne 0 -and
+                (Get-PESigningState -Path $Path -ResolvedSignTool $ResolvedSignTool `
+                    -CertificateThumbprint $CertificateThumbprint -OriginalFileHashes $OriginalFileHashes) -ne 'complete') {
+                $IncompletePaths += $Path
+            }
+        }
+        $PendingPaths = @($IncompletePaths)
+        if ($PendingPaths.Count -eq 0) { return }
+    }
+    foreach ($Path in $PendingPaths) {
+        if ((Get-PESigningState -Path $Path -ResolvedSignTool $ResolvedSignTool `
+                -CertificateThumbprint $CertificateThumbprint -OriginalFileHashes $OriginalFileHashes) -ne 'complete') {
+            throw "PE signing failed after 3 attempts: $($PendingPaths -join ', ')"
+        }
+    }
+}
+
 function Invoke-CodeSigning {
     param(
         [Parameter(Mandatory)][string]$Root,
@@ -267,12 +382,16 @@ function Invoke-CodeSigning {
     )
     $UnsignedFiles = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
     $AlreadySignedFiles = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
+    $OriginalFileHashes = @{}
     foreach ($File in $PortableExecutables) {
         $FileFullPath = [System.IO.Path]::GetFullPath($File.FullName)
         $ForceResign = $ForceResignFullPaths | Where-Object {
             $_.Equals($FileFullPath, [System.StringComparison]::OrdinalIgnoreCase)
         }
         if ($ForceResign -or -not (Test-EmbeddedAuthenticodeSignature -Path $File.FullName)) {
+            if ($ForceResign) {
+                $OriginalFileHashes[$File.FullName] = (Get-FileHash -LiteralPath $File.FullName -Algorithm SHA256).Hash
+            }
             $UnsignedFiles.Add($File)
         } else {
             $AlreadySignedFiles.Add($File)
@@ -289,15 +408,22 @@ function Invoke-CodeSigning {
     for ($Offset = 0; $Offset -lt $UnsignedFiles.Count; $Offset += $BatchSize) {
         $LastIndex = [Math]::Min($Offset + $BatchSize - 1, $UnsignedFiles.Count - 1)
         $BatchPaths = @($UnsignedFiles[$Offset..$LastIndex] | ForEach-Object { $_.FullName })
-        & $ResolvedSignTool sign `
-            /sha1 $CertificateThumbprint `
-            /fd SHA256 `
-            /tr $TimestampServer `
-            /td SHA256 `
-            /v `
-            @BatchPaths
-        if ($LASTEXITCODE -ne 0) {
-            throw "SignTool failed for PE batch beginning with '$($BatchPaths[0])'."
+        $Result = Invoke-PESigningCommand -ResolvedSignTool $ResolvedSignTool `
+            -Arguments (@('sign', '/sha1', $CertificateThumbprint, '/fd', 'SHA256', '/v') + $BatchPaths)
+        if ($Result.ExitCode -ne 0 -and -not $Result.Retryable) {
+            throw "SignTool failed for PE batch beginning with '$($BatchPaths[0])' (exit code $($Result.ExitCode))."
+        }
+        if ($Result.ExitCode -eq 0) {
+            $Result = Invoke-PESigningCommand -ResolvedSignTool $ResolvedSignTool `
+                -Arguments (@('timestamp', '/tr', $TimestampServer, '/td', 'SHA256') + $BatchPaths)
+            if ($Result.ExitCode -ne 0 -and $Result.HasErrorCodes -and -not $Result.Retryable) {
+                throw "SignTool timestamping failed for PE batch beginning with '$($BatchPaths[0])'."
+            }
+        }
+        if ($Result.ExitCode -ne 0) {
+            Repair-PESigningBatch -Paths $BatchPaths -ResolvedSignTool $ResolvedSignTool `
+                -CertificateThumbprint $CertificateThumbprint -TimestampServer $TimestampServer `
+                -OriginalFileHashes $OriginalFileHashes
         }
     }
 
@@ -307,9 +433,9 @@ function Invoke-CodeSigning {
             -ResolvedSignTool $ResolvedSignTool `
             -RequireTimestamp
         foreach ($File in $UnsignedFiles) {
-            $EmbeddedCertificate = [System.Security.Cryptography.X509Certificates.X509Certificate]::CreateFromSignedFile($File.FullName)
-            if ($EmbeddedCertificate.GetCertHashString() -ne $CertificateThumbprint) {
-                throw "Unexpected embedded signing certificate for '$($File.FullName)': $($EmbeddedCertificate.GetCertHashString())"
+            $Thumbprint = Get-EmbeddedSigningThumbprint -Path $File.FullName
+            if ($Thumbprint -ne $CertificateThumbprint) {
+                throw "Unexpected embedded signing certificate for '$($File.FullName)': $Thumbprint"
             }
         }
     }
@@ -372,9 +498,10 @@ if ($DoSign) {
 #    （resources\backend），冻结入口 jiuwenswarm_exe_entry.py 会在
 #    <后端 exe 目录>\runtime\ 下查找并前置 PATH，Agent 技能（ppt-creation
 #    等 node 脚本）因此不依赖用户机器的 Node.js。
+Import-Module (Join-Path $PSScriptRoot "build-inno-setup.psm1") -Force
 Import-Module (Join-Path $PSScriptRoot "build-runtimes.psm1") -Force
-$ElectronMinimumNodeVersion = [version]"22.12.0"
-$RuntimeSettings = Get-RuntimeBundleSettings -DefaultNodeVersion "v22.12.0"
+$ElectronMinimumNodeVersion = [version]"22.13.0"
+$RuntimeSettings = Get-RuntimeBundleSettings -DefaultNodeVersion "v22.13.0"
 $BundleNode = $RuntimeSettings.BundleNode
 $BundleUv = $RuntimeSettings.BundleUv
 $NodeVersion = $RuntimeSettings.NodeVersion
@@ -437,6 +564,16 @@ try {
     }
     npm run build
     if ($LASTEXITCODE -ne 0) { $FrontendBuildExit = $LASTEXITCODE; throw "vite build failed" }
+    # Office task pane, served by the desktop at /office/ (inside the frontend dist built above).
+    Push-Location (Join-Path $ProjectRoot "packages\jiuwenswarm-office-addin")
+    try {
+        npm ci --prefer-offline --no-audit --no-fund
+        if ($LASTEXITCODE -ne 0) { $FrontendBuildExit = $LASTEXITCODE; throw "office add-in npm ci failed" }
+        npm run build:desktop
+        if ($LASTEXITCODE -ne 0) { $FrontendBuildExit = $LASTEXITCODE; throw "office add-in build failed" }
+    } finally {
+        Pop-Location
+    }
 } finally {
     Pop-Location
     if ($null -ne $PreviousElectronEnv) { $env:ELECTRON = $PreviousElectronEnv } else { Remove-Item Env:\ELECTRON -ErrorAction SilentlyContinue }
@@ -494,7 +631,9 @@ if ($FrontendOnly) {
     Write-Host "`n[4/6] Reusing existing PyInstaller backend: $BackendDist" -ForegroundColor Yellow
 } else {
     Write-Host "`n[4/6] Running PyInstaller (backend)..." -ForegroundColor Yellow
-    uv run pyinstaller scripts\jiuwenswarm.spec --noconfirm
+    # Use an extended local path when collecting deeply nested runtime data.
+    $CollectDir = "\\?\$ProjectRoot\dist"
+    uv run pyinstaller scripts\jiuwenswarm.spec --noconfirm --distpath $CollectDir
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     if (-not (Test-Path (Join-Path $BackendDist $BuildExecutableNameWindows))) {
         throw "PyInstaller output not found: $BackendDist\$BuildExecutableNameWindows"
@@ -504,14 +643,9 @@ if ($FrontendOnly) {
     # (same self-check as the Python packaging build in build-exe.ps1).
     $FrozenExe = Join-Path $BackendDist $BuildExecutableNameWindows
     $GatewayVerifier = Join-Path $ProjectRoot "scripts\verify_gateway_adapter_bundle.py"
-    $GatewayVerifyProcess = Start-Process `
-        -FilePath $FrozenExe `
-        -ArgumentList @("`"$GatewayVerifier`"") `
-        -Wait `
-        -PassThru `
-        -NoNewWindow
-    if ($GatewayVerifyProcess.ExitCode -ne 0) {
-        throw "Frozen Gateway adapter bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
+    uv run --no-sync python $GatewayVerifier --executable $FrozenExe
+    if ($LASTEXITCODE -ne 0) {
+        throw "Frozen Gateway adapter bundle verification failed. See verifier output above."
     }
 
     $A2UIVerifier = Join-Path $ProjectRoot "scripts\verify_a2ui_bundle.py"
@@ -536,6 +670,17 @@ if ($FrontendOnly) {
         throw "Frozen RSI bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
     }
 
+    $CuaVerifier = Join-Path $ProjectRoot "scripts\verify_computer_use_bundle.py"
+    $CuaVerifyProcess = Start-Process `
+        -FilePath $FrozenExe `
+        -ArgumentList @("`"$CuaVerifier`"") `
+        -Wait `
+        -PassThru `
+        -NoNewWindow
+    if ($CuaVerifyProcess.ExitCode -ne 0) {
+        throw "Frozen Computer Use bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
+    }
+
     # The PyInstaller spec intentionally allows platforms for which gitcode-cli
     # publishes no native binary (currently including Windows) and falls back to
     # the connector's pip-based initialization. Only run the frozen CLI verifier
@@ -555,6 +700,17 @@ if ($FrontendOnly) {
         }
     } else {
         Write-Warning "gitcode-cli has no bundled Windows binary; the GitCode connector will use its existing pip fallback"
+    }
+}
+
+# Also check reused backends so an older bundle with missing Memory modules
+# cannot silently pass through -ReuseBackend into a new installer.
+if (-not $FrontendOnly) {
+    $FrozenExe = Join-Path $BackendDist $BuildExecutableNameWindows
+    $MemoryVerifier = Join-Path $ProjectRoot "scripts\verify_memory_bundle.py"
+    uv run --no-sync python $MemoryVerifier --executable $FrozenExe
+    if ($LASTEXITCODE -ne 0) {
+        throw "Frozen JiuwenMemory SDK and video tool verification failed. See verifier output above."
     }
 }
 
@@ -617,11 +773,15 @@ New-Item -ItemType Directory -Path $AppDir -Force | Out-Null
 # Copy the mature Electron desktop shell (main.cjs, preload.cjs, launch.cjs, target_mcp_wrapper.cjs)
 Write-Host "  Copying Electron desktop shell..." -ForegroundColor Gray
 Copy-Item -Path (Join-Path $DesktopDir "main.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "update_shutdown.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "cdp_port.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_panels.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "app_market_windows.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "app_market_resources.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_downloads.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "browser_download_bubble.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "share_image_export.cjs") -Destination $AppDir -Force
+Copy-Item -Path (Join-Path $DesktopDir "display_media_picker.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "preload.cjs") -Destination $AppDir -Force
 Copy-Item -Path (Join-Path $DesktopDir "target_mcp_wrapper.cjs") -Destination $AppDir -Force
 
@@ -724,9 +884,11 @@ if ($FrontendOnly) {
 $RequiredFiles = @(
     (Join-Path $ElectronAppDir $ShellExeName),
     (Join-Path $AppDir "main.cjs"),
+    (Join-Path $AppDir "update_shutdown.cjs"),
     (Join-Path $AppDir "cdp_port.cjs"),
     (Join-Path $AppDir "browser_downloads.cjs"),
     (Join-Path $AppDir "browser_download_bubble.cjs"),
+    (Join-Path $AppDir "display_media_picker.cjs"),
     (Join-Path $AppDir "preload.cjs"),
     (Join-Path $AppDir "dist\index.html"),
     (Join-Path $AppDir "dist\bubble.html"),
@@ -785,36 +947,52 @@ if ($SkipInstaller) {
 # ── 6. Build installer (Inno Setup) ───────────────────────────────────────────
 Write-Host "`n[6/6] Building installer (Inno Setup)..." -ForegroundColor Yellow
 
-$IsccPaths = @(
-    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
-    "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
-    "C:\Program Files\Inno Setup 6\ISCC.exe"
-)
-$Iscc = $IsccPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+# Compiler discovery and the SHA-256-verified Inno Setup 7 bootstrap are shared
+# with build-exe.ps1 through build-inno-setup.psm1.
+$Iscc = Resolve-InnoSetupCompiler
 if (-not $Iscc) {
-    $Iscc = Get-Command iscc -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
+    Install-InnoSetup7
+    $Iscc = Resolve-InnoSetupCompiler
+    if (-not $Iscc) {
+        throw "ISCC.exe was not found after installing Inno Setup 7. Install Inno Setup 7 and rerun the build."
+    }
 }
-if (-not $Iscc) {
-    $Winget = Get-Command winget -CommandType Application -ErrorAction SilentlyContinue
-    if (-not $Winget) {
-        throw "Inno Setup was not found and winget is unavailable. Install Inno Setup 6.7.1 and rerun the build."
+# The Office schema tree is the deepest payload path. Compress it before the
+# Inno Setup 6 MAX_PATH gate so the gate validates the payload that will
+# actually be packed, not the seed layout.
+$PayloadRoot = (Get-InnoSetupSourceRoot -ProjectRoot $ProjectRoot -SourceDir "$BuildDisplayName-Electron").TrimEnd('\')
+$OfficeSchemas = Join-Path $PayloadRoot 'resources\backend\_internal\jiuwenswarm\resources\agent\workspace\skills\workswarm-builtin\references\capabilities\ppt-creation\scripts\opc\schemas'
+if (Test-Path -LiteralPath $OfficeSchemas -PathType Container) {
+    $OfficeSchemas = (Resolve-Path -LiteralPath $OfficeSchemas).ProviderPath
+    $PayloadPrefix = (Resolve-Path -LiteralPath $PayloadRoot).ProviderPath.TrimEnd('\') + '\'
+    if (-not $OfficeSchemas.StartsWith($PayloadPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Office schemas are outside the Electron payload: $OfficeSchemas"
     }
-    # Use the versioned winget manifest and its installer SHA-256 verification.
-    # Never bypass a hash failure or execute an unverified direct download.
-    Write-Host "Installing Inno Setup 6.7.1 through winget..." -ForegroundColor Yellow
-    & $Winget.Source install --id JRSoftware.InnoSetup --exact --version 6.7.1 `
-        --source winget --scope user --silent --disable-interactivity `
-        --accept-package-agreements --accept-source-agreements
-    if ($LASTEXITCODE -ne 0) {
-        throw "Inno Setup installation failed (winget exit code: $LASTEXITCODE)."
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    [IO.Compression.ZipFile]::CreateFromDirectory($OfficeSchemas, "$OfficeSchemas.zip")
+    Remove-Item -LiteralPath $OfficeSchemas -Recurse -Force
+}
+if (-not (Test-InnoSetup7OrNewer -IsccPath $Iscc)) {
+    # Inno Setup 6 fails late ("The system cannot find the path specified")
+    # whenever a payload path exceeds MAX_PATH. The assembled app is final here,
+    # so validate it before invoking the compiler and fail fast with an
+    # actionable message. This gate stays after the -SkipInstaller return above:
+    # directory-only builds must not resolve a compiler or care about payload
+    # path length.
+    $PayloadRoot = Get-InnoSetupSourceRoot -ProjectRoot $ProjectRoot -SourceDir "$BuildDisplayName-Electron"
+    $MaxPathViolation = Find-MaxPathViolation -SourceRoot $PayloadRoot
+    if ($null -ne $MaxPathViolation) {
+        throw (
+            "Inno Setup 6 cannot build this payload: $MaxPathViolation`n" +
+            "Install Inno Setup 7 (no MAX_PATH limit) or move the build tree " +
+            "to a shorter directory so every payload path stays within 260 chars."
+        )
     }
-    $Iscc = $IsccPaths | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $Iscc) {
-        $Iscc = Get-Command iscc -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
-    }
-    if (-not $Iscc) {
-        throw "winget completed but ISCC.exe was not found. Install Inno Setup 6.7.1 and rerun the build."
-    }
+    Write-Host (
+        "Warning: Inno Setup 7 was not detected; continuing with Inno Setup 6. " +
+        "Inno Setup 6 cannot handle paths longer than MAX_PATH; all current " +
+        "payload paths are within 260 chars, but install Inno Setup 7 to stay safe."
+    ) -ForegroundColor Yellow
 }
 
 Write-Host "Using ISCC: $Iscc" -ForegroundColor Gray
@@ -834,7 +1012,11 @@ if (Test-Path -LiteralPath $InstallerPath) {
     Remove-Item -LiteralPath $InstallerPath -Force
 }
 
+$LongestPayloadPath = Get-ChildItem -LiteralPath $PayloadRoot -File -Recurse |
+    ForEach-Object { $_.FullName.Length - $PayloadRoot.Length - 1 } |
+    Measure-Object -Maximum
 $IsccArguments = @(
+    "/DMaxPayloadRelativePath=$($LongestPayloadPath.Maximum)",
     "/DMyAppName=$BuildDisplayName",
     "/DMyAppExeName=$ShellExeName",
     "/DMyAppVersion=$BuildVersion",
@@ -850,9 +1032,30 @@ if ($DoSign) {
         " /tr $TimestampUrl /td SHA256 /v " + '$f'
     $IsccArguments += "/Scertumsha256=$InnoSignCommand"
 }
-$IsccArguments += "$ProjectRoot\scripts\installer-electron.iss"
-& $Iscc @IsccArguments
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$InnoRoot = $ProjectRoot
+$InnoDrive = $null
+if (($PayloadRoot.Length + 1 + $LongestPayloadPath.Maximum) -gt 249) {
+    $UsedDrives = [System.IO.DriveInfo]::GetDrives().Name
+    $DriveName = 90..68 | ForEach-Object { "$([char]$_):\" } |
+        Where-Object { $_ -notin $UsedDrives } | Select-Object -First 1
+    if (-not $DriveName) {
+        throw 'Inno Setup needs a shorter checkout path or a free drive letter.'
+    }
+    $InnoDrive = $DriveName.TrimEnd('\')
+    & subst.exe $InnoDrive $ProjectRoot
+    if ($LASTEXITCODE -ne 0) {
+        throw "Could not map a short Inno Setup path for $ProjectRoot."
+    }
+    $InnoRoot = $DriveName
+}
+try {
+    $IsccArguments += Join-Path $InnoRoot 'scripts\installer-electron.iss'
+    & $Iscc @IsccArguments
+    $InnoExitCode = $LASTEXITCODE
+} finally {
+    if ($InnoDrive) { & subst.exe $InnoDrive /D }
+}
+if ($InnoExitCode -ne 0) { exit $InnoExitCode }
 
 if (-not (Test-Path -LiteralPath $InstallerPath -PathType Leaf)) {
     throw "Inno Setup completed without creating the expected installer: $InstallerPath"

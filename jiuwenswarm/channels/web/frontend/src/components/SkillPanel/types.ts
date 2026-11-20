@@ -68,6 +68,9 @@ export interface SkillPackBlockedMember {
 /** 技能包成员摘要（skills.get / skills.swarmskillshub.detail 的 skillpack.members） */
 export interface SkillPackMember {
   name: string;
+  version?: string;
+  asset_id?: string;
+  source?: string;
   display_name?: string;
   description?: string;
   path: string;
@@ -160,11 +163,17 @@ export type SkillFilePreview = {
 
 export type SkillRebuildResponse = {
   success: boolean;
-  result_type: 'followup';
-  action: string;
-  followup_prompt: string;
-  skill_name: string;
-  rebuild_target: {
+  pending?: boolean;
+  rebuild_id?: string;
+  status?: 'running' | 'done' | 'failed';
+  detail?: string;
+  code?: string;
+  name?: string;
+  result_type?: 'followup';
+  action?: string;
+  followup_prompt?: string;
+  skill_name?: string;
+  rebuild_target?: {
     version: string | null;
     is_default: boolean;
     skill_dir: string;

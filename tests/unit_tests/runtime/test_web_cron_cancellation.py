@@ -158,7 +158,7 @@ async def test_team_late_cron_completion_does_not_remove_new_producer():
 
 @pytest.mark.asyncio
 async def test_followup_waits_for_cron_producer_teardown_before_admission(monkeypatch):
-    from dataclasses import dataclass
+    from dataclasses import dataclass, field
 
     manager = TeamManager()
     stopping = asyncio.Event()
@@ -188,6 +188,7 @@ async def test_followup_waits_for_cron_producer_teardown_before_admission(monkey
         session_id: str = "session"
         request_id: str = "followup"
         metadata: object = None
+        params: dict = field(default_factory=dict)
 
     async def next_round(request, inputs, deep_agent, *, team_manager, startup, execution_context):
         team_manager.begin_round(request.session_id, request.request_id)

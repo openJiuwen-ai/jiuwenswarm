@@ -17,7 +17,6 @@ interface MarketplaceViewProps {
   marketplaceSubView: MarketplaceSubView;
   teamSkills: MarketplacePluginItem[];
   featuredSkills: MarketplacePluginItem[];
-  skillPacks: MarketplacePluginItem[];
   hubTeamMore: MarketplacePluginItem[];
   hubSkillMore: MarketplacePluginItem[];
   hubSkills: MarketplacePluginItem[];
@@ -30,7 +29,7 @@ interface MarketplaceViewProps {
   renderHubSkillAction: (skill: MarketplacePluginItem) => PageCardActionProps;
   onCategoryChange: (nextCategory: (typeof MARKETPLACE_CATEGORIES)[number]) => void;
   onOpenMore: (kind: 'swarmskill' | 'skill') => void;
-  onOpenAllPacks: () => void;
+  onOpenPacks: () => void;
   onBackFromMore: () => void;
 }
 
@@ -38,7 +37,6 @@ export function MarketplaceView({
   marketplaceSubView,
   teamSkills,
   featuredSkills,
-  skillPacks,
   hubTeamMore,
   hubSkillMore,
   hubSkills,
@@ -51,17 +49,19 @@ export function MarketplaceView({
   renderHubSkillAction,
   onCategoryChange,
   onOpenMore,
-  onOpenAllPacks,
+  onOpenPacks,
   onBackFromMore,
 }: MarketplaceViewProps) {
   const { t } = useTranslation();
 
-  if (!searchKeyword && (marketplaceSubView === 'team' || marketplaceSubView === 'skill')) {
-    const moreItems = marketplaceSubView === 'team' ? hubTeamMore : hubSkillMore;
+  const skillPacks = featuredSkills.filter(skill => skill.skill_type === 'skillpack' || skill.plugin_type === 'skillpack');
+  const packPage = marketplaceSubView === 'packs';
+  if (!searchKeyword && (packPage || marketplaceSubView === 'team' || marketplaceSubView === 'skill')) {
+    const moreItems = packPage ? skillPacks : marketplaceSubView === 'team' ? hubTeamMore : hubSkillMore;
     return (
       <div
         data-testid={
-          marketplaceSubView === 'team' ? 'skill-panel-team-skills-page' : 'skill-panel-featured-skills-page'
+          packPage ? 'skill-panel-all-packs-page' : marketplaceSubView === 'team' ? 'skill-panel-team-skills-page' : 'skill-panel-featured-skills-page'
         }
         className="mt-4 flex-1 flex flex-col min-h-0"
       >
@@ -75,7 +75,7 @@ export function MarketplaceView({
             className="font-bold text-text-strong"
             style={{ fontSize: '16px' }}
           >
-            {marketplaceSubView === 'team' ? t('skills.featuredTeamSkills') : t('skills.featuredSkills')}
+            {packPage ? t('skills.allSkillPacks') : marketplaceSubView === 'team' ? t('skills.featuredTeamSkills') : t('skills.featuredSkills')}
           </span>
           <button
             type="button"
@@ -137,7 +137,7 @@ export function MarketplaceView({
 
       {hubLoading ||
       catalogAwaitingItems(
-        searchKeyword ? hubSkills.length : teamSkills.length + featuredSkills.length + skillPacks.length,
+        searchKeyword ? hubSkills.length : teamSkills.length + featuredSkills.length,
         hubCache,
       ) ? (
         <div
@@ -165,39 +165,10 @@ export function MarketplaceView({
             </div>
           </div>
         )
-      ) : teamSkills.length === 0 && featuredSkills.length === 0 && skillPacks.length === 0 ? (
+      ) : teamSkills.length === 0 && featuredSkills.length === 0 ? (
         <EmptyState id="skill-panel-hub-list-empty" className="page-shell mt-4" text={t('skills.noMatches')} />
       ) : (
         <div className="page-scroll flex-1 min-h-0 overflow-y-auto">
-          {skillPacks.length > 0 && (
-            <>
-              <div className="flex items-center justify-between mb-3">
-                <span className="font-bold text-text-strong" style={{ fontSize: '16px' }}>
-                  {t('skills.featuredSkillPacks')}
-                </span>
-                {skillPacks.length > 3 && (
-                  <button
-                    type="button"
-                    onClick={onOpenAllPacks}
-                    className="flex items-center gap-0.5 text-sm text-text"
-                  >
-                    {t('nav.more')}
-                    <ChevronRight size={16} aria-hidden="true" />
-                  </button>
-                )}
-              </div>
-              <div className="card-grid-auto mb-6">
-                {skillPacks.slice(0, 3).map((skill) => (
-                  <HubSkillCard
-                    key={skill.asset_id}
-                    skill={skill}
-                    onSelect={() => onSelectHubSkill(skill)}
-                    action={renderHubSkillAction(skill)}
-                  />
-                ))}
-              </div>
-            </>
-          )}
           {teamSkills.length > 0 && (
             <>
               <div className="flex items-center justify-between mb-3">
@@ -237,6 +208,11 @@ export function MarketplaceView({
                 <span className="font-bold text-text-strong" style={{ fontSize: '16px' }}>
                   {t('skills.featuredSkills')}
                 </span>
+                {skillPacks.length > 3 && (
+                  <button type="button" onClick={onOpenPacks} className="ml-auto mr-3 text-sm text-text" data-testid="skill-panel-all-packs-btn">
+                    {t('skills.allSkillPacks')}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => onOpenMore('skill')}
@@ -261,50 +237,6 @@ export function MarketplaceView({
           )}
         </div>
       )}
-    </div>
-  );
-}
-
-/** 全部技能包专页 */
-export function SkillPacksView({
-  skillPacks,
-  onBack,
-  onSelectHubSkill,
-  renderHubSkillAction,
-}: {
-  skillPacks: MarketplacePluginItem[];
-  onBack: () => void;
-  onSelectHubSkill: (skill: MarketplacePluginItem) => void;
-  renderHubSkillAction: (skill: MarketplacePluginItem) => PageCardActionProps;
-}) {
-  const { t } = useTranslation();
-  return (
-    <div className="mt-4 flex-1 flex flex-col min-h-0" data-testid="skill-panel-all-packs-page">
-      <button type="button" className="detail-back" onClick={onBack}>
-        <BackIcon aria-hidden="true" />
-        {t('agentManagement.actions.back')}
-      </button>
-      <div className="page-scroll flex-1 min-h-0 overflow-y-auto">
-        <div className="flex items-center justify-between mb-3">
-          <span className="font-bold text-text-strong" style={{ fontSize: '16px' }}>
-            {t('skills.allSkillPacks')}
-          </span>
-        </div>
-        {skillPacks.length === 0 ? (
-          <EmptyState id="skill-panel-all-packs-empty" text={t('skills.noMatches')} />
-        ) : (
-          <div className="card-grid-auto">
-            {skillPacks.map((skill) => (
-              <HubSkillCard
-                key={skill.asset_id}
-                skill={skill}
-                onSelect={() => onSelectHubSkill(skill)}
-                action={renderHubSkillAction(skill)}
-              />
-            ))}
-          </div>
-        )}
-      </div>
     </div>
   );
 }

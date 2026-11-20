@@ -4,15 +4,15 @@ from pathlib import Path
 from typing import get_type_hints
 
 import pytest
-
-import jiuwenswarm.extensions as extensions
-import jiuwenswarm.extensions.sdk as extension_sdk
-from gateway.extensions.manager import (
+from agent_gateway.extensions.manager import (
     ExtensionManager,
     _enabled_extension_filter,
     _extension_dir_paths_from_config,
 )
-from gateway.extensions.registry import ExtensionRegistry
+from agent_gateway.extensions.registry import ExtensionRegistry
+
+import jiuwenswarm.extensions as extensions
+import jiuwenswarm.extensions.sdk as extension_sdk
 
 
 def test_extension_dirs_default_to_builtin_when_empty_string() -> None:
@@ -20,13 +20,13 @@ def test_extension_dirs_default_to_builtin_when_empty_string() -> None:
         {"extensions": {"extension_dirs": ""}}
     )
 
-    assert paths == ["gateway/extensions"]
+    assert paths == ["agent_gateway/extensions"]
 
 
 def test_extension_dirs_default_to_builtin_when_missing() -> None:
-    assert _extension_dir_paths_from_config({}) == ["gateway/extensions"]
+    assert _extension_dir_paths_from_config({}) == ["agent_gateway/extensions"]
     assert _extension_dir_paths_from_config({"extensions": {}}) == [
-        "gateway/extensions"
+        "agent_gateway/extensions"
     ]
 
 
@@ -35,19 +35,19 @@ def test_extension_dirs_append_builtin_after_custom_paths() -> None:
         {"extensions": {"extension_dirs": "custom/a; custom/b "}}
     )
 
-    assert paths == ["custom/a", "custom/b", "gateway/extensions"]
+    assert paths == ["custom/a", "custom/b", "agent_gateway/extensions"]
 
 
 def test_extension_dirs_do_not_duplicate_builtin_path() -> None:
     paths = _extension_dir_paths_from_config(
         {
             "extensions": {
-                "extension_dirs": "custom/a;gateway/extensions;custom/a"
+                "extension_dirs": "custom/a;agent_gateway/extensions;custom/a"
             }
         }
     )
 
-    assert paths == ["custom/a", "gateway/extensions"]
+    assert paths == ["custom/a", "agent_gateway/extensions"]
 
 
 def test_lazy_extension_exports_are_discoverable() -> None:
@@ -143,14 +143,14 @@ def test_include_package_extensions_false_drops_builtin_dir() -> None:
         {"extensions": {"include_package_extensions": False, "extension_dirs": "/opt/exts"}}
     )
     assert paths == ["/opt/exts"]
-    assert all("gateway/extensions" not in p for p in paths)
+    assert all("agent_gateway/extensions" not in p for p in paths)
 
 
 def test_include_package_extensions_true_keeps_builtin_dir() -> None:
     """默认与显式 true 均保持包内目录（向后兼容）。"""
     for cfg in ({}, {"extensions": {"include_package_extensions": True}}):
         paths = _extension_dir_paths_from_config(cfg)
-        assert any(p.endswith("gateway/extensions") for p in paths)
+        assert any(p.endswith("agent_gateway/extensions") for p in paths)
 
 
 def test_enabled_extension_filter_defaults_to_none() -> None:

@@ -676,7 +676,7 @@ def normalize_node(raw: Any) -> DesignerGraphNode:
     config = normalize_node_config(raw.get("config"))
     if not str(config.get(CONFIG_KEY_PIPELINE) or "").strip():
         inferred = infer_pipeline_from_id(node_id)
-        if inferred:
+        if inferred and PIPELINE_TO_TYPE[inferred] == node_type:
             config[CONFIG_KEY_PIPELINE] = inferred
     if not str(config.get(CONFIG_KEY_ROLE) or "").strip():
         config[CONFIG_KEY_ROLE] = node_type
@@ -1029,6 +1029,50 @@ def _asset_ref_uri(ref: object) -> str:
     if not isinstance(ref, dict):
         return ""
     return str(ref.get("uri") or "").strip()
+
+
+def apply_incoming_layouts(
+    incoming: DesignerExecutionGraph,
+    existing: DesignerExecutionGraph | None,
+) -> DesignerExecutionGraph:
+    """Take node layout from ``incoming`` and keep every other stored field.
+
+    A canvas drag or auto-layout save sends the whole graph, including
+    whatever config the browser last had. Merging only layout prevents that
+    snapshot from overwriting a concurrent prompt or artifact write.
+    """
+    if existing is None:
+        return incoming
+    incoming_by_id = {
+        str(node.get("id") or ""): node
+        for node in incoming.get("nodes") or []
+        if str(node.get("id") or "")
+    }
+    nodes: list[DesignerGraphNode] = []
+    changed = False
+    for node in existing.get("nodes") or []:
+        inc = incoming_by_id.get(str(node.get("id") or ""))
+        if not isinstance(inc, dict):
+            nodes.append(node)
+            continue
+        merged = dict(node)
+        inc_layout = inc.get("layout") if isinstance(inc.get("layout"), dict) else None
+        if inc_layout is not None and inc_layout != (node.get("layout") or {}):
+            merged["layout"] = dict(inc_layout)
+            changed = True
+        inc_cfg = inc.get("config") if isinstance(inc.get("config"), dict) else {}
+        if inc_cfg.get("user_resized") is True:
+            cfg = dict(merged.get("config") or {}) if isinstance(merged.get("config"), dict) else {}
+            if cfg.get("user_resized") is not True:
+                cfg["user_resized"] = True
+                merged["config"] = cfg
+                changed = True
+        nodes.append(merged)
+    if not changed:
+        return existing
+    next_graph = dict(existing)
+    next_graph["nodes"] = nodes
+    return next_graph
 
 
 def preserve_node_output_refs(
@@ -1543,10 +1587,14 @@ def node_pipeline(node: DesignerGraphNode) -> str:
     role = str(config.get(CONFIG_KEY_ROLE) or "").strip()
     if role in PIPELINES:
         return role
-    return infer_pipeline_from_id(str(node.get("id") or ""))
+    inferred = infer_pipeline_from_id(str(node.get("id") or ""))
+    return inferred if inferred and PIPELINE_TO_TYPE[inferred] == node.get("type") else ""
 
 
 def node_delegate(node: DesignerGraphNode) -> str:
+    # A worker agent has no music tool and only scripts a stand-in bed.
+    if node_pipeline(node) == PIPELINE_MUSIC:
+        return CONFIG_DELEGATE_HANDLER
     delegate = str(node_config(node).get("delegate") or CONFIG_DELEGATE_AGENT).strip()
     if delegate == CONFIG_DELEGATE_SUBAGENT:
         return CONFIG_DELEGATE_AGENT
@@ -1595,7 +1643,11 @@ def _merge_node_patch(existing: dict[str, Any], patch: dict[str, Any]) -> dict[s
 
 
 def apply_graph_patch(graph: DesignerExecutionGraph, patch: Any) -> DesignerExecutionGraph:
-    """Merge upserts/removals into a domain graph, then re-normalize."""
+    """Merge same-type node edits; a type change replaces the whole node.
+
+    Config/layout objects merge recursively, so an empty object is a no-op.
+    Explicit nulls and arrays retain their replacement semantics.
+    """
     if patch is None:
         patch = {}
     if not isinstance(patch, dict):
@@ -1617,11 +1669,13 @@ def apply_graph_patch(graph: DesignerExecutionGraph, patch: Any) -> DesignerExec
         if isinstance(item, dict):
             existing = nodes_by_id.get(str(item.get("id") or "").strip())
             if existing is not None:
-                merged = {**existing, **item}
-                for field in ("config", "layout"):
-                    if isinstance(existing.get(field), dict) and isinstance(item.get(field), dict):
-                        merged[field] = _merge_node_patch(existing[field], item[field])
-                item = merged
+                patch_type = item.get("type", existing["type"])
+                if isinstance(patch_type, str) and patch_type.strip() == existing["type"]:
+                    merged = {**existing, **item}
+                    for field in ("config", "layout"):
+                        if isinstance(existing.get(field), dict) and isinstance(item.get(field), dict):
+                            merged[field] = _merge_node_patch(existing[field], item[field])
+                    item = merged
         node = normalize_node(item)
         nodes_by_id[node["id"]] = node
     remove_node_ids = patch.get("remove_node_ids") or []

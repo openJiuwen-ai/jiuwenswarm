@@ -726,6 +726,7 @@ class TestResolveCronProjectBinding:
         binding = resolve_cron_project_binding("proj_missing", "", "work")
         assert binding.error is not None
         assert "project not found" in binding.error
+        assert binding.code == "NOT_FOUND"
 
     @staticmethod
     def test_design_mode_is_not_cron_eligible(project_store_dir):
@@ -754,3 +755,33 @@ class TestResolveCronProjectBinding:
         binding = resolve_cron_project_binding(project.project_id, "", "work")
         assert binding.code == "BAD_REQUEST"
         assert binding.error == "cron is not supported for work_mode: 'design'"
+
+
+class TestResolveCronBindingErrorCode:
+    """相对路径属于入参校验失败，适配器必须回 BAD_REQUEST 而非 INTERNAL_ERROR。"""
+
+    @staticmethod
+    def test_relative_project_dir_returns_bad_request(project_store_dir):
+        from jiuwenswarm.server.control.store.project_queries import (
+            resolve_cron_binding,
+        )
+
+        payload, error, code = resolve_cron_binding(
+            {"project_dir": "relative/dir"}, "web"
+        )
+        assert payload is None
+        assert error == "project_dir must be an absolute path"
+        assert code == "BAD_REQUEST"
+
+    @staticmethod
+    def test_unknown_project_id_returns_not_found(project_store_dir):
+        from jiuwenswarm.server.control.store.project_queries import (
+            resolve_cron_binding,
+        )
+
+        payload, error, code = resolve_cron_binding(
+            {"project_id": "proj_nonexistent_404"}, "web"
+        )
+        assert payload is None
+        assert error == "project not found: 'proj_nonexistent_404'"
+        assert code == "NOT_FOUND"

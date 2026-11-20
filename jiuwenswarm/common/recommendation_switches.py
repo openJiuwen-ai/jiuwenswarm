@@ -23,7 +23,7 @@ from typing import Any, Callable
 
 # Product defaults while YAML is ``null``. Flip these to change first-run behavior.
 DEFAULT_TOPIC_RECOMMENDATION_ENABLED = False
-DEFAULT_PROMPT_SUGGESTION_ENABLED = False
+DEFAULT_PROMPT_SUGGESTION_ENABLED = True
 
 _TOPIC_ENABLED_HOOKS: list[Callable[[float], None]] = []
 
@@ -111,6 +111,9 @@ def save_recommendation_switches(
 
     update_config(mutate)
     if topic_enabled:
+        # Agent tier registers freeze_consent_boundary via register_topic_enabled_hook.
+        # common must not import agents (layering R1); missing freeze is healed by
+        # repair_missing_consent_boundary on worker startup.
         moment = now if now is not None else time.time()
         for hook in _TOPIC_ENABLED_HOOKS:
             hook(moment)

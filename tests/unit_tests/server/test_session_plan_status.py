@@ -252,7 +252,7 @@ async def test_handler_does_not_start_or_switch_plan_mode():
 
 
 def test_web_handler_registered():
-    from gateway.channel_manager.web.app_web_handlers import (
+    from agent_gateway.channel_manager.web.app_web_handlers import (
         WebHandlersBindParams,
         _register_web_handlers,
     )
@@ -261,7 +261,7 @@ def test_web_handler_registered():
         def __init__(self):
             self.methods: dict[str, object] = {}
 
-        def register_method(self, name, handler):
+        def register_method(self, name, handler, *, local_only=False):
             self.methods[name] = handler
 
         def on_connect(self, handler):

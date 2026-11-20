@@ -18,8 +18,11 @@ interface MarketCardProps {
   onOpenDetail: () => void;
   onQuickAdd: () => void;
   quickAction?: 'install' | 'connect';
+  actionMode?: 'auto' | 'use';
   actionDisabled?: boolean;
   onUse?: () => void;
+  /** 错误态红点的提示文案；不传为"连接失败"。 */
+  errorLabel?: string;
 }
 
 export function MarketCard({
@@ -33,8 +36,10 @@ export function MarketCard({
   onOpenDetail,
   onQuickAdd,
   quickAction = 'install',
+  actionMode = 'auto',
   actionDisabled = false,
   onUse,
+  errorLabel,
 }: MarketCardProps) {
   const { t } = useTranslation();
   const { tooltip: errorTooltip, handlers: errorTooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
@@ -44,7 +49,7 @@ export function MarketCard({
   const titleEndNode = state === 'error' ? (
     <>
       <span
-        data-tooltip={t('connectorMarket.card.stateError')}
+        data-tooltip={errorLabel ?? t('connectorMarket.card.stateError')}
         className="flex shrink-0 items-center justify-center text-danger"
         {...errorTooltipHandlers}
       >
@@ -64,8 +69,8 @@ export function MarketCard({
         {t(busyLabelKey(busyKind))}
       </span>
     );
-  } else if (state === 'connected') {
-    actionSlot = <button type="button" className="connector-market-card-install" data-testid="connector-market-card-use" disabled={!onUse} onClick={event => { event.stopPropagation(); onUse?.(); }}>{t('connectorMarket.card.use')}</button>;
+  } else if ((state === 'connected' || actionMode === 'use') && onUse) {
+    actionSlot = <button type="button" className="connector-market-card-install" data-testid="connector-market-card-use" disabled={actionDisabled} onClick={event => { event.stopPropagation(); onUse(); }}>{t('connectorMarket.card.use')}</button>;
   } else if (state === 'idle' || state === 'error') {
     actionSlot = (
       <button

@@ -11,6 +11,7 @@ import {
 } from '../node_modules/.cache/agent-group-management/port.js';
 import {
   buildGroupCatalogViewModel,
+  collectCategories,
   mergeAgentGroupDetailWithCatalog,
 } from '../node_modules/.cache/agent-group-management/viewModel.js';
 import {
@@ -162,23 +163,36 @@ test('group view model separates catalog and mine scopes and excludes tags from 
     installed: false,
   }, 'zh');
   const item = normalizeAgentGroupListItem(rawGroup, 'zh');
+  // 分类页签改由已加载数据动态统计（#5902）：category 直接与后端自由字符串比对，
+  // 不再映射写死的 ProductDevelopment 等枚举别名；市场有几个分类出几个页签，
+  // 不截断、不自建 "Other" 聚合类型。
+  assert.deepEqual(collectCategories(['engineering', 'research', 'engineering', '']), ['engineering', 'research']);
+  assert.equal(
+    collectCategories(['g1', 'g2', 'g3', 'g4', 'g5', 'g6', 'g7']).length,
+    7,
+  );
   assert.equal(
     buildGroupCatalogViewModel([item, local], {
       scope: 'catalog',
-      category: 'ProductDevelopment',
+      category: 'engineering',
       query: '',
-      page: 1,
-      pageSize: 15,
     }).totalItems,
     1,
+  );
+  // 不存在的分类精确比对后为空，不再归入"其他"兜底分组。
+  assert.equal(
+    buildGroupCatalogViewModel([item, local], {
+      scope: 'catalog',
+      category: 'research',
+      query: '',
+    }).totalItems,
+    0,
   );
   assert.equal(
     buildGroupCatalogViewModel([item, local], {
       scope: 'mine',
       category: '',
       query: '本地团队',
-      page: 1,
-      pageSize: 15,
     }).totalItems,
     1,
   );
@@ -293,6 +307,18 @@ test('chat group picker submits runtime names only after runtime availability ch
         assert.equal(new Function('item', 'selectedGroupId', `return ${selectedExpression}`)(item, item.name), true);
       }
     }
+  }
+});
+
+test('uninstalling an agent group asks for confirmation before calling the API', () => {
+  const source = readFileSync(new URL('../src/components/AgentManagementPanel/index.tsx', import.meta.url), 'utf8');
+  const handler = source.slice(source.indexOf('const handleUninstallGroup'), source.indexOf('const handleReconnect'));
+  const confirmAt = handler.indexOf('window.confirm(');
+  assert.notEqual(confirmAt, -1);
+  assert.ok(confirmAt < handler.indexOf('groupClient.uninstallGroup('));
+  for (const locale of ['zh', 'en']) {
+    const messages = JSON.parse(readFileSync(new URL(`../src/i18n/locales/${locale}.json`, import.meta.url), 'utf8'));
+    assert.match(messages.agentManagement.confirm.uninstallGroupMessage, /\{\{name\}\}/);
   }
 });
 

@@ -8,6 +8,7 @@ import {
   dropAnsweredAskUserQuestions,
   enqueuePendingQuestions,
   isAnsweredAskUserQuestion,
+  isQuestionAnswered,
   markQuestionsAnswered,
   pendingQuestionIdentity,
   shouldClearPermissionQuestionsForLifecycleEvent,
@@ -49,7 +50,7 @@ test('updates one card in place and consumes only that card', () => {
 
 test('rejects malformed and multi-question permission payloads', () => {
   assert.deepEqual(enqueuePendingQuestions([], permission('')), []);
-  assert.deepEqual(enqueuePendingQuestions([], permission('x'.repeat(129))), []);
+  assert.deepEqual(enqueuePendingQuestions([], permission('x'.repeat(513))), []);
   assert.deepEqual(
     enqueuePendingQuestions([], {
       ...permission('card-a'),
@@ -134,7 +135,18 @@ for (const count of [1, 2]) {
   });
 }
 
-for (const card of [undefined, null, '', ' ', 12, {}, 'x'.repeat(129)]) {
+for (const size of [128, 129, 512]) {
+  test(`call-ID alias of ${size} characters retains identity and binding`, () => {
+    const callId = 'c'.repeat(size);
+    const payload = { ...permission(callId), request_id: callId };
+    assert.equal(enqueuePendingQuestions([], payload).length, 1);
+    assert.deepEqual(bindPendingPermissionCard([{ selected_options: ['allow_once'] }], payload.questions), [
+      { selected_options: ['allow_once'], card_id: callId },
+    ]);
+  });
+}
+
+for (const card of [undefined, null, '', ' ', 12, {}, 'x'.repeat(513)]) {
   test(`an explicit invalid card (${String(card)}) never downgrades to legacy`, () => {
     const payload = permission(card);
     assert.deepEqual(enqueuePendingQuestions([], payload), []);
@@ -171,6 +183,19 @@ test('answered ask_user questions are recognised per session and dropped from th
   assert.deepEqual(dropAnsweredAskUserQuestions('session-a', [answered, pending]), [pending]);
 });
 
+test('history can query answered request ids without a source while live filtering stays source-specific', () => {
+  markQuestionsAnswered('history-source-query', ['answered-without-source']);
+  assert.equal(isQuestionAnswered('history-source-query', 'answered-without-source'), true);
+  assert.equal(isQuestionAnswered('other-source-query', 'answered-without-source'), false);
+  assert.equal(isQuestionAnswered('history-source-query', 'unknown'), false);
+  assert.equal(isAnsweredAskUserQuestion('history-source-query', {
+    request_id: 'answered-without-source', questions: [],
+  }), false);
+  assert.equal(isAnsweredAskUserQuestion('history-source-query', {
+    ...permission('source-query'), request_id: 'answered-without-source',
+  }), false);
+});
+
 test('answered request ids only filter ask_user questions', () => {
   markQuestionsAnswered('session-a', ['resume-request']);
   const card = permission('card-a');
@@ -187,4 +212,16 @@ test('answered request ids ignore blank values and stay bounded', () => {
   markQuestionsAnswered('session-bounded', Array.from({ length: 600 }, (_, i) => `call-${i}`));
   assert.equal(isAnsweredAskUserQuestion('session-bounded', askUser('call-oldest')), false);
   assert.equal(isAnsweredAskUserQuestion('session-bounded', askUser('call-599')), true);
+});
+
+test('a re-delivered question replaces the stored interrupt id', () => {
+  const ask = (interruptId) => ({
+    request_id: 'ask-request',
+    source: 'ask_user_interrupt',
+    interruptId,
+    questions: [{ header: 'Question', question: 'Continue?', options: [] }],
+  });
+  const queue = enqueuePendingQuestions(enqueuePendingQuestions([], ask('a')), ask('b'));
+  assert.equal(queue.length, 1);
+  assert.equal(queue[0].interruptId, 'b');
 });

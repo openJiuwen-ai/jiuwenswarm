@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 from prompt_toolkit import PromptSession
 
-from gateway.common.mode_matrix import deprecate_mode
+from agent_gateway.common.mode_matrix import deprecate_mode
 from jiuwenswarm.channels.process_cli.commands import (
     ParsedSlashCommand,
     parse_slash_command,

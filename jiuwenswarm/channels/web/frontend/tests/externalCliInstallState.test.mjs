@@ -285,15 +285,28 @@ test('installed cards keep the detect+install pair and not-installed ones show t
   // The path dropdown merges the persisted backend history between the saved
   // path and the PATH-detected candidate, so switching addresses never loses
   // the previous ones; explicit actions prune stale entries via
-  // external_cli.validate_paths (backend history, not localStorage).
+  // external_cli.validate_paths (backend history, not localStorage). The
+  // built-in (managed) CLI path reported by every detection result is offered
+  // last and stays constant across local-path switches (#6647) — switching to
+  // a local executable must not wipe the built-in entry from the dropdown.
   assert.match(
     sectionSource,
-    /for \(const path of \[cliPath, \.\.\.historyPaths, pathCandidates\[cliAgent\] \|\| '', detectedPath\]\)/,
+    /for \(const path of \[\s+cliPath,\s+\.\.\.historyPaths,\s+pathCandidates\[cliAgent\] \|\| '',\s+detectedPath,\s+builtinPaths\[cliAgent\] \|\| '',\s+\]\)/,
   );
   assert.match(
     sectionSource,
     /parseExternalCliPathHistories\(draftValues\[externalCliKey\(cliAgent, 'path_histories'\)\]\)/,
   );
+  // Built-in paths come from the detection payload (builtin_path), tracked
+  // per agent; no localStorage history may reappear here.
+  assert.match(sectionSource, /builtin_path \|\| prev\[cliAgent\]/);
+  // Selecting the managed built-in path switches back to built-in mode
+  // (use_builtin=true, no custom path) instead of pinning the installer-
+  // managed path as a custom cli_path, and mirrors the post-commit echo
+  // bookkeeping so the config echo never flashes "not installed" (!10307).
+  assert.match(sectionSource, /next === builtinPaths\[cliAgent\]/);
+  assert.match(sectionSource, /toggleAgentEnabled\(cliAgent, true, true, ''\)/);
+  assert.match(sectionSource, /observedCliPathsRef\.current\[cliAgent\] = ''/);
   assert.doesNotMatch(sectionSource, /rememberBuiltinPath|removePathHistory|PATH_HISTORY/);
   assert.doesNotMatch(sectionSource, /config\.externalCli\.removePath/);
 });
@@ -429,7 +442,7 @@ test('Codex installation falls back to built-in only when PATH has no usable exe
   }
 });
 
-async function mountCliSection(draftValues, onDetect) {
+async function mountCliSection(draftValues, onDetect, sectionProps = {}) {
   const { ExternalCliAgentsSection } = await import(
     '../node_modules/.cache/external-cli-section/components/ExternalCliAgentsSection.mjs'
   );
@@ -454,6 +467,7 @@ async function mountCliSection(draftValues, onDetect) {
     onCommitAgent: async (agent, choice) => { commits.push([agent, choice]); },
     initialResults: { claude: { cli_agent: 'claude', status: 'ok', path: '/bundled/claude' } },
     t: (key) => key,
+    ...sectionProps,
   };
   const render = async (values) => {
     props.draftValues = values;
@@ -480,6 +494,61 @@ async function mountCliSection(draftValues, onDetect) {
     },
   };
 }
+
+function assertCliStatus(agent, expected) {
+  const status = document.querySelector(
+    `[data-testid="settings-panel-external-cli-agent-status"][data-variant="${agent}"]`,
+  );
+  assert.ok(status, `${agent} status badge`);
+  assert.equal(status.textContent, `config.externalCli.${expected}`, agent);
+}
+
+for (const [name, enabled, detectionStatus, expected] of [
+  ['undetected and disabled', false, null, 'notInstalled'],
+  ['missing and disabled', false, 'missing', 'notInstalled'],
+  ['installed and disabled', false, 'ok', 'disabled'],
+  ['installed with a warning and disabled', false, 'warning', 'disabled'],
+  ['installed and enabled', true, 'ok', 'installed'],
+]) {
+  test(`external CLI status labels: ${name}`, async () => {
+    const agents = ['claude', 'codex'];
+    const draft = Object.fromEntries(agents.map((agent) => [
+      `external_cli_agent_${agent}_enabled`, String(enabled),
+    ]));
+    const initialResults = detectionStatus === null ? {} : Object.fromEntries(agents.map((agent) => [
+      agent, { cli_agent: agent, status: detectionStatus },
+    ]));
+    const env = await mountCliSection(draft, undefined, { initialResults });
+    try {
+      for (const agent of agents) assertCliStatus(agent, expected);
+    } finally {
+      env.cleanup();
+    }
+  });
+}
+
+test('external CLI status labels prioritize detection and installation over disabled or missing', async () => {
+  const pending = [];
+  const onDetect = (agent) => new Promise((resolve) => {
+    pending.push(() => resolve({ cli_agent: agent, status: 'missing' }));
+  });
+  const env = await mountCliSection({
+    external_cli_agent_claude_enabled: 'false',
+    external_cli_agent_codex_enabled: 'false',
+  }, onDetect, {
+    initialResults: {},
+    installStatuses: { claude: { status: 'running' }, codex: { status: 'running' } },
+  });
+  try {
+    assertCliStatus('claude', 'detecting');
+    assertCliStatus('codex', 'detecting');
+    await act(async () => { for (const resolve of pending) resolve(); });
+    assertCliStatus('claude', 'installPhase.running');
+    assertCliStatus('codex', 'installPhase.running');
+  } finally {
+    env.cleanup();
+  }
+});
 
 test('PATH remains selectable with a saved built-in choice and after changing executables', async () => {
   const initial = {
@@ -570,12 +639,24 @@ test('the detection hint distinguishes PATH lookup from executable validation', 
   assert.match(enLocale, /"redetectHint": "Re-check the current CLI executable and validate its version"/);
   assert.match(section, /title=\{t\('config\.externalCli\.redetectHint'\)\}/);
   assert.match(section, /disabled=\{disabled \|\| !onDetect \|\| editing\[cliAgent\]\}/);
-  assert.match(section, /!onCommitAgent \|\| agentInstalling \|\| editing\[cliAgent\]/);
-  // The enable switch is disabled only when the CLI is not installed AND the
-  // agent is already disabled — so a page reload (installed=false until the
-  // auto-detect runs) does not lock the user out of an enabled agent, and a
-  // disabled agent cannot be turned on before installing the CLI.
+  // The install buttons freeze like their siblings while a commit runs or an
+  // install is in flight; the one-click install spinner must only reflect its
+  // own action (installInFlight), never a generic card commit — re-enabling an
+  // already-installed agent toggles the switch, not a re-install (#6620).
+  assert.match(section, /!onCommitAgent \|\| committing\[cliAgent\] \|\| installInFlight\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]/);
+  assert.match(section, /loading=\{installInFlight\[cliAgent\]\}/);
+  assert.doesNotMatch(section, /loading=\{committing\[cliAgent\]\}/);
+  // The enable switch stays operable so the user can always disable a broken
+  // agent — 检测确认地址缺失时由手动检测的自动落闸把开关置回禁用，而不是
+  // 冻结开关堵死关闭入口；刷新窗口（尚无探测结果）也不锁。
   assert.match(section, /disabled=\{disabled \|\| \(!installed && !enabled\) \|\| committing\[cliAgent\] \|\| agentInstalling \|\| editing\[cliAgent\]\}/);
+  assert.match(section, /检测确认当前配置的可执行文件不存在/);
+  // 自动落闸只认 missing/unsupported（地址不存在/不可执行）；unavailable
+  // （可执行文件在、版本命令失败）不落闸，保留手动关闭的能力。
+  assert.match(section, /result\.status === 'missing' \|\| result\.status === 'unsupported'/);
+  // 自动落闸只依据持久化快照决策与提交，不持久化未保存的草稿路径（!10406）。
+  assert.match(section, /probedPersistedChoice/);
+  assert.match(section, /await commit\(cliAgent, \{\s+enabled: false,\s+useBuiltin: persistedValues\[useBuiltinKey\] === 'true',/);
 });
 
 test('uploaded custom agents are listed after Claude and Codex', async () => {

@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any, AsyncIterator
 
 import pytest
+from agent_gateway.common.session_message import with_cross_session_history_metadata
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -22,7 +23,6 @@ from jiuwenswarm.server.runtime.agent_adapter.interface import (
     _history_user_extra,
     _with_heartbeat_history_metadata,
 )
-from gateway.common.session_message import with_cross_session_history_metadata
 from jiuwenswarm.runtime.session.model import (
     TEAM_EXECUTION_CONTEXT_METADATA_KEY,
     SessionLifecycleContext,

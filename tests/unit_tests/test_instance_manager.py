@@ -63,6 +63,7 @@ from jiuwenswarm.instance_manager import (
     PORT_ENV_NAMES,
     PORT_ENV_OVERRIDES,
     STALE_LOCK_TIMEOUT,
+    pinned_port_types,
 )
 from jiuwenswarm.instance_manager.config import (
     _format_url_hint,
@@ -100,7 +101,7 @@ def _try_acquire_lock_with_result(workspace_str: str, result_queue) -> None:
 
 def _try_acquire_gateway_lock(workspace_str: str, result_queue) -> None:
     """Try acquiring a GatewayLock in a subprocess (must be module-level for Windows)."""
-    from gateway.gateway_lock import GatewayLock
+    from agent_gateway.gateway_lock import GatewayLock
 
     _lock = GatewayLock(Path(workspace_str))
     result = _lock.acquire(timeout=0.5)
@@ -126,7 +127,7 @@ def _hold_gateway_lock(
             parent never sets ``release_event``; tests that wait for a timed
             release rely on it.
     """
-    from gateway.gateway_lock import GatewayLock
+    from agent_gateway.gateway_lock import GatewayLock
 
     lock = GatewayLock(Path(workspace_str))
     ok = lock.acquire(timeout=5.0)
@@ -140,7 +141,7 @@ def _concurrent_stale_takeover(
     workspace_str: str, result_queue, hold_seconds: float = 3.0
 ) -> None:
     """Race two processes for a stale GatewayLock (module-level for Windows spawn)."""
-    from gateway.gateway_lock import GatewayLock
+    from agent_gateway.gateway_lock import GatewayLock
 
     lock = GatewayLock(Path(workspace_str))
     ok = lock.acquire(timeout=1.5)
@@ -1324,10 +1325,9 @@ class TestStartServicesFallback:
 
         # Make index-1 group occupied; everything else free
         occupied = set(calculate_instance_ports(1).values())
-        real = is_port_available
 
         def fake(host, port):
-            return port not in occupied and real(host, port)
+            return port not in occupied
 
         monkeypatch.setattr(
             "jiuwenswarm.instance_manager.config.is_port_available", fake
@@ -1375,10 +1375,9 @@ class TestStartServicesFallback:
 
         # Force ONLY the index-0 group to be occupied; every higher index free.
         occupied = set(calculate_instance_ports(0).values())
-        real = is_port_available
 
         def fake(host, port):
-            return port not in occupied and real(host, port)
+            return port not in occupied
 
         monkeypatch.setattr(
             "jiuwenswarm.instance_manager.config.is_port_available", fake
@@ -1561,7 +1560,7 @@ class TestGatewayLock:
     @staticmethod
     def test_acquire_and_release(tmp_path):
         """Acquire writes our pid; release clears it but keeps the file."""
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         lock = GatewayLock(tmp_path)
         assert lock.acquire(timeout=1.0) is True
@@ -1579,7 +1578,7 @@ class TestGatewayLock:
     @staticmethod
     def test_reacquire_after_release(tmp_path):
         """A released lock can be re-acquired immediately."""
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         lock = GatewayLock(tmp_path)
         assert lock.acquire(timeout=1.0) is True
@@ -1590,7 +1589,7 @@ class TestGatewayLock:
     @staticmethod
     def test_second_acquire_fails_while_live(tmp_path):
         """A lock held by a LIVE foreign process refuses a second acquire."""
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         ctx = multiprocessing.get_context("spawn")
         result_queue = ctx.Queue()
@@ -1627,7 +1626,7 @@ class TestGatewayLock:
         """
         import multiprocessing
 
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         # Seed a stale lock file (holder PID dead, no OS lock held).
         (tmp_path / ".gateway.lock").write_text(
@@ -1672,7 +1671,7 @@ class TestGatewayLock:
         os.execv, reusing the same PID; the fresh process must be allowed to
         acquire the lock left behind by its previous image.
         """
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         (tmp_path / ".gateway.lock").write_text(
             json.dumps(
@@ -1696,7 +1695,7 @@ class TestGatewayLock:
     @staticmethod
     def test_takeover_when_holder_dead(tmp_path):
         """A lock held by a DEAD pid is taken over without waiting."""
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         (tmp_path / ".gateway.lock").write_text(
             json.dumps(
@@ -1720,7 +1719,7 @@ class TestGatewayLock:
     @staticmethod
     def test_acquire_waits_for_release(tmp_path):
         """Acquire waits (up to timeout) for a foreign live holder to exit."""
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         ctx = multiprocessing.get_context("spawn")
         result_queue = ctx.Queue()
@@ -1750,7 +1749,7 @@ class TestGatewayLock:
     @staticmethod
     def test_find_holder_live_and_dead(tmp_path):
         """find_holder reports None for dead pid or live pid without OS lock."""
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         lock_path = tmp_path / ".gateway.lock"
         # Dead pid -> no holder.
@@ -1786,7 +1785,7 @@ class TestGatewayLock:
         A subprocess acquires the GatewayLock (writes its PID + holds the OS
         lock); the main process then calls find_holder and must see the holder.
         """
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         ctx = multiprocessing.get_context("spawn")
         result_queue = ctx.Queue()
@@ -1817,7 +1816,7 @@ class TestGatewayLock:
         process: the OS lock is released, so preflight must NOT report a
         holder despite the stale metadata showing a live PID.
         """
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         # Stale metadata: crashed Gateway's PID happens to match a live process.
         (tmp_path / ".gateway.lock").write_text(
@@ -1838,7 +1837,7 @@ class TestGatewayLock:
         """A second PROCESS cannot acquire the same workspace lock."""
         import multiprocessing
 
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         lock = GatewayLock(tmp_path)
         assert lock.acquire(timeout=1.0) is True
@@ -1870,7 +1869,7 @@ class TestGatewayLock:
         hand-edited or partially written holder file would crash the desktop
         preflight. Mirrors Electron's ``Number(data.pid) || 0`` tolerance.
         """
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         lock_path = tmp_path / ".gateway.lock"
         for bad_pid in ("abc", "12.5", [1], {"x": 1}):
@@ -1894,7 +1893,7 @@ class TestGatewayLock:
         pid="abc": the AlreadyLocked branch must treat it as an unknown
         holder and time out instead of propagating ValueError.
         """
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         ctx = multiprocessing.get_context("spawn")
         result_queue = ctx.Queue()
@@ -1941,7 +1940,7 @@ class TestGatewayLock:
 
         repo_root = Path(__file__).resolve().parents[2]
         code = (
-            "import sys; import gateway.gateway_lock; "
+            "import sys; import agent_gateway.gateway_lock; "
             "sys.exit(0 if 'jiuwenswarm.instance_manager' not in sys.modules "
             "else 1)"
         )
@@ -1956,7 +1955,7 @@ class TestGatewayLock:
             cwd=str(repo_root),
         )
         assert result.returncode == 0, (
-            "gateway.gateway_lock must not load jiuwenswarm.instance_manager: "
+            "agent_gateway.gateway_lock must not load jiuwenswarm.instance_manager: "
             f"{result.stderr.strip()}"
         )
 
@@ -2258,3 +2257,248 @@ class TestIssue2788SafeStop:
         write_pid.assert_called_once()
         assert write_pid.call_args.args == (config, os.getpid(), 123.5, {"schema_version": 2})
         metadata.assert_called_once_with({"app": process}, 123.5)
+
+
+@pytest.mark.parametrize("has_record", [False, True])
+def test_instance_stop_keeps_state_until_worker_exit_is_confirmed(monkeypatch, tmp_path, has_record):
+    from jiuwenswarm.instance_manager import status as status_mod
+
+    config = InstanceConfig("worker-owner", tmp_path, {})
+    if has_record:
+        write_pid_file(config, 4242, started_at=100.0)
+    monkeypatch.setattr(status_mod, "is_process_alive", lambda pid: False)
+    monkeypatch.setattr(status_mod, "_stop_owned_listeners", lambda config, timeout: True)
+    monkeypatch.setattr(status_mod, "_ports_are_clear", lambda config: True)
+    calls = []
+    monkeypatch.setattr(status_mod, "_shutdown_instance_worker", lambda config: calls.append(config) or False,
+                        raising=False)
+    assert status_mod.stop_instance_process(config) is False
+    assert calls == [config]
+    assert (read_pid_file(config) is not None) is has_record
+
+
+def test_instance_worker_cleanup_waits_for_fronts_to_stop(monkeypatch, tmp_path):
+    from jiuwenswarm.instance_manager import status as status_mod
+
+    config = InstanceConfig("worker-owner", tmp_path, {})
+    monkeypatch.setattr(status_mod, "_stop_owned_listeners", lambda config, timeout: False)
+    lifecycle = MagicMock(return_value=True)
+    monkeypatch.setattr(status_mod, "_shutdown_instance_worker", lifecycle, raising=False)
+    assert status_mod.stop_instance_process(config) is False
+    lifecycle.assert_not_called()
+
+
+@pytest.mark.parametrize("service,interrupted,worker_ok,expected", [
+    ("app", False, True, 0), ("app", True, True, 130),
+    ("app", False, False, 1), ("web", False, False, 0),
+])
+def test_launcher_final_shutdown_does_not_treat_web_only_as_worker_owner(
+    monkeypatch, tmp_path, service, interrupted, worker_ok, expected,
+):
+    from jiuwenswarm import start_services
+    from jiuwenswarm.server.supervisor import shutdown
+
+    process = MagicMock()
+    process.poll.return_value = 0
+    order = []
+    monkeypatch.setattr(start_services, "_start_process", lambda *args, **kwargs: process)
+    monkeypatch.setattr(start_services, "_wait_for_services_ready", lambda *args: None)
+    if interrupted:
+        monkeypatch.setattr(start_services, "_wait_for_process_exit", MagicMock(side_effect=KeyboardInterrupt))
+    monkeypatch.setattr(start_services, "_terminate_processes", lambda *args: order.append("fronts-stopped"))
+    lifecycle = MagicMock(side_effect=lambda **kwargs: order.append("worker-stopped") or worker_ok)
+    monkeypatch.setattr(shutdown, "shutdown_application_worker", lifecycle)
+    assert start_services._run_processes([(service, ["stub"], tmp_path)], {}) == expected
+    assert order == (["fronts-stopped", "worker-stopped"] if service == "app" else ["fronts-stopped"])
+
+
+def test_launcher_cannot_close_worker_while_front_cleanup_failed(monkeypatch, tmp_path):
+    from jiuwenswarm import start_services
+    from jiuwenswarm.server.supervisor import shutdown
+
+    monkeypatch.setattr(start_services, "_terminate_processes", MagicMock(side_effect=RuntimeError("unknown child")))
+    lifecycle = MagicMock(return_value=True)
+    monkeypatch.setattr(shutdown, "shutdown_application_worker", lifecycle)
+    assert start_services._shutdown_services({}, [("app", ["stub"], tmp_path)], tmp_path) is False
+    lifecycle.assert_not_called()
+
+
+def test_default_instance_preserves_pid_record_validation(monkeypatch, tmp_path):
+    from jiuwenswarm import start_services
+
+    config = InstanceConfig("default", tmp_path, {})
+    write_pid_file(config, 4242, started_at=100.0, metadata={"schema_version": 2})
+    command = SimpleNamespace(config=config, status=SimpleNamespace(pid=4242), is_default=True, name="default")
+    tree = MagicMock()
+    monkeypatch.setattr(start_services, "terminate_service_tree", tree)
+    stop = MagicMock(return_value=False)
+    monkeypatch.setattr(start_services, "stop_instance_process", stop)
+    assert start_services.do_stop_instance(command) == 1
+    tree.assert_not_called()
+    stop.assert_called_once_with(config, timeout=10.0)
+
+
+class TestPinnedPortTypes:
+    """``pinned_port_types`` must agree with what ``_resolved_base_port`` honours."""
+
+    @staticmethod
+    def test_nothing_pinned_by_default(monkeypatch):
+        for env_key in PORT_ENV_OVERRIDES.values():
+            monkeypatch.delenv(env_key, raising=False)
+        assert pinned_port_types() == set()
+
+    @staticmethod
+    def test_valid_values_are_pinned(monkeypatch):
+        for env_key in PORT_ENV_OVERRIDES.values():
+            monkeypatch.delenv(env_key, raising=False)
+        monkeypatch.setenv(PORT_ENV_OVERRIDES["web"], "19000")
+        monkeypatch.setenv(PORT_ENV_OVERRIDES["gateway"], "19001")
+        assert pinned_port_types() == {"web", "gateway"}
+
+    @staticmethod
+    def test_malformed_value_is_not_pinned(monkeypatch):
+        """_resolved_base_port ignores a non-int and uses the default, so this
+        must not count as pinned -- otherwise startup hard-fails over a port the
+        operator never actually chose."""
+        for env_key in PORT_ENV_OVERRIDES.values():
+            monkeypatch.delenv(env_key, raising=False)
+        monkeypatch.setenv(PORT_ENV_OVERRIDES["web"], "not-a-port")
+        monkeypatch.setenv(PORT_ENV_OVERRIDES["gateway"], "")
+        assert pinned_port_types() == set()
+
+
+class TestPinnedPortConflictsAbort:
+    """A pinned port that is taken must stop startup, never relocate silently."""
+
+    @staticmethod
+    def _clear(monkeypatch):
+        for env_key in PORT_ENV_OVERRIDES.values():
+            monkeypatch.delenv(env_key, raising=False)
+
+    @staticmethod
+    def test_pinned_conflict_aborts_without_scanning(monkeypatch):
+        from jiuwenswarm import start_services
+
+        TestPinnedPortConflictsAbort._clear(monkeypatch)
+        monkeypatch.setenv(PORT_ENV_OVERRIDES["gateway"], "19001")
+
+        scanned = []
+        monkeypatch.setattr(
+            "jiuwenswarm.start_services.find_available_ports",
+            lambda **kw: scanned.append(kw) or (calculate_instance_ports(1), 1),
+        )
+
+        cmd = start_services.InstanceCommand("default")
+        assert cmd.validate_and_load() is None
+        conflicts = [("gateway", 19001)]
+
+        rc = start_services._resolve_ports_with_fallback(cmd, conflicts=conflicts)
+
+        assert rc == 1
+        assert scanned == [], "a pinned group must never be relocated"
+        # Ports left untouched, so nothing downstream can bind a shifted group.
+        assert cmd.config.ports["gateway"] == 19001
+
+    @staticmethod
+    def test_unpinned_conflict_still_scans(monkeypatch, tmp_path):
+        from jiuwenswarm import start_services
+
+        TestPinnedPortConflictsAbort._clear(monkeypatch)
+        cfg_env = tmp_path / "config" / ".env"
+        cfg_env.parent.mkdir(parents=True, exist_ok=True)
+        cfg_env.write_text("API_KEY=sk-keep\n", encoding="utf-8")
+        monkeypatch.setattr("jiuwenswarm.start_services.get_env_file", lambda: cfg_env)
+        monkeypatch.setattr(
+            "jiuwenswarm.instance_manager.collect_all_ports",
+            lambda exclude_name=None: [],
+        )
+        occupied = set(calculate_instance_ports(0).values())
+        monkeypatch.setattr(
+            "jiuwenswarm.instance_manager.config.is_port_available",
+            lambda host, port: port not in occupied,
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.start_services.is_port_available",
+            lambda host, port: port not in occupied,
+        )
+
+        cmd = start_services.InstanceCommand("default")
+        assert cmd.validate_and_load() is None
+
+        rc = start_services._resolve_ports_with_fallback(
+            cmd, conflicts=[("gateway", 19001)]
+        )
+
+        assert rc is None
+        assert cmd.config.ports["gateway"] == 20001
+
+    @staticmethod
+    def test_a_pinned_port_keeps_its_value_when_another_type_conflicts(
+        monkeypatch, tmp_path
+    ):
+        """The scenario the guard exists for: the pin holds, or it is worthless.
+
+        `web` is pinned to 19000 and is free; `gateway` is auto-allocated and
+        conflicts. A scan resolves the whole group at once -- every port moves
+        by the same step -- so relocating `gateway` would carry `web` to 20000
+        and write that to `.env`, where it survives the next start. Whatever the
+        return code, this asserts the thing the pin promises: 19000 still names
+        the web port, in the live config and in what was persisted.
+        """
+        from jiuwenswarm import start_services
+
+        TestPinnedPortConflictsAbort._clear(monkeypatch)
+        monkeypatch.setenv(PORT_ENV_OVERRIDES["web"], "19000")
+        cfg_env = tmp_path / "config" / ".env"
+        cfg_env.parent.mkdir(parents=True, exist_ok=True)
+        cfg_env.write_text("API_KEY=sk-keep\n", encoding="utf-8")
+        monkeypatch.setattr("jiuwenswarm.start_services.get_env_file", lambda: cfg_env)
+        monkeypatch.setattr(
+            "jiuwenswarm.instance_manager.collect_all_ports",
+            lambda exclude_name=None: [],
+        )
+        occupied = set(calculate_instance_ports(0).values())
+        monkeypatch.setattr(
+            "jiuwenswarm.instance_manager.config.is_port_available",
+            lambda host, port: port not in occupied,
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.start_services.is_port_available",
+            lambda host, port: port not in occupied,
+        )
+
+        cmd = start_services.InstanceCommand("default")
+        assert cmd.validate_and_load() is None
+
+        rc = start_services._resolve_ports_with_fallback(
+            cmd, conflicts=[("gateway", 19001)]
+        )
+
+        assert rc == 1
+        assert cmd.config.ports["web"] == 19000
+        assert "WEB_PORT=20000" not in cfg_env.read_text(encoding="utf-8")
+
+    @staticmethod
+    def test_reject_helper_reads_the_pins_not_the_conflicts(monkeypatch):
+        """What is pinned decides, not which type happens to be occupied.
+
+        The group is the unit of relocation, so a conflict on any type moves
+        every pinned port in it. A pin that only blocks a conflict on its own
+        type does not keep its port.
+        """
+        from jiuwenswarm import start_services
+
+        TestPinnedPortConflictsAbort._clear(monkeypatch)
+
+        # Nothing pinned: the auto-allocated group is free to move.
+        assert start_services._reject_pinned_port_conflicts([]) is None
+        assert (
+            start_services._reject_pinned_port_conflicts([("gateway", 19001)]) is None
+        )
+
+        monkeypatch.setenv(PORT_ENV_OVERRIDES["frontend"], "5173")
+
+        assert start_services._reject_pinned_port_conflicts([("frontend", 5173)]) == 1
+        # The pinned type is not the one occupied, and the answer is the same:
+        # the scan would move `frontend` off 5173 regardless.
+        assert start_services._reject_pinned_port_conflicts([("gateway", 19001)]) == 1

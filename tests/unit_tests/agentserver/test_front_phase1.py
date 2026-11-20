@@ -219,7 +219,7 @@ os.environ["JIUWENSWARM_RUNTIME_WORKSPACE_READY"] = "1"
 forbidden = (
     "openjiuwen",
     "jiuwenswarm.server.agent_ws_server",
-    "gateway.channel_manager.web.app_web_handlers",
+    "agent_gateway.channel_manager.web.app_web_handlers",
     "jiuwenswarm.agents.harness",
     "jiuwenswarm.common.config",
     "jiuwenswarm.server.runtime.gateway_adapter",
@@ -538,7 +538,7 @@ async def test_front_history_restores_durable_usage_without_usage_records(
     monkeypatch: pytest.MonkeyPatch,
     query: dict,
 ) -> None:
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+    from e2a.wire_codec import parse_agent_server_wire_chunk
     from jiuwenswarm.server.front import router as router_module
     from jiuwenswarm.server.runtime.session import session_history
     from jiuwenswarm.server.runtime.session.session_token_usage import SessionTokenUsageLedger
@@ -951,14 +951,15 @@ def test_runtime_start_defaults_to_no_transport_bind() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_construct_is_off_front_process(monkeypatch, worker_callback_framework) -> None:
+async def test_runtime_construct_is_off_front_process(
+    monkeypatch, worker_callback_framework, clean_extension_registry,
+) -> None:
     import threading
     from pathlib import Path
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    from gateway.extensions.manager import ExtensionManager
-    from gateway.extensions.registry import ExtensionRegistry
+    from agent_gateway.extensions.manager import ExtensionManager
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.server.worker import runtime_backend, runtime_bootstrap
     from jiuwenswarm.server.worker.telemetry import StartupTelemetry
@@ -975,7 +976,6 @@ async def test_runtime_construct_is_off_front_process(monkeypatch, worker_callba
         return server
 
     monkeypatch.setattr(AgentWebSocketServer, "get_instance", construct)
-    monkeypatch.setattr(ExtensionRegistry, "_instance", None)
     monkeypatch.setattr(ExtensionManager, "load_all_extensions", AsyncMock())
     monkeypatch.setattr(runtime_backend, "preload_shared_execution_code", lambda: None)
     owned = AsyncMock()

@@ -14,10 +14,17 @@ from jiuwenswarm.server.runtime.agent_adapter import team_helpers
 from jiuwenswarm.server.runtime.session import session_metadata
 
 
-def _patch_metadata(monkeypatch: pytest.MonkeyPatch, metadata: dict[str, Any]) -> list[dict[str, Any]]:
-    written: list[dict[str, Any]] = []
+def _patch_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    metadata: dict[str, Any],
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    written: list[tuple[dict[str, Any], dict[str, Any]]] = []
     monkeypatch.setattr(session_metadata, "_read_metadata", lambda _sid, cache_bust=True: dict(metadata))
-    monkeypatch.setattr(session_metadata, "_enqueue_write", lambda _sid, data: written.append(dict(data)))
+    monkeypatch.setattr(
+        session_metadata,
+        "_enqueue_write",
+        lambda _sid, data, **kwargs: written.append((dict(data), dict(kwargs))),
+    )
     return written
 
 
@@ -54,7 +61,35 @@ def test_persist_dispatch_mode_writes_metadata(monkeypatch: pytest.MonkeyPatch) 
 
     team_helpers.persist_session_team_dispatch_mode("s1", "scheduled")
 
-    assert written == [{"session_id": "s1", "title": "t", "session_team_dispatch_mode": "scheduled"}]
+    assert written == [
+        (
+            {"session_id": "s1", "title": "t", "session_team_dispatch_mode": "scheduled"},
+            {
+                "sync_write": True,
+                "merge_fields": frozenset({"session_team_dispatch_mode"}),
+            },
+        )
+    ]
+
+
+def test_team_mode_writes_only_merge_their_owned_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[dict[str, Any], frozenset[str] | None]] = []
+    monkeypatch.setattr(
+        session_metadata,
+        "_read_metadata",
+        lambda _sid, cache_bust=True: {"session_id": "s1", "title": "t"},
+    )
+    monkeypatch.setattr(
+        session_metadata,
+        "_enqueue_write",
+        lambda _sid, data, **kwargs: calls.append((dict(data), kwargs.get("merge_fields"))),
+    )
+
+    team_helpers.persist_session_team_dispatch_mode("s1", "scheduled")
+    team_helpers.persist_session_team_bootstrap_mode("s1", "leader")
+
+    assert calls[0][1] == frozenset({"session_team_dispatch_mode"})
+    assert calls[1][1] == frozenset({"session_team_bootstrap_mode"})
 
 
 async def _build_spec(
@@ -63,10 +98,11 @@ async def _build_spec(
     bootstrap_mode: str | None = None,
     *,
     config_bootstrap_mode: str = "leader",
+    config_dispatch_mode: str = "scheduled",
 ) -> SimpleNamespace:
     spec = SimpleNamespace(
         team_name="team",
-        dispatch_mode="scheduled",
+        dispatch_mode=config_dispatch_mode,
         bootstrap_mode=config_bootstrap_mode,
         enable_task_verification=True,
         enable_member_messaging=True,
@@ -79,7 +115,10 @@ async def _build_spec(
     monkeypatch.setattr("jiuwenswarm.agents.harness.team.team_manager.get_config", lambda: {})
     monkeypatch.setattr(TeamManager, "_ensure_postgresql_for_leader", fake_ensure_postgresql)
     monkeypatch.setattr(TeamManager, "_load_session_team_spec", lambda self, _sid, **_kw: (spec, True))
-    monkeypatch.setattr("jiuwenswarm.agents.swarm.enrich_team_spec_for_swarm", lambda _spec, **_kw: None)
+    def check_assembly_mode(spec: SimpleNamespace, **_kwargs: Any) -> None:
+        assert spec.dispatch_mode == (dispatch_mode or config_dispatch_mode)
+
+    monkeypatch.setattr("jiuwenswarm.agents.swarm.enrich_team_spec_for_swarm", check_assembly_mode)
 
     return await TeamManager().get_swarm_enriched_team_spec(
         "s1",
@@ -148,12 +187,20 @@ def test_persist_bootstrap_mode_writes_metadata(monkeypatch: pytest.MonkeyPatch)
 
     team_helpers.persist_session_team_bootstrap_mode("s1", "framework")
 
-    assert written == [{"session_id": "s1", "title": "t", "session_team_bootstrap_mode": "framework"}]
+    assert written == [
+        (
+            {"session_id": "s1", "title": "t", "session_team_bootstrap_mode": "framework"},
+            {
+                "sync_write": True,
+                "merge_fields": frozenset({"session_team_bootstrap_mode"}),
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio
 async def test_framework_bootstrap_lands_on_a_scheduled_spec(monkeypatch: pytest.MonkeyPatch) -> None:
-    spec = await _build_spec(monkeypatch, "scheduled", "framework")
+    spec = await _build_spec(monkeypatch, "scheduled", "framework", config_dispatch_mode="autonomous")
 
     assert spec.dispatch_mode == "scheduled"
     assert spec.bootstrap_mode == "framework"

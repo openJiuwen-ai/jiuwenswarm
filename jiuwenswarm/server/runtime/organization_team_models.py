@@ -12,13 +12,12 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
-
 from openjiuwen.agent_teams.paths import team_home
 from openjiuwen.agent_teams.tools.member_options import get_member_cli_agent
+from agent_gateway.common.model_selection import ModelSelection
 
 from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.model_routing_registry import ModelSelectionResolver
-from gateway.common.model_selection import ModelSelection
 from jiuwenswarm.server.runtime.model_compiler_adapter import compile_model_selection
 from jiuwenswarm.server.runtime.team_binding_store import validate_team_name
 

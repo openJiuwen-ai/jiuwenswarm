@@ -157,6 +157,63 @@ def test_download_file_reports_destination_write_failure(monkeypatch, tmp_path):
     assert target_path.exists() is False
 
 
+def test_download_file_percent_encodes_non_ascii_url(monkeypatch, tmp_path):
+    """中文文件名/路径必须先百分号编码再交给 urllib，否则请求行编码失败。"""
+    from urllib.parse import unquote, urlsplit
+
+    runtime = _runtime()
+    target_path = tmp_path / "report.docx"
+    filename = "沐曦集成电路(上海)股份有限公司企业分析报告.docx"
+    url = (
+        "http://127.0.0.1:19000/api/scenario-config/asset/zhiyanpan/"
+        f"files/muxi/{filename}"
+    )
+    downloaded = []
+
+    monkeypatch.setattr(
+        runtime, "_select_save_path", lambda name, file_types: target_path
+    )
+    monkeypatch.setattr(runtime, "_show_download_complete", lambda path: None)
+
+    def urlretrieve(request_url: str, path: Path) -> None:
+        downloaded.append(request_url)
+        path.write_bytes(b"docx-content")
+
+    monkeypatch.setattr(urllib.request, "urlretrieve", urlretrieve)
+
+    result = runtime.download_file(url, filename)
+
+    assert result == {"ok": True, "cancelled": False}
+    assert downloaded[0].isascii()
+    assert "沐" not in downloaded[0]
+    assert unquote(urlsplit(downloaded[0]).path).endswith("/" + filename)
+    assert target_path.read_bytes() == b"docx-content"
+
+
+def test_download_file_keeps_existing_percent_escapes(monkeypatch, tmp_path):
+    """已编码的 URL 不能被二次编码，否则 %2F 会变成 %252F 导致 404。"""
+    runtime = _runtime()
+    target_path = tmp_path / "report.xlsx"
+    url = "/file-api/raw-file?path=agent%2Fworkspace%2Freport.xlsx"
+    downloaded = []
+
+    monkeypatch.setattr(
+        runtime, "_select_save_path", lambda name, file_types: target_path
+    )
+    monkeypatch.setattr(runtime, "_show_download_complete", lambda path: None)
+
+    def urlretrieve(request_url: str, path: Path) -> None:
+        downloaded.append(request_url)
+        path.write_bytes(b"xlsx-content")
+
+    monkeypatch.setattr(urllib.request, "urlretrieve", urlretrieve)
+
+    result = runtime.download_file(url, "report.xlsx")
+
+    assert result == {"ok": True, "cancelled": False}
+    assert downloaded[0] == url
+
+
 @pytest.mark.parametrize("language", [None, "zh", "en", "en-US"])
 @pytest.mark.parametrize("confirmed", [False, True])
 def test_download_confirmation_is_a_sheet_on_the_macos_window(

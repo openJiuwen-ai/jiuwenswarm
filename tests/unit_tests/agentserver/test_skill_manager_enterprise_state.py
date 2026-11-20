@@ -387,11 +387,11 @@ def test_enterprise_builtin_skill_can_toggle_but_not_uninstall(
     assert skill_dir.is_dir()
 
 
-def test_personal_builtin_skill_can_uninstall(
+def test_personal_builtin_skill_cannot_uninstall(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """个人版内置（builtin）与 develop 一致：安装副本可卸载。"""
+    """个人版内置（builtin）安装副本也不可卸载。"""
     monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     workspace = tmp_path / "tenant"
     manager = SkillManager(workspace_dir=str(workspace))
@@ -409,9 +409,11 @@ def test_personal_builtin_skill_can_uninstall(
             {"name": "docx-pro", "origin": record["origin"]}
         )
     )
-    assert uninstall_result.get("success") is True
-    assert not skill_dir.is_dir()
-    assert manager.list_skill_installations() == []
+    assert uninstall_result["success"] is False
+    assert uninstall_result["error_code"] == "prebuilt_not_removable"
+    assert uninstall_result["detail"] == "内置技能不允许删除"
+    assert skill_dir.is_dir()
+    assert manager.list_skill_installations()
 
 
 def test_enterprise_web_install_and_uninstall_use_workspace_state(
@@ -518,11 +520,11 @@ def test_enterprise_web_uninstall_still_rejects_builtin(
     assert skill_dir.is_dir()
 
 
-def test_personal_web_uninstall_allows_builtin(
+def test_personal_web_uninstall_rejects_builtin(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """个人版 web 卸载入口：builtin 安装副本可卸（与 handle_skills_uninstall 对齐）。"""
+    """个人版 web 卸载入口：builtin 安装副本不可卸。"""
     monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     manager = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
     skill_dir = _write_skill(tmp_path, "docx-pro")
@@ -536,9 +538,11 @@ def test_personal_web_uninstall_allows_builtin(
 
     result = asyncio.run(manager.handle_skills_web_uninstall({"name": "docx-pro"}))
 
-    assert result == {"success": True, "name": "docx-pro"}
-    assert not skill_dir.is_dir()
-    assert manager.list_skill_installations() == []
+    assert result["success"] is False
+    assert result["error_code"] == "prebuilt_not_removable"
+    assert result["error_message"] == "内置技能不允许删除"
+    assert skill_dir.is_dir()
+    assert manager.list_skill_installations()
 
 
 def test_enterprise_uninstall_does_not_fall_back_from_unknown_origin(tmp_path: Path) -> None:
@@ -550,6 +554,108 @@ def test_enterprise_uninstall_does_not_fall_back_from_unknown_origin(tmp_path: P
     ))
     assert result["success"] is False
     assert skill_dir.exists()
+
+
+def test_web_uninstall_rejects_non_string_name(tmp_path: Path) -> None:
+    """name 声明为 string，非法类型必须被类型校验拒绝而非巧合落入 missing_params。"""
+    manager = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
+    skill_dir = _write_skill(tmp_path, "user-skill")
+    manager.record_skill_installation(name="user-skill", source_type="user", origin="hub:asset-1")
+
+    result = asyncio.run(manager.handle_skills_web_uninstall({"name": ["user-skill"]}))
+
+    assert result["success"] is False
+    assert result["error_code"] == "invalid_params"
+    assert skill_dir.exists()
+
+
+def test_web_uninstall_rejects_non_string_origin_without_name_fallback(tmp_path: Path) -> None:
+    """origin 声明为 string，对象等非法类型不得静默改写为空串后走 name-only 回退误删。"""
+    manager = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
+    skill_dir = _write_skill(tmp_path, "user-skill")
+    manager.record_skill_installation(name="user-skill", source_type="user", origin="hub:asset-1")
+
+    result = asyncio.run(
+        manager.handle_skills_web_uninstall({"name": "user-skill", "origin": {}})
+    )
+
+    assert result["success"] is False
+    assert result["error_code"] == "invalid_params"
+    assert skill_dir.exists()
+    assert [row["name"] for row in manager.list_skill_installations()] == ["user-skill"]
+
+
+def test_source_install_rejects_string_force_before_fetch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """force 声明为 boolean，字符串 "false" 必须在触发下载前被拒绝而非当作 truthy 强制重装。"""
+    manager = SkillManager(workspace_dir=str(tmp_path))
+
+    async def _unexpected_fetch(**_kwargs: object) -> tuple[object, object, object]:
+        raise AssertionError("type validation must reject before artifact fetch")
+
+    monkeypatch.setattr(manager, "_fetch_verified_source_artifact", _unexpected_fetch)
+
+    result = asyncio.run(manager.handle_skills_source_install({
+        "source_id": "hub-a",
+        "skill_id": "asset-1",
+        "version_id": "v2",
+        "force": "false",
+    }))
+
+    assert result["success"] is False
+    assert result["error_code"] == "invalid_params"
+    assert "force" in result["error_message"]
+
+
+def test_source_install_rejects_non_string_identifiers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """source_id/skill_id/version_id 声明为 string，数字等非法类型必须在入口拒绝。"""
+    manager = SkillManager(workspace_dir=str(tmp_path))
+
+    async def _unexpected_fetch(**_kwargs: object) -> tuple[object, object, object]:
+        raise AssertionError("type validation must reject before artifact fetch")
+
+    monkeypatch.setattr(manager, "_fetch_verified_source_artifact", _unexpected_fetch)
+
+    for key, value in (("source_id", []), ("skill_id", 7), ("version_id", 1)):
+        params: dict[str, object] = {
+            "source_id": "hub-a",
+            "skill_id": "asset-1",
+            "version_id": "v2",
+        }
+        params[key] = value
+        result = asyncio.run(manager.handle_skills_source_install(params))
+        assert result["success"] is False
+        assert result["error_code"] == "invalid_params"
+        assert key in result["error_message"]
+
+
+def test_skills_update_rejects_non_string_params(tmp_path: Path) -> None:
+    """update 与 install/uninstall 同层契约：非法类型必须在入口统一拒绝。"""
+    manager = SkillManager(workspace_dir=str(tmp_path))
+
+    result = asyncio.run(manager.handle_skills_update({
+        "source_id": "hub-a",
+        "skill_id": "asset-1",
+        "target_version_id": 1,
+    }))
+    assert result["success"] is False
+    assert result["error_code"] == "invalid_params"
+    assert "target_version_id" in result["error_message"]
+
+    result = asyncio.run(manager.handle_skills_update({
+        "source_id": "hub-a",
+        "skill_id": "asset-1",
+        "target_version_id": "v2",
+        "expected_current_version_id": 2,
+    }))
+    assert result["success"] is False
+    assert result["error_code"] == "invalid_params"
+    assert "expected_current_version_id" in result["error_message"]
 
 
 def test_enterprise_uninstall_resolves_origin_kept_only_on_local_skills(tmp_path: Path) -> None:

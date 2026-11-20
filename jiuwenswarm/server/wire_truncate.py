@@ -81,6 +81,7 @@ _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES = frozenset(
         "chat.file",
         "chat.ask_user_question",
         "chat.ask_user_answer",
+        "chat.ask_user_closed",
         "chat.error",
         "team.message",
         "context.usage",
@@ -89,6 +90,23 @@ _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES = frozenset(
         "context.rewind_summary",
     }
 )
+
+# 人数上限通知要在刷新后读回来。其它 chat.notice（例如图片工具降级）不进历史。
+_HISTORY_RESTORABLE_TEAM_NOTICE_TYPES = frozenset({
+    "requested_team_size",
+    "team_quota",
+    "team_teammate_quota",
+})
+
+
+def history_assistant_event_is_restorable(record: dict) -> bool:
+    """True when an assistant history row should survive a session refresh."""
+    event_type = record.get("event_type")
+    if event_type in _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES:
+        return True
+    if event_type != "chat.notice":
+        return False
+    return record.get("notice_type") in _HISTORY_RESTORABLE_TEAM_NOTICE_TYPES
 
 _HISTORY_COLLAPSE_KEEP_KEYS = {
     "id",
@@ -108,6 +126,7 @@ _HISTORY_COLLAPSE_KEEP_KEYS = {
     "is_goal_objective_message",
     "is_goal_completed_message",
     "evidence",
+    "payload_refs",
     "agent_template_name",
 }
 
@@ -128,6 +147,10 @@ _WORKFLOW_LIST_SUMMARY_KEEP_KEYS = (
     # Cold-start marker: the list row is what the tree renders first after a
     # session reopen, and the buttons key their greying on it.
     "recovered",
+    # Run attribution (None = no team context): the executor badge renders
+    # from the list row on a cold reopen — the same cold-start argument as
+    # "recovered"; the detail view shares these keep keys.
+    "executor",
 )
 
 
@@ -763,6 +786,7 @@ __all__ = [
     "_WORKFLOW_AGENT_MAX_LIMIT",
     "_SPLITTABLE_AGENT_FIELDS",
     "_HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES",
+    "history_assistant_event_is_restorable",
     "_json_wire_size",
     "_coerce_int",
     "_truncate_string_by_bytes",

@@ -25,6 +25,7 @@ from jiuwenswarm.server.ipc.protocol import (
     PROTOCOL_VERSION,
 )
 from jiuwenswarm.server.ipc.server import IpcServer
+from jiuwenswarm.server.ipc.session import IpcSessionSource
 from jiuwenswarm.server.worker.diagnostics import arm_stall_dump, cancel_stall_dump
 
 logger = logging.getLogger(__name__)
@@ -40,10 +41,11 @@ async def serve_stub(
     ready_delay: float = 0.0,
     exit_on_request: bool = False,
     code_identity_value: str | None = None,
+    session_source: IpcSessionSource | None = None,
 ) -> None:
-    server = IpcServer(socket_path)
+    server = session_source if session_source is not None else IpcServer(socket_path)
     await server.start()
-    logger.info("[Worker] stub listening: %s", socket_path)
+    logger.info("[Worker] stub ipc ready: %s", socket_path if session_source is None else "front_loopback")
     generation = 0
     runtime_loaded = False
     instance = uuid.uuid4().hex
@@ -57,7 +59,8 @@ async def serve_stub(
         )
         while True:
             conn = await server.accept()
-            generation += 1
+            generation = (session_source.generation if session_source is not None
+                          and session_source.generation is not None else generation + 1)
             try:
                 closed = await _serve_one(
                     conn,
@@ -70,6 +73,8 @@ async def serve_stub(
                 )
             except (OSError, asyncio.IncompleteReadError):
                 runtime_loaded = True
+                if session_source is not None and not session_source.reconnectable:
+                    return
                 continue
             finally:
                 cancel_stall_dump()
@@ -91,7 +96,8 @@ async def _serve_one(
     instance: str,
     code_identity_value: str | None = None,
 ) -> bool:
-    from jiuwenswarm.server.supervisor.identity import code_identity, data_scope
+    from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, deployment_scope
+    import psutil
 
     send = getattr(conn, "send")
     recv = getattr(conn, "recv")
@@ -105,6 +111,9 @@ async def _serve_one(
             "runtime_loaded": runtime_loaded,
             "generation": generation,
             "data_scope": data_scope(),
+            "deployment_scope": deployment_scope(),
+            "shutdown_ack": True,
+            "process_created": psutil.Process().create_time(),
             "code_identity": code_identity_value if code_identity_value is not None else code_identity(),
         }
     )

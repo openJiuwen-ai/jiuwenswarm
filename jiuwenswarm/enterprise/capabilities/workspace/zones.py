@@ -39,18 +39,18 @@ _ROLE_MD_NAMES: Final[frozenset[str]] = frozenset(
 )
 
 _PREFIX_RULES: Final[tuple[tuple[str, WorkspaceZone], ...]] = (
-    ("agent/jiuwenclaw_workspace/projects/", WorkspaceZone.SESSION_WORKSPACE),
-    ("agent/jiuwenclaw_workspace/todo/", WorkspaceZone.SESSION_TODO),
+    ("agent/workspace/projects/", WorkspaceZone.SESSION_WORKSPACE),
+    ("agent/workspace/todo/", WorkspaceZone.SESSION_TODO),
     ("agent/sessions/", WorkspaceZone.SESSION_META),
-    ("agent/jiuwenclaw_workspace/skills/", WorkspaceZone.SKILLS),
-    ("agent/jiuwenclaw_workspace/memory/", WorkspaceZone.MEMORY),
-    ("agent/jiuwenclaw_workspace/coding_memory/", WorkspaceZone.MEMORY),
-    ("agent/jiuwenclaw_workspace/context/", WorkspaceZone.MEMORY),
-    ("agent/jiuwenclaw_workspace/agents/", WorkspaceZone.RUNTIME),
-    ("agent/jiuwenclaw_workspace/extensions/", WorkspaceZone.RUNTIME),
-    ("agent/jiuwenclaw_workspace/messages/", WorkspaceZone.RUNTIME),
-    ("agent/jiuwenclaw_workspace/prompt_attachment/", WorkspaceZone.ARTIFACT),
-    ("agent/jiuwenclaw_workspace/received_files/", WorkspaceZone.ARTIFACT),
+    ("agent/workspace/skills/", WorkspaceZone.SKILLS),
+    ("agent/workspace/memory/", WorkspaceZone.MEMORY),
+    ("agent/workspace/coding_memory/", WorkspaceZone.MEMORY),
+    ("agent/workspace/context/", WorkspaceZone.MEMORY),
+    ("agent/workspace/agents/", WorkspaceZone.RUNTIME),
+    ("agent/workspace/extensions/", WorkspaceZone.RUNTIME),
+    ("agent/workspace/messages/", WorkspaceZone.RUNTIME),
+    ("agent/workspace/prompt_attachment/", WorkspaceZone.ARTIFACT),
+    ("agent/workspace/received_files/", WorkspaceZone.ARTIFACT),
 )
 
 
@@ -87,10 +87,7 @@ def classify_zone(relative_path: str | None) -> WorkspaceZone:
 
     name = path.rsplit("/", 1)[-1]
     parent = path[: -len(name)].rstrip("/") if "/" in path else ""
-    if name in _ROLE_MD_NAMES and parent in {
-        "agent/jiuwenclaw_workspace",
-        "agent/workspace",
-    }:
+    if name in _ROLE_MD_NAMES and parent == "agent/workspace":
         return WorkspaceZone.ROLE_MD
 
     best: WorkspaceZone | None = None

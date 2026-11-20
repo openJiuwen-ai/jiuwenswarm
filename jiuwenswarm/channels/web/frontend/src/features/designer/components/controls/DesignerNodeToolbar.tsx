@@ -3,8 +3,10 @@ import { useTranslation } from 'react-i18next';
 import { useReactFlow } from '@xyflow/react';
 import SendPlaneIcon from '../../../../assets/send_plane.svg?react';
 import { isComfyuiNodeConfig } from '../../comfyuiWorkflow';
+import { nodeSendBlockedByMissingModel } from '../../designerNodeGenerationKind';
 import { designerToolbarRevealShift } from '../../designerToolbarVisibility';
 import { useDesignerGraphEditingLocked } from '../../useDesignerGraphEditingLocked';
+import { useDesignerModelConfiguration } from '../../useDesignerModelConfiguration';
 import { useDesignerRunStore } from '../../designerRunStore';
 import { useDesignerStore } from '../../designerStore';
 import {
@@ -13,7 +15,8 @@ import {
   readMediaConfig,
   writeMediaGeneratePatch,
 } from '../../mediaNodeConfig';
-import type { DesignerComfyuiConfig } from '../../executionGraphTypes';
+import { DESIGNER_NODE_ROLE_MUSIC, type DesignerComfyuiConfig } from '../../executionGraphTypes';
+import { DesignerAudioSettingsMenu } from './DesignerAudioSettingsMenu';
 import { DesignerComfyuiParamsForm } from './DesignerComfyuiParamsForm';
 import { DesignerMaterialStrip } from './DesignerMaterialStrip';
 import { DesignerMediaSettingsMenu } from './DesignerMediaSettingsMenu';
@@ -30,15 +33,17 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
     const node = state.domainGraph?.nodes.find((item) => item.id === nodeId);
     return isMedia && Boolean(node && isUploadedMediaNode(node));
   });
-  const canGenerate = nodeType !== 'audio' && !uploadedMedia;
   const updateNodeConfig = useDesignerStore((state) => state.updateNodeConfig);
   const rerunNode = useDesignerRunStore((state) => state.rerunNode);
   const isRunning = useDesignerRunStore((state) => state.isRunning);
   const editingLocked = useDesignerGraphEditingLocked();
   const domainGraph = useDesignerStore((state) => state.domainGraph);
+  const generation = useDesignerModelConfiguration();
   const config = useDesignerStore(
     (state) => state.domainGraph?.nodes.find((node) => node.id === nodeId)?.config ?? {},
   );
+  const generatesMusic = (config as { pipeline?: unknown }).pipeline === DESIGNER_NODE_ROLE_MUSIC;
+  const canGenerate = (nodeType !== 'audio' || generatesMusic) && !uploadedMedia;
   const media = readMediaConfig(config, nodeType);
   const comfyui =
     isMedia && isComfyuiNodeConfig(config)
@@ -85,10 +90,18 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
     [editingLocked, nodeId, updateNodeConfig],
   );
 
+  const currentNode = domainGraph?.nodes.find((item) => item.id === nodeId);
+  const generationKind = currentNode?.type === 'image' || currentNode?.type === 'video' ? currentNode.type : null;
+  const sendBlocked = nodeSendBlockedByMissingModel(
+    currentNode,
+    domainGraph,
+    generation.snapshot ? generation.selection : null,
+  );
+
   const onGenerateNode = useCallback(() => {
-    if (!domainGraph || isRunning || editingLocked) return;
+    if (!domainGraph || isRunning || editingLocked || sendBlocked) return;
     void rerunNode(domainGraph, nodeId);
-  }, [domainGraph, editingLocked, isRunning, nodeId, rerunNode]);
+  }, [domainGraph, editingLocked, isRunning, nodeId, rerunNode, sendBlocked]);
 
   if (isMedia && !canGenerate) {
     return null;
@@ -151,12 +164,17 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
               {!comfyui && (nodeType === 'image' || nodeType === 'video') ? (
                 <DesignerMediaSettingsMenu nodeId={nodeId} nodeType={nodeType} />
               ) : null}
+              {!comfyui && nodeType === 'audio' ? <DesignerAudioSettingsMenu nodeId={nodeId} /> : null}
               <button
                 type="button"
                 className={`designer-node-toolbar__send${editingLocked ? ' designer-edit-control' : ''}`}
                 data-testid="designer-node-toolbar-generate-action"
-                disabled={isRunning || !domainGraph || editingLocked}
-                title={t('designer.toolbar.rerunHint')}
+                disabled={isRunning || !domainGraph || editingLocked || sendBlocked}
+                title={
+                  sendBlocked && generationKind
+                    ? t(`designer.models.${generationKind}Missing`)
+                    : t('designer.toolbar.rerunHint')
+                }
                 aria-label={t('designer.toolbar.generateAction')}
                 onClick={onGenerateNode}
               >

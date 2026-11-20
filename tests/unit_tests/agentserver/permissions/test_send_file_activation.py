@@ -47,6 +47,7 @@ def _adapter(*, registered_send_tool: bool = False) -> JiuWenSwarmDeepAdapter:
     adapter._resolve_runtime_language = MagicMock(return_value="cn")
     adapter._cron_tools_registered_language = None
     adapter._project_dir = None
+    adapter._instance_overrides = {}
     adapter._tool_owner_id = MagicMock(return_value="test-owner")
     adapter._register_agent_owned_tool = MagicMock()
     adapter._enable_auto_permission = False

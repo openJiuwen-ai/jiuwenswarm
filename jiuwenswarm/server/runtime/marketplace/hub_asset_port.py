@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 HubAssetKind = Literal["agent_template", "agent_group", "plugin", "mcp"]
 
@@ -80,6 +80,9 @@ class HubAssetDetail:
     icon_uri: str
     tags: tuple[str, ...]
     package_name: str = ""
+    # Published package profile from the version endpoint; renders detail cards without
+    # downloading the package archive.
+    package_profile: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)

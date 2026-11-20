@@ -43,6 +43,7 @@ export function SettingsChannelsPanel({
           channels={controller.channels}
           feishuApps={controller.feishuApps}
           feishuLoaded={controller.controllers.feishu.loaded}
+          dingtalk={controller.dingtalkList}
           loading={controller.channelsLoading || controller.configurationsLoading}
           channelConfigured={controller.channelConfigured}
           channelEnabled={controller.channelEnabled}
@@ -61,6 +62,7 @@ export function SettingsChannelsPanel({
         open={controller.dialogOpen}
         activeChannelId={controller.activeChannelId}
         activeFeishuAppIndex={controller.activeFeishuAppIndex}
+        activeDingtalkAppIndex={controller.activeDingtalkAppIndex}
         isConnected={isConnected}
         controllers={controller.controllers}
         onCancel={controller.closeDialog}

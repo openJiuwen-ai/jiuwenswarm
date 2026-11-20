@@ -17,6 +17,18 @@ ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "scripts" / "preserve-windows-cli.ps1"
 
 
+def _inno_setup_compiler() -> Path | None:
+    candidates = [
+        Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Inno Setup 7/ISCC.exe",
+        Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Inno Setup 7/ISCC.exe",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs/Inno Setup 7/ISCC.exe",
+        Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Inno Setup 6/ISCC.exe",
+        Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Inno Setup 6/ISCC.exe",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs/Inno Setup 6/ISCC.exe",
+    ]
+    return next((path for path in candidates if path.is_file()), None)
+
+
 @pytest.fixture
 def windows_environment(tmp_path, monkeypatch):
     root = tmp_path / "data" / "runtime" / "npm"
@@ -192,10 +204,11 @@ $script:registry | Add-Member ScriptMethod Dispose { }
     script = tmp_path / "preserve.ps1"
     script.write_text(text, encoding="utf-8")
     data = tmp_path / "user data 测试"
-    report = tmp_path / "report.json"
     path_result = tmp_path / "user-path.txt"
 
-    def run(app, *, mode="Preserve", original_path="%USERPROFILE%\\tools;;C:\\existing;C:\\existing", data_dir=None, progress_path=None):
+    def run(app, *, mode="Preserve", original_path="%USERPROFILE%\\tools;;C:\\existing;C:\\existing",
+            data_dir=None, progress_path=None, report_name="report.json"):
+        report = tmp_path / report_name
         env = os.environ.copy()
         env.pop("PSModulePath", None)
         env["JIUWENSWARM_DATA_DIR"] = str(data_dir or data)
@@ -386,7 +399,7 @@ def test_settings_detect_and_enable_a_migrated_explicit_cli(windows_environment,
 
     def version(_agent, executable_path):
         probes.append(executable_path)
-        return "2.1.999", ""
+        return "2.1.999 (Claude Code)", ""
 
     monkeypatch.setattr(handlers, "run_external_cli_version_command", version)
     flat = handlers.flatten_external_cli_agents_for_config_panel(raw)
@@ -706,12 +719,145 @@ def test_busy_cli_blocks_upgrade_without_stopping_it(tmp_path, preservation_runn
         process.wait(timeout=10)
 
 
-def test_pinned_runtime_and_migrated_dependency_work_after_old_app_is_removed(tmp_path, preservation_runner):
+@pytest.mark.parametrize("reference,busy", [
+    ('"{source}-backup\\readme.txt"', False),
+    ('"{source}.old\\readme.txt"', False),
+    ('"C:\\archive{source}\\cli.js"', False),
+    ('"{source}\\cli.js"', True),
+    ('--prefix="{source}"', True),
+    ('--prefix={source}', True),
+    ('{source}', True),
+    ('"{source}"', True),
+])
+def test_process_reference_respects_path_boundaries(tmp_path, preservation_runner, monkeypatch, reference, busy):
+    app = tmp_path / "old app"
+    source = _prefix(app)
+    monkeypatch.setenv("TEST_PROCESS_COMMAND", reference.format(source=source).replace("\\", "/"))
+    fixture = r'''
+function Get-CimInstance {
+    param([string]$ClassName)
+    [pscustomobject]@{ProcessId=($PID+10000); ExecutablePath='C:\tools\node.exe'; CommandLine=$env:TEST_PROCESS_COMMAND}
+}
+'''
+    script = preservation_runner.script
+    text = script.read_text(encoding="utf-8")
+    script.write_text(text.replace("$safeRoot=$false", "$safeRoot=$false\n" + fixture), encoding="utf-8")
+    result, report, _, _ = preservation_runner(app)
+    assert (result.returncode != 0) == busy, report.read_text(encoding="utf-8")
+    if busy:
+        assert "Close the CLI process" in report.read_text(encoding="utf-8")
+
+
+def test_real_sibling_process_does_not_block_preservation(tmp_path, preservation_runner):
+    import time
+
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("requires Node")
+    app = tmp_path / "app"
+    source = _prefix(app)
+    sibling = source.with_name(source.name + "-backup")
+    sibling.mkdir()
+    readme = sibling / "readme.txt"
+    readme.write_text("unrelated sibling")
+    ready = tmp_path / "ready.txt"
+    process = subprocess.Popen([
+        node, "-e", "require('fs').readFileSync(process.argv[1]);"
+        "require('fs').writeFileSync(process.argv[2],'ready');setInterval(()=>{},1000)",
+        str(readme), str(ready),
+    ], creationflags=subprocess.CREATE_NO_WINDOW)
+    try:
+        deadline = time.monotonic() + 10
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert ready.exists()
+        result, report, _, _ = preservation_runner(app)
+        assert result.returncode == 0, report.read_text(encoding="utf-8")
+        assert process.poll() is None
+        mapping = json.loads(report.read_text(encoding="utf-8"))["mappings"][0]
+        assert (Path(mapping["target"]) / "unknown-user-file").read_text() == "must not be dropped"
+    finally:
+        process.terminate()
+        process.wait(timeout=10)
+
+
+@pytest.mark.parametrize("mode", ["Preserve", "Initialize"])
+@pytest.mark.parametrize("operation", ["open", "write"])
+def test_user_path_permission_denial_keeps_verified_environment(tmp_path, preservation_runner, mode, operation):
+    app = tmp_path / "app"
+    source = _prefix(app)
+    script = preservation_runner.script
+    text = script.read_text(encoding="utf-8")
+    if operation == "open":
+        text = text.replace("$key=$script:registry", "$key=$(throw [UnauthorizedAccessException]::new('registry denied'))")
+    else:
+        text = text.replace("$key.SetValue('Path',$updated,$kind)", "throw [Security.SecurityException]::new('registry denied')")
+    script.write_text(text, encoding="utf-8")
+    result, report, root, user_path = preservation_runner(app, mode=mode)
+    assert result.returncode == 0, report.read_text(encoding="utf-8")
+    record = json.loads(report.read_text(encoding="utf-8"))
+    assert record["success"] and "process environment" in record["path_warning"]
+    target = Path(record["mappings"][0]["target"]) if mode == "Preserve" else root / "global"
+    assert (target / "unknown-user-file").read_text() == "must not be dropped"
+    assert (source / "unknown-user-file").read_text() == "must not be dropped"
+    assert not user_path.exists()
+
+
+def test_unexpected_path_failure_is_not_permission_fallback(tmp_path, preservation_runner):
+    app = tmp_path / "app"
+    _prefix(app)
+    script = preservation_runner.script
+    text = script.read_text(encoding="utf-8")
+    script.write_text(text.replace("$key.SetValue('Path',$updated,$kind)", "throw [IO.IOException]::new('unexpected registry failure')"), encoding="utf-8")
+    result, report, _, user_path = preservation_runner(app)
+    assert result.returncode != 0
+    assert "unexpected registry failure" in report.read_text(encoding="utf-8")
+    assert not user_path.exists()
+
+
+@pytest.mark.parametrize("mode,statement,layout", [
+    ("Preserve", "[IO.Directory]::Move((Long-Path $stage),(Long-Path $target))", "runtime/node-runtime"),
+    ("Preserve", "[IO.Directory]::Move((Long-Path $stage),(Long-Path $activeDirectory))", "runtime/node-runtime"),
+    ("Initialize", "[IO.Directory]::Move((Long-Path $stage),(Long-Path $globalPrefix))", "runtime/node-runtime"),
+    ("Preserve", "[IO.Directory]::Move((Long-Path $stage),(Long-Path $active))", "runtime/external-cli/claude/site-packages"),
+])
+def test_directory_move_denied_never_allows_cleanup(tmp_path, preservation_runner, mode, statement, layout):
+    app = tmp_path / "app"
+    source = _prefix(app, layout)
+    script = preservation_runner.script
+    text = script.read_text(encoding="utf-8")
+    assert statement in text
+    script.write_text(text.replace(statement, "throw [UnauthorizedAccessException]::new('directory move denied')"), encoding="utf-8")
+    result, report, root, user_path = preservation_runner(app, mode=mode)
+    assert result.returncode != 0
+    assert "directory move denied" in report.read_text(encoding="utf-8")
+    assert (source / "unknown-user-file").read_text() == "must not be dropped"
+    assert list(root.parent.rglob("unknown-user-file")), "Recovery material must remain available"
+    assert not user_path.exists()
+
+
+@pytest.mark.parametrize("path_denied", [False, True])
+def test_pinned_runtime_and_migrated_dependency_work_after_old_app_is_removed(tmp_path, preservation_runner, monkeypatch, path_denied):
+    import importlib
+
+    from jiuwenswarm.common import external_cli_runtime as runtime
+
     node = shutil.which("node")
     if not node:
         pytest.skip("requires Node for end-to-end launcher verification")
     app = tmp_path / "app"
+    if path_denied:
+        script = preservation_runner.script
+        text = script.read_text(encoding="utf-8")
+        script.write_text(text.replace("$key.SetValue('Path',$updated,$kind)", "throw [UnauthorizedAccessException]::new('registry denied')"), encoding="utf-8")
     source = _prefix(app)
+    sdk_source = app / "runtime/external-cli/claude/site-packages"
+    sdk_source.mkdir(parents=True)
+    (sdk_source / "preservation_fixture_sdk.py").write_text("def probe(): return 'preserved SDK loaded'\n")
+    (sdk_source / ".jiuwenswarm-runtime.json").write_text(json.dumps({
+        "agent": "claude", "platform": "windows-x86_64",
+        "packages": [{"name": "fixture-sdk", "version": "1.0"}],
+    }))
     shutil.copyfile(node, source / "node.exe")
     (source / "node_modules/npm/bin/npm-cli.js").write_text("require('fs').writeFileSync(process.env.TEST_NPM_RESULT,JSON.stringify({prefix:process.env.NPM_CONFIG_PREFIX,node:process.execPath}))")
     migrated, report, _, _ = preservation_runner(app)
@@ -722,11 +868,36 @@ def test_pinned_runtime_and_migrated_dependency_work_after_old_app_is_removed(tm
     # Delete only this test's synthetic installation, after checking containment.
     assert app.resolve().is_relative_to(tmp_path.resolve())
     shutil.rmtree(app)
+    sdk_target = root.parent / "external-cli/claude/site-packages"
+    monkeypatch.setattr(runtime, "_is_frozen_windows", lambda: True)
+    monkeypatch.setattr(runtime, "_runtime_platform_key", lambda: "windows-x86_64")
+    monkeypatch.setattr(runtime, "_runtime_site_packages", lambda _agent: sdk_target)
+    monkeypatch.setattr(runtime, "_load_manifest", lambda: {"agents": {"claude": {
+        "required_modules": ["preservation_fixture_sdk"],
+        "platforms": {"windows-x86_64": [{"name": "fixture-sdk", "version": "1.0"}]},
+    }}})
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    # Use the real compatibility check and import hook, not a global PYTHONPATH.
+    assert runtime.get_external_cli_runtime_status("claude")["runtime_state"] == "current"
+    runtime.activate_external_cli_runtime_paths()
+    try:
+        sdk = importlib.import_module("preservation_fixture_sdk")
+        assert sdk.probe() == "preserved SDK loaded"
+        assert Path(sdk.__file__).parent == sdk_target
+    finally:
+        sys.modules.pop("preservation_fixture_sdk", None)
     run = subprocess.run([str(target / "node.exe"), str(target / "node_modules/@example/cli/index.js")], capture_output=True, text=True, timeout=15)
     assert run.returncode == 0 and "dependency retained" in run.stdout
     env = os.environ.copy()
-    env["NPM_CONFIG_PREFIX"] = str(root / "global")
     env["PATH"] = str(Path(os.environ["SystemRoot"]) / "System32")
+    env["NPM_CONFIG_USERCONFIG"] = str(tmp_path / "absent.npmrc")
+    env.pop("NPM_CONFIG_PREFIX", None)
+    env.pop("npm_config_prefix", None)
+    monkeypatch.setattr(paths, "windows_npm_root", lambda: root)
+    monkeypatch.setattr(paths, "os", SimpleNamespace(name="nt", environ=env, path=os.path, pathsep=os.pathsep))
+    paths.configure_windows_npm_environment()
+    assert env["NPM_CONFIG_PREFIX"] == str(root / "global")
+    assert shutil.which("example.cmd", path=env["PATH"]) == str(root / "global" / "example.cmd")
     env["TEST_NPM_RESULT"] = str(tmp_path / "npm-result.json")
     for launcher in (target / "example.cmd", target / "node_modules/.bin/example.cmd"):
         env["TEST_CLI_LAUNCHER"] = str(launcher)
@@ -736,7 +907,6 @@ def test_pinned_runtime_and_migrated_dependency_work_after_old_app_is_removed(tm
         )
         assert run.returncode == 0 and "dependency retained" in run.stdout, run.stderr
     powershell = Path(os.environ["SystemRoot"]) / "System32/WindowsPowerShell/v1.0/powershell.exe"
-    env["PATH"] = str(root / "bin") + os.pathsep + env["PATH"]
     run = subprocess.run([
         str(powershell), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Restricted", "-Command",
         "$ErrorActionPreference='Stop'; npm --version; exit $LASTEXITCODE",
@@ -763,8 +933,8 @@ def test_installers_preserve_before_delete_and_old_uninstall():
 @pytest.mark.skipif(sys.platform != "win32", reason="requires the Windows installer compiler")
 @pytest.mark.parametrize("name", ["installer.iss", "installer-electron.iss"])
 def test_inno_compiles_preservation_hooks(tmp_path, monkeypatch, name):
-    compiler = Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Inno Setup 6/ISCC.exe"
-    if not compiler.is_file():
+    compiler = _inno_setup_compiler()
+    if compiler is None:
         pytest.skip("Inno Setup is not installed")
     monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
     import platform
@@ -775,6 +945,9 @@ def test_inno_compiles_preservation_hooks(tmp_path, monkeypatch, name):
     scripts.mkdir(parents=True)
     for filename in (name, "windows-cli-preservation.iss", "preserve-windows-cli.ps1"):
         shutil.copyfile(ROOT / "scripts" / filename, scripts / filename)
+    license_dir = ROOT / "scripts" / "license"
+    if license_dir.is_dir():
+        shutil.copytree(license_dir, scripts / "license")
     icon = project / "jiuwenswarm/channels/web/frontend/public/logo.ico"
     icon.parent.mkdir(parents=True)
     shutil.copyfile(ROOT / "jiuwenswarm/channels/web/frontend/public/logo.ico", icon)
@@ -782,8 +955,18 @@ def test_inno_compiles_preservation_hooks(tmp_path, monkeypatch, name):
         payload = project / "dist" / dist
         payload.mkdir(parents=True)
         (payload / "fixture.txt").write_text("compile-only fixture; never installed")
+    command = [str(compiler), "/Qp", f"/O{tmp_path / 'compiled'}", "/DBuildDisplayName=WorkSwarm",
+        "/DBuildVersion=0.0.0", "/DBuildExecutableNameWindows=workswarm.exe",
+        "/DBuildDistDirName=workswarm", "/DBuildSetupBaseName=issue5338-test"]
+    if name == "installer-electron.iss":
+        missing = subprocess.run(
+            [*command, str(scripts / name)], cwd=scripts, capture_output=True, text=True, errors="replace", timeout=60,
+        )
+        assert missing.returncode != 0
+        assert "MaxPayloadRelativePath is required" in missing.stdout + missing.stderr
+        command.append(f"/DMaxPayloadRelativePath={len('fixture.txt')}")
     result = subprocess.run(
-        [str(compiler), "/Qp", f"/O{tmp_path / 'compiled'}", "/DBuildDisplayName=WorkSwarm", "/DBuildVersion=0.0.0", "/DBuildExecutableNameWindows=workswarm.exe", "/DBuildDistDirName=workswarm", "/DBuildSetupBaseName=issue5338-test", str(scripts / name)],
+        [*command, str(scripts / name)],
         cwd=scripts, capture_output=True, text=True, errors="replace", timeout=60,
     )
     assert result.returncode == 0, result.stdout + result.stderr
@@ -794,7 +977,7 @@ def test_inno_compiles_preservation_hooks(tmp_path, monkeypatch, name):
 def test_absent_runtime_skips_file_inventory(tmp_path, preservation_runner, mode):
     script = preservation_runner.script
     script.write_text(script.read_text(encoding="utf-8").replace(
-        "function Inventory([string]$Root) {", "function Inventory([string]$Root) { throw 'unexpected inventory'"
+        "function Inventory([string]$Root, [switch]$Verify) {", "function Inventory([string]$Root, [switch]$Verify) { throw 'unexpected inventory'"
     ), encoding="utf-8")
     result, report, _, path_result = preservation_runner(tmp_path / "empty-app", mode=mode)
     assert result.returncode == 0, result.stderr + report.read_text()
@@ -810,8 +993,8 @@ def test_bundled_node_only_initialization_uses_verified_digest(tmp_path, preserv
     script = preservation_runner.script
     trace = tmp_path / "inventory.txt"
     script.write_text(script.read_text(encoding="utf-8").replace(
-        "function Inventory([string]$Root) {",
-        "function Inventory([string]$Root) {\n[IO.File]::AppendAllText('" + str(trace) + "',$Root+[Environment]::NewLine)"
+        "function Inventory([string]$Root, [switch]$Verify) {",
+        "function Inventory([string]$Root, [switch]$Verify) {\n[IO.File]::AppendAllText('" + str(trace) + "',$Root+[Environment]::NewLine)"
     ), encoding="utf-8")
     result, report, root, _ = preservation_runner(app, mode="Initialize")
     assert result.returncode == 0, result.stderr + report.read_text()
@@ -869,8 +1052,8 @@ def test_stock_upgrade_skips_recovery_copies_and_reuses_user_environment(tmp_pat
     # inventory any independently mutable user runtime or recovery directory.
     script = preservation_runner.script
     script.write_text(script.read_text(encoding="utf-8").replace(
-        "function Inventory([string]$Root) {",
-        "function Inventory([string]$Root) {\nif ($Root -ne '" + str(source) + "') { throw 'unexpected user environment inventory' }"
+        "function Inventory([string]$Root, [switch]$Verify) {",
+        "function Inventory([string]$Root, [switch]$Verify) {\nif ($Root -ne '" + str(source) + "') { throw 'unexpected user environment inventory' }"
     ), encoding="utf-8")
     result, report, _, _ = preservation_runner(app)
     assert result.returncode == 0, report.read_text(encoding="utf-8")
@@ -880,7 +1063,7 @@ def test_stock_upgrade_skips_recovery_copies_and_reuses_user_environment(tmp_pat
     assert not (root / "installed").exists()
     # Existing managed npm initialization must not scan any file tree at all.
     script.write_text(script.read_text(encoding="utf-8").replace(
-        "function Inventory([string]$Root) {", "function Inventory([string]$Root) { throw 'unexpected initialization inventory'"
+        "function Inventory([string]$Root, [switch]$Verify) {", "function Inventory([string]$Root, [switch]$Verify) { throw 'unexpected initialization inventory'"
     ), encoding="utf-8")
     result, report, _, _ = preservation_runner(app, mode="Initialize")
     assert result.returncode == 0, report.read_text(encoding="utf-8")
@@ -1006,3 +1189,225 @@ def test_bundle_identity_is_finalized_after_signed_and_unsigned_payloads(entrypo
     unsigned_branch = script.index("Skipping PE signing (unsigned local build).", signing)
     assert signing < unsigned_branch < finalizer < script.index("Building installer (Inno Setup)", finalizer)
     assert "}\n" in script[unsigned_branch:finalizer]
+
+
+def _windows_powershell() -> Path:
+    return Path(os.environ["SystemRoot"]) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+
+
+def test_device_path_probe_reports_existence_beyond_net_limits(tmp_path):
+    """The Win32 probe must see long directories that .NET normalization may hide."""
+    if sys.platform != "win32":
+        pytest.skip("requires Windows PowerShell")
+    existing = tmp_path / ("probe-fixture-" + "y" * 240)
+    Path("\\\\?\\" + str(existing)).mkdir(parents=True)
+    missing = tmp_path / "definitely-absent"
+    extraction = """
+$ast=[System.Management.Automation.Language.Parser]::ParseFile('{script}',[ref]$null,[ref]$null)
+$fn=$ast.FindAll({{ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'Test-DevicePathExists' }},$true)
+if ($fn.Count -ne 1) {{ Write-Output ('EXTRACT-FAIL ' + $fn.Count); exit 1 }}
+Invoke-Expression $fn[0].Extent.Text
+$script:NativePathProbe=$null
+Write-Output ((Test-DevicePathExists '{long}').ToString() + '/' + (Test-DevicePathExists '{missing}').ToString())
+""".format(script=SCRIPT, long=existing, missing=missing)
+    result = subprocess.run(
+        [str(_windows_powershell()), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", extraction],
+        capture_output=True, text=True, errors="replace", timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-1] == "True/False"
+
+
+def test_degraded_runtime_aborts_on_existing_max_path_cli_root(tmp_path, preservation_runner):
+    """A legacy runtime must not mistake an existing boundary-length CLI root for absence.
+
+    Only the host-dependent link (the plain-path layer going blind) is simulated,
+    at the attribute read itself; the guard decision, the Win32 re-probe, and the
+    real 260-character directory all execute for real, so the protective abort is
+    exercised on every Windows host.
+    """
+    if sys.platform != "win32":
+        pytest.skip("requires Windows PowerShell")
+    app = tmp_path / "app"
+    source = app / "runtime" / "node-runtime"
+    pad = 260 - len(str(source))
+    assert 0 < pad < 200, "unexpected tmp_path depth for the boundary fixture"
+    app = tmp_path / ("app" + "x" * pad)
+    source = app / "runtime" / "node-runtime"
+    assert len(str(source)) == 260
+    extended_source = Path("\\\\?\\" + str(source))
+    extended_source.mkdir(parents=True)
+    (extended_source / "node.exe").write_bytes(b"fixture node")
+    text = preservation_runner.script.read_text(encoding="utf-8")
+    probe_call = r"try { [void][IO.File]::GetAttributes('\\?\'+$env:SystemRoot) }"
+    assert text.count(probe_call) == 1
+    text = text.replace(probe_call, r"try { throw (New-Object ArgumentException('simulated legacy runtime rejects device paths')) }")
+    attribute_read = r"try { $attributes=[IO.File]::GetAttributes((Long-Path $Source)) }"
+    assert text.count(attribute_read) == 1
+    blind = r"try { if (-not $script:DevicePathSupported -and $Source.Length -ge 250) { throw (New-Object IO.DirectoryNotFoundException('simulated plain-path blindness')) }; $attributes=[IO.File]::GetAttributes((Long-Path $Source)) }"
+    text = text.replace(attribute_read, blind)
+    preservation_runner.script.write_text(text, encoding="utf-8")
+    completed, report, _, _ = preservation_runner(app)
+    assert completed.returncode != 0
+    # The outer catch writes the abort reason to the report file (not stderr).
+    report_text = report.read_text(encoding="utf-8")
+    assert "Existing CLI directory is unreachable through plain paths" in report_text
+    # Nothing was cleaned up: the unbacked-up CLI tree is still intact.
+    assert (extended_source / "node.exe").read_bytes() == b"fixture node"
+
+
+def test_device_path_probe_error_discrimination(tmp_path):
+    """Every probe decision branch is deterministic on a plain Windows host.
+
+    exists -> True (attribute read); missing leaf -> errno 2 -> False; missing
+    intermediate directory -> errno 3 -> False; invalid name syntax -> errno 123
+    (any non-2/3 error) -> conservative True so the guard aborts, never skips;
+    UNC form conversion executes; an unresolvable UNC host yields errno 53 (not 2/3) and keeps the conservative exists verdict.
+    The double call also exercises the compiled-handle reuse path.
+    """
+    if sys.platform != "win32":
+        pytest.skip("requires Windows PowerShell")
+    existing = tmp_path / "exists-dir"
+    Path("\\\\?\\" + str(existing)).mkdir()
+    missing_leaf = tmp_path / "no-such-leaf"
+    missing_middle = tmp_path / "no-such-middle" / "nested"
+    invalid_syntax = "C:\\foo<bar"
+    dead_unc = "\\\\nonexistent-host-xyz.invalid\\share\\dir"
+    extraction = """
+$ast=[System.Management.Automation.Language.Parser]::ParseFile('{script}',[ref]$null,[ref]$null)
+$fn=$ast.FindAll({{ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $args[0].Name -eq 'Test-DevicePathExists' }},$true)
+if ($fn.Count -ne 1) {{ Write-Output ('EXTRACT-FAIL ' + $fn.Count); exit 1 }}
+Invoke-Expression $fn[0].Extent.Text
+$script:NativePathProbe=$null
+Write-Output ((Test-DevicePathExists '{exists}').ToString() + '/' + (Test-DevicePathExists '{exists}').ToString())
+Write-Output (Test-DevicePathExists '{leaf}').ToString()
+Write-Output (Test-DevicePathExists '{middle}').ToString()
+Write-Output (Test-DevicePathExists '{syntax}').ToString()
+Write-Output (Test-DevicePathExists '{unc}').ToString()
+""".format(script=SCRIPT, exists=existing, leaf=missing_leaf, middle=missing_middle, syntax=invalid_syntax, unc=dead_unc)
+    result = subprocess.run(
+        [str(_windows_powershell()), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", extraction],
+        capture_output=True, text=True, errors="replace", timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip().splitlines()[-5:] == ["True/True", "False", "False", "True", "True"]
+
+
+def test_not_supported_probe_engages_degrade_and_skips_absent_dirs(tmp_path, preservation_runner):
+    """NotSupportedException engages plain-path degrade; first install stays healthy.
+
+    Exercises the second named catch, the Long-Path degrade branch, and both
+    guards' degrade-plus-absent outcomes (return $null / continue): absent CLI
+    and SDK directories must still be skipped so a fresh install succeeds.
+    """
+    if sys.platform != "win32":
+        pytest.skip("requires Windows PowerShell")
+    app = tmp_path / "fresh install"
+    app.mkdir()
+    text = preservation_runner.script.read_text(encoding="utf-8")
+    probe_call = r"try { [void][IO.File]::GetAttributes('\\?\'+$env:SystemRoot) }"
+    assert text.count(probe_call) == 1
+    simulated = r"try { throw (New-Object NotSupportedException('simulated legacy runtime')) }"
+    text = text.replace(probe_call, simulated)
+    preservation_runner.script.write_text(text, encoding="utf-8")
+    completed, report, _, path_result = preservation_runner(app)
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["success"] is True
+    assert payload["mappings"] == []
+    assert payload["sdk_mappings"] == []
+    assert not path_result.exists()
+
+
+def test_unknown_probe_exception_keeps_device_paths_and_first_install(tmp_path, preservation_runner):
+    """Any other probe exception keeps the supported default; behavior unchanged.
+
+    Exercises the fallback catch: an IOException neither names a capability
+    verdict nor degrades anything, so a fresh install behaves exactly like the
+    unmodified script.
+    """
+    if sys.platform != "win32":
+        pytest.skip("requires Windows PowerShell")
+    app = tmp_path / "fresh install"
+    app.mkdir()
+    text = preservation_runner.script.read_text(encoding="utf-8")
+    probe_call = r"try { [void][IO.File]::GetAttributes('\\?\'+$env:SystemRoot) }"
+    assert text.count(probe_call) == 1
+    simulated = r"try { throw (New-Object System.IO.IOException('simulated unknown failure')) }"
+    text = text.replace(probe_call, simulated)
+    preservation_runner.script.write_text(text, encoding="utf-8")
+    completed, report, _, path_result = preservation_runner(app)
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(report.read_text(encoding="utf-8"))
+    assert payload["success"] is True
+    assert payload["mappings"] == []
+    assert not path_result.exists()
+
+
+def test_degraded_runtime_aborts_on_existing_max_path_sdk_dir(tmp_path, preservation_runner):
+    """An existing boundary-length SDK directory must also abort, never vanish.
+
+    Both CLI candidates are genuinely absent (fresh install), so the Preserve
+    loop skips them for real; the SDK scan then meets its boundary-length
+    external-cli directory and must abort instead of dropping it silently.
+    """
+    if sys.platform != "win32":
+        pytest.skip("requires Windows PowerShell")
+    app = tmp_path / "app"
+    sdk_source = app / "runtime" / "external-cli"
+    pad = 260 - len(str(sdk_source))
+    assert 0 < pad < 200, "unexpected tmp_path depth for the boundary fixture"
+    app = tmp_path / ("app" + "x" * pad)
+    sdk_source = app / "runtime" / "external-cli"
+    assert len(str(sdk_source)) == 260
+    extended_sdk = Path("\\\\?\\" + str(sdk_source))
+    extended_sdk.mkdir(parents=True)
+    text = preservation_runner.script.read_text(encoding="utf-8")
+    probe_call = r"try { [void][IO.File]::GetAttributes('\\?\'+$env:SystemRoot) }"
+    assert text.count(probe_call) == 1
+    text = text.replace(probe_call, r"try { throw (New-Object ArgumentException('simulated legacy runtime rejects device paths')) }")
+    attribute_read = r"try { $sdkAttributes=[IO.File]::GetAttributes((Long-Path $sdkSource)) }"
+    assert text.count(attribute_read) == 1
+    blind = r"try { if (-not $script:DevicePathSupported -and $sdkSource.Length -ge 250) { throw (New-Object IO.DirectoryNotFoundException('simulated plain-path blindness')) }; $sdkAttributes=[IO.File]::GetAttributes((Long-Path $sdkSource)) }"
+    text = text.replace(attribute_read, blind)
+    preservation_runner.script.write_text(text, encoding="utf-8")
+    completed, report, _, _ = preservation_runner(app)
+    assert completed.returncode != 0
+    report_text = report.read_text(encoding="utf-8")
+    assert "Existing SDK directory is unreachable through plain paths" in report_text
+    assert extended_sdk.exists()
+
+
+def test_degraded_initialize_aborts_on_existing_max_path_bundle(tmp_path, preservation_runner):
+    """Initialize must not report success while skipping an unreadable Node bundle.
+
+    Initialize runs before the Preserve loop and seeds the managed CLI from the
+    bundled runtime; a boundary-length bundle directory that the plain-path layer
+    cannot see must abort with an explicit report, never a success=true JSON.
+    """
+    if sys.platform != "win32":
+        pytest.skip("requires Windows PowerShell")
+    app = tmp_path / "app"
+    bundle = app / "runtime" / "node-runtime"
+    pad = 260 - len(str(bundle))
+    assert 0 < pad < 200, "unexpected tmp_path depth for the boundary fixture"
+    app = tmp_path / ("app" + "x" * pad)
+    bundle = app / "runtime" / "node-runtime"
+    assert len(str(bundle)) == 260
+    extended_bundle = Path("\\\\?\\" + str(bundle))
+    extended_bundle.mkdir(parents=True)
+    (extended_bundle / "node.exe").write_bytes(b"fixture node")
+    text = preservation_runner.script.read_text(encoding="utf-8")
+    probe_call = r"try { [void][IO.File]::GetAttributes('\\?\'+$env:SystemRoot) }"
+    assert text.count(probe_call) == 1
+    text = text.replace(probe_call, r"try { throw (New-Object ArgumentException('simulated legacy runtime rejects device paths')) }")
+    candidate_read = r"try { $candidateIsDirectory=(([IO.File]::GetAttributes((Long-Path $candidate)) -band [IO.FileAttributes]::Directory) -ne 0) }"
+    assert text.count(candidate_read) == 1
+    blind = r"try { if (-not $script:DevicePathSupported -and $candidate.Length -ge 250) { throw (New-Object IO.DirectoryNotFoundException('simulated plain-path blindness')) }; $candidateIsDirectory=(([IO.File]::GetAttributes((Long-Path $candidate)) -band [IO.FileAttributes]::Directory) -ne 0) }"
+    text = text.replace(candidate_read, blind)
+    preservation_runner.script.write_text(text, encoding="utf-8")
+    completed, report, _, _ = preservation_runner(app, mode="Initialize")
+    assert completed.returncode != 0
+    report_text = report.read_text(encoding="utf-8")
+    assert "Existing bundled Node runtime is unreachable through plain paths" in report_text
+    assert (extended_bundle / "node.exe").read_bytes() == b"fixture node"

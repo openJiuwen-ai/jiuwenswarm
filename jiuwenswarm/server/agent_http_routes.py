@@ -13,9 +13,11 @@ import asyncio
 import json
 import logging
 import sys
+import uuid
 from typing import Any
 from urllib.parse import parse_qs
 
+from agent_gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from starlette.datastructures import Headers
@@ -26,9 +28,9 @@ from jiuwenswarm.common.log_context import (
     current_log_session_id,
     unbind_log_session,
 )
+from jiuwenswarm.common.request_ext import METADATA_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from gateway.common.ws_limits import AGENT_WS_MAX_MESSAGE_BYTES
 from jiuwenswarm.server import http_chat
 from jiuwenswarm.server.app_services import AppServices
 from jiuwenswarm.server.context import AgentServerServices, RequestContext
@@ -368,27 +370,53 @@ def _stream_response(ctx: RequestContext, handler) -> StreamingResponse:
 
 
 async def _event_frames(request: Request):
-    """Gateway 长连接：先报 push_ready，再转发本进程 ``send_push`` 的 wire。
+    """Gateway 长连接：先报 push_ready，再转发本进程推送。
 
-    runtime 模式下 Gateway 没有 WebSocket，cron / 主动推送都靠这条 SSE。
+    runtime 模式下 Gateway 没有 WebSocket。cron / 主动推走 ``http_hub``；
+    企业版团队直播另走 ``fanout``。两条队列都挂上，谁先到谁先发。
     """
+    from jiuwenswarm.enterprise.edition import is_enterprise
     from jiuwenswarm.server.gateway_push.http_hub import get_http_push_hub
 
     hub = get_http_push_hub()
-    queue = hub.subscribe()
+    hub_queue = hub.subscribe()
+    team_queue = None
+    if is_enterprise():
+        from jiuwenswarm.enterprise.team.push_fanout import attach
+
+        team_queue = attach()
     try:
         yield _sse_frame({"event_type": "gateway.push_ready"})
         while True:
             if await request.is_disconnected():
                 break
-            try:
-                wire = await asyncio.wait_for(queue.get(), timeout=15.0)
-            except asyncio.TimeoutError:
+            waiters = [asyncio.create_task(hub_queue.get())]
+            if team_queue is not None:
+                waiters.append(asyncio.create_task(team_queue.get()))
+            done, pending = await asyncio.wait(
+                waiters, timeout=15.0, return_when=asyncio.FIRST_COMPLETED
+            )
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+            if not done:
                 yield ": keepalive\n\n"
                 continue
-            yield _sse_frame(wire)
+            for task in done:
+                try:
+                    item = task.result()
+                except Exception:
+                    logger.exception("[SessionLive] push queue read failed")
+                    continue
+                if isinstance(item, dict):
+                    yield _sse_frame(item)
     finally:
-        hub.unsubscribe(queue)
+        hub.unsubscribe(hub_queue)
+        if team_queue is not None:
+            from jiuwenswarm.enterprise.team.push_fanout import detach
+
+            detach(team_queue)
 
 
 def _sse_frame(payload: dict[str, Any]) -> str:
@@ -403,6 +431,11 @@ def _wants_stream(request: Request) -> bool:
 def _header(request: Request, name: str, default: str) -> str:
     text = str(request.headers.get(name) or "").strip()
     return text or default
+
+
+def _default_request_id() -> str:
+    """缺省 request_id 一次一个：同会话并发聊天不再登记同一条 push 路由。"""
+    return f"http-{uuid.uuid4().hex[:12]}"
 
 
 def _client_json(body: dict[str, Any]) -> dict[str, Any]:
@@ -428,8 +461,9 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
     """从 Gateway 透传的 ``X-*`` 头重建 ``user_id`` 和 ``metadata``。
 
     Gateway 的 REST 正文只有业务参数。身份在头里：``X-User-Id``、路由三维、
-    企业租户三字段，以及内部扩展头。企业版的专家包允许名单在
-    ``X-Jiuwenswarm-Package-Allowlist``。没有 ``X-User-Id`` 时 ``user_id`` 为空，
+    企业租户三字段，以及内部扩展头。定时任务推送真渠道在 ``X-Cron-Targets``，
+    重建为顶层 ``metadata["targets"]``。企业版的专家包名单在
+    ``X-Jiuwenswarm-Expert-Packages``。没有 ``X-User-Id`` 时 ``user_id`` 为空，
     表示这次请求按匿名处理，和 WebSocket 入口缺省身份时一样。
     """
     from jiuwenswarm.common.request_identity import (
@@ -454,9 +488,11 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
         value = _header(request, header_name, "")
         if value:
             metadata[field] = value
+    cron_targets = _header(request, "x-cron-targets", "")
+    if cron_targets:
+        metadata["targets"] = cron_targets
     from jiuwenswarm.common.request_ext import (
         INTERNAL_HEADER_NAME,
-        METADATA_KEY,
         RequestExtCodecError,
         decode_internal_header,
     )
@@ -476,13 +512,13 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
     from jiuwenswarm.enterprise.edition import is_enterprise
 
     if is_enterprise():
-        from openjiuwen_protocol.package_allowlist import (
-            PACKAGE_ALLOWLIST_HEADER_NAME as HEADER_NAME,
-            PACKAGE_ALLOWLIST_METADATA_KEY as GRANT_METADATA_KEY,
-            decode_package_allowlist_header,
+        from jiuwenswarm.common.schema.expert_packages import (
+            HEADER_NAME,
+            METADATA_KEY as GRANT_METADATA_KEY,
+            decode_expert_packages_header,
         )
 
-        metadata[GRANT_METADATA_KEY] = decode_package_allowlist_header(
+        metadata[GRANT_METADATA_KEY] = decode_expert_packages_header(
             request.headers.get(HEADER_NAME)
         )
     user_id = str(identity.get("user_id") or "").strip()
@@ -503,7 +539,7 @@ def _context_from_runtime(
         session_id = str(body.get("session_id") or "").strip()
     user_id, metadata = _rebuild_identity_from_headers(request)
     agent_request = AgentRequest(
-        request_id=_header(request, "x-request-id", "http"),
+        request_id=_header(request, "x-request-id", "") or _default_request_id(),
         channel_id=_header(request, "x-channel-id", "http"),
         session_id=session_id or None,
         req_method=req_method,
@@ -556,14 +592,20 @@ def _context_from_mapping(
     is_stream: bool,
 ) -> RequestContext:
     params = body.get("params")
+    metadata = body.get("metadata")
+    if isinstance(metadata, dict):
+        # Request-scoped credentials must not come from client-supplied metadata.
+        metadata = {key: value for key, value in metadata.items() if key != METADATA_KEY}
+    else:
+        metadata = None
     agent_request = AgentRequest(
-        request_id=str(body.get("request_id") or "http"),
+        request_id=str(body.get("request_id") or "") or _default_request_id(),
         channel_id=str(body.get("channel_id") or "http"),
         session_id=str(body.get("session_id") or "") or None,
         req_method=req_method,
         params=params if isinstance(params, dict) else {},
         is_stream=is_stream,
-        metadata=body.get("metadata") if isinstance(body.get("metadata"), dict) else None,
+        metadata=metadata,
         user_id=str(body.get("user_id") or "").strip(),
     )
     return RequestContext(

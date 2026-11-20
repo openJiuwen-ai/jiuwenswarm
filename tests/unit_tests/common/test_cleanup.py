@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from gateway.cleanup import (
+from agent_gateway.cleanup import (
     cleanup_old_sessions,
     cleanup_orphan_file_ops,
 )
@@ -27,8 +27,8 @@ class TestCleanup:
         old_time = time.time() - 999 * 86400
         os.utime(stale, (old_time, old_time))
 
-        monkeypatch.setattr("gateway.cleanup.get_agent_sessions_dir", lambda: sessions_dir)
-        monkeypatch.setattr("gateway.cleanup._get_cleanup_period_days", lambda: 30)
+        monkeypatch.setattr("agent_gateway.cleanup.get_agent_sessions_dir", lambda: sessions_dir)
+        monkeypatch.setattr("agent_gateway.cleanup._get_cleanup_period_days", lambda: 30)
 
         result = cleanup_old_sessions()
         assert result["removed"] >= 1
@@ -45,9 +45,9 @@ class TestCleanup:
         fop = hist_dir / "file_ops_jiuwenswarm_dead_session.json"
         fop.write_text("{}", encoding="utf-8")
 
-        monkeypatch.setattr("gateway.cleanup.get_agent_workspace_dir", lambda: tmp_path / "agent-ws")
-        monkeypatch.setattr("gateway.cleanup.get_user_workspace_dir", lambda: tmp_path / "user-ws")
-        monkeypatch.setattr("gateway.cleanup.get_agent_sessions_dir", lambda: sessions_dir)
+        monkeypatch.setattr("agent_gateway.cleanup.get_agent_workspace_dir", lambda: tmp_path / "agent-ws")
+        monkeypatch.setattr("agent_gateway.cleanup.get_user_workspace_dir", lambda: tmp_path / "user-ws")
+        monkeypatch.setattr("agent_gateway.cleanup.get_agent_sessions_dir", lambda: sessions_dir)
 
         result = cleanup_orphan_file_ops()
         assert result["removed"] >= 1
@@ -60,11 +60,11 @@ def test_configured_cleanup_retention(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Zero means forever; invalid configuration preserves the default."""
-    from gateway.cleanup import _get_cleanup_period_days
+    from agent_gateway.cleanup import _get_cleanup_period_days
 
     monkeypatch.delenv("CLEANUP_PERIOD_DAYS", raising=False)
     monkeypatch.setattr(
-        "gateway.cleanup.get_config",
+        "agent_gateway.cleanup.get_config",
         lambda: {"session_cleanup": {"retention_days": days}},
     )
     expected = {0: 0, 14: 14, "0": 0, "90": 90}.get(days, 30)
@@ -73,10 +73,10 @@ def test_configured_cleanup_retention(
 
 def test_cleanup_environment_overrides_config(monkeypatch: pytest.MonkeyPatch) -> None:
     """Existing environment-based deployments retain precedence."""
-    from gateway.cleanup import _get_cleanup_period_days
+    from agent_gateway.cleanup import _get_cleanup_period_days
 
     monkeypatch.setattr(
-        "gateway.cleanup.get_config",
+        "agent_gateway.cleanup.get_config",
         lambda: {"session_cleanup": {"retention_days": 30}},
     )
     monkeypatch.setenv("CLEANUP_PERIOD_DAYS", "0")
@@ -100,12 +100,12 @@ def test_forever_retention_keeps_old_sessions_and_orphan_logs(
     orphan.write_text("{}", encoding="utf-8")
     monkeypatch.delenv("CLEANUP_PERIOD_DAYS", raising=False)
     monkeypatch.setattr(
-        "gateway.cleanup.get_config",
+        "agent_gateway.cleanup.get_config",
         lambda: {"session_cleanup": {"retention_days": 0}},
     )
-    monkeypatch.setattr("gateway.cleanup.get_agent_sessions_dir", lambda: sessions)
-    monkeypatch.setattr("gateway.cleanup.get_agent_workspace_dir", lambda: workspace)
-    monkeypatch.setattr("gateway.cleanup.get_user_workspace_dir", lambda: workspace)
+    monkeypatch.setattr("agent_gateway.cleanup.get_agent_sessions_dir", lambda: sessions)
+    monkeypatch.setattr("agent_gateway.cleanup.get_agent_workspace_dir", lambda: workspace)
+    monkeypatch.setattr("agent_gateway.cleanup.get_user_workspace_dir", lambda: workspace)
 
     assert cleanup_old_sessions() == {"removed": 0, "errors": 0}
     assert cleanup_orphan_file_ops() == {"removed": 0, "errors": 0}

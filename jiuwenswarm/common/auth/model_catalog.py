@@ -7,8 +7,8 @@
 B3 拆仓时随 shim 收敛退役。
 """
 
-from gateway.auth.model_catalog import *  # noqa: F401,F403
-from gateway.auth.model_catalog import (  # noqa: F401
+from agent_gateway.auth.model_catalog import *  # noqa: F401,F403
+from agent_gateway.auth.model_catalog import (  # noqa: F401
     Any,
     LOGIN_MODEL_SETTINGS_KEY,
     LOGIN_MODEL_SOURCE,

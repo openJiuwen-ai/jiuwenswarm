@@ -2,7 +2,7 @@
 
 """兼容别名：已归 ``gateway.extensions.auth(ssh_key_issuer)``。"""
 
-from gateway.extensions.auth.ssh_key_issuer import (  # noqa: F401
+from agent_gateway.extensions.auth.ssh_key_issuer import (  # noqa: F401
     SshKeyIssuer,
     AgentOSSshKeyIssuer,
 )

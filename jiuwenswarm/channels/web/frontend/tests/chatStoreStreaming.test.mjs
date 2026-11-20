@@ -3,6 +3,45 @@ import test from 'node:test';
 
 import { useChatStore } from '../node_modules/.cache/chat-store-streaming/chatStore.mjs';
 
+test('MoA operations clear at turn, pause and history-reset boundaries without leaking into messages', () => {
+  const sessionId = 'moa-store-lifecycle';
+  const store = useChatStore.getState();
+  const start = () => {
+    store.setProcessing(sessionId, false);
+    store.setProcessing(sessionId, true);
+    store.setActiveExecutionId(sessionId, 'moa-execution');
+    store.updateMoaStatus(sessionId, {
+      operation_id: 'reference', phase: 'reference', status: 'started', execution_id: 'moa-execution',
+    });
+    assert.equal(store.getRuntime(sessionId).moaOperations.reference.status, 'started');
+  };
+  store.ensureRuntime(sessionId);
+  try {
+    start();
+    store.replaceHistoryMessages(sessionId, []);
+    assert.equal(store.getRuntime(sessionId).moaOperations.reference.status, 'started', 'live progress survives history loading');
+    store.setPaused(sessionId, true);
+    assert.deepEqual(store.getRuntime(sessionId).moaOperations, {});
+    store.setPaused(sessionId, false);
+    start();
+    store.clearCurrentTurnData(sessionId);
+    assert.deepEqual(store.getRuntime(sessionId).moaOperations, {});
+    start();
+    store.setExecutionError(sessionId, 'failed');
+    assert.deepEqual(store.getRuntime(sessionId).moaOperations, {});
+    start();
+    store.clearMessages(sessionId);
+    assert.deepEqual(store.getRuntime(sessionId).moaOperations, {});
+    start();
+    store.setProcessing(sessionId, false);
+    store.setProcessing(sessionId, true);
+    assert.deepEqual(store.getRuntime(sessionId).moaOperations, {});
+    assert.deepEqual(store.getRuntime(sessionId).messages, []);
+  } finally {
+    store.removeRuntime(sessionId);
+  }
+});
+
 test('setThinking does not notify subscribers when the value is unchanged', () => {
   const sessionId = 'streaming-thinking-noop';
   useChatStore.getState().ensureRuntime(sessionId);

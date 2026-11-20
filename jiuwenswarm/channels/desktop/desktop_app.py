@@ -27,7 +27,7 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterator
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from logging.handlers import RotatingFileHandler
 
@@ -52,10 +52,17 @@ from jiuwenswarm.common.startup_diagnostics import (
 )
 from jiuwenswarm.common.utils import (
     get_user_workspace_dir,
+    get_config_dir,
+    get_infra_data_dir,
     get_logs_dir,
     prepare_runtime_workspace,
     wait_for_pid_exit,
     wait_for_tcp_port,
+)
+from jiuwenswarm.common.update_shutdown import (
+    create_shutdown_receipt,
+    complete_shutdown_receipt,
+    require_clean_shutdown,
 )
 from jiuwenswarm.instance_manager.config import (
     BASE_PORTS,
@@ -77,10 +84,13 @@ UPDATE_HELPER_FLAG = "--desktop-install-update"
 DESKTOP_ENV_FLAG = "JIUWENSWARM_DESKTOP"
 STARTUP_TIMEOUT_SECONDS = 120.0
 STARTUP_DOCTOR_TIMEOUT_SECONDS = DOCTOR_TIMEOUT_SECONDS + 15.0
+DESKTOP_SHUTDOWN_TIMEOUT_SECONDS = 30.0
+DESKTOP_SHUTDOWN_GRACE_SECONDS = 5.0
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 DESKTOP_BLOB_CHUNK_SIZE = 1024 * 1024
 MAX_JAVASCRIPT_SAFE_INTEGER = 9_007_199_254_740_991
 _MACOS_RUNTIME_REF: weakref.ReferenceType[Any] | None = None
+
 DESKTOP_WINDOW_PREFERENCES_FILENAME = "desktop-window.json"
 CLOSE_ACTION_ASK = "ask"
 CLOSE_ACTION_HIDE = "hide"
@@ -90,8 +100,94 @@ VALID_CLOSE_ACTIONS = frozenset(
 )
 
 
+# Only the current frontend origin may request microphone access.
+_WK_MEDIA_CAPTURE_MICROPHONE = 1  # WKMediaCaptureTypeMicrophone
+_WK_PERMISSION_GRANT = 1  # WKPermissionDecisionGrant
+_WK_PERMISSION_DENY = 2  # WKPermissionDecisionDeny
+
+
+def _install_macos_media_capture_permission(get_frontend_url: Callable[[], str]) -> None:
+    """给 pywebview 的 WKUIDelegate 补上媒体授权回调。
+
+    pywebview 的 BrowserDelegate 没实现
+    webView:requestMediaCapturePermissionForOrigin:initiatedByFrame:type:decisionHandler:，
+    WKWebView 因此直接拒绝 getUserMedia（NotAllowedError，不弹框）。
+    回调只在网页调用 getUserMedia 时触发，所以启动阶段不会要权限；
+    放行后首次使用由 macOS 弹系统麦克风授权。getDisplayMedia 不走这个回调。
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        import objc  # type: ignore[import-not-found]
+        from webview.platforms.cocoa import BrowserView
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[desktop] media permission hook unavailable: %s", exc)
+        return
+    delegate_cls = BrowserView.BrowserDelegate
+    if getattr(delegate_cls, "_jiuwenswarm_media_permission_installed", False):
+        return
+
+    def media_permission(_self, _webview, origin, _frame, media_type, decision_handler):
+        allowed = False
+        try:
+            expected = urlsplit(get_frontend_url())
+            default_port = 443 if expected.scheme == "https" else 80
+            expected_origin = (expected.scheme, expected.hostname, expected.port or default_port)
+            request_origin = (
+                str(origin.protocol()), str(origin.host()), int(origin.port()) or default_port,
+            )
+            allowed = (
+                expected.scheme in {"http", "https"}
+                and request_origin == expected_origin
+                and int(media_type) == _WK_MEDIA_CAPTURE_MICROPHONE
+            )
+        except (AttributeError, TypeError, ValueError):
+            pass
+        logger.info(
+            "[desktop] media capture request type=%s allowed=%s",
+            media_type, allowed,
+        )
+        decision_handler(_WK_PERMISSION_GRANT if allowed else _WK_PERMISSION_DENY)
+
+    objc.classAddMethods(
+        delegate_cls,
+        [
+            objc.selector(
+                media_permission,
+                selector=b"webView:requestMediaCapturePermissionForOrigin:"
+                b"initiatedByFrame:type:decisionHandler:",
+                signature=b"v@:@@@q@?",
+            )
+        ],
+    )
+    delegate_cls._jiuwenswarm_media_permission_installed = True  # pylint: disable=protected-access
+
+
+def _macos_display_capture_supported() -> bool:
+    """WKWebView 的 getDisplayMedia 只能经 ScreenCaptureKit 系统选屏框拿到画面。
+
+    选屏框类 SCContentSharingPicker 自 macOS 14 起才有；更早的系统 WebKit
+    只弹“允许共享屏幕”确认，之后永远拿不到画面，网页收到 NotAllowedError，
+    与用户取消无法区分。这里把能力告诉前端，不支持时直接降级纯语音。
+    """
+    if sys.platform != "darwin":
+        return True
+    try:
+        from Foundation import NSBundle  # type: ignore[import-not-found]
+        import objc  # type: ignore[import-not-found]
+
+        bundle = NSBundle.bundleWithPath_("/System/Library/Frameworks/ScreenCaptureKit.framework")
+        if bundle is None or not bundle.load():
+            return False
+        objc.lookUpClass("SCContentSharingPicker")
+        return True
+    except Exception as exc:  # noqa: BLE001
+        logger.info("[desktop] screen capture picker unavailable: %s", exc)
+        return False
+
+
 def _desktop_window_preferences_path() -> Path:
-    return get_user_workspace_dir() / "config" / DESKTOP_WINDOW_PREFERENCES_FILENAME
+    return get_config_dir() / DESKTOP_WINDOW_PREFERENCES_FILENAME
 
 
 def _load_close_action() -> str | None:
@@ -395,7 +491,7 @@ def resolve_desktop_ports(
 
 
 def _cleanup_stale_update_artifacts() -> None:
-    updates_dir = get_user_workspace_dir() / ".updates"
+    updates_dir = get_infra_data_dir() / ".updates"
     if not updates_dir.is_dir():
         return
 
@@ -441,7 +537,7 @@ def _build_child_command(name: str, extra_args: list[str] | None = None) -> list
     elif name == "agent":
         base = [sys.executable, "-m", "jiuwenswarm.server.app_agentserver"]
     elif name == "gateway":
-        base = [sys.executable, "-m", "gateway.app_gateway"]
+        base = [sys.executable, "-m", "agent_gateway.app_gateway"]
     elif name == "app":
         base = [sys.executable, "-m", "jiuwenswarm.app"]
     elif name == "web":
@@ -486,6 +582,7 @@ def _build_child_env(
     env["AGENT_SERVER_PORT"] = str(ports["agent_server"])
     env["AGENT_PORT"] = str(ports["agent_server"])
     env["FRONTEND_PORT"] = str(ports["frontend"])
+    env["OFFICE_TLS_PORT"] = str(ports["office_tls"])
     # Gateway prefers AGENT_SERVER_URL over AGENT_SERVER_PORT; drop any stale
     # URL from the parent shell so the remapped port is used.
     env.pop("AGENT_SERVER_URL", None)
@@ -583,7 +680,7 @@ def _start_process(
 # web 子进程 import 的大头是 jiuwenswarm 自身, 放在最前优先预热; openjiuwen
 # 与 C 扩展库主要服务 app 子进程。预读块加大到 64KB 以覆盖归档多页。
 _WARMUP_PACKAGES = (
-    "jiuwenswarm", "openjiuwen", "faiss", "pymilvus", "google", "a2ui",
+    "jiuwenswarm", "openjiuwen", "pymilvus", "google", "a2ui",
     "sqlite_vec", "tree_sitter", "tiktoken", "tiktoken_ext",
 )
 _WARMUP_READ_BYTES = 64 * 1024
@@ -683,12 +780,21 @@ def _wait_for_port_release(host: str, port: int, timeout: float = 15.0) -> bool:
     return wait_for_tcp_port(host, port, timeout=timeout, target_state="disconnected")
 
 
+def _shutdown_runtime_before_update() -> None:
+    from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
+
+    result = asyncio.run(shutdown_resident_worker(timeout=30, include_legacy=True))
+    if not isinstance(result, dict) or result.get("ok") is not True:
+        raise RuntimeError(f"Worker shutdown incomplete: {result}")
+
+
 def _launch_windows_installer_helper(
     installer_path: str,
     app_executable: str,
     parent_pid: int = 0,
     backend_port: int = BACKEND_PORT,
     frontend_port: int = FRONTEND_PORT,
+    shutdown_receipt: str = "",
 ) -> None:
     target = Path(installer_path).expanduser().resolve()
 
@@ -705,8 +811,11 @@ def _launch_windows_installer_helper(
         frontend_port,
     )
 
-    _wait_for_port_release(BACKEND_HOST, backend_port, timeout=15.0)
-    _wait_for_port_release(FRONTEND_HOST, frontend_port, timeout=15.0)
+    require_clean_shutdown(shutdown_receipt)
+    _shutdown_runtime_before_update()
+    if (not _wait_for_port_release(BACKEND_HOST, backend_port, timeout=15.0)
+            or not _wait_for_port_release(FRONTEND_HOST, frontend_port, timeout=15.0)):
+        raise TimeoutError("Update stopped: backend/frontend ports are still occupied")
     logger.info("[update-helper] ports released, proceeding with install")
 
     try:
@@ -756,8 +865,6 @@ class _WindowApi:
     @staticmethod
     def open_external_url(url: str) -> bool:
         """Open SkillHub OAuth in the system browser, outside the desktop WebView."""
-        from urllib.parse import urlsplit
-
         base = (
             os.getenv("SKILLHUB_OAUTH_BASE_URL")
             or os.getenv("TEAM_SKILLS_HUB_BASE_URL")
@@ -779,8 +886,6 @@ class _WindowApi:
 
         Only plain http(s) URLs without embedded credentials are accepted.
         """
-        from urllib.parse import urlsplit
-
         parsed = urlsplit(str(url))
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             return False
@@ -802,7 +907,7 @@ class _WindowApi:
         import html as html_module
         import re
         import urllib.request
-        from urllib.parse import parse_qs, urlsplit
+        from urllib.parse import parse_qs
 
         if not isinstance(options, dict):
             return None
@@ -1204,6 +1309,9 @@ class DesktopRuntime:
         self._blob_save_lock = threading.Lock()
         self._blob_save_transfers: dict[str, _BlobSaveTransfer] = {}
         self._is_shutting_down = False
+        self._shutdown_complete = threading.Event()
+        self._shutdown_deadline = 0.0
+        self._update_shutdown_receipt: Path | None = None
         self._allow_window_close = False
         self._tray_icon = None
         self._tray_menu = None
@@ -1255,7 +1363,7 @@ class DesktopRuntime:
         ``wait`` seconds for a still-shutting-down Gateway from an upgrade
         restart to release the lock, then raises if a live holder remains.
         """
-        from gateway.gateway_lock import GatewayLock
+        from agent_gateway.gateway_lock import GatewayLock
 
         workspace = get_user_workspace_dir()
         holder = GatewayLock.find_holder(workspace)
@@ -1988,7 +2096,12 @@ class DesktopRuntime:
             if isinstance(url, str) and url.startswith("data:"):
                 temp_path.write_bytes(self._bytes_from_download_data_url(url))
             else:
-                urllib.request.urlretrieve(url, temp_path)
+                # urllib 的 HTTP 请求行只接受 ASCII：中文文件名/空格等非 ASCII 字符
+                # 必须先百分号编码，否则抛 UnicodeEncodeError，表现为桌面端下载失败。
+                # safe 保留 URL 结构字符与已有的 %xx 转义，避免二次编码。
+                urllib.request.urlretrieve(
+                    quote(url, safe=":/?#[]@!$&'()*+,;=%"), temp_path
+                )
             os.replace(temp_path, target_path)
             temp_path = None
             logger.info("[desktop] file downloaded to: %s", target_path)
@@ -2468,6 +2581,8 @@ class DesktopRuntime:
         require ``copy`` — ``move``/``none`` are rejected and show the forbidden
         cursor.
         """
+        if not _macos_display_capture_supported():
+            self._run_js("window.__JIUWEN_DESKTOP_SCREEN_CAPTURE__ = false;")
         self._run_js(
             """
 (function () {
@@ -2476,7 +2591,13 @@ class DesktopRuntime:
   // Durable stub: never leave Python without a callable ingest hook.
   if (typeof window.__JIUWEN_INGEST_LOCAL_FILES__ !== 'function') {
     window.__JIUWEN_INGEST_LOCAL_FILES__ = function (detail) {
-      try { window.__JIUWEN_DROP_QUEUE__.push(detail); } catch (err) {}
+      try {
+        // Same rule as localFilePicker.ts: do not replay a drop into a later
+        // chat when the composer was not mounted.
+        if (document.querySelector('.chat-panel-shell')) {
+          window.__JIUWEN_DROP_QUEUE__.push(detail);
+        }
+      } catch (err) {}
       window.dispatchEvent(new CustomEvent('jiuwen-desktop-local-files', { detail: detail }));
     };
   }
@@ -2912,6 +3033,7 @@ class DesktopRuntime:
             return False
 
         app_executable = Path(sys.executable).resolve()
+        self._update_shutdown_receipt = create_shutdown_receipt(get_infra_data_dir() / ".updates")
 
         if os.name == "nt":
             ok = self._launch_windows_install_helper(target, app_executable)
@@ -2930,7 +3052,7 @@ class DesktopRuntime:
 
     def _launch_macos_install_helper(self, target: Path, app_executable: Path) -> bool:
         parent_pid = os.getpid()
-        updates_dir = get_user_workspace_dir() / ".updates"
+        updates_dir = get_infra_data_dir() / ".updates"
         updates_dir.mkdir(parents=True, exist_ok=True)
 
         if not os.access(updates_dir, os.W_OK):
@@ -2962,6 +3084,7 @@ class DesktopRuntime:
         q_log_file = shlex.quote(str(log_file))
         q_temp_target = shlex.quote(f"{install_target}.new")
         q_old_target = shlex.quote(f"{install_target}.old")
+        q_shutdown_receipt = shlex.quote(str(getattr(self, "_update_shutdown_receipt", "")))
 
         helper_content = f"""#!/bin/bash
 set -e
@@ -2981,6 +3104,9 @@ while kill -0 "{parent_pid}" 2>/dev/null; do
 done
 echo "[helper] parent process exited"
 
+# Confirm resident Runtime shutdown before replacing any installed archive.
+{shlex.quote(str(app_executable))} --desktop-run-worker-lifecycle --shutdown-worker --timeout 30 --shutdown-receipt {q_shutdown_receipt}
+
 # Wait for backend/frontend ports to release
 wait_port_release() {{
     local port=$1
@@ -2993,7 +3119,8 @@ wait_port_release() {{
         fi
         sleep 0.5
     done
-    echo "[helper] warning: port $port ($name) still in use after 15s, proceeding anyway"
+    echo "[helper] port $port ($name) still in use after 15s; keeping installed app"
+    return 1
 }}
 wait_port_release {backend_port} backend
 wait_port_release {frontend_port} frontend
@@ -3089,10 +3216,9 @@ echo "=== install helper finished: $(date) ==="
         )
         return True
 
-    @staticmethod
-    def _launch_linux_install_helper(target: Path, app_executable: Path) -> bool:
+    def _launch_linux_install_helper(self, target: Path, app_executable: Path) -> bool:
         parent_pid = os.getpid()
-        updates_dir = get_user_workspace_dir() / ".updates"
+        updates_dir = get_infra_data_dir() / ".updates"
         updates_dir.mkdir(parents=True, exist_ok=True)
 
         if not os.access(updates_dir, os.W_OK):
@@ -3108,6 +3234,7 @@ echo "=== install helper finished: $(date) ==="
         q_install_dir = shlex.quote(install_dir)
         q_backup_dir = shlex.quote(backup_dir)
         q_executable = shlex.quote(f"{install_dir}/{EXECUTABLE_NAME}")
+        q_shutdown_receipt = shlex.quote(str(getattr(self, "_update_shutdown_receipt", "")))
 
         helper_content = f"""#!/bin/bash
 set -e
@@ -3117,6 +3244,7 @@ while kill -0 "$PARENT_PID" 2>/dev/null; do
 done
 
 BACKUP={q_backup_dir}
+{q_executable} --desktop-run-worker-lifecycle --shutdown-worker --timeout 30 --shutdown-receipt {q_shutdown_receipt}
 if [ -d {q_install_dir} ]; then
     mv {q_install_dir} "$BACKUP"
 fi
@@ -3157,6 +3285,8 @@ nohup {q_executable} >/dev/null 2>&1 &
                 str(self.backend_port),
                 "--frontend-port",
                 str(self.frontend_port),
+                "--shutdown-receipt",
+                str(getattr(self, "_update_shutdown_receipt", "")),
             ],
         )
         logger.info("[desktop] launching update helper: %s", helper_cmd)
@@ -3172,38 +3302,74 @@ nohup {q_executable} >/dev/null 2>&1 &
         with self._lock:
             if self._is_shutting_down:
                 return
+            deadline = time.monotonic() + DESKTOP_SHUTDOWN_TIMEOUT_SECONDS
+            self._shutdown_deadline = deadline
             self._is_shutting_down = True
             self._startup_cancelled.set()
             processes = list(self.processes.values())
 
-        self._abort_all_blob_saves()
-        deadline = time.monotonic() + 30.0
-        logger.info("[desktop] shutting down child processes")
+        try:
+            self._abort_all_blob_saves()
+            shutdown_ok = True
+            logger.info("[desktop] shutting down child processes")
 
-        for process in processes:
-            if process.poll() is None:
-                _terminate_process_tree(process)
+            for process in processes:
+                if process.poll() is None:
+                    try:
+                        _terminate_process_tree(process)
+                    except (OSError, RuntimeError):
+                        shutdown_ok = False
+                        logger.exception("[desktop] service tree cleanup incomplete")
 
-        if processes:
-            # Front restarts detach. The desktop application owns final exit
-            # and upgrade, so it explicitly drains the resident Worker here.
+            # A previous launch may own a resident Worker even before this
+            # application's first service is registered. Final exit owns both.
             from jiuwenswarm.server.supervisor.shutdown import shutdown_resident_worker
             try:
-                asyncio.run(shutdown_resident_worker(timeout=max(.001, deadline - time.monotonic())))
+                result = asyncio.run(
+                    shutdown_resident_worker(
+                        timeout=max(.001, deadline - time.monotonic()),
+                        include_legacy=True,
+                    )
+                )
+                if not isinstance(result, dict) or result.get("ok") is not True:
+                    shutdown_ok = False
+                    logger.error("[desktop] resident Worker final shutdown incomplete: %s", result)
             except Exception:
+                shutdown_ok = False
                 logger.exception("[desktop] resident Worker final shutdown incomplete")
 
-        while time.monotonic() < deadline:
-            if all(process.poll() is not None for process in processes):
-                break
-            time.sleep(0.2)
+            while time.monotonic() < deadline:
+                if all(process.poll() is not None for process in processes):
+                    break
+                time.sleep(0.2)
 
-        for process in processes:
-            if process.poll() is None:
-                _kill_process_tree(process)
+            for process in processes:
+                if process.poll() is None:
+                    shutdown_ok = False
+                    try:
+                        _kill_process_tree(process)
+                    except (OSError, RuntimeError):
+                        logger.exception("[desktop] forced service tree cleanup incomplete")
 
-        with self._lock:
-            self.processes.clear()
+            with self._lock:
+                self.processes.clear()
+            receipt = getattr(self, "_update_shutdown_receipt", None)
+            if receipt is not None:
+                try:
+                    complete_shutdown_receipt(receipt, ok=shutdown_ok)
+                except (OSError, RuntimeError):
+                    logger.exception("[desktop] failed to record update shutdown receipt")
+        finally:
+            self._shutdown_complete.set()
+
+    def shutdown_and_wait(self) -> None:
+        """Finish desktop cleanup before the main thread exits."""
+        self.shutdown()
+        # The owner shares its deadline with the main thread. Allow time after
+        # it for final process cleanup and writing the update receipt.
+        remaining = self._shutdown_deadline + DESKTOP_SHUTDOWN_GRACE_SECONDS - time.monotonic()
+        if not self._shutdown_complete.wait(timeout=max(0.0, remaining)):
+            logger.error("[desktop] shutdown did not complete within the shutdown budget")
 
     @staticmethod
     def _clear_wkwebview_system_cache() -> None:
@@ -3261,9 +3427,10 @@ nohup {q_executable} >/dev/null 2>&1 &
     def run(self, window_title: str, width: int, height: int, debug: bool) -> None:
         self._clear_wkwebview_system_cache()
 
-        storage_path = get_user_workspace_dir() / "tmp" / "webview"
+        storage_path = get_infra_data_dir() / "tmp" / "webview"
         storage_path.mkdir(parents=True, exist_ok=True)
         self._clear_webview_http_cache(storage_path)
+        _install_macos_media_capture_permission(lambda: self.frontend_display_url)
 
         self.window = webview.create_window(
             window_title,
@@ -3602,54 +3769,10 @@ if(bridgeNeverResponded||bridgeStoppedResponding){
 
 
 def _psutil_terminate(pid: int, force: bool = False) -> None:
-    """Terminate a process and all its descendants using psutil.
+    """Signal owned services while preserving resident Worker branches."""
+    from jiuwenswarm.common.process_supervision import signal_service_tree
 
-    Unlike ``taskkill.exe``, this is a pure-Python operation that does not
-    spawn an external console process, avoiding console window flashes on
-    Windows (console=False builds).
-    """
-    try:
-        import psutil
-
-        parent = psutil.Process(pid)
-        # 获取所有子孙进程（在杀父进程之前先拿到完整列表）
-        children = parent.children(recursive=True)
-        # Runtime lives in a separate process session on POSIX. On Windows a
-        # recursive psutil termination must similarly preserve that subtree
-        # during Front/Gateway restart; final exit uses explicit Worker IPC.
-        retained = set()
-        by_pid = {child.pid: child for child in children}
-        for child in children:
-            try:
-                argv = child.cmdline()
-                if "-m" in argv and argv[argv.index("-m") + 1] == "jiuwenswarm.server.worker.main":
-                    retained.add(child.pid)
-            except psutil.NoSuchProcess:
-                pass
-        for child in children:
-            try:
-                ancestor = child.ppid()
-                while ancestor in by_pid and ancestor not in retained:
-                    ancestor = by_pid[ancestor].ppid()
-                if ancestor in retained:
-                    retained.add(child.pid)
-            except psutil.NoSuchProcess:
-                pass
-        kill_fn = (lambda p: p.kill()) if force else (lambda p: p.terminate())
-        # 先杀子孙，再杀父进程，避免子孙变成孤儿
-        for child in reversed(children):
-            if child.pid in retained:
-                continue
-            try:
-                kill_fn(child)
-            except psutil.NoSuchProcess:
-                pass
-        try:
-            kill_fn(parent)
-        except psutil.NoSuchProcess:
-            pass
-    except Exception:  # noqa: BLE001
-        pass
+    signal_service_tree(pid, force=force)
 
 
 def _terminate_process_tree(process: subprocess.Popen[bytes]) -> None:
@@ -3690,6 +3813,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--installer-path", default="", help=argparse.SUPPRESS)
     parser.add_argument("--app-executable", default="", help=argparse.SUPPRESS)
     parser.add_argument("--parent-pid", type=int, default=0, help=argparse.SUPPRESS)
+    parser.add_argument("--shutdown-receipt", default="", help=argparse.SUPPRESS)
     parser.add_argument(
         "--backend-port", type=int, default=BACKEND_PORT, help=argparse.SUPPRESS
     )
@@ -3734,6 +3858,7 @@ def main() -> None:
             args.parent_pid,
             backend_port=args.backend_port,
             frontend_port=args.frontend_port,
+            shutdown_receipt=args.shutdown_receipt,
         )
         return
 
@@ -3758,7 +3883,7 @@ def main() -> None:
             debug=args.debug,
         )
     finally:
-        runtime.shutdown()
+        runtime.shutdown_and_wait()
 
 
 if __name__ == "__main__":

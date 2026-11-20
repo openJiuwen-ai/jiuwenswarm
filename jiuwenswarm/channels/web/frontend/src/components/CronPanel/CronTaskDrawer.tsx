@@ -1,6 +1,7 @@
-import { useState, useRef, ReactNode } from 'react';
+import { useRef, useState, ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { X, Pencil } from 'lucide-react';
+import { deriveDrawerCanSubmit } from './drawerSubmitGuard';
 import ScheduleEditor from './ScheduleEditor';
 import ModelPicker from '../ModelPicker';
 import ModeSelector from './ModeSelector';
@@ -12,10 +13,11 @@ import { normalizeWakeOffsetSeconds } from './cronWakeOffset';
 import { cronExprToSchedule, isOnceScheduleExpired } from './scheduleConvert';
 import { TIMEZONE_OPTIONS } from './constants';
 import { isDefaultLikeProject } from './cronProjectDisplay';
-import { modelNameForSelection } from './cronModelSelection';
+import { modelNameForSelection, resolveCronDefaultHint } from './cronModelSelection';
 import type { CronTaskUI, CronTemplateUI } from '../../types/cron';
 import type { ProjectInfo, WorkMode } from '../../features/workspace/projectTypes';
 import { getProjectDisplayName } from '../../stores/workspaceStore';
+import { isEnterprise } from '../../edition';
 import { useSessionStore } from '../../stores/sessionStore';
 import type { AgentMode, ModelSelection } from '../../types';
 import '../ChatPanel/ChatPanel.css';
@@ -123,12 +125,10 @@ interface CronTaskDrawerProps {
   initial?: CronTaskFormValue;
   projects: ProjectInfo[];
   targetOptions: { value: string; label: string; disabled?: boolean }[];
-  // 主动推荐自动维护的 job（proactive-tick-auto）编辑时锁定：只能改执行计划(cron表达式)和时区，
-  // 其余字段（名称/模型/描述/推送频道/启用）由 Settings/cron_sync 管理，只读展示
-  // （沿用 upstream 提交 59cf6de7 的约束，见 index.tsx handleEditSubmit）
-  proactiveLocked?: boolean;
   onClose: () => void;
   onSubmit: (value: CronTaskFormValue) => void;
+  /** 提交中标记：请求在途时禁用"确认"，防止慢响应窗口内重复点击发出第二个请求（对齐 HeartbeatTaskDrawer） */
+  submitting?: boolean;
   onSwitchToManual?: () => void;
   onSwitchToTemplate?: () => void;
 }
@@ -191,9 +191,9 @@ export default function CronTaskDrawer({
   initial,
   projects,
   targetOptions,
-  proactiveLocked = false,
   onClose,
   onSubmit,
+  submitting = false,
   onSwitchToManual,
   onSwitchToTemplate,
 }: CronTaskDrawerProps) {
@@ -201,6 +201,17 @@ export default function CronTaskDrawer({
   const [form, setForm] = useState<CronTaskFormValue>(initial ?? emptyForm());
   const models = useSessionStore((state) => state.chatAvailableModels);
   const modelsLoaded = useSessionStore((state) => state.modelsLoaded);
+  const defaultModelName = useSessionStore((state) => state.defaultModelName);
+  // 任务未存模型（新建/模板创建未选，或编辑一个本就未下发模型的任务）时，在
+  // picker 下方展示任务触发时实际执行的默认模型说明。仅提示、不写 form：
+  // 提交值保持不携带任何模型字段，「新建任务不借用聊天默认模型」的产品约束
+  // （!5666）不变。任务存了模型时 form 非空，提示自然消失（模型被删的旧任务
+  // 由既有 unavailable 提示接管）。清单加载完成（modelsLoaded）后才判定，
+  // 避免加载中把空目录误报成「未检测到可用模型」。
+  const defaultModelHint =
+    modelsLoaded && !form.modelName && !form.modelSelection
+      ? resolveCronDefaultHint(models, defaultModelName)
+      : null;
   // 有稳定选择按 model_id 核对（重名模型也能正确判定可用性）；旧数据退回名字核对
   const modelUnavailable = modelsLoaded && (form.modelSelection
     ? !models.some((model) => model.model_id === form.modelSelection?.id)
@@ -247,15 +258,13 @@ export default function CronTaskDrawer({
   // 单独提示（而不是塞进"还需要填写"的缺失字段列表里，语义对不上）
   const parsedSchedule = form.cronExpr.trim() ? cronExprToSchedule(form.cronExpr) : null;
   const scheduleAlreadyExpired = parsedSchedule ? isOnceScheduleExpired(parsedSchedule, form.timezone) : false;
-  const canSubmit = missingFieldLabels.length === 0 && !scheduleAlreadyExpired;
+  const canSubmit = deriveDrawerCanSubmit(missingFieldLabels, scheduleAlreadyExpired, submitting);
   const missingFieldsHint =
     missingFieldLabels.length > 0
       ? t('cron.drawer.missingFieldsHint', { fields: missingFieldLabels.join(t('cron.schedule.listSeparator')) })
       : scheduleAlreadyExpired
         ? t('cron.drawer.scheduleAlreadyExpiredHint')
         : undefined;
-  const lockedTitle = proactiveLocked ? (t('cron.autoManagedToggleDisabled') ?? undefined) : undefined;
-
   interface SelectFieldConfig {
     testId: string;
     label: string;
@@ -287,7 +296,7 @@ export default function CronTaskDrawer({
           workMode: matched?.work_mode ?? null,
         });
       },
-      condition: mode !== 'edit',
+      condition: !isEnterprise() && mode !== 'edit',
     },
     {
       testId: 'cron-simple-select-3',
@@ -295,7 +304,6 @@ export default function CronTaskDrawer({
       labelTestId: 'cron-drawer-channel-label',
       value: form.targets,
       options: targetOptions,
-      disabled: proactiveLocked,
       onChange: (v) => setForm({ ...form, targets: v }),
     },
     {
@@ -364,15 +372,6 @@ export default function CronTaskDrawer({
         <div className="flex-1 overflow-y-auto">
           {/* ── Form body ───────────────────────────────────────── */}
           <div className="flex flex-col gap-5">
-            {proactiveLocked && (
-              <p
-                className="rounded-md bg-bg-muted px-3 py-2 text-xs text-text-muted"
-                data-testid="cron-drawer-locked-hint"
-              >
-                {t('cron.autoManagedHint')}
-              </p>
-            )}
-
             {/* Name */}
             <FormTextField
               label={t('cron.drawer.fieldName')}
@@ -395,8 +394,6 @@ export default function CronTaskDrawer({
                   onChange={(e) => setForm({ ...form, name: e.target.value })}
                   placeholder={t('cron.drawer.placeholderInput') ?? undefined}
                   maxLength={CRON_NAME_MAX_LENGTH}
-                  disabled={proactiveLocked}
-                  title={lockedTitle}
                   data-testid="cron-drawer-name-input"
                   className={fieldClass}
                 />
@@ -444,8 +441,6 @@ export default function CronTaskDrawer({
                     placeholder={t('cron.drawer.placeholderInput') ?? undefined}
                     rows={4}
                     maxLength={CRON_DESCRIPTION_MAX_LENGTH}
-                    disabled={proactiveLocked}
-                    title={lockedTitle}
                     data-testid="cron-drawer-description-input"
                     className="w-full resize-none border-0 bg-transparent py-1.5 text-sm text-text outline-none placeholder:text-text-muted disabled:cursor-not-allowed disabled:opacity-50"
                   />
@@ -453,7 +448,7 @@ export default function CronTaskDrawer({
                     className="cron-drawer-mode-model-row flex items-center gap-4 border-border/60"
                     data-testid="cron-drawer-mode-model-row"
                   >
-                    <ModeSelector value={form.mode} onChange={handleModeChange} disabled={proactiveLocked} />
+                    <ModeSelector value={form.mode} onChange={handleModeChange} />
                     <ModelPicker
                       testIdPrefix="cron-model-picker"
                       value={form.modelName}
@@ -467,9 +462,23 @@ export default function CronTaskDrawer({
                         setForm({ ...form, modelSelection, modelName: matchedName });
                       }}
                       includeModelGroups={false}
-                      disabled={proactiveLocked}
+                      excludeFreeModels={isEnterprise()}
                     />
                   </div>
+                  {defaultModelHint && (
+                    <p
+                      className={`min-w-0 break-words text-xs ${defaultModelHint.kind === 'empty' ? 'text-warn' : 'text-text-muted'}`}
+                      role="status"
+                      data-testid="cron-drawer-model-default-hint"
+                      data-kind={defaultModelHint.kind}
+                    >
+                      {defaultModelHint.kind === 'named'
+                        ? t('cron.drawer.modelDefaultHintNamed', { model: defaultModelHint.modelName })
+                        : defaultModelHint.kind === 'generic'
+                          ? t('cron.drawer.modelDefaultHintGeneric')
+                          : t('cron.drawer.modelDefaultHintEmpty')}
+                    </p>
+                  )}
                   {modelUnavailable && (
                     <p
                       className="min-w-0 break-words text-xs text-warn"
@@ -490,7 +499,6 @@ export default function CronTaskDrawer({
               timezone={form.timezone}
               wakeOffsetSeconds={form.wakeOffsetSeconds}
               onWakeOffsetSecondsChange={(wakeOffsetSeconds) => setForm({ ...form, wakeOffsetSeconds })}
-              wakeOffsetDisabled={proactiveLocked}
             />
 
             {/* Effective date (currently hidden, see CRON_EFFECTIVE_DATE_UI_ENABLED) */}
@@ -510,8 +518,6 @@ export default function CronTaskDrawer({
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                disabled={proactiveLocked}
-                title={lockedTitle}
                 onClick={() => setForm({ ...form, enabled: !form.enabled })}
                 data-testid="cron-drawer-enabled-toggle"
                 data-variant={form.enabled ? 'enabled' : 'disabled'}

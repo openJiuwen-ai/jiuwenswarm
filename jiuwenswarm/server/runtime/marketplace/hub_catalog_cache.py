@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 _ALLOWED = frozenset(
     (
-        'catalog_kind items skills success query count source category_id category_name plugin_type '
+        'catalog_kind items skills success query count source category_id category_name plugin_type skill_type '
         'request_id user_id complete has_more total page page_size asset_id kind package_name '
         'display_name short_description public_latest_version icon_uri tags name summary version '
         'author category native_score updated_at is_team_skill short_desc latest_version score '
@@ -51,8 +51,10 @@ def safe_metadata(value, depth=0):
     if depth > 8:
         return None
     if isinstance(value, dict):
-        return {k: safe_metadata(v, depth + 1) for k, v in value.items()
-                if k in _ALLOWED and not _unsafe_url_leaf(v)}
+        # Allowed keys always survive with a blanked value instead of being dropped:
+        # cards promise a fixed field set (e.g. icon_uri), and a signed URL that no
+        # longer fits the cache must read as "no icon", not as a missing key.
+        return {k: safe_metadata(v, depth + 1) for k, v in value.items() if k in _ALLOWED}
     if isinstance(value, (list, tuple)):
         return [safe_metadata(v, depth + 1) for v in value[:10000] if not _unsafe_url_leaf(v)]
     if isinstance(value, str):

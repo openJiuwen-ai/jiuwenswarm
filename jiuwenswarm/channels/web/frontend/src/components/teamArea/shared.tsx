@@ -113,7 +113,7 @@ export type TeamAreaProps = BaseTeamAreaProps &
     }
   );
 
-export type TabType = 'planning' | 'team' | 'artifacts' | 'review' | 'browser';
+export type TabType = 'planning' | 'team' | 'organization' | 'artifacts' | 'review' | 'browser';
 export type TeamDetailTab = 'members' | 'group';
 export type TaskStatus = 'pending' | 'in_progress' | 'completed' | 'cancelled' | 'error';
 export type TaskColumnKey = 'waiting' | 'running' | 'completed' | 'cancelled';
@@ -638,22 +638,7 @@ function getExecutionEventTitle(event: TeamMemberExecutionEvent, t: Translate): 
   return event.title || t('team.process.execution.event');
 }
 
-export function mergeUniqueMessages(messages: Message[]): Message[] {
-  const seen = new Set<string>();
-  const merged: Message[] = [];
-  for (const message of messages) {
-    const event = parseTeamEventMessage(message);
-    const key = event
-      ? ['team', event.type, event.messageId, event.fromMember, event.toMember || '', event.timestamp || '', event.content].join(':')
-      : `${message.id}:${message.content}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    merged.push(message);
-  }
-  return merged;
-}
+export { mergeUniqueMessages } from '../ChatPanel/teamEventUtils';
 
 export function latestUserPrompt(messages: Message[]): string {
   for (let i = messages.length - 1; i >= 0; i -= 1) {

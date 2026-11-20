@@ -152,6 +152,10 @@ class PermissionApprovalInvalidated(ValueError):
     """An approval no longer satisfies the current Host safety checks."""
 
 
+class PermissionRememberUnavailable(ValueError):
+    """A valid approval cannot be represented by a safe reusable rule."""
+
+
 def _check_approval_accesses(
     permissions: dict[str, Any], name: str, args: dict[str, Any],
     root: str | Path | None,
@@ -259,7 +263,7 @@ def persist_exact_permission_allow_rule(
             if level == PermissionLevel.ASK:
                 merged, applied = merge_permission_allow_rule_into_permissions(baseline, name, args)
                 if not applied:
-                    raise PermissionApprovalInvalidated("approval_rule_unavailable")
+                    raise PermissionRememberUnavailable("approval_rule_unavailable")
                 if (merged.get("tools") or {}).get(name) != (baseline.get("tools") or {}).get(name):
                     allow = list(updated.get("allow_tools") or [])
                     if name not in allow:
@@ -286,7 +290,7 @@ def persist_exact_permission_allow_rule(
             except OSError:
                 logger.exception("[PermissionPersist] permission storage failed")
                 return False
-    except PermissionApprovalInvalidated:
+    except (PermissionApprovalInvalidated, PermissionRememberUnavailable):
         if raise_on_invalid:
             raise
         return False

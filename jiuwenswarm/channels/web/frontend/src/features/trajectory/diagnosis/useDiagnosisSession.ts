@@ -65,7 +65,33 @@ export interface DiagnosisSession {
 
 const EMPTY_KEYS: ReadonlySet<string> = new Set();
 
+/** Team sessions often lack team_name until runtime-ready; list then 403s. */
+const LIST_UNSUPPORTED_RETRIES = 3;
+const LIST_UNSUPPORTED_RETRY_MS = 1_500;
+
 type RecordUpdate = DiagnosisRecord | null | ((current: DiagnosisRecord | null) => DiagnosisRecord | null);
+
+function isUnsupportedSessionMode(error: unknown): boolean {
+  return error instanceof TrajectoryApiError && error.code === 'UNSUPPORTED_SESSION_MODE';
+}
+
+function waitForRetry(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted === true) {
+      reject(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      window.clearTimeout(timer);
+      reject(signal?.reason ?? new DOMException('Aborted', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
 
 export function useDiagnosisSession(sessionId: string): DiagnosisSession {
   const { t, i18n } = useTranslation();
@@ -115,13 +141,30 @@ export function useDiagnosisSession(sessionId: string): DiagnosisSession {
 
   const reloadList = useCallback(async (signal?: AbortSignal) => {
     const requestedSession = sessionRef.current;
-    try {
-      const items = await listDiagnoses(requestedSession, signal === undefined ? {} : { signal });
-      if (sessionRef.current !== requestedSession) return;
-      setSummaries([...items].sort((left, right) => right.ordinal - left.ordinal));
-    } catch (error) {
-      if (signal?.aborted === true || sessionRef.current !== requestedSession) return;
-      fail(error);
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        const items = await listDiagnoses(requestedSession, signal === undefined ? {} : { signal });
+        if (sessionRef.current !== requestedSession) return;
+        setSummaries([...items].sort((left, right) => right.ordinal - left.ordinal));
+        return;
+      } catch (error) {
+        if (signal?.aborted === true || sessionRef.current !== requestedSession) return;
+        // Cluster task just started: mode is team but team_name is not persisted yet.
+        // Show the empty diagnosis state instead of "session mode unsupported".
+        if (isUnsupportedSessionMode(error)) {
+          setSummaries([]);
+          if (attempt >= LIST_UNSUPPORTED_RETRIES) return;
+          try {
+            await waitForRetry(LIST_UNSUPPORTED_RETRY_MS, signal);
+          } catch {
+            return;
+          }
+          if (sessionRef.current !== requestedSession) return;
+          continue;
+        }
+        fail(error);
+        return;
+      }
     }
   }, [fail]);
 

@@ -29,6 +29,8 @@ import type {
   RawTeamSkillMarketplaceItem,
 } from './raw';
 import { normalizeEquipmentIdentity, normalizeEquipmentSource } from '../equipmentMarketplace';
+import { getApiBase, resolveApiUrl } from '../../utils/env';
+import { resolveUserId } from '../../utils/userId';
 
 export type SupportedLocale = 'zh' | 'en';
 
@@ -88,6 +90,12 @@ function normalizeTags(tags: RawAgentTag[] | undefined, locale: SupportedLocale)
 
 function normalizeAvatarUrl(value: string | undefined): string | null {
   const avatar = value?.trim() || '';
+  if (avatar.startsWith('/file-api/download?')) {
+    const userId = resolveUserId();
+    const routed = userId ? `${avatar}&user_id=${encodeURIComponent(userId)}` : avatar;
+    const base = getApiBase();
+    return base ? `${base}${routed}` : resolveApiUrl(routed);
+  }
   if (/^(?:https?:|data:image\/)/i.test(avatar)) return avatar;
   return null;
 }

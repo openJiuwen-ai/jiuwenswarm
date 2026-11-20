@@ -258,7 +258,7 @@ async def test_real_deep_agent_routes_needs_input_resume_without_shared_extra(
         ]
     )
     rail = (
-        SymphonyOrchestrationRail(config_base={"symphony": {"enabled": True}})
+        SymphonyOrchestrationRail(config_base={"symphony": {"orchestration": {"enabled": True}}})
         if mode == "agent"
         else _build_symphony_orchestration_rail(
             {}, type("Leader", (), {"role": "leader"})()
@@ -692,7 +692,7 @@ async def test_completed_scope_releases_generation_but_paused_scope_keeps_it() -
 
 def test_agent_and_team_leader_install_the_rail_but_member_does_not() -> None:
     adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
-    adapter._config_base_cache = {"symphony": {"enabled": True}}
+    adapter._config_base_cache = {"symphony": {"orchestration": {"enabled": True}}}
     assert isinstance(
         adapter._build_symphony_orchestration_rail(), SymphonyOrchestrationRail
     )

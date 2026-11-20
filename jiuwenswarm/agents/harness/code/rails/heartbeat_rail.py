@@ -20,6 +20,9 @@ from jiuwenswarm.agents.harness.code.rails.heartbeat.tools import (
     HeartbeatJobService,
     HeartbeatRuntimeBridge,
 )
+from jiuwenswarm.agents.harness.common.tools.tool_discovery_catalog import (
+    apply_discovery_metadata,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +42,7 @@ class HeartbeatRail(DeepAgentRail):
         """Register rail-owned tools on the concrete DeepAgent instance."""
         self._tools = self._runtime.build_tools(context=self._context)
         for tool in self._tools:
+            apply_discovery_metadata(tool.card)
             agent.ability_manager.add_ability(tool.card, tool)
         logger.info(
             "[HeartbeatRail] registered tools: %s",

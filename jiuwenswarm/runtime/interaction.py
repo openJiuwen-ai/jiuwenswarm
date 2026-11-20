@@ -9,10 +9,11 @@ from copy import deepcopy
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
+from agent_gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
 from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.runtime.evolution import (
+    SKILL_EVOLUTION_APPROVAL_SOURCE,
     is_interrupt_evolution_approval_answer_payload,
 )
 
@@ -22,9 +23,12 @@ if TYPE_CHECKING:
 
 _WORK_MODES = frozenset({"work", "code"})
 
+#: The events that ask the user, or the user's client, for an answer the turn waits on.
+USER_INTERACTION_EVENTS = frozenset({"chat.ask_user_question", EventType.CHAT_CLIENT_TOOL_REQUEST.value})
+
 # The id an answer names, per event that asks for one.
 _INTERACTION_ID_KEYS: dict[str, str] = {
-    "chat.ask_user_question": "request_id",
+    **dict.fromkeys(USER_INTERACTION_EVENTS, "request_id"),
     "harness.activate_interaction": "interaction_id",
 }
 
@@ -77,6 +81,39 @@ def validate_answer_items(value: object) -> tuple[Mapping[str, Any], ...]:
     return tuple(result)
 
 
+#: Sources that may legally carry interrupt answers on a ``chat.send``.
+ANSWER_SOURCE_WHITELIST = frozenset(INTERRUPT_RESUME_SOURCES) | frozenset(
+    {SKILL_EVOLUTION_APPROVAL_SOURCE}
+)
+
+
+def validate_answer_source(params: object) -> None:
+    """Reject answers carried under a source no transport defines (#6285).
+
+    A ``chat.send`` with ``request_id`` + ``answers`` but a typo'd/unknown
+    ``source`` is not an interrupt resume: it is classified as a plain turn
+    and queues behind the interaction still waiting for that answer,
+    deadlocking the session without a terminal frame. Rejecting here —
+    before lane admission — guarantees the client an error response.
+    """
+    if not isinstance(params, Mapping):
+        return
+    if not str(params.get("request_id") or "").strip():
+        return
+    answers = params.get("answers")
+    if isinstance(answers, (str, bytes)) or not isinstance(answers, Sequence) or not answers:
+        return
+    source = str(params.get("source") or "").strip()
+    if not source:
+        return
+    if source not in ANSWER_SOURCE_WHITELIST:
+        raise InteractionAnswerError(
+            "params.source must be one of "
+            f"{sorted(ANSWER_SOURCE_WHITELIST)} when answers are present, "
+            f"got {source!r}"
+        )
+
+
 def _trusted_dirs(value: object) -> tuple[str, ...]:
     if isinstance(value, (str, bytes)) or not isinstance(value, Sequence):
         raise InteractionAnswerError("trusted_dirs must be a sequence of strings")
@@ -115,6 +152,7 @@ class InteractionAnswerInput:
     interaction_id: str
     answers: tuple[Mapping[str, Any], ...]
     source: str = ""
+    interrupt_id: str = ""
     approval_schema: str = ""
     evolution_meta: Mapping[str, Any] | None = None
     mode: str = ""
@@ -141,6 +179,7 @@ class InteractionAnswerInput:
         )
         object.__setattr__(self, "answers", validate_answer_items(self.answers))
         object.__setattr__(self, "source", _optional_text("source", self.source))
+        object.__setattr__(self, "interrupt_id", _optional_text("interrupt_id", self.interrupt_id))
         object.__setattr__(
             self,
             "approval_schema",
@@ -195,6 +234,7 @@ class InteractionAnswerInput:
             "query": "" if self.resumes_interrupted_turn else None,
         }
         optional = {
+            "interrupt_id": self.interrupt_id,
             "mode": self.mode,
             "work_mode": self.work_mode,
             "project_dir": self.project_dir,
@@ -222,4 +262,10 @@ class InteractionAnswerInput:
         )
 
 
-__all__ = ["InteractionAnswerError", "InteractionAnswerInput", "asked_interaction_ids", "interaction_ids"]
+__all__ = [
+    "USER_INTERACTION_EVENTS",
+    "InteractionAnswerError",
+    "InteractionAnswerInput",
+    "asked_interaction_ids",
+    "interaction_ids",
+]

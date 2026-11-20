@@ -9,28 +9,27 @@ import json
 import logging
 import os
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
+from agent_gateway.routing.agent_client import (
+    AGENT_REQUEST_TIMEOUT_SECONDS,
+    AgentServerClient,
+)
 
-from jiuwenswarm.common.e2a.constants import (
+from e2a.constants import (
     E2A_RESPONSE_KIND_ACP_OUTPUT_REQUEST,
     E2A_WIRE_SERVER_PUSH_KEY,
 )
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+from e2a.models import E2AEnvelope
+from e2a.wire_codec import parse_agent_server_wire_chunk
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
 from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
     HttpMethodNotHandled,
     assemble_rest_request,
     normalize_agent_http_base,
-)
-from gateway.routing.agent_client import (
-    AGENT_REQUEST_TIMEOUT_SECONDS,
-    AgentServerClient,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,30 +59,18 @@ _CANCELLED_RID_TTL_SECONDS = 2.0
 _PUSH_TERMINATED_EVENT_TYPE = "gateway.push_terminated"
 
 
-@dataclass(frozen=True)
-class _StreamScope:
-    """Session identity used to decide whether a new stream may supersede another."""
-
-    channel: str
-    user_id: str
-    agent_id: str
-    service_id: str
-    workspace_key: str
-    session_id: str
-
-
-async def _assemble_with_allowlist(envelope: E2AEnvelope, api_root: str):
-    """企业版先读库再组头。个人版直接组请求。"""
-    from gateway.enterprise.edition import is_enterprise
+async def _assemble_with_expert_packages(envelope: E2AEnvelope, api_root: str):
+    """企业版按这只 bot 的模板槽组头。个人版直接组请求。"""
+    from agent_gateway.enterprise.edition import is_enterprise
 
     if not is_enterprise():
         return assemble_rest_request(envelope, base_url=api_root)
-    from gateway.enterprise.capabilities.experts.allowlist import bind_outbound_allowlist
-    from gateway.enterprise.config.manager_config.core.application_config.package_allowlist import (
-        read_package_allowlist_packages,
-    )
+    from agent_gateway.enterprise.capabilities.experts.allowlist import bind_outbound_allowlist
+    from agent_gateway.enterprise.capabilities.experts.bound_packages import packages_for_bot
+    from jiuwenswarm.common.request_identity import web_routing_identity
 
-    packages = await read_package_allowlist_packages()
+    bot_id = web_routing_identity(envelope.channel_context).get("bot_id", "")
+    packages = await packages_for_bot(bot_id)
     with bind_outbound_allowlist(packages):
         return assemble_rest_request(envelope, base_url=api_root)
 
@@ -214,8 +201,12 @@ class HttpSseAgentServerClient(AgentServerClient):
         self._push_ready = asyncio.Event()
         self._push_handlers: set[asyncio.Task[None]] = set()
         self._stream_lock = asyncio.Lock()
+        # Only tracks streams that have finished or been explicitly abandoned so
+        # late residual SSE frames of *that* request_id can be dropped. A new
+        # stream must never cancel another in-flight stream: steer/supplemental
+        # chat.send shares the parent session and delivers chat.input_received
+        # on the parent SSE (personal-edition WS multiplexes the same way).
         self._cancelled_request_ids: set[str] = set()
-        self._inflight_stream_ids: dict[str, _StreamScope | None] = {}
         self._link_mtls = link_mtls_config
         # False：连续 TCP 失败后停（企业按 Pod IP）。True：继续重连（开源固定 URL）。
         self._retry_push_connect = retry_push_connect
@@ -364,7 +355,6 @@ class HttpSseAgentServerClient(AgentServerClient):
         self._base_url = None
         self._api_root = None
         self._cancelled_request_ids.clear()
-        self._inflight_stream_ids.clear()
         logger.info("[HttpSseAgentServerClient] 已断开")
 
     async def send_request(
@@ -373,7 +363,7 @@ class HttpSseAgentServerClient(AgentServerClient):
         api_root = self._resolve_api_root(base_url)
         envelope.is_stream = False
         try:
-            assembled = await _assemble_with_allowlist(envelope, api_root)
+            assembled = await _assemble_with_expert_packages(envelope, api_root)
         except HttpMethodNotHandled as exc:
             logger.info(
                 "[E2A][out][http][unary] request_id=%s method=%s 没有 HTTP 处理",
@@ -408,37 +398,13 @@ class HttpSseAgentServerClient(AgentServerClient):
     def _is_stream_cancelled(self, rid: str) -> bool:
         return bool(rid) and rid in self._cancelled_request_ids
 
-    def _stream_scope(self, envelope: E2AEnvelope) -> _StreamScope | None:
-        """Identify a stream by session so shared clients do not cross-cancel."""
-        if not envelope.session_id or not str(envelope.user_id or "").strip():
-            return None
-        return _StreamScope(
-            channel=str(envelope.channel or ""),
-            user_id=str(envelope.user_id or ""),
-            agent_id=str(envelope.agent_id or ""),
-            service_id=str(envelope.service_id or ""),
-            workspace_key=str(envelope.workspace_key or ""),
-            session_id=str(envelope.session_id or ""),
-        )
-
-    def _supersede_other_streams(
-        self, rid: str, scope: _StreamScope | None
-    ) -> None:
-        """Only supersede streams belonging to the same identified session."""
-        if scope is None:
-            return
-        for other, other_scope in list(self._inflight_stream_ids.items()):
-            if other and other != rid and other_scope == scope:
-                self._cancelled_request_ids.add(other)
-                asyncio.create_task(self._delayed_cleanup_cancelled_request_id(other))
-
     async def _mark_stream_cancelled(self, rid: str) -> None:
+        """Mark one finished stream so only *its* late residual frames are dropped."""
         if not rid:
             return
         async with self._stream_lock:
             already = rid in self._cancelled_request_ids
             self._cancelled_request_ids.add(rid)
-            self._inflight_stream_ids.pop(rid, None)
         if not already:
             asyncio.create_task(self._delayed_cleanup_cancelled_request_id(rid))
 
@@ -464,7 +430,7 @@ class HttpSseAgentServerClient(AgentServerClient):
         api_root = self._resolve_api_root(base_url)
         envelope.is_stream = True
         try:
-            assembled = await _assemble_with_allowlist(envelope, api_root)
+            assembled = await _assemble_with_expert_packages(envelope, api_root)
         except HttpMethodNotHandled as exc:
             logger.info(
                 "[E2A][out][http][stream] request_id=%s method=%s 没有 HTTP 处理",
@@ -484,13 +450,8 @@ class HttpSseAgentServerClient(AgentServerClient):
             assembled.url,
             assembled.used_rpc_fallback,
         )
-        # This client is shared across users and Runtime-routed Pods. A new
-        # request must never cancel another session merely by sharing the client.
-        scope = self._stream_scope(envelope)
-        async with self._stream_lock:
-            self._supersede_other_streams(rid, scope)
-            if rid:
-                self._inflight_stream_ids[rid] = scope
+        # Concurrent streams for the same session must coexist (parent chat +
+        # steer short receipt). Never cancel a peer stream when opening another.
         timeout = httpx.Timeout(_STREAM_READ_TIMEOUT, connect=_CONNECT_TIMEOUT_SECONDS)
         try:
             async with http.stream(
@@ -665,7 +626,11 @@ class HttpSseAgentServerClient(AgentServerClient):
 def _raise_for_pod_http_error(
     response: httpx.Response, *, base_url: str | None
 ) -> None:
-    """企业按次指定 Pod 时，5xx/429 抛给编排换 Pod；开源钉死那台仍转成 ok=False。"""
+    """企业按次指定 Pod 时，5xx/429 抛给编排换 Pod；开源钉死那台仍转成 ok=False。
+
+    业务上的「找不到」保持 HTTP 200。HTTP 404 不换机：它也可能是资源不存在，
+    旧进程缺网址靠重启 AgentServer，不靠把 404 解释成这台 Pod 坏了。
+    """
     if not base_url:
         return
     if response.status_code >= 500 or response.status_code == 429:

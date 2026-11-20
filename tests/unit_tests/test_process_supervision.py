@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import importlib
 import signal
 import time
 from types import SimpleNamespace
@@ -21,6 +22,28 @@ from jiuwenswarm.common.process_supervision import (
 _COMMANDS = {"agentserver": ["agentserver"], "gateway": ["gateway"]}
 
 
+@pytest.mark.parametrize("keep_worker,worker_ok,expected", [(False, True, 0), (False, False, 1), (True, False, 0)])
+def test_application_final_exit_owns_worker_unless_launcher_delegates(monkeypatch, keep_worker, worker_ok, expected):
+    import sys
+    from jiuwenswarm.common import utils
+    from jiuwenswarm.server.supervisor import shutdown
+
+    monkeypatch.setattr(utils, "cleanup_stale_openjiuwen_descs", lambda: None)
+    monkeypatch.setattr(utils, "prepare_runtime_workspace", lambda **kwargs: None)
+    monkeypatch.setattr(sys, "argv", ["jiuwenswarm-app"] + (["--keep-worker"] if keep_worker else []))
+    app = importlib.import_module("jiuwenswarm.app")
+    order = []
+    monkeypatch.setattr(app, "supervise", lambda *args: order.append("fronts-stopped") or 0)
+    monkeypatch.setattr(app.signal, "signal", lambda *args: None)
+    monkeypatch.setattr(app, "install_async_dump_handler", lambda *args: None)
+    monkeypatch.setattr(shutdown, "shutdown_application_worker",
+                        lambda **kwargs: order.append("worker-stopped") or worker_ok, raising=False)
+    with pytest.raises(SystemExit) as result:
+        app.main()
+    assert result.value.code == expected
+    assert order == (["fronts-stopped"] if keep_worker else ["fronts-stopped", "worker-stopped"])
+
+
 class _Clock:
     def __init__(self) -> None:
         self.now = 0.0
@@ -37,10 +60,12 @@ class _Clock:
 
 class _FakeProc:
     _next_pid = 1000
+    _instances = {}
 
     def __init__(self, clock: _Clock, exit_at: float | None, code: int) -> None:
         _FakeProc._next_pid += 1
         self.pid = _FakeProc._next_pid
+        _FakeProc._instances[self.pid] = self
         self._clock = clock
         self._exit_at = exit_at
         self._code = code
@@ -80,6 +105,13 @@ def breadcrumb_file(monkeypatch, tmp_path):
     """Keep exit breadcrumbs out of the real logs dir."""
     path = tmp_path / "service_exits.jsonl"
     monkeypatch.setattr(process_supervision, "_breadcrumb_path", lambda: path)
+    _FakeProc._instances.clear()
+
+    def stop_fake_tree(pid, *, timeout):
+        assert pid in _FakeProc._instances, "Unit tests must never signal a real PID"
+        _FakeProc._instances[pid].terminate()
+
+    monkeypatch.setattr(process_supervision, "terminate_service_tree", stop_fake_tree)
     return path
 
 

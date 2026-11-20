@@ -10,6 +10,8 @@ The core goal of Harness Engineering is to build the engineered execution enviro
 
 The globally active RSI optimization package is the default session Harness. Selecting another RSI Harness in session extensions unloads the current version before loading the selection, so only one RSI Harness is effective per session. Clearing the selection restores the global default; omitting the selection retains the current choice. Global version changes preserve explicit session selections, and failed replacements restore the previous version. Ordinary extension packages can still be combined.
 
+New Harness RSI tasks use continuous scores from 0 to 1 with two-stage promotion (`continuous_two_stage_v2`). Each target case must first improve by more than 0.05 over its frozen baseline. One independent full evaluation then requires every target to remain improved, each non-target to regress by no more than 0.05, and the overall mean score to strictly increase. Runtime tool and skill usage and machine verification evidence must also pass their checks. Resumed historical tasks retain their saved configuration without automatic policy migration.
+
 ### 1.1 What Is Harness?
 
 Harness is the engineering control layer of an agent. The model generates reasoning and action intent, while the Harness places that intent into a controlled execution system. In other words, openJiuwen Harness does not replace the model; it supplies the execution, state, constraints, and feedback mechanisms outside the model:
@@ -132,6 +134,8 @@ Different modes are an important runtime policy layer in Harness. `AgentMode` cu
 | Write restrictions | `plan` mode blocks shell/git write operations to avoid modifying the real workspace during planning |
 | File-write restrictions | `write_file` / `edit_file` can only write the plan file in `plan` mode |
 | Sub-agent collaboration | After entering `plan` mode, `task_tool` can be registered dynamically to support planning-time sub-agent exploration |
+
+JiuwenSwarm supports plan approval for both single agents and teams in the Work and Code profiles. Finishing plan generation preserves the pending approval. Execute leaves plan mode and starts implementation; Skip ends only the current turn and keeps plan mode active; revision feedback continues planning. Background queries, such as asset lists and authorization status, neither switch plan mode nor emit plan-exit notifications.
 
 ### 3.5 Context & Memory: Context Engineering and Memory System
 

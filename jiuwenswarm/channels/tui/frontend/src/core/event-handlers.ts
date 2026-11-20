@@ -41,6 +41,7 @@ export interface PendingQuestion {
   planPath?: string;
   planSlug?: string;
   evolutionMeta?: Record<string, unknown>;
+  interruptId?: string;
   questions: PendingQuestionItem[];
 }
 
@@ -51,6 +52,7 @@ export interface PendingQuestionItem {
   multiSelect?: boolean;
   planPath?: string;
   planSlug?: string;
+  /** @deprecated Not recommended for new identity logic; echo until alias retirement. */
   cardId?: string;
 }
 
@@ -65,6 +67,7 @@ export interface PendingQuestionOption {
 export interface UserAnswer {
   selected_options: string[];
   custom_input?: string;
+  /** @deprecated Not recommended for new identity logic; echo until alias retirement. */
   card_id?: string;
 }
 
@@ -545,7 +548,7 @@ function normalizePendingQuestion(payload: Record<string, unknown>): PendingQues
 function boundedCardId(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.trim();
-  return normalized && normalized.length <= 128 ? normalized : undefined;
+  return normalized && normalized.length <= 512 ? normalized : undefined;
 }
 
 function handleDelta(
@@ -1323,6 +1326,10 @@ export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFram
             ? (payload._evolution_meta as Record<string, unknown>)
             : undefined;
       const source = typeof payload.source === "string" ? payload.source : undefined;
+      const interruptId =
+        typeof payload.interrupt_id === "string" && payload.interrupt_id
+          ? payload.interrupt_id
+          : undefined;
       const planApprovalKind =
         typeof payload.plan_approval_kind === "string" ? payload.plan_approval_kind : undefined;
       const planContent =
@@ -1349,6 +1356,7 @@ export function handleIncomingFrame(delegate: AppEventDelegate, frame: EventFram
         planPath,
         planSlug,
         evolutionMeta,
+        interruptId,
         questions,
       });
       delegate.setStreamingState(StreamingState.WaitingForConfirmation);

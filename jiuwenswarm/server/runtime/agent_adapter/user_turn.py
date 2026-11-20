@@ -22,7 +22,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
     HOST_USER_ORIGIN_INTERNAL,
     HOST_USER_PROMPT_PREFIX_EN,
@@ -157,6 +157,11 @@ class UserTurn:
     def with_text(self, text: Any) -> "UserTurn":
         """Return a copy carrying rewritten user text, keeping all context."""
         return replace(self, text=text)
+
+    @property
+    def resolved_skills(self) -> list[str]:
+        """Return this turn's explicit selectors using the prompt's rules."""
+        return self._resolve_skills(self.text)
 
     def render(self) -> Any:
         """Render this turn into the prompt an agent receives.
@@ -306,12 +311,15 @@ class UserTurn:
         """
         if self._prompt_channel() == "agent_session":
             return []
+        from jiuwenswarm.common.builtin_skills import with_builtin_catalog
+        from jiuwenswarm.common.utils import get_agent_skills_dir
+
         if self.skills:
-            return list(self.skills)
+            return with_builtin_catalog(list(self.skills), get_agent_skills_dir())
         if not isinstance(content, str):
             return []
         parsed_skills, _stripped = _handle_skills_use_slash_command(content)
-        return parsed_skills
+        return with_builtin_catalog(parsed_skills, get_agent_skills_dir())
 
     def _sender_fields(self) -> dict[str, str]:
         """Return sender / chat_type fields when the channel reports them."""

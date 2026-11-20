@@ -9,9 +9,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from agent_gateway.common.model_selection import ModelSelection
+
 from jiuwenswarm.common.config import get_config, load_models_config
 from jiuwenswarm.common.model_errors import MODEL_RUNTIME_UNAVAILABLE, MODEL_SELECTION_NOT_FOUND, ModelSelectionError
-from gateway.common.model_selection import ModelSelection
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,16 @@ class ModelCatalog:
                 return group
         raise ModelSelectionError(MODEL_SELECTION_NOT_FOUND, f"unknown model_group_id {group_id!r}")
 
+    def group_display_name(self, group_id: str) -> str:
+        """A model group's display name, falling back to its id.
+
+        The single naming source for every surface that names a model group
+        (runtime state file, team pool metadata, runtime prompt): falling
+        back to the id keeps a catalog miss from ever failing the caller.
+        """
+        group = self.get_group(group_id)
+        return str(group.get("display_name") or "").strip() or group_id
+
     def has_selection(self, selection: ModelSelection) -> bool:
         """Whether a saved selection still names a model, group, and route."""
         if selection.type == "model":
@@ -150,6 +161,22 @@ class ModelCatalog:
         # Normalize only the response; retain the original persisted values.
         client["model_name"] = str(client.get("model_name") or "")
         client["api_base"] = str(client.get("api_base") or "")
+        for key in ("vendor_key", "plan"):
+            if not client.get(key) and key in entry:
+                client[key] = entry[key]
+        # The catalog snapshot comes from get_config(), where resolve_env_vars
+        # has already replaced an exec: reference with its resolved plaintext.
+        # Echoing that would leak the secret, and a later save would overwrite
+        # the reference with stale plaintext. For reference entries only, the
+        # api_key shown to the edit dialog comes from the raw file (the
+        # reference string itself); every other form keeps the resolved-chain
+        # display it always had (see raw_api_key_by_model_id).
+        if expose_api_key and "api_key" in client:
+            from jiuwenswarm.common.config import raw_api_key_by_model_id
+
+            raw_key = raw_api_key_by_model_id(model_id)
+            if raw_key is not None:
+                client["api_key"] = raw_key
         entry["model_client_config"] = client
         write_only_fields: list[str] = []
         if isinstance(client, dict):

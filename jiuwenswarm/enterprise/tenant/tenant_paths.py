@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 # tenant_key 纯契约（_TENANT_KEY_SEP / normalize_tenant_key_part / build_tenant_key）
 # 真源已迁 gateway.common.tenant_key（下载 URL 签验两侧同码）；此处 re-export 保持既有链路。
-from gateway.common.tenant_key import (  # noqa: F401
+from agent_gateway.common.tenant_key import (  # noqa: F401  # pylint: disable=wrong-import-order
     build_tenant_key,
     normalize_tenant_key_part,
 )
@@ -36,9 +36,7 @@ __all__ = [
 
 def get_agent_workspace_relative_dir() -> Path:
     """Relative agent workspace under a tenant root."""
-    from jiuwenswarm.common.utils import get_agent_workspace_dirname
-
-    return Path("agent") / get_agent_workspace_dirname()
+    return Path("agent") / "workspace"
 
 
 def get_agent_root_relative_dir() -> Path:
@@ -99,6 +97,7 @@ def seed_tenant_agent_workspace(tenant_root: Path) -> None:
     from jiuwenswarm.common.utils import (
         _find_package_root,
         _resolve_preferred_language,
+        _uses_jiuwen_memory,
         get_config_file,
     )
 
@@ -118,7 +117,8 @@ def seed_tenant_agent_workspace(tenant_root: Path) -> None:
         )
         return
 
-    resolved_lang = _resolve_preferred_language(get_config_file(), None)
+    config_path = get_config_file()
+    resolved_lang = _resolve_preferred_language(config_path, None)
     suffix = "_ZH" if resolved_lang == "zh" else "_EN"
     # (模板内相对路径, 落盘相对路径)，多语言文件去掉 _ZH/_EN 后缀
     entries: list[tuple[str, str]] = [
@@ -127,8 +127,9 @@ def seed_tenant_agent_workspace(tenant_root: Path) -> None:
         (f"IDENTITY{suffix}.md", "IDENTITY.md"),
         (f"SOUL{suffix}.md", "SOUL.md"),
         ("USER.md", "USER.md"),
-        (f"memory/MEMORY{suffix}.md", "memory/MEMORY.md"),
     ]
+    if not _uses_jiuwen_memory(config_path):
+        entries.append((f"memory/MEMORY{suffix}.md", "memory/MEMORY.md"))
     added: list[str] = []
     for src_rel, dst_rel in entries:
         src = template_workspace / src_rel

@@ -1,6 +1,78 @@
 import asyncio
+import json
 import pytest
 from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import HubCatalogCache
+
+
+@pytest.mark.asyncio
+async def test_skill_type_survives_memory_and_disk_cache(tmp_path):
+    path = tmp_path / 'typed-catalog.sqlite'
+    cache = HubCatalogCache(path)
+    cards = [
+        {'asset_id': 'ordinary', 'plugin_type': 'skill', 'skill_type': 'skill'},
+        {'asset_id': 'pack', 'plugin_type': 'skill', 'skill_type': 'skillpack',
+         'tags': ['openjiuwen-skillpack-v1'], 'short_desc': '[技能包] 站会报告'},
+    ]
+
+    async def loader():
+        yield {'skills': cards, 'items': cards, 'complete': True}
+
+    cache.read('typed', loader)
+    await asyncio.sleep(.02)
+    data, _ = cache.read('typed', loader)
+    assert data['skills'] == cards
+    await cache.close()
+    cache = HubCatalogCache(path)
+    data, state = cache.read('typed', loader)
+    assert state['state'] == 'fresh'
+    assert data['items'] == cards
+    assert data['skills'] == cards
+    await cache.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('operation', ['recommend', 'search'])
+async def test_legacy_untyped_skill_cache_is_refetched(tmp_path, monkeypatch, operation):
+    import jiuwenswarm.server.runtime.marketplace.hub_catalog_cache as module
+    from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+    cache = HubCatalogCache(tmp_path / 'legacy-catalog.sqlite')
+    monkeypatch.setattr(module, 'get_hub_catalog_cache', lambda: cache)
+    manager = SkillManager(workspace_dir=str(tmp_path))
+    monkeypatch.setattr(manager, '_resolve_teamskills_hub_auth_with_env', lambda params: {})
+    calls = []
+
+    async def fetch(path, **kwargs):
+        calls.append(path)
+        return {'items': [{'asset_id': 'pack', 'name': 'Pack', 'plugin_type': 'skill',
+                           'tags': ['openjiuwen-skillpack-v1'], 'short_desc': '[技能包] 站会报告'}]}
+
+    monkeypatch.setattr(manager, '_team_skills_hub_http_post_data', fetch)
+    monkeypatch.setattr(manager, '_team_skills_hub_http_get_data', fetch)
+    original_read = cache.read
+    observed_keys = []
+
+    def read_with_old_cache(key, loader, **kwargs):
+        parts = json.loads(key)
+        assert parts[-1] == 'typed-v1'
+        old_key = json.dumps(parts[:-1], sort_keys=True)
+        if not observed_keys:
+            cache._put(old_key, {'success': True, 'skills': [
+                {'asset_id': 'pack', 'plugin_type': 'skill'}], 'complete': True}, public=True)
+        observed_keys.append(key)
+        return original_read(key, loader, **kwargs)
+
+    monkeypatch.setattr(cache, 'read', read_with_old_cache)
+    handler = (manager.handle_skills_swarm_skills_hub_recommend if operation == 'recommend'
+               else manager.handle_skills_team_skills_hub_search)
+    params = {'cache_mode': 'prefer_cache', 'plugin_type': 'skill', '_catalog_anonymous': True}
+    miss = await handler(params)
+    assert miss['cache']['state'] == 'miss'
+    await asyncio.sleep(.02)
+    hit = await handler(params)
+    assert hit['cache']['state'] == 'fresh'
+    assert hit['skills'][0]['skill_type'] == 'skillpack'
+    assert len(calls) == 1
+    await cache.close()
 
 @pytest.mark.asyncio
 async def test_cold_progress_dedup_and_failure_keeps_old(tmp_path):
@@ -41,7 +113,9 @@ async def test_disk_public_only_and_safe_metadata(tmp_path):
     await cache.close()
     cache = HubCatalogCache(path)
     data, state = cache.read('public', loader)
-    assert data['items'] == [{'asset_id': 'ok'}]
+    # Unsafe values are blanked, not dropped: the allowed key set must stay stable.
+    assert data['items'] == [{'asset_id': 'ok', 'icon': ''}]
+    assert 'secret' not in json.dumps(data)
     data, state = cache.read('private', loader, public=False)
     assert data is None
     await cache.close()
@@ -150,6 +224,63 @@ async def test_recommend_cache_fills_signed_icons_before_persist(tmp_path, monke
     })
     assert hit['cache']['state'] == 'fresh'
     assert hit['skills'][0]['icon_uri'] == data_url
+    await cache.close()
+
+@pytest.mark.asyncio
+async def test_recommend_icon_uri_key_survives_avatar_fill_timeout(tmp_path, monkeypatch):
+    """A card whose avatar is still signed when the fill budget ends may lose its URL, not its key.
+
+    Partial fill mirrors the 20s timeout in HubAvatarCache.fill: converted cards carry a
+    data URL, cancelled cards keep the signed URL that safe_metadata must blank in place.
+    """
+    import jiuwenswarm.server.runtime.marketplace.hub_catalog_cache as module
+    from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+    path = tmp_path / 'partial-icons.sqlite'
+    cache = HubCatalogCache(path)
+    monkeypatch.setattr(module, 'get_hub_catalog_cache', lambda: cache)
+    manager = SkillManager(workspace_dir=str(tmp_path))
+    monkeypatch.setattr(manager, '_resolve_teamskills_hub_auth_with_env', lambda params: {})
+    signed = 'https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/skill.png?signature=secret'
+    data_url = 'data:image/webp;base64,dGVzdA=='
+    card_fields = (
+        'asset_id', 'name', 'display_name', 'summary', 'short_desc', 'version', 'latest_version',
+        'updated_at', 'plugin_type', 'skill_type', 'tags', 'score', 'publisher_name', 'author',
+        'install_count', 'like_count', 'view_count', 'icon_uri', 'category_id', 'category_name',
+    )
+
+    async def post(path, **kwargs):
+        return {
+            'items': [
+                {'asset_id': 'converted', 'name': 'Converted', 'plugin_type': 'skill', 'icon_uri': signed},
+                {'asset_id': 'cancelled', 'name': 'Cancelled', 'plugin_type': 'skill', 'icon_uri': signed},
+                {'asset_id': 'no-icon', 'name': 'NoIcon', 'plugin_type': 'skill'},
+            ]
+        }
+
+    async def partial_fill(cards):
+        # Only the first card finishes before the timeout cancels the rest.
+        cards[0]['icon_uri'] = data_url
+
+    monkeypatch.setattr(manager, '_team_skills_hub_http_post_data', post)
+    monkeypatch.setattr(cache.avatars, 'fill', partial_fill)
+    params = {'top_k': 50, 'plugin_type': 'skill', 'cache_mode': 'prefer_cache', '_catalog_anonymous': True}
+    assert (await manager.handle_skills_swarm_skills_hub_recommend(params))['cache']['state'] == 'miss'
+    await asyncio.sleep(.05)
+    hit = await manager.handle_skills_swarm_skills_hub_recommend(params)
+    assert hit['cache']['state'] == 'fresh' and hit['count'] == 3
+    for card in hit['skills']:
+        assert set(card_fields) <= set(card), card['asset_id']
+    icons = {card['asset_id']: card['icon_uri'] for card in hit['skills']}
+    assert icons == {'converted': data_url, 'cancelled': '', 'no-icon': ''}
+    assert 'secret' not in json.dumps(hit)
+    await cache.close()
+
+    # The persisted snapshot must satisfy the same contract after a restart.
+    cache = HubCatalogCache(path)
+    monkeypatch.setattr(module, 'get_hub_catalog_cache', lambda: cache)
+    reloaded = await manager.handle_skills_swarm_skills_hub_recommend(params)
+    assert reloaded['cache']['state'] == 'fresh'
+    assert {card['asset_id']: card['icon_uri'] for card in reloaded['skills']} == icons
     await cache.close()
 
 @pytest.mark.asyncio

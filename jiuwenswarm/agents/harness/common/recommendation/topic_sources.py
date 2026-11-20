@@ -10,6 +10,7 @@ from collections import Counter
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import lru_cache
 from importlib import resources
 from typing import IO, Any, Protocol, Sequence
 from urllib.parse import urlparse
@@ -25,6 +26,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_page_fetch import (
     fetch_topic_page_sync,
     msn_detail_api_url,
 )
+from .topic_primitives import plain_int as _plain_int
 
 RETRIEVAL_CONFIG_VERSION = "topic-starter-live-retrieval-v3"
 MAX_SEARCH_RESULTS = 5
@@ -38,11 +40,6 @@ SearchFn = Callable[
     Awaitable[tuple[str, list[dict[str, str]]]],
 ]
 FetchFn = Callable[[str, int], Awaitable[dict[str, Any]]]
-
-
-def _plain_int(value: Any) -> bool:
-    # bool is an int subclass; a JSON boolean is never a version or a count.
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 @dataclass(frozen=True, slots=True)
@@ -386,8 +383,30 @@ async def ground_candidates(
     )
     return [result for result in results if result is not None]
 
-CORPUS_VERSION = "topic-starter-corpus-v1"
-CORPUS_RESOURCE = "resources/recommendation/topic_corpus.jsonl"
+CORPUS_VERSION_ZH = "topic-starter-corpus-v2"
+CORPUS_VERSION_EN = "topic-starter-corpus-v2-en"
+CORPUS_RESOURCE_ZH = "resources/recommendation/topic_corpus.jsonl"
+CORPUS_RESOURCE_EN = "resources/recommendation/topic_corpus.en.jsonl"
+# Backward-compatible default. Call sites should use
+# ``corpus_version_for_language`` so the corpus version doubles as the pool's
+# language identity.
+CORPUS_VERSION = CORPUS_VERSION_ZH
+_CORPUS_RESOURCES = {
+    CORPUS_VERSION_ZH: CORPUS_RESOURCE_ZH,
+    CORPUS_VERSION_EN: CORPUS_RESOURCE_EN,
+}
+
+
+def corpus_version_for_language(language: str) -> str:
+    """The immutable corpus version for a UI language (unknown → Chinese)."""
+
+    return (
+        CORPUS_VERSION_EN
+        if str(language or "").strip().lower() == "en"
+        else CORPUS_VERSION_ZH
+    )
+
+
 TOPIC_BUCKETS = frozenset({"生活", "科学", "文化", "实用", "好奇"})
 HOOK_TYPES = frozenset({"surprise", "relatability", "self_curiosity"})
 FRESHNESS_CLASSES = frozenset(
@@ -529,8 +548,13 @@ class StarterHit:
     source_locators: tuple[SourceLocator, ...]
 
 
-def _open_corpus() -> IO[str]:
-    resource = resources.files("jiuwenswarm").joinpath(CORPUS_RESOURCE)
+def _open_corpus(corpus_version: str) -> IO[str]:
+    resource_name = _CORPUS_RESOURCES.get(str(corpus_version))
+    if resource_name is None:
+        raise FixedStarterCorpusError(
+            f"unknown corpus version {corpus_version!r}"
+        )
+    resource = resources.files("jiuwenswarm").joinpath(resource_name)
     return resource.open(encoding="utf-8")
 
 
@@ -584,13 +608,18 @@ def _parse_starter(row: Any, line_number: int) -> FixedStarter:
     return starter
 
 
+@lru_cache(maxsize=8)
 def load_fixed_starter_corpus(
     corpus_version: str,
 ) -> tuple[FixedStarter, ...]:
-    """Load and validate one immutable version of the package-local corpus."""
+    """Load and validate one immutable version of the package-local corpus.
+
+    The corpus is immutable per version, so the parsed tuple is cached; every
+    cold-start serve otherwise re-reads and re-validates the whole file.
+    """
 
     starters: list[FixedStarter] = []
-    with _open_corpus() as handle:
+    with _open_corpus(corpus_version) as handle:
         for line_number, raw_line in enumerate(handle, start=1):
             if not raw_line.strip():
                 raise FixedStarterCorpusError(

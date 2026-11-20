@@ -34,7 +34,7 @@ def _item(path: Path, mime_type: str = "image/png") -> dict:
     return {"type": "image", "path": str(path), "filename": path.name, "mime_type": mime_type}
 
 
-@pytest.mark.parametrize("module_name", ["jiuwenswarm.runtime.session_input", "gateway.runtime.session_input"])
+@pytest.mark.parametrize("module_name", ["jiuwenswarm.runtime.session_input", "agent_gateway.runtime.session_input"])
 @pytest.mark.parametrize("query", [None, "", " ", "compare screenshots"])
 @pytest.mark.parametrize("image_count", [1, 9])
 def test_reference_only_steer_accepts_image_only_without_filesystem_access(
@@ -48,7 +48,7 @@ def test_reference_only_steer_accepts_image_only_without_filesystem_access(
     module.validate_session_input(params)
 
 
-@pytest.mark.parametrize("module_name", ["jiuwenswarm.runtime.session_input", "gateway.runtime.session_input"])
+@pytest.mark.parametrize("module_name", ["jiuwenswarm.runtime.session_input", "agent_gateway.runtime.session_input"])
 @pytest.mark.parametrize("change", [
     {"media_items": "not a list"},
     {"media_items": [{"type": "image", "base64Data": "AAAA"}]},
@@ -73,7 +73,7 @@ def test_reference_only_steer_rejects_unsupported_payload(module_name: str, chan
         module.validate_session_input(params)
 
 
-@pytest.mark.parametrize("module_name", ["jiuwenswarm.runtime.session_input", "gateway.runtime.session_input"])
+@pytest.mark.parametrize("module_name", ["jiuwenswarm.runtime.session_input", "agent_gateway.runtime.session_input"])
 def test_empty_steer_and_image_only_follow_up_still_require_text(module_name: str) -> None:
     module = importlib.import_module(module_name)
     for params in (

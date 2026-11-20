@@ -293,7 +293,7 @@ async def test_original_and_supplemental_quoted_inputs_have_separate_fixed_budge
 @pytest.mark.asyncio
 @pytest.mark.parametrize("agent_origin", ["original", "supplement"])
 async def test_agent_message_body_stays_in_tool_history_instead_of_system_instructions(agent_origin):
-    from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+    from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
     guard, ctx = _guard_and_context()
     marker = {"message_id": "agent-message", "source_session_id": "source-session", "hop_count": 1}
@@ -396,7 +396,7 @@ async def test_native_steer_keeps_hidden_result_as_unfinished_reference(long_rep
 @pytest.mark.asyncio
 @pytest.mark.parametrize("excluded", ["goal", "agent-original", "agent-input", "tool-call", "wrong-tail", "failed", "other-round"])
 async def test_native_reference_never_rewrites_other_authority_or_tool_pairs(excluded):
-    from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+    from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
     guard, ctx = _guard_and_context()
     if excluded == "goal":

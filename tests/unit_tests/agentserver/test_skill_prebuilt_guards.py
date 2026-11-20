@@ -41,8 +41,8 @@ def test_tenant_workspace_defaults_without_key() -> None:
 
     TenantContext.clear()
     path = get_agent_workspace_dir()
-    # 未绑定租户时走个人工作区；企业版目录名由 edition 决定，不另起 service_id 目录。
-    assert path.name in {"workspace", "jiuwenclaw_workspace"}
+    # 未绑定租户时走个人工作区；个人版 / 企业版目录名统一为 workspace。
+    assert path.name == "workspace"
     assert get_agent_skills_dir() == path / "skills"
 
 

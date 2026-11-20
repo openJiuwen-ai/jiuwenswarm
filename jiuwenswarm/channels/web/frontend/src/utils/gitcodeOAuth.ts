@@ -55,6 +55,17 @@ export function getStoredOAuthUser(): OAuthUser | null {
   }
 }
 
+/** Clear the stored Hub authorization used by the publishing drawer. */
+export function clearHubOAuthSession(): void {
+  try {
+    sessionStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(PROVIDER_KEY);
+    sessionStorage.removeItem(USER_KEY);
+  } catch {
+    // sessionStorage unavailable: nothing to clear
+  }
+}
+
 export async function beginHubOAuth(provider: OAuthProvider): Promise<HubOAuthAttempt> {
   const response = await fetch('/marketplace-oauth/hub/start', {
     method: 'POST',
@@ -101,6 +112,8 @@ export async function waitForHubOAuth(
         throw new Error('Hub 登录结果兑换失败，请重新授权；若仍失败请联系 Hub 管理员。');
       throw new Error('授权失败，请重试。');
     }
+    // The request may resolve after the caller aborted the attempt; never store a cancelled result.
+    if (signal?.aborted) throw new DOMException('OAuth cancelled', 'AbortError');
     sessionStorage.setItem(TOKEN_KEY, result.access_token);
     sessionStorage.setItem(PROVIDER_KEY, result.provider);
     if (result.user) {

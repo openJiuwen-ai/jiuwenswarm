@@ -100,6 +100,13 @@ _DEFAULT_TOKENIZER_REPOSITORIES: tuple[_DefaultTokenizerRepository, ...] = (
         "deepseek-v4-flash",
         "deepseek-ai/DeepSeek-V4-Flash",
     ),
+    # ``deepseek-flash`` is the API name, not a delimited variant of
+    # ``deepseek-v4-flash``. An exact entry is required because a family match
+    # is not a trusted token count.
+    _DefaultTokenizerRepository(
+        "deepseek-flash",
+        "deepseek-ai/DeepSeek-V4-Flash",
+    ),
     _DefaultTokenizerRepository(
         "deepseek-ai/deepseek-v4-pro",
         "deepseek-ai/DeepSeek-V4-Pro",

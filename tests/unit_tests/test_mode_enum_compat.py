@@ -14,13 +14,13 @@
 from __future__ import annotations
 
 import pytest
-
-from gateway.common.mode_matrix import DEPRECATION_MAP, deprecate_mode
-from jiuwenswarm.common.schema.message import Mode
-from gateway.message_handler.command_parser.slash_command import (
+from agent_gateway.common.mode_matrix import DEPRECATION_MAP, deprecate_mode
+from agent_gateway.message_handler.command_parser.slash_command import (
     ModeSubcommand,
 )
-from gateway.message_handler.message_handler import ChannelMode
+from agent_gateway.message_handler.message_handler import ChannelMode
+
+from jiuwenswarm.common.schema.message import Mode
 
 
 # ── 三套枚举新成员 ─────────────────────────────────────────────────────

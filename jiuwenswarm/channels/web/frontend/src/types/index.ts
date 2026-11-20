@@ -19,6 +19,7 @@ export type ModelSelection =
   { type: 'model'; id: string; route_id?: never } | { type: 'model_group'; id: string; route_id?: string | null };
 
 export interface Session {
+  type?: 'chat' | 'group_chat';
   session_id: string;
   title: string;
   project_id: string;
@@ -40,7 +41,8 @@ export interface Session {
   /** Legacy server metadata; collaboration is derived from feature settings and model_selection. */
   moa_enabled?: boolean;
   mode: AgentMode;
-  status: SessionStatus;
+  /** WebSocket metadata can omit activity when execution recovery has no current snapshot. */
+  status?: SessionStatus;
   message_count: number;
   created_at: string;
   updated_at: string;
@@ -93,7 +95,7 @@ export type AgentMode =
   | 'team.work.plan'
   | 'team.code.normal'
   | 'team.code.plan';
-export type SessionStatus = 'active' | 'paused' | 'completed' | 'interrupted';
+export type SessionStatus = 'active' | 'paused' | 'completed' | 'interrupted' | 'processing' | 'idle';
 export type Permission = 'default' | 'automatic' | 'full_access';
 
 export type ModelPlan = 'token_plan' | 'coding_plan' | 'custom_api';
@@ -137,6 +139,7 @@ export interface ChatInputProvenance {
 }
 
 export interface ModelEntry {
+  extensions?: { kv_cache?: { mode?: string; [key: string]: unknown }; [key: string]: unknown };
   /** Backend stable model ID. Zen free models may omit this field. */
   model_id?: string;
   model_name: string;
@@ -149,6 +152,8 @@ export interface ModelEntry {
   temperature?: number;
   reasoning_level?: string;
   context_window_tokens?: number;
+  /** Per-request maximum output tokens; null explicitly clears an existing limit. */
+  max_tokens?: number | null;
   /** 同 model_name 组内的默认勾选标识 */
   is_default?: boolean;
   /** 可选别名，用于快捷切换模型（如 "gpt" → "gpt-4o"） */

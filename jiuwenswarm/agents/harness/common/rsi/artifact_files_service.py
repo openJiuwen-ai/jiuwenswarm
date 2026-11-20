@@ -20,6 +20,7 @@ from jiuwenswarm.agents.harness.common.rsi.errors import (
     RsiPathInvalid,
     RsiTaskNotFound,
 )
+from jiuwenswarm.agents.harness.common.rsi.artifact_service import RsiArtifactService
 
 
 _MAX_PREVIEW_BYTES = 10 * 1024 * 1024
@@ -42,20 +43,33 @@ _TEXT_SUFFIXES = {
 class RsiArtifactFilesService:
     """按 RSI tasks 根目录约束读取节点产物目录和文件。"""
 
-    def __init__(self, store: Any) -> None:
+    def __init__(self, store: Any, *, artifact_service: RsiArtifactService | None = None) -> None:
         self.store = store
+        self.artifact_service = artifact_service or RsiArtifactService(store.tasks_root)
 
     def list_files(self, params: dict[str, Any]) -> dict[str, Any]:
         task_id = str(params.get("task_id") or "").strip()
         if not task_id:
             raise RsiBadRequest("task_id 必填")
 
-        target = self._resolve_path(params.get("path"), task_id)
+        artifact_id = str(params.get("artifact_id") or "").strip()
+        if artifact_id:
+            if params.get("path"):
+                raise RsiBadRequest("path 和 artifact_id 只能提供一个")
+            if not _TASK_ID_RE.fullmatch(artifact_id):
+                raise RsiBadRequest("artifact_id 格式无效")
+            self._resolve_task_root(task_id)
+            # Snapshot lookup is read-only: do not use the download service,
+            # which can release the task's active artifact reference.
+            snapshot = self.artifact_service.locate(task_id, artifact_id)
+            target = self._resolve_path(snapshot.path, task_id)
+        else:
+            target = self._resolve_path(params.get("path"), task_id)
         if not target.exists():
             raise RsiArtifactNotFound(f"产物路径不存在: {target}")
         if target.is_file() and target.suffix.lower() == ".zip":
             root = self._materialize_archive(target, task_id)
-            initial_path = self._select_initial_file(root)
+            initial_path = self._select_initial_file(root, prefer_harness=bool(artifact_id))
             candidates = root.rglob("*")
         elif target.is_dir():
             root = target
@@ -215,8 +229,10 @@ class RsiArtifactFilesService:
             return view_root
 
     @classmethod
-    def _select_initial_file(cls, root: Path) -> Path | None:
+    def _select_initial_file(cls, root: Path, *, prefer_harness: bool = False) -> Path | None:
         preferred_names = (
+            "manifest.json", "harness_config.yaml", "harness_config.yml", "README.md",
+        ) if prefer_harness else (
             "main.pdf",
             "main.tex",
             "paper.pdf",
@@ -273,7 +289,14 @@ class RsiArtifactFilesService:
             return "text/plain"
         if suffix == ".csv":
             return "text/csv"
-        return mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        mime = mimetypes.guess_type(path.name)[0]
+        if suffix in _TEXT_SUFFIXES:
+            if mime and (
+                mime.startswith("text/") or mime in {"application/json", "application/xml", "application/javascript"}
+            ):
+                return mime
+            return "text/plain"
+        return mime or "application/octet-stream"
 
 
 def _is_public_path(path: Path, task_root: Path) -> bool:

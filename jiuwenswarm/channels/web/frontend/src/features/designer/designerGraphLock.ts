@@ -1,3 +1,4 @@
+import type { ChatRuntime } from '../../stores/chatStore';
 import { isDesignerPreviewGraph } from './designerBootstrapGraph';
 import { allNodesCompleted } from './designerLayerRun';
 import { DESIGNER_TERMINAL_RUN_STATUSES, isActiveDesignerRun } from './designerRunView';
@@ -9,10 +10,62 @@ import {
 } from './executionGraphTypes';
 
 /**
+ * The leader's round is not over while it streams, while it waits for the
+ * user to answer an ask_user question, or while it is paused: the next send
+ * resumes the paused round against the same graph. `isProcessing` alone is
+ * false in the last two.
+ */
+export function isDesignerLeaderBusy(
+  runtime: Pick<ChatRuntime, 'isProcessing' | 'isPaused' | 'pendingQuestions'> | undefined,
+): boolean {
+  if (!runtime) return false;
+  return runtime.isProcessing || runtime.isPaused || runtime.pendingQuestions.length > 0;
+}
+
+/**
+ * The chat-dock stop control covers the whole leader turn: streaming
+ * (`isProcessing`) and the canvas autorun that turn started
+ * (`trigger_source === 'leader'`). After ``chat.final``, processing is already
+ * false while child nodes keep running, so the stop button must follow the
+ * leader-triggered run as well. Canvas-initiated runs keep their own toolbar.
+ */
+export function isDesignerChatStoppable(params: {
+  isProcessing: boolean;
+  isRunning: boolean;
+  triggerSource?: string | null;
+}): boolean {
+  if (params.isProcessing) return true;
+  return params.isRunning && params.triggerSource === 'leader';
+}
+
+/** Stop control after a click: spinner until the run or leader turn actually ends. */
+export function designerChatStopControl(params: {
+  canStop: boolean;
+  stopPending: boolean;
+}): 'stopping' | 'stop' | 'send' {
+  if (params.stopPending) return 'stopping';
+  if (params.canStop) return 'stop';
+  return 'send';
+}
+
+/**
+ * The canvas model menu stays closed while the chat dock is offering stop
+ * (leader turn, or the in-flight stop click) and while a run is still active.
+ * A single-node rerun is a canvas run: it does not turn the chat send button
+ * into stop, but it is still `running` or `paused`, so the run status covers it.
+ */
+export function isDesignerModelMenuLocked(params: {
+  stopControl: 'stopping' | 'stop' | 'send';
+  runStatus?: string | null;
+}): boolean {
+  return params.stopControl !== 'send' || isActiveDesignerRun(params.runStatus || undefined);
+}
+
+/**
  * The workflow stays read-only from the moment a prompt is sent until its
- * first run finishes. While the design leader is still answering, the graph
- * it is about to fill may be empty or only partly built, so that keeps the
- * lock too. A run that is still going (including a pause between layers)
+ * first run finishes. While the design leader's round is open
+ * (`isDesignerLeaderBusy`), the graph it is about to fill may be empty or only
+ * partly built, so that keeps the lock too. A run that is still going (including a pause between layers)
  * keeps the lock. Any finished run (completed, failed or cancelled) unlocks:
  * a single-node or cascade rerun completes without touching the rest of the
  * graph, so nodes an earlier run left failed, cancelled or unrun must not

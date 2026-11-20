@@ -119,7 +119,7 @@ class SessionRunAdmission:
         state = self._states.get(session_id)
         return bool(state and state.pending_interrupt_ids)
 
-    def pending_interactions(self, session_id: str) -> frozenset[str]:
+    def pending_interaction_ids(self, session_id: str) -> frozenset[str]:
         state = self._states.get(session_id)
         return frozenset(state.pending_interrupt_ids) if state else frozenset()
 

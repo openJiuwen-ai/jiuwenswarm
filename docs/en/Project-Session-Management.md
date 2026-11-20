@@ -11,6 +11,8 @@ The Web channel provides project-scoped session management. Sessions bind to pro
 
 The current implementation adds a `work_mode` dimension to isolate regular work collaboration from code projects. `code` projects support Git status, branch operations, Diff snapshots, live Diff monitoring, and discarding/redoing the last turn's file changes. `work` projects keep the regular project/session behavior.
 
+Expert and expert group chats keep model selections per session. Returning to a session retains its selection, and reloading the page restores it from session metadata. Local choices are also retained when switching sessions before sending a message. The chat selector and outgoing requests use the same model selection. If restoration fails, the page shows an error and temporarily disables sending to avoid using the default model unintentionally.
+
 ### Core Concepts
 
 | Concept | Description |

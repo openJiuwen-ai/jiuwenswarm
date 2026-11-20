@@ -29,6 +29,8 @@ def isolated_agent_dirs(tmp_path, monkeypatch):
 
 QUESTION = {"event_type": "chat.ask_user_question", "request_id": "q-1", "source": "ask_user_interrupt",
             "questions": [{"question": "go?"}]}
+CLIENT_CALL = {"event_type": "chat.client_tool_request", "request_id": "call-a", "interrupt_id": "intr-a",
+               "source": "client_tool_interrupt", "tool_name": "read_page", "client_tool": {"input": {}}}
 
 
 class _Manager(FakeAgentManager):
@@ -47,7 +49,18 @@ class _Manager(FakeAgentManager):
         return None
 
 
-def _web_agent(session_id: str, delivered: list[dict]) -> tuple[JiuWenSwarm, object]:
+class _PausedChild(_IdleChildAdapter):
+    def __init__(self, asked: dict) -> None:
+        super().__init__()
+        self.asked = asked
+
+    def paused_interaction_events(self) -> list[dict]:
+        return [self.asked]
+
+
+def _web_agent(
+    session_id: str, delivered: list[dict], asked: dict = QUESTION,
+) -> tuple[JiuWenSwarm, object]:
     router = _make_adapter(
         _is_session_scoped_adapter=False, _session_adapters={}, _session_adapter_locks={},
         _session_adapter_last_used={}, _session_adapter_versions={}, _session_adapter_reload_failures={},
@@ -58,10 +71,15 @@ def _web_agent(session_id: str, delivered: list[dict]) -> tuple[JiuWenSwarm, obj
     agent._session_manager = SessionManager()
     agent._adapter = router
 
+    async def get_or_create(sid, **_kwargs):
+        return router._session_adapters.setdefault(sid, _PausedChild(asked))
+
+    router._get_or_create_session_adapter = get_or_create
+
     async def process_message_stream(request):
-        router._session_adapters[session_id] = _IdleChildAdapter()
+        router._session_adapters[session_id] = _PausedChild(asked)
         router._session_adapter_last_used[session_id] = 1.0
-        yield AgentResponseChunk(request_id=request.request_id, channel_id=request.channel_id, payload=QUESTION)
+        yield AgentResponseChunk(request_id=request.request_id, channel_id=request.channel_id, payload=asked)
 
     async def deliver_control_input(request):
         delivered.append(request.params)
@@ -73,8 +91,10 @@ def _web_agent(session_id: str, delivered: list[dict]) -> tuple[JiuWenSwarm, obj
     return agent, router
 
 
-async def _paused_then_evicted(session_id: str, delivered: list[dict]) -> tuple[AgentRuntime, _Manager]:
-    agent, router = _web_agent(session_id, delivered)
+async def _paused_then_evicted(
+    session_id: str, delivered: list[dict], asked: dict = QUESTION,
+) -> tuple[AgentRuntime, _Manager]:
+    agent, router = _web_agent(session_id, delivered, asked)
     manager = _Manager(agent)
     runtime = AgentRuntime(agent_manager=manager, initializer=AsyncMock(), plan_controller=FakePlanController(),
                            admission_controller=SessionRunAdmission())
@@ -137,3 +157,26 @@ async def test_a_superseded_pause_lets_its_recreated_agent_go() -> None:
 
     assert retired() is None
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streamed", [False, True])
+async def test_a_client_tool_pause_whose_session_was_evicted_is_read_and_resumed(streamed: bool) -> None:
+    delivered: list[dict] = []
+    session_id = f"document-{streamed}"
+    runtime, _manager = await _paused_then_evicted(session_id, delivered, CLIENT_CALL)
+
+    assert await runtime.pending_interactions(session_id) == [CLIENT_CALL]
+
+    resume = AgentRequest(
+        request_id="resume-1", channel_id="web", session_id=session_id, req_method=ReqMethod.CHAT_SEND,
+        is_stream=streamed, params={"source": "client_tool_interrupt", "answers": [{
+            "request_id": "call-a", "interrupt_id": "intr-a",
+            "result": {"content": [{"type": "text", "text": "page"}], "is_error": False}}]},
+    )
+    if streamed:
+        await asyncio.wait_for(_collect_events(runtime.stream(resume, trigger_hook=False)), 5)
+    else:
+        await asyncio.wait_for(runtime.invoke(resume, trigger_hook=False), 5)
+
+    assert [params["answers"][0]["request_id"] for params in delivered] == ["call-a"]
+    assert await runtime.pending_interactions(session_id) == []

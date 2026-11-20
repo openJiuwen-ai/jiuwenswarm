@@ -84,8 +84,42 @@ def test_builtin_list_skips_invalid_package_without_hiding_valid_package(
 
     assert [item["name"] for item in items] == ["valid"]
     assert items[0]["source"] == "built_in"
-    warning.assert_called_once()
-    assert "broken" in str(warning.call_args)
+    assert any("broken" in str(call) for call in warning.call_args_list)
+
+
+def test_missing_display_fields_fall_back_to_name_and_description(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    package = tmp_path / "mcp" / "mcp_hub" / "arxiv-zh-mcp"
+    _write_json(
+        package / "manifest.json",
+        {
+            "version": "1.0.0",
+            "package_type": "mcp",
+            "id": "arxiv-zh-mcp",
+            "name": "arXiv 中文化",
+            "description": "Translate arXiv LaTeX sources into scholarly Chinese",
+            "integration": {"type": "stdio-mcp", "file": "mcp.json"},
+            "credentials": {"type": "token", "file": "token-schema.json"},
+        },
+    )
+    _write_json(
+        package / "mcp.json",
+        {"mcpServers": {"arxiv-zh-mcp": {"command": "uvx", "args": ["arxiv-zh-mcp"]}}},
+    )
+    _write_json(package / "token-schema.json", {"fields": []})
+    monkeypatch.setattr(registry, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(credential, "get_workspace_dir", lambda: tmp_path)
+
+    summary = next(
+        item
+        for item in registry.list_marketplace_mcps("builtin")
+        if item["name"] == "arxiv-zh-mcp"
+    )
+
+    assert summary["display_name"] == "arXiv 中文化"
+    assert summary["description"] == "Translate arXiv LaTeX sources into scholarly Chinese"
 
 
 def test_oauth_credential_kind_is_supported(tmp_path: Path, monkeypatch) -> None:
@@ -113,3 +147,81 @@ def test_oauth_credential_kind_is_supported(tmp_path: Path, monkeypatch) -> None
     monkeypatch.setattr(credential, "get_workspace_dir", lambda: tmp_path)
 
     assert credential.detect_credential_kind("canva") == credential.KIND_OAUTH
+
+
+def test_list_parses_each_package_manifest_once(tmp_path: Path, monkeypatch) -> None:
+    """One list call resolves every package exactly once (no per-field reloads)."""
+    root = tmp_path / "mcp" / "mcp_builtins"
+    for name in ("alpha", "beta"):
+        package = root / name
+        package.mkdir(parents=True)
+        _write_json(
+            package / "manifest.json",
+            {
+                "version": "1.0.0",
+                "package_type": "mcp",
+                "id": name,
+                "name": name,
+                "description": f"{name} package",
+                "integration": {"type": "skill-only"},
+                "skills": [],
+            },
+        )
+    monkeypatch.setattr(registry, "get_workspace_dir", lambda: tmp_path)
+
+    loads: list[str] = []
+    real_load = package_manifest.load_mcp_package
+
+    def counting_load(path, *args, **kwargs):
+        loads.append(Path(path).name)
+        return real_load(path, *args, **kwargs)
+
+    monkeypatch.setattr(package_manifest, "load_mcp_package", counting_load)
+
+    items = registry.list_marketplace_mcps("builtin")
+
+    assert [item["name"] for item in items] == ["alpha", "beta"]
+    assert loads == ["alpha", "beta"]
+
+
+def test_list_returns_signed_icon_urls_instead_of_inline_images(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """List payloads carry a short URL; the bytes are served by the download API."""
+    from urllib.parse import parse_qs, urlsplit
+
+    from jiuwenswarm.common.file_download_token import WebFileDownloadManager
+    from jiuwenswarm.server.runtime import package_avatars
+    from tests.unit_tests.agentserver.mcp.manifest_helpers import (
+        write_canva_oauth_package,
+    )
+
+    package = write_canva_oauth_package(tmp_path / "mcp" / "mcp_builtins" / "canva")
+    monkeypatch.setattr(registry, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(package_avatars, "get_agent_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        package_avatars,
+        "get_package_avatar_cache_dir",
+        lambda: tmp_path / ".cache" / "package-avatars",
+    )
+    monkeypatch.setattr(
+        WebFileDownloadManager,
+        "_instance",
+        WebFileDownloadManager(secret="mcp-icon-test-secret"),
+    )
+    package_avatars._AVATAR_URL_CACHE.clear()
+
+    summary = next(
+        item for item in registry.list_marketplace_mcps("builtin")
+        if item["name"] == "canva"
+    )
+
+    icon = summary["icon"]
+    assert isinstance(icon, str)
+    assert icon.startswith("/file-api/download?token=")
+    assert icon.endswith("&inline=1")
+    token = parse_qs(urlsplit(icon).query)["token"][0]
+    claims = WebFileDownloadManager.get_instance().validate_token(token)
+    assert claims is not None
+    assert Path(claims["path"]).read_bytes() == (package / "icon.png").read_bytes()

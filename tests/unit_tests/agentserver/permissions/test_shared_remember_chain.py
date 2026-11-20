@@ -108,7 +108,7 @@ async def approve(
         payload = {"approved": approved, "auto_confirm": remember if approved else False}
         if permanent is not None:
             payload["persist_allow"] = permanent
-        answer.update(card.key.invocation_id, payload)
+        answer.update(card.key.tool_call_id, payload)
         reserved = queue.reserve_answer(ctx.session.get_session_id(), answer)
         resumed = context(
             ctx.session.get_session_id(), ctx.inputs.tool_name, ctx.inputs.tool_args,

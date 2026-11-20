@@ -52,6 +52,10 @@ export interface TeamSnapshotMember {
   mode?: string;
   role?: string;
   cli_agent?: string | null;
+  /** 后端把镜像 worker 带进名册时才有；真实成员无此字段。 */
+  workflow_run_id?: string;
+  agent_template?: string | null;
+  display_name?: string | null;
 }
 
 export interface TeamSnapshotTask {

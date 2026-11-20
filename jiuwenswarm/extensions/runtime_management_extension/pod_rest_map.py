@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from typing import Any, Mapping
 from urllib.parse import quote, urljoin
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
+from e2a.models import E2AEnvelope
 
 API_PREFIX = "/api/v1"
 DEFAULT_HTTP_PORT = 8766
@@ -28,6 +28,10 @@ _METHODS_WITHOUT_PARAM_SESSION_ID = frozenset({"session.create"})
 _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("media.persist", "POST", "/sessions/{session_id}/media"),
     ("media.discard", "DELETE", "/sessions/{session_id}/media"),
+    # session.assets.remove 暂不提供 HTTP。 gateway中 DELETE 一条因协议枚举缺失不可达
+    ("session.assets.list", "GET", "/sessions/{session_id}/assets"),
+    ("session.assets.register", "POST", "/sessions/{session_id}/assets"),
+    ("session.assets.rename", "PATCH", "/sessions/{session_id}/assets/{asset_id}"),
     ("document.persist", "POST", "/sessions/{session_id}/documents"),
     ("document.formats", "GET", "/documents/formats"),
     ("file.import_url", "POST", "/sessions/{session_id}/files/import"),
@@ -121,9 +125,20 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("org.snapshot", "GET", "/sessions/{session_id}/organization/snapshot"),
     ("a4p.config.get", "GET", "/a4p/config"),
     ("a4p.config.update", "PUT", "/a4p/config"),
+    ("a4p.authorization.pending", "GET", "/a4p/authorization/pending"),
+    ("a4p.authorization.complete", "POST", "/a4p/authorization/actions/complete"),
+    ("a4p.authorization.reject", "POST", "/a4p/authorization/actions/reject"),
+    ("a4p.authorization.reprepare", "POST", "/a4p/authorization/actions/reprepare"),
     ("team.members.get", "GET", "/sessions/{session_id}/team/members"),
     ("team.history.get", "GET", "/sessions/{session_id}/team/history"),
     ("team.mq.publish", "POST", "/teams/mq/publish"),
+    ("team.create", "POST", "/teams"),
+    ("team.get", "GET", "/teams/current"),
+    ("team.stop", "POST", "/teams/actions/stop"),
+    ("team.member.join", "POST", "/teams/members/join"),
+    ("team.member.leave", "POST", "/teams/members/leave"),
+    ("team.members.list", "GET", "/teams/members"),
+    ("team.quota.get", "GET", "/teams/quota"),
     ("team.delete", "DELETE", "/teams/{team_name}"),
     ("skills.list", "GET", "/skills"),
     ("skills.installed", "GET", "/skills/installed"),
@@ -226,6 +241,7 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("permissions.file_guard.workspace.access.get", "GET", "/permissions/file-guard/workspace/access"),
     ("permissions.file_guard.workspace.access.set", "PUT", "/permissions/file-guard/workspace/access"),
     ("config.cache_clear", "POST", "/config/actions/cache-clear"),
+    ("hub.expert_packages.catalog", "GET", "/hub/expert-packages/catalog"),
     ("agent.reload_config", "POST", "/config/actions/agent-reload"),
     ("sync_agents_configs", "POST", "/config/actions/sync-agents"),
     ("agent.prewarm_sync", "POST", "/config/actions/prewarm-sync"),
@@ -296,7 +312,9 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("project.rename", "PATCH", "/projects/{project_id}"),
     ("project.pin", "POST", "/projects/{project_id}/actions/pin"),
     ("project.remove", "DELETE", "/projects/{project_id}"),
-    # 定时任务创建前问「这个项目现在能不能跑」。长连接里已有同名处理，这里补 HTTP。
+    # 定时任务准入：单项目快照。Gateway 后台 events/inventory 轮询走
+    # /projects/actions/lifecycle（见 _lookup_route / declared_http_routes），
+    # 不能塞进本行，否则 REST_ROUTES 同 method 只能留一条。
     ("project.lifecycle", "POST", "/projects/{project_id}/lifecycle"),
     # Gateway 把 cron 工具结果 / 立即执行 run_id / 任务快照回传 Agent（runtime HTTP）。
     ("cron.command.ack", "POST", "/cron/command-ack"),
@@ -308,6 +326,7 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
 )
 
 REST_ROUTES: dict[str, tuple[str, str]] = {method: (verb, path) for method, verb, path in _ROUTE_ROWS}
+REST_ROUTES["video.conversation.append"] = ("POST", "/sessions/{session_id}/video/conversation/events")
 
 
 class RestAssemblyError(ValueError):
@@ -352,8 +371,12 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
     ``channel_context.ext`` 是白名单过滤后的请求级扩展字段，经内部
     ``X-Jiuwenswarm-Request-Ext`` 传输；该头不承担鉴权。
 
-    企业版另附 ``X-Jiuwenswarm-Package-Allowlist``。值来自发送前读到的库行，
-    不采用 ``channel_context`` 里客户端自带的名单。
+    定时任务的推送真渠道 ``channel_context.targets``（= job.targets）经
+    ``X-Cron-Targets`` 透传；执行侧 ``X-Channel-Id`` 仍可能是 ``__cron__``。
+    Agent 重建为 ``metadata["targets"]``，供 send_file 等按真渠道开关。
+
+    企业版另附 ``X-Jiuwenswarm-Expert-Packages``。值按这只 bot 的专家包模板展开，
+    不用 ``channel_context`` 里客户端自带的字段。
 
     ``gateway_id`` 仅透传保留；Agent 业务（如企业配置 ``RoutingContext``）当前不消费。
     """
@@ -398,24 +421,27 @@ def identity_headers(envelope: E2AEnvelope, *, accept: str) -> dict[str, str]:
     channel_context = (
         envelope.channel_context if isinstance(envelope.channel_context, dict) else {}
     )
+    cron_targets = str(channel_context.get("targets") or "").strip()
+    if cron_targets:
+        headers["X-Cron-Targets"] = cron_targets
     encoded_ext = encode_internal_header(channel_context.get(METADATA_KEY))
     if encoded_ext:
         headers[INTERNAL_HEADER_NAME] = encoded_ext
-    _attach_package_allowlist_header(headers)
+    _attach_expert_packages_header(headers)
     return headers
 
 
-def _attach_package_allowlist_header(headers: dict[str, str]) -> None:
+def _attach_expert_packages_header(headers: dict[str, str]) -> None:
     """企业版写入刚绑定的名单。未绑定时按空名单发送。"""
-    from gateway.enterprise.edition import is_enterprise
+    from agent_gateway.enterprise.edition import is_enterprise
 
     if not is_enterprise():
         return
-    from gateway.enterprise.capabilities.experts.allowlist import (
-        attach_package_allowlist_header,
+    from agent_gateway.enterprise.capabilities.experts.allowlist import (
+        attach_expert_packages_header,
     )
 
-    attach_package_allowlist_header(headers)
+    attach_expert_packages_header(headers)
 
 
 def method_has_http_handler(method: str) -> bool:
@@ -431,9 +457,17 @@ def method_has_http_handler(method: str) -> bool:
     return is_http_chat_method(req_method) or req_method in HANDLERS
 
 
+# Gateway lifecycle_handlers 轮询用：全量 events / inventory，无 project_id。
+_PROJECT_LIFECYCLE_FEED_ROUTE: tuple[str, str] = ("POST", "/projects/actions/lifecycle")
+
+
 def declared_http_routes() -> tuple[tuple[str, str, str], ...]:
     """返回实际要注册的 ``(方法名, 动词, 路径)``。没有处理函数的不出现。"""
     chosen: dict[tuple[str, str], str] = {}
+    # 固定 /projects/actions/... 必须先于 /projects/{project_id}/... 注册，
+    # 否则 Starlette 会把 ``actions`` 当成 project_id。
+    if method_has_http_handler("project.lifecycle"):
+        chosen[_PROJECT_LIFECYCLE_FEED_ROUTE] = "project.lifecycle"
     for method, (verb, path) in REST_ROUTES.items():
         if not method_has_http_handler(method):
             continue
@@ -443,12 +477,21 @@ def declared_http_routes() -> tuple[tuple[str, str, str], ...]:
     return tuple((method, verb, path) for (verb, path), method in chosen.items())
 
 
-def _lookup_route(method: str, *, is_stream: bool) -> tuple[str, str]:
+def _lookup_route(
+    method: str,
+    *,
+    is_stream: bool,
+    params: Mapping[str, Any] | None = None,
+) -> tuple[str, str]:
     if method in {"chat.send", "chat.resume"}:
         path = "/chat/completions" if method == "chat.send" else "/chat/resume"
         return "POST", path
     if method == "history.get" and is_stream and method_has_http_handler(method):
         return "GET", "/sessions/{session_id}/history/stream"
+    if method == "project.lifecycle" and method_has_http_handler(method):
+        feed = params or {}
+        if feed.get("events") or feed.get("inventory"):
+            return _PROJECT_LIFECYCLE_FEED_ROUTE
     found = REST_ROUTES.get(method)
     if found is not None and method_has_http_handler(method):
         return found[0], found[1]
@@ -460,11 +503,11 @@ def _lookup_route(method: str, *, is_stream: bool) -> tuple[str, str]:
 
 def _enterprise_pod_route(method: str) -> tuple[str, str] | None:
     """企业版从 Gateway 企业平面取专家包专用网址。个人版不加载该模块。"""
-    from gateway.enterprise.edition import is_enterprise
+    from agent_gateway.enterprise.edition import is_enterprise
 
     if not is_enterprise():
         return None
-    from gateway.enterprise.capabilities.experts.http_routes import pod_http_routes
+    from agent_gateway.enterprise.capabilities.experts.http_routes import pod_http_routes
 
     return pod_http_routes().get(method)
 
@@ -512,8 +555,12 @@ def assemble_rest_request(envelope: E2AEnvelope, *, base_url: str) -> AssembledR
     if not method:
         raise RestAssemblyError("envelope.method 为空，无法组装 REST")
 
-    verb, template = _lookup_route(method, is_stream=bool(envelope.is_stream))
     values: dict[str, Any] = dict(envelope.params or {})
+    verb, template = _lookup_route(
+        method,
+        is_stream=bool(envelope.is_stream),
+        params=values,
+    )
     if method in _METHODS_WITHOUT_PARAM_SESSION_ID:
         # 勿 setdefault 信封 session_id；并剥掉 params 里误带的客户端临时 id。
         values.pop("session_id", None)

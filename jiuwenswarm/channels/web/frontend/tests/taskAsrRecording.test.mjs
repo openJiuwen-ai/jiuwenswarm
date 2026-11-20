@@ -151,3 +151,16 @@ test('leaving during recording discards the clip and closes microphone and audio
   assert.equal(closed, 1);
   assert.equal(cancelled, 1);
 });
+
+test('unconfigured ASR skips transcription and clears loading without an error', async () => {
+  globalThis.__asrTest.request = async () => ({ text: '', skipped: true, reason: 'ASR_NOT_CONFIGURED' });
+  await act(async () => state.toggleRecording());
+  await act(async () => {
+    state.toggleRecording();
+    await new Promise((done) => setTimeout(done, 20));
+  });
+  assert.equal(state.isRecording, false);
+  assert.equal(state.isTranscribing, false);
+  assert.equal(stopped, 1);
+  assert.deepEqual(errors, []);
+});

@@ -97,7 +97,7 @@ class FakeRegistry:
 
 
 def _make_handler(channel: FakeWebChannel, registry: FakeRegistry):
-    from gateway.channel_manager.web.git_ws_handler import (
+    from agent_gateway.channel_manager.web.git_ws_handler import (
         GitDiffWebSocketHandler,
     )
     return GitDiffWebSocketHandler(channel=channel, registry=registry)

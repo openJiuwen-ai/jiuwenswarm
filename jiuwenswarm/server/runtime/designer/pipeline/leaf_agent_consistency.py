@@ -85,8 +85,14 @@ def hollywood_leaf_instructions(role: str) -> str:
     if r in {"character"}:
         return (
             shared
-            + "ROLE=character sheet. Write ONE positive Qwen-ready studio portrait prompt "
-            "from the locks (name, wardrobe, style). Plain empty backdrop, one person. "
+            + "ROLE=character sheet. Write ONE positive Qwen-ready turnaround prompt "
+            "from the locks (name, wardrobe, style): four views of this one person in one row, "
+            "left to right — a front head-and-shoulders close-up as tall as the sheet, then "
+            "full-body front, side (profile facing left), and back views — on one continuous "
+            "pure white background. The figures stand apart in open white space; the background "
+            "is one unbroken white field, borderless, with no frames and no dividing lines. "
+            "Copy the brief's Visual Style "
+            "wording unchanged. "
             "Fold wardrobe into 'wearing …' prose — no LOCK banners, no forbid lists, no examples. "
             "Then call_image_model with that prompt only. Finish with designer_node_complete "
             "preferring the PNG uri (text notes are optional debug only)."
@@ -125,7 +131,7 @@ def hollywood_leaf_instructions(role: str) -> str:
             "from structured continuity fields only — never paste prior Wan text "
             "into call_video_model; never restage finished speech/action.\n"
             "OPENING HOLDS: if pose_holds / beat_done / crowd_state exist, open the prompt "
-            "already past those beats (e.g. already facing the landmark; crowd already gone "
+            "already past those moments (e.g. already facing the landmark; crowd already gone "
             "or still in background). Never restage a finished turn/exit/onset unless THIS "
             "storyboard row asks to repeat it.\n"
             "Clip API call rules: positive sentences only — no forbid, no 'do not', no already-done, "

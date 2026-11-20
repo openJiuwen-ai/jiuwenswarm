@@ -17,6 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
+from agent_gateway.common.work_mode import SUPPORTED_WORK_MODES
 from jiuwenswarm.server.runtime.session.project_store import file_lock
 
 _HELD_LOCKS = threading.local()
@@ -626,38 +627,126 @@ def write_guard(session_id: str, generation: int | None = None) -> None:
         raise LifecycleError("OPERATION_IN_PROGRESS", "project writes are isolated")
 
 
-def assert_runtime_owner(session_id: str) -> None:
-    """Never move files while another live process owns untracked writers."""
+def _proc_start_ticks(pid: int, *, proc_root: Path = Path("/proc")) -> int | None:
+    """Read Linux/OpenHarmony's PID-reuse-safe start-time counter.
+
+    ``psutil.Process.create_time()`` converts this counter to wall-clock time
+    by reading the global ``/proc/stat`` boot-time record. That record is not
+    readable from some HarmonyOS app sandboxes, while the per-process stat
+    file is still available.
+    """
+    try:
+        text = (proc_root / str(pid) / "stat").read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    closing_paren = text.rfind(")")
+    if closing_paren < 0:
+        return None
+    fields = text[closing_paren + 2:].split()
+    # The slice starts at field 3 (state); field 22 is starttime, index 19.
+    if len(fields) <= 19:
+        return None
+    try:
+        return int(fields[19])
+    except ValueError:
+        return None
+
+
+def _runtime_owner_record(pid: int) -> dict[str, Any]:
+    """Build a runtime-owner record without requiring ``/proc/stat``."""
     import psutil
 
+    owner: dict[str, Any] = {"pid": pid}
+    try:
+        owner["started_at"] = psutil.Process(pid).create_time()
+    except psutil.Error as exc:
+        start_ticks = _proc_start_ticks(pid)
+        if start_ticks is not None:
+            owner["start_ticks"] = start_ticks
+            logger.warning(
+                "runtime owner pid=%s uses /proc/%s/stat fallback; "
+                "psutil create_time unavailable: %s",
+                pid,
+                pid,
+                exc,
+            )
+        else:
+            # The first request may proceed, but later checks fail closed.
+            owner["identity"] = "pid"
+            logger.warning(
+                "runtime owner pid=%s is pid-only; process identity cannot "
+                "be verified in this sandbox: %s",
+                pid,
+                exc,
+            )
+    else:
+        # Keep the kernel counter so a record remains verifiable on a
+        # restrictive HarmonyOS build after being created on a permissive OS.
+        start_ticks = _proc_start_ticks(pid)
+        if start_ticks is not None:
+            owner["start_ticks"] = start_ticks
+    return owner
+
+
+def current_runtime_owner() -> dict:
+    """Return a PID and a PID-reuse-safe process identity."""
+    return _runtime_owner_record(os.getpid())
+
+
+def runtime_owner_alive(owner: dict) -> bool:
+    """Check process identity conservatively when its state cannot be inspected."""
+    import psutil
+
+    try:
+        process = psutil.Process(owner["pid"])
+        owner_start_ticks = owner.get("start_ticks")
+        owner_started_at = owner.get("started_at")
+        if owner_start_ticks is not None:
+            current_start_ticks = _proc_start_ticks(owner["pid"])
+            if current_start_ticks is None:
+                raise LifecycleError(
+                    "OPERATION_IN_PROGRESS",
+                    "cannot verify the previous runtime owner",
+                )
+            if int(current_start_ticks) != int(owner_start_ticks):
+                return False
+        if owner_started_at is not None:
+            try:
+                if abs(process.create_time() - owner_started_at) >= 0.01:
+                    return False
+            except psutil.AccessDenied:
+                if owner_start_ticks is None:
+                    raise
+        if owner_start_ticks is not None or owner_started_at is not None:
+            status = process.status()
+            if status == psutil.STATUS_ZOMBIE:
+                # A zombie group leader may still have threads owning writers.
+                return process.num_threads() > 1
+            return status != psutil.STATUS_DEAD
+        raise LifecycleError(
+            "OPERATION_IN_PROGRESS", "cannot verify the previous runtime owner"
+        )
+    except psutil.NoSuchProcess:
+        return False
+    except psutil.AccessDenied as exc:
+        raise LifecycleError("OPERATION_IN_PROGRESS", "cannot verify the previous runtime owner") from exc
+
+
+def assert_runtime_owner(session_id: str) -> None:
+    """Never move files while another live process owns untracked writers."""
     owner = state("session", session_id).get("runtime_owner")
     if not owner or owner["pid"] == os.getpid():
         return
-    try:
-        process = psutil.Process(owner["pid"])
-        if abs(process.create_time() - owner["started_at"]) < 0.01:
-            raise LifecycleError(
-                "OPERATION_IN_PROGRESS",
-                "another live AgentServer owns the session runtime",
-            )
-    except psutil.NoSuchProcess:
-        return
-    except psutil.AccessDenied as exc:
-        raise LifecycleError(
-            "OPERATION_IN_PROGRESS", "cannot verify the previous runtime owner"
-        ) from exc
+    if runtime_owner_alive(owner):
+        raise LifecycleError("OPERATION_IN_PROGRESS", "another live AgentServer owns the session runtime")
 
 
 def claim_runtime(session_id: str) -> None:
-    import psutil
-
     with resource_lock("session", session_id):
         guard(session_id)
         assert_runtime_owner(session_id)
         value = state("session", session_id)
-        value["runtime_owner"] = dict(
-            pid=os.getpid(), started_at=psutil.Process().create_time()
-        )
+        value["runtime_owner"] = current_runtime_owner()
         save_locked("session", session_id, value)
 
 
@@ -719,7 +808,7 @@ def page(items: list[dict], params: dict, key: str, maximum: int) -> dict:
     work_mode, keyword = params.get("work_mode"), params.get("keyword", "")
     if (
         work_mode is not None
-        and work_mode not in ("work", "code")
+        and work_mode not in SUPPORTED_WORK_MODES
         or not isinstance(keyword, str)
     ):
         raise LifecycleError("BAD_REQUEST", "invalid filter")
@@ -803,3 +892,37 @@ def event_snapshots() -> list[dict]:
             )
         )
     return result
+
+
+def events_feed() -> dict:
+    """Gateway 后台轮询：全量 lifecycle 事件（不需要 project_id）。"""
+    return {"events": event_snapshots()}
+
+
+def inventory_feed() -> dict:
+    """Gateway/运维：项目名单 + 未完成的 lifecycle 残片。"""
+    from jiuwenswarm.server.runtime.session.project_store import list_projects
+
+    payload = {
+        "projects": [
+            dict(
+                project_id=p.project_id,
+                operation=state("project", p.project_id).get("operation"),
+            )
+            for p in list_projects(include_hidden=True, cache_bust=True)
+        ]
+    }
+    known = {item["project_id"] for item in payload["projects"]}
+    directory = get_agent_root_dir() / "lifecycle" / "resources"
+    for path in directory.glob("project_*.json") if directory.exists() else ():
+        operation = read_json(path).get("operation") or {}
+        project_id = operation.get("resource_id")
+        if (
+            project_id
+            and project_id not in known
+            and operation.get("status") != "completed"
+        ):
+            payload["projects"].append(
+                dict(project_id=project_id, operation=operation)
+            )
+    return payload

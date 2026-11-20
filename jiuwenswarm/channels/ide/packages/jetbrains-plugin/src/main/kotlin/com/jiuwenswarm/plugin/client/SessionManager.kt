@@ -209,6 +209,7 @@ class SessionManager(
         answers: com.google.gson.JsonArray,
         source: String,
         mode: String,
+        interruptId: String = "",
     ): Boolean {
         val sid = sessionId ?: return false
         val msg = buildJsonObject {
@@ -222,6 +223,7 @@ class SessionManager(
                 add("answers", answers)
                 addProperty("source", source)
                 addProperty("mode", mode)
+                if (interruptId.isNotEmpty()) addProperty("interrupt_id", interruptId)
             })
         }
         return ws.send(msg)

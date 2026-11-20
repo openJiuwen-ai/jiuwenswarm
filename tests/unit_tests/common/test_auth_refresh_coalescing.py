@@ -1,15 +1,16 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 
 import pytest
 
-from gateway.auth import service as service_mod
-from gateway.auth import session_store as store_mod
-from gateway.auth.account_kit import Credential, LoginOutcome
-from gateway.auth.service import REFRESH_AHEAD_S, AuthService, ModelAuthRequired
+from agent_gateway.auth import service as service_mod
+from agent_gateway.auth import session_store as store_mod
+from agent_gateway.auth.account_kit import Credential, LoginOutcome
+from agent_gateway.auth.service import REFRESH_AHEAD_S, AuthService, ModelAuthRequired
 
 
 @pytest.fixture
@@ -111,20 +112,24 @@ def test_failed_early_refresh_keeps_the_still_valid_token(store):
 
 
 def test_different_users_refresh_in_parallel(store):
-    flow = CountingFlow(delay=0.05)
+    barrier = threading.Barrier(3)
+
+    class ParallelFlow(CountingFlow):
+        def refresh(self, credential):
+            # All users must enter refresh before any request can complete.
+            barrier.wait(timeout=10)
+            return super().refresh(credential)
+
+    flow = ParallelFlow(delay=0)
     service = AuthService(flow=flow, store=store)
     sessions = [store.create(_outcome(user_id=u)) for u in ("openid-1", "openid-2", "openid-3")]
 
-    started = time.monotonic()
-    threads = [threading.Thread(target=service.try_refresh, args=(s,)) for s in sessions]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join(timeout=15)
-    elapsed = time.monotonic() - started
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        futures = [executor.submit(service.try_refresh, session) for session in sessions]
+        results = [future.result(timeout=15) for future in futures]
 
     assert flow.calls == 3, "三个不同账号各刷一次"
-    assert elapsed < 0.13, f"不同账号被互相阻塞了（耗时 {elapsed:.3f}s）"
+    assert all(result is not None and result.credential.id_token == "id-new" for result in results)
 
 
 def test_fresh_token_is_not_refreshed(store):

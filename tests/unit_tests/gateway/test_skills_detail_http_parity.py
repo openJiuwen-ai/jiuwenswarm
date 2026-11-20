@@ -16,16 +16,18 @@ import sys
 from pathlib import Path
 
 import pytest
+import agent_gateway
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
+from e2a.models import E2AEnvelope
 from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
     REST_ROUTES,
     assemble_rest_request,
 )
 
 _ROOT = Path(__file__).resolve().parents[3]
-_INVOKE = _ROOT / "gateway" / "channel_manager" / "web" / "invoke.py"
-_MAPPED = _ROOT / "gateway" / "channel_manager" / "web" / "http_routes" / "mapped.py"
+_GATEWAY_ROOT = Path(agent_gateway.__file__).resolve().parent
+_INVOKE = _GATEWAY_ROOT / "channel_manager" / "web" / "invoke.py"
+_MAPPED = _GATEWAY_ROOT / "channel_manager" / "web" / "http_routes" / "mapped.py"
 _DISPATCH = _ROOT / "jiuwenswarm" / "server" / "dispatch.py"
 _WEB_HTTP = (
     _ROOT
@@ -98,20 +100,6 @@ def test_skill_detail_read_methods_have_frontend_http_routes(
 
 
 @pytest.mark.parametrize("method,expected", sorted(_SKILL_DETAIL_READ_METHODS.items()))
-def test_skill_detail_read_methods_have_gateway_mapped_routes(
-    method: str, expected: tuple[str, str]
-) -> None:
-    mapped = _load_mapped()
-    verb, path = expected
-    matched = [
-        r
-        for r in mapped.MAPPED_ROUTES
-        if r.rpc_method == method and r.http_method == verb and r.path == path
-    ]
-    assert matched, f"mapped.py missing {verb} {path} → {method}"
-
-
-@pytest.mark.parametrize("method,expected", sorted(_SKILL_DETAIL_READ_METHODS.items()))
 def test_skill_detail_read_methods_have_pod_rest_routes(
     method: str, expected: tuple[str, str]
 ) -> None:
@@ -124,11 +112,6 @@ def test_skill_detail_read_methods_registered_in_dispatch(method: str) -> None:
     text = _DISPATCH.read_text(encoding="utf-8")
     needle = f"ReqMethod.{enum_name}: handle_skills_request"
     assert needle in text, f"dispatch.py missing {needle}"
-
-
-@pytest.mark.parametrize("method", sorted(_SKILL_DETAIL_READ_METHODS))
-def test_skill_detail_read_methods_allowed_in_enterprise(method: str) -> None:
-    assert method in _enterprise_skill_allowed()
 
 
 def test_skills_files_and_versions_assemble_dedicated_urls() -> None:

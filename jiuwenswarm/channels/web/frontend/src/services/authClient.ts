@@ -70,7 +70,7 @@ export class AuthApiError extends Error {
   }
 }
 
-function readStoredSessionId(): string {
+export function readStoredSessionId(): string {
   try {
     return localStorage.getItem(SESSION_STORAGE_KEY) || '';
   } catch {

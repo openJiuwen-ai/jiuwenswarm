@@ -59,6 +59,14 @@ test('undeclared OAuth placeholders are package errors, not login failures', () 
   assert.equal(publishFailureKey({ code: 'AUTH_REQUIRED' }), 'authRequired');
 });
 
+test('unavailable SkillPack member versions retain a safe actionable error', () => {
+  assert.equal(publishIssueKey('SKILLPACK_MEMBER_UNAVAILABLE'), 'packMemberUnavailable');
+  assert.equal(
+    publishFailureKey({ payload: { error: { code: 'SKILLPACK_MEMBER_UNAVAILABLE' } } }),
+    'packMemberUnavailable',
+  );
+});
+
 test('Hub MCP validation rejection remains an actionable safe error', () => {
   assert.equal(publishIssueKey('invalid_agent_mcp'), 'invalidAgentMcp');
   assert.equal(

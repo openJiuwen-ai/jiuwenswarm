@@ -15,11 +15,11 @@ export interface DiagnosisSelectionBarProps {
   onNoteChange: (value: string) => void;
   /** Agents in the pick; `0` when nothing is picked. */
   pickedAgents: number;
-  /** OTel spans contained whole by the pick (start and end both covered). */
+  /** Nodes contained whole by the pick (start and end both covered). */
   pickedNodes: number;
   /** Shown when the pick contains the main agent's last turn. */
   lastTurnNotice: string | null;
-  /** Shown when the pick contains more OTel spans than a diagnosis may cover. */
+  /** Shown when the pick contains more nodes than a diagnosis may cover. */
   nodeLimitNotice: string | null;
   /** Shown after Start when the pick contains no complete OTel span. */
   emptyNodesNotice: string | null;

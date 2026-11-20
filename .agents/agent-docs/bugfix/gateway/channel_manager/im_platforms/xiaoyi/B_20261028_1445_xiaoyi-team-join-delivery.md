@@ -5,11 +5,11 @@ id: B_20261028_1445_xiaoyi-team-join-delivery
 title: 小艺成员加入团队后仅在通知栏收到 Team Leader 消息
 type: B
 modules:
-  - gateway/channel_manager/im_platforms/xiaoyi
-  - gateway/message_handler
+  - agent_gateway/channel_manager/im_platforms/xiaoyi
+  - agent_gateway/message_handler
 files:
-  - gateway/channel_manager/im_platforms/xiaoyi/xiaoyi_connect.py
-  - gateway/message_handler/join_exit_handlers.py
+  - agent_gateway/channel_manager/im_platforms/xiaoyi/xiaoyi_connect.py
+  - agent_gateway/message_handler/join_exit_handlers.py
   - tests/unit_tests/gateway/test_xiaoyi_team_delivery.py
 designs: []
 design_note: 当前团队席位和 fan-out 契约未变化，本次仅修复小艺平台任务生命周期。

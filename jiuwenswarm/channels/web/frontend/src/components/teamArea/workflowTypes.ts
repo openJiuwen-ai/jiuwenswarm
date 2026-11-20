@@ -208,6 +208,8 @@ export interface WorkflowRun {
   budget_exhausted_scope?: 'session' | 'workflow' | null;
   /** 'relaunch' = script-edit re-run (replace the phase tree); 'resume' = normal pause→resume. */
   relaunch_kind?: 'relaunch' | 'resume' | null;
+  /** Member name currently hosting the run (leader included); null/absent = no team context (no badge). */
+  executor?: string | null;
   /** Absent on list summaries from ``action=list``. */
   phases?: WorkflowPhase[];
   detail_pending?: boolean;
@@ -375,6 +377,18 @@ export function workflowAgentIdentity(
 /** Label the tree / task cards show for a node: always the call label, same as the mirrored roster. */
 export function workflowAgentDisplayName(agent: Pick<WorkflowAgent, 'name' | 'display_name'>): string {
   return agent.name;
+}
+
+/**
+ * The node's hover full name: ``wf_<runid>:<agent id>`` — the engine's
+ * resume-stable per-node id (a call key such as ``[["par", 0, 0], ["call", 0]]``
+ * on one-shot operators), the only sound way to tell same-label nodes apart.
+ */
+export function workflowAgentFullName(
+  agent: Pick<WorkflowAgent, 'id'>,
+  runId?: string | null,
+): string {
+  return runId ? `${runId}:${agent.id}` : agent.id;
 }
 
 /** String the avatar illustration is hashed from — the call label, same as the mirrored member list. */
@@ -862,6 +876,53 @@ export function findWorkflowAgent(
     if (agent) return { workflow, phase, agent };
   }
   return null;
+}
+
+/**
+ * Whether a run reached a terminal state (completed / failed / stopped).
+ * Terminal runs emit no further progress events; the exception is a script
+ * relaunch, which reuses the same run_id and flips it back to running.
+ */
+export function isWorkflowRunEnded(status: WorkflowStatus): boolean {
+  return status === 'completed' || status === 'failed' || status === 'stopped';
+}
+
+/**
+ * Split runs into active (still progressing) and ended, preserving the
+ * incoming order inside each section. The store keeps runs newest-first;
+ * the tree view pins the active section on top and folds the ended one
+ * below a divider so finished runs stop burying live ones.
+ */
+export function partitionWorkflowRunsByLiveness(
+  runs: WorkflowRun[],
+): { active: WorkflowRun[]; ended: WorkflowRun[] } {
+  const active: WorkflowRun[] = [];
+  const ended: WorkflowRun[] = [];
+  for (const run of runs) {
+    (isWorkflowRunEnded(run.status) ? ended : active).push(run);
+  }
+  return { active, ended };
+}
+
+/**
+ * Order runs for the tree view: active section first, a 'divider' marker, then
+ * the ended section (marker only when both sections are non-empty). The marker
+ * exists so the caller can render the boundary inside ONE keyed list — React
+ * preserves component state only among siblings of the same list, so mapping
+ * the two sections as separate arrays would remount every run crossing the
+ * boundary and drop its toast / modal / phase-tree state.
+ */
+export function orderRunsForTreeView(runs: WorkflowRun[]): {
+  items: Array<WorkflowRun | 'divider'>;
+  activeCount: number;
+  endedCount: number;
+} {
+  const { active, ended } = partitionWorkflowRunsByLiveness(runs);
+  const items: Array<WorkflowRun | 'divider'> =
+    active.length > 0 && ended.length > 0
+      ? [...active, 'divider', ...ended]
+      : [...active, ...ended];
+  return { items, activeCount: active.length, endedCount: ended.length };
 }
 
 // ── 循环检测工具 ──────────────────────────────────────────

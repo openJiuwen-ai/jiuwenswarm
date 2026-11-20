@@ -242,7 +242,39 @@ If not using `tiered_policy`, typically **only** `external_directory` is updated
 
 ---
 
-## 9. See Also
+## 9. JiuwenMate Tool Approvals in Feishu and DingTalk
+
+When a tool needs human confirmation, JiuwenMate sends an approval notice to the original conversation. Only the original initiator can decide through the original application and conversation:
+
+- For one pending approval containing one tool call, reply `approve` or `reject` (Chinese equivalents are supported).
+- For multiple calls, copy a complete command from the notice. Only the selected call is approved; all remaining calls are rejected. `reject APPROVAL_ID` rejects the entire batch.
+- Invalid, missing, processed and expired approvals receive explicit feedback. Approvals expire after 15 minutes and are rejected on expiry.
+- Approval replies bypass the business queue. Other business messages remain queued with a reminder to resolve the pending approval.
+- Redelivery of an approval message cannot execute the operation twice or approve a later interruption.
+
+In Feishu and DingTalk groups, you may mention the employee before the command, for example `@employee approve APPROVAL_ID`. For a single call, `APPROVAL_ID` alone also approves that exact operation. `APPROVAL_ID TOOL_CALL_ID`, `approve TOOL_CALL_ID` or `TOOL_CALL_ID` select one call; a tool-only reference requires one unambiguous pending approval. If several employees have pending approvals, mention the intended employee or include the approval ID. Other employees do not send a “no pending approval” reply to an unaddressed group command. These shortcuts retain all initiator, application, conversation and expiry checks; cross-group disclosure still needs the owner's Web approval.
+
+Reference-only shortcuts are recognized only when the current initiator and route have a pending approval, the message matches a saved approval-reply record, or the platform confirms a mention of the receiving employee. Otherwise, text such as `123456abcdef` or `call-me-later` follows the normal business-message path, including group archiving.
+
+Group messages older than the employee's current readable-history boundary are ignored before they become tasks or approval decisions. If access is lost while an accepted request waits or resumes, the request ends with a specific permission/history notice, retained in its WorkSwarm request view even if delivery to the original channel fails. Ordinary group traffic refreshing membership verification does not itself revoke access.
+
+Publishing a permission profile affects new requests only. Switching to full access does not approve an existing paused operation. Explicit approval or rejection resumes the original request with its original configuration. Tool execution confirmation is separate from Feishu or DingTalk application permissions and user OAuth authorization.
+
+## 10. JiuwenMate cross-group sharing approval
+
+Searching another group's messages creates a private approval in the **Agent owner's Web workspace → Private chat → Cross-group sharing approvals**. The card shows the requester, sources, destination, query and proposed content. The original IM conversation receives only a waiting notice; its requester cannot approve their own disclosure.
+
+- **Approve once** releases only the frozen result for this request and query, excluding later messages and other queries.
+- **Always approve** permits future sharing from those sources to the same group or private recipient. The owner can revoke it in the grants table below the cards.
+- **Reject** shares none of the proposed content. Pending approvals expire after 15 minutes and are rejected.
+
+Approval resumes the original request. Source access changes, message edits or recalls and revoked grants are rechecked before reading and delivery; blocked content and files are not sent. Full tool access and ordinary tool approvals do not replace owner consent.
+
+This gate protects group search and the associated request's delivery. It does not erase previously disclosed history or turn unrestricted Bash into an OS sandbox.
+
+For Feishu and DingTalk, a confirmed platform delivery stays delivered when consent later expires. Local archive reconciliation preserves an existing bot message with the same platform, group and receipt ID, including platform edits; it does not resend or overwrite that message. If consent is no longer valid and no platform record is available, the archive keeps a restricted-content notice stating that the message was previously delivered. A notice actually sent instead of blocked content remains unchanged. New reads, sharing and handoffs still require valid authorization.
+
+## 11. See Also
 
 - [Configuration](Configuration.md): `JIUWENSWARM_CONFIG_DIR`, configuration file location.
 - [CLI Commands](CLI.md): CLI/TUI entry points (including slash commands).

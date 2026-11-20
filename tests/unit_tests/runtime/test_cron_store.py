@@ -3,10 +3,10 @@
 import asyncio
 
 import pytest
+from agent_gateway.common.model_selection import ModelSelection
+from agent_gateway.runtime.cron.store import CronJobStore
 
-from gateway.common.model_selection import ModelSelection
 from jiuwenswarm.common.model_catalog import ModelCatalog
-from gateway.runtime.cron.store import CronJobStore
 from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
 
 
@@ -78,7 +78,7 @@ async def test_model_selection_preserved_when_not_overridden_by_name(
         })
         resolver = ModelSelectionResolver(catalog)
         monkeypatch.setattr(
-            "gateway.common.model_routing_registry.ModelSelectionResolver",
+            "agent_gateway.common.model_routing_registry.ModelSelectionResolver",
             lambda: resolver,
         )
         patch.update(model_name="new-config-model", model_selection=selection)

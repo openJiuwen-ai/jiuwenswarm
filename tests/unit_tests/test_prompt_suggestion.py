@@ -15,7 +15,6 @@ from typing import Any, AsyncIterator
 from uuid import uuid4
 
 import pytest
-
 from openjiuwen.core.common.constants.constant import INTERACTION
 from openjiuwen.core.foundation.llm import (
     AssistantMessage, ModelClientConfig, ModelRequestConfig, ToolCall, ToolMessage, UserMessage,
@@ -25,12 +24,17 @@ from openjiuwen.core.foundation.llm.schema.message_chunk import AssistantMessage
 from openjiuwen.core.foundation.tool import ToolCard
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.session import InteractiveInput
+from openjiuwen.core.session.checkpointer import CheckpointerFactory
+from openjiuwen.core.session.checkpointer.inmemory import InMemoryCheckpointer
 from openjiuwen.core.single_agent.agents.react_agent import ReActAgent
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, AgentRail, ModelCallInputs
 from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 from openjiuwen.harness import DeepAgent, create_deep_agent
 from openjiuwen.harness.schema.interaction import SendInputRequest
 from openjiuwen.harness.schema.state import DeepAgentState, PlanModeState
+from agent_gateway.channel_manager.base import RobotMessageRouter
+from agent_gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
+from agent_gateway.message_handler.message_handler import MessageHandler
 
 from jiuwenswarm.agents.harness.common.rails.ask_user_rail import StructuredAskUserRail
 from jiuwenswarm.agents.harness.common.recommendation import prompt_suggestion, topic_controls
@@ -38,9 +42,6 @@ from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import P
 from jiuwenswarm.agents.harness.common.recommendation.topic_starter import TopicStarterStore
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
-from gateway.channel_manager.base import RobotMessageRouter
-from gateway.channel_manager.web.web_connect import WebChannel, WebChannelConfig
-from gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.server.gateway_push.transport import WebSocketGatewayPushTransport
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
@@ -49,6 +50,28 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmD
 from jiuwenswarm.server.runtime.session import session_history
 
 SESSION = "web_suggestion_session"
+
+
+def test_current_suggestions_recovers_only_latest_unconsumed_candidates(tmp_path, monkeypatch) -> None:
+    store = TopicStarterStore(tmp_path / "recovery.db")
+    monkeypatch.setattr(prompt_suggestion, "consent_epoch", lambda: 0.0)
+    monkeypatch.setattr(prompt_suggestion, "_latest_completed_request", lambda session_id: "request-1")
+    candidate = {"session_id": SESSION, "request_id": "request-1", "suggestion_id": "a" * 32,
+                 "text": "Compare these options", "outcome": "candidate"}
+    row = {"session_id": SESSION, "slate_id": "prompt-suggestion:request-1",
+           "topic_id": "prompt-suggestion:" + "a" * 32, "policy_id": POLICY_ID,
+           "event_type": "prompt_suggestion_generation", "created_at": 10.0, "payload": candidate}
+    assert store.record_event(row)
+    response = prompt_suggestion.current_suggestions(store, SESSION)
+    assert response["enabled"] is True
+    assert response["suggestions"][0]["text"] == "Compare these options"
+    assert prompt_suggestion.current_suggestions(store, "other-session")["suggestions"] == []
+    assert store.record_event({**row, "event_type": "prompt_suggestion_ignored"})
+    assert prompt_suggestion.current_suggestions(store, SESSION)["suggestions"] == []
+    monkeypatch.setattr(prompt_suggestion, "_latest_completed_request", lambda session_id: "request-2")
+    assert prompt_suggestion.current_suggestions(store, SESSION)["suggestions"] == []
+    monkeypatch.setattr(prompt_suggestion, "consent_epoch", lambda: None)
+    assert prompt_suggestion.current_suggestions(store, SESSION) == {"enabled": False, "suggestions": []}
 
 
 def _usage(prompt: int, cached: int, completion: int) -> UsageMetadata:
@@ -197,6 +220,9 @@ async def _deep_host(client: _ModelClient, tmp_path, monkeypatch) -> AsyncIterat
 @pytest.fixture
 def product(tmp_path, monkeypatch):
     """AgentServer and gateway in one process, joined by the real server-push wire."""
+    # Real agent lifecycle hooks need a real, test-owned checkpoint store.
+    # Restore the process default at teardown rather than inheriting another test's stub.
+    monkeypatch.setattr(CheckpointerFactory, "_default_checkpointer", InMemoryCheckpointer())
     monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path / "sessions")
     monkeypatch.setattr(prompt_suggestion, "get_agent_workspace_dir", lambda: tmp_path)
     monkeypatch.setattr(prompt_suggestion, "forks", prompt_suggestion.PromptSuggestionForks())
@@ -465,9 +491,9 @@ async def test_tool_denial_keeps_each_provider_receipt_and_first_response_identi
 
 @pytest.mark.parametrize(("first_text", "outcome", "reason", "shown"), [
     ("继续", "candidate", None, ["继续"]),
-    ("谢谢，译得很好", "filtered", "evaluative", []),
+    ("谢谢，译得很好", "candidate", None, ["谢谢，译得很好"]),
 ])
-async def test_tool_denial_selects_and_filters_the_first_assistant_text(
+async def test_tool_denial_keeps_the_first_assistant_text(
     product, monkeypatch, first_text, outcome, reason, shown,
 ) -> None:
     client = _ModelClient(
@@ -751,8 +777,8 @@ async def test_agent_server_shutdown_cancels_the_suggestion_in_flight(product, m
 async def test_composer_event_cancels_only_its_sessions_in_flight_fork(product, monkeypatch, deny_tool) -> None:
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_response_to_agent_response
     from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
-    from jiuwenswarm.common.e2a.models import E2AResponse
-    from gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
+    from e2a.models import E2AResponse
+    from agent_gateway.channel_manager.web.app_web_handlers import WebHandlersBindParams, _register_web_handlers
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
     server = AgentWebSocketServer()
@@ -772,7 +798,7 @@ async def test_composer_event_cancels_only_its_sessions_in_flight_fork(product, 
             self.methods = {}
             self.responses = []
 
-        def register_method(self, name, handler):
+        def register_method(self, name, handler, *, local_only=False):
             self.methods[name] = handler
 
         def on_connect(self, _handler):
@@ -818,7 +844,6 @@ async def test_composer_event_cancels_only_its_sessions_in_flight_fork(product, 
         assert len(generation["provider_receipts"]) == 1
         assert generation["total_usage"]["total_tokens"] == 1120
         assert generation["missing_provider_receipts"] == 1 and generation["usage_complete"] is False
-    assert prompt_suggestion.forks.answered_call(SESSION, "req-1") is not None
     assert product.page.events == []
     assert _outcomes(product.store) == [("cancelled", None)]
 
@@ -859,24 +884,31 @@ async def test_new_request_cancels_the_suggestion_still_being_generated(product,
         assert len(cancelled["provider_receipts"]) == 1 and cancelled["missing_provider_receipts"] == 1
 
 
-@pytest.mark.parametrize(("enabled", "parent_usage", "outcomes"), [
-    # With recommendations off no suggestion is generated, and none is recorded.
-    (False, _usage(900, 800, 10), []),
-    # The fork reads the call's prompt from the cache and pays afresh for its 10,500-token answer.
-    (True, _usage(14_000, 3_000, 10_500), [("suppressed", "cache_cold")]),
-])
-async def test_no_suggestion_when_recommendations_are_off_or_the_parent_was_not_cached(
-    product, monkeypatch, enabled, parent_usage, outcomes,
-) -> None:
-    product.controls["prompt_enabled"] = enabled
-    client = _ModelClient(AssistantMessage(content="译好了。", usage_metadata=parent_usage))
+async def test_no_suggestion_when_recommendations_are_off(product, monkeypatch) -> None:
+    product.controls["prompt_enabled"] = False
+    client = _ModelClient(AssistantMessage(content="译好了。", usage_metadata=_usage(900, 800, 10)))
 
     await _turn(_facade(_Host(await _agent(client, monkeypatch))), "req-1", "把这段说明译成英文")
     await _settled()
 
     assert len(client.requests) == 1
     assert product.page.events == []
-    assert _outcomes(product.store) == outcomes
+    assert _outcomes(product.store) == []
+
+
+async def test_a_long_parent_answer_still_gets_a_suggestion(product, monkeypatch) -> None:
+    # A long parent completion still forks; paying for the answer again is accepted.
+    client = _ModelClient(
+        AssistantMessage(content="译好了。" + ("详" * 200), usage_metadata=_usage(14_000, 3_000, 10_500)),
+        AssistantMessage(content="导出成双语对照"),
+    )
+
+    await _turn(_facade(_Host(await _agent(client, monkeypatch))), "req-1", "把这段说明译成英文")
+    await _settled()
+
+    assert len(client.requests) == 2
+    assert [event.payload["request_id"] for event in product.page.events] == ["req-1"]
+    assert _outcomes(product.store) == [("candidate", None)]
 
 
 async def test_a_first_turn_whose_prompt_was_not_cached_yet_is_followed_by_a_suggestion(product, monkeypatch) -> None:
@@ -895,20 +927,24 @@ async def test_a_first_turn_whose_prompt_was_not_cached_yet_is_followed_by_a_sug
     assert _outcomes(product.store) == [("candidate", None)]
 
 
-@pytest.mark.parametrize(("reply", "outcome", "reason"), [
-    (AssistantMessage(content="  "), "suppressed", "empty"),
-    (AssistantMessage(content="谢谢，译得很好"), "filtered", "evaluative"),
-    (AssistantMessage(content="我来帮你整理术语表"), "filtered", "claude_voice"),
-    (AssistantMessage(content="（不输出）"), "filtered", "meta_wrapped"),
+@pytest.mark.parametrize(("reply", "outcome", "reason", "shown"), [
+    (AssistantMessage(content="  "), "suppressed", "empty", None),
+    (AssistantMessage(content="谢谢，译得很好"), "candidate", None, "谢谢，译得很好"),
+    (AssistantMessage(content="我来帮你整理术语表"), "candidate", None, "我来帮你整理术语表"),
+    (AssistantMessage(content="（不输出）"), "candidate", None, "（不输出）"),
 ])
-async def test_reply_that_is_not_the_users_next_input_is_not_shown(product, monkeypatch, reply, outcome, reason) -> None:
+async def test_non_empty_fork_replies_reach_the_page_without_content_filters(
+    product, monkeypatch, reply, outcome, reason, shown,
+) -> None:
     client = _ModelClient(AssistantMessage(content="译好了。", usage_metadata=_usage(900, 800, 10)), reply)
 
     await _turn(_facade(_Host(await _agent(client, monkeypatch))), "req-1", "把这段说明译成英文")
     await _settled()
 
     assert len(client.requests) == 2
-    assert product.page.events == []
+    assert [event.payload["text"] for event in product.page.events] == (
+        [] if shown is None else [shown]
+    )
     assert _outcomes(product.store) == [(outcome, reason)]
 
 
@@ -934,6 +970,13 @@ def test_a_json_suggestion_is_unwrapped() -> None:
     )
 
 
+def test_a_fenced_json_suggestion_is_unwrapped() -> None:
+    raw = '```json\n{"suggestion": "那清朝有哪些小说家？"}\n```'
+    assert prompt_suggestion.select_suggestions(raw) == (
+        ["那清朝有哪些小说家？"], "candidate", None,
+    )
+
+
 async def test_only_the_first_likely_next_input_reaches_the_page(product, monkeypatch) -> None:
     reply = AssistantMessage(
         content="买ETF，长期配置\n谢谢\n跌破4100美元时提醒我\n再写一条多余的",
@@ -956,85 +999,11 @@ async def test_only_the_first_likely_next_input_reaches_the_page(product, monkey
     assert [event.payload["suggestion_id"] for event in product.page.events] == [row["suggestion_id"] for row in generations]
 
 
-@pytest.mark.parametrize(("text", "reason"), [
-    pytest.param("无输出。", "meta_text", id="saved-phase20-empty-response"),
-    ("无输出", "meta_text"), ("无输出！", "meta_text"),
-    ("不输出", "meta_text"), ("不输出。", "meta_text"),
-    pytest.param("什么都不输出。", "meta_text", id="review-acceptance-20261013-echoed-instruction"),
-    ("什么也不输出", "meta_text"),
-    ("检查无输出的原因", None), ("排查不输出的原因", None), ("为什么脚本什么都不输出", None),
+@pytest.mark.parametrize("text", [
+    "无输出。", "无输出", "检查无输出的原因", "继续下一步", "继续吧",
+    "北京", "看起来不错", "无建议", "继续。提交",
 ])
-async def test_chinese_empty_results_are_not_sent_but_commands_containing_the_words_are(
-    product, monkeypatch, text, reason,
-) -> None:
-    fork_started, release = asyncio.Event(), asyncio.Event()
-
-    async def reply() -> AssistantMessage:
-        fork_started.set()
-        await release.wait()
-        return AssistantMessage(content=text, usage_metadata=_usage(1100, 1000, 6))
-
-    main_answer = AssistantMessage(content="收到。", usage_metadata=_usage(900, 800, 10))
-    client = _ModelClient(main_answer, reply)
-    agent = await _agent(client, monkeypatch)
-    executed = []
-
-    async def run_tool(*args: Any, **kwargs: Any):
-        executed.append((args, kwargs))
-        return "found", ToolMessage(content="found", tool_call_id="lookup")
-
-    monkeypatch.setattr(agent.ability_manager, "_execute_single_tool_call", run_tool)
-    query = "本轮只确认收到" if reason else "检查这段脚本为什么没有输出"
-    await _turn(_facade(_Host(agent)), "req-1", query)
-    await fork_started.wait()
-    session_history.flush_history_writes()
-    before = session_history.load_history_records(SESSION)
-    release.set()
-    await _settled()
-
-    assert len(client.requests) == 2
-    main, fork = client.requests
-    assert fork.messages[:-2] == main.messages
-    assert fork.messages[-2] == main_answer
-    assert fork.tools == main.tools
-    assert fork.model == main.model == "dialogue-model"
-    assert fork.kwargs == main.kwargs == {}
-    assert len(executed) == 0
-    assert session_history.load_history_records(SESSION) == before
-    assert [event.payload["text"] for event in product.page.events] == ([] if reason else [text])
-    assert _outcomes(product.store) == [("filtered" if reason else "candidate", reason)]
-    assert _generations(product.store)[0]["text"] == text
-
-
-@pytest.mark.parametrize(("text", "reason"), [
-    ("继续下一步", "nonspecific"), ("继续下一步。", "nonspecific"),
-    ("继续下一步!", "nonspecific"), ("继续下一步……", "nonspecific"),
-    ("继续", None), ("继续吧", None), ("是的", None), ("试试看", None),
-    ("继续比较大潮和小潮", None), ("继续下一步比较口感", None),
-    ("解释“继续下一步”的含义", None),
-])
-async def test_next_step_placeholder_is_not_sent_but_specific_commands_are(product, monkeypatch, text, reason) -> None:
-    client = _ModelClient(
-        AssistantMessage(content="比较已经答完。", usage_metadata=_usage(900, 800, 10)),
-        AssistantMessage(content=text, usage_metadata=_usage(1100, 1000, 6)),
-    )
-
-    await _turn(_facade(_Host(await _agent(client, monkeypatch))), "req-1", "解释合并与删除记忆，再比较适用情况")
-    await _settled()
-
-    assert [event.payload["text"] for event in product.page.events] == ([] if reason else [text])
-    assert _outcomes(product.store) == [("filtered" if reason else "candidate", reason)]
-
-
-@pytest.mark.parametrize(("text", "reason"), [
-    ("是的", None), ("当然", None), ("好", None), ("好的", None),
-    ("推送", None), ("提交", None), ("部署", None), ("停止", None),
-    ("继续", None), ("检查", None), ("退出", None), ("不", None), ("不要", None),
-    ("继续吧", None), pytest.param("试试看", None, id="try-it-out"),
-    ("北京", "too_few_words"), ("SQLite", "too_few_words"), ("看起来不错", "evaluative"),
-    ("无建议", "meta_text"), ("继续。提交", "multiple_sentences"),
-])
-async def test_chinese_source_commands_keep_the_original_short_input_exception(product, monkeypatch, text, reason) -> None:
+async def test_former_content_filter_hits_are_shown(product, monkeypatch, text) -> None:
     client = _ModelClient(
         AssistantMessage(content="译好了。", usage_metadata=_usage(900, 800, 10)),
         AssistantMessage(content=text, usage_metadata=_usage(1100, 1000, 6)),
@@ -1043,8 +1012,8 @@ async def test_chinese_source_commands_keep_the_original_short_input_exception(p
     await _turn(_facade(_Host(await _agent(client, monkeypatch))), "req-1", "把这段说明译成英文")
     await _settled()
 
-    assert [event.payload["text"] for event in product.page.events] == ([text] if reason is None else [])
-    assert _outcomes(product.store) == [("candidate" if reason is None else "filtered", reason)]
+    assert [event.payload["text"] for event in product.page.events] == [text]
+    assert _outcomes(product.store) == [("candidate", None)]
 
 
 def _completed(request_id: str) -> None:
@@ -1108,7 +1077,6 @@ async def test_a_model_call_without_a_session_or_model_client_is_left_alone(prod
     await prompt_suggestion.PromptSuggestionForkRail().after_model_call(ctx)
 
     forks.turn_ended(SESSION, "req-1", status="success", waiting_for_user=False, completion=None)
-    assert forks.answered_call(SESSION, "req-1") is None
     assert _outcomes(product.store) == [("suppressed", "no_model_call")]
 
 
@@ -1149,42 +1117,18 @@ def test_every_agent_rail_set_keeps_the_last_model_call(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize("text", [
-    "导出成双语对照", "好的，继续", "检查错别字", "术语要统一成哪套译法？", "帮我来一份术语表", "提醒我不错过截止日期",
-    "把整份说明逐段译成英文并在每段后面附上原文和页码以便逐句核对术语",
-    "please run every single unit test in the repository and then report back to me",
-    "run the tests", "yes", "/review", "push it to the release branch",
+    "导出成双语对照", "done", "不出", "北京", "长" * 241,
+    "Let me run the tests", "我帮你导出成双语对照", "**导出**成双语对照",
 ])
-def test_filter_keeps_what_the_user_would_type(text) -> None:
+def test_filter_suggestion_is_a_noop(text) -> None:
     assert prompt_suggestion.filter_suggestion(text) is None
+    assert prompt_suggestion.select_suggestions(text) == ([text], "candidate", None)
 
 
-@pytest.mark.parametrize(("text", "reason"), [
-    ("done", "done"),
-    ("不出", "meta_text"),
-    ("（不出）", "meta_text"),
-    ("Stay silent, the next step is unclear", "meta_text"),
-    ("[no suggestion]", "meta_wrapped"),
-    ("（不输出）", "meta_wrapped"),
-    ("本轮不预测", "meta_text"),
-    ("（本轮不预测）", "meta_wrapped"),
-    ("API Error: 500 upstream", "error_message"),
-    ("Suggestion: run the tests", "prefixed_label"),
-    ("建议：检查错别字", "prefixed_label"),
-    ("北京", "too_few_words"),
-    ("refactor", "too_few_words"),
-    ("长" * 241, "too_long"),
-    ("检查错别字。然后导出", "multiple_sentences"),
-    ("Run the tests. Then push it", "multiple_sentences"),
-    ("**导出**成双语对照", "has_formatting"),
-    ("- 导出成双语对照", "has_formatting"),
-    ("looks good, ship it", "evaluative"),
-    ("谢谢，就这样吧", "evaluative"),
-    ("Let me run the tests", "claude_voice"),
-    ("我帮你导出成双语对照", "claude_voice"),
-    ("以下是术语表的整理方案", "claude_voice"),
-])
-def test_filter_drops_what_is_not_the_users_next_input(text, reason) -> None:
-    assert prompt_suggestion.filter_suggestion(text) == reason
+def test_list_marker_line_still_strips_prefix() -> None:
+    assert prompt_suggestion.select_suggestions("- 导出成双语对照") == (
+        ["导出成双语对照"], "candidate", None,
+    )
 
 
 class _Browser:
@@ -1267,3 +1211,20 @@ async def test_one_failed_suggestion_delivery_leaves_the_next(monkeypatch) -> No
         suggestions=[("first", "导出成双语对照"), ("second", "再整理一份术语表")],
     )
     assert [message["payload"]["suggestion_id"] for message in pushed] == ["second"]
+
+async def test_page_events_follow_the_prompt_switch_not_the_topic_switch(monkeypatch, tmp_path) -> None:
+    from jiuwenswarm.agents.harness.common.recommendation import switches
+    from jiuwenswarm.agents.harness.common.recommendation.topic_starter import TopicStarterStore
+    from jiuwenswarm.server.runtime import recommendation_rpc
+
+    store = TopicStarterStore(tmp_path / "recommendation.db")
+    monkeypatch.setattr(switches, "is_prompt_suggestion_enabled", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(recommendation_rpc, "_prompt_store", lambda _host: store)
+
+    result = await recommendation_rpc._prompt_suggestion_event(
+        None, {"event_type": "shown", "session_id": SESSION, "suggestion_id": "unknown"},
+    )
+
+    # Processed (and rejected as unknown), not shut off by the topic switch.
+    assert result.payload is None
+    assert result.code == "BAD_REQUEST"

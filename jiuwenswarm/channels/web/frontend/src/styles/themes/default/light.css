@@ -127,6 +127,8 @@
   /* 技能版本管理“默认”徽标：2026-09-23 用户指定的精确色值 */
   --color-skill-version-default-text: #0950de;
   --color-skill-version-default-surface: #cedefd;
+  --color-tag-team-text: #9b3fd1;
+  --color-tag-team-surface: #f6e8ff;
   --color-tag-neutral-text: #191919;
   --color-tag-neutral-surface: #f5f5f5;
   --color-feedback-success-toast: #d5f2dc;

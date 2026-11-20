@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  buildDingtalkDeletionPayload,
+  buildDingtalkEnabledPayload,
   buildDingtalkFormPayload,
   buildFeishuDeletionPayload,
   buildFeishuEnabledPayload,
@@ -141,12 +143,6 @@ test('channel deletion payloads remove configuration instead of only disabling i
   assert.deepEqual(buildFeishuDeletionPayload(feishuValues, 1).apps.length, 1);
   assert.throws(() => buildFeishuDeletionPayload(feishuValues, 2), /Invalid Feishu account index/);
   assert.deepEqual(buildSingleChannelDeletionPayload('xiaoyi'), { apps: [] });
-  assert.deepEqual(buildSingleChannelDeletionPayload('dingtalk'), {
-    enabled: false,
-    client_id: '',
-    client_secret: '',
-    allow_from: [],
-  });
   assert.deepEqual(buildSingleChannelDeletionPayload('telegram'), {
     enabled: false,
     bot_token: '',
@@ -205,8 +201,12 @@ test('configured channel checks distinguish saved disabled configurations from e
   assert.equal(channelConfigurationChecks.feishu({ apps: [{ app_id: 'app', app_secret: 'secret' }] }), true);
   assert.equal(channelConfigurationChecks.xiaoyi({ apps: [{ enabled: false }] }), false);
   assert.equal(channelConfigurationChecks.xiaoyi({ apps: [{ ak: 'ak', sk: 'sk', agent_id: 'agent' }] }), true);
-  assert.equal(channelConfigurationChecks.dingtalk({ client_id: 'id' }), false);
-  assert.equal(channelConfigurationChecks.dingtalk({ client_id: 'id', client_secret: 'secret', enabled: false }), true);
+  assert.equal(channelConfigurationChecks.dingtalk({ apps: [{ client_id: 'id' }] }), false);
+  assert.equal(
+    channelConfigurationChecks.dingtalk({ apps: [{ client_id: 'id', client_secret: 'secret', enabled: false }] }),
+    true,
+  );
+  assert.equal(channelConfigurationChecks.dingtalk({ client_id: 'id', client_secret: 'secret' }), false);
   assert.equal(channelConfigurationChecks.telegram({ bot_token: ' ' }), false);
   assert.equal(channelConfigurationChecks.telegram({ bot_token: 'token', enabled: false }), true);
   assert.equal(channelConfigurationChecks.discord({ bot_token: '' }), false);
@@ -277,6 +277,7 @@ test('simple channel adapters round-trip list and boolean fields', () => {
   assert.deepEqual(
     buildDingtalkFormPayload(
       readDingtalkFormValues({
+        name: 'Legacy',
         enabled: true,
         client_id: ' id ',
         client_secret: ' secret ',
@@ -284,10 +285,16 @@ test('simple channel adapters round-trip list and boolean fields', () => {
       }),
     ),
     {
-      enabled: true,
-      client_id: 'id',
-      client_secret: 'secret',
-      allow_from: ['one', 'two'],
+      apps: [
+        {
+          name: 'Legacy',
+          enabled: true,
+          client_id: 'id',
+          client_secret: 'secret',
+          robot_code: '',
+          allow_from: ['one', 'two'],
+        },
+      ],
     },
   );
 
@@ -379,4 +386,50 @@ test('simple channel adapters round-trip list and boolean fields', () => {
       bridge_workdir: 'dir',
     },
   );
+});
+
+test('dingtalk apps are edited, toggled and deleted one at a time without sending bindings', () => {
+  const values = readDingtalkFormValues({
+    apps: [
+      { name: 'Ordinary', client_id: 'ordinary', client_secret: 'secret', is_default: true },
+      { name: 'Colleague', client_id: 'jm', client_secret: 'secret', persistent_agent_id: 'agent-a', enabled: true },
+    ],
+  });
+  assert.equal(values.apps[1].persistent_agent_id, 'agent-a');
+  const sent = buildDingtalkFormPayload(values).apps;
+  assert.ok(sent.every((app) => !('persistent_agent_id' in app) && !('is_default' in app)));
+  assert.deepEqual(
+    buildDingtalkEnabledPayload(values, 1, false).apps.map((app) => [app.client_id, app.enabled]),
+    [
+      ['ordinary', true],
+      ['jm', false],
+    ],
+  );
+  assert.deepEqual(
+    buildDingtalkDeletionPayload(values, 0).apps.map((app) => app.client_id),
+    ['jm'],
+  );
+  assert.throws(() => buildDingtalkDeletionPayload(values, 2), /Invalid DingTalk account index/);
+  assert.equal(readDingtalkFormValues({}).apps.length, 1);
+  assert.deepEqual(buildDingtalkFormPayload(readDingtalkFormValues({})), { apps: [] });
+});
+
+test('a malformed dingtalk allowlist is never saved as empty until the user replaces it', () => {
+  for (const allowFrom of ['staff-only', [null], [123456], { staff: true }]) {
+    const values = readDingtalkFormValues({
+      apps: [
+        { name: 'Ordinary', client_id: 'ordinary', client_secret: 'secret', allow_from: allowFrom },
+        { name: 'Colleague', client_id: 'jm', client_secret: 'secret', persistent_agent_id: 'agent-a' },
+      ],
+    });
+    const [ordinary] = values.apps;
+    assert.equal(ordinary.allow_from_invalid, true);
+    assert.equal(ordinary.allow_from, '');
+    const renamed = { apps: [ordinary, { ...values.apps[1], name: 'Renamed' }] };
+    assert.ok(!('allow_from' in buildDingtalkFormPayload(renamed).apps[0]));
+    assert.ok(!('allow_from' in buildDingtalkEnabledPayload(values, 0, true).apps[0]));
+    const fixed = { apps: [{ ...ordinary, allow_from: 'staff-a', allow_from_invalid: false }, values.apps[1]] };
+    assert.deepEqual(buildDingtalkFormPayload(fixed).apps[0].allow_from, ['staff-a']);
+  }
+  assert.equal(readDingtalkFormValues({ apps: [{ client_id: 'a', allow_from: null }] }).apps[0].allow_from_invalid, false);
 });

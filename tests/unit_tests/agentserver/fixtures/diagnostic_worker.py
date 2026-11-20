@@ -61,6 +61,12 @@ class SlowShellProbe:
             }
 
 
+class BadNotesValueError(ValueError):
+    @property
+    def __notes__(self):
+        raise RuntimeError("token=notes-injection-private-value")
+
+
 class TrafficRuntime:
     def __init__(self, mode: str) -> None:
         self.mode = mode
@@ -119,6 +125,30 @@ class TrafficRuntime:
             from jiuwenswarm.common import utils  # noqa: F401
 
             self.utils_origin = utils.__file__
+        if mode == "exception-logging":
+            import io
+            import linecache
+
+            from jiuwenswarm.common import utils
+            from jiuwenswarm.common.background_logging import wrap_log_handlers
+
+            self.utils_origin = utils.__file__
+            self.source_lookups = 0
+            self.exception_output = io.StringIO()
+            self.exception_logger = logging.getLogger("exception-source-injection")
+            self.exception_logger.handlers = [logging.StreamHandler(self.exception_output)]
+            self.exception_logger.propagate = False
+            self.exception_logger.setLevel(logging.INFO)
+            wrap_log_handlers(self.exception_logger)
+
+            original = linecache.checkcache
+
+            def slow_checkcache(*args, **kwargs):
+                self.source_lookups += 1
+                time.sleep(2)
+                return original(*args, **kwargs)
+
+            linecache.checkcache = slow_checkcache
 
     async def attach_gateway_connection(self, ws, send_lock) -> None:
         pass
@@ -130,6 +160,28 @@ class TrafficRuntime:
         self.release.set()
 
     async def dispatch_parsed_request(self, ws, request, send_lock) -> None:
+        if self.mode == "exception-logging":
+            started = time.monotonic()
+            error_type = BadNotesValueError if request.params.get("bad_notes") else ValueError
+            try:
+                raise error_type("api_key=source-injection-private-value")
+            except ValueError:
+                self.exception_logger.exception("injected exception")
+            log_seconds = time.monotonic() - started
+            async with asyncio.timeout(5):
+                while not self.exception_output.getvalue():
+                    await asyncio.sleep(0.01)
+            text = self.exception_output.getvalue()
+            await ws.send(json.dumps({
+                "request_id": request.request_id, "phase": "final",
+                "log_seconds": log_seconds, "source_lookups": self.source_lookups,
+                "traceback_present": "Traceback" in text and "ValueError:" in text,
+                "redacted": "source-injection-private-value" not in text
+                and "notes-injection-private-value" not in text and "******" in text,
+                "notes_omitted": "exception notes omitted" in text,
+                "utils_origin": self.utils_origin,
+            }))
+            return
         if self.mode == "regex-logging":
             await ws.send(json.dumps({
                 "request_id": request.request_id, "phase": "regex_starting",
@@ -148,11 +200,15 @@ class TrafficRuntime:
         if self.mode == "slow-shell":
             await self._slow_shell_request(ws, request)
             return
-        if self.mode == "freeze" and request.params.get("freeze", True):
+        if self.mode == "heartbeat-loss":
+            await ws.send(json.dumps({"request_id": request.request_id, "phase": "heartbeats_muted"}))
+            await asyncio.Event().wait()  # Keep the business loop responsive.
+            return
+        if self.mode in {"freeze", "freeze-long"} and request.params.get("freeze", True):
             await ws.send(
                 json.dumps({"request_id": request.request_id, "phase": "freezing"})
             )
-            time.sleep(60)  # Intentional event-loop stall, in this owned child only.
+            time.sleep(200 if self.mode == "freeze-long" else 60)  # Owned child fault injection.
             return
         frames = int(request.params.get("frames", 64))
         size = int(request.params.get("bytes", 8192))
@@ -233,22 +289,22 @@ class TrafficRuntime:
         )
 
 
-def run() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--mode", choices=["pool-pressure", "freeze", "crash", "slow-shell", "slow-logging", "regex-logging"], required=True
-    )
-    args, remaining = parser.parse_known_args()
-
+def configure(mode: str) -> None:
+    """Inject traffic faults while retaining the production Worker entrypoint."""
     async def load_runtime(host, port, signals, dispatcher, loaded):
-        runtime = TrafficRuntime(args.mode)
+        runtime = TrafficRuntime(mode)
         await dispatcher.bind_runtime(runtime)
         loaded["runtime"] = runtime
         signals.agent_ready()
         return runtime
 
     service._load_runtime = load_runtime
-    if args.mode == "crash":
+    if mode == "heartbeat-loss":
+        def mute_heartbeats(conn, _beat):
+            conn.set_heartbeat_responder(lambda _message: None)
+
+        service._install_heartbeat_fast_path = mute_heartbeats
+    if mode == "crash":
 
         async def crashing_session(conn, dispatcher):
             diagnostics.arm_stall_dump()
@@ -263,6 +319,20 @@ def run() -> None:
                 diagnostics.cancel_stall_dump()
 
         service._read_session = crashing_session
+
+
+def run() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mode",
+        choices=[
+            "pool-pressure", "freeze", "freeze-long", "heartbeat-loss", "crash",
+            "slow-shell", "slow-logging", "regex-logging", "exception-logging",
+        ],
+        required=True,
+    )
+    args, remaining = parser.parse_known_args()
+    configure(args.mode)
     sys.argv = [sys.argv[0], *remaining]
     main()
 

@@ -12,7 +12,7 @@ import type { ExternalCliInstallStatuses } from '../../components/ExternalCliIns
 import { SettingsPageLayout, type SettingsSidebarControls } from './SettingsPageLayout';
 import { SettingsServicesProvider } from './services/SettingsServicesProvider';
 import type { SettingsPageDefinition } from './registry/types';
-import type { SettingsModuleTarget } from './settingsNavigation';
+import type { SettingsModuleTarget, SettingsNavigationTarget } from './settingsNavigation';
 
 export function SettingsPage({
   definition,
@@ -33,10 +33,9 @@ export function SettingsPage({
   onExternalCliPendingChoicesChange,
   externalCliDetectResults,
   onExternalCliDetectResultsChange,
-  recommendationFocus,
-  onCorrectRecommendation,
   onRecommendationEnabledChange,
   initialModuleId,
+  navigationTarget,
   sidebar,
 }: {
   definition: SettingsPageDefinition;
@@ -71,14 +70,14 @@ export function SettingsPage({
           Record<ExternalCliAgentKind, ExternalCliDetectResult>
         >),
   ) => void;
-  recommendationFocus?: number | null;
-  onCorrectRecommendation?: (text: string) => void;
   onRecommendationEnabledChange?: (enabled: boolean) => void;
   initialModuleId?: SettingsModuleTarget;
+  navigationTarget?: SettingsNavigationTarget;
   sidebar?: SettingsSidebarControls;
 }) {
   return (
     <SettingsServicesProvider
+      navigationTarget={navigationTarget}
       appVersion={appVersion}
       isConnected={isConnected}
       connectionState={connectionState}
@@ -96,8 +95,6 @@ export function SettingsPage({
       onExternalCliPendingChoicesChange={onExternalCliPendingChoicesChange}
       externalCliDetectResults={externalCliDetectResults}
       onExternalCliDetectResultsChange={onExternalCliDetectResultsChange}
-      recommendationFocus={recommendationFocus}
-      onCorrectRecommendation={onCorrectRecommendation}
       onRecommendationEnabledChange={onRecommendationEnabledChange}
     >
       <SettingsPageLayout definition={definition} initialModuleId={initialModuleId} sidebar={sidebar} />

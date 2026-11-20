@@ -86,6 +86,17 @@ Use `/mcp` commands during conversations to manage MCP servers:
 
 ---
 
+## CLI Connector Authorization
+
+Connecting CLI connectors such as Feishu or DingTalk from the connector marketplace, detail page, or extension dependency flow opens a dialog that waits for authorization automatically.
+
+- When the backend provides an authorization URL, each step opens the same URL once per connection attempt or explicit retry. Page state refreshes and language changes preserve the current wait.
+- When the CLI has already opened the browser, the dialog waits for authorization to complete.
+- If the browser blocks the automatic popup, select “Open authorization page” to open it manually. After a failed wait, select “Retry” to reopen the current authorization URL and start another wait.
+- Multi-step authorization continues with the returned step. When the backend reports that the same step still requires authorization, the dialog starts the next wait. Selecting “Cancel connection” asks the backend to end the current connection flow.
+
+---
+
 ## MCP Apps and Agent Interaction
 
 MCP Apps servers can display interactive views inside Web chat tool results without a separate MCP connection configuration.

@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import asyncio as _asyncio
+import base64
 import importlib
 import json
 import shutil
 import stat
+import sys
+import types
 import zipfile
 from pathlib import Path
 
@@ -17,6 +20,10 @@ import pytest
 
 import jiuwenswarm.common.utils as utils
 from jiuwenswarm.server.runtime import extension_package_manager as catalog
+from jiuwenswarm.server.runtime.marketplace.hub_asset_port import (
+    HubAssetDetail,
+    HubResolvedDownload,
+)
 from jiuwenswarm.server.runtime.mcp import state_store as mcp_state
 
 from tests.unit_tests.server.extensions.conftest import (
@@ -74,7 +81,7 @@ async def test_agent_group_catalog_queries_only_group_hub_type(monkeypatch):
     monkeypatch.setattr(catalog, "list_agent_groups", lambda _params=None: [
         {"id": "built-in-group", "source": "builtin", "installed": False}
     ])
-    monkeypatch.setattr(catalog, "_hub_install_state_store", lambda _kind: type(
+    monkeypatch.setattr(catalog, "hub_install_state_store", lambda _kind: type(
         "Store", (), {"get_by_package_id": lambda _self, _id: None}
     )())
 
@@ -119,7 +126,7 @@ async def test_hub_agent_group_installs_and_uninstalls_by_asset_id(extension_wor
     assert detail["id"] == "group-asset-id" and detail["installed"]
     assert detail["source"] == "hub"
     catalog.uninstall_agent_group({"id": "group-asset-id"})
-    assert catalog._hub_install_state_store(AGENT_GROUPS).get("group-asset-id") is None
+    assert catalog.hub_install_state_store(AGENT_GROUPS).get("group-asset-id") is None
 
 
 def _seed_valid_agent_group(
@@ -198,6 +205,77 @@ def _seed_valid_agent_group(
         encoding="utf-8",
     )
     return package
+
+
+def test_group_list_externalizes_large_inline_avatars(
+    extension_workspace: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from urllib.parse import parse_qs, urlsplit
+
+    from e2a.wire_codec import encode_agent_response_for_wire
+
+    from jiuwenswarm.common.file_download_token import WebFileDownloadManager
+    from jiuwenswarm.common.schema.agent import AgentResponse
+    from jiuwenswarm.server.ws_send import send_wire_payload
+
+    monkeypatch.setattr(WebFileDownloadManager, "_instance", WebFileDownloadManager(secret="avatar-test-secret"))
+    image = b"x" * (1024 * 1024)
+    inline = "data:image/png;base64," + base64.b64encode(image).decode("ascii")
+    for index in range(5):
+        package = _seed_valid_agent_group(extension_workspace, f"large-group-{index}", under="local")
+        manifest_path = package / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["avatar"] = inline
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    cards = _run(catalog.list_agent_groups_with_hub({"filter": "local"}))
+
+    assert len(cards) == 5
+    assert len(json.dumps(cards).encode("utf-8")) < 32 * 1024
+    for card in cards:
+        assert card["avatar"].startswith("/file-api/download?")
+        token = parse_qs(urlsplit(card["avatar"]).query)["token"][0]
+        claims = WebFileDownloadManager.get_instance().validate_token(token)
+        assert claims is not None
+        assert Path(claims["path"]).read_bytes() == image
+    assert len(list((extension_workspace / ".cache" / "package-avatars").iterdir())) == 1
+    wire = encode_agent_response_for_wire(
+        AgentResponse(request_id="large-groups", channel_id="web", ok=True, payload={"agentGroups": cards}),
+        response_id="large-groups",
+    )
+    socket = types.SimpleNamespace(send=AsyncMock())
+    assert _run(send_wire_payload(socket, wire)) is True
+    socket.send.assert_awaited_once()
+
+
+def test_uninstall_snapshot_survives_previously_queued_metadata(
+    extension_workspace: Path,
+) -> None:
+    from jiuwenswarm.server.runtime.session import session_metadata as metadata
+
+    group_name = "queued-display-group"
+    _seed_valid_agent_group(extension_workspace, group_name, under="local")
+    catalog.install_agent_group({"id": group_name})
+    sid = "queued-legacy-group"
+    queued = {
+        "session_id": sid,
+        "agent_group_name": group_name,
+        "message_count": 7,
+    }
+    metadata._write_metadata_sync(sid, queued)
+    identity = catalog.resolve_agent_group_display_identity(group_name)
+
+    catalog.uninstall_agent_group({"id": group_name})
+    metadata._write_metadata_sync(
+        sid,
+        {**queued, "message_count": 8},
+        metadata._MetadataWriteOptions(preserve_pin_fields=True),
+    )
+
+    restored = metadata.get_session_metadata(sid, cache_bust=True)
+    assert restored["team_group_identity"] == identity
+    assert restored["message_count"] == 8
 
 
 class TestPrepareWorkspaceAndMarketplace:
@@ -421,13 +499,13 @@ class TestAgentGroupResolution:
         card = catalog.show_agent_group("localized-review")
 
         assert card is not None
-        assert card["avatar"].startswith("data:image/png;base64,")
+        assert card["avatar"].startswith("/file-api/download?")
         reviewer = next(member for member in card["members"] if member["id"] == "reviewer")
         assert reviewer["displayName"] == {
             "zh": "质量复核专家",
             "en": "Quality Reviewer",
         }
-        assert reviewer["avatar"].startswith("data:image/png;base64,")
+        assert reviewer["avatar"].startswith("/file-api/download?")
 
     def test_show_agent_group_returns_none_when_missing(
         self,
@@ -1144,7 +1222,7 @@ class TestCreateInstallUninstall:
             },
         )
 
-        with pytest.raises(ValueError, match="provider_name.*claudecode.*codex.*dsh"):
+        with pytest.raises(ValueError, match="provider_name.*claudecode.*codex;"):
             catalog.install_agent_template({"id": "invalid-runtime"})
 
         assert catalog.read_agent_template_marketplace_entries() == []
@@ -1160,7 +1238,7 @@ class TestCreateInstallUninstall:
             extra_manifest={
                 "name": "unsupported-runtime",
                 "description": "External expert with unsupported native capabilities.",
-                "runtime": {"provider_name": "dsh"},
+                "runtime": {"provider_name": "codex"},
                 unsupported_field: [{"file": "unsupported.py"}],
             },
         )
@@ -1539,6 +1617,29 @@ def _write_src_zip(root: Path, kind: str, package_id: str) -> Path:
             if path.is_file():
                 zf.write(path, Path(src.name) / path.relative_to(src))
     return zip_path
+
+
+@pytest.mark.parametrize("provider_name", ["gemini", "dsh"])
+def test_install_imported_expert_lists_only_supported_providers(
+    extension_workspace: Path, tmp_path: Path, provider_name: str
+) -> None:
+    package_id = "external-expert"
+    manifest = _src_manifest(AGENT_TEMPLATES, package_id)
+    manifest["runtime"] = {"provider_name": provider_name}
+    zip_path = tmp_path / f"{package_id}.zip"
+    with zipfile.ZipFile(zip_path, "w") as archive:
+        archive.writestr(f"{package_id}/manifest.json", json.dumps(manifest))
+        archive.writestr(f"{package_id}/README.md", "External expert.")
+        archive.writestr(f"{package_id}/persona/{package_id}.md", "# Persona")
+
+    imported = catalog.import_agent_template({"path": str(zip_path)})
+    with pytest.raises(ValueError) as error:
+        catalog.install_agent_template(imported)
+
+    assert str(error.value) == (
+        f"runtime.provider_name must be one of: claudecode, codex; got {provider_name!r}"
+    )
+    assert marketplace_entries(AGENT_TEMPLATES)[0]["installed"] is False
 
 
 class TestImportLocal:
@@ -2166,3 +2267,246 @@ def test_import_group_rejects_absolute_skill_paths(
     )
     assert not destination.exists()
     assert not catalog.is_agent_group_installed("invalid-skills")
+
+def test_hub_package_id_resolver_reuses_record_and_skips_claimed_ids(
+    extension_workspace: Path,
+) -> None:
+    """Same asset keeps its id; another asset lands on the next free suffix."""
+    from jiuwenswarm.server.runtime.marketplace.hub_install_state import (
+        HubInstallRecord,
+    )
+
+    local_root = catalog.get_local_root(AGENT_TEMPLATES)
+    (local_root / "sales-expert").mkdir(parents=True)
+    (local_root / "sales-expert-2").mkdir(parents=True)
+    catalog.hub_install_state_store(AGENT_TEMPLATES).upsert(
+        HubInstallRecord(
+            asset_id="asset-alpha",
+            package_id="sales-expert-2",
+            kind="agent_template",
+            version="1.0.0",
+            checksum_sha256="a" * 64,
+            installed_at="2026-10-01T00:00:00Z",
+        )
+    )
+    resolver = catalog._hub_package_id_resolver(AGENT_TEMPLATES)
+
+    assert resolver("sales-expert", "asset-alpha") == "sales-expert-2"
+    assert resolver("sales-expert", "asset-beta") == "sales-expert-3"
+    assert resolver("brand-new", "asset-gamma") == "brand-new"
+
+
+def _write_identity_manifest(
+    package_root: Path, package_type: str, identity: str | None
+) -> dict:
+    """Write a minimal manifest and return the payload stored on disk."""
+    identity_key = "id" if package_type == "plugin" else "name"
+    manifest: dict = {
+        "package_type": package_type,
+        "display_name": {"zh": "商业策划专家团", "en": "Business Planning Team"},
+    }
+    if identity is not None:
+        manifest[identity_key] = identity
+    (package_root / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+    )
+    return manifest
+
+
+@pytest.mark.parametrize(
+    ("package_type", "identity_key"),
+    (("agent_template", "name"), ("agent_group", "name"), ("plugin", "id")),
+)
+def test_rename_hub_package_identity_rewrites_only_the_alias(
+    tmp_path: Path, package_type: str, identity_key: str
+) -> None:
+    """An alias moves the identity; unrelated or missing ids stay for validation."""
+    aliased = tmp_path / "aliased"
+    aliased.mkdir()
+    _write_identity_manifest(aliased, package_type, "hub-id")
+
+    catalog._rename_hub_package_identity(aliased, "hub-id-2", package_type)
+
+    manifest = json.loads((aliased / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest[identity_key] == "hub-id-2"
+    assert manifest["display_name"] == {
+        "zh": "商业策划专家团",
+        "en": "Business Planning Team",
+    }
+
+    for index, identity in enumerate(("different-expert", None)):
+        untouched = tmp_path / f"untouched-{index}"
+        untouched.mkdir()
+        original = _write_identity_manifest(untouched, package_type, identity)
+
+        catalog._rename_hub_package_identity(untouched, "hub-id-2", package_type)
+
+        assert (
+            json.loads((untouched / "manifest.json").read_text(encoding="utf-8"))
+            == original
+        )
+
+
+class _SameNamedHubPort:
+    """Serve several Hub assets that all carry the same package name."""
+
+    VERSIONS = {"asset-1.2.0": "1.2.0", "asset-1.3.0": "1.3.0"}
+
+    def __init__(self, package_name: str, display_name: str) -> None:
+        self.package_name = package_name
+        self.display_name = display_name
+
+    async def query_asset(self, request):
+        return HubAssetDetail(
+            kind=request.kind,
+            asset_id=request.asset_id,
+            version=self.VERSIONS[request.asset_id],
+            display_name=self.display_name,
+            short_description=self.display_name,
+            detail_description=self.display_name,
+            icon_uri="",
+            tags=(),
+            package_name=self.package_name,
+        )
+
+    async def resolve_download(self, request):
+        return HubResolvedDownload(
+            kind=request.kind,
+            asset_id=request.asset_id,
+            version=request.version,
+            download_url="https://example.test/package.zip",
+            checksum_sha256="a" * 64,
+            package_name=self.package_name,
+        )
+
+
+class _SameNamedDownloader:
+    """Extract one Hub package; expert teams reuse a seeded real package tree."""
+
+    def __init__(
+        self, kind: str, package_name: str, display_name: str, archive: Path | None
+    ) -> None:
+        self.kind = kind
+        self.package_name = package_name
+        self.display_name = display_name
+        self.archive = archive
+        self.calls = 0
+
+    def _manifest(self) -> dict:
+        if self.kind == AGENT_TEMPLATES:
+            return {
+                "package_type": "agent_template",
+                "name": self.package_name,
+                "description": self.display_name,
+                "display_name": {"zh": self.display_name, "en": self.display_name},
+            }
+        return {
+            "package_type": "plugin",
+            "id": self.package_name,
+            "name": self.display_name,
+            "display_name": {"zh": self.display_name, "en": self.display_name},
+        }
+
+    async def download_and_extract(self, artifact, destination: Path) -> None:
+        self.calls += 1
+        if self.archive is not None:
+            shutil.copytree(self.archive, destination / artifact.package_name)
+            return
+        package = destination / artifact.package_name
+        package.mkdir(parents=True)
+        (package / "manifest.json").write_text(
+            json.dumps(self._manifest(), ensure_ascii=False), encoding="utf-8"
+        )
+
+
+def _stub_openjiuwen_group_loader(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The loader lives in-tree here; the local openjiuwen checkout may be incomplete."""
+    group_module = types.ModuleType("jiuwenswarm.agents.swarm.agent_group")
+    group_module.load_agent_group_package = lambda _path: {}
+    monkeypatch.setitem(
+        sys.modules, "jiuwenswarm.agents.swarm.agent_group", group_module
+    )
+
+
+def _stub_openjiuwen_harness_resources(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same for harness.resources: this test only checks the install layout."""
+    resources_module = types.ModuleType("openjiuwen.harness.resources")
+    resources_module.AgentTemplateCard = type("AgentTemplateCard", (), {})
+    resources_module.AgentTemplateSpec = type("AgentTemplateSpec", (), {})
+    resources_module.RuntimeSpec = type("RuntimeSpec", (), {})
+    monkeypatch.setitem(sys.modules, "openjiuwen.harness.resources", resources_module)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("kind", "package_name", "display_name"),
+    (
+        (AGENT_TEMPLATES, "sales-expert", "销售专家"),
+        (PLUGIN_PACKAGES, "report-tool", "报表工具"),
+        (AGENT_GROUPS, "business-planning", "商业策划专家团"),
+    ),
+)
+async def test_hub_packages_sharing_a_package_name_install_as_siblings(
+    extension_workspace: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+    package_name: str,
+    display_name: str,
+) -> None:
+    """Hub keys assets by asset_id, so same-named packages must coexist locally."""
+    archive: Path | None = None
+    if kind == AGENT_GROUPS:
+        _stub_openjiuwen_group_loader(monkeypatch)
+        source = _seed_valid_agent_group(extension_workspace, package_name, under="local")
+        manifest_path = source / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["display_name"] = {"zh": display_name, "en": display_name}
+        manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+        )
+        archive = tmp_path / "archive-source"
+        shutil.move(str(source), str(archive))
+    elif kind == AGENT_TEMPLATES:
+        _stub_openjiuwen_harness_resources(monkeypatch)
+
+    port = _SameNamedHubPort(package_name, display_name)
+    downloader = _SameNamedDownloader(kind, package_name, display_name, archive)
+
+    async def install(asset_id: str) -> None:
+        if kind == AGENT_GROUPS:
+            await catalog.install_agent_group_with_hub(
+                {"id": asset_id}, hub_port=port, downloader=downloader
+            )
+            return
+        ok, payload = await catalog.install_equipment_from_hub_gated(
+            kind, {"id": asset_id}, hub_port=port, downloader=downloader
+        )
+        assert ok, payload
+
+    # Install both assets, then reinstall the second one to prove idempotence.
+    for asset_id in ("asset-1.2.0", "asset-1.3.0", "asset-1.3.0"):
+        await install(asset_id)
+
+    local_root = catalog.get_local_root(kind)
+    assert (local_root / package_name).is_dir()
+    assert (local_root / f"{package_name}-2").is_dir()
+    assert not (local_root / f"{package_name}-3").exists()
+    assert downloader.calls == 2
+
+    store = catalog.hub_install_state_store(kind)
+    assert store.get("asset-1.2.0").package_id == package_name
+    assert store.get("asset-1.3.0").package_id == f"{package_name}-2"
+
+    identity_key = "id" if kind == PLUGIN_PACKAGES else "name"
+    second_manifest = json.loads(
+        (local_root / f"{package_name}-2" / "manifest.json").read_text(encoding="utf-8")
+    )
+    assert second_manifest[identity_key] == f"{package_name}-2"
+    assert second_manifest["display_name"]["zh"] == display_name
+
+    if kind == AGENT_GROUPS:
+        assert catalog.is_agent_group_installed(f"{package_name}-2")
+        catalog.uninstall_agent_group({"id": "asset-1.3.0"})
+        assert not (local_root / f"{package_name}-2").exists()
+        assert (local_root / package_name).is_dir()

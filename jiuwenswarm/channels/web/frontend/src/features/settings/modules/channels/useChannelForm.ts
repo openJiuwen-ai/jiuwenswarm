@@ -13,6 +13,7 @@ type ChannelFormOptions<TValues extends FormValues> = {
   setMethod: string;
   loadErrorMessage: string;
   saveErrorMessage: string;
+  saveErrorByCode?: Readonly<Record<string, string>>;
   savedMessage: string;
   onSaved: () => void;
 };
@@ -41,6 +42,7 @@ export function useChannelForm<TValues extends FormValues>({
   setMethod,
   loadErrorMessage,
   saveErrorMessage,
+  saveErrorByCode,
   savedMessage,
   onSaved,
 }: ChannelFormOptions<TValues>): ChannelFormController<TValues> {
@@ -86,13 +88,15 @@ export function useChannelForm<TValues extends FormValues>({
         onSaved();
         return true;
       } catch (saveError) {
-        setError(saveError instanceof Error ? saveError.message : saveErrorMessage);
+        const code = saveError && typeof saveError === 'object' && 'code' in saveError ? saveError.code : undefined;
+        const localizedError = typeof code === 'string' ? saveErrorByCode?.[code] : undefined;
+        setError(localizedError ?? (saveError instanceof Error ? saveError.message : saveErrorMessage));
         return false;
       } finally {
         setSaving(false);
       }
     },
-    [form, isConfigured, onSaved, readValues, request, saveErrorMessage, saving, setMethod],
+    [form, isConfigured, onSaved, readValues, request, saveErrorByCode, saveErrorMessage, saving, setMethod],
   );
 
   const save = useCallback(async () => {

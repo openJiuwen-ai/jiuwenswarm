@@ -16,8 +16,8 @@ from typing import Any
 
 def make_config_routing_client(on_config_saved: Any = None) -> Any:
     """构造把 config 域 E2A 请求交给真实 ConfigAdapter 执行的 client。"""
-    from openjiuwen_protocol.e2a.agent_models import AgentRequest
-    from openjiuwen_protocol.message import ReqMethod
+    from e2a.agent_models import AgentRequest
+    from e2a.message import ReqMethod
 
     from jiuwenswarm.server.runtime.gateway_adapter.config_adapter import ConfigAdapter
 
@@ -49,7 +49,7 @@ def make_legacy_config_routing_client(on_config_saved: Any = None) -> Any:
     ConfigAdapter 执行（legacy 单用户的 AgentServer 与 Gateway 同机共享目录，
     测试中以同进程执行等价）。
     """
-    from gateway.routing.agent_client import WebSocketAgentServerClient
+    from agent_gateway.routing.agent_client import WebSocketAgentServerClient
 
     base = make_config_routing_client(on_config_saved)
 

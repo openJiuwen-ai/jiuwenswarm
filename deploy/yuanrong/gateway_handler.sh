@@ -51,14 +51,17 @@ gateway_compute_extension_dirs() {
     master_host=$(get_local_ip)   # gateway 在本机（ingress master）运行，EXTENSION_DIRS 取本机 jiuwenswarm 安装位置
     local python_version="${DEPLOY_VARS["YR_PYTHON_VERSION"]}"
 
-    local jiuwenswarm_location
-    jiuwenswarm_location=$(exec_on_host "${master_host}" "python${python_version} -m pip show jiuwenswarm 2>/dev/null | grep -i '^Location:' | awk '{print \$2}'" | tr -d '\r') || true
+    local dist_name jiuwenswarm_location=""
+    dist_name=$(jiuwenswarm_dist_name "${master_host}")
+    if [ -n "${dist_name}" ]; then
+        jiuwenswarm_location=$(exec_on_host "${master_host}" "python${python_version} -m pip show ${dist_name} 2>/dev/null | grep -i '^Location:' | awk '{print \$2}'" | tr -d '\r') || true
+    fi
 
     if [ -n "${jiuwenswarm_location}" ]; then
         DEPLOY_VARS["EXTENSION_DIRS"]="${jiuwenswarm_location}/jiuwenswarm/extensions"
-        info "EXTENSION_DIRS inferred from jiuwenswarm install on ${master_host}: ${DEPLOY_VARS["EXTENSION_DIRS"]}"
+        info "EXTENSION_DIRS inferred from jiuwenswarm (${dist_name}) install on ${master_host}: ${DEPLOY_VARS["EXTENSION_DIRS"]}"
     else
-        warning "Could not infer EXTENSION_DIRS: jiuwenswarm not found on ${master_host}. You may set EXTENSION_DIRS in .env.custom manually."
+        warning "Could not infer EXTENSION_DIRS: jiuwenswarm/workswarm not found on ${master_host}. You may set EXTENSION_DIRS in .env.custom manually."
     fi
 }
 

@@ -16,10 +16,11 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from agent_gateway.common.session_message import SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY
+from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
-from gateway.common.session_message import SESSION_MESSAGE_OWNER_SCOPE_METADATA_KEY
 from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
 from jiuwenswarm.server.ipc.protocol import request_scope
 
@@ -46,9 +47,15 @@ class DispatchRecord:
     last_sequence: int = 0
     last_execution_id: str = ""
     is_processing: bool = False
+    # Set only by events carrying an explicit is_processing payload; distinguishes
+    # the stream's own processing claim from busy flags set by other bookkeeping.
+    stream_processing_claim: bool = False
     entered_at_ns: int | None = None
     interactions: dict[str, dict[str, Any]] = field(default_factory=dict)
     terminal: dict[str, Any] | None = None
+    delivery_generation: int | None = None
+    completion: dict[str, Any] | None = None
+    expired_sequence: int = 0
 
     @property
     def is_passive_subscription(self) -> bool:
@@ -90,7 +97,9 @@ class WorkerEventStore:
         key = (*scope[:4], str(request.request_id or ""))
         if key in self._active:
             raise ValueError("duplicate active request_id")
-        if len(self._active) >= 256:
+        # Returned handlers can still own pending interactions and keep their
+        # duplicate guard, but they no longer need a dispatch slot.
+        if sum(record.active for record in self.records.values()) >= 256:
             raise ValueError("worker dispatch limit reached")
         if len(self.records) >= 2048:
             raise ValueError("worker retained interaction limit reached")
@@ -130,6 +139,7 @@ class WorkerEventStore:
         if record is None:
             return
         record.is_processing = False
+        record.stream_processing_claim = False
         record.interactions.clear()
         record.terminal = {"event_type": "runtime.completed", "state": state, "error": error}
         self.finish(dispatch_id)
@@ -202,6 +212,9 @@ class WorkerEventStore:
             _expired_scope, expired, expired_size = self._frames.popleft()
             self._expired_sequence = expired["sequence"]
             self._bytes -= expired_size
+            expired_record = self.records.get(expired["dispatch_id"])
+            if expired_record is not None:
+                expired_record.expired_sequence = expired["sequence"]
         if record:
             body = wire.get("body") or wire.get("payload") or {}
             if isinstance(body, dict):
@@ -212,6 +225,10 @@ class WorkerEventStore:
                 record.last_execution_id = str(body.get("execution_id") or record.last_execution_id)
                 if "is_processing" in body:
                     record.is_processing = bool(body["is_processing"])
+                    # The stream's own claim survives ledger pruning in
+                    # dispatcher._reconcile_execution_state; only the stream's
+                    # false or a terminal event retires it.
+                    record.stream_processing_claim = bool(body["is_processing"])
                 event = str(body.get("event_type") or wire.get("response_kind") or "")
                 interaction = str(body.get("interaction_id") or body.get("control_id")
                                   or (body.get("request_id") if "ask_user" in event else "") or "")
@@ -224,6 +241,7 @@ class WorkerEventStore:
                 if "runtime.completed" in event or "chat.error" in event or final_segment:
                     record.terminal = copy.deepcopy(body)
                     record.is_processing = False
+                    record.stream_processing_claim = False
                     record.interactions.clear()
                     if not record.active:
                         self.finish(dispatch_id)
@@ -255,7 +273,54 @@ class WorkerEventStore:
             } for record in records],
         }
 
+    def retire_session_interactions(self, request: AgentRequest) -> None:
+        """Mark a session's pending interactions retired after an interrupt.
+
+        chat.interrupt (pause/cancel) ends the current round; an ask_user the
+        round was holding can no longer be answered and the paused session must
+        not stay "processing". Without this the next metadata query sees
+        is_processing + a buffered ask_user frame and the forced after:0
+        replay re-opens the popup.
+
+        A cancel with params.target_request_id retires only that request's
+        record: the same scope also carries the owner turn and other rounds
+        whose pending interactions must stay answerable. An already-returned
+        record still counts — its suspended ask_user is as unanswerable as a
+        live one once its round is the cancel target. Retiring a non-active
+        record also releases its ``_active`` slot here: ``finish`` kept the
+        slot because the suspended interaction made the record look busy, and
+        without the release every retired round leaks one slot until the
+        dispatch limit rejects all later work.
+        """
+        scope = request_scope(request)
+        # Legacy clients pass the cancel target as request_id — same fallback
+        # as admission._dispatch_cancel and dispatcher._drop_queued_cancel.
+        params = request.params or {}
+        target = str(params.get("target_request_id") or params.get("request_id") or "")
+        retired: list[str] = []
+        for record in self.records.values():
+            if record.scope != scope:
+                continue
+            if record.is_passive_subscription:
+                continue
+            if target and str(record.request.request_id or "") != target:
+                continue
+            record.interactions.clear()
+            record.is_processing = False
+            record.stream_processing_claim = False
+            if not record.active:
+                retired.append(record.dispatch_id)
+        # finish() may trim self.records, so it runs after the iteration;
+        # active records keep their slot for the cancel/complete path.
+        for dispatch_id in retired:
+            self.finish(dispatch_id)
+
     def replay(self, request: AgentRequest, *, after: int) -> list[dict[str, Any]]:
+        # Admission is decided by the dispatcher's recoverable-control filter,
+        # which reads the live execution state. A dispatch record's pending
+        # interactions cannot tell a finished question from the continuation
+        # the same round is currently waiting on, so filtering here would drop
+        # the live one.
         scope = request_scope(request)
         return [copy.deepcopy(frame) for owner, frame, _ in self._frames
                 if owner == scope and frame["sequence"] > after]

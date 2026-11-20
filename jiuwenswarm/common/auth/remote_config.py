@@ -6,8 +6,8 @@ server/agents 侧消费方经本路径取用（拍板 #10 方向：母仓反向�
 gateway 仓）；B3 拆仓时随 shim 收敛退役。
 """
 
-from gateway.auth.remote_config import *  # noqa: F401,F403
-from gateway.auth.remote_config import (  # noqa: F401
+from agent_gateway.auth.remote_config import *  # noqa: F401,F403
+from agent_gateway.auth.remote_config import (  # noqa: F401
     Any,
     CONFIG_URL_ENV,
     DEFAULT_CONFIG_URL,

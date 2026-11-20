@@ -10,6 +10,7 @@ import {
   HTML_PREVIEW_SANDBOX,
   artifactBinaryPreviewUrl,
   artifactTextPreviewUrl,
+  decodeTextBytes,
   formatArtifactPreviewText,
   previewKind,
   type PreviewKind,
@@ -39,26 +40,27 @@ function Notice({ children }: { children: string }) {
 
 function TextPreview({ artifact, kind }: { artifact: PreviewArtifact; kind: TextKind }) {
   const { t } = useTranslation();
-  const [state, setState] = useState<{ content: string; error: boolean; loading: boolean }>({ content: '', error: false, loading: true });
+  const [state, setState] = useState<{ content: string; error: boolean; loading: boolean; oversize: boolean }>({ content: '', error: false, loading: true, oversize: false });
   useEffect(() => {
     const url = artifactTextPreviewUrl(artifact, window.location.origin);
     if (!url) {
-      setState({ content: '', error: true, loading: false });
+      setState({ content: '', error: true, loading: false, oversize: false });
       return;
     }
     let cancelled = false;
-    setState({ content: '', error: false, loading: true });
+    setState({ content: '', error: false, loading: true, oversize: false });
     void fetch(url, { cache: 'no-store' })
       .then(async response => {
         const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
+        if (response.status === 413) throw new Error('file_too_large');
         if (!response.ok || contentType.includes('text/html')) throw new Error('read_failed');
-        return response.text();
+        return decodeTextBytes(await response.arrayBuffer());
       })
       .then(content => {
-        if (!cancelled) setState({ content, error: false, loading: false });
+        if (!cancelled) setState({ content, error: false, loading: false, oversize: false });
       })
-      .catch(() => {
-        if (!cancelled) setState({ content: '', error: true, loading: false });
+      .catch((err: unknown) => {
+        if (!cancelled) setState({ content: '', error: true, loading: false, oversize: err instanceof Error && err.message === 'file_too_large' });
       });
     return () => {
       cancelled = true;
@@ -71,7 +73,7 @@ function TextPreview({ artifact, kind }: { artifact: PreviewArtifact; kind: Text
         {t('common.loading')}
       </div>
     );
-  if (state.error) return <Notice>{t('artifacts.previewFailed')}</Notice>;
+  if (state.error) return <Notice>{state.oversize ? t('artifacts.previewTooLarge') : t('artifacts.previewFailed')}</Notice>;
   if (kind === 'markdown')
     return <MarkdownRenderer content={state.content} className="chat-text chat-markdown h-full max-w-none overflow-auto" testId="artifact-markdown-preview" />;
   if (kind === 'code') return <CodePreview content={state.content} name={artifact.name} mimeType={artifact.mimeType} />;

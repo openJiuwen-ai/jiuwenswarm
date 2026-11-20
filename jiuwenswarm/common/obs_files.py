@@ -4,6 +4,6 @@
 
 import sys
 
-import gateway.common.obs_files as _real
+import agent_gateway.common.obs_files as _real
 
 sys.modules[__name__] = _real

@@ -846,6 +846,253 @@ async def test_control_input_resumes_work_after_output_stream_ends() -> None:
 
 
 @pytest.mark.asyncio
+async def test_every_card_raised_in_one_round_stays_clickable() -> None:
+    """#5738: parallel tool calls raise two cards in one round. Only the last
+    card id was kept, so clicking the first card failed with "session has no
+    active execution" while it was still shown."""
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+
+    async def original():
+        yield "card-1"
+        yield "card-2"
+
+    stream = coordinator.run_stream(
+        "session-a",
+        "original",
+        SessionWorkKind.CHAT_STREAM,
+        original,
+        interaction_ids=lambda item: frozenset({item}),
+    )
+    assert [item async for item in stream] == ["card-1", "card-2"]
+
+    # Answering the first card resumes the round, which asks the second card again.
+    assert await coordinator.deliver_control(
+        "session-a",
+        ("card-1",),
+        lambda: asyncio.sleep(0, result="card-2"),
+        interaction_ids=lambda item: frozenset({item}),
+    ) == "card-2"
+    assert await coordinator.deliver_control(
+        "session-a", ("card-2",), lambda: asyncio.sleep(0, result="done")
+    ) == "done"
+    completed = coordinator.snapshot_session("session-a")
+    assert completed is not None
+    assert all(item.state.terminal for item in completed.executions)
+    await coordinator.close()
+
+
+async def _park_on_cards(coordinator: RuntimeSessionCoordinator, *cards: str) -> None:
+    async def original():
+        for card in cards:
+            yield card
+
+    stream = coordinator.run_stream(
+        "session-a",
+        "original",
+        SessionWorkKind.CHAT_STREAM,
+        original,
+        interaction_ids=lambda item: frozenset({item}),
+    )
+    assert [item async for item in stream] == list(cards)
+
+
+async def _answer(coordinator: RuntimeSessionCoordinator, card: str, *reasked: str) -> list[str]:
+    """Click ``card``; the resumed round asks ``reasked`` cards again, as the agent does."""
+
+    async def resume():
+        for item in reasked:
+            yield item
+
+    return [
+        item
+        async for item in coordinator.deliver_control_stream(
+            "session-a", (card,), resume, interaction_ids=lambda item: frozenset({item}),
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cards_raised_in_one_round_can_be_answered_in_any_order() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    await _park_on_cards(coordinator, "card-1", "card-2", "card-3")
+
+    assert await _answer(coordinator, "card-2", "card-1", "card-3") == ["card-1", "card-3"]
+    assert await _answer(coordinator, "card-1", "card-3") == ["card-3"]
+    assert await _answer(coordinator, "card-3") == []
+    completed = coordinator.snapshot_session("session-a")
+    assert completed is not None
+    assert all(item.state.terminal for item in completed.executions)
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_an_answered_card_cannot_resume_the_round_again() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    await _park_on_cards(coordinator, "card-1", "card-2")
+
+    assert await coordinator.deliver_control(
+        "session-a", ("card-1",), lambda: asyncio.sleep(0, result="card-2"),
+        interaction_ids=lambda item: frozenset({item}),
+    ) == "card-2"
+    # A second click on the same card must not run the resume twice.
+    with pytest.raises(RuntimeError, match="no active execution"):
+        await coordinator.deliver_control(
+            "session-a", ("card-1",), lambda: asyncio.sleep(0, result="again")
+        )
+    assert await coordinator.deliver_control(
+        "session-a", ("card-2",), lambda: asyncio.sleep(0, result="done")
+    ) == "done"
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelling_a_round_releases_all_of_its_cards() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    await _park_on_cards(coordinator, "card-1", "card-2")
+
+    await coordinator.cancel_execution("session-a", request_id="original")
+    for card in ("card-1", "card-2"):
+        with pytest.raises(RuntimeError, match="no active execution"):
+            await coordinator.deliver_control(
+                "session-a", (card,), lambda: asyncio.sleep(0, result="resumed")
+            )
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_owner_refuses_card_before_teardown_finishes() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    await _park_on_cards(coordinator, "card")
+    owner = coordinator.snapshot_session("session-a").executions[0]
+    coordinator._registry.get(owner.execution_id).cancellation_requested = True
+    with pytest.raises(RuntimeError, match="no active execution"):
+        await coordinator.deliver_control("session-a", ("card",), lambda: asyncio.sleep(0))
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_every_card_reasked_in_one_answer_stays_clickable() -> None:
+    """A web click resumes through the unary path, whose result can re-ask
+    several cards at once; each of them, not just the first, must resume."""
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    await _park_on_cards(coordinator, "card-1", "card-2", "card-3")
+
+    assert await coordinator.deliver_control(
+        "session-a", ("card-1",), lambda: asyncio.sleep(0, result=["card-2", "card-3"]),
+        interaction_ids=frozenset,
+    ) == ["card-2", "card-3"]
+    assert await coordinator.deliver_control(
+        "session-a", ("card-3",), lambda: asyncio.sleep(0, result=["card-2"]),
+        interaction_ids=frozenset,
+    ) == ["card-2"]
+    assert await coordinator.deliver_control(
+        "session-a", ("card-2",), lambda: asyncio.sleep(0, result="done")
+    ) == "done"
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_two_cards_of_one_round_cannot_resume_it_at_once() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    await _park_on_cards(coordinator, "card-1", "card-2")
+    gate = asyncio.Event()
+
+    async def slow_answer():
+        await gate.wait()
+        return "done"
+
+    first = asyncio.create_task(
+        coordinator.deliver_control("session-a", ("card-1",), slow_answer)
+    )
+    await asyncio.sleep(0)
+    # A near-simultaneous click on the other card must not inject a second
+    # answer into the round that card-1 is already resuming.
+    second = asyncio.create_task(coordinator.deliver_control(
+        "session-a", ("card-2",), lambda: asyncio.sleep(0, result="twice")
+    ))
+    await asyncio.sleep(0)
+    assert not second.done()
+    gate.set()
+    assert await first == "done"
+    with pytest.raises(RuntimeError, match="no active execution"):
+        await second
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_answering_the_latest_card_mid_round_keeps_the_earlier_card_open() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    finish = asyncio.Event()
+
+    async def original():
+        yield "card-1"
+        yield "card-2"
+        await finish.wait()
+
+    async def consume():
+        stream = coordinator.run_stream(
+            "session-a", "original", SessionWorkKind.CHAT_STREAM, original,
+            interaction_ids=lambda item: frozenset({item}),
+        )
+        return [item async for item in stream]
+
+    consumer = asyncio.create_task(consume())
+    while not any(
+        "card-2" in item.waiting_control_ids
+        for item in coordinator.snapshot_session("session-a").executions
+    ):
+        await asyncio.sleep(0)
+    assert await coordinator.deliver_control(
+        "session-a", ("card-2",), lambda: asyncio.sleep(0, result="card-1"),
+        interaction_ids=lambda item: frozenset({item}),
+    ) == "card-1"
+    finish.set()
+    assert await consumer == ["card-1", "card-2"]
+    # The round still waits on card-1 instead of ending with it on screen.
+    assert await coordinator.deliver_control(
+        "session-a", ("card-1",), lambda: asyncio.sleep(0, result="done")
+    ) == "done"
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_an_answered_heartbeat_card_cannot_resume_it_again() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    recorded = asyncio.Event()
+    release = asyncio.Event()
+
+    async def heartbeat() -> None:
+        assert coordinator.record_interaction("session-a", "heartbeat-1", frozenset({"card-x"}))
+        recorded.set()
+        await release.wait()
+
+    heartbeat_task = asyncio.create_task(
+        coordinator.run_unary("session-a", "heartbeat-1", SessionWorkKind.HEARTBEAT, heartbeat)
+    )
+    await recorded.wait()
+    assert await coordinator.deliver_control(
+        "session-a", ("card-x",), lambda: asyncio.sleep(0, result="card-y"),
+        interaction_ids=lambda item: frozenset({item}),
+    ) == "card-y"
+    with pytest.raises(RuntimeError, match="no active execution"):
+        await coordinator.deliver_control(
+            "session-a", ("card-x",), lambda: asyncio.sleep(0, result="twice")
+        )
+    release.set()
+    await asyncio.wait_for(heartbeat_task, timeout=1)
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
 async def test_new_work_supersedes_waiting_control() -> None:
     coordinator = RuntimeSessionCoordinator()
     await _register(coordinator)

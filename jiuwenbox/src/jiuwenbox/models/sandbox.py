@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 """Sandbox data models."""
 
 from __future__ import annotations
@@ -8,7 +8,7 @@ import re
 import uuid
 from datetime import datetime
 
-from pydantic import AliasChoices, BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_serializer, field_validator
 from jiuwenbox.server.runtime.errors import InvalidJobIdError, InvalidSandboxIdError
 from jiuwenbox.supervisor.daemon_ipc import SANDBOX_IP_ENV
 
@@ -102,6 +102,18 @@ class SandboxRef(BaseModel):
     # shared network-namespace egress address. None when not yet known.
     ip_address: str | None = None
 
+    @field_serializer("created_at", "started_at", "last_active_at")
+    def _serialize_local_time(self, value: datetime | None) -> datetime | None:
+        """Emit the same local wall clock as ``created_at``.
+
+        ``created_at`` is a naive local timestamp. Aware values (historically
+        UTC) are converted to that same local clock and stripped of the
+        offset so ``sandbox ls`` does not show an 8-hour gap.
+        """
+        if value is None or value.tzinfo is None:
+            return value
+        return value.astimezone().replace(tzinfo=None)
+
 
 class ExecResult(BaseModel):
     """Result of executing a command in a sandbox."""
@@ -115,7 +127,7 @@ class BackgroundExecRequest(BaseModel):
     command: list[str]
     job_id: str | None = None
     workdir: str | None = None
-    env: dict[str, str] | None = None
+    env: dict[str, str | None] | None = None
     stdin: str | None = None
     timeout_seconds: int | None = None
 
@@ -123,8 +135,8 @@ class BackgroundExecRequest(BaseModel):
     @classmethod
     def reject_reserved_environment(
         cls,
-        value: dict[str, str] | None,
-    ) -> dict[str, str] | None:
+        value: dict[str, str | None] | None,
+    ) -> dict[str, str | None] | None:
         if value is not None and SANDBOX_IP_ENV in value:
             raise ValueError(f"{SANDBOX_IP_ENV} is reserved by the sandbox runtime")
         return value

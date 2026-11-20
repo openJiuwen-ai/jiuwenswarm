@@ -216,7 +216,7 @@ async def test_clawhub_download_records_owner_qualified_origin(tmp_path, monkeyp
 
     zip_content = _zip_bytes(
         {
-            "weather/SKILL.md": "---\nname: weather\nversion: 1.0.0\n---\nbody\n",
+            "weather/SKILL.md": "---\nname: weather\ndescription: weather forecast\nversion: 1.0.0\n---\nbody\n",
         }
     )
     fake_client = _FakeDownloadClient(status_code=200, content=zip_content)
@@ -294,7 +294,7 @@ async def test_clawhub_download_without_owner_keeps_slug_origin(tmp_path, monkey
 
     zip_content = _zip_bytes(
         {
-            "unique-skill/SKILL.md": "---\nname: unique-skill\nversion: 1.0.0\n---\nbody\n",
+            "unique-skill/SKILL.md": "---\nname: unique-skill\ndescription: demo skill\nversion: 1.0.0\n---\nbody\n",
         }
     )
     fake_client = _FakeDownloadClient(status_code=200, content=zip_content)

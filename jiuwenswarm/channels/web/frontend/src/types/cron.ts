@@ -35,7 +35,10 @@ export interface CronJobDTO {
   delete_after_run?: boolean;
   timeout_seconds?: number;
   project_id: string;
+  work_mode?: 'work' | 'code';
   last_session_id?: string;
+  /** 正在执行的会话（企业版 list 挂载，供前端订 live） */
+  active_session_id?: string;
   model_name?: string;
   // 稳定模型选择（对齐后端 CronJob.model_selection）；有值时执行侧按它定位模型，
   // model_name 仅作展示/旧链路兜底——目录里出现重名模型时仅靠名字反查会失败
@@ -47,6 +50,7 @@ export interface CronTaskUI {
   id: string;
   name: string;
   projectId: string;
+  workMode?: 'work' | 'code';
   projectName: string | null;
   description: string;
   modelName: string | null;

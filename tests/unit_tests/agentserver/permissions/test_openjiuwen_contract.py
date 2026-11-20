@@ -114,6 +114,6 @@ def test_manual_approval_response_builds_permission_interrupt() -> None:
     assert converted is not None
     assert converted["source"] == "permission_interrupt"
     assert "manual approval required" in converted["questions"][0]["question"]
-    assert converted["questions"][0]["card_id"] == card.key.invocation_id
+    assert converted["questions"][0]["card_id"] == card.key.tool_call_id
     assert "tool_invocation_key" not in converted["questions"][0]
     assert "tool_call_id" not in converted["questions"][0]

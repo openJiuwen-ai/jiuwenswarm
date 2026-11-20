@@ -12,8 +12,11 @@ import type {
 import type { ExternalCliInstallStatuses } from '../../../components/ExternalCliInstallDialog';
 import { SettingsSaveQueue } from './SettingsSaveQueue';
 import { SettingsUnsavedChangesRegistry } from './SettingsUnsavedChangesRegistry';
+import { MultimodalSettingsProvider } from './useMultimodalSettings';
+import type { SettingsNavigationTarget } from '../settingsNavigation';
 
 export type SettingsServices = {
+  navigationTarget?: SettingsNavigationTarget;
   appVersion?: string;
   isConnected: boolean;
   connectionState: WebConnectionState;
@@ -49,8 +52,6 @@ export type SettingsServices = {
           Record<ExternalCliAgentKind, ExternalCliDetectResult>
         >),
   ) => void;
-  recommendationFocus?: number | null;
-  onCorrectRecommendation?: (text: string) => void;
   onRecommendationEnabledChange?: (enabled: boolean) => void;
 };
 
@@ -70,6 +71,7 @@ export function SettingsServicesProvider({
   const value = useMemo(
     () => ({ ...services, saveQueue: saveQueueRef.current!, unsavedChanges: changesRef.current! }),
     [
+      services.navigationTarget,
       services.appVersion,
       services.connectionState,
       services.externalCliDetectResults,
@@ -85,8 +87,6 @@ export function SettingsServicesProvider({
       services.onTrackExternalCliDependencyInstalls,
       services.onValidateExternalCliPaths,
       services.onPruneExternalCliPathHistories,
-      services.recommendationFocus,
-      services.onCorrectRecommendation,
       services.onRecommendationEnabledChange,
       services.request,
     ],
@@ -96,7 +96,11 @@ export function SettingsServicesProvider({
     return value.unsavedChanges.subscribe(() => onHasChangesChange?.(value.unsavedChanges.hasChanges()));
   }, [onHasChangesChange, value.unsavedChanges]);
   useEffect(() => () => onHasChangesChange?.(false), [onHasChangesChange]);
-  return <SettingsServicesContext.Provider value={value}>{children}</SettingsServicesContext.Provider>;
+  return (
+    <SettingsServicesContext.Provider value={value}>
+      <MultimodalSettingsProvider>{children}</MultimodalSettingsProvider>
+    </SettingsServicesContext.Provider>
+  );
 }
 export function useSettingsServices(): SettingsServices {
   const services = useContext(SettingsServicesContext);

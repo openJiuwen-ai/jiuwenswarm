@@ -207,6 +207,17 @@ NFS server/client 脚本、连通性检查、取消挂载：`scripts/nfs/README.
 
 这两个路径名字相同但不是同一个物理目录。需要让成员写出的文件被 leader 直接读取时，应配置双方都可访问的 `team.workspace.root_path`，或通过消息 / DB / 文件传输工具回传结果。
 
+### 沙箱（jiuwenbox）与分布式成员
+
+开启 `sandbox.enabled=true` 且 `type=jiuwenbox` 时，teammate 节点的成员命令在本节点的 jiuwenbox 沙箱内执行。部署要求与行为边界：
+
+- **每个 teammate 节点需要部署本机 jiuwenbox**，且该节点的 `sandbox.url` 指向本机可达地址（如 `http://127.0.0.1:<port>`）。leader 侧的沙箱配置不跨节点传播：teammate 进程在收到 bootstrap 后按**本机 config** 重建成员沙箱配置。
+- 每个成员的沙箱容器在该成员实际运行的节点上懒创建，容器不跨节点共享；交付物互通仍依赖上面的共享 `JIUWEN_TEAM_WORKSPACE_ROOT`（NFS）。
+- 本机沙箱不可用（未启用 jiuwenbox / endpoint 未解析）时，成员降级为本地执行并输出 warning 日志；安全敏感部署可开启 `sandbox.team_fail_closed: true`，此时 teammate 拒绝收养无沙箱成员（bootstrap 报错）而不是降级。
+- `sandbox.network_mode`（可选，如 `host`）：显式把网络模式写入成员沙箱的 client policy fragment。jiuwenbox 的 append-merge 只保留 fragment 中出现的字段，因此只在 server 根 policy 里配置 `network.mode` 会在合并后丢失（表现为无特权环境下容器创建失败：`ip netns add` 权限不足）。设为 `host` 可在无特权主机（WSL/容器内）使用宿主网络。默认空 = 不转发，行为与旧版一致。
+- 定时派发（scheduled dispatch）模式下成员为运行期动态生成，无具名条目，沙箱粒度退化为角色级（leader / teammate 各一间）。
+- 具名团队解散后重建时，若 agent-server 与 jiuwenbox 进程未重启，成员可能复用之前的沙箱容器（环境延续，与单 agent 同项目共用容器的既有语义一致）；空闲容器由 jiuwenbox 的 idle 淘汰自动回收。
+
 端口与防火墙需保证 leader/teammate 机器互通（多机时把示例中的 `127.0.0.1` 换成真实 IP）。
 
 ---

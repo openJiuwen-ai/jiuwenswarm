@@ -271,3 +271,27 @@ Edit CSS variables in `src/index.css`:
 ## License
 
 MIT
+
+### Group chats
+
+Open **Chat** in the left navigation rail. The persistent sidebar lists pinned and other conversations.
+Use **Start group chat** to select installed experts or teams, including while another conversation is open.
+Pin and unpin actions reuse the shared session pin API.
+The workspace supports public messages, explicit mentions, discussions/task assignments, execution progress,
+file links, adding members, and editing group details. Task cards use backend events and snapshots rather
+than inferring progress from message text.
+
+`/groups` and `/groups/<group_id>` support direct access and reload recovery. Failed sends preserve the
+draft and message ID; the composer clears only after `team.group_message.accepted`. Member removal,
+clearing history, and speaking-mode controls are not exposed until backend APIs support them.
+Deleting a group uses `group.delete` to clean up its associated runtime resources.
+
+Run `npm run test:group-chat` to verify deduplication, member IDs, result correlation, and transport contracts.
+
+
+Group chats reuse the existing `ask_user` prompt above the composer. Answers use `chat.send` with
+`source=ask_user_interrupt`, `request_id`, and `answers` to resume the original owner without starting a new task.
+`group.get.pending_questions` restores unanswered prompts after browser reload; questions and answers are stored
+in the group session's `questions.json`. A stopped owner process cannot receive an answer in its old model instance.
+Execution cards show compact task names, real subtask titles, owners, and state counts, without internal instructions
+or inferred percentages.

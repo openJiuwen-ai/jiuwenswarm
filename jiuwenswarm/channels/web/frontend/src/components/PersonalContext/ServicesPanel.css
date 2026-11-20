@@ -56,21 +56,30 @@
 .pc-services__notice--success {
   position: fixed;
   top: 10px;
-  right: 16px;
+  left: 50%;
+  transform: translateX(-50%);
   z-index: 1000;
+  /* Do not inherit the page-wide error banner's width and auto margins. */
+  width: fit-content;
+  max-width: calc(100vw - 32px);
+  margin-inline: 0;
   box-sizing: border-box;
-  height: 34px;
+  min-height: 34px;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
-  padding: 0 12px;
-  overflow: hidden;
+  justify-content: flex-start;
+  padding: 8px 12px;
   border-radius: 8px;
   background: #e6f2d5;
   color: #191919;
   font-weight: 400;
   font-size: 12px;
   line-height: 18px;
+}
+
+.pc-services__notice--success > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .pc-services__success-icon {

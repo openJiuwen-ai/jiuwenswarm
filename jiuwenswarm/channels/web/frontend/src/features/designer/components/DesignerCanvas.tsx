@@ -219,14 +219,14 @@ function DesignerCanvasInner({ graph }: DesignerCanvasProps) {
   useEffect(() => {
     if (!layoutRequestId || layoutRequestId === lastLayoutRequestRef.current) return;
     lastLayoutRequestRef.current = layoutRequestId;
-    if (editingLocked) return;
+    // Pure layout: allowed while the agent team holds the edit lock.
     autoLayout();
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
         void fitView({ padding: DESIGNER_FIT_VIEW_PADDING, duration: 220 });
       });
     });
-  }, [autoLayout, editingLocked, fitView, layoutRequestId]);
+  }, [autoLayout, fitView, layoutRequestId]);
 
   const syncZoomPercent = useCallback(
     (zoom: number) => {
@@ -258,6 +258,19 @@ function DesignerCanvasInner({ graph }: DesignerCanvasProps) {
       });
     }
   }, [graph.graph_id, reactFlowGraph, selectedNodeId, setNodes, setEdges, fitView]);
+
+  // Refresh display data independently so config edits do not reset a local drag.
+  useEffect(() => {
+    const updated = toReactFlowGraph(graph);
+    const nodeData = new Map(updated.nodes.map((node) => [node.id, node.data]));
+    const edgeLabels = new Map(updated.edges.map((edge) => [edge.id, edge.label]));
+    setNodes((previous) => previous.map((node) => (
+      nodeData.has(node.id) ? { ...node, data: nodeData.get(node.id)! } : node
+    )));
+    setEdges((previous) => previous.map((edge) => (
+      edgeLabels.has(edge.id) ? { ...edge, label: edgeLabels.get(edge.id) } : edge
+    )));
+  }, [graph, reactFlowGraph, selectedNodeId, setNodes, setEdges]);
 
   useOnSelectionChange({
     onChange: ({ nodes: selectedNodes }) => {
@@ -426,7 +439,8 @@ function DesignerCanvasInner({ graph }: DesignerCanvasProps) {
         zoomOnScroll={false}
         zoomActivationKeyCode={['Control', 'Meta']}
         selectionOnDrag={!handMode && !canvasLocked}
-        nodesDraggable={!handMode && !canvasLocked && !editingLocked}
+        // Position-only: drag stays on during the agent-work edit lock.
+        nodesDraggable={!handMode && !canvasLocked}
         // Port handles stay connectable in select and hand tools; only lock blocks them.
         nodesConnectable={!canvasLocked && !editingLocked}
         connectionDragThreshold={8}

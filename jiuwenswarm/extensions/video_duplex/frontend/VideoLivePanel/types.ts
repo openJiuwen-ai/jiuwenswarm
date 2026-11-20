@@ -24,15 +24,27 @@ export interface SearchJobPayload {
   queue_position?: number;
   queue_version?: number;
   job_id?: string;
+  title?: string;
   search_session_id?: string;
   question?: string;
   query?: string;
   result?: string;
   display_result?: string;
   realtime_brief?: RealtimeBrief;
+  files?: FileDownloadItem[];
   error?: string;
-  interaction?: { id: string; request_id: string; state: string; questions: Array<{ question: string }> };
+  interaction?: {
+    id: string;
+    request_id: string;
+    state: string;
+    source?: string;
+    approval_schema?: unknown;
+    evolution_meta?: unknown;
+    questions: Array<{ question: string; options?: Array<{ label: string; description?: string }> }>;
+  };
   wait_reason?: string;
+  /** Tasks this queued job is held behind (same user, possibly other conversations). */
+  waiting_on?: Array<{ id: string; title: string; status: string; search_session_id: string }>;
   engine?: string;
   status?: 'unknown' | 'queued' | 'running' | 'waiting_user' | 'cancelling' | 'cancelled' | 'completed' | 'failed';
   latency_ms?: number;
@@ -56,6 +68,7 @@ export interface SearchProgressEntry {
   content?: string;
   tool_name?: string;
   tool_call_id?: string;
+  tool_payload?: Record<string, unknown>;
   tool_arguments?: unknown;
   tool_description?: string;
   tool_formatted_args?: string;
@@ -63,6 +76,7 @@ export interface SearchProgressEntry {
   tool_result?: unknown;
   tool_summary?: string;
   tool_success?: boolean;
+  subagent_event?: Record<string, unknown>;
 }
 
 export interface SearchProgressJob {
@@ -99,6 +113,7 @@ export interface AgentAction {
 }
 
 export interface VideoSessionConfig {
+  context_restore?: { token: string; instructions: string };
   provider?: 'joyai' | 'qwen_omni';
   url?: string;
   model: string;

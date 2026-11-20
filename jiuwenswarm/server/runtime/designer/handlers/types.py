@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import dataclasses
 from pathlib import Path
 
 from dataclasses import dataclass
@@ -32,6 +34,17 @@ class NodeExecutionContext:
     # live and age with the team), _media_save_dir writes under it; None
     # falls back to the legacy global designer_media layout.
     media_dir: "Path | None" = None
+
+
+def thread_snapshot(ctx: NodeExecutionContext) -> NodeExecutionContext:
+    """Private copy of ``ctx`` for a worker thread: the loop keeps mutating the live records."""
+    return dataclasses.replace(
+        ctx,
+        graph=copy.deepcopy(ctx.graph),
+        run=copy.deepcopy(ctx.run),
+        emit_activity=None,
+        on_prompt_artifact=None,
+    )
 
 
 @dataclass(frozen=True)

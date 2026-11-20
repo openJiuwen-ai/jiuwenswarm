@@ -41,6 +41,7 @@ import { DesignerStoryboardTable } from '../../DesignerStoryboardTable';
 import { DesignerActivityPeek } from '../DesignerActivityPeek';
 import { DesignerNodeActionBar } from '../controls/DesignerNodeActionBar';
 import { DesignerNodeToolbar } from '../controls/DesignerNodeToolbar';
+import { DesignerAudioPreview } from './DesignerAudioPreview';
 import { DesignerNodePortControl } from './DesignerNodePortControl';
 
 type DesignerNodeData = DesignerReactFlowNode['data'];
@@ -182,6 +183,7 @@ function DesignerNodeShell({
     <div
       className={`designer-node${media ? ' designer-node--media' : ''}${showMediaFill ? ' designer-node--media-filled' : ''}${generatingShimmer ? ' is-generating-shimmer' : ''}${selected ? ' is-selected' : ''}${statusClass} group`}
       data-testid="designer-node"
+      data-node-type={nodeType}
       data-selected={selected ? 'true' : 'false'}
       data-status={status}
     >
@@ -223,12 +225,12 @@ function DesignerNodeShell({
         ) : null}
         <div className="designer-node__body">{body}</div>
         {nodeError ? (
-          <p className="designer-node__error" data-testid="designer-node-error" title={nodeError}>
+          <p className="designer-node__error nodrag nopan nowheel" data-testid="designer-node-error" title={nodeError}>
             {isDesignerModerationError(nodeError) ? t('designer.run.moderationBlocked') : nodeError}
           </p>
         ) : null}
         <DesignerNodePortControl nodeId={nodeId} side="successor" />
-        <DesignerNodeResizeHandle nodeId={nodeId} />
+        {nodeType === DESIGNER_NODE_TYPE_AUDIO ? null : <DesignerNodeResizeHandle nodeId={nodeId} />}
       </div>
       {toolbar}
     </div>
@@ -482,14 +484,7 @@ export function DesignerMediaNode({ id, data, selected }: NodeProps<DesignerFlow
       />
     );
   } else if (hasPreview && nodeType === DESIGNER_NODE_TYPE_AUDIO) {
-    inner = (
-      <audio
-        className="designer-node__audio-preview"
-        src={previewSrc || ''}
-        controls
-        data-testid="designer-node-uploaded-audio"
-      />
-    );
+    inner = <DesignerAudioPreview src={previewSrc || ''} />;
   }
 
   const generatingShimmer =

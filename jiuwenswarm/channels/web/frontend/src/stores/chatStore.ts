@@ -5,7 +5,9 @@
  * 组件通过 activeSessionId 读取当前会话的运行态。
  */
 
+import { foldEnterpriseStreamText } from '../features/enterpriseStreamText';
 import { create } from 'zustand';
+import { mergeUniqueMessages, toOwnerTeamMessage } from '../components/ChatPanel/teamEventUtils';
 import { subscribeWithSelector } from 'zustand/middleware';
 import {
   Message,
@@ -22,6 +24,8 @@ import {
   FileDownloadItem,
   ContextCompressionRuntime,
   ContextCompressionSummary,
+  MoaOperation,
+  MoaStatusPayload,
   MediaItem,
 } from '../types';
 import { useTodoStore } from './todoStore';
@@ -32,6 +36,7 @@ import {
   shouldDropToolResult,
 } from './toolResultLifecycle';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
+import { canMessageHostFileItems } from '../features/chatFileAttachment';
 import { parseTimestampToMs } from '../utils/timestamp';
 import { areSteerImagesReady } from '../features/sessionInputMedia';
 import {
@@ -40,11 +45,28 @@ import {
   dropAnsweredAskUserQuestions,
   enqueuePendingQuestions,
   isAnsweredAskUserQuestion,
+  isQuestionAnswered,
   markQuestionsAnswered as markQueuedQuestionsAnswered,
 } from './pendingQuestionQueue';
 
 const TOOL_TIMEOUT_MS = 12_000_000;
 const EVOLUTION_STATUS_END_VISIBLE_MS = 3_000;
+
+// A live or already-answered interaction supersedes only its own unanswered echo.
+// Keep this at store ingress so restore, pagination, and late snapshots agree.
+function omitLiveQuestionHistory(
+  sessionId: string,
+  messages: Message[],
+  pendingQuestions: readonly AskUserQuestionPayload[],
+): Message[] {
+  const pendingIds = new Set(pendingQuestions.map((question) => question.request_id));
+  const filtered = messages.filter((message) => {
+    const question = message.unansweredQuestion;
+    if (!question) return true;
+    return !pendingIds.has(question.requestId) && !isQuestionAnswered(sessionId, question.requestId);
+  });
+  return filtered.length === messages.length ? messages : filtered;
+}
 
 /**
  * 会话视图键。
@@ -190,6 +212,7 @@ export interface ChatRuntime {
   /** Aggregate busy state; foreground and organization lifecycles update their own flags. */
   isProcessing: boolean;
   foregroundIsProcessing: boolean;
+  turnRevision: number;
   organizationIsProcessing: boolean;
   activeExecutionId: string | null;
   executionError: string | null;
@@ -223,6 +246,8 @@ export interface ChatRuntime {
   orphanResults: Map<string, ToolResult>;
   contextCompressionRuntime?: ContextCompressionRuntime;
   contextCompressionSummary?: ContextCompressionSummary;
+  moaOperations: Record<string, MoaOperation>;
+  moaStatusClosed: boolean;
   toolMetrics: {
     toolCallDedupDropped: number;
     toolResultDedupDropped: number;
@@ -252,6 +277,13 @@ export interface ChatRuntime {
   evolutionStatusClearTimer: ReturnType<typeof setTimeout> | null;
   /** interruptResult 自动清除定时器，按 session 隔离 */
   interruptResultClearTimer: ReturnType<typeof setTimeout> | null;
+  /**
+   * Epoch of the last successful pause/cancel ack that settled this turn.
+   * While set, a lagging runtime-snapshot (session.get_metadata) or a synthetic
+   * resume processing event must not relight foreground processing; the next
+   * real processing_status(true) frame or a new user send clears it.
+   */
+  interruptSettledEpoch: number | null;
 }
 
 function createEmptyRuntime(): ChatRuntime {
@@ -259,6 +291,7 @@ function createEmptyRuntime(): ChatRuntime {
     messages: [],
     isProcessing: false,
     foregroundIsProcessing: false,
+    turnRevision: 0,
     organizationIsProcessing: false,
     activeExecutionId: null,
     executionError: null,
@@ -270,6 +303,7 @@ function createEmptyRuntime(): ChatRuntime {
     isPaused: false,
     pausedTask: null,
     interruptResult: null,
+    interruptSettledEpoch: null,
     switchingMode: false,
     isNewSession: false,
     currentStreamContent: '',
@@ -286,6 +320,8 @@ function createEmptyRuntime(): ChatRuntime {
     orphanResults: new Map(),
     contextCompressionRuntime: undefined,
     contextCompressionSummary: undefined,
+    moaOperations: {},
+    moaStatusClosed: true,
     toolMetrics: {
       toolCallDedupDropped: 0,
       toolResultDedupDropped: 0,
@@ -388,7 +424,7 @@ interface ChatState {
   bumpThinkingAnchor: (sessionId: string) => void;
   setExecutionError: (sessionId: string, error: string | null) => void;
   setAgentGroupUnavailable: (sessionId: string, unavailable: boolean) => void;
-  setProcessing: (sessionId: string, status: boolean) => void;
+  setProcessing: (sessionId: string, status: boolean, options?: { newTurn?: boolean }) => void;
   setOrganizationProcessing: (sessionId: string, status: boolean) => void;
   setActiveExecutionId: (sessionId: string, executionId: string) => void;
   setThinking: (sessionId: string, status: boolean) => void;
@@ -407,6 +443,13 @@ interface ChatState {
     messages: QueuedSessionMessage[]
   ) => void;
   setInterruptResult: (sessionId: string, result: InterruptResultPayload | null) => void;
+  markInterruptSettled: (sessionId: string) => void;
+  clearInterruptSettled: (sessionId: string) => void;
+  /**
+   * 会话生命周期动作（归档/删除）已停掉本轮：后端不会补发终态线帧，
+   * 需要在前端显式收尾，否则恢复会话后会一直显示执行中。
+   */
+  settleLifecycleStoppedSession: (sessionId: string) => void;
   setSwitchingMode: (sessionId: string, switching: boolean) => void;
   setNewSession: (sessionId: string, isNew: boolean) => void;
   addToolCall: (
@@ -472,6 +515,8 @@ interface ChatState {
     runtime?: ContextCompressionRuntime,
     summary?: ContextCompressionSummary
   ) => void;
+  updateMoaStatus: (sessionId: string, payload: MoaStatusPayload) => void;
+  clearMoaStatus: (sessionId: string) => void;
 }
 
 export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get) => ({
@@ -599,7 +644,11 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         useChatStore.getState().ensureTeamRuntime(sessionId, teamId);
         useChatStore.getState().replaceHistoryMessages(conversationKey(sessionId, teamId), history);
       }
-      messages = messages.filter((message) => !message.teamId);
+      messages = messages.flatMap((message) => {
+        if (!message.teamId) return [message];
+        const ownerMessage = toOwnerTeamMessage(message);
+        return ownerMessage ? [ownerMessage] : [];
+      });
     }
     set((state) => {
       const runtime = state.runtimes[sessionId];
@@ -607,7 +656,9 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       if (runtime.evolutionStatusClearTimer) {
         clearTimeout(runtime.evolutionStatusClearTimer);
       }
-      const assigned = assignMessageRenderKeys(runtime, messages);
+      const assigned = assignMessageRenderKeys(
+        runtime, omitLiveQuestionHistory(sessionId, messages, runtime.pendingQuestions),
+      );
       return {
         runtimes: {
           ...state.runtimes,
@@ -631,6 +682,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             orphanResults: new Map(),
             contextCompressionRuntime: undefined,
             contextCompressionSummary: undefined,
+            ...(!runtime.isProcessing ? { moaOperations: {} } : {}),
             toolMetrics: {
               toolCallDedupDropped: 0,
               toolResultDedupDropped: 0,
@@ -671,7 +723,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       if (!runtime || !runtime.currentStreamId) return state;
 
       const existingBuffer = runtime.streamBuffers.get(streamKey) || '';
-      const nextContent = existingBuffer + content;
+      const nextContent = foldEnterpriseStreamText(existingBuffer, content);
 
       return {
         runtimes: {
@@ -1018,7 +1070,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, executionError: error },
+          [sessionId]: { ...runtime, executionError: error, ...(error ? { moaOperations: {}, moaStatusClosed: true } : {}) },
         },
       };
     });
@@ -1029,7 +1081,17 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       const runtime = state.runtimes[sessionId];
       if (!runtime || runtime.activeExecutionId === executionId) return state;
       return {
-        runtimes: { ...state.runtimes, [sessionId]: { ...runtime, activeExecutionId: executionId } },
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            activeExecutionId: executionId,
+            moaStatusClosed: !executionId,
+            moaOperations: Object.fromEntries(
+              Object.entries(runtime.moaOperations).filter(([, operation]) => operation.executionId === executionId),
+            ),
+          },
+        },
       };
     });
   },
@@ -1047,7 +1109,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     });
   },
 
-  setProcessing: (sessionId, status) => {
+  setProcessing: (sessionId, status, options) => {
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
@@ -1059,6 +1121,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           [sessionId]: {
             ...runtime,
             foregroundIsProcessing: status,
+            ...(status && (turnStart || options?.newTurn) ? { turnRevision: runtime.turnRevision + 1 } : {}),
             isProcessing: status || runtime.organizationIsProcessing,
             ...(!status ? {
               activeExecutionId: null,
@@ -1067,6 +1130,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             executionError: status ? null : runtime.executionError,
             ...(status ? { error: null } : {}),
             ...(turnStart ? { thinkingAnchorAt: Date.now() } : {}),
+            ...(!status || turnStart ? { moaOperations: {}, moaStatusClosed: !status } : {}),
           },
         },
       };
@@ -1185,7 +1249,12 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, isPaused: paused, pausedTask: task ?? null },
+          [sessionId]: {
+            ...runtime,
+            isPaused: paused,
+            pausedTask: task ?? null,
+            ...(paused ? { moaOperations: {}, moaStatusClosed: true } : {}),
+          },
         },
       };
     });
@@ -1325,6 +1394,64 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         },
       };
     });
+  },
+
+  markInterruptSettled: (sessionId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, interruptSettledEpoch: Date.now() },
+        },
+      };
+    });
+  },
+
+  clearInterruptSettled: (sessionId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime || runtime.interruptSettledEpoch === null) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, interruptSettledEpoch: null },
+        },
+      };
+    });
+  },
+
+  settleLifecycleStoppedSession: (sessionId) => {
+    // Archive/delete cancel the live turn inside the runtime without emitting
+    // the usual terminal frames (chat.processing_status(false) / chat.final).
+    // Close the local turn here, otherwise reopening a restored Session in the
+    // same page keeps its spinner, stop button and open tool cards running
+    // forever (GitCode #6533).
+    if (!get().runtimes[sessionId]) return;
+    // Keep lagging metadata snapshots from relighting the settled turn; the
+    // next real processing_status(true) frame or a new user send clears it.
+    get().markInterruptSettled(sessionId);
+    get().setPaused(sessionId, false);
+    get().setOrganizationProcessing(sessionId, false);
+    get().setProcessing(sessionId, false);
+    get().setThinking(sessionId, false);
+    get().closeReasoning(sessionId);
+    get().stopStreaming(sessionId);
+    // Team-leader bubbles stream outside currentStreamId; stopStreaming does
+    // not close them, so close their cursors explicitly.
+    const messages = get().runtimes[sessionId]?.messages ?? [];
+    for (const message of messages) {
+      if (message.id.startsWith('team-leader-') && message.isStreaming) {
+        get().updateMessage(sessionId, message.id, { isStreaming: false });
+      }
+    }
+    get().clearPermissionQuestions(sessionId);
+    get().clearPendingQuestions(sessionId);
+    // The stopped turn will never deliver a tool_result. Settle its orphan
+    // tool calls now (isProcessing is already false) so they stop rendering as
+    // "执行中"; the next history reload would do the same.
+    get().settleHistoricalToolExecutions(sessionId);
   },
 
   setSwitchingMode: (sessionId, switching) => {
@@ -1750,6 +1877,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               interruptResult: null,
               pendingQuestions: [],
               pendingA4PAuthorization: null,
+              moaOperations: {},
               toolMetrics: {
                 toolCallDedupDropped: 0,
                 toolResultDedupDropped: 0,
@@ -1769,6 +1897,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             interruptResult: null,
             pendingQuestions: [],
             pendingA4PAuthorization: null,
+            moaOperations: {},
             toolMetrics: {
               toolCallDedupDropped: 0,
               toolResultDedupDropped: 0,
@@ -1793,13 +1922,23 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         useChatStore.getState().ensureTeamRuntime(sessionId, teamId);
         useChatStore.getState().prependMessages(conversationKey(sessionId, teamId), history);
       }
-      olderFirst = olderFirst.filter((message) => !message.teamId);
+      olderFirst = olderFirst.flatMap((message) => {
+        if (!message.teamId) return [message];
+        const ownerMessage = toOwnerTeamMessage(message);
+        return ownerMessage ? [ownerMessage] : [];
+      });
     }
     if (!olderFirst.length) return;
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
-      const assigned = assignMessageRenderKeys(runtime, olderFirst);
+      // History pages may overlap live Team events whose transport IDs differ.
+      const existing = new Set(runtime.messages);
+      const history = omitLiveQuestionHistory(sessionId, olderFirst, runtime.pendingQuestions);
+      const incoming = mergeUniqueMessages([...runtime.messages, ...history])
+        .filter((message) => !existing.has(message));
+      if (!incoming.length) return state;
+      const assigned = assignMessageRenderKeys(runtime, incoming);
       return {
         runtimes: {
           ...state.runtimes,
@@ -1840,6 +1979,8 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             orphanResults: new Map(),
             contextCompressionRuntime: undefined,
             contextCompressionSummary: undefined,
+            moaOperations: {},
+            moaStatusClosed: true,
             toolMetrics: {
               toolCallDedupDropped: 0,
               toolResultDedupDropped: 0,
@@ -2113,6 +2254,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           [sessionId]: {
             ...runtime,
             pendingQuestions,
+            messages: omitLiveQuestionHistory(sessionId, runtime.messages, pendingQuestions),
           },
         },
       };
@@ -2142,13 +2284,15 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
       const pendingQuestions = dropAnsweredAskUserQuestions(sessionId, runtime.pendingQuestions);
-      if (pendingQuestions.length === runtime.pendingQuestions.length) return state;
+      const messages = omitLiveQuestionHistory(sessionId, runtime.messages, pendingQuestions);
+      if (pendingQuestions.length === runtime.pendingQuestions.length && messages === runtime.messages) return state;
       return {
         runtimes: {
           ...state.runtimes,
           [sessionId]: {
             ...runtime,
             pendingQuestions,
+            messages,
           },
         },
       };
@@ -2347,13 +2491,11 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
       const lastMessage = runtime.messages[runtime.messages.length - 1];
-      // 与历史 restore 一致：优先挂当前流；否则挂最近一条助手消息（不是下一条 final）。
+      // 与历史 restore 一致：优先挂当前流；否则只在最后一条消息能承载文件卡片时挂上去。
+      // goal 完成卡不渲染 fileItems，挂上去会让文件消失。
       const targetId =
         runtime.currentStreamId ??
-        (lastMessage?.role === 'assistant' ||
-        (lastMessage?.role === 'system' && lastMessage.id?.startsWith('team-leader-'))
-          ? lastMessage.id
-          : null);
+        (lastMessage && canMessageHostFileItems(lastMessage) ? lastMessage.id : null);
       const timestampIso =
         typeof options?.timestampIso === 'string' && options.timestampIso.trim()
           ? options.timestampIso.trim()
@@ -2391,6 +2533,48 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             ),
           },
         },
+      };
+    });
+  },
+
+  updateMoaStatus: (sessionId, payload) => {
+    const operationId = typeof payload.operation_id === 'string' ? payload.operation_id.trim() : '';
+    const phase = payload.phase;
+    const status = payload.status;
+    const executionId = typeof payload.execution_id === 'string' ? payload.execution_id : undefined;
+    if (!operationId || (phase !== 'reference' && phase !== 'verification')) return;
+    if (!['started', 'completed', 'failed', 'cancelled'].includes(status)) return;
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime?.isProcessing || runtime.isPaused || runtime.moaStatusClosed) return state;
+      if (runtime.activeExecutionId && executionId !== runtime.activeExecutionId) return state;
+      const current = Object.prototype.hasOwnProperty.call(runtime.moaOperations, operationId)
+        ? runtime.moaOperations[operationId]
+        : undefined;
+      // Keep terminal operations until the turn ends so duplicate starts cannot revive a finished hint.
+      if (current && (current.status !== 'started' || current.status === status)) return state;
+      if (current?.executionId && executionId && current.executionId !== executionId) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            moaOperations: {
+              ...runtime.moaOperations,
+              [operationId]: { phase, status, executionId },
+            },
+          },
+        },
+      };
+    });
+  },
+
+  clearMoaStatus: (sessionId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime || (runtime.moaStatusClosed && Object.keys(runtime.moaOperations).length === 0)) return state;
+      return {
+        runtimes: { ...state.runtimes, [sessionId]: { ...runtime, moaOperations: {}, moaStatusClosed: true } },
       };
     });
   },

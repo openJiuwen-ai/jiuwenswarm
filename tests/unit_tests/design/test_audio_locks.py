@@ -231,7 +231,7 @@ async def test_music_handler_writes_silent_placeholder(
     )
 
     async def _noop_async(*_a, **_k):
-        return None
+        return None, ""
 
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.designer.handlers.audio_nodes._try_music_api",
@@ -273,9 +273,20 @@ def test_clip_audio_is_dialogue_only() -> None:
         bgm_lock={"mood": "tender romantic"},
         clip_embedded=True,
     )
-    assert "Do NOT generate music" in block
-    assert "NATIVE DIALOGUE only" in block
+    # No music backend in this call: the clip must never be asked for a score.
+    assert "no music backend" in block
+    assert "Never synthesize music inside this clip" in block
+    assert "NATIVE DIALOGUE and DIEGETIC SOUND only" in block
     assert "speech + BGM" not in block
+    scored = audio_lock_prompt_block(
+        include_speech=True,
+        include_music=True,
+        speech_line="hello",
+        bgm_lock={"mood": "tender romantic"},
+        clip_embedded=True,
+        can_music=True,
+    )
+    assert "Do NOT generate music" in scored
 
 
 def test_speech_is_default_unless_mime_or_silence() -> None:
@@ -287,13 +298,15 @@ def test_speech_is_default_unless_mime_or_silence() -> None:
 
     crosstalk = detect_audio_intent("生成一段15秒的相声，两个人在舞台上身着长袍，气氛轻松愉快")
     assert crosstalk["include_speech"] is True
-    assert crosstalk["policy"] == "speech_and_music"
+    # Music is opt-in: a film the user did not score stays unscored.
+    assert crosstalk["policy"] == "speech"
+    assert crosstalk["include_music"] is False
     assert crosstalk["language_lock"] == "zh"
 
     mime = detect_audio_intent("一段默剧，两个人在舞台上")
     assert mime["include_speech"] is False
     assert mime["policy"] != "silent"
-    assert mime["include_music"] is True
+    assert mime["include_music"] is False
 
     silent = detect_audio_intent("请做一支无声短片")
     assert silent["include_speech"] is False
@@ -313,3 +326,34 @@ def test_speech_is_default_unless_mime_or_silence() -> None:
     )
     assert opened["include_speech"] is True
     assert opened["policy"] == "speech_and_music"
+
+
+def test_optional_music_policy_alone_never_asks_for_a_score() -> None:
+    from jiuwenswarm.server.runtime.designer.audio_locks import (
+        resolve_audio_intent_flags,
+        stamp_audio_fields_on_clip_config,
+    )
+
+    meta = {"audio_intent": {"policy": "optional_music", "include_music": False}}
+    cfg: dict[str, object] = {"clip_index": 1}
+    stamp_audio_fields_on_clip_config(cfg, meta=meta)
+    assert cfg["include_music"] is False
+    assert cfg["audio_policy"] == "optional_music"
+    assert resolve_audio_intent_flags(meta, {"clip_index": 1})["include_music"] is False
+
+
+def test_silent_policy_drops_shot_cues_from_the_clip_prompt() -> None:
+    from jiuwenswarm.server.runtime.designer.audio_locks import (
+        audio_lock_prompt_block,
+        stamp_audio_fields_on_clip_config,
+    )
+
+    meta = {"audio_intent": {"policy": "silent", "include_speech": False, "include_music": False}}
+    shot = {"sfx": ["rain on the roof", "distant thunder"]}
+    cfg: dict[str, object] = {"clip_index": 1}
+    stamp_audio_fields_on_clip_config(cfg, shot=shot, meta=meta)
+    assert cfg["sfx"] == []
+    assert cfg["audio_policy"] == "silent"
+    block = audio_lock_prompt_block(include_speech=False, include_music=False, silent=True)
+    assert "this shot is silent" in block
+    assert "room tone" not in block

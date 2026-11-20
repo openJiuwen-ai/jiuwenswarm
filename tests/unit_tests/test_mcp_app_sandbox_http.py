@@ -7,7 +7,7 @@ import json
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from gateway.channel_manager.web.mcp_app_sandbox_http import (
+from agent_gateway.channel_manager.web.mcp_app_sandbox_http import (
     SANDBOX_INFO_PATH,
     SANDBOX_PATH,
     build_mcp_app_csp,

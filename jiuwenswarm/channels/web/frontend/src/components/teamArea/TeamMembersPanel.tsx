@@ -1,5 +1,6 @@
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { webRequest } from '../../services/webClient';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { useChatStore, useSessionStore, useTodoStore } from '../../stores';
@@ -13,7 +14,8 @@ import { MarkdownMessageBody } from '../ChatPanel/MessageItem';
 import { parseTeamEventMessage, type ParsedTeamEvent } from '../ChatPanel/teamEventUtils';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { isTeamLeaderMember, isUserMember } from '../../utils/teamMemberAvatar';
-import { contextCompressionRunningText } from '../../utils/contextCompression';
+import { contextCompressionElapsedText, contextCompressionRunningText } from '../../utils/contextCompression';
+import { useContextCompressionElapsed } from '../../hooks/useCompressionElapsed';
 import { getSkillAvatar } from '../../utils/skillAvatar';
 import teamIcon from '../../assets/team.svg';
 import FrameTimeIcon from '../../assets/work-mode/frame-time.svg?react';
@@ -60,6 +62,7 @@ import {
   type TeamTaskTimelineEntry,
 } from './groupChatTimeline';
 import { groupByWorkflowRun, type WorkflowRunGroup } from './runGrouping';
+import { isWorkflowRunEnded, type WorkflowStatus } from './workflowTypes';
 import { RunGroupHeader } from './RunGroupHeader';
 
 type TeamMembersPanelProps = {
@@ -81,11 +84,46 @@ type GroupMessageItem = { message: Message; event: ParsedTeamEvent };
 
 const EMPTY_TIMELINE: TeamTaskTimelineEntry[] = [];
 
+type TeamQuotaSnapshot = {
+  teams?: { used?: number; limit?: number };
+  org?: { used?: number; limit?: number };
+};
+
+function useTeamQuotaLabel(): string {
+  const { t } = useTranslation();
+  const [label, setLabel] = useState('');
+  useEffect(() => {
+    let cancelled = false;
+    void webRequest<TeamQuotaSnapshot>('team.quota.get', {})
+      .then((quota) => {
+        if (cancelled || !quota?.teams) return;
+        const teams = t('team.quotaUsage', {
+          used: quota.teams.used ?? 0,
+          limit: quota.teams.limit ?? 0,
+        });
+        const org =
+          quota.org && (quota.org.limit ?? 0) > 0
+            ? ` · ${t('team.orgQuotaUsage', {
+                used: quota.org.used ?? 0,
+                limit: quota.org.limit ?? 0,
+              })}`
+            : '';
+        setLabel(`${teams}${org}`);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [t]);
+  return label;
+}
+
 function getGroupMemberIds(members: TeamMember[]): string[] {
   return members.map((member) => member.member_id).filter((memberId) => !isTeamLeaderMember(memberId));
 }
 
 function isGroupMessageItem(item: { message: Message; event: ParsedTeamEvent | null }): item is GroupMessageItem {
+  // P2P-to-user stays visible here. Plain Leader output is shown in this Team's chat instead.
   return item.event !== null && !item.event.isLeaderToUser;
 }
 
@@ -152,6 +190,7 @@ export function TeamMembersPanel({
   onDetailTabChange,
 }: TeamMembersPanelProps) {
   const { t } = useTranslation();
+  const quotaLabel = useTeamQuotaLabel();
   const activeSessionId = useOrganizationConversationKey(useChatStore((s) => s.activeSessionId));
   const messages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages ?? []);
   const teamLeaderMemberIds = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamLeaderMemberIds ?? []);
@@ -224,6 +263,11 @@ export function TeamMembersPanel({
             <span className="text-sm font-medium text-text" data-testid="team-area-members-count">
               {t('team.members')} ({visibleMembers.length})
             </span>
+            {quotaLabel ? (
+              <span className="text-xs text-text-muted" data-testid="team-area-quota">
+                {quotaLabel}
+              </span>
+            ) : null}
           </div>
         </div>
         <div className="flex-1 space-y-2 overflow-y-auto px-4 py-3" data-testid="team-area-members-list">
@@ -259,7 +303,7 @@ export function TeamMembersPanel({
       data-variant="expanded"
     >
       <aside
-        className="w-[240px] shrink-0 overflow-y-auto border-r border-border bg-card"
+        className="w-[clamp(144px,38%,240px)] shrink-0 overflow-y-auto border-r border-border bg-card"
         data-testid="team-area-members-sidebar"
       >
         <div className="px-[24px] pt-[24px]">
@@ -810,7 +854,7 @@ function MemberTaskDetail({
   };
 
   return (
-    <section className="flex min-w-[320px] flex-1 flex-col bg-card" data-testid="team-area-member-task-detail">
+    <section className="flex min-w-0 flex-1 flex-col bg-card" data-testid="team-area-member-task-detail">
       <div className="flex shrink-0 items-center gap-2 bg-card pl-4 pt-6" data-testid="team-area-member-detail-section">
         {onBack && (
           <button
@@ -869,6 +913,7 @@ function TeamMemberContextCompressionBar({
   const { t } = useTranslation();
   const runtime = state?.runtime;
   const summary = state?.summary;
+  const runningElapsedSeconds = useContextCompressionElapsed(runtime);
   const summaryItems = (summary?.summaries ?? []).filter(Boolean);
   const showSummaryDetails = summaryItems.length > 0;
 
@@ -879,11 +924,17 @@ function TeamMemberContextCompressionBar({
   const status = runtime?.status;
   const isRunning = status === 'running';
   const isFailed = status === 'failed';
+  // 用户暂停/取消：SDK 发 cancelled/paused，按中性终态呈现（可关闭、不红色、无转圈）。
+  const isInterrupted = status === 'cancelled' || status === 'paused';
   let statusTitle = t('team.contextCompression.completed', { count: summary?.count || 1 });
   if (isRunning) {
     statusTitle = t('team.contextCompression.running');
   } else if (isFailed) {
     statusTitle = t('team.contextCompression.failed');
+  } else if (isInterrupted) {
+    statusTitle = status === 'paused'
+      ? t('team.contextCompression.paused')
+      : t('team.contextCompression.cancelled');
   }
   const detailsTitle = showSummaryDetails
     ? summaryItems.map((item, index) => `${index + 1}. ${item}`).join('\n')
@@ -932,6 +983,14 @@ function TeamMemberContextCompressionBar({
         {runtime?.summary && !isComplete && (
           <span className={activityClassName} data-testid="team-area-context-compression-activity">
             {isRunning ? contextCompressionRunningText(t, runtime?.processor, runtime.summary) : runtime.summary}
+          </span>
+        )}
+        {isRunning && runningElapsedSeconds !== undefined && (
+          <span
+            className="team-event-group-summary__activity context-compression-elapsed"
+            data-testid="team-area-context-compression-elapsed"
+          >
+            {contextCompressionElapsedText(t, runningElapsedSeconds)}
           </span>
         )}
         {!isRunning && (
@@ -992,20 +1051,31 @@ function MemberRunGroupedList({
   groups: WorkflowRunGroup<TeamMember>[];
   renderRow: (member: TeamMember) => ReactNode;
 }) {
+  // 一个会话能攒好几个 run、每个 run 十几二十个 worker，全部平铺太长：
+  // 每个组头给一个展开/收起，默认展开还在跑的、收起已结束的。
+  const [collapsedRuns, setCollapsedRuns] = useState<Record<string, boolean>>({});
   return (
     <>
       {ungrouped.map(renderRow)}
-      {groups.map((group) => (
-        <div key={group.runId}>
-          <RunGroupHeader
-            name={group.name}
-            shortId={group.shortId}
-            status={group.status}
-            runId={group.runId}
-          />
-          {group.items.map(renderRow)}
-        </div>
-      ))}
+      {groups.map((group) => {
+        const collapsed = collapsedRuns[group.runId] ?? isWorkflowRunEnded(group.status as WorkflowStatus);
+        return (
+          <div key={group.runId}>
+            <RunGroupHeader
+              name={group.name}
+              shortId={group.shortId}
+              status={group.status}
+              runId={group.runId}
+              executor={group.executor}
+              collapsed={collapsed}
+              onToggle={() =>
+                setCollapsedRuns((prev) => ({ ...prev, [group.runId]: !collapsed }))
+              }
+            />
+            {!collapsed && group.items.map(renderRow)}
+          </div>
+        );
+      })}
     </>
   );
 }

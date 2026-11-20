@@ -10,6 +10,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 
+from jiuwenswarm.server.ipc.io_loop import ipc_io
 from jiuwenswarm.server.ipc.stream import (
     _PIPE_AUTHKEY,
     IpcConnection,
@@ -23,6 +24,7 @@ _PIPE_CONNECT_POOL = ThreadPoolExecutor(
 )
 
 
+@ipc_io
 async def connect(path: str) -> IpcConnection:
     if os.name == "nt":
         return await _connect_pipe(path)

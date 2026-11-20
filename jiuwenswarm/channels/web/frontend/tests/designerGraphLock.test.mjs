@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isDesignerGraphEditingLocked } from '../node_modules/.cache/designer-graph-lock/designerGraphLock.js';
+import {
+  designerChatStopControl,
+  isDesignerChatStoppable,
+  isDesignerGraphEditingLocked,
+  isDesignerLeaderBusy,
+  isDesignerModelMenuLocked,
+} from '../node_modules/.cache/designer-graph-lock/designerGraphLock.js';
 
 const promptGraph = {
   graph_id: 'g1',
@@ -80,6 +86,49 @@ test('the graph stays locked while the leader answers the first prompt', () => {
       nodeStates: {},
       runStatus: null,
     }),
+    false,
+  );
+});
+
+test('the leader stays busy while it waits for an answer or is paused', () => {
+  const idle = { isProcessing: false, isPaused: false, pendingQuestions: [] };
+  assert.equal(isDesignerLeaderBusy(undefined), false);
+  assert.equal(isDesignerLeaderBusy(idle), false);
+  assert.equal(isDesignerLeaderBusy({ ...idle, isProcessing: true }), true);
+  assert.equal(isDesignerLeaderBusy({ ...idle, pendingQuestions: [{ request_id: 'q1' }] }), true);
+  assert.equal(isDesignerLeaderBusy({ ...idle, isPaused: true }), true);
+});
+
+test('a stop click stays disabled until the run actually ends', () => {
+  assert.equal(designerChatStopControl({ canStop: true, stopPending: false }), 'stop');
+  assert.equal(designerChatStopControl({ canStop: true, stopPending: true }), 'stopping');
+  assert.equal(designerChatStopControl({ canStop: false, stopPending: false }), 'send');
+});
+
+test('the canvas model menu stays shut while stop is offered or a run is active', () => {
+  assert.equal(isDesignerModelMenuLocked({ stopControl: 'send', runStatus: null }), false);
+  assert.equal(isDesignerModelMenuLocked({ stopControl: 'send', runStatus: 'completed' }), false);
+  assert.equal(isDesignerModelMenuLocked({ stopControl: 'stop', runStatus: null }), true);
+  assert.equal(isDesignerModelMenuLocked({ stopControl: 'stopping', runStatus: null }), true);
+  assert.equal(isDesignerModelMenuLocked({ stopControl: 'send', runStatus: 'running' }), true);
+  assert.equal(isDesignerModelMenuLocked({ stopControl: 'send', runStatus: 'paused' }), true);
+});
+
+test('chat stop stays available while a leader-triggered canvas run continues after chat.final', () => {
+  assert.equal(
+    isDesignerChatStoppable({ isProcessing: true, isRunning: false, triggerSource: null }),
+    true,
+  );
+  assert.equal(
+    isDesignerChatStoppable({ isProcessing: false, isRunning: true, triggerSource: 'leader' }),
+    true,
+  );
+  assert.equal(
+    isDesignerChatStoppable({ isProcessing: false, isRunning: true, triggerSource: 'canvas' }),
+    false,
+  );
+  assert.equal(
+    isDesignerChatStoppable({ isProcessing: false, isRunning: false, triggerSource: 'leader' }),
     false,
   );
 });

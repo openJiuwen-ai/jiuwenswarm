@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { webRequest } from '../services/webClient';
 import { projectRegistryClient } from '../features/workspace/projectRegistryClient';
 import { jobBelongsToProject } from '../components/CronPanel/cronProjectDisplay';
+import { adoptActiveCronSessions } from '../features/cron/cronActiveSessionDiscovery';
 import type { Session } from '../types';
 import type { CronRunUpdate } from '../types/cron';
 
@@ -13,6 +14,13 @@ export interface SidebarCronJob {
   cron_expr: string;
   project_id: string;
   session_id?: string;
+  /** 最近一次成功执行的会话 */
+  last_session_id?: string;
+  /**
+   * 正在执行的会话号（企业 list 挂载）。
+   * 前端发现后写入 lastRunSessionId 并后台订 live；不在此字段上直接标未读。
+   */
+  active_session_id?: string;
   // 推送频道 ID,字符串或逗号分隔的多个(对齐后端 CronJob.to_dict().targets);空串按后端默认 web
   targets?: string;
   created_at: number | string | null;
@@ -26,6 +34,15 @@ export function isWebChannelJob(targets?: string): boolean {
   return s.split(',').some((p) => p.trim().toLowerCase() === 'web');
 }
 
+const CRON_UNREAD_KEY = 'jiuwenswarm_cron_unread';
+let cronSessionsRequestId = 0;
+const pendingCronSessionRequests = new Map<string, number>();
+// loadJobs 的请求序号：触发点全是 fire-and-forget（面板每次操作、归档事件、
+// 连接建立的重试梯），两个并发请求的响应顺序不保证，旧快照后落会整表覆盖
+// 新列表（刚建的任务"消失"、已删的任务"复活"）。守卫模式与下方
+// pendingCronSessionRequests 同构，只是 jobs 是单一列表，用不到按 key 分桶。
+let loadJobsRequestId = 0;
+
 interface CronState {
   runUpdates: Record<string, CronRunUpdate & { firstSeenAt: number }>;
   clearUnconfirmedRuns: () => void;
@@ -37,10 +54,10 @@ interface CronState {
   cronSessions: Record<string, Session[]>;
   // cron_id → 加载中状态
   cronSessionsLoading: Record<string, boolean>;
-  // job_id → 最近"立即执行"返回的 session_id，用于广播消息路由
+  // job_id → 最近"立即执行"返回的 session_id，用于广播消息路由 / 后台 live
   lastRunSessionId: Record<string, string>;
   setLastRunSessionId: (jobId: string, sessionId: string) => void;
-  // 定时任务未读状态（is_placeholder=false 的广播到达时标记，点击后清除）
+  // 定时任务未读状态（整趟收尾时标记，点击后清除）
   unreadCronJobs: Record<string, boolean>;
   markCronJobUnread: (jobId: string) => void;
   clearCronJobUnread: (jobId: string) => void;
@@ -56,8 +73,22 @@ interface CronState {
 // 避免阻塞 WebSocket 消息处理；try/catch 防止配额满/隐私模式导致异常影响 store 状态
 function persistCronUnread(state: Record<string, boolean>) {
   queueMicrotask(() => {
-    try { localStorage.setItem('jiuwenswarm_cron_unread', JSON.stringify(state)); } catch { /* ignore */ }
+    try { localStorage.setItem(CRON_UNREAD_KEY, JSON.stringify(state)); } catch { /* ignore */ }
   });
+}
+
+function readUnreadCronJobs(): Record<string, boolean> {
+  try {
+    const value = JSON.parse(localStorage.getItem(CRON_UNREAD_KEY) || '{}');
+    if (typeof value !== 'object' || value === null) return {};
+    const out: Record<string, boolean> = {};
+    for (const [jobId, flag] of Object.entries(value as Record<string, unknown>)) {
+      if (flag === true) out[jobId] = true;
+    }
+    return out;
+  } catch {
+    return {};
+  }
 }
 
 export const useCronStore = create<CronState>((set, get) => ({
@@ -103,14 +134,7 @@ export const useCronStore = create<CronState>((set, get) => ({
   lastRunSessionId: {},
   setLastRunSessionId: (jobId, sessionId) =>
     set((s) => ({ lastRunSessionId: { ...s.lastRunSessionId, [jobId]: sessionId } })),
-  unreadCronJobs: (() => {
-    try {
-      const value = JSON.parse(localStorage.getItem('jiuwenswarm_cron_unread') || '{}');
-      return typeof value === 'object' && value !== null ? value as Record<string, boolean> : {};
-    } catch {
-      return {};
-    }
-  })(),
+  unreadCronJobs: readUnreadCronJobs(),
   markCronJobUnread: (jobId) => {
     set((s) => {
       if (s.unreadCronJobs[jobId]) return s;
@@ -130,18 +154,40 @@ export const useCronStore = create<CronState>((set, get) => ({
   },
 
   loadJobs: async () => {
+    const requestId = ++loadJobsRequestId;
+    const isCurrent = () => requestId === loadJobsRequestId;
     set({ isLoading: true });
     try {
       const payload = await webRequest<{ jobs: SidebarCronJob[] }>('cron.job.list');
+      // 旧请求的响应直接丢弃：它拍的是更早的快照，写回会把新列表整表回退。
+      // 返回 true 让调用方的重试梯停掉——已有更新的请求接管了加载状态。
+      if (!isCurrent()) return true;
       // 侧边栏是 Web 端工作区,只展示 targets 含 "web" 的定时任务
       const webJobs = (payload.jobs || []).filter((j) => isWebChannelJob(j.targets));
       set({ jobs: webJobs, isLoading: false });
+      // 到点触发：list 带上 active_session_id → 记入 lastRunSessionId → App 后台 live
+      // 同时刷侧栏 cronSessions，否则已展开分组仍是旧缓存，要收起再展开才看见新会话。
+      const adopted = adoptActiveCronSessions(
+        webJobs,
+        get().setLastRunSessionId,
+        () => get().lastRunSessionId,
+      );
+      for (const jobId of adopted) {
+        const job = webJobs.find((j) => j.id === jobId);
+        if (!job) continue;
+        void get().loadCronSessions(job.project_id || 'default', jobId);
+      }
       return true;
     } catch {
       // 瞬时失败（Gateway/Agent Pod 尚未就绪）不要清空已有列表，
       // 否则首屏失败后要等手动刷新才会再出现定时任务。
-      set({ isLoading: false });
-      return false;
+      // 旧请求的失败同样不碰 isLoading——加载中状态归最新请求管，且让调用方
+      // 的重试梯停下（更新的请求已接管，旧梯继续重试只会制造更多并发）。
+      if (isCurrent()) {
+        set({ isLoading: false });
+        return false;
+      }
+      return true;
     }
   },
 
@@ -163,38 +209,38 @@ export const useCronStore = create<CronState>((set, get) => ({
   },
 
   loadCronSessions: async (projectId: string, cronId: string) => {
+    const requestId = ++cronSessionsRequestId;
+    pendingCronSessionRequests.set(cronId, requestId);
+    const isCurrent = () => pendingCronSessionRequests.get(cronId) === requestId;
     set((state) => ({
       cronSessionsLoading: { ...state.cronSessionsLoading, [cronId]: true },
     }));
     try {
       const payload = await projectRegistryClient.getCronSessions(projectId, cronId);
+      if (!isCurrent()) return;
       set((state) => ({
         cronSessions: {
           ...state.cronSessions,
           [cronId]: payload.sessions || [],
         },
-        cronSessionsLoading: { ...state.cronSessionsLoading, [cronId]: false },
       }));
     } catch {
-      set((state) => ({
-        cronSessionsLoading: { ...state.cronSessionsLoading, [cronId]: false },
-      }));
+      // Retain the last successful list on a transient query failure.
+    } finally {
+      if (isCurrent()) {
+        pendingCronSessionRequests.delete(cronId);
+        set((state) => ({
+          cronSessionsLoading: { ...state.cronSessionsLoading, [cronId]: false },
+        }));
+      }
     }
   },
 
 }));
 
-// 系统自动维护的 cron job id（与后端 proactive_cron_sync.PROACTIVE_JOB_ID、
-// CronPanel/index.tsx 的 PROACTIVE_AUTO_JOB_ID 一致）。这类 job 由配置开关自动创建/删除，
-// 不创建会话、不给推送的会话打 cron_id——所以"触发的会话"列表恒空，在会话侧栏是个空壳。
-// 从会话侧栏隐藏它（Cron 面板里仍可见可编辑 cron 表达式/时区），避免空壳 item 碍眼。
-const SYSTEM_AUTO_JOB_IDS = new Set(['proactive-tick-auto']);
-
-/** 按项目过滤定时任务；系统自动维护 job 不进会话侧栏。 */
+/** 按项目过滤定时任务。 */
 export function filterJobsForProject(jobs: SidebarCronJob[], projectId: string): SidebarCronJob[] {
-  const filtered = jobs.filter(
-    (job) => jobBelongsToProject(job.project_id, projectId) && !SYSTEM_AUTO_JOB_IDS.has(job.id),
-  );
+  const filtered = jobs.filter((job) => jobBelongsToProject(job.project_id, projectId));
   return filtered.sort((a, b) => {
     const au = typeof a.updated_at === 'number' ? a.updated_at : 0;
     const bu = typeof b.updated_at === 'number' ? b.updated_at : 0;

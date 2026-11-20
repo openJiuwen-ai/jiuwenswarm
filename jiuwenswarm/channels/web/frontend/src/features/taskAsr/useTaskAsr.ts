@@ -11,6 +11,7 @@ type TaskAsrOptions = {
 
 type TaskAsrResponse = {
   text?: string;
+  skipped?: boolean;
 };
 
 function preferredMimeType(): string | undefined {
@@ -90,6 +91,7 @@ export function useTaskAsr({ onTranscript, onError }: TaskAsrOptions) {
         },
         { timeoutMs: 130_000 },
       );
+      if (response.skipped) return;
       const text = response.text?.trim();
       if (!text) throw new Error('ASR did not return any text');
       if (mountedRef.current) onTranscriptRef.current(text);

@@ -1,0 +1,22 @@
+---
+name: themes-and-masters
+description: Read before setting up a blank deck, changing a theme or master, or restyling or rebranding a deck.
+---
+
+`read_presentation_context` tells you which of three cases applies through `is_default_theme` and `has_content`. Go by these two values, never by the deck's title.
+
+**Blank deck** (`is_default_theme` true, `has_content` false). When `edit_slide_master` is available, set the look up in the master before the first slide: theme colours, heading and body fonts, background, default text colours and a bold title style. Slides then inherit it, which keeps the deck uniform and turns any later restyle into a single edit. Whatever appears on every slide (background, a rule, a logo) then belongs to the master, and text colour is defined in the master's text styles rather than shape by shape. Without it, declare the look once as the patch's `design_system` and apply it on every slide you build. Use whatever the user said about the look. For the rest, pick one heading font and one body font, an off-white and a near-black instead of pure white and black, one or two accents of about equal brightness, and a look that suits this particular deck, since a quarterly review should not resemble a pitch or a workshop, and a dark-blue background is not the default. Some starting directions: neutral corporate (white or pale grey, a single strong accent, plenty of air) for reports and proposals; warm editorial (cream ground with terracotta or olive) for case studies and stories; confident startup (near-white with one vivid accent) for launches and pitches; quiet academic (paper white, steel blue with a soft green, serif headings) for research and teaching; bright and playful (a warm light ground with several strong accents) for events and creative sessions.
+
+**Hand-styled deck on the default master** (`is_default_theme` true, `has_content` true). The slides themselves are the design system, so leave the master alone and create none. Study one typical slide (background, fonts, sizes, colours, how shapes are styled) and give each new slide the same styling.
+
+**Templated deck** (`is_default_theme` false). Keep the template unless told otherwise: new content takes the hex values of `theme_palette` unchanged and uses the existing layouts.
+
+- A request about the theme only ("make accent2 gold", "change the heading font"): when `edit_slide_master` is available, one call on theme1.xml or slideMaster1.xml, and nothing else; the shapes follow on their own. Without it, tell the user the theme is changed in the presentation app's own design settings, and offer to change the slides' own colours or fonts instead.
+- A restyle, redesign or rebrand: set up the new theme with `edit_slide_master` when it is available (plus the slide-by-slide hex replacement below wherever shapes carry fixed colours); without it, only the slide-by-slide replacement, and say that the master and theme keep their look. Do not restyle slide by slide by removing placeholders and redrawing shapes. If the user asked outright for a new look, give them one. If you cannot tell whether they want the current template tidied or swapped out, ask only that; if they keep it, leave the master, backgrounds and theme colours untouched.
+- A brand guide, template or visual example the user gave for this task overrides the deck's present look wherever it says something; the present deck overrides house defaults only where the user has not said otherwise.
+
+## Master, theme and package facts
+
+- The template's fonts are in `theme1.xml <a:fontScheme>` (`majorFont`, `minorFont`); read them when you match its typography.
+- In master and theme XML, edit the existing `<p:txStyles>`, `<a:clrScheme>` and `<a:fontScheme>` where they are; never add a second copy. `<p:bg>` goes before `<p:spTree>`, since OOXML enforces the order of child elements.
+- Shapes with a fixed `<a:srgbClr>` ignore theme changes, and most real decks have such shapes. For a complete rebrand, swap every old hex in the master, layout and theme parts within one `edit_slide_master` call when it is available, and act on its result's `ambiguous_layout_slide_ids`, `missing_layout_slide_ids` and `old_master_retained`; that package contains only the first slide's parts, so the fixed hexes on each other slide, charts included, are swapped with one `edit_slide_xml` call per slide. `edit_slide_xml` reaches only the slide's own parts.

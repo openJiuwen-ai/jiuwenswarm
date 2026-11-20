@@ -45,10 +45,12 @@ BASE_PORTS = {
     "web": 19000,
     "gateway": 19001,
     "frontend": 5173,
+    # HTTPS origin of the Office add-in task pane (Office loads panes only over HTTPS).
+    "office_tls": 5443,
 }
 
 # Port types that must be unique across instances
-PORT_TYPES = ("agent_server", "web", "gateway", "frontend")
+PORT_TYPES = ("agent_server", "web", "gateway", "frontend", "office_tls")
 
 # PID file name in workspace directory
 PID_FILENAME = ".instance.pid"
@@ -135,6 +137,7 @@ PORT_ENV_OVERRIDES = {
     "web": "JIUWENSWARM_WEB_PORT",
     "gateway": "JIUWENSWARM_GATEWAY_PORT",
     "frontend": "JIUWENSWARM_FRONTEND_PORT",
+    "office_tls": "JIUWENSWARM_OFFICE_TLS_PORT",
 }
 
 
@@ -157,6 +160,26 @@ def _resolved_base_port(port_type: str) -> int:
                     env_key, raw,
                 )
     return BASE_PORTS.get(port_type, 10000)
+
+
+def pinned_port_types() -> set[str]:
+    """Return port types whose base is set via ``JIUWENSWARM_<TYPE>_PORT``.
+
+    Only values ``_resolved_base_port`` honors count: it ignores a malformed one
+    and uses the default, so treating it as pinned would fail startup over a port
+    nobody chose. Pins the base; the effective port stays ``base + index * 1000``.
+    """
+    pinned: set[str] = set()
+    for port_type, env_key in PORT_ENV_OVERRIDES.items():
+        raw = os.getenv(env_key)
+        if not raw:
+            continue
+        try:
+            int(raw)
+        except ValueError:
+            continue
+        pinned.add(port_type)
+    return pinned
 
 
 def compute_auto_port(port_type: str, index: int) -> int:
@@ -448,6 +471,7 @@ PORT_ENV_NAMES = {
     "web": "WEB_PORT",
     "gateway": "GATEWAY_PORT",
     "frontend": "FRONTEND_PORT",
+    "office_tls": "OFFICE_TLS_PORT",
 }
 
 
@@ -460,7 +484,7 @@ def find_available_ports(
     """Scan upward for the first fully-available port group.
 
     Starting at ``base_index``, walks ``scan_range`` consecutive instance
-    indices. For each index it computes the full 4-port group via
+    indices. For each index it computes the full port group via
     ``calculate_instance_ports``; the group is usable only when *every* port
     is available on ``host`` AND not in ``exclude_ports`` (ports already
     claimed by other live instances).

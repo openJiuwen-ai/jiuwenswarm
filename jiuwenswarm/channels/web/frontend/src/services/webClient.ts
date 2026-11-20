@@ -1,4 +1,5 @@
 import {
+  Session,
   WebConnectOptions,
   WebConnectionState,
   WebError,
@@ -11,12 +12,17 @@ import {
 import { getWebTransport, getWsBase } from '../utils/env';
 import { resolveUserId } from '../utils/userId';
 import { WebHttpClient } from './webHttpClient';
+import { readStoredSessionId } from './authClient';
 import i18n from '../i18n';
 import { appendRuntimeScopeQuery } from './runtimeScope';
 import { withExpertUiLanguage } from './expertUiLanguage';
 import { GoalRecord } from '../types/goal';
 import { createSessionEventGate } from './sessionEventGate';
 import { RuntimeResume } from './runtimeResume';
+import { useChatStore } from '../stores/chatStore';
+
+type RuntimeResumeQuery = ReturnType<RuntimeResume['queries']>[number];
+type RuntimeRecoveryMetadata = Pick<Session, 'status' | 'is_processing'> & { runtime?: Record<string, unknown> };
 
 type EventHandler = (event: WsEvent) => void;
 type TypedEventHandler<TPayload> = (event: WsEvent & { payload: TPayload }) => void;
@@ -25,13 +31,16 @@ type StateHandler = (state: WebConnectionState) => void;
 interface PendingRequest {
   resolve: (value: unknown) => void;
   reject: (reason?: unknown) => void;
-  timeoutId: number;
+  timeoutId: number | undefined;
   awaitRuntimeAccepted: boolean;
+  awaitUserAnswerResult: boolean;
 }
 
 const MAX_RECONNECT_ATTEMPTS = 5;
 const DEFAULT_TIMEOUT_MS = 15000;
 const MAX_RECOVERY_ATTEMPTS = 3;
+const MIN_RECOVERY_RETRY_MS = 1000;
+const MAX_RECOVERY_RETRY_MS = 30_000;
 
 /** 暂停期间暂存、恢复后回放的流式事件 */
 export const PAUSABLE_STREAM_EVENTS = new Set([
@@ -99,6 +108,8 @@ function logDevWsTraffic(entry: DevWsLogEntry): void {
 class WebClient {
   private readonly runtimeResume = new RuntimeResume();
   private resumeOwner = '';
+  private readonly resumeRequests = new Map<string, Promise<RuntimeRecoveryMetadata | undefined>>();
+  private readonly resumeRetryTimers = new Map<string, number>();
   private connectedOnce = false;
   private ws: WebSocket | null = null;
   private state: WebConnectionState = 'idle';
@@ -224,6 +235,7 @@ class WebClient {
           },
         });
         this.ws = null;
+        this.clearExecutionRecovery();
         this.connectPromise = null;
         this.rejectAllPending(
           this.createWebError(
@@ -261,6 +273,7 @@ class WebClient {
   disconnect(reason = 'User disconnect'): Promise<void> {
     this.manualClose = true;
     this.clearReconnectTimer();
+    this.clearExecutionRecovery();
     this.rejectAllPending(this.createWebError(i18n.t('network.connectionClosed'), 'WS_CLOSED', undefined, false));
     const currentWs = this.ws;
     let closedPromise = Promise.resolve();
@@ -316,7 +329,7 @@ class WebClient {
     };
 
     return new Promise<T>((resolve, reject) => {
-      const timeoutId = window.setTimeout(() => {
+      const timeoutId = timeoutMs === 0 ? undefined : window.setTimeout(() => {
         this.pending.delete(id);
         reject(this.createWebError(i18n.t('network.requestTimeout'), 'REQUEST_TIMEOUT', id, true));
       }, timeoutMs);
@@ -326,6 +339,7 @@ class WebClient {
         reject,
         timeoutId,
         awaitRuntimeAccepted: options.awaitRuntimeAccepted === true,
+        awaitUserAnswerResult: method === 'chat.user_answer' && options.awaitUserAnswerResult === true,
       };
       this.pending.set(id, pending);
 
@@ -360,22 +374,27 @@ class WebClient {
       }
     }).then(async (value) => {
       if (method === 'session.get_metadata' && !params?.runtime_resume && typeof params?.session_id === 'string') {
-        const runtime = (value as { runtime?: Record<string, unknown> } | null)?.runtime;
+        const metadata = value as RuntimeRecoveryMetadata | null;
+        const runtime = metadata?.runtime;
         if (
-          runtime?.recovery_pending === true ||
-          (runtime?.is_processing === true && typeof runtime.worker_instance === 'string')
+          metadata &&
+          (runtime?.recovery_pending === true ||
+            (runtime?.is_processing === true && typeof runtime.worker_instance === 'string') ||
+            (this.resumeRetryTimers.has(params.session_id) &&
+              runtime?.is_processing === false && runtime.history_required === true))
         ) {
-          // A freshly loaded page has no stream cursor yet. Reattach to the
-          // existing execution through its snapshot, never by sending input.
-          await this.resumeExecutions([
-            {
-              session_id: params.session_id,
-              runtime_resume: {
-                worker_instance: typeof runtime.worker_instance === 'string' ? runtime.worker_instance : '',
-                after: 0,
-              },
-            },
-          ]);
+          // Recovery applies a newer snapshot. Return that same metadata so the
+          // caller cannot overwrite it with the state from the initial query.
+          const recovered = await this.recoverSessionExecution(
+            params.session_id,
+            typeof runtime.worker_instance === 'string' ? runtime.worker_instance : '',
+            options.signal,
+          );
+          if (recovered) return recovered as T;
+
+          // Keep the session details. The first processing snapshot may already have been superseded.
+          const { status: _status, is_processing: _isProcessing, runtime: _runtime, ...session } = metadata;
+          return session as T;
         }
       }
       return value;
@@ -514,22 +533,90 @@ class WebClient {
     return null;
   }
 
-  private async resumeExecutions(queries = this.runtimeResume.queries()): Promise<void> {
-    await Promise.all(queries.map((query) => this.resumeExecution(query)));
+  private async resumeExecutions(queries = this.runtimeResume.queries(), retryDelayMs = 0): Promise<void> {
+    await Promise.allSettled(queries.map((query) => this.resumeExecution(query, retryDelayMs)));
   }
 
-  private async resumeExecution(query: ReturnType<RuntimeResume['queries']>[number]): Promise<void> {
+  isRecoveringExecution(sessionId: string): boolean {
+    return this.resumeRequests.has(sessionId) || this.resumeRetryTimers.has(sessionId);
+  }
+
+  private recoverSessionExecution(
+    sessionId: string,
+    workerInstance: string,
+    signal?: AbortSignal,
+  ): Promise<RuntimeRecoveryMetadata | undefined> {
+    if (signal?.aborted) return Promise.resolve(undefined);
+    const query = this.runtimeResume.queries().find((item) => item.session_id === sessionId) ?? {
+      session_id: sessionId,
+      runtime_resume: { worker_instance: workerInstance, after: 0 },
+    };
+    const recovery = this.resumeExecution(query);
+    if (!signal) return recovery;
+    // A caller can cancel its wait independently of the session's shared subscription.
+    return new Promise((resolve, reject) => {
+      const onAbort = () => resolve(undefined);
+      signal.addEventListener('abort', onAbort, { once: true });
+      void recovery.then(resolve, reject).finally(() => signal.removeEventListener('abort', onAbort));
+    });
+  }
+
+  private clearExecutionRecovery(): void {
+    for (const timer of this.resumeRetryTimers.values()) window.clearTimeout(timer);
+    this.resumeRetryTimers.clear();
+    this.resumeRequests.clear();
+  }
+
+  private resumeExecution(query: RuntimeResumeQuery, retryDelayMs = 0): Promise<RuntimeRecoveryMetadata | undefined> {
+    const sessionId = query.session_id;
+    const existing = this.resumeRequests.get(sessionId);
+    if (existing) return existing;
+    const timer = this.resumeRetryTimers.get(sessionId);
+    if (timer !== undefined) {
+      window.clearTimeout(timer);
+      this.resumeRetryTimers.delete(sessionId);
+    }
+    const request = this.queryExecutionRecovery(query, retryDelayMs).finally(() => {
+      if (this.resumeRequests.get(sessionId) === request) this.resumeRequests.delete(sessionId);
+    });
+    this.resumeRequests.set(sessionId, request);
+    return request;
+  }
+
+  private async queryExecutionRecovery(
+    query: RuntimeResumeQuery,
+    retryDelayMs: number,
+  ): Promise<RuntimeRecoveryMetadata | undefined> {
+    const sessionId = query.session_id;
     const socket = this.ws;
     const owner = this.resumeOwner;
-    for (let attempt = 0; attempt < MAX_RECOVERY_ATTEMPTS; attempt += 1) {
-      if (this.ws !== socket || this.resumeOwner !== owner || this.state !== 'ready') return;
+    const turnRevision = useChatStore.getState().getRuntime(sessionId)?.turnRevision ?? 0;
+    const isCurrent = () =>
+      this.ws === socket && this.resumeOwner === owner && this.state === 'ready' &&
+      (useChatStore.getState().getRuntime(sessionId)?.turnRevision ?? 0) === turnRevision;
+    const shouldRetry = () =>
+      isCurrent() && useChatStore.getState().getRuntime(sessionId)?.foregroundIsProcessing;
+    const retry = () => {
+      if (!shouldRetry()) return;
+      const delay = retryDelayMs === 0 ? MIN_RECOVERY_RETRY_MS : Math.min(retryDelayMs * 2, MAX_RECOVERY_RETRY_MS);
+      const timer = window.setTimeout(() => {
+        this.resumeRetryTimers.delete(sessionId);
+        if (!shouldRetry()) return;
+        const latest = this.runtimeResume.queries().find((item) => item.session_id === sessionId);
+        void this.resumeExecutions([latest ?? query], delay);
+      }, delay);
+      this.resumeRetryTimers.set(sessionId, timer);
+    };
+    const attempts = retryDelayMs === 0 ? MAX_RECOVERY_ATTEMPTS : 1;
+    for (let attempt = 0; ; attempt += 1) {
+      if (!isCurrent()) return;
       try {
-        const metadata = await this.request<{ runtime?: Record<string, unknown> }>('session.get_metadata', query, {
+        const metadata = await this.request<RuntimeRecoveryMetadata>('session.get_metadata', query, {
           timeoutMs: 10_000,
         });
-        if (this.ws !== socket || this.resumeOwner !== owner) return;
+        if (!isCurrent()) return;
         const runtime = metadata?.runtime;
-        if (!runtime) return;
+        if (!runtime) return metadata;
         this.dispatchEvent({
           type: 'event',
           event: 'runtime.snapshot',
@@ -538,7 +625,7 @@ class WebClient {
         if (runtime.recovery_pending === true) {
           // An unfinished snapshot cannot clear a running task. Retry only the
           // metadata/cursor query, preserving the original accepted execution.
-          if (attempt + 1 < MAX_RECOVERY_ATTEMPTS) {
+          if (attempt + 1 < attempts) {
             const delay =
               typeof runtime.retry_after_ms === 'number' && Number.isFinite(runtime.retry_after_ms)
                 ? Math.max(100, Math.min(1000, runtime.retry_after_ms))
@@ -546,13 +633,25 @@ class WebClient {
             await new Promise<void>((resolve) => window.setTimeout(resolve, delay));
             continue;
           }
-          return;
+          retry();
+          return metadata;
         }
+        const localRuntime = useChatStore.getState().getRuntime(sessionId);
+        const missingTerminal = runtime.is_processing === false && localRuntime?.foregroundIsProcessing === true;
+        const segments = localRuntime?.reasoningSegments;
+        const lastReasoning = segments?.[segments.length - 1];
         if (typeof runtime.is_processing === 'boolean') {
           this.dispatchEvent({
             type: 'event',
             event: 'chat.processing_status',
-            payload: { session_id: query.session_id, is_processing: runtime.is_processing },
+            payload: {
+              session_id: sessionId,
+              is_processing: runtime.is_processing,
+              runtime_recovery_revision: turnRevision,
+              ...(missingTerminal && lastReasoning && !lastReasoning.closed
+                ? { timestamp: lastReasoning.updatedAt }
+                : {}),
+            },
           });
         }
         if (runtime.interrupted === true) {
@@ -581,15 +680,17 @@ class WebClient {
               }
             }
           }
+        }
+        if (runtime.history_required === true || missingTerminal) {
           this.dispatchEvent({
             type: 'event',
             event: 'runtime.history_required',
-            payload: { session_id: query.session_id },
+            payload: { session_id: sessionId },
           });
         }
-        return;
-      } catch {
-        // The next reconnect/history query reconciles state. Never retry chat.send.
+        return metadata;
+      } catch (error) {
+        if ((error as WebError | undefined)?.code === 'REQUEST_TIMEOUT') retry();
         return;
       }
     }
@@ -608,6 +709,10 @@ class WebClient {
       return;
     }
     if (message.ok && pending.awaitRuntimeAccepted) {
+      return;
+    }
+    if (message.ok && pending.awaitUserAnswerResult &&
+      typeof this.normalizePayload(message.payload).resolved !== 'boolean') {
       return;
     }
     window.clearTimeout(pending.timeoutId);
@@ -638,7 +743,8 @@ class WebClient {
       return;
     }
     const pending = this.pending.get(requestId);
-    if (!pending?.awaitRuntimeAccepted) {
+    if (!pending || (!pending.awaitRuntimeAccepted &&
+      !(message.event === 'chat.error' && pending.awaitUserAnswerResult))) {
       return;
     }
     window.clearTimeout(pending.timeoutId);
@@ -724,6 +830,10 @@ class WebClient {
     // 浏览器 new WebSocket 无法设置自定义 header，身份走 query：
     // user_id / group_id / bot_id（见 runtimeScope.ts；个人版可仅有 user_id）。
     appendRuntimeScopeQuery(params);
+    // 鸿蒙 WebView 拿不到系统浏览器的登录 cookie，也不能给 WebSocket 设置自定义 header。
+    // authClient 在本地存下的会话 id 通过 query 传给 Gateway，登录后重连时重新读取。
+    const authSession = readStoredSessionId();
+    if (authSession) params.set('auth_session', authSession);
     const query = params.toString();
     const target = `${base}${path}`;
     return query ? `${target}?${query}` : target;

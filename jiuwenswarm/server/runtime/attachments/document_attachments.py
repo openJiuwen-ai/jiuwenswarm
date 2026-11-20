@@ -35,12 +35,12 @@ _MAX_DOCUMENT_BYTES: int = 100 * 1024 * 1024
 _MAX_DOCUMENT_COUNT: int = 8
 
 
-from gateway.common.attachment_safety import (  # noqa: F401,E402
+from agent_gateway.common.attachment_safety import (  # noqa: F401,E402  # pylint: disable=wrong-import-order
     strip_data_uri_prefix as _strip_data_uri_prefix,
 )
 
 # Executable / script / package types rejected by document upload.
-from gateway.common.attachment_safety import (  # noqa: F401
+from agent_gateway.common.attachment_safety import (  # noqa: F401  # pylint: disable=wrong-import-order
     FORBIDDEN_DOCUMENT_EXTENSIONS,
     _document_suffix,
     forbidden_formats,

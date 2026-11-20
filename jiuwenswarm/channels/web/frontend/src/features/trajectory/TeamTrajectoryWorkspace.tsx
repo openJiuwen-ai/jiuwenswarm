@@ -1,12 +1,49 @@
 /** Team member navigation using the native trajectory overview and ledger. */
 
-import { memo, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import {
+  Fragment,
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { TrajectoryViewState } from './client/TrajectoryExplorer';
 import { trajectoryTranslator, type TrajectoryKey } from './client/i18n';
 import { TrajectoryToolbar } from './client/TrajectoryToolbar';
-import { buildTeamMemberLanes, type TeamMemberLaneModel } from './teamTrajectoryLanes';
+import {
+  buildTeamMemberLanes,
+  type TeamMemberLaneModel,
+} from './teamTrajectoryLanes';
+import {
+  attachWorkflowGroupsToHostLanes,
+  groupTeamMemberLanesByWorkflowRun,
+  parseEngineSwarmflowMemberId,
+  swarmflowLaneFullName,
+  swarmflowWorkerMemberName,
+  type SwarmflowWorkerIdentity,
+  type WorkflowRunLaneSummary,
+} from './teamTrajectoryWorkflowGroups';
+import {
+  buildScheduledTeamLaneSections,
+  groupScheduledTaskRuns,
+  noReviewMessageKey,
+  scheduledMemberDisplayName,
+  type ScheduledReviewerLane,
+  type ScheduledReviewerTask,
+  type ScheduledTaskRun,
+} from './scheduledTrajectoryLanes';
 import type { TrajectorySubjectGroups } from './trajectorySubjects';
+import {
+  ScheduledControlTimeline,
+  type ScheduledControlTimelineProps,
+} from './ScheduledControlTimeline';
 import css from './TeamTrajectoryWorkspace.module.css';
 
 export interface TeamMemberViewContext {
@@ -20,6 +57,20 @@ export interface TeamTrajectoryWorkspaceProps {
   active: boolean;
   groups: TrajectorySubjectGroups;
   messages?: Partial<Record<TrajectoryKey, string>>;
+  /**
+   * Swarmflow run summaries from the session store. Lanes whose member name
+   * opens with a run slug collapse into one collapsible group per run, headed
+   * by the run's task name; absent summaries still group by the untracked
+   * `wf-<12hex>` member-name pattern.
+   */
+  workflowRuns?: readonly WorkflowRunLaneSummary[];
+  /**
+   * Swarmflow worker identities from the session's team member events. A lane
+   * whose worker member name matches one gets its engine member id
+   * (`wf_<runid>:[["par", 0, 0], ["call", 0]]`) as the hover full name, so
+   * same-label operators stay distinguishable.
+   */
+  swarmflowMembers?: readonly SwarmflowWorkerIdentity[];
   /** Currently expanded member subject id, or `null` when every lane is collapsed. */
   selectedSubjectId: string | null;
   onSelectSubject: (subjectId: string | null) => void;
@@ -33,6 +84,11 @@ export interface TeamTrajectoryWorkspaceProps {
   externalViewState?: TrajectoryViewState;
   /** Full-width control under the toolbar, used by the diagnosis time axis. */
   toolbarTrailing?: ReactNode;
+  /** `main` task events rendered above the lanes on the same shared axis. */
+  controlTimeline?: Omit<
+    ScheduledControlTimelineProps,
+    'reviewRunCount' | 'memberDisplayName' | 'compact' | 'compactKey'
+  >;
   /**
    * Diagnosis pick controls. Absent on the raw team trajectory.
    *
@@ -57,6 +113,22 @@ export interface TeamTrajectoryWorkspaceProps {
   };
 }
 
+const EMPTY_WORKER_NAME_INDEX: ReadonlyMap<string, string> = new Map();
+
+/** `sha256(text)[:12]` — the ident the backend mints worker member names with. */
+async function sha256Ident(text: string): Promise<string | null> {
+  const subtle = globalThis.crypto?.subtle;
+  if (subtle === undefined) return null;
+  try {
+    const digest = await subtle.digest('SHA-256', new TextEncoder().encode(text));
+    let hex = '';
+    for (const byte of new Uint8Array(digest)) hex += byte.toString(16).padStart(2, '0');
+    return hex.slice(0, 12);
+  } catch {
+    return null;
+  }
+}
+
 function MemberToolbarControl({
   lane,
   expanded,
@@ -79,18 +151,50 @@ function MemberToolbarControl({
   selectAllActive?: boolean;
 }) {
   const { t } = useTranslation();
+  const fullLabel = 'fullLabel' in lane && typeof lane.fullLabel === 'string'
+    ? lane.fullLabel
+    : lane.label;
+  const scheduledLane = 'taskId' in lane ? lane as ScheduledReviewerLane : undefined;
+  const decision = scheduledLane?.decision;
+  const pendingDecisionLabel = scheduledLane?.reviewer.toLowerCase().includes('inspector')
+    ? t('trajectory.team.schedule.decision.pendingScore')
+    : t('trajectory.team.schedule.decision.pending');
+  const decisionLabel = decision === undefined
+    ? undefined
+    : decision.kind === 'pass'
+      ? t('trajectory.team.schedule.decision.pass')
+      : decision.kind === 'fail'
+        ? t('trajectory.team.schedule.decision.fail')
+        : decision.kind === 'score'
+          ? t('trajectory.team.schedule.decision.score', {
+            value: Number.isInteger(decision.value) ? decision.value : decision.value.toFixed(2),
+          })
+          : pendingDecisionLabel;
   const button = (
     <button
       type="button"
       className={css.memberControl}
       aria-expanded={expanded}
-      aria-label={`${lane.label} — ${lane.traceCount} traces, ${lane.recordCount} records`}
+      aria-label={[
+        fullLabel,
+        decisionLabel,
+        `${lane.traceCount} traces, ${lane.recordCount} records`,
+      ].filter(Boolean).join(' — ')}
       data-status={lane.status}
       data-member-lane={lane.subjectId}
+      data-review-decision={decision?.kind}
       onClick={onClick}
     >
       <span className={`${css.statusDot} ${css[`status_${lane.status}`]}`} aria-hidden="true" />
-      <span className={css.memberName} title={lane.label}>{lane.label}</span>
+      <span className={css.memberName} title={fullLabel}>{lane.label}</span>
+      {decisionLabel === undefined ? null : (
+        <span
+          className={css.reviewDecision}
+          data-decision={decision?.kind}
+        >
+          {decisionLabel}
+        </span>
+      )}
       <span
         className={`${css.chevron} ${expanded ? css.chevronExpanded : ''}`}
         aria-hidden="true"
@@ -103,10 +207,10 @@ function MemberToolbarControl({
   const selectAllEnabled = canSelectAll === true;
   const allSelected = selectAllActive === true;
   const selectAllLabel = allSelected
-    ? t('trajectory.analysis.selection.clearSelectAllAgent', { name: lane.label })
-    : t('trajectory.analysis.selection.selectAllAgent', { name: lane.label });
-  const includeLabel = t('trajectory.diagnosis.includeAgent', { name: lane.label });
-  const includeTitle = t('trajectory.diagnosis.includeAgentHint', { name: lane.label });
+    ? t('trajectory.analysis.selection.clearSelectAllAgent', { name: fullLabel })
+    : t('trajectory.analysis.selection.selectAllAgent', { name: fullLabel });
+  const includeLabel = t('trajectory.diagnosis.includeAgent', { name: fullLabel });
+  const includeTitle = t('trajectory.diagnosis.includeAgentHint', { name: fullLabel });
   const showInclude = showIncludeToggle === true && onToggleIncluded !== undefined;
   return (
     <span className={css.memberCluster}>
@@ -151,6 +255,8 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
   active,
   groups,
   messages,
+  workflowRuns,
+  swarmflowMembers,
   selectedSubjectId,
   onSelectSubject,
   memberView,
@@ -158,10 +264,74 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
   hideToolbar = false,
   externalViewState,
   toolbarTrailing,
+  controlTimeline,
   agentSelection,
 }: TeamTrajectoryWorkspaceProps) {
   const { t } = useTranslation();
-  const lanes = buildTeamMemberLanes(groups.groups);
+  const flatLanes = useMemo(() => buildTeamMemberLanes(groups.groups), [groups.groups]);
+  const scheduledMode = controlTimeline !== undefined && controlTimeline.model.tasks.length > 0;
+  const laneSections = useMemo(
+    () => (scheduledMode
+      ? buildScheduledTeamLaneSections(groups.groups, controlTimeline?.model)
+      : null),
+    [controlTimeline?.model, groups.groups, scheduledMode],
+  );
+  const reviewRunCount = laneSections?.reviewRunCount ?? flatLanes.filter(
+    lane => lane.subjectId.startsWith('team-reviewer:'),
+  ).length;
+  const memberDisplayName = useCallback(
+    (memberName: string) => scheduledMemberDisplayName(
+      memberName,
+      laneSections?.members ?? flatLanes,
+    ),
+    [flatLanes, laneSections],
+  );
+  const taskRuns = useMemo(
+    () => groupScheduledTaskRuns(
+      laneSections?.members ?? [],
+      laneSections?.tasks ?? [],
+    ),
+    [laneSections],
+  );
+  const standaloneMembers = useMemo(() => {
+    if (laneSections === null) return [];
+    const nested = new Set(
+      taskRuns.flatMap(run => (
+        run.member === undefined ? [] : [run.member.subjectId]
+      )),
+    );
+    return laneSections.members.filter(member => !nested.has(member.subjectId));
+  }, [laneSections, taskRuns]);
+  // Swarmflow worker lanes collapse into one collapsible group per run,
+  // headed by the run's task name. In scheduled sessions only regular member
+  // lanes participate; reviewer lanes keep their Task -> Round hierarchy.
+  const workflowGroupingLanes = laneSections === null ? flatLanes : standaloneMembers;
+  const { ungrouped, groups: workflowGroups } = groupTeamMemberLanesByWorkflowRun(
+    workflowGroupingLanes,
+    workflowRuns ?? [],
+  );
+  // Place each run group right under the lane of the member who executed it
+  // (issue #6381: a teammate-launched swarmflow otherwise reads as the
+  // leader's). In scheduled mode a task assignee's lane lives inside its task
+  // run row, not in `ungrouped`, so its runs attach there; groups without
+  // resolvable attribution keep the trailing slot. The plan is keyed by the
+  // host lane object, so interleaved task runs of the same member render a
+  // group exactly once.
+  const {
+    attached: attachedWorkflowGroups,
+    trailing: trailingWorkflowGroups,
+  } = useMemo(() => (
+    attachWorkflowGroupsToHostLanes(workflowGroups, [
+      ...ungrouped,
+      ...taskRuns.flatMap(run => (run.member === undefined ? [] : [run.member])),
+    ])
+  ), [workflowGroups, ungrouped, taskRuns]);
+  const renderMemberWithRuns = (lane: TeamMemberLaneModel) => (
+    <Fragment key={lane.subjectId}>
+      {renderLane(lane)}
+      {(attachedWorkflowGroups.get(lane) ?? []).map(renderWorkflowGroup)}
+    </Fragment>
+  );
   const translate = useMemo(() => trajectoryTranslator(messages), [messages]);
   const [actualDuration, setActualDuration] = useState(false);
   const [actualTime, setActualTime] = useState(false);
@@ -170,7 +340,44 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
   const [callsCollapsed, setCallsCollapsed] = useState(false);
   const lanesRef = useRef<HTMLDivElement>(null);
   const laneRowsRef = useRef(new Map<string, HTMLDivElement>());
+  const [selectedTaskRow, setSelectedTaskRow] = useState<{ subjectId: string; key: string } | null>(null);
+  const [expandedHeight, setExpandedHeight] = useState<number | null>(null);
   const [pinToken, setPinToken] = useState(0);
+  const [collapsedTaskRuns, setCollapsedTaskRuns] = useState<ReadonlySet<string>>(() => new Set());
+  const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(() => new Set());
+  const [collapsedReviews, setCollapsedReviews] = useState<ReadonlySet<string>>(() => new Set());
+  // Worker member name -> engine member id (`wf_<runid>:[["par", 0, 0], ["call", 0]]`).
+  // The ident bridge is async (WebCrypto); until it resolves, lanes fall back
+  // to the plain worker member name.
+  const [memberIdByWorkerName, setMemberIdByWorkerName] = useState<
+    ReadonlyMap<string, string>
+  >(() => EMPTY_WORKER_NAME_INDEX);
+  useEffect(() => {
+    const identities = swarmflowMembers ?? [];
+    if (identities.length === 0) {
+      setMemberIdByWorkerName(current =>
+        current.size === 0 ? current : EMPTY_WORKER_NAME_INDEX);
+      return undefined;
+    }
+    let cancelled = false;
+    void (async () => {
+      const entries: Array<[string, string]> = [];
+      for (const identity of identities) {
+        const parsed = parseEngineSwarmflowMemberId(identity.memberId);
+        if (parsed === null) continue;
+        const ident = await sha256Ident(parsed.callKey);
+        if (ident === null) continue;
+        entries.push([
+          swarmflowWorkerMemberName(parsed.runId, identity.name, ident),
+          identity.memberId,
+        ]);
+      }
+      if (!cancelled) setMemberIdByWorkerName(new Map(entries));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [swarmflowMembers]);
   const localViewState = useMemo<TrajectoryViewState>(() => ({
     actualDuration,
     actualTime,
@@ -185,21 +392,375 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
     turnsCollapsed,
   ]);
   const viewState = externalViewState ?? localViewState;
+  const selectedRowKey = useMemo(() => {
+    if (!scheduledMode || selectedSubjectId === null) return selectedSubjectId;
+    const taskRowKeys = taskRuns
+      .filter(run => run.member?.subjectId === selectedSubjectId && !collapsedTaskRuns.has(run.key))
+      .map(run => `${run.key}:${selectedSubjectId}`);
+    if (selectedTaskRow?.subjectId === selectedSubjectId
+      && (selectedTaskRow.key === selectedSubjectId || taskRowKeys.includes(selectedTaskRow.key))) {
+      return selectedTaskRow.key;
+    }
+    return taskRowKeys[0] ?? selectedSubjectId;
+  }, [collapsedTaskRuns, scheduledMode, selectedSubjectId, selectedTaskRow, taskRuns]);
   useLayoutEffect(() => {
-    if (selectedSubjectId === null) return;
+    if (selectedRowKey === null) return;
     const lanesElement = lanesRef.current;
-    const rowElement = laneRowsRef.current.get(selectedSubjectId);
+    const rowElement = laneRowsRef.current.get(selectedRowKey);
     if (lanesElement === null || rowElement === undefined) return;
     const lanesBounds = lanesElement.getBoundingClientRect();
     const rowBounds = rowElement.getBoundingClientRect();
     lanesElement.scrollTop += rowBounds.top - lanesBounds.top;
-  }, [pinToken, selectedSubjectId]);
+  }, [pinToken, selectedRowKey]);
+
+  useLayoutEffect(() => {
+    if (!scheduledMode || selectedRowKey === null) return undefined;
+    const lanesElement = lanesRef.current;
+    const rowElement = laneRowsRef.current.get(selectedRowKey);
+    const tablePane = rowElement?.querySelector<HTMLElement>('[data-trajectory-scroll]');
+    const table = tablePane?.querySelector('table');
+    if (lanesElement === null || rowElement === undefined || tablePane == null || table == null) {
+      return undefined;
+    }
+    const measure = () => {
+      if (!rowElement.isConnected || !tablePane.isConnected || !table.isConnected) return;
+      const fixedHeight = rowElement.clientHeight - tablePane.clientHeight;
+      const contentHeight = fixedHeight + table.offsetHeight;
+      const nextHeight = Math.min(lanesElement.clientHeight, Math.max(120, fixedHeight, contentHeight));
+      setExpandedHeight(current => current === nextHeight ? current : nextHeight);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(lanesElement);
+    observer.observe(table);
+    return () => observer.disconnect();
+  }, [groups.groups, scheduledMode, selectedRowKey]);
+
+  const renderLane = (lane: TeamMemberLaneModel, rowKey = lane.subjectId) => {
+    // Scheduled lanes carry their own fullLabel; swarmflow worker lanes get
+    // the engine member id (call key) so same-label operators stay
+    // distinguishable on hover.
+    const fullName = lane.fullLabel ?? swarmflowLaneFullName(lane, memberIdByWorkerName);
+    const laneModel = fullName === null || fullName === lane.fullLabel
+      ? lane
+      : { ...lane, fullLabel: fullName };
+    const expanded = lane.subjectId === selectedSubjectId
+      && (!scheduledMode || selectedRowKey === rowKey);
+    const select = () => {
+      if (scheduledMode) {
+        setSelectedTaskRow(expanded ? null : { subjectId: lane.subjectId, key: rowKey });
+        setExpandedHeight(null);
+      }
+      onSelectSubject(expanded ? null : lane.subjectId);
+    };
+    const expand = () => {
+      if (!expanded) {
+        if (scheduledMode) {
+          setSelectedTaskRow({ subjectId: lane.subjectId, key: rowKey });
+          setExpandedHeight(null);
+        }
+        onSelectSubject(lane.subjectId);
+      }
+      setPinToken(value => value + 1);
+    };
+    const scheduled = 'taskId' in lane ? lane as ScheduledReviewerLane : undefined;
+    return (
+      <div
+        ref={(element) => {
+          if (element === null) laneRowsRef.current.delete(rowKey);
+          else laneRowsRef.current.set(rowKey, element);
+        }}
+        key={rowKey}
+        role="listitem"
+        className={`${css.laneRow} ${expanded ? css.laneRowExpanded : ''}`}
+        style={expanded && scheduledMode && expandedHeight !== null
+          ? { '--trajectory-expanded-height': `${expandedHeight}px` } as CSSProperties
+          : undefined}
+        data-member-subject={lane.subjectId}
+        data-variant={rowKey}
+        data-review-task={scheduled?.taskId}
+        data-review-round={scheduled?.round}
+        data-review-attempt={scheduled?.attempt}
+        data-highlighted={agentSelection?.isHighlighted?.(lane.subjectId) === true ? 'true' : 'false'}
+        data-testid="team-trajectory-lane-row"
+      >
+        {memberView(lane.subjectId, {
+          expanded,
+          viewState,
+          toolbarAddon: (
+            <MemberToolbarControl
+              lane={laneModel}
+              expanded={expanded}
+              onClick={select}
+              {...(agentSelection === undefined
+                ? {}
+                : {
+                  included: agentSelection.isIncluded(lane.subjectId),
+                  onToggleIncluded: () => agentSelection.onToggle(lane.subjectId),
+                  showIncludeToggle: agentSelection.showIncludeToggle(lane.subjectId),
+                  onSelectAll: () => agentSelection.onSelectAll(lane.subjectId),
+                  canSelectAll: agentSelection.canSelectAll(lane.subjectId),
+                  selectAllActive: agentSelection.isSelectAllActive(lane.subjectId),
+                })}
+            />
+          ),
+          onOverviewActivate: expand,
+        })}
+      </div>
+    );
+  };
+
+  const renderReviewRounds = (task: ScheduledReviewerTask) => (
+    task.rounds.length === 0
+      ? (
+        <span className={css.taskReviewEmpty}>
+          {t(noReviewMessageKey(task.phase, task.reviewRecordCount))}
+        </span>
+      )
+      : task.rounds.map(round => (
+        <div className={css.roundSection} key={`${task.taskId}:r${round.round}`}>
+          <div className={css.roundHeader} data-testid="team-trajectory-review-round">
+            <span>R{round.round}</span>
+            <span>
+              {t('trajectory.team.schedule.reviewCount', { count: round.lanes.length })}
+            </span>
+          </div>
+          {round.lanes.map(lane => renderLane(lane))}
+        </div>
+      ))
+  );
+
+  const renderTaskReview = (task: ScheduledReviewerTask) => {
+    const taskPhase = task.phase === undefined
+      ? null
+      : t(`trajectory.team.schedule.phase.${task.phase}`);
+    if (task.runCount === 0) {
+      // Nothing to disclose: keep the task's name and status visible as a
+      // static row instead of a collapsible section with an empty body.
+      return (
+        <div
+          className={css.taskReviewSection}
+          key={`task-review:${task.taskId}`}
+          data-testid="team-trajectory-review-task-group"
+          data-variant={task.taskId}
+          data-task-index={task.taskIndex}
+        >
+          <div className={css.taskReviewStatic}>
+            <span className={css.taskReviewSpacer} aria-hidden />
+            <span className={css.taskIndex}>T{task.taskIndex}</span>
+            <strong className={css.taskName}>{task.taskId}</strong>
+            {taskPhase === null ? null : <span className={css.sectionMeta}>{taskPhase}</span>}
+            <span className={css.taskReviewEmpty}>
+              {t(noReviewMessageKey(task.phase, task.reviewRecordCount))}
+            </span>
+          </div>
+        </div>
+      );
+    }
+    const collapsed = collapsedReviews.has(task.taskId);
+    return (
+      <div
+        className={css.taskReviewSection}
+        key={`task-review:${task.taskId}`}
+        data-testid="team-trajectory-review-task-group"
+        data-variant={task.taskId}
+        data-task-index={task.taskIndex}
+      >
+        <button
+          type="button"
+          className={css.taskReviewToggle}
+          aria-expanded={!collapsed}
+          aria-label={t(collapsed
+            ? 'trajectory.team.schedule.expandReviews'
+            : 'trajectory.team.schedule.collapseReviews')}
+          onClick={() => {
+            if (!collapsedReviews.has(task.taskId)
+              && task.rounds.some(round => round.lanes.some(lane => lane.subjectId === selectedSubjectId))) {
+              onSelectSubject(null);
+              setSelectedTaskRow(null);
+              setExpandedHeight(null);
+            }
+            setCollapsedReviews((current) => {
+              const next = new Set(current);
+              if (next.has(task.taskId)) next.delete(task.taskId);
+              else next.add(task.taskId);
+              return next;
+            });
+          }}
+          data-testid="team-trajectory-review-toggle"
+        >
+          {collapsed ? (
+            <ChevronRight size={16} strokeWidth={2} className={css.disclosureIcon} aria-hidden />
+          ) : (
+            <ChevronDown size={16} strokeWidth={2} className={css.disclosureIcon} aria-hidden />
+          )}
+          <span className={css.taskIndex}>T{task.taskIndex}</span>
+          <strong className={css.taskName}>{task.taskId}</strong>
+          {taskPhase === null ? null : <span className={css.sectionMeta}>{taskPhase}</span>}
+          <span
+            className={css.taskReviewCount}
+            data-testid="team-trajectory-review-count"
+            data-variant={task.taskId}
+          >
+            {t('trajectory.team.schedule.reviewCount', { count: task.runCount })}
+          </span>
+        </button>
+        {collapsed ? null : renderReviewRounds(task)}
+      </div>
+    );
+  };
+
+  const renderTaskRun = (run: ScheduledTaskRun) => {
+    const collapsed = collapsedTaskRuns.has(run.key);
+    const firstTask = run.tasks[0];
+    if (firstTask === undefined) return null;
+    const taskIndexes = run.tasks.map(task => `T${task.taskIndex}`).join(' / ');
+    const firstTaskPhase = firstTask.phase === undefined
+      ? null
+      : t(`trajectory.team.schedule.phase.${firstTask.phase}`);
+    const taskRunAssignee = run.member?.label ?? (
+      firstTask.assignee === undefined
+        ? t('trajectory.team.schedule.unassigned')
+        : memberDisplayName(firstTask.assignee)
+    );
+    return (
+      <div
+        className={css.taskSection}
+        key={run.key}
+        data-testid="team-trajectory-review-task-run"
+        data-variant={run.key}
+      >
+        <div className={css.taskHeader}>
+          <button
+            type="button"
+            className={css.taskHeaderToggle}
+            aria-expanded={!collapsed}
+            onClick={() => {
+              if (!collapsed && selectedRowKey === `${run.key}:${selectedSubjectId}`) {
+                onSelectSubject(null);
+                setSelectedTaskRow(null);
+                setExpandedHeight(null);
+              }
+              setCollapsedTaskRuns((current) => {
+                const next = new Set(current);
+                if (next.has(run.key)) next.delete(run.key);
+                else next.add(run.key);
+                return next;
+              });
+            }}
+            data-testid="team-trajectory-review-task-toggle"
+          >
+            {collapsed ? (
+              <ChevronRight size={16} strokeWidth={2} className={css.disclosureIcon} aria-hidden />
+            ) : (
+              <ChevronDown size={16} strokeWidth={2} className={css.disclosureIcon} aria-hidden />
+            )}
+            <span className={css.sectionTitle}>
+              <strong className={css.taskRunIndex}>{taskIndexes}</strong>
+              {run.tasks.length === 1 ? (
+                <strong className={css.taskName}>{firstTask.taskId}</strong>
+              ) : null}
+            </span>
+            {run.tasks.length === 1 ? (
+              firstTaskPhase === null
+                ? null
+                : <span className={css.sectionMeta}>{firstTaskPhase}</span>
+            ) : null}
+            {run.tasks.length > 1 || run.member === undefined ? (
+              <span className={css.taskRunAssignee} title={taskRunAssignee}>
+                {t('trajectory.team.schedule.assigneeValue', { name: taskRunAssignee })}
+              </span>
+            ) : null}
+          </button>
+        </div>
+        {collapsed ? null : (
+          <div className={css.taskBody}>
+            {run.member === undefined ? null : renderLane(run.member, `${run.key}:${run.member.subjectId}`)}
+            {run.member === undefined
+              ? null
+              : (attachedWorkflowGroups.get(run.member) ?? []).map(renderWorkflowGroup)}
+            <div className={css.taskRunReviews}>
+              {run.tasks.length === 1
+                ? renderReviewRounds(firstTask)
+                : run.tasks.map(renderTaskReview)}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  const renderWorkflowGroup = (group: (typeof workflowGroups)[number]) => {
+    // The selected member's group stays expanded so its lane never disappears
+    // behind a collapse the toggle cannot undo. The toggle still flips such a
+    // group: folding closes the lane's trajectory drawer with it, so the
+    // selection never points at a hidden lane.
+    const selected = group.lanes.some((lane) => lane.subjectId === selectedSubjectId);
+    const expanded = expandedGroups.has(group.runId) || selected;
+    const toggle = () => {
+      const next = !expanded;
+      if (!next && selected) onSelectSubject(null);
+      setExpandedGroups((current) => {
+        const updated = new Set(current);
+        if (next) updated.add(group.runId);
+        else updated.delete(group.runId);
+        return updated;
+      });
+    };
+    return (
+      <div
+        key={group.runId}
+        role="listitem"
+        className={`${css.workflowGroup} ${selected ? css.workflowGroupSelected : ''}`}
+        data-testid="team-trajectory-workflow-group"
+        data-variant={group.runId}
+        data-status={group.status}
+      >
+        <button
+          type="button"
+          className={css.workflowGroupHeader}
+          aria-expanded={expanded}
+          aria-label={t('trajectory.team.workflowGroupAria', {
+            name: group.name,
+            count: group.lanes.length,
+          })}
+          title={group.runId}
+          data-testid="team-trajectory-workflow-group-header"
+          data-variant={group.runId}
+          onClick={toggle}
+        >
+          <span className={`${css.statusDot} ${css[`status_${group.status}`]}`} aria-hidden="true" />
+          <span className={css.workflowGroupName} title={group.name}>{group.name}</span>
+          <span className={css.workflowGroupShortId}>{group.shortId}</span>
+          <span
+            className={css.workflowGroupCount}
+            data-testid="team-trajectory-workflow-group-count"
+            data-variant={group.runId}
+          >
+            {t('trajectory.team.workflowGroupOperators', { count: group.lanes.length })}
+          </span>
+          <span
+            className={`${css.chevron} ${expanded ? css.chevronExpanded : ''}`}
+            aria-hidden="true"
+          >
+            {'>'}
+          </span>
+        </button>
+        {expanded ? (
+          <div className={css.workflowGroupLanes} role="list">
+            {group.lanes.map(lane => renderLane(lane))}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
 
   return (
     <div
       className={`${css.root} jiuwenTrajectoryTheme`}
       data-active={active ? 'true' : 'false'}
       data-trajectory-theme="light"
+      data-scheduled-control={scheduledMode ? 'true' : 'false'}
       data-testid="team-trajectory-workspace"
     >
       {hideToolbar ? null : <TrajectoryToolbar
@@ -225,6 +786,17 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
       {toolbarTrailing === undefined || toolbarTrailing === null
         ? null
         : <div className={css.axisHost}>{toolbarTrailing}</div>}
+      {controlTimeline === undefined ? null : (
+        <div className={css.controlTimeline}>
+          <ScheduledControlTimeline
+            {...controlTimeline}
+            reviewRunCount={reviewRunCount}
+            memberDisplayName={memberDisplayName}
+            compact={selectedSubjectId !== null}
+            compactKey={selectedSubjectId}
+          />
+        </div>
+      )}
       <div
         ref={lanesRef}
         className={css.lanes}
@@ -232,52 +804,27 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
         aria-label={t('trajectory.team.memberLanes')}
         data-testid="team-trajectory-lanes"
       >
-        {lanes.map((lane) => {
-          const expanded = lane.subjectId === selectedSubjectId;
-          const select = () => onSelectSubject(expanded ? null : lane.subjectId);
-          const expand = () => {
-            if (!expanded) onSelectSubject(lane.subjectId);
-            // Keep this agent's name on screen each time one of its bars is opened.
-            setPinToken(value => value + 1);
-          };
-          return (
-            <div
-              ref={(element) => {
-                if (element === null) laneRowsRef.current.delete(lane.subjectId);
-                else laneRowsRef.current.set(lane.subjectId, element);
-              }}
-              key={lane.subjectId}
-              role="listitem"
-              className={`${css.laneRow} ${expanded ? css.laneRowExpanded : ''}`}
-              data-member-subject={lane.subjectId}
-              data-highlighted={agentSelection?.isHighlighted?.(lane.subjectId) === true ? 'true' : 'false'}
-              data-testid="team-trajectory-lane-row"
-            >
-              {memberView(lane.subjectId, {
-                expanded,
-                viewState,
-                toolbarAddon: (
-                  <MemberToolbarControl
-                    lane={lane}
-                    expanded={expanded}
-                    onClick={select}
-                    {...(agentSelection === undefined
-                      ? {}
-                      : {
-                        included: agentSelection.isIncluded(lane.subjectId),
-                        onToggleIncluded: () => agentSelection.onToggle(lane.subjectId),
-                        showIncludeToggle: agentSelection.showIncludeToggle(lane.subjectId),
-                        onSelectAll: () => agentSelection.onSelectAll(lane.subjectId),
-                        canSelectAll: agentSelection.canSelectAll(lane.subjectId),
-                        selectAllActive: agentSelection.isSelectAllActive(lane.subjectId),
-                      })}
-                  />
-                ),
-                onOverviewActivate: expand,
-              })}
-            </div>
-          );
-        })}
+        {scheduledMode && laneSections !== null ? (
+          <>
+            {standaloneMembers.length === 0 ? null : (
+              <div className={css.laneSection} data-testid="team-trajectory-member-group">
+                {ungrouped.map(renderMemberWithRuns)}
+                {trailingWorkflowGroups.map(renderWorkflowGroup)}
+              </div>
+            )}
+            {taskRuns.map(renderTaskRun)}
+            {laneSections.ungroupedReviewers.length === 0 ? null : (
+              <div className={css.laneSection}>
+                {laneSections.ungroupedReviewers.map(lane => renderLane(lane))}
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            {ungrouped.map(renderMemberWithRuns)}
+            {trailingWorkflowGroups.map(renderWorkflowGroup)}
+          </>
+        )}
       </div>
     </div>
   );

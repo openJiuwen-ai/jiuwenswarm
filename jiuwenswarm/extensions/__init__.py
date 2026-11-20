@@ -6,28 +6,28 @@ from importlib import import_module
 from typing import Any
 
 _EXPORTS = {
-    "ExtensionLoader": ("gateway.extensions.loader", "ExtensionLoader"),
-    "ExtensionManager": ("gateway.extensions.manager", "ExtensionManager"),
-    "ExtensionRegistry": ("gateway.extensions.registry", "ExtensionRegistry"),
+    "ExtensionLoader": ("agent_gateway.extensions.loader", "ExtensionLoader"),
+    "ExtensionManager": ("agent_gateway.extensions.manager", "ExtensionManager"),
+    "ExtensionRegistry": ("agent_gateway.extensions.registry", "ExtensionRegistry"),
     "AgentServerClientExtension": (
-        "gateway.extensions.sdk.agent_server_client",
+        "agent_gateway.extensions.sdk.agent_server_client",
         "AgentServerClientExtension",
     ),
     "ApplicationPluginExtension": (
-        "gateway.extensions.sdk.application_plugin",
+        "agent_gateway.extensions.sdk.application_plugin",
         "ApplicationPluginExtension",
     ),
-    "BaseExtension": ("gateway.extensions.sdk.base", "BaseExtension"),
+    "BaseExtension": ("agent_gateway.extensions.sdk.base", "BaseExtension"),
     "CryptoUtility": (
-        "gateway.extensions.sdk.crypto_utility",
+        "agent_gateway.extensions.sdk.crypto_utility",
         "CryptoUtility",
     ),
     "ThirdAgentExtension": (
-        "gateway.extensions.sdk.third_agent",
+        "agent_gateway.extensions.sdk.third_agent",
         "ThirdAgentExtension",
     ),
-    "ExtensionConfig": ("gateway.extensions.types", "ExtensionConfig"),
-    "ExtensionMetadata": ("gateway.extensions.types", "ExtensionMetadata"),
+    "ExtensionConfig": ("agent_gateway.extensions.types", "ExtensionConfig"),
+    "ExtensionMetadata": ("agent_gateway.extensions.types", "ExtensionMetadata"),
 }
 
 

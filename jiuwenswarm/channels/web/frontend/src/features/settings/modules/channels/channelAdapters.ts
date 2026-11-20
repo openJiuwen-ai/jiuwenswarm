@@ -1,5 +1,7 @@
 import i18n from '../../../../i18n';
 import type {
+  DingtalkAppConfig,
+  DingtalkAppDraft,
   DingtalkFormValues,
   DiscordFormValues,
   FeishuAppConfig,
@@ -211,27 +213,96 @@ export function buildXiaoyiDeletionPayload(): Record<string, unknown> {
   return { apps: [] };
 }
 
+function isStringList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function normalizeDingtalkApp(input: unknown, fallbackName: string): DingtalkAppConfig {
+  const data = input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
+  const clientId = String(data.client_id ?? '').trim();
+  const clientSecret = String(data.client_secret ?? '').trim();
+  // An empty allowlist admits everyone, so a malformed one is never shown or saved as empty.
+  const allowFromValid = data.allow_from === undefined || data.allow_from === null || isStringList(data.allow_from);
+  return {
+    name: String(data.name ?? '').trim() || fallbackName,
+    // Matches the server: an unset flag means enabled once the credentials exist.
+    enabled: typeof data.enabled === 'boolean' ? data.enabled : Boolean(clientId && clientSecret),
+    client_id: clientId,
+    client_secret: clientSecret,
+    robot_code: String(data.robot_code ?? '').trim(),
+    allow_from: allowFromValid ? normalizeStringList(data.allow_from) : [],
+    is_default: data.is_default === true,
+    persistent_agent_id: String(data.persistent_agent_id ?? '').trim(),
+    allow_from_invalid: !allowFromValid,
+  };
+}
+
+function toDingtalkDraft(config: DingtalkAppConfig): DingtalkAppDraft {
+  return { ...config, allow_from: config.allow_from.join('\n') };
+}
+
 export function readDingtalkFormValues(input: unknown): DingtalkFormValues {
   const data = input && typeof input === 'object' ? (input as Record<string, unknown>) : {};
+  const rawApps = Array.isArray(data.apps) ? data.apps : String(data.client_id ?? '').trim() ? [input] : [];
+  const apps = rawApps.map((app, index) =>
+    normalizeDingtalkApp(app, i18n.t('channels.dingtalkApps.appNameTemplate', { index: index + 1 })),
+  );
+  const normalizedApps = apps.length
+    ? apps
+    : [normalizeDingtalkApp({ enabled: true }, i18n.t('channels.dingtalkApps.defaultAppName'))];
+  return { apps: normalizedApps.map(toDingtalkDraft) };
+}
+
+export function createDingtalkAppDraft(name: string): DingtalkAppDraft {
+  return toDingtalkDraft(normalizeDingtalkApp({ enabled: true }, name));
+}
+
+function buildDingtalkApp(draft: DingtalkAppDraft): Record<string, unknown> {
+  // The binding and the default flag are owned by the server; the form never sends them.
   return {
-    enabled: Boolean(data.enabled),
-    client_id: String(data.client_id ?? '').trim(),
-    client_secret: String(data.client_secret ?? '').trim(),
-    allow_from: normalizeStringList(data.allow_from).join('\n'),
+    name: draft.name.trim() || i18n.t('channels.dingtalkApps.unnamedAppName'),
+    enabled: draft.enabled,
+    client_id: draft.client_id.trim(),
+    client_secret: draft.client_secret.trim(),
+    robot_code: draft.robot_code.trim(),
+    allow_from: normalizeTextList(draft.allow_from),
   };
+}
+
+function buildDingtalkAppEdit(draft: DingtalkAppDraft): Record<string, unknown> {
+  const app = buildDingtalkApp(draft);
+  // Leave a malformed allowlist on the server until the user replaces it; the app stays stopped.
+  if (draft.allow_from_invalid) delete app.allow_from;
+  return app;
 }
 
 export function buildDingtalkFormPayload(values: DingtalkFormValues): Record<string, unknown> {
-  return {
-    enabled: values.enabled,
-    client_id: values.client_id.trim(),
-    client_secret: values.client_secret.trim(),
-    allow_from: normalizeTextList(values.allow_from),
-  };
+  return { apps: values.apps.filter((app) => app.client_id.trim()).map(buildDingtalkAppEdit) };
 }
 
-export function buildDingtalkDeletionPayload(): Record<string, unknown> {
-  return buildDingtalkFormPayload(readDingtalkFormValues({}));
+function requireDingtalkIndex(values: DingtalkFormValues, accountIndex: number): void {
+  if (!Number.isInteger(accountIndex) || accountIndex < 0 || accountIndex >= values.apps.length) {
+    throw new RangeError(`Invalid DingTalk account index: ${accountIndex}`);
+  }
+}
+
+export function buildDingtalkEnabledPayload(
+  values: DingtalkFormValues,
+  accountIndex: number,
+  enabled: boolean,
+): Record<string, unknown> {
+  requireDingtalkIndex(values, accountIndex);
+  return buildDingtalkFormPayload({
+    apps: values.apps.map((app, index) => (index === accountIndex ? { ...app, enabled } : app)),
+  });
+}
+
+export function buildDingtalkDeletionPayload(
+  values: DingtalkFormValues,
+  accountIndex: number,
+): Record<string, unknown> {
+  requireDingtalkIndex(values, accountIndex);
+  return buildDingtalkFormPayload({ apps: values.apps.filter((_, index) => index !== accountIndex) });
 }
 
 export function readTelegramFormValues(input: unknown): TelegramFormValues {
@@ -366,7 +437,6 @@ export function buildWhatsAppDeletionPayload(): Record<string, unknown> {
 
 const SINGLE_CHANNEL_DELETION_PAYLOAD_BUILDERS: Record<SingleSettingsChannelId, () => Record<string, unknown>> = {
   xiaoyi: buildXiaoyiDeletionPayload,
-  dingtalk: buildDingtalkDeletionPayload,
   telegram: buildTelegramDeletionPayload,
   discord: buildDiscordDeletionPayload,
   slack: buildSlackDeletionPayload,

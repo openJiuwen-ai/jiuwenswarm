@@ -19,7 +19,7 @@ from copy import deepcopy
 
 from openjiuwen.core.single_agent.interrupt.response import InterruptKind
 
-from gateway.common.interrupt_resume import INTERRUPT_RESUME_SOURCES
+from agent_gateway.common.interrupt_resume import answers_paused_calls
 
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     build_plan_approval_actions,
@@ -30,12 +30,18 @@ from jiuwenswarm.agents.harness.code.rails.code_plan_approval_interrupt_rail imp
     is_plan_approval_message,
     strip_inline_plan_approval_choices,
 )
+from jiuwenswarm.agents.harness.common.rails.cua_delegation_approval_rail import (
+    CUA_SUBAGENT_TYPE,
+    is_cua_delegation_approval_message,
+)
 from jiuwenswarm.agents.harness.common.rails.interrupt.permission_options import (
     ALLOW_ONCE,
     ALWAYS_ALLOW,
     REJECT,
     SESSION_ALLOW,
+    resolve_permission_action,
 )
+from jiuwenswarm.enterprise import is_enterprise
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_invocation_key import (
     ToolInvocationKeyV1,
 )
@@ -48,6 +54,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_redaction impo
     sanitize_permission_ui_payload,
 )
 from jiuwenswarm.common.utils import logger
+from jiuwenswarm.enterprise import is_enterprise
 
 SKILL_EVOLUTION_APPROVAL_SCHEMA = "openjiuwen.skill_evolution_approval.v1"
 EVOLUTION_INTERRUPT_SOURCE = "evolution_interrupt"
@@ -155,12 +162,11 @@ def has_interrupt_resume_payload(params: Any) -> bool:
 
 
 def is_interrupt_resume_payload(params: Any) -> bool:
+    if answers_paused_calls(params):
+        return True
     if not has_interrupt_resume_payload(params):
         return False
-    source = str(params.get("source") or "").strip()
-    if source in INTERRUPT_RESUME_SOURCES:
-        return True
-    if source != LEGACY_SKILL_EVOLUTION_APPROVAL_SOURCE:
+    if str(params.get("source") or "").strip() != LEGACY_SKILL_EVOLUTION_APPROVAL_SOURCE:
         return False
     evolution_meta = params.get("evolution_meta")
     return (
@@ -220,6 +226,7 @@ def build_permission_rail(
     from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
         SKILLS_REBUILD_SILENT,
         TOOL_PERMISSION_CHANNEL_ID,
+        TOOL_PERMISSION_REQUEST_ID,
     )
     from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
         is_auto_permission_enabled,
@@ -229,11 +236,12 @@ def build_permission_rail(
         AUTHORIZATION_EXECUTION_CONTEXTS,
     )
     from jiuwenswarm.common.config import get_config
-    from jiuwenswarm.common.e2a.acp.acp_tool_updates import build_acp_tool_descriptor
+    from e2a.acp.acp_tool_updates import build_acp_tool_descriptor
     from jiuwenswarm.common.utils import get_config_file
 
     from jiuwenswarm.agents.harness.common.a4p.preflight import unregister_preflight_rail
 
+    bound_channel_id = str(channel_id or "").strip()
     if session_id:
         unregister_preflight_rail(str(session_id).strip())
     inline_permissions = config.get("permissions", {})
@@ -351,11 +359,37 @@ def build_permission_rail(
                     return value.strip()
             return None
 
-        def _resolve_cron_job_id(metadata: dict[str, Any]) -> str:
-            cron = metadata.get("cron") if isinstance(metadata, dict) else None
-            if not isinstance(cron, dict):
+        def _job_id_from_cron_request_id(request_id: str | None) -> str:
+            rid = str(request_id or "").strip()
+            if not rid.startswith("cron-"):
                 return ""
-            return str(cron.get("job_id") or cron.get("jobId") or "").strip()
+            body = rid[len("cron-"):]
+            if body.startswith("session-create-"):
+                body = body[len("session-create-"):]
+            job_part, sep, ts = body.rpartition(":")
+            if sep and ts.isdigit() and job_part.strip():
+                return job_part.strip()
+            return ""
+
+        def _resolve_cron_job_id(
+            metadata: dict[str, Any],
+            *,
+            request_id: str | None = None,
+        ) -> str:
+            cron = metadata.get("cron") if isinstance(metadata, dict) else None
+            if isinstance(cron, dict):
+                job_id = str(cron.get("job_id") or cron.get("jobId") or "").strip()
+                if job_id:
+                    return job_id
+            if isinstance(metadata, dict):
+                job_id = str(metadata.get("cron_id") or "").strip()
+                if job_id:
+                    return job_id
+            return _job_id_from_cron_request_id(
+                request_id
+                or (metadata.get("request_id") if isinstance(metadata, dict) else None)
+                or TOOL_PERMISSION_REQUEST_ID.get()
+            )
 
         async def _request_permission_confirmation(
             req: PermissionConfirmationRequest,
@@ -376,10 +410,25 @@ def build_permission_rail(
 
             session_id = _resolve_session_id(req.ctx)
             execution_context = AUTHORIZATION_EXECUTION_CONTEXTS.get(session_id)
+            if execution_context is None:
+                # Tool ctx session_id can diverge from the host request session;
+                # fall back to the host request id stamped on this asyncio task.
+                # Do not pass the divergent tool session_id as a filter — that
+                # would reject the only correct host context. Colliding
+                # request_ids across sessions fail closed inside the lookup.
+                execution_context = AUTHORIZATION_EXECUTION_CONTEXTS.get_by_request_id(
+                    TOOL_PERMISSION_REQUEST_ID.get()
+                )
+            # A4P gate / attempt / intent tokens are bound on the host session.
+            host_session_id = (
+                execution_context.session_id
+                if execution_context is not None
+                else _effective_session_id(session_id)
+            )
             channel = (
                 execution_context.channel_id
-                if execution_context is not None
-                else (TOOL_PERMISSION_CHANNEL_ID.get() or "web")
+                if execution_context is not None and execution_context.channel_id
+                else (TOOL_PERMISSION_CHANNEL_ID.get() or bound_channel_id or "web")
             )
 
             tool_call = req.tool_call
@@ -395,7 +444,7 @@ def build_permission_rail(
                 )
 
             def _matching_a4p_attempt() -> Any | None:
-                attempt = AUTHORIZATION_EXECUTION_CONTEXTS.get_attempt(session_id)
+                attempt = AUTHORIZATION_EXECUTION_CONTEXTS.get_attempt(host_session_id)
                 if attempt is None or execution_context is None:
                     return None
                 if attempt.request_id != execution_context.request_id or attempt.status == "not_requested":
@@ -429,8 +478,21 @@ def build_permission_rail(
                 )
 
             cron_job_id = ""
-            metadata = execution_context.metadata if execution_context is not None else {}
-            is_cron = channel == "__cron__" or bool(metadata.get("cron"))
+            metadata = (
+                dict(execution_context.metadata)
+                if execution_context is not None and isinstance(execution_context.metadata, dict)
+                else {}
+            )
+            host_request_id = (
+                execution_context.request_id
+                if execution_context is not None
+                else TOOL_PERMISSION_REQUEST_ID.get()
+            )
+            is_cron = (
+                channel == "__cron__"
+                or bool(metadata.get("cron"))
+                or str(host_request_id or "").startswith("cron-")
+            )
             is_interactive_web = bool(
                 execution_context is not None
                 and execution_context.is_interactive_web
@@ -456,11 +518,23 @@ def build_permission_rail(
                         resolve_a4p_identity,
                     )
 
+                    # Start from process get_config() (patchable); overlay rail
+                    # snapshot / session bind only when they actually carry a4p.
+                    process_cfg = get_config()
+                    process_cfg = (
+                        dict(process_cfg) if isinstance(process_cfg, dict) else {}
+                    )
                     config = {
-                        **get_config(),
-                        "permissions": _get_installed_permissions(session_id),
+                        **process_cfg,
+                        "permissions": _get_installed_permissions(host_session_id),
                     }
-                    if is_a4p_preauthorization_active(config):
+                    inline_a4p = installed_a4p_config[0]
+                    if isinstance(inline_a4p, dict) and inline_a4p:
+                        config["a4p"] = dict(inline_a4p)
+                    if is_a4p_preauthorization_active(
+                        config,
+                        session_id=host_session_id,
+                    ):
                         agent_name = (
                             execution_context.agent_id
                             if execution_context is not None
@@ -471,7 +545,10 @@ def build_permission_rail(
                             agent_name=agent_name,
                         )
                         runtime = get_a4p_runtime()
-                        cron_job_id = _resolve_cron_job_id(metadata)
+                        cron_job_id = _resolve_cron_job_id(
+                            metadata,
+                            request_id=host_request_id,
+                        )
                         if cron_job_id:
                             token = await runtime.find_valid_cron_intent_token(
                                 cron_job_id=cron_job_id,
@@ -501,13 +578,13 @@ def build_permission_rail(
                                 "请求 metadata.cron.job_id 缺失，无法定位 job 授权"
                             )
 
-                        if not session_id:
+                        if not host_session_id:
                             logger.warning(
                                 "[InterruptHelpers] A4P intent token check skipped: session_id missing"
                             )
                             return "interrupt"
                         token = await runtime.find_valid_intent_token(
-                            session_id=session_id,
+                            session_id=host_session_id,
                             identity=identity,
                             action=tool_name,
                             params=tool_args,
@@ -516,7 +593,7 @@ def build_permission_rail(
                             logger.info(
                                 "[InterruptHelpers] A4P intent token approved tool=%s session=%s",
                                 tool_name,
-                                session_id,
+                                host_session_id,
                             )
                             return PermissionConfirmResponse(
                                 approved=True,
@@ -736,6 +813,12 @@ def build_permission_rail(
 
         installed_permission_rail: Any | None = None
         installed_global_permissions = [deepcopy(inline_permissions)]
+        # Enterprise puts a4p on the per-agent config_base; process get_config()
+        # often still has a4p.enabled=False. Keep the rail-build snapshot.
+        _inline_a4p = config.get("a4p")
+        installed_a4p_config = [
+            deepcopy(_inline_a4p) if isinstance(_inline_a4p, dict) else {}
+        ]
 
         def _replace_installed_global_permissions(permissions: dict[str, Any]) -> dict[str, Any]:
             """Publish the global policy installed by the latest session reload."""
@@ -783,6 +866,23 @@ def build_permission_rail(
                 session_permissions=session,
                 session_id=sid,
                 auto_mode=enable_auto_permission,
+            )
+
+        def _get_written_permissions() -> dict[str, Any]:
+            """The composed rules before Smart normalization, for the calls its reviewer cannot judge."""
+            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+                permission_storage_lock, read_permission_layers_locked,
+            )
+            sid = _effective_session_id()
+            with permission_storage_lock(sid):
+                _, user, session = read_permission_layers_locked(
+                    sid, global_permissions=installed_global_permissions[0],
+                )
+            return compose_host_effective_permissions(
+                global_permissions=installed_global_permissions[0],
+                user_permissions=user,
+                session_permissions=session,
+                session_id=sid,
             )
 
         def _permission_scene_config() -> dict[str, Any]:
@@ -910,6 +1010,7 @@ def build_permission_rail(
                 persistent_audit_writer=persistent_audit_writer,
                 browser_runtime_security_profile=browser_runtime_security_profile,
                 trusted_search_urls=trusted_search_urls,
+                written_permissions=_get_written_permissions,
             )
             permission_rail.set_trusted_dirs(None)
 
@@ -1085,6 +1186,8 @@ def _is_permission_interrupt_message(message: str, tool_name: str) -> bool:
         return True
     if normalized.startswith("**工具 `") or normalized.startswith("**Tool `"):
         return True
+    if is_cua_delegation_approval_message(message):
+        return False
     if tool_name and tool_name not in _CONFIRM_INTERRUPT_TOOLS:
         return True
     if normalized in {"", "Please approve or reject?"}:
@@ -1136,6 +1239,17 @@ def _interrupt_identity(value_obj: Any) -> dict[str, str]:
     return {"interrupt_id": _interrupt_id(value_obj), "kind": _interrupt_kind(value_obj)}
 
 
+def question_interactions(state_outputs: Any) -> list[Any]:
+    """The interactions of a pause that ask the user something.
+
+    A client tool call is not a question: it has its own chat.client_tool_request event.
+    """
+    return [
+        item for item in _iter_interactions(state_outputs or [])
+        if _interrupt_kind(_extract_interaction_parts(item)[1]) != InterruptKind.CLIENT_TOOL
+    ]
+
+
 def convert_interactions_to_ask_user_question(
     state_outputs: list,
     *,
@@ -1155,7 +1269,7 @@ def convert_interactions_to_ask_user_question(
     if not state_outputs:
         return None
 
-    interactions = list(_iter_interactions(state_outputs))
+    interactions = question_interactions(state_outputs)
     if not interactions:
         return None
     locator_rows = [
@@ -1558,10 +1672,13 @@ def _reviewer_ui_metadata_from_interaction(
                 projected[key] = items
             continue
         if isinstance(value, str) and value.strip():
-            projected[key] = redact_secret_values(
-                value,
-                max_length=_AUTO_REVIEWER_UI_MAX_TEXT_LENGTH,
-            )
+            if key in {"evidence_summary", "manual_reason_summary", "user_review_hint"}:
+                projected[key] = value
+            else:
+                projected[key] = redact_secret_values(
+                    value,
+                    max_length=_AUTO_REVIEWER_UI_MAX_TEXT_LENGTH,
+                )
     return projected
 
 
@@ -1602,16 +1719,44 @@ def _normalize_question_option(option: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+# agent-core 权限 ask 文案里会附带「选择「永久记住」…」提示；企业版不出该按钮时一并去掉。
+_PERMANENT_REMEMBER_HINT_RE = re.compile(
+    r"[；;]?\s*选择「永久记住」[^。\n]*。?",
+)
+
+
 # 权限审批的兜底选项。``value`` 取自 ``permission_options``，与解析回答用的是同一份
 # 词表：web / CLI 回传 ``value``，TUI 回传 ``label``，两条路都要能被 ``build_inputs``
 # 解出同一个动作。label / description 保持原样，渲染出的文案不变。
+#
+# 企业版不提供 always 档（权限卡「永久记住」/ 演进卡「总是允许」）：写回本地
+# user overlay / approval_overrides 或跨次自动放行，与 Manager 权威源不一致。
+# 个人版仍保留四档权限选项。
 def _default_interrupt_options() -> list[dict[str, str]]:
-    return [
+    options = [
         {"value": ALLOW_ONCE, "label": "本次允许", "description": "仅本次授权执行"},
         {"value": SESSION_ALLOW, "label": "会话内记住", "description": "本次会话内自动放行同类操作"},
-        {"value": ALWAYS_ALLOW, "label": "永久记住", "description": "写回磁盘，所有会话均自动放行"},
         {"value": REJECT, "label": "拒绝", "description": "拒绝执行此工具"},
     ]
+    if not is_enterprise():
+        options.insert(
+            2,
+            {
+                "value": ALWAYS_ALLOW,
+                "label": "永久记住",
+                "description": "写回磁盘，所有会话均自动放行",
+            },
+        )
+    return options
+
+
+def _is_always_allow_option(option: dict[str, Any]) -> bool:
+    """权限「永久记住」与演进「总是允许」均映射到 ALWAYS_ALLOW。"""
+    return resolve_permission_action(option.get("value") or option.get("label")) == ALWAYS_ALLOW
+
+
+def _strip_permanent_remember_hint(message: str) -> str:
+    return _PERMANENT_REMEMBER_HINT_RE.sub("", message or "").strip()
 
 
 def _plan_approval_interrupt_options(
@@ -1628,6 +1773,17 @@ def _plan_approval_interrupt_options(
     return build_plan_approval_options_from_message(message)
 
 
+def _fallback_interrupt_options(
+    source: str,
+    tool_name: str,
+    message: str,
+) -> list[dict[str, Any]]:
+    return (
+        _plan_approval_interrupt_options(source, tool_name, message)
+        or _default_interrupt_options()
+    )
+
+
 def _question_options_from_ui_options(
     value_obj: Any,
     source: str,
@@ -1642,11 +1798,15 @@ def _question_options_from_ui_options(
         if normalized["label"]:
             options.append(normalized)
     if options:
+        # 企业版统一隐藏 always 档：权限「永久记住」与技能演进「总是允许」都不保留。
+        if is_enterprise():
+            options = [
+                option for option in options if not _is_always_allow_option(option)
+            ]
+            if not options:
+                return _fallback_interrupt_options(source, tool_name, message)
         return options
-    return (
-        _plan_approval_interrupt_options(source, tool_name, message)
-        or _default_interrupt_options()
-    )
+    return _fallback_interrupt_options(source, tool_name, message)
 
 
 def _classify_structured_approval(
@@ -1753,6 +1913,10 @@ def _format_question_from_interaction(
     if plan_approval_options:
         header = "Exit Plan and Execute"
         question = strip_inline_plan_approval_choices(message)
+    elif source == "confirm_interrupt" and is_cua_delegation_approval_message(message):
+        # Name the agent that will act, not the internal task_tool it rides on.
+        header = f"操作确认: {CUA_SUBAGENT_TYPE}"
+        question = message
     elif source == "confirm_interrupt":
         header = f"操作确认: {tool_name}" if tool_name else "操作确认"
         question = message
@@ -1761,6 +1925,8 @@ def _format_question_from_interaction(
         ask_title = str(metadata.get("ask_title") or "").strip()
         header = ask_title or (f"权限审批: {tool_name}" if tool_name else "权限审批")
         question = message
+        if is_enterprise():
+            question = _strip_permanent_remember_hint(question)
 
     question_data = {
         "question": question,
@@ -1771,8 +1937,16 @@ def _format_question_from_interaction(
         "multi_select": False,
     }
     if source == "permission_interrupt":
+        if is_enterprise():
+            metadata = _extract_interaction_metadata(payload)
+            metadata.update(_extract_interrupt_metadata(value_obj))
+            matched_rule = metadata.get("matched_rule")
+            if isinstance(matched_rule, str) and matched_rule.strip():
+                question_data["matched_rule"] = redact_secret_values(matched_rule)
         if invocation_record is not None:
-            question_data["card_id"] = invocation_record.key.invocation_id
+            # Deprecated compatibility alias; use request_id for new identity logic.
+            # Existing clients must echo this value until the alias is retired.
+            question_data["card_id"] = invocation_record.key.tool_call_id
         if reviewer_metadata:
             question_data["reviewer_metadata"] = reviewer_metadata
         if isinstance(tool_args, dict):

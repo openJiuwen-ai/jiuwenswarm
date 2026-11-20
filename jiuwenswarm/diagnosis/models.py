@@ -13,7 +13,7 @@ import re
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator, model_validator
 
 MAX_USER_NOTE_CHARS = 2000
 MAX_SELECTION_RANGES = 50
@@ -21,6 +21,16 @@ MAX_SELECTION_RANGES = 50
 _TRACE_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _SPAN_ID_PATTERN = re.compile(r"^[0-9a-f]{16}$")
 _NANO_PATTERN = re.compile(r"^\d{1,19}$")
+
+
+def summary_tree_payload(value: Any) -> Any:
+    """Encode nanoseconds as decimal strings before a browser can round them."""
+    if isinstance(value, dict):
+        return {key: str(item) if key in {"start_ts_ns", "end_ts_ns", "time_ns", "sent_ts_ns"}
+                and isinstance(item, int) else summary_tree_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [summary_tree_payload(item) for item in value]
+    return value
 
 
 class DiagnosisStatus(StrEnum):
@@ -50,6 +60,7 @@ class StageStatus(StrEnum):
     COMPLETED = "completed"
     FAILED = "failed"
     SKIPPED = "skipped"
+    DEGRADED = "degraded"
 
 
 class ModeProfile(StrEnum):
@@ -303,6 +314,11 @@ class DiagnosisRecord(DiagnosisSummary):
     ttse_trigger: dict[str, TtseTriggerResult] = Field(default_factory=dict)
     error: DiagnosisError | None = None
     reward: dict[str, Any] | None = None
+    summary_tree: dict[str, Any] | None = None
+
+    @field_serializer("summary_tree", when_used="json")
+    def _summary_tree_wire(self, value: Any) -> Any:
+        return summary_tree_payload(value)
 
     def to_summary(self) -> DiagnosisSummary:
         """Return the list-endpoint projection of this record."""
@@ -333,10 +349,11 @@ class DiagnosisProgressEvent(_Model):
         "reward",
         "reward_failure_causes",
         "evolution_judge",
+        "trajectory_summary",
     ]
     title: str | None = None
     text_delta: str | None = None
-    status: Literal["completed", "failed", "skipped"] | None = None
+    status: Literal["completed", "degraded", "failed", "skipped"] | None = None
     summary: str | None = None
     skip_reason: str | None = None
     elapsed_ms: int | None = None
@@ -345,6 +362,11 @@ class DiagnosisProgressEvent(_Model):
     # Whole-table replacement events: every item known so far.
     reward_failure_causes: list[RewardFailureCause] | None = None
     evolution_judge: list[EvolutionJudge] | None = None
+    summary_tree: dict[str, Any] | None = None
+
+    @field_serializer("summary_tree", when_used="json")
+    def _summary_tree_wire(self, value: Any) -> Any:
+        return summary_tree_payload(value)
 
 
 class DiagnosisStatusEvent(_Model):

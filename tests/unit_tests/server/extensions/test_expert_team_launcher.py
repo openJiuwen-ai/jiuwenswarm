@@ -98,9 +98,9 @@ async def test_organization_stream_keeps_round_id_through_web_gateway(source: st
     """Transport frames stay unique while browser chunks share one request boundary."""
     import json
 
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
-    from gateway.channel_manager.web.web_connect import WebChannel
-    from gateway.message_handler.message_handler import MessageHandler
+    from e2a.wire_codec import parse_agent_server_wire_chunk
+    from agent_gateway.channel_manager.web.web_connect import WebChannel
+    from agent_gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
     transport = SimpleNamespace(send_push=AsyncMock(return_value=True))
@@ -128,6 +128,90 @@ async def test_organization_stream_keeps_round_id_through_web_gateway(source: st
     assert {event["request_id"] for event in events} == {"org-round"}
     assert "".join(event["content"] for event in events[:-1]) == events[-1]["content"]
     assert all(event["role"] == role and event["member_name"] == "analyst" for event in events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "is_group", "event_type", "recorded"),
+    [
+        ("org_expert_direct", False, "chat.final", True),
+        ("org_expert_background", True, "chat.final", True),
+        ("org_root_background", True, "chat.tool_call", True),
+        ("org_expert_background", False, "chat.final", True),
+        ("org_summary_background", True, "chat.delta", False),
+    ],
+)
+async def test_group_background_replies_are_written_to_session_history(
+    monkeypatch, source, is_group, event_type, recorded
+):
+    history = []
+
+    def append_history_record(**kwargs):
+        history.append(kwargs)
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.team_helpers.append_history_record",
+        append_history_record,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.group_service.read_group",
+        lambda group_id: {"group_id": group_id} if is_group else None,
+    )
+    transport = SimpleNamespace(send_push=AsyncMock(return_value=True))
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=SimpleNamespace())
+    launcher._get_push_transport = lambda: transport
+
+    delivered = await launcher.push_expert_payload(
+        {"event_type": event_type, "content": "可行性报告"},
+        team_id="org-expert-owner",
+        session_id="web-group",
+        channel_id="web",
+        round_id="org-round",
+        frame_sequence=1,
+        source=source,
+    )
+
+    assert delivered is True
+    assert bool(history) is recorded
+    if recorded:
+        assert history[0]["session_id"] == "web-group"
+        assert history[0]["event_type"] == event_type
+        assert history[0]["mode"] == "team"
+
+
+@pytest.mark.asyncio
+async def test_group_reply_is_stored_when_no_browser_is_attached(monkeypatch):
+    history = []
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.team_helpers.append_history_record",
+        lambda **kwargs: history.append(kwargs),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.group_service.read_group",
+        lambda group_id: {
+            "group_id": group_id,
+            "organization_teams": [
+                {"team_id": "org-expert-owner", "role": "owner"},
+            ],
+        },
+    )
+    transport = SimpleNamespace(send_push=AsyncMock(return_value=False))
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=SimpleNamespace())
+    launcher._get_push_transport = lambda: transport
+
+    delivered = await launcher.push_expert_payload(
+        {"event_type": "chat.final", "content": "可行性报告"},
+        team_id="org-expert-owner",
+        session_id="web-group",
+        channel_id="web",
+        round_id="org-round",
+        frame_sequence=2,
+        source="org_root_background",
+    )
+
+    assert delivered is False
+    assert history and history[0]["content"] == "可行性报告"
+    assert history[0]["extra"]["swarm_group_owner"] is True
 
 
 @pytest.mark.asyncio
@@ -275,6 +359,13 @@ def agent_group_loader(monkeypatch: pytest.MonkeyPatch, tmp_path):
         assert path == package_dir
         return package
 
+    def locate(name):
+        return SimpleNamespace(name=name, path=_resolve(name))
+
+    monkeypatch.setattr(
+        "openjiuwen.agent_teams.experts.catalog._process_catalog",
+        SimpleNamespace(locate_group=AsyncMock(side_effect=locate)),
+    )
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.extension_package_manager.resolve_agent_group_dir",
         _resolve,
@@ -332,8 +423,9 @@ async def test_expert_spec_snapshots_group_name_without_changing_team_alias(monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("explicit_team_id", [None, "org-expert-specified"])
 async def test_launch_creates_resolvable_team(
-    monkeypatch: pytest.MonkeyPatch, agent_group_loader
+    monkeypatch: pytest.MonkeyPatch, agent_group_loader, explicit_team_id,
 ) -> None:
     shared_db = _FakeDb()
     runtime = _FakeRuntime(shared_db)
@@ -349,10 +441,14 @@ async def test_launch_creates_resolvable_team(
         agent_group_name="sample-expert-group",
         session_id="sess-1",
         display_name="Sample",
+        team_id=explicit_team_id,
     )
 
     assert launched.team_id.startswith("org-expert-")
-    assert len(launched.team_id.removeprefix("org-expert-")) == 12
+    if explicit_team_id is None:
+        assert len(launched.team_id.removeprefix("org-expert-")) == 12
+    else:
+        assert launched.team_id == explicit_team_id
     assert launched.agent_group_name == "sample-expert-group"
     from jiuwenswarm.server.runtime.team_organization_identity_store import load_organization_team_identity
 
@@ -566,6 +662,58 @@ def test_verify_shared_database_rejects_mismatched_task_manager_db() -> None:
 
 
 @pytest.mark.asyncio
+async def test_organization_turn_rejects_group_outside_current_expansion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from openjiuwen.agent_teams.runtime.pool import RuntimeState
+
+    streamed: list[object] = []
+    interacted: list[object] = []
+
+    class _Agent:
+        spec = SimpleNamespace(metadata={
+            "expert_team": True,
+            "agent_group_name": "finance",
+            "channel_id": "web",
+        })
+
+        async def stream(self, inputs, session):
+            streamed.append(inputs)
+            yield SimpleNamespace(payload={"event_type": "chat.final"})
+
+    entry = SimpleNamespace(
+        agent=_Agent(),
+        current_session_id="sess-1",
+        state=RuntimeState.PAUSED,
+    )
+
+    class _Pool:
+        async def get(self, team_id):
+            assert team_id == "expert"
+            return entry
+
+    async def interact(*_args, **kwargs):
+        interacted.append(kwargs)
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.organization_packages.team_package_availability",
+        lambda *_args, **_kwargs: {"available": True, "agent_group_name": "finance"},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.enterprise.capabilities.experts.request_packages.allows",
+        lambda kind, package_id: False,
+    )
+    launcher = JiuwenExpertTeamLauncher(
+        runtime_manager=SimpleNamespace(pool=_Pool(), interact=interact)
+    )
+
+    assert await launcher.run_organization_turn("expert", "sess-1", {"query": "next"}) is False
+    assert streamed == []
+    assert interacted == []
+
+
+@pytest.mark.asyncio
 async def test_run_organization_turn_falls_back_for_owner_team() -> None:
     """Non-expert (owner) teams must use the default org runner, not return False."""
     from openjiuwen.agent_teams.runtime.pool import RuntimeState
@@ -625,6 +773,69 @@ async def test_launch_reflects_metadata_capabilities_from_build(
         session_id="sess-1",
     )
     assert launched.capabilities == ("finance", "risk")
+
+
+@pytest.mark.asyncio
+async def test_build_preserves_bootstrap_capabilities_after_swarm_enrichment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+    from jiuwenswarm.agents.swarm import assembly
+
+    monkeypatch.setattr(
+        TeamManager,
+        "load_default_team_spec",
+        lambda _session_id: _FakeSpec("default"),
+    )
+
+    def _fake_enrich(spec, **_kwargs):
+        spec.metadata = {**spec.metadata, "capabilities": ["finance"]}
+
+    monkeypatch.setattr(assembly, "enrich_team_spec_for_swarm", _fake_enrich)
+    launcher = JiuwenExpertTeamLauncher(runtime_manager=SimpleNamespace())
+
+    spec = await launcher._build_enriched_spec(
+        team_id="expert-team",
+        session_id="sess-1",
+        agent_group_name="finance-group",
+        agent_group_package=SimpleNamespace(capabilities=["finance"]),
+        display_name=None,
+        extra_capabilities=["group-member:business", "group-coordination"],
+    )
+
+    assert spec.metadata["capabilities"] == [
+        "finance",
+        "group-member:business",
+        "group-coordination",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("group_policy", [False, True])
+async def test_group_lifecycle_rail_is_an_opt_in_leader_spec(monkeypatch, group_policy):
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+    from jiuwenswarm.agents.swarm import assembly
+    from jiuwenswarm.agents.swarm.group_org_lifecycle import organization_lifecycle_spec, POLICY
+    from openjiuwen.harness.schema.deep_agent_spec import RailSpec
+
+    monkeypatch.setattr(TeamManager, "load_default_team_spec", lambda _: _FakeSpec("default"))
+
+    def _enrich(spec, **_kwargs):
+        spec.agents = {
+            "leader": SimpleNamespace(rails=[RailSpec(type="existing-leader")]),
+            "worker": SimpleNamespace(rails=[RailSpec(type="existing-worker")]),
+        }
+
+    monkeypatch.setattr(assembly, "enrich_team_spec_for_swarm", _enrich)
+    spec = await JiuwenExpertTeamLauncher()._build_enriched_spec(
+        team_id="finance", session_id="group", agent_group_name="finance-group",
+        agent_group_package=SimpleNamespace(capabilities=["finance"]), display_name=None,
+        leader_rails=[organization_lifecycle_spec("finance")] if group_policy else None,
+    )
+    assert [rail.type for rail in spec.agents["leader"].rails] == (
+        ["existing-leader", POLICY] if group_policy else ["existing-leader"]
+    )
+    assert [rail.type for rail in spec.agents["worker"].rails] == ["existing-worker"]
 
 
 @pytest.mark.asyncio
@@ -777,9 +988,9 @@ async def test_org_turn_closes_only_owner_processing(
     from openjiuwen.agent_teams.runtime.dispatch import RunActionKind
     from openjiuwen.agent_teams.runtime.pool import RuntimeState
 
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
-    from gateway.channel_manager.web.web_connect import WebChannel
-    from gateway.message_handler.message_handler import MessageHandler
+    from e2a.wire_codec import parse_agent_server_wire_chunk
+    from agent_gateway.channel_manager.web.web_connect import WebChannel
+    from agent_gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
     from jiuwenswarm.server.runtime.session import session_metadata
 
@@ -858,9 +1069,9 @@ async def test_summary_turn_closes_reasoning_after_an_earlier_final(ending):
     from openjiuwen.agent_teams.runtime.dispatch import RunActionKind
     from openjiuwen.agent_teams.runtime.pool import RuntimeState
 
-    from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
-    from gateway.channel_manager.web.web_connect import WebChannel
-    from gateway.message_handler.message_handler import MessageHandler
+    from e2a.wire_codec import parse_agent_server_wire_chunk
+    from agent_gateway.channel_manager.web.web_connect import WebChannel
+    from agent_gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
     class Agent:

@@ -152,6 +152,9 @@ def _apply_enterprise_policy(base: dict, loaded: Any) -> dict:
         merge_memory_config_into_config,
     )
     from jiuwenswarm.common.mcp_dynamic_token_patch import apply_dispatched_credentials
+    from jiuwenswarm.enterprise.config.effective.apply_advanced_config import (
+        apply_enterprise_advanced_config_to_config,
+    )
     from jiuwenswarm.enterprise.config.effective.apply_permissions import (
         apply_enterprise_permissions_to_config,
     )
@@ -162,6 +165,8 @@ def _apply_enterprise_policy(base: dict, loaded: Any) -> dict:
     apply_dispatched_credentials(loaded)
     merged = merge_memory_config_into_config(merged)
     merged, _ = apply_enterprise_permissions_to_config(merged, loaded)
+    # advanced_config（含 a4p_enabled）→ config.a4p.enabled 等
+    merged, _ = apply_enterprise_advanced_config_to_config(merged, loaded)
     return merged
 
 
@@ -186,6 +191,16 @@ class DefaultConfigProvider:
             load_effective_enterprise_config,
         )
 
+        # Execution owns memory caches. Read persisted values here so a fresh
+        # worker (or one without Runtime refresh notifications) does not depend
+        # on Gateway startup or a shared Python process to populate them.
+        try:
+            await self._refresh_memory_configs()
+        except Exception:
+            logger.warning(
+                "memory configuration refresh failed; keeping last applied values",
+                exc_info=True,
+            )
         loaded = (
             await load_effective_enterprise_config(
                 ctx.request, DEFAULT_AGENT_LOAD_SLOTS
@@ -203,15 +218,18 @@ class DefaultConfigProvider:
             from jiuwenswarm.enterprise.config.effective import (
                 invalidate_enterprise_config_caches,
             )
-            from jiuwenswarm.agents.harness.common.memory.config import (
-                reload_memory_config_from_gateway_db,
-                reload_task_memory_config_from_gateway_db,
-            )
-
             invalidate_enterprise_config_caches()
-            await reload_memory_config_from_gateway_db()
-            await reload_task_memory_config_from_gateway_db()
-            return
+            await self._refresh_memory_configs()
+
+    @staticmethod
+    async def _refresh_memory_configs() -> None:
+        from jiuwenswarm.agents.harness.common.memory.config import (
+            reload_memory_config_from_gateway_db,
+            reload_task_memory_config_from_gateway_db,
+        )
+
+        await reload_memory_config_from_gateway_db()
+        await reload_task_memory_config_from_gateway_db()
 
 
 _DEFAULT_PROVIDER = DefaultConfigProvider()

@@ -13,6 +13,7 @@ export interface ModelMeta {
   // agentos 备份模型标记：与 defaults 并列可选可切换，但不抢启动默认
   is_agentos?: boolean;
   reasoning_level?: string;
+  vendor_key?: string;
 }
 
 export interface ModelListPayload {

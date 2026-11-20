@@ -9,12 +9,15 @@ pause resumes the message.
 from __future__ import annotations
 
 import asyncio
+from unittest.mock import AsyncMock
 
 import pytest
+from agent_gateway.common.interrupt_resume import CLIENT_TOOL_INTERRUPT_SOURCE
 
 from jiuwenswarm.agents.harness.code.rails.heartbeat.execution import SessionRunAdmission
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.runtime.client_tools import ClientToolAnswerMismatch
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.runtime.session import RuntimeSessionCoordinator, SessionPersistencePolicy, SessionWorkKind
 from jiuwenswarm.runtime.session.model import NoControlTargetError
@@ -25,7 +28,6 @@ from jiuwenswarm.server.runtime.session.session_message_store import SessionMess
 from tests.unit_tests.agentserver.test_session_messaging import _enqueue, _metadata
 from tests.unit_tests.runtime.test_runtime_service import FakeAgent, FakeAgentManager, FakePlanController
 from jiuwenswarm.runtime.service import AgentRuntime
-from unittest.mock import AsyncMock
 
 QUESTIONS = ("question-1", "question-2")
 
@@ -206,6 +208,59 @@ async def test_a_refused_second_answer_leaves_the_message_with_the_answer_that_r
     await asyncio.wait_for(first, 2)
     with pytest.raises(NoControlTargetError):
         await asyncio.wait_for(second, 2)
+
+    message = store.get(queued.message_id)
+    assert (message.status, message.interrupt_request_id) == ("waiting_user", "question-3")
+    assert coordinator.has_control_target("target-1", "question-3")
+    await service.stop()
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("again", ["results", "client_gone"])
+async def test_the_same_client_results_sent_again_leave_the_message_with_the_first_delivery(
+    tmp_path, monkeypatch, again,
+) -> None:
+    store, service = await _service(tmp_path)
+    queued, _ = _enqueue(store, key=f"client-twice-{again}")
+    store.claim(queued.message_id, "execution-1", "run-1")
+    store.mark_waiting(queued.message_id, interrupt_request_id="call-1", interrupt_source=CLIENT_TOOL_INTERRUPT_SOURCE)
+    agent = _FollowUpAgent()
+    coordinator = RuntimeSessionCoordinator()
+    runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=AsyncMock(),
+                           plan_controller=FakePlanController(), session_coordinator=coordinator)
+    await coordinator.register_session("target-1", "web", SessionPersistencePolicy.PERSISTENT)
+    turn_id = f"session-message-{queued.message_id}"
+
+    async def mailbox_turn() -> None:
+        coordinator.bind_agent("target-1", turn_id, agent)
+
+    await coordinator.run_unary("target-1", turn_id, SessionWorkKind.SESSION_MESSAGE, mailbox_turn,
+                                interaction_ids=lambda _: frozenset({"call-1"}))
+    server = _server(service, runtime)
+    server._session_stream_tasks = {}
+    server._send_runtime_event = AsyncMock(return_value=True)
+    monkeypatch.setattr(agent_ws_server_module, "enqueue_history_request_completion", lambda *a, **k: None)
+
+    def results(request_id: str) -> AgentRequest:
+        return AgentRequest(
+            request_id=request_id, channel_id="web", session_id="target-1", req_method=ReqMethod.CHAT_SEND,
+            is_stream=True, params={"source": CLIENT_TOOL_INTERRUPT_SOURCE, "mode": "agent", "answers": [{
+                "interrupt_id": "interrupt-1", "request_id": "call-1",
+                "result": {"content": [{"type": "text", "text": "page"}], "is_error": False}}]},
+        )
+
+    first = asyncio.create_task(server._handle_stream_impl(object(), results("results-1"), asyncio.Lock()))
+    await asyncio.wait_for(agent.delivering.wait(), 2)
+    with pytest.raises(ClientToolAnswerMismatch):
+        if again == "results":
+            await asyncio.wait_for(server._handle_stream_impl(object(), results("results-2"), asyncio.Lock()), 2)
+        else:  # no client stayed attached meanwhile: its call is answered as gone
+            call = {"event_type": "chat.client_tool_request", "request_id": "call-1", "interrupt_id": "interrupt-1",
+                    "source": CLIENT_TOOL_INTERRUPT_SOURCE, "tool_name": "read_page", "client_tool": {"input": {}}}
+            await server._answer_calls_no_client_runs("target-1", "web", "user-1", [call])
+    agent.release.set()
+    await asyncio.wait_for(first, 2)
 
     message = store.get(queued.message_id)
     assert (message.status, message.interrupt_request_id) == ("waiting_user", "question-3")

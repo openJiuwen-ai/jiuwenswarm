@@ -64,7 +64,7 @@ def _interaction(card):
 def _answer(card, *, approved: bool = True) -> InteractiveInput:
     incoming = InteractiveInput()
     incoming.update(
-        card.key.invocation_id,
+        card.key.tool_call_id,
         {
             "approved": approved,
             "auto_confirm": False,
@@ -176,8 +176,8 @@ def test_non_head_multi_and_foreign_answers_fail_closed() -> None:
 
     multiple = _answer(first)
     multiple.update(
-        second.key.invocation_id,
-        dict(_answer(second).user_inputs[second.key.invocation_id]),
+        second.key.tool_call_id,
+        dict(_answer(second).user_inputs[second.key.tool_call_id]),
     )
     with pytest.raises(RootPermissionQueueError, match="one_answer_required"):
         queue.reserve_answer("root-session", multiple)
@@ -564,3 +564,26 @@ def test_finish_active_cannot_consume_pending_or_resuming_cards() -> None:
 
     assert queue.finish_active(answer.card.key) is False
     assert queue.get(answer.card.key) == answer.card
+
+
+def test_a_snapshot_with_client_tool_calls_beside_cards_projects_the_head_card() -> None:
+    from openjiuwen.core.single_agent.interrupt import ClientToolRequest
+
+    queue = RootPermissionQueue(id_factory=lambda: "invocation-1")
+    pending = _pending(queue, "call-1")
+    snapshot = queue.reconcile(
+        {
+            "result_type": "interrupt",
+            "interrupt_ids": ["read-1", "call-1"],
+            "state": [
+                {"id": "read-1", "value": ClientToolRequest(tool_name="read_page", client_request={"input": {}})},
+                _interaction(pending),
+            ],
+        },
+        root_session_id="root-session",
+    )
+
+    # The client answers its calls apart; the card is the head the user answers.
+    assert [card.key for card in snapshot.cards] == [pending.key]
+    assert snapshot.interactions[0]["id"] == "call-1"
+    queue.raise_if_quarantined("root-session")

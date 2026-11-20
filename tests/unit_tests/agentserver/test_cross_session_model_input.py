@@ -13,7 +13,7 @@ from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ModelCa
 from openjiuwen.core.single_agent.rail.base import AgentCallbackEvent
 from openjiuwen.core.single_agent.agent_callback_manager import AgentCallbackManager
 
-from gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from agent_gateway.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 from jiuwenswarm.server.runtime.agent_adapter.session_input import (
     QueuedSessionInput, SessionInputDeliveryUnknown, SessionInputGuard,
 )

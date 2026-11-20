@@ -278,6 +278,7 @@ for (const cardId of ["card-1", "card-2", "card-3"]) {
     payload: {
       request_id: `request-${cardId}`,
       source: "permission_interrupt",
+      interrupt_id: `intr-${cardId}`,
       questions: [
         {
           header: "Permission",
@@ -294,12 +295,31 @@ assert.deepEqual(
   ["card-1", "card-2", "card-3"],
 );
 assert.deepEqual(
+  capturedPermissionQuestions.map((pending) => pending.interruptId),
+  ["intr-card-1", "intr-card-2", "intr-card-3"],
+);
+assert.deepEqual(
   bindPermissionCardAnswer(
     [{ selected_options: ["本次允许"] }],
     capturedPermissionQuestions[1].questions,
   ),
   [{ selected_options: ["本次允许"], card_id: "card-2" }],
 );
+
+for (const size of [128, 129, 512, 513]) {
+  const callId = "c".repeat(size);
+  handleIncomingFrame(permissionDelegate, {
+    event: "chat.ask_user_question",
+    payload: {
+      request_id: callId, source: "permission_interrupt",
+      questions: [{ header: "Permission", question: "Continue?", options: [], card_id: callId }],
+    },
+  });
+  const pending = capturedPermissionQuestions.at(-1);
+  assert.equal(pending.questions[0]?.cardId, size <= 512 ? callId : undefined);
+  assert.deepEqual(bindPermissionCardAnswer([{ selected_options: ["allow_once"] }], pending.questions),
+    size <= 512 ? [{ selected_options: ["allow_once"], card_id: callId }] : []);
+}
 
 const narrowQuestionTitle =
   "[Redis 方案] Redis 接入有三种方案，范围和依赖递增。请根据当前项目选择。";

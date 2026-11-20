@@ -10,6 +10,11 @@ import httpx
 import pytest
 from fastapi import FastAPI
 from minio.error import S3Error
+from agent_gateway.channel_manager.web.enterprise_files import (
+    register_enterprise_file_routes,
+    serve_presigned_download,
+)
+from starlette.requests import Request
 
 from jiuwenswarm.agents.harness.common.tools.obs_file_delivery import (
     build_object_file_download_info,
@@ -22,11 +27,6 @@ from jiuwenswarm.agents.harness.common.tools.web_file_download import (
 )
 from jiuwenswarm.common.obs_files import AttachmentStore, DOWNLOAD_TTL_SECONDS
 from jiuwenswarm.common.utils import build_tenant_key
-from gateway.channel_manager.web.enterprise_files import (
-    register_enterprise_file_routes,
-    serve_presigned_download,
-)
-from starlette.requests import Request
 from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
 
 
@@ -117,7 +117,7 @@ class ObjectClient:
 
     def signed_request(self, method, url, *, headers=None, redirect, preload_content):
         headers = headers or {}
-        from gateway.channel_manager.web.container_file_http import _parse_single_byte_range
+        from agent_gateway.channel_manager.web.container_file_http import _parse_single_byte_range
 
         assert method == "GET" and not redirect and not preload_content
         status, response_headers = 200, {}
@@ -209,7 +209,7 @@ def delivery(tmp_path, monkeypatch):
     store = AttachmentStore(client, "bucket", "http://obs")
     monkeypatch.setattr(AttachmentStore, "from_env", lambda: store)
     monkeypatch.setattr(
-        "gateway.channel_manager.web.enterprise_files._obs_http_client",
+        "agent_gateway.channel_manager.web.enterprise_files._obs_http_client",
         lambda: SimpleNamespace(request=client.signed_request, clear=Mock()),
     )
     monkeypatch.setattr(
@@ -259,6 +259,12 @@ async def test_gateway_reads_obs_without_agent_or_snapshot(delivery):
         url = delivery.info["download_url"]
         full = await client.get(url)
         assert full.status_code == 200 and full.content == b"workspace file\n"
+        assert full.headers["content-disposition"].startswith("attachment")
+        inline = await client.get(url + "&inline=1")
+        assert inline.status_code == 200 and inline.content == b"workspace file\n"
+        assert inline.headers["content-disposition"].startswith("attachment")
+        assert inline.headers["content-security-policy"] == "sandbox"
+        assert inline.headers["x-content-type-options"] == "nosniff"
         assert delivery.client.closed and delivery.client.released
         count = len(delivery.client.reads)
         head = await client.head(url)
@@ -402,7 +408,7 @@ async def test_proxy_releases_connection_when_close_raises(delivery, monkeypatch
 async def test_proxy_does_not_follow_redirects_or_expose_upstream_errors(delivery, monkeypatch, status):
     response = Mock(status=status, headers={"Location": "http://untrusted/"})
     pool = Mock(request=Mock(return_value=response))
-    monkeypatch.setattr("gateway.channel_manager.web.enterprise_files._obs_http_client", lambda: pool)
+    monkeypatch.setattr("agent_gateway.channel_manager.web.enterprise_files._obs_http_client", lambda: pool)
     result = await serve_presigned_download(
         Request({"type": "http", "method": "HEAD", "headers": [], "query_string": b""}),
         delivery.info["url"], delivery.identity,

@@ -26,7 +26,7 @@ Desktop installers are pre-built for a specific platform and architecture. Confi
 | Windows | Windows 10 / 11 (64-bit) | x64 only | **Administrator privileges required** to run the installer (`PrivilegesRequired=admin`) | 2 CPU cores, 4 GB RAM, 2 GB free disk |
 | macOS | macOS 11 (Big Sur) or newer | arm64 (Apple Silicon) only | On first launch, right-click the app in Finder and choose "Open" to pass GateKeeper | 2 CPU cores, 4 GB RAM, 2 GB free disk |
 
-> 💡 **Resources**: The values above are an empirical lower bound for a single-machine local run (Web UI plus at least one model channel). If you also enable browser automation (Playwright), vector retrieval (ChromaDB/FAISS), or connect multiple IM channels, 8 GB+ RAM is recommended. Actual cost is dominated by the configured models and concurrency.
+> 💡 **Resources**: The values above are an empirical lower bound for a single-machine local run (Web UI plus at least one model channel). If you also enable browser automation (Playwright), vector retrieval (ChromaDB), or connect multiple IM channels, 8 GB+ RAM is recommended. Actual cost is dominated by the configured models and concurrency.
 
 ##### Architecture note (macOS)
 
@@ -54,6 +54,8 @@ curl -L --fail -o JiuwenSwarm-<version>.dmg \
   > ⚠️ Only the **64-bit** edition of Windows 10 / 11 is supported; 32-bit systems and earlier Windows versions are not.
 
 On first launch the app creates `~/.jiuwenswarm/`. Then follow [Post-start verification](#3-post-start-verification) to finish model configuration.
+
+> ⚠️ **Desktop-installer users should not run `jiuwenswarm-init` / `jiuwenswarm-start`:** those CLI entry points belong to [Option 2: pip install](#option-2-pip-install). After installing the `.exe` / `.dmg`, start the app from the desktop shortcut or Start menu (the Windows installer already initializes the workspace). Running those commands in a terminal will fail with “not recognized as an internal or external command”.
 
 > Match the version to the actual download link on the Release page. For desktop auto-update behavior (Windows and macOS), see [Desktop auto-update design](WindowsAutoUpdateDesign.md).
 
@@ -131,6 +133,8 @@ pip install workswarm==0.2.5.beta1
 > 📦 **Package rename**: the PyPI package is now `workswarm` (renamed from `jiuwenswarm`). Install with `pip install workswarm` and upgrade with `pip install --upgrade workswarm`. The old `jiuwenswarm` package stays at 0.2.3 and is no longer released from this repository; CLI entry points (`jiuwenswarm-init`, `jiuwenswarm-start`, …) and the `~/.jiuwenswarm` config directory are unchanged.
 
 #### 2. First launch
+
+> Applies to **pip / source installs only**. If you installed via the desktop `.exe` / `.dmg`, go back to [Option 1](#option-1-desktop-installer-dmg--exe) and launch from the GUI.
 
 ```bash
 # Initialize JiuwenSwarm (first run)

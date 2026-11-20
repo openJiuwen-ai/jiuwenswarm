@@ -2,7 +2,7 @@
 
 """转发别名：实现已迁 ``gateway.common.client.third_agent``。"""
 
-from gateway.common.client.third_agent import (  # noqa: F401
+from agent_gateway.common.client.third_agent import (  # noqa: F401
     ThirdAgent,
     UnsupportedThirdAgent,
     get_unsupported_third_agent,

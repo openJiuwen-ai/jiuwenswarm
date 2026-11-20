@@ -5,17 +5,38 @@ import { useTranslation } from 'react-i18next';
 import type { TrajectoryTimeRange } from '../trajectory/timeline';
 import {
   axisTicks,
-  formatAxisClock,
+  formatUserTurnClock,
+  placeUserTurnAxisEdges,
+  resolveSelectionWallMs,
+  userTurnGapHalfAxisMs,
+  type SharedTurnAxisRange,
   type WallClockDomain,
 } from './diagnosisTimeSelection';
 import css from './SharedTimeAxis.module.css';
 
 const MINIMUM_DRAG_PX = 4;
 const LABEL_GAP_PX = 8;
-const LABEL_CHAR_PX = 8;
+const LABEL_CHAR_PX = 7;
+
+/** @deprecated Prefer `SharedTurnAxisRange`; kept as an alias for call sites. */
+export type SharedAxisTurnMarker = SharedTurnAxisRange;
 
 function textWidth(text: string): number {
-  return Math.max(LABEL_CHAR_PX, text.length * LABEL_CHAR_PX);
+  let max = 0;
+  for (const line of text.split('\n')) {
+    max = Math.max(max, line.length * LABEL_CHAR_PX);
+  }
+  return Math.max(LABEL_CHAR_PX, max);
+}
+
+/** Collapse a narrow selection into one two-line label above the brush. */
+function formatCombinedSelectionLabel(startLabel: string, endLabel: string): string {
+  const [startDate, startTime = ''] = startLabel.split('\n');
+  const [endDate, endTime = ''] = endLabel.split('\n');
+  if (startDate === endDate) {
+    return `${startDate}\n${startTime} – ${endTime}`;
+  }
+  return `${startDate} ${startTime}\n– ${endDate} ${endTime}`;
 }
 
 interface PlacedSelectionLabels {
@@ -99,7 +120,7 @@ function placeSelectionLabels(input: {
           sLeft = sRight - startW;
         }
       } else {
-        const combined = `${input.startLabel} – ${input.endLabel}`;
+        const combined = formatCombinedSelectionLabel(input.startLabel, input.endLabel);
         const combinedW = textWidth(combined);
         let combinedLeft = (input.startPx + input.endPx) / 2 - combinedW / 2;
         combinedLeft = Math.min(Math.max(combinedLeft, minLeft), Math.max(minLeft, maxRight - combinedW));
@@ -154,6 +175,12 @@ export interface SharedTimeAxisProps {
   onRangeChange: (range: TrajectoryTimeRange | null) => void;
   /** When false the axis is a plain ruler: dragging selects nothing. Defaults to true. */
   selectable?: boolean;
+  /**
+   * user_turn ranges on this axis (usually from the main / leader lane).
+   * Start/end lines and clock labels separate user-prompt interactions; model
+   * `turn` numbers stay on the ledger / projector.
+   */
+  turnMarkers?: readonly SharedTurnAxisRange[];
 }
 
 function clampFraction(value: number): number {
@@ -172,6 +199,7 @@ export function SharedTimeAxis({
   range,
   onRangeChange,
   selectable = true,
+  turnMarkers = [],
 }: SharedTimeAxisProps) {
   const { t } = useTranslation();
   const plotRef = useRef<HTMLDivElement>(null);
@@ -199,11 +227,23 @@ export function SharedTimeAxis({
     : viewport === null ? domain.endMs : Math.min(domain.endMs, viewport.end);
   const duration = Math.max(0, windowEnd - windowStart);
   const visible = draft ?? range;
-  const labelAt = (axisMs: number): string => (
-    formatAxisClock(toWall === undefined ? axisMs : toWall(axisMs))
+  const gapHalfAxisMs = userTurnGapHalfAxisMs(duration);
+  const wallAt = (axisMs: number, role: 'start' | 'end'): number => {
+    if (toWall === undefined) return axisMs;
+    if (turnMarkers.length === 0) return toWall(axisMs);
+    return resolveSelectionWallMs({
+      axisMs,
+      role,
+      turns: turnMarkers,
+      toWall,
+      gapHalfAxisMs,
+    });
+  };
+  const labelAt = (axisMs: number, role: 'start' | 'end' = 'start'): string => (
+    formatUserTurnClock(wallAt(axisMs, role))
   );
-  const boundStartLabel = labelAt(windowStart);
-  const boundEndLabel = labelAt(windowEnd);
+  const boundStartLabel = labelAt(windowStart, 'start');
+  const boundEndLabel = labelAt(windowEnd, 'end');
   const tickMarks = useMemo(() => {
     if (duration <= 0) return [];
     // Skip the endpoints: the bound labels already mark the ends.
@@ -214,6 +254,41 @@ export function SharedTimeAxis({
         fraction: tick.fraction,
       }));
   }, [duration]);
+  const visibleTurnMarks = useMemo(() => {
+    if (duration <= 0 || turnMarkers.length === 0) return [];
+    let firstTurn = Number.POSITIVE_INFINITY;
+    let lastTurn = Number.NEGATIVE_INFINITY;
+    for (const marker of turnMarkers) {
+      firstTurn = Math.min(firstTurn, marker.turn);
+      lastTurn = Math.max(lastTurn, marker.turn);
+    }
+    return placeUserTurnAxisEdges(turnMarkers, duration)
+      .filter(edge => (
+        (edge.displayAxisMs >= windowStart && edge.displayAxisMs <= windowEnd)
+        || (edge.axisMs >= windowStart && edge.axisMs <= windowEnd)
+      ))
+      .map(edge => {
+        const displayAxisMs = Math.min(windowEnd, Math.max(windowStart, edge.displayAxisMs));
+        const fraction = clampFraction((displayAxisMs - windowStart) / duration);
+        const clock = formatUserTurnClock(edge.wallMs);
+        // Domain ends are named above the axis; keep only interior junction clocks below.
+        const atDomainEnds = (
+          (edge.edge === 'start' && edge.turn === firstTurn)
+          || (edge.edge === 'end' && edge.turn === lastTurn)
+        );
+        return {
+          key: `${edge.turn}-${edge.edge}-${edge.axisMs}`,
+          turn: edge.turn,
+          edge: edge.edge,
+          axisMs: edge.axisMs,
+          displayAxisMs,
+          wallMs: edge.wallMs,
+          fraction,
+          clock,
+          showLabel: !atDomainEnds && clock.length > 0,
+        };
+      });
+  }, [duration, turnMarkers, windowEnd, windowStart]);
   // Endpoint labels follow the visible window. The selection's own labels stay
   // on the picked instants, so zooming the window does not rewrite them.
   const selection = visible === null || duration <= 0
@@ -226,8 +301,8 @@ export function SharedTimeAxis({
       const endFraction = (visible.end - windowStart) / duration;
       const left = clampFraction((overlapStart - windowStart) / duration);
       const width = clampFraction((overlapEnd - overlapStart) / duration);
-      const startLabel = labelAt(visible.start);
-      const endLabel = labelAt(visible.end);
+      const startLabel = labelAt(visible.start, 'start');
+      const endLabel = labelAt(visible.end, 'end');
       const placed = placeSelectionLabels({
         startPx: left * plotWidth,
         endPx: (left + width) * plotWidth,
@@ -322,6 +397,22 @@ export function SharedTimeAxis({
               style={{ left: `${tick.fraction * 100}%` }}
               data-testid="trajectory-analysis-time-axis-tick"
             />
+          ))}
+          {visibleTurnMarks.map(mark => (
+            <span
+              key={mark.key}
+              className={css.turnMark}
+              data-turn={mark.turn}
+              data-edge={mark.edge}
+              data-testid="trajectory-analysis-time-axis-turn"
+              title={mark.clock.replace('\n', ' ')}
+              style={{ left: `${mark.fraction * 100}%` }}
+            >
+              <span className={css.turnMarkLine} aria-hidden="true" />
+              {mark.showLabel ? (
+                <span className={css.turnMarkLabel}>{mark.clock}</span>
+              ) : null}
+            </span>
           ))}
           {selection === null ? null : (
             <span

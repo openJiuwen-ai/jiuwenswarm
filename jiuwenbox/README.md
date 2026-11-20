@@ -311,7 +311,7 @@ not enabled.
 | `files` | Empty files created by the server and bound into the sandbox. Same shape as `directories`, with optional `permissions`. |
 | `read_only` | Sandbox-visible paths granted read-only access. These entries do not mount host paths by themselves; pair them with `bind_mounts` / `directories`. |
 | `read_write` | Sandbox-visible paths granted read-write access. Use `directories` or `bind_mounts` to make the paths exist inside the sandbox. |
-| `bind_mounts` | Explicit host-to-sandbox bind mounts with `host_path`, `sandbox_path`, and `mode` (`ro` / `rw`). `host_path` cannot be the literal `"*"`. |
+| `bind_mounts` | Explicit host-to-sandbox bind mounts with `host_path`, `sandbox_path`, and `mode` (`ro` / `rw`). `host_path` cannot be the literal `"*"`. Entries that are absent or unresolvable on the current host (including dangling symlinks) are logged as warnings and skipped instead of failing the sandbox start, so a default list may cover several distro layouts. |
 | `bind_root_entries` | Bind every **first-level** child under `host_root` to `sandbox_path/{name}`. Supports `mode`, `include_hidden` (hidden entries excluded by default), and `exclude` (fnmatch globs). Useful for bulk-mounting immediate children of `/usr` and similar trees. |
 | `device` | Device nodes exposed inside the sandbox with `bwrap --dev-bind`; each item has `host_path` and `sandbox_path`. |
 

@@ -11,8 +11,9 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+from agent_gateway.common.work_mode import is_default_project_id
+
 from jiuwenswarm.common.cron_session import cron_session_matches_job
-from gateway.common.work_mode import is_default_project_id
 from jiuwenswarm.server.runtime.session import lifecycle as lc, project_store
 from jiuwenswarm.server.runtime.session.session_info import to_session_info
 
@@ -733,6 +734,14 @@ class SessionArchiveService:
         payload = dict(session_id=session_id, ok=True, project_id=project_id)
         await asyncio.to_thread(
             lc.complete, "session", session_id, deleted=True, result=payload
+        )
+        # Fixed-format audit line: deletion success is silent otherwise, and
+        # both the live finalizer and the runtime_deleted recovery path
+        # converge here, so every completed delete logs exactly once.
+        logger.info(
+            "session delete completed: session_id=%s project_id=%s",
+            session_id,
+            project_id,
         )
         from jiuwenswarm.server.runtime.recommendation_host import (
             active_recommendation_host,
@@ -1674,6 +1683,8 @@ class SessionArchiveService:
     async def project_batch(
         self, project_id: str, action: str, channel_id: str
     ) -> dict:
+        from jiuwenswarm.server.client_attachments.registry import conversation_app
+
         lc.validate_id(project_id)
         if action not in {"archive", "delete_archived"}:
             raise lc.LifecycleError("BAD_REQUEST", "unknown session batch operation")
@@ -1701,12 +1712,14 @@ class SessionArchiveService:
                 sid = item.session_id
                 meta = item.metadata
                 if action == "archive":
+                    # A client app's conversation stays with its app's client, outside the project.
                     if (
                         item.active
                         and not item.logically_archived
                         and not (
                             meta.get("cron_id")
                             or sid.startswith(("cron_", "heartbeat_"))
+                            or conversation_app(meta) is not None
                         )
                     ):
                         ids.append(sid)
