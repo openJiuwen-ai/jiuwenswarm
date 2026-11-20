@@ -21,10 +21,20 @@ _INVALID_DIRECTORY_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 def _normalize_coding_memory_project_path(
     project_dir: str | PathLike[str],
 ) -> str:
-    """Return the canonical path used to isolate a project's coding memory."""
+    """Return the canonical path used to isolate a project's coding memory.
+
+    The runtime agent manager casefolds ``project_dir`` when deriving its
+    coding-memory rail, while the auto-memory extractor receives the raw
+    client-supplied path.  On case-sensitive filesystems ``os.path.normcase``
+    is a no-op, so without an explicit casefold the two components derive
+    different directory keys and the extractor's writes are rejected by its
+    own sandbox (``Access denied ... outside sandbox``, #6867).  Casefolding
+    here makes both sides converge on one key on every platform.
+    """
     expanded = os.path.expanduser(str(project_dir).strip())
     canonical = os.path.realpath(os.path.abspath(expanded))
     canonical = os.path.normcase(os.path.normpath(canonical))
+    canonical = canonical.casefold()
     return unicodedata.normalize("NFC", canonical)
 
 

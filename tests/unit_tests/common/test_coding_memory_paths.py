@@ -87,6 +87,39 @@ def test_project_prefix_is_limited_by_utf8_bytes(tmp_path: Path) -> None:
     assert len(prefix.encode("utf-8")) <= CODING_MEMORY_PROJECT_NAME_MAX_BYTES
 
 
+def test_mixed_case_path_matches_lowercase_path_on_case_sensitive_fs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A mixed-case project path must map to the same coding-memory key as its
+    lowercase form on case-sensitive filesystems (#6867).
+
+    The runtime agent manager casefolds ``project_dir`` for its coding-memory
+    rail while the extractor receives the original client path.  If the two
+    spellings produce different keys, the extractor writes into a directory
+    outside its sandbox and all memories are silently lost.
+    """
+    realpath = coding_memory_paths.os.path.realpath
+    normcase = coding_memory_paths.os.path.normcase
+
+    def _lower_realpath(path: str) -> str:
+        return realpath(path).casefold()
+
+    def _identity_normcase(path: str) -> str:
+        # Emulate a case-sensitive POSIX filesystem where normcase is a no-op.
+        return path
+
+    monkeypatch.setattr(coding_memory_paths.os.path, "realpath", _lower_realpath)
+    monkeypatch.setattr(coding_memory_paths.os.path, "normcase", _identity_normcase)
+
+    mixed = "/home/user/Work/MyProj"
+    lowercase = mixed.casefold()
+
+    assert resolve_coding_memory_project_name(mixed) == (
+        resolve_coding_memory_project_name(lowercase)
+    )
+
+
 def test_symlink_alias_uses_same_project_key(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
