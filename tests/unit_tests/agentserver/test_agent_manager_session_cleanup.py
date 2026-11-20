@@ -248,6 +248,135 @@ async def test_repeated_tui_projects_do_not_accumulate_root_agents() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cleanup_session_runtime_reclaims_idle_web_project_root() -> None:
+    """issue#6787: web 逐会话项目根在会话清理后必须退役,不能无限累积."""
+    manager = AgentManager()
+    agent = _SessionRuntimeAgent(has_session_runtime=False)
+    agent._jiuwenswarm_agent_project_dir = "/tmp/ws/projects/web_case_1"
+    cache_key = "agent::/tmp/ws/projects/web_case_1"
+    manager.agents["web"] = {cache_key: agent}
+    manager._agent_create_params["web"] = {cache_key: {"mode": "agent"}}
+
+    assert await manager.cleanup_session_runtime(
+        channel_id="web",
+        session_id="web_case_1",
+    )
+
+    assert agent.cleaned_sessions == ["web_case_1"]
+    assert agent.cleaned is True
+    assert "web" not in manager.agents
+    assert "web" not in manager._agent_create_params
+
+
+@pytest.mark.asyncio
+async def test_cleanup_session_runtime_keeps_web_shared_root_cached() -> None:
+    """web 无项目共享键(agent::)每 mode 仅一条,保持常驻避免重建抖动."""
+    manager = AgentManager()
+    agent = _SessionRuntimeAgent(has_session_runtime=False)
+    manager.agents["web"] = {"agent::": agent}
+    manager._agent_create_params["web"] = {"agent::": {"mode": "agent"}}
+
+    assert await manager.cleanup_session_runtime(
+        channel_id="web",
+        session_id="web_case_1",
+    )
+
+    assert agent.cleaned_sessions == ["web_case_1"]
+    assert agent.cleaned is False
+    assert manager.agents["web"]["agent::"] is agent
+
+
+@pytest.mark.asyncio
+async def test_cleanup_session_runtime_keeps_web_project_root_with_other_sessions() -> None:
+    """仍承载其它会话运行时的 web 项目根不得退役."""
+    manager = AgentManager()
+    agent = _SessionRuntimeAgent(has_session_runtime=True)
+    agent._jiuwenswarm_agent_project_dir = "/tmp/ws/projects/web_busy"
+    cache_key = "agent::/tmp/ws/projects/web_busy"
+    manager.agents["web"] = {cache_key: agent}
+    manager._agent_create_params["web"] = {cache_key: {"mode": "agent"}}
+
+    assert await manager.cleanup_session_runtime(
+        channel_id="web",
+        session_id="web_case_1",
+    )
+
+    assert agent.cleaned is False
+    assert manager.agents["web"][cache_key] is agent
+
+
+@pytest.mark.asyncio
+async def test_idle_root_sweep_retires_only_project_roots() -> None:
+    """周期清扫回收全通道空闲逐项目根;共享键与活跃根保留."""
+    manager = AgentManager()
+    idle_project = _SessionRuntimeAgent(has_session_runtime=False)
+    idle_project._jiuwenswarm_agent_project_dir = "/tmp/ws/projects/s1"
+    busy_project = _SessionRuntimeAgent(has_session_runtime=True)
+    busy_project._jiuwenswarm_agent_project_dir = "/tmp/ws/projects/s2"
+    shared = _SessionRuntimeAgent(has_session_runtime=False)
+    manager.agents["web"] = {
+        "agent::/tmp/ws/projects/s1": idle_project,
+        "agent::/tmp/ws/projects/s2": busy_project,
+        "agent::": shared,
+    }
+    manager._agent_create_params["web"] = {
+        "agent::/tmp/ws/projects/s1": {"mode": "agent"},
+        "agent::/tmp/ws/projects/s2": {"mode": "agent"},
+        "agent::": {"mode": "agent"},
+    }
+
+    retired = await manager._sweep_idle_project_roots()
+
+    assert retired == 1
+    assert idle_project.cleaned is True
+    assert busy_project.cleaned is False
+    assert shared.cleaned is False
+    assert manager.agents["web"] == {
+        "agent::/tmp/ws/projects/s2": busy_project,
+        "agent::": shared,
+    }
+    assert set(manager._agent_create_params["web"]) == {
+        "agent::/tmp/ws/projects/s2",
+        "agent::",
+    }
+
+
+@pytest.mark.asyncio
+async def test_idle_root_sweep_triggers_adapter_ttl_eviction_first() -> None:
+    """清扫先触发根自身的 adapter TTL 逐出,否则无流量根永远视为忙(issue#6787)."""
+    manager = AgentManager()
+    agent = _SessionRuntimeAgent(has_session_runtime=True)
+    agent._jiuwenswarm_agent_project_dir = "/tmp/ws/projects/s3"
+    cache_key = "agent::/tmp/ws/projects/s3"
+    evict_calls: list[int] = []
+
+    async def _evict_idle() -> int:
+        evict_calls.append(1)
+        agent._has_session_runtime = False  # TTL eviction freed the adapter
+        return 1
+
+    agent.evict_idle_session_adapters = _evict_idle  # type: ignore[method-assign]
+    manager.agents["web"] = {cache_key: agent}
+    manager._agent_create_params["web"] = {cache_key: {"mode": "agent"}}
+
+    retired = await manager._sweep_idle_project_roots()
+
+    assert retired == 1
+    assert evict_calls == [1]
+    assert agent.cleaned is True
+    assert "web" not in manager.agents
+
+
+def test_idle_root_sweep_disabled_by_zero_interval(monkeypatch) -> None:
+    monkeypatch.setenv("JIUWENSWARM_AGENT_IDLE_ROOT_SWEEP_INTERVAL", "0")
+    manager = AgentManager()
+    manager._ensure_idle_root_sweep_started()
+
+    assert manager._idle_root_sweep_interval == 0
+    assert manager._idle_root_sweep_task is None
+
+
+@pytest.mark.asyncio
 async def test_cleanup_waits_for_borrowed_tui_root_agent() -> None:
     manager = AgentManager()
     agent = _SessionRuntimeAgent(has_session_runtime=False)
@@ -286,7 +415,7 @@ async def test_cleanup_waits_for_borrowed_tui_root_agent() -> None:
     assert agent.cleaned is True
     assert "tui" not in manager.agents
     assert manager._agent_borrowers == {}
-    assert manager._pending_tui_retirements == set()
+    assert manager._pending_idle_retirements == set()
     assert manager._retirement_tasks == {}
 
 
@@ -315,7 +444,7 @@ async def test_cleanup_waits_for_pinned_tui_root_agent() -> None:
     assert agent.cleaned is True
     assert "tui" not in manager.agents
     assert manager._agent_pins == {}
-    assert manager._pending_tui_retirements == set()
+    assert manager._pending_idle_retirements == set()
     assert manager._retirement_tasks == {}
 
 
