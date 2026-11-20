@@ -2814,6 +2814,16 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # 不走 SubagentRail 的 subagent_spawn / task_tool 路径。
         # （agent 模式仍由 interface_deep.py 的 _load_custom_subagents 管理）
 
+        logger.debug(
+            "[JiuwenSwarmCodeAdapter] react.subagents resolved specs=%s",
+            [
+                {
+                    "name": getattr(getattr(spec, "agent_card", None), "name", None),
+                    "max_iterations": getattr(spec, "max_iterations", None),
+                }
+                for spec in subagents
+            ],
+        )
         return subagents or None, False
 
     # ─── Rail 生命周期(mode切换) ───────────────────

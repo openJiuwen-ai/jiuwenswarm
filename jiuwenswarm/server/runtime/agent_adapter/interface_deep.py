@@ -1973,6 +1973,11 @@ def _with_general_purpose_max_iterations(
             changed = True
         else:
             patched.append(spec)
+    logger.debug(
+        "[JiuWenSwarmDeepAdapter] general-purpose max_iterations=%s resolved from react config (patched=%s)",
+        max_iterations,
+        changed,
+    )
     return patched if changed else subagents
 
 
@@ -2243,7 +2248,12 @@ def _build_deep_agent_context_engine_config(
             model_context_windows[selected_model_name] = selected_model_context_window
         supported["model_context_window_tokens"] = model_context_windows
 
-    return ContextEngineConfig.model_validate({**defaults.model_dump(), **supported})
+    built = ContextEngineConfig.model_validate({**defaults.model_dump(), **supported})
+    logger.debug(
+        "[JiuWenSwarmDeepAdapter] effective context_engine_config: %s",
+        built.model_dump(),
+    )
+    return built
 
 
 def _deep_agent_context_engine_config(
@@ -2341,7 +2351,22 @@ def _build_context_processor_rail(config: dict[str, Any]) -> ContextProcessorRai
         if isinstance(round_level_cfg, dict) and round_level_cfg:
             user_processors.append(("RoundLevelCompressor", round_level_cfg))
 
-        user_processors.append(symphony_retrieval_compact_processor_spec())
+        symphony_retrieval_spec = symphony_retrieval_compact_processor_spec()
+        user_processors.append(symphony_retrieval_spec)
+
+        logger.debug(
+            "[JiuWenSwarmDeepAdapter] context processor configs: session_memory=%s "
+            "message_summary_offloader=%s session_memory_compressor=%s "
+            "dialogue_compressor=%s current_round_compressor=%s "
+            "round_level_compressor=%s symphony_retrieval=%s",
+            session_memory_cfg,
+            offloader_cfg,
+            session_memory_compressor_cfg,
+            compressor_cfg,
+            current_round_cfg,
+            round_level_cfg,
+            symphony_retrieval_spec,
+        )
 
         context_rail = ContextProcessorRail(
             processors=user_processors if user_processors else None,
@@ -6901,6 +6926,17 @@ class JiuWenSwarmDeepAdapter:
                 exc_info=True,
             )
 
+        logger.debug(
+            "[JiuWenSwarmDeepAdapter] react.subagents resolved specs=%s general_purpose=%s",
+            [
+                {
+                    "name": getattr(getattr(spec, "agent_card", None), "name", None),
+                    "max_iterations": getattr(spec, "max_iterations", None),
+                }
+                for spec in subagents
+            ],
+            should_add_general_purpose,
+        )
         return subagents or None, should_add_general_purpose
 
     @staticmethod
@@ -7633,7 +7669,7 @@ class JiuWenSwarmDeepAdapter:
             # persist that optimistic snapshot after a transient registration
             # failure. A restored profile remains the authoritative state.
             child.discard_transient_skill_retrieval_session_profile()
-            raise RuntimeError("Requested MCP capability unavailable: " + ", ".join(sorted(failed_names)))
+            logger.warning("[JiuWenSwarmDeepAdapter] MCP capability unavailable, continue without them: %s", ", ".join(sorted(failed_names)))
 
     def _start_mcp_prewarm(self) -> None:
         """后台预热 connected MCP 的进程级连接缓存（仅 web root adapter）。
@@ -12127,11 +12163,12 @@ class JiuWenSwarmDeepAdapter:
         enable_runtime = self._resolve_enable_subagent_runtime(config_base)
         try:
             subagents_cfg = ((config_base or {}).get("react") or {}).get("subagents")
+            cua_agent_enabled = is_cua_agent_enabled(
+                subagents_cfg.get("cua_agent") if isinstance(subagents_cfg, dict) else None
+            )
             subagent_rail = BrowserTaskPromptRail(
                 enable_subagent_runtime=enable_runtime,
-                cua_agent_enabled=is_cua_agent_enabled(
-                    subagents_cfg.get("cua_agent") if isinstance(subagents_cfg, dict) else None
-                ),
+                cua_agent_enabled=cua_agent_enabled,
                 symphony_tasks_enabled=(
                     None if is_team_mode(getattr(self, "_session_instance_mode", "agent"))
                     else lambda: SymphonyToolkit.is_enabled(getattr(self, "_config_base_cache", None) or config_base)
@@ -12139,8 +12176,9 @@ class JiuWenSwarmDeepAdapter:
             )
             logger.info(
                 "[JiuWenSwarmDeepAdapter] SubagentRail create success "
-                "(load-aware browser policy, subagent_runtime=%s)",
+                "(load-aware browser policy, subagent_runtime=%s cua_agent_enabled=%s)",
                 enable_runtime,
+                cua_agent_enabled,
             )
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] SubagentRail create failed: %s", exc)
