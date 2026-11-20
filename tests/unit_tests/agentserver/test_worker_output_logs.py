@@ -60,6 +60,42 @@ def test_failed_archive_keeps_original_output(tmp_path, monkeypatch):
     assert not list(tmp_path.glob("*.tmp"))
 
 
+@pytest.mark.parametrize("repeats", [6, 100])
+def test_utf8_archives_keep_complete_characters_and_recent_bytes(tmp_path, repeats):
+    path = _stderr(tmp_path)
+    payload = ("中🙂文" * repeats).encode("utf-8")
+    path.write_bytes(payload)
+    rotation = output_logs.WorkerLogRotation(path, max_bytes=32, backup_count=2)
+    rotation.rotate()
+    archives = sorted(tmp_path.glob("*.stderr_*.log"))
+    assert len(archives) == 2
+    content = b""
+    for archive in archives:
+        raw = archive.read_bytes()
+        assert 0 < len(raw) <= 32
+        assert raw.decode("utf-8").encode("utf-8") == raw
+        content += raw
+    assert content == payload[-len(content):]
+    if repeats == 6:
+        assert content == payload
+    assert path.read_bytes() == b""
+
+
+def test_archive_names_do_not_overwrite_when_clock_ticks_repeat(tmp_path, monkeypatch):
+    monkeypatch.setattr(output_logs.time, "time_ns", lambda: 123)
+    path = _stderr(tmp_path)
+    payload = b"a" * 16 + b"b" * 16 + b"c" * 16
+    path.write_bytes(payload)
+    rotation = output_logs.WorkerLogRotation(path, max_bytes=16, backup_count=4)
+    rotation.rotate()
+    path.write_bytes(b"d" * 16)
+    rotation.rotate()
+    archives = sorted(tmp_path.glob("*.stderr_*.log"))
+    assert len(archives) == 4
+    assert b"".join(archive.read_bytes() for archive in archives) == payload + b"d" * 16
+    assert path.read_bytes() == b""
+
+
 def test_archive_delete_failure_does_not_stop_rotation(tmp_path, monkeypatch):
     path = _stderr(tmp_path)
     rotation = output_logs.WorkerLogRotation(path, max_bytes=32, backup_count=2)
@@ -150,8 +186,40 @@ def test_retention_enforces_byte_budget_for_old_oversized_logs(tmp_path, monkeyp
     assert latest.read_bytes() == b"recent traceback"
 
 
+@pytest.mark.parametrize("partial_copies", [1, 8])
+def test_retention_prunes_closed_temporary_files_left_by_interrupted_rotation(tmp_path, monkeypatch, partial_copies):
+    monkeypatch.setattr(output_logs, "_active_log_paths", lambda _directory: set())
+    orphan = tmp_path / f"runtime-worker-{'a' * 32}.stderr_20261120_120000_123.tmp"
+    orphan.write_bytes(b"partial archive" * partial_copies)
+    _age(orphan, 100)
+    retained = _stderr(tmp_path)
+    retained.write_bytes(b"recent output")
+    _age(retained, 200)
+    unrelated = tmp_path / "unrelated.tmp"
+    unrelated.write_bytes(b"keep")
+    _age(unrelated)
+    output_logs.prune_worker_logs(tmp_path, max_bytes=32, backup_count=2)
+    assert not orphan.exists()
+    assert retained.read_bytes() == b"recent output"
+    assert unrelated.read_bytes() == b"keep"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows temporary-file sharing")
+def test_retention_protects_an_open_temporary_archive(tmp_path):
+    active = tmp_path / f"runtime-worker-{'a' * 32}.stderr_20261120_120000_123.tmp"
+    with active.open("wb") as stream:
+        stream.write(b"incomplete" * 16)
+        stream.flush()
+        _age(active, 200)
+        output_logs.prune_worker_logs(tmp_path, max_bytes=32, backup_count=2)
+        assert active.exists()
+        stream.write(b" continues")
+    assert active.read_bytes().endswith(b" continues")
+
+
 def test_unknown_process_access_protects_base_logs_but_prunes_archives(tmp_path, monkeypatch):
     monkeypatch.setattr(output_logs, "_active_log_paths", lambda _directory: None)
+    monkeypatch.setattr(output_logs, "_windows_log_is_closed", lambda _path: False)
     bases = []
     archives = []
     for number in range(4):
@@ -170,13 +238,15 @@ def test_unknown_process_access_protects_base_logs_but_prunes_archives(tmp_path,
     assert [path for path in archives if path.exists()] == archives[-2:]
 
 
-def test_retention_protects_another_process_inherited_stderr(tmp_path, monkeypatch):
+@pytest.mark.parametrize("inherited_handle", ["legacy", "append_only"])
+def test_retention_protects_another_process_inherited_stderr(tmp_path, monkeypatch, inherited_handle):
     active = _stderr(tmp_path)
     retired = [_stderr(tmp_path, number) for number in (1, 2, 3)]
     for path in retired:
         path.write_bytes(b"old")
         _age(path)
-    with output_logs.open_worker_stderr(active) as stream:
+    opener = output_logs.open_worker_stderr if inherited_handle == "append_only" else lambda path: path.open("ab")
+    with opener(active) as stream:
         process = subprocess.Popen(
             [sys.executable, "-c", "import os; os.write(2,b'active'); input()"],
             stdin=subprocess.PIPE, stderr=stream,
@@ -205,6 +275,75 @@ def test_retention_protects_another_process_inherited_stderr(tmp_path, monkeypat
         process.wait(timeout=5)
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows delete-sharing protection")
+def test_windows_closed_logs_prune_without_system_process_access(tmp_path, monkeypatch):
+    def inaccessible_processes(_directory):
+        raise AssertionError("Windows retention must not inspect system processes")
+
+    monkeypatch.setattr(output_logs, "_active_log_paths", inaccessible_processes)
+    live = [_stderr(tmp_path, 10), _stderr(tmp_path, 11)]
+    retired = [_stderr(tmp_path, number) for number in range(5)]
+    for number, path in enumerate(retired):
+        path.write_bytes(b"closed traceback")
+        _age(path, 140-number)
+    with live[0].open("ab") as legacy, output_logs.open_worker_stderr(live[1]) as current:
+        legacy.write(b"legacy\n")
+        legacy.flush()
+        current.write(b"current\n")
+        for path in live:
+            _age(path, 200)
+            assert not output_logs._windows_log_is_closed(path)
+        output_logs.prune_worker_logs(tmp_path, max_bytes=32, backup_count=2)
+        assert [path for path in retired if path.exists()] == retired[-2:]
+        assert all(path.exists() for path in live)
+        legacy.write(b"after\n")
+        current.write(b"after\n")
+    assert live[0].read_bytes() == b"legacy\nafter\n"
+    assert live[1].read_bytes() == b"current\nafter\n"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows handle lifecycle")
+def test_windows_sharing_probe_does_not_leak_handles(tmp_path):
+    closed = _stderr(tmp_path)
+    live = _stderr(tmp_path, 1)
+    closed.write_bytes(b"closed")
+    assert output_logs._windows_log_is_closed(closed)
+    with output_logs.open_worker_stderr(live):
+        process = psutil.Process()
+        before = process.num_handles()
+        for _ in range(1000):
+            assert output_logs._windows_log_is_closed(closed)
+            assert not output_logs._windows_log_is_closed(live)
+        assert process.num_handles() <= before + 4
+
+
+@pytest.mark.asyncio
+async def test_slow_retention_does_not_delay_worker_spawn(tmp_path, monkeypatch):
+    from jiuwenswarm.server.supervisor import identity
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_retention(*_args, **_kwargs):
+        entered.set()
+        release.wait(timeout=2)
+
+    monkeypatch.setattr(output_logs, "prune_worker_logs", slow_retention)
+    monkeypatch.setattr(identity, "code_identity", lambda: "0" * 64)
+    monkeypatch.setattr(
+        process_module, "build_worker_command",
+        lambda *_args, **_kwargs: [sys.executable, "-c", "import sys; sys.stdin.buffer.read()"],
+    )
+    process = process_module.WorkerProcess(str(tmp_path / "worker.pipe"), host="127.0.0.1", port=18092)
+    try:
+        await process.spawn()
+        assert not entered.is_set()
+        assert await process.wait(timeout=5) == 0
+    finally:
+        release.set()
+        await process.stop()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("transport", ["resident", "front_loopback"])
 async def test_real_worker_stderr_rotates_without_losing_native_diagnostics(
@@ -224,8 +363,7 @@ for number in range(5):
         time.sleep(0.01)
     assert rotation.path.stat().st_size == 0
 faulthandler.enable()
-faulthandler.dump_traceback_later(0.05)
-time.sleep(0.15)
+faulthandler.dump_traceback(file=sys.stderr, all_threads=True)
 rotation.stop()
 os.write(2, b'native stderr after rotation\\n')
 raise RuntimeError('original exception after rotation')
@@ -248,7 +386,7 @@ raise RuntimeError('original exception after rotation')
         assert all(path.stat().st_size <= 4096 for path in archives)
         stderr = process.stderr_path.read_bytes()
         assert b"\x00" not in stderr
-        assert b"Timeout (" in stderr and b"File " in stderr
+        assert b"Current thread" in stderr and b"File " in stderr
         assert b"native stderr after rotation" in stderr
         assert b"RuntimeError: original exception after rotation" in stderr
         assert not list(process.stderr_path.parent.glob("*.stdout.log"))

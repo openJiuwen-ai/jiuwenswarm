@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import atexit
+import codecs
 import datetime
 import logging
 import os
@@ -12,15 +13,58 @@ import re
 import sys
 import threading
 import time
+from functools import cache
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 logger = logging.getLogger(__name__)
 
 STDERR_LOG_ENV = "JIUWENSWARM_WORKER_STDERR_LOG"
 _LOG_NAME = re.compile(r"runtime-worker-[0-9a-f]{32}\.(?:stderr|stdout)(?:_\d{8}_\d{6}_\d+)?\.log")
+_TEMP_NAME = re.compile(r"runtime-worker-[0-9a-f]{32}\.(?:stderr|stdout)_\d{8}_\d{6}_\d+\.tmp")
 _DUMP_NAME = re.compile(r"supervisor-\d+-\d+\.txt")
 _rotation: WorkerLogRotation | None = None
+
+
+@cache
+def _windows_file_api() -> Any:
+    """Resolve the Windows file API without loading it on POSIX."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateFileW.argtypes = (
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    )
+    kernel.CreateFileW.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel.CloseHandle.restype = wintypes.BOOL
+    return kernel
+
+
+def _windows_log_is_closed(path: Path) -> bool:
+    """Probe delete sharing without deleting or renaming the file.
+
+    Both legacy CRT stderr and our append-only handles deny delete sharing.
+    An inherited handle therefore protects the file even after its Worker
+    exits, without inspecting unrelated or protected system processes.
+    """
+    import ctypes
+
+    kernel = _windows_file_api()
+    delete_access = 0x00010000
+    share_read_write_delete = 0x0001 | 0x0002 | 0x0004
+    open_existing = 3
+    normal_file = 0x0080
+    handle = kernel.CreateFileW(
+        str(path), delete_access, share_read_write_delete,
+        None, open_existing, normal_file, None,
+    )
+    if handle == ctypes.c_void_p(-1).value:
+        return False
+    kernel.CloseHandle(handle)
+    return True
 
 
 def open_worker_stderr(path: Path) -> BinaryIO:
@@ -35,16 +79,8 @@ def open_worker_stderr(path: Path) -> BinaryIO:
 
     import ctypes
     import msvcrt
-    from ctypes import wintypes
 
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.CreateFileW.argtypes = (
-        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
-        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
-    )
-    kernel.CreateFileW.restype = wintypes.HANDLE
-    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
-    kernel.CloseHandle.restype = wintypes.BOOL
+    kernel = _windows_file_api()
     append_data = 0x0004
     read_attributes = 0x0080
     share_read_write = 0x0001 | 0x0002
@@ -126,11 +162,14 @@ def prune_worker_logs(
     """Bound old Worker outputs and Supervisor snapshots in this directory."""
     outputs = []
     dumps = []
+    temporary_outputs = []
     for path in directory.iterdir():
         if path.is_symlink():
             continue
         if _LOG_NAME.fullmatch(path.name):
             kind = outputs
+        elif _TEMP_NAME.fullmatch(path.name):
+            kind = temporary_outputs
         elif _DUMP_NAME.fullmatch(path.name):
             kind = dumps
         else:
@@ -141,17 +180,27 @@ def prune_worker_logs(
             continue
         if path.is_file():
             kind.append((info.st_mtime, info.st_size, path))
-    if len(outputs) > backup_count or sum(item[1] for item in outputs) > max_bytes * backup_count:
-        active = _active_log_paths(directory)
-        outputs = [
-            item for item in outputs
-            if item[2] != protected
-            and (
-                (".stderr_" in item[2].name or ".stdout_" in item[2].name)
-                or (active is not None and os.path.normcase(str(item[2].resolve())) not in active)
-            )
-        ]
-        _prune(outputs, max_bytes=max_bytes, backup_count=backup_count)
+    prune_outputs = len(outputs) > backup_count or sum(item[1] for item in outputs) > max_bytes * backup_count
+    if prune_outputs or temporary_outputs:
+        active = _active_log_paths(directory) if os.name != "nt" else None
+        closed = []
+        abandoned = []
+        for item in outputs + temporary_outputs:
+            path = item[2]
+            if path == protected:
+                continue
+            eligible = abandoned if path.suffix == ".tmp" else closed
+            if path.suffix == ".log" and (".stderr_" in path.name or ".stdout_" in path.name):
+                eligible.append(item)
+            elif os.name == "nt":
+                if _windows_log_is_closed(path):
+                    eligible.append(item)
+            elif active is not None and os.path.normcase(str(path.resolve())) not in active:
+                eligible.append(item)
+        if prune_outputs:
+            _prune(closed, max_bytes=max_bytes, backup_count=backup_count)
+        # An interrupted copy is disposable; keep its complete source log.
+        _prune(abandoned, max_bytes=1, backup_count=0)
     _prune(dumps, max_bytes=max_bytes, backup_count=backup_count)
 
 
@@ -163,12 +212,13 @@ class WorkerLogRotation:
         interval: float = 5.0, retention_interval: float = 60.0,
     ) -> None:
         self.path = path
-        if max_bytes <= 0 or backup_count <= 0 or interval <= 0 or retention_interval <= 0:
-            raise ValueError("Worker log rotation limits and intervals must be positive")
+        if max_bytes < 4 or backup_count <= 0 or interval <= 0 or retention_interval <= 0:
+            raise ValueError("Worker log size must fit a UTF-8 character and other limits must be positive")
         self.max_bytes = max_bytes
         self.backup_count = backup_count
         self._interval = interval
         self._retention_interval = retention_interval
+        self._last_archive_ns = 0
         self._stopped = threading.Event()
         self._thread = threading.Thread(target=self._run, name="worker-stderr-rotation", daemon=True)
 
@@ -187,12 +237,28 @@ class WorkerLogRotation:
         stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d_%H%M%S")
         with self.path.open("r+b", buffering=0) as source:
             size = os.fstat(source.fileno()).st_size
-            remaining = min(size, self.max_bytes * self.backup_count)
+            # Each intermediate UTF-8 boundary can move back by three bytes.
+            # Reserve that space so even an oversized file fits this many archives.
+            budget = self.max_bytes * self.backup_count - 3 * (self.backup_count - 1)
+            remaining = min(size, budget)
             source.seek(size - remaining)
+            if size > remaining:
+                for _ in range(3):
+                    first = source.read(1)
+                    if not first or first[0] & 0xC0 != 0x80:
+                        if first:
+                            source.seek(-1, os.SEEK_CUR)
+                        break
+                    remaining -= 1
             while remaining:
-                archive = self.path.with_name(f"{self.path.stem}_{stamp}_{time.time_ns()}{self.path.suffix}")
+                # Windows wall-clock reads may repeat within one rotation.
+                # Keep the suffix strictly increasing so replace cannot overwrite
+                # an earlier chunk emitted in the same clock tick.
+                self._last_archive_ns = max(time.time_ns(), self._last_archive_ns + 1)
+                archive = self.path.with_name(f"{self.path.stem}_{stamp}_{self._last_archive_ns}{self.path.suffix}")
                 temporary = archive.with_suffix(".tmp")
                 chunk_bytes = min(remaining, self.max_bytes)
+                tail = b""
                 try:
                     with temporary.open("xb") as target:
                         while chunk_bytes:
@@ -200,8 +266,18 @@ class WorkerLogRotation:
                             if not chunk:
                                 raise OSError("Worker stderr changed while archiving")
                             target.write(chunk)
+                            tail = (tail + chunk)[-4:]
                             remaining -= len(chunk)
                             chunk_bytes -= len(chunk)
+                        if remaining:
+                            decoder = codecs.getincrementaldecoder("utf-8")("surrogateescape")
+                            decoder.decode(tail, final=False)
+                            pending = len(decoder.getstate()[0])
+                            if pending:
+                                target.seek(-pending, os.SEEK_CUR)
+                                target.truncate()
+                                source.seek(-pending, os.SEEK_CUR)
+                                remaining += pending
                     temporary.replace(archive)
                     self._prune_archives()
                 finally:
@@ -280,11 +356,3 @@ def start_worker_log_rotation(
     return rotation
 
 
-def cleanup_worker_logs(directory: Path) -> None:
-    """Apply retention on launch too, even if a previous Worker failed to boot."""
-    from jiuwenswarm.common.utils import _LOG_FILE_BACKUP_COUNT, _LOG_FILE_MAX_BYTES
-
-    try:
-        prune_worker_logs(directory, max_bytes=_LOG_FILE_MAX_BYTES, backup_count=_LOG_FILE_BACKUP_COUNT)
-    except Exception:  # noqa: BLE001 - cleanup must not prevent a replacement Worker
-        logger.warning("[Supervisor] old Worker log cleanup failed", exc_info=True)
