@@ -141,3 +141,21 @@ def test_standalone_adx_tool_retains_application_identity_directory(monkeypatch,
     extra = builder._build_adx_extra_params()
     assert extra['workdir'] == str(root)
     assert extra['mounts'] == [{'host_path': str(root), 'target': str(root), 'options': ['rw']}]
+
+
+def test_adx_lifecycle_options_reach_environment_create_params(monkeypatch, tool_workspace):
+    """Idle pause, its checkpoint policy and failover must survive config filtering."""
+    lifecycle = {
+        'idle_action': 'pause',
+        'pause_policy': {'retention': {'kind': 'ttl', 'ttlSeconds': 86400},
+                         'timeoutSeconds': 300, 'storage': 'configured'},
+        'failover': True,
+    }
+    source = {'type': 'adx-environment', 'runtime': 'runsc', 'idle_timeout': 900, **deepcopy(lifecycle)}
+    monkeypatch.setattr(config, 'get_config', lambda: {'sandbox': source})
+    endpoint = config.get_sandbox_endpoint()
+    extra = builder._build_adx_extra_params()
+    assert endpoint['idle_timeout'] == 900
+    for key, value in lifecycle.items():
+        assert endpoint[key] == value
+        assert extra[key] == value

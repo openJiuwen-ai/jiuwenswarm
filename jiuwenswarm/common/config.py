@@ -4226,7 +4226,8 @@ def get_sandbox_endpoint() -> dict[str, Any]:
     }
     if sandbox_type == "adx-environment":
         for key in ("image", "rootfs", "runtime", "workdir", "mounts", "cpu", "cpu_limit",
-                    "memory", "mem_limit", "idle_timeout", "user", "group", "network", "connection",
+                    "memory", "mem_limit", "idle_timeout", "idle_action", "pause_policy", "failover",
+                    "user", "group", "network", "connection",
                     "env", "create_timeout", "schedule_timeout", "endpoint_file", "restart_policy"):
             if key in sandbox:
                 result[key] = sandbox[key]
