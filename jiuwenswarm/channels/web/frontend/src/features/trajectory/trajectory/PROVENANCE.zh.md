@@ -27,3 +27,5 @@ JiuwenSwarm 依据 MIT 许可证复制部分 DSH Trajectory 源码，并且仅�
 `../client/TrajectoryExplorer.tsx` 是 JiuwenSwarm 对这些副本的自有组装。为支持轨迹诊断，它新增可选 props：`highlightStepKeys`、`onTimelineSelectionChange`、`clearSelectionToken`、`timelineRange`、`onTimelineRangeChange`、`sharedTimeDomain`、`mapSharedTime`、`lockTimelineViewport`、`sharedViewport` 与 `onSharedViewportChange`；它们强调时间轴片段，并让各泳道共用一段墙钟选区，不改变源自 DSH 的列表。`lockTimelineViewport` 仅在进入诊断选区时打开，浏览/缩放阶段仍与时长概览一样用手型光标拖拽平移。
 
 `../theme/` 以 `packages/client/ui-theme/src/styles` 的五个 token 样式表为来源，并将作用域限制到轨迹宿主；[`../theme/PROVENANCE.zh.md`](../theme/PROVENANCE.zh.md) 记录源版本和调整。[`../primitives/PROVENANCE.zh.md`](../primitives/PROVENANCE.zh.md) 记录本地复制的 React 基础组件。JiuwenSwarm 在构建或运行时不会解析上游 workspace 包。
+
+Goal 评估隔离：`model.ts` 增加独立评估读模型；`../client/TrajectoryExplorer.tsx` 在执行账本之外挂载宿主自有 `GoalAssessments`，复用 `TrajectoryTable` 查看完整请求。显式标记 goal_assessment 的请求不参与执行输入差分，不修改 DSH 上游源文件。

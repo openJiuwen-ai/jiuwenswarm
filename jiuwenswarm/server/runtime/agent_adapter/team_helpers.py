@@ -4373,11 +4373,21 @@ async def _process_team_message_stream(
         )
         from jiuwenswarm.server.runtime.session.execution_settings import prepare_session_execution
 
-        await prepare_session_execution(
-            session_id,
-            team_spec,
-            params_obj.get("execution_settings") if isinstance(params_obj, dict) else None,
-        )
+        try:
+            await prepare_session_execution(
+                session_id,
+                team_spec,
+                params_obj.get("execution_settings") if isinstance(params_obj, dict) else None,
+            )
+        except ValueError as exc:
+            # Rejected settings are the client's to fix. Running the team
+            # without them would silently drop the requested Git identity.
+            logger.warning("[team] execution settings rejected: session_id=%s error=%s", session_id, exc)
+            yield AgentResponseChunk(
+                request_id=rid, channel_id=channel_id,
+                payload={"event_type": "chat.error", "error": str(exc)}, is_complete=True,
+            )
+            return
         if group_input is not None:
             update_session_metadata(session_id=session_id,
                 conversation_type="group_chat",
@@ -5877,6 +5887,31 @@ async def _consume_stream_with_query(
                             "is_complete": True,
                         },
                     )
+                    terminal_broadcasted = True
+                    continue
+                elif parsed.get("event_type") == "team.goal.blocked":
+                    # Core keeps the resident stream open for later user input.
+                    # End this request's processing state without completing its tasks.
+                    fallback = (
+                        "The leader goal is blocked. Add input to continue."
+                        if str(getattr(team_spec, "language", "cn")) == "en"
+                        else "领导目标已阻塞，请补充输入后继续。"
+                    )
+                    await _deliver({
+                        "event_type": "chat.error",
+                        "error": str(parsed.get("reason") or fallback),
+                        "code": "TEAM_GOAL_BLOCKED",
+                        "session_id": session_id,
+                        "rid": round_id,
+                    })
+                    await _deliver({
+                        "event_type": "chat.processing_status",
+                        "session_id": session_id,
+                        "rid": round_id,
+                        "is_processing": False,
+                        "is_complete": True,
+                        "reason": "team.goal.blocked",
+                    })
                     terminal_broadcasted = True
                     continue
                 elif parsed.get("event_type") == "team.completed":
