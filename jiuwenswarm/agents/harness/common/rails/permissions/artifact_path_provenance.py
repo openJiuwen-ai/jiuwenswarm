@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from collections import OrderedDict
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -35,6 +36,8 @@ from jiuwenswarm.agents.harness.common.workspace_paths import (
     normalize_workspace_root,
     resolve_workspace_path,
 )
+
+logger = logging.getLogger(__name__)
 
 MAX_PENDING_INVOCATIONS = 32
 MAX_ACCEPTED_PATHS = 256
@@ -165,11 +168,11 @@ class SessionArtifactPaths:
                 pending = self._discard_pending(key)
                 if pending is None or not self._eligible(key):
                     return 0
-                if (pending.tool_name != tool_name
-                        or pending.arguments_digest != _arguments_digest(tool_args)
-                        or exception is not None
-                        or not isinstance(result, ToolOutput)
-                        or not _completed_success(result)):
+                if pending.tool_name != tool_name or pending.arguments_digest != _arguments_digest(tool_args):
+                    return 0
+                if exception is not None or not isinstance(result, ToolOutput):
+                    return 0
+                if not _completed_success(result):
                     return 0
                 path = pending.path
                 if self._safe_path(path.as_posix(), must_exist=True) != path:
@@ -195,8 +198,9 @@ class SessionArtifactPaths:
     def _evidence(self, facts: ToolDecisionFacts, root_session_id: str) -> tuple[dict[str, str | bool], ...]:
         """Project related native-write history only to verified local file calls."""
         with self._lock:
-            if (self._closed or not self._host_visible or self._root is None
-                    or not root_session_id or root_session_id != self.root_session_id):
+            if self._closed or not self._host_visible or self._root is None:
+                return ()
+            if not root_session_id or root_session_id != self.root_session_id:
                 return ()
             target = self._native_file_path(facts)
             if target is None:
@@ -212,10 +216,11 @@ class SessionArtifactPaths:
     def _native_file_path(self, facts: ToolDecisionFacts, *, write_only: bool = False) -> Path | None:
         """Use the invocation-local executor proof, never a name-only extraction."""
         capability = facts.capability
-        if (facts.tool_name not in {"read_file", "write_file", "edit_file"}
-                or capability.category != "path" or capability.facts_source != "host_static"
-                or capability.alias_conflict or capability.high_flex
-                or not facts.accesses_known):
+        if facts.tool_name not in {"read_file", "write_file", "edit_file"}:
+            return None
+        if capability.category != "path" or capability.facts_source != "host_static":
+            return None
+        if capability.alias_conflict or capability.high_flex or not facts.accesses_known:
             return None
         access = current_native_path_access(facts.tool_name, facts.untrusted_args)
         if access is None or access.action not in ({"write"} if write_only else {"read", "write"}):
@@ -252,7 +257,7 @@ class SessionArtifactPaths:
                     if pending is not None and pending.lease is lease:
                         self._discard_pending(key)
             except Exception:
-                pass
+                logger.debug("Native write evidence cleanup failed")
 
         task.add_done_callback(cleanup)
         return task, cleanup
@@ -302,7 +307,7 @@ def _arguments_digest(args: Mapping[str, Any]) -> str | None:
         encoded = json.dumps(dict(args), sort_keys=True, ensure_ascii=False,
                              separators=(",", ":"), allow_nan=False).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
-    except (TypeError, ValueError, UnicodeError):
+    except (TypeError, ValueError):
         return None
 
 
@@ -316,10 +321,11 @@ def _completed_success(result: ToolOutput) -> bool:
     for part in parts:
         if ToolResultErrorDetector.has_error(part):
             return False
-        if (part.get("background") is True or part.get("cancelled") is True
-                or part.get("canceled") is True or part.get("timed_out") is True
-                or str(part.get("status", "")).strip().lower() in _UNFINISHED
-                or part.get("is_error") is True or part.get("isError") is True
+        if any(part.get(flag) is True for flag in ("background", "cancelled", "canceled", "timed_out")):
+            return False
+        if str(part.get("status", "")).strip().lower() in _UNFINISHED:
+            return False
+        if (part.get("is_error") is True or part.get("isError") is True
                 or part.get("error") not in (None, "", False)):
             return False
         for field in ("exit_code", "exitCode", "returncode", "return_code"):

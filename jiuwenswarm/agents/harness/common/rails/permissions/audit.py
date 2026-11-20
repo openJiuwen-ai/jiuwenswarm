@@ -54,6 +54,8 @@ def emit_permission_audit(
     if persistent_writer is None:
         return None
     try:
+        # Keep private model reasons out of subclass overrides and __class__ proxies.
+        # pylint: disable-next=huawei-unidiomatic-typecheck
         if local_details is not None and type(persistent_writer) is PersistentAuditWriter:
             return persistent_writer.write(
                 facts,
