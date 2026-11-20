@@ -23,13 +23,22 @@ def _normalize_coding_memory_project_path(
 ) -> str:
     """Return the canonical path used to isolate a project's coding memory.
 
-    The runtime agent manager casefolds ``project_dir`` when deriving its
-    coding-memory rail, while the auto-memory extractor receives the raw
-    client-supplied path.  On case-sensitive filesystems ``os.path.normcase``
-    is a no-op, so without an explicit casefold the two components derive
-    different directory keys and the extractor's writes are rejected by its
-    own sandbox (``Access denied ... outside sandbox``, #6867).  Casefolding
-    here makes both sides converge on one key on every platform.
+    The runtime agent manager already casefolds ``project_dir``
+    (``server/runtime/agent_manager.py::_normalize_project_dir``) and writes
+    that value back into ``config["project_dir"]``.  The parent agent therefore
+    derives its ``CodingMemoryRail`` directory from a casefolded path, while
+    the auto-memory extractor receives the raw client-supplied path.  On
+    case-sensitive filesystems ``os.path.normcase`` is a no-op, so without an
+    explicit casefold the two components derive different directory keys and
+    the extractor's writes are rejected by its own sandbox
+    (``Access denied ... outside sandbox``, #6867).
+
+    Casefolding here is deliberate: it keeps the coding-memory key aligned with
+    the project identity the agent layer has *already* casefolded, rather than
+    introducing a new identity rule.  Paths that genuinely differ still map to
+    distinct keys after casefolding (e.g. ``/a/frontend`` and ``/b/frontend``),
+    so same-named projects at different locations remain isolated.  NFC
+    normalization is applied last so Unicode-equivalent spellings converge too.
     """
     expanded = os.path.expanduser(str(project_dir).strip())
     canonical = os.path.realpath(os.path.abspath(expanded))

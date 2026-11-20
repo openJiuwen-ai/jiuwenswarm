@@ -88,7 +88,6 @@ def test_project_prefix_is_limited_by_utf8_bytes(tmp_path: Path) -> None:
 
 
 def test_mixed_case_path_matches_lowercase_path_on_case_sensitive_fs(
-    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A mixed-case project path must map to the same coding-memory key as its
@@ -98,19 +97,23 @@ def test_mixed_case_path_matches_lowercase_path_on_case_sensitive_fs(
     rail while the extractor receives the original client path.  If the two
     spellings produce different keys, the extractor writes into a directory
     outside its sandbox and all memories are silently lost.
+
+    The filesystem helpers are replaced with case-PRESERVING identities to
+    emulate a case-sensitive POSIX filesystem.  Crucially none of them fold
+    case: the two inputs must converge *only* because of the production
+    ``casefold()`` in ``_normalize_coding_memory_project_path``.  Removing that
+    line makes this assertion fail, so it genuinely guards against a #6867
+    regression.
     """
-    realpath = coding_memory_paths.os.path.realpath
-    normcase = coding_memory_paths.os.path.normcase
 
-    def _lower_realpath(path: str) -> str:
-        return realpath(path).casefold()
-
-    def _identity_normcase(path: str) -> str:
-        # Emulate a case-sensitive POSIX filesystem where normcase is a no-op.
+    def _identity(path: str) -> str:
         return path
 
-    monkeypatch.setattr(coding_memory_paths.os.path, "realpath", _lower_realpath)
-    monkeypatch.setattr(coding_memory_paths.os.path, "normcase", _identity_normcase)
+    monkeypatch.setattr(coding_memory_paths.os.path, "expanduser", _identity)
+    monkeypatch.setattr(coding_memory_paths.os.path, "abspath", _identity)
+    monkeypatch.setattr(coding_memory_paths.os.path, "realpath", _identity)
+    monkeypatch.setattr(coding_memory_paths.os.path, "normpath", _identity)
+    monkeypatch.setattr(coding_memory_paths.os.path, "normcase", _identity)
 
     mixed = "/home/user/Work/MyProj"
     lowercase = mixed.casefold()
