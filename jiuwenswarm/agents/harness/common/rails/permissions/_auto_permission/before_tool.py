@@ -405,15 +405,12 @@ class AutoPermissionBeforeToolMixin:
                         "final_reviewer_status": "approved",
                     },
                 )
-            if (
-                self.session_artifact_paths is not None
-                and artifact_key is not None
-                and (result is None or classify_permission_result(result) == "allow")
-            ):
-                self.session_artifact_paths.stage(
-                    artifact_key, tool_name=facts.tool_name,
-                    tool_args=facts.untrusted_args, facts=facts,
-                )
+            if self.session_artifact_paths is not None and artifact_key is not None:
+                if result is None or classify_permission_result(result) == "allow":
+                    self.session_artifact_paths.stage(
+                        artifact_key, tool_name=facts.tool_name,
+                        tool_args=facts.untrusted_args, facts=facts,
+                    )
             if (
                 manual_resume
                 and decision_source == "manual_approval"
