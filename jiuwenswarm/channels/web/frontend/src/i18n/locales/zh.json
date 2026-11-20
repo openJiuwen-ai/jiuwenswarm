@@ -4126,7 +4126,7 @@
       "flatReady": "候选目录达到或超过 1% 预算阈值；新会话使用实时平铺检索。",
       "indexedReady": "分类目录已就绪；新会话会自动使用。",
       "indexedStale": "现有分类目录已过期但仍可用；新增 Skill 会出现在 /newly_installed_skills 下。",
-      "description": "开启 Skill 发现后，系统按 1% 阈值为新会话选择完整候选快照或实时 skill_index 检索；分类索引是否构建由单独的索引开关控制。已有会话保持创建时冻结的策略。",
+      "description": "开启 Skill 发现后，系统按 1% 阈值为新会话选择完整候选快照或实时目录检索。分类索引是否构建由单独的索引开关控制。已有会话沿用创建时的策略。",
       "globalDisabledHint": "全局发现开关已关闭。Agent 使用 JiuwenSwarm 原有 Skill 逻辑；已有分类索引文件会保留但不使用。",
       "indexNotNeeded": "完整候选快照低于 1% 阈值时无需分类索引；即使已保存索引偏好，也不会启动构建。",
       "indexDisabled": "分类索引开关已关闭。实时平铺检索仍可用，已有索引文件会保留。",

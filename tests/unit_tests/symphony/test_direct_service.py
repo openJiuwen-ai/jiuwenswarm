@@ -740,6 +740,7 @@ def test_production_uses_only_stable_openjiuwen_symphony_imports():
         "CapabilityDescriptor",
         "CapabilityFingerprint",
         "FingerprintArtifact",
+        "FingerprintArtifactStore",
         "FingerprintService",
         "FingerprintSettings",
         "GraphArtifactStore",
@@ -748,8 +749,8 @@ def test_production_uses_only_stable_openjiuwen_symphony_imports():
         "SkillFolderScanner",
         "SourceSnapshot",
         "SymphonyRuntime",
-        "DiscoverySession",
         "SymphonyConfig",
+        "capability_content_hash",
         "normalize_name_key",
     }
     allowed_modules = {

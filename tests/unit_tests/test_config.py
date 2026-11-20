@@ -49,6 +49,140 @@ from jiuwenswarm.common.config import (
 from jiuwenswarm.common import symphony_config as symphony_config_module
 
 
+@pytest.mark.parametrize("enabled", [None, False, True])
+def test_migrate_legacy_symphony_loads_without_changing_other_settings(tmp_path, monkeypatch, enabled):
+    template = Path(__file__).resolve().parents[2] / "jiuwenswarm/resources/config.yaml"
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(yaml.safe_dump({
+        "preferred_language": "en",
+        "operator_settings": {"keep": "${CUSTOM_VALUE:-original}"},
+        "symphony": {
+            "enabled": enabled,
+            "paths": {"skills_root": "", "graph_dir": ""},
+            "fingerprint": {"scan": {"max_depth": 1}, "extraction": {
+                "workers": 4, "batch_size": 2, "body_limit": None,
+            }},
+            "build": {"workers": 4, "batch_size": 16, "require_consensus": False},
+            "evolution": {"flow": {"enabled": None, "min_successes": 3, "min_pack_success_rate": 0.8}},
+            "orchestration": {"mode": "fast", "top_k": 3, "max_depth": 4, "min_edge_confidence": 0.5},
+            "skill_retrieval": {"enabled": False, "artifact_root": "", "llm": None},
+        },
+    }), encoding="utf-8")
+    monkeypatch.setattr(config_module, "get_config_file", lambda: config_path)
+    original = config_path.read_bytes()
+
+    # Deployment-managed configurations can be read before template migration.
+    in_memory = config_module.get_config()
+    assert "skill_retrieval" not in in_memory["symphony"]
+    assert in_memory["symphony"]["retrieval"]["enabled"] is False
+    assert config_path.read_bytes() == original
+
+    assert migrate_config_from_template(template, config_path) is True
+    loaded = config_module.get_config()
+    assert loaded["preferred_language"] == "en"
+    persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert persisted["operator_settings"] == {"keep": "${CUSTOM_VALUE:-original}"}
+    assert persisted["symphony"]["orchestration"]["enabled"] is enabled
+    assert persisted["symphony"]["capability"]["scan"]["max_depth"] == 1
+    assert config_path.with_name("config.yaml.symphony-legacy.bak").read_bytes() == original
+    assert symphony_config_module.load_symphony_config(loaded).capability.require_single_source().type == "skill"
+    assert migrate_config_from_template(template, config_path) is False
+
+
+def test_symphony_migration_preserves_explicit_new_values_and_unrelated_comments(tmp_path):
+    template = Path(__file__).resolve().parents[2] / "jiuwenswarm/resources/config.yaml"
+    config_path = tmp_path / "config.yaml"
+    original = (
+        '# Keep operator settings\npreferred_language: "en"  # keep this note\n'
+        'operator_only: "${CUSTOM_VALUE:-untouched}"\n'
+        'symphony:\n'
+        '  enabled: true\n'
+        '  fingerprint:\n    extraction:\n      workers: 7\n'
+        '  skill_retrieval:\n'
+        '    enabled: true\n'
+        '    llm:\n      api_key: "${OLD_BUILDER_KEY}"\n'
+        '    build:\n      max_workers: 9\n'
+        '  retrieval:\n    enabled: false\n'
+        '  orchestration:\n    enabled: false\n'
+    )
+    config_path.write_text(original, encoding="utf-8")
+    assert migrate_config_from_template(template, config_path) is True
+    text = config_path.read_text(encoding="utf-8")
+    saved = yaml.safe_load(text)
+    assert saved["symphony"]["retrieval"]["enabled"] is False
+    assert saved["symphony"]["orchestration"]["enabled"] is False
+    assert saved["symphony"]["capability"]["fingerprint"]["extraction"]["max_concurrency"] == 7
+    assert saved["symphony"]["retrieval"]["index_build"]["request"]["max_concurrency"] == 9
+    assert 'preferred_language: "en"  # keep this note' in text
+    assert '# Keep operator settings' in text
+    assert saved["operator_only"] == "${CUSTOM_VALUE:-untouched}"
+    assert config_path.with_name("config.yaml.symphony-legacy.bak").read_text(encoding="utf-8") == original
+    assert migrate_config_from_template(template, config_path) is False
+
+
+def test_symphony_migration_writes_even_when_no_template_defaults_are_added(tmp_path, monkeypatch):
+    from jiuwenswarm.common import version
+
+    monkeypatch.setattr(version, "get_runtime_version_label", lambda: "same-version")
+    template = tmp_path / "template.yaml"
+    config_path = tmp_path / "config.yaml"
+    template.write_text('{}\n', encoding="utf-8")
+    config_path.write_text('config_version: same-version\nsymphony:\n  enabled: true\n', encoding="utf-8")
+    assert migrate_config_from_template(template, config_path) is True
+    assert yaml.safe_load(config_path.read_text(encoding="utf-8"))["symphony"] == {
+        "orchestration": {"enabled": True},
+    }
+    assert migrate_config_from_template(template, config_path) is False
+
+
+def test_symphony_migration_rejects_invalid_new_values_before_writing(tmp_path):
+    from pydantic import ValidationError
+
+    template = Path(__file__).resolve().parents[2] / "jiuwenswarm/resources/config.yaml"
+    config_path = tmp_path / "config.yaml"
+    original = 'symphony:\n  enabled: true\n  retrieval:\n    enabled: "false"\n'
+    config_path.write_text(original, encoding="utf-8")
+    with pytest.raises(ValidationError, match="symphony.retrieval.enabled"):
+        migrate_config_from_template(template, config_path)
+    assert config_path.read_text(encoding="utf-8") == original
+    assert not config_path.with_name("config.yaml.symphony-legacy.bak").exists()
+
+
+def test_symphony_migration_preserves_an_existing_backup(tmp_path):
+    template = tmp_path / "template.yaml"
+    config_path = tmp_path / "config.yaml"
+    template.write_text('{}\n', encoding="utf-8")
+    original = 'symphony:\n  enabled: true\n'
+    config_path.write_text(original, encoding="utf-8")
+    backup = config_path.with_name("config.yaml.symphony-legacy.bak")
+    backup.write_text("previous configuration\n", encoding="utf-8")
+
+    assert migrate_config_from_template(template, config_path) is True
+    assert backup.read_text(encoding="utf-8") == "previous configuration\n"
+    backups = list(tmp_path.glob("config.yaml.symphony-legacy.*.bak"))
+    assert len(backups) == 1
+    assert backups[0].read_text(encoding="utf-8") == original
+    assert migrate_config_from_template(template, config_path) is False
+
+
+def test_current_symphony_configuration_is_not_rewritten_or_backed_up(tmp_path, monkeypatch):
+    from jiuwenswarm.common import version
+
+    monkeypatch.setattr(version, "get_runtime_version_label", lambda: "same-version")
+    template = tmp_path / "template.yaml"
+    config_path = tmp_path / "config.yaml"
+    template.write_text('{}\n', encoding="utf-8")
+    original = (
+        'config_version: same-version\nsymphony:\n'
+        '  retrieval:\n    enabled: true  # keep my setting\n'
+        '  orchestration:\n    enabled: false\n'
+    )
+    config_path.write_text(original, encoding="utf-8")
+    assert migrate_config_from_template(template, config_path) is False
+    assert config_path.read_text(encoding="utf-8") == original
+    assert not list(tmp_path.glob("*.bak"))
+
+
 def test_config_refreshes_same_version_build_date_and_preserves_user_values(tmp_path, monkeypatch):
     from jiuwenswarm.common import version
 
@@ -1360,6 +1494,7 @@ class TestConfigFunctions:
             yaml.safe_dump({"symphony": {
                 "enabled": True,
                 "fingerprint": {"scan": {"max_depth": 1}},
+                "skill_retrieval": {"discovery": {"use_existing_index": False}},
                 "orchestration": {
                     "enabled": None,
                     "mode": "beam",
@@ -1370,12 +1505,16 @@ class TestConfigFunctions:
             encoding="utf-8",
         )
 
+        original = user_config_path.read_bytes()
         assert migrate_config_from_template(template_path, user_config_path) is True
+        assert user_config_path.with_name("config.yaml.symphony-legacy.bak").read_bytes() == original
         migrated = yaml.safe_load(user_config_path.read_text(encoding="utf-8"))
         resolved = symphony_config_module.load_symphony_config(migrated)
         assert resolved.orchestration.enabled is True
         assert resolved.orchestration.plan.mode == "beam"
         assert resolved.capability.scan.max_depth == 1
+        assert resolved.retrieval.use_existing_index is False
+        assert migrate_config_from_template(template_path, user_config_path) is False
 
     @staticmethod
     def test_migrate_config_preserves_canonical_evolution_settings(

@@ -4129,7 +4129,7 @@
       "flatReady": "The catalog is at or above the 1% budget threshold; new sessions use live flat retrieval.",
       "indexedReady": "The taxonomy is ready; new sessions use it automatically.",
       "indexedStale": "The existing taxonomy is stale but remains available; newly added Skills appear under /newly_installed_skills.",
-      "description": "When Skill discovery is enabled, the 1% threshold selects a complete snapshot or live skill_index retrieval for new sessions. Taxonomy construction is controlled independently by the index switch. Existing sessions keep the strategy frozen at creation.",
+      "description": "When Skill discovery is enabled, the 1% threshold selects a complete snapshot or live catalog search for new sessions. Taxonomy construction is controlled independently by the index switch. Existing sessions keep the strategy frozen at creation.",
       "globalDisabledHint": "The global discovery switch is off. Agents use the original JiuwenSwarm Skill logic; any existing taxonomy files remain stored and unused.",
       "indexNotNeeded": "A taxonomy is not needed while the complete candidate snapshot fits below the 1% threshold. No taxonomy build is started, even if the saved index preference is on.",
       "indexDisabled": "The taxonomy switch is off. Live flat retrieval remains available, and existing taxonomy files are retained.",
