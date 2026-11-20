@@ -124,7 +124,7 @@ async def test_native_load_in_a_second_process_and_switch_model(tmp_path, monkey
     from types import SimpleNamespace
 
     from jiuwenswarm.acp.session_mcp import MCP_CALL_METHOD, MCP_TOOLS_PARAM
-    from jiuwenswarm.acp.session_protocol import ACP_SESSION_EXTENSION
+    from jiuwenswarm.acp.session_protocol import ACP_SESSION_EXTENSION, ACP_THINKING_PARAM
     from jiuwenswarm.runtime.model_catalog import build_model_catalog
     from jiuwenswarm.server.handlers.acp_session import native_acp_session_response
     from jiuwenswarm.server.runtime.session import lifecycle, session_metadata
@@ -147,11 +147,20 @@ async def test_native_load_in_a_second_process_and_switch_model(tmp_path, monkey
     )
     servers = [{"name": "fixture", "command": sys.executable, "args": [str(fixture)]}]
 
+    entries = [
+        {
+            "model_client_config": {"model_name": "primary", "api_key": "test", "api_base": "https://api.openai.com"},
+            "is_default": True,
+        },
+        {
+            "model_client_config": {"model_name": "secondary", "api_key": "test", "api_base": "https://api.openai.com"},
+            "alias": "Secondary",
+        },
+    ]
+    monkeypatch.setattr("jiuwenswarm.common.config.get_default_models", lambda: entries)
+
     def list_models(*, current_selection):
-        return build_model_catalog([
-            {"model_client_config": {"model_name": "primary"}, "is_default": True},
-            {"model_client_config": {"model_name": "secondary"}, "alias": "Secondary"},
-        ], current_selection=current_selection)
+        return build_model_catalog(entries, current_selection=current_selection)
 
     async def start():
         pass
@@ -203,7 +212,9 @@ async def test_native_load_in_a_second_process_and_switch_model(tmp_path, monkey
 
         try:
             initialized = await rpc("initialize", {"protocolVersion": 1})
-            assert initialized["result"]["agentCapabilities"]["loadSession"]
+            capabilities = initialized["result"]["agentCapabilities"]
+            assert capabilities["loadSession"]
+            assert capabilities["mcpCapabilities"] == {"http": True, "sse": True}
             return await operations(rpc)
         finally:
             async with asyncio.timeout(8):
@@ -223,11 +234,27 @@ async def test_native_load_in_a_second_process_and_switch_model(tmp_path, monkey
         assert invalid["error"]["code"] == -32602
         switched = await rpc("session/set_model", {"sessionId": sid, "modelId": "secondary#1"})
         assert switched["result"]["models"]["currentModelId"] == "secondary#1"
+        option, = switched["result"]["configOptions"]
+        assert option["category"] == "thought_level"
+        config = {"sessionId": sid, "configId": "thinking"}
+        invalid = await rpc("session/set_config_option", {**config, "value": "bogus"})
+        assert invalid["error"]["code"] == -32602
+        updated = await rpc("session/set_config_option", {**config, "value": "high"})
+        assert updated["result"]["configOptions"][0]["currentValue"] == "high"
         prompt = await rpc("session/prompt", {
-            "sessionId": sid, "prompt": [{"type": "text", "text": "First turn"}],
+            "sessionId": sid, ACP_THINKING_PARAM: "off", "prompt": [{"type": "text", "text": "First turn"}],
         })
         assert prompt["result"]["stopReason"] == "end_turn"
-        return sid, turns.get_nowait()[1]
+        turn, pid = turns.get_nowait()
+        assert turn[ACP_THINKING_PARAM] == "high"
+        assert "configOptions" not in turn
+        updated = await rpc("session/set_config_option", {**config, "value": "default"})
+        assert updated["result"]["configOptions"][0]["currentValue"] == "default"
+        await rpc("session/prompt", {
+            "sessionId": sid, "prompt": [{"type": "text", "text": "With defaults"}],
+        })
+        assert turns.get_nowait()[0][ACP_THINKING_PARAM] is None
+        return sid, pid
 
     async def second_client(rpc):
         load = {"sessionId": session_id, "cwd": str(cwd)}

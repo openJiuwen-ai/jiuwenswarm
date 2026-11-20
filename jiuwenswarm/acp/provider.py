@@ -12,7 +12,12 @@ import sys
 from pathlib import Path
 from uuid import uuid4
 
-from jiuwenswarm.acp.session_protocol import ACP_SESSION_EXTENSION
+from jiuwenswarm.acp.session_protocol import (
+    ACP_SESSION_EXTENSION,
+    ACP_THINKING_PARAM,
+    DEFAULT_THINKING,
+    THINKING_CONFIG_ID,
+)
 from jiuwenswarm.common.version import get_runtime_version
 
 
@@ -100,12 +105,32 @@ async def _run(gateway_url: str) -> None:
                     agent_caps.get("sessionCapabilities", {}).pop("list", None)
                 await self._write_jsonrpc_result(rpc_id, result)
                 return
+            if method == "session/set_config_option":
+                await self._set_config_option(rpc_id, params)
+                return
             if self._persistent_sessions and method in (
                 "session/new", "session/load", "session/set_model",
             ):
                 await self._handle_persistent_session(rpc_id, method, params)
                 return
             await super()._handle_jsonrpc_request(data)
+
+        async def _set_config_option(self, rpc_id, params: dict) -> None:
+            session_id = params.get("sessionId")
+            session = self._session_ctx.get(session_id) if isinstance(session_id, str) else None
+            if session is None:
+                await self._write_jsonrpc_error(rpc_id, -32002, "Session not found or expired")
+                return
+            options = session.get("configOptions", [])
+            thinking = next((option for option in options if option["id"] == THINKING_CONFIG_ID), None)
+            value = params.get("value")
+            if (params.get("configId") != THINKING_CONFIG_ID or thinking is None
+                    or not any(value == item["value"] for item in thinking["options"])):
+                await self._write_jsonrpc_error(rpc_id, -32602, "Unsupported thinking option or value")
+                return
+            thinking["currentValue"] = value
+            session[ACP_THINKING_PARAM] = None if value == DEFAULT_THINKING else value
+            await self._write_jsonrpc_result(rpc_id, {"configOptions": options})
 
         async def _handle_persistent_session(self, rpc_id, method: str, params: dict) -> None:
             session_id = params.get("sessionId")
@@ -140,6 +165,8 @@ async def _run(gateway_url: str) -> None:
             self._session_ctx[session_id]["model_name"] = (
                 result.get("models", {}).get("currentModelId", "")
             )
+            self._session_ctx[session_id]["configOptions"] = result.get("configOptions", [])
+            self._session_ctx[session_id].pop(ACP_THINKING_PARAM, None)
             await self._write_jsonrpc_result(rpc_id, result)
 
         async def _handle_jsonrpc_session_new(
@@ -149,6 +176,12 @@ async def _run(gateway_url: str) -> None:
             if not isinstance(cwd, str) or not Path(cwd).is_absolute() or not Path(cwd).is_dir():
                 raise ValueError("session/new cwd must be an existing absolute directory")
             await super()._handle_jsonrpc_session_new(rpc_id, params)
+
+        def _envelope_to_message(self, env):
+            msg = super()._envelope_to_message(env)
+            if env.method == "session/prompt":
+                msg.params.pop("configOptions", None)
+            return msg
 
         async def _handle_jsonrpc_session_prompt(
             self, rpc_id: str | int | None, params: dict,
@@ -162,6 +195,7 @@ async def _run(gateway_url: str) -> None:
             if not Path(cwd).is_dir():
                 raise ValueError("session cwd no longer exists")
             turn = {**params, "cwd": cwd, "project_dir": cwd, "workspace_dir": cwd}
+            turn[ACP_THINKING_PARAM] = session.get(ACP_THINKING_PARAM)
             if self._persistent_sessions and "model_name" in session:
                 turn["model_name"] = session["model_name"]
                 turn["eternal_conversation_enabled"] = True

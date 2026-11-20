@@ -63,7 +63,9 @@ def _session_payload(runtime, user_id: str, args: dict) -> dict:
             raise ValueError(exc.message) from exc
         patch_session_metadata(session_id, {"model": current})
 
-    result = {"sessionId": session_id}
+    from jiuwenswarm.server.runtime.acp_thinking import thinking_config_options
+
+    result = {"sessionId": session_id, "configOptions": thinking_config_options(current) if current else []}
     if catalog.models:
         result["models"] = {
             "currentModelId": current,

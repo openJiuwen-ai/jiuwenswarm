@@ -109,3 +109,64 @@ async def test_stdio_tool_lifetime_and_gateway_round_trip(tmp_path, explicit_clo
                 process.kill()
                 await process.wait()
                 raise
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("transport,path", [("http", "/mcp"), ("sse", "/sse")])
+async def test_remote_mcp_tool_call_with_headers(tmp_path, transport, path):
+    import socket
+
+    import uvicorn
+    from mcp.server.fastmcp import FastMCP
+    from mcp.server.fastmcp.server import Context
+
+    from jiuwenswarm.acp.session_mcp import SessionMcp, _session_servers
+
+    mcp = FastMCP("fixture", stateless_http=True, json_response=True)
+
+    @mcp.tool()
+    def echo(message: str, ctx: Context) -> str:
+        return ctx.request_context.request.headers["x-fixture"] + message
+
+    app = mcp.streamable_http_app() if transport == "http" else mcp.sse_app()
+    with socket.socket() as listener:
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        server = uvicorn.Server(uvicorn.Config(app, log_level="error", lifespan="auto"))
+        worker = asyncio.create_task(server.serve(sockets=[listener]))
+        try:
+            async with asyncio.timeout(5):
+                while not server.started:
+                    await asyncio.sleep(0.01)
+            params = {
+                "cwd": str(tmp_path),
+                "mcpServers": [{
+                    "type": transport, "name": "remote", "url": f"http://127.0.0.1:{port}{path}",
+                    "headers": [{"name": "X-Fixture", "value": "remote:"}],
+                }],
+            }
+            first = SessionMcp(_session_servers(params))
+            try:
+                tool, = await first.declarations()
+                assert tool["name"] == "mcp__remote__echo"
+                result = await first.call(tool["name"], {"message": "hello"})
+                assert result["content"][0]["text"] == "remote:hello"
+            finally:
+                await first.close()
+            assert not first._tools
+        finally:
+            server.should_exit = True
+            await asyncio.wait_for(worker, 5)
+
+
+@pytest.mark.parametrize("entry", [
+    {"type": "http", "name": "remote", "url": "file:///tmp/x"},
+    {"type": "sse", "name": "remote", "url": "http://localhost:bad"},
+    {"type": "http", "name": "remote", "url": "http://localhost/mcp",
+     "headers": [{"name": "X-Test", "value": "one\r\ntwo"}]},
+])
+def test_invalid_remote_transport_parameters(tmp_path, entry):
+    from jiuwenswarm.acp.session_mcp import _session_servers
+
+    with pytest.raises(ValueError):
+        _session_servers({"cwd": str(tmp_path), "mcpServers": [entry]})

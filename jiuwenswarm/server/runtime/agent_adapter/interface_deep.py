@@ -10029,6 +10029,31 @@ class JiuWenSwarmDeepAdapter:
         return self._model
 
     def _resolve_model_for_request(self, request: AgentRequest) -> Model:
+        model = self._resolve_base_model_for_request(request)
+        if self._moa_runtime is not None or request.channel_id != "acp":
+            return model
+
+        from jiuwenswarm.acp.session_protocol import ACP_THINKING_PARAM
+
+        params = request.params or {}
+        if ACP_THINKING_PARAM not in params:
+            return model
+        previous = getattr(self, "_acp_thinking_model", None)
+        if previous is not None and model is previous[2]:
+            model = previous[0]
+        level = params[ACP_THINKING_PARAM]
+        if level is None:
+            return model
+        if previous is not None and model is previous[0] and level == previous[1]:
+            return previous[2]
+
+        from jiuwenswarm.server.runtime.acp_thinking import apply_thinking_level
+
+        adjusted = apply_thinking_level(model, level)
+        self._acp_thinking_model = (model, level, adjusted)
+        return adjusted
+
+    def _resolve_base_model_for_request(self, request: AgentRequest) -> Model:
         """根据请求中的 model_name 参数查找对应模型（支持别名），未匹配则回退默认模型。
 
         支持两种格式：
