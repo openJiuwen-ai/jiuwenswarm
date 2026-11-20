@@ -239,6 +239,13 @@ _DESKTOP_SESSION_LIMIT_MESSAGE = (
     "请等待其他会话结束后再发起新会话。"
 )
 _DEFAULT_DESKTOP_MAX_PARALLEL_SESSIONS = 5
+
+# session.list 单页行数上限。旧值 200 会迫使桌面端按 ceil(N/200) 页翻页，
+# 而服务端每页都全量扫描会话目录（session_metadata.get_all_sessions_metadata），
+# 会话多时一次侧栏刷新 = 15 页 × 全量扫描，事件循环被打满。
+# 放宽到 5000 后桌面端一次 RPC 即可拉全（配合桌面端 SESSION_LIST_PAGE_LIMIT）；
+# Web/TUI 前端只请求 limit<=20，小值行为不变。
+_SESSION_LIST_PAGE_LIMIT = 5000
 # session.delete 前先等在途的会话预热（warm pool 前台 prepare）落地：create 回包时
 # 适配器注册与 prepare 仍在后台续跑，delete 抢在该尾巴之前会 cancel 空转、cleanup
 # 撞上"刚注册"的运行态而误判 DELETE_FAILED。超时后照常拆，仍失败则诚实报错。
@@ -3919,7 +3926,7 @@ class AgentWebSocketServer:
         elif isinstance(raw_offset, str) and raw_offset.strip().isdigit():
             offset = int(raw_offset.strip())
 
-        limit = max(1, min(limit, 200))
+        limit = max(1, min(limit, _SESSION_LIST_PAGE_LIMIT))
         offset = max(0, offset)
 
         try:

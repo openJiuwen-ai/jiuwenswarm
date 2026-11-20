@@ -2267,3 +2267,77 @@ def test_remove_team_mode_session_dirs_at_startup_keeps_stable_team_sessions(
     assert (sessions_dir / "stable_code").exists()
     assert not (sessions_dir / "temp_team").exists()
     assert (sessions_dir / "agent_temp").exists()
+
+
+# ===========================================================================
+# get_all_sessions_metadata: cron 执行会话跳过（cron-skip，2026-11-19）
+# ===========================================================================
+class TestGetAllSessionsMetadataCronSkip:
+    @staticmethod
+    def _mk_session(sessions_dir, sid: str, title: str = "t") -> None:
+        d = sessions_dir / sid
+        d.mkdir()
+        (d / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "session_id": sid,
+                    "channel_id": "desktop",
+                    "created_at": 1795000000.0,
+                    "last_message_at": 1795000000.0,
+                    "title": title,
+                    "message_count": 1,
+                    "mode": "unknown",
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def test_list_excludes_cron_exec_and_heartbeat(sessions_dir):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_all_sessions_metadata,
+        )
+
+        self = TestGetAllSessionsMetadataCronSkip
+        self._mk_session(sessions_dir, "__cron___1a1f0001_0001")
+        self._mk_session(sessions_dir, "__cron___1a1f0001_0002")
+        self._mk_session(sessions_dir, "heartbeat_abc")
+        self._mk_session(sessions_dir, "desktop_1a1f0002_aaa", title="A")
+        self._mk_session(sessions_dir, "desktop_1a1f0002_bbb", title="B")
+
+        sessions, total = get_all_sessions_metadata(limit=50, offset=0)
+        ids = {s["session_id"] for s in sessions}
+        assert ids == {"desktop_1a1f0002_aaa", "desktop_1a1f0002_bbb"}
+        assert total == 2
+
+    @staticmethod
+    def test_collect_all_still_includes_cron_exec(sessions_dir):
+        # 边界保护：collect_all（项目统计/置顶聚合）口径不变，仍包含 __cron__ 行
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            collect_all_sessions_metadata,
+        )
+
+        self = TestGetAllSessionsMetadataCronSkip
+        self._mk_session(sessions_dir, "__cron___1a1f0001_0001")
+        self._mk_session(sessions_dir, "desktop_1a1f0002_aaa", title="A")
+
+        rows = collect_all_sessions_metadata()
+        ids = {r["session_id"] for r in rows}
+        assert "__cron___1a1f0001_0001" in ids
+        assert "desktop_1a1f0002_aaa" in ids
+
+    @staticmethod
+    def test_cron_prefixed_sidebar_session_still_listed(sessions_dir):
+        # 只跳过 "__cron__"（双下划线执行会话）；"cron_" 前缀
+        # （web 渠道展示的定时任务侧栏会话，SessionsPanel 有 prefix 标签）不受影响
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_all_sessions_metadata,
+        )
+
+        self = TestGetAllSessionsMetadataCronSkip
+        self._mk_session(sessions_dir, "cron_1a1f0003_web", title="cron sidebar")
+
+        sessions, total = get_all_sessions_metadata(limit=50, offset=0)
+        assert total == 1
+        assert sessions[0]["session_id"] == "cron_1a1f0003_web"
