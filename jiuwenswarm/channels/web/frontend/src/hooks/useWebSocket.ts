@@ -87,7 +87,7 @@ import {
   shouldClearPermissionQuestionsForLifecycleEvent,
 } from '../stores/pendingQuestionQueue';
 import { requestLogin } from '../stores/authStore';
-import { describeChatError } from '../features/free-models/chatError';
+import { describeChatError, isFinishedTurnWorkerLifecycleError } from '../features/free-models/chatError';
 import { webClient, requestGoalAction, sendGoalStreamCommand } from '../services/webClient';
 import { WebHttpClient } from '../services/webHttpClient';
 import { getWebTransport } from '../utils/env';
@@ -107,6 +107,7 @@ import {
   resolveStreamFinalContent,
   unescapeLiteralNewlines,
   interpretChatFinalAction,
+  parseChatFinalMode,
   shouldCollapseTurnFinal,
   parseTimestampToMs,
   timestampMsToIso,
@@ -1059,6 +1060,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const teamCancelLiveSuppressRef = useRef(new Set<string>());
   const activeRequestIdRef = useRef<string | undefined>(undefined);
   const processingRequestIdsRef = useRef(new Map<string, string>());
+  // 已交过 chat.final 的 request_id（#6373）：worker 在其后关闭属于生命周期
+  // 事件，不能再渲染成对话里的错误气泡。有界保存，避免长会话无限增长。
+  const finalizedRequestIdsRef = useRef(new Set<string>());
   // 立即同步更新，不等待 effect
 
   const [isConnected, setIsConnected] = useState(false);
@@ -3716,6 +3720,23 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // Supplemental requests never own a separate answer or task lifecycle.
         if (handleTaskInputReceipt('chat.final', payload)) return;
         const crossSession = extractCrossSessionMessage(payload);
+        const finalRequestId = getPayloadRequestId(payload);
+        // #6373：只有覆盖整轮输出的 final 才能作为「任务已收尾」的判据。
+        // 跨会话请求一个 request 会有多个 final，子任务总结只覆盖子任务气泡，
+        // append 分段 final 也只是追加一段；它们之后同一请求仍可能继续执行。
+        if (
+          finalRequestId
+          && !crossSession
+          && payload.source !== 'session_task_summary'
+          && parseChatFinalMode(payload) !== 'append'
+        ) {
+          const finalized = finalizedRequestIdsRef.current;
+          finalized.add(finalRequestId);
+          if (finalized.size > 256) {
+            const oldest = finalized.values().next().value;
+            if (oldest) finalized.delete(oldest);
+          }
+        }
         // One cross-session request may emit several finals. Its stable bubble ID
         // makes each final safe to replay, while the latest one replaces the text.
         if (!crossSession && shouldDropDuplicatedEvent('chat.final', payload)) return;
@@ -5275,6 +5296,21 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
         // 忽略 "invalid page_idx or session history not found" 错误，因为这是新会话的正常情况
         if (rawErrorMsg.includes('invalid page_idx or session history not found')) {
+          return;
+        }
+        // #6373：该请求已交过整轮 final，且已不是会话正在处理的那一轮时，
+        // 说明这一轮已正常收尾；此后常驻 worker 关闭是 INFO 级生命周期事件，
+        // 不得再追加"错误:"气泡或报错提示。仍在本轮处理中的关闭照常报错，
+        // 避免中间段 final 之后的真实崩溃被静默成"半截回答即完成"。
+        if (isFinishedTurnWorkerLifecycleError(
+          payload,
+          getPayloadRequestId(payload),
+          finalizedRequestIdsRef.current,
+          {
+            isProcessing: useChatStore.getState().getRuntime(sessionId)?.isProcessing ?? false,
+            processingRequestId: processingRequestIdsRef.current.get(sessionId),
+          },
+        )) {
           return;
         }
         // 选了免费模型但没登录 / 登录已过期（后端预检 interface_deep._model_config_error，
