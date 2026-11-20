@@ -2707,15 +2707,22 @@ async def _apply_enterprise_runtime_ready_hooks(
     """Attach the teammate quota guard and back-fill team identity on ready."""
     from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
+    team_agent = await _current_pool_team_agent(runtime_team_name)
+    backend = getattr(team_agent, "team_backend", None)
+    if getattr(backend, "conversation_mode", None) == "group_chat":
+        from jiuwenswarm.enterprise.team.member_limits import detach_teammate_limit_guard
+
+        detach_teammate_limit_guard(team_agent)
+        return
+
     await run_team_store(
         _record_session_team_occupancy,
         request=request,
         session_id=session_id,
         runtime_team_name=runtime_team_name,
     )
-    team_agent = await _current_pool_team_agent(runtime_team_name)
     try:
-        from jiuwenswarm.enterprise.team.member_limits import attach_teammate_limit_guard
+        from jiuwenswarm.enterprise.team.member_limits import attach_teammate_limit_guard, quota_member_names
 
         if team_agent is not None:
             team_id = ""
@@ -2750,12 +2757,7 @@ async def _apply_enterprise_runtime_ready_hooks(
                     leader_name = str(getattr(backend, "leader_member_name", "") or "")
                     names: list[str] = []
                     if backend is not None and getattr(backend, "db", None) is not None:
-                        roster = await backend.db.member.get_member_roster(backend.team_name)
-                        names = [
-                            str(name)
-                            for name, _display, _status in roster
-                            if str(name) and str(name) != leader_name
-                        ]
+                        names = [name for name in await quota_member_names(backend) if name != leader_name]
                     await run_team_store(
                         get_team_quota_service().reconcile_local_roster,
                         team_id,
@@ -4077,10 +4079,10 @@ async def _process_team_message_stream(
             hide_dm = preparation.hide_dm
             debug = preparation.debug
 
-    if is_first_request:
+    if is_first_request and group_input is None:
         from jiuwenswarm.enterprise.edition import is_enterprise
 
-        # 超员拒绝只属于企业版。个人版不解析人数，也不为取上限打开配额服务。
+        # Team execution quotas do not limit the public group roster.
         if is_enterprise():
             from jiuwenswarm.enterprise.team.quota import QUOTA_EXCEEDED
 
@@ -4373,11 +4375,21 @@ async def _process_team_message_stream(
         )
         from jiuwenswarm.server.runtime.session.execution_settings import prepare_session_execution
 
-        await prepare_session_execution(
-            session_id,
-            team_spec,
-            params_obj.get("execution_settings") if isinstance(params_obj, dict) else None,
-        )
+        try:
+            await prepare_session_execution(
+                session_id,
+                team_spec,
+                params_obj.get("execution_settings") if isinstance(params_obj, dict) else None,
+            )
+        except ValueError as exc:
+            # Rejected settings are the client's to fix. Running the team
+            # without them would silently drop the requested Git identity.
+            logger.warning("[team] execution settings rejected: session_id=%s error=%s", session_id, exc)
+            yield AgentResponseChunk(
+                request_id=rid, channel_id=channel_id,
+                payload={"event_type": "chat.error", "error": str(exc)}, is_complete=True,
+            )
+            return
         if group_input is not None:
             update_session_metadata(session_id=session_id,
                 conversation_type="group_chat",
@@ -5877,6 +5889,31 @@ async def _consume_stream_with_query(
                             "is_complete": True,
                         },
                     )
+                    terminal_broadcasted = True
+                    continue
+                elif parsed.get("event_type") == "team.goal.blocked":
+                    # Core keeps the resident stream open for later user input.
+                    # End this request's processing state without completing its tasks.
+                    fallback = (
+                        "The leader goal is blocked. Add input to continue."
+                        if str(getattr(team_spec, "language", "cn")) == "en"
+                        else "领导目标已阻塞，请补充输入后继续。"
+                    )
+                    await _deliver({
+                        "event_type": "chat.error",
+                        "error": str(parsed.get("reason") or fallback),
+                        "code": "TEAM_GOAL_BLOCKED",
+                        "session_id": session_id,
+                        "rid": round_id,
+                    })
+                    await _deliver({
+                        "event_type": "chat.processing_status",
+                        "session_id": session_id,
+                        "rid": round_id,
+                        "is_processing": False,
+                        "is_complete": True,
+                        "reason": "team.goal.blocked",
+                    })
                     terminal_broadcasted = True
                     continue
                 elif parsed.get("event_type") == "team.completed":

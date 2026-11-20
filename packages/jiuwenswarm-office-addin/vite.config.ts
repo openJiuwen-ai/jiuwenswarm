@@ -14,7 +14,7 @@ const officeHosts = ['powerpoint', 'word', 'excel'];
  * One page per host; the code they share is split into common chunks. WPS loads the shell under ``public/wps/``
  * instead of a manifest, which opens its page.
  */
-const hosts = [...officeHosts, 'wps-presentation'];
+const hosts = [...officeHosts, 'wps-presentation', 'wps-spreadsheet', 'wps-writer'];
 
 /** Where `build:desktop` puts the pane: the web frontend's build, which the desktop serves at `/office/`. */
 const desktopOutDir = fileURLToPath(new URL('../../jiuwenswarm/channels/web/frontend/dist/office/', import.meta.url));

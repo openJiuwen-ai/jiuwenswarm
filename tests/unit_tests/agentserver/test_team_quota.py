@@ -295,6 +295,7 @@ def test_template_over_y_counted(tmp_path: Path) -> None:
                         {"member_name": "a", "role": "teammate"},
                         {"member_name": "b", "role": "teammate"},
                         {"member_name": "c", "role": "teammate"},
+                        {"member_name": "colleague", "role_type": "host_managed"},
                     ]
                 }
             }

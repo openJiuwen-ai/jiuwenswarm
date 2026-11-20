@@ -8,8 +8,44 @@
     <title>WorkSwarm</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!--
+      启动中性层（Gateway S_09）：与 Electron 加载页一致，首帧即显示，由前端门控接管后移除。
+      上次判定没有开场或本次启动已完成开场时不显示；脚本始终未接管时 20 秒后自动隐藏。
+    -->
+    <style>
+      #workswarm-neutral { position: fixed; inset: 0; z-index: 2147483646; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 24px; background: #0f172a; color: #f1f5f9;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        animation: workswarm-neutral-timeout 0s linear 20s forwards; }
+      #workswarm-neutral img { width: 64px; height: 64px; border-radius: 16px; }
+      #workswarm-neutral .workswarm-neutral__name { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
+      #workswarm-neutral .workswarm-neutral__spinner { width: 32px; height: 32px; border-radius: 50%;
+        border: 3px solid rgba(148, 163, 184, 0.2); border-top-color: #60a5fa; animation: workswarm-neutral-spin 1.5s linear infinite; }
+      @keyframes workswarm-neutral-spin { to { transform: rotate(360deg); } }
+      @keyframes workswarm-neutral-timeout { to { visibility: hidden; } }
+    </style>
   </head>
   <body>
+    <div id="workswarm-neutral" aria-hidden="true">
+      <img src="/logo.svg" alt="" />
+      <div class="workswarm-neutral__name">WorkSwarm</div>
+      <div class="workswarm-neutral__spinner"></div>
+    </div>
+    <script>
+      (function () {
+        try {
+          // The completion record shares the launch identifier's storage (splash/launch.ts).
+          var desktop = window.jiuwenDesktop && window.jiuwenDesktop.launchId;
+          var launch = desktop || sessionStorage.getItem('workswarm.launch');
+          var completed = (desktop ? localStorage : sessionStorage).getItem('workswarm.splash.completedLaunch');
+          if (localStorage.getItem('workswarm.splash.expected') === '0' || (launch && completed === launch)) {
+            document.getElementById('workswarm-neutral').remove();
+          }
+        } catch (error) {
+          // Storage may be unavailable; the gate still removes the layer.
+        }
+      })();
+    </script>
     <div id="root">
     </div>
     <!--

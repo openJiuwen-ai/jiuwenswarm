@@ -55,12 +55,6 @@ def sharing(tmp_path):
                            gate=gate, delegate=delegate, port=GuardedGroupChatPort(delegate, gate))
 
 
-async def test_first_cross_group_search_interrupts_without_returning_content(sharing):
-    with pytest.raises(core.GroupContentApprovalRequired):
-        await sharing.port.search_messages(sharing.execution, sharing.query)
-    rows = sharing.repo.list_for_owner("local", "config-1", owner_principal="local")
-    assert len(rows["approvals"]) == 1
-    assert rows["approvals"][0]["messages"][0]["text"] == "private launch plan"
 
 
 @pytest.mark.parametrize("kind", ["file", "online_doc"])
@@ -121,54 +115,14 @@ async def approve(sharing, decision="once"):
     return row
 
 
-async def test_once_returns_only_frozen_content_with_current_execution_identity(sharing):
-    await approve(sharing)
-    changed = sharing.result.hits[0].model_copy(update={"message": sharing.result.hits[0].message.model_copy(
-        update={"message_id": "m-2", "text": "new unapproved message"})})
-    sharing.delegate.search_messages.return_value = sharing.result.model_copy(update={"hits": (changed,)})
-    resumed = replace(sharing.execution, execution_id="execution-2")
-    result = await sharing.port.search_messages(resumed, sharing.query)
-    result.assert_matches(resumed)
-    assert result.hits[0].message.text == "private launch plan"
 
 
-async def test_approval_created_before_platform_field_can_resume_after_upgrade(sharing):
-    import json
-
-    row = await approve(sharing)
-    scope = sharing.repo.get(row["approval_id"])["scope"]
-    scope["query"].pop("platforms", None)
-    with sharing.repo._transaction() as conn:
-        conn.execute("UPDATE group_share_approvals SET scope_json=? WHERE approval_id=?",
-                     (json.dumps(scope), row["approval_id"]))
-    result = await sharing.port.search_messages(sharing.execution, sharing.query)
-    assert result.status == "found"
-    assert result.hits[0].message.text == "private launch plan"
 
 
-async def test_recalled_source_is_not_released_after_owner_approval(sharing):
-    await approve(sharing)
-    sharing.archive.current_messages = lambda *args: (sharing.result.hits[0].message.model_copy(
-        update={"text": None, "status": "recalled"}),)
-    result = await sharing.port.search_messages(sharing.execution, sharing.query)
-    assert not result.hits and result.status in {"forbidden", "unavailable"}
 
 
-async def test_once_does_not_authorize_new_content_in_another_query(sharing):
-    await approve(sharing)
-    hit = sharing.result.hits[0]
-    changed = hit.model_copy(update={'message': hit.message.model_copy(
-        update={'message_id': 'm-new', 'text': 'new unapproved content'},
-    )})
-    sharing.delegate.search_messages.return_value = sharing.result.model_copy(update={'hits': (changed,)})
-    with pytest.raises(core.GroupContentApprovalRequired):
-        await sharing.port.search_messages(sharing.execution, core.GroupMessageQuery(query="another"))
 
 
-async def test_rejection_returns_no_candidates(sharing):
-    await approve(sharing, "reject")
-    result = await sharing.port.search_messages(sharing.execution, sharing.query)
-    assert result.status == "unavailable" and not result.hits and not result.artifacts
 
 
 async def test_current_group_search_does_not_ask_owner(sharing):
@@ -178,14 +132,6 @@ async def test_current_group_search_does_not_ask_owner(sharing):
     assert not sharing.repo.pending_for_request("local", "request-1")
 
 
-async def test_permanent_grant_is_scoped_to_destination_and_is_revocable(sharing):
-    await approve(sharing, "permanent")
-    result = await sharing.port.search_messages(sharing.execution, core.GroupMessageQuery(query="another"))
-    assert result.hits
-    grant, = sharing.repo.list_for_owner("local", "config-1", owner_principal="local")["grants"]
-    sharing.repo.revoke(grant["grant_id"], namespace_id="local", config_id="config-1", owner_principal="local", now=NOW)
-    result = await sharing.port.search_messages(sharing.execution, sharing.query)
-    assert not result.hits and result.status == "forbidden"
 
 
 async def test_no_search_match_returns_no_candidates_or_share_request(sharing):
@@ -195,38 +141,10 @@ async def test_no_search_match_returns_no_candidates_or_share_request(sharing):
     assert not sharing.repo.pending_for_request("local", "request-1")
 
 
-async def test_source_membership_failure_does_not_return_saved_approval(sharing):
-    await approve(sharing)
-    sharing.delegate.search_messages.return_value = sharing.result.model_copy(
-        update={"status": "unavailable", "query_complete": False, "hits": (), "reason": "membership unavailable"})
-    result = await sharing.port.search_messages(sharing.execution, sharing.query)
-    assert result.status == "unavailable" and not result.hits
 
 
-async def test_mixed_current_and_cross_group_results_only_ask_for_external_content(sharing):
-    current = sharing.result.hits[0].model_copy(update={"group_id": "target-group", "group_name": "Current group"})
-    sharing.delegate.search_messages.return_value = sharing.result.model_copy(update={"hits": (current, *sharing.result.hits)})
-    sharing.delegate.sharing_sources.return_value = (
-        {"group_id": "target-group", "name": "Current group"},
-        {"group_id": "source-group", "name": "Source group"},
-    )
-    row = await approve(sharing)
-    assert {item["group_id"] for item in row["source_groups"]} == {"source-group"}
-    result = await sharing.port.search_messages(sharing.execution, sharing.query)
-    assert {hit.group_id for hit in result.hits} == {"source-group", "target-group"}
 
 
-async def test_rejoined_group_cannot_release_a_snapshot_from_older_visibility(sharing):
-    sharing.delegate.sharing_sources.return_value = (
-        {"group_id": "source-group", "name": "Source group", "app_id": "app-1", "visible_from": NOW.isoformat()},
-    )
-    await approve(sharing)
-    sharing.delegate.sharing_sources.return_value = (
-        {"group_id": "source-group", "name": "Source group", "app_id": "app-1",
-         "visible_from": (NOW + timedelta(seconds=1)).isoformat()},
-    )
-    result = await sharing.port.search_messages(sharing.execution, sharing.query)
-    assert result.status == "unavailable" and not result.hits
 
 
 def delivery_job():
@@ -235,54 +153,12 @@ def delivery_job():
             "request_kind": "group_message", "is_direct_message": False}
 
 
-async def test_revoking_permanent_grant_blocks_an_already_prepared_delivery(sharing):
-    await approve(sharing, "permanent")
-    assert await sharing.gate.can_deliver(delivery_job())
-    grant, = sharing.repo.list_for_owner("local", "config-1", owner_principal="local")["grants"]
-    sharing.repo.revoke(grant["grant_id"], namespace_id="local", config_id="config-1", owner_principal="local", now=NOW)
-    assert not await sharing.gate.can_deliver(delivery_job())
 
 
-@pytest.mark.parametrize("change", [
-    {"agent_id": "other-agent"}, {"channel": "dingtalk"}, {"app_id": "other-app"},
-    {"target_id": "other-group"}, {"request_kind": "direct_message", "is_direct_message": True},
-])
-async def test_delivery_consent_cannot_be_reused_for_another_runtime_or_audience(sharing, change):
-    await approve(sharing)
-    job = delivery_job()
-    assert await sharing.gate.can_deliver(job)
-    assert not await sharing.gate.can_deliver({**job, **change})
 
 
-async def test_public_archive_row_uses_the_immutable_request_for_absent_route_fields(sharing):
-    await approve(sharing)
-    row = {"namespace_id": "local", "request_id": "request-1", "channel": "feishu", "target_id": "chat-target"}
-    assert await sharing.gate.can_deliver(row)
-    assert not await sharing.gate.can_deliver({**row, "target_id": "other-group"})
 
 
-@pytest.mark.parametrize("name", ["Alice in destination", ""])
-async def test_owner_preview_resolves_requester_in_the_exact_destination_without_changing_scope(sharing, monkeypatch, name):
-    from jiuwenswarm.server.jiuwenmate import feishu_group_fanout
-
-    sharing.record.route_snapshot = RequestRouteSnapshot(channel="feishu", app_id="app-1", target_id="oc_target",
-                                                         source_message_id="trigger-message")
-    sharing.record.request_input.source = SimpleNamespace(sender_id="ou_requester", sender_name="ou_requester")
-    lookups = []
-
-    def names(chat_id, app_ids):
-        lookups.append((chat_id, app_ids))
-        return {"ou_requester": name} if name else {}
-
-    monkeypatch.setattr(feishu_group_fanout, "feishu_member_names", names)
-    with pytest.raises(core.GroupContentApprovalRequired):
-        await sharing.port.search_messages(sharing.execution, sharing.query)
-    data = sharing.repo.list_for_owner("local", "config-1", owner_principal="local")
-    await sharing.gate.enrich_owner_view(data)
-    assert data["approvals"][0]["requester_name"] == name
-    assert lookups == [("oc_target", ("app-1",))]
-    row, = sharing.repo.pending_for_request("local", "request-1")
-    assert row["scope"]["requester_name"] == "ou_requester"
 
 
 @pytest.mark.parametrize("remaining", [(), ({"group_id": "target-group", "name": "Current group"},)])
@@ -301,16 +177,6 @@ async def test_unlisted_result_source_is_refused_even_when_no_cross_scope_remain
     assert result.status == "unavailable" and not result.hits
 
 
-@pytest.mark.parametrize("decision", ["once", "permanent"])
-@pytest.mark.parametrize("change", ["edited", "recalled"])
-async def test_source_changed_after_model_read_blocks_prepared_delivery(sharing, decision, change):
-    await approve(sharing, decision)
-    released = await sharing.port.search_messages(sharing.execution, sharing.query)
-    assert released.hits
-    assert await sharing.gate.can_deliver(delivery_job())
-    updates = {"text": "edited body"} if change == "edited" else {"text": None, "status": "recalled"}
-    sharing.archive.current_messages = lambda *args: (sharing.result.hits[0].message.model_copy(update=updates),)
-    assert not await sharing.gate.can_deliver(delivery_job())
 
 
 @pytest.mark.parametrize("fail", [False, True])

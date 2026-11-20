@@ -20,8 +20,6 @@ export interface ToastConfig {
   duration?: number;
   /** 视觉变体：info 为 toast 专用底色（连接状态/目录缓存提示类），success/warning/error 分别为绿色勾、琥珀色警告、红色描边 + 对应图标。 */
   variant?: ToastVariant;
-  /** 长文案场景按条加宽（如「请先手动停止」这类操作指引被单行省略截断时）；只影响该条 toast。 */
-  wide?: boolean;
   /** 自定义左侧图标；传入后覆盖 variant 默认图标。 */
   icon?: ReactNode;
   /** 弹出位置，默认 'center'（顶部居中）；同位置的条目各归各的堆叠列。 */
@@ -47,7 +45,6 @@ export interface ToastRecord {
   actions: ToastAction[];
   durationMs: number;
   variant: ToastVariant;
-  wide?: boolean;
   icon?: ReactNode;
   position: ToastPosition;
   testId?: string;
@@ -134,7 +131,6 @@ function buildRecord(config: ToastConfig, key: number): ToastRecord {
     actions: config.actions ?? [],
     durationMs: (config.duration ?? DEFAULT_DURATION_SECONDS) * 1000,
     variant: config.variant ?? 'default',
-    wide: config.wide,
     icon: config.icon,
     position: config.position ?? 'center',
     testId: config.testId,

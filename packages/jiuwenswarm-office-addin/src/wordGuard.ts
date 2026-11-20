@@ -3,7 +3,9 @@
  * shares (the Normal template and the other templates, their building blocks, the list gallery, the master list of
  * sources), open or create other documents, or bring in content that Word fetches from another file, program or
  * computer. The industry add-in asks the user in its pane for these; the approval here is the backend's, before
- * the call, so the pane refuses them outright. The runner already keeps the network APIs out of reach.
+ * the call, so the pane refuses them outright. The runner already keeps the network APIs out of reach. On WPS
+ * Writer the same holds for ``execute_wps_js`` over the VBA-style object model, which also keeps the application,
+ * files and hyperlinks out of reach (``WPS_WRITER_UNREACHABLE``).
  */
 import type { HostWrite } from './officeCodeRunner';
 
@@ -38,6 +40,45 @@ export function screenWordWrite({ path, name, values }: HostWrite): string | und
   const markup = /^insert(?:Ooxml|Html)$/.test(name);
   if (markup && values.some(value => typeof value === 'string' && FETCHING_MARKUP.test(value))) {
     return 'The inserted content would make Word fetch from another file, program or address.';
+  }
+  return undefined;
+}
+
+/**
+ * What ``execute_wps_js`` code may not reach from a document, lower-cased: the application and the way back to it
+ * (``Parent``), the templates every document shares, other files and programs, hyperlinks and mail, and saving,
+ * printing or closing.
+ */
+export const WPS_WRITER_UNREACHABLE: ReadonlySet<string> = new Set(['application', 'parent', 'attachedtemplate',
+  'normaltemplate', 'templates', 'listtemplategalleries', 'bibliography', 'buildingblockentries', 'hyperlinks',
+  'followhyperlink', 'doclick', 'insertfile', 'addpicture', 'addoleobject', 'addolecontrol', 'linkformat', 'mailmerge',
+  'sendmail', 'sendfax', 'save', 'saveas', 'saveas2', 'savecopyas', 'exportasfixedformat', 'printout',
+  'printpreview', 'close', 'reload', 'compare', 'run', 'vbproject', 'filesystem', 'env', 'shell']);
+/** ``WdFieldType`` of the fields above, and of a hyperlink, which is kept out of reach too. */
+const FETCHING_FIELD_TYPES = new Set([36, 45, 46, 55, 56, 67, 68, 88]);
+const FETCHING_FIELD_CODE = /^\s*(?:INCLUDE|INCLUDETEXT|INCLUDEPICTURE|LINK|DDE|DDEAUTO|IMPORT|HYPERLINK)\b/i;
+
+/**
+ * The runner's screen for WPS Writer: another file merged in, and fields and inserted markup that fetch from outside
+ * the document.
+ */
+export function screenWpsWriterWrite({ path, name, values }: HostWrite): string | undefined {
+  // A table's cells merge with a cell; a document merges with a file, named by its path.
+  if (/^merge$/i.test(name) && typeof values[0] === 'string') {
+    return 'Code here works on this document only; it cannot read another file into it.';
+  }
+  const field = /^add$/i.test(name) && /^fields$/i.test(path.at(-1) ?? '');
+  if ((field && FETCHING_FIELD_TYPES.has(Number(values[1])))
+    || ((field || path.some(step => /^(?:fields|code)$/i.test(step)))
+      && values.some(value => typeof value === 'string' && FETCHING_FIELD_CODE.test(value)))) {
+    return 'The field would make WPS fetch content from another file, program or address.';
+  }
+  if (/^insertxml$/i.test(name) && values.some(value => typeof value === 'string' && FETCHING_MARKUP.test(value))) {
+    return 'The inserted content would make WPS fetch from another file, program or address.';
+  }
+  // Updating runs every field in reach, including ones already in the document that fetch from outside it.
+  if (/^update(?:source)?$/i.test(name) && path.some(step => /^fields?$/i.test(step))) {
+    return 'Fields cannot be updated here: one may fetch content from another file, program or address.';
   }
   return undefined;
 }

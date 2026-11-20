@@ -265,7 +265,17 @@ export class FakeWorkbook {
     this.active = this.sheets[0];
   }
 
-  readonly run: ExcelRun = batch => batch(this.context as unknown as Excel.RequestContext);
+  /** Set while the user types in a cell: Excel refuses every request, and holds a run with ``delayForCellEdit``. */
+  cellLeft?: Promise<void>;
+
+  readonly run: ExcelRun = batch => (this.cellLeft
+    ? Promise.reject(Object.assign(new Error('The cell is being edited.'), { code: 'InvalidOperationInCellEditMode' }))
+    : batch(this.context as unknown as Excel.RequestContext));
+
+  readonly delayedRun: ExcelRun = async batch => {
+    await this.cellLeft;
+    return batch(this.context as unknown as Excel.RequestContext);
+  };
 
   sheet(name: string): FakeSheet {
     return this.sheets.find(sheet => sheet.name === name)!;
@@ -306,7 +316,11 @@ class FakeWorkbookApi extends Loadable {
 
   get name(): string { return this.book.name; }
   get worksheets(): FakeWorksheets { return this.book.worksheets; }
+  /** Excel cannot read the selected ranges while a chart is selected: the next ``sync`` fails. */
   getSelectedRanges() {
+    if (this.book.chart) {
+      this.book.context.failNextSync(new Error('The current selection is invalid for this operation.'));
+    }
     return { address: this.book.selection, load() {} };
   }
   getActiveChartOrNullObject() {
@@ -317,6 +331,16 @@ class FakeWorkbookApi extends Loadable {
 }
 
 class FakeContext {
+  private failure?: Error;
   constructor(readonly workbook: FakeWorkbookApi) {}
-  async sync(): Promise<void> {}
+
+  failNextSync(error: Error): void {
+    this.failure = error;
+  }
+
+  async sync(): Promise<void> {
+    const { failure } = this;
+    this.failure = undefined;
+    if (failure) throw failure;
+  }
 }

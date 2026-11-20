@@ -19,8 +19,11 @@ generated: true
 | [docs](#module-docs) |
 | [jiuwenswarm](#module-jiuwenswarm) |
 | [jiuwenswarm/agents/harness/common](#module-jiuwenswarm-agents-harness-common) |
+| [jiuwenswarm/agents/harness/team](#module-jiuwenswarm-agents-harness-team) |
 | [jiuwenswarm/channels/web/frontend](#module-jiuwenswarm-channels-web-frontend) |
+| [jiuwenswarm/channels/web/frontend/src/features/settings](#module-jiuwenswarm-channels-web-frontend-src-features-settings) |
 | [jiuwenswarm/common](#module-jiuwenswarm-common) |
+| [jiuwenswarm/common/config_panel](#module-jiuwenswarm-common-config_panel) |
 | [jiuwenswarm/extensions/app_market](#module-jiuwenswarm-extensions-app_market) |
 | [jiuwenswarm/gateway/channel_manager/web](#module-jiuwenswarm-gateway-channel_manager-web) |
 | [jiuwenswarm/observability](#module-jiuwenswarm-observability) |
@@ -28,10 +31,12 @@ generated: true
 | [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin](#module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin) |
 | [jiuwenswarm/runtime](#module-jiuwenswarm-runtime) |
 | [jiuwenswarm/server](#module-jiuwenswarm-server) |
+| [jiuwenswarm/server/control](#module-jiuwenswarm-server-control) |
 | [jiuwenswarm/server/runtime](#module-jiuwenswarm-server-runtime) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-jiuwenswarm-server-runtime-agent_adapter) |
 | [jiuwenswarm/server/runtime/session](#module-jiuwenswarm-server-runtime-session) |
 | [jiuwenswarm/server/runtime/skill](#module-jiuwenswarm-server-runtime-skill) |
+| [openjiuwen/agent_teams](#module-openjiuwen-agent_teams) |
 
 <a id="module-agent_teams"></a>
 
@@ -88,6 +93,16 @@ generated: true
 | [D-20261103-1123-builtin-skill-catalog](active/D-20261103-1123-builtin-skill-catalog/design.md) | 内置 Skill 总目录与按需加载设计方案 | in-development | kdgmpw | harness | 2026-11-03 |
 | [D-20261104-1141-npc-team-member-sessions](active/D-20261104-1141-npc-team-member-sessions/design.md) | NPC 主从会话与按需搜索工具 | in-development | kdgmpw | harness | 2026-11-04 |
 
+<a id="module-jiuwenswarm-agents-harness-team"></a>
+
+## jiuwenswarm/agents/harness/team
+
+### 开发中 (active)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261111-1722-team-goal-config](active/D-20261111-1722-team-goal-config/design.md) | Swarm 团队 Goal 配置接入方案 | in-development | alan_cheng | harness | 2026-11-11 |
+
 <a id="module-jiuwenswarm-channels-web-frontend"></a>
 
 ## jiuwenswarm/channels/web/frontend
@@ -98,6 +113,16 @@ generated: true
 |---|---|---|---|---|---|
 | [SDD-0026](proposals/SDD-0026-trajectory-observability-web-ui/design.md) | 轨迹观测前端：单 Agent、Subagent 与 Team 多 Agent 轨迹 UI | draft | @alan_cheng | observability | 2026-09-15 |
 
+<a id="module-jiuwenswarm-channels-web-frontend-src-features-settings"></a>
+
+## jiuwenswarm/channels/web/frontend/src/features/settings
+
+### 开发中 (active)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261111-1722-team-goal-config](active/D-20261111-1722-team-goal-config/design.md) | Swarm 团队 Goal 配置接入方案 | in-development | alan_cheng | harness | 2026-11-11 |
+
 <a id="module-jiuwenswarm-common"></a>
 
 ## jiuwenswarm/common
@@ -107,6 +132,16 @@ generated: true
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
 | [D-20261103-1123-builtin-skill-catalog](active/D-20261103-1123-builtin-skill-catalog/design.md) | 内置 Skill 总目录与按需加载设计方案 | in-development | kdgmpw | harness | 2026-11-03 |
+
+<a id="module-jiuwenswarm-common-config_panel"></a>
+
+## jiuwenswarm/common/config_panel
+
+### 开发中 (active)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261111-1722-team-goal-config](active/D-20261111-1722-team-goal-config/design.md) | Swarm 团队 Goal 配置接入方案 | in-development | alan_cheng | harness | 2026-11-11 |
 
 <a id="module-jiuwenswarm-extensions-app_market"></a>
 
@@ -179,6 +214,16 @@ generated: true
 |---|---|---|---|---|---|
 | [D-20261104-1141-npc-team-member-sessions](active/D-20261104-1141-npc-team-member-sessions/design.md) | NPC 主从会话与按需搜索工具 | in-development | kdgmpw | harness | 2026-11-04 |
 
+<a id="module-jiuwenswarm-server-control"></a>
+
+## jiuwenswarm/server/control
+
+### 开发中 (active)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261111-1722-team-goal-config](active/D-20261111-1722-team-goal-config/design.md) | Swarm 团队 Goal 配置接入方案 | in-development | alan_cheng | harness | 2026-11-11 |
+
 <a id="module-jiuwenswarm-server-runtime"></a>
 
 ## jiuwenswarm/server/runtime
@@ -219,3 +264,17 @@ generated: true
 | ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
 |---|---|---|---|---|---|
 | [D-20261103-1123-builtin-skill-catalog](active/D-20261103-1123-builtin-skill-catalog/design.md) | 内置 Skill 总目录与按需加载设计方案 | in-development | kdgmpw | harness | 2026-11-03 |
+
+<a id="module-openjiuwen-agent_teams"></a>
+
+## openjiuwen/agent_teams
+
+### 开发中 (active)
+
+| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
+|---|---|---|---|---|---|
+| [D-20261111-1722-team-goal-config](active/D-20261111-1722-team-goal-config/design.md) | Swarm 团队 Goal 配置接入方案 | in-development | alan_cheng | harness | 2026-11-11 |
+
+## ⚠ 无法解析（已跳过，请运行 validate 修复）
+
+- `active/D-20261116-1201-colleague-swarmchat-membership/design.md` — 文件夹缺少 design.md

@@ -65,3 +65,28 @@ export function describeChatError(
   console.warn('[free-models] chat error', code, rawErrorMsg);
   return t(hintKey);
 }
+
+// 常驻 worker 关闭是 INFO 级生命周期事件。该请求已经交过本轮终结的 chat.final
+// 且当前不在处理时，说明任务已正常收尾，之后的关闭只是进程回收。
+const WORKER_LIFECYCLE_CODES = new Set(['WORKER_CLOSED', 'WORKER_UNSTABLE']);
+
+export interface WorkerLifecycleTurnState {
+  // 会话当前是否仍在处理中。
+  isProcessing: boolean;
+  // 会话当前正在处理的 request_id（未知时为空）。
+  processingRequestId?: string;
+}
+
+export function isFinishedTurnWorkerLifecycleError(
+  payload: { code?: unknown },
+  requestId: string | undefined,
+  finalizedRequestIds: ReadonlySet<string>,
+  turn: WorkerLifecycleTurnState,
+): boolean {
+  const code = typeof payload.code === 'string' ? payload.code : '';
+  if (!WORKER_LIFECYCLE_CODES.has(code) || !requestId) return false;
+  if (!finalizedRequestIds.has(requestId)) return false;
+  // 该请求仍是会话正在跑的这一轮时，关闭就是真实故障：中间段 final 之后
+  // 仍可能继续执行（Goal 续跑、团队多轮），不能把半截结果当成完整结果。
+  return !(turn.isProcessing && turn.processingRequestId === requestId);
+}

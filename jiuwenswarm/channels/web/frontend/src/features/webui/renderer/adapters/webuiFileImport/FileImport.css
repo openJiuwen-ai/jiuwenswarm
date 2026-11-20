@@ -1,0 +1,15 @@
+.webui-file-import {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.webui-file-import__status {
+  font-size: 12px;
+  color: var(--color-text-meta);
+}
+
+.webui-file-import__status--error {
+  color: var(--color-feedback-danger-text);
+}

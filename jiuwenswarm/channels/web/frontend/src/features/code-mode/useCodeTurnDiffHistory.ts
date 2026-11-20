@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { Message, ProjectInfo } from '../../types';
 import { gitClient } from './gitClient';
 import { gitWatchClient } from './gitWatchClient';
@@ -16,6 +17,7 @@ interface UseCodeTurnDiffHistoryOptions {
 }
 
 export function useCodeTurnDiffHistory({ project, sessionId, isProcessing, messages }: UseCodeTurnDiffHistoryOptions) {
+  const { t } = useTranslation();
   const [turns, setTurns] = useState<GitTurnDiff[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -49,11 +51,11 @@ export function useCodeTurnDiffHistory({ project, sessionId, isProcessing, messa
     } catch (nextError) {
       if (requestSequenceRef.current !== requestSequence) return;
       console.warn('[code-mode] Failed to load turn diff history', nextError);
-      setError(nextError instanceof Error ? nextError.message : '加载逐轮修改历史失败');
+      setError(nextError instanceof Error ? nextError.message : t('codeMode.turnChangeErrors.loadHistoryFailed'));
     } finally {
       if (requestSequenceRef.current === requestSequence) setLoading(false);
     }
-  }, [projectId, sessionId]);
+  }, [projectId, sessionId, t]);
 
   useEffect(() => {
     requestSequenceRef.current += 1;
@@ -123,17 +125,17 @@ export function useCodeTurnDiffHistory({ project, sessionId, isProcessing, messa
           turnIndex: result.turn_index,
           status: nextStatus,
         });
-        setTurnChangeNotice(action === 'discard' ? '已撤销修改' : '已重新应用修改');
+        setTurnChangeNotice(action === 'discard' ? t('codeMode.turnChangeErrors.discarded') : t('codeMode.turnChangeErrors.redone'));
         void loadHistory();
       } catch (nextError) {
         if (operationSequenceRef.current !== operationSequence) return;
-        setTurnChangeError({ turnKey, message: turnChangeErrorMessage(nextError, action) });
+        setTurnChangeError({ turnKey, message: turnChangeErrorMessage(nextError, action, t) });
         void loadHistory();
       } finally {
         if (operationSequenceRef.current === operationSequence) setTurnChangeOperation(null);
       }
     },
-    [isProcessing, latestTurn, latestTurnKey, loadHistory, projectId, sessionId],
+    [isProcessing, latestTurn, latestTurnKey, loadHistory, projectId, sessionId, t],
   );
   const discardLatestTurn = useCallback(() => changeLatestTurn('discard'), [changeLatestTurn]);
   const redoLatestTurn = useCallback(() => changeLatestTurn('redo'), [changeLatestTurn]);

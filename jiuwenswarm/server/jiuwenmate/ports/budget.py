@@ -59,7 +59,7 @@ class HostBudgetPort:
         session = self._sessions.get_session(execution.namespace_id, execution.session_id)
         if session.agent_id != execution.agent_id:
             raise PersistentContractError("Session belongs to another Agent")
-        if session.conversation.kind == "group":
+        if session.conversation.kind in ("group", "swarm_group"):
             return BudgetAccountRef("group", session.conversation.key)
         return BudgetAccountRef("agent", execution.agent_id)
 

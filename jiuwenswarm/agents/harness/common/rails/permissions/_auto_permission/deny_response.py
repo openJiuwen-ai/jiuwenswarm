@@ -21,6 +21,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.tool_decision_facts imp
     ToolDecisionFacts,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_decision import DENY_LEVEL
+from jiuwenswarm.agents.harness.common.rails.permissions.persistent_audit import LocalAuditDetails
 from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_stream_metadata import (
     record_reviewer_tool_result_metadata,
 )
@@ -33,6 +34,7 @@ class AutoPermissionDenyResponseMixin:
         *,
         channel_kind: str,
         audit_extra: dict[str, object],
+        local_details: LocalAuditDetails | None = None,
     ) -> tuple[Any, str]:
         metadata = _reviewer_ui_metadata(
             facts,
@@ -48,6 +50,7 @@ class AutoPermissionDenyResponseMixin:
             reason="reviewer_deny",
             degraded=False,
             extra=metadata,
+            local_details=local_details,
         )
         response = _denied_permission_response("reviewer_deny", metadata)
         denial_summary = str(

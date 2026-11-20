@@ -1,0 +1,34 @@
+.root {
+  flex: 0 1 auto;
+  max-height: 55%;
+  overflow: auto;
+  min-height: 30px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+  background: var(--dsw-alias-bg-layer-1);
+  color: var(--dsw-alias-label-primary);
+  font: var(--dsw-font-xxs-12);
+}
+
+.heading,
+.note {
+  padding: 6px 12px;
+  margin: 0;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.assessment > summary {
+  cursor: pointer;
+  padding: 8px 12px;
+  border-top: 1px solid var(--dsw-alias-border-l2);
+}
+
+.assessment > summary > span {
+  margin-right: 12px;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  height: 340px;
+  min-height: 160px;
+}

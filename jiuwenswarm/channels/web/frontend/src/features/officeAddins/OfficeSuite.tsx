@@ -18,6 +18,7 @@ import {
   installOfficeSuite,
   removeOfficeSuite,
   suiteState,
+  type AppId,
   type AppStatus,
   type SuiteId,
   type SuiteState,
@@ -106,6 +107,12 @@ function StatusLabel({ status, testId }: { status: AppStatus; testId: string }) 
       {t(`officeAddins.appStatus.${status}`)}
     </span>
   );
+}
+
+function AppLogo({ app, className }: { app: AppId; className: string }) {
+  const Logo = APP_LOGOS[app];
+  if (typeof Logo === 'string') return <img src={Logo} alt="" className={className} data-testid="office-addins-logo" />;
+  return <Logo className={`${className} text-text-muted`} aria-hidden="true" data-testid="office-addins-logo" />;
 }
 
 /** The plugin detail page's layout: back link, heading with the suite's apps as tags, problems, then sections. */
@@ -197,7 +204,7 @@ export function OfficeSuiteDetail({
           <EntityTagList
             tags={apps.map((app) => ({
               label: t(`officeAddins.apps.${app}`),
-              icon: <img src={APP_LOGOS[app]} alt="" className="h-4 w-4" data-testid="office-addins-logo" />,
+              icon: <AppLogo app={app} className="h-4 w-4" />,
             }))}
           />
         </div>
@@ -241,7 +248,7 @@ export function OfficeSuiteDetail({
                   data-variant={app}
                   data-status={appState}
                 >
-                  <img src={APP_LOGOS[app]} alt="" className="h-5 w-5 shrink-0" data-testid="office-addins-logo" />
+                  <AppLogo app={app} className="h-5 w-5 shrink-0" />
                   <span className="min-w-0 flex-1 text-text">{t(`officeAddins.apps.${app}`)}</span>
                   <StatusLabel status={appState} testId="office-addins-app-status" />
                 </li>
@@ -295,7 +302,7 @@ export function OfficeSuiteDetail({
             <h2 id={confirmTitleId} className="text-[15px] font-semibold text-text-strong">
               {t(`officeAddins.confirm.${confirming}`, { name: title })}
             </h2>
-            <p className="text-[13px] leading-5 text-text-muted">{t('officeAddins.confirm.trustNotice')}</p>
+            <p className="text-[13px] leading-5 text-text-muted">{t(`officeAddins.suites.${suite}.installNotice`)}</p>
             <div className="flex justify-end gap-2">
               <Button size="sm" onClick={() => setConfirming(null)} data-testid="office-addins-confirm-cancel">
                 {t('common.cancel')}
@@ -319,7 +326,7 @@ export function OfficeSuiteDetail({
       {confirming === 'remove' && (
         <ConfirmDialog
           title={t('officeAddins.confirm.remove', { name: title })}
-          message={t('officeAddins.confirm.removeNotice')}
+          message={t(`officeAddins.suites.${suite}.removeNotice`)}
           confirmLabel={t('officeAddins.actions.remove')}
           busy={pending === 'remove'}
           onCancel={() => setConfirming(null)}

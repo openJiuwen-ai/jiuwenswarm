@@ -1,0 +1,108 @@
+/* Above the workspace and every modal; the entry dialog waits for the gate. */
+.webui-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483646;
+  overflow: hidden;
+}
+
+/* Matches the Electron loading page and the first-paint layer in index.html. */
+.webui-splash[data-look='neutral'] {
+  background: #0f172a;
+  color: #f1f5f9;
+}
+
+.webui-splash[data-look='plain'] {
+  background: var(--color-surface-page);
+}
+
+.webui-splash__surface,
+.webui-splash__instance {
+  position: absolute;
+  inset: 0;
+}
+
+.webui-splash__neutral {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+}
+
+.webui-splash__logo {
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+}
+
+.webui-splash__name {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+}
+
+.webui-splash__spinner {
+  width: 32px;
+  height: 32px;
+  border: 3px solid rgba(148, 163, 184, 0.2);
+  border-top-color: #60a5fa;
+  border-radius: 50%;
+  animation: webui-splash-spin 1.5s linear infinite;
+}
+
+@keyframes webui-splash-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .webui-splash__spinner {
+    animation: none;
+  }
+}
+
+/* The splash plays over its own content, so the hint keeps a fixed dark pill for contrast. */
+.webui-splash__skip {
+  position: absolute;
+  right: 24px;
+  bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 14px 6px 6px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.55);
+  color: #f8fafc;
+  font: 13px -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+}
+
+.webui-splash__ring {
+  width: 22px;
+  height: 22px;
+  transform: rotate(-90deg);
+}
+
+.webui-splash__ring circle {
+  fill: none;
+  stroke-width: 3;
+}
+
+.webui-splash__ring-track {
+  stroke: rgba(248, 250, 252, 0.25);
+}
+
+.webui-splash__ring-value {
+  stroke: #f8fafc;
+  stroke-linecap: round;
+}

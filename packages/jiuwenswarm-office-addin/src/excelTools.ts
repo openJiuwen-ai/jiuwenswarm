@@ -38,8 +38,11 @@ class Refused extends Error {
 interface Options {
   run: ExcelRun;
   host: OfficeHost;
-  /** The enums ``execute_office_js`` code sees as ``Excel``. */
-  enums: Record<string, Readonly<Record<string, string>>>;
+  /**
+   * The enums ``execute_office_js`` code sees as ``Excel``; absent on a host that runs no Office.js (WPS), which
+   * then has no ``execute_office_js``.
+   */
+  enums?: Record<string, Readonly<Record<string, string>>>;
   /** The current sheet, selection and chart, as ``read_surface_context`` returns them. */
   surface: () => Promise<string>;
   /** The queue the writes run in, told where each wrote. */
@@ -52,11 +55,11 @@ export function excelRuntime(options: Options): ClientToolRuntime<ExcelToolName>
     get_range_as_csv: input => options.run(context => readCsv(context, input)),
     set_cell_range: input => options.run(context => writeCells(context, input, options.host, options.writes)),
     copy_paste_range: input => options.run(context => copyRange(context, input, options.writes)),
-    execute_office_js: input => runCode(String(input.code), options),
+    execute_office_js: input => runCode(String(input.code), options, options.enums!),
     read_surface_context: async () => ({ ok: true, result: await options.surface() }),
   };
   return {
-    tools: new Set(EXCEL_TOOL_NAMES),
+    tools: new Set(EXCEL_TOOL_NAMES.filter(name => name !== 'execute_office_js' || options.enums)),
     execute: async ({ toolName, input }) => {
       try {
         return await tools[toolName](input);
@@ -72,9 +75,12 @@ export function excelRuntime(options: Options): ClientToolRuntime<ExcelToolName>
 }
 
 /** The code, telling the queue the ranges it wrote to. */
-async function runCode(code: string, { run, enums, writes }: Options): Promise<ClientToolResponse> {
+async function runCode(
+  code: string, { run, writes }: Options, enums: NonNullable<Options['enums']>,
+): Promise<ClientToolResponse> {
   const ranges: Excel.Range[] = [];
-  const response = await runOfficeCode({ name: 'Excel', run: run as CodeHost['run'], enums, screen: screenExcelWrite,
+  const response = await runOfficeCode({ name: 'Excel', run: run as CodeHost['run'], globals: { Excel: enums },
+    screen: screenExcelWrite,
     // Loaded ahead of the write, the address is the range's as the write found it, whatever the write does to it.
     writing: target => 'address' in target && ranges.push((target as Excel.Range).load('address')) }, code);
   for (const range of ranges) {

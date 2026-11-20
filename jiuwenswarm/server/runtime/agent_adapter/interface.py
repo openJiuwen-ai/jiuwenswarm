@@ -86,6 +86,7 @@ from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import (
 from jiuwenswarm.enterprise import is_enterprise
 from jiuwenswarm.common.chat_final import ensure_final_mode_inplace
 from jiuwenswarm.common.config import get_config
+from jiuwenswarm.common.runtime_workspace import RuntimeWorkspacePaths
 from jiuwenswarm.common.context_keys import (
     JIUWENSWARM_CHANNEL_CONTEXT_KEY,
     JIUWENSWARM_SKIP_A2UI_CONTEXT_KEY,
@@ -137,6 +138,7 @@ from jiuwenswarm.server.runtime.agent_adapter.team_member_stream_history import 
     TeamMemberStreamHistory,
     team_member_stream_key,
 )
+from jiuwenswarm.server.runtime.agent_adapter.prompt_context import prepare_prompt_context
 from jiuwenswarm.server.runtime.agent_adapter.user_turn import (
     TEAM_USER_TURN_KEY,
     UserTurn,
@@ -144,6 +146,7 @@ from jiuwenswarm.server.runtime.agent_adapter.user_turn import (
 from jiuwenswarm.server.runtime.session.history_io import (
     run_history_io as _run_history_io,
 )
+from jiuwenswarm.server.runtime.session.history_context import history_context_request, history_context_stream
 from jiuwenswarm.server.runtime.session.session_history import (
     SESSION_REQUEST_COMPLETED_EVENT,
     append_compact_history_records,
@@ -1550,6 +1553,10 @@ _STATUSLINE_PROMPT_REGEX = re.compile(
 # to every parent-agent user turn.
 _STATUSLINE_SETUP_PROMPT = STATUSLINE_SETUP_SYSTEM_PROMPT
 
+# Private marker used by the async canonical builder before prompt.context has
+# completed. It must never cross the adapter boundary.
+_DEFERRED_PROMPT = object()
+
 
 def _handle_skills_use_slash_command(query: str) -> Tuple[list, str]:
     """Handle the /skills use slash command"""
@@ -2013,10 +2020,57 @@ class JiuWenSwarm:
         )
 
     def build_inputs(self, request: AgentRequest) -> Tuple[dict[str, Any], str, UserTurn]:
-        """构建 adapter 所需的 inputs 字典（公共接口）."""
+        """Build inputs for legacy synchronous callers.
+
+        Production AgentServer paths use :meth:`build_inputs_async` so the
+        prompt.context event completes before the user turn is rendered.
+        """
         return self._build_inputs(request)
 
-    def _build_inputs(self, request: AgentRequest) -> Tuple[dict[str, Any], str, UserTurn]:
+    async def build_inputs_async(
+        self,
+        request: AgentRequest,
+    ) -> Tuple[dict[str, Any], str, UserTurn]:
+        """Build inputs through the event-aware asynchronous canonical path."""
+        return await self._build_inputs_async(request)
+
+    async def _build_inputs_async(
+        self,
+        request: AgentRequest,
+    ) -> Tuple[dict[str, Any], str, UserTurn]:
+        """Build inputs after preparing the turn's prompt.context collection."""
+        try:
+            inputs, memory_mode, turn = self._build_inputs(request, render_prompt=False)
+        except TypeError as exc:
+            # Keep test doubles and downstream subclasses that still expose the
+            # pre-event one-argument override working; they already return a
+            # rendered query and cannot participate in deferred preparation.
+            if "render_prompt" not in str(exc):
+                raise
+            inputs, memory_mode, turn = self._build_inputs(request)
+        if inputs.get("query") is _DEFERRED_PROMPT:
+            raw_cwd = inputs.get("cwd")
+            cwd = raw_cwd if isinstance(raw_cwd, str) else None
+            turn = await prepare_prompt_context(turn, request, cwd=cwd)
+            inputs["query"] = turn.render()
+            if isinstance(turn.text, str) and "/statusline" in turn.text:
+                logger.info(
+                    "[_build_inputs][STATUSLINE] 原始 query=%s, 最终 prompt 长度=%d, "
+                    "包含 statusline-setup 调度=%s",
+                    turn.text[:200],
+                    len(inputs["query"]) if isinstance(inputs["query"], str) else 0,
+                    "statusline-setup" in inputs["query"]
+                    if isinstance(inputs["query"], str)
+                    else False,
+                )
+        return inputs, memory_mode, turn
+
+    def _build_inputs(
+        self,
+        request: AgentRequest,
+        *,
+        render_prompt: bool = True,
+    ) -> Tuple[dict[str, Any], str, UserTurn]:
         """构建 adapter 所需的 inputs 字典.
 
         Returns:
@@ -2174,19 +2228,24 @@ class JiuWenSwarm:
                 if interactive_input is not None:
                     final_query = interactive_input
                     turn = turn.with_text(interactive_input)
-                else:
+                elif render_prompt:
                     final_query = turn.render()
+                else:
+                    final_query = _DEFERRED_PROMPT
             else:
-                final_query = turn.render()
-                # 调试日志：确认 /statusline 是否已改写为内置子代理调度
-                if isinstance(query, str) and "/statusline" in query:
-                    logger.info(
-                        "[_build_inputs][STATUSLINE] 原始 query=%s, 最终 prompt 长度=%d, "
-                        "包含 statusline-setup 调度=%s",
-                        query[:200],
-                        len(final_query) if isinstance(final_query, str) else 0,
-                        "statusline-setup" in final_query if isinstance(final_query, str) else False,
-                    )
+                if render_prompt:
+                    final_query = turn.render()
+                    # 调试日志：确认 /statusline 是否已改写为内置子代理调度
+                    if isinstance(query, str) and "/statusline" in query:
+                        logger.info(
+                            "[_build_inputs][STATUSLINE] 原始 query=%s, 最终 prompt 长度=%d, "
+                            "包含 statusline-setup 调度=%s",
+                            query[:200],
+                            len(final_query) if isinstance(final_query, str) else 0,
+                            "statusline-setup" in final_query if isinstance(final_query, str) else False,
+                        )
+                else:
+                    final_query = _DEFERRED_PROMPT
 
         inputs: dict[str, Any] = {
             "conversation_id": request.session_id,
@@ -2301,7 +2360,7 @@ class JiuWenSwarm:
                     timestamp=request.timestamp,
                     metadata={**(request.metadata or {}), "skip_a2ui": True},
                 )
-                retry_inputs, _, _ = self._build_inputs(modified_request)
+                retry_inputs, _, _ = await self._build_inputs_async(modified_request)
                 retry_inputs["_invoke_turn_id"] = request.request_id
                 result = await adapter.process_message_impl(modified_request, retry_inputs)
                 if result.ok and result.payload.get("content"):
@@ -2356,7 +2415,7 @@ class JiuWenSwarm:
                     timestamp=request.timestamp,
                     metadata={**(request.metadata or {}), "skip_a2ui": True},
                 )
-                retry_inputs, _, _ = self._build_inputs(modified_request)
+                retry_inputs, _, _ = await self._build_inputs_async(modified_request)
                 retry_inputs["_invoke_turn_id"] = request.request_id
                 result = await adapter.process_message_impl(modified_request, retry_inputs)
                 if result.ok and result.payload.get("content"):
@@ -2993,7 +3052,7 @@ class JiuWenSwarm:
                 metadata=metadata,
             )
             adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(chat_request))
-            inputs, _, _ = self._build_inputs(chat_request)
+            inputs, _, _ = await self._build_inputs_async(chat_request)
             silent_token = SKILLS_REBUILD_SILENT.set(True)
             try:
                 async for _chunk in adapter.process_message_stream_impl(chat_request, inputs):
@@ -3126,7 +3185,7 @@ class JiuWenSwarm:
                 input_file=input_file,
             )
             adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(chat_request))
-            inputs, _, _ = self._build_inputs(chat_request)
+            inputs, _, _ = await self._build_inputs_async(chat_request)
             async for _chunk in adapter.process_message_stream_impl(chat_request, inputs):
                 pass
 
@@ -3226,7 +3285,10 @@ class JiuWenSwarm:
             elif method == ReqMethod.AGENT_GROUPS_IMPORT_LOCAL:
                 payload = package_manager.import_agent_group(params)
             elif method == ReqMethod.AGENT_GROUPS_INSTALL:
-                await package_manager.install_agent_group_with_hub(params)
+                await asyncio.wait_for(
+                    package_manager.install_agent_group_with_hub(params),
+                    timeout=220,
+                )
                 payload = {}
             elif method == ReqMethod.AGENT_GROUPS_UNINSTALL:
                 from jiuwenswarm.server.runtime.organization_packages import (
@@ -3596,6 +3658,7 @@ class JiuWenSwarm:
         plan_language = str(params.get("plan_language") or "").strip().lower()
         return plan_language in {"cn", "en"}
 
+    @history_context_request
     async def process_message(self, request: AgentRequest) -> AgentResponse:
         """Process a request through the facade-owned Session scheduler."""
         from jiuwenswarm.enterprise.capabilities.experts.request_packages import bind_request_subject
@@ -3836,7 +3899,7 @@ class JiuWenSwarm:
         )
 
         try:
-            inputs, memory_mode, user_turn = self._build_inputs(request)
+            inputs, memory_mode, user_turn = await self._build_inputs_async(request)
         except asyncio.CancelledError:
             _schedule_feedback_once("cancelled")
             raise
@@ -4040,7 +4103,7 @@ class JiuWenSwarm:
             raise RuntimeError("active agent does not support supplemental input")
         session_id = self._session_manager.get_session_id(request.session_id)
         restore_chat_send_equipment_params(session_id, request.params)
-        inputs, _memory_mode, _user_turn = self._build_inputs(request)
+        inputs, _memory_mode, _user_turn = await self._build_inputs_async(request)
         history_persisted = False
         async with aclosing(deliver(request, inputs)) as stream:
             async for chunk in stream:
@@ -4104,7 +4167,7 @@ class JiuWenSwarm:
         session_id = self._session_manager.get_session_id(request.session_id)
         params = request.params if isinstance(request.params, dict) else {}
         restore_chat_send_equipment_params(session_id, params)
-        inputs, _memory_mode, _user_turn = self._build_inputs(request)
+        inputs, _memory_mode, _user_turn = await self._build_inputs_async(request)
         await self.reconcile_session_mcp(
             request.session_id,
             compute_chat_send_mcp_needed(params),
@@ -4388,6 +4451,7 @@ class JiuWenSwarm:
             mode=request.params.get("mode", "unknown") if isinstance(request.params, dict) else "unknown",
         )
 
+    @history_context_stream
     async def process_message_stream(
         self, request: AgentRequest
     ) -> AsyncIterator[AgentResponseChunk]:
@@ -4603,7 +4667,7 @@ class JiuWenSwarm:
         )
 
         try:
-            inputs, memory_mode, user_turn = self._build_inputs(request)
+            inputs, memory_mode, user_turn = await self._build_inputs_async(request)
         except asyncio.CancelledError:
             _schedule_feedback_once("cancelled")
             raise
@@ -6298,6 +6362,8 @@ class JiuWenSwarm:
             *,
             return_state: bool = False,
             processor_types: list[str] | None = None,
+            # TODO(compact): Reserve instructions until native integration resumes.
+            # instructions: str | None = None,
     ) -> dict[str, Any]:
         """主动触发上下文压缩。
 
@@ -6319,6 +6385,7 @@ class JiuWenSwarm:
             session=session,
             return_state=return_state,
             processor_types=processor_types,
+            # instructions=instructions,
         )
 
     async def get_context_usage(self, session_id: str) -> dict[str, Any]:
@@ -6473,6 +6540,11 @@ class JiuWenSwarm:
     async def pending_interactions(self, session_id: str) -> list[dict[str, Any]]:
         """What this Session's paused turn still asks, as the events that asked it."""
         return await self._adapter.pending_interactions(session_id) if self._adapter is not None else []
+
+    def get_session_workspace_paths(self, session_id: str) -> RuntimeWorkspacePaths | None:
+        """Inspect an already-bound session without initializing an adapter."""
+        getter = getattr(self._adapter, "get_session_workspace_paths", None)
+        return getter(session_id) if callable(getter) else None
 
     def has_auto_permission_session(self, session_id: str | None) -> bool:
         adapter = self._adapter

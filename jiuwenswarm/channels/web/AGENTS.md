@@ -144,6 +144,7 @@
 | `components/ModelProviderIcon` | `model-provider-icon` | 模型供应商图标 |
 | `components/Switch` | `switch` | 通用开关(无透传,调用处编号兜底,自身不加) |
 | `components/ui/PageCard` | `page-card` | 通用卡片;卡片右上角浮现主操作按钮(defaultButton) |
+| `components/ui/EntityHeader` | `entity-header` | 实体头部;标签行与溢出提示 |
 | `features/trajectory` | `trajectory` | 轨迹面板(zip/JSONL 归档流式导入/导出;保留期检查点播种;原始数据检视器;诊断与归因面板 `trajectory-diagnosis-*`) |
 | `features/trajectory` | `single-agent` | 单 Agent 工作台(chat/trajectory 双 tab 切换) |
 | `features/trajectory` | `team-trajectory` | 团队轨迹工作台(泳道视图) |

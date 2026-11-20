@@ -195,8 +195,9 @@ class ResultDeliveryService:
             timeout = self._file_send_timeout if "file" in job else self._send_timeout
             try:
                 gateway_job = dict(job)
-                for field in ("namespace_id", "agent_id", "session_id", "request_kind"):
-                    gateway_job.pop(field, None)
+                if job.get("channel") != "swarmchat":
+                    for field in ("namespace_id", "agent_id", "session_id", "request_kind"):
+                        gateway_job.pop(field, None)
                 ack = await asyncio.wait_for(self._send_delivery(gateway_job), timeout=timeout)
             except TimeoutError:
                 ack = {"outcome": "unknown", "error_code": "ACK_TIMEOUT"}
