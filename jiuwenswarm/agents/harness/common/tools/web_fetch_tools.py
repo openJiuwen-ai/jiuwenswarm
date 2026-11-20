@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 from contextvars import ContextVar
 from html import unescape
+from typing import Any
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import requests
@@ -23,6 +25,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.url_safety import (
     unsafe_public_https_url_reason,
 )
 
+logger = logging.getLogger(__name__)
 _PUBLIC_HTTPS_FETCH: ContextVar[bool] = ContextVar("public_https_fetch", default=False)
 
 
@@ -266,12 +269,23 @@ def _fetch_via_jina_reader_sync(
     }
 
 
+def _extract_trafilatura_title(trafilatura_mod: Any, raw_html: str, url: str) -> str:
+    """Best-effort title extraction via trafilatura metadata."""
+    try:
+        metadata = trafilatura_mod.extract_metadata(raw_html, default_url=url)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.debug("trafilatura metadata extract failed for %s: %s", url, exc)
+        return ""
+    return str(getattr(metadata, "title", "") or "").strip() if metadata else ""
+
+
 def _extract_html_with_trafilatura(raw_html: str, url: str) -> tuple[str, str]:
     """Extract clean article Markdown and title using trafilatura."""
     try:
         # pylint: disable=import-outside-toplevel
         import trafilatura
     except ImportError:
+        logger.debug("trafilatura unavailable; falling back to strip_tags")
         return "", ""
 
     try:
@@ -283,15 +297,14 @@ def _extract_html_with_trafilatura(raw_html: str, url: str) -> tuple[str, str]:
             include_tables=True,
             favor_precision=True,
         )
-        if not extracted or not extracted.strip():
-            return "", ""
-        metadata = trafilatura.extract_metadata(raw_html, default_url=url)
-        meta_title = (
-            str(getattr(metadata, "title", "") or "").strip() if metadata else ""
-        )
-        return extracted.strip(), meta_title
-    except Exception:  # pylint: disable=broad-exception-caught
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.debug("trafilatura extract failed for %s: %s", url, exc)
         return "", ""
+
+    if not extracted or not extracted.strip():
+        return "", ""
+    meta_title = _extract_trafilatura_title(trafilatura, raw_html, url)
+    return extracted.strip(), meta_title
 
 
 def _extract_html_fallback(raw_html: str) -> str:

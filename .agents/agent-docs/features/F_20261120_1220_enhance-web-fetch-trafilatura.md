@@ -7,6 +7,8 @@ author_email: zhuxiangjv@gmail.com
 modules:
   - jiuwenswarm/agents/harness
 files:
+  - pyproject.toml
+  - uv.lock
   - jiuwenswarm/agents/harness/common/tools/web_fetch_tools.py
   - tests/unit_tests/agents/test_web_fetch_article_extraction.py
 designs: []
@@ -23,7 +25,7 @@ design_note: 增强现有 mcp_fetch_webpage 工具的 HTML 正文提取与降噪
 
 为避免与现有工具重复造轮子，不另起新工具名，而是直接在 `web_fetch_tools.py` 中对 `mcp_fetch_webpage` 进行渐进式增强：
 1. **保持工具契约 100% 兼容**：入参 schema 严格保持 `url`、`max_chars`、`timeout_seconds` 不变，完全保留 `_PermissionAwareFetch` 与 `public_https` 安全守卫；
-2. **`trafilatura` 正文优先 + 自动兜底回退**：对 HTML 响应优先使用已有依赖 `trafilatura` 提取 Markdown 正文（含标题与表格），剔除导航/广告/页脚噪音；若HTML 无明显 `<title>` 则从 metadata 回填；当 `trafilatura` 返回空内容（如纯前端 SPA 壳页面）、缺包或抛出异常时，无缝回退至原有的 `strip_tags` 提取逻辑；
+2. **`trafilatura` 正文优先 + 自动兜底回退**：在 `pyproject.toml` 显式声明 `trafilatura>=2.0,<3` 并同步 `uv.lock`；对 HTML 响应优先使用 `trafilatura` 提取 Markdown 正文（含标题与表格），剔除导航/广告/页脚噪音；若 HTML 无明显 `<title>` 则通过独立异常处理从 metadata 回填（确保元数据异常不丢弃已提取正文）；当 `trafilatura` 返回空内容（如纯前端 SPA 壳页面）、缺包或抛出异常时，记录 `debug` 日志并无缝回退至原有的 `strip_tags` 提取逻辑；
 3. **非 HTML 响应透传不变**：`text/plain`、`application/json` 等非 HTML 内容不经过 `trafilatura`，保持原有压缩空白行为。
 
 ## 2. 验证证据

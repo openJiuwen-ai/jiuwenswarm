@@ -66,6 +66,7 @@ def _mock_response(
 
 @pytest.mark.asyncio
 async def test_trafilatura_extracts_clean_markdown_and_strips_noise(monkeypatch) -> None:
+    pytest.importorskip("trafilatura")
     resp = _mock_response(_ARTICLE_URL, _RICH_ARTICLE_HTML)
     monkeypatch.setattr(fetch, "fetch_response", lambda *a, **kw: resp)
 
@@ -188,3 +189,23 @@ async def test_max_chars_clips_markdown_and_schema_unchanged(monkeypatch) -> Non
     result = await fetch.mcp_fetch_webpage.invoke({"url": _ARTICLE_URL, "max_chars": 60})
 
     assert "...[truncated]" in result
+
+
+@pytest.mark.asyncio
+async def test_trafilatura_metadata_error_keeps_extracted_body(monkeypatch) -> None:
+    no_title_html = (
+        "<html><body><article><h1>Body Title</h1>"
+        "<p>Main text.</p></article></body></html>"
+    )
+    resp = _mock_response(_ARTICLE_URL, no_title_html)
+    monkeypatch.setattr(fetch, "fetch_response", lambda *a, **kw: resp)
+    stub_mod = SimpleNamespace(
+        extract=MagicMock(return_value="# Body Title\n\nMain text."),
+        extract_metadata=MagicMock(side_effect=RuntimeError("meta fail")),
+    )
+    monkeypatch.setitem(sys.modules, "trafilatura", stub_mod)
+
+    result = await fetch.mcp_fetch_webpage.invoke({"url": _ARTICLE_URL})
+
+    assert "# Body Title" in result
+    assert "Main text." in result
