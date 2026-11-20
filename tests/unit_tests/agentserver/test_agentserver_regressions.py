@@ -711,7 +711,16 @@ async def test_native_front_control_queries_do_not_load_runtime_dependencies(tmp
                     ws = await connect(f"ws://127.0.0.1:{port}")
                     break
                 except OSError:
-                    ws = None
+                    # CR-10664-01: a partially established websocket (connect ok,
+                    # recv/ack failed) must be closed and cleared so the next
+                    # iteration reconnects from scratch, matching the old
+                    # fixed-count loop semantics.
+                    if ws is not None:
+                        try:
+                            await ws.close()
+                        except Exception:
+                            pass
+                        ws = None
                     await asyncio.sleep(0.05)
             if ws is None:
                 log.flush()
