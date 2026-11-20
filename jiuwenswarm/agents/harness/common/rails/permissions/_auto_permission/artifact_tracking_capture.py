@@ -8,6 +8,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.invoca
     _extract_invocation,
     _host_session_id,
     _host_tool_call_id,
+    _input_value,
     normalize_invocation_tool_args,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
@@ -38,7 +39,7 @@ class AutoPermissionArtifactCaptureMixin:
                     self.session_artifact_paths.complete(
                         key, tool_name=invocation.tool_name,
                         tool_args=normalize_invocation_tool_args(invocation.tool_name, invocation.tool_args),
-                        result=getattr(getattr(invocation.ctx, "inputs", None), "tool_result", None),
+                        result=_input_value(getattr(invocation.ctx, "inputs", None), "tool_result"),
                         exception=getattr(invocation.ctx, "exception", None),
                     )
             except Exception:

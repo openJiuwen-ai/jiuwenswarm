@@ -12821,20 +12821,9 @@ class JiuWenSwarmDeepAdapter:
     def _build_session_permission_group(
         self, config: dict[str, Any], *, smart: bool,
         installed_permissions: dict[str, Any] | None, model_name: str, workspace_root: Any,
+        prepare_only: bool = False,
     ) -> PermissionRailGroup:
         artifact_paths = getattr(self, "_session_artifact_paths", None)
-        if artifact_paths is not None:
-            if smart:
-                permissions = config.get("permissions")
-                raw_auto = permissions.get("auto") if isinstance(permissions, dict) else None
-                auto_options = normalize_auto_permission_options(raw_auto)
-                artifact_paths.configure(
-                    workspace_root,
-                    host_visible=self._artifact_workspace_host_visible(workspace_root),
-                    protected_paths=auto_options.get("bounded_write_excluded_paths", ()),
-                )
-            else:
-                artifact_paths.configure(None, host_visible=False)
         group = build_permission_group(
             config, permission_builder=build_permission_rail,
             permission_inputs={
@@ -12855,7 +12844,27 @@ class JiuWenSwarmDeepAdapter:
         )
         if group.stream_event_rail is not None:
             group.stream_event_rail.project_interruption_snapshots = True
+        if not prepare_only:
+            self._configure_session_artifact_paths(config, smart=smart, workspace_root=workspace_root)
         return group
+
+    def _configure_session_artifact_paths(
+        self, config: dict[str, Any], *, smart: bool, workspace_root: Any,
+    ) -> None:
+        """Publish evidence boundaries for the permission group being installed."""
+        artifact_paths = getattr(self, "_session_artifact_paths", None)
+        if artifact_paths is not None:
+            if smart:
+                permissions = config.get("permissions")
+                raw_auto = permissions.get("auto") if isinstance(permissions, dict) else None
+                auto_options = normalize_auto_permission_options(raw_auto)
+                artifact_paths.configure(
+                    workspace_root,
+                    host_visible=self._artifact_workspace_host_visible(workspace_root),
+                    protected_paths=auto_options.get("bounded_write_excluded_paths", ()),
+                )
+            else:
+                artifact_paths.configure(None, host_visible=False)
 
     def _artifact_workspace_host_visible(self, workspace_root: Any) -> bool:
         """Accept only local files or an existing identity directory bind."""
@@ -13040,6 +13049,7 @@ class JiuWenSwarmDeepAdapter:
                 expected = self._build_session_permission_group(
                     candidate_config, smart=smart, installed_permissions=effective if smart else None,
                     model_name=self._default_model_name, workspace_root=workspace_root,
+                    prepare_only=True,
                 )
                 if global_layer.get("enabled") and expected.permission_rail is None:
                     raise RuntimeError("permission_rail_candidate_unavailable")
@@ -13064,6 +13074,9 @@ class JiuWenSwarmDeepAdapter:
                     snapshot = latest
                     continue
                 # Admission remains closed through validation and publication.
+                self._configure_session_artifact_paths(
+                    candidate_config, smart=smart, workspace_root=workspace_root,
+                )
                 for attr, rail in self._permission_group_bindings(expected).items():
                     setattr(self, attr, rail)
                 self._instance.deep_config.subagents = subagents

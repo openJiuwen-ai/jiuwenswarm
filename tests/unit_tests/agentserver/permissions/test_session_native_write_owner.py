@@ -12,6 +12,9 @@ from openjiuwen.core.sys_operation.sys_operation import OperationMode
 
 from jiuwenswarm.agents.harness.common.rails.permissions.artifact_path_provenance import SessionArtifactPaths
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_permission_rail import AutoPermissionInterruptRail
+from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
+    TOOL_INVOCATION_CONTEXT_ATTRIBUTE,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_decision_facts import build_tool_decision_facts
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_invocation_key import ToolInvocationKeyV1
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
@@ -219,6 +222,59 @@ async def test_work_permission_replacement_retains_evidence_and_disposes_with_se
     h.adapter._sys_operation_card = SimpleNamespace(mode=OperationMode.LOCAL)
     await h.create()
     await _assert_reload_and_dispose(h, monkeypatch, code=False)
+
+
+@pytest.mark.parametrize("success", [True, False])
+async def test_native_write_after_hook_captures_mapping_result(cold, success):
+    h = cold
+    h.adapter._sys_operation_card = SimpleNamespace(mode=OperationMode.LOCAL)
+    await h.create()
+    owner = _assert_installed(h.adapter)
+    sid, root = h.adapter._parent_session_id, h.adapter._permission_workspace_root
+    path = root / "mapping-output.txt"
+    path.write_text("accepted output", encoding="utf-8")
+    args, facts = _file_facts("write_file", path, root)
+    key = _key(sid, "mapping-write")
+    assert owner.stage(key, "write_file", args, facts) == 1
+    ctx = SimpleNamespace(
+        inputs={
+            "tool_name": "write_file",
+            "tool_call": SimpleNamespace(id=key.tool_call_id, name="write_file", arguments=args),
+            "tool_args": args,
+            "tool_result": ToolOutput(success=success, data={"file_path": str(path)}),
+        },
+        session=SimpleNamespace(get_session_id=lambda: sid),
+        extra={},
+    )
+    setattr(ctx, TOOL_INVOCATION_CONTEXT_ATTRIBUTE, key)
+    await h.adapter._permission_rail.after_tool_call(ctx)
+    _, read = _file_facts("read_file", path, root)
+    assert owner.evidence(read, sid) == (_history(path.name) if success else ())
+    assert not owner._pending
+
+
+async def test_failed_permission_group_prepare_preserves_active_write_history(cold, monkeypatch):
+    h = cold
+    adapter = h.adapter
+    adapter._sys_operation_card = SimpleNamespace(mode=OperationMode.LOCAL)
+    await h.create()
+    owner = _assert_installed(adapter)
+    sid, root = adapter._parent_session_id, adapter._permission_workspace_root
+    path, _, _ = _seed(owner, root, sid)
+    _, read = _file_facts("read_file", path, root)
+    old_rail = adapter._permission_rail
+
+    def fail_preparation(*args, **kwargs):
+        raise RuntimeError("test_permission_prepare_failed")
+
+    monkeypatch.setattr(adapter, "_prepare_general_purpose_permission_update", fail_preparation)
+    h.raw["permissions"]["mode"] = "manual"
+    h.change()
+    with pytest.raises(RuntimeError, match="test_permission_prepare_failed"):
+        await adapter._replace_permission_group(h.raw)
+    assert adapter._permission_rail is old_rail
+    assert _assert_installed(adapter) is owner
+    assert owner.evidence(read, sid) == _history(path.name)
 
 
 async def test_code_permission_reload_retains_evidence_and_spec_owner_contract(code_cold, monkeypatch):
