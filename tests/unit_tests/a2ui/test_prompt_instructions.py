@@ -365,6 +365,10 @@ def test_a2ui_officeclaw_component_rules_scoped_by_channel():
         assert "single-select, set maxAllowedSelections to 1" in en
         assert "single-parent" in en
         assert "Do not nest templates" in en
+        # [Text-bold] 在公共段（requested_component）：web channel 也注入，钉住防移回 officeclaw 段
+        assert "[Text-bold]" in en
+        zh = build_a2ui_autonomy_instruction("zh", channel=ch)
+        assert "[文本加粗]" in zh
 
 
 def test_a2ui_prompt_section_passes_channel_through():
