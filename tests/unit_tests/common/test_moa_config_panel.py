@@ -328,3 +328,21 @@ async def test_a2ui_panel_without_registered_provider(panel_config, monkeypatch)
     await handlers.config_get_handler(channel, None, "get", {}, None)
     assert channel.send_response.call_args.kwargs["ok"] is True
     assert channel.send_response.call_args.kwargs["payload"]["a2ui_enabled"] == "true"
+
+
+@pytest.mark.asyncio
+async def test_team_delivery_switch_round_trip_and_team_reload(panel_config):
+    channel = SimpleNamespace(send_response=AsyncMock())
+    reload = AsyncMock()
+    await handlers.config_get_handler(channel, None, "get", {}, None)
+    assert channel.send_response.call_args.kwargs["payload"]["team_message_delivery_enabled"] == "false"
+    for enabled in ("true", "false"):
+        await handlers.config_save_all_handler(channel, None, "save", {
+            "config": {"team_message_delivery_enabled": enabled},
+        }, None, on_config_saved=reload)
+        assert channel.send_response.call_args.kwargs["ok"] is True
+        raw = yaml.safe_load(panel_config.read_text(encoding="utf-8"))
+        assert raw["experimental"]["team_message_delivery_enabled"] is (enabled == "true")
+        await handlers.config_get_handler(channel, None, "get", {}, None)
+        assert channel.send_response.call_args.kwargs["payload"]["team_message_delivery_enabled"] == enabled
+    assert reload.await_count == 2

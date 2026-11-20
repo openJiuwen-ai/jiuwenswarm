@@ -322,6 +322,7 @@ test('experimental sections retain their order with a single computer control se
     'trajectory-ui',
     'skill-pack',
     'kv-cache-affinity',
+    'team-message-delivery',
     'team-organization',
     'team-scheduled-dispatch',
     'multi-model-collaboration',

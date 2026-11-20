@@ -69,6 +69,11 @@ export const experimentalModule: SettingsModuleDefinition = {
       ],
     },
     {
+      id: 'team-message-delivery',
+      titleKey: 'settingsPanel.experimental.teamMessageDelivery',
+      items: [{ id: 'team-message-delivery-enabled', component: 'switch', key: 'team_message_delivery_enabled' }],
+    },
+    {
       id: 'team-organization',
       titleKey: 'settingsPanel.experimental.teamOrganization',
       items: [{ id: 'team-organization-ui-enabled', component: 'switch', key: 'team_organization_ui_enabled' }],

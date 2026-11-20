@@ -479,6 +479,9 @@ def get_panel() -> dict[str, Any]:
         payload["task_asr_enabled"] = _bool_text(
             experimental_cfg.get("task_asr_enabled"), False
         )
+        payload["team_message_delivery_enabled"] = _bool_text(
+            experimental_cfg.get("team_message_delivery_enabled"), False
+        )
         payload["team_organization_ui_enabled"] = _bool_text(
             experimental_cfg.get("team_organization_ui_enabled"), False
         )
@@ -541,6 +544,7 @@ def get_panel() -> dict[str, Any]:
         payload.setdefault("a2ui_enabled", "false")
         payload.setdefault("trajectory_ui_enabled", "false")
         payload.setdefault("trajectory_ui_diagnosis_enabled", "false")
+        payload.setdefault("team_message_delivery_enabled", "false")
         payload.setdefault("team_organization_ui_enabled", "false")
         payload.setdefault("task_full_duplex_enabled", "false")
         payload.setdefault("task_asr_enabled", "false")
