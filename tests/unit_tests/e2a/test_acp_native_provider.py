@@ -109,3 +109,131 @@ async def test_native_uses_session_cwd_and_forwards_gateway_usage(tmp_path, alia
                 process.kill()
                 await process.wait()
                 raise
+
+
+@pytest.mark.asyncio
+async def test_native_load_in_a_second_process_and_switch_model(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from jiuwenswarm.acp.session_protocol import ACP_SESSION_EXTENSION
+    from jiuwenswarm.runtime.model_catalog import build_model_catalog
+    from jiuwenswarm.server.handlers.acp_session import native_acp_session_response
+    from jiuwenswarm.server.runtime.session import lifecycle, session_metadata
+
+    sessions = tmp_path / "sessions"
+    sessions.mkdir()
+    monkeypatch.setattr(lifecycle, "get_agent_sessions_dir", lambda: sessions)
+    monkeypatch.setattr(session_metadata, "get_agent_sessions_dir", lambda: sessions)
+    cwd = tmp_path / "checkout"
+    cwd.mkdir()
+
+    def list_models(*, current_selection):
+        return build_model_catalog([
+            {"model_client_config": {"model_name": "primary"}, "is_default": True},
+            {"model_client_config": {"model_name": "secondary"}, "alias": "Secondary"},
+        ], current_selection=current_selection)
+
+    async def start():
+        pass
+
+    runtime = SimpleNamespace(start=start, list_model_capabilities=list_models)
+    request = SimpleNamespace(channel_id="acp", user_id="test-user")
+    turns = asyncio.Queue()
+
+    async def gateway(ws):
+        async for raw in ws:
+            msg = json.loads(raw)
+            if msg["method"] == "initialize":
+                ctx = SimpleNamespace(**vars(request), params=msg["params"])
+                payload = await native_acp_session_response(runtime, ctx)
+                await ws.send(json.dumps({
+                    "type": "res", "id": msg["id"], "ok": True, "payload": payload or {},
+                }))
+            elif msg["method"] == "chat.send":
+                await turns.put(msg["params"])
+                await ws.send(json.dumps({
+                    "type": "event", "event": "chat.processing_status",
+                    "payload": {
+                        "is_processing": False, "request_id": msg["id"],
+                        "session_id": msg["params"]["session_id"],
+                    },
+                }))
+
+    async def run_client(url, operations):
+        client = await _provider("--gateway-url", url)
+
+        async def rpc(method, params):
+            client.stdin.write(json.dumps({
+                "jsonrpc": "2.0", "id": method, "method": method, "params": params,
+            }).encode() + b"\n")
+            await client.stdin.drain()
+            while line := await asyncio.wait_for(client.stdout.readline(), 8):
+                frame = json.loads(line)
+                if frame.get("id") == method:
+                    return frame
+            pytest.fail(f"Missing response for {method}")
+
+        try:
+            initialized = await rpc("initialize", {"protocolVersion": 1})
+            assert initialized["result"]["agentCapabilities"]["loadSession"]
+            return await operations(rpc)
+        finally:
+            async with asyncio.timeout(8):
+                await client.communicate()
+
+    async def first_client(rpc):
+        session = (await rpc("session/new", {"cwd": str(cwd)}))["result"]
+        sid = session["sessionId"]
+        assert session["models"] == {
+            "currentModelId": "primary#0",
+            "availableModels": [
+                {"modelId": "primary#0", "name": "primary"},
+                {"modelId": "secondary#1", "name": "Secondary"},
+            ],
+        }
+        invalid = await rpc("session/set_model", {"sessionId": sid, "modelId": "bogus"})
+        assert invalid["error"]["code"] == -32602
+        switched = await rpc("session/set_model", {"sessionId": sid, "modelId": "secondary#1"})
+        assert switched["result"]["models"]["currentModelId"] == "secondary#1"
+        return sid
+
+    async def second_client(rpc):
+        load = {"sessionId": session_id, "cwd": str(cwd)}
+        missing = await rpc("session/load", {**load, "sessionId": "acp_" + "0" * 32})
+        assert missing["error"]["code"] == -32002
+        result = (await rpc("session/load", load))["result"]
+        assert result["sessionId"] == session_id
+        assert result["models"]["currentModelId"] == "secondary#1"
+        prompt = await rpc("session/prompt", {
+            "sessionId": session_id,
+            "model_name": "primary#0",
+            "eternal_conversation_enabled": False,
+            "prompt": [{"type": "text", "text": "Continue"}],
+        })
+        assert prompt["result"]["stopReason"] == "end_turn"
+        turn = turns.get_nowait()
+        assert turn["session_id"] == session_id
+        assert turn["model_name"] == "secondary#1"
+        assert turn["eternal_conversation_enabled"] is True
+
+    async with serve(gateway, "127.0.0.1", 0) as server:
+        url = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}/acp"
+        session_id = await run_client(url, first_client)
+        session_metadata.remove_session_metadata_cache(session_id)
+        stored = session_metadata.get_session_metadata(session_id, cache_bust=True)
+        assert stored["persist_session"] is True
+        assert stored["model"] == "secondary#1"
+        await run_client(url, second_client)
+
+    def archived(_sid):
+        raise lifecycle.LifecycleError("SESSION_ARCHIVED", "session has been archived")
+
+    monkeypatch.setattr(lifecycle, "guard", archived)
+    response = await native_acp_session_response(runtime, SimpleNamespace(
+        **vars(request), params={ACP_SESSION_EXTENSION: {
+            "operation": "resume", "sessionId": session_id, "cwd": str(cwd),
+        }},
+    ))
+    assert response[ACP_SESSION_EXTENSION]["error"] == {
+        "code": -32002, "message": "Session not found or expired",
+    }
