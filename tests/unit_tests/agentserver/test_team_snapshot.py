@@ -285,3 +285,19 @@ async def test_missing_database_board_does_not_claim_no_recovery_needed() -> Non
         resp, _ = await _invoke(monitor=None, db_snapshot=None)
     assert resp.payload["runtime_available"] is False
     assert resp.payload["recovery_required"] is None
+
+
+@pytest.mark.anyio
+async def test_scoped_probe_miss_keeps_a_running_session_monitor_available() -> None:
+    """A running monitor without a board is still a live runtime, not a stopped one."""
+    from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+    probe = mock.AsyncMock(return_value=None)
+    with mock.patch.object(GLOBAL_RUNNER, "get_agent_team_monitor", new=probe):
+        resp, _ = await _invoke(
+            monitor=_FakeMonitorHandler(None),
+            db_snapshot={"members": [], "tasks": [{"task_id": "t1", "status": "pending"}], "team_id": "team-sess-1"},
+        )
+    probe.assert_awaited_once()
+    assert resp.payload["runtime_available"] is True
+    assert resp.payload["recovery_required"] is False

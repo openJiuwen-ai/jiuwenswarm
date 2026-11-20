@@ -176,3 +176,14 @@ async def test_preparation_seeds_policy_and_later_turns_update(
         assert committed["version"] == 2
     finally:
         await db.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requested", ["true", [1]])
+async def test_preparation_rejects_non_object_settings_before_reading_them(
+    monkeypatch: pytest.MonkeyPatch, requested: object,
+) -> None:
+    """A truthy non-object from chat.send is a ValueError, not an AttributeError."""
+    monkeypatch.setattr(policy, "get_session_metadata", lambda *args, **kwargs: {"work_mode": "team"})
+    with pytest.raises(ValueError, match="Invalid execution settings"):
+        await policy.prepare_session_execution("session", SimpleNamespace(), requested)
