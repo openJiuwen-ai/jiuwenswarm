@@ -93,7 +93,7 @@ await i18next.use(initReactI18next).init({
 const { PluginDetailPage, usePluginPackageStore: store } = await import('../node_modules/.cache/plugin-detail-install.mjs');
 const pluginId = 'detail-plugin';
 
-function setup({ pending = false, failure = false } = {}) {
+function setup({ pending = false, failure = false, source = 'local', quickInputs, installedQuickInputs } = {}) {
   const probe = { installed: false, connected: !pending, calls: [], cacheCleared: false };
   const connector = { name: 'crm', id: 'crm', runtimePackageName: 'crm', source: 'local', installed: true };
   globalThis.detailConnectorState = {
@@ -113,13 +113,14 @@ function setup({ pending = false, failure = false } = {}) {
       return {};
     }
     if (method === 'plugin_packages.show') return { package: {
-      id: pluginId, packageName: pluginId, source: 'local',
+      id: pluginId, packageName: pluginId, source,
       displayName: { zh: '详情插件', en: 'Detail plugin' },
       displayDescription: { zh: '实际服务返回详情', en: 'Server detail' },
       installed: probe.installed,
       connection_state: probe.installed && probe.connected ? 'connected' : 'disconnected',
       tags: [], skills: [], tools: [], rails: [], mcps: [],
       pending_connectors: probe.connected ? [] : ['crm'],
+      quickInputs: probe.installed ? installedQuickInputs : quickInputs,
     } };
     if (method === 'plugin_packages.list') return { packages: [] };
     throw new Error(`Unexpected RPC: ${method}`);
@@ -132,13 +133,13 @@ function setup({ pending = false, failure = false } = {}) {
   return probe;
 }
 
-async function renderDetail(fromMy, check) {
+async function renderDetail(fromMy, check, onUseExample) {
   const host = document.createElement('div');
   document.body.appendChild(host);
   const root = createRoot(host);
   try {
     await act(async () => root.render(React.createElement(PluginDetailPage, {
-      id: pluginId, fromMy, onBack() {},
+      id: pluginId, fromMy, onBack() {}, onUseExample,
     })));
     await check(host);
   } finally {
@@ -177,6 +178,34 @@ for (const pending of [false, true]) {
     }
   });
 }
+
+test('Hub plugin examples display before installation and keep localized prompts after installation', async () => {
+  const prompts = ['检查当前差异', '找出测试缺口', '总结行动项'];
+  const localized = { zh: '检查当前差异', en: 'Review the current diff' };
+  const probe = setup({ source: 'hub', quickInputs: prompts, installedQuickInputs: [localized] });
+  const used = [];
+  const examples = host => Array.from(host.querySelectorAll('[data-testid="connector-market-plugin-detail-example"]'));
+  try {
+    await renderDetail(false, async host => {
+      assert.deepEqual(examples(host).map(chip => chip.textContent), prompts);
+      assert.deepEqual(examples(host).map(chip => chip.tagName), ['SPAN', 'SPAN', 'SPAN']);
+      assert.equal(probe.calls.some(([method]) => method === 'plugin_packages.install'), false);
+      assert.deepEqual(used, []);
+
+      await act(async () => i18next.changeLanguage('en'));
+      assert.deepEqual(examples(host).map(chip => chip.textContent), prompts);
+
+      await act(async () => host.querySelector('[data-testid="connector-market-plugin-detail-install"]').click());
+      const [example] = examples(host);
+      assert.equal(example.tagName, 'BUTTON');
+      assert.equal(example.textContent, localized.en);
+      await act(async () => example.click());
+      assert.deepEqual(used, [[localized.en, pluginId]]);
+    }, (...args) => used.push(args));
+  } finally {
+    await i18next.changeLanguage('zh');
+  }
+});
 
 test('failed installation preserves details and permits retry', async () => {
   const probe = setup({ failure: true });
