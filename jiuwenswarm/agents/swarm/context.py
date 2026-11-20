@@ -133,6 +133,9 @@ class SwarmBuildContext(BuildContext):
     trusted_dirs: list[str] | None = None
     disable_teammate_worktree: bool = False
     team_id: str = ""
+    memory_agent_name: str = ""
+    memory_project: str = "default"
+    memory_team: str = ""
     team_ws_root: str | None = None
     task_workspace_root: str | None = None
     team_outputs_dir: str | None = None
@@ -239,6 +242,9 @@ class SwarmBuildContext(BuildContext):
             "trusted_dirs": list(self.trusted_dirs) if self.trusted_dirs else None,
             "disable_teammate_worktree": self.disable_teammate_worktree,
             "team_id": self.team_id,
+            "memory_agent_name": self.memory_agent_name,
+            "memory_project": self.memory_project,
+            "memory_team": self.memory_team,
             "team_ws_root": self.team_ws_root,
             "task_workspace_root": self.task_workspace_root,
             "team_outputs_dir": self.team_outputs_dir,
@@ -265,6 +271,15 @@ class SwarmBuildContext(BuildContext):
             A ``SwarmBuildContext`` with the seed fields restored and the
             non-serializable handles sourced from the receiving process.
         """
+        from jiuwenswarm.common.team_memory_binding import uses_jiuwen_team_memory
+
+        memory_agent_name = seed.get("memory_agent_name", "")
+        if uses_jiuwen_team_memory(config, seed.get("mode") or "team"):
+            from jiuwenswarm.agents.harness.common.memory.jiuwen_rail_builder import (
+                get_jiuwen_memory_scope,
+            )
+            # Current configuration takes precedence over a saved runtime Agent name.
+            memory_agent_name = get_jiuwen_memory_scope(config)["agent"]
         return cls(
             execution_settings_managed=seed.get("execution_settings_managed", False),
             session_id=seed.get("session_id", ""),
@@ -280,6 +295,9 @@ class SwarmBuildContext(BuildContext):
                 seed.get("disable_teammate_worktree", False)
             ),
             team_id=seed.get("team_id", ""),
+            memory_agent_name=memory_agent_name,
+            memory_project=seed.get("memory_project", "default"),
+            memory_team=seed.get("memory_team", ""),
             team_ws_root=seed.get("team_ws_root"),
             task_workspace_root=seed.get("task_workspace_root"),
             team_outputs_dir=seed.get("team_outputs_dir"),

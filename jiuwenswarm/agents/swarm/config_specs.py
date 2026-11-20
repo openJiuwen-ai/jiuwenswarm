@@ -820,6 +820,10 @@ def build_member_capability_specs(
         rails, tools = _build_team_capability_specs(
             config, mode, role, enable_permissions=enable_permissions
         )
+    from jiuwenswarm.common.team_memory_binding import uses_jiuwen_team_memory
+    if uses_jiuwen_team_memory(config, mode):
+        rails = [rail for rail in rails if rail.type != registry.CODE_CODING_MEMORY]
+        rails.append(RailSpec(type=registry.TEAM_MEMORY))
     # OpenCode Go models need a member-scoped session header; the rail is a
     # no-op for every other vendor, so mounting it needs no config gate.
     rails.append(RailSpec(type=registry.OPENCODE_SESSION))

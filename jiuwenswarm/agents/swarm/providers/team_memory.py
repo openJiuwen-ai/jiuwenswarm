@@ -1,0 +1,34 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+"""Fresh memory Rail/Provider per Team responder; coordinates come from the entry."""
+from __future__ import annotations
+
+from typing import Any
+
+from agent_gateway.common.mode_matrix import is_code_profile_mode
+from openjiuwen.agent_teams.harness.manifest import ElementKind, harness_element
+
+from jiuwenswarm.agents.harness.common.memory.jiuwen_rail_builder import build_jiuwen_memory_rail
+from jiuwenswarm.agents.harness.common.rails.memory_forbidden_rail import MemoryForbiddenRail
+from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+from jiuwenswarm.common.team_memory_binding import uses_jiuwen_team_memory
+
+TEAM_MEMORY = "swarm.team_memory"
+
+
+@harness_element(kind=ElementKind.RAIL, name=TEAM_MEMORY,
+                 description="Jiuwen Team document memory with host-bound identity and coordinates.")
+def build_team_memory(_params: dict[str, Any], ctx: SwarmBuildContext) -> Any:
+    config = ctx.config or {}
+    # Provider selection enables Team memory independently of legacy memory gates.
+    if not uses_jiuwen_team_memory(config, ctx.mode) or not ctx.memory_team:
+        return None
+    sidebar = "code" if is_code_profile_mode(ctx.mode) else "work"
+    rail = build_jiuwen_memory_rail(config,
+        scene="team", project=ctx.memory_project, shared_document_root=True,
+        team_binding={"team": ctx.memory_team, "member": ctx.member_name or "",
+                      "sidebar": sidebar})
+    if rail is None:
+        return None
+    # code_agent is part of this responder, not a separate Team member.
+    ctx.extras["_coding_memory_rail"] = rail
+    return [MemoryForbiddenRail(), rail]

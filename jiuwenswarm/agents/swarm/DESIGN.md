@@ -430,3 +430,7 @@ TeamSkillUseRail(skills_dir=<全局唯一库>, visibility_provider=...)
 | **builder 内部收窄** | permission / coding_memory / context_processor / evolution 的本地 builder 当前收原 config 子 dict（swarm 隔离）；后续可收窄签名并迁移 legacy 调用方（interface_code / interface_deep / team_manager）。 |
 | **interface_methods 精化** | 当前按 kind 自省基类契约；可按产出类精化（受惰性导入约束）。 |
 | **上游 openjiuwen 对齐** | 把元数据 / 输入声明能力下沉到 openjiuwen 注册表。 |
+
+## Jiuwen Team 记忆
+
+Jiuwen 路线的 Work/Code/Team 共用配置 agent_id（缺省 main_agent），不取运行名称。Team 入口解析记忆身份、项目键和团队键，作为 SwarmBuildContext/seed 传给成员；恢复时按当前配置刷新身份。scene=team 工厂只负责装配独立 Team Rail/Provider；普通 SDK 经 document_runtime_holder 共享底层 Runtime，HTTP 直连服务。team.work/team.code 按 provider=jiuwen 直接启用，不检查旧团队开关、单人开关或 memory.mode/engine；选择该路线时不装旧团队 manager 或 CodingMemoryRail，初始化失败不回退原生记忆。详细契约见仓库 S_04_coding-document-memory 与 F-20261118-1150-team-document-memory。

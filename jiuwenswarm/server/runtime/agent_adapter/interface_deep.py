@@ -20589,6 +20589,10 @@ class JiuWenSwarmDeepAdapter:
 
         # Team 模式处理
         if is_team_mode(mode):
+            from jiuwenswarm.common.team_memory_binding import uses_jiuwen_team_memory
+            if uses_jiuwen_team_memory(get_config(), mode):
+                await self._handle_memory_rail_by_config(mode)
+
             from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
                 bind_team_heartbeat_service,
                 process_team_message_stream,
@@ -23147,6 +23151,14 @@ class JiuWenSwarmDeepAdapter:
 
     async def _handle_memory_rail_by_config(self, mode: str):
         config = get_config()
+        from jiuwenswarm.common.team_memory_binding import uses_jiuwen_team_memory
+        if uses_jiuwen_team_memory(config, mode):
+            if self._memory_rail is not None:
+                await self._drain_jiuwen_memory_rail(self._memory_rail)
+                await self._instance.unregister_rail(self._memory_rail)
+                self._memory_rail = None
+            return
+
         if get_memory_mode(config) == "local":
             # 引擎门禁：memory.engine 未放行内置时，等同于禁用
             builtin_on = (

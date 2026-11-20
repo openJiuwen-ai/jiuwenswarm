@@ -175,7 +175,8 @@ def test_sdk_bare_uses_provider_builtin_default():
     rail = jrb.build_jiuwen_memory_rail(_cfg({"mode": "sdk"}))
     assert isinstance(rail, _FakeJiuwenRail)
     init = _FakeAgentMemoryProvider.last_init_kwargs
-    assert init["config_dict"] is None  # provider 端走内置默认
+    root = init["config_dict"]["markdown_store"]["default"]["params"]["root"]
+    assert root.endswith("agent/workspace")  # Shared SDK root; provider fills remaining defaults.
     assert init["config_path"] is None
     assert not init["base_url"]
     assert init["security_provider"] is not None  # mem2.0 进程内身份 fail-closed
@@ -199,11 +200,17 @@ def test_sdk_inline_config_dict_passthrough():
     assert "config_path" not in passed
 
 
-def test_sdk_agent_name_overrides_agent_id():
-    """运行 agent name 优先作为 scope.agent 轴。"""
-    rail = jrb.build_jiuwen_memory_rail(_cfg({"mode": "sdk", "agent_id": "cfg-agent"}), agent_name="run-agent")
+@pytest.mark.parametrize("mode", ["sdk", "http"])
+@pytest.mark.parametrize("agent_id,expected", [("cfg-agent", "cfg-agent"), (None, "main_agent")])
+def test_configured_memory_identity_overrides_runtime_name(mode, agent_id, expected):
+    cfg = _cfg({"mode": mode, "agent_id": agent_id})
+    rail = jrb.build_jiuwen_memory_rail(cfg, agent_name="run-agent")
     assert isinstance(rail, _FakeJiuwenRail)
-    assert _FakeJiuwenRail.last_args["agent_id"] == "run-agent"
+    assert _FakeJiuwenRail.last_args["agent_id"] == expected
+    assert _FakeAgentMemoryProvider.last_init_kwargs["agent_id"] == expected
+    assert jrb.jiuwen_builtin_config_fingerprint(cfg, agent_name="run-agent") == (
+        jrb.jiuwen_builtin_config_fingerprint(cfg, agent_name="another-agent")
+    )
 
 
 def test_sdk_portal_video_globals_passthrough(tmp_path):
@@ -247,7 +254,7 @@ def test_web_settings_assemble_sdk_video_with_exact_scope(tmp_path):
     from jiuwen_memory.common.errors import PermissionDeniedError
 
     config = _cfg({
-        "mode": "sdk", "scope_id": "org", "space": "space", "user_id": "user", "session_id": "session",
+        "mode": "sdk", "scope_id": "org", "space": "space", "user_id": "user", "session_id": "session", "agent_id": "memory-agent",
     })
     project = tmp_path / "project"
     project.mkdir()
@@ -268,7 +275,7 @@ def test_web_settings_assemble_sdk_video_with_exact_scope(tmp_path):
     assert video["llm_model"] == "video-test-model"
     normalizer = assembled["normalizer"]["default"]["params"]["routes"]["video"]["params"]
     imports = local_media.LocalMediaImports(normalizer["local_media_roots"])
-    scope = Scope(org="org", space="space", user="user", agent="run-agent", session="session")
+    scope = Scope(org="org", space="space", user="user", agent="memory-agent", session="session")
     inside = project / "inside.mp4"
     outside = tmp_path / "outside.mp4"
     inside.touch()
@@ -311,9 +318,9 @@ def test_video_upload_root_preserves_effective_import_roots(tmp_path, monkeypatc
     workspace.mkdir()
     uploads = tmp_path / "web_session" / "uploads"
     uploads.mkdir(parents=True)
-    scope = {"org": "org", "space": "space", "user": "user", "agent": "run-agent", "session": "memory-session"}
+    scope = {"org": "org", "space": "space", "user": "user", "agent": "memory-agent", "session": "memory-session"}
     roots = [{"scope": scope, "root": str(workspace)}]
-    jiuwen = {"mode": "sdk", "scope_id": "org", "space": "space", "user_id": "user", "session_id": "memory-session"}
+    jiuwen = {"mode": "sdk", "scope_id": "org", "space": "space", "user_id": "user", "session_id": "memory-session", "agent_id": "memory-agent"}
     if deployment_source == "inline":
         jiuwen["sdk"] = {"globals": {"local_media_roots": roots}}
     elif deployment_source == "env":
@@ -473,6 +480,15 @@ def test_provider_unavailable_returns_none():
 def test_fingerprint_stable_for_equal_config():
     cfg = _cfg({"mode": "sdk"})
     assert jrb.jiuwen_builtin_config_fingerprint(cfg) == jrb.jiuwen_builtin_config_fingerprint(cfg)
+
+
+@pytest.mark.parametrize("mode", ["http", "sdk"])
+@pytest.mark.parametrize("key", ["scope_id", "space", "user_id", "agent_id", "session_id"])
+def test_fingerprint_tracks_each_configured_identity_dimension(mode, key):
+    cfg = _cfg({"mode": mode})
+    before = jrb.jiuwen_builtin_config_fingerprint(cfg, agent_name="same-runtime")
+    cfg["memory"]["builtin"]["jiuwen"][key] = "different"
+    assert jrb.jiuwen_builtin_config_fingerprint(cfg, agent_name="same-runtime") != before
 
 
 def test_fingerprint_sensitive_to_mode():
