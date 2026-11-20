@@ -193,6 +193,7 @@ def build_permission_rail(
     browser_runtime_security_profile: Any = None,
     trusted_search_urls: Any = None,
     channel_id: str = "",
+    session_artifact_paths: Any = None,
 ) -> Any | None:
     """Build openjiuwen PermissionInterruptRail for tool permission checks.
 
@@ -918,6 +919,7 @@ def build_permission_rail(
                 persistent_audit_writer=persistent_audit_writer,
                 browser_runtime_security_profile=browser_runtime_security_profile,
                 trusted_search_urls=trusted_search_urls,
+                session_artifact_paths=session_artifact_paths,
             )
             permission_rail.set_trusted_dirs(None)
 

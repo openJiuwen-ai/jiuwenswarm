@@ -27,6 +27,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from shutil import copytree, ignore_patterns, which
 from tempfile import TemporaryDirectory
+from urllib.parse import urlparse
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, List, Optional, Tuple
 
 if TYPE_CHECKING:
@@ -392,8 +393,12 @@ from jiuwenswarm.agents.harness.common.rails.permissions.tool_invocation_key imp
 from jiuwenswarm.agents.harness.common.rails.permissions.trusted_search_urls import (  # noqa: E402
     SessionTrustedSearchUrls,
 )
+from jiuwenswarm.agents.harness.common.rails.permissions.artifact_path_provenance import (  # noqa: E402
+    SessionArtifactPaths,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (  # noqa: E402
     is_auto_permission_enabled,
+    normalize_auto_permission_options,
     resolve_declared_auto_workspace,
     supports_phase_auto_root,
 )
@@ -2443,6 +2448,7 @@ class JiuWenSwarmDeepAdapter:
         self._root_permission_queue = RootPermissionQueue()
         self._permission_dispatch = RootPermissionDispatch(self._root_permission_queue)
         self._trusted_search_urls = SessionTrustedSearchUrls()
+        self._session_artifact_paths = SessionArtifactPaths()
         self._root_permission_queue_rail: RootPermissionQueueRail | None = None
         self._root_permission_completion_rail: RootPermissionCompletionRail | None = (
             None
@@ -3053,6 +3059,7 @@ class JiuWenSwarmDeepAdapter:
         self._is_session_scoped_adapter = True
         self._parent_session_id = session_id
         self._trusted_search_urls.bind_session(session_id)
+        self._session_artifact_paths.bind_session(session_id)
 
     def _resolve_permission_workspace_root(self) -> Path:
         """Return the session-stable primary root used by Auto Permission."""
@@ -11857,7 +11864,9 @@ class JiuWenSwarmDeepAdapter:
     def _build_session_permission_group(
         self, config: dict[str, Any], *, smart: bool,
         installed_permissions: dict[str, Any] | None, model_name: str, workspace_root: Any,
+        prepare_only: bool = False,
     ) -> PermissionRailGroup:
+        artifact_paths = getattr(self, "_session_artifact_paths", None)
         group = build_permission_group(
             config, permission_builder=build_permission_rail,
             permission_inputs={
@@ -11870,6 +11879,7 @@ class JiuWenSwarmDeepAdapter:
                 "browser_runtime_security_profile": self._browser_runtime_security_profile,
                 "trusted_search_urls": self._trusted_search_urls if smart else None,
                 "channel_id": getattr(self, "_channel_id", ""),
+                "session_artifact_paths": artifact_paths if smart else None,
             },
             queue=self._root_permission_queue, answer_claimed=self._permission_dispatch.close_claimed,
             sandboxed=getattr(self._sys_operation_card, "mode", None) == OperationMode.SANDBOX,
@@ -11877,7 +11887,67 @@ class JiuWenSwarmDeepAdapter:
         )
         if group.stream_event_rail is not None:
             group.stream_event_rail.project_interruption_snapshots = True
+        if not prepare_only:
+            self._configure_session_artifact_paths(config, smart=smart, workspace_root=workspace_root)
         return group
+
+    def _configure_session_artifact_paths(
+        self, config: dict[str, Any], *, smart: bool, workspace_root: Any,
+    ) -> None:
+        """Publish evidence boundaries for the permission group being installed."""
+        artifact_paths = getattr(self, "_session_artifact_paths", None)
+        if artifact_paths is not None:
+            if smart:
+                permissions = config.get("permissions")
+                raw_auto = permissions.get("auto") if isinstance(permissions, dict) else None
+                auto_options = normalize_auto_permission_options(raw_auto)
+                artifact_paths.configure(
+                    workspace_root,
+                    host_visible=self._artifact_workspace_host_visible(workspace_root),
+                    protected_paths=auto_options.get("bounded_write_excluded_paths", ()),
+                )
+            else:
+                artifact_paths.configure(None, host_visible=False)
+
+    def _artifact_workspace_host_visible(self, workspace_root: Any) -> bool:
+        """Accept only local files or an existing identity directory bind."""
+        card = getattr(self, "_sys_operation_card", None)
+        mode = getattr(card, "mode", None)
+        if mode == OperationMode.LOCAL:
+            return True
+        if mode != OperationMode.SANDBOX or workspace_root is None:
+            return False
+        launcher = getattr(getattr(card, "gateway_config", None), "launcher_config", None)
+        # A remote server's host_path does not establish visibility on this Host.
+        try:
+            endpoint = urlparse(getattr(launcher, "base_url", ""))
+            if endpoint.hostname not in {"localhost", "127.0.0.1", "::1"}:
+                return False
+        except (TypeError, ValueError):
+            return False
+        extra = getattr(launcher, "extra_params", None)
+        if not isinstance(extra, dict):
+            return False
+        policy = extra.get("policy", {})
+        if not isinstance(policy, dict):
+            return False
+        policy = policy.get("conch", policy)
+        fs_policy = policy.get("filesystem_policy", {}) if isinstance(policy, dict) else {}
+        mounts = fs_policy.get("bind_mounts", ()) if isinstance(fs_policy, dict) else ()
+        try:
+            root = Path(workspace_root).resolve(strict=False)
+            for mount in mounts:
+                if not isinstance(mount, dict):
+                    continue
+                host, sandbox = mount.get("host_path"), mount.get("sandbox_path")
+                if not isinstance(host, str) or host != sandbox:
+                    continue
+                source = Path(host)
+                if source.is_absolute() and source.is_dir() and root.is_relative_to(source.resolve()):
+                    return True
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return False
+        return False
 
     def _permission_group_bindings(self, group: PermissionRailGroup) -> dict[str, Any]:
         """Translate a rail recipe using the adapter's existing binding names."""
@@ -12023,6 +12093,7 @@ class JiuWenSwarmDeepAdapter:
                 expected = self._build_session_permission_group(
                     candidate_config, smart=smart, installed_permissions=effective if smart else None,
                     model_name=self._default_model_name, workspace_root=workspace_root,
+                    prepare_only=True,
                 )
                 if global_layer.get("enabled") and expected.permission_rail is None:
                     raise RuntimeError("permission_rail_candidate_unavailable")
@@ -12047,6 +12118,9 @@ class JiuWenSwarmDeepAdapter:
                     snapshot = latest
                     continue
                 # Admission remains closed through validation and publication.
+                self._configure_session_artifact_paths(
+                    candidate_config, smart=smart, workspace_root=workspace_root,
+                )
                 for attr, rail in self._permission_group_bindings(expected).items():
                     setattr(self, attr, rail)
                 self._instance.deep_config.subagents = subagents
@@ -14940,6 +15014,7 @@ class JiuWenSwarmDeepAdapter:
                     exc,
                 )
             self._trusted_search_urls.dispose()
+            self._session_artifact_paths.dispose()
         await self._finalize_external_memory_session()
         try:
             await self._sync_personal_context_rail("cleanup")
