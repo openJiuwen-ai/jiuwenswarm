@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Run ACP-supplied stdio MCP servers in the stdio bridge process."""
+"""Run ACP-supplied MCP servers in the stdio bridge process."""
 
 from __future__ import annotations
 
@@ -9,12 +9,17 @@ import json
 import logging
 import re
 import sys
-from contextlib import AsyncExitStack
+from collections.abc import Callable
+from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from functools import partial
 from pathlib import Path
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from mcp import ClientSession, StdioServerParameters
+from mcp.client.sse import sse_client
 from mcp.client.stdio import stdio_client
+from mcp.client.streamable_http import streamablehttp_client
 from websockets.exceptions import ConnectionClosed
 
 logger = logging.getLogger(__name__)
@@ -22,9 +27,11 @@ logger = logging.getLogger(__name__)
 MCP_CALL_METHOD = "_jiuwenswarm/mcp/call"
 MCP_TOOLS_PARAM = "_jiuwenswarm_acp_mcp_tools"
 
+McpTransport = Callable[[], AbstractAsyncContextManager]
+
 
 class SessionMcp:
-    def __init__(self, servers: list[tuple[str, StdioServerParameters]]) -> None:
+    def __init__(self, servers: list[tuple[str, McpTransport]]) -> None:
         self.token = uuid4().hex
         self._servers = servers
         self._ready = asyncio.get_running_loop().create_future()
@@ -35,9 +42,9 @@ class SessionMcp:
         try:
             async with AsyncExitStack() as stack:
                 declarations = []
-                for server_name, params in self._servers:
-                    pipes = await stack.enter_async_context(stdio_client(params))
-                    client = await stack.enter_async_context(ClientSession(*pipes))
+                for server_name, connect in self._servers:
+                    reader, writer, *_ = await stack.enter_async_context(connect())
+                    client = await stack.enter_async_context(ClientSession(reader, writer))
                     await client.initialize()
                     cursor = None
                     while True:
@@ -81,7 +88,39 @@ class SessionMcp:
             self._ready.exception()
 
 
-def _stdio_servers(params: dict) -> list[tuple[str, StdioServerParameters]]:
+def _remote_server(entry: dict, transport: str) -> McpTransport:
+    url = entry.get("url")
+    if not isinstance(url, str) or any(char.isspace() for char in url):
+        raise ValueError("Remote MCP server requires a valid HTTP(S) URL")
+    try:
+        endpoint = urlsplit(url)
+        port = endpoint.port
+    except ValueError:
+        raise ValueError("Remote MCP server requires a valid HTTP(S) URL") from None
+    if (endpoint.scheme not in ("http", "https") or not endpoint.hostname
+            or endpoint.username is not None or endpoint.fragment or port == 0):
+        raise ValueError("Remote MCP server requires a valid HTTP(S) URL")
+    headers = _name_value_pairs(entry.get("headers", []), "headers")
+    if any(
+        not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+", key)
+        or any(char in value for char in "\r\n\x00")
+        for key, value in headers.items()
+    ):
+        raise ValueError("Invalid remote MCP header")
+    connect = streamablehttp_client if transport == "http" else sse_client
+    return partial(connect, url, headers=headers, timeout=10)
+
+
+def _name_value_pairs(items: object, field: str) -> dict[str, str]:
+    if not isinstance(items, list) or not all(
+        isinstance(item, dict) and isinstance(item.get("name"), str)
+        and isinstance(item.get("value"), str) for item in items
+    ):
+        raise ValueError(f"MCP {field} must contain name/value pairs")
+    return {item["name"]: item["value"] for item in items}
+
+
+def _session_servers(params: dict) -> list[tuple[str, McpTransport]]:
     entries = params.get("mcpServers", [])
     if not isinstance(entries, list):
         raise ValueError("mcpServers must be an array")
@@ -89,41 +128,47 @@ def _stdio_servers(params: dict) -> list[tuple[str, StdioServerParameters]]:
     if entries and (
         not isinstance(cwd, str) or not Path(cwd).is_absolute() or not Path(cwd).is_dir()
     ):
-        raise ValueError("stdio MCP requires an existing absolute session cwd")
+        raise ValueError("MCP requires an existing absolute session cwd")
     servers = []
     names = set()
     for entry in entries:
-        if not isinstance(entry, dict) or entry.get("type", "stdio") != "stdio":
-            raise ValueError("Only stdio MCP servers are supported")
-        name, command = entry.get("name"), entry.get("command")
-        args, env = entry.get("args", []), entry.get("env", [])
-        if not isinstance(name, str) or not name or name in names:
-            raise ValueError("stdio MCP server names must be unique and nonempty")
+        if not isinstance(entry, dict):
+            raise ValueError("MCP servers must be objects")
+        transport = entry.get("type", "stdio")
+        name = entry.get("name")
+        if not isinstance(name, str) or not name.strip() or name in names:
+            raise ValueError("MCP server names must be unique and nonempty")
+        names.add(name)
+        if transport in ("http", "sse"):
+            servers.append((name, _remote_server(entry, transport)))
+            continue
+        if transport != "stdio":
+            raise ValueError("Unsupported MCP server type")
+        command, args = entry.get("command"), entry.get("args", [])
         if not isinstance(command, str) or not command:
             raise ValueError("stdio MCP command must be a nonempty string")
         if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
             raise ValueError("stdio MCP args must be an array of strings")
-        if not isinstance(env, list) or not all(
-            isinstance(item, dict) and isinstance(item.get("name"), str)
-            and isinstance(item.get("value"), str) for item in env
-        ):
-            raise ValueError("stdio MCP env must contain name/value pairs")
-        names.add(name)
-        servers.append((name, StdioServerParameters(
-            command=command, args=args, env={item["name"]: item["value"] for item in env},
-            cwd=cwd,
-        )))
+        server_params = StdioServerParameters(
+            command=command, args=args, env=_name_value_pairs(entry.get("env", []), "env"), cwd=cwd,
+        )
+        servers.append((name, partial(stdio_client, server_params)))
     return servers
 
 
 class SessionMcpChannelMixin:
-    """Attach bridge-owned MCP processes to successful ACP sessions."""
+    """Attach bridge-owned MCP transports to successful ACP sessions."""
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._mcp_sessions: dict[str, tuple[SessionMcp, list[dict]]] = {}
         self._mcp_calls: set[asyncio.Task] = set()
         self._mcp_new_session: tuple[object, SessionMcp | None, list[dict]] | None = None
+
+    def _initialize_result(self) -> dict:
+        result = super()._initialize_result()
+        result["agentCapabilities"]["mcpCapabilities"].update(http=True, sse=True)
+        return result
 
     async def start(self) -> None:
         if self._running:
@@ -174,7 +219,7 @@ class SessionMcpChannelMixin:
             await super()._handle_jsonrpc_request(data)
             return
         try:
-            servers = _stdio_servers(params)
+            servers = _session_servers(params)
         except ValueError as exc:
             await self._write_jsonrpc_error(rpc_id, -32602, str(exc))
             return
@@ -184,7 +229,7 @@ class SessionMcpChannelMixin:
             try:
                 declarations = await session.declarations() if session is not None else []
             except Exception:
-                await self._write_jsonrpc_error(rpc_id, -32603, "Could not initialize stdio MCP servers")
+                await self._write_jsonrpc_error(rpc_id, -32603, "Could not initialize session MCP servers")
                 return
             self._mcp_new_session = (rpc_id, session, declarations)
             clean_params = {key: value for key, value in params.items() if key != "mcpServers"}

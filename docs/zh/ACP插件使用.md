@@ -151,3 +151,7 @@ python -m jiuwenswarm.app
 
 - [返回文档首页](../README.md)
 - [返回项目首页](../../README_CN.md)
+
+原生 Provider 通过 `configOptions` 公布当前模型的思考档位。所选档位应用于当前 ACP 连接的后续提示，选择「默认」可恢复模型原有配置。AgentServer 需要运行包含此功能的 JiuwenSwarm 版本。
+
+Multica MCP 配置中，`type: "http"` 使用 Streamable HTTP，`type: "sse"` 使用 SSE。请填写服务地址，按需添加请求头。本地 ACP 进程为会话建立这些连接，并在加载会话时根据本次下发的 MCP 配置重新连接。

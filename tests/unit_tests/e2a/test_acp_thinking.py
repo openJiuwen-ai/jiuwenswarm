@@ -1,0 +1,38 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+from types import SimpleNamespace
+
+import pytest
+from openjiuwen.core.foundation.llm import Model, ModelClientConfig, ModelRequestConfig
+
+from jiuwenswarm.acp.session_protocol import ACP_THINKING_PARAM
+from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+
+def test_acp_thinking_applies_to_turn_and_resets_to_configured_default(monkeypatch):
+    base = Model(
+        model_client_config=ModelClientConfig(
+            client_provider="OpenAI", api_base="https://api.openai.com", api_key="test",
+        ),
+        model_config=ModelRequestConfig(model="gpt-5", reasoning={"mode": "enabled", "effort": "low"}),
+    )
+    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+    adapter._moa_runtime = None
+    adapter._last_resolved_model = base
+    monkeypatch.setattr(adapter, "_resolve_base_model_for_request", lambda _: adapter._last_resolved_model)
+    request = SimpleNamespace(channel_id="acp", params={ACP_THINKING_PARAM: "high"})
+
+    adjusted = adapter._resolve_model_for_request(request)
+    assert adjusted.model_config.reasoning == {"mode": "enabled", "effort": "high"}
+    assert base.model_config.model_dump()["reasoning"]["effort"] == "low"
+    assert adapter._resolve_model_for_request(request) is adjusted
+
+    adapter._last_resolved_model = adjusted
+    request.params[ACP_THINKING_PARAM] = None
+    assert adapter._resolve_model_for_request(request) is base
+
+    request.params[ACP_THINKING_PARAM] = "bogus"
+    with pytest.raises(ValueError, match="no longer supported"):
+        adapter._resolve_model_for_request(request)
+    request.channel_id = "web"
+    assert adapter._resolve_model_for_request(request) is adjusted

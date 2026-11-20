@@ -50,3 +50,7 @@ For users who installed JiuwenSwarm via `pip install workswarm`.
 2. Start the JiuwenSwarm Gateway and configure a working model. Set `GATEWAY_URL` in the daemon's environment if the Gateway uses a custom address. The default is `ws://127.0.0.1:19001/acp`.
 3. Use a Multica build that supports the `jiuwenswarm` provider. Put `jiuwenswarm-acp` on the daemon's PATH or set `MULTICA_JIUWENSWARM_PATH` to its absolute path, then restart the daemon.
 4. Select the discovered JiuwenSwarm runtime when binding the Multica agent. Assign a test issue with a checkout and confirm that the agent can edit a file in it.
+
+The native provider advertises the selected model’s thinking levels through `configOptions`. The selection applies to subsequent prompts on that ACP connection. Choosing **Default** restores the model’s configured behavior. Updating the available levels requires the AgentServer to run the matching version of JiuwenSwarm.
+
+Multica MCP entries with `type: "http"` use Streamable HTTP. Entries with `type: "sse"` use SSE. Include the server URL and optional headers in the Multica MCP configuration. The local ACP process opens these connections for the session and reconnects using the MCP configuration supplied when the session is loaded.
