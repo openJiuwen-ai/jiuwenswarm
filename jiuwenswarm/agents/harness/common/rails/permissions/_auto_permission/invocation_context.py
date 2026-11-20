@@ -558,6 +558,8 @@ def _normalize_command_invocation_for_execution(
         invocation.tool_name,
         invocation.tool_args,
     )
+    if not normalized_args and invocation.tool_name == "bash":
+        return invocation, ""
     if not normalized_args or (invocation.tool_name == "mcp_exec_command" and "cwd" in normalized_args):
         return invocation, "command_workdir_contract_invalid"
     try:

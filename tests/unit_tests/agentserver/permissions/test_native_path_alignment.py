@@ -577,6 +577,45 @@ def test_bash_name_alone_does_not_freeze_workdir(native):
     assert result is invocation
 
 
+@pytest.mark.parametrize("arguments", ["{}", "{invalid"])
+def test_native_bash_leaves_empty_or_invalid_arguments_to_existing_validation(native, arguments):
+    from openjiuwen.harness.tools.shell.bash._tool import BashTool
+
+    tool = BashTool(native.operation)
+    native.manager.add_ability(tool.card, tool)
+    invocation = _invocation(native, "bash", {})
+    invocation.ctx.inputs.tool_args = arguments
+    invocation.tool_call.arguments = arguments
+    invocation = inv._extract_invocation((invocation.ctx,), {})
+    result, error = inv._normalize_command_invocation_for_execution(invocation, {})
+    assert not error
+    assert result is invocation
+    assert invocation.tool_call.arguments == arguments
+
+
+def test_native_bash_failed_partial_workdir_writeback_still_blocks(native):
+    from openjiuwen.harness.tools.shell.bash._tool import BashTool
+
+    tool = BashTool(native.operation)
+    native.manager.add_ability(tool.card, tool)
+    invocation = _invocation(native, "bash", {"command": "pwd"})
+    inputs = invocation.ctx.inputs
+
+    class ReadOnlyInputs:
+        tool_name = inputs.tool_name
+        tool_call = inputs.tool_call
+
+        @property
+        def tool_args(self):
+            return inputs.tool_args
+
+    invocation.ctx.inputs = ReadOnlyInputs()
+    result, error = inv._normalize_command_invocation_for_execution(invocation, {})
+    assert error == "command_workdir_writeback_failed"
+    assert result is invocation
+    assert json.loads(invocation.tool_call.arguments)["workdir"] == str(native.work)
+
+
 def test_native_bash_preserves_explicit_relative_workdir(native):
     from openjiuwen.harness.tools.shell.bash._tool import BashTool
 
