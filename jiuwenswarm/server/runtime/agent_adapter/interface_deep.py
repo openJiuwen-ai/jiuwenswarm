@@ -1368,15 +1368,8 @@ _AGENT_CARD_ID = "jiuwenswarm"
 _SYS_OPERATION_REFCOUNTS: dict[str, int] = {}
 _SYS_OPERATION_REFCOUNT_LOCK = threading.Lock()
 
-_ACP_BLOCKED_DEFAULT_TOOL_NAMES = frozenset(
-    {
-        "read_file",
-        "write_file",
-        "edit_file",
-        "bash",
-        "code",
-    }
-)
+_ACP_LOCAL_FILE_TOOLS = frozenset({"read_file", "write_file", "edit_file"})
+_ACP_LOCAL_TERMINAL_TOOLS = frozenset({"bash", "code", "cmd", "powershell", "mcp_exec_command"})
 _TOOL_RETRIEVAL_TOOL_NAMES = frozenset(
     {
         "tool_search",
@@ -16362,6 +16355,7 @@ class JiuWenSwarmDeepAdapter:
         request_id: str | None,
         channel_id: str | None,
         request_metadata: dict[str, Any] | None,
+        cwd: str | None = None,
     ) -> None:
         """Refresh ACP tools for the current request based on client capabilities."""
         acp_tool_names = (
@@ -16372,9 +16366,15 @@ class JiuWenSwarmDeepAdapter:
             "wait_for_terminal_exit",
             "release_terminal",
         )
+        fs_enabled, terminal_enabled = self._acp_runtime_tools_enabled(request_metadata)
         if channel_id == "acp":
+            blocked_tools = set()
+            if fs_enabled:
+                blocked_tools.update(_ACP_LOCAL_FILE_TOOLS)
+            if terminal_enabled:
+                blocked_tools.update(_ACP_LOCAL_TERMINAL_TOOLS)
             for existing in list(self._instance.ability_manager.list() or []):
-                if getattr(existing, "name", "") in _ACP_BLOCKED_DEFAULT_TOOL_NAMES:
+                if getattr(existing, "name", "") in blocked_tools:
                     self._instance.ability_manager.remove(existing.name)
         for existing in list(self._instance.ability_manager.list() or []):
             if getattr(existing, "name", "") in acp_tool_names:
@@ -16383,7 +16383,6 @@ class JiuWenSwarmDeepAdapter:
                 # instead of piling up under a dead id.
                 self._instance.ability_manager.remove_ability(existing.name)
 
-        fs_enabled, terminal_enabled = self._acp_runtime_tools_enabled(request_metadata)
         has_runtime_capability = fs_enabled or terminal_enabled
         can_register_acp_runtime_tools = self._should_register_acp_runtime_tools(
             channel_id=channel_id,
@@ -16392,7 +16391,9 @@ class JiuWenSwarmDeepAdapter:
             has_runtime_capability=has_runtime_capability,
         )
         if can_register_acp_runtime_tools:
-            for tool in get_acp_output_tools(session_id=session_id, request_id=request_id):
+            for tool in get_acp_output_tools(
+                session_id=session_id, request_id=request_id, default_cwd=cwd,
+            ):
                 if tool.card.name in {"read_text_file", "write_text_file"}:
                     if not fs_enabled:
                         continue
@@ -16915,6 +16916,7 @@ class JiuWenSwarmDeepAdapter:
                 runtime_config.request_id,
                 runtime_config.channel_id,
                 runtime_config.request_metadata,
+                runtime_config.cwd,
             )
 
         stage_timer.mark("acp_tools")
