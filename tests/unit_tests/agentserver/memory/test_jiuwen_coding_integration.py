@@ -432,8 +432,11 @@ async def test_http_root_change_keeps_client_through_full_spec_reload(monkeypatc
             "default": {"target": "local", "params": {"root": str(tmp_path / "unused")}}}}
         candidate = obj._build_coding_memory_rail()
         assert candidate is rail
+        # apply_deep_agent_parts reads parts.extension_bus (core factory
+        # applies it onto the agent); the real resolve_parts always carries
+        # it (from BuildContext). Give the stub the same shape as production.
         parts = SimpleNamespace(config=copy(agent.deep_config), rails=[candidate],
-                                tool_cards=[], tool_instances=[])
+                                tool_cards=[], tool_instances=[], extension_bus=None)
         spec = MagicMock()
         spec.resolve_parts.return_value = parts
         context = SimpleNamespace(tool_owner_id=None, artifacts=SimpleNamespace(tools=[]))
