@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from contextvars import ContextVar
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -117,6 +118,293 @@ async def test_child_exception_preserves_cause_and_prevents_reuse(debug_capture,
     with pytest.raises(BaseError, match="unavailable"):
         await dispatch(child)
     assert run.await_count == 1
+
+
+def _assistant(content, tool_calls=None):
+    return SimpleNamespace(role="assistant", content=content, tool_calls=tool_calls)
+
+
+def _child_with_context(child, messages):
+    engine = SimpleNamespace(
+        get_context=lambda session_id: SimpleNamespace(get_messages=lambda: list(messages)),
+    )
+    child._react_agent = SimpleNamespace(context_engine=engine)
+    return child
+
+
+def _persist_failure() -> Exception:
+    """与生产一致的存储层异常形态：SQLite 驱动直抛。"""
+    return sqlite3.OperationalError("disk I/O error")
+
+
+def _sqlalchemy_persist_failure(blob: str = "") -> Exception:
+    """SQLAlchemy 包装形态：message 内联 SQL 与绑定参数，.orig 是驱动异常。"""
+    from sqlalchemy.exc import OperationalError as SAOperationalError
+
+    return SAOperationalError(
+        "INSERT INTO kv_store",
+        [("agent_state_blobs", blob)],
+        sqlite3.OperationalError("disk I/O error"),
+    )
+
+
+@pytest.mark.parametrize("task_loop", [False, True])
+async def test_checkpoint_save_failure_recovers_final_answer_with_degraded_note(
+    debug_capture, task_loop,
+):
+    run = AsyncMock(side_effect=_persist_failure())
+    child = child_for(run, task_loop=task_loop)
+    _child_with_context(child, [
+        SimpleNamespace(role="user", content="generate the report file"),
+        _assistant("TASK-01 done, file written to /workspace/child_result.txt"),
+    ])
+    result = await dispatch(child)
+    assert result.success is True
+    assert "child_result.txt" in result.data["output"]
+    assert "checkpoint_degraded" in result.data["output"]
+    # 持久化失败同样永久退役该实例：checkpoint 可能已损坏，不能复用。
+    with pytest.raises(BaseError, match="unavailable"):
+        await dispatch(child)
+
+
+async def test_sqlalchemy_wrapped_persist_failure_recovers_answer(debug_capture):
+    run = AsyncMock(side_effect=_sqlalchemy_persist_failure())
+    child = child_for(run)
+    _child_with_context(child, [_assistant("TASK-01 done")])
+    result = await dispatch(child)
+    assert result.success is True
+    assert "checkpoint_degraded" in result.data["output"]
+
+
+def _sdk_stream_error_chunk(exc: Exception, *, with_origin: bool = True) -> dict:
+    """SDK 流式转换层的真实帧形态：外层 type=answer，payload.result_type=error。"""
+    payload = {"output": str(exc), "result_type": "error"}
+    if with_origin:
+        payload["error_origin_class"] = f"{type(exc).__module__}.{type(exc).__qualname__}"
+    return {"type": "answer", "payload": payload}
+
+
+async def test_stream_error_chunk_preserves_storage_degradation(debug_capture):
+    # 复刻 SDK 流式转换层真实帧形态（外层 type=answer、payload.result_type=error）：
+    # origin_class 经 payload 透传 + output 兜底 reason，降级在 debug 通道成立。
+    run = AsyncMock(side_effect=_sqlalchemy_persist_failure())
+    child = child_for(run)
+
+    async def stream(*args, **kwargs):
+        try:
+            await run(*args, **kwargs)
+        except Exception as e:  # noqa: BLE001 — 复刻 SDK 转换层形态
+            yield _sdk_stream_error_chunk(e)
+
+    child.stream = stream
+    _child_with_context(child, [_assistant("TASK-01 done")])
+    result = await dispatch(child)
+    assert result.success is True
+    assert "checkpoint_degraded" in result.data["output"]
+    # reason 兜底为 output 失败文本，不再只剩 subagent_error。
+    assert "disk I/O error" in result.data["output"]
+    with pytest.raises(BaseError, match="unavailable"):
+        await dispatch(child)
+
+
+async def test_error_typed_chunk_preserves_storage_degradation(debug_capture):
+    # type=error 的裸 chunk（其它 emitter 形态）同样走 error 分支兜底。
+    run = AsyncMock(side_effect=_sqlalchemy_persist_failure())
+    child = child_for(run)
+
+    async def stream(*args, **kwargs):
+        try:
+            await run(*args, **kwargs)
+        except Exception as e:  # noqa: BLE001
+            yield {"type": "error", "payload": {
+                "output": str(e),
+                "result_type": "error",
+                "error_origin_class": f"{type(e).__module__}.{type(e).__qualname__}",
+            }}
+
+    child.stream = stream
+    _child_with_context(child, [_assistant("TASK-01 done")])
+    result = await dispatch(child)
+    assert result.success is True
+    assert "checkpoint_degraded" in result.data["output"]
+
+
+async def test_error_typed_chunk_output_fallback_is_truncated(debug_capture):
+    if debug_capture is None:
+        return  # type=error 兜底只经流路径；invoke 通道异常带链走降级，不适用
+    # type=error 分支的 output 兜底与 answer 分支同口径：巨型异常文本（生产见
+    # 51 万字符 blob 参数）截断 400，不整段进异常与日志（CR-4 回归钉）。
+    run = AsyncMock(side_effect=_sqlalchemy_persist_failure())
+    child = child_for(run)
+
+    async def stream(*args, **kwargs):
+        try:
+            await run(*args, **kwargs)
+        except Exception as e:  # noqa: BLE001
+            yield {"type": "error", "payload": {
+                "output": str(e) + "[parameters: ('agent_state_blobs', '" + "y" * 5000 + "')]",
+                "result_type": "error",
+            }}
+
+    child.stream = stream
+    _child_with_context(child, [_assistant("TASK-01 done")])
+    with pytest.raises(BaseError, match="disk I/O error") as error:
+        await dispatch(child)
+    assert len(str(error.value)) < 2000
+    assert "y" * 5000 not in str(error.value)
+
+
+async def test_locked_core_answer_chunk_without_origin_stays_fail_closed(debug_capture):
+    if debug_capture is None:
+        return  # error chunk 只经 debug 捕获流路径
+    # 锁定 core（未含 origin_class）的过渡期：answer 帧形态无来源标记时不得降级
+    # （保持原样失败），output 兜底以 origin_class 为门，reason 仍为 subagent_error
+    # ——invoke 返回的 error dict 的 output 是业务输出，不得借道进错误文本。
+    async def stream(*args, **kwargs):
+        yield _sdk_stream_error_chunk(_sqlalchemy_persist_failure(), with_origin=False)
+
+    child = child_for(AsyncMock())
+    child.stream = stream
+    with pytest.raises(BaseError, match="subagent_error"):
+        await dispatch(child)
+
+
+async def test_error_chunk_without_origin_class_never_degrades(debug_capture):
+    if debug_capture is None:
+        return  # error chunk 只经 debug 捕获流路径，invoke 参数下无此形态
+
+    async def stream(*args, **kwargs):
+        yield {"type": "error", "payload": {
+            "output": "tool output mentioned (sqlite3.OperationalError) disk I/O error",
+            "result_type": "error",
+        }}
+
+    child = child_for(AsyncMock())
+    child.stream = stream
+    # 无来源类名但有失败文本：不降级，reason 兜底为 output 文本原样透传。
+    with pytest.raises(BaseError, match=r"mentioned \(sqlite3"):
+        await dispatch(child)
+
+
+@pytest.mark.parametrize("messages", [
+    [_assistant("reading inputs", tool_calls=[{"id": "t1", "name": "write_file"}])],
+    [],
+])
+async def test_checkpoint_save_failure_without_final_answer_is_progress_unknown(
+    debug_capture, messages,
+):
+    run = AsyncMock(side_effect=_persist_failure())
+    child = child_for(run)
+    _child_with_context(child, messages)
+    with pytest.raises(BaseError, match="subagent_progress_unknown") as error:
+        await dispatch(child)
+    # 错误必须保留存储层原始信息用于定位失败阶段，且不得声称业务未执行。
+    assert "disk I/O error" in str(error.value)
+    assert "workspace" in str(error.value)
+    with pytest.raises(BaseError, match="unavailable"):
+        await dispatch(child)
+
+
+async def test_checkpoint_save_failure_without_context_engine_is_progress_unknown(debug_capture):
+    run = AsyncMock(side_effect=_persist_failure())
+    child = child_for(run)
+    with pytest.raises(BaseError, match="subagent_progress_unknown"):
+        await dispatch(child)
+
+
+async def test_non_persistence_failure_never_recovers_answer(debug_capture):
+    run = AsyncMock(side_effect=RuntimeError("provider unavailable"))
+    child = child_for(run)
+    _child_with_context(child, [_assistant("TASK-01 done, file written")])
+    with pytest.raises(BaseError, match="provider unavailable"):
+        await dispatch(child)
+
+
+class _BrokenStrSqliteError(sqlite3.OperationalError):
+    def __str__(self) -> str:
+        raise RuntimeError("__str__ is broken")
+
+
+async def test_broken_str_exception_chain_never_masks_original(debug_capture):
+    # 判定链上任一节点 __str__ 损坏时按非存储层处理：原样 re-raise，不得让
+    # 边界判定引入新的失败模式掩盖原异常（CR-1 回归钉）。
+    def broken_cause(*args, **kwargs):
+        err = RuntimeError("business failure")
+        err.__cause__ = _BrokenStrSqliteError("disk I/O error")
+        raise err
+
+    child = child_for(broken_cause)
+    _child_with_context(child, [_assistant("TASK-01 done")])
+    with pytest.raises(BaseError, match="business failure"):
+        await dispatch(child)
+
+
+async def test_sqlite_text_in_business_error_is_not_degraded(debug_capture):
+    # 业务异常文本恰好携带 "(sqlite3." 字样时不得按存储层降级（文本嗅探误判回归钉）。
+    run = AsyncMock(side_effect=RuntimeError(
+        "tool output mentioned (sqlite3.OperationalError) disk I/O error in its result text"
+    ))
+    child = child_for(run)
+    _child_with_context(child, [_assistant("TASK-01 done")])
+    with pytest.raises(BaseError, match="in its result text"):
+        await dispatch(child)
+
+
+async def test_cancelled_error_with_sqlite_context_is_never_swallowed(debug_capture):
+    async def run(*args, **kwargs):
+        try:
+            raise _persist_failure()
+        except sqlite3.OperationalError:
+            raise asyncio.CancelledError()
+
+    child = child_for(run)
+    _child_with_context(child, [_assistant("TASK-01 done")])
+    # 取消契约：CancelledError 即使 __context__ 挂着 sqlite 错误也必须原样重抛。
+    with pytest.raises(asyncio.CancelledError):
+        await dispatch(child)
+
+
+async def test_recovery_stops_at_current_turn_user_boundary(debug_capture):
+    run = AsyncMock(side_effect=_persist_failure())
+    child = child_for(run)
+    # 本轮还没有任何 assistant 消息：不得越过本轮 user 输入取上一轮旧回答当成本次交付。
+    _child_with_context(child, [
+        _assistant("stale answer from the previous turn"),
+        SimpleNamespace(role="user", content="new task of this turn"),
+    ])
+    with pytest.raises(BaseError, match="subagent_progress_unknown"):
+        await dispatch(child)
+
+
+async def test_degraded_note_strips_sql_and_params(debug_capture):
+    run = AsyncMock(side_effect=_sqlalchemy_persist_failure(blob="x" * 5000))
+    child = child_for(run)
+    _child_with_context(child, [_assistant("TASK-01 done")])
+    result = await dispatch(child)
+    assert result.success is True
+    # 模型可见文本只保异常类型与简短原因：SQL 语句与绑定参数原文不外泄。
+    assert "INSERT INTO kv_store" not in result.data["output"]
+    assert "x" * 5000 not in result.data["output"]
+    assert "disk I/O error" in result.data["output"]
+    assert len(result.data["output"]) < 2000
+
+
+def test_recovery_uses_real_deep_agent_property_path():
+    from openjiuwen.core.single_agent.schema.agent_card import AgentCard
+    from openjiuwen.harness.deep_agent import DeepAgent
+
+    from jiuwenswarm.agents.harness.common.tools.subagent_executor.execution_timeout import (
+        _recover_last_assistant_text,
+    )
+
+    # 真实 DeepAgent 的公开 react_agent property → context_engine 属性链防漂移钉。
+    child = DeepAgent(AgentCard(id="recover-child", name="child"))
+    child._react_agent = SimpleNamespace(context_engine=SimpleNamespace(
+        get_context=lambda session_id: SimpleNamespace(
+            get_messages=lambda: [_assistant("final answer")],
+        ),
+    ))
+    assert _recover_last_assistant_text(child, "recover-sid") == "final answer"
 
 
 async def test_debug_error_chunk_is_not_reduced_to_empty_success(debug_capture):
