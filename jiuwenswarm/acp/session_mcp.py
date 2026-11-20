@@ -1,0 +1,261 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""Run ACP-supplied stdio MCP servers in the stdio bridge process."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import re
+import sys
+from contextlib import AsyncExitStack
+from pathlib import Path
+from uuid import uuid4
+
+from mcp import ClientSession, StdioServerParameters
+from mcp.client.stdio import stdio_client
+from websockets.exceptions import ConnectionClosed
+
+logger = logging.getLogger(__name__)
+
+MCP_CALL_METHOD = "_jiuwenswarm/mcp/call"
+MCP_TOOLS_PARAM = "_jiuwenswarm_acp_mcp_tools"
+
+
+class SessionMcp:
+    def __init__(self, servers: list[tuple[str, StdioServerParameters]]) -> None:
+        self.token = uuid4().hex
+        self._servers = servers
+        self._ready = asyncio.get_running_loop().create_future()
+        self._tools: dict[str, tuple[ClientSession, str]] = {}
+        self._task = asyncio.create_task(self._run(), name="acp-session-mcp")
+
+    async def _run(self) -> None:
+        try:
+            async with AsyncExitStack() as stack:
+                declarations = []
+                for server_name, params in self._servers:
+                    pipes = await stack.enter_async_context(stdio_client(params))
+                    client = await stack.enter_async_context(ClientSession(*pipes))
+                    await client.initialize()
+                    cursor = None
+                    while True:
+                        result = await client.list_tools(cursor=cursor)
+                        for tool in result.tools:
+                            name = re.sub(r"[^a-zA-Z0-9_-]", "_", f"mcp__{server_name}__{tool.name}")
+                            if len(name) > 64 or name in self._tools:
+                                name = f"{name[:43]}_{uuid4().hex[:20]}"
+                            self._tools[name] = client, tool.name
+                            declarations.append({
+                                "name": name, "description": tool.description or tool.name,
+                                "schema": tool.inputSchema, "token": self.token,
+                            })
+                        cursor = result.nextCursor
+                        if not cursor:
+                            break
+                self._ready.set_result(declarations)
+                await asyncio.Future()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            if not self._ready.done():
+                self._ready.set_exception(exc)
+        finally:
+            self._tools.clear()
+
+    async def declarations(self) -> list[dict]:
+        return await asyncio.wait_for(asyncio.shield(self._ready), timeout=20)
+
+    async def call(self, name: str, arguments: dict) -> dict:
+        client, original_name = self._tools[name]
+        result = await client.call_tool(original_name, arguments)
+        return result.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+    async def close(self) -> None:
+        self._task.cancel()
+        await asyncio.gather(self._task, return_exceptions=True)
+        if not self._ready.done():
+            self._ready.cancel()
+        elif not self._ready.cancelled():
+            self._ready.exception()
+
+
+def _stdio_servers(params: dict) -> list[tuple[str, StdioServerParameters]]:
+    entries = params.get("mcpServers", [])
+    if not isinstance(entries, list):
+        raise ValueError("mcpServers must be an array")
+    cwd = params.get("cwd")
+    if entries and (
+        not isinstance(cwd, str) or not Path(cwd).is_absolute() or not Path(cwd).is_dir()
+    ):
+        raise ValueError("stdio MCP requires an existing absolute session cwd")
+    servers = []
+    names = set()
+    for entry in entries:
+        if not isinstance(entry, dict) or entry.get("type", "stdio") != "stdio":
+            raise ValueError("Only stdio MCP servers are supported")
+        name, command = entry.get("name"), entry.get("command")
+        args, env = entry.get("args", []), entry.get("env", [])
+        if not isinstance(name, str) or not name or name in names:
+            raise ValueError("stdio MCP server names must be unique and nonempty")
+        if not isinstance(command, str) or not command:
+            raise ValueError("stdio MCP command must be a nonempty string")
+        if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+            raise ValueError("stdio MCP args must be an array of strings")
+        if not isinstance(env, list) or not all(
+            isinstance(item, dict) and isinstance(item.get("name"), str)
+            and isinstance(item.get("value"), str) for item in env
+        ):
+            raise ValueError("stdio MCP env must contain name/value pairs")
+        names.add(name)
+        servers.append((name, StdioServerParameters(
+            command=command, args=args, env={item["name"]: item["value"] for item in env},
+            cwd=cwd,
+        )))
+    return servers
+
+
+class SessionMcpChannelMixin:
+    """Attach bridge-owned MCP processes to successful ACP sessions."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._mcp_sessions: dict[str, tuple[SessionMcp, list[dict]]] = {}
+        self._mcp_calls: set[asyncio.Task] = set()
+        self._mcp_new_session: tuple[object, SessionMcp | None, list[dict]] | None = None
+
+    async def start(self) -> None:
+        if self._running:
+            return
+        self._running = True
+        await self._ensure_gateway_connection()
+        while self._running:
+            line = await asyncio.to_thread(sys.stdin.buffer.readline)
+            if not line:
+                break
+            if not line.strip():
+                continue
+            try:
+                await self._handle_raw_line(line.decode("utf-8", errors="replace"))
+            except Exception:
+                logger.exception("ACP stdio request failed")
+                await self._write_jsonrpc_error(None, -32603, "ACP stdio request failed")
+
+        # A half-closed stdio client can still read its in-flight prompt result.
+        # Once responses drain, close the MCP children without an idle grace period.
+        while (
+            self._running and self._gateway_ws is not None
+            and self._request_ctx and not self._pending_client_rpc_session_by_id
+        ):
+            await asyncio.sleep(0.05)
+
+    async def _handle_jsonrpc_request(self, data: dict) -> None:
+        method = data.get("method")
+        params = data.get("params")
+        params = params if isinstance(params, dict) else {}
+        rpc_id = data.get("id")
+        if method == "session/close":
+            session_id = params.get("sessionId")
+            if not isinstance(session_id, str) or session_id not in self._session_ctx:
+                await self._write_jsonrpc_error(rpc_id, -32002, "Session not found or expired")
+                return
+            if session_id in self._active_prompt_request_by_session:
+                await self._handle_jsonrpc_session_cancel(None, {"sessionId": session_id})
+            self._session_ctx.pop(session_id, None)
+            self._known_sessions.discard(session_id)
+            binding = self._mcp_sessions.pop(session_id, None)
+            if binding is not None:
+                await binding[0].close()
+            await self._write_jsonrpc_result(rpc_id, {})
+            return
+
+        if method not in ("session/new", "session/load", "session/resume"):
+            await super()._handle_jsonrpc_request(data)
+            return
+        try:
+            servers = _stdio_servers(params)
+        except ValueError as exc:
+            await self._write_jsonrpc_error(rpc_id, -32602, str(exc))
+            return
+        session = SessionMcp(servers) if servers else None
+        self._mcp_new_session = (rpc_id, session, [])
+        try:
+            try:
+                declarations = await session.declarations() if session is not None else []
+            except Exception:
+                await self._write_jsonrpc_error(rpc_id, -32603, "Could not initialize stdio MCP servers")
+                return
+            self._mcp_new_session = (rpc_id, session, declarations)
+            clean_params = {key: value for key, value in params.items() if key != "mcpServers"}
+            await super()._handle_jsonrpc_request({**data, "params": clean_params})
+        finally:
+            if session is not None and self._mcp_new_session is not None:
+                await session.close()
+            self._mcp_new_session = None
+
+    async def _write_jsonrpc_result(self, rpc_id, result) -> None:
+        pending = self._mcp_new_session
+        if pending is not None and pending[0] == rpc_id and isinstance(result, dict):
+            session_id = result.get("sessionId")
+            if isinstance(session_id, str):
+                _, session, declarations = pending
+                prior = self._mcp_sessions.pop(session_id, None)
+                if prior is not None:
+                    await prior[0].close()
+                if session is not None:
+                    self._mcp_sessions[session_id] = session, declarations
+                self._mcp_new_session = None
+        await super()._write_jsonrpc_result(rpc_id, result)
+
+    async def _handle_jsonrpc_session_prompt(self, rpc_id, params: dict) -> None:
+        session_id = str(params.get("sessionId") or "").strip()
+        binding = self._mcp_sessions.get(session_id)
+        if binding is not None and session_id in self._active_prompt_request_by_session:
+            await self._write_jsonrpc_error(rpc_id, -32600, "Session already has an active prompt")
+            return
+        turn = {key: value for key, value in params.items() if key != "mcpServers"}
+        turn[MCP_TOOLS_PARAM] = binding[1] if binding is not None else []
+        await super()._handle_jsonrpc_session_prompt(rpc_id, turn)
+
+    async def _handle_gateway_jsonrpc_request(self, data: dict) -> None:
+        if data.get("method") != MCP_CALL_METHOD:
+            await super()._handle_gateway_jsonrpc_request(data)
+            return
+        task = asyncio.create_task(self._call_session_mcp(data), name="acp-mcp-call")
+        self._mcp_calls.add(task)
+        task.add_done_callback(self._mcp_calls.discard)
+
+    async def _call_session_mcp(self, data: dict) -> None:
+        params = data.get("params")
+        params = params if isinstance(params, dict) else {}
+        response = {"jsonrpc": "2.0", "id": data.get("id")}
+        binding = next((
+            session for session, _ in self._mcp_sessions.values()
+            if session.token == params.get("token")
+        ), None)
+        try:
+            if binding is None:
+                raise ValueError("MCP session closed")
+            async with asyncio.timeout(45):
+                response["result"] = await binding.call(params["name"], params["arguments"])
+        except Exception:
+            response["error"] = {"code": -32603, "message": "Session MCP call failed"}
+        if self._gateway_ws is not None:
+            try:
+                await self._gateway_ws.send(json.dumps(response))
+            except (OSError, ConnectionClosed):
+                pass
+
+    async def stop(self) -> None:
+        self._running = False
+        bindings = tuple(self._mcp_sessions.values())
+        self._mcp_sessions.clear()
+        calls = tuple(self._mcp_calls)
+        try:
+            for task in calls:
+                task.cancel()
+            await asyncio.gather(*calls, return_exceptions=True)
+            await asyncio.gather(*(server.close() for server, _ in bindings))
+        finally:
+            await super().stop()

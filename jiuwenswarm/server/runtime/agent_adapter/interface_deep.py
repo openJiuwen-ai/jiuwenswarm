@@ -21864,10 +21864,13 @@ class JiuWenSwarmDeepAdapter:
                     await session_adapter.configure_process_cli_run(
                         max_turns=process_options.max_turns, host_tools=process_options.host_tools
                     )
-                child_stream = session_adapter.process_message_stream_impl(request, inputs)
-                async with aclosing(child_stream):
-                    async for chunk in child_stream:
-                        yield chunk
+                from jiuwenswarm.server.runtime.agent_adapter.acp_mcp import bind_acp_mcp_tools
+
+                with bind_acp_mcp_tools(session_adapter, request):
+                    child_stream = session_adapter.process_message_stream_impl(request, inputs)
+                    async with aclosing(child_stream):
+                        async for chunk in child_stream:
+                            yield chunk
                 return
             finally:
                 session_adapter._unregister_session_agent_task(  # pylint: disable=protected-access
