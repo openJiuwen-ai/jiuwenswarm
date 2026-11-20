@@ -8,7 +8,11 @@ modules:
   - jiuwenswarm/server/runtime/agent_adapter
 files:
   - jiuwenswarm/server/runtime/agent_adapter/interface_deep.py
+  - jiuwenswarm/server/supervisor/diagnostics.py
   - tests/unit_tests/agentserver/test_deep_adapter_rail_build_timing.py
+  - tests/unit_tests/agentserver/test_ipc_backpressure.py
+  - tests/unit_tests/agentserver/permissions/test_permission_cold_build.py
+  - tests/unit_tests/agentserver/permissions/test_permission_output_process_cli.py
 designs: []
 design_note: 本次是对现有 DeepAdapter 创建链路的局部阻塞修复，无独立设计文档。
 ---
@@ -42,6 +46,9 @@ design_note: 本次是对现有 DeepAdapter 创建链路的局部阻塞修复，
 - CI 门禁报告中的 314 个失败节点按文件分组复测：原有同步 builder 的位置参数兼容问题已消失；权限回归、MoA、快照和 Process CLI 相关节点均通过。
 - Windows 下补充验证：Process CLI 权限链路 11 passed，Process CLI 回归 9 passed；绑定文件使用扩展路径，避免深层 worktree 下超过 `MAX_PATH` 被误报为 `FileNotFoundError`。
 - 快照测试显式按 UTF-8 读取其自身写出的 JSON，避免依赖 Windows 默认代码页；`test_permission_cold_snapshot.py` 35 passed。
+- rebase 到 `origin/develop` 的 `b460e34522` 后，CI 报告（提交 `17367a6792`）为 27157 passed、247 skipped、1 failed；唯一失败是 `test_ipc_backpressure.py` 依赖不同 Python/Linux 版本的 `faulthandler` 输出包含固定函数名。诊断文件新增稳定的 `PYTHON STACK TRACE` 段标记，UT 改为验证稳定段顺序。
+- 对 rebase 后暴露的 persistent initialization loop 生命周期补齐测试所有权清理：cold fixture 使用 adapter 原生 cleanup，Process CLI fake manager 模拟生产 manager cleanup；`test_permission_admission_edges.py` 5 passed，Process CLI 相关场景重跑通过。
+- 本次 CI 唯一失败用例在 Windows 本地重跑通过；修改后通过 `git diff --check`，未运行格式化和静态检查。
 - 新增/修改 Python 文件通过 `py_compile`，`git diff --check` 通过。
 
 未执行格式化和静态检查，遵循本仓库“禁止运行格式化与静态检查工具”的协作约束；未修改依赖锁文件。
