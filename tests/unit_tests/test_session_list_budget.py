@@ -3,7 +3,10 @@ import json
 
 import pytest
 
-from jiuwenswarm.server.agent_ws_server import _fit_sessions_page_bytes
+from jiuwenswarm.server.agent_ws_server import (
+    _fit_sessions_page_bytes,
+    _skeleton_session_row,
+)
 
 
 def _row(i: int, pad: int = 0) -> dict:
@@ -54,3 +57,51 @@ class TestFitSessionsPageBytes:
         assert 1 <= len(out) < 5000
         size = len(json.dumps({"sessions": out}, ensure_ascii=False).encode("utf-8"))
         assert size <= 256 * 1024
+
+    def test_single_row_over_budget_degrades_to_skeleton(self):
+        # 病态场景：单行自身超预算（异常大嵌套字段）——floor=1 也发不出去，
+        # 必须降级为骨架行而不是把 response_too_large 留给客户端
+        giant = {
+            "session_id": "desktop_giant_001",
+            "title": "正常标题",
+            "channel_id": "desktop",
+            "channel_metadata": {"blob": "x" * (5 * 1024 * 1024)},
+        }
+        out = _fit_sessions_page_bytes([giant], budget=512 * 1024)
+        assert len(out) == 1
+        size = len(json.dumps({"sessions": out}, ensure_ascii=False).encode("utf-8"))
+        assert size <= 512 * 1024
+        assert out[0]["session_id"] == "desktop_giant_001"
+        assert out[0]["title"] == "正常标题"
+        assert "channel_metadata" not in out[0]
+
+    def test_skeleton_truncates_oversized_string_fields(self):
+        row = {
+            "session_id": "desktop_s",
+            "title": "t" * 5000,
+            "channel_id": "desktop",
+            "mode": "agent",
+            "status": "active",
+            "pinned": True,
+            "history_text": "h" * 100000,
+        }
+        sk = _skeleton_session_row(row)
+        assert sk["session_id"] == "desktop_s"
+        assert len(sk["title"]) == 512
+        assert sk["pinned"] is True
+        assert len(sk["history_text"]) == 512
+        assert sk["mode"] == "agent" and sk["status"] == "active"
+
+    def test_skeleton_keeps_row_count_semantics(self):
+        # 病态行在页首的混排：比例收缩一路裁到 floor=1（仍超预算）→ 骨架化，
+        # 行数语义不变（不丢行位、不产生空页），total/offset 对账不受影响
+        rows = [{"session_id": "desktop_giant", "channel_metadata": {"b": "y" * (2 * 1024 * 1024)}}] + [
+            _row(i, pad=1500) for i in range(300)
+        ]
+        budget = 512 * 1024
+        out = _fit_sessions_page_bytes(rows, budget=budget)
+        assert len(out) == 1
+        size = len(json.dumps({"sessions": out}, ensure_ascii=False).encode("utf-8"))
+        assert size <= budget
+        assert out[0]["session_id"] == "desktop_giant"
+        assert "channel_metadata" not in out[0]

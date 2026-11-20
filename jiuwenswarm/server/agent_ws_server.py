@@ -253,6 +253,23 @@ _SESSION_LIST_PAGE_LIMIT = 5000
 # response_too_large 错误，桌面侧栏将长期空白（每次刷新都同样失败）。
 # 4 MiB 工作线 = 6 MiB 硬限的 66%，为探测与 wire 的口径差留足余量。
 _SESSION_LIST_SEND_BUDGET_BYTES = 4 * 1024 * 1024
+# 骨架行的字符串字段截断上限：单行自身超预算（病态 metadata，如异常大的
+# channel_metadata/附件/历史字段）时，floor=1 行仍发不出去会触发 response_too_large，
+# 退化为骨架行保底——丢弃嵌套/超长字段、保留标量展示字段，行数语义不变
+# （total/offset 对账不受影响），侧栏不空白。
+_SESSION_ROW_STRING_CAP = 512
+
+
+def _skeleton_session_row(row: dict[str, Any]) -> dict[str, Any]:
+    """超预算单行的保底骨架：仅保留标量字段（长字符串截断），丢弃嵌套结构。"""
+    out: dict[str, Any] = {}
+    for k, v in row.items():
+        if isinstance(v, str):
+            out[k] = v[:_SESSION_ROW_STRING_CAP]
+        elif isinstance(v, (int, float, bool)):
+            out[k] = v
+    out.setdefault("session_id", "")
+    return out
 
 
 def _fit_sessions_page_bytes(
@@ -263,6 +280,8 @@ def _fit_sessions_page_bytes(
     纯函数便于单测：探测序列化用 json.dumps(ensure_ascii=False)，实测字节 >= wire 编码
     字节（保守）。收缩按比例推进并复测；floor 为 1 行——返回空页会让客户端把当前页
     误判为末页从而漏掉后续会话（total 有余量时空页是错误信号）。
+    单行自身仍超预算（病态 metadata）时降级为骨架行：floor=1 也发不出去，不能把
+    response_too_large 留给客户端（退 200/页拿到的还是同一行，最终侧栏空白）。
     """
     if not sessions:
         return sessions
@@ -279,6 +298,15 @@ def _fit_sessions_page_bytes(
             keep = len(sessions) - 1
         sessions = sessions[:max(1, keep)]
         size = _size(sessions)
+    if size > budget:
+        logger.warning(
+            "[AgentWebSocketServer] session.list 单行超字节预算，降级为骨架行: "
+            "session_id=%s size=%d budget=%d",
+            sessions[0].get("session_id"),
+            size,
+            budget,
+        )
+        sessions = [_skeleton_session_row(sessions[0])]
     return sessions
 
 
