@@ -132,8 +132,9 @@ def raise_for_subagent_stream_error(chunk: Any) -> None:
             error["message"] = payload
         elif isinstance(payload, dict) and not error.get("error"):
             # SDK 流式转换层把失败文本写进 output（error_result 无 error 字段），
-            # 不兜底的话 reason 只剩 subagent_error，失败阶段完全不可定位。
-            error["error"] = payload.get("output")
+            # 不兜底的话 reason 只剩 subagent_error，失败阶段完全不可定位；
+            # 与 _mark_stream_error_text 同口径截断，巨型原文不进异常与日志。
+            error["error"] = str(payload.get("output") or "")[:_MAX_REASON_CHARS]
         raise_for_subagent_error(error)
     elif kind == "answer":
         if isinstance(payload, dict):

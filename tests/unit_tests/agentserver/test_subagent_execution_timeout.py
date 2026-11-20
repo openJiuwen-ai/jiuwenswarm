@@ -229,6 +229,31 @@ async def test_error_typed_chunk_preserves_storage_degradation(debug_capture):
     assert "checkpoint_degraded" in result.data["output"]
 
 
+async def test_error_typed_chunk_output_fallback_is_truncated(debug_capture):
+    if debug_capture is None:
+        return  # type=error 兜底只经流路径；invoke 通道异常带链走降级，不适用
+    # type=error 分支的 output 兜底与 answer 分支同口径：巨型异常文本（生产见
+    # 51 万字符 blob 参数）截断 400，不整段进异常与日志（CR-4 回归钉）。
+    run = AsyncMock(side_effect=_sqlalchemy_persist_failure())
+    child = child_for(run)
+
+    async def stream(*args, **kwargs):
+        try:
+            await run(*args, **kwargs)
+        except Exception as e:  # noqa: BLE001
+            yield {"type": "error", "payload": {
+                "output": str(e) + "[parameters: ('agent_state_blobs', '" + "y" * 5000 + "')]",
+                "result_type": "error",
+            }}
+
+    child.stream = stream
+    _child_with_context(child, [_assistant("TASK-01 done")])
+    with pytest.raises(BaseError, match="disk I/O error") as error:
+        await dispatch(child)
+    assert len(str(error.value)) < 2000
+    assert "y" * 5000 not in str(error.value)
+
+
 async def test_locked_core_answer_chunk_without_origin_stays_fail_closed(debug_capture):
     if debug_capture is None:
         return  # error chunk 只经 debug 捕获流路径
