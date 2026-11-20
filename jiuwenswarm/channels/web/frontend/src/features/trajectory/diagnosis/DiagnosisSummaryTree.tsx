@@ -20,11 +20,18 @@ export function DiagnosisSummaryTree({ record, subjectLabels }: {
   const segments = Object.values(tree?.turns ?? {}).flatMap(turns => turns.flatMap(turn => turn.segments));
   const completed = segments.filter(segment => segment.status === 'completed').length;
   const status = (value: SummaryStatus) => t(`trajectory.diagnosis.stageStatus.${value}`);
+  const internalCodes = new Set(['problem_rejected', 'problem_recovery_unconfirmed',
+    'turn_number_conflict', 'turn_identity_fallback', 'display_summary_missing']);
+  const internalOnly = tree?.status === 'degraded' && tree.warnings.length > 0
+    && tree.warnings.every(warning => internalCodes.has(warning.code))
+    && segments.every(segment => segment.status === 'completed')
+    && Object.values(tree.agent_summaries).every(agent => agent.status === 'completed')
+    && !!root.trim();
+  const visibleStatus = internalOnly ? 'completed' : tree?.status;
   const notice = tree ? [
-    tree.status !== 'completed' ? status(tree.status) : '',
+    visibleStatus && visibleStatus !== 'completed' ? status(visibleStatus) : '',
     completed < segments.length ? t('trajectory.diagnosis.summaryTree.coverage',
       { completed, total: segments.length }) : '',
-    tree.warnings.length ? t('trajectory.diagnosis.summaryTree.warnings', { count: tree.warnings.length }) : '',
   ].filter(Boolean).join(' · ') : '';
   const agents = Object.entries(tree?.agent_summaries ?? {});
   const labels = new Map(subjectLabels);
@@ -45,7 +52,7 @@ export function DiagnosisSummaryTree({ record, subjectLabels }: {
   };
   return (
     <FoldableItem title={t('trajectory.diagnosis.objectSummary')} className={css.summaryBlock}
-      mark={tree && tree.status !== 'completed' ? <DiagnosisStatusIcon kind={tree.status} /> : undefined}
+      mark={visibleStatus && visibleStatus !== 'completed' ? <DiagnosisStatusIcon kind={visibleStatus} /> : undefined}
       action={(
         <button type="button" className={css.linkButton} onClick={download}
           data-testid="trajectory-diagnosis-summary-download">

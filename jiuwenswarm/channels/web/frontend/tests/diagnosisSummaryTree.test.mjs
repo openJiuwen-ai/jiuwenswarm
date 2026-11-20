@@ -49,6 +49,20 @@ test('failed summary keeps its failure mark instead of a success check', () => {
   assert.ok(!html.includes('lucide-circle-check'));
 });
 
+test('internal warnings in historical summaries keep a completed presentation', () => {
+  const tree = { trajectory_summary: 'Complete account', status: 'degraded', problems: [],
+    turns: { A: [{ status: 'completed', segments: [{ status: 'completed' }] }] }, agent_summaries: {},
+    warnings: [{ code: 'problem_rejected', message: 'candidate 2: invalid evidence' }] };
+  const html = render({ summary_tree: tree });
+  assert.ok(html.includes('lucide-circle-check'));
+  assert.ok(!html.includes('data-kind="degraded"'));
+  assert.ok(!html.includes('summaryTree.warnings') && !html.includes('invalid evidence'));
+  assert.equal(tree.status, 'degraded');
+  const shortened = render({ summary_tree: { ...tree,
+    warnings: [{ code: 'input_truncated', message: 'provider context limit' }] } });
+  assert.ok(shortened.includes('data-kind="degraded"'));
+});
+
 test('summary detail renders the overall account and agent accounts while keeping turn details off the page', () => {
   const root = 'Root context '.repeat(100) + 'ROOT_END_MARKER';
   const segment = { segment_id: 'A:segment:1', start_node_id: 'A:1', end_node_id: 'A:4',
