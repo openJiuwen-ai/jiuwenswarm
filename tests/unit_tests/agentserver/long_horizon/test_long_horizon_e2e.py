@@ -18,7 +18,14 @@ from jiuwenswarm.agents.harness.common.long_horizon.runtime import (
 )
 from jiuwenswarm.agents.harness.common.long_horizon.tools import LongHorizonActions
 
-NOW = datetime(2026, 9, 16, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+_TZ = ZoneInfo("Asia/Shanghai")
+# 时间炸弹修复（!6961 回归）：tools._deliver_overdue_stages_after_confirm 以真实
+# 时钟判定 overdue stage，固定 NOW=2026-09-16 / anchor 12-20 在真实时间越过
+# due 线（2026-11-20 09:00）后触发 overdue 投递，confirm 断言随之失败。
+# 改为相对构造：NOW 取真实当前，anchor 推后 90 天，offset -30 的阶段永远在未来。
+NOW = datetime.now(tz=_TZ)
+_ANCHOR_MD = NOW + timedelta(days=90)
+_STAGE1_MD = NOW + timedelta(days=60)
 BRIEF = "目标、约束、交付物和关键背景。"
 
 
@@ -59,20 +66,20 @@ def _two_stage_draft_params() -> dict:
     return {
         "action": "draft",
         "title": "年度发布",
-        "month": 12,
-        "day": 20,
+        "month": _ANCHOR_MD.month,
+        "day": _ANCHOR_MD.day,
         "timezone": "Asia/Shanghai",
         "stages": [
             {
                 "title": "准备材料",
-                "month": 11,
-                "day": 20,
+                "month": _STAGE1_MD.month,
+                "day": _STAGE1_MD.day,
                 "plan": "整理发布清单并标记负责人。",
             },
             {
                 "title": "发布检查",
-                "month": 12,
-                "day": 20,
+                "month": _ANCHOR_MD.month,
+                "day": _ANCHOR_MD.day,
                 "plan": "逐项核对清单并输出检查结论。",
             },
         ],

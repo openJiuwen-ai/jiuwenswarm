@@ -12,7 +12,14 @@ from jiuwenswarm.agents.harness.common.long_horizon.core import (
 from jiuwenswarm.agents.harness.common.long_horizon.runtime import stage_job_id
 from jiuwenswarm.agents.harness.common.long_horizon.tools import LongHorizonActions
 
-NOW = datetime(2026, 9, 16, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+_TZ = ZoneInfo("Asia/Shanghai")
+# 时间炸弹修复（!6961 回归）：tools._deliver_overdue_stages_after_confirm 以真实
+# 时钟判定 overdue stage，固定 NOW=2026-09-16 / anchor 12-20 在真实时间越过
+# due 线（2026-11-20 09:00）后触发 overdue 投递，confirm 断言随之失败。
+# 改为相对构造：NOW 取真实当前，anchor 推后 90 天，offset -30 的阶段永远在未来。
+NOW = datetime.now(tz=_TZ)
+_ANCHOR_MD = NOW + timedelta(days=90)
+_STAGE1_MD = NOW + timedelta(days=60)
 BRIEF = "目标、约束、交付物和关键背景。"
 
 
@@ -58,20 +65,20 @@ def valid_draft_params() -> dict:
     return {
         "action": "draft",
         "title": "年度发布",
-        "month": 12,
-        "day": 20,
+        "month": _ANCHOR_MD.month,
+        "day": _ANCHOR_MD.day,
         "timezone": "Asia/Shanghai",
         "stages": [
             {
                 "title": "准备材料",
-                "month": 11,
-                "day": 20,
+                "month": _STAGE1_MD.month,
+                "day": _STAGE1_MD.day,
                 "plan": "整理发布清单并标记负责人。",
             },
             {
                 "title": "发布检查",
-                "month": 12,
-                "day": 20,
+                "month": _ANCHOR_MD.month,
+                "day": _ANCHOR_MD.day,
                 "plan": "逐项核对清单并输出检查结论。",
             },
         ],
@@ -490,22 +497,26 @@ async def test_list_and_inbox(workspace, fake_cron):
 async def test_confirm_delivers_every_overdue_stage_and_schedules_future(
     workspace, fake_cron
 ):
+    # confirm 后的 overdue 判定走真实时钟（_deliver_overdue_stages_after_confirm），
+    # 而非入参 now：入参 now 取 NOW-3（早于两个"过期"段，draft 校验通过），
+    # 过期段 NOW-1/-2 相对入参是未来、相对真实时钟必过期，未来段 NOW+30
+    # 相对真实时钟必未到期——断言不随真实时间推移漂移。
     params = valid_draft_params()
-    params["now"] = "2026-09-13T12:00:00+08:00"
+    params["now"] = (NOW - timedelta(days=3)).isoformat()
     params["stages"] = [
         {
             "title": "昨天",
-            "due_at": "2026-09-15T09:00:00+08:00",
+            "due_at": (NOW - timedelta(days=1)).isoformat(),
             "plan": "补昨天的工作。",
         },
         {
             "title": "前天",
-            "due_at": "2026-09-14T09:00:00+08:00",
+            "due_at": (NOW - timedelta(days=2)).isoformat(),
             "plan": "补前天的工作。",
         },
         {
             "title": "未来",
-            "due_at": "2026-12-20T09:00:00+08:00",
+            "due_at": (NOW + timedelta(days=30)).isoformat(),
             "plan": "按计划推进。",
         },
     ]

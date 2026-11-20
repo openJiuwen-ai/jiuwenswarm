@@ -54,6 +54,7 @@ _EXPECTED_SECTIONS = [
     (300, "tool_selection"),
     (330, "bash_discipline"),
     (340, "tool_result"),
+    (345, "browser_routing"),
     (410, "thinking_discipline"),
     (430, "todo"),
     (440, "task_tool"),
@@ -131,8 +132,13 @@ def test_offline_sections_are_registered_and_static() -> None:
         assert snapshot.sections, "v1 快照不应为空"
         for section in snapshot.sections:
             assert section.registered is True
-            assert section.carrier == "system"
-            assert section.priority < 800  # 全为静态区
+            # browser_routing（345）是唯一 attachment 载体段：导航段随按需工具动态
+            # 加载（!10385），不进静态区 hash（snapshot static_hash 只收 system 载体）。
+            if section.name == "browser_routing":
+                assert section.carrier == "attachment"
+            else:
+                assert section.carrier == "system"
+            assert section.priority < 800  # 全为静态区段号
 
 
 def test_safety_relay_merge_present() -> None:

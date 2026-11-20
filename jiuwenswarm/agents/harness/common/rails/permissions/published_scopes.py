@@ -22,17 +22,42 @@ _publishers_lock = threading.RLock()
 # detached children own leases; the SDK remains the final global key budget.
 MAX_IDLE_PERMISSION_SESSIONS = 128
 _idle_sessions = OrderedDict()
+# finalize 回调无法同步清理时的积压（见 _release_orphaned_keys）。
+_orphaned_backlog = []
 
 
 def _release_orphaned_keys(manager, keys):
     # No reference to the publisher/rail: GC must be able to collect their
     # host callback cycle even when normal Agent uninit was missed.
+    # 锁忙探测：finalize 回调可能在「正持有 manager._lock 的线程」中被 GC
+    # 同步触发（update_config/remove_config 块内分配触发回收）。agent_shield
+    # 的 manager._lock 是 threading.Lock（不可重入），此时 remove_config 重入
+    # 即同线程自锁死锁（CI 慢机并行下实测 60s 超时）。孤儿 key 清理是
+    # best-effort：锁忙时推迟，由 _flush_orphaned_backlog 在正常调用栈重试；
+    # 进程退出时 key 表随进程消亡，兜底无泄漏。
+    lock = getattr(manager, "_lock", None)
+    if lock is not None and not lock.acquire(blocking=False):
+        _orphaned_backlog.append((manager, tuple(keys)))
+        keys.clear()
+        return
+    if lock is not None:
+        lock.release()
     for key in tuple(keys):
         manager.remove_config(key)
     keys.clear()
 
 
+def _flush_orphaned_backlog():
+    """在无重入风险的正读路径重试被推迟的孤儿 key 清理。"""
+    if not _orphaned_backlog:
+        return
+    pending, _orphaned_backlog[:] = _orphaned_backlog[:], []
+    for manager, keys in pending:
+        _release_orphaned_keys(manager, set(keys))
+
+
 def _publisher_snapshot():
+    _flush_orphaned_backlog()
     with _publishers_lock:
         return list(_publishers.values())
 

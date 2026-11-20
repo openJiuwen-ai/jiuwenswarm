@@ -68,6 +68,61 @@ def test_session_publish_apis_are_noop(publisher):
         scopes.key_for("session-one")
 
 
+def test_finalize_defers_when_manager_lock_held():
+    """finalize 回调撞上持锁线程（同线程重入）时推迟清理而非死锁。
+
+    agent_shield manager._lock 是 threading.Lock（不可重入）：GC 在
+    update_config/remove_config 持锁块内触发 publisher finalize 时，
+    回调里同步 remove_config 即自锁（CI 慢机并行下 60s 超时）。
+    """
+    import threading
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from jiuwenswarm.agents.harness.common.rails.permissions import (
+        published_scopes,
+    )
+
+    removed = []
+    fake_manager = SimpleNamespace(
+        _lock=threading.Lock(),
+        remove_config=Mock(side_effect=lambda key: removed.append(key)),
+    )
+    keys = {"orphan-key"}
+    try:
+        fake_manager._lock.acquire()  # 模拟同线程持锁时 GC 触发 finalize
+        published_scopes._release_orphaned_keys(fake_manager, keys)
+        assert removed == []  # 未死锁、未清理
+        assert keys == set()  # 原集合已消费
+        assert len(published_scopes._orphaned_backlog) == 1
+        fake_manager._lock.release()  # 锁释放后经正常读路径重试
+        published_scopes._publisher_snapshot()
+        assert removed == ["orphan-key"]
+        assert published_scopes._orphaned_backlog == []
+    finally:
+        published_scopes._orphaned_backlog[:] = []
+
+
+def test_finalize_without_manager_lock_still_cleans_directly():
+    """manager 无 _lock 属性（包升级改名等）时退回原直接清理路径。"""
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from jiuwenswarm.agents.harness.common.rails.permissions import (
+        published_scopes,
+    )
+
+    removed = []
+    fake_manager = SimpleNamespace(
+        remove_config=Mock(side_effect=lambda key: removed.append(key)),
+    )
+    keys = {"orphan-key"}
+    published_scopes._release_orphaned_keys(fake_manager, keys)
+    assert removed == ["orphan-key"]
+    assert keys == set()
+    assert published_scopes._orphaned_backlog == []
+
+
 @pytest.mark.asyncio
 async def test_activation_uses_temp_config_not_manager_skill_key(publisher):
     """Skill activation no longer registers a derived Manager key."""
