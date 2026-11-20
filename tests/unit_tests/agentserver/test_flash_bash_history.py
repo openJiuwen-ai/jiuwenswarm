@@ -82,7 +82,9 @@ def temp_dir():
     if any(quote in base for quote in ("'", '"')):
         base = os.getcwd()
     dir_path = tempfile.mkdtemp(dir=base)
-    yield dir_path
+    # macOS 上 gettempdir() 返回 /var/folders/...（/var 是 /private/var 的符号链接），
+    # 被测代码内部 Path.resolve() 后以 resolved 路径为账本 key，这里同样归一，避免 KeyError。
+    yield str(Path(dir_path).resolve())
     shutil.rmtree(dir_path, ignore_errors=True)
 
 

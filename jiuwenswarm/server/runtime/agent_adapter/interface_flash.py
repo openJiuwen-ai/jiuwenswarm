@@ -1142,12 +1142,6 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             logger.warning("[FlashAdapter] FlashSkillProtocolRail create failed: %s", exc, exc_info=True)
             return None
 
-    @staticmethod
-    def _rail_enabled(config: Any) -> bool:
-        if not isinstance(config, dict):
-            return True
-        return bool(config.get("enabled", True))
-
     def _build_flash_repeat_call_guard_rail(self) -> Any | None:
         """重复调用守卫：attachment 只提醒不否决。配置 flash.repeat_call_guard。"""
         try:
