@@ -56,8 +56,10 @@ AgentServer 归一化后带/不带 `mode` 都识别为团队请求（`team.work.
 
 - 去掉 `validate_answer_source` 的 `request_id` 前置条件：恢复与否由
   `source` 白名单判定，缺 `request_id` 的恢复请求也要校验。
-- `answers` 判定放宽为 `Mapping` 或 `Sequence`（排除 `str`/`bytes` 与空值），
-  让字典形态的错误载荷同样进入白名单校验并快速失败。
+- `answers` 为 `Mapping` 时直接拒绝，与 `source` 是否在白名单内无关：运行时
+  只把非空答案列表识别为中断恢复（`has_interrupt_resume_payload` 要求
+  `isinstance(answers, list)`），字典形态永远不可能是恢复，放行只会复现同样的
+  排队死锁。`str`/`bytes` 与空列表继续按「无 answers」放行。
 - 校验位置不变：仍在 `normalize_request` 之后、`session_work_kind` 团队
   分类与 lane 准入之前，`InteractionAnswerError` 直接作为错误响应帧返回客户端。
 - 保持既有豁免：无 `answers` 的普通回合即使带非白名单 `source`
@@ -66,9 +68,12 @@ AgentServer 归一化后带/不带 `mode` 都识别为团队请求（`team.work.
 
 ## 验证
 
-先红后绿，`tests/unit_tests/runtime/test_answer_source_validation.py` 13 passed：
+先红后绿，`tests/unit_tests/runtime/test_answer_source_validation.py` 15 passed：
 
 - `test_mapping_answers_without_request_id_are_rejected`（复现 #6857 字典载荷）
+- `test_mapping_answers_with_whitelisted_source_are_rejected`
+  （检视意见：白名单 source 也不能放行字典载荷）
+- `test_mapping_answers_without_source_are_rejected`（字典形态先于 source 判定被拒绝）
 - `test_chat_send_with_mapping_answers_and_no_mode_is_rejected`
   （AgentRuntime 层复现原始请求体：无 `mode`、`answers` 为字典、source 非法）
 - `test_missing_request_id_still_rejects_unknown_source`
