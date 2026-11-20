@@ -843,15 +843,50 @@ def page(items: list[dict], params: dict, key: str, maximum: int) -> dict:
     }
 
 
+# gateway watcher 轮询周期是 2s：绝大多数轮询没有任何生命周期变化，却每次都
+# 全量 glob+parse+projection。缓存上次快照与每个文件的 mtime 快照，目录与文件
+# mtime 都未变时直接返回上次结果（一次轮询从 O(文件数) 降为 O(文件数) 的 stat，
+# 不再读文件、不再 JSON 解析、不再 projection）。写方仍走 atomic_json 的
+# tmp+rename，rename 必更新 mtime，因此任何状态变化都会使缓存失效；文件删除
+# 由目录内容快照长度/文件集合变化捕获。缓存键含目录路径，多实例/多数据目录
+# 互不污染；进程重启自然失效，不影响 correctness，只影响性能。
+_SNAPSHOT_CACHE: dict[str, tuple[float, dict[str, float], list[dict]]] = {}
+_SNAPSHOT_CACHE_LOCK = threading.Lock()
+
+
+def _clear_snapshot_cache() -> None:
+    """测试钩子：重置 event_snapshots 的 mtime 快照缓存。"""
+    with _SNAPSHOT_CACHE_LOCK:
+        _SNAPSHOT_CACHE.clear()
+
+
 def event_snapshots() -> list[dict]:
     """Internal Gateway refresh feed. Resource revisions survive restarts."""
     directory = get_agent_root_dir() / "lifecycle" / "resources"
+    if not directory.exists():
+        return []
+    try:
+        mtimes = {
+            path.name: path.stat().st_mtime for path in directory.glob("*.json")
+        }
+    except OSError:
+        mtimes = None  # 扫描窗口内文件被删/共享冲突：退回全量重扫
+    if mtimes is not None:
+        with _SNAPSHOT_CACHE_LOCK:
+            cached = _SNAPSHOT_CACHE.get(str(directory))
+            if cached is not None and cached[1] == mtimes:
+                return cached[2]
     result = []
     # Sessions share few projects: cache each project state once per poll and
     # hand every entry its own already-loaded value instead of letting
     # projection() re-read the same resource file.
     project_states: dict[str, dict] = {}
-    for path in directory.glob("*.json") if directory.exists() else ():
+    paths_iter = (
+        (directory / name for name in sorted(mtimes))
+        if mtimes is not None
+        else directory.glob("*.json")
+    )
+    for path in paths_iter:
         value = read_json(path)
         operation = value.get("operation")
         if not operation:
@@ -891,11 +926,103 @@ def event_snapshots() -> list[dict]:
                 result=operation.get("result", {}),
             )
         )
+    if mtimes is not None:
+        with _SNAPSHOT_CACHE_LOCK:
+            _SNAPSHOT_CACHE[str(directory)] = (time.time(), mtimes, result)
     return result
+
+
+# 死资源回收：complete 只在 JSON 上标记 deleted=True，文件本体与其 .lock 永不
+# 清理，目录随历史会话无上界增长（同时拖累 event_snapshots 的全量扫描与
+# file_lock 的孤儿锁）。回收挂在 events_feed 上节流触发——watcher 每 2s 轮询
+# 一次，GC 每 _GC_INTERVAL_SECONDS 才真正执行一次，不额外起线程。
+# 安全性：只回收 completed && (deleted 或 blocked) 且已静默 _GC_RETENTION_SECONDS
+# 的资源——保留窗口保证 gateway watcher 已拉走过最终 revision（事件不丢）；
+# 归档资源（deleted=False）不回收，archive 语义是"挪到 archived 区"而非死数据。
+# 孤儿锁单独回收：资源 JSON 已不存在（或已可回收）的 .lock 文件没有持有者
+# （flock 只在 file_lock with 块内持有），直接删除不影响任何在途操作。
+_GC_INTERVAL_SECONDS = 6 * 3600
+_GC_RETENTION_SECONDS = 24 * 3600
+_last_gc_attempt = 0.0
+_GC_LOCK = threading.Lock()
+
+
+def _sweep_dead_resources(now: float) -> None:
+    """删除已完结且超过保留期的资源 JSON 与孤儿锁文件。幂等；O(目录)。"""
+    directory = get_agent_root_dir() / "lifecycle" / "resources"
+    if not directory.exists():
+        return
+    cutoff = now - _GC_RETENTION_SECONDS
+    try:
+        names = [path.name for path in os.scandir(directory)]
+    except OSError:
+        return
+    json_names = {
+        name for name in names if name.endswith(".json") and not name.startswith(".")
+    }
+    for name in names:
+        if not name.endswith(".lock"):
+            continue
+        base = name[: -len(".lock")]
+        # 孤儿锁：同名资源 JSON 已被回收，或资源本身已死且过保留期。
+        if base in json_names and not _resource_ready_for_removal(
+            directory / base, cutoff
+        ):
+            continue
+        _unlink_quietly(directory / name)
+    for name in sorted(json_names):
+        path = directory / name
+        if not _resource_ready_for_removal(path, cutoff):
+            continue
+        _unlink_quietly(path)
+        _unlink_quietly(path.with_name(path.name + ".lock"))
+
+
+def _resource_ready_for_removal(path: Path, cutoff: float) -> bool:
+    try:
+        if path.stat().st_mtime > cutoff:
+            return False  # 还在保留期内：watcher 可能尚未取走最终 revision
+        value = read_json(path)
+    except (OSError, LifecycleError, ValueError):
+        # 文件已消失（并发删除，幂等）或内容损坏的死文件。用 ValueError 兜住
+        # JSONDecodeError 与 UnicodeDecodeError（二进制垃圾）：若只捕前者，
+        # 一个非 UTF-8 损坏文件会让每轮 GC 在此处中止，排在它后面的死文件
+        # 永远轮不到回收。
+        return True
+    operation = value.get("operation") or {}
+    return bool(
+        operation.get("status") == "completed"
+        and (value.get("deleted") or value.get("blocked"))
+    )
+
+
+def _unlink_quietly(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        # Windows 上锁文件恰好被并发 file_lock 打开时删除失败：留待下一轮 GC。
+        logger.debug("lifecycle GC skip locked file %s", path.name)
+
+
+def _maybe_sweep(now: float | None = None) -> None:
+    global _last_gc_attempt
+    if now is None:
+        now = time.time()
+    if now - _last_gc_attempt < _GC_INTERVAL_SECONDS:
+        return
+    with _GC_LOCK:
+        if now - _last_gc_attempt < _GC_INTERVAL_SECONDS:
+            return
+        _last_gc_attempt = now
+        try:
+            _sweep_dead_resources(now)
+        except Exception:  # noqa: BLE001 - GC 失败绝不影响事件流
+            logger.exception("lifecycle resource GC failed")
 
 
 def events_feed() -> dict:
     """Gateway 后台轮询：全量 lifecycle 事件（不需要 project_id）。"""
+    _maybe_sweep()
     return {"events": event_snapshots()}
 
 
