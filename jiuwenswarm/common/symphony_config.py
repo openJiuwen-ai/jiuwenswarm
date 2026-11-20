@@ -112,18 +112,10 @@ def migrate_legacy_symphony_config(
     from jiuwenswarm.common.config import resolve_env_vars
 
     explicit = deepcopy(raw)
-    legacy = {
-        key: explicit.pop(key)
-        for key in ("enabled", "paths", "fingerprint", "build", "evolution", "skill_retrieval")
-        if key in explicit
-    }
+    legacy = _pop_legacy_fields(explicit, ("enabled", "paths", "fingerprint", "build", "evolution", "skill_retrieval"))
     orchestration = explicit.get("orchestration")
     if isinstance(orchestration, dict):
-        legacy["orchestration"] = {
-            key: orchestration.pop(key)
-            for key in ("mode", "top_k", "max_depth")
-            if key in orchestration
-        }
+        legacy["orchestration"] = _pop_legacy_fields(orchestration, ("mode", "top_k", "max_depth"))
     converted: dict[str, Any] = {}
     for old_path, new_path in _LEGACY_SYMPHONY_FIELDS.items():
         value = legacy
@@ -177,6 +169,14 @@ def _discard_premerged_defaults(
             _discard_premerged_defaults(current, converted[key], template[key])
         elif current == template[key]:
             del explicit[key]
+
+
+def _pop_legacy_fields(config: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
+    fields = {}
+    for key in keys:
+        if key in config:
+            fields[key] = config.pop(key)
+    return fields
 
 
 def _merge(base: dict[str, Any], explicit: dict[str, Any]) -> dict[str, Any]:
