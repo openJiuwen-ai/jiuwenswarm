@@ -12,7 +12,7 @@ from typing import Any
 
 from jiuwenswarm.common._build_config import PACKAGE_NAME
 from jiuwenswarm.common.config import get_config_raw
-from jiuwenswarm.common.version import __version__, get_runtime_build_date, get_runtime_version
+from jiuwenswarm.common.version import get_runtime_build_date, get_runtime_version
 from jiuwenswarm.common.upgrade_executor import create_executor
 from jiuwenswarm.common.version_source import (
     PYPI_INDEX_URL,
@@ -308,8 +308,14 @@ class UpdaterService:
 
     def _check(self, config: dict[str, Any]) -> None:
         source = self._create_version_source(config)
+        # Compare against the installed distribution version, the same value the
+        # status reports as current_version. Daily wheel builds can carry a
+        # distribution version that differs from the packaged source version,
+        # and comparing different bases made the panel advertise an "upgrade" to
+        # an older release (#6849).
+        current_version = get_runtime_version()
         try:
-            release = source.fetch_latest(__version__)
+            release = source.fetch_latest(current_version)
         except Exception as exc:
             raise RuntimeError(
                 f"Failed to fetch latest release from {config['release_api_type']}: {exc}"
@@ -328,14 +334,14 @@ class UpdaterService:
             if not release.current_release_published_at:
                 raise RuntimeError(
                     "Current desktop release timestamp is missing for version "
-                    f"{__version__}."
+                    f"{current_version}."
                 )
             has_update = _is_newer_release(
                 release.published_at,
                 release.current_release_published_at,
             )
         else:
-            has_update = _is_newer_version(latest_version, __version__)
+            has_update = _is_newer_version(latest_version, current_version)
 
         if not has_update:
             if install_mode == "desktop":
