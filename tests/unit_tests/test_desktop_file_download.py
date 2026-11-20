@@ -185,7 +185,7 @@ def test_download_file_percent_encodes_non_ascii_url(monkeypatch, tmp_path):
 
     assert result == {"ok": True, "cancelled": False}
     assert downloaded[0].isascii()
-    assert "沐" not in downloaded[0]
+    assert filename[0] not in downloaded[0]
     assert unquote(urlsplit(downloaded[0]).path).endswith("/" + filename)
     assert target_path.read_bytes() == b"docx-content"
 
