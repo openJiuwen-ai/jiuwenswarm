@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import sys
 
 import pytest
@@ -51,7 +52,10 @@ async def test_native_uses_session_cwd_and_forwards_gateway_usage(tmp_path, alia
             await requests.put(req)
             usage = {"input_tokens": 42, "output_tokens": 3, "total_tokens": 45, "cache_tokens": 7}
             for event, fields in (
-                ("chat.delta", {"content": "Done"}),
+                ("chat.delta", {"content": "Working.\n"}),
+                ("chat.tool_call", {"tool_call_id": "phase", "name": "fixture"}),
+                ("chat.delta", {"content": "Do"}),
+                ("chat.delta", {"content": "ne"}),
                 ("context.usage", {"context_max": 1024, "tokens_used": 42}),
                 ("chat.usage_summary", {"usage": usage}),
                 ("chat.final", {"content": "Done"}),
@@ -98,6 +102,10 @@ async def test_native_uses_session_cwd_and_forwards_gateway_usage(tmp_path, alia
                 assert wire["params"][field] == str(tmp_path)
             usage = {"inputTokens": 42, "outputTokens": 3, "totalTokens": 45, "cachedReadTokens": 7}
             assert prompt["result"] == {"stopReason": "end_turn", "usage": usage}
+            assert [
+                item["content"]["text"] for item in updates
+                if item.get("sessionUpdate") == "agent_message_chunk"
+            ] == ["Working.\n", "Do", "ne"]
             assert {
                 "sessionUpdate": "usage_update", "size": 1024, "used": 42,
                 "_meta": {"usage": usage},
@@ -115,6 +123,7 @@ async def test_native_uses_session_cwd_and_forwards_gateway_usage(tmp_path, alia
 async def test_native_load_in_a_second_process_and_switch_model(tmp_path, monkeypatch):
     from types import SimpleNamespace
 
+    from jiuwenswarm.acp.session_mcp import MCP_CALL_METHOD, MCP_TOOLS_PARAM
     from jiuwenswarm.acp.session_protocol import ACP_SESSION_EXTENSION
     from jiuwenswarm.runtime.model_catalog import build_model_catalog
     from jiuwenswarm.server.handlers.acp_session import native_acp_session_response
@@ -126,6 +135,17 @@ async def test_native_load_in_a_second_process_and_switch_model(tmp_path, monkey
     monkeypatch.setattr(session_metadata, "get_agent_sessions_dir", lambda: sessions)
     cwd = tmp_path / "checkout"
     cwd.mkdir()
+    fixture = tmp_path / "mcp_server.py"
+    fixture.write_text(
+        'from mcp.server.fastmcp import FastMCP\n'
+        'import os\n'
+        'app = FastMCP("fixture")\n'
+        '@app.tool()\n'
+        'def process_id() -> str:\n'
+        '    return str(os.getpid())\n'
+        'app.run(transport="stdio")\n',
+    )
+    servers = [{"name": "fixture", "command": sys.executable, "args": [str(fixture)]}]
 
     def list_models(*, current_selection):
         return build_model_catalog([
@@ -150,7 +170,15 @@ async def test_native_load_in_a_second_process_and_switch_model(tmp_path, monkey
                     "type": "res", "id": msg["id"], "ok": True, "payload": payload or {},
                 }))
             elif msg["method"] == "chat.send":
-                await turns.put(msg["params"])
+                turn = msg["params"]
+                tool, = turn[MCP_TOOLS_PARAM]
+                await ws.send(json.dumps({
+                    "jsonrpc": "2.0", "id": "mcp-call", "method": MCP_CALL_METHOD,
+                    "params": {"sessionId": turn["session_id"], "name": tool["name"],
+                               "token": tool["token"], "arguments": {}},
+                }))
+                reply = json.loads(await ws.recv())
+                await turns.put((turn, int(reply["result"]["content"][0]["text"])))
                 await ws.send(json.dumps({
                     "type": "event", "event": "chat.processing_status",
                     "payload": {
@@ -182,7 +210,7 @@ async def test_native_load_in_a_second_process_and_switch_model(tmp_path, monkey
                 await client.communicate()
 
     async def first_client(rpc):
-        session = (await rpc("session/new", {"cwd": str(cwd)}))["result"]
+        session = (await rpc("session/new", {"cwd": str(cwd), "mcpServers": servers}))["result"]
         sid = session["sessionId"]
         assert session["models"] == {
             "currentModelId": "primary#0",
@@ -195,13 +223,17 @@ async def test_native_load_in_a_second_process_and_switch_model(tmp_path, monkey
         assert invalid["error"]["code"] == -32602
         switched = await rpc("session/set_model", {"sessionId": sid, "modelId": "secondary#1"})
         assert switched["result"]["models"]["currentModelId"] == "secondary#1"
-        return sid
+        prompt = await rpc("session/prompt", {
+            "sessionId": sid, "prompt": [{"type": "text", "text": "First turn"}],
+        })
+        assert prompt["result"]["stopReason"] == "end_turn"
+        return sid, turns.get_nowait()[1]
 
     async def second_client(rpc):
         load = {"sessionId": session_id, "cwd": str(cwd)}
         missing = await rpc("session/load", {**load, "sessionId": "acp_" + "0" * 32})
         assert missing["error"]["code"] == -32002
-        result = (await rpc("session/load", load))["result"]
+        result = (await rpc("session/load", {**load, "mcpServers": servers}))["result"]
         assert result["sessionId"] == session_id
         assert result["models"]["currentModelId"] == "secondary#1"
         prompt = await rpc("session/prompt", {
@@ -211,19 +243,26 @@ async def test_native_load_in_a_second_process_and_switch_model(tmp_path, monkey
             "prompt": [{"type": "text", "text": "Continue"}],
         })
         assert prompt["result"]["stopReason"] == "end_turn"
-        turn = turns.get_nowait()
+        turn, pid = turns.get_nowait()
+        assert pid != first_pid
         assert turn["session_id"] == session_id
         assert turn["model_name"] == "secondary#1"
         assert turn["eternal_conversation_enabled"] is True
+        return pid
 
     async with serve(gateway, "127.0.0.1", 0) as server:
         url = f"ws://127.0.0.1:{server.sockets[0].getsockname()[1]}/acp"
-        session_id = await run_client(url, first_client)
+        session_id, first_pid = await run_client(url, first_client)
         session_metadata.remove_session_metadata_cache(session_id)
         stored = session_metadata.get_session_metadata(session_id, cache_bust=True)
         assert stored["persist_session"] is True
         assert stored["model"] == "secondary#1"
-        await run_client(url, second_client)
+        second_pid = await run_client(url, second_client)
+
+    if os.name == "posix":
+        for pid in (first_pid, second_pid):
+            with pytest.raises(ProcessLookupError):
+                os.kill(pid, 0)
 
     def archived(_sid):
         raise lifecycle.LifecycleError("SESSION_ARCHIVED", "session has been archived")
