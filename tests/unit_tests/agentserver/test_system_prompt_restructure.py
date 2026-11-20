@@ -200,7 +200,7 @@ def test_build_agent_identity_prompt_contains_stable_identity_and_task_strategy(
     assert "# JiuwenSwarm 内部数据" not in prompt
     assert "## 输出文件放置规范" not in prompt
     assert "## 文件发送" not in prompt
-    assert "## Skill Orchestration Contract" not in prompt
+    assert "## Capability Orchestration Contract" not in prompt
     assert "`symphony_compose_graph`" not in prompt
     assert "# 消息说明" not in prompt
 
@@ -319,9 +319,9 @@ async def test_symphony_orchestration_rail_respects_config_snapshot():
 
     enabled_prompt = enabled_builder.build()
     disabled_prompt = disabled_builder.build()
-    assert "## Skill Orchestration Contract" in enabled_prompt
+    assert "## Capability Orchestration Contract" in enabled_prompt
     assert "`symphony_compose_graph`" in enabled_prompt
-    assert "## Skill Orchestration Contract" not in disabled_prompt
+    assert "## Capability Orchestration Contract" not in disabled_prompt
     assert "`symphony_compose_graph`" not in disabled_prompt
 
 
@@ -350,13 +350,13 @@ async def test_symphony_orchestration_rail_injects_when_tool_visible(
 
     prompt = builder.build()
     normalized_prompt = " ".join(prompt.split())
-    assert "## Skill Orchestration Contract" in prompt
+    assert "## Capability Orchestration Contract" in prompt
     assert "`symphony_compose_graph`" in prompt
     assert "multiple selected Skills" in normalized_prompt
     assert "an ordered or dependent workflow" in normalized_prompt
     assert "selected exact Skill IDs are sufficient evidence" in normalized_prompt
     assert (
-        "Calling `skill_index` alone is also not a compose trigger"
+        "Capability discovery alone does not trigger composition."
         in normalized_prompt
     )
     assert "never pass all retrieval results" in normalized_prompt
@@ -365,7 +365,13 @@ async def test_symphony_orchestration_rail_injects_when_tool_visible(
     assert "do not call `skill_tool`" in prompt
     assert "SKILL.md" in prompt
     assert "`planned_graph` status, nodes, and edges" in prompt
-    assert "do not present it" in prompt
+    assert "continue without requesting plan confirmation" in normalized_prompt
+    assert (
+        "call `symphony_compose_graph` with the original user task and `type=expert`"
+        in normalized_prompt
+    )
+    assert "Omit `mode` to use the session configuration for expert planning." in normalized_prompt
+    assert "handle the uncovered work through the normal task flow" in normalized_prompt
     assert "search_skill" not in prompt
     assert "install_skill" not in prompt
     assert "returned\n`content` directly" not in prompt
@@ -391,9 +397,9 @@ def test_symphony_orchestration_guidance_has_precise_compose_boundaries():
         "Skill or 技能."
     ) in normalized_prompt
 
-    assert "`skill_index`" in prompt
+    assert "Capability discovery alone does not trigger composition." in normalized_prompt
     assert "skill_branch_explore" not in prompt
-    assert "only the selected exact Skill IDs" in prompt
+    assert "only the selected exact IDs for that type" in prompt
     assert "do not call `skill_tool`" in prompt
     assert "read any SKILL.md" in prompt
 
@@ -648,7 +654,7 @@ async def test_symphony_timeout_removes_graph_tools_and_orchestration_prompt():
     await rail.before_model_call(ctx)
 
     assert [rail._model_tool_name(tool) for tool in ctx.inputs.tools] == ["other_tool"]
-    assert "## Skill Orchestration Contract" not in builder.build()
+    assert "## Capability Orchestration Contract" not in builder.build()
 
     next_invoke_ctx = AgentCallbackContext(
         agent=agent,
@@ -667,7 +673,7 @@ async def test_symphony_timeout_removes_graph_tools_and_orchestration_prompt():
         "symphony_compose_graph",
         "symphony_refresh_graph",
     ]
-    assert "## Skill Orchestration Contract" in builder.build()
+    assert "## Capability Orchestration Contract" in builder.build()
 
 
 @pytest.mark.asyncio
@@ -705,14 +711,14 @@ async def test_symphony_orchestration_rail_backfills_viewed_skills():
 
     compose_ctx = _tool_call_ctx(
         "symphony_compose_graph",
-        {"query": "build a financial model"},
+        {"query": "build a financial model", "type": "skill"},
         extra=invocation_extra,
     )
     await rail.before_tool_call(compose_ctx)
 
     expected = ["creating-financial-models", "xlsx"]
-    assert compose_ctx.inputs.tool_args["candidate_skill_ids"] == expected
-    assert compose_ctx.inputs.tool_call.arguments["candidate_skill_ids"] == expected
+    assert compose_ctx.inputs.tool_args["candidate_ids"] == expected
+    assert compose_ctx.inputs.tool_call.arguments["candidate_ids"] == expected
 
 
 @pytest.mark.asyncio
@@ -728,7 +734,7 @@ async def test_symphony_orchestration_rail_preserves_explicit_candidates():
     )
     compose_ctx = _tool_call_ctx(
         "symphony_compose_graph",
-        {"query": "task", "candidate_skill_ids": ["explicit-skill"]},
+        {"query": "task", "type": "skill", "candidate_skill_ids": ["explicit-skill"]},
         extra=invocation_extra,
     )
 
@@ -751,13 +757,13 @@ async def test_symphony_orchestration_rail_does_not_reuse_other_invocation():
     )
     compose_ctx = _tool_call_ctx(
         "symphony_compose_graph",
-        {"query": "new task"},
+        {"query": "new task", "type": "skill"},
         extra={},
     )
 
     await rail.before_tool_call(compose_ctx)
 
-    assert "candidate_skill_ids" not in compose_ctx.inputs.tool_args
+    assert "candidate_ids" not in compose_ctx.inputs.tool_args
 
 
 @pytest.mark.asyncio
@@ -781,13 +787,13 @@ async def test_symphony_orchestration_rail_ignores_disclosure_and_failed_views()
     )
     compose_ctx = _tool_call_ctx(
         "symphony_compose_graph",
-        {"query": "task"},
+        {"query": "task", "type": "skill"},
         extra=invocation_extra,
     )
 
     await rail.before_tool_call(compose_ctx)
 
-    assert "candidate_skill_ids" not in compose_ctx.inputs.tool_args
+    assert "candidate_ids" not in compose_ctx.inputs.tool_args
 
 
 @pytest.mark.asyncio
@@ -844,7 +850,7 @@ async def test_symphony_orchestration_rail_clears_when_disabled(
     rail.init(agent)
     await rail.before_model_call(ctx)
 
-    assert "## Skill Orchestration Contract" not in builder.build()
+    assert "## Capability Orchestration Contract" not in builder.build()
 
 
 def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
@@ -2228,7 +2234,7 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
             tools=[
                 SimpleNamespace(name="list_skill"),
                 SimpleNamespace(name="list_skills"),
-                SimpleNamespace(name="skill_index"),
+                SimpleNamespace(name="capability_search"),
             ],
         ),
         session=_FakeSession(),
@@ -2244,7 +2250,7 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
     rail.init(agent)
     await rail.before_model_call(ctx)
 
-    assert [tool.name for tool in ctx.inputs.tools] == ["skill_index"]
+    assert [tool.name for tool in ctx.inputs.tools] == ["capability_search"]
     assert agent.ability_manager.get("list_skill") is None
     assert "旧 list_skill 提示" not in builder.build()
     rendered = agent.prompt_attachment_manager.render(

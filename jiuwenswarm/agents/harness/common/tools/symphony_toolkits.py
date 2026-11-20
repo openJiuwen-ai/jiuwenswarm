@@ -7,12 +7,20 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any, Callable
 
-from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
+from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard, ToolExposure
 
 from jiuwenswarm.agents.harness.common.tool_progress_context import (
     current_tool_progress,
 )
 from jiuwenswarm.common.symphony_config import load_symphony_config
+from jiuwenswarm.runtime.symphony.adapter import normalize_candidate_ids
+from jiuwenswarm.runtime.symphony.planning_inputs import (
+    PLANNING_INPUTS_ATTR,
+    PLANNING_INPUTS_SCHEMA,
+    annotate_unavailable_inputs,
+    prepare_planning_inputs,
+    supports_planning_inputs,
+)
 if TYPE_CHECKING:
     from jiuwenswarm.runtime.symphony.service import SwarmSymphonyService
 from jiuwenswarm.runtime.symphony.llm import LLMConfig, current_request_llm_config
@@ -32,24 +40,41 @@ def get_swarm_symphony_service() -> SwarmSymphonyService:
 def _coerce_compose_inputs(inputs: Any) -> Any:
     if not isinstance(inputs, dict):
         return inputs
-    encoded_candidate_ids = inputs.get("candidate_skill_ids")
-    if not isinstance(encoded_candidate_ids, str):
-        return inputs
-    try:
-        decoded_candidate_ids = json.loads(encoded_candidate_ids)
-    except json.JSONDecodeError:
-        return inputs
-    if not isinstance(decoded_candidate_ids, list):
-        return inputs
-
     normalized_inputs = dict(inputs)
-    normalized_inputs["candidate_skill_ids"] = decoded_candidate_ids
+    for key in ("candidate_ids", "candidate_skill_ids", "inputs"):
+        value = inputs.get(key)
+        if not isinstance(value, str):
+            continue
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(decoded, list):
+            normalized_inputs[key] = decoded
     return normalized_inputs
 
 
 class _ComposeGraphLocalFunction(LocalFunction):
+    accepts_tool_callback_context = True
+
     async def invoke(self, inputs: Any, **kwargs: Any) -> Any:
-        return await super().invoke(_coerce_compose_inputs(inputs), **kwargs)
+        args = _coerce_compose_inputs(inputs)
+        if not isinstance(args, dict) or "inputs" not in args:
+            return await super().invoke(args, **kwargs)
+        if not supports_planning_inputs():
+            return {"success": False, "reason": "planning_inputs_unsupported", "detail": (
+                "The installed Core does not support named planning inputs."
+            )}
+        try:
+            available, unavailable = await asyncio.to_thread(prepare_planning_inputs, args["inputs"])
+        except ValueError as exc:
+            return {"success": False, "reason": "invalid_planning_inputs", "detail": str(exc)}
+        args["inputs"] = available
+        result = await super().invoke(args, **kwargs)
+        context = kwargs.get("_tool_callback_context")
+        if context is not None:
+            setattr(context, PLANNING_INPUTS_ATTR, tuple(available))
+        return annotate_unavailable_inputs(result, unavailable)
 
 
 class SymphonyToolkit:
@@ -221,6 +246,7 @@ class SymphonyToolkit:
                 "exists",
                 "stale",
                 "skill_count",
+                "expert_count",
                 "changed_count",
                 "added_count",
                 "removed_count",
@@ -239,6 +265,7 @@ class SymphonyToolkit:
                 "rebuilt",
                 "success",
                 "skill_count",
+                "expert_count",
                 "reused_count",
                 "extracted_count",
                 "removed_count",
@@ -289,6 +316,10 @@ class SymphonyToolkit:
         query: str,
         mode: str | None = None,
         candidate_skill_ids: list[str] | None = None,
+        *,
+        type: str = "skill",
+        candidate_ids: list[str] | None = None,
+        inputs: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         if not self.is_enabled():
             return self._compact_plan_payload(
@@ -296,14 +327,15 @@ class SymphonyToolkit:
             )
         query_text = str(query or "").strip()
         mode_text = str(mode or "").strip()
-        normalized_candidate_skill_ids = _normalize_candidate_skill_ids(
-            candidate_skill_ids
-        )
         kwargs: dict[str, Any] = {
             "mode": mode_text or None,
-            "candidate_skill_ids": normalized_candidate_skill_ids,
+            "capability_type": type,
+            "candidate_ids": normalize_candidate_ids(candidate_ids),
+            "candidate_skill_ids": normalize_candidate_ids(candidate_skill_ids),
             "progress": current_tool_progress(),
         }
+        if inputs:
+            kwargs["inputs"] = inputs
         llm_kwargs, error = self._llm_config_kwargs("plan")
         if error is not None:
             return self._compact_plan_payload(error)
@@ -345,24 +377,23 @@ class SymphonyToolkit:
                     {"resilience": {"timeout_s": None}} if uses_internal_timeout else {}
                 ),
             )
-            tool_type = (
-                _ComposeGraphLocalFunction
-                if name == "symphony_compose_graph"
-                else LocalFunction
-            )
-            return tool_type(card=card, func=func)
+            if name == "symphony_compose_graph":
+                card.exposure = ToolExposure.DIRECT
+                card.set_exposure_declared(True)
+                return _ComposeGraphLocalFunction(card=card, func=func)
+            return LocalFunction(card=card, func=func)
 
         return [
             make_tool(
                 "symphony_read_graph",
-                "Read whether the Skill Graph exists or is stale before composing Skill execution.",
+                "Read whether the capability graph exists or is stale before planning a workflow.",
                 {"type": "object", "properties": {}},
                 self.graph_status,
             ),
             make_tool(
                 "symphony_refresh_graph",
                 (
-                    "Extract installed Skill features and refresh the Skill Graph. "
+                    "Extract fingerprints and refresh the graph for configured Skills and experts. "
                     "If a result reports graph_build_timeout or manual_graph_build, "
                     "do not call this tool or symphony_compose_graph again in this round."
                 ),
@@ -373,18 +404,25 @@ class SymphonyToolkit:
             make_tool(
                 "symphony_compose_graph",
                 (
-                    "Compose an execution plan for a task that requires multiple installed "
-                    "skills or an ordered skill workflow. Discovery, comparison, and "
-                    "recommendation alone do not require this tool. Pass only shortlisted "
-                    "exact skill IDs in candidate_skill_ids; omit that argument when the "
-                    "user requested a plan but no candidate is known. Before composing, use "
+                    "Use type=expert to plan assignments for installed experts and task-scoped inline roles "
+                    "when work splits into two or more independent tasks, or benefits from parallel exploration, "
+                    "context isolation, specialist roles, or independent verification. "
+                    "Prior retrieval and matching installed experts are optional; the plan may use only inline roles. "
+                    "Call this tool when the user explicitly requests capability orchestration. "
+                    "Use type=skill for Skill workflows. "
+                    "Pass shortlisted exact installed IDs for the selected type "
+                    "in candidate_ids, or omit it when no candidate is known. Use "
                     "discovery metadata directly; do not call skill_tool, read_file, or read "
-                    "any SKILL.md. The tool may refresh a missing or stale graph before "
-                    "composing. Use its returned plan and ask for any missing inputs it "
-                    "reports. When the plan is ready, choose one currently executable Skill, "
+                    "any SKILL.md before composing a Skill workflow. For a Skill plan with needs_input, "
+                    "ask for the reported inputs. For a ready Skill plan, choose one currently executable Skill, "
                     "read only that Skill's SKILL.md immediately before executing it, and do "
-                    "not preload all selected Skill instructions. When the plan needs input "
-                    "or no plan is available, do not read Skills merely for orchestration. "
+                    "not preload all selected Skill instructions. When the user requests completed work, "
+                    "execute a ready expert plan through task_tool(plan_id, node_id) in dependency order "
+                    "when plan dispatch is available. Trust completed node outputs and integrate them; "
+                    "do not replace the plan with your own implementation. Present without executing only "
+                    "for planning-only requests or Plan mode; report unavailable dispatch. Expert missing_inputs "
+                    "are advisory; resolve concrete blockers while continuing unaffected branches. Discovery, comparison, "
+                    "and recommendation alone do not require this tool. "
                     "If it returns graph_build_timeout or manual_graph_build, do not retry "
                     "graph tools in the same round."
                 ),
@@ -395,29 +433,40 @@ class SymphonyToolkit:
                             "type": "string",
                             "description": "The user's original task, without retrieval commands or internal notes.",
                         },
+                        "type": {
+                            "type": "string",
+                            "enum": ["skill", "expert"],
+                            "description": "Choose a Skill workflow or expert task assignments.",
+                        },
                         "mode": {
                             "type": "string",
                             "enum": ["fast", "beam"],
                             "description": (
-                                "Optional planning mode. Use fast for simple tasks, "
-                                "short execution chains, or when candidate skills are "
-                                "already clear; fast is the default. Use beam for "
+                                "Optional planning mode. Omit it for expert workflows to use the session "
+                                "configuration. For Skill workflows, use fast for simple tasks, short "
+                                "execution chains, or when candidates are already clear. Use beam for "
                                 "complex multi-step tasks, tasks with multiple possible "
-                                "skill paths, or when prerequisite skills need to be "
+                                "paths, or when prerequisites need to be "
                                 "discovered through bidirectional search."
+                            ),
+                        },
+                        "candidate_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Exact installed IDs of the selected type shortlisted for the task. "
+                                "Batch all relevant IDs in this one argument; do not include "
+                                "weak matches or every skill from a catalog overview."
                             ),
                         },
                         "candidate_skill_ids": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": (
-                                "Exact installed skill IDs already shortlisted for the task. "
-                                "Batch all relevant IDs in this one argument; do not include "
-                                "weak matches or every skill from a catalog overview."
-                            ),
+                            "description": "Legacy alias for candidate_ids when type=skill. Supply only one field.",
                         },
+                        **({"inputs": PLANNING_INPUTS_SCHEMA} if supports_planning_inputs() else {}),
                     },
-                    "required": ["query"],
+                    "required": ["query", "type"],
                 },
                 self.plan,
                 uses_internal_timeout=True,
@@ -440,17 +489,3 @@ def _copy_compact_fields(
     return compact
 
 
-def _normalize_candidate_skill_ids(values: Any) -> list[str] | None:
-    if values is None:
-        return None
-    if not isinstance(values, (list, tuple)):
-        return []
-    output: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        current_skill_id = str(value or "").strip()
-        if not current_skill_id or current_skill_id in seen:
-            continue
-        seen.add(current_skill_id)
-        output.append(current_skill_id)
-    return output

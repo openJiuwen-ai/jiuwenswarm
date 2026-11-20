@@ -46,6 +46,7 @@ import type { CodeReviewTarget } from '../../features/code-mode/types';
 import { useCodeGitDiffWatch } from '../../features/code-mode/useCodeGitDiffWatch';
 import { type SingleAgentToolTab } from '../../features/singleAgentPanelState';
 import { useBrowserAgentActivity } from '../../features/browserAgentActivity';
+import { resolveSubagentDisplayName } from '../../features/subagent/subagentNormalizer';
 import { useDesktopBrowserHeadless } from '../../features/desktopBrowserDisplay';
 import { closeDesktopBrowserTab, openFileInDesktopBrowser, useDesktopBrowserTabFlags } from '../../features/desktopBrowserFile';
 import { SubagentExpandedPanel } from '../subagent/SubagentExpandedPanel';
@@ -157,7 +158,7 @@ export function ToolPanel({
   shouldFullscreen = false,
   onCloseFloating,
 }: ToolPanelProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const organizationUiEnabled = useTeamOrganizationUiEnabled();
   const isConnected = useSessionStore((state) => state.isConnected);
   const activeSessionId = useChatStore(s => s.activeSessionId);
@@ -194,13 +195,13 @@ export function ToolPanel({
     () =>
       subagentList.map(subagent => ({
         task_id: subagent.subagent_id,
-        title: subagent.display_name,
+        title: resolveSubagentDisplayName(subagent, i18n.language),
         content: subagent.role || subagent.task_description || undefined,
         status: (subagent.status === 'running' ? 'in_progress' : 'completed') as TeamTaskStatus,
         assignee: subagent.subagent_id,
         timestamp: subagent.updated_at,
       })),
-    [subagentList],
+    [subagentList, i18n.language],
   );
   const [subagentsExpanded, setSubagentsExpanded] = useState(false);
   const sessionArtifacts = useSessionArtifacts();
@@ -793,7 +794,13 @@ export function ToolPanel({
             emptyIllustration={emptyMembersIcon}
             renderStatusIcon={() => null}
             renderTaskIcon={task => (
-              <TeamMemberAvatar member={task.assignee ?? ''} alt={task.title ?? ''} className="h-4 w-4 rounded-full shrink-0" imageClassName="rounded-full" />
+              <TeamMemberAvatar
+                member={task.assignee ?? ''}
+                avatarUrl={subagentRuntime?.subagentsById[task.task_id]?.avatar}
+                alt={task.title ?? ''}
+                className="h-4 w-4 rounded-full shrink-0"
+                imageClassName="rounded-full"
+              />
             )}
             onTaskClick={taskId => {
               setSingleAgentPanelSelectedSubagentId(taskId);

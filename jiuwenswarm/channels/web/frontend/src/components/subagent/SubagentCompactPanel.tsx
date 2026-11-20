@@ -1,6 +1,7 @@
 import { useTranslation } from 'react-i18next';
 import { useSubagentStore, selectSubagents } from '../../stores/subagentStore';
 import { getSubagentStatusLabelKey } from '../../features/subagent/subagentStatusPresentation';
+import { resolveSubagentDisplayName } from '../../features/subagent/subagentNormalizer';
 import CollapseIcon from '../../assets/subagent/collapse.svg?react';
 import TeamMembersIcon from '../../assets/subagent/team-members.svg?react';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
@@ -8,7 +9,7 @@ import { SubagentStatusIcon } from './SubagentStatusIcon';
 import './Subagent.css';
 
 export function SubagentCompactPanel({ sessionId, onExpand }: { sessionId: string; onExpand: () => void }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const runtime = useSubagentStore(state => state.runtimes[sessionId]);
   const setSelectedSubagent = useSubagentStore(state => state.setSelectedSubagent);
   const subagents = selectSubagents(runtime);
@@ -29,6 +30,7 @@ export function SubagentCompactPanel({ sessionId, onExpand }: { sessionId: strin
 
       <div className="subagent-compact-panel__list" data-testid="subagent-compact-list">
         {subagents.map(subagent => {
+          const displayName = resolveSubagentDisplayName(subagent, i18n.language);
           const statusLabel = t(getSubagentStatusLabelKey(subagent.status, subagent.closed_reason, subagent.turn_outcome));
           return (
             <button
@@ -39,18 +41,24 @@ export function SubagentCompactPanel({ sessionId, onExpand }: { sessionId: strin
                 setSelectedSubagent(sessionId, subagent.subagent_id);
                 onExpand();
               }}
-              aria-label={t('subagent.selectWithStatus', { name: subagent.display_name, status: statusLabel })}
+              aria-label={t('subagent.selectWithStatus', { name: displayName, status: statusLabel })}
               data-testid="subagent-compact-row"
               data-variant={subagent.subagent_id}
             >
-              <TeamMemberAvatar member={subagent.subagent_id} alt={subagent.display_name} className="h-6 w-6 rounded-lg" imageClassName="rounded-lg" />
+              <TeamMemberAvatar
+                member={subagent.subagent_id}
+                avatarUrl={subagent.avatar}
+                alt={displayName}
+                className="h-6 w-6 rounded-lg"
+                imageClassName="rounded-lg"
+              />
               <span className="subagent-compact-row__copy">
                 <span
                   className="subagent-compact-row__name truncate text-sm font-semibold text-text"
                   data-testid="subagent-compact-row-name"
-                  title={subagent.display_name}
+                  title={displayName}
                 >
-                  {subagent.display_name}
+                  {displayName}
                 </span>
                 {(subagent.role || subagent.task_description) ? (
                   <span

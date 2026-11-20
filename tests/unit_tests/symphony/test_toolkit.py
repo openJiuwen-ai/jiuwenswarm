@@ -1,9 +1,13 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
 
 from openjiuwen.core.common.exception.errors import ValidationError
+from openjiuwen.core.foundation.tool import ToolExposure
+from openjiuwen.core.single_agent.ability_manager import AbilityManager
+from openjiuwen.core.sys_operation.cwd import init_cwd
 
 from jiuwenswarm.agents.harness.common.tool_progress_context import (
     bind_tool_progress,
@@ -14,6 +18,7 @@ from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import (
 )
 from jiuwenswarm.runtime.symphony.service import SwarmSymphonyService
 from jiuwenswarm.runtime.symphony.llm import LLMConfig
+from jiuwenswarm.runtime.symphony.planning_inputs import supports_planning_inputs
 
 
 def _minimal_planned_graph(status="ready"):
@@ -79,6 +84,8 @@ async def test_plan_calls_process_service_once_without_language():
         {
             "query": "use installed skills",
             "mode": None,
+            "capability_type": "skill",
+            "candidate_ids": None,
             "candidate_skill_ids": None,
             "progress": None,
         }
@@ -109,6 +116,8 @@ async def test_plan_passes_mode_and_deduplicated_candidates():
     assert seen == {
         "query": "compose",
         "mode": "beam",
+        "capability_type": "skill",
+        "candidate_ids": None,
         "candidate_skill_ids": ["skill-a", "Skill B"],
         "progress": None,
     }
@@ -200,6 +209,7 @@ async def test_compose_tool_accepts_json_encoded_candidate_skill_ids():
         {
             "query": "plan a trip",
             "mode": "fast",
+            "type": "skill",
             "candidate_skill_ids": '["openJiuwen-DeepSearch"]',
         }
     )
@@ -208,6 +218,8 @@ async def test_compose_tool_accepts_json_encoded_candidate_skill_ids():
         {
             "query": "plan a trip",
             "mode": "fast",
+            "capability_type": "skill",
+            "candidate_ids": None,
             "candidate_skill_ids": ["openJiuwen-DeepSearch"],
             "progress": None,
         }
@@ -230,9 +242,59 @@ async def test_compose_tool_rejects_non_array_candidate_strings(candidate_skill_
         await compose_tool.invoke(
             {
                 "query": "plan a trip",
+                "type": "skill",
                 "candidate_skill_ids": candidate_skill_ids,
             }
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not supports_planning_inputs(), reason="Requires Core planning inputs support")
+async def test_compose_reports_unavailable_workspace_files_by_name_without_blocking(tmp_path):
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    facts = workspace / "facts.md"
+    facts.write_text("Product data", encoding="utf-8")
+    outside = tmp_path / "outside.md"
+    outside.write_text("Outside the project", encoding="utf-8")
+    escape = workspace / "escape.md"
+    try:
+        escape.symlink_to(outside)
+    except (NotImplementedError, OSError):
+        escape = outside
+    init_cwd(str(workspace), workspace=str(workspace))
+    calls = []
+
+    async def handler(query, **kwargs):
+        calls.append(kwargs["inputs"])
+        graph = _minimal_planned_graph()
+        graph["graph"]["metadata"]["plan_kind"] = "expert_tasks"
+        return {"success": True, "planned_graph": graph}
+
+    compose = SymphonyToolkit(SimpleNamespace(plan=handler)).get_tools()[-1]
+    result = await compose.invoke({
+        "query": "Plan a launch",
+        "type": "expert",
+        "inputs": json.dumps([
+            {"name": "facts", "kind": "file", "value": facts.name},
+            {"name": "price", "kind": "file", "value": "missing.md"},
+            {"name": "external", "kind": "file", "value": str(escape)},
+        ]),
+    })
+
+    assert calls == [[{"name": "facts", "kind": "file", "value": str(facts.resolve())}]]
+    graph = result["planned_graph"]["graph"]
+    assert graph["metadata"]["status"] == "ready"
+    assert graph["nodes"]
+    assert [hint["name"] for hint in graph["metadata"]["missing_inputs"]] == ["price", "external"]
+    assert str(outside) not in json.dumps(result)
+
+
+@pytest.mark.asyncio
+async def test_compose_tool_requires_a_capability_type():
+    compose_tool = SymphonyToolkit().get_tools()[-1]
+    with pytest.raises(ValidationError, match="type"):
+        await compose_tool.invoke({"query": "plan a trip"})
 
 
 @pytest.mark.asyncio
@@ -630,15 +692,17 @@ def test_get_tools_exposes_only_graph_named_contracts():
 
     assert properties["mode"]["enum"] == ["fast", "beam"]
     assert "language" not in properties
-    assert properties["candidate_skill_ids"]["type"] == "array"
-    assert properties["candidate_skill_ids"]["items"] == {"type": "string"}
-    assert "shortlisted" in properties["candidate_skill_ids"]["description"]
-    assert "fast is the default" in properties["mode"]["description"]
-    assert "requires multiple installed skills" in compose_tool.card.description
+    assert properties["type"]["enum"] == ["skill", "expert"]
+    assert compose_tool.card.input_params["required"] == ["query", "type"]
+    assert properties["candidate_ids"]["type"] == "array"
+    assert properties["candidate_ids"]["items"] == {"type": "string"}
+    assert "shortlisted" in properties["candidate_ids"]["description"]
+    assert "Omit it for expert workflows to use the session configuration" in properties["mode"]["description"]
+    assert "installed experts and task-scoped inline roles" in compose_tool.card.description
     assert (
         "recommendation alone do not require this tool" in compose_tool.card.description
     )
-    assert "only shortlisted exact skill IDs" in compose_tool.card.description
+    assert "shortlisted exact installed IDs for the selected type" in compose_tool.card.description
     assert "skill_branch_explore" not in compose_tool.card.description
     assert all("Symphony" not in tool.card.description for tool in tools)
     assert all(
@@ -649,6 +713,16 @@ def test_get_tools_exposes_only_graph_named_contracts():
     assert "manual_graph_build" in compose_tool.card.description
     assert "graph_build_timeout" in tools[1].card.description
     assert "manual_graph_build" in tools[1].card.description
+
+
+def test_compose_graph_is_direct_with_progressive_loading():
+    manager = AbilityManager()
+    manager.set_tool_exposure_policy(progressive_tool_enabled=True)
+    manager.add([tool.card for tool in SymphonyToolkit().get_tools()])
+
+    assert manager.get("symphony_compose_graph").exposure is ToolExposure.DIRECT
+    assert manager.get("symphony_read_graph").exposure is ToolExposure.DEFERRED
+    assert manager.get("symphony_refresh_graph").exposure is ToolExposure.DEFERRED
 
 
 def test_disabled_config_hides_tools():
