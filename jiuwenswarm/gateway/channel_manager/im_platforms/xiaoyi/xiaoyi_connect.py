@@ -2341,6 +2341,15 @@ class XiaoyiChannel(BaseChannel):
 
         # status_update / file 类事件透传（不参与 push 合并）
         if should_send_as_status_update(msg.event_type):
+            # GodView 自动订阅的 XiaoyiDeliveryTarget 不带 agent_id
+            # （_maybe_register_godview → make_delivery_target 未传
+            # physical_user_id），_resolve_active_ws 因此解析不出手机端活跃
+            # (session, task)。终态 chat.processing_status(is_processing=False)
+            # 的 completed 状态若解析不到就静默丢弃，手机/云端任务永远 working、
+            # 报告管线收不了口。用请求 metadata 里的物理回发地址兜底
+            # （与 _send_legacy/_extract_platform_receive_info 同源）。
+            if not (ws_session and ws_task) and platform_session_id and source_task_id:
+                ws_session, ws_task = platform_session_id, source_task_id
             if ws_session and ws_task:
                 status_text = get_status_text_for_event(msg.event_type, msg.payload)
                 status_state = get_status_state_for_event(msg.event_type, msg.payload)

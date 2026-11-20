@@ -811,9 +811,10 @@ def _is_restorable_history_record(record: Any) -> bool:
 
         if is_team_mode(mode):
             channel_id = record.get("channel_id", "")
-            # desktop 渠道的用户消息是真实用户输入，必须与 web/tui 同规放行——
-            # 否则桌面团队会话重启后用户问题气泡丢失
-            if channel_id not in ("web", "tui", "desktop"):
+            # desktop/xiaoyi 渠道的用户消息是真实用户输入，必须与 web/tui 同规放行——
+            # 否则桌面团队会话重启后用户问题气泡丢失；xiaoyi 是手机端发起的团队
+            # 追问，其 query 同样落本地历史，缺放行则 PC 端重进会话看不到该轮问题。
+            if channel_id not in ("web", "tui", "desktop", "xiaoyi"):
                 return False
         return has_content or has_media
 
