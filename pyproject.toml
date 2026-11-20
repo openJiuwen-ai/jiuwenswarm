@@ -245,7 +245,7 @@ default-groups = ['dev']
 # The distribute extra enables both postgres and zmq.
 # The unified Symphony runtime and session execution environments require this Core revision.
 # 该 core 要求 opentelemetry>=1.45.1，只有 google-adk>=2.14 放开到该版本，它又要求
-# google-genai>=2.30 与 starlette>=1.3.1（agent-gateway !132 起放开 starlette<2，上游已钉 d68e80b）。
+# google-genai>=2.30 与 starlette>=1.3.1（agent-gateway !132 起放开 starlette<2，上游已钉 91cf73b / !209 SPI）。
 override-dependencies = [
     "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@f5ecfd7435400fafc4e4b4d399c921a134c4358c",
     "openjiuwen[cua] @ git+https://gitcode.com/openJiuwen/agent-core.git@f5ecfd7435400fafc4e4b4d399c921a134c4358c ; extra == 'cua'",
