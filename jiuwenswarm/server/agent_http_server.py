@@ -24,6 +24,7 @@ DEFAULT_HTTP_PORT = 8766
 API_PREFIX = "/api/v1"
 
 #: 端口被占时向上扫描的候选个数与步进，与实例端口组（base + index*1000）保持一致。
+#: 仅个人版/未禁漂移时使用；企业版与 ``AGENT_HTTP_NO_PORT_DRIFT`` 禁止自动切换。
 PORT_SCAN_RANGE = 10
 PORT_SCAN_STEP = 1000
 
@@ -182,24 +183,6 @@ def new_request_id() -> str:
     return f"http_{uuid.uuid4().hex[:16]}"
 
 
-def is_port_available(host: str, port: int) -> bool:
-    """端口预检：能 bind 上即视为可用。
-
-    存在极小的 TOCTOU 窗口，但 :meth:`AgentHTTPServer.start` 里的 guard 协程
-    会兜住随后的绑定失败，不会影响 WebSocket。
-    """
-    import socket
-
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-            sock.bind((host or "127.0.0.1", int(port)))
-        return True
-    except OSError:
-        return False
-    except (TypeError, ValueError, OverflowError):
-        return False
-
-
 def _as_bool(value: Any, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
@@ -212,6 +195,92 @@ def _as_bool(value: Any, default: bool = False) -> bool:
         if v in {"0", "false", "no", "off"}:
             return False
     return default
+
+
+def http_port_drift_forbidden() -> bool:
+    """是否禁止 HTTP 端口自动漂移。
+
+    - ``AGENT_HTTP_NO_PORT_DRIFT`` 显式开关优先；
+    - 无法识别的取值不 fail-open，回退到版本默认并打 warning；
+    - 未设置时企业版默认禁止（K8s 下端口是探针/注册契约）；
+    - 个人版默认允许，保留单机多实例 ``+1000`` 扫描。
+    """
+    import os
+
+    raw = (os.getenv("AGENT_HTTP_NO_PORT_DRIFT") or "").strip()
+    if raw != "":
+        # 只接受明确真/假；拼错（如 ture）不得静默当成 False 放开企业版漂移。
+        v = raw.lower()
+        if v in {"1", "true", "yes", "on"}:
+            return True
+        if v in {"0", "false", "no", "off"}:
+            return False
+        logger.warning(
+            "AGENT_HTTP_NO_PORT_DRIFT=%r is not a recognized bool; "
+            "falling back to edition default (enterprise=%s)",
+            raw,
+            is_enterprise(),
+        )
+        return is_enterprise()
+    return is_enterprise()
+
+
+def _reuseaddr_bind_probe(host: str, port: int) -> bool:
+    """Linux：带 SO_REUSEADDR 复探，区分 TIME_WAIT 残留与真 LISTEN。
+
+    uvicorn 在 Linux 上会设 SO_REUSEADDR，能绑上仅有半关闭/TIME_WAIT 残留的端口；
+    裸 bind 预检过严会误判占用并触发无意义的 +1000 漂移。
+
+    Windows / macOS / BSD 上 SO_REUSEADDR 允许叠在活 listener 上，不能用来复探——
+    调用方不得在非 Linux 走到这里。
+    """
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((host, port))
+        return True
+    except OSError:
+        return False
+
+
+def is_port_available(host: str, port: int) -> bool:
+    """端口预检：能被真实监听器（uvicorn）绑上即视为可用。
+
+    先做不带 SO_REUSEADDR 的裸 ``bind``（活 listener / 僵死 LISTEN 都会失败）。
+    仅在 Linux 上若失败且为 EADDRINUSE，再带 SO_REUSEADDR 复探：成功说明只是
+    TIME_WAIT 等残留，uvicorn 仍可绑定；失败才是真占用。macOS/BSD/Windows 不做
+    复探（SO_REUSEADDR 语义不安全）。
+
+    存在极小的 TOCTOU 窗口，但 :meth:`AgentHTTPServer.start` 里的 guard 协程
+    会兜住随后的绑定失败，不会影响 WebSocket。
+    """
+    import errno
+    import platform
+    import socket
+
+    bind_host = host or "127.0.0.1"
+    try:
+        port_i = int(port)
+    except (TypeError, ValueError):
+        return False
+    if port_i < 0 or port_i > 65535:
+        return False
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind((bind_host, port_i))
+        return True
+    except OSError as exc:
+        if (
+            getattr(exc, "errno", None) == errno.EADDRINUSE
+            and platform.system().lower() == "linux"
+        ):
+            return _reuseaddr_bind_probe(bind_host, port_i)
+        return False
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 def resolve_http_server_settings(agent_host: str) -> tuple[bool, str, int]:
@@ -438,9 +507,9 @@ class AgentHTTPServer:
     def port(self) -> int:
         """实际监听的端口。
 
-        不是构造时传入的那个 —— :meth:`start` 在端口被占时会按 +1000 步进向上扫描
-        并落到别的端口上（与实例端口组一致）。调用方（如就绪横幅）要打印的是**实际**
-        监听的端口，因此读这个属性，而不是外部去碰内部字段。
+        个人版且未禁漂移时，:meth:`start` 可能按 +1000 步进落到别的端口；
+        企业版 / ``AGENT_HTTP_NO_PORT_DRIFT`` 下不会漂移，应等于配置端口。
+        调用方（如就绪横幅）要打印的是**实际**监听端口，因此读这个属性。
         """
         return self._port
 
@@ -663,7 +732,10 @@ class AgentHTTPServer:
                     )
 
     def _find_bindable_port(self) -> int | None:
-        """端口被占时向上扫描，语义与实例端口组一致（+1000 步进）"""
+        """端口被占时向上扫描，语义与实例端口组一致（+1000 步进）。
+
+        仅个人版未禁漂移时由 :meth:`start` 调用；企业版禁止走此路径。
+        """
         for offset in range(PORT_SCAN_RANGE):
             candidate = self._port + offset * PORT_SCAN_STEP
             if candidate > 65535:
@@ -680,21 +752,40 @@ class AgentHTTPServer:
     async def start(self) -> bool:
         """启动 HTTP 服务，返回是否成功。
 
-        **绝不能因 HTTP 起不来而影响 WebSocket 主链路**，这里做了三层防护：
+        **绝不能因 HTTP 起不来而拖垮 WebSocket 主链路**（个人版），防护：
 
-        1. 启动前预检端口占用，占用则直接放弃（不抛异常）。
+        1. 启动前预检端口；企业版 / 禁漂移 / mTLS enforce 下占口则失败且不换口。
         2. uvicorn 绑定失败时内部会调 ``sys.exit(1)``，在 task 里会变成
            ``SystemExit`` 逃逸出来把整个 AgentServer 拖垮 —— 用 guard 协程捕获。
         3. 等待确认 ``server.started``，避免"日志说启动了其实没起来"。
+
+        企业版调用方应把 ``False`` 视为致命（见 ``app_agentserver``），交给 K8s 重启，
+        避免听错口导致 runtime 探针误杀。
         """
         import uvicorn
 
         from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig, LinkMTLSError
 
         link_mtls = LinkMTLSConfig.from_env(role="agentserver")
-        if link_mtls.enforced and not is_port_available(self._host, self._port):
-            raise LinkMTLSError("enforce listener port is occupied; refusing automatic port drift")
-        bindable = self._port if link_mtls.enforced else self._find_bindable_port()
+        refuse_drift = link_mtls.enforced or http_port_drift_forbidden()
+        if refuse_drift:
+            if not is_port_available(self._host, self._port):
+                if link_mtls.enforced:
+                    raise LinkMTLSError(
+                        "enforce listener port is occupied; refusing automatic port drift"
+                    )
+                logger.error(
+                    "[AgentHTTPServer] 端口 %s:%s 被占用，已禁止自动漂移"
+                    "（企业版或 AGENT_HTTP_NO_PORT_DRIFT）。请清理占用进程，"
+                    "或设 AGENT_HTTP_PORT / config.yaml http_server.port；"
+                    "K8s 场景应交由容器重启自愈，勿切换到未注册端口",
+                    self._host,
+                    self._port,
+                )
+                return False
+            bindable = self._port
+        else:
+            bindable = self._find_bindable_port()
         if bindable is None:
             logger.error(
                 "[AgentHTTPServer] 端口 %s:%s 起连续 %d 个候选均被占用，HTTP 入口未启动"
