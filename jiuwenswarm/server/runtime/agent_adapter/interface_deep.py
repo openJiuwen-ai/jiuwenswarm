@@ -647,8 +647,6 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
 from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
 from jiuwenswarm.agents.harness.common.tools.chart_tools import generate_chart
 from jiuwenswarm.agents.harness.common.tools.diff_tools import diff_files
-from jiuwenswarm.agents.harness.common.tools.grep_tools import grep_code
-from jiuwenswarm.agents.harness.common.tools.web_article_tools import read_web_article
 from jiuwenswarm.agents.harness.common.tools.file_delivery_policy import is_send_file_enabled
 from jiuwenswarm.agents.harness.common.tools.heartbeat_policy import is_heartbeat_supported
 from jiuwenswarm.common.scheduled_task_policy import is_scheduled_task_supported
@@ -13302,7 +13300,7 @@ class JiuWenSwarmDeepAdapter:
             self._register_agent_owned_tool(tool_instance, agent_id)
             tool_cards.append(tool_instance.card)
 
-        for extra_tool in [diff_files, generate_chart, grep_code, read_web_article]:
+        for extra_tool in [diff_files, generate_chart]:
             self._register_shared_tool(extra_tool)
             tool_cards.append(extra_tool.card)
 

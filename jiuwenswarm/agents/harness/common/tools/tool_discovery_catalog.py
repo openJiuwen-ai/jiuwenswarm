@@ -56,14 +56,6 @@ BUILTIN_TOOL_DISCOVERY: dict[str, ToolDiscoveryMetadata] = {
         "Generate vector SVG charts (bar, line, pie, donut, metric card) from data.",
         "生成图表 数据可视化 柱状图 折线图 饼图 环形图 指标看板 svg",
     ),
-    "grep_code": _entry(
-        "Search codebase and text files with regex, context lines, and file filters.",
-        "代码搜索 代码检索 正则匹配 查找代码 文件过滤 ripgrep grep",
-    ),
-    "read_web_article": _entry(
-        "Extract clean, noise-free article text from a URL as Markdown.",
-        "阅读 提取 网页 正文 文章 降噪 URL",
-    ),
     "cron": _entry("Manage standalone scheduled tasks and reminders.", "定时任务 提醒 闹钟 周期通知"),
     "cron_create_job": _entry(
         "Create a standalone scheduled task, one-time reminder, daily notification, or periodic notification.",

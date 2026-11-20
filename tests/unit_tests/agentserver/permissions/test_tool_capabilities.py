@@ -177,7 +177,6 @@ def test_diff_files_is_a_static_read_path_tool() -> None:
     assert info.static_side_effects == frozenset()
     assert info.facts_source == "host_static"
     assert classify_tool("generate_chart").operation_family == "workspace_write"
-    assert classify_tool("read_web_article").operation_family == "public_web_read"
 
 
 def test_playwright_browser_mcp_wrapper_uses_browser_policy_domain() -> None:

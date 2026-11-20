@@ -84,16 +84,6 @@ register(['generate_chart'], {
   actionKey: 'chatUi.toolAction.write',
   iconKey: 'write',
 });
-register(['grep_code'], {
-  category: 'search',
-  actionKey: 'chatUi.toolAction.search',
-  iconKey: 'search',
-});
-register(['read_web_article'], {
-  category: 'search',
-  actionKey: 'chatUi.toolAction.fetch',
-  iconKey: 'fetch',
-});
 
 // 搜索类：搜索内容（grep/记忆检索）
 register(['grep', 'memory_search'], {

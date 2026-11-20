@@ -12,8 +12,6 @@ _EXPORTS = {
     "edit_memory": (".memory_tools", "edit_memory"),
     "diff_files": (".diff_tools", "diff_files"),
     "generate_chart": (".chart_tools", "generate_chart"),
-    "grep_code": (".grep_tools", "grep_code"),
-    "read_web_article": (".web_article_tools", "read_web_article"),
     "read_memory": (".memory_tools", "read_memory"),
     "set_group_chat_mode": (".memory_tools", "set_group_chat_mode"),
     "is_group_chat_mode": (".memory_tools", "is_group_chat_mode"),
