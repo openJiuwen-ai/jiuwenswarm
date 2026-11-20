@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import AsyncMock, Mock
 
@@ -154,13 +155,16 @@ async def test_pause_session_returns_result_without_publishing(
 @pytest.mark.asyncio
 async def test_pause_completion_pushes_member_and_session_states_when_gateway_cancels_observer(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     from agent_gateway.message_handler.message_handler import MessageHandler
 
     from jiuwenswarm.agents.harness.team import TeamManager
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+    from jiuwenswarm.server.runtime.session.session_history import flush_history_writes, read_team_history_records
 
+    monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(tmp_path))
     manager = TeamManager()
     coordinator = _RecordingCoordinator()
     adapter = TeamSessionLifecycleAdapter(coordinator=coordinator, team_manager=manager)
@@ -203,6 +207,11 @@ async def test_pause_completion_pushes_member_and_session_states_when_gateway_ca
     assert observer.empty()
     assert sent_messages.await_count == 6
     messages = [call.args[0] for call in sent_messages.await_args_list]
+    flush_history_writes()
+    history = read_team_history_records("session-a")
+    assert [record["event"] for record in history if record["event_type"] == "team.member"] == [
+        message.payload["event"] for message in messages[:-1]
+    ]
     for message, member_id in zip(messages[:-1], member_ids, strict=True):
         assert message.channel_id == "web"
         assert message.session_id == "session-a"
@@ -224,6 +233,34 @@ async def test_pause_completion_pushes_member_and_session_states_when_gateway_ca
     }
     assert coordinator.transitions == [("waiting", "session-a", 2)]
     test_logger.info("Gateway published five member states and the session terminal independently of its observer")
+
+
+@pytest.mark.asyncio
+async def test_pause_completion_pushes_members_when_a_history_write_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    adapter = TeamSessionLifecycleAdapter(coordinator=_RecordingCoordinator(), team_manager=_RecordingTeamManager())
+    write_history = AsyncMock(side_effect=[OSError("history unavailable"), None])
+    push_event = AsyncMock(return_value=True)
+    monkeypatch.setattr(lifecycle_module, "run_history_io", write_history)
+    monkeypatch.setattr(adapter, "_push_pause_event", push_event)
+    monkeypatch.setattr(
+        lifecycle_module,
+        "get_session_metadata_async",
+        AsyncMock(return_value={"team_name": "team-a"}),
+    )
+    members = [{"member_id": "writer", "status": "paused"}, {"member_id": "reviewer", "status": "paused"}]
+    monkeypatch.setattr(TeamMonitorHandler, "get_member_list_from_db", AsyncMock(return_value=members))
+
+    await adapter.publish_pause_completed("session-a", generation=2, channel_id="web")
+
+    assert write_history.await_count == 2
+    events = [call.args[1] for call in push_event.await_args_list]
+    assert [event["event"]["member_id"] for event in events[:-1]] == ["writer", "reviewer"]
+    assert events[-1]["event_type"] == "chat.processing_status"
+    assert "Failed to record paused Team member: session_id=session-a member_id=writer" in caplog.text
+    test_logger.info("Both paused members and the session terminal were pushed after a history write failed")
 
 
 @pytest.mark.asyncio
