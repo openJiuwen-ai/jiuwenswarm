@@ -27,22 +27,24 @@
       "sha256": "fe74411ec968aafc3c7795e99cc403291b8ad57fd99ee7d4c578e501e71d5bb1"
     },
     {
-      "chars": 2465,
+      "chars": 2464,
       "name": "tools",
       "priorities": [
         300,
         330,
-        340
+        340,
+        345
       ],
       "section_names": [
         "tool_selection",
         "bash_discipline",
-        "tool_result"
+        "tool_result",
+        "browser_routing"
       ],
-      "sha256": "62a56c0faf22506c9663eb9a549c80d5abc3fa3bb2001bd58a13d9fb1767917a"
+      "sha256": "34daa4ed0fa1af9c5f1c89a6c1ebf015a28bbf6cf05531a0d53e35f61168845a"
     },
     {
-      "chars": 6779,
+      "chars": 6959,
       "name": "execution",
       "priorities": [
         410,
@@ -54,7 +56,7 @@
         "todo",
         "task_tool"
       ],
-      "sha256": "88290413d8510f16a1a44ee8a95d70f15b767051a07be92d0268d758f08e9ce8"
+      "sha256": "6199f402e2e1ba4bb4fb9697ce3eed373d8515f92ab0686111353e1282aad5b7"
     },
     {
       "chars": 3889,
@@ -74,12 +76,12 @@
       "sha256": "488bd737c0fa19ae9ee5d09027e30887a69df4a7171c4ce4fc66cff9b46a4be2"
     }
   ],
-  "full_hash": "73b0705f34761ae444fbf90d584059e3d0dc0a1edba1eb3b0317d26d2d343dc3",
+  "full_hash": "d83029cb80971450e111b713f690ce3560698bf619cc5458cef65806181289fc",
   "language": "en",
-  "prefix_chars": 16811,
-  "prefix_hash": "a03a0a69989ab2c634a11788be763de50eff97eedfa3bbd0963e5ea4fe455b57",
+  "prefix_chars": 5737,
+  "prefix_hash": "69fc0f207f2c283e4126386758f23ffcde7bd73c3bc612fea592649c19084083",
   "schema_version": 1,
-  "section_count": 14,
+  "section_count": 15,
   "sections": [
     {
       "band": "identity",
@@ -144,12 +146,22 @@
     {
       "band": "tools",
       "carrier": "system",
-      "chars": 909,
+      "chars": 517,
       "name": "tool_result",
       "priority": 340,
       "registered": true,
-      "sha256": "f1c9568388e74c91e5acf935234b8156dee2a21b5bf9c13d62fffb6b8b3a8f62",
-      "text": "# Tool Result and Specialized Routing\n\n- Strictly treat the tool's actual returned content as authoritative; never infer or fabricate execution results.\n- When a tool errors, times out, or fails: face the failure honestly, adjust strategy or parameters and retry, and briefly state the reason and next steps; never pretend success or hide failure.\n- On permission denial (Permission denied) or path out-of-bounds, stop retrying the same target immediately; never bypass by repeatedly trying alternate command syntax.\n\n## Mandatory Browser Task Routing\n- For any task involving browser/web interaction, you must call task_tool with subagent_type: \"browser_agent\" (if the tool is not available in the current environment, tell the user the limitation directly).\n- Never build a browser process yourself via bash or other tools using scripts, subprocess, or system commands (e.g. playwright/selenium/puppeteer).\n"
+      "sha256": "0c68045090dd6484c03924f221f40b2babba56c87d1996082b6f74bdc2f4bcdb",
+      "text": "# Tool Result and Specialized Routing\n\n- Strictly treat the tool's actual returned content as authoritative; never infer or fabricate execution results.\n- When a tool errors, times out, or fails: face the failure honestly, adjust strategy or parameters and retry, and briefly state the reason and next steps; never pretend success or hide failure.\n- On permission denial (Permission denied) or path out-of-bounds, stop retrying the same target immediately; never bypass by repeatedly trying alternate command syntax.\n"
+    },
+    {
+      "band": "tools",
+      "carrier": "attachment",
+      "chars": 391,
+      "name": "browser_routing",
+      "priority": 345,
+      "registered": true,
+      "sha256": "bd631788628afdc84c3fd0748ab737b5ba5ed0883e6744f4235449beae3cdbf3",
+      "text": "## Mandatory Browser Task Routing\n- For any task involving browser/web interaction, you must call task_tool with subagent_type: \"browser_agent\" (if the tool is not available in the current environment, tell the user the limitation directly).\n- Never build a browser process yourself via bash or other tools using scripts, subprocess, or system commands (e.g. playwright/selenium/puppeteer).\n"
     },
     {
       "band": "execution",
@@ -164,12 +176,12 @@
     {
       "band": "execution",
       "carrier": "system",
-      "chars": 2824,
+      "chars": 3004,
       "name": "todo",
       "priority": 430,
       "registered": true,
-      "sha256": "3e32f5248e414a1f22180ff4c871ba8cdd9d07042dad011c350d262d2612ae0b",
-      "text": "# todo Discipline\n\n**When to create — call todo(action=create) when any of the following applies:**\n- The user explicitly requests planning or provides multiple items to complete\n- The task has several stages with a real sequence or dependency between them, spans multiple rounds of tool calls, and visibility into overall progress is genuinely useful\n\n**When NOT to create:**\n- The task is simple: a one-off question, a single action, or a few straightforward steps that can be completed directly\n- Executing directly is more efficient than planning first\n- The user's intent is only to list a plan or checklist with no request to carry out the work this turn — present the list in your reply as text or a table; do not call the todo tool\n\n**Task granularity:**\n- Each todo should represent an execution stage that needs to be advanced or verified independently, not a single tool call, a small action, or a component of the final deliverable\n- Merge steps that are logically continuous and normally completed together into one todo\n- If a phase applies the same processing to multiple independent objects, design it as a single \"parallel batch\" task and must clearly list all parallel sub-items in its description (e.g. \"Read and analyse the following 5 papers in parallel: [Paper A, Paper B, Paper C, Paper D, Paper E], each delegated to an independent subagent\"), so that execution can clearly dispatch one task_tool call per sub-item\n\n**Status discipline:**\n- Use create for a new plan, modify to adjust\n- For an unfinished plan, use todo(action=modify) to continue or append; replace it only by explicitly passing plan_action=new/rebuild to todo(action=create)\n- Update status as soon as it changes; do not accumulate multiple changes and update them all later\n- Each call should only include the fields that changed (usually just id and status)\n- When creating or updating a task, never fill in the selected_model_id field (even if it appears in the tool definition); always use the Agent's default model\n- Only one task can be in_progress at a time\n- Verify carefully before marking complete (e.g., run tests); never mark complete when the work is partial, tests fail, or unresolved errors remain\n- After marking complete, check whether new follow-up tasks surfaced during execution and append them via todo(action=modify)\n- Mark cancelled immediately when abandoning/skipping a step\n- Do not fall into a dead loop of failure → modify → failure on the same todo: if it still fails after 2-3 retries, stop and analyze the cause; mark it cancelled or explain the blocker to the user instead of mechanically retrying\n\n## Model Selection Note\n\nNo model selection list is configured. When creating or updating tasks, **do NOT use the selected_model_id field**.\nAll tasks will be executed using the Agent's default model.\n"
+      "sha256": "0be9d48130fcbcdae4c7f6c56cf43fb4c09dbf492146ff0973bc7021afa76160",
+      "text": "# todo Discipline\n\n**When to create — call todo(action=create) when any of the following applies:**\n- The user explicitly requests planning or provides multiple items to complete\n- The task has several stages with a real sequence or dependency between them, spans multiple rounds of tool calls, and visibility into overall progress is genuinely useful\n\n**When NOT to create:**\n- The task is simple: a one-off question, a single action, or a few straightforward steps that can be completed directly\n- Executing directly is more efficient than planning first\n- The user's intent is only to list a plan or checklist with no request to carry out the work this turn — present the list in your reply as text or a table; do not call the todo tool\n\n**Task granularity:**\n- Each todo should represent an execution stage that needs to be advanced or verified independently, not a single tool call, a small action, or a component of the final deliverable\n- Merge steps that are logically continuous and normally completed together into one todo\n- If a phase applies the same processing to multiple independent objects, design it as a single \"parallel batch\" task and must clearly list all parallel sub-items in its description (e.g. \"Read and analyse the following 5 papers in parallel: [Paper A, Paper B, Paper C, Paper D, Paper E], each delegated to an independent subagent\"), so that execution can clearly dispatch one task_tool call per sub-item\n\n**Status discipline:**\n- Use create for a new plan, modify to adjust\n- For an unfinished plan, use todo(action=modify) to continue or append; replace it only by explicitly passing plan_action=new/rebuild to todo(action=create)\n- Update status as soon as it changes; do not accumulate multiple changes and update them all later\n- Always supply modify_action when modifying a task. Status update example: todo({\"action\":\"modify\",\"modify_action\":\"update\",\"todos\":[{\"id\":\"<task_id>\",\"status\":\"<new_status>\"}]})\n- Each call should only include the fields that changed (usually just id and status)\n- When creating or updating a task, never fill in the selected_model_id field (even if it appears in the tool definition); always use the Agent's default model\n- Only one task can be in_progress at a time\n- Verify carefully before marking complete (e.g., run tests); never mark complete when the work is partial, tests fail, or unresolved errors remain\n- After marking complete, check whether new follow-up tasks surfaced during execution and append them via todo(action=modify)\n- Mark cancelled immediately when abandoning/skipping a step\n- Do not fall into a dead loop of failure → modify → failure on the same todo: if it still fails after 2-3 retries, stop and analyze the cause; mark it cancelled or explain the blocker to the user instead of mechanically retrying\n\n## Model Selection Note\n\nNo model selection list is configured. When creating or updating tasks, **do NOT use the selected_model_id field**.\nAll tasks will be executed using the Agent's default model.\n"
     },
     {
       "band": "execution",
@@ -222,6 +234,6 @@
       "text": "# Model Name Answer Policy\n\n- When the user asks what model you are using, answer with only the current model value from the runtime state note. Do not introduce yourself or list capabilities.\n- When the user asks what models are available or configured, list all available models from the available_models list in the runtime state note.\n- When this runtime information is missing, say \"the current environment did not provide this information\"; do not assert \"not configured\".\n"
     }
   ],
-  "static_hash": "73b0705f34761ae444fbf90d584059e3d0dc0a1edba1eb3b0317d26d2d343dc3",
-  "total_chars": 16785
+  "static_hash": "76bd1175b2ac0e34bd0f7b80cb38118d1cd8c4f6bb27458b1683122350c208be",
+  "total_chars": 16964
 }
