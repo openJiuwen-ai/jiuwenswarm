@@ -56,6 +56,7 @@ from jiuwenswarm.agents.swarm.providers import (
     designer_tools as _designer_tools,  # noqa: F401  # imported for provider registration
     evolution_rails as _evolution_rails,
     member_rails as _member_rails,
+    team_memory as _team_memory,
     runtime_tools as _runtime_tools,
     skills as _skills,
     tools as _tools,
@@ -117,6 +118,7 @@ AUDIO = _OJ_AUDIO
 # Only these core providers are migrated in the first event-registration
 # slice. Swarm-owned providers deliberately remain on the legacy path.
 EVENT_TOOL_TYPES = (WEB_SEARCH, WEB_FETCH, WEB_PAID_SEARCH, VISION, AUDIO)
+TEAM_MEMORY = _team_memory.TEAM_MEMORY
 PERSONAL_CONTEXT = _member_rails.PERSONAL_CONTEXT
 RUNTIME_PROMPT = _member_rails.RUNTIME_PROMPT
 TEAM_SKILL_STORAGE_POLICY = _member_rails.TEAM_SKILL_STORAGE_POLICY
@@ -313,6 +315,7 @@ __all__ = [
     "GROUP_TASK_POLICY",
     "GROUP_ASK_USER",
 
+    "TEAM_MEMORY",
     "PERSONAL_CONTEXT",
     "register_swarm_providers",
     "SKILL_TOOLKIT",

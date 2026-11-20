@@ -370,6 +370,10 @@ class CodeCodingMemoryInput(ConstructionInput):
 )
 def build_code_coding_memory(params: dict[str, Any], ctx: SwarmBuildContext) -> Any:
     """Build CodingMemoryRail and publish it on ``ctx.extras`` for code_agent reuse."""
+    from jiuwenswarm.common.team_memory_binding import uses_jiuwen_team_memory
+    if uses_jiuwen_team_memory(ctx.config or {}, ctx.mode):
+        return None
+
     try:
         from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
             create_coding_memory_rail,

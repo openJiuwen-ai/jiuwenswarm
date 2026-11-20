@@ -3,6 +3,9 @@
 """Unit tests for CodeAdapter coding-memory configuration."""
 
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
 
 from jiuwenswarm.server.runtime.agent_adapter import interface_code
 
@@ -181,3 +184,43 @@ def test_native_failed_rebuild_keeps_same_binding(monkeypatch, tmp_path):
     assert adapter._coding_memory_config_fingerprint == fingerprint
     adapter._project_dir = str(tmp_path / "another-project")
     assert adapter._build_coding_memory_rail() is None
+
+
+@pytest.mark.parametrize("provider, expected", [("jiuwen", False), ("", True)])
+def test_team_entry_project_memory_follows_provider(monkeypatch, tmp_path, provider, expected):
+    config = {"memory": {"builtin": {"provider": provider}},
+              "modes": {"code": {"memory": {"enabled": True}}}}
+    adapter = interface_code.JiuwenSwarmCodeAdapter()
+    adapter._project_dir = str(tmp_path)
+    adapter._workspace_dir = str(tmp_path)
+    adapter._session_instance_mode = "team.code.normal"
+    monkeypatch.setattr(adapter, "_active_code_config", lambda: config)
+    monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "cn")
+    assert (adapter._build_project_memory_rail() is not None) is expected
+
+
+@pytest.mark.asyncio
+async def test_switching_team_entry_removes_and_restores_project_memory(monkeypatch, tmp_path):
+    config = {"memory": {"builtin": {"provider": "jiuwen"}},
+              "modes": {"code": {"memory": {"enabled": True}}}}
+    adapter = interface_code.JiuwenSwarmCodeAdapter()
+    adapter._project_dir = str(tmp_path)
+    adapter._workspace_dir = str(tmp_path)
+    adapter._instance = SimpleNamespace(register_rail=AsyncMock(), unregister_rail=AsyncMock())
+    adapter._subagent_rail = object()
+    monkeypatch.setattr(adapter, "_active_code_config", lambda: config)
+    monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "cn")
+    monkeypatch.setattr(adapter, "_reconcile_coding_memory", AsyncMock())
+    monkeypatch.setattr(adapter, "_sync_personal_context_rail", AsyncMock())
+    await adapter._update_rails_for_mode("code.normal")
+    previous = adapter._project_memory_rail
+    assert previous is not None
+    await adapter._update_rails_for_mode("team.code.normal")
+    assert adapter._project_memory_rail is None
+    adapter._instance.unregister_rail.assert_awaited_once_with(previous)
+    await adapter._update_rails_for_mode("code.normal")
+    assert adapter._project_memory_rail is not None
+    assert adapter._project_memory_rail is not previous
+    config["modes"]["code"]["memory"]["enabled"] = False
+    await adapter._update_rails_for_mode("code.normal")
+    assert adapter._project_memory_rail is None
