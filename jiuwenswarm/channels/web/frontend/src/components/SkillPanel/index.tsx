@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
 import { matchesAssetName } from '../../features/assetNameSearch';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
 /**
@@ -688,13 +689,14 @@ export function SkillPanel({
   }, []);
 
   // 新建会话并将技能选中到输入框：只有集群技能进集群模式，其余（普通技能、技能包等）固定单 agent
-  const handleGoToChat = useCallback((skillName: string, skillType?: string) => {
+  const handleGoToChat = useCallback((skillName: string, skillType?: string, resetAttachmentDrafts = false) => {
     window.dispatchEvent(
       new CustomEvent('jiuwen:new-conversation', {
         detail: {
           skillName,
           mode: skillType === 'swarm_skill' ? ('team' as const) : ('agent' as const),
           preserveDraft: true,
+          resetAttachmentDrafts,
         },
       }),
     );
@@ -784,7 +786,7 @@ export function SkillPanel({
     async (file: File): Promise<string> => {
       const form = new FormData();
       form.append('file', file);
-      const uploadResp = await fetch('/file-api/skills/upload-temp', { method: 'POST', body: form });
+      const uploadResp = await gatewayFetch('/file-api/skills/upload-temp', { method: 'POST', body: form });
       const uploadData = await uploadResp.json();
       if (!uploadResp.ok || !uploadData.path) {
         throw createUploadError(uploadData.code, uploadResp.status);

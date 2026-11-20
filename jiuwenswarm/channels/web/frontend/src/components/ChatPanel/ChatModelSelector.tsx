@@ -22,6 +22,7 @@ import ModelPicker, { type ModelPickerPresentation } from '../ModelPicker';
 import { isEnterprise } from '../../edition';
 import { useTeamSelectorStore } from '../../stores/teamSelectorStore';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
+import { selectConversationModel } from '../../multi-session/state/modelSelectionActions';
 
 function openModelSettings(): void {
   requestSettingsModule('models');
@@ -171,17 +172,12 @@ export default function ChatModelSelector({
     if (selectedChildTeam) return;
     if (!boundSessionId || disabled || pickLocked || useChatStore.getState().getRuntime(boundSessionId)?.isProcessing) return;
     setSelectionError('');
-    setSelectedModelSelection(boundSessionId, next);
-    if (boundSessionId === NEW_CONVERSATION_ID) return;
     try {
-      await webRequest('session.selection.set', {
-        session_id: boundSessionId,
-        model_selection: next,
-      });
+      await selectConversationModel(boundSessionId, next);
     } catch (error) {
-      setSelectionError(
-        error instanceof Error && error.message ? error.message : t('chat.modelSelector.selectionFailed'),
-      );
+      const code = error instanceof Error ? error.message : '';
+      setSelectionError(['CONVERSATION_BUSY', 'MODEL_UNAVAILABLE', 'TARGET_INACTIVE'].includes(code)
+        ? t(`chat.modelSelector.errors.${code}`) : code || t('chat.modelSelector.selectionFailed'));
     }
   };
 

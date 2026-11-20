@@ -3814,6 +3814,299 @@ def _deep_merge(
 _LEGACY_AGENT_SUBMODE_KEYS: tuple[str, ...] = ("plan", "fast", "agent.plan", "agent.fast")
 
 
+_MISSING_CONFIG_VALUE = object()
+
+
+def _read_config_path(config: dict[str, Any], path: tuple[str, ...]) -> Any:
+    current: Any = config
+    for key in path:
+        if not isinstance(current, dict) or key not in current:
+            return _MISSING_CONFIG_VALUE
+        current = current[key]
+    return current
+
+
+def _set_config_path_if_missing(
+    config: dict[str, Any],
+    path: tuple[str, ...],
+    value: Any,
+) -> bool:
+    current = config
+    for key in path[:-1]:
+        child = current.get(key)
+        if child is None and key not in current:
+            child = {}
+            current[key] = child
+        if not isinstance(child, dict):
+            return False
+        current = child
+    if path[-1] in current:
+        return False
+    current[path[-1]] = deepcopy(value)
+    return True
+
+
+def _set_config_path_from_legacy(
+    config: dict[str, Any],
+    template: dict[str, Any],
+    path: tuple[str, ...],
+    value: Any,
+) -> bool:
+    current_value = _read_config_path(config, path)
+    if current_value is _MISSING_CONFIG_VALUE:
+        return _set_config_path_if_missing(config, path, value)
+
+    template_value = _read_config_path(template, path)
+    if template_value is _MISSING_CONFIG_VALUE or current_value != template_value:
+        return False
+    if current_value == value:
+        return False
+
+    current = config
+    for key in path[:-1]:
+        child = current.get(key)
+        if not isinstance(child, dict):
+            return False
+        current = child
+    current[path[-1]] = deepcopy(value)
+    return True
+
+
+def _migrate_legacy_symphony_config(
+    user_data: dict[str, Any],
+    template_data: dict[str, Any],
+) -> bool:
+    """Move the beta3 Symphony layout into the current Core schema.
+
+    Template migration intentionally preserves operator-owned keys. That rule
+    also retained retired beta3 fields while adding the new schema beside
+    them, and Core correctly rejected the resulting mixed configuration. Only
+    known beta3 paths are consumed here. Canonical user values win, while
+    canonical template defaults previously merged into the file are replaced
+    by the corresponding legacy user values.
+    """
+    symphony = user_data.get("symphony")
+    if not isinstance(symphony, dict):
+        return False
+    template_symphony = template_data.get("symphony")
+    if not isinstance(template_symphony, dict):
+        template_symphony = {}
+
+    changed = False
+    path_mappings: tuple[
+        tuple[tuple[str, ...], tuple[str, ...]], ...
+    ] = (
+        (("enabled",), ("orchestration", "enabled")),
+        (
+            ("fingerprint", "scan", "max_depth"),
+            ("capability", "scan", "max_depth"),
+        ),
+        (
+            ("fingerprint", "extraction", "workers"),
+            ("capability", "fingerprint", "extraction", "max_concurrency"),
+        ),
+        (
+            ("fingerprint", "extraction", "batch_size"),
+            ("capability", "fingerprint", "extraction", "batch_size"),
+        ),
+        (
+            ("build", "workers"),
+            ("orchestration", "build", "max_concurrency"),
+        ),
+        (
+            ("build", "batch_size"),
+            ("orchestration", "build", "matching", "batch_size"),
+        ),
+        (
+            ("build", "max_candidates_per_skill_relation"),
+            (
+                "orchestration",
+                "build",
+                "matching",
+                "max_candidates_per_capability_relation",
+            ),
+        ),
+        (
+            ("build", "require_consensus"),
+            ("orchestration", "build", "matching", "require_consensus"),
+        ),
+        (
+            ("build", "min_edge_confidence"),
+            ("orchestration", "min_edge_confidence"),
+        ),
+        (
+            ("evolution", "flow", "enabled"),
+            ("orchestration", "experience", "enabled"),
+        ),
+        (
+            ("evolution", "flow", "min_successes"),
+            ("orchestration", "experience", "acceptance", "min_successes"),
+        ),
+        (
+            ("evolution", "flow", "min_pack_success_rate"),
+            (
+                "orchestration",
+                "experience",
+                "acceptance",
+                "min_pack_success_rate",
+            ),
+        ),
+        (("orchestration", "mode"), ("orchestration", "plan", "mode")),
+        (("orchestration", "top_k"), ("orchestration", "plan", "top_k")),
+        (
+            ("orchestration", "max_depth"),
+            ("orchestration", "plan", "max_depth"),
+        ),
+        (("skill_retrieval", "enabled"), ("retrieval", "enabled")),
+        (
+            ("skill_retrieval", "discovery", "max_output_chars"),
+            ("retrieval", "output", "max_chars"),
+        ),
+        (
+            ("skill_retrieval", "discovery", "max_results"),
+            ("retrieval", "output", "max_results"),
+        ),
+        (
+            ("skill_retrieval", "discovery", "max_list_entries"),
+            ("retrieval", "output", "max_list_entries"),
+        ),
+        (
+            (
+                "skill_retrieval",
+                "discovery",
+                "incremental_notice_max_chars",
+            ),
+            ("retrieval", "output", "incremental_notice_max_chars"),
+        ),
+        (
+            ("skill_retrieval", "discovery", "prompt_preferred_skills"),
+            ("retrieval", "prompt", "preferred_capability_ids"),
+        ),
+        (
+            ("skill_retrieval", "build", "max_depth"),
+            ("retrieval", "index_build", "structure", "max_depth"),
+        ),
+        (
+            ("skill_retrieval", "build", "branching_factor"),
+            ("retrieval", "index_build", "structure", "branching_factor"),
+        ),
+        (
+            ("skill_retrieval", "build", "root_categories"),
+            ("retrieval", "index_build", "structure", "root_categories"),
+        ),
+        (
+            ("skill_retrieval", "build", "max_workers"),
+            ("retrieval", "index_build", "request", "max_concurrency"),
+        ),
+        (
+            ("skill_retrieval", "build", "max_retries"),
+            ("retrieval", "index_build", "request", "max_retries"),
+        ),
+        (
+            ("skill_retrieval", "build", "request_timeout_seconds"),
+            ("retrieval", "index_build", "request", "timeout_seconds"),
+        ),
+        (
+            ("skill_retrieval", "build", "classification_batch_limit"),
+            (
+                "retrieval",
+                "index_build",
+                "request",
+                "classification_batch_limit",
+            ),
+        ),
+        (
+            (
+                "skill_retrieval",
+                "build",
+                "preserve_previous_index_on_failure",
+            ),
+            (
+                "retrieval",
+                "index_build",
+                "task",
+                "preserve_previous_index_on_failure",
+            ),
+        ),
+        (
+            ("skill_retrieval", "build", "discovery_seed"),
+            ("retrieval", "index_build", "prompt", "discovery_seed"),
+        ),
+        (
+            ("skill_retrieval", "build", "postprocess_enabled"),
+            ("retrieval", "index_build", "postprocess", "enabled"),
+        ),
+        (
+            ("skill_retrieval", "build", "postprocess_max_passes"),
+            ("retrieval", "index_build", "postprocess", "max_passes"),
+        ),
+        (
+            ("skill_retrieval", "build", "postprocess_min_skills"),
+            ("retrieval", "index_build", "postprocess", "min_capabilities"),
+        ),
+        (
+            ("skill_retrieval", "build", "equivalence_enabled"),
+            ("retrieval", "index_build", "equivalence", "enabled"),
+        ),
+    )
+    for source_path, target_path in path_mappings:
+        value = _read_config_path(symphony, source_path)
+        if value is _MISSING_CONFIG_VALUE:
+            continue
+        changed = _set_config_path_from_legacy(
+            symphony,
+            template_symphony,
+            target_path,
+            value,
+        ) or changed
+
+    legacy_body_limit = _read_config_path(
+        symphony,
+        ("fingerprint", "extraction", "body_limit"),
+    )
+    try:
+        normalized_body_limit = int(legacy_body_limit)
+    except (TypeError, ValueError):
+        normalized_body_limit = 0
+    if normalized_body_limit > 0:
+        changed = _set_config_path_from_legacy(
+            symphony,
+            template_symphony,
+            ("capability", "fingerprint", "extraction", "max_body_chars"),
+            normalized_body_limit,
+        ) or changed
+
+    legacy_paths = symphony.get("paths")
+    if isinstance(legacy_paths, dict):
+        skills_root = legacy_paths.get("skills_root")
+        if isinstance(skills_root, str) and skills_root.strip():
+            changed = _set_config_path_from_legacy(
+                symphony,
+                template_symphony,
+                ("capability", "sources"),
+                [{"type": "skill", "root": skills_root}],
+            ) or changed
+
+    for key in (
+        "enabled",
+        "paths",
+        "fingerprint",
+        "build",
+        "evolution",
+        "skill_retrieval",
+    ):
+        if key in symphony:
+            symphony.pop(key)
+            changed = True
+    orchestration = symphony.get("orchestration")
+    if isinstance(orchestration, dict):
+        for key in ("mode", "top_k", "max_depth"):
+            if key in orchestration:
+                orchestration.pop(key)
+                changed = True
+    return changed
+
+
 def _migrate_legacy_agent_submode_memory(user_data: dict[str, Any]) -> None:
     modes = user_data.get("modes")
     if not isinstance(modes, dict):
@@ -3934,6 +4227,10 @@ def migrate_config_from_template(
         # 必须在 _deep_merge 之前执行，否则旧子节点会被静默丢弃而非迁移。
         _migrate_legacy_agent_submode_memory(user_data)
         _migrate_legacy_kv_cache_affinity_config(user_data)
+        legacy_symphony_migrated = _migrate_legacy_symphony_config(
+            user_data,
+            template_data,
+        )
         # team_observability / agent_observability -> observability.{team,agent}
         # 必须在 _deep_merge 之前执行：合并会先按模板塞入默认的 observability 段，
         # 旧段里用户改过的 exporter / endpoint 等就会被模板默认值挡住。
@@ -3952,6 +4249,8 @@ def migrate_config_from_template(
                 user_data["extensions"] = {}
         changes = _deep_merge(template_data, user_data, prune=prune)
         if legacy_observability_migrated:
+            changes += 1
+        if legacy_symphony_migrated:
             changes += 1
 
         # Guard against an empty result overwriting a valid user config

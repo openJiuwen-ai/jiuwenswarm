@@ -304,6 +304,10 @@ for lazy_package in (
     lazy_runtime_submodules += collect_submodules(lazy_package)
 
 hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdown"] + webview_hiddenimports + http2_submodules + [
+    "jiuwenswarm.channels.cli.extension",  # Shared extension command in frozen subprocesses.
+    "jiuwenswarm.common.extension_cli",
+    # Installed Gateway packages import WebUI ops outside the entry point graph.
+    "agent_gateway.extensions_v2.webui.ops",
     "jiuwenswarm.server.jiuwenmate.agent_mail_local_provider",
     "jiuwenswarm.server.jiuwenmate.dingtalk_cli_local_provider",
     # Full-duplex Python sources load by path, outside the static import graph.
@@ -340,6 +344,7 @@ hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdo
     "webview",
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
     "jiuwenswarm.channels.desktop.desktop_app",  # 桌面入口
+    "jiuwenswarm.common.system_plugin_recovery_sidecar",
 ] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + cli_channel_submodules
 hiddenimports += gateway_submodules
 
