@@ -21,6 +21,7 @@ overrides = [
     { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=fd6e1865dba6dcf60ef51bf034ff0957f3690596" },
     { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=fd6e1865dba6dcf60ef51bf034ff0957f3690596" },
     { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=fd6e1865dba6dcf60ef51bf034ff0957f3690596" },
+    { name = "openjiuwen-runtime-foundation", specifier = "==0.1.2b1" },
 ]
 
 [[package]]
@@ -3954,6 +3955,7 @@ dependencies = [
 wheels = [
     { url = "https://files.pythonhosted.org/packages/96/e0/72ba57a53a8e53704f48159ce053290c4788974135098f29cd10840201eb/openjiuwen_computeruse-0.1.0b1-cp311-abi3-macosx_14_0_arm64.whl", hash = "sha256:6481e93fbae6970ac50631d3fc7e1009f7ddce71d955850eb48299ef55d31171", size = 8054125, upload-time = "2026-11-20T01:53:32.811Z" },
     { url = "https://files.pythonhosted.org/packages/8f/31/91cbed4bf705183c9624283deae0a6f68b18004e2bae4e868f065675f9ed/openjiuwen_computeruse-0.1.0b1-cp311-abi3-macosx_14_0_x86_64.whl", hash = "sha256:1bdf44a37eeaff1524043f01941d60cee045a82db6972e9d1db8caf4e1308ed7", size = 8584336, upload-time = "2026-11-20T01:53:41.981Z" },
+    { url = "https://files.pythonhosted.org/packages/e5/ea/537509016f78ef65891ff4a803e388cde0c087862652b478d2993686e0ba/openjiuwen_computeruse-0.1.0b1-cp311-abi3-manylinux_2_34_aarch64.whl", hash = "sha256:ef344d9764b65627c7972194f64dae7efe0551fcec7ac51bcffaeb01da78b57d", size = 5170130, upload-time = "2026-11-20T02:14:05.499Z" },
     { url = "https://files.pythonhosted.org/packages/01/18/1c73c77148dd9a7792058b0ea99385219f4f989a5abbc152e01d7f005245/openjiuwen_computeruse-0.1.0b1-cp311-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:a4913165685575d59160496a6730809efcb9eaf4a4ec3a351b20a159c15d4ddd", size = 5492775, upload-time = "2026-11-20T01:53:35.588Z" },
     { url = "https://files.pythonhosted.org/packages/43/f9/daf2e84eef350950dccf130eb8feaed12c1f6400b363524ad2418047de2d/openjiuwen_computeruse-0.1.0b1-cp311-abi3-win_amd64.whl", hash = "sha256:04382dfdf80aaa0b3e2eba261f53688b9b2947dcb0beee6ba162ad74b13e0c47", size = 4110355, upload-time = "2026-11-20T01:53:38.38Z" },
     { url = "https://files.pythonhosted.org/packages/51/1c/5d6dd3665e02be236c83bbf4274b976d33e28e4c9d5046bc3872424e299b/openjiuwen_computeruse-0.1.0b1-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:00fdc18fb76832fc37e133302337c14c519f6aa95373354725ae79ba6527d883", size = 8049807, upload-time = "2026-11-19T12:50:22.19Z" },
@@ -3969,8 +3971,8 @@ source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory
 
 [[package]]
 name = "openjiuwen-runtime-foundation"
-version = "0.1.0"
-source = { git = "https://gitcode.com/openJiuwen/agent-runtime.git?subdirectory=foundation&branch=develop#d4a8761c8a561b1ee1b8a4333def0077b308e709" }
+version = "0.1.2b1"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "aiomysql" },
@@ -3987,6 +3989,10 @@ dependencies = [
     { name = "pyyaml" },
     { name = "redis" },
     { name = "sqlalchemy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0f/ac/beb54a748a81a1d4788c066db5b86b6939dcbfec63b5b31414ebb15cae00/openjiuwen_runtime_foundation-0.1.2b1.tar.gz", hash = "sha256:f03659aa48effbfa5fa1aada8a7c038b9f16bf271f4988af0272a8658fc94d93", size = 81534, upload-time = "2026-11-19T12:11:49.109Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/80/51/8d3c09373a5e2f65daaef260029647c95dfeb4e1294a0b33e2fc4a5e6180/openjiuwen_runtime_foundation-0.1.2b1-py3-none-any.whl", hash = "sha256:773240be07e19afd358000c7913e0de93f0e5ed4fd4457683cd4d4add8a568ce", size = 112262, upload-time = "2026-11-19T12:11:47.455Z" },
 ]
 
 [[package]]
@@ -7473,7 +7479,7 @@ requires-dist = [
     { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'" },
     { name = "openjiuwen-computeruse", specifier = "==0.1.0b1" },
     { name = "openjiuwen-e2a", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-e2a&rev=10ad4a2eeff11e0600c06a8235a797c5dd9f0a38" },
-    { name = "openjiuwen-runtime-foundation", git = "https://gitcode.com/openJiuwen/agent-runtime.git?subdirectory=foundation&branch=develop" },
+    { name = "openjiuwen-runtime-foundation", specifier = "==0.1.2b1" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },
     { name = "opentelemetry-api", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.28.0,<1.42" },
