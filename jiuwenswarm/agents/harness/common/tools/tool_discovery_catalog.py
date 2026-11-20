@@ -91,6 +91,10 @@ BUILTIN_TOOL_DISCOVERY: dict[str, ToolDiscoveryMetadata] = {
     "heartbeat_run_now": _entry("Run a session follow-up immediately.", "立即运行 马上执行 心跳 跟进任务"),
     "heartbeat_toggle_job": _entry("Enable or disable a session follow-up.", "启用 禁用 暂停 恢复 心跳 跟进任务"),
     "heartbeat_update_job": _entry("Update a session follow-up schedule.", "修改 更新 心跳 跟进任务"),
+    "code_outline": _entry(
+        "Extract classes, functions, signatures, and docstrings from source files.",
+        "代码大纲 符号大纲 代码地图 类 函数 签名 文档注释",
+    ),
     "session_continue_queued": _entry("Resume queued work in another persistent session.", "继续 恢复 其他会话 排队任务"),
     "session_list": _entry("List other persistent sessions and their status.", "列出 查看 其他会话 会话状态"),
     "session_message_list": _entry("Inspect cross-session messages and delivery status.", "查看 跨会话消息 投递状态 消息列表"),

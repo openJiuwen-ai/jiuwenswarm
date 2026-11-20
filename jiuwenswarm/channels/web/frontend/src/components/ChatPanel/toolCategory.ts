@@ -106,6 +106,11 @@ register(['glob', 'list_files', 'list_dir', 'list_directories', 'search_file', '
   actionKey: 'chatUi.toolAction.glob',
   iconKey: 'search',
 });
+register(['code_outline'], {
+  category: 'file',
+  actionKey: 'chatUi.toolAction.read',
+  iconKey: 'read',
+});
 register(['free_search', 'paid_search', 'mcp_free_search', 'mcp_paid_search'], {
   category: 'search',
   actionKey: 'chatUi.toolAction.webSearch',

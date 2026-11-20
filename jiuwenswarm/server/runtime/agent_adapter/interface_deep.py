@@ -660,6 +660,7 @@ from jiuwenswarm.agents.harness.common.tools.visual_gen_tools import (
     visual_gen_configured,
     visual_gen_enabled,
 )
+from jiuwenswarm.agents.harness.common.tools.code_outline_tools import code_outline
 from jiuwenswarm.agents.harness.common.tools import (
     SendFileToolkit,
     SkillRetrievalToolkit,
@@ -13376,6 +13377,8 @@ class JiuWenSwarmDeepAdapter:
         if self._instance is None and self._uses_smart_permission_lifecycle(self._config_base_cache or {}):
             for tool in multimodal_tools:
                 self._append_tool_card(tool.card)
+        self._register_shared_tool(code_outline)
+        tool_cards.append(code_outline.card)
 
         # 小艺手机端工具：由 channels.xiaoyi.phone_tools_enabled 控制
         config_base = get_config()

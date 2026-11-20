@@ -154,6 +154,14 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
         description_en="Use language servers for code definitions, references and diagnostics.",
     ),
     ToolCategory(
+        path="code-analysis",
+        description="提取源码文件的类、函数、签名与文档注释大纲。",
+        tools=("code_outline",),
+        description_en=(
+            "Extract classes, functions, signatures, and docstrings from source files."
+        ),
+    ),
+    ToolCategory(
         path="modes",
         description="在 normal 与 plan 两种会话模式之间切换当前会话。",
         tools=("switch_mode",),
