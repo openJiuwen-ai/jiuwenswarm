@@ -1957,7 +1957,8 @@ def _normalize_model_entry(entry: dict[str, Any]) -> dict[str, Any]:
         if value or value in (None, ""):
             mcc[key] = str(value) if value else value
     temp = saved.pop("temperature", None)
-    if temp is not None:
+    # An empty string means "unset" (same as models.replace_all); float("") raises.
+    if temp is not None and not (isinstance(temp, str) and not temp.strip()):
         mco["temperature"] = float(temp)
     rl = saved.pop("reasoning_level", None)
     if rl is not None and str(rl).strip():
@@ -2036,8 +2037,23 @@ def _remove_initial_model_placeholder(models: dict[str, Any], saved: dict[str, A
             saved["is_default"] = True
 
 
+def _clears_temperature(entry: dict[str, Any]) -> bool:
+    """Return whether the payload explicitly clears ``temperature`` (#6856).
+
+    An empty string means "unset", matching ``models.replace_all``, which
+    normalises a blank ``temperature`` to null instead of persisting ``""``.
+    """
+    model_config = entry.get("model_config_obj")
+    if isinstance(model_config, dict) and "temperature" in model_config:
+        value = model_config["temperature"]
+    else:
+        value = entry.get("temperature")
+    return isinstance(value, str) and not value.strip()
+
+
 def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
     saved = _normalize_model_entry(entry)
+    clear_temperature = _clears_temperature(entry)
     clear_max_tokens = (
         isinstance(entry.get("model_config_obj"), dict)
         and "max_tokens" in entry["model_config_obj"]
@@ -2080,6 +2096,12 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
                 # A null max_tokens is the resource API's explicit "unlimited"
                 # signal. Omission still preserves an existing user setting.
                 saved_model_config.pop("max_tokens", None)
+        if clear_temperature:
+            saved_model_config = saved.get("model_config_obj")
+            if isinstance(saved_model_config, dict):
+                # A blank temperature is "unset", never a literal empty string,
+                # so the response and persisted YAML stay numeric-or-absent.
+                saved_model_config.pop("temperature", None)
         for key in ("vendor_key", "plan"):
             if key in client_update and client_update[key] in (None, ""):
                 saved.pop(key, None)
