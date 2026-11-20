@@ -38,6 +38,7 @@ async def _run(gateway_url: str) -> None:
         AcpChannel,
         load_acp_channel_config,
     )
+    from e2a.acp.acp_tool_updates import is_reasoning_event
     from websockets.legacy.client import connect
     from websockets.exceptions import WebSocketException
 
@@ -179,6 +180,21 @@ async def _run(gateway_url: str) -> None:
                 if isinstance(payload, dict):
                     await self._record_gateway_usage(event, payload)
             await super()._handle_gateway_frame(data)
+
+        async def _send_jsonrpc_message(self, msg, ctx) -> bool:
+            if msg.type == "event" and getattr(msg.event_type, "value", None) == "chat.final":
+                payload = msg.payload or {}
+                final = str(payload.get("content") or "").strip()
+                streamed = (
+                    ctx.thought_text if is_reasoning_event("chat.final", payload)
+                    else ctx.assistant_text
+                )
+                # The final snapshot can contain only the last visible segment
+                # while the bridge has accumulated the entire turn. Forward its
+                # usage and completion signal without replaying that segment.
+                if final and streamed and streamed.rstrip().endswith(final):
+                    msg.payload = {**payload, "content": ""}
+            return await super()._send_jsonrpc_message(msg, ctx)
 
         async def _record_gateway_usage(self, event: object, payload: dict) -> None:
             session_id = payload.get("session_id")
