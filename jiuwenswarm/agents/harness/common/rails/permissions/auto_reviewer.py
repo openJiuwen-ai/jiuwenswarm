@@ -24,6 +24,9 @@ from openjiuwen.harness.security.permission_engine.toolguard.shell_ast import (
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
     normalize_reviewer_output_format,
 )
+from jiuwenswarm.agents.harness.common.rails.permissions.generated_artifact_delivery import (
+    normalize_send_file_target_channels,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_redaction import (
     redact_reviewer_value,
     redact_secret_values_preserve_format,
@@ -299,6 +302,7 @@ def _visible_review_evidence(evidence: Mapping[str, Any]) -> dict[str, Any]:
         "path_targets_incomplete",
         "reviewable_payload",
         "session_write_evidence",
+        "file_delivery_request",
         "user_intent",
     }
     return {
@@ -319,6 +323,7 @@ def build_reviewer_action_view(
     original_user_intent: OriginalUserIntentEvidence | None,
     domain_route: DecisionRoute | None,
     session_write_evidence: tuple[dict[str, str | bool], ...] = (),
+    request_channel: str = "",
 ) -> ReviewerActionView:
     """Project one bounded current-call view without Host identity or raw args."""
 
@@ -354,6 +359,15 @@ def build_reviewer_action_view(
             "reason": domain_route.reason,
             "source": domain_route.source,
         }
+    if facts.tool_name == "send_file_to_user" and request_channel == "web":
+        targets = normalize_send_file_target_channels(facts.untrusted_args.get("target_channels"))
+        # Describe the requested logical recipient, never an execution receipt.
+        review_evidence["file_delivery_request"] = {
+            "source_channel": "web",
+            "intended_recipient": (
+                "current_session_user" if not targets or targets == ("web",) else "explicit_targets"
+            ),
+        }
     if session_write_evidence:
         review_evidence["session_write_evidence"] = list(session_write_evidence)
     payload_error = _complete_payload_evidence(facts, review_evidence)
@@ -382,6 +396,8 @@ def _complete_payload_evidence(facts: ToolDecisionFacts, evidence: dict[str, Any
             evidence["reviewable_payload"] = {}
             return "reviewer_payload_missing"
     bounded = {"reviewable_payload": payload, "user_intent": evidence["user_intent"]}
+    if "file_delivery_request" in evidence:
+        bounded["file_delivery_request"] = evidence.pop("file_delivery_request")
     if "session_write_evidence" in evidence:
         bounded["session_write_evidence"] = evidence.pop("session_write_evidence")
     try:
