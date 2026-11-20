@@ -64,6 +64,32 @@ def strip_prerelease_suffix(version: str) -> str:
     return normalized
 
 
+# Daily wheels keep the release version and append the build time, e.g.
+# ``0.2.9.beta5.dev20261119`` or ``0.2.9+local.20261119``.
+_BUILD_SUFFIX_PATTERN = re.compile(
+    r"^(?P<version>.+?)"
+    r"(?:\+[0-9a-z]+(?:[.\-_][0-9a-z]+)*|[.\-_]?(?:dev|post)[.\-_]?\d{8,})$",
+    re.IGNORECASE,
+)
+
+
+def strip_build_suffix(version: str) -> str:
+    """Drop the build-time suffix daily wheel builds append to the version.
+
+    The suffix (a date such as ``.dev20261119`` or a ``+local`` segment) only
+    identifies the artifact, not a newer release.  Ordering the raw metadata
+    version makes an installed daily build rank below an obsolete pre-release
+    of the same base (``0.2.9.beta5.dev20261119`` vs ``0.2.9b3``), so
+    comparisons use the release version itself (#6849).
+    """
+    stripped = (version or "").strip()
+    while True:
+        m = _BUILD_SUFFIX_PATTERN.match(stripped)
+        if m is None:
+            return stripped
+        stripped = m.group("version")
+
+
 def release_sort_key(version: str) -> tuple[tuple[int, ...], int, tuple[int, ...]]:
     """Total-order key so that newer versions sort higher.
 
