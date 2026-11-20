@@ -11,12 +11,22 @@ import {
   toolCallOf, toolResultCallId, toolResultFailed,
 } from './crossDocumentMessages';
 import { isRecord, type GatewayEvent, type JsonObject } from './gatewayClient';
+import { DOCUMENT_BLOCK_HEADER } from './sessionFacade';
+
+/** The one way out a failed turn offers: send its message again, start over, or take the error along. */
+export type FailureAction = 'retry' | 'newConversation' | 'copyDetails';
+
+/** A failed turn: its way out, and what the backend said, word for word. */
+export interface Failure { action: FailureAction; detail: string }
 
 /** An image the user sent; a replayed message names its images only. */
 export interface MessageImage { filename: string; src?: string }
 
+/** A document the user sent, by name. */
+export interface MessageFile { filename: string; size?: number }
+
 export type Entry =
-  | { kind: 'user'; id: string; text: string; images?: readonly MessageImage[] }
+  | { kind: 'user'; id: string; text: string; images?: readonly MessageImage[]; files?: readonly MessageFile[] }
   | { kind: 'assistant'; id: string; text: string }
   | {
     kind: 'tool'; id: string; name: string; status: 'running' | 'done' | 'failed';
@@ -28,7 +38,7 @@ export type Entry =
   | { kind: 'incoming'; id: string; sourceTitle: string; text: string; status: string }
   /** A task this conversation sent to another document's. */
   | { kind: 'outgoing'; id: string; targetSessionId: string; text: string; status: 'sending' | 'sent' | 'failed' }
-  | { kind: 'notice'; id: string; tone: 'info' | 'error'; text: string }
+  | { kind: 'notice'; id: string; tone: 'info' | 'error'; text: string; failure?: Failure }
   /** The end of a turn that called a writing tool: the calls its undo takes back. */
   | { kind: 'changes'; id: string; callIds: string[] };
 
@@ -70,6 +80,8 @@ export interface Conversation {
   prompt?: Prompt;
   /** The assistant entry the stream writes to; a tool call or a final reply closes it. */
   openReply?: string;
+  /** The backend compacts the conversation's context, as a long turn does before it calls the model again. */
+  compacting?: boolean;
   /** Where the turn the user still waits on began in ``entries``; a pause for a question does not end it. */
   turnStart?: number;
   nextId: number;
@@ -96,11 +108,11 @@ function has(conversation: Conversation, id: string): boolean {
 }
 
 export function addUserMessage(
-  conversation: Conversation, text: string, images: readonly MessageImage[] = [],
+  conversation: Conversation, text: string, images: readonly MessageImage[] = [], files: readonly MessageFile[] = [],
 ): Conversation {
   // A new message ends the reply it follows; the web chat drops a pending question on a new query too.
   return add({ ...conversation, openReply: undefined, prompt: undefined },
-    { kind: 'user', text, ...(images.length ? { images } : {}) });
+    { kind: 'user', text, ...(images.length ? { images } : {}), ...(files.length ? { files } : {}) });
 }
 
 /** The conversation without one entry, as a message that did not go out. */
@@ -123,7 +135,8 @@ type Writes = Pick<ToolContract, 'isMutating'>;
 /** The turn is over here: the user stopped it, or it failed. Its steps still under way will not finish. */
 export function endTurn(conversation: Conversation, contract: Writes): Conversation {
   return closeTurn(unfinishedFailed(
-    { ...conversation, turn: 'idle', awaitingTools: false, prompt: undefined, openReply: undefined }), contract);
+    { ...conversation, turn: 'idle', awaitingTools: false, prompt: undefined, openReply: undefined, compacting: false }),
+  contract);
 }
 
 function unfinishedFailed(conversation: Conversation): Conversation {
@@ -162,8 +175,10 @@ export function applyEvent(
     }
     case 'chat.interrupt_result':
       return payload.intent === 'cancel' && payload.success !== false ? endTurn(conversation, contract) : conversation;
+    case 'context.compression_state':
+      return { ...conversation, compacting: payload.status === 'started' || payload.status === 'running' };
     case 'chat.error':
-      return endTurn(addNotice(conversation, 'error', copy.turnError(errorText(payload))), contract);
+      return endTurn(add(conversation, failureNotice(payload)), contract);
     // The model takes no images: the backend says whether a vision tool reads them instead.
     case 'chat.notice':
       return payload.notice_type === 'image_tool_fallback' && typeof payload.content === 'string' && payload.content
@@ -219,7 +234,7 @@ function processingStatus(conversation: Conversation, payload: JsonObject, contr
     });
   }
   if (payload.is_processing === false && !conversation.awaitingTools) {
-    const idle = { ...conversation, turn: 'idle' as const, openReply: undefined };
+    const idle = { ...conversation, turn: 'idle' as const, openReply: undefined, compacting: false };
     return conversation.prompt ? idle : closeTurn(idle, contract);
   }
   return conversation;
@@ -278,9 +293,33 @@ function incomingId(messageId: string): string {
   return `incoming:${messageId}`;
 }
 
-function errorText(payload: JsonObject): string {
+interface KnownFailure { text: string; action: FailureAction }
+
+const busy: KnownFailure = { text: copy.failureBusy, action: 'retry' };
+const ended: KnownFailure = { text: copy.failureEnded, action: 'newConversation' };
+
+/**
+ * The failures a ``chat.error`` names by its ``code``, in plain words: the free model's (only its errors get a code),
+ * the Gateway's lost AgentServer, a conversation deleted or archived, an image the model cannot read.
+ */
+const KNOWN_FAILURES: ReadonlyMap<string, KnownFailure> = new Map<string, KnownFailure>([
+  ['rate_limited', busy], ['free_model_unavailable', busy],
+  ['AGENT_SERVER_ERROR', busy], ['AGENT_SERVER_TIMEOUT', busy], ['AGENT_SERVER_CONNECTION_CLOSED', busy],
+  ['login_required', { text: copy.failureLogin, action: 'retry' }],
+  ['quota_exhausted', { text: copy.failureQuota, action: 'copyDetails' }],
+  ['NOT_FOUND', ended], ['SESSION_ARCHIVED', ended],
+  ['SESSION_INPUT_IMAGE_UNAVAILABLE', { text: copy.failureImage, action: 'copyDetails' }],
+]);
+
+function failureNotice(payload: JsonObject): NewEntry {
   const message = payload.error ?? payload.message;
-  return typeof message === 'string' && message ? message : copy.turnErrorFallback;
+  const text = typeof message === 'string' && message ? message : copy.turnErrorFallback;
+  const code = typeof payload.code === 'string' ? payload.code : '';
+  const known = KNOWN_FAILURES.get(code);
+  return {
+    kind: 'notice', tone: 'error', text: known?.text ?? copy.turnError(text),
+    failure: { action: known?.action ?? 'copyDetails', detail: code ? `${code}: ${text}` : text },
+  };
 }
 
 /** The question a ``chat.ask_user_question`` asks, or undefined for one this pane does not answer. */
@@ -358,8 +397,8 @@ function replayedUserMessage(conversation: Conversation, message: JsonObject): C
   const text = typeof message.content === 'string' ? message.content : '';
   const incoming = incomingMessage(message);
   if (!incoming) {
-    const images = historyImages(message);
-    return add(conversation, { kind: 'user', text, ...(images.length ? { images } : {}) });
+    const files = historyFiles(message);
+    return addUserMessage(conversation, withoutDocumentPaths(text, files.length), historyImages(message), files);
   }
   if (has(conversation, incomingId(incoming.messageId))) return conversation;
   return add(conversation, {
@@ -373,6 +412,21 @@ function historyImages(message: JsonObject): MessageImage[] {
   const uploaded = isRecord(message.files) ? message.files.uploaded_images : undefined;
   return list(isRecord(uploaded) ? uploaded.items : undefined).flatMap(item => (
     isRecord(item) && typeof item.filename === 'string' ? [{ filename: item.filename }] : []));
+}
+
+/** The documents a user message carried, as the history keeps them (``media_items.items``). */
+function historyFiles(message: JsonObject): MessageFile[] {
+  const media = isRecord(message.media_items) ? message.media_items.items : undefined;
+  return list(media).flatMap(item => (isRecord(item) && item.type === 'document' && typeof item.filename === 'string'
+    ? [{ filename: item.filename, ...(typeof item.size_bytes === 'number' ? { size: item.size_bytes } : {}) }] : []));
+}
+
+/** The message as the user wrote it, without the line and the one path per document the pane appended to it. */
+function withoutDocumentPaths(text: string, documents: number): string {
+  if (!documents) return text;
+  const lines = text.split('\n');
+  const at = lines.length - documents - 1;
+  return lines[at] === DOCUMENT_BLOCK_HEADER ? lines.slice(0, at).join('\n') : text;
 }
 
 /** The note a replayed question or its answer shows, or undefined. */

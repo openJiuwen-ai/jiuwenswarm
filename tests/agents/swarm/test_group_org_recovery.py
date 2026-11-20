@@ -2,14 +2,18 @@
 
 import asyncio
 import copy
+import threading
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from jiuwenswarm.agents.swarm import group_org_bootstrap as boot, group_org_recovery as recovery
 from jiuwenswarm.server.runtime import group_execution as ge, group_service as gs
 from tests.unit_tests.server.test_group_service import service, create
+
+
+_original_publish = ge.GroupExecutions.publish
 
 
 @pytest.fixture
@@ -248,3 +252,308 @@ async def test_pool_for_does_not_open_a_database_when_runtime_config_is_missing(
     monkeypatch.setattr(shared_resources, 'get_shared_db', get_shared_db)
     with pytest.raises(RuntimeError, match='No verified organization database'):
         await recovery._pool_for({'organization_id': 'org-1'})
+
+
+@pytest.mark.asyncio
+async def test_slow_glob_keeps_business_loop_responsive(monkeypatch):
+    from jiuwenswarm.common import utils
+
+    entered, release = threading.Event(), threading.Event()
+    stop = asyncio.Event()
+    loop_thread = threading.get_ident()
+    calls = []
+
+    class SlowSessions:
+        def glob(self, pattern):
+            # Deliberately block iteration, not creation of the generator.
+            calls.append(threading.get_ident())
+            entered.set()
+            assert release.wait(3)
+            yield SimpleNamespace(parent=SimpleNamespace(name='unused'))
+
+    monkeypatch.setattr(utils, 'get_agent_sessions_dir', lambda: SlowSessions())
+    reconcile = AsyncMock()
+    monkeypatch.setattr(recovery, 'reconcile_group', reconcile)
+    scan = asyncio.create_task(recovery.recovery_loop(stop))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        # A different request can run and be cancelled while stat is blocked.
+        request = asyncio.create_task(asyncio.sleep(100))
+        await asyncio.sleep(0)
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        assert len(calls) == 1 and calls[0] != loop_thread
+        stop.set()
+        release.set()
+        await asyncio.wait_for(scan, 2)
+        reconcile.assert_not_awaited()
+    finally:
+        stop.set()
+        release.set()
+        await asyncio.wait_for(scan, 4)
+    assert not recovery._enabled
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('target', ['group', 'plans', 'records', 'save', 'update', 'binding', 'owner', 'plan'])
+async def test_recovery_file_operations_do_not_block_business_loop(case, monkeypatch, target):
+    targets = {
+        'group': (gs, 'read_group'),
+        'plans': (gs, 'group_organization_plans'),
+        'records': (ge.GroupExecutions, 'read'),
+        'save': (ge.GroupExecutions, 'save'),
+        'update': (gs, 'update_group_organization_plan'),
+        'binding': (gs, 'clear_group_organization_binding'),
+        'owner': (recovery.lifecycle, 'runtime_owner_alive'),
+        'plan': (boot, 'organization_plan_record'),
+    }
+    obj, name = targets[target]
+    original = getattr(obj, name)
+    entered, release = threading.Event(), threading.Event()
+    loop_thread = threading.get_ident()
+    threads = []
+
+    def slow(*args, **kwargs):
+        threads.append(threading.get_ident())
+        entered.set()
+        assert release.wait(3)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(obj, name, slow)
+    job = asyncio.create_task(recovery.reconcile_group(case.sid))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        await asyncio.sleep(0)
+        assert not job.done()
+        assert all(thread != loop_thread for thread in threads)
+    finally:
+        release.set()
+        await asyncio.wait_for(job, 5)
+    assert case.pool.dissolve_organization.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cancelled_recovery_write_keeps_group_locked_until_finished(case, monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    original = ge.GroupExecutions.save
+    written = []
+
+    def slow_save(store, records):
+        entered.set()
+        assert release.wait(3)
+        original(store, records)
+        written.append(True)
+
+    monkeypatch.setattr(ge.GroupExecutions, 'save', slow_save)
+    recovered = asyncio.create_task(recovery.reconcile_group(case.sid))
+    acquired = asyncio.Event()
+
+    async def next_writer():
+        async with gs.group_lock(case.sid):
+            assert written
+            acquired.set()
+
+    writer = None
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        recovered.cancel()
+        await asyncio.sleep(0)
+        recovered.cancel()
+        writer = asyncio.create_task(next_writer())
+        await asyncio.sleep(0)
+        assert not recovered.done()
+        assert not acquired.is_set()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(recovered, 3)
+        await asyncio.wait_for(writer, 3)
+        assert acquired.is_set()
+        case.pool.dissolve_organization.assert_not_awaited()
+        assert boot._plan_record(case.sid, 'old')['cleanup_status'] == 'pending'
+        await recovery.reconcile_group(case.sid)
+        assert boot._plan_record(case.sid, 'old')['cleanup_status'] == 'done'
+    finally:
+        release.set()
+        if not recovered.done():
+            recovered.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await recovered
+        if writer is not None and not writer.done():
+            await writer
+
+
+@pytest.mark.asyncio
+async def test_scan_failure_retries_without_killing_recovery(case, monkeypatch):
+    stop = asyncio.Event()
+    attempts = []
+
+    def scan():
+        attempts.append(True)
+        if len(attempts) == 1:
+            raise OSError('slow or temporarily unavailable storage')
+        return [case.sid]
+
+    original_wait = asyncio.wait_for
+
+    async def fast_retry(awaitable, timeout):
+        return await original_wait(awaitable, 0.001 if timeout == 30 else timeout)
+
+    async def recovered(session_id):
+        assert session_id == case.sid
+        stop.set()
+
+    monkeypatch.setattr(recovery, '_scan_sessions', scan)
+    monkeypatch.setattr(recovery.asyncio, 'wait_for', fast_retry)
+    monkeypatch.setattr(recovery, 'reconcile_group', recovered)
+    await original_wait(recovery.recovery_loop(stop), 3)
+    assert len(attempts) == 2
+    assert not recovery._enabled
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('live', [False, True])
+async def test_recovery_releases_direct_reply_without_reading_files_on_loop(case, monkeypatch, live):
+    job = {'member': 'owner', 'started': False}
+    monkeypatch.setattr(boot, '_deferred_direct', {(case.sid, 'direct'): job})
+    schedule = Mock()
+    monkeypatch.setattr(boot, '_schedule_direct_member', schedule)
+    gs.add_group_organization_plan(case.sid, dict(
+        plan_id='next', organization_id='next-org', status='running',
+        members=['owner'], created_at=boot._now_ms() if live else 1,
+        run_owner={'pid': 111, 'started_at': 1},
+    ))
+    original = gs.read_group
+    loop_thread = threading.get_ident()
+    owner = {'pid': 111, 'started_at': 1}
+    monkeypatch.setattr(recovery.lifecycle, 'current_runtime_owner', lambda: owner)
+    monkeypatch.setattr(recovery.lifecycle, 'runtime_owner_alive', lambda value: value == owner)
+
+    def read(group_id):
+        assert threading.get_ident() != loop_thread
+        return original(group_id)
+
+    monkeypatch.setattr(gs, 'read_group', read)
+    await recovery.reconcile_group(case.sid)
+    if live:
+        schedule.assert_not_called()
+        assert not job['started']
+    else:
+        schedule.assert_called_once_with(case.sid, job)
+        assert job['started']
+        # Read persisted state in a thread, just like recovery.
+        assert (await asyncio.to_thread(boot._plan_record, case.sid, 'next'))['status'] == 'expired'
+
+
+@pytest.mark.asyncio
+async def test_recovery_notification_reads_group_outside_business_loop(case, monkeypatch):
+    from jiuwenswarm.server.gateway_push.transport import WebSocketGatewayPushTransport
+
+    record = case.store.get('card')
+    original = ge.read_group
+    loop_thread = threading.get_ident()
+    reads = []
+
+    def read(session_id):
+        assert threading.get_ident() != loop_thread
+        reads.append(session_id)
+        return original(session_id)
+
+    push = AsyncMock()
+    monkeypatch.setattr(ge, 'read_group', read)
+    monkeypatch.setattr(WebSocketGatewayPushTransport, 'send_push', push)
+    # The fixture suppresses publication elsewhere; exercise the real method here.
+    await _original_publish(case.store, record, 'updated')
+    assert reads == [case.sid]
+    push.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('protection', ['other_alive', 'owner_unknown', 'member', 'missing_owner', 'changed'])
+async def test_recovery_never_expires_a_possibly_live_plan(case, monkeypatch, protection):
+    owner = {'pid': 111, 'started_at': 1}
+    own = {'pid': 222, 'started_at': 1}
+    gs.add_group_organization_plan(case.sid, dict(
+        plan_id='next', organization_id='next-org', status='running',
+        members=['owner'], created_at=1, run_owner=None if protection == 'missing_owner' else owner,
+    ))
+    job = {'member': 'owner', 'started': False}
+    monkeypatch.setattr(boot, '_deferred_direct', {(case.sid, 'direct'): job})
+    schedule = Mock()
+    monkeypatch.setattr(boot, '_schedule_direct_member', schedule)
+    monkeypatch.setattr(recovery.lifecycle, 'current_runtime_owner', lambda: own)
+    member = None
+    if protection == 'other_alive':
+        monkeypatch.setattr(recovery.lifecycle, 'runtime_owner_alive', lambda value: value == owner)
+    elif protection == 'owner_unknown':
+        def check(value):
+            if value == owner:
+                raise RuntimeError('owner unavailable')
+            return False
+        monkeypatch.setattr(recovery.lifecycle, 'runtime_owner_alive', check)
+    elif protection == 'member':
+        member = asyncio.get_running_loop().create_future()
+        boot._member_runs[(case.sid, 'next', 'owner')] = member
+    elif protection == 'changed':
+        original = boot.organization_plan_record
+        def changed(session_id, plan_id):
+            plan = original(session_id, plan_id)
+            if plan_id == 'next':
+                return {**plan, 'run_owner': own}
+            return plan
+        monkeypatch.setattr(boot, 'organization_plan_record', changed)
+    try:
+        await recovery.reconcile_group(case.sid)
+        assert gs.group_organization_plans(case.sid)[1]['status'] == 'running'
+        assert not job['started']
+        schedule.assert_not_called()
+    finally:
+        if member is not None:
+            boot._member_runs.pop((case.sid, 'next', 'owner'), None)
+            member.cancel()
+
+
+@pytest.mark.asyncio
+async def test_stale_plan_owned_by_this_worker_can_expire(case, monkeypatch):
+    owner = {'pid': 111, 'started_at': 1}
+    gs.add_group_organization_plan(case.sid, dict(
+        plan_id='next', organization_id='next-org', status='running',
+        members=['owner'], created_at=1, run_owner=owner,
+    ))
+    job = {'member': 'owner', 'started': False}
+    monkeypatch.setattr(boot, '_deferred_direct', {(case.sid, 'direct'): job})
+    schedule = Mock()
+    monkeypatch.setattr(boot, '_schedule_direct_member', schedule)
+    monkeypatch.setattr(recovery.lifecycle, 'current_runtime_owner', lambda: owner)
+    monkeypatch.setattr(recovery.lifecycle, 'runtime_owner_alive', lambda value: value == owner)
+    await recovery.reconcile_group(case.sid)
+    assert boot._plan_record(case.sid, 'next')['status'] == 'expired'
+    schedule.assert_called_once_with(case.sid, job)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_file_io_preserves_worker_exception():
+    entered, release = threading.Event(), threading.Event()
+
+    def fail():
+        entered.set()
+        assert release.wait(3)
+        raise OSError('write failed')
+
+    task = asyncio.create_task(recovery._file_io(fail))
+    try:
+        assert await asyncio.to_thread(entered.wait, 2)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError) as caught:
+            await task
+        assert isinstance(caught.value.__cause__, OSError)
+        assert str(caught.value.__cause__) == 'write failed'
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task

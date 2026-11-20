@@ -140,7 +140,16 @@ handle 时，`build_request` 给出 `/file-api/download` 链接；这个下载�
   状态每次现读注册和证书，`problems` 取值 `permission_denied`、`certificate_untrusted`、
   `certificate_expiring`、`tls_unavailable`、`stale_origin`；修复就是再点一次安装。web 进程启动后会按当前端口
   重写已装的清单。
-- 没有任何应用还注册着时，移除会撤销 CA 信任、删除证书并关掉 HTTPS 监听。Windows 卸载程序执行
+- `wps` 套件（WPS 文字、表格、演示）不用证书：WPS 从本机 HTTP 加载，地址是桌面 web 进程自己的端口
+  `http://127.0.0.1:<端口>/office/wps/<wps|et|wpp>/`（壳页面 `ribbon.xml`、`index.html` 在窗格构建的 `wps/` 下）。
+  注册是在 WPS 的加载项列表 `publish.xml` 里按类型各加一条 `name="WorkSwarm"` 的 `jspluginonline`，
+  移除只删这几条，其他条目和文件编码不动；`authaddin.json` 归 WPS 管，不碰。列表位置按平台
+  查表：Mac 国际版和国内版各在自己的沙盒容器里（`WPS_MAC_EDITIONS`）；Windows 在
+  `%APPDATA%\kingsoft\wps\jsaddons\publish.xml`（`WPS_WINDOWS_EDITIONS`，国内版取自 WPS 官方 wpsjs 工具的写法，
+  国际版也用这个目录是推断，未验证）。装过哪个版本就写哪个，各版本互不影响；没有装任何版本时，三个应用都显示「未找到」。
+  Windows 卸载程序也会删掉这几条。
+  首次使用要重启 WPS，并在 WPS 询问时信任一次。
+- 没有任何 Office 应用还注册着时，移除会撤销 CA 信任、删除证书并关掉 HTTPS 监听。Windows 卸载程序执行
   `--desktop-remove-office-addins` 做同样的清理。
 - 已知限制：Mac 没有卸载钩子，删除 app 前要先在桌面里移除；macOS 上每个 Office 应用必须先打开过一次；
   Office 应用可能要重启才读到新清单；从源码运行桌面版时要先在 `packages/jiuwenswarm-office-addin` 执行

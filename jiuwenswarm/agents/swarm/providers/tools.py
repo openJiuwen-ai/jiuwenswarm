@@ -2,12 +2,12 @@
 
 """Config-sourced swarm-owned tool providers for team assembly.
 
-Only swarm-owned tools are declared here as individual ``swarm.*`` tool
-elements, each self-gated by the config source and filtered against the swarm
-``TOOL_WHITELIST``:
+Swarm-owned tools are declared here as individual ``swarm.*`` tool
+elements and gated by the config source. Shared tool factories use
+``TOOL_WHITELIST``; discovery is built for each member's session:
 
 * ``swarm.skill_toolkit`` — skill discovery / install / uninstall tools.
-* ``swarm.skill_retrieval`` — agentic installed skill tree retrieval tools.
+* ``swarm.skill_retrieval`` — session capability search and Skill directory browsing.
 * ``swarm.user_todos`` — the personal todo tool.
 * ``swarm.video`` — the video-understanding tool (``models.video`` gated).
 * ``swarm.image_gen`` — the image-generation tool (``IMAGE_GEN_API_KEY`` gated).
@@ -379,7 +379,7 @@ def _build_skill_toolkit_tools() -> list[Any]:
 def skill_retrieval_toolkit_for_context(
     ctx: SwarmBuildContext,
 ) -> SkillRetrievalToolkit:
-    """Return the member runtime shared by skill_index and its prompt rail."""
+    """Return the member runtime shared by discovery and its prompt rail."""
 
     existing = getattr(ctx, "skill_retrieval_toolkit", None)
     if isinstance(existing, SkillRetrievalToolkit):
@@ -543,15 +543,13 @@ def build_skill_toolkit(params: dict[str, Any], ctx: SwarmBuildContext) -> list[
     input_model=SkillRetrievalInput,
 )
 def build_skill_retrieval(params: dict[str, Any], ctx: SwarmBuildContext) -> list[Any]:
-    """Build the whitelist-filtered installed-Skill directory tool."""
+    """Build the member-owned discovery tool from this member's visibility scope."""
     SkillRetrievalInput.resolve(params, ctx)
     if not is_skill_retrieval_enabled(ctx.config):
         logger.info("[swarm.skill_retrieval] skipped: disabled")
         return []
     try:
-        return _filter_whitelist(
-            list(skill_retrieval_toolkit_for_context(ctx).get_tools())
-        )
+        return skill_retrieval_toolkit_for_context(ctx).get_tools()
     except Exception as exc:
         logger.warning("[swarm.skill_retrieval] construction failed: %s", exc)
         return []

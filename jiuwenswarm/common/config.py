@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import sys
 import threading
 import time
@@ -321,7 +322,9 @@ def get_config():
                 logger.warning("Ignoring malformed AgentOS %s deployment config", section)
 
     if "symphony" in config_base:
-        from jiuwenswarm.common.symphony_config import load_symphony_config
+        from jiuwenswarm.common.symphony_config import load_symphony_config, migrate_legacy_symphony_config
+        if isinstance(config_base["symphony"], dict):
+            config_base["symphony"] = migrate_legacy_symphony_config(config_base["symphony"])
         load_symphony_config(config_base)
     return apply_runtime_model_config(config_base)
 
@@ -498,8 +501,7 @@ def is_tool_retrieval_enabled(config: dict[str, Any] | None = None) -> bool:
 
     True only when both top-level switches are true: ``progressive_tool_enabled``
     (AbilityManager deferred assignment) and ``progressive_tool_optimize`` (the
-    retrieval layer itself). ``true`` means our skill_index-framework
-    ``tool_search`` is mounted and deferred tools are hidden until discovered;
+    retrieval layer itself). ``true`` mounts ``tool_search`` and hides deferred tools until discovered.
     ``false`` disables it and every tool stays direct.
     """
 
@@ -1598,10 +1600,10 @@ def _parse_custom_headers(value: str | dict | None) -> dict[str, Any] | None:
         result = json.loads(value)
         if isinstance(result, dict):
             return result
-        logger.warning(f"custom_headers must be a JSON object, got: {type(result).__name__}")
+        logger.warning("custom_headers must be a JSON object, got: %s", type(result).__name__)
         return None
     except json.JSONDecodeError as e:
-        logger.warning(f"custom_headers JSON parse failed: {e}")
+        logger.warning("custom_headers JSON parse failed: %s", e)
         return None
 
 
@@ -1686,8 +1688,6 @@ def _models_for_write(data: dict[str, Any]) -> dict[str, Any]:
     if _recover_existing_model_fields(models):
         # Preserve the exact original, including comments and invalid values.
         # A failed backup must abort the write rather than lose user data.
-        import shutil
-
         backup = CONFIG_YAML_PATH.with_name(f"{CONFIG_YAML_PATH.name}.models-{uuid.uuid4().hex}.bak")
         shutil.copy2(CONFIG_YAML_PATH, backup)
         logger.warning("Recovered invalid model fields; original configuration saved to %s", backup)
@@ -3115,6 +3115,25 @@ def _set_config_path(path: tuple[str, ...], value: Any) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def update_team_goal_settings_in_config(
+    *, scheduled: bool | None, enabled: bool | None,
+) -> None:
+    """Commit dispatch mode and leader goal together under the config lock."""
+    from jiuwenswarm.common.team_goal_config import resolve_leader_goal_update
+
+    def mutate(data: dict[str, Any]) -> dict[str, Any]:
+        modes = _ensure_config_object(data, "modes", "modes")
+        teams = _ensure_config_object(modes, "team", "modes.team")
+        team = _ensure_config_object(teams, "jiuwen_team", "modes.team.jiuwen_team")
+        mode, goal = resolve_leader_goal_update(team, scheduled=scheduled, enabled=enabled)
+        leader = _ensure_config_object(team, "leader", "modes.team.jiuwen_team.leader")
+        team["dispatch_mode"] = mode
+        leader["goal"] = goal
+        return data
+
+    update_config(mutate)
+
+
 def update_team_scheduled_dispatch_in_config(enabled: bool) -> None:
     """Update ``modes.team.jiuwen_team.dispatch_mode`` (scheduled / autonomous)."""
     _set_config_path(TEAM_DISPATCH_MODE_CONFIG_PATH, "scheduled" if enabled else "autonomous")
@@ -3795,6 +3814,35 @@ def _deep_merge(
 _LEGACY_AGENT_SUBMODE_KEYS: tuple[str, ...] = ("plan", "fast", "agent.plan", "agent.fast")
 
 
+def _migrate_legacy_symphony_config(
+    user_data: dict[str, Any],
+    template_data: dict[str, Any],
+    user_config_path: Path,
+) -> bool:
+    """Convert the Symphony section before merging defaults and back up the original YAML."""
+    symphony = user_data.get("symphony")
+    if not isinstance(symphony, dict):
+        return False
+    from jiuwenswarm.common.symphony_config import load_symphony_config, migrate_legacy_symphony_config
+
+    converted = migrate_legacy_symphony_config(symphony, template=template_data.get("symphony"))
+    if converted == symphony:
+        return False
+
+    load_symphony_config({"symphony": converted})
+    backup = user_config_path.with_name(f"{user_config_path.name}.symphony-legacy.bak")
+    if backup.exists():
+        backup = backup.with_name(f"{backup.stem}.{uuid.uuid4().hex}.bak")
+    shutil.copy2(user_config_path, backup)
+    user_data["symphony"] = converted
+    logger.warning(
+        "Migrated legacy Symphony settings; original configuration is in %s. "
+        "Old indexes need rebuilding; retired builder model/cache options are not used by the Runtime.",
+        backup,
+    )
+    return True
+
+
 def _migrate_legacy_agent_submode_memory(user_data: dict[str, Any]) -> None:
     modes = user_data.get("modes")
     if not isinstance(modes, dict):
@@ -3915,6 +3963,7 @@ def migrate_config_from_template(
         # 必须在 _deep_merge 之前执行，否则旧子节点会被静默丢弃而非迁移。
         _migrate_legacy_agent_submode_memory(user_data)
         _migrate_legacy_kv_cache_affinity_config(user_data)
+        legacy_symphony_migrated = _migrate_legacy_symphony_config(user_data, template_data, user_config_path)
         # team_observability / agent_observability -> observability.{team,agent}
         # 必须在 _deep_merge 之前执行：合并会先按模板塞入默认的 observability 段，
         # 旧段里用户改过的 exporter / endpoint 等就会被模板默认值挡住。
@@ -3933,6 +3982,8 @@ def migrate_config_from_template(
                 user_data["extensions"] = {}
         changes = _deep_merge(template_data, user_data, prune=prune)
         if legacy_observability_migrated:
+            changes += 1
+        if legacy_symphony_migrated:
             changes += 1
 
         # Guard against an empty result overwriting a valid user config

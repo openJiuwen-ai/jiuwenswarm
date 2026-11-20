@@ -36,9 +36,8 @@ const VALUE_OPTIONS = new Set([
 ]);
 
 const SYMPHONY_COMMAND_TOOLS = new Set([
-  'skill_index',
+  'capability_search',
   'skill_directory',
-  'skillindex',
   'skill_inventory',
   'skill_inventory_command',
 ]);
@@ -287,12 +286,13 @@ export function parseSymphonyCommandAction(args: Record<string, unknown> | null 
   const structuredPaths = Array.isArray(args?.paths)
     ? args.paths.filter((value): value is string => typeof value === 'string' && value.trim().length > 0)
     : [];
-  if (operation === 'search') {
-    const query = typeof args?.query === 'string' ? shorten(args.query) : '';
-    return query ? { kind: 'search', query } : { kind: 'command', commandName: operation };
+  const rawQuery = Array.isArray(args?.query) ? args.query[0] : args?.query;
+  if (operation === 'search' || (!operation && typeof rawQuery === 'string')) {
+    const query = typeof rawQuery === 'string' ? shorten(rawQuery) : '';
+    return query ? { kind: 'search', query } : { kind: 'command', commandName: 'search' };
   }
   if (operation === 'list') {
-    const path = structuredPaths[0]?.trim();
+    const path = typeof args?.category === 'string' ? args.category.trim() : structuredPaths[0]?.trim();
     return {
       kind: 'browse',
       path: path && path !== '/' ? shorten(path) : undefined,

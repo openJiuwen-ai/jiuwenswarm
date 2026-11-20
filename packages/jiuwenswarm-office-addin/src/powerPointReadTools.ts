@@ -3,6 +3,7 @@ import { type ClientToolResponse, type ClientToolRuntime, type HostTimings, png 
 import type { JsonObject } from './gatewayClient';
 import type { PresentationToolName } from './powerPointApp';
 import { themeOf } from './presentationPackage';
+import type { Selection } from './selectionLine';
 
 /** ``PowerPoint.run``, injected so tests can drive a fake deck. */
 export type PowerPointRun = <T>(batch: (context: PowerPoint.RequestContext) => Promise<T>) => Promise<T>;
@@ -268,6 +269,29 @@ async function readTheme({ presentation, sync }: Batch, host: OfficeHost, timing
   await sync();
   timings.export_ms = Date.now() - started;
   return themeOf(exported.value);
+}
+
+/**
+ * The selected slides by position and how many shapes are selected, for the pane's selection line. The shapes are
+ * read apart, as WPS fails a read of selected shapes when only slides are selected.
+ */
+export async function selectedSlides(run: PowerPointRun): Promise<Selection> {
+  const { slides, selected } = await run(async context => {
+    const all = context.presentation.slides;
+    const picked = context.presentation.getSelectedSlides();
+    all.load('items/id');
+    picked.load('items/id');
+    await context.sync();
+    return { slides: all.items.map(slide => slide.id), selected: picked.items.map(slide => slide.id) };
+  });
+  const shapes = await run(async context => {
+    const picked = context.presentation.getSelectedShapes();
+    picked.load('items/id');
+    await context.sync();
+    return picked.items.length;
+  }).catch(() => 0);
+  return { kind: 'slides', positions: selected.map(id => slides.indexOf(id) + 1).filter(position => position > 0),
+    shapes };
 }
 
 async function selectedIds(

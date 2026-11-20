@@ -152,6 +152,11 @@ def resolve_package(name: str) -> McpPackageManifest | None:
     return _resolve_package(name)
 
 
+def list_local_packages() -> list[McpPackageManifest]:
+    """Read installed connector manifests using the registry's root precedence."""
+    return iter_mcp_packages(*_package_roots())
+
+
 def _resolve_package(name: str) -> McpPackageManifest | None:
     return resolve_mcp_package(str(name or "").strip(), *_package_roots())
 

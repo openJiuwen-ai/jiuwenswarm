@@ -21,6 +21,7 @@ class OwnershipRuntime:
         self.runtime = AgentRuntime.__new__(AgentRuntime)
         self.runtime._closed = False
         self.runtime._session_coordinator = RuntimeSessionCoordinator()
+        self.runtime._session_runtime_locks = {}
         self.sessions: set[str] = set()
 
     async def attach_gateway_connection(self, _ws, _lock) -> None:

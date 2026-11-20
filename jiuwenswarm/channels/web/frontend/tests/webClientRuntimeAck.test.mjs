@@ -93,6 +93,30 @@ test('request without a deadline accepts delayed receipts and remains abortable'
   await assert.rejects(aborted, error => error.code === 'REQUEST_ABORTED');
 });
 
+test('connection retainers keep a shared socket alive until its final owner releases it', async () => {
+  const shell = webClient.retainConnection();
+  const view = webClient.retainConnection();
+  const original = FakeWebSocket.instance;
+  view(); view();
+  assert.equal(webClient.getState(), 'ready');
+  assert.equal(FakeWebSocket.instance, original);
+  shell();
+  assert.equal(webClient.getState(), 'closed');
+  await webClient.connect();
+  assert.equal(webClient.getState(), 'ready');
+});
+
+test('an explicit auth reconnect replaces the socket while a shared owner retains it', async () => {
+  const release = webClient.retainConnection();
+  const original = FakeWebSocket.instance;
+  await webClient.reconnect('Auth changed');
+  assert.notEqual(FakeWebSocket.instance, original);
+  assert.equal(webClient.getState(), 'ready');
+  release();
+  assert.equal(webClient.getState(), 'closed');
+  await webClient.connect();
+});
+
 test('runtime-ack request stays pending after gateway response and resolves exact ack', async () => {
   let settled = false;
   const result = webClient
@@ -445,6 +469,7 @@ test('the page only marks a session missing when metadata reports NOT_FOUND', as
   const missing = [];
   let code = 'WS_DISCONNECTED';
   const refresh = loadCallback('App.tsx', 'fetchSessionMetadata', {
+    browserClientCapabilities: { getEpoch: () => 0 },
     organizationOwnerStateRevision: () => 0,
     useChatStore,
     sessionIdRef: { current: sessionId },

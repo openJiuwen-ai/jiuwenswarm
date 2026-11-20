@@ -36,6 +36,7 @@ from openjiuwen.harness.rails.base import DeepAgentRail
 from openjiuwen.harness.rails._multimodal import should_enable_read_image_multimodal
 from openjiuwen.harness.tools import TodoListTool
 from openjiuwen.harness.workspace.workspace import WorkspaceNode
+from openjiuwen.symphony.discovery import CAPABILITY_SEARCH_TOOL_NAME
 
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     build_verified_permission_ask_user_question,
@@ -1083,7 +1084,7 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
         next_tools: list[Any] = []
         changed = False
         for tool in tools:
-            if getattr(tool, "name", None) == "skill_index":
+            if getattr(tool, "name", None) == CAPABILITY_SEARCH_TOOL_NAME:
                 next_tools.append(tool)
                 continue
             params = getattr(tool, "parameters", None)

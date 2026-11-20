@@ -135,6 +135,7 @@ if getattr(sys, "frozen", False):
 
 _DESKTOP_RUN_AGENT = "--desktop-run-agent"
 _DESKTOP_RUN_GATEWAY = "--desktop-run-gateway"
+_EXTENSION_RECOVERY_SIDECAR = "--extension-recovery-sidecar"
 _DESKTOP_PREPARE_RUNTIME_WORKSPACE = "--desktop-prepare-runtime-workspace"
 _DESKTOP_INSTALL_EXTERNAL_CLI = "--desktop-install-external-cli"
 _DESKTOP_RESET_EXTERNAL_CLI_CONFIG = "--desktop-reset-external-cli-config"
@@ -168,6 +169,7 @@ _CHILD_FLAGS = {
     "--desktop-run-web",
     _DESKTOP_RUN_AGENT,
     _DESKTOP_RUN_GATEWAY,
+    _EXTENSION_RECOVERY_SIDECAR,
     _DESKTOP_PREPARE_RUNTIME_WORKSPACE,
     _DESKTOP_INSTALL_EXTERNAL_CLI,
     _DESKTOP_RESET_EXTERNAL_CLI_CONFIG,
@@ -589,8 +591,7 @@ def _dispatch() -> int | None:
         from jiuwenswarm.channels.desktop.office_addins import remove_all
         from jiuwenswarm.common.utils import get_user_workspace_dir
 
-        remove_all(get_user_workspace_dir())
-        return 0
+        return 0 if remove_all(get_user_workspace_dir()) else 1
     if _pop_flag("--desktop-restore-upgrade-config"):
         if len(sys.argv) != 1:
             raise ValueError("upgrade configuration restore does not accept arguments")
@@ -598,6 +599,14 @@ def _dispatch() -> int | None:
 
         restore_legacy_upgrade_config()
         return 0
+    if len(sys.argv) >= 2 and sys.argv[1].lower() == "presentation":
+        from jiuwenswarm.channels.cli.presentation import main as presentation_main
+
+        return presentation_main(sys.argv[2:])
+    if len(sys.argv) >= 2 and sys.argv[1].lower() == "extension":
+        from jiuwenswarm.channels.cli.extension import main as extension_main
+
+        return extension_main(sys.argv[2:])
     # 已知子命令分发（不检查单实例锁）
     if len(sys.argv) >= 2 and sys.argv[1].lower() == "init":
         sys.argv.pop(1)
@@ -619,6 +628,10 @@ def _dispatch() -> int | None:
     if _pop_flag("--desktop-run-app"):
         from jiuwenswarm.app import main as app_main
         app_main()
+        return None
+    if _pop_flag(_EXTENSION_RECOVERY_SIDECAR):
+        from jiuwenswarm.common.system_plugin_recovery_sidecar import main as recovery_main
+        recovery_main()
         return None
     if _pop_flag("--desktop-run-web"):
         from jiuwenswarm.channels.web.app_web import main as web_main

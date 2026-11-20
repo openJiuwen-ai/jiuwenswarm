@@ -7,6 +7,8 @@ import type { AutoReviewerMetadata } from './message';
 export type WebConnectionState = 'idle' | 'connecting' | 'ready' | 'reconnecting' | 'closed';
 
 export interface WsRequest {
+  /** Host-provided request bindings and context; never merged into business params. */
+  request_context?: Record<string, unknown>;
   type: 'req';
   id: string;
   method: string;

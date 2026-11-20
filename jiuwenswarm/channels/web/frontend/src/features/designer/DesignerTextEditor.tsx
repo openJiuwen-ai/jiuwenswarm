@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { MarkdownRenderer } from '../../components/MarkdownRenderer';
@@ -70,7 +71,7 @@ export function DesignerTextEditor({
     const url = `${material.textUrl}${material.textUrl.includes('?') ? '&' : '?'}t=${reloadAt}`;
     setLoading(true);
     setError('');
-    void fetch(url, { cache: 'no-store' })
+    void gatewayFetch(url, { cache: 'no-store' })
       .then((response) => {
         if (!response.ok) throw new Error(String(response.status));
         return response.text();
