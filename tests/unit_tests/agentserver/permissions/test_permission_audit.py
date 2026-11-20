@@ -83,15 +83,18 @@ def test_model_recommendation_is_only_available_to_native_local_writer(tmp_path,
     )
     record = json.loads(writer.audit_path.read_text(encoding="utf-8"))
     assert record["model_recommendation"]["rationale"] == "任务需要读取当前文件。"
-    custom_writer = Mock()
-    emit_permission_audit(
-        facts, decision="allow", reason="reviewer_allow_once", degraded=False,
-        extra=extra, persistent_writer=custom_writer, local_details=details,
-    )
-    custom_writer.write.assert_called_once_with(
-        facts, decision="allow", reason="reviewer_allow_once", degraded=False,
-        grant_id="", grant_reason="", extra=extra,
-    )
+    class CustomWriter(PersistentAuditWriter):
+        write = Mock()
+
+    for custom_writer in (Mock(), Mock(spec=PersistentAuditWriter), CustomWriter(data_root=tmp_path)):
+        emit_permission_audit(
+            facts, decision="allow", reason="reviewer_allow_once", degraded=False,
+            extra=extra, persistent_writer=custom_writer, local_details=details,
+        )
+        custom_writer.write.assert_called_once_with(
+            facts, decision="allow", reason="reviewer_allow_once", degraded=False,
+            grant_id="", grant_reason="", extra=extra,
+        )
     assert "model_recommendation" not in caplog.text
     assert "tiv_local" not in caplog.text
 
