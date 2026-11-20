@@ -73,6 +73,12 @@ _BUILD_SUFFIX_PATTERN = re.compile(
 )
 
 
+_BUILD_DATE_PATTERN = re.compile(
+    r"(?:dev|post)[.\-_]?(\d{8,})(?!\d)",
+    re.IGNORECASE,
+)
+
+
 def strip_build_suffix(version: str) -> str:
     """Drop the build-time suffix daily wheel builds append to the version.
 
@@ -88,6 +94,48 @@ def strip_build_suffix(version: str) -> str:
         if m is None:
             return stripped
         stripped = m.group("version")
+
+
+def build_date_suffix(version: str) -> int:
+    """Return the daily-build date number (``20261119``) or 0 when absent."""
+    m = _BUILD_DATE_PATTERN.search((version or "").strip())
+    return int(m.group(1)) if m else 0
+
+
+def distribution_sort_key(version: str) -> tuple[tuple[int, ...], int, tuple[int, ...], int, int]:
+    """Ordering key for distribution metadata versions.
+
+    Release semantics come from :func:`release_sort_key` after the build suffix
+    is stripped from both sides of a comparison.  When two artifacts share the
+    same release key, a clean release outranks a dated build of that release,
+    and a later build date outranks an earlier one.
+    """
+    build_date = build_date_suffix(version)
+    return (
+        *release_sort_key(strip_build_suffix(version)),
+        1 if build_date == 0 else 0,
+        build_date,
+    )
+
+
+def is_newer_distribution_version(candidate: str, current: str) -> bool:
+    """Return True when *candidate* is a newer artifact than *current*.
+
+    Build suffixes identify the artifact rather than a newer release, so both
+    sides are normalized before ordering.  When the normalized release versions
+    are equal, only two dated builds of that release are comparable; the later
+    build date wins.  A dated build and its clean release are equivalent, which
+    keeps an installed daily build from being "upgraded" to the same release.
+    """
+    candidate_release = release_sort_key(strip_build_suffix(candidate))
+    current_release = release_sort_key(strip_build_suffix(current))
+    if candidate_release != current_release:
+        return candidate_release > current_release
+    candidate_date = build_date_suffix(candidate)
+    current_date = build_date_suffix(current)
+    if candidate_date == 0 or current_date == 0:
+        return False
+    return candidate_date > current_date
 
 
 def release_sort_key(version: str) -> tuple[tuple[int, ...], int, tuple[int, ...]]:
@@ -646,7 +694,11 @@ class PyPIVersionSource(VersionSource):
             raise RuntimeError("Could not parse any version from .whl filenames.")
 
         # Pick the newest version overall, including pre-releases (beta channel).
-        latest_version = max(set(versions_by_filename.values()), key=release_sort_key)
+        # Daily builds share the release version once their dated suffix is
+        # stripped, so the artifact order must break that tie by build date.
+        latest_version = max(
+            set(versions_by_filename.values()), key=distribution_sort_key
+        )
         # The simple index lists every upload of the project, oldest first, so
         # only the files whose parsed version equals the newest one belong to
         # this release. Substring matching would also let 0.2.9 claim 0.2.9b3.

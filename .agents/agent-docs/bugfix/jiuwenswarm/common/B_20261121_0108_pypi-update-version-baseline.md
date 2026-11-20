@@ -56,6 +56,13 @@ design_note: 仅修正更新检查的版本基线取值与 PyPI 源对最新版�
 - `PyPIVersionSource.fetch_latest` 在解析文件名版本时记录「文件名 → 版本」，
   `release.assets` 只保留版本号与 `latest_version` **完全相等**的文件；时间戳
   也从该文件的上传时间取得，不再使用子串匹配。
+- 评审第二轮补充：归一化必须对称。`_check` 保留原始
+  `current_version` 传给 `_is_newer_version`，由
+  `is_newer_distribution_version` 对候选与已安装两侧统一剥离构建后缀后比较；
+  两侧归一化后的发布版本相同时，只有**双方都带日期构建后缀**才按 build 日期
+  比较新旧，避免每日构建通道永远判定「已是最新」。`PyPIVersionSource`
+  选取最新版本也改用 `distribution_sort_key`：发布版本相同时干净发布优先，
+  同一条目下的多个日期构建按日期取最新，避免 `max` 在等键时取到最旧条目。
 - 不改变 pip 安装命令（仍为 `pip install --upgrade <package>`）、更新源配置与
   前端对 `latest_version` / `published_at` 的展示契约：更新源上最新发布版本
   依旧如实展示，只是状态正确落到「已是最新版本」，且可升级时才展示与
@@ -76,11 +83,16 @@ design_note: 仅修正更新检查的版本基线取值与 PyPI 源对最新版�
   `0.2.9.beta1.dev20261119` 仍能识别到 `0.2.9b3` 是升级。
 - `test_strip_build_suffix_keeps_release_version`：覆盖 `.dev<日期>`、`.post<日期>`、
   `+local`、多段后缀，以及 `0.2.9b3` / `0.2.9.beta5` / `0.2.9.dev1` 保持不变。
+- `test_pip_check_orders_daily_builds_by_build_date`：更新源同时存在
+  `0.2.9.beta5.dev20261119`、`0.2.9.beta5.dev20261120` 与旧 `0.2.9b3` 时，
+  已安装 1119 能升级到 1120；已安装 1120 或更新的 1121 不会回退；
+  `0.2.9.beta4.dev20261119` 仍能升级到更新的 beta5 构建；
+  `0.2.9.dev20261119` 归一化后高于同基线 beta5 构建，不误报升级。
 
 `tests/unit_tests/test_updater_install_mode.py` 中依赖 `updater.__version__`
 的用例改为注入 `updater.get_runtime_version`。
 
-三个测试文件共 84 个用例全部通过（含本次新增定向用例）。
+三个测试文件共 89 个用例全部通过（含本轮新增定向用例）。
 
 ## 遗留
 
