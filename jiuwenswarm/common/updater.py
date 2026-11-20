@@ -21,6 +21,7 @@ from jiuwenswarm.common.version_source import (
     PyPIVersionSource,
     ReleaseAsset,
     ReleaseInfo,
+    is_newer_distribution_version,
     normalize_pypi_index_url,
     pypi_project_url,
     release_timestamp_key,
@@ -65,9 +66,12 @@ def _is_newer_version(candidate: str, current: str) -> bool:
       dev < alpha < beta < rc < pre.
     - Within the same type, a larger pre-release number is newer
       (``0.2.3.beta2`` > ``0.2.3.beta1``).
+
+    Build-date suffixes are normalized on both sides so a daily channel can
+    offer the next day's build while never ranking a daily build below the
+    release it was cut from (#6849).
     """
-    from jiuwenswarm.common.version_source import release_sort_key
-    return release_sort_key(candidate) > release_sort_key(current)
+    return is_newer_distribution_version(candidate, current)
 
 
 def _is_newer_release(candidate_published_at: str, current_published_at: str) -> bool:
@@ -346,7 +350,7 @@ class UpdaterService:
                 release.current_release_published_at,
             )
         else:
-            has_update = _is_newer_version(latest_version, comparison_version)
+            has_update = _is_newer_version(latest_version, current_version)
 
         if not has_update:
             if install_mode == "desktop":
