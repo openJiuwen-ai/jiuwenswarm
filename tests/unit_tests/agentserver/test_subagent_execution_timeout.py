@@ -176,9 +176,17 @@ async def test_sqlalchemy_wrapped_persist_failure_recovers_answer(debug_capture)
     assert "checkpoint_degraded" in result.data["output"]
 
 
+def _sdk_stream_error_chunk(exc: Exception, *, with_origin: bool = True) -> dict:
+    """SDK 流式转换层的真实帧形态：外层 type=answer，payload.result_type=error。"""
+    payload = {"output": str(exc), "result_type": "error"}
+    if with_origin:
+        payload["error_origin_class"] = f"{type(exc).__module__}.{type(exc).__qualname__}"
+    return {"type": "answer", "payload": payload}
+
+
 async def test_stream_error_chunk_preserves_storage_degradation(debug_capture):
-    # 模拟 SDK 流式转换层（react_agent/deep_agent stream 的 except Exception）：
-    # 内部异常转 error chunk，str(e) 文本化，结构化来源只剩 error_origin_class。
+    # 复刻 SDK 流式转换层真实帧形态（外层 type=answer、payload.result_type=error）：
+    # origin_class 经 payload 透传 + output 兜底 reason，降级在 debug 通道成立。
     run = AsyncMock(side_effect=_sqlalchemy_persist_failure())
     child = child_for(run)
 
@@ -186,6 +194,28 @@ async def test_stream_error_chunk_preserves_storage_degradation(debug_capture):
         try:
             await run(*args, **kwargs)
         except Exception as e:  # noqa: BLE001 — 复刻 SDK 转换层形态
+            yield _sdk_stream_error_chunk(e)
+
+    child.stream = stream
+    _child_with_context(child, [_assistant("TASK-01 done")])
+    result = await dispatch(child)
+    assert result.success is True
+    assert "checkpoint_degraded" in result.data["output"]
+    # reason 兜底为 output 失败文本，不再只剩 subagent_error。
+    assert "disk I/O error" in result.data["output"]
+    with pytest.raises(BaseError, match="unavailable"):
+        await dispatch(child)
+
+
+async def test_error_typed_chunk_preserves_storage_degradation(debug_capture):
+    # type=error 的裸 chunk（其它 emitter 形态）同样走 error 分支兜底。
+    run = AsyncMock(side_effect=_sqlalchemy_persist_failure())
+    child = child_for(run)
+
+    async def stream(*args, **kwargs):
+        try:
+            await run(*args, **kwargs)
+        except Exception as e:  # noqa: BLE001
             yield {"type": "error", "payload": {
                 "output": str(e),
                 "result_type": "error",
@@ -197,7 +227,20 @@ async def test_stream_error_chunk_preserves_storage_degradation(debug_capture):
     result = await dispatch(child)
     assert result.success is True
     assert "checkpoint_degraded" in result.data["output"]
-    with pytest.raises(BaseError, match="unavailable"):
+
+
+async def test_locked_core_answer_chunk_without_origin_stays_fail_closed(debug_capture):
+    if debug_capture is None:
+        return  # error chunk 只经 debug 捕获流路径
+    # 锁定 core（未含 origin_class）的过渡期：answer 帧形态无来源标记时不得降级
+    # （保持原样失败），output 兜底以 origin_class 为门，reason 仍为 subagent_error
+    # ——invoke 返回的 error dict 的 output 是业务输出，不得借道进错误文本。
+    async def stream(*args, **kwargs):
+        yield _sdk_stream_error_chunk(_sqlalchemy_persist_failure(), with_origin=False)
+
+    child = child_for(AsyncMock())
+    child.stream = stream
+    with pytest.raises(BaseError, match="subagent_error"):
         await dispatch(child)
 
 

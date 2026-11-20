@@ -106,6 +106,21 @@ def ensure_subagent_available(child: Any) -> None:
         raise RuntimeError("subagent unavailable after failed or cancelled execution")
 
 
+def _mark_stream_error_text(payload: dict) -> dict:
+    """仅对 SDK 转换层异常帧把 output 失败文本补进 error 字段。
+
+    type=answer 的 error 帧有两种来源：SDK 流式转换层的异常帧（output=str(e)
+    失败文本，且带 error_origin_class 标记）与 invoke 返回的 error dict
+    （output 是业务输出，不得进错误文本）。以 origin_class 为门区分两者；
+    锁定 core 过渡期（无标记）保持 fail-closed，reason 仍为 subagent_error。
+    """
+    if not payload.get("error_origin_class"):
+        return payload
+    if payload.get("result_type") == "error" and not payload.get("error"):
+        return {**payload, "error": str(payload.get("output") or "")[:_MAX_REASON_CHARS]}
+    return payload
+
+
 def raise_for_subagent_stream_error(chunk: Any) -> None:
     """Reject terminal agent errors without rejecting recoverable tool errors."""
     kind = chunk.get("type") if isinstance(chunk, dict) else getattr(chunk, "type", None)
@@ -121,6 +136,8 @@ def raise_for_subagent_stream_error(chunk: Any) -> None:
             error["error"] = payload.get("output")
         raise_for_subagent_error(error)
     elif kind == "answer":
+        if isinstance(payload, dict):
+            payload = _mark_stream_error_text(payload)
         raise_for_subagent_error(payload)
     elif kind is None:
         raise_for_subagent_error(chunk)
