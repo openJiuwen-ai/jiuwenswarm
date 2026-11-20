@@ -2614,6 +2614,7 @@
     "inputAttachment": {
       "imageLimitTooltip": "Images: up to {{limit}}M each",
       "fileLimitTooltip": "Files: up to {{limit}}M each",
+      "enterpriseDocumentLimitTooltip": "Documents: up to {{limit}} MiB each",
       "countLimitTooltip": "Up to {{limit}} attachments per message",
       "unnamedFile": "Unnamed file",
       "unsupportedFileType": "Unsupported file type: {{name}}",

@@ -57,6 +57,7 @@ import ChatModelSelector from './ChatModelSelector';
 import DesignerModelSelector from '../../features/designer/components/DesignerModelSelector';
 import { getTeamSessionLive, subscribeTeamSessionLive, teamFollowUpLiveReady } from '../../services/sessionLive';
 import { getTeamQuota } from '../../services/teamApi';
+import { ENTERPRISE_ATTACHMENT_MAX_BYTES } from '../../services/obsUpload';
 import { designLandingModelProblem } from '../../features/designer/designLandingDraft';
 import { FileIcon } from '../FileIcon';
 import { getEvolutionPillLabel } from './evolution-status';
@@ -741,8 +742,11 @@ function getDocumentValidationError(
   options?: { filename?: string; localPath?: string },
 ): string | null {
   const filename = options?.filename || file?.name || t('chat.inputAttachment.unnamedFile');
-  if (file && !getLocalFilePath(file, options?.localPath) && file.size > MAX_FILE_BYTES) {
-    return t('chat.inputAttachment.fileSizeExceeded', { name: filename, limit: formatAttachmentSize(MAX_FILE_BYTES) });
+  const enterprise = isEnterprise();
+  const maxBytes = enterprise ? ENTERPRISE_ATTACHMENT_MAX_BYTES : MAX_FILE_BYTES;
+  if (file && !getLocalFilePath(file, options?.localPath) && file.size > maxBytes) {
+    const limit = enterprise ? `${maxBytes / (1024 * 1024)} MiB` : formatAttachmentSize(maxBytes);
+    return t('chat.inputAttachment.fileSizeExceeded', { name: filename, limit });
   }
   if (file && isForbiddenDocumentFile(file)) {
     return t('chat.inputAttachment.forbiddenFileType', { name: filename });
@@ -1773,7 +1777,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const uploadLimitsTooltip = [
     t('chat.inputAttachment.imageLimitTooltip', { limit: MAX_IMAGE_BYTES / (1024 * 1024) }),
     ...(!isDesktopBridgeReady
-      ? [t('chat.inputAttachment.fileLimitTooltip', { limit: MAX_FILE_BYTES / (1024 * 1024) })]
+      ? [
+          enterprise
+            ? t('chat.inputAttachment.enterpriseDocumentLimitTooltip', {
+                limit: ENTERPRISE_ATTACHMENT_MAX_BYTES / (1024 * 1024),
+              })
+            : t('chat.inputAttachment.fileLimitTooltip', { limit: MAX_FILE_BYTES / (1024 * 1024) }),
+        ]
       : []),
     t('chat.inputAttachment.countLimitTooltip', { limit: MAX_ATTACHMENT_COUNT }),
   ].join('\n');
