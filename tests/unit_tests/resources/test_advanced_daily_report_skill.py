@@ -24,9 +24,14 @@ _RUN_REPORT = _SKILL_DIR / "run_report.py"
 
 def _todo_collector_class():
     """Import the bundled collector package from the skill directory."""
-    skill_dir = str(_SKILL_DIR)
-    if skill_dir not in sys.path:
-        sys.path.insert(0, skill_dir)
+    sys.path.insert(
+        0,
+        str(
+            Path(__file__).resolve().parents[3]
+            / "jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin"
+            / "references/capabilities/advanced-daily-report"
+        ),
+    )
     module = importlib.import_module("collectors.todo_collector")
     return module.TodoCollector
 
