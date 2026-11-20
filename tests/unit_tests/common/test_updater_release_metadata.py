@@ -94,7 +94,7 @@ def test_pypi_check_and_install_share_mirror(
         return SimpleNamespace(stdout=None, returncode=0, wait=lambda: 0)
 
     monkeypatch.setattr(updater, "get_config_raw", lambda: {"updater": {"pypi_mirror": mirror}})
-    monkeypatch.setattr(updater, "__version__", "1.0.0")
+    monkeypatch.setattr(updater, "get_runtime_version", lambda: "1.0.0")
     monkeypatch.setattr(version_source, "urlopen", fake_urlopen)
     monkeypatch.setattr(upgrade_executor.PipExecutor, "_resolve_uv_command", staticmethod(lambda: uv_command))
     monkeypatch.setattr(upgrade_executor.subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=1))
@@ -239,3 +239,87 @@ def test_publish_time_gives_up_within_budget_when_upstream_hangs(monkeypatch):
     assert release.version == "1.2.3"
     assert release.assets[0].name == "workswarm-1.2.3-py3-none-any.whl"
     assert elapsed < 1.0
+
+
+def test_pypi_source_keeps_only_latest_version_files(monkeypatch):
+    """#6849: a simple index lists every upload, not just the newest release."""
+
+    def fake_urlopen(request, timeout):
+        del request, timeout
+        return JsonResponse({
+            "files": [
+                {
+                    "filename": "workswarm-0.2.5-py3-none-any.whl",
+                    "url": "../../p/workswarm-0.2.5-py3-none-any.whl",
+                    "upload-time": "2026-11-13T10:36:00Z",
+                },
+                {
+                    "filename": "workswarm-0.2.9b3-py3-none-any.whl",
+                    "url": "../../p/workswarm-0.2.9b3-py3-none-any.whl",
+                    "upload-time": "2026-11-13T02:36:00Z",
+                },
+                {
+                    "filename": "workswarm-0.2.9-py3-none-any.whl",
+                    "url": "../../p/workswarm-0.2.9-py3-none-any.whl",
+                    "upload-time": "2026-11-19T02:06:55Z",
+                },
+            ],
+        })
+
+    monkeypatch.setattr(version_source, "urlopen", fake_urlopen)
+    source = version_source.PyPIVersionSource(
+        package="workswarm",
+        mirror="https://mirror.test/pypi",
+        timeout_seconds=5,
+    )
+
+    release = source.fetch_latest("0.2.9")
+
+    assert release.version == "0.2.9"
+    assert [asset.name for asset in release.assets] == [
+        "workswarm-0.2.9-py3-none-any.whl"
+    ]
+    # 0.2.9 must not borrow 0.2.9b3's timestamp through substring matching.
+    assert release.published_at == "2026-11-19T02:06:55Z"
+
+
+@pytest.mark.parametrize(
+    ("installed", "has_update", "matched_asset"),
+    [
+        ("0.2.9", False, ""),
+        ("0.2.8", True, "workswarm-0.2.9b3-py3-none-any.whl"),
+    ],
+)
+def test_pip_check_compares_installed_build_version(
+    monkeypatch, installed, has_update, matched_asset
+):
+    """#6849: the newest mirror release can be older than the installed build."""
+
+    def fake_urlopen(request, timeout):
+        del request, timeout
+        return JsonResponse({
+            "files": [
+                {
+                    "filename": "workswarm-0.2.5-py3-none-any.whl",
+                    "url": "../../p/workswarm-0.2.5-py3-none-any.whl",
+                    "upload-time": "2026-11-13T10:36:00Z",
+                },
+                {
+                    "filename": "workswarm-0.2.9b3-py3-none-any.whl",
+                    "url": "../../p/workswarm-0.2.9b3-py3-none-any.whl",
+                    "upload-time": "2026-11-13T02:36:00Z",
+                },
+            ],
+        })
+
+    monkeypatch.setattr(updater, "get_config_raw", lambda: {"updater": {"enabled": True}})
+    monkeypatch.setattr(updater, "get_runtime_version", lambda: installed)
+    monkeypatch.setattr(version_source, "urlopen", fake_urlopen)
+
+    status = updater.UpdaterService().check(manual=True)
+
+    assert status["current_version"] == installed
+    assert status["latest_version"] == "0.2.9b3"
+    assert status["has_update"] is has_update
+    assert status["matched_asset"] == matched_asset
+
