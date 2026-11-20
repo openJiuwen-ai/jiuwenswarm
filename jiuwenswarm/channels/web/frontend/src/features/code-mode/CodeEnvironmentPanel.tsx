@@ -25,10 +25,10 @@ export function CodeEnvironmentPanel({ project, isProcessing, diffWatch, onRevie
     <section className="code-environment" aria-label={t('codeMode.environment')} data-testid="code-mode-environment-panel">
       {repoIsParentOfProject ? (
         <div className="code-environment__notice" role="status" data-testid="code-mode-environment-repo-parent-notice">
-          当前 Git 仓库位于项目目录的上级（{repoRoot}），分支变更会统计项目目录之外的文件。
+          {t('codeMode.reviewPanel.repoParentNotice', { repoRoot })}
         </div>
       ) : null}
-      <button type="button" className="code-environment__row" onClick={onReview} title={diffWatch.summaryError || '打开代码审核'} data-testid="code-mode-environment-review-button">
+      <button type="button" className="code-environment__row" onClick={onReview} title={diffWatch.summaryError || t('codeMode.reviewPanel.openReview')} data-testid="code-mode-environment-review-button">
         <FileDiff size={15} />
         <span>{t('codeMode.changes')}</span>
         <small className="code-environment__stats" aria-live="polite" data-testid="code-mode-environment-stats" data-variant={loading ? 'loading' : unavailable ? 'unavailable' : 'ready'}>
