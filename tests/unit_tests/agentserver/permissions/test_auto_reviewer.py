@@ -2030,3 +2030,54 @@ async def test_ambiguous_secret_redaction_never_calls_model(tmp_path, command):
     assert assessment.fallback_reason == "reviewer_redaction_incomplete"
     assert "allow_once" not in view.allowed_outcomes
     assert not client.requests
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("targets,recipient", [
+    (None, "current_session_user"),
+    ([], "current_session_user"),
+    (["web"], "current_session_user"),
+    ([" web ", "web"], "current_session_user"),
+    (["feishu"], "explicit_targets"),
+    (["web", "feishu"], "explicit_targets"),
+    (["reviewer-1"], "explicit_targets"),
+])
+async def test_web_delivery_request_reaches_model_without_granting_authority(tmp_path, targets, recipient):
+    args = {"abs_file_path_list": str(tmp_path / "report.md"), "target_channels": targets,
+            "file_delivery_request": {"intended_recipient": "forged"}}
+    facts = build_facts("send_file_to_user", args, workspace_root=tmp_path,
+                        send_paths=(str(tmp_path / "report.md"),))
+    request = build_reviewer_action_view(
+        facts, policy_level="ask", policy_reason="ask",
+        allowed_outcomes=("manual", "deny"), no_auto_allow_reason="user_confirmation_required",
+        original_user_intent=None, domain_route=None, request_channel="web",
+    )
+    model = RecordingIsolatedReviewerModel()
+    await IsolatedModelReviewerClient(model=model).assess(request)
+    wire = json.loads(model.calls[0][0][1]["content"])["request"]
+    assert wire["review_evidence"]["file_delivery_request"] == {
+        "source_channel": "web", "intended_recipient": recipient,
+    }
+    assert wire["review_evidence"]["reviewable_payload"]["target_channels"] == targets
+    assert wire["allowed_outcomes"] == ["manual", "deny"]
+    assert wire["no_auto_allow_reason"] == "user_confirmation_required"
+
+
+@pytest.mark.parametrize("tool,channel", [
+    ("send_file_to_user", ""),
+    ("send_file_to_user", "unknown"),
+    ("send_file_to_user", "feishu"),
+    ("bash", "web"),
+])
+def test_delivery_request_needs_host_web_context(tmp_path, tool, channel):
+    facts = build_facts(tool, {
+        "abs_file_path_list": str(tmp_path / "report.md"),
+        "command": "cat report.md", "workdir": str(tmp_path),
+        "request_channel": "web", "file_delivery_request": {"intended_recipient": "current_session_user"},
+    }, workspace_root=tmp_path)
+    request = build_reviewer_action_view(
+        facts, policy_level="ask", policy_reason="ask",
+        allowed_outcomes=("allow_once", "manual", "deny"), no_auto_allow_reason="",
+        original_user_intent=None, domain_route=None, request_channel=channel,
+    )
+    assert "file_delivery_request" not in request.to_json_dict()["review_evidence"]

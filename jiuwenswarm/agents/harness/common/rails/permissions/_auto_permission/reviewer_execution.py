@@ -227,6 +227,7 @@ class AutoPermissionReviewerExecutionMixin:
             no_auto_allow_reason=route.no_auto_allow_reason,
             original_user_intent=original_user_intent,
             domain_route=domain_route,
+            request_channel=channel_kind if runtime_ctx is not None else "",
             session_write_evidence=(
                 self.session_artifact_paths.evidence(facts, root_session_id=session_id)
                 if self.session_artifact_paths is not None else ()
