@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CircleAlert } from 'lucide-react';
@@ -324,7 +325,7 @@ export function SessionsPanel({
         const fetchDirEntries = async (dir: string, depth: number): Promise<SessionFileItem[]> => {
           if (!isCurrent()) return [];
           const encodedDir = encodeURIComponent(dir);
-          const resp = await fetch(`/file-api/list-files?dir=${encodedDir}`, { cache: 'no-store' });
+          const resp = await gatewayFetch(`/file-api/list-files?dir=${encodedDir}`, { cache: 'no-store' });
           if (!resp.ok) {
             const text = await resp.text();
             throw new Error(`HTTP ${resp.status}: ${text.substring(0, 120)}`);
@@ -353,7 +354,7 @@ export function SessionsPanel({
         // Check for todo.json in DeepAgent workspace todo directory
         const todoPath = `agent/workspace/todo/${sessionId}/todo.json`;
         try {
-          const todoResp = await fetch(`/file-api/file-content?path=${encodeURIComponent(todoPath)}`, { cache: 'no-store' });
+          const todoResp = await gatewayFetch(`/file-api/file-content?path=${encodeURIComponent(todoPath)}`, { cache: 'no-store' });
           if (todoResp.ok) {
             rows.push({
               name: 'todo.json',

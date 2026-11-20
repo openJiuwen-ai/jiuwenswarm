@@ -432,9 +432,13 @@ async def test_http_root_change_keeps_client_through_full_spec_reload(monkeypatc
             "default": {"target": "local", "params": {"root": str(tmp_path / "unused")}}}}
         candidate = obj._build_coding_memory_rail()
         assert candidate is rail
-        parts = SimpleNamespace(config=copy(agent.deep_config), rails=[candidate],
-                                tool_cards=[], tool_instances=[],
-                                extension_bus=None)
+        parts = SimpleNamespace(
+            config=copy(agent.deep_config),
+            rails=[candidate],
+            tool_cards=[],
+            tool_instances=[],
+            extension_bus=agent._extension_bus,
+        )
         spec = MagicMock()
         spec.resolve_parts.return_value = parts
         context = SimpleNamespace(tool_owner_id=None, artifacts=SimpleNamespace(tools=[]))

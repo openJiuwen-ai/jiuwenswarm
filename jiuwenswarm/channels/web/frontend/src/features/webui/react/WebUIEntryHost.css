@@ -1,0 +1,43 @@
+.webui-entry-host {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 12px;
+  border: 0;
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  outline: none;
+}
+
+.webui-entry-host[open] {
+  display: flex;
+}
+
+.webui-entry-host__body,
+.webui-entry-host__instance {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.webui-entry-host__instance {
+  flex-shrink: 0;
+}
+
+.webui-entry-notice {
+  position: absolute;
+  inset: 16px 24px auto;
+  z-index: 1;
+}

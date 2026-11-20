@@ -103,7 +103,12 @@ def test_workswarm_extension_migration_only_recovers_known_local_config(tmp_path
 
     assert migrate_config_from_template(template, config)
     migrated = yaml.safe_load(config.read_text(encoding="utf-8"))
-    expected_extensions = None if expected_dir is None else {"extension_dirs": expected_dir}
+    expected_extensions = None
+    if expected_dir is not None:
+        expected_extensions = yaml.safe_load(
+            template.read_text(encoding="utf-8")
+        )["extensions"]
+        expected_extensions["extension_dirs"] = expected_dir
     assert migrated["extensions"] == expected_extensions
     assert not migrate_config_from_template(template, config)
 
@@ -1207,6 +1212,170 @@ class TestConfigFunctions:
         assert resolved.capability.fingerprint.extraction.max_concurrency == 3
         assert resolved.capability.fingerprint.extraction.batch_size == 2
         assert resolved.orchestration.build.max_concurrency == 4
+
+    @staticmethod
+    def test_migrate_config_from_template_converts_beta3_symphony_layout(tmp_path):
+        template_path = tmp_path / "template.yaml"
+        user_config_path = tmp_path / "config.yaml"
+        template_path.write_text(
+            yaml.safe_dump({"symphony": {
+                "capability": {"scan": {"max_depth": None}},
+                "storage": {"artifact_root": ""},
+                "retrieval": {"enabled": False},
+                "orchestration": {"enabled": None, "plan": {"mode": "fast"}},
+            }}),
+            encoding="utf-8",
+        )
+        skills_root = tmp_path / "skills"
+        user_config_path.write_text(
+            yaml.safe_dump({"symphony": {
+                "enabled": True,
+                "paths": {
+                    "skills_root": str(skills_root),
+                    "graph_dir": str(tmp_path / "legacy-graph"),
+                },
+                "fingerprint": {
+                    "scan": {"max_depth": 1},
+                    "extraction": {
+                        "workers": 3,
+                        "batch_size": 5,
+                        "body_limit": 9000,
+                    },
+                },
+                "build": {
+                    "workers": 2,
+                    "batch_size": 7,
+                    "max_candidates_per_skill_relation": 11,
+                    "require_consensus": True,
+                    "min_edge_confidence": 0.6,
+                },
+                "evolution": {"flow": {
+                    "enabled": True,
+                    "min_successes": 4,
+                    "min_pack_success_rate": 0.9,
+                }},
+                "orchestration": {
+                    "mode": "beam",
+                    "top_k": 6,
+                    "max_depth": 8,
+                },
+                "skill_retrieval": {
+                    "enabled": True,
+                    "artifact_root": str(tmp_path / "legacy-index"),
+                    "discovery": {
+                        "max_output_chars": 7000,
+                        "incremental_notice_max_chars": 2000,
+                        "prompt_preferred_skills": ["skill-creator"],
+                    },
+                    "build": {
+                        "max_depth": 5,
+                        "branching_factor": 64,
+                        "max_workers": 3,
+                        "max_retries": 1,
+                        "request_timeout_seconds": 120.0,
+                        "classification_batch_limit": 16,
+                        "root_categories": ["coding"],
+                        "discovery_seed": 7,
+                        "postprocess_enabled": False,
+                        "postprocess_max_passes": 0,
+                        "postprocess_min_skills": 3,
+                        "equivalence_enabled": True,
+                        "preserve_previous_index_on_failure": False,
+                    },
+                },
+            }}),
+            encoding="utf-8",
+        )
+
+        assert migrate_config_from_template(template_path, user_config_path) is True
+        migrated = yaml.safe_load(user_config_path.read_text(encoding="utf-8"))
+        symphony = migrated["symphony"]
+        assert not {
+            "enabled",
+            "paths",
+            "fingerprint",
+            "build",
+            "evolution",
+            "skill_retrieval",
+        } & set(symphony)
+        assert not {"mode", "top_k", "max_depth"} & set(
+            symphony["orchestration"]
+        )
+        resolved = symphony_config_module.load_symphony_config(migrated)
+        assert Path(resolved.capability.sources[0].root) == skills_root.resolve()
+        assert resolved.capability.scan.max_depth == 1
+        assert resolved.capability.fingerprint.extraction.max_concurrency == 3
+        assert resolved.capability.fingerprint.extraction.max_body_chars == 9000
+        assert resolved.retrieval.enabled is True
+        assert resolved.retrieval.index_build.structure.branching_factor == 64
+        assert resolved.retrieval.index_build.request.max_concurrency == 3
+        assert resolved.orchestration.enabled is True
+        assert resolved.orchestration.plan.mode == "beam"
+        assert resolved.orchestration.plan.top_k == 6
+        assert resolved.orchestration.experience.acceptance.min_successes == 4
+
+        assert migrate_config_from_template(template_path, user_config_path) is False
+
+    @staticmethod
+    def test_migrate_beta3_symphony_keeps_existing_canonical_values(tmp_path):
+        template_path = tmp_path / "template.yaml"
+        user_config_path = tmp_path / "config.yaml"
+        template_path.write_text("symphony: {}\n", encoding="utf-8")
+        user_config_path.write_text(
+            yaml.safe_dump({"symphony": {
+                "enabled": True,
+                "orchestration": {
+                    "enabled": False,
+                    "mode": "beam",
+                    "plan": {"mode": "fast"},
+                },
+                "skill_retrieval": {"enabled": True},
+                "retrieval": {"enabled": False},
+            }}),
+            encoding="utf-8",
+        )
+
+        assert migrate_config_from_template(template_path, user_config_path) is True
+        migrated = yaml.safe_load(user_config_path.read_text(encoding="utf-8"))
+        resolved = symphony_config_module.load_symphony_config(migrated)
+        assert resolved.orchestration.enabled is False
+        assert resolved.orchestration.plan.mode == "fast"
+        assert resolved.retrieval.enabled is False
+
+    @staticmethod
+    def test_migrate_beta3_symphony_replaces_previously_merged_defaults(tmp_path):
+        template_path = tmp_path / "template.yaml"
+        user_config_path = tmp_path / "config.yaml"
+        template_path.write_text(
+            yaml.safe_dump({"symphony": {
+                "capability": {"scan": {"max_depth": None}},
+                "orchestration": {
+                    "enabled": None,
+                    "plan": {"mode": "fast"},
+                },
+            }}),
+            encoding="utf-8",
+        )
+        user_config_path.write_text(
+            yaml.safe_dump({"symphony": {
+                "enabled": True,
+                "fingerprint": {"scan": {"max_depth": 1}},
+                "orchestration": {
+                    "enabled": None,
+                    "mode": "beam",
+                    "plan": {"mode": "fast"},
+                },
+                "capability": {"scan": {"max_depth": None}},
+            }}),
+            encoding="utf-8",
+        )
+
+        assert migrate_config_from_template(template_path, user_config_path) is True
+        migrated = yaml.safe_load(user_config_path.read_text(encoding="utf-8"))
+        resolved = symphony_config_module.load_symphony_config(migrated)
+        assert resolved.orchestration.enabled is True
+        assert resolved.orchestration.plan.mode == "beam"
+        assert resolved.capability.scan.max_depth == 1
 
     @staticmethod
     def test_migrate_config_preserves_canonical_evolution_settings(

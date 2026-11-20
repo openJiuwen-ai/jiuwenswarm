@@ -966,7 +966,7 @@ async def _call(web, method, params):
 
 
 @pytest.mark.asyncio
-async def test_binding_moves_the_legacy_app_into_the_list_and_settings_edits_keep_it(web):
+async def test_binding_moves_the_legacy_app_and_personal_settings_leave_it_untouched(web):
     web.seed({"enabled": True, "client_id": "ordinary", "client_secret": "fake-old", "api_base": "https://example.invalid",
               "last_sender_id": "staff-old"})
     bound = await _call(web, "channel.dingtalk.bind_agent", {
@@ -981,16 +981,20 @@ async def test_binding_moves_the_legacy_app_into_the_list_and_settings_edits_kee
     assert saved["apps"][1]["persistent_agent_id"] == "agent-app-dingtalk"
     edited = await _call(web, "channel.dingtalk.set_conf", {"apps": [
         {"client_id": "ordinary", "allow_from": ["staff-test"], "enabled": True},
-        {"client_id": "app-dingtalk", "enabled": False},
     ]})
     assert edited["ok"] is True
     ordinary, jm = web.saved()["apps"]
     assert ordinary["allow_from"] == ["staff-test"] and ordinary["client_secret"] == "fake-old"
     assert jm["persistent_agent_id"] == "agent-app-dingtalk" and jm["client_secret"] == "fake-secret"
-    assert jm["enabled"] is False
+    assert jm["enabled"] is True
+    refused = await _call(web, "channel.dingtalk.set_conf", {"apps": [
+        {"client_id": "ordinary"}, {"client_id": "app-dingtalk", "enabled": False},
+    ]})
+    assert refused["ok"] is False and refused["code"] == "CHANNEL_BOUND_TO_EMPLOYEE"
+    assert web.saved()["apps"][1]["enabled"] is True
     assert web.cm.configs["dingtalk"] == dict(web.saved())
     listing = await _call(web, "channel.dingtalk.get_conf", {})
-    assert [app["client_id"] for app in listing["payload"]["config"]["apps"]] == ["ordinary", "app-dingtalk"]
+    assert [app["client_id"] for app in listing["payload"]["config"]["apps"]] == ["ordinary"]
 
 
 @pytest.mark.asyncio
@@ -1000,7 +1004,7 @@ async def test_deleting_one_app_keeps_the_others_and_another_app_adds_a_connecti
         {"client_id": "jm-a", "client_secret": "fake", "persistent_agent_id": "agent-jm-a"},
         {"client_id": "jm-b", "client_secret": "fake", "persistent_agent_id": "agent-jm-b"},
     ], "last_sender_id": "staff-old"})
-    assert (await _call(web, "channel.dingtalk.set_conf", {"apps": [{"client_id": "jm-a"}, {"client_id": "jm-b"}]}))["ok"]
+    assert (await _call(web, "channel.dingtalk.set_conf", {"apps": []}))["ok"]
     saved = web.saved()
     assert [app["client_id"] for app in saved["apps"]] == ["jm-a", "jm-b"] and "last_sender_id" not in saved
     # Another app for the same colleague is another connection with its own agent; jm-a stays.
@@ -1057,7 +1061,7 @@ async def test_a_malformed_allowlist_survives_binding_and_blocks_a_client_id_cha
     assert ordinary["allow_from"] == "staff-only" and jm["allow_from"] == []
     # The settings page omits a malformed allowlist; under another client_id it would be an unrestricted new app.
     renamed = await _call(web, "channel.dingtalk.set_conf", {"apps": [
-        {"client_id": "ordinary-new", "client_secret": "fake"}, {"client_id": "app-a"},
+        {"client_id": "ordinary-new", "client_secret": "fake"},
     ]})
     assert renamed["ok"] is False and renamed["code"] == "BAD_REQUEST"
     assert [app["client_id"] for app in web.saved()["apps"]] == ["ordinary", "app-a"]

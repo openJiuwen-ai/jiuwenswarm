@@ -1,3 +1,5 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
+import { GatewayImage, GatewayVideo, needsGatewayResource, downloadGatewayResource } from '../../features/webui/client/GatewayResources';
 /**
  * MessageItem 组件
  *
@@ -51,6 +53,7 @@ import { AgentAvatar } from '../AgentAvatar';
 import { fileArtifactId } from '../ArtifactsPanel';
 import { openArtifactPanel } from '../../features/teamPanelState';
 import { openSingleAgentPanel } from '../../features/singleAgentPanelState';
+import { WebUIHost } from '../../features/webui';
 import { openFileInDesktopBrowser } from '../../features/desktopBrowserFile';
 import { executeDesktopSave, type DesktopSaveApiResult } from '../../utils/desktopSave';
 import { FileIcon } from '../FileIcon';
@@ -1181,6 +1184,15 @@ export const MessageItem = memo(function MessageItem({
           </div>
         )}
 
+        {!isUser && !isStreaming && !hideMeta && message.outputOrder?.requestId ? (
+          <WebUIHost
+            slotId="conversation.session.content.after"
+            sessionId={activeSessionId}
+            instanceKey={message.outputOrder.requestId}
+            className="mt-2 mb-3"
+          />
+        ) : null}
+
         {!isStreaming && !hideMeta && (
           <div
             data-testid="chat-panel-message-meta"
@@ -1277,6 +1289,23 @@ export const MessageItem = memo(function MessageItem({
                 {tooltip}
               </div>
             )}
+
+            {!isUser && message.outputOrder?.requestId ? (
+              <>
+                <WebUIHost
+                  slotId="message.assistant.meta"
+                  sessionId={activeSessionId}
+                  instanceKey={message.outputOrder.requestId}
+                  layout="row"
+                />
+                <WebUIHost
+                  slotId="conversation.turn.footer.actions"
+                  sessionId={activeSessionId}
+                  instanceKey={message.outputOrder.requestId}
+                  layout="row"
+                />
+              </>
+            ) : null}
           </div>
         )}
 
@@ -1348,19 +1377,24 @@ export function FileDownloadList({
     let cancelled = false;
     files.forEach((file, index) => {
       if (!file.download_url) return;
-      fileDownloadHead(file.download_url)
+      const gatewayResource = needsGatewayResource(file.download_url);
+      const enterpriseDownload = !gatewayResource && isEnterprise();
+      const head = gatewayResource
+        ? gatewayFetch(file.download_url, { method: 'HEAD' })
+        : fileDownloadHead(file.download_url);
+      head
         .then((res) => {
           if (!cancelled) {
             setExpiredSet((prev) => {
               const next = new Set(prev);
-              if (res.ok && isEnterprise()) next.delete(index);
-              else if (!res.ok && (!isEnterprise() || [403, 404, 410].includes(res.status))) next.add(index);
+              if (res.ok && enterpriseDownload) next.delete(index);
+              else if (!res.ok && (!enterpriseDownload || [403, 404, 410].includes(res.status))) next.add(index);
               return next;
             });
           }
         })
         .catch(() => {
-          if (!cancelled && !isEnterprise()) {
+          if (!cancelled && !enterpriseDownload) {
             setExpiredSet((prev) => new Set(prev).add(index));
           }
         });
@@ -1386,6 +1420,11 @@ export function FileDownloadList({
       : '';
     const href = file.download_url || pathHref;
     if (expiredSet.has(index) || !href) return;
+    if (needsGatewayResource(href)) {
+      try { await downloadGatewayResource(href, file.name || 'download'); }
+      catch { window.alert(t('artifacts.downloadFailed', { name: file.name })); }
+      return;
+    }
     if (file.download_url && isEnterprise() && !(await prepareFileDownload(file.download_url))) {
       window.alert(t('artifacts.downloadFailed', { name: file.name }));
       return;
@@ -1500,7 +1539,7 @@ export function FileDownloadList({
               aria-label={onPreview ? t('artifacts.openPreview', { name: displayName }) : undefined}
             >
               {isSkill ? (
-                <img
+                <GatewayImage
                   src={skillPackageIcon}
                   alt=""
                   aria-hidden="true"
@@ -1583,7 +1622,7 @@ export function FileDownloadList({
             )}
             </div>
             {showImagePreview && (
-              <img
+              <GatewayImage
                 src={file.download_url}
                 alt={displayName}
                 className="chat-panel-file-download-image-preview"
@@ -1592,15 +1631,15 @@ export function FileDownloadList({
               />
             )}
             {showVideoPreview && (
-              <video
+              <GatewayVideo
+                src={file.download_url}
                 controls
                 preload="metadata"
                 className="chat-panel-file-download-video-preview"
                 data-testid="chat-panel-file-download-video-preview"
                 onClick={(event) => event.stopPropagation()}
               >
-                <source src={file.download_url} type={file.mime_type} />
-              </video>
+              </GatewayVideo>
             )}
           </div>
         );

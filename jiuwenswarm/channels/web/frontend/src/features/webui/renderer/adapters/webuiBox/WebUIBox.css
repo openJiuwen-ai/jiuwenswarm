@@ -1,0 +1,17 @@
+.webui-box.webui-box--from-sm,
+.webui-box.webui-box--from-md,
+.webui-box.webui-box--from-lg {
+  display: none;
+}
+
+@media (min-width: 576px) {
+  .webui-box.webui-box--from-sm { display: flex; }
+}
+
+@media (min-width: 768px) {
+  .webui-box.webui-box--from-md { display: flex; }
+}
+
+@media (min-width: 992px) {
+  .webui-box.webui-box--from-lg { display: flex; }
+}

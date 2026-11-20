@@ -229,7 +229,7 @@ async def test_auto_answer_reenters_native_projection_after_cwd_changes(native, 
     )}}
     result = await native.rail.before_tool_call(invocation.ctx)
     assert result is None
-    assert collected == [[(str(native.root.parent), "read")]]
+    assert collected == [[(native.root.parent.as_posix(), "read")]]
     assert bool(persisted) is True
     assert inv.normalize_invocation_tool_args(name, pending.tool_args) == frozen_args
     assert NATIVE_PATH_ACCESS.get() is None
@@ -276,9 +276,9 @@ async def test_tool_deny_and_exact_external_path_survive_projection(native):
     policy = OpenJiuwenPolicyEvaluator(base, permission_config_getter=lambda: native.permissions)
     result = await policy.evaluate(frozen)
     assert result.level == "ask"
-    assert result.external_paths == (str(native.root.parent),)
+    assert result.external_paths == (native.root.parent.as_posix(),)
     assert base._collect_file_guard_persist_accesses("glob", frozen.tool_args, base._engine.config) == [
-        (str(native.root.parent), "read"),
+        (native.root.parent.as_posix(), "read"),
     ]
     denied = deepcopy(native.permissions)
     denied["tools"] = {"glob": "deny"}
@@ -422,7 +422,7 @@ async def test_pdf_keeps_its_workspace_not_cwd_resolution(native, monkeypatch, l
         base = native.rail.base_rail
         policy = OpenJiuwenPolicyEvaluator(base, permission_config_getter=lambda: configured)
         assert (await policy.evaluate(frozen)).level == level
-        expected = [(str(target), "read")] if level == "ask" else []
+        expected = [(target.as_posix(), "read")] if level == "ask" else []
         assert base._collect_file_guard_persist_accesses("read_pdf", frozen.tool_args, configured) == expected
     finally:
         native.manager.remove(tool.card.name)

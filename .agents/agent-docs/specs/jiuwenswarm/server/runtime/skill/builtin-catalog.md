@@ -12,7 +12,7 @@ files: [jiuwenswarm/common/builtin_skills.py, jiuwenswarm/common/utils.py, jiuwe
 
 ## 入口与资源
 
-包内默认内置技能统一注册为 `workswarm-builtin`，35 个能力位于其 `references/capabilities/<name>/`，由 `references/catalog.md` 导航。模型以文件读取方式按需加载，子技能的脚本和相对资源按子目录解析。用户、项目、在线市场与 MCP 技能保持各自发现语义。
+包内默认内置技能统一注册为 `workswarm-builtin`，36 个能力位于其 `references/capabilities/<name>/`，由 `references/catalog.md` 导航。模型以文件读取方式按需加载，子技能的脚本和相对资源按子目录解析。用户、项目、在线市场与 MCP 技能保持各自发现语义。
 
 Swarm UI 与默认安装只发布总目录；现有 Symphony 直接子目录扫描和 core SkillUseRail 的首个 SKILL.md 边界保证子技能不成为初始独立候选。读取总入口不会读取子技能正文。
 
@@ -22,13 +22,15 @@ Swarm UI 与默认安装只发布总目录；现有 Symphony 直接子目录扫�
 
 `_install_default_builtin_skills()` 同时承接初始化和启动补齐。首次复制先写临时目录再重命名，完整安装后才迁移旧副本；补齐不覆盖现有总目录。显式覆盖安装更新种子资源，保留 `.legacy/` 归档和迁移偏好。安装与迁移使用同一工作区的锁串行处理。
 
+已安装且来源确认为 builtin 的总目录，在同一安装锁内补齐包内新增但本地尚不存在的能力叶子。每个叶子先复制到同文件系统的临时目录，再整体重命名发布；复制失败不留下可发现的半份能力，也不提前更新导航。已存在的能力目录与其用户修改均不覆盖，不重新创建顶层独立技能。`jiuwen-system-plugin-dev` 按此规则位于总目录 `references/capabilities/`，用于系统插件开发、修改、测试、打包及明确授权后的安装。
+
 `legacy_hashes.json` 记录收拢前资源指纹，`legacy_versions.json` 补充可追溯 Git 修订的历史发行内容指纹。迁移只归档 state 中来源明确为 builtin、没有同名本地注册、内容和可信指纹一致的副本；文本换行差异与 Python 缓存不算用户修改。无法确认原版的修改副本保留原目录和启用配置，安装来源改为 local，记录 `legacy_builtin: true` 和 `builtin_catalog_customized`，不再占内置分组。符号链接不迁移；未登记或来源不明的资产不按 builtin 处理。
 
 未修改副本移动到总目录 `.legacy/<name>/`，不删除原内容。成功后从 `installed_plugins` 移除旧独立安装记录，并将名字记录在 `builtin_catalog_migrated`。移动后提交 state 前中断，下一次通过归档指纹识别并继续；state 用临时文件替换提交。总目录尚未安装成功时不能迁移旧目录。
 
 已存在归档时，可信的重复顶层副本移动到同一 `.legacy/` 下带内容摘要与序号的归档，保留两份内容，不因归档冲突保留独立卡片。恢复同时检查默认和带摘要的归档。`skills.list` 在总目录存在且来源确认为 builtin 时，先重载磁盘状态、在目录锁下补齐迁移，再重载后扫描；迁移失败保留旧资产并记录错误，不使列表整体不可用。
 
-总目录的 `SKILL.md` / `skill_display.md` 仅在内容精确匹配可信旧发行指纹时更新导航，旧文件保存在 `.legacy/catalog-files/`；用户修改的导航不覆盖。总目录在内容和中英文展示描述中明确提供 App Market / app-market 的应用开发入口，子技能保持按需加载。
+总目录的 `SKILL.md` / `skill_display.md` / `references/catalog.md` 仅在内容精确匹配可信旧发行指纹时更新导航，旧文件保存在 `.legacy/catalog-files/`；用户修改的导航不覆盖。总目录在内容和中英文展示描述中明确提供 App Market / app-market 的应用开发入口，子技能保持按需加载。
 
 禁用选择来自旧 `skill_configs` 或插件 enabled 标志，保留原记录并写入 `builtin_catalog_disabled` 和 `references/migration.md`，由总目录提示词要求模型遵循。子技能禁用在收拢后属于提示词偏好；总目录的整体开关仍用现有机制。
 

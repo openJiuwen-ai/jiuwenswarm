@@ -13,6 +13,7 @@ import errno
 import hmac
 import http.client
 import io
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -68,6 +69,16 @@ class _BadRequestError(ValueError):
     """
 
 
+def _is_loopback_address(value: object) -> bool:
+    """Return whether a peer address is a loopback IP literal."""
+    if not isinstance(value, str):
+        return False
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
 def _get_share_image_export_manager() -> ShareImageExportManager:
     """Forward to the gateway-owned singleton (shared job registry)."""
     from agent_gateway.channel_manager.web.share_image_export import (
@@ -84,6 +95,26 @@ def _get_user_workspace_dir() -> Path:
         return Path(configured)
     user_home = os.getenv("JIUWENSWARM_HOME", "").strip()
     return (Path(user_home) if user_home else Path.home()) / ".jiuwenswarm"
+
+
+#: Startup splash candidate hint (Gateway S_09 section 4); answered locally because
+#: the page may load before the Gateway is up.
+SPLASH_HINT_PATH = "/extension-splash/hint"
+
+
+def _splash_candidates() -> bool:
+    """Whether an installed Gateway package may play a splash (Gateway S_09 section 4).
+
+    Shares the Gateway's configuration, manifest rules and splash preferences; the browser still
+    confirms with the Gateway once connected, so this only decides how long to wait.
+    """
+    try:
+        from agent_gateway.extensions_v2.splash_hint import installed_splash_providers
+
+        return bool(installed_splash_providers())
+    except Exception:  # noqa: BLE001 - an unreadable install counts as none; the Gateway answer decides
+        logging.getLogger(__name__).debug("splash hint unavailable", exc_info=True)
+        return False
 
 
 def _get_agent_root_dir() -> Path:
@@ -512,6 +543,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     _WS_LOG_MAX_CHARS = 2000
     _HTTP_PROXY_TIMEOUT = 30
     _SHARE_IMAGE_UPLOAD_IDLE_TIMEOUT = 60 * 60
+    _HTTP_PROXY_CHUNK_BYTES = 64 * 1024
     _WS_CONNECT_TIMEOUT = 10
     _WS_HANDSHAKE_TIMEOUT = 10
     _WS_SELECT_TIMEOUT = 60
@@ -679,6 +711,14 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     def _is_api_route(self) -> bool:
         return urlparse(self.path).path.startswith("/api")
 
+    def _is_extension_asset_route(self) -> bool:
+        # Gateway extension package assets live on the same WebChannel as /api.
+        return urlparse(self.path).path.startswith("/extension-assets/")
+
+    def _is_extension_transfer_route(self) -> bool:
+        # Gateway file import and export (S_10 sections 6 and 7); the Gateway's tickets decide access.
+        return urlparse(self.path).path.startswith(("/extension-uploads/", "/extension-downloads/"))
+
     def _is_ws_route(self) -> bool:
         return urlparse(self.path).path.startswith("/ws")
 
@@ -777,6 +817,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     def _proxy_http(
         self, *, target: str | None = None, path: str | None = None,
         stream_sse: bool = False, login_surface: str | None = None,
+        stream_body: bool = False,
     ) -> None:
         outer_host = self._clean_outer_host()
         if outer_host is None:
@@ -798,11 +839,14 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 timeout=self._HTTP_PROXY_TIMEOUT,
             )
 
+        headers_sent = False
         try:
             body = b""
+            length = 0
             if self.command not in ("GET", "HEAD"):
                 length = int(self.headers.get("Content-Length", "0") or "0")
-                body = self.rfile.read(length) if length > 0 else b""
+                if not stream_body:
+                    body = self.rfile.read(length) if length > 0 else b""
 
             forward_headers: dict[str, str] = {}
             for key, value in self.headers.items():
@@ -817,17 +861,32 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     continue
                 forward_headers[key] = value
             forward_headers["Host"] = outer_host
-
             if login_surface:
                 forward_headers["X-Jiuwen-Web-Surface"] = login_surface
-            conn.request(self.command, path or self.path, body=body, headers=forward_headers)
+
+            if stream_body:
+                # Large imports go through in chunks instead of being held in memory.
+                conn.putrequest(self.command, path or self.path, skip_host=True, skip_accept_encoding=True)
+                for key, value in forward_headers.items():
+                    conn.putheader(key, value)
+                conn.endheaders()
+                remaining = length
+                while remaining > 0:
+                    chunk = self.rfile.read(min(remaining, self._HTTP_PROXY_CHUNK_BYTES))
+                    if not chunk:
+                        break
+                    conn.send(chunk)
+                    remaining -= len(chunk)
+            else:
+                conn.request(self.command, path or self.path, body=body, headers=forward_headers)
             resp = conn.getresponse()
             streaming = (
                 stream_sse
                 and self.command != "HEAD"
                 and resp.getheader("Content-Type", "").startswith("text/event-stream")
             )
-            resp_body = b"" if streaming else resp.read()
+            stream_response = streaming or self._is_extension_asset_route() or self._is_extension_transfer_route()
+            resp_body = b"" if stream_response else resp.read()
 
             self.send_response(resp.status, resp.reason)
             for key, value in resp.getheaders():
@@ -838,20 +897,23 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self.close_connection = True
                 self.send_header("Connection", "close")
             self.end_headers()
-            if streaming:
+            headers_sent = True
+            if stream_response and self.command != "HEAD":
+                # Keep SSE flushing and start extension media before the upstream finishes.
                 try:
-                    chunk = resp.read1(65536)
+                    chunk = resp.read1(self._HTTP_PROXY_CHUNK_BYTES)
                     while chunk:
                         self.wfile.write(chunk)
                         self.wfile.flush()
-                        chunk = resp.read1(65536)
+                        chunk = resp.read1(self._HTTP_PROXY_CHUNK_BYTES)
                 except (OSError, http.client.HTTPException):
                     return
             elif self.command != "HEAD":
                 self.wfile.write(resp_body)
         except Exception as exc:  # noqa: BLE001
             self.log_error("proxy http error: %s", exc)
-            self._write_proxy_error(502, "proxy http error")
+            if not headers_sent:
+                self._write_proxy_error(502, "proxy http error")
         finally:
             conn.close()
 
@@ -1274,7 +1336,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         gateway_api = path == "/gateway-api" or path.startswith("/gateway-api/")
         ws = self._is_ws_route()
         if not (gateway_api or ws or self._is_api_route() or self._is_file_api_route()
-                or self._is_share_api_route()):
+                or self._is_share_api_route() or self._is_extension_asset_route()
+                or self._is_extension_transfer_route()
+                or path == "/system-plugin-recovery/endpoint"):
             return False
         upstream = self._resolve_enterprise_upstream()
         if upstream is None:
@@ -1287,12 +1351,18 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self.send_error(400, "expected websocket upgrade")
         else:
             forward_path = self.path.replace("/gateway-api", "/api", 1) if gateway_api else self.path
-            self._proxy_http(target=http_target, path=forward_path, stream_sse=True)
+            self._proxy_http(
+                target=http_target, path=forward_path, stream_sse=True,
+                stream_body=self._is_extension_transfer_route(),
+            )
         return True
 
     def _dispatch_proxy(self) -> bool:
-        if self._is_api_route():
+        if self._is_api_route() or self._is_extension_asset_route():
             self._proxy_http()
+            return True
+        if self._is_extension_transfer_route():
+            self._proxy_http(stream_body=True)
             return True
         if self._is_ws_route():
             if self._is_websocket_upgrade():
@@ -1301,6 +1371,30 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self.send_error(400, "expected websocket upgrade")
             return True
         return False
+
+    def _handle_system_plugin_recovery_endpoint(self) -> None:
+        """Return the private loopback page URL without using extension services."""
+        from jiuwenswarm.common.system_plugin_recovery import is_local_recovery_request
+
+        if not is_local_recovery_request(self.headers, self.server.server_address[1]):
+            self._write_json(403, {"error": "forbidden"})
+            return
+        if self._check_desktop_access():
+            return
+        if not self.desktop_token and not _is_loopback_address(self.client_address[0]):
+            self._write_json(403, {"error": "forbidden"})
+            return
+        try:
+            from jiuwenswarm.common.system_plugin_recovery import SystemPluginRecovery
+
+            endpoint = SystemPluginRecovery().endpoint()
+        except Exception:  # noqa: BLE001 - keep the static emergency route isolated
+            self.logger.warning("[SystemPluginRecovery] could not read sidecar endpoint", exc_info=True)
+            endpoint = None
+        if endpoint is None:
+            self._write_json(503, {"error": "recovery_unavailable"})
+            return
+        self._write_json(200, {"url": endpoint})
 
     @staticmethod
     def _is_markdown(path_obj: Path) -> bool:
@@ -2650,6 +2744,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         parsed = urlparse(self.path)
         if self._dispatch_office_addins(parsed):
             return
+        if parsed.path == "/system-plugin-recovery/endpoint":
+            self._handle_system_plugin_recovery_endpoint()
+            return
         if parsed.path == "/oauth/hub/callback":
             from jiuwenswarm.channels.web.hub_oauth import complete
 
@@ -2662,6 +2759,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("Content-Length", "0")
             self.end_headers()
+            return
+        if parsed.path == SPLASH_HINT_PATH:
+            self._write_json(200, {"candidates": _splash_candidates()})
             return
         if parsed.path == "/oauth/hub/done":
             body = (
@@ -2771,6 +2871,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self._dispatch_enterprise():
             return
         parsed = urlparse(self.path)
+        if parsed.path == "/system-plugin-recovery/endpoint":
+            self._handle_system_plugin_recovery_endpoint()
+            return
         if self._is_share_api_route():
             self._handle_share_api_get(parsed)
             return
@@ -2815,6 +2918,30 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if cls._IMMUTABLE_ASSET_RE.match(rel_path):
             return cls._IMMUTABLE_CACHE_CONTROL
         return cls._REVALIDATE_CACHE_CONTROL
+
+    @staticmethod
+    def _resolve_route_relative_static(base_dir: Path, rel_path: str) -> Path | None:
+        """Map a route-prefixed static request back onto the static root.
+
+        The Electron build emits relative asset URLs, so a full page reload on a
+        nested route (for example ``/chat/assets/app-xxx.js``) asks the server
+        for the file with the route prefix attached. Serving the matching file
+        keeps deep links working without changing the frontend ``base``.
+        """
+        parts = rel_path.split("/")
+        if len(parts) < 2 or "." not in parts[-1]:
+            return None
+        for start in range(1, len(parts)):
+            # SPA routes never end in a file name, so only file-like tails are
+            # rewritten; anything else keeps the regular index.html fallback.
+            candidate = (base_dir.joinpath(*parts[start:])).resolve()
+            try:
+                in_base = os.path.commonpath([str(base_dir), str(candidate)]) == str(base_dir)
+            except ValueError:
+                continue
+            if in_base and candidate.is_file():
+                return candidate
+        return None
 
     def end_headers(self) -> None:
         # 缓存策略在 send_head 里决定、这里统一落头：super().send_head() 内部
@@ -2908,6 +3035,12 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return super().send_head()
 
         self._static_cache_control = self._REVALIDATE_CACHE_CONTROL
+        route_static = self._resolve_route_relative_static(base_dir, rel_path)
+        if route_static is not None:
+            route_rel_path = route_static.relative_to(base_dir).as_posix()
+            self._static_cache_control = self._cache_control_for_static(route_rel_path)
+            self.path = "/" + route_rel_path
+            return super().send_head()
         self.path = "/index.html"
         if spa_index.is_file():
             return self._injected_index(spa_index)
