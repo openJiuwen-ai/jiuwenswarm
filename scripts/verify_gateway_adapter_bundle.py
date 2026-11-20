@@ -16,7 +16,7 @@ def verify_gateway_extensions() -> None:
     """Exercise the package's file-based loader without starting extensions."""
     package = import_module("agent_gateway")
     import_module("agent_gateway.app_gateway")
-    version("agent-gateway")
+    version("openjiuwen-agent-gateway")
     extension_loader = import_module("agent_gateway.extensions.loader").ExtensionLoader
 
     class VerificationLoader(extension_loader):

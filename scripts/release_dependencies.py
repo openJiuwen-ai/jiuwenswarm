@@ -16,7 +16,7 @@ _OFFICIAL_REPOSITORIES = {
         "https://gitcode.com/openJiuwen/agent-core.git",
         "https://github.com/openJiuwen-ai/agent-core.git",
     },
-    "agent-gateway": {
+    "openjiuwen-agent-gateway": {
         "https://gitcode.com/openJiuwen/agent-gateway.git",
         "https://github.com/openJiuwen-ai/agent-gateway.git",
     },
