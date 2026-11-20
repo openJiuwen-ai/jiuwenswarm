@@ -140,18 +140,12 @@ python -m jiuwenswarm.app
 ![ACP配置完成](../assets/images/ACP配置完成.png)
 ---
 
-## 接入 Multica 本地运行时（Linux 和 macOS）
+## 安装 Multica 原生 JiuwenSwarm Provider
 
-1. 将源码依赖安装到 `.venv`，启动 JiuwenSwarm，并在 JiuwenSwarm 中配置可用模型。
-2. 在运行 daemon 的机器上创建自定义 Profile。使用 `multica daemon status --output json` 返回的机器 ID，以及本机源码目录中启动脚本的绝对路径。
-
-   ```sh
-   multica runtime profile create --daemon-id <daemon-id> --protocol-family kimi \
-     --display-name JiuwenSwarm --command-name /absolute/path/to/jiuwenswarm/scripts/run_multica_acp.sh
-   ```
-
-3. 在 `multica runtime list` 看到 JiuwenSwarm 在线后，使用运行时 ID 绑定 Multica Agent。将 Multica 里的模型留空，使用 Gateway 已配置的模型。如果 Gateway 使用自定义地址，将 Agent 的自定义参数设为 `["--gateway-url", "ws://127.0.0.1:19001/acp"]`，并替换为实际地址。
-4. 将测试事项分配给该 Agent 并检查运行结果。daemon 会为每次运行启动脚本，脚本连接已运行的 Gateway。JiuwenSwarm 当前通过 ACP 声明不支持加载会话，因此这条接入路径暂时无法跨 Multica 运行延续会话。
+1. 在 Multica daemon 使用的环境中安装带原生 ACP 入口的 `workswarm`，运行 `jiuwenswarm-acp --version` 检查安装结果。
+2. 启动 JiuwenSwarm Gateway 并配置可用模型。如果 Gateway 使用自定义地址，在 daemon 的环境中设置 `GATEWAY_URL`。默认地址为 `ws://127.0.0.1:19001/acp`。
+3. 使用支持 `jiuwenswarm` Provider 的 Multica 版本。将 `jiuwenswarm-acp` 加入 daemon 的 PATH，或将 `MULTICA_JIUWENSWARM_PATH` 设为该命令的绝对路径，然后重启 daemon。
+4. 为 Multica Agent 绑定自动发现的 JiuwenSwarm 运行时，分配一个带仓库检出的测试事项，确认 Agent 能修改该仓库中的文件。
 
 ## 返回导航
 
