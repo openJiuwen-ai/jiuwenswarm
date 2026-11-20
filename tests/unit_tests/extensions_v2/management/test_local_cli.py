@@ -383,7 +383,8 @@ def test_frozen_entry_dispatches_before_single_instance_lock(
     monkeypatch.setattr(sys, "frozen", frozen, raising=False)
     namespace = {"sys": sys, "_pop_flag": lambda flag: False, "_ensure_stdio": lambda: None,
                  "_DESKTOP_INSTALL_EXTERNAL_CLI": "install-cli", "_DESKTOP_RESET_EXTERNAL_CLI_CONFIG": "reset-cli",
-                 "_DESKTOP_REMOVE_OFFICE_ADDINS": "remove-office-addins"}
+                 "_DESKTOP_REMOVE_OFFICE_ADDINS": "remove-office-addins",
+                 "_DESKTOP_STOP_BUNDLED_EMAIL_MCP": "stop-bundled-email-mcp"}
     exec(compile(ast.Module(body=[function], type_ignores=[]), "frozen_dispatch", "exec"), namespace)
     assert namespace["_dispatch"]() == 3
     assert calls == [["query", "--json"]]
