@@ -495,6 +495,9 @@ def test_start_services_terminates_peer_waiter_after_first_readiness_failure(
     desktop_app, tmp_path: Path, monkeypatch
 ) -> None:
     """A failed readiness probe must not leave the other probe timing out."""
+    from jiuwenswarm.common import system_plugin_recovery
+
+    monkeypatch.setattr(system_plugin_recovery, "begin_system_plugin_recovery_session", lambda: None)
     runtime = _runtime(desktop_app, tmp_path, monkeypatch)
     agent_process = types.SimpleNamespace(poll=lambda: None)
     gateway_process = types.SimpleNamespace(poll=lambda: None)
