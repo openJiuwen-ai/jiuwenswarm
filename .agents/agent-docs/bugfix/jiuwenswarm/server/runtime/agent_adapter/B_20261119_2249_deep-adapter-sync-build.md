@@ -39,10 +39,13 @@ design_note: 本次是对现有 DeepAdapter 创建链路的局部阻塞修复，
 - rails/初始化线程边界：覆盖真实 `_instantiate_rails()` 慢 builder、`ensure_initialized()` 内同步 `rail.init()` 的 worker 执行、worker loop 生命周期和取消后的 sys operation 接管。
 - cron 注册线程边界：19 passed，覆盖启动期 cron 工具注册的 worker 执行及既有注册行为。
 - 创建链路定向回归：34 passed in 24.29s，断言全部通过；pytest 进程退出阶段受 Windows 下测试日志 handler 未释放、临时目录删除触发 `WinError 32` 影响。
+- CI 门禁报告中的 314 个失败节点按文件分组复测：原有同步 builder 的位置参数兼容问题已消失；权限回归、MoA、快照和 Process CLI 相关节点均通过。
+- Windows 下补充验证：Process CLI 权限链路 11 passed，Process CLI 回归 9 passed；绑定文件使用扩展路径，避免深层 worktree 下超过 `MAX_PATH` 被误报为 `FileNotFoundError`。
+- 快照测试显式按 UTF-8 读取其自身写出的 JSON，避免依赖 Windows 默认代码页；`test_permission_cold_snapshot.py` 35 passed。
 - 新增/修改 Python 文件通过 `py_compile`，`git diff --check` 通过。
 
 未执行格式化和静态检查，遵循本仓库“禁止运行格式化与静态检查工具”的协作约束；未修改依赖锁文件。
 
 ## 遗留风险
 
-worker 无法中断已经进入 native 同步 I/O 的任务；当前实现因此限制共享 registry 操作并在取消时等待收尾。适配器销毁前会清理初始化 worker loop 上的 rails/resources，但运行期对 DeepAgent 的跨 loop 调用仍需继续按真实调用链验证。创建链路之外，配置热更新和运行期具体 `create_subagent()` 仍有各自的同步边界，尚未由本次 adapter 创建修复统一处理。
+worker 无法中断已经进入 native 同步 I/O 的任务；当前实现因此限制共享 registry 操作并在取消时等待收尾。适配器销毁前会清理初始化 worker loop 上的 rails/resources，已通过 Process CLI 的交互、取消和二次卡片链路验证；运行期具体 `create_subagent()` 仍有各自的同步边界，尚未由本次 adapter 创建修复统一处理。
