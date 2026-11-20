@@ -63,6 +63,19 @@ class _CallState:
     unavailable: bool = False
 
 
+class _SubagentReportedFailure(RuntimeError):
+    """raise_for_subagent_error 构造的上报失败：携带来源异常类名供边界判定。
+
+    debug 捕获通道把子代理内部异常转成 error chunk（SDK 流式层 str(e) 文本化，
+    异常链丢失），结构化来源只能靠转换层写入 payload 的 error_origin_class
+    保留——invoke 通道异常自带完整链，origin_class 为 None，行为不变。
+    """
+
+    def __init__(self, reason: str, origin_class: str | None = None) -> None:
+        super().__init__(reason)
+        self.origin_class = origin_class
+
+
 class _CompletionDeadline(Exception):
     """Distinguish our deadline from a TimeoutError raised inside the child."""
 
@@ -80,7 +93,10 @@ def raise_for_subagent_error(result: Any) -> None:
             reason = result.get("error") or result.get("message")
             if not reason and result.get("finish_reason") == "max_iterations":
                 reason = _MAX_ITERATIONS_REASON
-            raise RuntimeError(f"subagent_failed: {reason or 'subagent_error'}")
+            raise _SubagentReportedFailure(
+                f"subagent_failed: {reason or 'subagent_error'}",
+                origin_class=str(result.get("error_origin_class") or "") or None,
+            )
 
 
 def ensure_subagent_available(child: Any) -> None:
@@ -99,6 +115,10 @@ def raise_for_subagent_stream_error(chunk: Any) -> None:
         error["result_type"] = "error"
         if isinstance(payload, str):
             error["message"] = payload
+        elif isinstance(payload, dict) and not error.get("error"):
+            # SDK 流式转换层把失败文本写进 output（error_result 无 error 字段），
+            # 不兜底的话 reason 只剩 subagent_error，失败阶段完全不可定位。
+            error["error"] = payload.get("output")
         raise_for_subagent_error(error)
     elif kind == "answer":
         raise_for_subagent_error(payload)
@@ -161,6 +181,23 @@ def _persistence_failure_reason(exc: BaseException) -> str | None:
         except Exception:  # noqa: BLE001 — 判定失败 = 非存储层，原样 re-raise 不掩盖
             return None
     return None
+
+
+# error chunk 转换层（agent-core stream except）写入 payload 的来源异常类名前缀，
+# 覆盖 SQLite 驱动直抛与 SQLAlchemy 包装两种存储层形态。
+_STORAGE_ORIGIN_MODULE_PREFIXES = ("sqlite3.", "sqlalchemy.exc.")
+
+
+def _reported_storage_reason(exc: BaseException) -> str | None:
+    """error chunk 通道异常链丢失时的补充判定：来源类名是否存储层。
+
+    debug 捕获通道经 SDK 流式转换层后抛出的是 _SubagentReportedFailure（无链），
+    只能按 origin_class 判定；invoke 通道 origin_class 为 None 不受影响。
+    """
+    origin_class = getattr(exc, "origin_class", None)
+    if not origin_class or not origin_class.startswith(_STORAGE_ORIGIN_MODULE_PREFIXES):
+        return None
+    return _storage_error_summary(exc)
 
 
 def _assistant_text(content: Any) -> str:
@@ -305,7 +342,7 @@ async def run_subagent_with_timeout(
         degraded = (
             None
             if deadline or isinstance(exc, asyncio.CancelledError)
-            else _persistence_failure_reason(exc)
+            else _persistence_failure_reason(exc) or _reported_storage_reason(exc)
         )
         recovered = None if degraded is None else _recover_last_assistant_text(child, session_id)
         cleanup = await _cancel_and_observe(child, task, session_id)

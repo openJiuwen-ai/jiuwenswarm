@@ -176,6 +176,48 @@ async def test_sqlalchemy_wrapped_persist_failure_recovers_answer(debug_capture)
     assert "checkpoint_degraded" in result.data["output"]
 
 
+async def test_stream_error_chunk_preserves_storage_degradation(debug_capture):
+    # 模拟 SDK 流式转换层（react_agent/deep_agent stream 的 except Exception）：
+    # 内部异常转 error chunk，str(e) 文本化，结构化来源只剩 error_origin_class。
+    run = AsyncMock(side_effect=_sqlalchemy_persist_failure())
+    child = child_for(run)
+
+    async def stream(*args, **kwargs):
+        try:
+            await run(*args, **kwargs)
+        except Exception as e:  # noqa: BLE001 — 复刻 SDK 转换层形态
+            yield {"type": "error", "payload": {
+                "output": str(e),
+                "result_type": "error",
+                "error_origin_class": f"{type(e).__module__}.{type(e).__qualname__}",
+            }}
+
+    child.stream = stream
+    _child_with_context(child, [_assistant("TASK-01 done")])
+    result = await dispatch(child)
+    assert result.success is True
+    assert "checkpoint_degraded" in result.data["output"]
+    with pytest.raises(BaseError, match="unavailable"):
+        await dispatch(child)
+
+
+async def test_error_chunk_without_origin_class_never_degrades(debug_capture):
+    if debug_capture is None:
+        return  # error chunk 只经 debug 捕获流路径，invoke 参数下无此形态
+
+    async def stream(*args, **kwargs):
+        yield {"type": "error", "payload": {
+            "output": "tool output mentioned (sqlite3.OperationalError) disk I/O error",
+            "result_type": "error",
+        }}
+
+    child = child_for(AsyncMock())
+    child.stream = stream
+    # 无来源类名但有失败文本：不降级，reason 兜底为 output 文本原样透传。
+    with pytest.raises(BaseError, match=r"mentioned \(sqlite3"):
+        await dispatch(child)
+
+
 @pytest.mark.parametrize("messages", [
     [_assistant("reading inputs", tool_calls=[{"id": "t1", "name": "write_file"}])],
     [],
