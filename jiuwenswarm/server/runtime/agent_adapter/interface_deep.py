@@ -14353,9 +14353,9 @@ class JiuWenSwarmDeepAdapter:
             else:
                 configured_subagents = await run_history_io(
                     self._build_subagents_with_general_purpose,
-                    model,
-                    config,
-                    config_base,
+                    model=model,
+                    config=config,
+                    config_base=config_base,
                     rails=rails_list,
                     tools=tool_cards if tool_cards else [],
                     workspace=workspace_obj,
