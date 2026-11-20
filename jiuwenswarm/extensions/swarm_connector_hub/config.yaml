@@ -1,0 +1,13 @@
+# Swarm Connector Hub 默认源（OpenJiuwen Hub MCP 目录；非敏感配置内聚在扩展包内）。
+# 密钥不落盘：hmac_secret_ref 只放 env:// 引用。
+# verification: off（默认，不验 HMAC）| if-present（有签才验）| required（强制验签）
+# content_sha256 有声明时始终核对，不受 verification 控制。
+endpoint: "https://swarmskills.openjiuwen.com"
+timeout: 60.0
+verification: "off"
+hmac_key_id: "default"
+hmac_secret_ref: "env://SKILL_DOWNLOAD_HMAC_SECRET"
+allowed_download_hosts:
+  - "openjiuwen-market.obs.*.myhuaweicloud.com"
+  - "127.0.0.1"
+  - "localhost"
