@@ -153,7 +153,10 @@ def _apply_runtime_entry_patches() -> None:
     install_native_tokenizer_cache()
     install_shell_tool_safety_hooks()
     install_fs_rwlock_task_affinity_patch()
-    install_team_db_lock_retry_patch()
+    try:
+        install_team_db_lock_retry_patch()
+    except Exception:  # noqa: BLE001 — optional compatibility patch
+        logger.warning("[TeamDBLockPatch] optional lock-retry installation failed", exc_info=True)
     apply_provider_compat_patches()
     try:
         install_team_workspace_read_guard()

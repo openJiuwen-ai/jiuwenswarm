@@ -86,12 +86,21 @@ def reset_team_db_lock_retry_patch() -> None:
     try:
         from openjiuwen.agent_teams.tools.database.member_dao import MemberDao
 
+        current = getattr(MemberDao, "update_member_execution_status", None)
         if _original_update_member_execution_status is not None:
-            MemberDao.update_member_execution_status = _original_update_member_execution_status
-    except ImportError:
-        pass
-    _original_update_member_execution_status = None
-    _installed = False
+            if getattr(current, "_jiuwenswarm_lock_retry_patched", False) is True:
+                MemberDao.update_member_execution_status = _original_update_member_execution_status
+            else:
+                logger.warning(
+                    "[TeamDBLockPatch] skip restore: MemberDao method changed after patch installation"
+                )
+    except ImportError as exc:
+        logger.warning("[TeamDBLockPatch] cannot restore MemberDao method: %s", exc, exc_info=True)
+    except (AttributeError, TypeError):
+        logger.warning("[TeamDBLockPatch] cannot restore MemberDao method", exc_info=True)
+    finally:
+        _original_update_member_execution_status = None
+        _installed = False
 
 
 __all__ = ["install_team_db_lock_retry_patch", "reset_team_db_lock_retry_patch"]

@@ -38,20 +38,21 @@ SDK 的瞬时错误重试 helper，因此锁释放后也不会再次执行状态
 
 在 Worker 运行时入口安装幂等兼容包装，只委托 SDK `retry_on_transient` 重试该成员状态写入。
 如果 SDK 方法本身已包含锁重试则不重复包装；SDK/接口不兼容时发出明确警告。没有对所有数据库错误
-做宽泛重试，也没有修改数据库事务或成员执行流程。
+做宽泛重试，也没有修改数据库事务或成员执行流程。安装异常作为可选补丁失败记录完整 warning 后继续
+后续 Worker 补丁。测试重置时只在 DAO 方法仍带本补丁标记时回写原方法，避免覆盖其他补丁。
 
 ## 回归证据与适用范围
 
-- 新增 `test_execution_status_write_retries_sqlite_lock`：首次 DAO 调用抛出锁错误，重试成功后断言
-  返回值及两次调用次数。
-- 扩展 Worker runtime patch 顺序测试，确保团队数据库锁补丁在运行时入口安装。
+- DAO 回归覆盖锁错误重试成功、非锁类 `OperationalError` 单次调用后原样上抛、重复安装不叠加包装、
+  重置不覆盖后续替换的方法，以及 DAO 不可导入时记录 warning。
+- Worker runtime 回归注入补丁安装异常，验证 warning 含异常栈并继续执行后续补丁。
 - Conda `jiuwenswarm` 环境中执行
   `python -m pytest -o addopts='' tests/unit_tests/test_openjiuwen_team_db_lock_patch.py -q`：
-  **1 passed**。测试使用该环境的真实 OpenJiuwen `MemberDao` 与重试 helper，确认锁错误后第二次调用成功。
+  **6 passed**。测试使用真实 OpenJiuwen `MemberDao` 与 SDK 重试 helper。
 - 标准库替身检查通过：锁错误后重试成功、重复安装不叠加包装、测试重置能恢复方法。
-- Worker runtime patch 顺序测试未能执行：该环境已安装的 `agent_gateway.extensions.sdk.skill_source`
-  缺少源码期望的 `SKILL_CAPABILITIES`，在 `agentserver/conftest.py` 导入阶段失败；需要同步匹配的
-  `agent_gateway` 依赖后再重验启动接入。
+- 未能运行更大的 `test_agentserver_regressions.py`：当前环境的 `agent_gateway.extensions.sdk.skill_source`
+  缺少源码期望的 `SKILL_CAPABILITIES`，在 `agentserver/conftest.py` 导入阶段失败。Worker 补丁异常后
+  继续装配的独立回归已通过。
 
 ## 防错模式与资料同步
 
@@ -60,5 +61,5 @@ SDK 的瞬时错误重试 helper，因此锁释放后也不会再次执行状态
 
 ## 遗留与后续
 
-Worker 接入级定向 pytest 仍待重验，需先同步匹配的 `agent_gateway` 依赖；DAO 锁重试单测已在 Conda
-环境通过。若 SDK DAO 或重试 helper 接口变化，应检查并更新该兼容补丁。
+更大的 AgentServer 回归仍待匹配的 `agent_gateway` 依赖环境重验；若 SDK DAO 或重试 helper 接口变化，
+应检查并更新该兼容补丁。

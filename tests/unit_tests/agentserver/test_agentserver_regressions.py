@@ -1337,7 +1337,7 @@ async def test_drain_cancels_raw_task_after_timeout_and_keeps_it_until_exit():
 
 # --- from test_worker_optional_team_patches.py ---
 
-@pytest.mark.parametrize("failed_stage", ["guard", "descriptions"])
+@pytest.mark.parametrize("failed_stage", ["team_db", "guard", "descriptions"])
 @pytest.mark.parametrize("error_type", [AttributeError, ImportError, OSError])
 def test_optional_team_patch_failure_preserves_remaining_runtime_patches(
     monkeypatch, caplog, failed_stage, error_type,
@@ -1382,8 +1382,8 @@ def test_optional_team_patch_failure_preserves_remaining_runtime_patches(
     runtime_backend._apply_runtime_entry_patches()
 
     assert calls == ["fs_rwlock", "team_db", "guard", "descriptions", "login", "sse"]
-    warnings = [record for record in caplog.records if "TeamWorkspace" in record.message]
-    assert len(warnings) == 1
     warning.assert_called_once()
     assert warning.call_args.kwargs["exc_info"] is True
+    expected_logger = "TeamDBLockPatch" if failed_stage == "team_db" else "TeamWorkspace"
+    assert expected_logger in warning.call_args.args[0]
 
