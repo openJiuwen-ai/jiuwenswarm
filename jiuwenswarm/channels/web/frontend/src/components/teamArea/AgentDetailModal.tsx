@@ -461,7 +461,7 @@ export function AgentDetailModal({ state, agentName, onClose, onTabChange, callR
                     : 'border-border text-text-muted hover:text-text'
                 }`}
               >
-                格式化
+                {t('swarmflow.formatToggleFormatted')}
               </button>
               <button
                 type="button"
@@ -474,7 +474,7 @@ export function AgentDetailModal({ state, agentName, onClose, onTabChange, callR
                     : 'border-border text-text-muted hover:text-text'
                 }`}
               >
-                原始
+                {t('swarmflow.formatToggleRaw')}
               </button>
             </div>
           )}

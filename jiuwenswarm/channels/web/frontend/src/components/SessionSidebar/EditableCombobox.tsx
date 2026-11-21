@@ -1,4 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type FocusEvent, type KeyboardEvent } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   filterEditableComboboxOptions,
   resolveEditableComboboxCommit,
@@ -22,12 +23,13 @@ const VIEWPORT_MARGIN = 8;
 export function EditableCombobox({
   ariaLabel,
   disabled = false,
-  emptyText = '没有匹配项',
+  emptyText,
   placeholder,
   onChange,
   options,
   value,
 }: EditableComboboxProps) {
+  const { t } = useTranslation();
   const listboxId = useId();
   const selectedOption = options.find(option => option.value === value);
   const selectedLabel = selectedOption?.label ?? (value ? value : '');
@@ -179,7 +181,7 @@ export function EditableCombobox({
         data-testid="session-sidebar-editable-combobox-toggle"
         type="button"
         className="editable-combobox__toggle"
-        aria-label={`${ariaLabel}选项`}
+        aria-label={t('sessionSidebar.comboboxOptions', { label: ariaLabel })}
         aria-expanded={open}
         disabled={disabled}
         onClick={() => {
@@ -221,7 +223,7 @@ export function EditableCombobox({
               </button>
             ))
           ) : (
-            <div className="editable-combobox__empty">{emptyText}</div>
+            <div className="editable-combobox__empty">{emptyText ?? t('common.noMatches')}</div>
           )}
         </div>
       )}

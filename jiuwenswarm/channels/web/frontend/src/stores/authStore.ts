@@ -8,6 +8,7 @@
  */
 
 import { create } from 'zustand';
+import i18n from '../i18n';
 import { webClient } from '../services/webClient';
 import {
   AUTH_CALLBACK_CHANNEL,
@@ -253,7 +254,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       request = await authorize();
     } catch (error) {
       if (run !== loginRun) return;
-      set({ phase: 'idle', error: messageOf(error, '无法获取授权地址，请稍后重试') });
+      set({ phase: 'idle', error: messageOf(error, i18n.t('auth.errors.authorizeUnavailable')) });
       return;
     }
     // 取授权地址期间用户点了取消 / 登出：这一轮作废，别再替他开浏览器；
@@ -317,7 +318,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       if (pendingLogin !== current || !(error instanceof AuthApiError)) return;
       finished = true;
       stopWaiting();
-      set({ phase: 'idle', error: messageOf(error, '登录失败，请重试'), claimPendingHint: false });
+      set({ phase: 'idle', error: messageOf(error, i18n.t('auth.errors.loginFailed')), claimPendingHint: false });
     } finally {
       claimInFlight = false;
       if (!finished && claimRequestedAgain) void get().checkLogin(claimRequestedManually);

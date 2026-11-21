@@ -291,7 +291,7 @@ function SuggestionCard({
           listedAtLabel ? t('chat.topicStarter.hotListListedAt', { time: listedAtLabel }) : '',
         ].filter(Boolean).join(' · ')
       : [
-          source?.source_kind === 'news_report' ? '资讯' : '近期',
+          source?.source_kind === 'news_report' ? t('chat.topicStarter.newsReport') : t('chat.topicStarter.recent'),
           sourceSite,
           typeof source?.published_at === 'string' ? source.published_at.slice(5, 10).replace('-', '/') : '',
         ].filter(Boolean).join(' · ');
@@ -332,7 +332,7 @@ function SuggestionCard({
               </div>
             </details>
           ) : (
-            <a data-testid="chat-panel-topic-source" data-variant={topic.title} className="chat-suggestion-card__source" href={sourceUrl} target="_blank" rel="noreferrer" aria-label={`打开原文：${sourceBadge}`}>
+            <a data-testid="chat-panel-topic-source" data-variant={topic.title} className="chat-suggestion-card__source" href={sourceUrl} target="_blank" rel="noreferrer" aria-label={t('chat.topicStarter.openOriginal', { source: sourceBadge })}>
               {sourceBadge} <span aria-hidden="true">↗</span>
             </a>
           )}
