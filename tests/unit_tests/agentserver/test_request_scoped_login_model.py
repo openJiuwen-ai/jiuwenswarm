@@ -105,3 +105,25 @@ def test_model_check_registers_the_token_even_when_the_model_is_not_rebuilt():
 def test_usable_model_passes():
     entry = {**PLACEHOLDER_ENTRY, "model_name": "my-gpt", "api_base": "https://api.openai.com/v1", "api_key": "sk-real"}
     assert _adapter_whose_default_is(entry)._model_config_error(_request()) is None
+
+
+@pytest.mark.parametrize(
+    ("preferred_language", "expected"),
+    [("en", "No model is configured"), ("zh", "还没有配置可用的模型"), ("cn", "还没有配置可用的模型")],
+)
+def test_model_not_configured_message_follows_preferred_language(monkeypatch, preferred_language, expected):
+    monkeypatch.setattr(
+        JiuWenSwarmDeepAdapter, "_resolve_prompt_language", staticmethod(lambda: preferred_language)
+    )
+    code, message = _adapter_whose_default_is(PLACEHOLDER_ENTRY)._model_config_error(_request())
+    assert code == "model_not_configured"
+    assert message.startswith(expected)
+
+
+def test_model_not_configured_message_falls_back_to_chinese_when_language_unreadable(monkeypatch):
+    def _boom():
+        raise RuntimeError("config unavailable")
+
+    monkeypatch.setattr(JiuWenSwarmDeepAdapter, "_resolve_prompt_language", staticmethod(_boom))
+    _code, message = _adapter_whose_default_is(PLACEHOLDER_ENTRY)._model_config_error(_request())
+    assert message.startswith("还没有配置可用的模型")
