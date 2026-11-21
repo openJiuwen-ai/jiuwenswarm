@@ -63,12 +63,21 @@ export function ActionMenu({
     };
     // Measure the hidden panel first, including its viewport height limit.
     place();
+    // Capture phase: the trigger also moves when a nested pane scrolls.
+    window.addEventListener('scroll', place, true);
+    window.addEventListener('resize', place);
+    // Layout changes that fire neither event (a sidebar or column resizing the
+    // trigger) still need a re-place; the trigger is what they move.
     const observer =
       typeof ResizeObserver === 'undefined' || !triggerRef.current
         ? null
         : new ResizeObserver(place);
     observer?.observe(triggerRef.current as HTMLButtonElement);
-    return () => observer?.disconnect();
+    return () => {
+      window.removeEventListener('scroll', place, true);
+      window.removeEventListener('resize', place);
+      observer?.disconnect();
+    };
   }, [open, floating, align]);
 
   useEffect(() => {
@@ -90,18 +99,11 @@ export function ActionMenu({
     };
     document.addEventListener('mousedown', close);
     document.addEventListener('keydown', escape);
-    // A viewport-anchored list would drift away from its trigger once anything scrolls or resizes.
-    if (floating) {
-      window.addEventListener('scroll', close, true);
-      window.addEventListener('resize', close);
-    }
     return () => {
       document.removeEventListener('mousedown', close);
       document.removeEventListener('keydown', escape);
-      window.removeEventListener('scroll', close, true);
-      window.removeEventListener('resize', close);
     };
-  }, [open, floating]);
+  }, [open]);
 
   return (
     <div
