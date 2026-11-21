@@ -55,11 +55,17 @@ export const managerAuthProvider: EnterpriseAuthProvider = {
     return requestJson<EnterpriseUser>(resolveApiUrl('/idp/v1/auth/me'));
   },
   async listAgentContexts() {
-    const result = await requestJson<ManagerResponse<{ contexts: EnterpriseAgentContext[] }>>(
+    const result = await requestJson<ManagerResponse<{
+      contexts: EnterpriseAgentContext[];
+      empty_reason?: 'no_grant' | 'no_agent_template' | null;
+    }>>(
       resolveApiUrl('/manager-api/v1/user-console/agent-contexts'),
     );
     if (result.code !== 200) throw new EnterpriseAuthError(result.code, result.message || '加载 Agent 上下文失败');
-    return result.data?.contexts ?? [];
+    return {
+      contexts: result.data?.contexts ?? [],
+      emptyReason: result.data?.empty_reason ?? null,
+    };
   },
   async setActiveCluster(jiuwenclawId: string) {
     const result = await requestJson<ManagerResponse<{ jiuwenclaw_id: string }>>(

@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type Focu
 import {
   filterEditableComboboxOptions,
   resolveEditableComboboxCommit,
+  resolveEditableComboboxStrictCommit,
   type EditableComboboxOption,
 } from './editableComboboxModel';
 
@@ -10,6 +11,8 @@ interface EditableComboboxProps {
   disabled?: boolean;
   emptyText?: string;
   placeholder?: string;
+  /** 只允许提交现有选项；自由输入失焦后回退到当前选中项。 */
+  strictSelection?: boolean;
   onChange: (value: string) => void;
   options: EditableComboboxOption[];
   value: string;
@@ -24,6 +27,7 @@ export function EditableCombobox({
   disabled = false,
   emptyText = '没有匹配项',
   placeholder,
+  strictSelection = false,
   onChange,
   options,
   value,
@@ -93,7 +97,9 @@ export function EditableCombobox({
   };
 
   const commitInput = () => {
-    const committedValue = resolveEditableComboboxCommit(options, inputValue);
+    const committedValue = strictSelection
+      ? resolveEditableComboboxStrictCommit(options, inputValue)
+      : resolveEditableComboboxCommit(options, inputValue);
     setOpen(false);
     setActiveIndex(0);
     if (!committedValue || committedValue === value) {
@@ -109,8 +115,7 @@ export function EditableCombobox({
     setOpen(false);
     setInputValue(option.label);
     setActiveIndex(0);
-    // 显式点选始终通知父组件：自定义生效后 value 可能仍停在某项，
-    // 再点同一项时也需要触发切换回授权 Agent。
+    // 显式点选始终通知父组件：即使 value 仍停在某项，也允许重新触发切换。
     onChange(option.value);
   };
 

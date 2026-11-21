@@ -26,6 +26,8 @@ from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
     assemble_rest_request,
 )
 
+_AGENT_ID = "EyMFedy4mZ0b8btF1gxJFjsq4FOl7Pj6m2EYP3Ecmu7"
+
 
 def _envelope(method: str, **kwargs) -> E2AEnvelope:
     return E2AEnvelope(
@@ -97,6 +99,41 @@ def test_session_upload_reader_has_dedicated_route_and_identity_headers() -> Non
     assert request.headers["X-User-Id"] == "u"
     assert request.headers["X-Group-Id"] == "g" and request.headers["X-Bot-Id"] == "b"
     assert request.query["path"] == envelope.params["path"]
+
+
+def test_identity_headers_carry_agent_display_identity() -> None:
+    envelope = _envelope(
+        "chat.send",
+        user_id="u",
+        channel_context={
+            "routing": {"group_id": "g", "bot_id": "b"},
+            "agent_identity": {
+                "agent_name": "agent_" + _AGENT_ID,
+                "agent_id": _AGENT_ID,
+                "runtime_template_id": "rt-1",
+                "agent_template_id": "tpl-1",
+            },
+        },
+    )
+    headers = assemble_rest_request(envelope, base_url="http://10.0.0.8:8766").headers
+    assert headers["X-Agent-Name"] == "agent_" + _AGENT_ID
+    assert headers["X-Agent-Identity-Id"] == _AGENT_ID
+    assert headers["X-Runtime-Template-Id"] == "rt-1"
+    assert headers["X-Agent-Template-Id"] == "tpl-1"
+
+
+def test_identity_headers_absent_without_display_identity() -> None:
+    envelope = _envelope("chat.send", user_id="u", channel_context={
+        "routing": {"group_id": "g", "bot_id": "b"},
+    })
+    headers = assemble_rest_request(envelope, base_url="http://10.0.0.8:8766").headers
+    for name in (
+        "X-Agent-Name",
+        "X-Agent-Identity-Id",
+        "X-Runtime-Template-Id",
+        "X-Agent-Template-Id",
+    ):
+        assert name not in headers
 
 
 def test_forwarded_methods_with_handlers_get_dedicated_urls() -> None:

@@ -465,8 +465,14 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
     重建为顶层 ``metadata["targets"]``。企业版的专家包名单在
     ``X-Jiuwenswarm-Expert-Packages``。没有 ``X-User-Id`` 时 ``user_id`` 为空，
     表示这次请求按匿名处理，和 WebSocket 入口缺省身份时一样。
+
+    平台展示身份（``agent_name`` / ``agent_id`` / 模板 id）由 Gateway 经
+    ``X-Agent-Name`` / ``X-Agent-Identity-Id`` / ``X-Runtime-Template-Id`` /
+    ``X-Agent-Template-Id`` 透传，这里重建为 ``metadata.agent_identity``，
+    供租户作用域写入工作区留痕；它与路由层 ``X-Agent-Id`` 是两个概念。
     """
     from jiuwenswarm.common.request_identity import (
+        apply_agent_identity_metadata,
         apply_routing_metadata,
         normalize_routing_identity,
     )
@@ -491,6 +497,15 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
     cron_targets = _header(request, "x-cron-targets", "")
     if cron_targets:
         metadata["targets"] = cron_targets
+    metadata = apply_agent_identity_metadata(
+        metadata,
+        {
+            "agent_name": _header(request, "x-agent-name", ""),
+            "agent_id": _header(request, "x-agent-identity-id", ""),
+            "runtime_template_id": _header(request, "x-runtime-template-id", ""),
+            "agent_template_id": _header(request, "x-agent-template-id", ""),
+        },
+    )
     from jiuwenswarm.common.request_ext import (
         INTERNAL_HEADER_NAME,
         RequestExtCodecError,
