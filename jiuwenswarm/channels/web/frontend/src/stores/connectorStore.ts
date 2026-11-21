@@ -81,7 +81,7 @@ interface ConnectorState {
   // 2026-08-17：'delete' 取值随 deleteConnector action 一并删除，不再有"删除中"这个分支。
   busyMap: Record<string, McpBusyKind | undefined>;
 
-  loadList: (filter: 'builtin' | 'local', options?: { silent?: boolean; refresh?: boolean }) => Promise<void>;
+  loadList: (filter: 'builtin' | 'local', options?: { silent?: boolean; refresh?: boolean }) => Promise<boolean>;
   loadDetail: (name: string, options?: { refresh?: boolean }) => Promise<void>;
   installPackage: (assetId: string) => Promise<ConnectorInstallResponse | null>;
   uninstallPackage: (identifier: string) => Promise<boolean>;
@@ -291,7 +291,7 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
     if (!silent) set({ isLoading: true, error: null });
     try {
       const response = await connectorApi.list(filter, '', { refresh: options?.refresh === true });
-      if (requestScope !== catalogScope()) return;
+      if (requestScope !== catalogScope()) return true;
       scheduleCatalogRefresh(
         'connectorStore.ts:' + filter,
         response.cache,
@@ -300,7 +300,7 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
         },
         () => listRequestSeq[filter] === mySeq,
       );
-      if (listRequestSeq[filter] !== mySeq) return; // 已有更新的同 filter 调用发起过，这次结果作废
+      if (listRequestSeq[filter] !== mySeq) return true; // 已有更新的同 filter 调用发起过，这次结果作废
       const fresh = response;
       if (silent) {
         const current = filter === 'builtin' ? get().builtinConnectors : get().myConnectors;
@@ -310,7 +310,7 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
         ) {
           // 早些时候的非静默请求可能已被本次静默请求顶掉，收尾它的 loading 态。
           if (get().isLoading) set({ isLoading: false });
-          return;
+          return true;
         }
       }
       set((state) => ({
@@ -318,13 +318,16 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
         ...(filter === 'builtin' ? { builtinConnectors: fresh } : { myConnectors: fresh }),
         isLoading: false,
       }));
+      return true;
     } catch (error) {
-      if (listRequestSeq[filter] !== mySeq) return;
-      if (silent) return;
-      set({
-        isLoading: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      if (listRequestSeq[filter] !== mySeq) return true;
+      if (!silent) {
+        set({
+          isLoading: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return false;
     }
   },
 

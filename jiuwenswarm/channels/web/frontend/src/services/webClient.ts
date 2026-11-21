@@ -59,6 +59,9 @@ export interface PauseBufferHook {
   onBuffer: (event: WsEvent) => void;
 }
 
+// 重连后等待适配器注入新声明的上限；超时后宿主会整页刷新，这里只需避免请求瞬间失败。
+const DECLARATION_WAIT_MS = 8000;
+
 const LEGACY_EVENT_MAP: Record<string, string> = {
   connection_ack: 'connection.ack',
   content_chunk: 'chat.delta',
@@ -354,6 +357,7 @@ class WebClient {
     options: WebRequestOptions = {},
   ): Promise<T> {
     await this.ensureReady();
+    await this.waitForClientContext();
 
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw this.createWebError(i18n.t('network.connectionUnavailable'), 'WS_NOT_READY', undefined, true);
@@ -465,6 +469,7 @@ class WebClient {
     options: { isStream?: boolean } = {},
   ): Promise<void> {
     await this.ensureReady();
+    await this.waitForClientContext();
 
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw this.createWebError(i18n.t('network.connectionUnavailable'), 'WS_NOT_READY', undefined, true);
@@ -495,6 +500,32 @@ class WebClient {
       return;
     }
     await this.connect(this.lastConnectOptions);
+  }
+
+  /**
+   * 重连后业务处于“等待新声明”的暂停状态：此时直接发请求会被
+   * CLIENT_DECLARATIONS_REQUIRED 判为失败，列表/设置页会短暂报错。
+   * 这里等适配器注入快照后再继续发送；超时仍无快照则由宿主整页刷新兜底。
+   */
+  private async waitForClientContext(): Promise<void> {
+    const host = browserClientCapabilities;
+    if (!host.isUnavailable()) {
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      let timerId = 0;
+      const finish = () => {
+        window.clearTimeout(timerId);
+        unsubscribe();
+        resolve();
+      };
+      const unsubscribe = host.subscribe((change) => {
+        if (change.phase === 'ready' && !host.isUnavailable()) {
+          finish();
+        }
+      });
+      timerId = window.setTimeout(finish, DECLARATION_WAIT_MS);
+    });
   }
 
   private handleIncoming(rawData: string): void {
@@ -875,6 +906,10 @@ class WebClient {
 
   private updateState(state: WebConnectionState): void {
     this.state = state;
+    // 重连成功后若始终收不到声明，由宿主在超时后整页刷新，避免导航请求永久被
+    // CLIENT_DECLARATIONS_REQUIRED 拦截；断开期间不启动该计时。
+    if (state === 'ready') browserClientCapabilities.armDeclarationTimeout();
+    else browserClientCapabilities.clearDeclarationTimeout();
     if (state === 'closed' || state === 'reconnecting') browserClientCapabilities.suspendConnection();
     this.stateHandlers.forEach((handler) => {
       handler(state);

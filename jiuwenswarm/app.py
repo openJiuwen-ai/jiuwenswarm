@@ -156,8 +156,14 @@ def main() -> None:
     recovery = SystemPluginRecovery()
 
     def _retire_recovery_worker() -> None:
-        if not shutdown_application_worker():
-            raise RuntimeError("Recovery restart refused an incomplete Worker shutdown")
+        if shutdown_application_worker():
+            return
+        # A Worker that could not drain must not take the Web front down with
+        # it: keep supervision alive, start the replacements, and surface the
+        # incomplete drain instead of aborting the whole application.
+        logger.error(
+            "[SystemPluginRecovery] Worker shutdown incomplete; restarting services anyway"
+        )
 
     def _backend_restart_requested() -> bool:
         try:

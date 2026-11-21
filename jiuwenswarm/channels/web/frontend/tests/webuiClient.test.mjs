@@ -244,9 +244,58 @@ test('a closed connection revokes active declarations until a fresh connection s
   const next = declarations(); next.connectionEpoch = 'connection-2';
   app.host.configure(next); await Promise.resolve();
   assert.equal(app.host.isUnavailable(), false);
+  assert.equal(app.host.isChanging(), false, 'the fresh snapshot must end the paused context');
   assert.equal(app.host.bindWebSocket({ method: 'config.get' }).request_context.headers.Authorization, 'Bearer persistent');
   assert.equal(app.host.acceptOperation(operation({ credential: 'persistent' })), false);
   assert.equal(app.host.acceptOperation(operation({ credential: 'persistent' }, { connection_epoch: 'connection-2' })), true);
+});
+
+test('an empty snapshot ends the wait left by a disconnected connection', async () => {
+  const app = await setup();
+  app.host.suspendConnection();
+  assert.throws(() => app.host.bindWebSocket({ method: 'config.get' }), /CLIENT_DECLARATIONS_REQUIRED/);
+  const empty = declarations(); empty.packages = []; empty.connectionEpoch = 'connection-2';
+  app.host.configure(empty); await Promise.resolve();
+  assert.equal(app.host.isUnavailable(), false);
+  assert.deepEqual(app.host.bindWebSocket({ method: 'config.get' }), { method: 'config.get' });
+});
+
+test('an unanswered reconnect reloads the page instead of waiting forever', async () => {
+  let reloads = 0;
+  const app = await setup([], { reloadPage: () => { reloads += 1; }, declarationTimeoutMs: 5 });
+  app.host.suspendConnection();
+  app.host.armDeclarationTimeout();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(reloads, 1);
+  assert.equal(app.host.isUnavailable(), true);
+});
+
+test('a delivered snapshot cancels the reload timeout', async () => {
+  let reloads = 0;
+  const app = await setup([], { reloadPage: () => { reloads += 1; }, declarationTimeoutMs: 5 });
+  app.host.suspendConnection();
+  app.host.armDeclarationTimeout();
+  const empty = declarations(); empty.packages = []; empty.connectionEpoch = 'connection-2';
+  app.host.configure(empty);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(reloads, 0);
+});
+
+test('the first declarations snapshot does not abort requests already in flight', async () => {
+  const storage = new Storage();
+  const host = createClientCapabilityHost({ storage: () => storage, gatewayUrl: () => 'https://gateway.test/' });
+  const signal = host.getSignal();
+  host.configure(declarations([]));
+  assert.equal(signal.aborted, false);
+  assert.equal(host.getSignal().aborted, false);
+  assert.equal(host.isUnavailable(), false);
+});
+
+test('a later snapshot still aborts requests bound to the previous one', async () => {
+  const app = await setup([]);
+  const signal = app.host.getSignal();
+  app.host.configure(declarations([]));
+  assert.equal(signal.aborted, true);
 });
 
 const server = createServer((request, response) => {
