@@ -37,6 +37,10 @@ def e2a_to_agent_request(env: E2AEnvelope) -> AgentRequest:
     若 envelope 含 Gateway 兜底标记，须由调用方先分支处理 legacy，勿调用本函数。
     """
     ctx = dict(env.channel_context or {})
+    # 顶层 traceparent 是 Gateway 注入的权威来源：仅在真值时覆盖 channel_context
+    # 中的同名值；顶层缺失时保留 channel 值，兼容只写 channel_context 的入口。
+    if env.traceparent:
+        ctx["traceparent"] = env.traceparent
     internal = ctx.pop(E2A_INTERNAL_CONTEXT_KEY, None)
     if isinstance(internal, dict) and internal.get("normalize_failed"):
         raise RuntimeError("e2a_to_agent_request called on fallback envelope; use legacy path")
