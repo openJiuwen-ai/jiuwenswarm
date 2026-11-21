@@ -12,8 +12,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.events import Event
-from openjiuwen.core.extension import ActivationReport, ActivePackageRecord
+from openjiuwen.core.extension import ActivationReport, ActivePackageRecord, ExtensionFailure
 
 from e2a.models import E2AEnvelope
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
@@ -940,6 +941,36 @@ async def test_uninstall_one_version_keeps_the_other_stored_versions(
     assert not (manager.install_dir / "webui.demo" / "1.0.0").exists()
     assert (manager.install_dir / "webui.demo" / "0.9.0").is_dir()
     assert (await manager.query()).active == ()
+
+
+async def test_uninstall_one_version_keeps_local_success_when_report_commit_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    await manager.install([write_package(tmp_path / "source-1", package_id="webui.demo", version="1.0.0")])
+    older = write_package(tmp_path / "source-09", package_id="webui.demo", version="0.9.0")
+    copytree(older, manager.install_dir / "webui.demo" / "0.9.0")
+    finish_operation = AsyncMock(
+        side_effect=ExtensionFailure(
+            StatusCode.EXTENSION_REPORT_FAILED,
+            reason="report lock timeout",
+        )
+    )
+    monkeypatch.setattr(manager.registry.context.install_report, "finish_operation", finish_operation)
+
+    removed = await PackageManagementAdapter().handle(
+        _request(
+            ReqMethod.EXTENSIONS_V2_UNINSTALL,
+            {"package_id": "webui.demo", "version": "1.0.0"},
+        )
+    )
+
+    assert removed.ok
+    assert removed.payload["reports"][0]["status"] == "SUCCESS"
+    assert not (manager.install_dir / "webui.demo" / "1.0.0").exists()
+    assert (manager.install_dir / "webui.demo" / "0.9.0").is_dir()
+    assert manager.registry.runtime.get_active("webui.demo") is None
+    finish_operation.assert_awaited_once()
 
 
 async def test_uninstall_a_stored_version_keeps_the_active_one(

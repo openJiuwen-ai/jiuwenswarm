@@ -298,12 +298,21 @@ class ExtensionManager:
             report = _failure(package_id, exc.as_error())
         finally:
             if token is not None:
-                await service.finish_operation(
-                    token,
-                    report=report,
-                    active=context.runtime.get_active(package_id),
-                    cleanup_pending=False,
-                )
+                try:
+                    await service.finish_operation(
+                        token,
+                        report=report,
+                        active=context.runtime.get_active(package_id),
+                        cleanup_pending=False,
+                    )
+                except ExtensionFailure:
+                    # Match Core's managed lifecycle: a report lock failure must not
+                    # replace a completed local uninstall result with an unknown error.
+                    logger.exception(
+                        "[ExtensionsV2] could not commit version uninstall result for %s@%s",
+                        package_id,
+                        version,
+                    )
         if report is None:  # pragma: no cover - begin_operation always reports one outcome
             raise ExtensionFailure(StatusCode.EXTENSION_LOAD_FAILED, reason="uninstall produced no report")
         return report
