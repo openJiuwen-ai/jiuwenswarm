@@ -27,6 +27,8 @@ await build({
         export const useSessionStore = selector => selector({isConnected: globalThis.a4pCard.connected});`,
           '../services/webClient':
             'export const webClient = {request: (...args) => globalThis.a4pCard.request(...args)};',
+          '../multi-session/state/newConversationLifecycle':
+            "export const NEW_CONVERSATION_ID = 'new';",
           'react-i18next':
             'export const useTranslation = () => ({t: (key, values) => globalThis.a4pCard.translate(key, values)});',
         };
@@ -80,7 +82,7 @@ async function mount(run, options = {}) {
     fixture.listeners.forEach((fn) => fn());
   };
   fixture.state = {
-    activeSessionId: 's',
+    activeSessionId: options.sessionId ?? 's',
     runtimes: { s: { pendingA4PAuthorization: pending('abc', [0, 1, 2]) } },
     setPendingA4PAuthorization: (_s, p) => update(p),
   };
@@ -294,6 +296,12 @@ for (const cron of [false, true]) {
     });
   });
 }
+
+test('draft conversation skips the pending authorization query', async () => {
+  await mount(async ({ fixture }) => {
+    assert.deepEqual(fixture.calls, []);
+  }, { connected: true, sessionId: 'new' });
+});
 
 test('reconnection restores original candidates and prepared selection', async () => {
   await mount(
