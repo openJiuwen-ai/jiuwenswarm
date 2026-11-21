@@ -1617,7 +1617,7 @@ test('channel reply mode renders a compact selected state and disables changes w
 });
 
 
-test('each bound app is listed with its own platform without an add connection action', () => {
+test('bound apps offer modification and only unbound platforms offer authorization', () => {
   const dingtalk = { channel: 'dingtalk', connectionKey: 'ding-app', agentId: 'agent-ding', workspaceDir: null };
   const markup = renderProfile({
     initialSection: 'channels',
@@ -1629,13 +1629,20 @@ test('each bound app is listed with its own platform without an add connection a
   assert.match(markup, /data-testid="jiuwenmate-profile-connection" data-variant="cli-app"/);
   assert.match(markup, /data-testid="jiuwenmate-profile-connection" data-variant="ding-app"/);
   assert.equal(markup.match(/data-testid="jiuwenmate-profile-im-remove"/g).length, 2);
-  assert.doesNotMatch(markup, /data-testid="jiuwenmate-profile-im-add"/);
+  assert.doesNotMatch(markup, /data-testid="jiuwenmate-profile-im-(?:add|authorize)"/);
   assert.equal(markup.match(/data-testid="jiuwenmate-profile-im-modify"/g).length, 2);
   assert.doesNotMatch(markup, /data-testid="jiuwenmate-profile-quick-im"/);
 
   const unbound = renderProfile({ initialSection: 'channels' });
   assert.doesNotMatch(unbound, /data-testid="jiuwenmate-profile-connection"/);
-  assert.match(unbound, />授权</);
+  assert.equal(unbound.match(/data-testid="jiuwenmate-profile-im-authorize"/g).length, 2);
+
+  const feishuOnly = renderProfile({
+    initialSection: 'channels',
+    colleague: { ...colleague, connections: [...colleague.connections, feishuConnection] },
+  });
+  assert.equal(feishuOnly.match(/data-testid="jiuwenmate-profile-im-authorize"/g).length, 1);
+  assert.doesNotMatch(feishuOnly, /data-testid="jiuwenmate-profile-im-add"/);
 });
 
 test('a bound platform hides authorization while other platforms remain available', () => {
