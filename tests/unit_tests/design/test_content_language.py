@@ -116,7 +116,10 @@ def test_chinese_smart_graph_keeps_locks_out_of_visible_and_api_text(monkeypatch
     body, _notes = director_approve_video_prompt(
         "阿岚擦拭吧台", cfg=cfg, graph=graph, clip_index=1, action="阿岚擦拭吧台", camera="固定中景"
     )
-    assert "身穿白衬衫配棕色围裙" in body
+    # The character sheet carries face and wardrobe, so the clip prompt binds it by
+    # slot instead of restating the outfit as prose.
+    assert "阿岚（Image 1）" in body
+    assert "白衬衫" not in body
     assert _english_words(body) == set(), body
     compose = next(n["config"] for n in graph["nodes"] if n["id"] == "n_compose")
     assert compose["director_task"].startswith("使用 ffmpeg_compose 工具，按镜头顺序")

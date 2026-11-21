@@ -530,12 +530,76 @@ def _tod_covered_in_text(text: str, cfg: dict[str, Any], lang: str = "en") -> bo
     return False
 
 
+def resolve_clip_prompt_budget() -> int:
+    """The one character budget a clip prompt is held to.
+
+    The vendor limit is the only real cap; the practice gate and the composer use
+    this same number so a prompt that passes the gate is never cut afterwards.
+    """
+    try:
+        from jiuwenswarm.server.runtime.designer.pipeline.media_prompt_limits import (
+            resolve_prompt_limit,
+        )
+
+        limit = resolve_prompt_limit("video")
+        if limit.max_chars and limit.max_chars > 0:
+            return int(limit.max_chars)
+    except Exception:  # noqa: BLE001
+        pass
+    return 2200
+
+
+_SENTENCE_END = "。！？；.!?;"
+
+
+def split_sentences(text: str) -> list[str]:
+    """Split at sentence terminators, keeping each terminator with its sentence."""
+    parts: list[str] = []
+    buf: list[str] = []
+    for ch in str(text or ""):
+        buf.append(ch)
+        if ch in _SENTENCE_END:
+            parts.append("".join(buf))
+            buf = []
+    if buf:
+        parts.append("".join(buf))
+    return [part.strip() for part in parts if part.strip()]
+
+
+def fit_prompt_to_budget(text: str, budget: int | None = None) -> tuple[str, list[str]]:
+    """Trim a prompt at sentence boundaries, never mid-word, and say what was lost.
+
+    Sentences keep their order; the tail is dropped when the budget is exhausted.
+    Returns (prompt, dropped_sentences).
+    """
+    limit = int(budget or resolve_clip_prompt_budget())
+    text = str(text or "").strip()
+    if len(text) <= limit:
+        return text, []
+    parts = split_sentences(text)
+    kept: list[str] = []
+    size = 0
+    dropped: list[str] = []
+    cjk = any("\u4e00" <= ch <= "\u9fff" for ch in text[:200])
+    joiner = "" if cjk else " "
+    for part in parts:
+        piece = part if not kept else joiner + part
+        if size + len(piece) > limit:
+            dropped.append(part.strip())
+            continue
+        kept.append(part)
+        size += len(piece)
+    if not kept:
+        return text[:limit], [text[limit:]]
+    return joiner.join(kept).strip(), dropped
+
+
 def ensure_story_lock_coverage(
     prompt: str,
     cfg: dict[str, Any] | None,
     *,
     graph: dict[str, Any] | None = None,
-    max_chars: int = 2200,
+    max_chars: int | None = None,
 ) -> tuple[str, list[str]]:
     """Append missing film-lock *content* as positive story sentences (clip-safe).
 
@@ -569,7 +633,11 @@ def ensure_story_lock_coverage(
             notes.append("story_cover_language")
 
     tod_sent = _time_of_day_sentence(cfg, content_lang)
-    if tod_sent and not _tod_covered_in_text(text, cfg, content_lang):
+    plate = bool(str(cfg.get("scene_node_id") or cfg.get("master_scene_node_id") or "").strip())
+    tod_locked = str((_time_of_day_payload(cfg) or {}).get("time_of_day") or "").strip()
+    if tod_locked.lower() == "unspecified":
+        tod_locked = ""
+    if tod_sent and (tod_locked or not plate) and not _tod_covered_in_text(text, cfg, content_lang):
         additions.append(tod_sent)
         notes.append("story_cover_time_of_day")
 
@@ -604,9 +672,13 @@ def ensure_story_lock_coverage(
             break
 
     if not additions:
-        return text[:max_chars], notes
+        fitted, dropped = fit_prompt_to_budget(text, max_chars)
+        return fitted, [*notes, *([f"dropped_tail:{len(dropped)}"] if dropped else [])]
     merged = join_sentences([text.rstrip(), join_sentences(additions, content_lang)], content_lang).strip()
-    return merged[:max_chars], notes
+    fitted, dropped = fit_prompt_to_budget(merged, max_chars)
+    if dropped:
+        notes.append(f"dropped_tail:{len(dropped)}")
+    return fitted, notes
 
 
 def _scrub_lock_phrase(text: str) -> str:
@@ -1044,10 +1116,20 @@ def compose_practice_prompt(
         if str(x).strip() and not _BAD_DIRECTIVE.search(str(x))
     ]
     props = [p for p in props if p]
+    # An environment plate already shows the architecture, materials and props of
+    # this room; describing them again in words gives the model a second, often
+    # camera-specific version of the same room. Keep the prose only when no plate
+    # is attached to this shot.
+    scene_plate = bool(
+        str(cfg.get("scene_node_id") or cfg.get("master_scene_node_id") or "").strip()
+    )
     tod_sent = _time_of_day_sentence(cfg, lang)
-    if tod_sent:
+    tod_locked = str((_time_of_day_payload(cfg) or {}).get("time_of_day") or "").strip()
+    if tod_locked and tod_locked.lower() == "unspecified":
+        tod_locked = ""
+    if tod_sent and (tod_locked or not scene_plate):
         sentences.append(tod_sent)
-    else:
+    elif not scene_plate:
         lighting = _scrub_lock_phrase(str(bible.get("lighting") or ""))
         lighting = strip_phrase(localized_lighting(lighting, lang))
         desc_bits = [b for b in (lighting, list_separator(lang).join(props) if props else "") if b]
@@ -1055,9 +1137,8 @@ def compose_practice_prompt(
             sentences.append(
                 phrase(_PHRASES, lang, "scene_description", desc=("；" if zh else "; ").join(desc_bits))
             )
-    if props and tod_sent:
+    if props and tod_sent and not scene_plate:
         sentences.append(phrase(_PHRASES, lang, "props_in_view", props=list_separator(lang).join(props)))
-
     for line in _continuity_story_lines(cfg, lang):
         if line and line not in sentences:
             sentences.append(line)
@@ -1073,6 +1154,30 @@ def compose_practice_prompt(
             sentences.append(action_sentence)
 
     turnaround = _turnaround_cast(graph)
+    # A character sheet is drawn from the wardrobe lock and shows it from several
+    # angles, so restating it in words only creates a second, weaker source of
+    # truth. Wardrobe prose is kept only when no sheet is attached for that person.
+    plates = {
+        str(x).strip()
+        for x in (
+            list(cfg.get("character_node_ids") or [])
+            + list((cfg.get("identity_refs") or {}).get("character_node_ids") or [])
+        )
+        if str(x).strip()
+    }
+    wardrobe_delta = (
+        cfg.get("wardrobe_delta") if isinstance(cfg.get("wardrobe_delta"), dict) else {}
+    )
+    delta_by_name: dict[str, str] = {}
+    for key, value in wardrobe_delta.items():
+        text_value = str(value or "").strip()
+        if not text_value:
+            continue
+        token_key = str(key or "").strip()
+        delta_by_name[token_key.casefold()] = text_value
+        mapped = _name_for_id(token_key, graph)
+        if mapped:
+            delta_by_name[mapped.casefold()] = text_value
     turnaround_words: list[str] = []
     for index, token in enumerate(tokens, start=1):
         who = _name_for_id(token, graph) or str(token)
@@ -1080,11 +1185,17 @@ def compose_practice_prompt(
             continue
         if token.casefold() in turnaround or who.casefold() in turnaround:
             turnaround_words.append(_image_word(index, family))
+        booked = (
+            delta_by_name.get(str(token).casefold())
+            or delta_by_name.get(who.casefold())
+            or ""
+        )
+        wardrobe = booked or ("" if plates else _wardrobe_for(token, cfg, graph, lang))
         sentences.append(
             _story_cast_sentence(
                 who=who,
                 image_word=_image_word(index, family),
-                wardrobe=_wardrobe_for(token, cfg, graph, lang),
+                wardrobe=wardrobe,
                 seat=_seat_for(token, cfg, graph, lang),
                 doing=_action_for(token, cfg, graph, action),
                 scene_word=scene_word,
@@ -1293,6 +1404,47 @@ def _compose_cfg_for_user_origin(cfg: dict[str, Any], *, camera: str) -> dict[st
     return out
 
 
+_TOKEN_TRIM = ".,;:!?()[]{}\"'“”‘’"
+_WORD_EXTRA = "_'-’"
+
+
+def _plain_word(token: str) -> bool:
+    return bool(token) and all(ch.isalnum() or ch in _WORD_EXTRA for ch in token)
+
+
+def _wearing_hits(text: str) -> list[tuple[str, list[str]]]:
+    """Every "wearing" with the word before it and the plain words after it.
+
+    Plain word scan on purpose: no pattern engine, so a sentence is read the way a
+    writer would read it.
+    """
+    tokens = [token.strip(_TOKEN_TRIM) for token in str(text or "").split()]
+    hits: list[tuple[str, list[str]]] = []
+    for index, token in enumerate(tokens):
+        if token.casefold() != "wearing":
+            continue
+        following: list[str] = []
+        for nxt in tokens[index + 1 : index + 9]:
+            if not _plain_word(nxt):
+                break
+            following.append(nxt)
+        previous = tokens[index - 1].casefold() if index else ""
+        hits.append((previous, following))
+    return hits
+
+
+def _mentions_wearing(text: str) -> bool:
+    return bool(_wearing_hits(text))
+
+
+def _restates_wardrobe(text: str) -> bool:
+    """An outfit spelled out in words beside a sheet that already shows it."""
+    return any(
+        previous != "now" and len(following) >= 3
+        for previous, following in _wearing_hits(text)
+    )
+
+
 def prompt_respects_practice(
     prompt: str,
     *,
@@ -1312,7 +1464,7 @@ def prompt_respects_practice(
     reasons: list[str] = []
     if not text:
         return ["empty"]
-    if len(text) > 2200:
+    if len(text) > resolve_clip_prompt_budget():
         reasons.append("too_long")
     if _BAD_DIRECTIVE.search(text):
         reasons.append("negative_or_example_or_lock_essay")
@@ -1328,8 +1480,30 @@ def prompt_respects_practice(
             break
     if on_screen_names(cfg, graph) and not re.search(r"(?i)\bwearing\b|\bfrom image\b", text):
         reasons.append("missing_cast_presence")
-    if str(cfg.get("costume_lock") or "").strip() and not re.search(r"(?i)\bwearing\b", text):
+    plates = list(cfg.get("character_node_ids") or [])
+    if not plates:
+        identity = cfg.get("identity_refs") if isinstance(cfg.get("identity_refs"), dict) else {}
+        plates = list(identity.get("character_node_ids") or [])
+    # A character sheet already shows the wardrobe, so a clip that binds it by slot
+    # does not have to repeat the outfit in words; only a plate-less shot does.
+    if (
+        str(cfg.get("costume_lock") or "").strip()
+        and not plates
+        and not _mentions_wearing(text)
+    ):
         reasons.append("missing_wardrobe_lock")
+    # With sheets attached, an outfit described in words is a second version of the
+    # wardrobe the plates already show. A stated delta ("now wearing …") is fine.
+    if plates and _restates_wardrobe(text):
+        reasons.append("wardrobe_restated")
+    # A stated speech line must reach the clip verbatim, or the shot loses its line.
+    speech = str(cfg.get("speech_line") or "").strip()
+    if speech and cfg.get("include_speech") is not False:
+        for line in [part.split(":", 1)[-1] for part in speech.split("|")]:
+            quote = line.strip().strip('"“”')
+            if len(quote) >= 8 and quote[:24].casefold() not in text.casefold():
+                reasons.append("missing_speech_line")
+                break
     # Exited cast must not reappear in the call unless storyboard put them on_screen.
     on = {n.casefold() for n in on_screen_names(cfg, graph)}
     for name in exited_names(cfg, graph):
