@@ -703,6 +703,56 @@ export async function sendGoalStreamCommand(params: {
   );
 }
 
+export interface WorkflowPhaseResponse {
+  type?: string;
+  phase?: unknown;
+  session_id?: string;
+  agent_total?: number;
+  has_more?: boolean;
+  error?: unknown;
+}
+
+export interface WorkflowAgentResponse {
+  type?: string;
+  agent?: unknown;
+  session_id?: string;
+  error?: unknown;
+}
+
+/** SwarmFlow：懒加载某个 phase 的 agents（树视图展开用） */
+export async function requestPhaseAgents(
+  sessionId: string,
+  workflowId: string,
+  phaseId: string,
+  agentOffset = 0,
+  agentLimit?: number,
+): Promise<WorkflowPhaseResponse> {
+  return webRequest<WorkflowPhaseResponse>('command.workflows', {
+    session_id: sessionId,
+    action: 'get_phase',
+    workflow_id: workflowId,
+    phase_id: phaseId,
+    agent_offset: agentOffset,
+    ...(agentLimit == null ? {} : { agent_limit: agentLimit }),
+  });
+}
+
+/** SwarmFlow：懒加载单个 agent 详情（节点弹窗用） */
+export async function requestAgentDetail(
+  sessionId: string,
+  workflowId: string,
+  phaseId: string,
+  agentId: string,
+): Promise<WorkflowAgentResponse> {
+  return webRequest<WorkflowAgentResponse>('command.workflows', {
+    session_id: sessionId,
+    action: 'get_agent',
+    workflow_id: workflowId,
+    phase_id: phaseId,
+    agent_id: agentId,
+  });
+}
+
 // Expose webClient to window for debugging in development
 if (import.meta.env.DEV) {
   (window as any).webClient = webClient;

@@ -200,9 +200,8 @@ class ContextOverflowRecoveryRail(DeepAgentRail):
         避免请求一路发到服务端 1M 硬上限才 400。
 
         每个 invoke 最多触发一次（通过 ``ctx.extra`` 标记），压缩失败或
-        usage 不可用时不改变原有行为。解析不到真实模型窗口时直接跳过，
-        不会用 agent-core 的 200000 默认值误触发；该场景仍由
-        ``on_model_exception`` 的响应式恢复兜底。
+        usage 不可用时不改变原有行为。未知模型按 agent-core 的
+        ``DEFAULT_CONTEXT_MAX_TOKENS``（200000）兜底，不再静默跳过。
         """
         if ctx.extra.get("_context_overflow_proactive_done"):
             return
@@ -300,10 +299,11 @@ class ContextOverflowRecoveryRail(DeepAgentRail):
 
     @classmethod
     def _resolve_model_context_limit(cls, ctx: AgentCallbackContext) -> int:
-        """按“显式窗口 → 模型窗口表 → 配置”解析真实上下文窗口。
+        """按“显式窗口 → 配置 → 模型窗口表 → 默认窗口”解析上下文窗口。
 
-        解析不到真实模型窗口时返回 0，放弃主动预压缩，避免用 agent-core
-        的 200000 默认值在远未接近真实窗口时反复触发 FullCompact。
+        未知模型沿用 agent-core 的 ``DEFAULT_CONTEXT_MAX_TOKENS``（200000）作为
+        兜底窗口并打 warning，而不是返回 0 放弃预压缩——否则漏登记窗口表的新模型
+        会在长会话里静默失去全部保护。
         """
         context = getattr(ctx, "context", None)
         explicit_limit = _coerce_positive_int(
@@ -345,19 +345,67 @@ class ContextOverflowRecoveryRail(DeepAgentRail):
             if resolved == DEFAULT_CONTEXT_MAX_TOKENS and not cls._is_known_model(
                 model_name, model_windows, MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS
             ):
-                logger.debug(
+                logger.warning(
                     "[ContextOverflowRecovery] unknown context window for model=%s; "
-                    "proactive compact skipped",
+                    "fallback to DEFAULT_CONTEXT_MAX_TOKENS=%d for proactive compact",
                     model_name,
+                    resolved,
                 )
-                return 0
             return resolved
         except Exception:  # noqa: BLE001
-            logger.debug(
+            logger.warning(
                 "[ContextOverflowRecovery] resolve model context limit failed",
                 exc_info=True,
             )
             return 0
+
+    # ------------------------------------------------------------------
+    # 对外水位口径：flash 水位提醒复用同一把尺子，避免各写一份解析
+    # ------------------------------------------------------------------
+
+    @classmethod
+    def resolve_real_model_context_limit(cls, ctx: AgentCallbackContext) -> int:
+        """公开水位口径：已登记模型的真实上下文窗口；未知模型 / 解析不到返回 0。
+
+        与 ``_resolve_model_context_limit`` 的差异：后者按上游策略，对未登记模型
+        兜底 ``DEFAULT_CONTEXT_MAX_TOKENS``（200000）以保住主动预压缩；水位提醒不能
+        把兜底值当真窗口（真实 1M 窗口在 15% 水位会被算成 75% 而误报），故这里对
+        「兜底值 且 模型不在窗口表」一律返回 0。显式配置的窗口视为真实窗口。
+        """
+        limit = cls._resolve_model_context_limit(ctx)
+        if limit <= 0:
+            return 0
+
+        context = getattr(ctx, "context", None)
+        explicit_limit = _coerce_positive_int(
+            getattr(context, "_context_window_tokens", None)
+        )
+        if explicit_limit <= 0:
+            explicit_limit = _get_config_context_limit(ctx)
+        if explicit_limit > 0:
+            return explicit_limit
+
+        from openjiuwen.core.context_engine.context.context_utils import (
+            DEFAULT_CONTEXT_MAX_TOKENS,
+            MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS,
+        )
+
+        if limit != DEFAULT_CONTEXT_MAX_TOKENS:
+            return limit
+        model_windows = getattr(context, "_model_context_window_tokens", None)
+        if not isinstance(model_windows, dict):
+            model_windows = None
+        model_name = cls._resolve_model_name(ctx)
+        if model_name and cls._is_known_model(
+            model_name, model_windows, MODEL_DEFAULT_CONTEXT_WINDOW_TOKENS
+        ):
+            return limit
+        return 0
+
+    @staticmethod
+    def last_prompt_tokens(ctx: AgentCallbackContext) -> int:
+        """公开口径：最近一次真实 prompt token 数；无 usage 时返回 0。"""
+        return ContextOverflowRecoveryRail._last_prompt_tokens(ctx)
 
     # ------------------------------------------------------------------
     # on_model_exception: core recovery logic

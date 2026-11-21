@@ -75,10 +75,10 @@ export function RsiDetail() {
           task={detail.task}
           report={detail.report}
           usage={detail.usage}
-          onOpenArtifact={(path, title) => {
+          onOpenArtifact={(source, title) => {
             if (!selectedTaskId) return;
             setArtifactTitle(title);
-            setArtifactSource({ taskId: selectedTaskId, path, initialFilePath: null });
+            setArtifactSource(source);
           }}
         />
         <RsiCanvasArea task={detail.task} tree={tree} />

@@ -682,7 +682,7 @@ load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
 reset_free_search_runtime_flags()
 
 
-def _trigger_auto_memory_extraction(
+async def _trigger_auto_memory_extraction(
     adapter: Any,
     request: AgentRequest,
     session_id: str,
@@ -705,10 +705,10 @@ def _trigger_auto_memory_extraction(
 
     messages = None
 
-    # Directly read messages from session history file
+    # Directly read messages from session history file (off event loop: may sleep-retry on PVC).
     try:
         from jiuwenswarm.server.runtime.session.session_history import read_session_history_records
-        history_records = read_session_history_records(session_id)
+        history_records = await asyncio.to_thread(read_session_history_records, session_id)
 
         # Convert history records to message format for memory extraction
         # Each history record has: role, content, timestamp, etc.
@@ -1868,6 +1868,7 @@ class JiuWenSwarm:
         mode: str,
         project_dir: str | None = None,
         adapter_mode: str | None = None,
+        request: AgentRequest | None = None,
     ) -> None:
         """Initialize and start the session-owned adapter without sending input.
 
@@ -1883,12 +1884,26 @@ class JiuWenSwarm:
         prepare = getattr(adapter, "prepare_session", None)
         if not callable(prepare):
             raise RuntimeError("active adapter does not support session prewarming")
-        await prepare(
-            session_id=session_id,
-            channel_id=channel_id,
-            mode=mode,
-            project_dir=project_dir,
-        )
+        if request is None:
+            await prepare(
+                session_id=session_id,
+                channel_id=channel_id,
+                mode=mode,
+                project_dir=project_dir,
+            )
+            return
+        # session.prepare：与对话轮同样的租户上下文和身份下构建。
+        tenant_tokens, mem_token = self._bind_tenant_request_context(request)
+        try:
+            await prepare(
+                session_id=session_id,
+                channel_id=channel_id,
+                mode=mode,
+                project_dir=project_dir,
+                request=request,
+            )
+        finally:
+            self._reset_tenant_request_context(tenant_tokens, mem_token)
 
     def build_inputs(self, request: AgentRequest) -> Tuple[dict[str, Any], str, str]:
         """构建 adapter 所需的 inputs 字典（公共接口）."""
@@ -3328,7 +3343,7 @@ class JiuWenSwarm:
                 mode = request.params.get("mode", "code") if isinstance(request.params, dict) else "code"
                 config = get_config()
                 if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
-                    _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=False)
+                    await _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=False)
             elif not result.ok and is_enterprise():
                 # 失败时也当普通 assistant 回复追加进历史（event_type=chat.final），
                 # 与成功回复走同一条历史恢复链路，刷新后即可在前端看到错误提示。
@@ -4517,7 +4532,7 @@ class JiuWenSwarm:
         mode = request.params.get("mode", "code") if isinstance(request.params, dict) else "code"
         config = get_config()
         if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
-            _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=True)
+            await _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=True)
 
         _schedule_symphony_session_feedback(session_id, rid)
         await self._try_apply_adapter_pending_reload()
@@ -4783,3 +4798,11 @@ class JiuWenSwarm:
             self._adapter = None
 
         logger.info("[JiuWenSwarm] cleanup: 完成")
+
+    async def apply_rsi_harness_install(self, operation, *, config_path, installation_id):
+        await self.ensure_instance()
+        apply = getattr(self._adapter, "apply_rsi_harness_install", None)
+        if not callable(apply):
+            raise RuntimeError("Current agent does not support Harness installation")
+        return await apply(operation, config_path=config_path, installation_id=installation_id)
+

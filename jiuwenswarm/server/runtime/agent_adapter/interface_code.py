@@ -50,6 +50,7 @@ from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
 
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.config import get_sandbox_runtime
+from jiuwenswarm.server.runtime.agent_adapter.deep.rail_factory import _build_llm_retry_rail
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
     _AGENT_CARD_ID,
@@ -479,6 +480,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         "PermissionInterruptRail",
         "ContextProcessorRail",
         "ContextOverflowRecoveryRail",
+        "NotifyingLLMRetryRail",
         "SysOperationRail", "CodingMemoryRail",
         "CodingArtifactPostProcessRail",
         "AgentModeRail", "StructuredAskUserRail", "ConfirmInterruptRail",
@@ -803,6 +805,14 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 _RailBuildInfo(
                     "_a2a_outbound_toolkit_rail",
                     self._build_a2a_outbound_toolkit_rail,
+                ),
+            )
+            # 团队成员由 swarm 装配自己的重试 Rail。
+            rail_infos.append(
+                _RailBuildInfo(
+                    "_llm_retry_rail",
+                    _build_llm_retry_rail,
+                    {"config_base": config_base},
                 ),
             )
             # 模型路由（ModelRoutingRail）只在单 agent code 模式挂载：auto 档
@@ -1589,7 +1599,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     "[JiuwenSwarmCodeAdapter] permission_rail.set_trusted_dirs failed",
                     exc_info=True,
                 )
-        self._write_runtime_state(
+        # Offload git/YAML runtime_state persistence so code/flash per-request
+        # paths do not stall the Worker event loop (/health), same as deep stream.
+        self._schedule_runtime_state_write(
             mode=runtime_config.mode,
             language=self._resolve_output_language(),
             channel=resolved_channel,

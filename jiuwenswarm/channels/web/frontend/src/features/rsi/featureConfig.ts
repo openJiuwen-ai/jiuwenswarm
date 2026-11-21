@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react';
 
-let rsiFeatureEnabled = true;
+let rsiFeatureEnabled = false;
 const rsiFeatureListeners = new Set<() => void>();
 
 export function setRSIFeatureEnabled(enabled: boolean): void {
@@ -26,7 +26,7 @@ export function useRSIFeatureEnabled(): boolean {
 
 export function normalizeRSIEnabled(value: unknown): boolean {
   if (typeof value === 'boolean') return value;
-  const text = String(value ?? 'true')
+  const text = String(value ?? 'false')
     .trim()
     .toLowerCase();
   return !['0', 'false', 'no', 'off'].includes(text);

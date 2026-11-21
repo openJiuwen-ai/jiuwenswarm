@@ -413,6 +413,11 @@ class MultiSessionToolkit:
         if created:
             result_msg += f": {', '.join(created)}"
         if failed:
+            # 部分成功语义（T1 v3.0 非目标 N6，与 send_file 分布式路径一致）：
+            # 有协程创建成功时整体按成功处理、失败明细保留在文本中；仅当全部
+            # 创建失败才整体标失败（避免重试导致已成功会话被重复创建）。
+            if not created:
+                result_msg = "[ERROR]: " + result_msg
             result_msg += f"\n创建失败 {len(failed)} 个: " + "; ".join(failed)
 
         logger.info(
@@ -436,7 +441,7 @@ class MultiSessionToolkit:
                 session_id,
                 list(self._tasks.keys()),
             )
-            return f"未找到 session_id={session_id}"
+            return f"[ERROR]: 未找到 session_id={session_id}"
         if task.done():
             logger.info("[MultiSessionToolkit] cancel_session session_id=%s 已结束，无需取消", session_id)
             return f"session_id={session_id} 已结束"

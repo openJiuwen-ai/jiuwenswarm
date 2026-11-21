@@ -30,6 +30,7 @@ from jiuwenswarm.server.handlers._default import _handle_stream, _handle_unary
 from jiuwenswarm.server.handlers._shared import _request_query_text
 from jiuwenswarm.server.handlers.chat import _ensure_auto_team_binding_for_chat
 from jiuwenswarm.server.runtime.swarm_skill_session import SwarmSkillSessionError
+from jiuwenswarm.server.runtime.team_binding_store import TeamSessionBindingError
 from jiuwenswarm.server.ws_send import send_wire_payload
 
 logger = logging.getLogger(__name__)
@@ -144,12 +145,12 @@ async def dispatch_parsed_request(
                     describe_ws_exception(e),
                 ),
             )
-        except SwarmSkillSessionError as e:
+        except (SwarmSkillSessionError, TeamSessionBindingError) as e:
             logger.info(
-                "[AgentWebSocketServer] swarm skill session policy rejected: "
+                "[AgentWebSocketServer] session policy rejected: "
                 "request_id=%s session_id=%s code=%s",
                 request.request_id,
-                e.session_id,
+                getattr(e, "session_id", request.session_id),
                 e.code,
             )
             error_resp = AgentResponse(

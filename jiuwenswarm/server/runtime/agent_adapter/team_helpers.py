@@ -22,6 +22,7 @@ from openjiuwen.agent_teams.paths import (
     team_home,
 )
 from openjiuwen.agent_teams.runtime import RunActionKind
+from openjiuwen.agent_teams.runtime.background_task_controller import BackgroundTaskController
 from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.agent_teams.monitor import TeamStreamLogger
 from openjiuwen.core.runner import Runner
@@ -31,6 +32,7 @@ from openjiuwen.harness import DeepAgent
 
 from jiuwenswarm.agents.harness.team import TeamManager, get_team_manager
 from jiuwenswarm.agents.harness.team.team_session_scope import TeamMonitorAttachOptions
+from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.log_preview import DEFAULT_PREVIEW_MAX_CHARS, preview_text
 from jiuwenswarm.common.cron_team_completion import (
     _cron_solo_harness_end_pending,
@@ -96,6 +98,158 @@ logger = logging.getLogger(__name__)
 # is no module-level global waiter registry — reach it via
 # get_team_manager(channel_id) or the team_manager handle passed in.
 _WORKFLOW_RUNS_STATE_KEY = "workflow_runs"
+_SESSION_SWARMFLOW_CONFIG_KEY = "session_swarmflow_config"
+
+
+def get_background_task_controller(session_id: str) -> BackgroundTaskController:
+    """Return the session's BackgroundTaskController (owned by TeamManager)."""
+    return get_team_manager(None).get_background_task_controller(session_id)
+
+
+def classify_swarmflow_control_miss(
+    channel_id: str, session_id: str, run_id: str,
+) -> dict | None:
+    """Classify a swarmflow control miss into the run's authoritative state.
+
+    The controller registry only answers "no live handle" — it cannot tell a
+    naturally-terminal run (user clicking a stale running/paused card) from
+    one lost to a process restart. Recover the authoritative ``status`` from
+    the workflow handler's in-memory states, then the session-metadata disk
+    snapshot, and return ``{"error", "status"}`` for the caller's ok=False
+    payload. Returns ``None`` when no state is found anywhere (true not-found).
+    """
+    run_state = None
+    try:
+        wf_handler = get_team_manager(channel_id).get_workflow_handler(session_id)
+        if wf_handler is not None:
+            run_state = wf_handler.get_run_states().get(run_id)
+        if run_state is None:
+            restored = restore_workflow_runs(session_id)
+            if restored:
+                run_state = restored.get(run_id)
+    except Exception as exc:
+        logger.warning(
+            "[swarmflow] control miss classification failed "
+            "session_id=%s run_id=%s: %s",
+            session_id, run_id, exc,
+        )
+        return None
+    if run_state is None:
+        return None
+    error = (
+        f"workflow already {run_state.status}"
+        if run_state.is_terminal
+        else f"workflow is {run_state.status} but no live control handle"
+    )
+    return {"error": error, "status": run_state.status}
+
+
+def persist_session_swarmflow_config(session_id: str, config: dict) -> None:
+    """Persist session-level swarmflow config to session metadata.
+
+    ``config`` is ``{enable_swarmflow: bool, swarmflow_budget: int | None}``.
+    Mirrors persist_session_budget style (read-modify-write, no-op on read failure).
+    TARGET ``_enqueue_write`` has no ``merge_fields``; sync_write avoids losing the
+    toggle when a following agent_group binding replaces the whole file.
+    """
+    from jiuwenswarm.server.runtime.session.session_metadata import _read_metadata, _enqueue_write
+    metadata = _read_metadata(session_id, cache_bust=True)
+    if not metadata.get("session_id"):
+        logger.warning(
+            "[TeamHelpers] skipping session_swarmflow_config persist: "
+            "failed to read session metadata (session_id=%s)",
+            session_id,
+        )
+        return
+    metadata[_SESSION_SWARMFLOW_CONFIG_KEY] = config
+    _enqueue_write(session_id, metadata, sync_write=True)
+
+
+def restore_session_swarmflow_config(session_id: str) -> dict | None:
+    """Restore session-level swarmflow config from session metadata, or None."""
+    from jiuwenswarm.server.runtime.session.session_metadata import _read_metadata
+    metadata = _read_metadata(session_id, cache_bust=True)
+    config = metadata.get(_SESSION_SWARMFLOW_CONFIG_KEY)
+    return config if isinstance(config, dict) else None
+
+
+def _coerce_budget(value) -> int | None:
+    """Coerce a raw budget value to a positive int, else None."""
+    if value is None:
+        return None
+    try:
+        n = int(value)
+    except (ValueError, TypeError):
+        return None
+    return n if n > 0 else None
+
+
+def _resolve_session_swarmflow_config(
+    params: dict | None,
+    config_base: dict,
+    *,
+    session_id: str,
+    project_dir: str | None = None,
+) -> dict | None:
+    """Resolve session-level swarmflow overlay fields.
+
+    Returns ``None`` (or a partial dict) so callers only overlay keys that are
+    true session overrides. Team-section ``enable_swarmflow`` /
+    ``swarmflow_budget`` / ``worktree`` already land on ``TeamAgentSpec`` via
+    ``config_loader``; re-emitting hard-coded ``modes.team.jiuwen_team`` here
+    would silently overwrite other team templates and drift from
+    ``resolve_team_section_for_admission``.
+
+    Priority for enable/budget: request params > metadata persisted.
+    No params and no metadata → leave those keys off the overlay.
+
+    ``swarmflow_budget`` is only emitted when the source carries a positive
+    int. A missing / null / non-positive budget must not put the key on the
+    overlay — otherwise ``get_swarm_enriched_team_spec`` would see the key,
+    take the ``else: spec.swarmflow_budget = None`` path, and wipe the team
+    template budget (then persistence would cement the wipe).
+
+    ``swarmflow_worktree`` is not a client choice: project directory selected
+    → arm isolation (``True``); absent → omit the key so the team config's
+    worktree section is kept (``None`` / missing, not forced ``False``).
+    """
+    _ = config_base  # retained for call-site compatibility; not a fallback source
+    result: dict[str, Any] = {}
+    source = "none"
+
+    if params and params.get("enable_swarmflow") is not None:
+        result["enable_swarmflow"] = bool(params.get("enable_swarmflow"))
+        budget = _coerce_budget(params.get("swarmflow_budget"))
+        if budget is not None:
+            result["swarmflow_budget"] = budget
+        source = "request params"
+    else:
+        persisted = restore_session_swarmflow_config(session_id)
+        if persisted is not None:
+            result["enable_swarmflow"] = bool(persisted.get("enable_swarmflow", False))
+            budget = _coerce_budget(persisted.get("swarmflow_budget"))
+            if budget is not None:
+                result["swarmflow_budget"] = budget
+            source = "metadata"
+
+    if str(project_dir or "").strip():
+        result["swarmflow_worktree"] = True
+
+    if not result:
+        logger.info(
+            "[TeamHelpers] swarmflow config (source=none, session=%s): no session overlay",
+            session_id,
+        )
+        return None
+
+    logger.info(
+        "[TeamHelpers] swarmflow config (source=%s, session=%s): %s",
+        source, session_id, result,
+    )
+    return result
+
+
+_SESSION_BUDGET_STATE_KEY = "session_budget"
 
 _TEAM_CREATE_KINDS = {
     RunActionKind.CREATE.value,
@@ -565,8 +719,15 @@ def persist_workflow_runs(
     session_id: str,
     *,
     sessions_root: str | Path | None = None,
+    session_budget: dict | None = None,
 ) -> None:
-    """Persist WorkflowRunState dict to session metadata (file-based store)."""
+    """Persist WorkflowRunState dict (and optionally session budget) to metadata.
+
+    ``session_budget`` MUST ride on the same read-modify-write as the runs:
+    two separate persists each cache_bust-read the disk before the other's
+    queued write is flushed, so the second full-file replace reverts the
+    first's workflow_runs (lost update freezing the checkpoint).
+    """
     from jiuwenswarm.server.runtime.session.session_metadata import (
         _coalesce_write_sessions_root,
         _read_metadata,
@@ -575,8 +736,24 @@ def persist_workflow_runs(
     root_s = _coalesce_write_sessions_root(sessions_root)
     runs_data = {run_id: run_state.model_dump() for run_id, run_state in runs.items()}
     metadata = _read_metadata(session_id, cache_bust=True, sessions_root=root_s)
+    if not metadata.get("session_id"):
+        # Empty dict = brand-new session (first checkpoint may create the file).
+        # Non-empty metadata without session_id = failed/partial read — skip so
+        # a full-file replace cannot wipe title / other fields.
+        if metadata:
+            logger.warning(
+                "[TeamHelpers] skipping workflow_runs persist: failed to read "
+                "session metadata (session_id=%s)",
+                session_id,
+            )
+            return
+        metadata = {"session_id": session_id}
     metadata[_WORKFLOW_RUNS_STATE_KEY] = runs_data
-    _enqueue_write(session_id, metadata, sessions_root=root_s)
+    if session_budget is not None:
+        metadata[_SESSION_BUDGET_STATE_KEY] = session_budget
+    # Synchronous: end-of-turn metadata sync reads disk and replaces the whole
+    # file, so a checkpoint still sitting in the async queue is rolled back.
+    _enqueue_write(session_id, metadata, sync_write=True, sessions_root=root_s)
 
 
 def restore_workflow_runs(
@@ -844,9 +1021,17 @@ async def ensure_monitor_handlers_for_active_runtime(
     # disk-restored runs. In-memory data is more up-to-date (may contain
     # events not yet persisted), so it takes priority over disk data.
     initial_runs: dict[str, WorkflowRunState] | None = None
+    # Carry team.task/team.member dedup across remount so resume replay does
+    # not re-broadcast already-emitted phase/agent edges.
+    prior_seen_phase: dict[str, str] = {}
+    prior_seen_agent: dict[str, str] = {}
+    prior_spawned_members: set[str] = set()
     if existing_wf is not None:
         # Stopped handler still holds _runs in memory — prefer these
         initial_runs = existing_wf.get_run_states()
+        prior_seen_phase = dict(getattr(existing_wf, "seen_phase", {}) or {})
+        prior_seen_agent = dict(getattr(existing_wf, "seen_agent", {}) or {})
+        prior_spawned_members = set(getattr(existing_wf, "spawned_members", set()) or ())
         # Merge disk-restored runs for any IDs not present in memory
         restored_from_disk = restore_workflow_runs(
             session_id,
@@ -892,6 +1077,9 @@ async def ensure_monitor_handlers_for_active_runtime(
         initial_runs=initial_runs,
         sessions_root=sessions_root,
     )
+    wf_handler.seen_phase = prior_seen_phase
+    wf_handler.seen_agent = prior_seen_agent
+    wf_handler.spawned_members = prior_spawned_members
     try:
         await wf_handler.start()
         tm.register_workflow_handler(session_id, wf_handler)
@@ -2480,6 +2668,15 @@ async def process_team_message_stream(
         ) or None
         # Provider-based assembly: build members from the shared config source,
         # no pre-built parent DeepAgent required.
+        # Session-level swarmflow overlay: request params > metadata.
+        # No session override → None / partial dict so team-template fields stay.
+        # worktree: project_dir selected → arm; absent → omit (keep team worktree).
+        swarmflow_config = _resolve_session_swarmflow_config(
+            params_obj if isinstance(params_obj, dict) else None,
+            config_base if isinstance(config_base, dict) else get_config(),
+            session_id=session_id,
+            project_dir=request_metadata.get("project_dir"),
+        )
         runtime_context: dict[str, Any] = {}
         if config_base is not None:
             runtime_context["config_base"] = config_base
@@ -2494,8 +2691,14 @@ async def process_team_message_stream(
             request_metadata=request_metadata,
             requested_model_name=requested_model_name,
             requested_model_ref=requested_model_ref,
+            swarmflow_config=swarmflow_config,
             **runtime_context,
         )
+        if (
+            isinstance(params_obj, dict)
+            and params_obj.get("enable_swarmflow") is not None
+        ):
+            persist_session_swarmflow_config(session_id, swarmflow_config)
         _persist_team_file_monitor_roots(session_id, team_spec)
     except Exception as exc:
         logger.exception("[TeamHelpers] TeamAgent create failed: %s", exc)
@@ -3136,6 +3339,7 @@ async def _consume_stream_with_query(
             session=session_id,
             envs=envs,
             stream_logger=lg,
+            background_task_controller=get_background_task_controller(session_id),
         )
         async for chunk in team_stream:
             if not tm_.owns_stream_task(session_id, asyncio.current_task()):
@@ -3703,9 +3907,13 @@ async def _consume_workflow_events(
     existing web frontend can render swarmflow workers/phases.
     """
     is_tui = _resolve_channel_id(channel_id) == "tui"
-    seen_phase: dict[str, str] = {}
-    seen_agent: dict[str, str] = {}
-    spawned_members: set[str] = set()
+    # Dedup tables live on the handler (session-scoped), not as locals: the
+    # consumer task ends when the handler stops and a new task starts on wake /
+    # remount. Resume relaunches replay the cached prefix; per-loop tables would
+    # re-emit and double-count finished work on the web task board.
+    seen_phase = workflow_handler.seen_phase
+    seen_agent = workflow_handler.seen_agent
+    spawned_members = workflow_handler.spawned_members
     try:
         logger.info(
             "[TeamHelpers] workflow event loop started: channel_id=%s session_id=%s is_tui=%s",

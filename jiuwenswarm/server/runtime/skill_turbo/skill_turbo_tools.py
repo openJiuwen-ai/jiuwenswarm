@@ -1571,6 +1571,11 @@ async def skill_turbo(query: str, fresh_start: bool = False) -> dict[str, Any] |
                 # 把占位帧误判成 PPT turbo 成功、替换最终正文（[[B_01]]）。
                 return {
                     "result": "任务正在处理中，本次重复作答已忽略，请等待原始请求完成",
+                    # 内部协议标记（__ 前缀）：ToolResultNormalizeRail 会跳过整体
+                    # 归一，保持 B_01 依赖的"帧不带 success 字段"形状，防止上层
+                    # isSuccessfulPptTurboToolResult（success===true 结构匹配）把
+                    # 占位帧当成 PPT turbo 成功。勿删，见 docs/bugfix/B_01。
+                    "__skill_turbo_resume_in_flight__": True,
                 }
             # mark in_flight（防重起点）：resume 处理期间第二次作答会被上方判重
             await mark_resume_in_flight(turbo_session, resume_ctx)

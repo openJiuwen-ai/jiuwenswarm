@@ -12,8 +12,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -28,6 +30,7 @@ from openjiuwen.core.foundation.llm.schema.message_chunk import (
 from jiuwenswarm.common.config import get_config, get_merged_config_dict
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.utils import get_root_dir
 from jiuwenswarm.edition import is_enterprise
 
 logger = logging.getLogger(__name__)
@@ -109,6 +112,36 @@ async def _cleanup_prewarm_agent(agent: Any) -> None:
         logger.warning("[Prewarm] cleanup prewarm agent failed", exc_info=True)
 
 
+def warmup_tiktoken_counter() -> None:
+    """阶段0.5：后台预热 tiktoken 词表（仅当精确 token 计数开启）。
+
+    词表缓存位置钉在 ``{root}/cache/tiktoken``，同一部署重启后可直接复用；容器镜像
+    已通过 ``TIKTOKEN_CACHE_DIR`` 预置时保持原值。目录由 tiktoken 在首次写缓存时
+    自行创建，这里不预建。
+
+    agent-core 在 ``ContextEngine`` 构造时也会触发同一预热（单飞、幂等），本函数只是
+    把触发点提前到启动期，避免首个会话等待词表下载。失败仅告警：agent-core 的
+    ``TiktokenCounter`` 构造失败会自动回退字符估算，不阻断会话创建。
+    """
+    try:
+        react = get_config().get("react") or {}
+        engine = react.get("context_engine_config") or {}
+        if not engine.get("enable_tiktoken_counter", False):
+            return
+        os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(Path(get_root_dir()) / "cache" / "tiktoken"))
+        from openjiuwen.core.context_engine.token.tiktoken_counter import (
+            start_background_warm_up,
+        )
+
+        start_background_warm_up()
+        logger.info(
+            "[Prewarm] stage=0.5 name=tiktoken_warmup cache_dir=%s",
+            os.environ["TIKTOKEN_CACHE_DIR"],
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("[Prewarm] stage=0.5 tiktoken warm-up failed", exc_info=True)
+
+
 async def warmup_import_and_checkpointer() -> None:
     """阶段1/2：interface_deep import + checkpointer。
 
@@ -139,6 +172,9 @@ async def warmup_import_and_checkpointer() -> None:
         "[Prewarm] stage=0 name=merged_config elapsed_ms=%.1f",
         (time.perf_counter() - t0) * 1000,
     )
+
+    # 阶段0.5：tiktoken 词表预热。后台线程立即返回，不延后阶段1/2 的完成时间。
+    warmup_tiktoken_counter()
 
     # 阶段1：interface_deep import（原 _warm_interface_deep_module 职责）。
     # 其内部已有 ``interface_deep_warmup cache=miss ok elapsed_ms=`` 埋点。

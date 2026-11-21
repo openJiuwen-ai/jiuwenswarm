@@ -40,7 +40,9 @@ def provision(
         sans=test_sans,
     )
     output.mkdir(mode=0o700)
-    for role in bundle["materials"]:
+    for role, files in bundle["materials"].items():
+        if "profile.json" not in files:
+            continue
         path = materialize_role(bundle, role, output / role)
         data = json.loads(path.read_text())
         # Socket tests have no service database. Persistence has separate tests.

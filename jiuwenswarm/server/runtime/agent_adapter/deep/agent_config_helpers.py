@@ -95,6 +95,8 @@ def _deep_agent_context_engine_config(react_cfg: dict[str, Any] | None) -> Conte
     return ReActAgentConfig().context_engine_config.model_copy(
         update={
             "enable_reload": bool(cec.get("enable_reload", False)),
+            # 精确 token 计数；字符估算对中文/JSON 低估约 25%~44%，会让压缩阈值失效
+            "enable_tiktoken_counter": bool(cec.get("enable_tiktoken_counter", False)),
             "enable_openrouter_model_context_window_tokens": bool(
                 cec.get("enable_openrouter_model_context_window_tokens", False)
             ),

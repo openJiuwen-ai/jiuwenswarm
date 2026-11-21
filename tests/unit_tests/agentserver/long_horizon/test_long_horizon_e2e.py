@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -18,7 +17,7 @@ from jiuwenswarm.agents.harness.common.long_horizon.runtime import (
 )
 from jiuwenswarm.agents.harness.common.long_horizon.tools import LongHorizonActions
 
-NOW = datetime(2026, 9, 16, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai"))
+pytestmark = pytest.mark.usefixtures("long_horizon_now")
 BRIEF = "目标、约束、交付物和关键背景。"
 
 
@@ -76,7 +75,6 @@ def _two_stage_draft_params() -> dict:
                 "plan": "逐项核对清单并输出检查结论。",
             },
         ],
-        "now": NOW.isoformat(),
     }
 
 
@@ -150,7 +148,7 @@ async def test_e2e_two_stage_confirm_cron_due_start(workspace, fake_cron):
 
 @pytest.mark.asyncio
 async def test_e2e_snooze_due_skip_preserves_second_stage_cron(
-    workspace, fake_cron
+    workspace, fake_cron, long_horizon_now
 ):
     """Scenario 2: snooze rebuilds stage Cron; skip removes it; stage2 Cron stays."""
     actions = LongHorizonActions(workspace, cron=fake_cron)
@@ -198,8 +196,7 @@ async def test_e2e_snooze_due_skip_preserves_second_stage_cron(
 
     due_at = datetime.fromisoformat(snoozed["task"]["stages"][0]["due_at"])
     assert due_at.tzinfo is not None
-    now_utc = datetime.now(timezone.utc)
-    assert now_utc + timedelta(hours=1) < due_at < now_utc + timedelta(hours=3)
+    assert due_at == long_horizon_now + timedelta(hours=2)
 
     # Second due after snooze window
     due2 = await deliver_from_cron_job(

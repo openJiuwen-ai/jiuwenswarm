@@ -26,6 +26,7 @@ from jiuwenswarm.server.transports.sink import ResponseSink
 #:
 #: 新增能力时在此登记一行；越界访问仍会当场 ``AttributeError``（语义与从前一致）。
 SERVICE_MEMBERS: dict[str, str] = {
+    "get_rsi_handlers": "_get_rsi_handlers",
     # 共享状态（server 实例属性；server 自己也在用，故走委托而非持有）
     "agent_manager": "_agent_manager",
     "session_stream_tasks": "_session_stream_tasks",

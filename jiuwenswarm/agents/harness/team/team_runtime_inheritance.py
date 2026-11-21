@@ -17,7 +17,6 @@ from openjiuwen.extensions.observability.demand import (
     get_trajectory_span_processor,
 )
 from openjiuwen.harness.rails import (
-    SysOperationRail,
     HeartbeatRail,
     SecurityRail,
     EvolutionInterruptRail,
@@ -36,6 +35,10 @@ from jiuwenswarm.agents.harness.common.rails.context_overflow_recovery_rail impo
     ContextOverflowRecoveryRail,
 )
 from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
+from jiuwenswarm.agents.harness.team.accel.accel_prompt_rail import AccelPromptRail
+from jiuwenswarm.agents.harness.team.accel.accel_sys_operation_rail import (
+    AccelSysOperationRail,
+)
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import RuntimePromptRail
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
 from jiuwenswarm.agents.harness.team.rails.team_admission_rail import (
@@ -48,6 +51,7 @@ from jiuwenswarm.common.config import (
     get_evolution_auto_save_enabled,
     get_evolution_review_trigger_enabled,
     get_passive_skill_evolution_triggers,
+    get_team_evolution_signal_trigger_enabled,
     get_skill_create_enabled,
 )
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
@@ -86,6 +90,8 @@ class TeamWorkspaceInfo:
 RAIL_WHITELIST = frozenset({
     "RuntimePromptRail",
     "ResponsePromptRail",
+    "AccelPromptRail",
+    "AccelSysOperationRail",
     "JiuSwarmStreamEventRail",
     "TaskPlanningRail",
     "SecurityRail",
@@ -202,11 +208,16 @@ def build_member_rails(
         logger.warning("[TeamRuntime] ResponsePromptRail failed: %s", exc)
 
     try:
-        rail = SysOperationRail()
-        rails_list.append(rail)
-        logger.info("[TeamRuntime] FileSystemRail created")
+        rails_list.append(AccelPromptRail(role=role))
+        logger.info("[TeamRuntime] AccelPromptRail created role=%s", role)
     except Exception as exc:
-        logger.warning("[TeamRuntime] FileSystemRail failed: %s", exc)
+        logger.warning("[TeamRuntime] AccelPromptRail failed: %s", exc)
+
+    try:
+        rails_list.append(AccelSysOperationRail())
+        logger.info("[TeamRuntime] AccelSysOperationRail created")
+    except Exception as exc:
+        logger.warning("[TeamRuntime] AccelSysOperationRail failed: %s", exc)
 
     try:
         rail = JiuSwarmStreamEventRail(
@@ -304,6 +315,7 @@ def build_member_rails(
                 trajectory_span_processor=get_trajectory_span_processor(),
                 member_role=role,
                 auto_save=evolution_auto_save,
+                signal_trigger=get_team_evolution_signal_trigger_enabled(config),
                 review_trigger=evolution_review_trigger,
                 team_id=team_id,
                 disabled_skills=merge_evolution_disabled_skills(

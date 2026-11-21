@@ -74,10 +74,11 @@ function parseWebTransportToken(raw: string): WebTransport | null {
 }
 
 /**
- * 北向传输：显式 ``WEB_TRANSPORT`` / ``VITE_WEB_TRANSPORT``（含 ``a2``→http）优先；
- * 未指定时企业版默认 http，个人版默认 websocket。
+ * 企业版使用 HTTP/SSE。个人版显式 WEB_TRANSPORT / VITE_WEB_TRANSPORT 优先，
+ * 未指定时使用 websocket。
  */
 export function getWebTransport(): WebTransport {
+  if (isEnterprise()) return "http";
   const injected = parseWebTransportToken(String(window.__JIUWEN_WEB_TRANSPORT__ ?? ""));
   if (injected) {
     return injected;
@@ -88,7 +89,7 @@ export function getWebTransport(): WebTransport {
   if (fromEnv) {
     return fromEnv;
   }
-  return isEnterprise() ? "http" : "websocket";
+  return "websocket";
 }
 
 /** Gateway A2 前缀，默认同源 `/gateway-api/v1`，避免与 Manager `/api/v1` 冲突。 */

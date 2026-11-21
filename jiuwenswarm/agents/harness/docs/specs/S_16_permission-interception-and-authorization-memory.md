@@ -8,7 +8,7 @@
 | 编号 / slug | S_16 / permission-interception-and-authorization-memory |
 | 关联模块（agent-core 仓） | `openjiuwen/harness/rails/security/tool_security_rail.py`（`PermissionInterruptRail` 858 行 / 模块级 `compute_auto_confirm_key` / `compute_batch_allow_key`）、`openjiuwen/harness/rails/interrupt/confirm_rail.py`（基类与 ConfirmPayload）、`openjiuwen/harness/security/host.py`（`ToolPermissionHost` 回调契约）、`openjiuwen/harness/security/core.py`（`PermissionEngine` 判定）、`openjiuwen/harness/security/models.py`（`PermissionConfirmResponse` / `PermissionLevel` / `PermissionResult`）、`openjiuwen/harness/security/patterns.py`（merge / 写盘）、`openjiuwen/harness/security/shell_ast.py`（`parse_shell_for_permission`） |
 | 关联模块（jiuwenswarm 仓） | 无本体文件——本 spec 管 agent-core 侧权限 rail 本体；宿主对 `ToolPermissionHost` 回调的实现（`_persist_allow_rule` / `_request_permission_confirmation` / `_permission_scene_hook` / `_get_permissions_snapshot`）与三级 rail 选择归 [[S_17]] |
-| 最近一次修订日期 | 2026-10-26 |
+| 最近一次修订日期 | 2026-11-18（engine 判定步新增注册转发类 meta-tool 展开语义见 2026-11-17；本次按 !10448 检视意见修正已知缺陷描述：persist 侧复评门在锁定版已不存在，改为按实际行为链记录，见判定序注记 / B_06 / issue #6499） |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -16,7 +16,7 @@
 本规约管 **工具权限拦截的判定序与授权记忆的分级存储**——`PermissionInterruptRail`（继承 `ConfirmInterruptRail`，`priority=90`，`inherit_to_subagents=True`）：
 
 - **拦截范围**：对**任意**工具名执行 `before_tool_call` 判定（`tool_names` 仅作 `get_tools` 展示标签，不参与是否拦截）
-- **判定序**：scene_hook 短路 → engine 判定（ALLOW/DENY）→ session auto_confirm → 批次 allow → hosted confirm → interrupt 弹卡
+- **判定序**：scene_hook 短路 → engine 判定（ALLOW/DENY）→ session auto_confirm → 批次 allow → hosted confirm → interrupt 弹卡。engine 判定步自 2026-11-17 起对**注册转发类 meta-tool**（宿主经 agent_shield `register_meta_tool` 注册，装配见 S_17）先按外层判定、再对内层 `(tool_name, tool_args)` 递归判定（深度封顶 2，封顶处并入 ASK fail-closed），合并取最严、平手保留内层 matched_rule——外层 `defaults` 放行不再携带内层命令穿透（issue #6499 / B_06）；**授权记忆的 persist 侧未随之展开**（已知缺陷，后续独立修复，行为链详见 B_06）：锁定版（openjiuwen `c30cbec5`）persist 无 ASK 复评门（原复评门已由 agent-core `d6d66a883` 移除），"总是允许"对转发卡落盘的是外层整工具规则 `tools.invoke_tool: allow`——被引擎无条件展开取最严压不住内层判定，新会话首次同类转发仍弹卡；首次点击因已落盘不存 session auto_confirm，第二次点击起转存裸键 `invoke_tool` 的 session auto_confirm（对全部内层工具放行）后本会话静默。
 - **双 key 体系**：session 级 auto_confirm key（用户显式选择的记忆粒度）与 replay 级 batch allow key（参数指纹）
 - **授权记忆三级**：allow_once（无记忆）/ allow_always_session（session state）/ allow_always_persist（磁盘 yaml）
 - **persist 回滚**：磁盘写失败回滚内存配置；先读磁盘快照防复活用户已删条目

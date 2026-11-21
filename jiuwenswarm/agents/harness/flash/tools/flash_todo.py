@@ -17,6 +17,8 @@ from openjiuwen.core.common.exception.errors import BaseError
 from openjiuwen.core.foundation.tool.base import Tool, ToolCard
 from openjiuwen.harness.tools.base_tool import ToolOutput
 
+from .todo_arguments import MODIFY_ACTIONS, TODO_ACTIONS, TodoArgumentError, parse_todo_operation
+
 logger = logging.getLogger(__name__)
 
 _UNIFIED_TODO_NAME = "todo"
@@ -28,16 +30,6 @@ _TODO_NAME_REPLACEMENTS = (
     ("todo_modify", "todo(action=modify)"),
     ("todo_list", "todo(action=list)"),
     ("todo_get", "todo(action=get)"),
-)
-
-_UNIFIED_TODO_ACTIONS = ("create", "list", "get", "modify")
-_MODIFY_ACTIONS = (
-    "update",
-    "delete",
-    "cancel",
-    "append",
-    "insert_after",
-    "insert_before",
 )
 
 
@@ -105,13 +97,18 @@ def _unified_todo_input_params(language: str) -> dict:
         "properties": {
             "action": {
                 "type": "string",
-                "enum": list(_UNIFIED_TODO_ACTIONS),
+                "enum": list(TODO_ACTIONS),
                 "description": d("要执行的操作", "Operation to execute"),
             },
             "plan_action": {"type": "string", "enum": ["new", "rebuild"]},
             "tasks": {
                 "type": "array",
-                "items": {"type": "object"},
+                "minItems": 1,
+                "items": {"type": "object", "required": ["content"], "properties": {
+                    "id": {"type": "string"}, "content": {"type": "string", "minLength": 1},
+                    "activeForm": {"type": "string"}, "description": {"type": "string"},
+                    "selected_model_id": {"type": "string"},
+                }},
                 "description": d(
                     "create 必填：任务数组 [{id, content, activeForm, description, "
                     "selected_model_id?}]；活动计划默认不覆盖",
@@ -128,7 +125,7 @@ def _unified_todo_input_params(language: str) -> dict:
             },
             "modify_action": {
                 "type": "string",
-                "enum": list(_MODIFY_ACTIONS),
+                "enum": list(MODIFY_ACTIONS),
                 "description": d(
                     "modify 必填：具体修改操作",
                     "modify: the mutation to apply",
@@ -156,7 +153,8 @@ def _unified_todo_input_params(language: str) -> dict:
             },
             "ids": {
                 "type": "array",
-                "items": {"type": "string"},
+                "minItems": 1,
+                "items": {"type": "string", "minLength": 1},
                 "description": d(
                     "modify_action=delete/cancel 时：任务 ID 列表",
                     "for modify_action=delete/cancel: list of task ids",
@@ -164,6 +162,17 @@ def _unified_todo_input_params(language: str) -> dict:
             },
             "todo_data": {
                 "type": "object",
+                "properties": {
+                    "target_id": {"type": "string", "minLength": 1},
+                    "items": {"type": "array", "minItems": 1, "items": {
+                        "type": "object", "required": ["id", "content", "status"],
+                        "properties": {"id": {"type": "string"}, "content": {"type": "string"},
+                                       "status": {"type": "string"}, "activeForm": {"type": "string"},
+                                       "description": {"type": "string"},
+                                       "selected_model_id": {"type": "string"}},
+                    }},
+                },
+                "required": ["target_id", "items"],
                 "description": d(
                     "modify_action=insert_before/insert_after 时：{target_id, items: [...]}",
                     "for modify_action=insert_before/insert_after: {target_id, items: [...]}",
@@ -182,6 +191,8 @@ class UnifiedTodoTool(Tool):
     is called by ability_manager directly with session threaded through.
     """
 
+    _log_execution_status = True
+
     def __init__(self, engines: dict, language: str, agent_id=None):
         card = ToolCard(
             id=f"UnifiedTodoTool_{agent_id}" if agent_id else "UnifiedTodoTool",
@@ -195,8 +206,13 @@ class UnifiedTodoTool(Tool):
     async def invoke(self, inputs, **kwargs):
         # 参数错误用结构化 ToolOutput 返回（与 FlashMemoryTool 同风格），
         # 不 raise——交给模型读到错误后自行纠正参数。
-        data = dict(inputs or {})
-        action = str(data.get("action") or "").strip().lower()
+        if not isinstance(inputs, dict):
+            return ToolOutput(success=False, error="todo inputs must be a JSON object")
+        data = dict(inputs)
+        try:
+            action, modify_action = parse_todo_operation(data)
+        except TodoArgumentError as exc:
+            return ToolOutput(success=False, error=str(exc))
 
         if action == "create":
             tasks = data.get("tasks")
@@ -219,20 +235,6 @@ class UnifiedTodoTool(Tool):
             return await self._engines["get"].invoke({"id": task_id}, **kwargs)
 
         if action == "modify":
-            modify_action = str(data.get("modify_action") or "").strip().lower()
-            if not modify_action:
-                return ToolOutput(
-                    success=False, error="'modify_action' is required for action=modify"
-                )
-            if modify_action in ("update", "append") and not isinstance(data.get("todos"), list):
-                return ToolOutput(
-                    success=False,
-                    error="'todos' must be an array, including for a single task. "
-                    'Update example: {"action":"modify","modify_action":"update",'
-                    '"todos":[{"id":"env","status":"completed"}]}; '
-                    "for append, include id/content/status in each item. "
-                    "Top-level id/status does not update a task.",
-                )
             inner = {"action": modify_action}
             for key in ("todos", "ids", "todo_data"):
                 if data.get(key) is not None:
@@ -240,6 +242,8 @@ class UnifiedTodoTool(Tool):
             try:
                 return await self._engines["modify"].invoke(inner, **kwargs)
             except BaseError as exc:
+                if getattr(exc, "tool_commit_state", None) == "unknown":
+                    raise
                 if "More than one task is marked as 'in_progress'" not in str(exc):
                     raise
                 hint = ""
@@ -255,8 +259,6 @@ class UnifiedTodoTool(Tool):
                     "only if its work is done, then start the next task in the same todos array; "
                     "do not assume a failed update changed task status.",
                 )
-
-        return ToolOutput(success=False, error=f"unsupported todo action: {action!r}")
 
     async def stream(self, inputs, **kwargs):
         yield await self.invoke(inputs, **kwargs)

@@ -60,6 +60,7 @@ import {
   RUNTIME_SCOPE_CHANGED_EVENT,
 } from '../services/runtimeScope';
 import { getWebTransport } from '../utils/env';
+import { stripTransitionalErrorPrefix } from '../utils/stripTransitionalErrorPrefix';
 import { isEnterprise } from '../edition';
 import {
   SWARM_SKILL_FORBIDDEN_WHEN_TEAM_BOUND,
@@ -679,7 +680,7 @@ interface UseWebSocketReturn {
   ) => Promise<T>;
   persistMedia: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   persistDocuments: (content: string, sessionId: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
-  sendMessage: (content: string, sessionId: string, mediaItems?: MediaItem[]) => Promise<boolean>;
+  sendMessage: (content: string, sessionId: string, mediaItems?: MediaItem[], rsiHarnessId?: string) => Promise<boolean>;
   sendLongHorizonKick: (
     sessionId: string,
     query: string,
@@ -1650,7 +1651,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
   // 发送聊天消息
   const sendMessage = useCallback(
-    async (content: string, sessionId: string, mediaItems: MediaItem[] = []): Promise<boolean> => {
+    async (content: string, sessionId: string, mediaItems: MediaItem[] = [], rsiHarnessId?: string): Promise<boolean> => {
       const hasMedia = mediaItems.length > 0;
       // User-visible text is required; attachment-only / 【上传文档】-only payloads
       // must not send (matches InputArea canSubmit / handleSubmit).
@@ -1830,6 +1831,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           ...(outgoingFiles ? { files: outgoingFiles } : {}),
           mode: outgoingMode,
           ...(selectedModel ? { model_name: selectedModel } : {}),
+          ...(outgoingMode.split('.')[0] === 'agent' && !inputMode && rsiHarnessId !== undefined
+            ? { rsi_harness_installation_id: rsiHarnessId }
+            : {}),
           ...workContext,
           skills: selectedSkills,
           ...(inputMode ? { input_mode: inputMode } : {}),
@@ -4151,8 +4155,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (!sessionId) return;
         if (shouldDropDuplicatedEvent('chat.error', payload)) return;
         useChatStore.getState().setThinking(sessionId, false);
+        // chat.error 可能携带 max_iterations_reached 前缀（给下游按文本归类的过渡标记）。
+        // 展示时剥离，避免英文技术标记暴露给终端用户；原始 error/code 仍随事件保留，不影响下游分类。
         const rawError =
-          typeof payload.error === 'string' ? payload.error : t('network.unknownError');
+          typeof payload.error === 'string'
+            ? stripTransitionalErrorPrefix(payload.error)
+            : t('network.unknownError');
         const swarmCode = resolveSwarmSkillErrorCode({
           code: typeof payload.code === 'string' ? payload.code : undefined,
           payload,
@@ -4639,6 +4647,19 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           timestamp: new Date().toISOString(),
         });
       }),
+      // SwarmFlow: workflow.updated → 增量合并到 workflowRuns（树/图视图）
+      webClient.on('workflow.updated', ({ payload }) => {
+        const sessionId = resolveEventSessionId(payload);
+        if (!sessionId) return;
+        const p = payload as { workflow?: unknown; event?: { workflow?: unknown } };
+        const workflow = (p.workflow ?? p.event?.workflow) as
+          | import('../components/teamArea/workflowTypes').WorkflowRun
+          | undefined;
+        if (workflow && typeof workflow === 'object' && workflow.id) {
+          useSessionStore.getState().applyWorkflowUpdate(sessionId, workflow);
+        }
+      }),
+
       webClient.on('team.task', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;

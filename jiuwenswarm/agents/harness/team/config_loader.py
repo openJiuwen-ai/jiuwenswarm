@@ -17,6 +17,7 @@ from jiuwenswarm.common.model_identity import (
     MODEL_IDENTITY_REFERENCE_PREFIX,
     build_model_identity_reference,
 )
+from jiuwenswarm.common.stream_timeout_defaults import apply_stream_timeout_defaults
 
 logger = logging.getLogger(__name__)
 
@@ -390,8 +391,10 @@ def _build_default_model_dict(
         requested_model_name=requested_model_name,
         requested_model_ref=requested_model_ref,
     )
-    model_client_config = merge_tip_default_headers(
-        dict(model_config.get("model_client_config", {}))
+    model_client_config = apply_stream_timeout_defaults(
+        merge_tip_default_headers(
+            dict(model_config.get("model_client_config", {}))
+        )
     )
     model_request_config = dict(model_config.get("model_config_obj", {}))
 
@@ -527,6 +530,13 @@ def _build_agent_spec_dict(
 ) -> dict[str, Any]:
     merged = deepcopy(agent_config)
     merged.setdefault("model", deepcopy(default_model))
+    # Inline ``model: { model_client_config: {...} }`` (no ``ref``) skips
+    # ``_resolve_agent_model_reference``; still normalize stream timeouts here.
+    model_spec = merged.get("model")
+    if isinstance(model_spec, dict) and isinstance(model_spec.get("model_client_config"), dict):
+        model_spec["model_client_config"] = apply_stream_timeout_defaults(
+            model_spec["model_client_config"]
+        )
     merged.setdefault("workspace", deepcopy(default_workspace))
     merged.setdefault("max_iterations", max_iterations)
     merged.setdefault("completion_timeout", completion_timeout)
@@ -646,8 +656,10 @@ def _resolve_agent_model_reference(
 
     entry = resolve_team_model_reference(model_raw.get("ref"), config_base)
 
-    model_client_config = merge_tip_default_headers(
-        deepcopy(entry.get("model_client_config") or {})
+    model_client_config = apply_stream_timeout_defaults(
+        merge_tip_default_headers(
+            deepcopy(entry.get("model_client_config") or {})
+        )
     )
     actual_name = str(model_client_config.get("model_name") or "").strip()
     model_request_config = deepcopy(entry.get("model_config_obj") or {})
@@ -907,6 +919,33 @@ def _resolve_enable_permissions(config_base: dict[str, Any], team_raw: dict[str,
     return global_enabled and team_enabled
 
 
+def _apply_swarmflow_budget(spec_dict: dict[str, Any], raw_value: Any) -> None:
+    """Validate and apply ``swarmflow_budget`` to *spec_dict* in-place.
+
+    Only positive integers are accepted. Invalid / non-positive values are
+    logged and silently dropped (the key is removed from *spec_dict*).
+    """
+    if raw_value is None:
+        return
+    try:
+        budget_value = int(raw_value)
+    except (ValueError, TypeError):
+        logger.warning(
+            "[TeamConfigLoader] invalid swarmflow_budget %r, ignored",
+            raw_value,
+        )
+        spec_dict.pop("swarmflow_budget", None)
+        return
+    if budget_value <= 0:
+        logger.warning(
+            "[TeamConfigLoader] swarmflow_budget must be positive, got %r, ignored",
+            raw_value,
+        )
+        spec_dict.pop("swarmflow_budget", None)
+        return
+    spec_dict["swarmflow_budget"] = budget_value
+
+
 def load_team_spec_dict(
     config_base: dict[str, Any] | None = None,
     *,
@@ -971,6 +1010,12 @@ def load_team_spec_dict(
     spec_dict["max_total_rounds"] = team_raw.get("max_total_rounds")
     spec_dict["max_total_messages"] = team_raw.get("max_total_messages")
     spec_dict["token_budget"] = team_raw.get("token_budget")
+    _apply_swarmflow_budget(spec_dict, team_raw.get("swarmflow_budget"))
+    # Team-level key forcing swarmflow workers into progressive exposure; the
+    # spec field is named progressive_tool on the engine side. Leader /
+    # teammate members (and, through the teammate base spec, workers) follow
+    # the top-level progressive_tool_enabled switch in config_specs instead.
+    spec_dict["progressive_tool"] = bool(spec_dict.pop("swarmflow_progressive_tool", False))
     language = _normalize_prompt_language(config_base.get("preferred_language"))
     spec_dict["leader"] = _build_leader_spec(team_raw, language=language)
     spec_dict["agents"] = agents

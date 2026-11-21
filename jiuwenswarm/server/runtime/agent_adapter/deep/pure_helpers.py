@@ -62,6 +62,8 @@ logger = logging.getLogger(__name__)
 
 # 进程内已完成卡一次性守卫：同 (session, goal) 只落盘一次；跨进程重复由磁盘检查兜底
 _GOAL_COMPLETED_PERSISTED: ClassVar[set[tuple[str, str]]] = set()
+# In-flight schedule keys so stream path does not enqueue duplicate disk scans.
+_GOAL_COMPLETED_SCHEDULED: set[tuple[str, str]] = set()
 
 
 def _session_adapter_key(session_id: str | None) -> str:
@@ -1472,6 +1474,71 @@ def _record_goal_completed_history_if_needed(
         },
     )
     _GOAL_COMPLETED_PERSISTED.add((sid, goal_id))
+
+
+def _schedule_goal_completed_history_if_needed(
+    *,
+    session_id: str,
+    channel_id: str,
+    channel_metadata: dict[str, Any] | None,
+    mode: str | None,
+    goal_payload: dict[str, Any] | None,
+) -> None:
+    """Schedule goal-completed persistence off the event loop (stream choke point).
+
+    Keeps cheap filters sync; disk scan/append runs via ``asyncio.to_thread``.
+    Sync unit tests should keep calling ``_record_goal_completed_history_if_needed``.
+    """
+    if not isinstance(goal_payload, dict):
+        return
+    status = goal_payload.get("status")
+    status_value = getattr(status, "value", status)
+    if str(status_value or "").strip().lower() != "completed":
+        return
+    goal_id = str(goal_payload.get("goal_id") or "").strip()
+    if not goal_id:
+        return
+    sid = (session_id or "default").strip() or "default"
+    key = (sid, goal_id)
+    if key in _GOAL_COMPLETED_PERSISTED or key in _GOAL_COMPLETED_SCHEDULED:
+        return
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _record_goal_completed_history_if_needed(
+            session_id=session_id,
+            channel_id=channel_id,
+            channel_metadata=channel_metadata,
+            mode=mode,
+            goal_payload=goal_payload,
+        )
+        return
+
+    _GOAL_COMPLETED_SCHEDULED.add(key)
+
+    async def _offload() -> None:
+        try:
+            await asyncio.to_thread(
+                _record_goal_completed_history_if_needed,
+                session_id=session_id,
+                channel_id=channel_id,
+                channel_metadata=channel_metadata,
+                mode=mode,
+                goal_payload=goal_payload,
+            )
+        except Exception:
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] scheduled goal-completed persist failed: "
+                "session_id=%s goal_id=%s",
+                sid,
+                goal_id,
+                exc_info=True,
+            )
+        finally:
+            _GOAL_COMPLETED_SCHEDULED.discard(key)
+
+    loop.create_task(_offload())
 
 
 def _interaction_goal_updated_payload(payload: Any) -> dict[str, Any]:

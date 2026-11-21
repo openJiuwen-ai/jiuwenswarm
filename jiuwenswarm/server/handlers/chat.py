@@ -544,10 +544,37 @@ async def _ensure_auto_team_binding_for_chat(ctx, request: AgentRequest) -> Any 
         metadata=metadata,
     )
 
+    if request.channel_id == "officeclaw" and not existing_team_name:
+        from jiuwenswarm.server.handlers.team import _restore_officeclaw_team_session
+
+        async with _session_team_binding_lock(session_id):
+            metadata = get_session_metadata(session_id, cache_bust=True, sessions_root=sessions_root)
+            existing_team_name = str(metadata.get("team_name") or "").strip()
+            if not existing_team_name:
+                restored = _restore_officeclaw_team_session(
+                    request, session_id=session_id, sessions_root=sessions_root, skill_ids=skill_ids,
+                )
+                if restored is not None:
+                    metadata = restored
+                    existing_team_name = str(metadata["team_name"])
+            if existing_team_name:
+                params["team_name"] = existing_team_name
+                template_id = str(metadata.get("team_template_id") or "").strip()
+                if template_id:
+                    params["team_template_id"] = template_id
+            # Restoration must not bypass bound-team XOR / continuation policy.
+            swarm_ids, _ordinary_ids = assert_chat_swarm_skill_policy(
+                session_id=session_id, team_name=existing_team_name,
+                skill_ids=skill_ids, metadata=metadata,
+            )
+
     # Resume continues an existing runtime; policy above still applies.
     if request.req_method != ReqMethod.CHAT_SEND:
         if existing_team_name:
             params["team_name"] = existing_team_name
+            template_id = str(metadata.get("team_template_id") or "").strip()
+            if template_id:
+                params.setdefault("team_template_id", template_id)
         return existing_team_name or None
 
     if existing_team_name:

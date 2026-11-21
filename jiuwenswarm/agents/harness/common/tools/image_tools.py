@@ -7,6 +7,7 @@ import random
 import re
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING as _TYPE_CHECKING
@@ -200,35 +201,65 @@ def _make_missing_key_error() -> str:
     )
 
 
+def _prepare_openai_vision_image_block(src: str) -> dict[str, Any] | str:
+    """Build OpenAI vision image block (local read once, or remote URL).
+
+    Returns the sandbox error string for sandbox-only paths so callers can
+    exit without retrying. Local IO failures raise and must stay outside
+    ``_RetryExecutor``.
+    """
+    if os.path.exists(src):
+        with open(src, "rb") as img_f:
+            img_bytes = img_f.read()
+        b64 = base64.b64encode(img_bytes).decode("utf-8")
+        mime = _MimeResolver.from_path(src)
+        return {
+            "type": "image_url",
+            "image_url": {"url": f"data:{mime};base64,{b64}"},
+        }
+    if _PathHelper.is_sandbox(src):
+        return _make_sandbox_error_msg()
+    return {"type": "image_url", "image_url": {"url": src}}
+
+
+def _invoke_openai_vision_http(
+    img_block: dict[str, Any],
+    q: str,
+    *,
+    api_key: str,
+    api_base: str,
+    model: str,
+) -> str:
+    """Sync OpenAI vision HTTP call only. Run via asyncio.to_thread + retry."""
+    msgs = [{"role": "user", "content": [{"type": "text", "text": q}, img_block]}]
+    cli = OpenAI(api_key=api_key, base_url=api_base)
+    r = cli.chat.completions.create(model=model, messages=msgs)
+    content = r.choices[0].message.content
+    if not content or not content.strip():
+        raise Exception("Response text is empty or None")
+    return content
+
+
 async def _invoke_openai_vision(src: str, q: str) -> str:
     api_key, api_base, model = _get_vision_api_credentials()
     if not api_key:
         return _make_missing_key_error()
 
     try:
-        if os.path.exists(src):
-            with open(src, "rb") as img_f:
-                img_bytes = img_f.read()
-            b64 = base64.b64encode(img_bytes).decode("utf-8")
-            mime = _MimeResolver.from_path(src)
-            img_block = {
-                "type": "image_url",
-                "image_url": {"url": f"data:{mime};base64,{b64}"},
-            }
-        elif _PathHelper.is_sandbox(src):
-            return _make_sandbox_error_msg()
-        else:
-            img_block = {"type": "image_url", "image_url": {"url": src}}
-
-        msgs = [{"role": "user", "content": [{"type": "text", "text": q}, img_block]}]
+        # Local file IO once (no backoff). Only the HTTP create() call retries.
+        prepared = await asyncio.to_thread(_prepare_openai_vision_image_block, src)
+        if isinstance(prepared, str):
+            return prepared
 
         async def _call():
-            cli = OpenAI(api_key=api_key, base_url=api_base)
-            r = cli.chat.completions.create(model=model, messages=msgs)
-            content = r.choices[0].message.content
-            if not content or not content.strip():
-                raise Exception("Response text is empty or None")
-            return content
+            return await asyncio.to_thread(
+                _invoke_openai_vision_http,
+                prepared,
+                q,
+                api_key=api_key,
+                api_base=api_base,
+                model=model,
+            )
 
         def _on_err(tries, exc):
             return f"Visual Question Answering (Client) failed after {tries} retries: {exc}\n"
@@ -239,6 +270,53 @@ async def _invoke_openai_vision(src: str, q: str) -> str:
         return f"[ERROR]: OpenAI Error: {ex}"
 
 
+class _SandboxImagePathError(ValueError):
+    """Raised when Gemini vision is asked to read a sandbox-only path."""
+
+
+def _load_gemini_image_part(src: str):
+    """Sync image load for Gemini (local file or HTTP). Run via asyncio.to_thread."""
+    mime = _MimeResolver.from_path(src)
+    if os.path.exists(src):
+        with open(src, "rb") as f:
+            data = f.read()
+        return types.Part.from_bytes(data=data, mime_type=mime)
+    if _PathHelper.is_sandbox(src):
+        raise _SandboxImagePathError(src)
+    ua = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    )
+    last_err: Exception | None = None
+    for attempt in range(4):
+        try:
+            r = requests_get(src, headers={"User-Agent": ua}, verify=get_requests_verify())
+            r.raise_for_status()
+            return types.Part.from_bytes(data=r.content, mime_type=mime)
+        except Exception as err:
+            last_err = err
+            if attempt == 3:
+                break
+            # Keep retry delays inside the worker thread so the event loop stays free.
+            delays = [5, 15, 60]
+            time.sleep(delays[attempt])
+    if last_err is None:
+        raise RuntimeError(f"Failed to get image data {src}: unknown error after retries")
+    raise last_err
+
+
+def _invoke_gemini_vision_once(part: Any, q: str, *, gemini_key: str) -> str:
+    """Sync Gemini generate_content. Run via asyncio.to_thread."""
+    cli = genai.Client(api_key=gemini_key)
+    resp = cli.models.generate_content(
+        model="gemini-2.5-pro",
+        contents=[part, types.Part(text=q)],
+    )
+    if not resp.text or not resp.text.strip():
+        raise Exception("Response text is None or empty")
+    return resp.text
+
+
 async def _invoke_gemini_vision(src: str, q: str) -> str:
     gemini_key = str(get_local_config("GEMINI_API_KEY", "") or "")
     if not gemini_key:
@@ -246,31 +324,9 @@ async def _invoke_gemini_vision(src: str, q: str) -> str:
 
     _ensure_image_dependencies()
     try:
-        mime = _MimeResolver.from_path(src)
-        if os.path.exists(src):
-            with open(src, "rb") as f:
-                data = f.read()
-            part = types.Part.from_bytes(data=data, mime_type=mime)
-        elif _PathHelper.is_sandbox(src):
-            return _make_sandbox_error_msg()
-        else:
-            ua = (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-            )
-            data = None
-            for attempt in range(4):
-                try:
-                    r = requests_get(src, headers={"User-Agent": ua}, verify=get_requests_verify())
-                    r.raise_for_status()
-                    data = r.content
-                    break
-                except Exception as err:
-                    if attempt == 3:
-                        raise err
-                    delays = [5, 15, 60]
-                    await asyncio.sleep(delays[attempt])
-            part = types.Part.from_bytes(data=data, mime_type=mime)
+        part = await asyncio.to_thread(_load_gemini_image_part, src)
+    except _SandboxImagePathError:
+        return _make_sandbox_error_msg()
     except Exception as e:
         return (
             f"[ERROR]: Failed to get image data {src}: {e}.\n"
@@ -283,14 +339,9 @@ async def _invoke_gemini_vision(src: str, q: str) -> str:
     max_r = 3
     while retries <= max_r:
         try:
-            cli = genai.Client(api_key=gemini_key)
-            resp = cli.models.generate_content(
-                model="gemini-2.5-pro",
-                contents=[part, types.Part(text=q)],
+            return await asyncio.to_thread(
+                _invoke_gemini_vision_once, part, q, gemini_key=gemini_key
             )
-            if not resp.text or not resp.text.strip():
-                raise Exception("Response text is None or empty")
-            return resp.text
         except Exception as e:
             err_str = str(e)
             retry_codes = ["503", "429", "500", "Response text is None or empty"]

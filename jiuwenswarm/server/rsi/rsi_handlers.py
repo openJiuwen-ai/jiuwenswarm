@@ -14,7 +14,7 @@ import inspect
 import logging
 from typing import Any, Callable
 
-from jiuwenswarm.agents.harness.common.rsi.errors import RsiError, RsiScenarioNotSupported
+from jiuwenswarm.agents.harness.common.rsi.errors import RsiBadRequest, RsiError, RsiNotReady
 
 logger = logging.getLogger(__name__)
 
@@ -206,22 +206,29 @@ class RsiAgentServerHandlers:
             adapter=self.context.adapter_for_task(params.get("task_id")),
         )
 
-    @staticmethod
-    def _do_harness_install(params: dict[str, Any]) -> Any:
-        del params
-        # openjiuwen harness_rsi 引擎未随本构建分发，Harness 优化安装链路随之下线。
-        raise RsiScenarioNotSupported("harness optimization is not available in this build")
+    def _do_harness_install(self, params: dict[str, Any]) -> Any:
+        task_id = str(params.get("task_id") or "").strip()
+        if not task_id:
+            raise RsiBadRequest("task_id 必填")
+        installer = getattr(self.context, "harness_installer", None)
+        if installer is None:
+            raise RsiNotReady("RSI Harness installer 未装配")
+        return installer.install(task_id)
 
-    @staticmethod
-    def _do_harness_versions_list(_params: dict[str, Any]) -> dict[str, Any]:
-        # openjiuwen harness_rsi 引擎未随本构建分发，Harness 版本管理随之下线。
-        raise RsiScenarioNotSupported("harness optimization is not available in this build")
+    def _do_harness_versions_list(self, _params: dict[str, Any]) -> dict[str, Any]:
+        installer = getattr(self.context, "harness_installer", None)
+        if installer is None:
+            raise RsiNotReady("RSI Harness installer 未装配")
+        return installer.list_versions()
 
-    @staticmethod
-    def _do_harness_rollback(params: dict[str, Any]) -> Any:
-        del params
-        # openjiuwen harness_rsi 引擎未随本构建分发，Harness 回滚链路随之下线。
-        raise RsiScenarioNotSupported("harness optimization is not available in this build")
+    def _do_harness_rollback(self, params: dict[str, Any]) -> Any:
+        installation_id = str(params.get("installation_id") or "").strip()
+        if not installation_id:
+            raise RsiBadRequest("installation_id 必填")
+        installer = getattr(self.context, "harness_installer", None)
+        if installer is None:
+            raise RsiNotReady("RSI Harness installer 未装配")
+        return installer.rollback(installation_id)
 
     # -- 推送 --
 

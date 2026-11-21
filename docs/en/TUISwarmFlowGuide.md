@@ -66,7 +66,7 @@ On first use, you need to set up the model API in the configuration. You can do 
 
 ## Enabling SwarmFlow
 
-SwarmFlow is enabled by default in the Team mode configuration. The configuration file is located at `~/.jiuwenswarm/config/config.yaml`.
+The shipping template keeps SwarmFlow **off** by default (`enable_swarmflow: false`). The configuration file is located at `~/.jiuwenswarm/config/config.yaml`.
 
 ### Configuration
 
@@ -80,7 +80,8 @@ modes:
       lifecycle: persistent
       teammate_mode: build_mode
       spawn_mode: inprocess
-      enable_swarmflow: true    # Set to true to enable SwarmFlow, default is True
+      enable_swarmflow: false    # Set to true to enable SwarmFlow; default is false
+      # swarmflow_budget: 500000  # Optional: team-shared token ceiling
 
       leader:
         member_name: team-leader
@@ -104,27 +105,34 @@ modes:
 
 | Field | Description | Default |
 |-------|-------------|---------|
-| `enable_swarmflow` | Whether to enable SwarmFlow workflows | `true` |
+| `enable_swarmflow` | Whether to enable SwarmFlow workflows | `false` |
+| `swarmflow_budget` | Team-shared token ceiling; positive int enables, unset/`null` means unbounded | unset |
 | `team_name` | Team name | `jiuwen_team` |
 | `lifecycle` | Team lifecycle: `persistent` / `temporary` | `persistent` |
 | `teammate_mode` | Member build mode: `build_mode` | `build_mode` |
 | `spawn_mode` | Process mode: `inprocess` (single machine) / see [Distributed Team](DistributedTeam.md) for distributed | `inprocess` |
 
-> **Note**: After modifying the configuration, restart the JiuwenSwarm backend service (`jiuwenswarm-start`) for changes to take effect.
+> **Note**: After editing `config.yaml`, restart the JiuwenSwarm backend (`jiuwenswarm-start`). TUI `/swarmflow` writes take effect on a **new session** — use `/new` to apply immediately.
 
 ---
 
 ## Using SwarmFlow
 
-### Step 1: Switch to Team Mode
+### Step 1: Enable SwarmFlow and enter Team
 
-In the TUI, enter the following command to switch to Team mode:
+Prefer the TUI command to enable SwarmFlow and switch into team in one step:
 
 ```
-/mode team
+/swarmflow on
+/swarmflow          # confirm: swarmflow: on · mode: team · budget: ...
 ```
 
-After switching, the TUI displays the current mode as `team`, and the Leader Agent takes charge of coordinating team tasks.
+You can also use `/mode team` and ensure `enable_swarmflow: true`. Optional budget:
+
+```
+/swarmflow on --budget 500000
+/swarmflow on --budget none
+```
 
 ### Step 2: Submit a Task
 
@@ -190,7 +198,7 @@ up/down select - Enter view - r refresh - Esc close
 
 | Information | Description |
 |-------------|-------------|
-| Status icon | `●` running / `○` pending / `◎` planned / `✓` completed / `✗` failed / `■` stopped |
+| Status icon | `●` running / `○` pending / `◎` planned / `✓` completed / `✗` failed / `■` stopped / `‖` paused |
 | Workflow name | Set by `SwarmflowTool` at launch |
 | Agent progress | `completed/total` format |
 
@@ -200,6 +208,9 @@ up/down select - Enter view - r refresh - Esc close
 |-----|--------|
 | `↑` / `↓` | Move focus between workflows |
 | `Enter` | Enter the selected workflow's phase details |
+| `Shift+B` | View Team / Run budget |
+| `Shift+P` | Pause/resume selected workflow (`swarmflow.pause` / `swarmflow.resume`) |
+| `Shift+S` | Stop selected workflow (`swarmflow.stop`) |
 | `r` | Refresh the workflow list |
 | `Esc` | Close the viewer, return to chat |
 
@@ -235,6 +246,9 @@ up/down select phase · Enter show agents · Tab/Right agents · Esc back
 | `Tab` / `→` | Toggle focus between **Phases** and **Agents** lists |
 | `←` | Return to the workflow list |
 | `l` | View full workflow logs (enters the file viewer) |
+| `Shift+B` | View Team / Run budget |
+| `Shift+P` | Pause/resume the current workflow |
+| `Shift+S` | Stop the current workflow |
 | `r` | Refresh |
 | `Esc` | Return to the workflow list |
 
@@ -288,10 +302,11 @@ When viewing logs, Prompt, Outcome, or Error, a full-screen file viewer opens:
 | Status | Description |
 |--------|-------------|
 | `running` | The workflow is currently executing |
+| `paused` | The workflow is paused; resume with `Shift+P` |
 | `pending` | The workflow has been created, awaiting execution |
 | `planned` | The workflow has been planned, not yet started |
 | `completed` | All phases in the workflow have finished executing |
-| `failed` | An error occurred during workflow execution |
+| `failed` | An error occurred during workflow execution (includes token budget exhaustion) |
 | `stopped` | The workflow was interrupted or stopped by the user |
 
 ### Phase Statuses

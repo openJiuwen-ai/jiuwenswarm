@@ -5,6 +5,7 @@ export type WorkflowStatus =
   | "completed"
   | "failed"
   | "stopped"
+  | "paused"
   | "waiting_for_human";
 
 export interface WorkflowAgentActivity {
@@ -14,6 +15,14 @@ export interface WorkflowAgentActivity {
 }
 
 export type WorkflowNodeType = "agent" | "agent_session" | "human" | "human_session";
+
+export interface WorkflowBudget {
+  total: number | null;
+  spent: number;
+  remaining: number | null;
+  scope: "leader" | "session" | "workflow";
+  exhausted: boolean;
+}
 
 export interface WorkflowAgent {
   id: string;
@@ -63,6 +72,12 @@ export interface WorkflowRun {
   token_count?: number | null;
   duration_ms?: number | null;
   estimated_token_count?: number | null;
+  /** Leader-shared budget snapshot. This is deliberately not a per-run budget. */
+  budget?: WorkflowBudget | null;
+  /** Per-run ledger snapshot (META.workflow_token_limit); null when unset. */
+  workflow_budget?: WorkflowBudget | null;
+  /** Which ledger triggered a budget failure: "session" | "workflow". */
+  budget_exhausted_scope?: "session" | "workflow" | null;
   phases: WorkflowPhase[];
   /** List summary only — full detail not yet fetched via ``action=get``. */
   detail_pending?: boolean;
@@ -74,6 +89,96 @@ export interface WorkflowAgentLookup {
   workflow: WorkflowRun;
   phase: WorkflowPhase;
   agent: WorkflowAgent;
+}
+
+function trimCompactDecimal(value: string): string {
+  return value.endsWith(".0") ? value.slice(0, -2) : value;
+}
+
+/** Compact a real token count for TUI rows without inventing missing usage. */
+export function formatTokenCount(value?: number | null): string | null {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return null;
+  if (value < 1_000) return `${Math.round(value)}`;
+  if (value < 1_000_000) return `${trimCompactDecimal((value / 1_000).toFixed(1))}k`;
+  return `${trimCompactDecimal((value / 1_000_000).toFixed(1))}m`;
+}
+
+export function workflowBudgetUsedPercent(budget?: WorkflowBudget | null): number | null {
+  if (!budget || typeof budget.total !== "number" || budget.total <= 0) return null;
+  if (!Number.isFinite(budget.spent)) return null;
+  return Math.round((budget.spent / budget.total) * 100);
+}
+
+export function isWorkflowBudgetLow(budget?: WorkflowBudget | null): boolean {
+  return Boolean(
+    budget &&
+      budget.exhausted !== true &&
+      typeof budget.total === "number" &&
+      budget.total > 0 &&
+      typeof budget.remaining === "number" &&
+      budget.remaining / budget.total <= 0.2,
+  );
+}
+
+export function isWorkflowBudgetExhausted(
+  workflow: Pick<WorkflowRun, "status" | "budget" | "error" | "budget_exhausted_scope">,
+): boolean {
+  return workflowBudgetExhaustedScope(workflow) !== null;
+}
+
+/**
+ * Which ledger ran dry: "workflow" (per-run, retryable by revising the
+ * workflow), "session" (team-wide, not retryable), or null when neither
+ * ceiling was crossed.
+ */
+export function workflowBudgetExhaustedScope(
+  workflow: Pick<
+    WorkflowRun,
+    "status" | "budget" | "workflow_budget" | "error" | "budget_exhausted_scope"
+  >,
+): "session" | "workflow" | null {
+  if (workflow.budget_exhausted_scope === "workflow") return "workflow";
+  if (workflow.budget_exhausted_scope === "session") return "session";
+  if (workflow.budget?.exhausted === true) return "session";
+  if (workflow.workflow_budget?.exhausted === true) return "workflow";
+  if (workflow.error && /budget exhausted/i.test(workflow.error)) return "session";
+  return null;
+}
+
+export function formatWorkflowBudgetInline(budget?: WorkflowBudget | null): string | null {
+  if (!budget) return null;
+  const spent = formatTokenCount(budget.spent);
+  if (!spent) return null;
+  const total = formatTokenCount(budget.total);
+  return total ? `team ${spent}/${total}` : `team spent ${spent} · unbounded`;
+}
+
+export function formatWorkflowBudgetDetail(budget?: WorkflowBudget | null): string | null {
+  if (!budget) return null;
+  const spent = formatTokenCount(budget.spent);
+  if (!spent) return null;
+  const total = formatTokenCount(budget.total);
+  if (!total) return `Team budget spent ${spent} (unbounded)`;
+  const percent = workflowBudgetUsedPercent(budget);
+  return `Team budget ${spent}/${total}${percent === null ? "" : ` (${percent}%)`}`;
+}
+
+export function formatWorkflowRunBudgetInline(budget?: WorkflowBudget | null): string | null {
+  if (!budget) return null;
+  const spent = formatTokenCount(budget.spent);
+  if (!spent) return null;
+  const total = formatTokenCount(budget.total);
+  return total ? `run ${spent}/${total}` : `run spent ${spent} · unbounded`;
+}
+
+export function formatWorkflowRunBudgetDetail(budget?: WorkflowBudget | null): string | null {
+  if (!budget) return null;
+  const spent = formatTokenCount(budget.spent);
+  if (!spent) return null;
+  const total = formatTokenCount(budget.total);
+  if (!total) return `Run budget spent ${spent} (unbounded)`;
+  const percent = workflowBudgetUsedPercent(budget);
+  return `Run budget ${spent}/${total}${percent === null ? "" : ` (${percent}%)`}`;
 }
 
 /** Single-width “human waiting” marker (text symbol — not emoji 👤/🧑). */
@@ -118,6 +223,8 @@ export function workflowStatusIcon(status: WorkflowStatus): string {
       return "○";
     case "stopped":
       return "■";
+    case "paused":
+      return "‖";
     case "waiting_for_human":
       return WAITING_FOR_HUMAN_ICON;
   }
@@ -126,12 +233,19 @@ export function workflowStatusIcon(status: WorkflowStatus): string {
 /** Fixed user-facing status lines — avoid showing raw engine narration (e.g. result payload). */
 export const WORKFLOW_STATUS_BANNER: Partial<Record<WorkflowStatus, string>> = {
   running: "Workflow running",
+  paused: "Workflow paused",
   completed: "Workflow completed",
+  stopped: "Workflow stopped",
 };
 
 export function runningWorkflowsBannerText(count: number): string {
   if (count <= 0) return "";
   return count === 1 ? "1 workflow running" : `${count} workflows running`;
+}
+
+export function pausedWorkflowsBannerText(count: number): string {
+  if (count <= 0) return "";
+  return count === 1 ? "1 workflow paused" : `${count} workflows paused`;
 }
 
 /** Format an ISO timestamp for workflow started-at display (local time). */
@@ -197,6 +311,8 @@ function formatWorkflowDurationLabel(status: WorkflowStatus): string {
       return "failed";
     case "stopped":
       return "stopped";
+    case "paused":
+      return "paused";
     case "running":
     case "pending":
     case "planned":

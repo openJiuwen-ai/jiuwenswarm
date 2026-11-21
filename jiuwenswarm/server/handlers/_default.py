@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
@@ -492,15 +493,21 @@ def _can_persist_work_agent_adapter_mode(
     }
 
 
-async def _prepare_code_mode_chat_turn(
-    ctx,
-    request: AgentRequest,
-    channel_id: str,
-    *,
-    sync_metadata: bool = True,
-    agent_manager: Any | None = None,
-) -> tuple[str, str | None, Any]:
-    """Mode resolution and correct agent instance selection."""
+@dataclass(frozen=True)
+class ChatTurnRouting:
+    mode: str
+    sub_mode: str | None
+    runtime_work_mode: str
+    canonical_mode: str | None
+    explicit_mode_provided: bool
+    is_interrupt_continuation: bool
+    source: str
+    session_id: str
+    sessions_root: Any
+
+
+def resolve_chat_turn_routing(request: AgentRequest) -> ChatTurnRouting:
+    """Resolve mode for a chat turn without writing session metadata; shared with session.prepare."""
     # [新增] 在 _apply_resolved_mode_to_request 把 canonical mode 写回 params 之前，
     # 先记录请求是否「显式」携带了 mode。下游 sync 用它做守卫：未显式携带则不覆盖
     # 磁盘已锁定的会话 mode（避免只读 RPC 用默认推断值腐蚀 team 等已锁定 mode）。
@@ -667,6 +674,65 @@ async def _prepare_code_mode_chat_turn(
             sid,
             canonical_mode,
         )
+    return ChatTurnRouting(
+        mode=mode,
+        sub_mode=sub_mode,
+        runtime_work_mode=runtime_work_mode,
+        canonical_mode=canonical_mode,
+        explicit_mode_provided=explicit_mode_provided,
+        is_interrupt_continuation=is_interrupt_continuation,
+        source=source,
+        session_id=sid,
+        sessions_root=sessions_root,
+    )
+
+
+def resolve_readonly_project_dir(
+    request: AgentRequest,
+    sessions_root: Any,
+    project_dir: str | None,
+    *,
+    prefer_locked: bool = False,
+) -> str | None:
+    """Combine the request's project_dir with session metadata; never writes."""
+    # prefer_locked 对齐对话轮的元数据同步（会话锁定值优先于请求值）；只读 RPC 保持请求值优先。
+    if not prefer_locked and isinstance(project_dir, str) and project_dir.strip():
+        return project_dir
+    sid = str(request.session_id or "").strip()
+    if not sid:
+        return project_dir
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        get_session_metadata,
+    )
+    meta = get_session_metadata(
+        sid,
+        cache_bust=True,
+        enable_writeback=False,
+        sessions_root=sessions_root,
+    )
+    locked = meta.get("project_dir") if isinstance(meta, dict) else None
+    if isinstance(locked, str) and locked.strip():
+        return locked.strip()
+    return project_dir
+
+
+async def _prepare_code_mode_chat_turn(
+    ctx,
+    request: AgentRequest,
+    channel_id: str,
+    *,
+    sync_metadata: bool = True,
+    agent_manager: Any | None = None,
+) -> tuple[str, str | None, Any]:
+    """Mode resolution and correct agent instance selection."""
+    routing = resolve_chat_turn_routing(request)
+    mode, sub_mode = routing.mode, routing.sub_mode
+    runtime_work_mode = routing.runtime_work_mode
+    canonical_mode = routing.canonical_mode
+    explicit_mode_provided = routing.explicit_mode_provided
+    is_interrupt_continuation = routing.is_interrupt_continuation
+    source = routing.source
+    sid = routing.session_id
 
     manager = agent_manager or ctx.services.agent_manager
     await manager.wait_for_session_prewarm(request.session_id)
@@ -703,22 +769,9 @@ async def _prepare_code_mode_chat_turn(
     else:
         # Read-only path (e.g. command.goal get): never create/update
         # metadata.json. Prefer request project_dir, else locked disk value.
-        project_dir = requested_project_dir
-        if not (isinstance(project_dir, str) and project_dir.strip()):
-            sid = str(request.session_id or "").strip()
-            if sid:
-                from jiuwenswarm.server.runtime.session.session_metadata import (
-                    get_session_metadata,
-                )
-                meta = get_session_metadata(
-                    sid,
-                    cache_bust=True,
-                    enable_writeback=False,
-                    sessions_root=sessions_root,
-                )
-                locked = meta.get("project_dir") if isinstance(meta, dict) else None
-                if isinstance(locked, str) and locked.strip():
-                    project_dir = locked.strip()
+        project_dir = resolve_readonly_project_dir(
+            request, routing.sessions_root, requested_project_dir,
+        )
     if isinstance(project_dir, str) and project_dir.strip():
         project_dir = project_dir.strip()
         request.params["project_dir"] = project_dir

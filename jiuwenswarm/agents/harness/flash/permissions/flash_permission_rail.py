@@ -9,6 +9,7 @@ from copy import deepcopy
 from dataclasses import replace
 from typing import Any
 
+from openjiuwen.core.foundation.llm.schema.message import ToolMessage
 from openjiuwen.core.runner import Runner
 from openjiuwen.harness.rails.interrupt.interrupt_base import (
     ApproveResult,
@@ -19,13 +20,6 @@ from openjiuwen.harness.rails.security.tool_security_rail import compute_batch_a
 from openjiuwen.harness.security.host import ToolPermissionHost
 from openjiuwen.harness.security.models import PermissionLevel, PermissionResult
 from openjiuwen.harness.security.permission_checks import merge_permission_results
-from openjiuwen.harness.security.patterns import (
-    merge_file_guard_access_allows,
-    merge_permission_allow_rule_into_permissions,
-    write_permissions_section_to_agent_config_yaml,
-)
-from openjiuwen.harness.security.tiered_policy import evaluate_tiered_policy
-
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     is_todo_close_nudge,
 )
@@ -34,10 +28,12 @@ from jiuwenswarm.server.runtime.skill_turbo.rails.permission_rail import (
     SkillTurboPermissionRail,
 )
 
+from ..tools.todo_arguments import TodoArgumentError
 from .skill_install import FlashSkillSearchTool, save_state, state_for
 from .tool_policy_projection import is_projected, project_operations
 
 _PENDING = "__flash_permission_pending__"
+_INVALID_TODO_ARGUMENTS = "flash:invalid_todo_arguments"
 logger = logging.getLogger(__name__)
 
 
@@ -94,6 +90,10 @@ class FlashPermissionRail(SkillTurboPermissionRail):
         project_cfg = self.projection_config_for(ctx)
         try:
             operations = project_operations(tool_name, tool_args, project_cfg)
+        except TodoArgumentError as exc:
+            if outer.permission == PermissionLevel.DENY:
+                return outer
+            return PermissionResult(PermissionLevel.DENY, _INVALID_TODO_ARGUMENTS, str(exc))
         except (TypeError, ValueError, KeyError):
             return PermissionResult(
                 PermissionLevel.DENY,
@@ -136,6 +136,24 @@ class FlashPermissionRail(SkillTurboPermissionRail):
             # SDK sibling calls share extra; a rejected call must not skip a sibling.
             ctx.extra = dict(ctx.extra)
         return super()._apply_decision(ctx, tool_call, tool_name, decision)
+
+    def _reject_projected_call(self, ctx, tool_call, result, permission_message):
+        if tool_call.name == "todo" and result.matched_rule == _INVALID_TODO_ARGUMENTS:
+            logger.info(
+                "flash.todo.invalid_arguments session_id=%s tool_call_id=%s reason=%s",
+                self._resolve_session_id(ctx), tool_call.id, result.reason,
+            )
+            return RejectResult(
+                tool_result={
+                    "status": "error",
+                    "success": False,
+                    "error": result.reason,
+                    # Existing tool cards use the rendered detail to identify failures.
+                    "display": f"[ERROR]: {result.reason}",
+                },
+                tool_message=ToolMessage(content=result.reason, tool_call_id=tool_call.id),
+            )
+        return self.reject(tool_result=permission_message)
 
     async def resolve_interrupt(
         self, ctx, tool_call, user_input, auto_confirm_config=None
@@ -185,7 +203,10 @@ class FlashPermissionRail(SkillTurboPermissionRail):
             pending.pop(tool_call.id, None)
             if ctx.session:
                 ctx.session.update_state({_PENDING: pending})
-            return self.reject(tool_result=f"[PERMISSION_DENIED] {result.reason}")
+            return self._reject_projected_call(
+                ctx, tool_call, result,
+                f"[PERMISSION_DENIED] {result.reason}",
+            )
         if (
             payload is not None
             and payload.approved
@@ -215,8 +236,9 @@ class FlashPermissionRail(SkillTurboPermissionRail):
                     tool_result="[PERMISSION_DENIED] Permission recheck failed"
                 )
             if final.permission == PermissionLevel.DENY:
-                return self.reject(
-                    tool_result="[PERMISSION_DENIED] Permission revoked before execution"
+                return self._reject_projected_call(
+                    ctx, tool_call, final,
+                    "[PERMISSION_DENIED] Permission revoked before execution",
                 )
             if (
                 final.permission == PermissionLevel.ASK
@@ -360,64 +382,5 @@ class FlashPermissionRail(SkillTurboPermissionRail):
         ).hexdigest()
 
     def _persist_allow_always(self, normalized_name, tool_args, ask_accesses=None):
-        # Parent (openjiuwen f9c052ee) passes ask_accesses positionally; keep signature
-        # compatible. Projected Flash ops merge tool rules locally and apply the
-        # caller's collected file_guard ask_accesses (collection moved out of rail).
-        if not is_projected(normalized_name, tool_args):
-            return super()._persist_allow_always(
-                normalized_name, tool_args, ask_accesses
-            )
-        snapshot = (
-            self._host.get_permissions_snapshot()
-            if self._host.get_permissions_snapshot
-            else None
-        )
-        config = deepcopy(
-            snapshot if isinstance(snapshot, dict) else self._static_config
-        )
-        operations = project_operations(normalized_name, tool_args, config)
-        from .tool_policy_projection import Operation
-
-        if normalized_name != "read_file":
-            operations.insert(0, Operation(normalized_name, tool_args))
-        changed = False
-        for operation in operations:
-            permission, matched_rule = evaluate_tiered_policy(
-                config, operation.name, operation.args
-            )
-            if _requires_explicit_approval(operation, permission, matched_rule):
-                # SDK persistence skips default ALLOW, which Flash promotes to ASK.
-                tools = config.get("tools")
-                if not isinstance(tools, dict):
-                    tools = {}
-                config["tools"] = {**tools, operation.name: "allow"}
-                updated = True
-            else:
-                config, updated = merge_permission_allow_rule_into_permissions(
-                    config, operation.name, operation.args
-                )
-            changed |= updated
-        accesses = list(ask_accesses or ())
-        if accesses:
-            config, updated = merge_file_guard_access_allows(config, accesses)
-            changed |= updated
-        if not changed:
-            return False
-        # 1B: host persist refreshes via rail.update_config; yaml path does the same.
-        if self._host.persist_allow_rule is not None:
-            try:
-                return bool(self._host.persist_allow_rule(config))
-            except Exception:
-                logger.warning(
-                    "Flash persist_allow_rule failed",
-                    exc_info=True,
-                )
-                return False
-        saved = bool(
-            write_permissions_section_to_agent_config_yaml(
-                self._host.permission_yaml_path, config
-            )
-        )
-        if saved:
-            self.update_config(config)
-        return saved
+        """Flash/OfficeAce does not persist allow-always; session auto-confirm only."""
+        return False

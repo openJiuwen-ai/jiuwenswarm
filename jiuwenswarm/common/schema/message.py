@@ -18,6 +18,9 @@ class ReqMethod(Enum):
     CHAT_CANCEL = "chat.interrupt"
     CHAT_ANSWER = "chat.user_answer"
     CHAT_SWARMFLOW_REPLY = "chat.swarmflow_reply"
+    SWARMFLOW_PAUSE = "swarmflow.pause"
+    SWARMFLOW_RESUME = "swarmflow.resume"
+    SWARMFLOW_STOP = "swarmflow.stop"
     FILE_TRANSFER_START = "file.transfer.start"
     FILE_TRANSFER_CHUNK = "file.transfer.chunk"
     FILE_TRANSFER_COMPLETE = "file.transfer.complete"
@@ -38,6 +41,7 @@ class ReqMethod(Enum):
     MCP_SERVER_UPDATE = "mcp.server.update"
     MCP_SERVER_LIST = "mcp.server.list"
     MCP_SERVER_GET = "mcp.server.get"
+    MCP_SERVER_RESCAN = "mcp.server.rescan"
     COMMAND_MODEL = "command.model"
     COMMAND_RESUME = "command.resume"
     COMMAND_SANDBOX = "command.sandbox"
@@ -65,6 +69,7 @@ class ReqMethod(Enum):
 
     SESSION_LIST = "session.list"
     SESSION_CREATE = "session.create"
+    SESSION_PREPARE = "session.prepare"
     SESSION_SWITCH = "session.switch"
     SESSION_DELETE = "session.delete"
     SESSION_RENAME = "session.rename"
@@ -366,6 +371,7 @@ class ReqMethod(Enum):
     RSI_HARNESS_INSTALL = "rsi.harness.install"
     RSI_HARNESS_VERSIONS_LIST = "rsi.harness.versions.list"
     RSI_HARNESS_ROLLBACK = "rsi.harness.rollback"
+    RSI_CAPABILITIES = "rsi.capabilities"
 
 
 class EventType(Enum):

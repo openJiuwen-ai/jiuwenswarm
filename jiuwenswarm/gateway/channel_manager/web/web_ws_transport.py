@@ -23,6 +23,7 @@ import aiohttp
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
 from jiuwenswarm.common.utils import get_agent_workspace_dir
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.gateway.channel_manager.base import ChannelMetadata, RobotMessageRouter
 from jiuwenswarm.gateway.routing.base_ws_channel import BaseWsChannel
 from jiuwenswarm.gateway.routing.keys import AgentRef, RoutingKey
@@ -632,6 +633,8 @@ class WebWsTransport(BaseWsChannel):
         if self._running:
             logger.warning("WebWsTransport 已在运行")
             return
+        if is_enterprise():
+            return
         if not self.config.enabled:
             logger.warning("WebWsTransport 未启用（enabled=False）")
             return
@@ -787,6 +790,7 @@ class WebWsTransport(BaseWsChannel):
             event_name in _WEB_FULL_PAYLOAD_EVENT_TYPES
             or event_name.startswith("team.")
             or event_name.startswith("harness.")
+            or event_name.startswith("rsi.")
             or event_name.startswith("personal_context.context.")
         )
 

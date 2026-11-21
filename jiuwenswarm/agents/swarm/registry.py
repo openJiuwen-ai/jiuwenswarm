@@ -53,6 +53,7 @@ from jiuwenswarm.agents.swarm.providers import (
     multimodal as _multimodal,
     runtime_tools as _runtime_tools,
     skills as _skills,
+    team_progressive as _team_progressive,
     tools as _tools,
 )
 from jiuwenswarm.common.config import get_config
@@ -79,6 +80,9 @@ PERSONAL_CONTEXT = _member_rails.PERSONAL_CONTEXT
 RUNTIME_PROMPT = _member_rails.RUNTIME_PROMPT
 TEAM_SKILL_STORAGE_POLICY = _member_rails.TEAM_SKILL_STORAGE_POLICY
 TEAM_SKILL_LIBRARY_RELOAD = _member_rails.TEAM_SKILL_LIBRARY_RELOAD
+LEGACY_TEAM_SHARED_SKILL_LINK_REFRESH = (
+    _member_rails.LEGACY_TEAM_SHARED_SKILL_LINK_REFRESH
+)
 TEAM_WORKSPACE_REPORT_PATH = _member_rails.TEAM_WORKSPACE_REPORT_PATH
 CONTEXT_PROCESSOR = _member_rails.CONTEXT_PROCESSOR
 CONTEXT_OVERFLOW_RECOVERY = _member_rails.CONTEXT_OVERFLOW_RECOVERY
@@ -90,6 +94,7 @@ A2A_OUTBOUND_TOOLKIT = _member_rails.A2A_OUTBOUND_TOOLKIT
 DISABLED_TOOLS = _member_rails.DISABLED_TOOLS
 REQUEST_SCOPED_MCP_TOOLS = _member_rails.REQUEST_SCOPED_MCP_TOOLS
 MODEL_ROUTING = _member_rails.MODEL_ROUTING
+TEAM_PROGRESSIVE_TOOL = _team_progressive.TEAM_PROGRESSIVE_TOOL
 # Leader-only native image input (uploaded pixels into the model context).
 MULTIMODAL_IMAGE = _multimodal.MULTIMODAL_IMAGE
 TEAM_PERMISSION = _member_rails.TEAM_PERMISSION
@@ -130,6 +135,8 @@ STATUSLINE_SETUP_AGENT = _code_subagents.STATUSLINE_SETUP_AGENT
 
 # Swarm-owned rails declared in ``builtin_rails``.
 RESPONSE_PROMPT = _builtin_rails.RESPONSE_PROMPT
+TEAM_ACCEL_PROMPT = _builtin_rails.TEAM_ACCEL_PROMPT
+TEAM_ACCEL_SYS = _builtin_rails.TEAM_ACCEL_SYS
 STREAM_EVENT = _builtin_rails.STREAM_EVENT
 AVATAR_PROMPT = _builtin_rails.AVATAR_PROMPT
 WORKSPACE_QUOTA = _builtin_rails.WORKSPACE_QUOTA
@@ -171,6 +178,14 @@ def register_swarm_providers() -> None:
     wires the build-context seed factory. Safe to call multiple times, but only
     the first call performs the registration.
     """
+    # Always (re)assert the accel worktree guard patch: early returns must not
+    # leave a process that imported registry before accel with the stock guard.
+    from jiuwenswarm.agents.harness.team.accel.worktree_sys_rail_patch import (
+        apply_team_accel_sys_rail_patch,
+    )
+
+    apply_team_accel_sys_rail_patch()
+
     global _REGISTERED
     if _REGISTERED:
         return
@@ -206,6 +221,7 @@ __all__ = [
     "RUNTIME_PROMPT",
     "TEAM_SKILL_STORAGE_POLICY",
     "TEAM_SKILL_LIBRARY_RELOAD",
+    "LEGACY_TEAM_SHARED_SKILL_LINK_REFRESH",
     "TEAM_WORKSPACE_REPORT_PATH",
     "CONTEXT_PROCESSOR",
     "CONTEXT_OVERFLOW_RECOVERY",
@@ -217,6 +233,7 @@ __all__ = [
     "DISABLED_TOOLS",
     "REQUEST_SCOPED_MCP_TOOLS",
     "MODEL_ROUTING",
+    "TEAM_PROGRESSIVE_TOOL",
     "MULTIMODAL_IMAGE",
     "TEAM_PERMISSION",
     "TEAM_PERMISSION_POLICY",
@@ -226,6 +243,8 @@ __all__ = [
     "TEAM_TTSE",
     "MEMBER_TTSE",
     "RESPONSE_PROMPT",
+    "TEAM_ACCEL_PROMPT",
+    "TEAM_ACCEL_SYS",
     "SYS_OPERATION",
     "STREAM_EVENT",
     "TASK_PLANNING",

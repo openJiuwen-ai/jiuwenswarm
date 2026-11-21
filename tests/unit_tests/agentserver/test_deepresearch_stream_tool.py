@@ -11,6 +11,7 @@ import logging
 import os
 import stat
 import sys
+import threading
 import warnings
 import zipfile
 from contextlib import ExitStack, asynccontextmanager
@@ -192,6 +193,87 @@ def _stream_patches(proc: _Proc, *, route: dict[str, str] | None = None):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("via_binding", [True, False])
+async def test_flash_research_uses_the_bound_todo_workspace(tmp_path, monkeypatch, via_binding):
+    from openjiuwen.core.single_agent.rail.base import ToolCallInputs
+    from openjiuwen.core.sys_operation import LocalWorkConfig, OperationMode
+    from openjiuwen.core.sys_operation.local._rw_lock_manager import (
+        ReadWriteLockManager,
+    )
+    from openjiuwen.core.sys_operation.local.fs_operation import FsOperation
+    from openjiuwen.harness.tools.todo import TodoModifyTool
+
+    from jiuwenswarm.agents.harness.common.rails.progressive_tool_rail import (
+        ProgressiveToolRail,
+    )
+
+    await ReadWriteLockManager.stop()
+    monkeypatch.setattr(ReadWriteLockManager, "_lock_dir", tmp_path / "locks")
+    workspace = tmp_path / "agent_office" / "todo"
+    todo_path = workspace / "flash-todo" / "todo.json"
+    todo_path.parent.mkdir(parents=True)
+    todo_path.write_text(json.dumps({"plan_id": "P", "revision": 1, "todos": []}))
+    fs = FsOperation("fs", OperationMode.LOCAL, "test", LocalWorkConfig())
+    tool = TodoModifyTool(SimpleNamespace(fs=lambda: fs), str(workspace))
+    tool.snapshot_guard = AsyncMock()
+    proc = _Proc([])
+    consume = AsyncMock(return_value={"status": "interrupted"})
+    route = {
+        "request_id": "r", "channel_id": "officeclaw", "session_id": "flash-todo",
+        "agent_id": "office", "service_id": "default", "workspace_key": "default",
+        "todo_tool_provider": lambda: tool,
+    }
+    rail = ProgressiveToolRail(deepresearch_context_provider=lambda: route)
+    monkeypatch.setattr(rail, "_skill_gate_blocks_direct_call", AsyncMock(return_value=False))
+    call = SimpleNamespace(id="research-call", name="deepresearch_stream", arguments={"query": "q"})
+    ctx = SimpleNamespace(inputs=ToolCallInputs(tool_call=call, tool_name=call.name, tool_args=call.arguments), extra={})
+    real_get_route = dt._get_route
+    try:
+        with ExitStack() as stack:
+            for item in _stream_patches(proc, route=route):
+                stack.enter_context(item)
+            stack.enter_context(patch.object(dt, "_get_route", side_effect=real_get_route))
+            stack.enter_context(patch(
+                "jiuwenswarm.common.local_env_config.build_effective_env_overlay", return_value={},
+            ))
+            stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
+                                      return_value=(tool, "flash-todo") if via_binding else (None, None)))
+            stack.enter_context(patch(
+                "jiuwenswarm.agents.harness.common.tools.deepresearch.todo_progress.get_tenant_agent_workspace_dir",
+                return_value=tmp_path / "agent_default",
+            ))
+            stack.enter_context(patch.object(dt, "_consume_stream", consume))
+            await rail.before_tool_call(ctx)
+            try:
+                result = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+            finally:
+                await rail.after_tool_call(ctx)
+        assert result["status"] == "interrupted"
+        actual_path, target = consume.await_args.kwargs["todo_context"]
+        assert actual_path == todo_path
+        assert target.plan_id == "P"
+    finally:
+        await ReadWriteLockManager.stop()
+
+
+@pytest.mark.asyncio
+async def test_flash_research_without_request_session_fails_before_spawn():
+    proc = _Proc([])
+    spawn = AsyncMock(return_value=proc)
+    tool = SimpleNamespace(snapshot_guard=object(), get_file_path=lambda sid: f"/todo/{sid}/todo.json")
+    with ExitStack() as stack:
+        for item in _stream_patches(proc, route={"session_id": ""}):
+            stack.enter_context(item)
+        stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
+                                  return_value=(tool, "flash-todo")))
+        stack.enter_context(patch("asyncio.create_subprocess_exec", spawn))
+        result = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+    assert result["status"] == "error"
+    assert result["error"] == "DeepResearch stream failed: ValueError"
+    spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_flash_todo_capture_finishes_before_research_process_starts():
     proc = _Proc([])
     entered, release = asyncio.Event(), asyncio.Event()
@@ -199,7 +281,8 @@ async def test_flash_todo_capture_finishes_before_research_process_starts():
     target = object()
     route = {"session_id": "flash-todo", "workspace_key": "default"}
 
-    async def capture(_path):
+    async def capture(_path, **kwargs):
+        assert kwargs["session_id"] == "flash-todo"
         entered.set()
         await release.wait()
         return target
@@ -209,7 +292,9 @@ async def test_flash_todo_capture_finishes_before_research_process_starts():
         for item in _stream_patches(proc, route=route):
             stack.enter_context(item)
         stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
-                                  return_value=(SimpleNamespace(snapshot_guard=object()), "flash-todo")))
+                                  return_value=(SimpleNamespace(snapshot_guard=object(),
+                                                                get_file_path=lambda sid: f"/todo/{sid}/todo.json"),
+                                                "flash-todo")))
         stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target", capture))
         stack.enter_context(patch.object(dt, "_consume_stream", consume))
         stack.enter_context(patch("asyncio.create_subprocess_exec", spawn))
@@ -237,7 +322,9 @@ async def test_flash_resume_keeps_captured_todo_owner_and_revised_outline(tmp_pa
         for item in _stream_patches(proc, route=route):
             stack.enter_context(item)
         stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
-                                  return_value=(SimpleNamespace(snapshot_guard=object()), "flash-todo")))
+                                  return_value=(SimpleNamespace(snapshot_guard=object(),
+                                                                get_file_path=lambda sid: f"/todo/{sid}/todo.json"),
+                                                "flash-todo")))
         stack.enter_context(patch.object(dt, "deepresearch_todo_path", return_value=tmp_path / "todo.json"))
         stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target", AsyncMock(return_value=target)))
         stack.enter_context(patch.object(dt, "_resolve_outline_interaction_feedback", return_value=feedback))
@@ -258,13 +345,77 @@ async def test_flash_todo_capture_failure_does_not_start_research():
         for item in _stream_patches(proc, route={"session_id": "flash-todo"}):
             stack.enter_context(item)
         stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
-                                  return_value=(SimpleNamespace(snapshot_guard=object()), "flash-todo")))
+                                  return_value=(SimpleNamespace(snapshot_guard=object(),
+                                                                get_file_path=lambda sid: f"/todo/{sid}/todo.json"),
+                                                "flash-todo")))
         stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target",
                                         AsyncMock(side_effect=ValueError("missing Todo"))))
         stack.enter_context(patch("asyncio.create_subprocess_exec", spawn))
         result = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
     assert result["status"] == "error" and result["error_code"] == "stream_failed"
     spawn.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("required", [False, True])
+@pytest.mark.parametrize("provider_raises", [False, True])
+@pytest.mark.parametrize("stale_binding", [False, True])
+async def test_missing_provider_obeys_the_current_host_todo_policy(required, provider_raises, stale_binding):
+    proc = _Proc([])
+    spawn = AsyncMock(return_value=proc)
+    consume = AsyncMock(return_value={"status": "interrupted"})
+    provider = Mock(side_effect=RuntimeError("owner unavailable")) if provider_raises else Mock(return_value=None)
+    stale_tool = SimpleNamespace(snapshot_guard=object()) if stale_binding else None
+    token = dt._deepresearch_route_ctx.set({
+        "todo_tool_provider": provider, "todo_owner_required": required,
+    })
+    try:
+        with ExitStack() as stack:
+            for item in _stream_patches(proc, route={"session_id": "current"}):
+                stack.enter_context(item)
+            stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
+                                      return_value=(stale_tool, "old")))
+            stack.enter_context(patch.object(dt, "_consume_stream", consume))
+            stack.enter_context(patch("asyncio.create_subprocess_exec", spawn))
+            result = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+        if required:
+            assert result["status"] == "error" and result["error_code"] == "stream_failed"
+            spawn.assert_not_awaited()
+            consume.assert_not_awaited()
+        else:
+            assert result["status"] == "interrupted"
+            assert consume.await_args.kwargs["todo_context"] == (None, None)
+            spawn.assert_awaited_once()
+    finally:
+        dt._deepresearch_route_ctx.reset(token)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("framework_error", [False, True])
+async def test_ordinary_todo_capture_failure_does_not_block_research(framework_error):
+    from openjiuwen.core.common.exception.codes import StatusCode
+    from openjiuwen.core.common.exception.errors import build_error
+
+    proc, spawn = _Proc([]), AsyncMock()
+    spawn.return_value = proc
+    consume = AsyncMock(return_value={"status": "interrupted"})
+    error = (build_error(StatusCode.TOOL_TODOS_LOAD_FAILED, reason="unsupported backend")
+             if framework_error else RuntimeError("unsupported backend"))
+    with ExitStack() as stack:
+        for item in _stream_patches(proc, route={"session_id": "ordinary"}):
+            stack.enter_context(item)
+        stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool",
+                                  return_value=(SimpleNamespace(snapshot_guard=None,
+                                                                get_file_path=lambda sid: f"/todo/{sid}/todo.json"),
+                                                "ordinary")))
+        stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target",
+                                         AsyncMock(side_effect=error)))
+        stack.enter_context(patch.object(dt, "_consume_stream", consume))
+        stack.enter_context(patch("asyncio.create_subprocess_exec", spawn))
+        result = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
+    assert result["status"] == "interrupted"
+    assert consume.await_args.kwargs["todo_context"] == (None, None)
+    spawn.assert_awaited_once()
 
 
 def test_config_frame_accepts_exact_limit_and_rejects_one_byte_over():
@@ -2168,7 +2319,8 @@ def _race_route() -> dict[str, str]:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("delivery", ["stream", "stop_race"])
-async def test_unbound_todo_logs_skip_without_blocking_report(tmp_path, delivery):
+@pytest.mark.parametrize("capture_failure", [False, True])
+async def test_unbound_todo_logs_skip_without_blocking_report(tmp_path, delivery, capture_failure):
     frame = {
         "__deepsearch_status__": "completed", "conversation_id": "C1",
         "final_result": {
@@ -2189,6 +2341,9 @@ async def test_unbound_todo_logs_skip_without_blocking_report(tmp_path, delivery
         for item in _stream_patches(proc, route=_race_route()):
             stack.enter_context(item)
         stack.enter_context(patch("openjiuwen.harness.tools.todo_store.bound_todo_tool", return_value=(None, None)))
+        if capture_failure:
+            stack.enter_context(patch.object(dt, "capture_deepresearch_todo_target",
+                                             AsyncMock(side_effect=RuntimeError("unsupported backend"))))
         stack.enter_context(patch.object(dt, "deepresearch_todo_path", return_value=path))
         stack.enter_context(patch.object(dt, "persist_deepresearch_task_update", persist))
         stack.enter_context(patch.object(dt, "WebSocketGatewayPushTransport", return_value=push))
@@ -7472,3 +7627,383 @@ async def test_main_agent_brief_caches_source_without_claiming_frontend_delivery
     finally:
         dt._deepresearch_main_agent_plan_ctx.reset(token)
         dt._BRIEF_UPGRADE_RECORDS.pop(dt._outline_cache_key(route), None)
+
+
+def test_request_config_uses_service_log_root_for_deepresearch_sdk(tmp_path):
+    service_logs = tmp_path / "service-logs"
+    with patch.object(dt, "get_logs_dir", return_value=service_logs, create=True) as logs_dir, \
+         patch.object(dt, "_build_deepresearch_config", return_value=_valid_config()), \
+         patch.object(dt, "get_task_env_overlay", return_value={}), \
+         patch.object(dt, "_get_route", return_value={"session_id": "host-session"}):
+        config = dt._build_deepresearch_request_config(
+            interactive_ask=True, service_id="research-service", agent_id="office",
+        )
+
+    assert config["OFFICE_CLAW_DEEPRESEARCH_LOG_DIR"] == str(
+        service_logs / "DeepResearch" / "output" / "logs"
+    )
+    logs_dir.assert_called_once_with("research-service")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["service_root", "fallback_root", "prepare"])
+async def test_stream_continues_when_diagnostics_setup_fails(failure, tmp_path, monkeypatch, caplog):
+    proc = _Proc()
+    patches = _stream_patches(proc)
+    monkeypatch.delenv("OFFICEACE_USER_DATA_ROOT", raising=False)
+    monkeypatch.delenv("OFFICE_CLAW_HOST_HOME", raising=False)
+    monkeypatch.setenv("OFFICE_CLAW_DATA_DIR", "~missing-deepresearch-test-user/data")
+    with ExitStack() as stack:
+        for index, item in enumerate(patches):
+            if index != 2:
+                stack.enter_context(item)
+        if failure == "service_root":
+            stack.enter_context(patch.object(dt, "get_logs_dir", side_effect=KeyError("private detail")))
+        else:
+            stack.enter_context(patch.object(dt, "get_logs_dir", return_value=tmp_path))
+        if failure == "fallback_root":
+            stack.enter_context(patch.object(dt, "trusted_fallback_log_config", side_effect=TypeError("private detail")))
+        if failure == "prepare":
+            stack.enter_context(patch.object(
+                dt, "prepare_runner_diagnostics", side_effect=RuntimeError("private detail"),
+            ))
+        stack.enter_context(patch.object(dt, "_build_deepresearch_config", return_value=_valid_config()))
+        stack.enter_context(patch.object(dt, "get_task_env_overlay", return_value={}))
+        stack.enter_context(patch.object(dt, "_consume_stream", AsyncMock(return_value={"status": "completed"})))
+        result = json.loads(await dt.deepresearch_stream._func(
+            action="resume", conversation_id="C-log", node="feedback_handler", feedback="continue",
+        ))
+
+    assert result["status"] == "completed"
+    assert "日志" in caplog.text or "诊断" in caplog.text
+    assert "private detail" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", ["error", "completed", "interrupted", "stopped"])
+async def test_stream_preserves_complete_stderr_in_unique_attempt_logs(status, tmp_path, caplog):
+    sdk_logs = tmp_path / "service-logs" / "DeepResearch" / "output" / "logs"
+    original_stderr = b"FIRST_CAUSE: invalid outline tool arguments\n" + b"x" * 30_000 + b"\nLAST_EVENT\xff"
+    caplog.set_level(logging.INFO)
+    for _attempt in range(2):
+        proc = _Proc(stderr=original_stderr)
+        patches = list(_stream_patches(proc, route={
+            "service_id": "research-service", "session_id": "host-session", "request_id": "request-1",
+        }))
+        patches[2] = patch.object(dt, "_build_deepresearch_request_config", return_value=_valid_config(
+            OFFICE_CLAW_DEEPRESEARCH_LOG_DIR=str(sdk_logs),
+        ))
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            stack.enter_context(patch.object(dt, "_consume_stream", AsyncMock(return_value={
+                "status": status, "conversation_id": "C-log", "node_id": "feedback_handler",
+            })))
+            spawn = stack.enter_context(patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)))
+            result = json.loads(await dt.deepresearch_stream._func(
+                action="resume", conversation_id="C-log", node="feedback_handler", feedback="continue",
+            ))
+        assert result["status"] == status
+        assert not any("log_path" in key for key in result)
+
+    journal_files = sorted((sdk_logs.parent.parent / "runner").glob("C-log.*.stderr.log"))
+    assert len(journal_files) == 2
+    assert journal_files[0].read_bytes() == original_stderr
+    assert journal_files[1].read_bytes() == original_stderr
+    assert spawn.await_args.kwargs["cwd"] == str(sdk_logs.parent.parent)
+    assert "C-log" in caplog.text and "request-1" in caplog.text
+    assert str(journal_files[0]) in caplog.text
+    assert "FIRST_CAUSE" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_cancelled_stream_preserves_stderr_before_reraising(tmp_path):
+    sdk_logs = tmp_path / "service-logs" / "DeepResearch" / "output" / "logs"
+    proc = _CancellationProc()
+    original_stderr = b"FIRST_CAUSE before cancellation\n" + b"g" * 30_000
+    stderr_written = asyncio.Event()
+
+    class Reader(_Reader):
+        async def read(self, size: int = -1) -> bytes:
+            if self.reads:
+                # 首块 stderr 写完后，排空任务才会读取下一块。
+                stderr_written.set()
+            return await super().read(size)
+
+    proc.stderr = Reader(original_stderr)
+    manager = Mock()
+    patches = list(_stream_patches(proc))
+    patches[2] = patch.object(dt, "_build_deepresearch_request_config", return_value=_valid_config(
+        OFFICE_CLAW_DEEPRESEARCH_LOG_DIR=str(sdk_logs),
+    ))
+
+    async def invoke():
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            stack.enter_context(patch.object(dt, "get_deepresearch_manager", return_value=manager))
+            await dt.deepresearch_stream._func(
+                action="resume", conversation_id="C-cancel-log", node="stopped",
+            )
+
+    task = asyncio.create_task(invoke())
+    try:
+        await asyncio.wait_for(stderr_written.wait(), timeout=5)
+    finally:
+        task.cancel()
+        proc.release_wait.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert proc.waited >= 1
+    assert proc.returncode is not None
+    journal_files = list((sdk_logs.parent.parent / "runner").glob("C-cancel-log.*.stderr.log"))
+    assert len(journal_files) == 1
+    assert journal_files[0].read_bytes() == original_stderr
+    manager.untrack_process.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_real_runner_process_logs_first_cause_and_binary_tail_under_unicode_path(tmp_path):
+    sdk_logs = tmp_path / "位置 with spaces" / "DeepResearch" / "output" / "logs"
+    runner = tmp_path / "runner fixture.py"
+    runner.write_text(
+        "import json, os, sys\n"
+        "frame = json.loads(sys.stdin.buffer.readline())\n"
+        "cid = sys.argv[sys.argv.index('--conversation-id') + 1]\n"
+        "print(json.dumps({'__deepsearch_status__': 'started', 'conversation_id': cid}), flush=True)\n"
+        "payload = b'FIRST_CAUSE: invalid outline arguments\\n' + "
+        "('\u4e2d\u6587 log\\n' * 6000).encode('utf-8') + b'FINAL_EVENT\\xff'\n"
+        "sys.stderr.buffer.write(payload)\n"
+        "sys.stderr.buffer.flush()\n"
+        "print(json.dumps({'__deepsearch_status__': 'error', 'conversation_id': cid, "
+        "'error_code': '211800', 'error': 'workflow failed'}), flush=True)\n",
+        encoding="utf-8",
+    )
+    expected = (
+        b"FIRST_CAUSE: invalid outline arguments\n"
+        + ("中文 log\n" * 6000).encode("utf-8")
+        + b"FINAL_EVENT\xff"
+    )
+    patches = list(_stream_patches(_Proc()))
+    patches[0] = patch.object(dt, "resolve_python_executable", return_value=Path(sys.executable))
+    patches[1] = patch.object(dt, "_resolve_run_script", return_value=str(runner))
+    patches[2] = patch.object(dt, "_build_deepresearch_request_config", return_value=_valid_config(
+        OFFICE_CLAW_DEEPRESEARCH_LOG_DIR=str(sdk_logs),
+    ))
+    with ExitStack() as stack:
+        for index, item in enumerate(patches):
+            if index != 5:  # The actual Python subprocess and pipes are the subject.
+                stack.enter_context(item)
+        stack.enter_context(patch.object(dt, "get_deepresearch_manager", return_value=Mock()))
+        stack.enter_context(patch.object(dt, "_deliver_salvaged_report", AsyncMock(return_value=None)))
+        results = await asyncio.wait_for(asyncio.gather(*(
+            dt.deepresearch_stream._func(action="start", query="q", conversation_id="C-real-1" if index else "")
+            for index in range(2)
+        )), timeout=10)
+
+    files = list((sdk_logs.parent.parent / "runner").glob("*.stderr.log"))
+    assert len(files) == 2
+    assert all(path.read_bytes() == expected for path in files)
+    for raw in results:
+        outcome = json.loads(raw)
+        assert outcome["error_code"] == "211800"
+        assert "FIRST_CAUSE" not in outcome["stderr_tail"]
+        assert "FINAL_EVENT" in outcome["stderr_tail"]
+        assert len(outcome["stderr_tail"]) <= dt.DEEPRESEARCH_STDERR_OUTCOME_MAX_CHARS
+        assert "stderr_log_path" not in outcome
+        assert any(path.name.startswith(outcome["conversation_id"] + ".") for path in files)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_spawn_closes_journal_and_removes_progress_artifact(tmp_path, caplog):
+    sdk_logs = tmp_path / "service-logs" / "DeepResearch" / "output" / "logs"
+    entered = asyncio.Event()
+    proc = _Proc()
+    artifacts = []
+    create_artifact = dt._create_progress_artifact
+
+    def record_artifact():
+        artifact = create_artifact()
+        artifacts.append(artifact)
+        return artifact
+
+    async def wait_in_spawn(*_args, **_kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+
+    patches = list(_stream_patches(proc))
+    patches[2] = patch.object(dt, "_build_deepresearch_request_config", return_value=_valid_config(
+        OFFICE_CLAW_DEEPRESEARCH_LOG_DIR=str(sdk_logs),
+    ))
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        stack.enter_context(patch("asyncio.create_subprocess_exec", wait_in_spawn))
+        progress = stack.enter_context(patch.object(dt, "_create_progress_artifact", side_effect=record_artifact))
+        task = asyncio.create_task(dt.deepresearch_stream._func(
+            action="resume", conversation_id="C-spawn-cancel", node="stopped",
+        ))
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=3)
+
+    files = list((sdk_logs.parent.parent / "runner").glob("C-spawn-cancel.*.stderr.log"))
+    assert len(files) == 1
+    assert files[0].read_bytes() == b""
+    # This also checks Windows closes the file handle before cancellation returns.
+    renamed = files[0].with_name("closed.stderr.log")
+    files[0].rename(renamed)
+    assert renamed.exists()
+    assert progress.call_count == 1
+    assert not artifacts[0].path.exists()
+    assert "spawn_cancelled" in caplog.text
+    assert proc.terminated == 0 and proc.killed == 0
+
+
+@pytest.mark.asyncio
+async def test_cancelled_spawn_does_not_wait_indefinitely_for_slow_journal_close(tmp_path):
+    from jiuwenswarm.agents.harness.common.tools.deepresearch import diagnostics as dd
+
+    sdk_logs = tmp_path / "service-logs" / "DeepResearch" / "output" / "logs"
+    entered, release_close, closed = asyncio.Event(), threading.Event(), threading.Event()
+    original_close = dd.RunnerDiagnostics.close
+
+    async def wait_in_spawn(*_args, **_kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+
+    def slow_close(capture):
+        release_close.wait(timeout=5)
+        original_close(capture)
+        closed.set()
+
+    patches = list(_stream_patches(_Proc()))
+    patches[2] = patch.object(dt, "_build_deepresearch_request_config", return_value=_valid_config(
+        OFFICE_CLAW_DEEPRESEARCH_LOG_DIR=str(sdk_logs),
+    ))
+    try:
+        with ExitStack() as stack:
+            for item in patches:
+                stack.enter_context(item)
+            stack.enter_context(patch("asyncio.create_subprocess_exec", wait_in_spawn))
+            stack.enter_context(patch.object(dd.RunnerDiagnostics, "close", slow_close))
+            stack.enter_context(patch.object(dd, "_CLOSE_TIMEOUT_SECONDS", 0.03))
+            task = asyncio.create_task(dt.deepresearch_stream._func(
+                action="resume", conversation_id="C-slow-close", node="stopped",
+            ))
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, timeout=1)
+            assert dd._CLOSE_TASKS  # Retained until the disk worker finishes.
+            release_close.set()
+            assert await asyncio.wait_for(asyncio.to_thread(closed.wait, 2), timeout=3)
+            await asyncio.sleep(0)
+    finally:
+        release_close.set()
+
+    files = list((sdk_logs.parent.parent / "runner").glob("C-slow-close.*.stderr.log"))
+    assert len(files) == 1
+    files[0].rename(files[0].with_name("closed.stderr.log"))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["prepare", "write", "read"])
+async def test_journal_failure_keeps_research_and_pipe_drain_alive(failure, tmp_path, caplog):
+    from jiuwenswarm.agents.harness.common.tools.deepresearch import diagnostics as dd
+
+    root = tmp_path / "service-logs"
+    if failure == "prepare":
+        root.write_text("preserve this file", encoding="utf-8")
+    sdk_logs = root / "DeepResearch" / "output" / "logs"
+
+    class Chunks:
+        reads = 0
+
+        async def read(self, _size):
+            self.reads += 1
+            if self.reads == 2 and failure == "read":
+                raise OSError("private device detail")
+            return {1: b"FIRST_CAUSE\n", 2: b"LAST_EVENT\n"}.get(self.reads, b"")
+
+    reader = Chunks()
+    proc = _Proc()
+    proc.stderr = reader
+    fdopen = dd.os.fdopen
+
+    class FailedDisk:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def write(self, _chunk):
+            raise OSError("private device detail")
+
+        def flush(self):
+            self.stream.flush()
+
+        def close(self):
+            self.stream.close()
+
+    patches = list(_stream_patches(proc))
+    patches[2] = patch.object(dt, "_build_deepresearch_request_config", return_value=_valid_config(
+        OFFICE_CLAW_DEEPRESEARCH_LOG_DIR=str(sdk_logs),
+    ))
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        if failure == "write":
+            stack.enter_context(patch.object(dd.os, "fdopen", side_effect=lambda *a, **kw: FailedDisk(fdopen(*a, **kw))))
+        stack.enter_context(patch.object(dt, "_consume_stream", AsyncMock(return_value={"status": "completed"})))
+        spawn = stack.enter_context(patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)))
+        result = json.loads(await asyncio.wait_for(dt.deepresearch_stream._func(
+            action="resume", conversation_id="C-disk-failure", node="stopped",
+        ), timeout=5))
+    assert result["status"] == "completed"
+    assert reader.reads == (2 if failure == "read" else 3)
+    assert "private device detail" not in caplog.text
+    if failure == "prepare":
+        assert "cwd" not in spawn.await_args.kwargs
+        assert "诊断准备失败" in caplog.text
+        assert root.read_text(encoding="utf-8") == "preserve this file"
+    elif failure == "write":
+        assert "日志写入失败" in caplog.text
+    else:
+        assert "stderr_read_OSError" in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("root_key", ["OFFICEACE_USER_DATA_ROOT", "OFFICE_CLAW_DATA_DIR", "OFFICE_CLAW_HOST_HOME", None])
+async def test_runner_fallback_root_crosses_only_config_frame_from_trusted_process_env(root_key, tmp_path, monkeypatch):
+    process_root = tmp_path / "可信 user data"
+    for key in ["OFFICEACE_USER_DATA_ROOT", "OFFICE_CLAW_DATA_DIR", "OFFICE_CLAW_HOST_HOME"]:
+        monkeypatch.delenv(key, raising=False)
+    if root_key:
+        monkeypatch.setenv(root_key, str(process_root))
+    proc = _Proc()
+    patches = list(_stream_patches(proc))
+    patches[2] = patch.object(dt, "_build_deepresearch_config", return_value=_valid_config())
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        stack.enter_context(patch.object(dt, "get_task_env_overlay", return_value={
+            "OFFICEACE_USER_DATA_ROOT": "/untrusted/tenant/path",
+            "OFFICE_CLAW_DATA_DIR": "/untrusted/tenant/path",
+        }))
+        stack.enter_context(patch.object(dt, "get_logs_dir", return_value=tmp_path / "service-logs"))
+        stack.enter_context(patch.object(dt, "_consume_stream", AsyncMock(return_value={"status": "completed"})))
+        spawn = stack.enter_context(patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)))
+        await dt.deepresearch_stream._func(action="start", query="q", conversation_id="C-frame-root")
+
+    config = json.loads(proc.stdin.data)["config"]
+    if root_key == "OFFICE_CLAW_HOST_HOME":
+        assert config["OFFICE_CLAW_DATA_DIR"] == str(process_root / ".office-claw")
+    elif root_key:
+        assert config[root_key] == str(process_root)
+    else:
+        assert "OFFICEACE_USER_DATA_ROOT" not in config and "OFFICE_CLAW_DATA_DIR" not in config
+    assert "/untrusted/tenant/path" not in config.values()
+    assert str(process_root) not in str(spawn.await_args.args)
+    for key in ["OFFICEACE_USER_DATA_ROOT", "OFFICE_CLAW_DATA_DIR", "OFFICE_CLAW_HOST_HOME"]:
+        assert key not in spawn.await_args.kwargs["env"]

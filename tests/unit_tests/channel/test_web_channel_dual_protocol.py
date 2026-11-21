@@ -41,6 +41,65 @@ def _route_paths(app: Any) -> set[str | None]:
     return {getattr(r, "path", None) for r in app.router.routes}
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["off", "observe", "enforce"])
+@pytest.mark.parametrize("dual_protocol", [False, True])
+async def test_enterprise_never_starts_websocket(monkeypatch, mode, dual_protocol):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    monkeypatch.setenv("JIUWENSWARM_LINK_MTLS_MODE", mode)
+    channel = WebChannel(
+        WebChannelConfig(enabled=True, dual_protocol=dual_protocol),
+        RobotMessageRouter(),
+    )
+    channel.ws._start_dual_protocol = AsyncMock()
+    channel.ws._start_websockets_legacy = AsyncMock()
+    await channel.ws.start_ws_server()
+    channel.ws._start_dual_protocol.assert_not_awaited()
+    channel.ws._start_websockets_legacy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_enterprise_channel_waits_for_http_and_stops(monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    channel = _make_channel()
+    channel.rpc.maybe_start_history_capture = lambda: None
+    channel.ws.start_ws_server = AsyncMock()
+    channel.http.start = AsyncMock(return_value=True)
+    waiting = asyncio.Event()
+    stopped = asyncio.Event()
+
+    async def wait_http():
+        waiting.set()
+        await stopped.wait()
+
+    channel.http.wait_closed = wait_http
+    task = asyncio.create_task(channel.start())
+    try:
+        await asyncio.wait_for(waiting.wait(), timeout=2)
+        assert not task.done()
+        channel.ws.start_ws_server.assert_not_awaited()
+        stopped.set()
+        await asyncio.wait_for(task, timeout=2)
+        assert not channel._running
+        assert not channel._trajectory_listener_registered
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await channel.stop()
+
+
+@pytest.mark.asyncio
+async def test_enterprise_http_start_failure_is_fatal(monkeypatch):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    channel = _make_channel()
+    channel.rpc.maybe_start_history_capture = lambda: None
+    channel.http.start = AsyncMock(return_value=False)
+    with pytest.raises(RuntimeError, match="Web HTTP failed to start"):
+        await channel.start()
+    assert not channel._running
+    assert not channel._trajectory_listener_registered
+
+
 class _QueueWebSocket:
     """Minimal websockets-like surface for ``WebChannel.handle_connection``."""
 

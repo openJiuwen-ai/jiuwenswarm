@@ -1,3 +1,7 @@
+import { RsiSessionHarnessPicker } from './features/rsi/components/RsiSessionHarnessPicker';
+import { RsiRailPeek } from './features/rsi/components/RsiRailPeek';
+import { useRsiStore } from './features/rsi/rsiStore';
+import { useMediaQuery, useSecondarySidebarPeek, useSecondarySidebarPreference } from './hooks/useSecondarySidebar';
 /**
  * App 主组件
  *
@@ -368,6 +372,18 @@ async function saveShareImage(dataUrl: string, filename: string): Promise<boolea
 const HISTORY_PRELOAD_MAX_WAIT_MS = 1500;
 
 function AppContent() {
+  const rsiEnabled = useRSIFeatureEnabled();
+  const [rsiRailCollapsedByUser, setRsiRailCollapsed] = useSecondarySidebarPreference();
+  const rsiNarrow = useMediaQuery('(max-width: 1250px)');
+  const rsiRailCollapsed = rsiRailCollapsedByUser || rsiNarrow;
+  const rsiListKnownEmpty = useRsiStore((state) => state.listLoadedOnce && state.list.length === 0);
+  const [rsiOpenCreateNonce, setRsiOpenCreateNonce] = useState(0);
+  const { target: sidebarPeek, open: openSidebarPeek, hover: hoverSidebarPeek,
+    close: closeSidebarPeek, surfaceProps: peekSurfaceProps } = useSecondarySidebarPeek();
+  const canPeekExperiments = rsiEnabled && rsiRailCollapsed && !rsiListKnownEmpty;
+  useEffect(() => {
+    if (!canPeekExperiments) closeSidebarPeek();
+  }, [canPeekExperiments, closeSidebarPeek]);
   const { t, i18n } = useTranslation();
   const { route, navigate } = useChatRoute();
   const routeKey = route.kind === 'chat-session'
@@ -428,7 +444,6 @@ function AppContent() {
   // 诊断面板保活：切走再切回不丢流式输出（卸载会销毁流式状态并断 SSE）
   const [hasVisitedDiagnosis, setHasVisitedDiagnosis] = useState(activeNav === 'diagnosis');
   // RSI 实验页左栏（实验管理栏）收起态；DST 无 dev 侧二级侧栏体系，用本地状态承载。
-  const [rsiSidebarCollapsed, setRsiSidebarCollapsed] = useState(false);
   const [sidebarMorePanelOpen, setSidebarMorePanelOpen] = useState(false);
   const [modelSetupGuideStep, setModelSetupGuideStep] = useState<ModelSetupGuideStep | null>(null);
   const [modelSetupGuideManual, setModelSetupGuideManual] = useState(false);
@@ -641,6 +656,7 @@ function AppContent() {
   const { setCurrentSession, setAvailableModels, setMode, setTeamLeaderMemberIds } = useSessionStore();
   const sessions = useSessionStore((s) => s.sessions);
   const currentSession = useSessionStore((s) => s.currentSession);
+  const [rsiHarnessDrafts, setRsiHarnessDrafts] = useState<Record<string, string>>({});
   const routeSessionId = route.kind === 'chat-session' ? route.sessionId : null;
   const projects = useWorkspaceStore((s) => s.projects);
   const sessionTitle = useMemo(() => {
@@ -1177,6 +1193,19 @@ function AppContent() {
       console.warn('Failed to fetch models list:', error);
     }
   }, [enterpriseMode, request, t, setAvailableModels]);
+
+  useEffect(() => {
+    let active = true;
+    if (!isConnected) { setRSIFeatureEnabled(false); return; }
+    void webRequest<{ enabled: boolean }>('rsi.capabilities').then((result) => {
+      if (active) setRSIFeatureEnabled(result.enabled === true);
+    }).catch(() => { if (active) setRSIFeatureEnabled(false); });
+    return () => { active = false; };
+  }, [isConnected]);
+
+  useEffect(() => {
+    if (!rsiEnabled && activeNav === 'experiments') setActiveNav('chat');
+  }, [rsiEnabled, activeNav]);
 
   useEffect(() => {
     if (!FEATURE_APP_UPDATER_UI || !isConnected || startupUpdateCheckRef.current) {
@@ -2251,7 +2280,11 @@ function AppContent() {
           });
           setGoalObjective(newSid, content);
         } else {
-          const sent = await sendMessage(content, newSid, mediaItems);
+          const harnessId = rsiEnabled ? rsiHarnessDrafts[currentSessionId] : undefined;
+          const sent = await sendMessage(content, newSid, mediaItems, harnessId);
+          if (sent && harnessId !== undefined) {
+            setRsiHarnessDrafts(({ [currentSessionId]: _draft, ...rest }) => ({ ...rest, [newSid]: harnessId }));
+          }
           if (!sent) {
             useChatStore.getState().setInputValue(newSid, content);
           }
@@ -2276,7 +2309,9 @@ function AppContent() {
       return;
     }
     disposeInFlightHistoryHandles(currentSessionId);
-    const sent = await sendMessage(content, currentSessionId, mediaItems);
+    const sent = await sendMessage(
+      content, currentSessionId, mediaItems, rsiEnabled ? rsiHarnessDrafts[currentSessionId] : undefined,
+    );
     if (sent) {
       const sessionState = useSessionStore.getState();
       const session =
@@ -2287,7 +2322,7 @@ function AppContent() {
     } else {
       useChatStore.getState().setInputValue(currentSessionId, content);
     }
-  }, [disposeInFlightHistoryHandles, mode, navigate, request, sendMessage, setGoalObjective, t]);
+  }, [disposeInFlightHistoryHandles, mode, navigate, request, rsiEnabled, rsiHarnessDrafts, sendMessage, setGoalObjective, t]);
 
   const handlePersistMedia = useCallback((content: string, mediaItems: MediaItem[]) => {
     const currentSessionId = sessionIdRef.current;
@@ -2788,9 +2823,11 @@ function AppContent() {
   }, [deleteTarget, enterNewConversation, request, t]);
 
   const handleNavigate = useCallback((nav: MainNavKey) => {
-    if (enterpriseBlockedNav.has(nav)) return;
-    if (nav === 'agents' && !workspaceQuotaEnabled) return;
-    if (nav === 'approvals' && (!enterpriseMode || !workspaceQuotaEnabled)) return;
+    if (enterpriseBlockedNav.has(nav)) return false;
+    if (nav === 'agents' && !workspaceQuotaEnabled) return false;
+    if (nav === 'approvals' && (!enterpriseMode || !workspaceQuotaEnabled)) return false;
+    closeSidebarPeek();
+    setRsiOpenCreateNonce(0);
     setActiveNav(nav);
     if (modelSetupGuideStep === 1 && nav === 'configpanel') {
       setModelSetupGuideStep(2);
@@ -2799,7 +2836,8 @@ function AppContent() {
     if (nav === 'channels') setHasVisitedChannels(true);
     if (nav === 'personalContext') setHasVisitedPersonalContext(true);
     if (nav === 'diagnosis') setHasVisitedDiagnosis(true);
-  }, [enterpriseBlockedNav, enterpriseMode, modelSetupGuideStep, workspaceQuotaEnabled]);
+    return true;
+  }, [closeSidebarPeek, enterpriseBlockedNav, enterpriseMode, modelSetupGuideStep, workspaceQuotaEnabled]);
 
   const skipModelSetupGuide = useCallback(() => {
     setModelSetupGuideStep(null);
@@ -2927,7 +2965,12 @@ function AppContent() {
       {/* Navigation Sidebar */}
       <SessionSidebar
         activeNav={activeNav}
-        onNavigate={handleNavigate}
+        onNavigate={(nav) => {
+          if (handleNavigate(nav) && nav === 'experiments' && canPeekExperiments) {
+            openSidebarPeek('experiments');
+          }
+        }}
+        onExperimentHover={(hovering) => hoverSidebarPeek(hovering && canPeekExperiments ? 'experiments' : null)}
         appVersion={typeof serverConfig?.app_version === 'string' ? serverConfig.app_version : ''}
         isConnected={isConnected}
         onNewSession={handleNewSession}
@@ -2937,6 +2980,7 @@ function AppContent() {
           const base: MainNavKey[] = enterpriseMode
             ? ['sessions', 'history', ...ENTERPRISE_HIDDEN_NAV_ITEMS]
             : ['sessions', 'history', 'approvals'];
+          if (!rsiEnabled) base.push('experiments');
           const withDiagnosis = diagnosisEnabled ? base : [...base, 'diagnosis' as MainNavKey];
           const withRsi = rsiFeatureEnabled ? withDiagnosis : [...withDiagnosis, 'experiments' as MainNavKey];
           if (workspaceQuotaEnabled) {
@@ -2960,6 +3004,19 @@ function AppContent() {
 
       {/* Main Content */}
       <main className={`content ${activeNav === 'chat' ? 'content--chat' : ''} ${activeNav === 'a2aingress' ? 'content--a2a' : ''} ${effectiveTeamAreaExpanded ? 'content--team-expanded' : ''}`}>
+        {canPeekExperiments && sidebarPeek === 'experiments' && (
+          <div className="rsi-rail-peek-host" {...peekSurfaceProps}>
+            <RsiRailPeek
+              onOpenExperiments={() => handleNavigate('experiments')}
+              onCreate={() => {
+                if (handleNavigate('experiments')) setRsiOpenCreateNonce(1);
+              }}
+              onPin={rsiNarrow ? undefined : () => {
+                if (handleNavigate('experiments')) setRsiRailCollapsed(false);
+              }}
+            />
+          </div>
+        )}
         {configError && (
           <div className="card mb-4">
             <div className="text-sm text-text-muted">
@@ -3001,7 +3058,16 @@ function AppContent() {
                 >
                   <SingleAgentSurface
                     activeView={chatSurfaceView}
-                    chat={<ChatPanel
+                    chat={<>
+                      {rsiEnabled && mode === 'agent' && (
+                        <RsiSessionHarnessPicker
+                          value={rsiHarnessDrafts[sessionId] ??
+                            (currentSession?.session_id === sessionId ? currentSession.rsi_harness_installation_id : undefined) ?? ''}
+                          disabled={isProcessing || isPaused}
+                          onChange={(value) => setRsiHarnessDrafts((drafts) => ({ ...drafts, [sessionId]: value }))}
+                        />
+                      )}
+                      <ChatPanel
                       onSendMessage={handleSendMessage}
                       onPersistMedia={handlePersistMedia}
                       onPersistDocuments={handlePersistDocuments}
@@ -3033,7 +3099,8 @@ function AppContent() {
                       onClearGoal={handleClearGoal}
                       onDrainTaskQueueIfIdle={drainTaskQueueIfIdle}
                       ensureSessionForExpertTeam={ensureSessionForExpertTeam}
-                    />}
+                    />
+                    </>}
                     chatLabel={t('nav.chat')}
                     mode={mode}
                     onViewChange={selectChatSurfaceView}
@@ -3119,6 +3186,18 @@ function AppContent() {
                 typeof serverConfig?.gateway_web_session_storage === 'string' &&
                 serverConfig.gateway_web_session_storage.trim().toLowerCase() === 'remote'
               }
+            />
+          </div>
+        )}
+        {rsiEnabled && activeNav === 'experiments' && (
+          <div className="app-section">
+            <RsiPage
+              collapsed={rsiRailCollapsed}
+              onCollapse={() => {
+                closeSidebarPeek();
+                setRsiRailCollapsed(true);
+              }}
+              openCreateNonce={rsiOpenCreateNonce}
             />
           </div>
         )}
@@ -3208,14 +3287,6 @@ function AppContent() {
             <Suspense fallback={null}>
               <LazyDiagnosisHistoryPanel request={request} currentSessionId={sessionId} />
             </Suspense>
-          </div>
-        )}
-        {activeNav === 'experiments' && (
-          <div className="app-section">
-            <RsiPage
-              collapsed={rsiSidebarCollapsed}
-              onCollapse={() => { setRsiSidebarCollapsed((v) => !v); }}
-            />
           </div>
         )}
 

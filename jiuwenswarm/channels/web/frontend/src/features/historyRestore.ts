@@ -1,6 +1,7 @@
 import { Message, MessageRole, UsageSummary, FileDownloadItem, MediaItem, WsEvent, ToolExecution, AskUserQuestionPayload } from '../types';
 import { webClient } from '../services/webClient';
 import { normalizeFinalContent } from '../utils/finalContent';
+import { stripTransitionalErrorPrefix } from '../utils/stripTransitionalErrorPrefix';
 import i18n from '../i18n';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
 import { parseTimestampToMs, timestampMsToIso } from '../utils/timestamp';
@@ -514,12 +515,13 @@ function parseHistoryTimelineEntry(
   if (eventType === 'chat.error') {
     const error = pickFirstString(payload, ['error', 'content']);
     if (!error) return null;
+    // 与实时 chat.error 展示同一套剥离，避免刷新/重开会话后过渡前缀复现。
     return {
       kind: 'message',
       message: {
         id: pickFirstString(record, ['id', 'message_id', 'msg_id']) ?? `hist-error-${sessionId}-${at}`,
         role: 'system',
-        content: i18n.t('network.errorPrefix', { message: error }),
+        content: i18n.t('network.errorPrefix', { message: stripTransitionalErrorPrefix(error) }),
         timestamp: at,
       },
     };

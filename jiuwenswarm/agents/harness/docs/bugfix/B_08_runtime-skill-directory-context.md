@@ -6,8 +6,8 @@
 |---|---|
 | 日期 | 2026-11-21 |
 | 范围 | RuntimePromptRail、身份提示、DeepAdapter 装配及对应回归测试 |
-| 关联 spec | `../specs/S_23_runtime-skill-directory-context.md` |
-| 测试基线 | 本地 `.venv`，相关 75 个测试通过 |
+| 关联 spec | `../specs/S_25_runtime-skill-directory-context.md` |
+| 测试基线 | 本地 `.venv`，原基线 75 个测试通过，合并上游后 99 个测试通过 |
 
 ## 现象与证据
 
@@ -44,6 +44,12 @@ $env:PYTHONPATH = (Get-Location).Path
 ```
 
 相关验证覆盖最终生成提示、无项目工作区、PathProvider 记忆目录配置以及慢盘事件循环响应。加强企业预置场景的共享目录对照后，新增 8 个用例再次通过。测试使用本机已安装的 openjiuwen 依赖，验证结果限定于该环境。
+
+### 合并上游后的复验
+
+2026-11-21 合入目标分支 `dev-stable` 的 `da61667dc`，处理 PR #10733 的两份文档索引冲突。索引同时保留上游的 RSI、DeepResearch 日志与技能目录说明。本规约重新编号为 `S_25`，本故障记录重新编号为 `B_08`，相关引用同步更新。
+
+在上述三个测试文件基础上增加 `test_flash_prompt_snapshot.py` 和 `test_flash_persona_rail.py`，使用相同 pytest 参数执行，结果为 99 passed、1 个第三方 Authlib 弃用警告。
 
 ## 已知遗留
 

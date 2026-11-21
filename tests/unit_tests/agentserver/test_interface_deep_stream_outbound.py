@@ -126,6 +126,70 @@ def test_answer_error_without_soft_stop_has_no_code() -> None:
     assert "code" not in parsed
 
 
+def test_answer_error_forwards_finish_reason_as_code() -> None:
+    chunk = SimpleNamespace(
+        type="answer",
+        payload={
+            "output": "已达到最大思考轮数",
+            "result_type": "error",
+            "finish_reason": "max_iterations",
+        },
+    )
+    parsed = _parse_stream_chunk(chunk)
+    assert parsed == {
+        "event_type": "chat.error",
+        "error": "已达到最大思考轮数",
+        "code": "max_iterations",
+    }
+
+
+def test_answer_nested_error_forwards_finish_reason_as_code() -> None:
+    chunk = SimpleNamespace(
+        type="answer",
+        payload={
+            "output": {
+                "output": "已达上限",
+                "result_type": "error",
+                "finish_reason": "max_iterations",
+            }
+        },
+    )
+    parsed = _parse_stream_chunk(chunk)
+    assert parsed == {
+        "event_type": "chat.error",
+        "error": "已达上限",
+        "code": "max_iterations",
+    }
+
+
+def test_dict_error_forwards_finish_reason_as_code() -> None:
+    parsed = _parse_stream_chunk(
+        {"output": "已达到最大思考轮数", "result_type": "error", "finish_reason": "max_iterations"}
+    )
+    assert parsed == {
+        "event_type": "chat.error",
+        "error": "已达到最大思考轮数",
+        "code": "max_iterations",
+    }
+
+
+def test_dict_nested_error_forwards_finish_reason_as_code() -> None:
+    parsed = _parse_stream_chunk(
+        {
+            "output": {
+                "output": "已达上限",
+                "result_type": "error",
+                "finish_reason": "max_iterations",
+            }
+        }
+    )
+    assert parsed == {
+        "event_type": "chat.error",
+        "error": "已达上限",
+        "code": "max_iterations",
+    }
+
+
 def test_parse_llm_output_forwards_task_id() -> None:
     chunk = SimpleNamespace(
         type="llm_output",

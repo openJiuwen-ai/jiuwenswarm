@@ -11,6 +11,7 @@ from jiuwenswarm.server.runtime.agent_adapter import evolution_helpers
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import auto_rebuild_job
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.common.schema.message import ReqMethod
 
 
 class _FakeTransport:
@@ -236,13 +237,16 @@ async def test_cancel_evolution_watchers_does_not_cancel_skill_sleep_tasks():
 
 
 @pytest.mark.asyncio
-async def test_stream_start_does_not_cancel_inflight_route_watcher(monkeypatch):
+@pytest.mark.parametrize("transport", ["stream", "unary"])
+@pytest.mark.parametrize("rsi_case", ["disabled", "missing_request_method", "missing_adapter_lock", "cancelled"])
+async def test_stream_start_does_not_cancel_inflight_route_watcher(monkeypatch, transport, rsi_case):
     """A new request must not abort an in-flight prior passive evolution."""
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
     adapter._is_session_scoped_adapter = True
     adapter._instance = object()
     adapter._deepresearch_rewrite_tx_uncertain = False
     adapter._STALE_CRON_PERMISSION_TEXT = "stale"
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {"rsi": {"enabled": rsi_case != "disabled"}})
 
     async def refresh_stale_mcp_tool_lists() -> None:
         return None
@@ -284,9 +288,32 @@ async def test_stream_start_does_not_cancel_inflight_route_watcher(monkeypatch):
         params={},
         metadata={},
     )
-    chunks = [chunk async for chunk in adapter._process_message_stream_impl(request, {})]
+    if rsi_case == "missing_adapter_lock":
+        request.req_method = ReqMethod.CHAT_SEND
+    if rsi_case == "cancelled":
+        async def cancel(_request):
+            raise asyncio.CancelledError()
+        monkeypatch.setattr(adapter, "_sync_rsi_session_harness", cancel)
 
-    assert chunks[-1].is_complete is True
+    async def run():
+        if transport == "stream":
+            chunks = [chunk async for chunk in adapter._process_message_stream_impl(request, {})]
+            assert chunks[-1].is_complete is True
+            return chunks[-1].payload
+        response = await adapter.process_message_impl(request, {})
+        return response.payload
+
+    if rsi_case == "cancelled":
+        with pytest.raises(asyncio.CancelledError):
+            await run()
+    else:
+        payload = await run()
+        if rsi_case == "disabled":
+            assert payload["error"] == "stale"
+        else:
+            assert payload["error_code"] == "rsi_harness_selection_failed"
+            if transport == "stream":
+                assert payload["event_type"] == "chat.error"
 
 
 @pytest.mark.asyncio

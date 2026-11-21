@@ -14,7 +14,7 @@ from dataclasses import asdict, is_dataclass
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 from jiuwenswarm.agents.harness.common.tools.web_file_download import build_file_download_info
 from jiuwenswarm.agents.harness.common.rsi.adapter import validate_scenario
@@ -130,10 +130,6 @@ class RsiTaskService:
             scenario_raw, artifact_type_raw,
             artifact_type_required=(scenario_raw == Scenario.ARTIFACT.value),
         )
-        # 本构建只随 openjiuwen 分发 program_opt / paper_opt 引擎：
-        # harness 优化分支显式下线（工厂不再构造对应 adapter）。
-        if scenario is Scenario.HARNESS:
-            raise RsiScenarioNotSupported("harness optimization is not available in this build")
         name = str(params.get("name") or "").strip()
         if not name or len(name) > 100:
             raise RsiBadRequest("实验名称必填且 1–100 字符")
@@ -802,10 +798,12 @@ def _download_fields(path: str, params: dict[str, Any]) -> dict[str, str]:
         path,
         Path(path).name,
         session_id=session_id,
-        user_id=user_id,
     )
+    download_url = str(info["download_url"])
+    if user_id:
+        download_url += "&" + urlencode({"user_id": user_id})
     return {
-        "download_url": str(info["download_url"]),
+        "download_url": download_url,
         "download_token": str(info["download_token"]),
     }
 
@@ -987,6 +985,7 @@ _PROVIDER_QUERY_FALLBACK = (
     NotImplementedError,
     OSError,
     RsiNotReady,
+    RsiScenarioNotSupported,
 )
 
 

@@ -215,6 +215,7 @@ react:
     enabled: true
     message_summary_offloader_config:
       add_message_threshold_ratio: 0.1
+      add_message_abs_token_threshold: 8000
       ttl_seconds: 300
       ttl_context_occupancy_ratio: 0.5
       ttl_message_threshold_ratio: 0.05

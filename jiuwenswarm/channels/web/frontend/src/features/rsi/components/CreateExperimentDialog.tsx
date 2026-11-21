@@ -88,9 +88,7 @@ interface FormState {
 function defaultForm(): FormState {
   return {
     name: '',
-    // 后端本构建仅分发 program_opt/paper_opt 引擎（HARNESS 创建会被拒绝），
-    // 默认落在可用的产物优化·论文分支。
-    scenario: 'ARTIFACT',
+    scenario: 'HARNESS',
     artifactType: 'PAPER',
     optimizer: '',
     tester: '',
@@ -228,7 +226,7 @@ export function CreateExperimentDialog({ open, onClose, onCreated }: CreateExper
         update('datasetFile', file.path);
         setDatasetValid(null);
       } else {
-        const result = await selectProjectDirectory({ initialDir: form.artifactPath || undefined });
+        const result = await selectProjectDirectory();
         if (!result.ok || !result.path) return;
         update('artifactPath', result.path);
       }
@@ -743,7 +741,7 @@ function ModelSelect({ value, onChange }: { value: string; onChange: (v: string)
   const { t } = useTranslation();
   const availableModels = useSessionStore((s) => s.availableModels);
 
-  const isFree = (m: ModelEntry) => m.is_free === true;
+  const isFree = (m: ModelEntry) => 'is_free' in m && m.is_free === true;
   // 免费模型由网关按会话注入凭据，RSI 实验配置无法持久化保存，这里不展示。
   const configuredModels = availableModels.filter((m) => !isFree(m));
 

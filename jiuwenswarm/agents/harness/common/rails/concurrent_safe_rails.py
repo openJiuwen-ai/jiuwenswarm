@@ -207,6 +207,11 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
                             break
 
         tools = existing_tools.copy()
+        # 记账本 rail 绑定的全局条目：todo 工具的注册 id 内嵌 binding（含
+        # id(fs)），每实例唯一且无人复用；不注销会经 tool.sys_operation 钉住
+        # 整棵会话对象图。复用命中（binding 一致）的条目同样记账——close 时
+        # 按 rail_binders 计数递减，最后一个持有者才真正移除。
+        self._registered_tool_ids = list(getattr(self, "_registered_tool_ids", []))
         try:
             new_tools = []
             for tool_class, found in tool_configs:
@@ -216,7 +221,12 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
                     if registered_tool is not None:
                         if not isinstance(registered_tool, tool_class) or not matches_binding(registered_tool):
                             raise _TodoBindingMismatchError(f"Todo tool binding mismatch: {new_tool.card.id}")
+                        binders = getattr(registered_tool, "rail_binders", None) or set()
+                        binders.add(id(self))
+                        registered_tool.rail_binders = binders
                         tools.append(registered_tool)
+                        if registered_tool.card.id not in self._registered_tool_ids:
+                            self._registered_tool_ids.append(registered_tool.card.id)
                         continue
                     new_tools.append(new_tool)
                     tools.append(new_tool)
@@ -226,6 +236,9 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
                 agent.ability_manager.remove(name)
             for tool in new_tools:
                 Runner.resource_mgr.add_tool(tool)
+                tool.rail_binders = {id(self)}
+                if tool.card.id not in self._registered_tool_ids:
+                    self._registered_tool_ids.append(tool.card.id)
             for tool in tools:
                 agent.ability_manager.add(tool.card)
             self.tools = tools
@@ -234,6 +247,41 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
             raise
         except Exception as exc:
             logger.warning("ConcurrentSafeTaskPlanningRail: failed to add tool, error: %s", exc)
+
+    def close(self) -> None:
+        """Deregister this rail's globally registered todo tools (adapter teardown).
+
+        init() 注册进 Runner.resource_mgr 的 todo 工具 id 内嵌 binding（含
+        id(fs)），每实例唯一且无人复用，adapter 释放后这些全局条目会经
+        ``tool.sys_operation`` 钉住整棵会话对象图。注册条目按 ``rail_binders``
+        （绑定过的 rail 身份集合）计数：存在其他 rail 仍绑定时只摘除自己、
+        不移除条目；最后一个持有者关闭时才逐条 remove_tool。幂等：可重复调用。
+        """
+        ids = list(getattr(self, "_registered_tool_ids", []) or [])
+        if not ids:
+            return
+        removed = 0
+        for tool_id in ids:
+            try:
+                tool = Runner.resource_mgr.get_tool(tool_id)
+                binders = getattr(tool, "rail_binders", None) or set()
+                binders.discard(id(self))
+                if tool is not None:
+                    tool.rail_binders = binders
+                if not binders:
+                    Runner.resource_mgr.remove_tool(tool_id)
+                    removed += 1
+            except Exception as exc:  # noqa: BLE001 - 单条失败不中止
+                logger.warning(
+                    "[ConcurrentSafeRails] todo tool deregister failed: id=%s error=%s",
+                    tool_id, exc,
+                )
+        self._registered_tool_ids = []
+        if removed:
+            logger.info(
+                "[ConcurrentSafeRails] todo tools deregistered: removed=%d/%d",
+                removed, len(ids),
+            )
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         # Tool callbacks run on the inner ReActAgent; TaskPlan belongs to
@@ -370,8 +418,10 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
             )
             return
 
+        if not getattr(getattr(todos, "snapshot", None), "read_authoritative", True):
+            return
         if not todos:
-            if getattr(todos, "snapshot", None) is not None:
+            if getattr(getattr(todos, "snapshot", None), "versioned", False):
                 await self._clear_task_plan(ctx)
             return
         execution_todos = [todo for todo in todos if not is_persistent_todo(todo)]

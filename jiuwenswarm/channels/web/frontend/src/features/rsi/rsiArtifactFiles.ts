@@ -1,11 +1,10 @@
-import type { RsiArtifactFileGetResult, RsiTreeNode } from './types';
+import type { RsiArtifactFileGetResult, RsiScenario, RsiTreeNode } from './types';
 import { rsiArtifactFilesGet, rsiArtifactFilesList } from './rsiApi';
 
-export interface RsiArtifactSource {
+export type RsiArtifactSource = {
   taskId: string;
-  path: string;
   initialFilePath: string | null;
-}
+} & ({ path: string; artifactId?: never } | { artifactId: string; path?: never });
 
 export interface RsiArtifactFileEntry {
   name: string;
@@ -112,7 +111,15 @@ function collectArtifactPaths(value: unknown): string[] {
   return paths;
 }
 
-export function resolveRsiArtifactSource(node: RsiTreeNode, taskId: string): RsiArtifactSource | null {
+export function resolveRsiArtifactSource(
+  node: RsiTreeNode,
+  taskId: string,
+  scenario: RsiScenario = 'ARTIFACT',
+): RsiArtifactSource | null {
+  if (scenario === 'HARNESS') {
+    const artifactId = node.snapshot_artifact_id?.trim();
+    return artifactId ? { taskId, artifactId, initialFilePath: null } : null;
+  }
   const paths = collectArtifactPaths(node.extra);
   if (paths.length === 0) return null;
   // The canonical paper artifact is a directory. Legacy snapshots can still
@@ -131,13 +138,14 @@ export function isPreviewableEntry(entry: RsiArtifactFileEntry): boolean {
   if (BINARY_EXTENSIONS.has(extension)) return false;
   if (LATEX_TEXT_EXTENSIONS.has(extension)) return true;
   if (extension === 'jsonl') return true;
-  const mime = entry.mimeType ?? mimeTypeFor(entry.name);
+  const mime = artifactMimeType(entry);
   return mime.startsWith('text/') || mime.startsWith('image/') || mime === 'application/pdf'
     || mime === 'application/json' || mime === 'application/x-ndjson' || mime === 'application/xml';
 }
 
 export async function loadRsiArtifactFiles(source: RsiArtifactSource): Promise<RsiArtifactLoadResult> {
-  const result = await rsiArtifactFilesList(source.taskId, source.path);
+  const selector = source.artifactId !== undefined ? { artifact_id: source.artifactId } : source.path;
+  const result = await rsiArtifactFilesList(source.taskId, selector);
   const root = normalizePath(result.root);
   const entries = result.files.map((file) => ({
     name: file.name,
@@ -159,7 +167,7 @@ export function readRsiArtifactFile(source: RsiArtifactSource, path: string): Pr
 
 export function artifactMimeType(entry: RsiArtifactFileEntry): string {
   if (LATEX_TEXT_EXTENSIONS.has(fileExtension(entry.name))) return 'text/plain';
-  return entry.mimeType ?? mimeTypeFor(entry.name);
+  return MIME_BY_EXTENSION[fileExtension(entry.name)] ?? entry.mimeType ?? mimeTypeFor(entry.name);
 }
 
 export function rsiArtifactFileName(path: string): string {

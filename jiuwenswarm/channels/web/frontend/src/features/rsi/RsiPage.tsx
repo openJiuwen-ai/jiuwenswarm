@@ -102,6 +102,11 @@ export function RsiPage({ collapsed, onCollapse, openCreateNonce = 0 }: RsiPageP
       {listError && (
         <div className="rsi-error" role="alert" style={{ position: 'absolute', bottom: 12, left: 384, right: 24 }}>
           {t('rsi.list.error')}: {listError}
+          {list.length === 0 && (
+            <button type="button" className="rsi-btn rsi-btn--ghost" onClick={loadList}>
+              {t('rsi.list.retry')}
+            </button>
+          )}
         </div>
       )}
     </div>

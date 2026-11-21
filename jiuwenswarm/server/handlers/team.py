@@ -5,15 +5,18 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import shutil
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.common.schema.agent import AgentResponse
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.handlers._shared import (
@@ -41,6 +44,12 @@ from jiuwenswarm.server.wire_truncate import (
 )
 
 logger = logging.getLogger(__name__)
+
+_SWARMFLOW_ACTIONS = {
+    ReqMethod.SWARMFLOW_PAUSE: "pause",
+    ReqMethod.SWARMFLOW_RESUME: "resume",
+    ReqMethod.SWARMFLOW_STOP: "stop",
+}
 
 
 def _cleanup_orphaned_generated_team(
@@ -182,6 +191,7 @@ async def _create_generated_team_binding(
     """Generate a unique team name and persist its binding and entity."""
     from jiuwenswarm.agents.harness.team import (
         generate_team_name,
+        get_team_template_snapshot,
         list_team_template_summaries,
     )
     from jiuwenswarm.server.runtime.team_binding_store import (
@@ -198,9 +208,24 @@ async def _create_generated_team_binding(
 
     default_template = templates[0]
     template_id = str(default_template.get("template_id") or "").strip()
+    from jiuwenswarm.server.runtime.team_entity_store import normalize_team_entity_snapshot
+
+    # Entity creation already normalizes this credential-free template. Naming
+    # validates it earlier, so it needs the same references before schema validation.
+    snapshot = normalize_team_entity_snapshot(
+        get_team_template_snapshot(config_base, template_id=template_id), config_base,
+    )
+    naming_config = deepcopy(config_base)
+    modes = naming_config.get("modes")
+    modes = dict(modes) if isinstance(modes, dict) else {}
+    teams = modes.get("team")
+    teams = dict(teams) if isinstance(teams, dict) else {}
+    teams[template_id] = snapshot
+    modes["team"] = teams
+    naming_config["modes"] = modes
     generated_name = await generate_team_name(
         normalized_description,
-        config_base=config_base,
+        config_base=naming_config,
         template_id=template_id,
     )
 
@@ -563,6 +588,172 @@ def _resolve_session_dir_for_bind(
     return session_dir
 
 
+def _restore_officeclaw_team_session(
+    request: Any,
+    *,
+    session_id: str,
+    sessions_root: str | Path,
+    skill_ids: list[str],
+) -> dict[str, Any] | None:
+    """Restore a proven owner, without creating/rebinding teams. Caller holds the session lock.
+
+    None permits the existing *unbound Swarm* opener only. All ordinary
+    OfficeClaw requests require a durable owner; a client team_name is not one.
+    """
+    from jiuwenswarm.agents.harness.team import TeamManager
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        capture_session_team_binding_artifacts,
+        get_session_metadata,
+        resolve_session_subdir,
+        restore_session_team_binding_artifacts,
+        update_session_metadata,
+    )
+    from jiuwenswarm.server.runtime.swarm_skill_session import (
+        assert_chat_swarm_skill_policy,
+        is_session_generated_team,
+    )
+    from jiuwenswarm.server.runtime.team_binding_store import (
+        TeamBindingStoreError, TeamSessionBindingError, get_team_binding_store,
+    )
+    from jiuwenswarm.server.runtime.team_entity_store import (
+        TeamEntityStoreError, get_team_entity_store, normalize_team_entity_snapshot,
+    )
+    from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
+
+    if TenantAgentPool.require_officeclaw_agent(request) is not None:
+        raise TeamSessionBindingError(
+            "Team session recovery requires a registered OfficeClaw agent.",
+            code="NOT_FOUND", reason="TEAM_SESSION_BINDING_SCOPE_INVALID",
+        )
+
+    swarm_ids, _ = assert_chat_swarm_skill_policy(
+        session_id=session_id, team_name="", skill_ids=skill_ids,
+    )
+    try:
+        binding = get_team_binding_store().find_by_session(session_id, require_unique=True)
+        session_dir = resolve_session_subdir(session_id, sessions_root=sessions_root)
+        # Native Swarm openers can carry a provisional ID before session.create.
+        # A resume, or any ID with an existing owner, must still recover strictly.
+        if session_dir is not None and not session_dir.exists():
+            if binding is None and swarm_ids and request.req_method == ReqMethod.CHAT_SEND:
+                return None
+        _resolve_session_dir_for_bind(request, session_id=session_id, sessions_root=sessions_root)
+        artifacts = capture_session_team_binding_artifacts(session_id, sessions_root=sessions_root)
+        metadata = json.loads(artifacts[0]) if artifacts[0] is not None else {}
+        if not isinstance(metadata, dict):
+            raise ValueError("invalid metadata object")
+    except (TeamBindingStoreError, OSError, ValueError, TypeError) as exc:
+        if isinstance(exc, TeamSessionBindingError) and exc.reason != "TEAM_SESSION_BINDING_READ_FAILED":
+            raise
+        raise TeamSessionBindingError(
+            "Unable to read the original team session binding.",
+            code=getattr(exc, "code", "INTERNAL_ERROR"), reason="TEAM_SESSION_BINDING_READ_FAILED",
+        ) from exc
+
+    swarm_ids, _ = assert_chat_swarm_skill_policy(
+        session_id=session_id, team_name="", skill_ids=skill_ids, metadata=metadata,
+    )
+    if binding is None:
+        if swarm_ids and request.req_method == ReqMethod.CHAT_SEND:
+            if not str(metadata.get("team_name") or "").strip() and not is_session_generated_team(metadata):
+                return None
+        raise TeamSessionBindingError(
+            "The original team binding is missing; restore it or start a new team conversation.",
+            code="NOT_FOUND", reason="TEAM_SESSION_BINDING_MISSING",
+        )
+    requested = str((request.params or {}).get("team_name") or "").strip()
+    prior_team = str(metadata.get("team_name") or "").strip()
+    prior_template = str(metadata.get("team_template_id") or "").strip()
+    identity_pairs = (
+        (requested, binding.team_name),
+        (prior_team, binding.team_name),
+        (prior_template, binding.template_id),
+    )
+    for actual, expected in identity_pairs:
+        if actual and actual != expected:
+            raise TeamSessionBindingError(
+                "The requested team conflicts with the original session binding.",
+                code="CONFLICT", reason="TEAM_SESSION_BINDING_CONFLICT",
+            )
+    # A generated team without its origin cannot safely be restored as an OA
+    # catalog team: live-template refresh would reintroduce its skill whitelist.
+    origin_known = (
+        is_session_generated_team(metadata)
+        or ("team_origin" in metadata and metadata["team_origin"] == "")
+        or binding.team_name == binding.template_id
+    )
+    if not origin_known:
+        raise TeamSessionBindingError(
+            "The original team session source cannot be verified.",
+            code="CONFLICT", reason="TEAM_SESSION_BINDING_SOURCE_UNKNOWN",
+        )
+    effective_metadata = dict(metadata, team_name=binding.team_name)
+    assert_chat_swarm_skill_policy(
+        session_id=session_id, team_name=binding.team_name,
+        skill_ids=skill_ids, metadata=effective_metadata,
+    )
+    config = _effective_config_for_request(request)
+    try:
+        if artifacts[1] is not None:
+            snapshot = json.loads(artifacts[1])
+        else:
+            snapshot = metadata.get("team_template_snapshot")
+            if snapshot is None:
+                entity = get_team_entity_store().get(binding.team_name)
+                if entity is not None and entity.template_id != binding.template_id:
+                    raise ValueError("entity template conflict")
+                snapshot = entity.template_snapshot if entity is not None else binding.template_snapshot
+        if not isinstance(snapshot, dict) or not snapshot:
+            raise ValueError("original snapshot unavailable")
+        snapshot = normalize_team_entity_snapshot(snapshot, config)
+    except (TeamEntityStoreError, OSError, ValueError, TypeError) as exc:
+        raise TeamSessionBindingError(
+            "The original team snapshot or model reference is unavailable.",
+            code=getattr(exc, "code", "NOT_FOUND"), reason="TEAM_SESSION_SNAPSHOT_INVALID",
+        ) from exc
+
+    runtime_name = TeamManager.build_session_scoped_team_name(binding.team_name, session_id)
+    restored_mode = str(metadata.get("mode") or "").strip()
+    if not restored_mode or restored_mode == "unknown":
+        restored_mode = resolve_agent_request_mode((request.params or {}).get("mode"))[2]
+    try:
+        update_session_metadata(
+            session_id=session_id, team_name=binding.team_name,
+            mode=restored_mode,
+            channel_id=metadata.get("channel_id") or request.channel_id,
+            runtime_team_name=runtime_name, team_template_id=binding.template_id,
+            team_template_snapshot=snapshot, touch_last_message_at=False,
+            sync=True, sessions_root=sessions_root,
+        )
+        restored = get_session_metadata(session_id, cache_bust=True, sessions_root=sessions_root)
+        expected_identity = {
+            "team_name": binding.team_name,
+            "runtime_team_name": runtime_name,
+            "team_template_id": binding.template_id,
+        }
+        for key, expected in expected_identity.items():
+            if restored.get(key) != expected:
+                raise ValueError("team identity write was not confirmed")
+    except Exception as exc:
+        try:
+            restore_session_team_binding_artifacts(session_id, artifacts, sessions_root=sessions_root)
+        except Exception as rollback_exc:
+            logger.exception("[TeamHandlers] session identity rollback failed: session_id=%s", session_id)
+            raise TeamSessionBindingError(
+                "Team session restoration failed and could not be rolled back.",
+                code="INTERNAL_ERROR", reason="TEAM_SESSION_BINDING_ROLLBACK_FAILED",
+            ) from rollback_exc
+        raise TeamSessionBindingError(
+            "Unable to restore the original team session metadata.",
+            code="INTERNAL_ERROR", reason="TEAM_SESSION_BINDING_RESTORE_FAILED",
+        ) from exc
+    logger.info(
+        "[TeamHandlers] restored session identity: session_id=%s team_name=%s source=binding_store sessions_root=%s",
+        session_id, binding.team_name, sessions_root,
+    )
+    return restored
+
+
 async def handle_team_session_bind(ctx: RequestContext) -> None:
     request = ctx.request
     from jiuwenswarm.agents.harness.team import TeamManager, get_team_template_snapshot
@@ -574,7 +765,9 @@ async def handle_team_session_bind(ctx: RequestContext) -> None:
         update_session_metadata,
     )
     from jiuwenswarm.server.runtime.swarm_skill_session import reject_deprecated_dynamic_entry
-    from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStoreError, get_team_binding_store
+    from jiuwenswarm.server.runtime.team_binding_store import (
+        TeamBindingStoreError, TeamSessionBindingError, get_team_binding_store,
+    )
     from jiuwenswarm.server.runtime.team_entity_store import (
         TeamEntityStoreError,
         ensure_team_entity_for_binding,
@@ -599,6 +792,32 @@ async def handle_team_session_bind(ctx: RequestContext) -> None:
         )
         async with _session_team_binding_lock(session_id):
             binding_store = get_team_binding_store()
+            from jiuwenswarm.server.runtime.swarm_skill_session import is_session_generated_team
+
+            allow_rebind = True
+            if request.channel_id == "officeclaw":
+                original = capture_session_team_binding_artifacts(session_id, sessions_root=sessions_root)
+                try:
+                    prior = json.loads(original[0]) if original[0] is not None else {}
+                    if not isinstance(prior, dict):
+                        raise ValueError("invalid metadata")
+                except (ValueError, TypeError) as exc:
+                    raise TeamSessionBindingError(
+                        "Unable to read the original team session metadata.",
+                        code="INTERNAL_ERROR", reason="TEAM_SESSION_BINDING_READ_FAILED",
+                    ) from exc
+                owner = binding_store.find_by_session(session_id, require_unique=True)
+                prior_name = str(prior.get("team_name") or "").strip()
+                allow_rebind = bool(
+                    is_session_generated_team(prior) and owner is not None and owner.team_name == prior_name
+                )
+                owner_conflicts = owner is not None and owner.team_name != team_name
+                metadata_conflicts = bool(prior_name) and prior_name != team_name
+                if not allow_rebind and (owner_conflicts or metadata_conflicts):
+                    raise TeamSessionBindingError(
+                        "Session is already bound to another team; create a new conversation to change teams.",
+                        code="CONFLICT", reason="TEAM_SESSION_BINDING_CONFLICT",
+                    )
             existing_binding = binding_store.get(team_name)
             if existing_binding is None:
                 raise TeamBindingStoreError("team binding not found", code="NOT_FOUND")
@@ -657,6 +876,7 @@ async def handle_team_session_bind(ctx: RequestContext) -> None:
                 binding = binding_store.bind_session(
                     team_name=team_name,
                     session_id=session_id,
+                    allow_rebind=allow_rebind,
                 )
                 # Rebinding away from a session-generated team must drop the
                 # orphan binding + workspace once no other session holds it.
@@ -700,13 +920,20 @@ async def handle_team_session_bind(ctx: RequestContext) -> None:
                         artifacts,
                         sessions_root=sessions_root,
                     )
-                except Exception:
+                except Exception as rollback_exc:
                     logger.exception(
                         "[AgentWebSocketServer] failed to roll back Team session bind: "
                         "session_id=%s team_name=%s",
                         session_id,
                         team_name,
                     )
+                    if request.channel_id == "officeclaw":
+                        raise TeamSessionBindingError(
+                            "Team session binding failed and could not be rolled back.",
+                            code="INTERNAL_ERROR", reason="TEAM_SESSION_BINDING_ROLLBACK_FAILED",
+                        ) from rollback_exc
+                if isinstance(exc, TeamSessionBindingError):
+                    raise
                 raise TeamBindingStoreError(
                     "team session bind failed",
                     code="INTERNAL_ERROR",
@@ -730,7 +957,7 @@ async def handle_team_session_bind(ctx: RequestContext) -> None:
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=False,
-            payload={"error": str(exc), "code": getattr(exc, "code", "BAD_REQUEST")},
+            payload=getattr(exc, "payload", {"error": str(exc), "code": getattr(exc, "code", "BAD_REQUEST")}),
             metadata=request.metadata,
         )
 
@@ -1690,4 +1917,125 @@ async def handle_team_members_get(ctx: RequestContext) -> None:
     wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
     await ctx.sink.send_wire(wire)
 
+
+async def handle_swarmflow_control(ctx: RequestContext) -> None:
+    """Shared pause/resume/stop control-path handler for a swarmflow run.
+
+    Looks up the session's BackgroundTaskController and applies the requested
+    control to the run identified by ``run_id`` (accepting ``run_id`` or the
+    ``workflow_run_id`` alias). Returns ok=False with a reason when run_id is
+    missing, the team is asleep (no leader harness to host the run — the
+    tree-view buttons are greyed then), or no matching run
+    is registered on the controller.
+    """
+    request = ctx.request
+    action = _SWARMFLOW_ACTIONS[request.req_method]
+    from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+        classify_swarmflow_control_miss,
+        get_background_task_controller,
+    )
+    from jiuwenswarm.agents.harness.team.swarmflow_btc import (
+        pause_background_tasks,
+        resume_background_tasks,
+        stop_background_tasks,
+    )
+
+    session_id = request.session_id or ""
+    channel_id = request.channel_id or "web"
+    params = request.params if isinstance(request.params, dict) else {}
+    run_id = params.get("run_id") or params.get("workflow_run_id")
+
+    from openjiuwen.agent_teams.runtime.pool import RuntimeState
+    from openjiuwen.core.runner import Runner
+
+    from jiuwenswarm.agents.harness.team import get_team_manager
+
+    tm = get_team_manager(channel_id)
+    active_teams = await Runner.list_active_teams()
+    team_runtime_running = any(
+        str(info.current_session_id or "") == session_id
+        and info.state == RuntimeState.RUNNING
+        for info in active_teams
+    )
+    if not isinstance(run_id, str) or not run_id.strip():
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=channel_id,
+            ok=False,
+            payload={"error": "run_id is required"},
+        )
+    elif not team_runtime_running:
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=channel_id,
+            ok=False,
+            payload={"error": "工作流控制不可用，发送一条消息唤醒团队后即可使用。"},
+        )
+    else:
+        run_id = run_id.strip()
+        controller = get_background_task_controller(session_id)
+        status = {"pause": "paused", "resume": "resumed", "stop": "stopped"}.get(action, "")
+        wf_handler = tm.get_workflow_handler(session_id)
+        if action == "pause":
+            acted = await pause_background_tasks(controller, run_id)
+            # 与 stop 对称：RPC 已回 {status: paused}，但仍合成 workflow.updated，
+            # 避免引擎事件丢失/滞后时树卡在 running、前端 pending 等事件解锁。
+            if acted and wf_handler is not None:
+                await wf_handler.pause_run(run_id)
+        elif action == "resume":
+            acted = await resume_background_tasks(controller, run_id)
+            # 引擎没有 workflow_resumed 进度事件；controller 重启后必须由 handler
+            # 把快照从 paused 推回 running，否则树状态滞后、控制按钮易锁死。
+            if acted and wf_handler is not None:
+                await wf_handler.resume_run(run_id)
+        elif action == "stop":
+            acted = await stop_background_tasks(controller, run_id)
+            # 已解栈的 paused run 没有引擎回发的 WORKFLOW_STOPPED，快照会永远停在
+            # paused；由 handler 合成终态 delta（树刷新 + 落盘），不写 journal seal
+            # （丢票不 seal，手动 resume_id 仍可续）。active run 由引擎事件路径更新，
+            # stop_run 对非 paused run 是 no-op。
+            if wf_handler is not None and await wf_handler.stop_run(run_id):
+                acted = True
+        else:  # pragma: no cover - internal dispatch only
+            acted = False
+        if not acted:
+            # controller 注册表 miss ≠ run 不存在：run 可能已经自然终态
+            # （用户点的是一张停在 running/paused 的陈旧卡片），也可能是
+            # 进程重启后注册表清空而状态快照还在。由 team 层找回权威
+            # status 一并返回，前端据此纠正卡片并明确提示，而不是
+            # 一句 not found。
+            miss = classify_swarmflow_control_miss(channel_id, session_id, run_id)
+            if miss is not None:
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=channel_id,
+                    ok=False,
+                    payload=miss,
+                )
+            else:
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=channel_id,
+                    ok=False,
+                    payload={"error": "workflow run not found"},
+                )
+        else:
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=channel_id,
+                ok=True,
+                payload={"run_id": run_id, "status": status},
+            )
+
+    logger.info(
+        "[SWARMFLOW] %s req channel_id=%s session_id=%s request_id=%s run_id=%s ok=%s",
+        action,
+        channel_id,
+        session_id,
+        request.request_id,
+        run_id,
+        resp.ok,
+    )
+    wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+    await ctx.sink.send_wire(wire)
 

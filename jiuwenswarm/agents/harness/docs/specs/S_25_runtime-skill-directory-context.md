@@ -5,11 +5,11 @@
 | 项 | 值 |
 |---|---|
 | 类型 | spec |
-| 编号 / slug | S_23 / runtime-skill-directory-context |
+| 编号 / slug | S_25 / runtime-skill-directory-context |
 | 关联模块 | `common/rails/runtime_prompt_rail.py`、`common/prompt/prompt_builder.py`、`jiuwenswarm/server/runtime/agent_adapter/interface_deep.py` |
 | 最近一次修订日期 | 2026-11-21 |
 | 关联 feature | 暂无 |
-| 关联 bugfix | `../bugfix/B_06_runtime-skill-directory-context.md` |
+| 关联 bugfix | `../bugfix/B_08_runtime-skill-directory-context.md` |
 
 ## 范围 / 边界
 

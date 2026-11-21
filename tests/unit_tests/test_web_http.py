@@ -8,6 +8,7 @@ import asyncio
 import importlib.util
 import inspect
 import json
+import ssl
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -791,6 +792,99 @@ def test_chat_send_compat_path(app_with_mock):
     assert "/api/v1/chat/send" not in paths
     assert "/api/v1/chat/completions" in paths
     assert dispatch.await_args.kwargs["method"] == "chat.send"
+
+
+@pytest.mark.parametrize("contents", ["missing", "empty", "invalid"])
+def test_web_mtls_requires_a_valid_peer_certificate(tmp_path, contents):
+    from openjiuwen_runtime.foundation.security.link_profile import LinkProfileError
+
+    server = _load_module("jw_web_http_mtls_test", SERVER_PATH)
+    peers = tmp_path / "peers"
+    if contents != "missing":
+        peers.mkdir()
+    if contents == "invalid":
+        (peers / "invalid.crt").write_bytes(b"\xff")
+    with pytest.raises(LinkProfileError, match="Web mTLS peer") as error:
+        server._load_web_peer_fingerprints(peers)
+    assert str(peers) in str(error.value)
+
+
+def test_web_mtls_loads_distinct_valid_peers_and_logs_invalid_file(tmp_path, caplog):
+    from openjiuwen_runtime.foundation.security.link_certificate_bundle import issue_bundle
+    from openjiuwen_runtime.foundation.security.link_profile import cert_fingerprint
+
+    server = _load_module("jw_web_http_mtls_test", SERVER_PATH)
+    bundle = issue_bundle(mtls_deployment_id="web-peer-test", endpoints={})
+    pem = bundle["materials"]["manager"]["tls.crt"]
+    valid = tmp_path / "valid.crt"
+    valid.write_text(pem)
+    (tmp_path / "duplicate.crt").write_text(pem)
+    (tmp_path / "invalid.crt").write_bytes(b"\xff")
+    with caplog.at_level("INFO", logger=server.__name__):
+        assert server._load_web_peer_fingerprints(tmp_path) == {cert_fingerprint(str(valid))}
+    assert "invalid.crt" in caplog.text
+    assert "loaded 1 Web mTLS peer fingerprints" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_web_mtls_listener_authorizes_peer_and_binding(tmp_path, monkeypatch, unused_tcp_port):
+    import httpx
+    from openjiuwen_runtime.foundation.security import link_profile
+
+    from tests.fixtures.link_mtls import install, provision
+
+    port = unused_tcp_port
+    bundle = tmp_path / "bundle"
+    install_root = tmp_path / "installed"
+    monkeypatch.setattr(link_profile, "DEFAULT_IDENTITY_ROOT", install_root)
+    monkeypatch.setenv("JIUWENSWARM_LINK_MTLS_MODE", "enforce")
+    monkeypatch.delenv("JIUWENSWARM_LINK_MTLS_PROFILE", raising=False)
+    provision(bundle, mtls_deployment_id="web-listener-test", endpoints={"gateway": f"127.0.0.1:{port}"})
+    install(bundle, "gateway")
+    peer_directory = install_root / "web-peers"
+    peer_directory.mkdir()
+    # Use a client-capable leaf from the existing four service roles as the Web peer.
+    (peer_directory / "web.crt").write_bytes((bundle / "runtime" / "tls.crt").read_bytes())
+    gateway = link_profile.load_service_identity("gateway")
+    web_peer = link_profile.LinkProfile.load(str(bundle / "runtime" / "profile.json"))
+    manager = link_profile.LinkProfile.load(str(bundle / "manager" / "profile.json"))
+
+    async def ok():
+        return {"ok": True}
+
+    app = FastAPI()
+    app.add_api_route("/api/v1/health", ok)
+    app.add_api_route("/api/v1/sessions", ok)
+    name = "jiuwenswarm.gateway.channel_manager.web.web_http_app"
+    factory = ModuleType(name)
+    factory.create_web_http_app = lambda channel: app
+    monkeypatch.setitem(sys.modules, name, factory)
+
+    listener = _load_module("jw_web_http_mtls_listener_test", SERVER_PATH)
+    server, task = await listener.start_web_http_server(object(), host="127.0.0.1", port=port)
+    base = f"https://127.0.0.1:{port}"
+    binding = gateway.headers()
+
+    def connect(peer):
+        context = peer.ssl_context()
+        # The fixture issuer predates Python 3.13's strict AKI checks.
+        context.verify_flags &= ~ssl.VERIFY_X509_STRICT
+        return httpx.AsyncClient(base_url=base, verify=context, trust_env=False)
+
+    try:
+        async with connect(web_peer) as client:
+            assert (await client.get("/api/v1/health")).status_code == 200
+            assert (await client.get("/api/v1/sessions", headers=binding)).status_code == 200
+            assert (await client.get("/api/v1/sessions")).status_code == 403
+            stale = {**binding, "X-Jiuwenswarm-Mtls-Binding-Epoch": "0"}
+            assert (await client.get("/api/v1/sessions", headers=stale)).status_code == 403
+        async with connect(gateway) as client:
+            assert (await client.get("/api/v1/health")).status_code == 200
+        async with connect(manager) as client:
+            assert (await client.get("/api/v1/sessions", headers=binding)).status_code == 403
+    finally:
+        server.should_exit = True
+        await asyncio.wait_for(task, timeout=5)
 
 
 def test_resolve_web_http_port_defaults_to_19002(monkeypatch: pytest.MonkeyPatch):

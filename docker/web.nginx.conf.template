@@ -23,6 +23,11 @@ map $http_upgrade $connection_upgrade {
     ""      "";
 }
 
+map "${JIUWENSWARM_EDITION}" $enterprise_gateway_ws_disabled {
+    default 0;
+    ~*^enterprise$ 1;
+}
+
 server {
     listen ${WEB_HTTP_PORT};
     server_name _;
@@ -59,6 +64,7 @@ server {
     # ---------- Gateway Web HTTP 组(gateway-api/file-api/share-api/sessions/v1) ----------
     location = /gateway-api { return 307 /gateway-api/; }
     location ^~ /gateway-api/ {
+        include /etc/nginx/conf.d/jiuwenswarm-link/*.conf;
         rewrite ^/gateway-api/(.*)$ /api/$1 break;
         proxy_pass ${GATEWAY_WEB_HTTP_URL};
         proxy_buffering off;
@@ -67,26 +73,37 @@ server {
         proxy_send_timeout 3600s;
     }
     location ^~ /file-api/ {
+        include /etc/nginx/conf.d/jiuwenswarm-link/*.conf;
         proxy_pass ${GATEWAY_WEB_HTTP_URL};
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
     }
     location ^~ /share-api/ {
+        include /etc/nginx/conf.d/jiuwenswarm-link/*.conf;
         proxy_pass ${GATEWAY_WEB_HTTP_URL};
         proxy_read_timeout 300s;
         proxy_send_timeout 300s;
     }
     location ^~ /api/sessions {
+        include /etc/nginx/conf.d/jiuwenswarm-link/*.conf;
         proxy_pass ${GATEWAY_WEB_HTTP_URL};
     }
-    location = /api/v1  { proxy_pass ${GATEWAY_WEB_HTTP_URL}; }
+    location = /api/v1 {
+        include /etc/nginx/conf.d/jiuwenswarm-link/*.conf;
+        proxy_pass ${GATEWAY_WEB_HTTP_URL};
+    }
     location ^~ /api/v1/ {
+        include /etc/nginx/conf.d/jiuwenswarm-link/*.conf;
         proxy_pass ${GATEWAY_WEB_HTTP_URL};
     }
 
     # ---------- 其余 /api → Gateway WebChannel ----------
-    location = /api { proxy_pass ${GATEWAY_URL}; }
+    location = /api {
+        if ($enterprise_gateway_ws_disabled) { return 404; }
+        proxy_pass ${GATEWAY_URL};
+    }
     location /api/ {
+        if ($enterprise_gateway_ws_disabled) { return 404; }
         proxy_pass ${GATEWAY_URL};
         proxy_buffering off;
         proxy_read_timeout 3600s;
@@ -95,6 +112,7 @@ server {
 
     # ---------- /ws → Gateway WebChannel WebSocket(upgrade 隧道) ----------
     location = /ws {
+        if ($enterprise_gateway_ws_disabled) { return 404; }
         proxy_pass ${GATEWAY_URL};
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
@@ -103,6 +121,7 @@ server {
         proxy_send_timeout 3600s;
     }
     location /ws/ {
+        if ($enterprise_gateway_ws_disabled) { return 404; }
         proxy_pass ${GATEWAY_URL};
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;

@@ -882,7 +882,8 @@ def check_todo_initialization(
     if file_exists:
         session_dir.mkdir(parents=True, exist_ok=True)
     path = session_dir / "metadata.json"
-    with _FILE_LOCK, portalocker.Lock(str(path) + ".lock", timeout=30):
+    # 同会话文件锁已协调线程和进程；不能持全局锁等待某个会话的磁盘锁。
+    with portalocker.Lock(str(path) + ".lock", timeout=30):
         metadata = (json.loads(path.read_text(encoding="utf-8")) if path.exists()
                     else {"session_id": session_id})
         if not isinstance(metadata, dict):
@@ -1143,6 +1144,7 @@ def update_session_metadata(
     sync: bool = False,
     sync_write: bool = False,
     work_mode: str | None = None,
+    rsi_harness_installation_id: str | None = None,
     sessions_root: str | Path | None = None,
     temporary_team_session: bool | None = None,
     team_lifecycle: str | None = None,
@@ -1336,6 +1338,9 @@ def update_session_metadata(
         # 非消息操作复用本函数而不腐蚀 last_message_at 语义)
         if touch_last_message_at:
             metadata["last_message_at"] = _current_timestamp()
+
+    if rsi_harness_installation_id is not None:
+        metadata["rsi_harness_installation_id"] = rsi_harness_installation_id
 
     _enqueue_write(
         session_id,

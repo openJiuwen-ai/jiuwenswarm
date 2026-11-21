@@ -133,10 +133,16 @@ class RsiTaskMaterializer:
             target = target_dir / "cases.json"
             target.write_text(json.dumps(normalized, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-        # 文件级清单（load_json_cases / copy_dataset_files）依赖 harness_rsi 的
-        # data_loader 工具，本构建不可用：任务清单仍记录数据集整体哈希，
-        # 整体不可变约束保持不变。
-        files: dict[str, str] = {}
+        try:
+            from openjiuwen.rsi.harness_rsi.data_loader import load_json_cases
+            from openjiuwen.rsi.harness_rsi.data_loader.case_files import (
+                copy_dataset_files,
+            )
+
+            cases = normalized["cases"] if normalized is not None else load_json_cases(source)
+            files = copy_dataset_files(cases, source, target)
+        except (ValueError, TypeError, OSError) as exc:
+            raise RsiDatasetInvalid(f"Dataset files are invalid: {exc}") from exc
 
         if check is not None:
             try:
@@ -186,14 +192,14 @@ class RsiTaskMaterializer:
             raise RsiInvalidHarness(f"Harness 配置必须是非空 mapping: {config_path}")
         try:
             if config_path.name == "manifest.json":
-                from openjiuwen.harness.resources import load_plugin_package
+                from openjiuwen.rsi.harness_rsi.package_compat import load_plugin_package
 
                 load_plugin_package(config_path)
             else:
                 # Reuse the AutoHarness import-time allow-list/path guards for
                 # the source package.  This prevents a trusted-ref wrapper from
                 # bypassing the existing ``mcps`` and path traversal checks.
-                from jiuwenswarm.agents.harness.common.auto_harness.service import (
+                from openjiuwen.rsi.harness_rsi.package_compat import (
                     validate_harness_config,
                 )
 
@@ -292,6 +298,7 @@ class RsiTaskMaterializer:
             "evaluator": {
                 "backend": "single_harness",
                 "evaluation_method": profile_options["evaluation_method"],
+                "score_mode": "continuous",
                 "transient_case_retry_limit": 2,
             },
             "evaluation_result_analyzer": {
@@ -319,8 +326,12 @@ class RsiTaskMaterializer:
             "scheduling": {
                 "evaluation_strategy": "hybrid",
                 "coordination_strategy": "team_first_single_pass",
-                "promotion_policy": "epoch_full_evaluation",
                 "full_evaluation_enabled": True,
+            },
+            "promotion": {
+                "policy_version": "continuous_two_stage_v2",
+                "min_improvement": 0.05,
+                "non_target_max_regression": 0.05,
             },
         }
         if profile_options["evaluation_method"] == "llm_as_judge":
@@ -332,8 +343,16 @@ class RsiTaskMaterializer:
             yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
             encoding="utf-8",
         )
-        # 引擎侧 dataclass 真校验（load_auto_coordinating_harness_config）依赖
-        # harness_rsi.config，本构建不可用；profile 结构由上方的本地归一化保证。
+        # Validate against the installed openjiuwen dataclasses immediately;
+        # malformed internal fields must fail during create, not worker startup.
+        try:
+            from openjiuwen.rsi.harness_rsi.config import (
+                load_auto_coordinating_harness_config,
+            )
+
+            load_auto_coordinating_harness_config(str(target))
+        except Exception as exc:  # noqa: BLE001
+            raise RsiPathInvalid(f"Validation profile 无效: {exc}") from exc
         return {
             "name": str(profile_name or VALIDATION_PROFILE_NAME),
             "path": str(target.resolve()),
@@ -588,27 +607,10 @@ def _materialize_file_harness(
 
 def _validate_materialized_harness(manifest: Path, package: Path) -> None:
     try:
-        from openjiuwen.harness.resources import load_plugin_package
-    except ImportError:
-        return
-    try:
-        load_plugin_package(manifest)
-    except Exception as exc:  # noqa: BLE001 - normalize SDK parser errors
-        raise RsiInvalidHarness(f"任务私有 Harness 包校验失败: {manifest}") from exc
-    if manifest.name == "manifest.json":
-        return
-    try:
-        from jiuwenswarm.agents.harness.common.auto_harness.service import (
-            validate_harness_config,
-        )
-
+        from openjiuwen.rsi.harness_rsi.package_compat import validate_harness_config
         validate_harness_config(manifest, package_dir=package)
-    except RsiInvalidHarness:
-        raise
-    except Exception as exc:  # noqa: BLE001 - normalize security errors
-        raise RsiInvalidHarness(
-            f"任务私有 Harness 配置安全校验失败: {manifest}"
-        ) from exc
+    except Exception as exc:
+        raise RsiInvalidHarness(f"任务私有 Harness 配置安全校验失败: {manifest}") from exc
 
 
 def _harness_config_path(source: Path) -> Path:
