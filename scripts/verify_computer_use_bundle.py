@@ -21,15 +21,25 @@ from jiuwenswarm.agents.harness.common.tools.cua_runtime import ReplRuntime
 LOGGER = logging.getLogger(__name__)
 PROBE = """
 import json
+from computer_use.client.execution import session_executor
 from computer_use.native.connection import Connection
 from computer_use.paths import native_driver
 connection = Connection(lambda *args: None)
-try:
-    hello = await connection.connect()
-    print(json.dumps({'platform': hello['platform'], 'driver': native_driver()['command']}))
-finally:
-    connection.close()
-    await connection.wait_closed()
+
+async def handshake():
+    try:
+        hello = await connection.connect()
+        return {'platform': hello['platform'], 'driver': native_driver()['command']}
+    finally:
+        connection.close()
+        await connection.wait_closed()
+
+# SessionExecutor.run(factory) awaits factory() and returns its value (execution.py `_wait`):
+# pass the callable itself, never a coroutine object.
+outcome = session_executor().run(handshake)
+if not isinstance(outcome, dict):
+    raise TypeError(f"session_executor().run must return the handshake dict, got {outcome!r}")
+print(json.dumps(outcome))
 packaged_value = 41
 """
 
@@ -58,7 +68,10 @@ async def verify_computer_use_bundle() -> None:
             result = await runtime.execute(PROBE)
             if result.isError:
                 raise RuntimeError("Packaged Computer Use handshake failed: " + _text(result))
-            observed = json.loads(_text(result).strip())
+            output = _text(result).strip()
+            if not output:
+                raise RuntimeError("Packaged Computer Use handshake produced no output")
+            observed = json.loads(output)
             if Path(observed["driver"]).resolve() != executable.resolve():
                 raise RuntimeError("The frozen SDK selected a driver outside its installed bundle")
             expected_platform = "macos" if sys.platform == "darwin" else "windows"
