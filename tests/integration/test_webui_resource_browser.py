@@ -76,7 +76,8 @@ async def test_sandboxed_resource_modules_fetch_and_isolation(tmp_path, monkeypa
 
     async def fetch(**kwargs):
         response = await adapter.handle(AgentRequest(
-            "read", channel_id=kwargs["channel_id"], req_method=ReqMethod(kwargs["req_method"].value), params=kwargs["params"],
+            "read", channel_id=kwargs["channel_id"], req_method=ReqMethod(kwargs["req_method"].value),
+            params=kwargs["params"],
             user_id=kwargs["user_id"], session_id=kwargs["session_id"],
         ))
         return response.ok, response.payload

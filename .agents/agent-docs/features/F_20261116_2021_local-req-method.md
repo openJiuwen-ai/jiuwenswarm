@@ -7,12 +7,14 @@ author_email: maoqiming1@huawei.com
 modules:
   - jiuwenswarm/common/schema
   - jiuwenswarm/common/e2a
+  - jiuwenswarm/extensions/app_market
   - jiuwenswarm/extensions/video_duplex
 files:
   - jiuwenswarm/common/schema/message.py
   - jiuwenswarm/common/schema/agent.py
   - jiuwenswarm/common/e2a/gateway_normalize.py
   - jiuwenswarm/server/dispatch.py
+  - jiuwenswarm/extensions/app_market/extension.py
   - jiuwenswarm/extensions/video_duplex/backend/task_adapter.py
   - jiuwenswarm/extensions/video_duplex/backend/video_live.py
   - jiuwenswarm/extensions/video_duplex/backend/video_search.py
@@ -22,6 +24,10 @@ files:
   - tests/unit_tests/agentserver/fixtures/front_process.py
   - tests/unit_tests/agentserver/test_agentserver_regressions.py
   - tests/unit_tests/agentserver/test_front_process_fixture.py
+  - tests/unit_tests/test_app_market_gateway_config.py
+  - tests/unit_tests/extensions_v2/webui/test_resources.py
+  - tests/unit_tests/extensions_v2/webui/test_settings_location.py
+  - tests/integration/test_webui_resource_browser.py
 designs: []
 design_note: 按用户明确要求迁移现有枚举并独立提交 PR，保持线协议兼容，未单独建立设计文档。
 ---
@@ -286,3 +292,11 @@ Windows / Python 3.14 组合结果为 `994 passed in 62.00s`，保留仓库 conf
 PYTHONPATH，因此其子进程 core 仍来自环境已安装的 `2f4bedb9c5d85ab70d7c79d36183e6a98799e94e`。
 本次未运行全量 UT/ST 或统一锁定依赖的 Linux 门禁，最终 CI 状态仍待确认。
 本次仅追加复核证据，不因未发现遗漏而制造额外生产代码改动。
+
+## 2026-11-21：同步 develop 并核对新方法
+
+- 基线 `e81838343`；使用锁定的 agent-protocol `10ad4a2ee`、agent-gateway `7c10913f1` 和 agent-core `0b1aa2102`。独立测试环境中的主进程和原生 Front 子进程均使用这些源码；未修改仓库依赖或共享环境。
+- E2A 原始枚举 434 项，Gateway 注册后 531 项，develop 本仓注册及团队清单 138 项。三者去重为 563 项，与本地枚举逐项比对，无缺失、额外项或协议字符串差异。对 1719 个生产 Python 文件盘点，477 个不同成员引用均已定义，无 E2A/Gateway 请求枚举导入或成员直接引用。
+- 相比前次核对，补入 18 项：MCP 来源提供方、会话分离、资产导入与导出、4 个 WebUI 方法及 10 个 Extensions V2 方法。Host 独有的四项另以固定协议字符串测试，避免删去成员后往返用例随枚举自动减少而未检出。
+- WebUI 资源与设置测试、浏览器集成测试按字符串跨 Gateway/Host，不再假设枚举对象相同。应用市场启动与编辑会话的回调共用 Gateway 的方法名解析接口，以原代理保留超时、重试和响应契约；两个注册入口均通过真实代理验证出站方法、参数及用户身份。
+- Windows / Python 3.14 最终定向组合：1806 passed, 1 skipped（112.95 秒）。保留仓库 conftest，使用无头 Edge 运行 WebUI 浏览器集成；跳过项为当前账户无法创建符号链接。覆盖前述协议、视频、Front、Gateway 回归及新增 WebUI、扩展管理、会话分离、资产契约、应用市场网关、编辑会话与 Hub 安装用例。一次中间运行出现 Hub 目录重命名 WinError 5，同一用例单跑及最终组合均通过；未改动安装逻辑。未运行全量 UT/ST 或 Linux CI。
