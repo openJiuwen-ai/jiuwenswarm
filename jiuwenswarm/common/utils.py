@@ -1591,6 +1591,90 @@ def prepare_runtime_workspace(
     if migrate_config:
         ensure_config_migrated_from_template(workspace_dir)
     ensure_default_builtin_skills()
+    ensure_infra_config_dir_link(workspace_dir)
+
+
+_INFRA_CONFIG_LINK = "infra/config"
+
+
+def ensure_infra_config_dir_link(workspace_dir: Path) -> bool:
+    """Bridge the partitioned Gateway config path onto the real config dir.
+
+    The pinned agent-gateway dependency resolves its config through the
+    ``domain``/``infra`` partition layout (``<root>/infra/config``), while this
+    repository still owns the flat layout (``<root>/config``). Without a bridge
+    the Gateway saves channel settings into a missing ``infra/config``
+    directory — portalocker fails to create ``config.lock`` there and every
+    settings save reports ``No such file or directory`` — and reads silently
+    fall back to the bundled template.
+
+    A directory link (junction on Windows, symlink elsewhere) makes both paths
+    address the same ``config.yaml`` and the same cross-process write lock.
+    Idempotent: an existing link pointing at the real config dir is left alone;
+    a real directory is never replaced or shadowed (the caller then owns
+    reconciling the two layouts); failures degrade to a warning so startup
+    proceeds with the Gateway-side symptom instead of blocking the app.
+
+    Args:
+        workspace_dir: User workspace root holding ``config/``.
+
+    Returns:
+        True when the link exists (or was created) and resolves to the real
+        config directory.
+    """
+    root = Path(workspace_dir)
+    real_config_dir = root / "config"
+    link_path = root / _INFRA_CONFIG_LINK
+    if not real_config_dir.is_dir():
+        return False
+
+    def _resolves_to_real_config(path: Path) -> bool:
+        try:
+            return path.resolve() == real_config_dir.resolve()
+        except OSError:
+            return False
+
+    if link_path.is_symlink() or _is_directory_link(link_path):
+        if _resolves_to_real_config(link_path):
+            return True
+        # A stale link to somewhere else: detach it so the correct target can
+        # be installed. POSIX symlinks must be unlinked — ``os.rmdir`` on a
+        # symlink raises NotADirectoryError. Windows junctions are removed
+        # with ``os.rmdir``, which never touches the target directory.
+        try:
+            if link_path.is_symlink():
+                link_path.unlink()
+            else:
+                os.rmdir(link_path)
+        except OSError as exc:
+            logger.warning("无法替换失效的 %s 链接: %s", link_path, exc)
+            return False
+    elif link_path.exists():
+        # A real directory already occupies the partitioned path. Never shadow
+        # or merge user data here; only report so the divergence stays visible.
+        logger.warning(
+            "%s 已是真实目录，保留不动；Gateway 与 AgentServer 的配置路径可能分叉",
+            link_path,
+        )
+        return False
+
+    try:
+        link_path.parent.mkdir(parents=True, exist_ok=True)
+        if sys.platform == "win32":
+            # Directory junction: no privileges required, and the empty-parent
+            # guard above keeps the link removable with plain ``os.rmdir``.
+            import _winapi
+
+            _winapi.CreateJunction(str(real_config_dir), str(link_path))
+        else:
+            # Relative to the link's parent (<root>/infra/), the real config
+            # dir is one level up.
+            os.symlink("../config", link_path, target_is_directory=True)
+    except (OSError, NotImplementedError, ImportError) as exc:
+        logger.warning("无法创建 %s 目录链接: %s", link_path, exc)
+        return False
+    logger.info("已创建配置目录链接: %s -> %s", link_path, real_config_dir)
+    return _resolves_to_real_config(link_path)
 
 
 def _close_log_handlers() -> None:
