@@ -225,7 +225,7 @@ def _decode_bytes_auto(raw_data: bytes, errors: str = "strict") -> tuple[str, st
                 return raw_data.decode(try_encoding, errors), try_encoding
             except (UnicodeDecodeError, LookupError):
                 continue
-    raise OSError("Unable to decode file with any known encoding") from decode_exc
+        raise OSError("Unable to decode file with any known encoding") from decode_exc
 
 
 _TEXTUAL_MIME_TYPES = frozenset(
