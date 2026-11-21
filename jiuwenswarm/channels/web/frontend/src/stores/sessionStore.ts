@@ -1456,14 +1456,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       // leaving an empty title. Fall back to a placeholder built from the
       // task_id tail so the card is not rendered with a bare empty title
       // (matches the precedent in features/teamHistoryPanelRestore.ts upsertTask).
-      // Append so the board stays creation order (top-to-bottom execution).
+      // Prepend so the newest card stays on top.
       const tasks: TeamTask[] = [
-        ...runtime.teamTasks,
         {
           ...task,
           status: task.status ?? 'pending',
           title: task.title ?? i18n.t('team.taskFallback', { id: String(task.task_id || '').slice(-6) }),
         },
+        ...runtime.teamTasks,
       ];
       return {
         runtimes: {

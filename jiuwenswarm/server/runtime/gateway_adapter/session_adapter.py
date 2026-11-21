@@ -138,9 +138,12 @@ class SessionAdapter(GatewayAdapter):
                 guard(str(params.get("session_id") or request.session_id or ""))
             except LifecycleError as exc:
                 return build_error_response(request, str(exc), code=exc.code)
+        # get_metadata stays on this async adapter so live Runner PAUSED can OR
+        # into is_paused. Front control session_repository is sync and durable-only.
+        if method == ReqMethod.SESSION_GET_METADATA:
+            return await self._handle_get_metadata(request)
         if method in {
             ReqMethod.SESSION_LIST,
-            ReqMethod.SESSION_GET_METADATA,
             ReqMethod.SESSION_PIN,
             ReqMethod.SESSION_COLOR_SET,
             ReqMethod.SESSION_PREVIEW,

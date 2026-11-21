@@ -5532,10 +5532,25 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // has_active_task 为 false 表示没有活跃任务（任务已完成）
         const hasActiveTask = resultPayload.has_active_task !== false;
 
+        // Team pause C1: work_stopped clears chrome; resumable opens 续跑 UI.
+        // Missing fields keep prior pause fallback (always clear+freeze).
+        const pauseWorkStopped =
+          resultPayload.intent === 'pause'
+            ? resultPayload.work_stopped !== false
+            : false;
+        const pauseResumable =
+          resultPayload.intent === 'pause'
+            ? resultPayload.resumable === true ||
+              (resultPayload.resumable === undefined && resultPayload.success === true)
+            : false;
+
         // 压缩提示兜底：后端已确认暂停/取消，若压缩行仍处于 running（SDK 的
         // cancelled/paused 终态事件未到或丢失），先收掉运行行，避免界面停在
         // "压缩中"；随后到达的终态事件会以中性文案重新呈现。
-        if (resultPayload.success && (resultPayload.intent === 'pause' || resultPayload.intent === 'cancel')) {
+        const settleInterrupt =
+          (resultPayload.intent === 'pause' && pauseWorkStopped) ||
+          (resultPayload.success && resultPayload.intent === 'cancel');
+        if (settleInterrupt && (resultPayload.intent === 'pause' || resultPayload.intent === 'cancel')) {
           const compressionRuntime =
             useChatStore.getState().getRuntime(sessionId)?.contextCompressionRuntime;
           if (compressionRuntime?.status === 'running') {
@@ -5551,34 +5566,34 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
 
         if (resultPayload.intent === 'pause') {
-          // 企业临时团队停止也走 pause。AS 已 settle/stop 时 Gateway 仍可能回
-          // success=False（#70 斐波那契复现）；仍要收 processing、冻任务板，
-          // 否则右侧 in_progress 一直转。setPaused 仅在 success 时写入，避免
-          // 真失败时误开「已暂停可续跑」。
-          if (resultPayload.success) {
+          // work_stopped → 收 processing / 冻板；resumable → 可续跑 UI。
+          // 缺字段时 work_stopped 默认 true，兼容旧后端；resumable 回退 success。
+          if (pauseResumable) {
             useChatStore.getState().setPaused(
               sessionId,
               hasActiveTask,
               hasActiveTask ? resultPayload.paused_task : undefined,
             );
           }
-          useChatStore.getState().setProcessing(sessionId, false);
-          useChatStore.getState().setThinking(sessionId, false);
-          // 暂停时生成已被掐断，思考段收不到后续 delta/final 兜底：这里显式收尾，
-          // 让「思考中」冻结为已完成；恢复后新到的 reasoning 会另起一段。
-          useChatStore.getState().closeReasoning(sessionId);
-          // pause 不改任务 status（便于续跑），但立刻冻结进度条/停转圈，
-          // 否则右侧 in_progress 会一直转，看起来像中断失败（issue #90 / #70）。
-          useSessionStore.getState().freezeRunningTeamTasks(sessionId);
-          const sessionPatch: Partial<Session> = {
-            is_processing: false,
-            updated_at: new Date().toISOString(),
-          };
-          updateSession(sessionId, sessionPatch);
-          useWorkspaceStore.getState().patchSession(sessionId, sessionPatch);
-          // 个人版与企业版临时团队停止都走 pause。team-leader 的 isStreaming
-          // 不经过 currentStreamId，这里显式收尾，避免光标一直闪。
-          closeActiveTeamLeaderMessages(sessionId);
+          if (pauseWorkStopped) {
+            useChatStore.getState().setProcessing(sessionId, false);
+            useChatStore.getState().setThinking(sessionId, false);
+            // 暂停时生成已被掐断，思考段收不到后续 delta/final 兜底：这里显式收尾，
+            // 让「思考中」冻结为已完成；恢复后新到的 reasoning 会另起一段。
+            useChatStore.getState().closeReasoning(sessionId);
+            // pause 不改任务 status（便于续跑），但立刻冻结进度条/停转圈，
+            // 否则右侧 in_progress 会一直转，看起来像中断失败（issue #90 / #70）。
+            useSessionStore.getState().freezeRunningTeamTasks(sessionId);
+            const sessionPatch: Partial<Session> = {
+              is_processing: false,
+              updated_at: new Date().toISOString(),
+            };
+            updateSession(sessionId, sessionPatch);
+            useWorkspaceStore.getState().patchSession(sessionId, sessionPatch);
+            // 个人版与企业版临时团队停止都走 pause。team-leader 的 isStreaming
+            // 不经过 currentStreamId，这里显式收尾，避免光标一直闪。
+            closeActiveTeamLeaderMessages(sessionId);
+          }
         } else if (resultPayload.intent === 'resume') {
           if (resultPayload.success) {
             setOrganizationOwnerStopped(sessionId, false);
