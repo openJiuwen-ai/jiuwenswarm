@@ -722,6 +722,74 @@ react:
       - enter_plan_mode             # plan 模式两件套必须常驻（BUG20261105402443）：plan 态下
       - exit_plan_mode              # reminder 指示模型调 enter_plan_mode，但懒加载把它滤进
                                     # deferred，模型反复探测无进展触发 agent_ras 熔断 OA.05000060
+    # 注册即可见保护名单（BUG20261117410859）：request-scoped MCP（pptx-mcp 等）
+    # 与交付/委派/计划模式工具由通道按会话状态注册，注册即代表该会话需要；
+    # 懒加载白名单模型（enable_for_models）下被裁剪后，模型意图与 schema 脱节，
+    # 退化为无进展空转直到 agent_ras 熔断（OA.05000060）。名单中未注册的名字
+    # 天然是 no-op，对非 PPT 会话零影响。缺省此键时代码内置同一份默认名单；
+    # 显式置空 [] 表示整体关闭保护。
+    # 过滤优先级、declared（required_skill）互斥语义、主 / subagent / team
+    # 共用等完整表述以 ProgressiveToolRail 类 docstring 为权威
+    # （progressive_tool_rail.py），此处不重复，避免两处漂移。
+    # 升级兼容：引入保护前，白名单模型下这些工具须经 tools_search→
+    # invoke_tool 代理调用；升级/热更后注册即在 schema 直接可见，反查会
+    # 收到"请直接调用"指引（预期行为变更）。如需保持旧分类行为，置空 []。
+    protected_eager_tools:
+      # —— pptx-mcp 套件 ——
+      - open_pptx
+      - switch_file
+      - ping
+      - get_deck_outline
+      - read_slide
+      - suggest_font_size
+      - render_slide
+      - snapshot_slide
+      - check_layout
+      - execute_slide_script
+      - get_native_capabilities
+      - check_native_contract
+      - read_template_structure
+      - create_template_family
+      - install_template
+      - register_media
+      - register_asset
+      - describe_ops
+      - apply_ops
+      - prepare_slide_shell
+      - compose_deck
+      - batch_add_label
+      - replace_text
+      - batch_replace_text
+      - replace_text_with_reflow
+      - find_replace_display_text
+      - organize_deck_sections
+      - apply_semantic_theme
+      - normalize_title_style
+      - light_cleanup_slides
+      - reflow_cards
+      - refresh_executive_style
+      - append_slide
+      - compose_slide
+      - duplicate_slide
+      - move_slide
+      - delete_slide
+      - add_chart_to_slide
+      - add_table_to_slide
+      - begin_ai_run
+      - commit_ai_run
+      - list_ai_snapshots
+      - restore_ai_snapshot
+      - cancel_ai_run
+      - undo
+      - redo
+      - save_pptx
+      - insert_web_image
+      - replace_image
+      # —— 交付 / 委派 / 计划模式 ——
+      - send_file_to_user
+      - task_tool
+      - enter_plan_mode
+      - exit_plan_mode
     # 模型白名单（空=全部启用），对模型名做子串匹配，大小写不敏感；未命中的模型全部工具直接可见。
     # 懒加载依赖模型读懂 tools_search → invoke_tool；收窄为白名单时需逐个模型验证该链路。
     enable_for_models: []

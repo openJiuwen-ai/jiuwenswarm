@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 
 from jiuwenswarm.agents.harness.common.rails.progressive_tool_rail import (
+    DEFAULT_PROGRESSIVE_PROTECTED_EAGER_TOOLS,
     ProgressiveToolRail,
 )
 from jiuwenswarm.agents.harness.team.rails.request_scoped_mcp_tools_rail import (
@@ -558,3 +559,49 @@ async def test_request_scoped_mcp_pins_member_progressive_rail():
         assert progressive._office_claw_active_tool_ids is None
     finally:
         revoke_request_scoped_mcp_registration(registration)
+
+
+def test_team_rail_receives_default_protected_eager_tools():
+    """BUG20261117410859 floor：成员 rail 缺省拿到代码默认保护名单（request-scoped
+    MCP 工具会挂到成员 ability_manager，白名单模型下不得被角色 eager 名单裁掉）。"""
+    ctx = SwarmBuildContext(
+        session_id="sess-protected",
+        member_card_id="team_m",
+        member_name="m",
+        role="teammate",
+        language="cn",
+        config={
+            "react": {
+                "tool_lazy_load": {
+                    "enabled": True,
+                    "enable_for_models": ["glm", "deepseek"],
+                },
+            }
+        },
+    )
+    rail = _build_team_progressive_tool_rail({}, ctx)
+
+    assert rail._protected_eager_tools == frozenset(DEFAULT_PROGRESSIVE_PROTECTED_EAGER_TOOLS)
+
+
+def test_team_rail_honors_explicit_empty_protected_eager_tools():
+    """显式置空 [] 时成员 rail 同样整体关闭保护，与主链路语义一致。"""
+    ctx = SwarmBuildContext(
+        session_id="sess-protected-off",
+        member_card_id="team_m",
+        member_name="m",
+        role="teammate",
+        language="cn",
+        config={
+            "react": {
+                "tool_lazy_load": {
+                    "enabled": True,
+                    "enable_for_models": ["glm", "deepseek"],
+                    "protected_eager_tools": [],
+                },
+            }
+        },
+    )
+    rail = _build_team_progressive_tool_rail({}, ctx)
+
+    assert rail._protected_eager_tools == frozenset()

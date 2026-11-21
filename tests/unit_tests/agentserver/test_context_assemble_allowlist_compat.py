@@ -142,3 +142,19 @@ def test_sync_context_assemble_tool_allowlist_tolerates_missing_setter():
         SimpleNamespace(),
         SimpleNamespace(eager_tools=["tools_search"]),
     )
+
+
+def test_sync_context_assemble_tool_allowlist_includes_protected_floor():
+    """热更新必须同步 eager + floor（BUG20261117410859），不得覆盖回 eager-only。"""
+    calls = []
+    assemble = SimpleNamespace(
+        set_tool_name_allowlist=lambda tool_names: calls.append(tool_names),
+    )
+    progressive = SimpleNamespace(
+        eager_tools=["tools_search", "invoke_tool"],
+        prompt_tool_allowlist=lambda: ["tools_search", "invoke_tool", "open_pptx"],
+    )
+
+    interface_deep._sync_context_assemble_tool_allowlist(assemble, progressive)
+
+    assert calls == [["tools_search", "invoke_tool", "open_pptx"]]
