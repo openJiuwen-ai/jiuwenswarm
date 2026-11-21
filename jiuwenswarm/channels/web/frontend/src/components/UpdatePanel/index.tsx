@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 
 interface UpdatePanelProps {
@@ -70,6 +70,19 @@ function formatPublishedAt(value: string, locale: string): string {
 
 const UPDATER_STATUS_EVENT = 'jiuwenswarm:updater-status';
 
+// The desktop request continues even if the user leaves the update panel.
+let desktopInstall: 'installing' | { error: string } | null = null;
+const desktopInstallEvents = new EventTarget();
+const subscribeDesktopInstall = (listener: () => void) => {
+  desktopInstallEvents.addEventListener('change', listener);
+  return () => desktopInstallEvents.removeEventListener('change', listener);
+};
+const getDesktopInstall = () => desktopInstall;
+const setDesktopInstall = (value: typeof desktopInstall) => {
+  desktopInstall = value;
+  desktopInstallEvents.dispatchEvent(new Event('change'));
+};
+
 export function UpdatePanel({ isConnected, request }: UpdatePanelProps) {
   const { t, i18n } = useTranslation();
   const [status, setStatus] = useState<UpdateStatusPayload | null>(null);
@@ -78,6 +91,9 @@ export function UpdatePanel({ isConnected, request }: UpdatePanelProps) {
   const [checking, setChecking] = useState(false);
   const [resettingSource, setResettingSource] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const install = useSyncExternalStore(subscribeDesktopInstall, getDesktopInstall);
+  const installingDesktop = install === 'installing';
+  const visibleError = installingDesktop ? null : install?.error ?? error;
 
   const refreshStatus = useCallback(async () => {
     try {
@@ -123,6 +139,7 @@ export function UpdatePanel({ isConnected, request }: UpdatePanelProps) {
   }, []);
 
   useEffect(() => {
+    if (installingDesktop) return;
     if (
       normalizeString(status?.state) !== 'checking' &&
       normalizeString(status?.state) !== 'downloading' &&
@@ -137,10 +154,11 @@ export function UpdatePanel({ isConnected, request }: UpdatePanelProps) {
     return () => {
       window.clearInterval(timer);
     };
-  }, [refreshStatus, status?.state]);
+  }, [installingDesktop, refreshStatus, status?.state]);
 
   const handleCheck = useCallback(async () => {
-    if (!isConnected || checking || normalizeString(status?.state) === 'downloading') return;
+    if (desktopInstall === 'installing' || !isConnected || checking || normalizeString(status?.state) === 'downloading') return;
+    setDesktopInstall(null);
     setChecking(true);
     setError(null);
     try {
@@ -155,7 +173,8 @@ export function UpdatePanel({ isConnected, request }: UpdatePanelProps) {
   }, [checking, isConnected, status, request, t]);
 
   const handleDownload = useCallback(async () => {
-    if (!isConnected) return;
+    if (desktopInstall === 'installing' || !isConnected) return;
+    setDesktopInstall(null);
     setError(null);
     try {
       const payload = await request<UpdateStatusPayload>('updater.download');
@@ -181,24 +200,23 @@ export function UpdatePanel({ isConnected, request }: UpdatePanelProps) {
   }, [request, resettingSource, t]);
 
   const handleInstall = useCallback(async () => {
+    if (desktopInstall === 'installing') return;
     const installerPath = normalizeString(status?.downloaded_path);
     const api = (window as Window & { pywebview?: { api?: { install_update?: (path: string) => Promise<boolean> | boolean } } }).pywebview?.api;
     if (!installerPath || !api?.install_update) {
-      setError(t('updatePanel.errors.installUnavailable'));
+      setDesktopInstall({ error: t('updatePanel.errors.installUnavailable') });
       return;
     }
-    // Optimistically switch to "installing" so the UI reflects the in-progress
-    // state before the desktop app closes the window.
-    setStatus((prev) => ({ ...(prev ?? {}), state: 'installing', installing: true }));
+    setError(null);
+    setDesktopInstall('installing');
     try {
       const ok = await api.install_update(installerPath);
-      if (!ok) {
-        setError(t('updatePanel.errors.installFailed'));
-        setStatus((prev) => ({ ...(prev ?? {}), state: 'downloaded', installing: false }));
-      }
+      if (ok) return;
+      setDesktopInstall({ error: t('updatePanel.errors.installFailed') });
     } catch (installError) {
-      setError(installError instanceof Error ? installError.message : t('updatePanel.errors.installFailed'));
-      setStatus((prev) => ({ ...(prev ?? {}), state: 'downloaded', installing: false }));
+      setDesktopInstall({
+        error: installError instanceof Error ? installError.message : t('updatePanel.errors.installFailed'),
+      });
     }
   }, [status?.downloaded_path, t]);
 
@@ -214,7 +232,7 @@ export function UpdatePanel({ isConnected, request }: UpdatePanelProps) {
     }
   }, [isConnected, request, t]);
 
-  const state = normalizeString(status?.state) || 'idle';
+  const state = installingDesktop ? 'installing' : normalizeString(status?.state) || 'idle';
   const hasUpdate = normalizeBoolean(status?.has_update);
   const installMode = normalizeString(status?.install_mode) || 'desktop';
   const isPipMode = installMode === 'pip';
@@ -239,7 +257,7 @@ export function UpdatePanel({ isConnected, request }: UpdatePanelProps) {
     if (totalBytes <= 0) return 0;
     return Math.max(0, Math.min(100, Math.round((downloadedBytes / totalBytes) * 100)));
   }, [downloadedBytes, totalBytes]);
-  const canDownload = isConnected && hasUpdate && state !== 'downloading' && state !== 'downloaded';
+  const canDownload = isConnected && hasUpdate && state !== 'downloading' && state !== 'downloaded' && !installingDesktop;
   const canInstall = state === 'downloaded' && normalizeString(status?.downloaded_path).length > 0;
   const canUpgradePip = isPipMode && hasUpdate && state !== 'upgrading' && state !== 'restart_pending' && state !== 'restarting';
   const canRestartPip = isPipMode && state === 'restart_pending';
@@ -254,7 +272,7 @@ export function UpdatePanel({ isConnected, request }: UpdatePanelProps) {
             <p className="text-sm text-text-muted mt-1" data-testid="update-panel-subtitle">{t('updatePanel.subtitle')}</p>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={() => void handleCheck()} className="btn secondary" disabled={!isConnected || checking || state === 'downloading'} data-testid="update-panel-check-btn">
+            <button onClick={() => void handleCheck()} className="btn secondary" disabled={!isConnected || checking || state === 'downloading' || installingDesktop} data-testid="update-panel-check-btn">
               {checking ? t('updatePanel.checking') : t('updatePanel.checkNow')}
             </button>
             {isPipMode ? (
@@ -285,9 +303,9 @@ export function UpdatePanel({ isConnected, request }: UpdatePanelProps) {
           </div>
         )}
 
-        {error && (
+        {visibleError && (
           <div className="rounded-xl border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-text" data-testid="update-panel-error">
-            {error}
+            {visibleError}
           </div>
         )}
 
