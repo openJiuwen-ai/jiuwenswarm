@@ -138,6 +138,34 @@ async def test_start_rejects_corrupt_store_without_false_running_state(
     assert sched.is_running() is False
 
 
+async def test_stop_propagates_caller_cancellation(setup) -> None:
+    """回归:stop() 期间调用方被取消时,取消信号必须向上传播。
+
+    _loop() 捕获自身 CancelledError 后正常返回;调用方的 cancel() 会被
+    asyncio 委托给子任务(_fut_waiter),同样被 _loop 吞掉——此时 stop()
+    恢复运行且没有任何异常,仅靠捕获感知不到调用方的取消。stop() 需检查
+    调用方待取消状态(cancelling())并重新抛出。
+    """
+    _, _, sched = setup
+    release = asyncio.Event()
+
+    async def hang_tick() -> None:
+        await release.wait()
+
+    # 挂起 _tick_once,让子任务停驻在循环内,保证 stop() 等待期间子任务不会自行退出
+    sched._tick_once = hang_tick  # type: ignore[method-assign]
+    await sched.start()
+
+    stop_task = asyncio.create_task(sched.stop())
+    await asyncio.sleep(0)  # 让 stop_task 运行至 await self._task 处挂起
+    stop_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await stop_task
+    assert stop_task.cancelled()
+    assert sched.is_running() is False
+    release.set()
+
+
 # ---------------------------------------------------------------------------
 # compute_next_run
 # ---------------------------------------------------------------------------
