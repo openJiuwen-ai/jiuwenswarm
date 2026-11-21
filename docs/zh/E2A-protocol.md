@@ -30,6 +30,8 @@
 `aggregator_model_name` 和 `aggregator_alias`，不包含凭据。AgentServer 客户端
 缺失或尚未就绪时，Gateway 返回 `SERVICE_UNAVAILABLE`，不在自身目录中回退执行配置检查。
 
+AgentServer 将 Gateway 注入的顶层 `traceparent` 映射到请求 metadata，经 Worker IPC 透传；顶层真值优先于 channel_context 中的同名值，顶层缺失时保留 channel_context 中的同名值（兼容只写 channel_context 的入口）。Worker 仅在请求执行任务内绑定有效的 W3C 父上下文，并在正常结束、异常和取消时恢复原上下文。缺失或无效输入保留 SDK 原有上下文行为；采集开关与 exporter 配置沿用原有优先级。
+
 ---
 
 ## 2. 易混点：`method` 的两种含义（必读）
@@ -70,6 +72,7 @@
 | `session_id` | string / null | 会话 |
 | `message_id` | string / null | 平台或 A2A 消息 id；语义勿与 `request_id` 混 |
 | `is_stream` | boolean | 是否流式响应 |
+| `traceparent` | string / null | Gateway 注入的 W3C 父上下文；AgentServer 将其归一进请求 metadata，顶层真值优先于 `channel_context` 同名值，顶层缺失时保留 channel 值 |
 
 ### 4.2 `provenance`（`E2AProvenance`）
 
