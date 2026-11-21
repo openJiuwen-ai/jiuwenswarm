@@ -63,15 +63,28 @@ class HubPackageInstallResult:
 
 
 def _find_package_root(extracted: Path, kind: HubAssetKind) -> Path:
+    """Locate the package root among the extracted manifests.
+
+    Packages may ship sub-assets with their own ``manifest.json`` (skills under
+    ``skills/<name>/``, nested experts under ``agents/<name>/``). Only the
+    shallowest manifest is the package root; deeper ones belong to sub-assets
+    and must not make a valid package look like it has several roots (#6602).
+    Sibling roots at the same depth stay ambiguous and are rejected.
+    """
     candidates = sorted({path.parent for path in extracted.rglob("manifest.json")})
     if kind == "agent_group":
         candidates = [
             path for path in candidates
             if _is_group_manifest(path / "manifest.json")
         ]
-    if len(candidates) != 1:
+    if not candidates:
         raise ValueError(f"Hub {kind} ZIP must contain exactly one manifest.json")
-    return candidates[0]
+    depths = {path: len(path.relative_to(extracted).parts) for path in candidates}
+    shallowest = min(depths.values())
+    roots = [path for path in candidates if depths[path] == shallowest]
+    if len(roots) != 1:
+        raise ValueError(f"Hub {kind} ZIP must contain exactly one manifest.json")
+    return roots[0]
 
 
 def _is_group_manifest(path: Path) -> bool:

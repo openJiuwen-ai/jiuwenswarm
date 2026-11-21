@@ -688,8 +688,11 @@ async def test_native_front_control_queries_do_not_load_runtime_dependencies(tmp
                                    cwd=root, env=env, stdout=log, stderr=log)
         ws = None
         try:
-            deadline = asyncio.get_running_loop().time() + 30
-            while asyncio.get_running_loop().time() < deadline:
+            # The front server imports a large dependency tree; under parallel
+            # CI load startup routinely exceeds the old 4s window. Wait up to
+            # 60s, and stop early when the child dies so the failure carries
+            # its log instead of a bare assertion.
+            for _ in range(1200):
                 if process.poll() is not None:
                     break
                 try:
@@ -698,6 +701,7 @@ async def test_native_front_control_queries_do_not_load_runtime_dependencies(tmp
                     assert acknowledgement.get("event") == "connection.ack"
                     break
                 except OSError:
+                    ws = None
                     await asyncio.sleep(0.05)
             if ws is None:
                 log.flush()
