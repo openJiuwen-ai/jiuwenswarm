@@ -316,7 +316,7 @@ def test_build_hooks_block_candidate_releases_but_allow_editable_installs(tmp_pa
                 assert len(identity.get(key, "")) == 64
 
 
-def test_sdk_overrides_and_lock_preserve_opt_in_extras_on_one_revision():
+def test_sdk_overrides_and_lock_preserve_opt_in_extras_on_one_pypi_version():
     config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     lock = tomllib.loads((ROOT / "uv.lock").read_text(encoding="utf-8"))
     sdk = next(package for package in lock["package"] if package["name"] == "openjiuwen")
@@ -324,22 +324,21 @@ def test_sdk_overrides_and_lock_preserve_opt_in_extras_on_one_revision():
     overrides = [Requirement(raw) for raw in config["tool"]["uv"]["override-dependencies"]]
     sdk_overrides = [requirement for requirement in overrides if requirement.name == "openjiuwen"]
     direct_requirements = [Requirement(raw) for raw in config["project"]["dependencies"]]
-    expected_url = next(item.url for item in direct_requirements if item.name == "openjiuwen")
-    parsed = urlsplit((expected_url or "").removeprefix("git+"))
-    repository, _, revision = parsed._replace(query="", fragment="").geturl().rpartition("@")
-    source = config["tool"]["uv"]["sources"].get("openjiuwen")
-    if source is not None:
-        assert (source["git"], source["rev"]) == (repository, revision)
-    assert {requirement.url for requirement in sdk_overrides} == {expected_url}
+    expected = next(item for item in direct_requirements if item.name == "openjiuwen")
+    assert expected.url is None
+    assert str(expected.specifier) == "==0.1.21"
+    assert "openjiuwen" not in config["tool"]["uv"]["sources"]
+    assert all(item.url is None and item.specifier == expected.specifier for item in sdk_overrides)
     declarations = config["project"]["dependencies"] + config["project"]["optional-dependencies"]["harmony"]
     for declaration in declarations:
         requirement = Requirement(declaration)
         if requirement.name == "openjiuwen":
-            assert requirement.url == expected_url
-    expected_lock_url = f"{repository}?rev={revision}"
-    assert sdk["source"]["git"] == f"{expected_lock_url}#{revision}"
+            assert requirement.url is None
+            assert requirement.specifier == expected.specifier
+    assert sdk["version"] == "0.1.21"
+    assert sdk["source"] == {"registry": "https://pypi.org/simple"}
     lock_overrides = [item for item in lock["manifest"]["overrides"] if item["name"] == "openjiuwen"]
-    assert {item["git"] for item in lock_overrides} == {expected_lock_url}
+    assert {item["specifier"] for item in lock_overrides} == {"==0.1.21"}
     for extra, expected in {
         "claude": {"claude"}, "codex": {"codex"}, "cua": {"cua"}, "distribute": {"postgres", "zmq"},
     }.items():
@@ -442,3 +441,67 @@ def test_bash_build_installs_backend_requirements_before_building(exit_code):
         encoding="utf-8", errors="replace", check=False, timeout=30,
     )
     _assert_build_bootstrap(result, exit_code)
+
+
+@pytest.mark.parametrize("name", ["openjiuwen", "openjiuwen-agent-gateway"])
+def test_release_accepts_consistent_pypi_versions(tmp_path, name):
+    _project(tmp_path)
+    config = tmp_path / "pyproject.toml"
+    config.write_text(
+        config.read_text().replace(
+            f"openjiuwen @ git+{OFFICIAL}@{REVISION}", "openjiuwen==0.1.21"
+        )
+        + '\n[project.optional-dependencies]\nclaude = ["openjiuwen[claude]"]\n'
+        + '\n[tool.uv]\noverride-dependencies = ["openjiuwen[claude]==0.1.21"]\n',
+        encoding="utf-8",
+    )
+    (tmp_path / "uv.lock").write_text(
+        '[[package]]\nname = "openjiuwen"\nversion = "0.1.21"\n'
+        'source = { registry = "https://pypi.org/simple" }\n',
+        encoding="utf-8",
+    )
+
+    if name == "openjiuwen-agent-gateway":
+        config.write_text(config.read_text().replace(
+            'dependencies = [', 'dependencies = ["openjiuwen-agent-gateway==0.1.0", ', 1
+        ), encoding="utf-8")
+        lock_path = tmp_path / "uv.lock"
+        lock_path.write_text(
+            lock_path.read_text()
+            + '\n[[package]]\nname = "openjiuwen-agent-gateway"\nversion = "0.1.0"\n'
+            + 'source = { registry = "https://pypi.org/simple" }\n',
+            encoding="utf-8",
+        )
+    validate_release_dependencies(tmp_path)
+
+
+@pytest.mark.parametrize("specifier", [">=0.1.21", "==0.1.*", "==0.1.21,!=0.1.20"])
+def test_release_rejects_unpinned_registry_versions(tmp_path, specifier):
+    _project(tmp_path)
+    config = tmp_path / "pyproject.toml"
+    config.write_text(config.read_text().replace(
+        f"openjiuwen @ git+{OFFICIAL}@{REVISION}", f"openjiuwen{specifier}"
+    ), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="one exact PyPI version"):
+        validate_release_dependencies(tmp_path)
+
+
+@pytest.mark.parametrize(
+    ("version", "registry"),
+    [("0.1.20", "https://pypi.org/simple"), ("0.1.21", "https://example.com/simple")],
+)
+def test_release_rejects_inconsistent_registry_locks(tmp_path, version, registry):
+    _project(tmp_path)
+    config = tmp_path / "pyproject.toml"
+    config.write_text(config.read_text().replace(
+        f"openjiuwen @ git+{OFFICIAL}@{REVISION}", "openjiuwen==0.1.21"
+    ), encoding="utf-8")
+    (tmp_path / "uv.lock").write_text(
+        f'[[package]]\nname = "openjiuwen"\nversion = "{version}"\n'
+        f'source = {{ registry = "{registry}" }}\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Release blocked"):
+        validate_release_dependencies(tmp_path)

@@ -222,10 +222,11 @@ datas += collect_data_files("jiuwenswarm.server.runtime.designer.skills", includ
 datas += collect_data_files("agent_gateway", include_py_files=False)
 # Gateway reads the product version from the frozen WorkSwarm distribution metadata.
 datas += copy_metadata("workswarm")
-datas += copy_metadata("agent-gateway", recursive=True)
+datas += copy_metadata("openjiuwen-agent-gateway", recursive=True)
 datas += copy_metadata("fastmcp", recursive=True)
 datas += copy_metadata("mcp", recursive=True)
 datas += copy_metadata("openjiuwen", recursive=True)
+datas += copy_metadata("openjiuwen-computeruse")
 datas += collect_data_files("openjiuwen", include_py_files=False, excludes=OPENJIUWEN_DATA_EXCLUDES)
 datas += collect_data_files(
     "a2ui",
