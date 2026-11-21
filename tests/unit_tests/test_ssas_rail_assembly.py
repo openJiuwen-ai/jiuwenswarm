@@ -21,13 +21,15 @@ import jiuwenswarm.server.runtime.agent_adapter.interface_deep as m
 def _reset_ssas_globals():
     """用例间隔离宿主侧进程级全局集合。
 
-    本模块对 _SSAS_INIT_TASKS/_SSAS_CLOSE_TASKS 做绝对数量断言, 全量套件
-    中同进程其它模块若滞留条目会令断言假红; 每用例前清空恢复隔离基线。
+    本模块对 _SSAS_INIT_TASKS/_SSAS_CLOSE_TASKS/_SSAS_PENDING_INIT 做绝对
+    数量断言, 全量套件中同进程其它模块若滞留条目会令断言假红; 每用例前
+    清空恢复隔离基线。
     """
     with m._SSAS_INIT_TASKS_LOCK:
         m._SSAS_INIT_TASKS.clear()
         m._SSAS_INIT_TASK_KEYS.clear()
         m._SSAS_CLOSE_TASKS.clear()
+        m._SSAS_PENDING_INIT.clear()
     yield
 
 
@@ -358,6 +360,38 @@ async def test_sync_context_fails_open(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_worker_thread_assembly_defers_init_to_loop(tmp_path):
+    """worker 线程装配只登记待派发条目, 由循环线程派发并收口初始化.
+
+    _create_instance 经 run_history_io(asyncio.to_thread) 装配 rail: worker
+    线程没有运行中的事件循环, 装配本身必须成功(不得因 get_running_loop
+    抛错而 fail-open 丢失 rail), 初始化 Task 则须回到循环线程派发。
+    """
+    cfg = _cfg(tmp_path)
+    loop = asyncio.get_running_loop()
+    rail = await asyncio.to_thread(
+        m.JiuWenSwarmDeepAdapter._build_ssas_rail, cfg, event_loop=loop
+    )
+    assert rail is not None
+    with m._SSAS_INIT_TASKS_LOCK:
+        assert len(m._SSAS_INIT_TASKS) == 0
+        assert len(m._SSAS_PENDING_INIT) == 1
+        pending_key, pending_backend = m._SSAS_PENDING_INIT[0]
+    assert pending_key == (loop, m._ssas_backend_fingerprint(cfg["ssas"]))
+    assert pending_backend is rail._backend._ssas_backend
+    assert rail._backend._initialized is False
+    m._dispatch_ssas_init_tasks(loop)
+    with m._SSAS_INIT_TASKS_LOCK:
+        assert len(m._SSAS_PENDING_INIT) == 0
+        assert len(m._SSAS_INIT_TASKS) == 1
+    await m._await_ssas_init_tasks()
+    assert rail._backend._initialized is True
+    with m._SSAS_INIT_TASKS_LOCK:
+        m._SSAS_BACKEND_CACHE.pop(pending_key, None)
+    await pending_backend.close()
+
+
+@pytest.mark.asyncio
 async def test_double_checked_lock_race_loser_closed_in_background(
     tmp_path, monkeypatch
 ):
@@ -388,6 +422,9 @@ async def test_double_checked_lock_race_loser_closed_in_background(
         state["armed"] = False
         monkeypatch.undo()
     assert rail is not None
+    # close Task 经 call_soon_threadsafe 派发, 登记回调在下一循环节拍执行;
+    # 补一拍后再收集, 避免漏掉尚未登记的 close Task
+    await asyncio.sleep(0)
     # 确定性等待竞态落败者的后台 close Task 完成, 而非固定 sleep 赌调度时序
     pending_close = [t for t in m._SSAS_CLOSE_TASKS if not t.done()]
     if pending_close:
