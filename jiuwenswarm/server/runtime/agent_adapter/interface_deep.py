@@ -8387,6 +8387,9 @@ class JiuWenSwarmDeepAdapter:
                 channel=default_channel,
                 agent_id=self._agent_id,
                 service_id=self._service_id,
+                skill_dirs_provider=lambda: (
+                    self._skill_rail.skills_dir if self._skill_rail is not None else []
+                ),
             )
             logger.info("[JiuWenSwarmDeepAdapter] RuntimePromptRail create success")
         except Exception as exc:
