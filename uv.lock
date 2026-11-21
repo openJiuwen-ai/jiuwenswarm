@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.11, <3.15"
 resolution-markers = [
     "python_full_version >= '3.14' and sys_platform == 'win32'",
@@ -16,11 +16,11 @@ resolution-markers = [
 
 [manifest]
 overrides = [
-    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=fd6e1865dba6dcf60ef51bf034ff0957f3690596" },
-    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=fd6e1865dba6dcf60ef51bf034ff0957f3690596" },
-    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=fd6e1865dba6dcf60ef51bf034ff0957f3690596" },
-    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=fd6e1865dba6dcf60ef51bf034ff0957f3690596" },
-    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=fd6e1865dba6dcf60ef51bf034ff0957f3690596" },
+    { name = "openjiuwen", specifier = "==0.1.21" },
+    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", specifier = "==0.1.21" },
+    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", specifier = "==0.1.21" },
+    { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", specifier = "==0.1.21" },
+    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", specifier = "==0.1.21" },
     { name = "openjiuwen-runtime-foundation", specifier = "==0.1.2b1" },
 ]
 
@@ -77,49 +77,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/dd/56/990aadd530a090214672383f12ed19ecc1bdba8fa5d9b0dfcfdb7f478f2e/a4p-0.1.0.tar.gz", hash = "sha256:be31abf1d6a2ccb1df01c4e06e1751901484b73d55d349ef9cbc08b670df016c", size = 165412, upload-time = "2026-11-02T03:43:05.09Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e3/a4/4d6e72e03c10d4aa0ffbbe4ef540b73855161ad5aaad87aaa85e31cf026f/a4p-0.1.0-py3-none-any.whl", hash = "sha256:14301d161a7626754f905cbccb519f4138bf2cfd1313182f6d3501c311b8bde6", size = 50090, upload-time = "2026-11-02T03:43:02.982Z" },
-]
-
-[[package]]
-name = "agent-gateway"
-version = "0.0.1"
-source = { git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=e0b507b99286a7705f232d9ff6ac8b96c360fabd#e0b507b99286a7705f232d9ff6ac8b96c360fabd" }
-dependencies = [
-    { name = "aiohttp" },
-    { name = "aiosqlite" },
-    { name = "charset-normalizer" },
-    { name = "croniter" },
-    { name = "dingtalk-stream" },
-    { name = "discord-py" },
-    { name = "fastapi" },
-    { name = "filelock" },
-    { name = "httpx", extra = ["http2", "socks"] },
-    { name = "imageio-ffmpeg" },
-    { name = "json-repair" },
-    { name = "lark-oapi" },
-    { name = "loguru" },
-    { name = "minio" },
-    { name = "openai" },
-    { name = "openjiuwen" },
-    { name = "openjiuwen-e2a" },
-    { name = "openjiuwen-runtime-foundation" },
-    { name = "opentelemetry-api" },
-    { name = "opentelemetry-exporter-otlp-proto-grpc" },
-    { name = "opentelemetry-exporter-otlp-proto-http" },
-    { name = "opentelemetry-sdk" },
-    { name = "portalocker" },
-    { name = "psutil" },
-    { name = "pydantic" },
-    { name = "python-dotenv" },
-    { name = "python-telegram-bot" },
-    { name = "pyyaml" },
-    { name = "requests" },
-    { name = "ruamel-yaml" },
-    { name = "slack-bolt" },
-    { name = "starlette" },
-    { name = "uvicorn", extra = ["standard"] },
-    { name = "websocket-client" },
-    { name = "websockets" },
-    { name = "wecom-aibot-sdk" },
 ]
 
 [[package]]
@@ -3867,8 +3824,8 @@ wheels = [
 
 [[package]]
 name = "openjiuwen"
-version = "0.1.20"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=fd6e1865dba6dcf60ef51bf034ff0957f3690596#fd6e1865dba6dcf60ef51bf034ff0957f3690596" }
+version = "0.1.21"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "agentdescent" },
     { name = "aiofiles" },
@@ -3922,6 +3879,10 @@ dependencies = [
     { name = "transformers" },
     { name = "xlrd" },
 ]
+sdist = { url = "https://files.pythonhosted.org/packages/3e/78/b1b7d76e92e409f5ba5d0c0d617dd33f332c7d60ccb1460dd1709ad24918/openjiuwen-0.1.21.tar.gz", hash = "sha256:f21d35190e8b702abb06cd3e256b54ed283cce23b08a37f8864d8be8d35e6964", size = 7324605, upload-time = "2026-11-20T11:41:25.898Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/39/11/96681b4c4f7aae613ef967f24bb2a19959eae68ff33e4cf17d28c9bef150/openjiuwen-0.1.21-py3-none-any.whl", hash = "sha256:4891b44db8ef7a99c7f7d89f2b05764ca253bfe2a62c0de27ed12d96e4b870d3", size = 9072934, upload-time = "2026-11-20T11:41:22.079Z" },
+]
 
 [package.optional-dependencies]
 claude = [
@@ -3942,6 +3903,52 @@ postgres = [
 zmq = [
     { name = "pyzmq" },
     { name = "tornado" },
+]
+
+[[package]]
+name = "openjiuwen-agent-gateway"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "aiosqlite" },
+    { name = "charset-normalizer" },
+    { name = "croniter" },
+    { name = "dingtalk-stream" },
+    { name = "discord-py" },
+    { name = "fastapi" },
+    { name = "filelock" },
+    { name = "httpx", extra = ["http2", "socks"] },
+    { name = "imageio-ffmpeg" },
+    { name = "json-repair" },
+    { name = "lark-oapi" },
+    { name = "loguru" },
+    { name = "minio" },
+    { name = "openai" },
+    { name = "openjiuwen" },
+    { name = "openjiuwen-e2a" },
+    { name = "openjiuwen-runtime-foundation" },
+    { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp-proto-grpc" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
+    { name = "opentelemetry-sdk" },
+    { name = "portalocker" },
+    { name = "psutil" },
+    { name = "pydantic" },
+    { name = "python-dotenv" },
+    { name = "python-telegram-bot" },
+    { name = "pyyaml" },
+    { name = "requests" },
+    { name = "ruamel-yaml" },
+    { name = "slack-bolt" },
+    { name = "starlette" },
+    { name = "uvicorn", extra = ["standard"] },
+    { name = "websocket-client" },
+    { name = "websockets" },
+    { name = "wecom-aibot-sdk" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/66/62/31cd28f91be0eddbe13495d6b56b6c8699fe01a6fab5222ff2865425d0de/openjiuwen_agent_gateway-0.1.0-py3-none-any.whl", hash = "sha256:1266ab1ed8fece35b83d6f16c602463db5bc5eda4b9f723dff5d3e8b6b1ee699", size = 1727009, upload-time = "2026-11-20T13:33:33.03Z" },
 ]
 
 [[package]]
@@ -3967,7 +3974,10 @@ wheels = [
 [[package]]
 name = "openjiuwen-e2a"
 version = "0.3.0"
-source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-e2a&rev=10ad4a2eeff11e0600c06a8235a797c5dd9f0a38#10ad4a2eeff11e0600c06a8235a797c5dd9f0a38" }
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9c/51/83d7cd9a6c26a56f0157ea9e6d3f5df6ca930eec9c2c883db42517555e78/openjiuwen_e2a-0.3.0-py3-none-any.whl", hash = "sha256:d724641c83eb0f32c5b8c902bc214a73bb2a6da09dcad138152f32b00a1c6124", size = 85725, upload-time = "2026-11-20T09:58:03.568Z" },
+]
 
 [[package]]
 name = "openjiuwen-runtime-foundation"
@@ -7211,12 +7221,11 @@ wheels = [
 
 [[package]]
 name = "workswarm"
-version = "0.2.8"
+version = "0.2.9"
 source = { editable = "." }
 dependencies = [
     { name = "a2ui-agent-sdk" },
     { name = "a4p" },
-    { name = "agent-gateway" },
     { name = "aiosqlite" },
     { name = "anthropic" },
     { name = "asyncpg" },
@@ -7248,6 +7257,7 @@ dependencies = [
     { name = "mutagen" },
     { name = "numpy" },
     { name = "openjiuwen" },
+    { name = "openjiuwen-agent-gateway" },
     { name = "openjiuwen-computeruse" },
     { name = "openjiuwen-e2a" },
     { name = "openjiuwen-runtime-foundation" },
@@ -7419,7 +7429,6 @@ requires-dist = [
     { name = "a2ui-agent-sdk", specifier = "==0.2.1" },
     { name = "a2ui-agent-sdk", marker = "extra == 'harmony'", specifier = "==0.2.1" },
     { name = "a4p", specifier = "==0.1.0" },
-    { name = "agent-gateway", git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=e0b507b99286a7705f232d9ff6ac8b96c360fabd" },
     { name = "aiosqlite", specifier = ">=0.22.1,<0.23" },
     { name = "aiosqlite", marker = "extra == 'harmony'", specifier = ">=0.22.1" },
     { name = "anthropic", specifier = ">=0.40.0,<1.0.0" },
@@ -7471,14 +7480,15 @@ requires-dist = [
     { name = "mutagen", specifier = ">=1.47.0,<2" },
     { name = "mutagen", marker = "extra == 'harmony'", specifier = ">=1.47.0" },
     { name = "numpy", specifier = ">=1.24.0,<3" },
-    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=fd6e1865dba6dcf60ef51bf034ff0957f3690596" },
-    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=fd6e1865dba6dcf60ef51bf034ff0957f3690596" },
+    { name = "openjiuwen", specifier = "==0.1.21" },
+    { name = "openjiuwen", marker = "extra == 'harmony'", specifier = "==0.1.21" },
     { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'" },
     { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'" },
     { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'" },
     { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'" },
+    { name = "openjiuwen-agent-gateway", specifier = "==0.1.0" },
     { name = "openjiuwen-computeruse", specifier = "==0.1.0b1" },
-    { name = "openjiuwen-e2a", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-e2a&rev=10ad4a2eeff11e0600c06a8235a797c5dd9f0a38" },
+    { name = "openjiuwen-e2a", specifier = "==0.3.0" },
     { name = "openjiuwen-runtime-foundation", specifier = "==0.1.2b1" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<1.42" },
     { name = "opentelemetry-api", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
@@ -7591,7 +7601,7 @@ test = [
 
 [[package]]
 name = "workswarm-tui"
-version = "0.2.8"
+version = "0.2.9"
 source = { directory = "packages/jiuwenswarm-tui" }
 
 [[package]]
