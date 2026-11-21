@@ -85,6 +85,93 @@ _OFFICE_CLAW_SCHEDULE_THREAD_PIN_TOOLS = frozenset(
     }
 )
 
+# BUG20261117410859 注册即可见 floor 默认名单。
+# pptx-mcp 套件（生产 93 工具 request-scoped 注册实测名单）由通道在 PPT 会话
+# 按需挂载，却不在运维窄版 eager_tools 里：glm/deepseek 白名单模型下整组被裁，
+# 模型意图（继续建页/交付）与 schema 脱节，退化为 todo 空转直到 agent_ras
+# 熔断 OA.05000060。这些工具只在已注册（会话真的处于 PPT 语境）时才存在，
+# floor 对非 PPT 会话零影响。交付/委派/计划模式三组是窄版 eager 列表的
+# 已知缺口（send_file_to_user 缺失曾阻塞交付；plan 两件套见 BUG20261105402443）。
+# 主 / subagent / team 三个装配 profile 共用同一份名单（S_08）。
+DEFAULT_PROGRESSIVE_PROTECTED_EAGER_TOOLS: tuple[str, ...] = (
+    # —— pptx-mcp 套件 ——
+    "open_pptx",
+    "switch_file",
+    "ping",
+    "get_deck_outline",
+    "read_slide",
+    "suggest_font_size",
+    "render_slide",
+    "snapshot_slide",
+    "check_layout",
+    "execute_slide_script",
+    "get_native_capabilities",
+    "check_native_contract",
+    "read_template_structure",
+    "create_template_family",
+    "install_template",
+    "register_media",
+    "register_asset",
+    "describe_ops",
+    "apply_ops",
+    "prepare_slide_shell",
+    "compose_deck",
+    "batch_add_label",
+    "replace_text",
+    "batch_replace_text",
+    "replace_text_with_reflow",
+    "find_replace_display_text",
+    "organize_deck_sections",
+    "apply_semantic_theme",
+    "normalize_title_style",
+    "light_cleanup_slides",
+    "reflow_cards",
+    "refresh_executive_style",
+    "append_slide",
+    "compose_slide",
+    "duplicate_slide",
+    "move_slide",
+    "delete_slide",
+    "add_chart_to_slide",
+    "add_table_to_slide",
+    "begin_ai_run",
+    "commit_ai_run",
+    "list_ai_snapshots",
+    "restore_ai_snapshot",
+    "cancel_ai_run",
+    "undo",
+    "redo",
+    "save_pptx",
+    "insert_web_image",
+    "replace_image",
+    # —— 交付 / 委派 / 计划模式 ——
+    "send_file_to_user",
+    "task_tool",
+    "enter_plan_mode",
+    "exit_plan_mode",
+)
+
+
+def resolve_protected_eager_tools(lazy_cfg: Any) -> list[str]:
+    """Resolve ``tool_lazy_load.protected_eager_tools`` with the shared semantics.
+
+    Absent key / ``None`` / malformed value → code default list (existing ops
+    configs gain the floor without edits); explicit ``[]`` disables the floor.
+    Returns an order-preserving deduplicated list. Shared by the main / subagent
+    build (``agent_adapter/deep/progressive_tools.py``) and the team-member
+    build (``agents/swarm/providers/team_progressive.py``).
+    """
+    value = lazy_cfg.get("protected_eager_tools") if isinstance(lazy_cfg, Mapping) else None
+    if value is None:
+        names = list(DEFAULT_PROGRESSIVE_PROTECTED_EAGER_TOOLS)
+    elif isinstance(value, str):
+        names = [item.strip() for item in value.split(",") if item.strip()]
+    elif isinstance(value, list):
+        names = [str(item).strip() for item in value if str(item).strip()]
+    else:
+        names = list(DEFAULT_PROGRESSIVE_PROTECTED_EAGER_TOOLS)
+    return list(dict.fromkeys(names))
+
 
 def _is_pinned_schema_tool(tool_name: str, registered_card: Any) -> bool:
     """True when the recall tool is registered and therefore directly callable."""
@@ -133,10 +220,19 @@ class ProgressiveToolRail(DeepAgentRail):
     """Progressive tool visibility with a stable base eager-tools schema.
 
     - eager_tools: always visible in the model tools schema
+    - protected_eager_tools: eager floor (BUG20261117410859). Request-scoped MCP
+      suites (pptx-mcp) and delivery/delegation tools are registered by the
+      channel exactly when the session needs them; hiding them for whitelisted
+      models decouples model intent from the schema and degrades into
+      no-progress loops until the agent_ras breaker fires (OA.05000060).
+      Floor-ranked names stay schema-visible whenever registered, overriding
+      the eager intersection. Declared (required_skill) tools are NOT floor-
+      ranked: they follow the skill gate so "schema-visible" stays equivalent
+      to "directly callable". DisabledToolsRail blacklist still wins
     - skill-gated tools: direct-visible only while their declared skill is active
     - recall_compressed_context: schema-visible when registered and ungated,
-      ordered after eager and active skill-gated tools. Disabled and skill
-      gates still win. Absent from the input list, it is not invented
+      ordered after eager, floor-ranked and active skill-gated tools. Disabled
+      and skill gates still win. Absent from the input list, it is not invented
     - deferred_tools: registered in ability_manager but hidden from schema;
       accessed via tools_search (get schema) + invoke_tool (proxy call)
     - ordinary tool schema stays stable, maximizing LLM prefix cache
@@ -154,6 +250,13 @@ class ProgressiveToolRail(DeepAgentRail):
     # already false — this flag makes factory honor that.
     inherit_to_subagents = False
 
+    # 裸实例兜底：仓内既有 UT 以 object.__new__ 绕过 __init__ 构造 rail、只补
+    # 必要属性；类级默认保证 floor 读取点（invoke 代理、before_model_call
+    # 排序、prompt_tool_allowlist）不因缺属性抛 AttributeError。正常实例由
+    # __init__ 以实例属性覆盖。
+    _protected_eager_tools: frozenset[str] = frozenset()
+    _protected_eager_tools_order: tuple[str, ...] = ()
+
     def __init__(
         self,
         *,
@@ -163,6 +266,7 @@ class ProgressiveToolRail(DeepAgentRail):
         agent_id: str | None = None,
         agent_card_id: str | None = None,
         enable_for_models: list[str] | None = None,
+        protected_eager_tools: list[str] | None = None,
         deepresearch_context_provider: Callable[[], dict[str, Any]] | None = None,
         active_skill_provider: Callable[[], str | None] | None = None,
         disabled_tools: list[str] | None = None,
@@ -178,6 +282,18 @@ class ProgressiveToolRail(DeepAgentRail):
             for item in (enable_for_models or [])
             if str(item).strip()
         ]
+        # 注册即可见 floor（BUG20261117410859）：名单内工具只要注册就保留在
+        # schema 中，优先于懒加载裁剪与 skill-gate 收窄。保序去重，供
+        # before_model_call 拼接 canonical 排序 key（_order_tools_by_name_list
+        # 只输出 key 内的名字，漏 key 会被静默丢弃）。
+        self._protected_eager_tools_order = list(
+            dict.fromkeys(
+                str(name).strip()
+                for name in (protected_eager_tools or [])
+                if str(name).strip()
+            )
+        )
+        self._protected_eager_tools = frozenset(self._protected_eager_tools_order)
         self._cached_model_name = ""
         self._bypass_logged_model: str | None = None
         self._deepresearch_context_provider = deepresearch_context_provider
@@ -225,6 +341,16 @@ class ProgressiveToolRail(DeepAgentRail):
             if str(name).strip()
         }
         self.invalidate_deferred_tool_cache()
+
+    def prompt_tool_allowlist(self) -> list[str]:
+        """Stable schema-visible names for the prompt ``# 可用工具`` section.
+
+        eager + floor-ranked (BUG20261117410859) in schema order. ContextAssembleRail's
+        ``tool_name_allowlist`` must cover the same stable set as the tools schema —
+        eager-only would describe fewer tools than the model can actually call.
+        Skill-gated / pinned names stay out: they are conditional by design.
+        """
+        return [*self.eager_tools, *self._protected_eager_tools_order]
 
     def _current_disabled_tools(self) -> frozenset[str]:
         """Union of constructor seed and live DisabledToolsRail when reachable.
@@ -919,6 +1045,16 @@ class ProgressiveToolRail(DeepAgentRail):
                     if name not in active_gated_names:
                         active_gated_names.append(name)
                 continue
+            if lazy_load_active and name in self._protected_eager_tools:
+                # BUG20261117410859 注册即可见 floor。request-scoped MCP（pptx-mcp
+                # 等）与交付/委派类工具由通道按会话状态注册，注册即代表该会话需要；
+                # 懒加载裁剪使模型意图与 schema 脱节，会退化成无进展空转直到
+                # agent_ras 熔断（OA.05000060）。保护名单优先于 eager 交集；
+                # declared（required_skill）工具不走 floor，保持既有技能门控
+                # 路径（激活才可见可调用），保证"可见 ⟺ 可直接调用"。
+                # DisabledToolsRail 黑名单仍最高优先。
+                filtered_tools.append(tool)
+                continue
             if (
                 not lazy_load_active
                 or name in self.eager_tools
@@ -928,9 +1064,18 @@ class ProgressiveToolRail(DeepAgentRail):
         if lazy_load_active:
             # Canonical eager order — never follow ability_manager / MCP rebind order.
             # Mid-task send_file_to_user <-> tools_search swaps break LLM prefix cache.
-            # _order_tools_by_name_list emits every name in the key, so the pinned
-            # tool is appended only when eager and active gates do not already place it.
-            ordered_names = [*self.eager_tools, *active_gated_names]
+            # _order_tools_by_name_list emits every name in the key, so floor-ranked
+            # (BUG20261117410859) and pinned tools must be keyed here too — a kept
+            # tool missing from the key is silently dropped by the ordering step.
+            ordered_names = list(
+                dict.fromkeys(
+                    [
+                        *self.eager_tools,
+                        *self._protected_eager_tools_order,
+                        *active_gated_names,
+                    ]
+                )
+            )
             if _PINNED_SCHEMA_TOOL_NAME not in ordered_names:
                 ordered_names.append(_PINNED_SCHEMA_TOOL_NAME)
             inputs.tools = self._order_tools_by_name_list(
@@ -1282,8 +1427,9 @@ class ProgressiveToolRail(DeepAgentRail):
     def _deferred_tools(self, tools: list[Any], disabled: Iterable[str]) -> list[Any]:
         """Return tools that stay hidden and are advertised as not directly callable.
 
-        Skill-gated and disabled tools are omitted. The pinned recall tool is
-        schema-visible, so leaving it here would tell the model a direct call fails.
+        Skill-gated and disabled tools are omitted. The pinned recall tool and
+        floor-ranked protected tools are schema-visible, so leaving them here
+        would tell the model a direct call fails.
         """
         blocked = set(disabled)
         deferred: list[Any] = []
@@ -1295,6 +1441,10 @@ class ProgressiveToolRail(DeepAgentRail):
             if name in self.eager_tools or name in blocked:
                 continue
             if name == _PINNED_SCHEMA_TOOL_NAME:
+                continue
+            if name in self._protected_eager_tools:
+                # BUG20261117410859 floor 名单内的工具在 schema 直接可见，
+                # 不能再进 deferred 池被导航描述为"需 tools_search 间接调用"。
                 continue
             deferred.append(tool)
         return deferred
@@ -1513,6 +1663,25 @@ class ProgressiveToolRail(DeepAgentRail):
                         f'skill_name="{required_skill}") 重新加载技能，'
                         "再直接调用该工具。这属于技能未激活，不代表能力"
                         "不可用，不要据此降级或改用其他工具绕过。"
+                    ),
+                }
+            # BUG20261117410859 floor 名单内、未声明 required_skill 的工具已
+            # 被移出 deferred 池（schema 直接可见），但仍可能被模型按旧习惯
+            # 反查。此时不得答复"未找到"——对已注册且可见的工具给出错误陈述
+            # 会诱导模型改写策略或反复探测（无进展熔断敏感路径）。反之，未
+            # 注册的名单名（如 web 模式未挂 pptx 套件）必须回落下方"未找到"
+            # 文案，"已注册且直接可见"的虚假指引会诱导模型调用不存在的工具。
+            if (
+                tool_name in self._protected_eager_tools
+                and registered_card is not None
+            ):
+                return {
+                    "success": False,
+                    "matches": [],
+                    "count": 0,
+                    "message": (
+                        f"工具 '{tool_name}' 已注册且在当前 schema 中直接"
+                        "可见（保护名单内），请直接调用，无需 tools_search。"
                     ),
                 }
 
@@ -1795,9 +1964,18 @@ class ProgressiveToolRail(DeepAgentRail):
                 "tool_name": tool_name,
             }
 
-        if tool_name in self.eager_tools or _is_pinned_schema_tool(
-            tool_name, registered_card
-        ):
+        # 常驻可见判定（G.CTL.03：条件细节前置为 bool 变量）。floor 仅在
+        # 已注册时视为常驻可见；未注册名单名走下方"未注册"回落，不得声称
+        # 常驻可见（BUG20261117410859）。
+        resident_visible = (
+            tool_name in self.eager_tools
+            or _is_pinned_schema_tool(tool_name, registered_card)
+            or (
+                tool_name in self._protected_eager_tools
+                and registered_card is not None
+            )
+        )
+        if resident_visible:
             return {
                 "success": False,
                 "error": f"工具 '{tool_name}' 是常驻可见工具，可直接调用，无需通过 invoke_tool。",
