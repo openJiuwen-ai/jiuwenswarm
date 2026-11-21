@@ -150,6 +150,9 @@ async def _run(host: str, port: int) -> None:
     from jiuwenswarm.server.front.server import AgentServerFront
 
     _configure_openjiuwen_logging()
+    from jiuwenswarm.server.runtime.mcp.cli_env_patch import install_shell_patch
+
+    install_shell_patch()
 
     startup_t0 = time.monotonic()
     logger.info("[AgentServer] starting: ws://%s:%s", host, port)
