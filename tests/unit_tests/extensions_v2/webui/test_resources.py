@@ -383,10 +383,11 @@ async def test_http_uses_e2a_for_html_relative_css_head_and_revocation(tmp_path,
     adapter = WebUIDispatchAdapter()
 
     async def fetch(**kwargs):
-        assert kwargs["req_method"] == ReqMethod.WEBUI_RESOURCE_READ
+        host_method = ReqMethod(kwargs["req_method"].value)
+        assert host_method is ReqMethod.WEBUI_RESOURCE_READ
         assert kwargs["user_id"] == "u1" and kwargs["session_id"] == "s1"
         response = await adapter.handle(AgentRequest(
-            "read", channel_id=kwargs["channel_id"], req_method=kwargs["req_method"],
+            "read", channel_id=kwargs["channel_id"], req_method=host_method,
             user_id=kwargs["user_id"], session_id=kwargs["session_id"], params=kwargs["params"],
         ))
         return response.ok, response.payload
