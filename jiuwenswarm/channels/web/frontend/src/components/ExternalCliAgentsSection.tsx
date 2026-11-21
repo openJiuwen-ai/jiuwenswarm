@@ -680,8 +680,31 @@ export function ExternalCliAgentsSection({
       useBuiltin: boolean,
       cliPath: string,
     ): Promise<ExternalCliAgentChoice> => {
-      if (useBuiltin || cliPath.trim()) {
-        return { enabled: true, useBuiltin, cliPath: useBuiltin ? '' : cliPath.trim() };
+      // 内置选择保持原样直接沿用：内置 CLI 是否可用由安装流程负责，不属于
+      // detect 的职责，探测异常也不应阻断启用（AI 检视 !10657）。
+      if (useBuiltin) {
+        return { enabled: true, useBuiltin: true, cliPath: '' };
+      }
+      // 本地路径选择：先探测校验最近一次选择——仅确认失效（missing/
+      // unsupported，与本文件 confirmedMissing 判据一致）才落到下方 PATH
+      // 扫描；unavailable（可执行文件在、版本命令失败）不视为失效，保留原
+      // 选择（AI 检视 !10657）。探测异常按非确认失效处理，不阻断状态切换。
+      if (cliPath.trim()) {
+        let lastProbe;
+        try {
+          lastProbe = EXTERNAL_CLI_AGENT_KINDS.includes(cliAgent)
+            ? await onDetect?.(cliAgent, cliPath.trim(), false)
+            : undefined;
+        } catch {
+          // 探测失败按非确认失效处理：保留原选择。
+          lastProbe = undefined;
+        }
+        const confirmedMissing =
+          lastProbe && (lastProbe.status === 'missing' || lastProbe.status === 'unsupported');
+        if (!confirmedMissing) {
+          return { enabled: true, useBuiltin: false, cliPath: cliPath.trim() };
+        }
+        // 确认失效：落到下方 PATH 扫描，取第一个可用的
       }
       const probe = EXTERNAL_CLI_AGENT_KINDS.includes(cliAgent)
         ? await onDetect?.(cliAgent, '', false)
@@ -689,9 +712,22 @@ export function ExternalCliAgentsSection({
       if (probe?.path && isInstalledStatus(probe)) {
         return { enabled: true, useBuiltin: false, cliPath: probe.path };
       }
+      // PATH 上没有可用的：再试路径历史里最近可用的本地路径，最后回退内置——
+      // 关闭再打开不得静默改用内置（#6753 问题二）。
+      const historyPaths = parseExternalCliPathHistories(
+        draftValues[externalCliKey(cliAgent, 'path_histories')],
+      ).slice().reverse();
+      for (const candidate of historyPaths) {
+        const historyProbe = await onDetect?.(cliAgent, candidate, false);
+        if (historyProbe?.path && isInstalledStatus(historyProbe)) {
+          return { enabled: true, useBuiltin: false, cliPath: historyProbe.path };
+        }
+      }
       return { enabled: true, useBuiltin: true, cliPath: '' };
+      // draftValues 必须入依赖：path_histories 在关闭开关时才写入草稿，缺失会让
+      // 本回调持有挂载时快照，同会话内关闭→重开读到空历史而回退内置（#6753）。
     },
-    [onDetect],
+    [draftValues, onDetect],
   );
 
   // Force dependency repair even when the executable choice is unchanged.
