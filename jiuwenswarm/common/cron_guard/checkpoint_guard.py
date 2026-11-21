@@ -1,0 +1,273 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
+"""L2: checkpoint restore governance for cron runs (issue #5018, design §3.3).
+
+Rules (ledger-driven, reversible):
+
+* Interactive requests are never rejected, quarantined, or cleared.
+* A ``scheduled_run`` whose *prior* ledger row for the same sid is in
+  ``{tripped, orphaned}`` is an abnormal resurrection: the checkpoint blobs
+  are copied into a ``quarantine:{ts}:{sid}:`` namespace and the original
+  keys are cleared (copy verified first — never destroy without backup).
+* ``finished`` priors are allowed (stable cron sids legitimately reuse
+  context across runs).
+* Guard-internal failures are fail-open (allow + warn).  Quarantine failures
+  (backup write failed) never clear the original keys.
+
+The checkpoint store is the upstream SQLite ``kv_store`` table at
+``~/.jiuwenswarm/agent/.checkpoint/checkpoint.db`` with keys of the form
+``{sid}:agent:{entity}:{suffix}``.  We operate on the key namespace
+directly (prefix copy + delete), which is storage-format agnostic.
+"""
+
+from __future__ import annotations
+
+import sqlite3
+import time
+from pathlib import Path
+
+from jiuwenswarm.common.utils import logger
+
+from .ledger import (
+    STATE_ORPHANED,
+    STATE_TRIPPED,
+    default_ledger_path,
+    get_run_ledger,
+)
+
+_ABNORMAL_PRIOR_STATES = frozenset({STATE_TRIPPED, STATE_ORPHANED})
+
+
+def _like_escape(value: str) -> str:
+    # review root 200900678: sids are session-controlled strings where "_"
+    # is common ("cron_xxx_1"); unescaped they act as LIKE wildcards and
+    # glob across sessions (cross-session copy + DELETE = data loss).
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+_LIKE_ESC = " ESCAPE '\\'"
+
+
+class CronCheckpointQuarantined(Exception):
+    """Raised when a scheduled run is refused because its checkpoint was quarantined."""
+
+
+def checkpoint_db_path() -> Path:
+    base = default_ledger_path().parent
+    return base / "checkpoint.db"
+
+
+def _connect(path: Path) -> sqlite3.Connection:
+    conn = sqlite3.connect(str(path), timeout=2.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
+def has_checkpoint_blob(sid: str, db_path: Path | None = None) -> bool:
+    path = db_path or checkpoint_db_path()
+    if not path.exists():
+        return False
+    try:
+        conn = _connect(path)
+        try:
+            cur = conn.execute(
+                "SELECT 1 FROM kv_store WHERE key LIKE ?" + _LIKE_ESC + " LIMIT 1",
+                (f"{_like_escape(sid)}:agent:%",),
+            )
+            return cur.fetchone() is not None
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[cron_guard] checkpoint probe failed (fail-open): %s", exc)
+        return False
+
+
+def quarantine_checkpoint(sid: str, db_path: Path | None = None) -> tuple[bool, str | None]:
+    """Copy ``{sid}:agent:*`` keys into ``quarantine:{ts}:{sid}:*`` then clear.
+
+    Returns ``(success, quarantine_prefix)`` with three distinct outcomes
+    (review root 200900674 — the failure classes were previously conflated):
+
+    * ``(True, prefix)`` — quarantine completed.  A ``quarantine_partial``
+      suffix means the copy succeeded but the delete only partially cleared,
+      for operator reconciliation.
+    * ``(True, None)`` — benign no-op: the checkpoint DB is missing or holds
+      no keys for this sid (e.g. another process already cleaned them, or a
+      TOCTOU gap behind ``has_checkpoint_blob``).  Fail-open: there is
+      nothing to quarantine, the caller allows the run.
+    * ``(False, None)`` — a real backup failure (copy/verify/clear failed);
+      the original keys are left untouched and the caller refuses the run.
+    """
+    path = db_path or checkpoint_db_path()
+    if not path.exists():
+        # review root 200900674: benign — nothing to quarantine.
+        logger.warning(
+            "[cron_guard] checkpoint db missing for sid=%s — nothing to quarantine (fail-open)",
+            sid,
+        )
+        return True, None
+    ts = int(time.time())
+    prefix = f"quarantine:{ts}:{sid}"
+    try:
+        conn = _connect(path)
+        try:
+            cur = conn.execute(
+                "SELECT key, value FROM kv_store WHERE key LIKE ?" + _LIKE_ESC,
+                (f"{_like_escape(sid)}:agent:%",),
+            )
+            rows = cur.fetchall()
+            if not rows:
+                # review root 200900674: benign — keys vanished between
+                # ``has_checkpoint_blob`` and here (TOCTOU / other-process
+                # cleanup); fail-open instead of judging the run dead.
+                logger.warning(
+                    "[cron_guard] no checkpoint rows for sid=%s — nothing to quarantine (fail-open)",
+                    sid,
+                )
+                return True, None
+            conn.executemany(
+                "INSERT OR REPLACE INTO kv_store (key, value) VALUES (?, ?)",
+                [(f"{prefix}:{k}", v) for k, v in rows],
+            )
+            # Verify the copy before committing or deleting anything — a
+            # rollback only discards work that was never committed.
+            verify = conn.execute(
+                "SELECT COUNT(*) FROM kv_store WHERE key LIKE ?" + _LIKE_ESC,
+                (f"{_like_escape(prefix)}:%",),
+            ).fetchone()[0]
+            if int(verify) < len(rows):
+                conn.rollback()
+                logger.error(
+                    "[cron_guard] quarantine copy verify failed for sid=%s — original keys untouched",
+                    sid,
+                )
+                return False, None
+            conn.commit()
+            conn.executemany(
+                "DELETE FROM kv_store WHERE key = ?",
+                [(k,) for k, _ in rows],
+            )
+            conn.commit()
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM kv_store WHERE key LIKE ?" + _LIKE_ESC,
+                (f"{_like_escape(sid)}:agent:%",),
+            ).fetchone()[0]
+            if int(remaining) > 0:
+                return True, prefix + ":quarantine_partial"
+            return True, prefix
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        # review root 200900674: a guard-internal error during the backup
+        # itself is a real backup failure — original keys stay untouched and
+        # the caller refuses the run (design §3.3.4), unlike the benign
+        # no-op branches above.
+        logger.error("[cron_guard] quarantine backup failed for sid=%s: %s", sid, exc)
+        return False, None
+
+
+def restore_quarantined(sid: str, quarantine_prefix: str, db_path: Path | None = None) -> bool:
+    """Operator-side reversible restore: copy quarantined keys back.
+
+    Not called by the agent automatically (design §3.3.5).
+    """
+    path = db_path or checkpoint_db_path()
+    try:
+        conn = _connect(path)
+        try:
+            cur = conn.execute(
+                "SELECT key, value FROM kv_store WHERE key LIKE ?" + _LIKE_ESC,
+                (f"{_like_escape(quarantine_prefix)}:%",),
+            )
+            rows = cur.fetchall()
+            if not rows:
+                return False
+            conn.executemany(
+                "INSERT OR REPLACE INTO kv_store (key, value) VALUES (?, ?)",
+                [(k[len(quarantine_prefix) + 1:], v) for k, v in rows],
+            )
+            conn.commit()
+            return True
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[cron_guard] quarantine restore failed: %s", exc)
+        return False
+
+
+def govern_restore_at_entry(ctx) -> None:
+    """L2 decision at scheduled-run entry (design §3.3.3/§3.3.4).
+
+    Raises :class:`CronCheckpointQuarantined` for ``quarantine_and_fail``
+    with a successful quarantine, and for a real quarantine backup failure
+    (review root 200900674).  Benign no-op branches (db missing / rows
+    already gone) and every other path return normally (allow / fresh /
+    warn / fail-open).
+    """
+    from .config import get_cron_guard_config
+
+    cfg = get_cron_guard_config()
+    cp_cfg = cfg.get("checkpoint") or {}
+    if not cfg.get("enabled") or not cp_cfg.get("enabled"):
+        return
+    if not ctx.trusted:
+        # Untrusted identity: state-changing actions disabled (log only).
+        logger.info(
+            "[cron_guard] untrusted scheduled_run sid=%s — checkpoint governance log-only",
+            ctx.sid,
+        )
+        return
+
+    ledger = get_run_ledger()
+    prior = ledger.latest_for_sid(ctx.sid, exclude_run_id=ctx.run_id)
+    if prior is None:
+        return  # first run for this sid
+    if prior.get("state") not in _ABNORMAL_PRIOR_STATES:
+        return  # finished (or same-run) — legitimate reuse
+
+    on_trip = str(cp_cfg.get("on_trip", "quarantine_and_fail"))
+    # Aliases from v1 keep the quarantine semantics.
+    if on_trip == "reset_and_fail":
+        on_trip = "quarantine_and_fail"
+    elif on_trip == "reset_and_fresh":
+        on_trip = "quarantine_and_fresh"
+
+    if not has_checkpoint_blob(ctx.sid):
+        logger.debug("[cron_guard] no checkpoint blob for sid=%s, allow", ctx.sid)
+        return
+
+    if on_trip == "warn":
+        logger.error(
+            "[cron_guard] (warn) abnormal checkpoint resurrection sid=%s prior_state=%s",
+            ctx.sid, prior.get("state"),
+        )
+        return
+
+    ok, prefix = quarantine_checkpoint(ctx.sid)
+    if ok and prefix is None:
+        # review root 200900674: benign no-op (db missing / rows already
+        # cleaned by another process) — fail-open, allow the run.
+        logger.warning(
+            "[cron_guard] nothing to quarantine for sid=%s prior_state=%s — allowing (fail-open)",
+            ctx.sid, prior.get("state"),
+        )
+        return
+    if not ok:
+        # Real backup failure → never clear; fail the run (design §3.3.4).
+        logger.error(
+            "[cron_guard] quarantine backup failed for sid=%s — failing run without clearing",
+            ctx.sid,
+        )
+        raise CronCheckpointQuarantined(
+            f"checkpoint quarantine failed for sid={ctx.sid}"
+        )
+    logger.warning(
+        "[cron_guard] quarantined checkpoint sid=%s prior_state=%s -> %s (on_trip=%s)",
+        ctx.sid, prior.get("state"), prefix, on_trip,
+    )
+    if on_trip == "quarantine_and_fail":
+        raise CronCheckpointQuarantined(
+            f"checkpoint quarantined ({prefix}); run refused due to prior "
+            f"{prior.get('state')} state"
+        )
+    # quarantine_and_fresh: fall through — execution continues with empty state.
