@@ -42,7 +42,7 @@ def test_adx_tool_card_reads_configuration_and_maps_existing_user_workspace(monk
               'network': {'block_network': True}, 'endpoint_file': '/run/agentos/node.json',
               'mounts': [{'host_path': '/shared/data', 'target': '/data', 'options': ['ro']}]}
     if runtime == 'runsc':
-        source['rootfs_template'] = 'offline-rootfs'
+        source['rootfs'] = {'type': 'local', 'path': '/objects/offline/rootfs'}
     original = deepcopy(source)
     monkeypatch.setattr(config, 'get_config', lambda: {'sandbox': source})
     card = builder.create_sandbox_sysop_card(source['url'], source['type'])
@@ -60,7 +60,7 @@ def test_adx_tool_card_reads_configuration_and_maps_existing_user_workspace(monk
     assert 'connection' not in extra
     assert extra['network'] == {'blockNetwork': True}
     if runtime == 'runsc':
-        assert extra['rootfs_template'] == 'offline-rootfs'
+        assert extra['rootfs'] == source['rootfs']
         assert 'image' not in extra
     else:
         assert extra['image'] == source['image']

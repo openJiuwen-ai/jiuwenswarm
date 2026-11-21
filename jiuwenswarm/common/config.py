@@ -148,6 +148,7 @@ def resolve_env_vars(value: Any, *, field_path: str = "") -> Any:
 
         return re.sub(pattern, replace_env, value)
     elif isinstance(value, dict):
+        path = tuple(field_path.split(".")) if isinstance(field_path, str) and field_path else tuple(field_path)
         # mcp.servers entries hold ${VAR} placeholders in headers/env that
         # are meant for the CredentialStore (resolved at McpServerConfig build
         # time), NOT for the process env. If resolve_env_vars touches them
@@ -165,16 +166,28 @@ def resolve_env_vars(value: Any, *, field_path: str = "") -> Any:
         ) or "server_id_scope" in value
         if is_mcp_server_entry:
             return {
-                k: (v if k in mcp_credential_keys else resolve_env_vars(v))
+                k: (v if k in mcp_credential_keys else resolve_env_vars(v, field_path=(*path, str(k))))
                 for k, v in value.items()
             }
+        if path in (("sandbox",), ("gateway", "adx", "builtin_launch")) and "image_env" in value:
+            image_env = value["image_env"]
+            if not isinstance(image_env, dict) or any(
+                not isinstance(key, str) or not isinstance(item, str) for key, item in image_env.items()
+            ):
+                raise ValueError("image_env must contain literal string environment values")
+            resolved = {
+                key: resolve_env_vars(item, field_path=(*path, str(key)))
+                for key, item in value.items() if key != "image_env"
+            }
+            resolved["env"] = {**image_env, **(resolved.get("env") or {})}
+            return resolved
         # dict keys extend the field path; list indices are not tracked
         # (the walk keeps its original list comprehension — a glob `*`
         # segment matches both bare and indexed forms). The path is carried
         # as a tuple and joined only at the exec: leaf (see str branch), so
         # non-credential walks pay no per-key string concatenation.
         return {
-            k: resolve_env_vars(v, field_path=(*field_path, str(k)) if field_path else (str(k),))
+            k: resolve_env_vars(v, field_path=(*path, str(k)))
             for k, v in value.items()
         }
     elif isinstance(value, list):
@@ -4627,7 +4640,7 @@ def get_sandbox_endpoint() -> dict[str, Any]:
         "policy_file": str(sandbox.get("policy_file") or "").strip(),
     }
     if sandbox_type == "adx-environment":
-        for key in ("image", "rootfs_template", "runtime", "workdir", "mounts", "cpu", "cpu_limit",
+        for key in ("image", "rootfs", "runtime", "workdir", "mounts", "cpu", "cpu_limit",
                     "memory", "mem_limit", "idle_timeout", "user", "group", "network", "connection",
                     "env", "create_timeout", "schedule_timeout", "endpoint_file", "restart_policy"):
             if key in sandbox:

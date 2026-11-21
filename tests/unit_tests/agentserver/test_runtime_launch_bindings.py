@@ -57,15 +57,19 @@ def test_gateway_bindings_preserve_existing_workspace_and_team_tool_semantics(mo
     context = tmp_path / 'node.json';context.write_text(json.dumps({'ingress_url': 'https://worker.example:8443'}))
     monkeypatch.setenv('JIUWENSWARM_ADX_NODE_CONTEXT_FILE', str(context))
     prepare_runtime_environment()
-    static = {'type': 'adx-environment', 'runtime': runtime, 'rootfs_template': 'retained-rootfs',
+    static = {'type': 'adx-environment', 'runtime': runtime,
               'cpu': 750, 'memory': 1024, 'idle_timeout': 60, 'user': '1000', 'group': '1000',
               'connection': {'server_address': 'previous-node', 'token': 'old'}, 'mounts': []}
+    if runtime == 'runsc':
+        static['rootfs'] = {'type': 'local', 'path': '/objects/retained/rootfs'}
     before = copy.deepcopy(static)
     bound = bind_runtime_sandbox(static, json.loads(body['env']['JIUWENSWARM_AGENTOS_SANDBOX_CONFIG']))
     assert static == before
     assert bound['url'] == 'https://worker.example:8443'
-    for key in ('runtime', 'rootfs_template', 'cpu', 'memory', 'user', 'group', 'mounts'):
+    for key in ('runtime', 'cpu', 'memory', 'user', 'group', 'mounts'):
         assert bound[key] == static[key]
+    if runtime == 'runsc':
+        assert bound['rootfs'] == static['rootfs']
     assert bound['endpoint_file'] == str(context)
     assert bound['connection'] == {'use_tls': True, 'verify_tls': True}
     assert os.environ['ADX_TOKEN'] == 'test-only-token'

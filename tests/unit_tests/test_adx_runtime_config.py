@@ -33,8 +33,7 @@ def test_runtime_requires_an_already_migrated_workspace(sandbox):
 
 def test_runtime_protocol_follows_current_node_and_does_not_resolve_images():
     actual = bind_adx_runtime({'type': 'adx-environment', 'runtime': 'runsc',
-                              'image': 'newly-configured-image', 'rootfs_template': 'prepared-rootfs'},
+                              'rootfs': {'type': 'local', 'path': '/objects/prepared/rootfs'}},
                              'http://10.88.4.1:8080')
-    assert actual['image'] == 'newly-configured-image'
-    assert actual['rootfs_template'] == 'prepared-rootfs'
+    assert actual['rootfs'] == {'type': 'local', 'path': '/objects/prepared/rootfs'}
     assert actual['connection'] == {'verify_tls': False, 'use_tls': False}

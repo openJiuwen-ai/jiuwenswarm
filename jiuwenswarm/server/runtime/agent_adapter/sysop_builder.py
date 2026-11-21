@@ -379,7 +379,7 @@ def _build_agentos_workspace_mounts() -> tuple[list[dict[str, Any]], str]:
 def _build_adx_extra_params() -> dict[str, Any]:
     """Carry the existing tool configuration and workspace mapping into ADX."""
     endpoint = get_sandbox_endpoint()
-    keys = ("image", "rootfs_template", "runtime", "cpu", "cpu_limit", "memory", "mem_limit",
+    keys = ("image", "rootfs", "runtime", "cpu", "cpu_limit", "memory", "mem_limit",
             "idle_timeout", "user", "group", "network", "connection", "env", "create_timeout",
             "schedule_timeout", "endpoint_file", "restart_policy")
     extra = {key: endpoint[key] for key in keys if key in endpoint}
@@ -845,7 +845,7 @@ def create_sandbox_sysop_card(
             if is_agentos_runtime() and os.getenv("ADX_TOKEN"):
                 extra_params["token_env"] = "ADX_TOKEN"
                 token = None
-            if extra_params.get("rootfs_template"):
+            if extra_params.get("rootfs"):
                 extra_params.pop("image", None)
             network = extra_params.get("network")
             if network and "schemaVersion" not in network:
