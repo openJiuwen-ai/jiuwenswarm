@@ -8,6 +8,9 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.app_market.extension import AppMarketPlugin
 from jiuwenswarm.extensions.sdk import ApplicationPluginServices
 
@@ -134,3 +137,38 @@ def test_market_data_dir_follows_workspace_resolver(tmp_path, monkeypatch):
 
     assert plugin._data_dir == tmp_path / "app_market"
     assert (tmp_path / "app_market").is_dir()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("route", ["app_market.start", "app_market.edit_session"])
+async def test_project_request_reaches_gateway_as_wire_method(tmp_path, monkeypatch, route):
+    methods = {}
+    channel = SimpleNamespace(channel_id="web", config=SimpleNamespace(host="127.0.0.1", port=29000),
+                              register_method=methods.__setitem__, send_response=AsyncMock())
+    ws = SimpleNamespace(_web_connection_user_id="market-user")
+    client = SimpleNamespace(send_request=AsyncMock(return_value=SimpleNamespace(ok=True, payload={"projects": []})))
+    plugin = AppMarketPlugin()
+    monkeypatch.setattr(plugin, "_data_dir", tmp_path, raising=False)
+    plugin.bind_web_channel(channel, ApplicationPluginServices(agent_client=client))
+
+    async def check(request):
+        ok, payload = await request(ReqMethod.PROJECT_LIST, {"filter": "all"})
+        assert ok
+        return payload
+
+    async def start(app_id, owner_id, consent, project_request):
+        return await check(project_request)
+
+    async def edit(app_id, owner_id, request, options):
+        return await check(request)
+
+    monkeypatch.setattr(plugin._manager, "start_app", start)
+    monkeypatch.setattr(plugin._manager, "edit_session", edit)
+    await methods[route](ws, "rpc", {"app_id": "demo"}, None)
+
+    client.send_request.assert_awaited_once()
+    envelope = client.send_request.await_args.args[0]
+    assert envelope.method == "project.list"
+    assert envelope.params == {"filter": "all"}
+    assert envelope.channel == "web" and envelope.user_id == "market-user"
+    channel.send_response.assert_awaited_once_with(ws, "rpc", ok=True, payload={"projects": []})
