@@ -78,7 +78,7 @@ async def test_local_app_publishes_wrapped_snapshot_with_owner_and_version_check
     )
     (app_dir / "main.htm").write_text(html, encoding="utf-8")
     (app_dir / ".env").write_text("EXAMPLE_SECRET=demo", encoding="utf-8")
-    for relative in ("data/state.json", "scripts/start.sh", "out/bundle.js"):
+    for relative in ("data/state.json", "scripts/start.sh", "out/bundle.js", "app.log", "logs/runtime.log"):
         path = app_dir / relative
         path.parent.mkdir(exist_ok=True)
         path.write_text("demo", encoding="utf-8")
@@ -127,7 +127,9 @@ async def test_local_app_publishes_wrapped_snapshot_with_owner_and_version_check
             )
         draft = await server.call("prepare", params(**ref, metadata=metadata), gateway_user=owner)
         assert draft["can_submit"]
-        assert set(draft["excluded"]) == {".env", "data/", "scripts/start.sh"}
+        assert set(draft["excluded"]) == {
+            ".env", "data/", "scripts/start.sh", "app.log", "logs/runtime.log",
+        }
         assert uploaded == []
         operation = await server.call(
             "commit", params(draft_id=draft["draft_id"], request_id="app-publish"), gateway_user=owner,

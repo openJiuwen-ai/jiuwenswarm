@@ -48,7 +48,7 @@ files:
 
 - 工作目录可用的本地应用卡片提供「发布到 Hub」。发布抽屉复用 `assets.publish.*`、GitHub/GitCode 登录、制品预览和发布记录。服务端按 `app_id` 读取注册清单，校验当前 Web 连接所有者与 `source=local`。企业部署需要非空所有者。浏览器只提交资产标识和发布信息，应用入口、工作目录和权限从清单读取。
 - 应用名、简介和版本预填，可设置可见范围及安装时是否创建项目。应用包名须以小写英文字母开头，其余字符可为小写英文字母、数字或连字符，最长 64 字符，避开系统保留名称。入口 HTML 已声明 `application-version` 时，显式本地登记版本和 Hub 提交版本均须与其一致。Hub 版本、续发和覆盖规则沿用其它资产的公共实现。
-- 打包在独立快照完成，生成 `runtime.type=app` 的 `plugin.yaml`。根目录下旧的 HTML 入口在快照内提供 `index.html`，若与已有入口冲突则提示报错。工作目录中的 `data/`、Git 元数据、真实环境变量文件、已知凭据和市场生成的启停脚本会从待上传制品排除。发布确认页展示包内文件及排除项。
+- 打包在独立快照完成，生成 `runtime.type=app` 的 `plugin.yaml`。根目录下旧的 HTML 入口在快照内提供 `index.html`，若与已有入口冲突则提示报错。工作目录中的 `data/`、Git 元数据、真实环境变量文件、已知凭据、日志文件和市场生成的启停脚本会从待上传制品排除。发布确认页展示包内文件及排除项。
 - 提交使用预览对应的快照和 SHA-256，上传沿用 `POST /api/v1/plugins`。App 的完整 multipart 请求体校验 512 MiB 上限，包使用 ZIP 存储模式以符合 Hub 压缩比限制。
 
 ## Hub 客户端与下载
@@ -63,7 +63,7 @@ files:
 - 安装根解析顺序：RPC `install_dir`（必须是服务端绝对路径）→ 环境变量 `APP_MARKET_INSTALL_ROOT` → `get_user_workspace_dir()/apps`。最终目录为 `<install_root>/<package_name>`；Windows 下安装路径长度超过 240 字符时预检失败。
 - `app_id = hub-<asset_id 安全化>-<sha256(hub_url, asset_id, owner)[:24]>`；同一 Hub 资产与所有者只允许一份安装。同版本摘要发生变化时可更新。更新前校验当前 Hub 与安装凭据的来源一致。
 - 安装先下载并解压到暂存目录，再在目标盘提交目录和注册清单、写入安装凭据。暂存目录和新发布目录使用同一随机发布标记。包不得携带这个标记。
-- 市场应用通过 `app_market.convert_to_local` 原地转为本地应用。转换按所有者校验并与安装、更新互斥，保留原目录、`app_id`、项目绑定和应用权限，清除 Hub 安装关联。编辑及再发布使用同一登记，Swarm 停止对该登记提供 Hub 更新和卸载。对于历史本地登记与安装目录重叠的情况，市场更新和卸载清理仍会保护该目录。
+- 市场应用通过 `app_market.convert_to_local` 原地转为本地应用。转换按所有者校验并与安装、更新互斥，保留原目录、`app_id`、项目绑定和应用权限，清除 Hub 安装关联。编辑及再发布使用同一登记，Swarm 停止对该登记提供 Hub 更新和卸载；此时 `app_market.update` 与 `app_market.uninstall` 返回 `app_not_hub_installed`，本地维护走编辑和 `app_market.delete`。对于历史本地登记与安装目录重叠的情况，市场更新和卸载清理仍会保护该目录。
 - 安装和更新在数据根的 `app_market/install_ops/<job_id>.json` 记录事务。只有目录归属、清单和凭据的版本及摘要相符时才确认完成。部分写入回滚，更新回滚同时恢复原目录、原清单和原凭据。恢复失败保留事务记录。无发布归属的旧记录、用户目录和备份保留。
 - `install.json` 记录 `install_id`、`release_id`、所有者、安装根、工作目录、Hub 资产及制品身份、安装时间和运行能力。注册表位于数据根的 `app_market/apps/<app_id>/`。
 - 包结构校验拒绝市场生成的启停脚本、`data/`、`.git` 和 `.workswarm-app-release`。包名最长 64 字符，符号链接和不安全路径由解包入口拒绝。

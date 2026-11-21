@@ -977,8 +977,13 @@ async def uninstall_hub_app(
 ) -> dict[str, Any]:
     """Deregister the app, then attempt optional local cleanup."""
     manifest = manager.service.get_app(app_id)
-    if manifest is None or manifest.owner_id != owner_id or manifest.source != "hub":
+    if manifest is None or manifest.owner_id != owner_id:
         raise AppInstallError("app_work_dir_missing", "Hub application not found")
+    if manifest.source != "hub":
+        raise AppInstallError(
+            "app_not_hub_installed",
+            "Application is no longer a Hub installation; delete the local app instead",
+        )
     record = load_install_record(manager, app_id) if remove_files else None
     if not await manager.service.delete_app(app_id) or manager.service.get_app(app_id) is not None:
         raise AppInstallError("app_operation_conflict", "Failed to remove application from App Market")
