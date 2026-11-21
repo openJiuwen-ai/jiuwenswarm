@@ -248,6 +248,11 @@ async def _run(host: str, port: int) -> None:
     except (NotImplementedError, OSError):
         pass
 
+    # 周期内存回收(gc.collect + malloc_trim):
+    # JIUWENSWARM_GC_RECLAIM_INTERVAL 秒门控,默认关闭。
+    from jiuwenswarm.server.runtime import mem_reclaimer
+    mem_reclaimer.setup()
+
     try:
         await stop_event.wait()
     except (asyncio.CancelledError, KeyboardInterrupt):

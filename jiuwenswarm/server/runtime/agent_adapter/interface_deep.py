@@ -1205,6 +1205,12 @@ class _StableGitFacts:
 
 _STABLE_GIT_FACTS: dict[str, _StableGitFacts] = {}
 _STABLE_GIT_FACTS_LOCK = threading.Lock()
+# Cache ceiling: ``project_dir`` is per-session (the session workspace), so the
+# key space grows with sessions and an unbounded dict leaks one entry per
+# session forever (issue#5240 residual hunt: +100 entries / 2min ≈ 1MB/h).
+# FIFO-evict the oldest insert at the cap; a miss only costs re-running the
+# six cached git subprocesses, never correctness.
+_STABLE_GIT_FACTS_MAX = 1024
 
 
 def _resolve_stable_git_facts(
@@ -1259,6 +1265,8 @@ def _resolve_stable_git_facts(
         head_file=head_file,
     )
     with _STABLE_GIT_FACTS_LOCK:
+        if len(_STABLE_GIT_FACTS) >= _STABLE_GIT_FACTS_MAX:
+            _STABLE_GIT_FACTS.pop(next(iter(_STABLE_GIT_FACTS)), None)
         _STABLE_GIT_FACTS[cache_key] = facts
     return facts
 
@@ -2199,8 +2207,41 @@ class _RecipeModelCache(dict):
         return model if model is not None else default
 
 
+_SESSION_ADAPTER_IDLE_TTL_ENV = "JIUWENSWARM_SESSION_ADAPTER_IDLE_TTL_SEC"
+
+
+def _session_adapter_idle_ttl_default() -> int:
+    """Session-scoped adapter idle TTL in seconds (default 2h).
+
+    Override via ``JIUWENSWARM_SESSION_ADAPTER_IDLE_TTL_SEC`` at process
+    start; non-numeric or non-positive values warn and fall back to the
+    default so a bad deploy cannot disable eviction entirely.
+    """
+    default = 2 * 60 * 60
+    raw = os.environ.get(_SESSION_ADAPTER_IDLE_TTL_ENV)
+    if raw is None or not raw.strip():
+        return default
+    try:
+        value = int(raw.strip())
+    except ValueError:
+        logger.warning(
+            "[JiuWenSwarmDeepAdapter] ignoring non-numeric %s=%s",
+            _SESSION_ADAPTER_IDLE_TTL_ENV,
+            raw,
+        )
+        return default
+    if value <= 0:
+        logger.warning(
+            "[JiuWenSwarmDeepAdapter] ignoring non-positive %s=%s",
+            _SESSION_ADAPTER_IDLE_TTL_ENV,
+            raw,
+        )
+        return default
+    return value
+
+
 class JiuWenSwarmDeepAdapter:
-    SESSION_ADAPTER_IDLE_TTL_SEC = 2 * 60 * 60
+    SESSION_ADAPTER_IDLE_TTL_SEC = _session_adapter_idle_ttl_default()
     SESSION_ADAPTER_EVICT_BATCH_SIZE = 3
     SESSION_ADAPTER_RELOAD_RETRY_INTERVAL_SEC = 30.0
     _subagent_runtime_supported: bool = True
