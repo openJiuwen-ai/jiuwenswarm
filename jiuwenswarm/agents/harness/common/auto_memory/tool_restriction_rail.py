@@ -15,6 +15,8 @@ but runtime restriction prevents unauthorized tool use.
 from __future__ import annotations
 
 import logging
+import re
+import shlex
 from pathlib import Path
 from typing import Any, Dict
 
@@ -49,8 +51,47 @@ READ_ONLY_BASH_COMMANDS = (
     "echo",
     "wc",
     "stat",
-    "file",
 )
+
+# Shell syntax that turns an otherwise read-only command into a writer: a
+# separator chains a second command, and the redirect/substitution tokens let
+# the shell itself create or overwrite files. A bare ``$`` is rejected as well:
+# ``shlex.split`` performs no expansion, so ``${IFS}`` survives as a single word
+# and the shell would split it into a write flag after this check passed.
+_SHELL_SEGMENT_SEPARATOR_RE = re.compile(r"\|\||&&|\||;")
+_SHELL_UNSAFE_TOKENS = (">", "<", "`", "$", "&", "\n", "\r")
+# `find` is read-only by name but not by flag: these turn it into a writer.
+_FIND_WRITE_ARGS = frozenset(
+    {"-delete", "-exec", "-execdir", "-ok", "-okdir", "-fprint", "-fprint0", "-fprintf", "-fls"}
+)
+
+
+def _is_read_only_shell_segment(segment: str) -> bool:
+    """Return whether a single shell segment is a read-only invocation.
+
+    Args:
+        segment: One command from a chain such as ``cat a && b``.
+
+    Returns:
+        True only if the segment neither redirects nor runs a non-allowlisted
+        command (and, for ``find``, carries no write flag).
+    """
+    if any(token in segment for token in _SHELL_UNSAFE_TOKENS):
+        return False
+    try:
+        words = shlex.split(segment)
+    except ValueError:
+        return False
+    if not words:
+        return False
+    command = words[0].lower()
+    if command == "git":
+        if " ".join(words[:2]).lower() not in READ_ONLY_BASH_COMMANDS:
+            return False
+        return not any(word == "--output" or word.startswith("--output=") for word in words)
+    if command not in READ_ONLY_BASH_COMMANDS:
+        return False
+    return command != "find" or _FIND_WRITE_ARGS.isdisjoint(words)
 
 
 class AutoMemoryToolRestrictionRail(AgentRail):
@@ -208,25 +249,15 @@ class AutoMemoryToolRestrictionRail(AgentRail):
         Returns:
             True if the command is read-only (no file modification).
         """
-        command = tool_args.get("command", "")
-        if not command:
-            return False
-
-        # Check against read-only command patterns
-        command_lower = command.lower()
-        for allowed_cmd in READ_ONLY_BASH_COMMANDS:
-            if allowed_cmd.lower() in command_lower:
-                return True
-
-        # Also check for explicit read-only flags
-        # e.g., "git status --porcelain" is safe
-        if any(
-            flag in command_lower
-            for flag in ("--status", "--list", "--show", "--print", "--read")
-        ):
-            return True
-
-        return False
+        # Every segment of the chain must be read-only on its own. Matching the
+        # allowlist as a substring of the whole command let ``rm -rf x && ls``
+        # through on the strength of the trailing ``ls``, and a bare ``--read``
+        # anywhere allowed anything at all.
+        command = str(tool_args.get("command") or "").strip()
+        segments = [
+            segment for segment in _SHELL_SEGMENT_SEPARATOR_RE.split(command) if segment.strip()
+        ]
+        return bool(segments) and all(_is_read_only_shell_segment(segment) for segment in segments)
 
     def _is_in_memory_dir(self, tool_args: Dict[str, Any]) -> bool:
         """Check if the target path is within memory_dir.
