@@ -60,6 +60,7 @@ export interface ClientCapabilityHostOptions {
   gatewayUrl: () => string;
   waitForInvocation?: (id: string) => Promise<void>;
   reloadPage?: () => void;
+  declarationTimeoutMs?: number;
 }
 
 export function createClientCapabilityHost(options: ClientCapabilityHostOptions) {
@@ -71,6 +72,7 @@ export function createClientCapabilityHost(options: ClientCapabilityHostOptions)
   let invalidConfiguration = false;
   let awaitingDeclarations = false;
   let controller = new AbortController();
+  let waitTimer: ReturnType<typeof setTimeout> | null = null;
   let waiter = options.waitForInvocation ?? (() => Promise.resolve());
   const changes = new Set<(change: ClientContextChange) => void>();
   const errors = new Set<() => void>();
@@ -125,7 +127,23 @@ export function createClientCapabilityHost(options: ClientCapabilityHostOptions)
     return ['http:', 'https:'].includes(url.protocol) && url.origin === base.origin
       && (base.pathname === '/' || url.pathname === base.pathname || url.pathname.startsWith(base.pathname.replace(/\/$/, '') + '/'));
   }
+  function clearDeclarationTimeout() {
+    if (waitTimer !== null) { clearTimeout(waitTimer); waitTimer = null; }
+  }
+  function armDeclarationTimeout() {
+    clearDeclarationTimeout();
+    if (!awaitingDeclarations || !options.reloadPage) return;
+    const timeout = options.declarationTimeoutMs ?? 8000;
+    if (timeout <= 0) return;
+    waitTimer = setTimeout(() => {
+      waitTimer = null;
+      if (!awaitingDeclarations) return;
+      options.reloadPage?.();
+    }, timeout);
+  }
   function configure(input: unknown): void {
+    clearDeclarationTimeout();
+    const initial = declarations === null;
     try {
       requireValue(plain(input)); keys(input, ['clientProtocolVersion', 'gatewayInstanceId', 'connectionEpoch', 'packages']);
       requireValue(input.clientProtocolVersion === 1 && nonEmpty(input.gatewayInstanceId) && nonEmpty(input.connectionEpoch)
@@ -156,7 +174,17 @@ export function createClientCapabilityHost(options: ClientCapabilityHostOptions)
       reportError('CONFIGURATION_ERROR');
       throw new ClientCapabilityError(error instanceof ClientCapabilityError ? error.code : 'SCHEMA_ERROR');
     }
-    advance(); reportError(null);
+    if (initial) {
+      // 首个快照到达前发出的请求没有使用旧绑定，保留其结果，不按过期上下文作废；
+      // 否则整页刷新后的首批请求会被取消，表现为“请求已取消”和设置加载失败。
+      // 这里必须显式结束 changing：重连时 suspendConnection 已进入 changing，
+      // 若沿用 advance() 的异步收尾，changing 会一直为真，后续业务请求全部被判为过期。
+      changing = false;
+      for (const listener of changes) listener({ epoch, phase: 'ready' });
+    } else {
+      advance();
+    }
+    reportError(null);
   }
   function acceptOperation(input: unknown): boolean {
     let changed: { package_id: string; key: string } | undefined;
@@ -268,7 +296,9 @@ export function createClientCapabilityHost(options: ClientCapabilityHostOptions)
       return !awaitingDeclarations && !invalidConfiguration && !!pkg
         && input.activation_generation === pkg.activationGeneration;
     },
-    invalidate: () => { declarations = null; invalidConfiguration = false; awaitingDeclarations = false; signature = ''; advance(); },
+    invalidate: () => { clearDeclarationTimeout(); declarations = null; invalidConfiguration = false; awaitingDeclarations = false; signature = ''; advance(); },
+    armDeclarationTimeout,
+    clearDeclarationTimeout,
     suspendConnection: () => {
       if ((!declarations && !invalidConfiguration) || awaitingDeclarations) return;
       declarations = null; signature = ''; awaitingDeclarations = true;
