@@ -77,6 +77,11 @@ memory:
 | `openviking` | ByteDance context database | `endpoint`, `api_key` |
 | `<plugin-name>` | Custom plugin | ~/.jiuwenswarm/plugins/memory/<name>/ |
 
+**Custom memory plugin contract**: place an entry module `plugin.py` under
+`~/.jiuwenswarm/plugins/memory/<name>/` exposing the factory
+`build_provider(config) -> provider | None`. The loader scans the directory,
+enforces the `allowed_plugins` whitelist, and maps any failure to a warning and None (fail-soft).
+
 #### External Memory Environment Variables
 
 | Variable | Description |
