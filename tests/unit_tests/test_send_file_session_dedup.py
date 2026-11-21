@@ -1,9 +1,29 @@
 import asyncio
+import importlib
+import sys
+import types
 from unittest.mock import patch
 
 import pytest
 
 from jiuwenswarm.agents.harness.common.tools import send_file_to_user as sfu
+
+# ``send_file_to_user`` imports the history writer lazily, and the tests patch
+# that name. Some development installs lack the optional agent_gateway package
+# that the real module pulls in, so register a stub only when the real module
+# cannot be imported; environments with full dependencies keep the real one.
+_HISTORY_MODULE = "jiuwenswarm.server.runtime.session.session_history"
+if _HISTORY_MODULE not in sys.modules:
+    try:
+        importlib.import_module(_HISTORY_MODULE)
+    except ImportError:
+        _stub = types.ModuleType(_HISTORY_MODULE)
+
+        async def _append_history_record(**_kwargs):
+            return None
+
+        _stub.append_history_record = _append_history_record
+        sys.modules[_HISTORY_MODULE] = _stub
 from jiuwenswarm.agents.harness.common.tools.web_file_download import (
     build_file_download_info,
     validate_file_download_token,
@@ -214,3 +234,41 @@ def test_send_file_keeps_worktree_file_in_worktree(tmp_path):
 
     assert toolkit._materialize_team_deliverable(str(source)) == str(source)
     assert not project_root.exists()
+
+
+def test_force_resends_a_file_the_session_already_delivered(tmp_path):
+    """A user reporting a missing file must be able to get it again."""
+    file_path = tmp_path / "handoff.md"
+    file_path.write_text("hello", encoding="utf-8")
+    toolkit = sfu.SendFileToolkit(
+        request_id="r-force",
+        session_id="sess-force",
+        channel_id="web",
+    )
+    pushed: list[dict] = []
+
+    async def _push(message: dict) -> bool:
+        pushed.append(message)
+        return True
+
+    with patch.object(sfu, "send_runtime_push", _push), patch(
+        "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+    ):
+        first = asyncio.run(toolkit.send_file(str(file_path)))
+        skipped = asyncio.run(toolkit.send_file(str(file_path)))
+        forced = asyncio.run(toolkit.send_file(str(file_path), force=True))
+
+    assert "成功发送" in first
+    assert "跳过重复投递" in skipped
+    assert "跳过重复投递" not in forced
+    assert len(pushed) == 2
+
+
+def test_filter_duplicate_files_honours_force():
+    sfu._mark_files_sent("s-filter", [r"C:\tmp\a.md"])
+
+    assert sfu._filter_duplicate_files("s-filter", [r"C:\tmp\a.md"]) == ([], [r"C:\tmp\a.md"])
+    assert sfu._filter_duplicate_files("s-filter", [r"C:\tmp\a.md"], force=True) == (
+        [r"C:\tmp\a.md"],
+        [],
+    )
