@@ -51,6 +51,16 @@ assert ReqMethod.VIDEO_CONVERSATION_APPEND.value == 'video.conversation.append'
     assert result.returncode == 0, result.stderr
 
 
+@pytest.mark.parametrize("name,wire_value", [
+    ("MCP_SOURCES_PROVIDERS", "mcp.sources.providers"),
+    ("SESSION_DETACH", "session.detach"),
+    ("ASSETS_EXPORT", "assets.export"),
+    ("ASSETS_IMPORT", "assets.import"),
+])
+def test_host_methods_not_in_gateway_catalog_keep_wire_values(name, wire_value):
+    assert ReqMethod(wire_value) is ReqMethod[name]
+
+
 def test_gateway_catalog_methods_have_matching_local_members():
     result = subprocess.run(
         [sys.executable, "-c", """
