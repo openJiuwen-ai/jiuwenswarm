@@ -32,6 +32,43 @@ def _clear_caches():
     resolver._WARN_LAST_AT.clear()
 
 
+@pytest.fixture(autouse=True)
+def _crypto_bridge_consistent(monkeypatch):
+    """Keep the global crypto hook and the gateway ``ExtensionRegistry``
+    singleton consistent (fixes the xdist cross-file ordering flake).
+
+    ``upsert_model_resource`` protects ``api_key`` through the crypto hook.
+    When that hook is the gateway ``_RegistryCryptoBridge`` but the singleton
+    has been reset to ``None`` by another test file in the same pytest-xdist
+    worker (``test_runtime_service.py`` resets it in teardown), ``encrypt``
+    dies with ``RuntimeError: ExtensionRegistry 尚未初始化`` — the CI failure
+    observed across unrelated PRs (openJiuwen#10206/#10326/#10331 UT runs).
+    The guard re-arms only the poisoned combination (hook installed +
+    singleton None): an instance without a crypto extension encrypts
+    pass-through per the bridge contract, identical to the hook-free behavior
+    on a clean run; monkeypatch restores the original singleton afterwards.
+    """
+    from unittest.mock import MagicMock
+    from agent_gateway.extensions import base_crypto
+    from agent_gateway.extensions.registry import ExtensionRegistry
+
+    if base_crypto.get_crypto_provider() is not None and ExtensionRegistry._instance is None:
+        monkeypatch.setattr(
+            ExtensionRegistry, "_instance",
+            # Constructed with the exact keyword signature that
+            # ``create_instance`` uses. ``__init__`` unconditionally starts
+            # ``_crypto_tool = None`` and ``get_crypto_utility_extension()``
+            # returns that attribute directly (no getattr probing), so this
+            # instance provably carries no crypto extension and the bridge
+            # short-circuits to plaintext pass-through.
+            ExtensionRegistry(
+                callback_framework=MagicMock(),
+                config={},
+                logger=MagicMock(),
+            ),
+        )
+
+
 def _register(monkeypatch, pattern: str = "models.*.model_client_config.api_key") -> None:
     monkeypatch.setattr(registry, "_load_patterns", lambda: [p.split(".") for p in [pattern]])
 
