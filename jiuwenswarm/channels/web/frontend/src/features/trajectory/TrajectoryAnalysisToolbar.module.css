@@ -2,6 +2,7 @@
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: flex-end;
   gap: 0.5rem;
@@ -14,7 +15,7 @@
 
 .replay {
   min-width: 0;
-  flex: 1 1 auto;
+  flex: 1 1 0;
   margin-right: auto;
   color: var(--color-text-secondary);
   font-size: 0.75rem;
@@ -119,6 +120,7 @@
   display: inline-flex;
   flex: none;
   width: 1.75rem;
+  flex: none;
   align-items: center;
   justify-content: center;
   padding: 0;
@@ -146,6 +148,7 @@
 .search {
   position: relative;
   display: inline-flex;
+  max-width: 100%;
   min-width: 0;
   width: 12.5rem;
   align-items: center;
@@ -167,4 +170,18 @@
 
 .searchInput::placeholder {
   color: var(--color-text-secondary);
+}
+
+@container (max-width: 32rem) {
+  .root {
+    justify-content: flex-start;
+  }
+
+  .replay {
+    flex-basis: 100%;
+  }
+
+  .search {
+    flex: 1 1 12.5rem;
+  }
 }
