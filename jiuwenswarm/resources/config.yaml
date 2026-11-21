@@ -112,6 +112,19 @@ symphony:
 # 启用 jiuwen 不跳过此任务；它仍写旧主题文件，与新文档记忆的 sync_turn 独立。
 auto_memory_enabled: false
 
+# 外部渠道输出分级（BUG-1 外发噪音治理）
+# 仅约束外部 IM 渠道（channels 名单内）的运行事件外发量，web/desktop 交互面不受影响。
+# verbosity：
+#   final（默认）= 仅最终回复、失败上报、待你确认的交互（ask_user/审批/确认）外发；
+#   progress     = 额外放行过程事件（流式输出、工具调用、子代理动态等）；
+#   verbose      = 全量外发（调试用）。
+# channels：受管辖的渠道 id 名单；名单外渠道（如 web、__cron__）永不收敛。
+# 环境变量 JIUWENSWARM_OUTPUT_VERBOSITY 可运行期覆盖 verbosity（非法值忽略）。
+output:
+  external:
+    verbosity: final
+    channels: [feishu, dingtalk, welink]
+
 # 日志目录：~/.jiuwenswarm/agent/.logs/
 # gateway.log / channel.log / agent_server.log 按源码路径分流；full.log 为汇总（不含 gateway 日志）。
 # level：未单独指定时的默认级别。console_level：控制台；可省略则用 level。
