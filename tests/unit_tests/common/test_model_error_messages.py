@@ -208,3 +208,62 @@ class TestValidateModelHandler:
         assert "platform.deepseek.com/top_up" in response["error"]
         assert "181001" not in response["error"]
         assert "APIStatusError" not in response["error"]
+
+
+# --- #6790: unknown long errors must keep a redacted cause summary ---
+
+
+def test_unknown_long_error_keeps_cause_summary() -> None:
+    err = (
+        "[181001] internal wrapper: upstream returned detail=SomethingWeird\n"
+        + "z" * 300
+    )
+    result = user_facing_model_error(err)
+    assert "SomethingWeird" in result
+    assert "请检查 API" in result
+    assert "\n" not in result
+    # Internal wrapper code must never leak into the user-facing excerpt.
+    assert "181001" not in result
+
+
+def test_cause_excerpt_is_bounded() -> None:
+    err = "x" * 2000
+    result = user_facing_model_error(err)
+    assert len(result) < 400
+
+
+def test_credentials_are_redacted_even_for_short_errors() -> None:
+    result = user_facing_model_error(
+        "model failed api_key=sk-secret123456789 with Bearer abcdefghijkl"
+    )
+    # Both credential forms must be masked independently: relying on only the
+    # sk- branch to produce the mask marker would leave Bearer regressions
+    # undetected.
+    assert "sk-secret123456789" not in result
+    assert "abcdefghijkl" not in result
+    assert "******" in result
+
+
+def test_dict_repr_and_jwt_credentials_are_redacted() -> None:
+    """The shared mask_sensitive() helper must cover dict/JWT token forms."""
+    result = user_facing_model_error(
+        "failed {'api_key': 'supersecretvalue'} token "
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig"
+    )
+    assert "supersecretvalue" not in result
+    assert "eyJhbGciOiJIUzI1NiJ9" not in result
+    assert "******" in result
+
+
+def test_short_internal_wrapper_is_stripped() -> None:
+    """Short unknown errors must not expose the internal wrapper code (#6790)."""
+    result = user_facing_model_error(
+        "[181001] model call failed: some unknown issue"
+    )
+    assert "181001" not in result
+    assert "model call failed" not in result
+    assert "some unknown issue" in result
+
+
+def test_short_error_unchanged_when_no_secret() -> None:
+    assert user_facing_model_error("simple failure") == "simple failure"
