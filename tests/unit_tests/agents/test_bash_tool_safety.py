@@ -175,3 +175,49 @@ def test_posix_keeps_process_group_kill(monkeypatch, kill_paths) -> None:
     install_shell_tool_safety_hooks()
 
     assert kill_paths.handler_cls._kill_process_tree is original
+
+
+# ── PR !10209 review root 200900610: cron_guard identity import fails open ──
+
+
+def test_invoke_record_shell_wait_import_fails_open(monkeypatch):
+    """A broken cron_guard subtree must not hard-fail BashTool.invoke."""
+    import asyncio
+    import sys
+
+    async def original(self, inputs, **kwargs):
+        return "ran"
+
+    monkeypatch.setitem(sys.modules, "jiuwenswarm.common.cron_guard.identity", None)
+    wrapped = bash_tool_safety._wrap_invoke(original)
+    tool = SimpleNamespace(_parse_inputs=lambda inputs: SimpleNamespace(command="ps aux"))
+    assert asyncio.run(wrapped(tool, {"command": "ps aux"})) == "ran"
+
+
+def test_stream_record_shell_wait_import_fails_open(monkeypatch):
+    """A broken cron_guard subtree must not hard-fail BashTool.stream."""
+    import asyncio
+    import sys
+
+    async def original(self, inputs, **kwargs):
+        yield "chunk"
+
+    monkeypatch.setitem(sys.modules, "jiuwenswarm.common.cron_guard.identity", None)
+    wrapped = bash_tool_safety._wrap_stream(original)
+    tool = SimpleNamespace(_parse_inputs=lambda inputs: SimpleNamespace(command="ps aux"))
+
+    async def collect():
+        return [item async for item in wrapped(tool, {"command": "ps aux"})]
+
+    assert asyncio.run(collect()) == ["chunk"]
+
+
+def test_mcp_exec_command_identity_import_fails_open(monkeypatch):
+    """200900610: mcp_exec_command survives an ImportError of cron_guard.identity."""
+    import asyncio
+    import sys
+
+    monkeypatch.setitem(sys.modules, "jiuwenswarm.common.cron_guard.identity", None)
+    # LocalFunction wraps the raw coroutine in ._func; call that directly.
+    result = asyncio.run(command_tools.mcp_exec_command._func("echo cronguard-failopen-ok", timeout_seconds=10))
+    assert "cronguard-failopen-ok" in result
