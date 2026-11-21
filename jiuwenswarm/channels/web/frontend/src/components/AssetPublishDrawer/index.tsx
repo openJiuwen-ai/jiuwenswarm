@@ -124,6 +124,11 @@ const messages = {
     undefinedPlaceholder: '连接器配置包含未声明的参数。请检查凭证占位符：宿主 OAuth 仅自动提供 OAUTH_ACCESS_TOKEN，其他参数需声明凭证字段。此问题与 Hub 登录无关。',
     invalidAgentMcp: 'Hub 拒绝了连接器包校验（invalid_agent_mcp）。请检查清单及凭证声明；OAuth 认证头应由宿主提供，而非作为手填 Token 字段发布。请更新宿主后重新检查发布内容，不要反复重新登录。',
     invalidPackage: '发布内容不合法，请检查清单文件或版本号后重试。',
+    appInvalidEntry: '无法将应用的 HTML 入口打包为 index.html，请检查应用入口文件。',
+    appVersionMismatch: '发布版本必须与入口 HTML 中声明的 application-version 一致。',
+    appConvertRequired: '请先将市场应用转为本地应用，再从该卡片发布。',
+    fileTooLarge: '上传大小超出 Hub 限制，请缩小包体后重试。',
+    packageLimitExceeded: '待发布文件的体积、数量或目录层级超出限制。',
     publishUnavailable: '发布服务暂时不可用，请稍后重试。',
     uploadOutcomeUnknown: '提交结果未确认。请到 Hub 的“我的上传”确认该版本是否存在，再决定是否重新提交。',
     invalidPluginStructure: '资源包结构不符合 Hub 要求，请检查清单文件和目录结构。',
@@ -142,6 +147,7 @@ const messages = {
     edit: '返回修改',
     identity: '远端更新权限由 Hub 最终校验。',
     versionHint: '例如 1.0.0 或 abcdef0',
+    appVersionHint: '例如 1.2 或 1.2.3-beta.1',
     loginAgain: '重新登录',
     unavailable: '此资源暂时无法发布，请查看检查原因。',
     empty: '无',
@@ -168,6 +174,9 @@ const messages = {
     invalidAssetName: '仅支持小写字母、数字、下划线和连字符，最长 64 个字符。',
     invalidAssetNameSystemPlugin: '请以小写字母开头，仅使用小写字母、数字、点和连字符，最长 64 个字符。',
     invalidVersion: '请输入 1.0.0 格式版本号或七位小写提交号。',
+    invalidAppName: '以小写字母开头，仅用小写字母、数字和连字符，最多 64 字符，避开系统保留名称。',
+    invalidAppVersion: '输入 1 至 4 段数字，可带 - 或 + 后缀，总长最多 32 字符。',
+    appRequiresProject: '安装时为应用创建项目',
     invalidDisplayName: '请输入展示名称，最长 128 个字符。',
     assetNameHelp: '发布名称是 Hub 中资源包的技术标识，只支持小写字母、数字、下划线和连字符，最长 64 个字符。',
     assetNameHelpSystemPlugin: '系统插件名称以小写字母开头，可包含小写字母、数字、点与连字符，最长 64 个字符。',
@@ -243,6 +252,11 @@ const messages = {
     undefinedPlaceholder: 'The connector configuration contains an undeclared parameter. Host OAuth supplies only OAUTH_ACCESS_TOKEN; other parameters need credential schema fields. This is not a Hub sign-in error.',
     invalidAgentMcp: 'Hub rejected connector package validation (invalid_agent_mcp). Check the manifest and credentials declaration. The host must supply OAuth authorization headers, not publish them as manual token fields. Update the host and check the package again instead of repeatedly signing in.',
     invalidPackage: 'The package is not publishable. Check its manifest or version and retry.',
+    appInvalidEntry: 'The app entry could not be packaged as index.html. Check the entry file.',
+    appVersionMismatch: 'The version must match the application-version declared in the HTML entry.',
+    appConvertRequired: 'Convert the marketplace app to a local app before publishing.',
+    fileTooLarge: 'The upload exceeds the Hub size limit. Reduce the package size and try again.',
+    packageLimitExceeded: 'The files exceed the package size, count, or directory depth limit.',
     publishUnavailable: 'The publishing service is unavailable right now. Retry later.',
     uploadOutcomeUnknown:
       'The submission result is unconfirmed. Check "My uploads" on the Hub before submitting again.',
@@ -265,6 +279,7 @@ const messages = {
     edit: 'Back to editing',
     identity: 'Hub makes the final decision on update permissions.',
     versionHint: 'For example 1.0.0 or abcdef0',
+    appVersionHint: 'For example 1.2 or 1.2.3-beta.1',
     loginAgain: 'Sign in again',
     unavailable: 'This resource cannot be published yet. Review the reasons below.',
     empty: 'None',
@@ -293,6 +308,9 @@ const messages = {
     invalidAssetNameSystemPlugin:
       'Start with a lowercase letter and use only lowercase letters, numbers, dots, and hyphens; maximum 64 characters.',
     invalidVersion: 'Enter a version such as 1.0.0 or a seven-character lowercase revision.',
+    invalidAppName: 'Start with a lowercase letter. Use up to 64 lowercase letters, digits, or hyphens. Avoid reserved names.',
+    invalidAppVersion: 'Use 1 to 4 numeric parts and an optional - or + suffix, up to 32 characters.',
+    appRequiresProject: 'Create a project when the app is installed',
     invalidDisplayName: 'Enter a display name of at most 128 characters.',
     assetNameHelp:
       'The package identifier in Hub. Use lowercase letters, numbers, underscores, or hyphens; maximum 64 characters.',
@@ -486,11 +504,13 @@ function AssetPublishDrawer({
     // The hook listens for this event to re-read the authorization scope.
     window.dispatchEvent(new CustomEvent('oauth-callback-complete'));
   };
-  const invalid = validateMetadata(state.metadata, reference.kind).length > 0;
+  const isApp = reference.kind === 'app';
+  const isSystemPlugin = reference.kind === 'system_plugin';
   const invalidFields = new Set(validateMetadata(state.metadata, reference.kind));
+  const invalid = invalidFields.size > 0;
   const fields = ['asset_name', 'version', 'display_name', 'description', 'tags', 'version_desc'] as const;
   const fieldHints: Partial<Record<(typeof fields)[number], MessageKey>> = {
-    asset_name: reference.kind === 'system_plugin' ? 'assetNameHelpSystemPlugin' : 'assetNameHelp',
+    asset_name: isApp ? 'invalidAppName' : isSystemPlugin ? 'assetNameHelpSystemPlugin' : 'assetNameHelp',
     display_name: 'displayNameHelp',
     description: 'descriptionHelp',
     tags: 'tagsHelp',
@@ -527,6 +547,7 @@ function AssetPublishDrawer({
     plugin: zh ? '插件' : 'Plugin',
     mcp: zh ? '连接器' : 'Connector',
     system_plugin: zh ? '系统插件' : 'System plugin',
+    app: zh ? '应用' : 'App',
   }[reference.kind];
   const packStageLabels: Record<string, MessageKey> = {
     publishing_members: 'packStagePublishingMembers',
@@ -558,8 +579,8 @@ function AssetPublishDrawer({
     </section>
   );
   const invalidText: Partial<Record<(typeof fields)[number], MessageKey>> = {
-    asset_name: reference.kind === 'system_plugin' ? 'invalidAssetNameSystemPlugin' : 'invalidAssetName',
-    version: 'invalidVersion',
+    asset_name: isApp ? 'invalidAppName' : isSystemPlugin ? 'invalidAssetNameSystemPlugin' : 'invalidAssetName',
+    version: isApp ? 'invalidAppVersion' : 'invalidVersion',
     display_name: 'invalidDisplayName',
   };
   const renderField = (field: (typeof fields)[number], className = '') => (
@@ -597,7 +618,9 @@ function AssetPublishDrawer({
           }
           required={['asset_name', 'display_name', 'version'].includes(field)}
           placeholder={
-            field === 'version' ? text('versionHint') : field === 'tags' ? text('tagsPlaceholder') : undefined
+            field === 'version'
+              ? text(isApp ? 'appVersionHint' : 'versionHint')
+              : field === 'tags' ? text('tagsPlaceholder') : undefined
           }
           invalid={invalidFields.has(field)}
         />
@@ -871,6 +894,17 @@ function AssetPublishDrawer({
                 </div>
               </div>
               {renderField('version_desc')}
+              {isApp && (
+                <label className="asset-publish-checkbox">
+                  <input
+                    type="checkbox"
+                    data-testid="asset-publish-app-requires-project"
+                    checked={Boolean(state.metadata.requires_project)}
+                    onChange={(event) => state.edit({ requires_project: event.target.checked })}
+                  />
+                  {text('appRequiresProject')}
+                </label>
+              )}
             </section>
             <details
               className="asset-publish-advanced"
@@ -1074,7 +1108,8 @@ export function AssetPublishHost() {
         if (!value) return;
         const saved = JSON.parse(value);
         if (
-          ['skill', 'skillpack', 'agent_template', 'agent_group', 'plugin', 'mcp', 'system_plugin'].includes(saved.reference?.kind) &&
+          ['skill', 'skillpack', 'agent_template', 'agent_group', 'plugin', 'mcp', 'system_plugin', 'app']
+            .includes(saved.reference?.kind) &&
           typeof saved.reference?.local_id === 'string'
         )
           setSelection(saved);

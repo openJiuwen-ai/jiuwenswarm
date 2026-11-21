@@ -45,7 +45,7 @@ description: |
 
 - 纯文字 NPC、棋手等无需工具的角色使用 `execution_profile:"app_role"`。创建时将人格、业务规则、输出 schema 写入 `role_instructions`（1–12000 字符），后续聊天仅发送当前业务输入。宿主保留精简基础系统提示；不加载项目指令、个人/项目记忆、技能和工具。创建响应必须确认 `execution_profile:"app_role"`；旧宿主不支持时明确提示升级，不降级到普通助手。需要工具的角色继续使用普通会话。轻量角色仅支持文字对话和取消，不支持暂停/继续、增强执行、永续记忆、cron 或装备工具；保留自身对话历史。
 - 根据玩法决定角色拓扑。单个 NPC 或几个互不协作的 NPC 使用各自的单角色会话。同一轮需要多个有身份的角色协作并各自发言时，使用原生 Team NPC。开始实现团队玩法前，读取 [Team NPC 接入指南](references/team-npc.md)，按示例完成角色名册、应用服务端 Gateway 客户端、回合事件处理和前端渲染。玩家只向 leader 提交输入，应用按角色逐条展示最终发言。
-- 角色会话必须绑定创建应用的项目。市场通过 `WORKSWARM_SOURCE_SESSION` 注入发布清单的来源会话 ID；应用服务端调用 `session.get_metadata` 读取其 `project_id` 和 `work_mode`，创建角色会话时透传这两个字段。不要以应用子目录代替项目路径，也不要固定 `work_mode:"work"`；消息请求沿用角色会话的工作模式。旧市场未注入时，可从应用自身配置读取发布时保存的来源会话 ID。来源缺失或查询失败时明确报错，不静默建到默认项目；真正的默认项目沿用来源的默认项目 ID 与工作模式。
+- 角色会话必须绑定所属项目。需要项目的 Hub 应用在包的 `plugin.yaml` 中声明 `metadata.app.requires_project: true`，应用优先成对使用启停环境中的 `WORKSWARM_APP_PROJECT_ID` 与 `WORKSWARM_APP_WORK_MODE`。缺省时使用来源会话方式。市场通过 `WORKSWARM_SOURCE_SESSION` 注入发布清单的来源会话 ID；应用服务端调用 `session.get_metadata` 读取其 `project_id` 和 `work_mode`，创建角色会话时透传这两个字段。不要以应用子目录代替项目路径，也不要固定 `work_mode:"work"`；消息请求沿用角色会话的工作模式。旧市场未注入时，可从应用自身配置读取发布时保存的来源会话 ID。显式项目上下文缺省且来源缺失或查询失败时明确报错，不静默建到默认项目；真正的默认项目沿用来源的默认项目 ID 与工作模式。
 - 每用户、每应用、每个独立角色或团队最多一个活动的应用绑定；团队成员会话由 Team 管理。应用保存绑定和幂等创建 token，初始化串行执行，多标签页不能并发建会话或提交同一轮。不使用时间戳或局号作为 role_id。
 - 默认 `persist_session:false`，仍保留普通多轮历史；该参数不是聊天历史保存开关。不要为保存对局开启永续记忆，不修改元数据绕过创建配置。
 - 独立对局默认新局重置。单角色中断后可 rewind 并复用；团队 NPC 需要清除上下文时删除旧 Team 会话并重新创建，清理确认后才启用新局。新局首轮重新初始化，禁止旧棋盘搭配新会话。
@@ -79,5 +79,5 @@ description: |
    node "{skill_directory}/scripts/publish.mjs" --entry <入口绝对路径> --session-id <当前会话ID> --gateway-url <实际 WebChannel WebSocket 地址> [--version <版本>] --confirmed
    ```
 
-   版本优先取 `--version`；未指定时读取页面 `<meta name="application-version">`；两者都没有时保留上次发布版本，首次发布默认 `1.0.0`。重复发布不会静默重置版本。优先读取当前会话的 WORKSWARM_GATEWAY_API_URL；否则从当前 Electron 实例的运行配置取得实际 WebChannel 地址。勿使用 AgentServer 或 TUI 通道。发布脚本先验证市场列表，再发送发布请求。
+   可用 `--version` 指定版本。页面已声明 `<meta name="application-version">` 时，两者须一致。未指定时使用页面版本；两者都没有时保留上次发布版本，首次发布默认 `1.0.0`。重复发布不会静默重置版本。优先读取当前会话的 WORKSWARM_GATEWAY_API_URL；否则从当前 Electron 实例的运行配置取得实际 WebChannel 地址。勿使用 AgentServer 或 TUI 通道。发布脚本先验证市场列表，再发送发布请求。
 5. 以返回的 `app_id` 与 `version` 报告结果，进入市场核对卡片。页面需要市场注入运行配置；直接双击页面应提示需要从应用市场启动。

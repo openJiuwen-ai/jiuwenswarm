@@ -102,6 +102,15 @@ function fixture(platform, frontendOnly = false) {
   };
 }
 
+test('Electron selects the Swarm Gateway entry for development and packaged starts', () => {
+  const { context } = fixture('win32');
+  assert.deepEqual(Array.from(context.serviceCommand('gateway').args), ['--desktop-run-gateway']);
+  context.app.isPackaged = false;
+  const command = context.serviceCommand('gateway');
+  assert.equal(command.command, 'uv');
+  assert.deepEqual(Array.from(command.args), ['run', 'python', '-m', 'jiuwenswarm.channels.desktop.gateway_entry']);
+});
+
 for (const platform of ['darwin', 'win32']) {
   for (const preparationExit of [0, 1]) {
     test(`${platform}: Quit wins a queued workspace exit (${preparationExit}) without launching backend`, async () => {

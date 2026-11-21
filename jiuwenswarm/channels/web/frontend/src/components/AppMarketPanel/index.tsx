@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppWindow, Circle, CircleCheck, Loader2, LogOut, Pencil, Play, RefreshCw, Square, Trash2, ExternalLink } from 'lucide-react';
+import { AppWindow, Circle, CircleCheck, Download, Loader2, LogOut, Pencil, Play, RefreshCw, Square, Trash2, ExternalLink } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { webRequest } from '../../services/webClient';
+import { openAssetPublish } from '../../features/assetPublishEvents';
+import { Pagination } from '../common/Pagination';
 import { CategoryTabs } from '../ui/CategoryTabs/CategoryTabs';
 import { PageCard } from '../ui/PageCard/PageCard';
 import { Button } from '../ui/Button/Button';
@@ -25,6 +27,50 @@ interface AppInfo {
   entry_path?: string;
   source_session?: string;
   startup_timeout_seconds?: number;
+  source?: string;
+  hub_asset_id?: string;
+  artifact_sha256?: string;
+  requires_project?: boolean;
+  project_id?: string;
+  project_dir?: string;
+  work_dir_missing?: boolean;
+}
+
+interface MarketAppInfo {
+  asset_id: string;
+  name: string;
+  display_name: string;
+  short_desc: string;
+  public_latest_version: string;
+  icon_uri: string;
+  tags: string[];
+  installed: boolean;
+  installed_version: string;
+  installed_app_id: string;
+  work_dir_missing?: boolean;
+}
+
+interface MarketAppDetail extends MarketAppInfo {
+  version: string;
+  detail_desc: string;
+  file_size?: number | null;
+  source_size?: number | null;
+  requires_project?: boolean | null;
+  permissions?: string[];
+  has_server_script?: boolean | null;
+  checksum_sha256?: string;
+  installed_checksum_sha256?: string;
+}
+
+interface InstallJobInfo {
+  job_id: string;
+  kind: string;
+  app_id: string;
+  state: string;
+  phase: string;
+  cancellable: boolean;
+  error?: { code: string; message: string } | null;
+  result?: Record<string, unknown> | null;
 }
 
 export interface AppMarketEditTarget {
@@ -38,8 +84,8 @@ export interface AppMarketEditTarget {
 export type AppMarketEditHandler = (target: AppMarketEditTarget, isCurrent: () => boolean) => void | Promise<void>;
 
 type AppState = 'stopped' | 'starting' | 'running' | 'stopping';
-type PendingAction = 'starting' | 'stopping' | 'deleting';
-type Tab = 'all' | 'running';
+type PendingAction = 'starting' | 'stopping' | 'deleting' | 'converting';
+type Tab = 'all' | 'running' | 'market';
 type LoadState = 'loading' | 'success' | 'error';
 
 function appState(state?: string): AppState {
@@ -87,6 +133,21 @@ export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {
   const [listState, setListState] = useState<LoadState>('loading');
   const [pending, setPending] = useState<Record<string, PendingAction>>({});
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
+  const [marketPage, setMarketPage] = useState(1);
+  const [marketPageSize, setMarketPageSize] = useState(50);
+  const [marketTotal, setMarketTotal] = useState(0);
+  const marketRevision = useRef(0);
+  const [marketApps, setMarketApps] = useState<MarketAppInfo[]>([]);
+  const [marketState, setMarketState] = useState<LoadState>('loading');
+  const [installJob, setInstallJob] = useState<{ jobId: string; assetId: string; phase: string } | null>(null);
+  const [installingAsset, setInstallingAsset] = useState('');
+  // Directory input replaces window.prompt, which embedded Chromium WebViews
+  // (and Electron) reject with "prompt() is not supported".
+  const [installDirDialog, setInstallDirDialog] = useState<{
+    item: MarketAppInfo;
+    detail: MarketAppDetail;
+    value: string;
+  } | null>(null);
   const actionLocks = useRef(new Set<string>());
   const instanceRevision = useRef(0);
   // Newest user intent for which page should be shown. Starting an app opens
@@ -128,11 +189,212 @@ export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {
 
   const showError = useCallback(
     (key: string, error: unknown) => {
+      if ((error as { code?: string } | null)?.code === 'app_run_disabled') {
+        setMessage({ text: t('appMarket.runDisabled'), error: true });
+        return;
+      }
       const detail = errorDetail(error);
       setMessage({ text: detail ? `${t(key)}: ${detail}` : t(key), error: true });
     },
     [t],
   );
+
+  const fetchMarket = useCallback(async () => {
+    const revision = ++marketRevision.current;
+    setMarketState('loading');
+    try {
+      const data = await webRequest<{ items?: MarketAppInfo[]; total: number }>('app_market.market_list', {
+        query: '',
+        page: marketPage,
+        page_size: marketPageSize,
+      });
+      if (revision !== marketRevision.current) return;
+      const lastPage = Math.max(1, Math.ceil(data.total / marketPageSize));
+      if (marketPage > lastPage) {
+        setMarketPage(lastPage);
+        return;
+      }
+      setMarketTotal(data.total);
+      setMarketApps(data.items || []);
+      setMarketState('success');
+    } catch (error) {
+      if (revision !== marketRevision.current) return;
+      setMarketState('error');
+      showError('appMarket.marketLoadFailed', error);
+    }
+  }, [marketPage, marketPageSize, showError]);
+
+  const waitForInstallJob = useCallback(async (jobId: string, assetId: string) => {
+    for (let attempt = 0; attempt < 900; attempt += 1) {
+      const job = await webRequest<InstallJobInfo>('app_market.install_status', { job_id: jobId });
+      setInstallJob({ jobId, assetId, phase: job.phase });
+      if (job.state === 'done') return job;
+      if (job.state === 'failed') {
+        throw new Error(job.error?.message || t('appMarket.installFailed'));
+      }
+      if (job.state === 'cancelled') throw new Error(t('appMarket.installCancelled'));
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+    throw new Error(t('appMarket.installTimeout'));
+  }, [t]);
+
+  const runInstall = async (
+    item: MarketAppInfo,
+    detail: MarketAppDetail,
+    installDir: string,
+  ) => {
+    const key = item.asset_id;
+    let start: { job_id: string };
+    if (item.installed && item.installed_app_id) {
+      start = await webRequest<{ job_id: string }>('app_market.update', {
+        app_id: item.installed_app_id,
+        version: detail.version,
+        expected_sha256: detail.checksum_sha256 || '',
+      });
+    } else {
+      start = await webRequest<{ job_id: string }>('app_market.install', {
+        asset_id: item.asset_id,
+        version: detail.version,
+        install_dir: installDir,
+        expected_sha256: detail.checksum_sha256 || '',
+      });
+    }
+    const job = start.job_id ? await waitForInstallJob(start.job_id, key) : undefined;
+    const backup = job?.result?.backup_dir;
+    const text = typeof backup === 'string'
+      ? t('appMarket.updateBackupSuccess', { name: detail.display_name, path: backup })
+      : t('appMarket.installSuccess', { name: detail.display_name });
+    setMessage({ text, error: false });
+    await Promise.all([fetchApps(), fetchMarket()]);
+    setActiveTab('all');
+    window.dispatchEvent(new Event('app-market-apps-changed'));
+  };
+
+  const handleInstall = async (item: MarketAppInfo) => {
+    if (installJob || installDirDialog) return;
+    let openedDirDialog = false;
+    const isUpdate = item.installed && !item.work_dir_missing;
+    const staleRegistration = item.installed && Boolean(item.installed_app_id) && Boolean(item.work_dir_missing);
+    try {
+      setInstallingAsset(item.asset_id);
+      const detail = await webRequest<MarketAppDetail>('app_market.market_detail', {
+        asset_id: item.asset_id,
+        version: item.public_latest_version,
+      });
+      if (!staleRegistration && item.installed && item.installed_version === detail.version
+        && detail.checksum_sha256 && detail.installed_checksum_sha256 === detail.checksum_sha256) {
+        setMessage({ text: t('appMarket.alreadyInstalled'), error: false });
+        return;
+      }
+      const size = detail.source_size ? `${(detail.source_size / 1024 / 1024).toFixed(1)} MB` : '';
+      const warnings = [
+        detail.has_server_script ? t('appMarket.installServerWarning') : '',
+        detail.permissions?.length
+          ? t('appMarket.installPermissions', { list: detail.permissions.join(', ') })
+          : '',
+        detail.requires_project ? t('appMarket.installProjectNote') : '',
+      ].filter(Boolean).join('\n');
+      const prompt = `${t(isUpdate ? 'appMarket.updateConfirm' : 'appMarket.installConfirm', {
+        name: detail.display_name,
+        version: detail.version,
+        size,
+      })}${warnings ? `\n${warnings}` : ''}`;
+      if (!window.confirm(prompt)) return;
+
+      if (isUpdate && item.installed_app_id) {
+        await runInstall(item, detail, '');
+      } else {
+        let target = item;
+        // A registered app whose directory disappeared must be deregistered
+        // before the install RPC can create a fresh copy.
+        if (staleRegistration) {
+          await webRequest('app_market.delete', { app_id: item.installed_app_id });
+          target = { ...item, installed: false, work_dir_missing: false, installed_app_id: '', installed_version: '' };
+        }
+        const dirDefault = await webRequest<{ path: string }>('app_market.install_dir_default');
+        openedDirDialog = true;
+        setInstallDirDialog({ item: target, detail, value: dirDefault.path });
+      }
+    } catch (error) {
+      showError(isUpdate ? 'appMarket.updateFailed' : 'appMarket.installFailed', error);
+    } finally {
+      if (!openedDirDialog) {
+        setInstallingAsset('');
+        setInstallJob(null);
+      }
+    }
+  };
+
+  const confirmInstallDir = async () => {
+    if (!installDirDialog) return;
+    const { item, detail, value } = installDirDialog;
+    const installDir = value.trim();
+    if (!installDir) {
+      setMessage({ text: t('appMarket.installDirRequired'), error: true });
+      return;
+    }
+    setInstallDirDialog(null);
+    try {
+      await runInstall(item, detail, installDir);
+    } catch (error) {
+      showError(item.installed ? 'appMarket.updateFailed' : 'appMarket.installFailed', error);
+    } finally {
+      setInstallingAsset('');
+      setInstallJob(null);
+    }
+  };
+
+  const cancelInstallDir = () => {
+    setInstallDirDialog(null);
+    setInstallingAsset('');
+    setInstallJob(null);
+  };
+
+  const cancelInstallJob = async () => {
+    if (!installJob) return;
+    try {
+      await webRequest('app_market.install_cancel', { job_id: installJob.jobId });
+      setMessage({ text: t('appMarket.installCancelling'), error: false });
+    } catch (error) {
+      showError('appMarket.installFailed', error);
+    }
+  };
+
+  const handleUpdateApp = async (app: AppInfo) => {
+    if (!app.hub_asset_id || installJob) return;
+    try {
+      setInstallingAsset(app.app_id);
+      const detail = await webRequest<MarketAppDetail>('app_market.market_detail', {
+        asset_id: app.hub_asset_id,
+      });
+      if (detail.version === app.version && detail.checksum_sha256 && detail.checksum_sha256 === app.artifact_sha256) {
+        setMessage({ text: t('appMarket.alreadyLatest'), error: false });
+        return;
+      }
+      if (!window.confirm(t('appMarket.updateConfirm', {
+        name: app.name,
+        version: detail.version,
+        size: detail.source_size ? `${(detail.source_size / 1024 / 1024).toFixed(1)} MB` : '',
+      }))) return;
+      const start = await webRequest<{ job_id: string }>('app_market.update', {
+        app_id: app.app_id,
+        version: detail.version,
+        expected_sha256: detail.checksum_sha256 || '',
+      });
+      const job = start.job_id ? await waitForInstallJob(start.job_id, app.app_id) : undefined;
+      const backup = job?.result?.backup_dir;
+      const text = typeof backup === 'string'
+        ? t('appMarket.updateBackupSuccess', { name: app.name, path: backup })
+        : t('appMarket.updateSuccess', { name: app.name });
+      setMessage({ text, error: false });
+      await Promise.all([fetchApps(), fetchInstances()]);
+    } catch (error) {
+      showError('appMarket.updateFailed', error);
+    } finally {
+      setInstallingAsset('');
+      setInstallJob(null);
+    }
+  };
 
   const openApplication = async (app: AppInfo, instance: InstanceInfo, edit = false) => {
     if (!instance.url) return;
@@ -201,6 +463,10 @@ export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {
 
   useEffect(() => watchAppMarketInstances(fetchInstances), [fetchInstances]);
 
+  useEffect(() => {
+    if (activeTab === 'market') void fetchMarket();
+  }, [activeTab, fetchMarket]);
+
   const beginAction = (appId: string, action: PendingAction) => {
     if (actionLocks.current.has(appId)) return false;
     actionLocks.current.add(appId);
@@ -222,12 +488,29 @@ export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {
   const handleStart = async (app: AppInfo, edit = false) => {
     if (!beginAction(app.app_id, 'starting')) return;
     const intent = ++viewIntent.current;
+    const requestOptions = { timeoutMs: appMarketStartTimeoutMs(app.startup_timeout_seconds) };
     try {
-      const instance = await webRequest<InstanceInfo>(
-        'app_market.start',
-        { app_id: app.app_id },
-        { timeoutMs: appMarketStartTimeoutMs(app.startup_timeout_seconds) },
-      );
+      let instance: InstanceInfo;
+      try {
+        instance = await webRequest<InstanceInfo>(
+          'app_market.start',
+          { app_id: app.app_id },
+          requestOptions,
+        );
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        const payload = (error as { payload?: { artifact_sha256?: string } }).payload;
+        const sha = payload?.artifact_sha256;
+        if (code !== 'app_run_consent_required' || !sha) throw error;
+        if (!window.confirm(t('appMarket.runConsentConfirm', { name: app.name }))) {
+          throw new Error(t('appMarket.runConsentDeclined'));
+        }
+        instance = await webRequest<InstanceInfo>(
+          'app_market.start',
+          { app_id: app.app_id, run_consent: { artifact_sha256: sha } },
+          requestOptions,
+        );
+      }
       if (instance.state !== 'running') throw new Error(instance.detail || t('appMarket.startFailed'));
       instanceRevision.current += 1;
       setInstances((current) => [...current.filter((item) => item.app_id !== app.app_id), instance]);
@@ -269,13 +552,58 @@ export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {
     if (actionLocks.current.has(app.app_id) || !window.confirm(t('appMarket.deleteConfirm'))) return;
     if (!beginAction(app.app_id, 'deleting')) return;
     try {
-      await webRequest('app_market.delete', { app_id: app.app_id });
+      let messageKey = 'appMarket.deleteSuccess';
+      let directory = '';
+      if (app.source === 'hub') {
+        const removeFiles = window.confirm(t('appMarket.uninstallRemoveFiles'));
+        const result = await webRequest<{ cleanup_warning?: string; work_dir?: string }>('app_market.uninstall', {
+          app_id: app.app_id,
+          remove_files: removeFiles,
+        });
+        if (result?.cleanup_warning) {
+          messageKey = 'appMarket.uninstallCleanupWarning';
+          directory = result.work_dir || '';
+        }
+      } else {
+        await webRequest('app_market.delete', { app_id: app.app_id });
+      }
       instanceRevision.current += 1;
       setApps((current) => current.filter((item) => item.app_id !== app.app_id));
       setInstances((current) => current.filter((item) => item.app_id !== app.app_id));
-      setMessage({ text: t('appMarket.deleteSuccess'), error: false });
+      setMessage({ text: t(messageKey, { directory }), error: false });
       await closeApplication(app);
       window.dispatchEvent(new Event('app-market-apps-changed'));
+    } catch (error) {
+      showError('appMarket.deleteFailed', error);
+    } finally {
+      finishAction(app.app_id);
+    }
+  };
+
+  const handleConvertToLocal = async (app: AppInfo) => {
+    if (actionLocks.current.has(app.app_id) || !window.confirm(t('appMarket.convertConfirm', { name: app.name }))) return;
+    if (!beginAction(app.app_id, 'converting')) return;
+    try {
+      await webRequest('app_market.convert_to_local', { app_id: app.app_id });
+      await fetchApps();
+      setMessage({ text: t('appMarket.convertSuccess', { name: app.name }), error: false });
+    } catch (error) {
+      showError('appMarket.convertFailed', error);
+    } finally {
+      finishAction(app.app_id);
+    }
+  };
+
+  const handleReinstall = async (app: AppInfo) => {
+    if (actionLocks.current.has(app.app_id) || !window.confirm(t('appMarket.reinstallConfirm', { name: app.name }))) return;
+    if (!beginAction(app.app_id, 'deleting')) return;
+    try {
+      await webRequest('app_market.delete', { app_id: app.app_id });
+      setApps((current) => current.filter((item) => item.app_id !== app.app_id));
+      setInstances((current) => current.filter((item) => item.app_id !== app.app_id));
+      await fetchMarket();
+      setActiveTab('market');
+      setMessage({ text: t('appMarket.reinstallHint'), error: false });
     } catch (error) {
       showError('appMarket.deleteFailed', error);
     } finally {
@@ -297,6 +625,7 @@ export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {
           items={[
             { value: 'all', label: t('appMarket.allApps') },
             { value: 'running', label: t('appMarket.running') },
+            { value: 'market', label: t('appMarket.market') },
           ]}
           value={activeTab}
           onChange={setActiveTab}
@@ -311,7 +640,8 @@ export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {
           disabled={listState === 'loading'}
           onClick={() => {
             setMessage(null);
-            void refresh();
+            if (activeTab === 'market') void fetchMarket();
+            else void refresh();
           }}
         >
           <RefreshCw size={16} aria-hidden="true" />
@@ -346,18 +676,114 @@ export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {
           {message.text}
         </div>
       )}
+      {installJob && (
+        <div
+          className="page-shell flex items-center justify-between gap-3 rounded-md bg-secondary px-3 py-2 text-sm text-text-muted"
+          data-testid="app-market-install-progress"
+        >
+          <span>
+            {t('appMarket.installPhase', {
+              phase: t(`appMarket.installPhases.${installJob.phase}`),
+            })}
+          </span>
+          <Button variant="quiet" size="sm" onClick={() => void cancelInstallJob()}>
+            {t('appMarket.cancel')}
+          </Button>
+        </div>
+      )}
+      {installDirDialog && (
+        <div
+          className="page-shell rounded-md bg-secondary px-3 py-2 text-sm text-text-muted"
+          data-testid="app-market-install-dir"
+        >
+          <label className="mb-1 block text-sm text-text-muted" htmlFor="app-market-install-dir-input">
+            {t('appMarket.installDirLabel')}
+          </label>
+          <input
+            id="app-market-install-dir-input"
+            type="text"
+            value={installDirDialog.value}
+            onChange={(event) => setInstallDirDialog({ ...installDirDialog, value: event.target.value })}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') void confirmInstallDir();
+              if (event.key === 'Escape') cancelInstallDir();
+            }}
+            className="w-full rounded-md border border-border bg-card px-2 py-1.5 text-sm"
+            data-testid="app-market-install-dir-input"
+            autoFocus
+          />
+          <div className="mt-2 flex items-center justify-end gap-2">
+            <Button variant="quiet" size="sm" onClick={cancelInstallDir}>
+              {t('appMarket.cancel')}
+            </Button>
+            <Button variant="secondary" size="sm" onClick={() => void confirmInstallDir()}>
+              {t('appMarket.installDirConfirm')}
+            </Button>
+          </div>
+          <p className="mt-1 text-xs text-text-muted">{t('appMarket.installDirHint')}</p>
+        </div>
+      )}
       <div className="page-scroll min-h-0 flex-1 overflow-y-auto">
-        {listState === 'loading' && <p className="text-sm text-text-muted">{t('appMarket.loading')}</p>}
-        {listState === 'success' && displayApps.length === 0 && (
+        {activeTab === 'market' && marketState === 'loading' && (
+          <p className="text-sm text-text-muted">{t('appMarket.loading')}</p>
+        )}
+        {activeTab === 'market' && marketState === 'error' && (
+          <p className="text-sm text-text-muted">{t('appMarket.marketLoadFailed')}</p>
+        )}
+        {activeTab === 'market' && marketState === 'success' && marketApps.length === 0 && (
+          <p className="text-sm text-text-muted">{t('appMarket.noMarketApps')}</p>
+        )}
+        {activeTab === 'market' && marketState === 'success' && marketApps.length > 0 && (
+          <div className="card-grid-auto">
+            {marketApps.map((item) => {
+              return (
+                <PageCard
+                  key={item.asset_id}
+                  testId="app-market-market-card"
+                  avatar={{ name: item.display_name, iconUrl: item.icon_uri }}
+                  title={item.display_name}
+                  label={[
+                    `v${item.public_latest_version}`,
+                    ...(item.installed ? [t('appMarket.installedBadge')] : []),
+                    ...(item.installed && item.work_dir_missing ? [t('appMarket.workDirMissing')] : []),
+                  ]}
+                  description={item.short_desc}
+                  actionSlot={
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      data-testid="app-market-install"
+                      icon={<Download size={16} aria-hidden="true" />}
+                      disabled={Boolean(installingAsset) || Boolean(installJob)}
+                      onClick={() => void handleInstall(item)}
+                    >
+                      {t(item.installed
+                        ? (item.work_dir_missing ? 'appMarket.reinstall' : 'appMarket.update')
+                        : 'appMarket.install')}
+                    </Button>
+                  }
+                />
+              );
+            })}
+          </div>
+        )}
+        {activeTab === 'market' && marketState === 'success' && marketTotal > marketPageSize && (
+          <Pagination page={marketPage} pageSize={marketPageSize} total={marketTotal}
+            totalPages={Math.ceil(marketTotal / marketPageSize)} onPageChange={setMarketPage}
+            onPageSizeChange={(size) => { setMarketPage(1); setMarketPageSize(size); }} />
+        )}
+        {activeTab !== 'market' && listState === 'loading' && <p className="text-sm text-text-muted">{t('appMarket.loading')}</p>}
+        {activeTab !== 'market' && listState === 'success' && displayApps.length === 0 && (
           <p className="text-sm text-text-muted">
             {t(activeTab === 'all' ? 'appMarket.noApps' : 'appMarket.noInstances')}
           </p>
         )}
-        {listState === 'success' && (
+        {activeTab !== 'market' && listState === 'success' && (
           <div className="card-grid-auto">
             {displayApps.map((app) => {
               const instance = instanceMap.get(app.app_id);
               const state = getState(app.app_id);
+              const missing = Boolean(app.work_dir_missing);
               const busy = !!pending[app.app_id] || state === 'starting' || state === 'stopping';
               const toggleLabel = t(state === 'running'
                 ? 'appMarket.stopApp'
@@ -370,12 +796,29 @@ export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {
                   className="app-market-card cursor-default"
                   avatar={{ name: app.name, iconUrl: app.icon_url, testId: 'app-market-card-avatar' }}
                   title={app.name}
-                  label={[`v${app.version}`]}
+                  label={[`v${app.version}`, ...(missing ? [t('appMarket.workDirMissing')] : [])]}
                   description={app.description}
                   titleEnd={<StateIcon state={state} label={t(`appMarket.states.${state}`)} />}
                   actionSlot={
                     <div className="flex shrink-0 items-center gap-2">
-                      {onEdit && app.entry_path && (
+                      {missing && app.source === 'hub' && (
+                        <Button variant="secondary" size="sm" data-testid="app-market-reinstall"
+                          disabled={busy} onClick={() => void handleReinstall(app)}>
+                          {t('appMarket.reinstall')}
+                        </Button>
+                      )}
+                      {!missing && app.source === 'hub' && (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          data-testid="app-market-convert-local"
+                          disabled={busy}
+                          onClick={() => void handleConvertToLocal(app)}
+                        >
+                          {t('appMarket.convertToLocal')}
+                        </Button>
+                      )}
+                      {!missing && app.source !== 'hub' && onEdit && app.entry_path && (
                         <Button variant="secondary" size="sm" icon={<Pencil size={16} aria-hidden="true" />}
                           data-testid="app-market-edit" title={t('appMarket.edit')} aria-label={t('appMarket.edit')}
                           disabled={busy} onClick={() => {
@@ -389,7 +832,25 @@ export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {
                           {t('appMarket.edit')}
                         </Button>
                       )}
-                      {state === 'running' && instance?.url && (
+                      {!missing && app.source === 'hub' && app.hub_asset_id && (
+                        <Button variant="secondary" size="sm" data-testid="app-market-update"
+                          disabled={busy || Boolean(installingAsset) || Boolean(installJob)}
+                          onClick={() => void handleUpdateApp(app)}>
+                          {t('appMarket.update')}
+                        </Button>
+                      )}
+                      {!missing && app.source === 'local' && (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          data-testid="app-market-publish"
+                          disabled={busy}
+                          onClick={() => openAssetPublish({ kind: 'app', local_id: app.app_id, avatar_url: app.icon_url })}
+                        >
+                          {t('appMarket.publishToHub')}
+                        </Button>
+                      )}
+                      {!missing && state === 'running' && instance?.url && (
                         <Button
                           variant="secondary"
                           size="sm"
@@ -414,7 +875,7 @@ export function AppMarketPanel({ onEdit }: { onEdit?: AppMarketEditHandler } = {
                         title={toggleLabel}
                         aria-label={toggleLabel}
                         aria-busy={state === 'starting' || state === 'stopping' || undefined}
-                        disabled={busy}
+                        disabled={busy || missing}
                         onClick={() => {
                           if (state === 'running' && instance) void handleStop(app, instance);
                           else if (state === 'stopped') void handleStart(app);

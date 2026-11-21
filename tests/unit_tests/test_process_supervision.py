@@ -6,6 +6,7 @@ import json
 import importlib
 import signal
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import psutil
@@ -56,6 +57,13 @@ def test_application_final_exit_owns_worker_unless_launcher_delegates(
     monkeypatch.setattr(app, "supervise", supervise_application)
     if gateway_config_dir is None:
         monkeypatch.delenv("JIUWENSWARM_GATEWAY_CONFIG_DIR", raising=False)
+        # prepare_local_gateway_config 只在无独立 Gateway 配置且非 AgentOS 时注入
+        # 实例配置目录；固定走注入分支，不依赖运行环境的真实配置文件。
+        import agent_gateway.common.paths as gateway_paths
+
+        monkeypatch.setattr(gateway_paths, "get_config_file",
+                            lambda: Path("<nonexistent>") / "gateway-config.yaml")
+        monkeypatch.setattr(utils, "is_agentos_runtime", lambda: False)
     else:
         monkeypatch.setenv("JIUWENSWARM_GATEWAY_CONFIG_DIR", gateway_config_dir)
     monkeypatch.setattr(app, "begin_system_plugin_recovery_session", lambda: None)
@@ -68,7 +76,7 @@ def test_application_final_exit_owns_worker_unless_launcher_delegates(
         app.main()
     assert result.value.code == expected
     assert order == (["fronts-stopped"] if keep_worker else ["fronts-stopped", "worker-stopped"])
-    expected_config_dir = gateway_config_dir or str(app._env_file.parent)
+    expected_config_dir = gateway_config_dir or str(utils.get_config_dir())
     assert supervised[0]["env"]["JIUWENSWARM_GATEWAY_CONFIG_DIR"] == expected_config_dir
 
 
