@@ -189,6 +189,23 @@ def _build_swarm_context_from_seed(seed: dict[str, Any]) -> SwarmBuildContext:
     )
 
 
+def _resolve_template_connectors(names: list[str], team_name: str, member_name: str) -> Any:
+    """Resolve an expert member's template connectors into MCPs and Skill dirs.
+
+    Scoped per team member so two experts binding the same connector each get
+    their own stable ``server_id``.
+    """
+    from openjiuwen.agent_teams.experts.template_connectors import ResolvedConnectors
+
+    from jiuwenswarm.common.mcp_config import resolve_connectors
+
+    mcps, skill_dirs = resolve_connectors(
+        names,
+        server_id_scope=f"team:{team_name}:{member_name}",
+    )
+    return ResolvedConnectors(mcps=mcps, skill_dirs=skill_dirs)
+
+
 def register_swarm_providers() -> None:
     """Register all swarm providers and rail types with openjiuwen (idempotent).
 
@@ -208,6 +225,12 @@ def register_swarm_providers() -> None:
     ensure_harness_elements_registered()
     register_from_catalog()
     register_build_context_factory(_build_swarm_context_from_seed)
+    # Expert members mount the MCP connectors bound on their AgentTemplate.
+    from openjiuwen.agent_teams.experts.template_connectors import (
+        register_template_connector_resolver,
+    )
+
+    register_template_connector_resolver(_resolve_template_connectors)
 
     _REGISTERED = True
 

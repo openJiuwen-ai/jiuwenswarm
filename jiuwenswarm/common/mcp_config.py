@@ -265,6 +265,122 @@ def build_enabled_mcp_server_configs(
     return configs
 
 
+def build_mcp_server_configs_by_names(
+    names: list[str],
+    *,
+    server_id_scope: str | None = None,
+) -> list[McpServerConfig]:
+    """MCP server configs of the named connectors (see :func:`resolve_connectors`)."""
+    configs, _skill_dirs = resolve_connectors(names, server_id_scope=server_id_scope)
+    return configs
+
+
+def _disabled_skill_names() -> set[str]:
+    """Skills the user switched off (``skill_configs[*].enabled is False``)."""
+    from jiuwenswarm.server.runtime.skill.skilldev.state_utils import (
+        get_state_file,
+        list_disabled_skills,
+    )
+
+    try:
+        state = json.loads(get_state_file().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    return set(list_disabled_skills(state)) if isinstance(state, dict) else set()
+
+
+def _connector_skill_dirs(skills_root: str, disabled: set[str]) -> list[str]:
+    """One absolute directory per bundled Skill (a child holding ``SKILL.md``)."""
+    root = os.path.abspath(skills_root)
+    try:
+        children = sorted(os.listdir(root))
+    except OSError:
+        return []
+    return [
+        os.path.join(root, child)
+        for child in children
+        if child not in disabled and os.path.isfile(os.path.join(root, child, "SKILL.md"))
+    ]
+
+
+def resolve_connectors(
+    names: list[str],
+    *,
+    server_id_scope: str | None = None,
+) -> tuple[list[McpServerConfig], list[str]]:
+    """Resolve connectors into MCP server configs and bundled Skill directories.
+
+    Used for an expert template's connectors (``mcps[].connector``) when its
+    Team member is built. Readiness follows the single-agent connector gate
+    (``unready_connectors``): a name is mounted only when its state record says
+    ``connected``. The TUI-only ``enabled`` flag is not consulted — web-connected
+    connectors are stored with ``enabled=False``.
+
+    A connector contributes whatever it has, like the single-agent path: its
+    MCP server (stdio / remote / hybrid CLI+MCP, credentials resolved) and its
+    bundled Skills under ``mcp/skills/<name>/`` (CLI and skill-only connectors
+    have only these). Skills the user disabled are left out. Unknown, unready or
+    empty connectors are logged and skipped; this never raises for one bad
+    connector.
+
+    Returns:
+        ``(mcp_configs, skill_dirs)`` — skill dirs are absolute, one per Skill.
+    """
+    from jiuwenswarm.common.config import get_mcp_servers
+    from jiuwenswarm.server.runtime.mcp.state_store import (
+        connected_mcp_skill_dirs,
+        get_mcp_record,
+    )
+
+    wanted: list[str] = []
+    for raw in names or []:
+        name = str(raw or "").strip()
+        if name and name not in wanted:
+            wanted.append(name)
+    if not wanted:
+        return [], []
+    entries = {
+        str(item.get("name", "") or "").strip(): item
+        for item in get_mcp_servers()
+        if isinstance(item, dict)
+    }
+    skills_roots = {item["name"]: item["dir"] for item in connected_mcp_skill_dirs()}
+    disabled = _disabled_skill_names() if any(name in skills_roots for name in wanted) else set()
+    configs: list[McpServerConfig] = []
+    skill_dirs: list[str] = []
+    for name in wanted:
+        rec = get_mcp_record(name)
+        if not isinstance(rec, dict) or rec.get("state") != "connected":
+            logger.warning(
+                "[mcp_config] connector %s skipped: not connected (state=%s)",
+                name,
+                rec.get("state") if isinstance(rec, dict) else None,
+            )
+            continue
+        dirs = _connector_skill_dirs(skills_roots[name], disabled) if name in skills_roots else []
+        skill_dirs.extend(d for d in dirs if d not in skill_dirs)
+        entry = entries.get(name)
+        if entry is None:
+            if not dirs:
+                logger.warning("[mcp_config] connector %s skipped: no server entry and no skills", name)
+            continue
+        try:
+            cfg = build_mcp_server_config(
+                entry,
+                server_id_scope=server_id_scope,
+                credential_resolver=build_mcp_credential_resolver(name),
+                resolve_node_launcher=True,
+            )
+        except Exception as exc:  # noqa: BLE001 — one bad connector must not drop the rest
+            logger.warning("[mcp_config] connector %s server skipped: build failed: %s", name, exc)
+            continue
+        if cfg is None:
+            logger.warning("[mcp_config] connector %s server skipped: invalid server entry", name)
+            continue
+        configs.append(cfg)
+    return configs, skill_dirs
+
+
 async def preflight_mcp_server_reachable(
     cfg: McpServerConfig,
     *,
@@ -819,6 +935,8 @@ __all__ = [
     "build_enabled_mcp_server_configs",
     "build_mcp_credential_resolver",
     "build_mcp_server_config",
+    "build_mcp_server_configs_by_names",
+    "resolve_connectors",
     "extract_enabled_mcp_server_entries",
     "preflight_mcp_server_reachable",
     "prewarm_connected_mcps",
