@@ -18,6 +18,7 @@ from typing import Any
 
 _INTEGRATION_TYPES = frozenset({"stdio-mcp", "remote-mcp", "cli", "skill-only"})
 _CREDENTIAL_TYPES = frozenset({"token", "cli-oauth", "oauth"})
+_ENTRYPOINT_ARG = "${MCP_PACKAGE_ENTRYPOINT}"
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +190,15 @@ def load_mcp_package(package_dir: Path, *, expected_id: str | None = None) -> Mc
             _read_json(integration_file, "integration.file")
     elif integration.get("file") is not None:
         logger.warning("skill-only integration declares integration.file; ignoring it")
+
+    if "entrypoint" in integration:
+        if integration_type != "stdio-mcp" or server_config is None:
+            raise McpPackageError("manifest integration.entrypoint requires stdio-mcp")
+        entrypoint = _declared_path(root, integration["entrypoint"], "integration.entrypoint")
+        args = server_config.get("args")
+        if not isinstance(args, list) or args.count(_ENTRYPOINT_ARG) != 1:
+            raise McpPackageError(f"integration.entrypoint requires exactly one {_ENTRYPOINT_ARG} argument")
+        server_config["args"] = [str(entrypoint) if arg == _ENTRYPOINT_ARG else arg for arg in args]
 
     credentials = raw.get("credentials")
     credentials_type = "none"
