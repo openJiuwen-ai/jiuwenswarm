@@ -146,17 +146,21 @@ def installed_mcp_descriptions() -> dict[str, dict[str, str]]:
 
 
 async def list_mcps_with_hub(
-    mcp_filter: str = "builtin",
+    mcp_filter: str | None = "builtin",
     *,
     hub_port: HubAssetPort | None = None,
     cache_mode: str | None = None,
     refresh: bool = False,
     query: str = "",
+    source_id: str | None = None,
+    metadata: Any = None,
 ) -> list[dict[str, Any]]:
     """Merge installed packages with ordinary, non-persisted Hub cards."""
+    del source_id, metadata
+    normalized_filter = "local" if mcp_filter == "local" else "builtin"
     local = await asyncio.to_thread(
         registry.list_marketplace_mcps,
-        "local" if mcp_filter == "local" else "builtin",
+        normalized_filter,
     )
     cards: dict[str, dict[str, Any]] = {}
     installed_asset_ids: set[str] = set()
@@ -352,9 +356,14 @@ def _validate_hub_package_name(value: str) -> str:
 async def install_hub_mcp(
     asset_id: str,
     *,
+    source_id: str | None = None,
+    version_id: str | None = None,
+    package_name: str | None = None,
+    metadata: Any = None,
     hub_port: HubAssetPort | None = None,
     downloader: HubPackageDownloader | None = None,
 ) -> dict[str, Any]:
+    del source_id, version_id, package_name, metadata
     asset = str(asset_id or "").strip()
     if not asset:
         raise ValueError("Hub MCP asset id is required")

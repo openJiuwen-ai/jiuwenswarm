@@ -49,11 +49,22 @@ class HubTrustPolicy:
         off         — never verify HMAC (default)
         if-present  — verify when signature is present; unsigned allowed
         required    — signature required and must verify
+
+    Unknown values raise ``ValueError`` at construction — never silently remapped.
     """
 
     verification: str = "off"
     hmac_key_id: str = "default"
     hmac_secret_ref: str = _DEFAULT_SECRET_REF
+
+    def __post_init__(self) -> None:
+        mode = str(self.verification or "").strip().lower()
+        if mode not in VERIFICATION_MODES:
+            raise ValueError(
+                f"invalid HubTrustPolicy.verification={self.verification!r}; "
+                f"expected one of {sorted(VERIFICATION_MODES)}"
+            )
+        object.__setattr__(self, "verification", mode)
 
 
 def resolve_env_secret(reference: str) -> str | None:
@@ -80,9 +91,7 @@ def verify_hub_connector_artifact(
     ``HubTrustPolicy.verification``: ``off`` / ``if-present`` / ``required``.
     """
     policy = trust_policy or HubTrustPolicy()
-    mode = str(policy.verification or "off").strip().lower()
-    if mode not in VERIFICATION_MODES:
-        mode = "off"
+    mode = policy.verification
 
     actual_sha256 = hashlib.sha256(content).hexdigest().lower()
     declared_sha256 = str(descriptor.content_sha256 or "").strip()
@@ -146,8 +155,8 @@ def verify_hub_connector_artifact(
             "artifact HMAC key is unavailable",
         )
 
-    asset_id = descriptor.artifact_ref.connector_ref.asset_id
-    version_id = descriptor.artifact_ref.version_id
+    asset_id = str(descriptor.asset_id or "").strip()
+    version_id = str(descriptor.version_id or "").strip()
     # Wire contract identity line is still the Hub artifact digest slot:
     # HMAC(secret, "skillhub-artifact-v1\n{asset_id}\n{version_id}\n{content_sha256}")
     signing_input = f"{_HMAC_SCOPE}\n{asset_id}\n{version_id}\n{declared_sha256}"
