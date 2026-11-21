@@ -19,9 +19,9 @@ after(() => {
   }
 });
 
-const { act, createElement: h, useState, useEffect } = await import('react');
+const { act, createElement: h, useId, useState, useEffect } = await import('react');
 const { createRoot } = await import('react-dom/client');
-const { ExpandedPanel, i18n } = await import('../node_modules/.cache/panel-pages/components.mjs');
+const { ExpandedPanel, i18n, useWebUIPluginPanelTabs } = await import('../node_modules/.cache/panel-pages/components.mjs');
 await i18n.changeLanguage('en');
 
 async function setup(initial = {}) {
@@ -34,17 +34,36 @@ async function setup(initial = {}) {
     useEffect(() => () => { unmounted.push(name); }, [name]);
     return h('div', null, `Plugin ${name}`);
   }
-  function Harness({ names = ['a', 'b'], title = '', activeTab = 'planning', showMiddleTab = true, openRequest }) {
+  function Harness({ names = ['a', 'b'], title = '', activeTab = 'planning', showMiddleTab = true, openRequest,
+    sessionId = 'session', discoveredPanels }) {
+    const slotId = useId();
     const [selection, setSelection] = useState(activeTab);
-    const [showBrowserTab, setShowBrowserTab] = useState(true);
+    const [closedBrowserSessions, setClosedBrowserSessions] = useState([]);
+    const showBrowserTab = !closedBrowserSessions.includes(sessionId);
+    const pluginTabs = useWebUIPluginPanelTabs({
+      slotId,
+      sessionId,
+      panels: discoveredPanels ?? [],
+      renderPanel: (key) => h(Body, { key, name: key }),
+    });
     useEffect(() => setSelection(activeTab), [activeTab]);
     useEffect(() => {
       if (openRequest) setSelection(openRequest.key);
     }, [openRequest]);
     return h(ExpandedPanel, {
-      activeTab: selection, onTabChange: setSelection,
-      onTabClose(key) { closed.push(key); setShowBrowserTab(false); },
-      additionalPanels: names.map((name) => ({
+      activeTab: pluginTabs.activeTabKey ?? selection,
+      onTabChange(key) {
+        if (pluginTabs.selectTab(key)) return;
+        pluginTabs.selectNativeTab();
+        setSelection(key);
+      },
+      onTabClose(key) {
+        if (pluginTabs.closeTab(key)) return;
+        closed.push(key);
+        setClosedBrowserSessions((sessions) => [...sessions, sessionId]);
+      },
+      addTab: discoveredPanels && { label: 'New tab', onOpen: pluginTabs.openDraft },
+      additionalPanels: discoveredPanels ? pluginTabs.tabs : names.map((name) => ({
         key: `webui:${name}`, label: `${name}${title}`, content: h(Body, { key: name, name }),
       })),
       onCollapse() {},
@@ -66,6 +85,10 @@ async function setup(initial = {}) {
   };
   return {
     container, tab, click, render, unmounted, closed,
+    async addPlugin(panelId) {
+      await click(container.querySelector('[data-testid="tool-panel-tab-add"]'));
+      await click(container.querySelector(`[data-testid="webui-panel-home-item"][data-variant="${panelId}"]`));
+    },
     active: () => container.querySelector('[role="tab"][aria-selected="true"]').dataset.variant,
     content: () => container.querySelector('[data-testid="tool-panel-expanded-content"]').textContent,
     async dispose() { await act(async () => root.unmount()); container.remove(); },
@@ -175,5 +198,123 @@ test('an explicit open request selects a plugin page without later updates takin
     assert.equal(app.active(), 'webui:b');
   } finally {
     await app.dispose();
+  }
+});
+
+const usagePanelId = 'pkg.stats|usage';
+const filesPanelId = 'pkg.files|files';
+const usagePanel = (sessionId) => ({ panelId: usagePanelId, key: `${sessionId}-usage`, title: 'Usage' });
+const filesPanel = (sessionId) => ({ panelId: filesPanelId, key: `${sessionId}-files`, title: 'Files' });
+const usageTabKey = `webui:plugin:${usagePanelId}`;
+const filesTabKey = `webui:plugin:${filesPanelId}`;
+
+test('clearing a plugin in the next session preserves tabs whose panels have not rendered yet', async () => {
+  const app = await setup({ sessionId: 'a', discoveredPanels: [usagePanel('a'), filesPanel('a')] });
+  try {
+    await app.addPlugin(filesPanelId);
+    await app.addPlugin(usagePanelId);
+    await app.render({ sessionId: 'b', discoveredPanels: [] });
+    await app.render({ sessionId: 'b', discoveredPanels: [filesPanel('b')] });
+    assert.ok(app.tab(filesTabKey));
+    await app.render({ sessionId: 'b', discoveredPanels: [] });
+    assert.equal(app.tab(filesTabKey), null);
+    await app.render({ sessionId: 'b', discoveredPanels: [usagePanel('b'), filesPanel('b')] });
+    assert.equal(app.tab(filesTabKey), null);
+    assert.equal(app.active(), usageTabKey);
+    assert.equal(app.content(), 'Plugin b-usage');
+  } finally {
+    await app.dispose();
+  }
+});
+
+test('closing an active draft skips neighbours that are still waiting to render', async () => {
+  const app = await setup({ sessionId: 'a', discoveredPanels: [usagePanel('a'), filesPanel('a')] });
+  try {
+    await app.addPlugin(usagePanelId);
+    await app.addPlugin(filesPanelId);
+    await app.render({ sessionId: 'b', discoveredPanels: [usagePanel('b')] });
+    await app.click(app.container.querySelector('[data-testid="tool-panel-tab-add"]'));
+    await app.click(app.container.querySelector('[role="tab"][aria-selected="true"] [data-testid="tool-panel-tab-close"]'));
+    assert.equal(app.active(), usageTabKey);
+    await app.render({ sessionId: 'b', discoveredPanels: [usagePanel('b'), filesPanel('b')] });
+    assert.ok(app.tab(filesTabKey));
+    assert.equal(app.active(), usageTabKey);
+  } finally {
+    await app.dispose();
+  }
+});
+
+test('closing the browser tab takes effect before switching sessions', async () => {
+  const prototype = window.HTMLElement.prototype;
+  const width = Object.getOwnPropertyDescriptor(prototype, 'offsetWidth');
+  Object.defineProperty(prototype, 'offsetWidth', { configurable: true, get: () => 100 });
+  const app = await setup({ sessionId: 'a', activeTab: 'browser' });
+  try {
+    await app.click(app.tab('browser').querySelector('[data-testid="tool-panel-tab-close"]'));
+    assert.deepEqual(app.closed, ['browser']);
+    assert.equal(app.tab('browser'), null);
+    await app.render({ sessionId: 'b', activeTab: 'browser' });
+    assert.equal(app.active(), 'browser');
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 160)); });
+    assert.equal(app.active(), 'browser');
+    assert.deepEqual(app.closed, ['browser']);
+  } finally {
+    await app.dispose();
+    Object.defineProperty(prototype, 'offsetWidth', width);
+  }
+});
+
+test('opening a new tab aligns it once without a delayed second scroll', async () => {
+  const prototype = window.HTMLElement.prototype;
+  const descriptor = Object.getOwnPropertyDescriptor(prototype, 'scrollIntoView');
+  const calls = [];
+  Object.defineProperty(prototype, 'scrollIntoView', {
+    configurable: true,
+    value(options) { calls.push({ key: this.dataset.variant, options }); },
+  });
+  let app;
+  try {
+    app = await setup();
+    calls.length = 0;
+    await app.render({ names: ['a', 'b', 'c'], openRequest: { key: 'webui:c' } });
+    assert.equal(app.active(), 'webui:c');
+    assert.deepEqual(calls.filter((call) => call.key === 'webui:c'), [{
+      key: 'webui:c', options: { behavior: 'auto', block: 'nearest', inline: 'nearest' },
+    }]);
+    const alignmentCount = calls.length;
+    await act(async () => { await new Promise((resolve) => window.setTimeout(resolve, 250)); });
+    assert.equal(calls.length, alignmentCount, 'the entrance animation must not trigger another scroll');
+    await app.click(app.tab('planning'));
+    assert.equal(calls.at(-1).key, 'planning');
+    assert.equal(calls.length, alignmentCount + 1);
+  } finally {
+    if (app) await app.dispose();
+    if (descriptor) Object.defineProperty(prototype, 'scrollIntoView', descriptor);
+    else delete prototype.scrollIntoView;
+  }
+});
+
+test('updating tab labels preserves the manually scrolled position', async () => {
+  const prototype = window.HTMLElement.prototype;
+  const descriptor = Object.getOwnPropertyDescriptor(prototype, 'scrollIntoView');
+  let alignmentCount = 0;
+  Object.defineProperty(prototype, 'scrollIntoView', {
+    configurable: true,
+    value() { alignmentCount += 1; },
+  });
+  let app;
+  try {
+    app = await setup({ activeTab: 'webui:b' });
+    const list = app.container.querySelector('[role="tablist"]');
+    list.scrollLeft = 145;
+    const countBeforeUpdate = alignmentCount;
+    await app.render({ activeTab: 'webui:b', title: ' updated' });
+    assert.equal(app.active(), 'webui:b');
+    assert.equal(list.scrollLeft, 145);
+    assert.equal(alignmentCount, countBeforeUpdate);
+  } finally {
+    if (app) await app.dispose();
+    if (descriptor) Object.defineProperty(prototype, 'scrollIntoView', descriptor);
+    else delete prototype.scrollIntoView;
   }
 });

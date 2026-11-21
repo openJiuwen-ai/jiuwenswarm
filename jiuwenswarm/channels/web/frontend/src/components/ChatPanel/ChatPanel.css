@@ -161,6 +161,17 @@
   display: block;
 }
 
+.chat-panel-header__plugin-action.ant-btn-icon-only {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+
+.chat-panel-header__plugin-action.ant-btn-icon-only svg {
+  width: 18px;
+  height: 18px;
+}
+
 .chat-input-container {
   container-type: inline-size;
   display: flex;

@@ -102,7 +102,7 @@ Tabs 隐藏页签的节点也计入整树预算。更小的组件字段限制优
 | 其余已实现组件 | 不允许 | 包括 Button、Text、Iframe、文件组件和媒体组件 |
 
 Panel / Iframe 只能作为允许其使用的槽位的树根。
-`conversation.panel.right` 的根白名单为 Panel / Iframe，二者的 title 同时作为右侧页签名称。
+`conversation.panel.right` 的根白名单为 Panel / Iframe，二者的 title 同时作为右侧页签名称，可选的 icon 作为页签图标。
 `application.menu.main` 和 `task.function.main` 允许 Iframe 专用根，也允许普通组件树。
 `task.function` 与 `task.function.main` 使用应用作用域，按当前 Web 连接隔离，不携带 `session_id`；
 空对话也可挂载，切换会话不改变实例归属或关闭已打开的任务页面。入口与页面共享包和实例标识。
@@ -408,8 +408,9 @@ cover 必须为合法 URL。允许普通子节点，无业务事件；extra 只�
 | 属性 | 类型 | 必填 | 默认值 | 含义 |
 | --- | --- | --- | --- | --- |
 | `title` | string（<= 200 UTF-8 字节） | 是 | — | 宿主页签名称，去空白后必须非空 |
+| `icon` | IconName | 否 | — | 宿主页签图标；省略时使用宿主默认插件图标，未知名称按非法属性拒绝 |
 
-只允许作为具备专用根许可的树根，必须有非空节点 children；不能嵌套 Panel / Iframe。title 用于宿主页签名称。无事件。
+只允许作为具备专用根许可的树根，必须有非空节点 children；不能嵌套 Panel / Iframe。title 用于宿主页签名称，icon 只影响宿主渲染的页签图标，不改写节点内容。无事件。
 
 ### 4.16 FileTree
 
@@ -446,8 +447,9 @@ file=null 表示无文件；非空对象至少提供 content 或 downloadUrl，n
 | `srcDoc` | LocalizedText | 与 src 二选一 | — | 插件生成的完整 HTML 文档，每种语言最长 16 KiB，去空白后非空 |
 | `title` | LocalizedText（每种语言 <= 200 UTF-8 字节） | 是 | — | 页面名称 / 右侧页签名称，各语言去空白后必须非空 |
 | `minWidth` | number（>= 0，<= 4096） | 否 | `0` | iframe 文档的最小宽度，单位 px；容器不足此宽度时由宿主外层提供横向滚动 |
+| `icon` | IconName | 否 | — | 右侧页签图标；省略时使用宿主默认插件图标，未知名称按非法属性拒绝 |
 
-只允许作为具备专用根许可的树根，无子节点或事件。URL 额外拒绝控制字符、反斜杠、三斜杠开头、凭据、无效 authority 与端口。宿主固定 sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"，不含 allow-same-origin，插件不可覆盖。iframe 宽度取容器可用宽度与 minWidth 中较大者；URL 和内联文档采用相同规则，不提供适应 / 桌面宽度切换。容器尺寸变化只调整布局，不重建浏览上下文；插件发送 replace 仍遵循整树重建契约。同 URL/文档刷新、URL 模式的外链打开与 15 秒慢加载提示为宿主功能。仅在 active 且 connected 时创建，隐藏 / 断连时卸载，不承诺保活。src 与 srcDoc 必须且只能提供一个；地址、文档和标题独立按宿主语言选择，切换文档释放旧浏览上下文，不接受不完整的语言映射。
+只允许作为具备专用根许可的树根，无子节点或事件。URL 额外拒绝控制字符、反斜杠、三斜杠开头、凭据、无效 authority 与端口。宿主固定 sandbox="allow-scripts allow-forms allow-popups allow-modals allow-downloads"，不含 allow-same-origin，插件不可覆盖。iframe 宽度取容器可用宽度与 minWidth 中较大者；URL 和内联文档采用相同规则，不提供适应 / 桌面宽度切换。容器尺寸变化只调整布局，不重建浏览上下文；插件发送 replace 仍遵循整树重建契约。同 URL/文档刷新、URL 模式的外链打开与 15 秒慢加载提示为宿主功能。仅在 active 且 connected 时创建，隐藏 / 断连时卸载，不承诺保活。src 与 srcDoc 必须且只能提供一个；地址、文档和标题独立按宿主语言选择，切换文档释放旧浏览上下文，不接受不完整的语言映射。icon 只影响宿主渲染的页签图标，不改写节点内容。
 
 以 `/extension-assets/` 开头的插件资源地址由宿主按配置的 Gateway API 基址解析；保留基址的路径前缀。没有显式 API 基址时保持同源相对地址。Electron FrontendOnly 的 file:// 页面使用桌面注入的 HTTP(S) API 基址；普通宿主相对网页和外部绝对地址保持原语义。iframe、来源展示和打开外链使用同一解析后的地址。
 
@@ -644,7 +646,7 @@ Gateway 仅支持展示型触发子树，不接受 icon。展示子树和菜单 
 | 整树、根节点和规模校验 | [schema.py](../../webui/schema.py)：validate_request、validate_root、_validate_node、_validate_events；[constants.py](../../webui/constants.py) | children、Tabs 内容遍历、专用根、预算和错误码 |
 | 已发布实例、版本与事件门禁 | [registry.py](../../webui/registry.py)、[action_validation.py](../../webui/action_validation.py)：validate_upstream、_find_node | 快照、节点路径、版本、action / args / data 核对 |
 | 后端渲染、清空和连接释放 | [runtime.py](../../webui/runtime.py)、[render_core.py](../../webui/core_handlers/render_core.py)、[action_core.py](../../webui/core_handlers/action_core.py) | 在何处拒绝、是否发布、旧实例与断连清理 |
-| 贡献发现与页面标题 | [contributions.py](../../webui/contributions.py)、[useWebUIPanels.tsx](../../../channels/web/frontend/src/features/webui/react/useWebUIPanels.tsx) | title、支持的 renderer / 根类型、实例与槽位映射 |
+| 贡献发现与页面标题 | [contributions.py](../../webui/contributions.py)、[useWebUIPanels.tsx](../../../channels/web/frontend/src/features/webui/react/useWebUIPanels.tsx) | title、跨会话稳定的 panelId、支持的 renderer / 根类型、实例与槽位映射 |
 | Gateway 转发 | [webui_handlers.py](../../../gateway/channel_manager/web/webui_handlers.py)、[transport.py](../../webui/transport.py)、[adapter.py](../../webui/adapter.py) | webui.dispatch、下行帧与错误转发；通常不解释组件 props，不能另加字段映射 |
 | 前端目录与默认值 | [componentCatalog.ts](../../../channels/web/frontend/src/features/webui/catalog/componentCatalog.ts)、[catalog/types.ts](../../../channels/web/frontend/src/features/webui/catalog/types.ts)、[catalog/components](../../../channels/web/frontend/src/features/webui/catalog/components) | 白名单、字段类型、required、defaults、validate、prepare、validateEvent |
 | 前端解析、规范化与不可变快照 | [protocol](../../../channels/web/frontend/src/features/webui/protocol)：checkPropValue、normalizeTree、process；[contracts](../../../channels/web/frontend/src/features/webui/contracts) | 与后端同样的类型和子节点规则、默认值、递归内容、版本和限制 |
@@ -675,10 +677,10 @@ Gateway 仅支持展示型触发子树，不接受 icon。展示子树和菜单 
 | Divider | divider.ts | webuiDivider：标题和方向 | 插件内容分段 |
 | Card | card.ts | webuiCard：标题、封面与内容 | 欢迎页、插件内容卡片 |
 | Tag | tag.ts | webuiTag：文案、状态色和链接 | 工作台标签、状态标识 |
-| Panel | panel.ts | webuiPanel：专用根容器 | ToolPanel / ExpandedPanel 的插件页签、工作区文件页签 |
+| Panel | panel.ts | webuiPanel：专用根容器；title / icon 供宿主页签使用 | ToolPanel / ExpandedPanel 的插件页签、工作区文件页签 |
 | FileTree | fileTree.ts | webuiFileTree：目录选择、展开、宽度及滚动恢复 | 工作区目录、Session Workspace Ops、文件预览联动 |
 | FilePreview | filePreview.ts | webuiFilePreview：文本、图片、PDF 与状态 | 受管文件下载 / 预览；内部 PDF iframe 不等于通用 Iframe 节点 |
-| Iframe | iframe.ts | webuiIframe：固定沙箱、活跃生命周期、最小宽度与刷新 | 右侧网页预览、侧栏主页面、任务主页面 |
+| Iframe | iframe.ts | webuiIframe：固定沙箱、活跃生命周期、最小宽度与刷新；title / icon 供宿主页签使用 | 右侧网页预览、侧栏主页面、任务主页面 |
 | Dropdown | dropdown.ts | webuiDropdown：图标或自定义触发区、菜单选择 | 侧栏用户菜单、轮次菜单 |
 | Icon | icon.ts | webuiIcon：白名单、尺寸与无障碍 | 独立装饰 / 语义图标 |
 | MediaSurface | mediaSurface.ts | webuiMediaSurface：图片、视频、沙箱页面、封面回退与消息协议 | 外观插件的应用背景 |
@@ -696,7 +698,7 @@ Gateway 仅支持展示型触发子树，不接受 icon。展示子树和菜单 
 | 侧栏菜单与用户入口：application.menu、application.sidebar.footer | [SessionSidebar/index.tsx](../../../channels/web/frontend/src/components/SessionSidebar/index.tsx) | 按钮、头像、Dropdown 触发区与菜单 |
 | 任务功能入口：task.function | [ConversationSidebar.tsx](../../../channels/web/frontend/src/multi-session/sidebar/ConversationSidebar.tsx) | 入口组件、导航及应用作用域 |
 | 菜单 / 任务主页面：application.menu.main、task.function.main | [App.tsx](../../../channels/web/frontend/src/App.tsx)、[WebUINavigation.tsx](../../../channels/web/frontend/src/features/webui/react/WebUINavigation.tsx)：WebUINavigationHost / WebUIPageHost | 普通树与 Iframe 专用根、页面切换 |
-| 右侧页签：conversation.panel.right | [ToolPanel/index.tsx](../../../channels/web/frontend/src/components/ToolPanel/index.tsx)、[ExpandedPanel.tsx](../../../channels/web/frontend/src/components/teamArea/ExpandedPanel.tsx)、[useWebUIPanels.tsx](../../../channels/web/frontend/src/features/webui/react/useWebUIPanels.tsx) | Panel / Iframe 的 title、页签选择、关闭、清理、滚动与隐藏生命周期 |
+| 右侧页签：conversation.panel.right | [ToolPanel/index.tsx](../../../channels/web/frontend/src/components/ToolPanel/index.tsx)、[ExpandedPanel.tsx](../../../channels/web/frontend/src/components/teamArea/ExpandedPanel.tsx)、[useWebUIPanels.tsx](../../../channels/web/frontend/src/features/webui/react/useWebUIPanels.tsx)、[useWebUIPluginPanelTabs.tsx](../../../channels/web/frontend/src/features/webui/react/useWebUIPluginPanelTabs.tsx)、[WebUIPluginPanelHome.tsx](../../../channels/web/frontend/src/features/webui/react/WebUIPluginPanelHome.tsx) | Panel / Iframe 的 title 与 icon、加号空白页签、选择后原地转插件页、页签关闭与相邻回退、空态、贡献消失裁剪、滚动与隐藏生命周期 |
 | 聊天标题和操作：conversation.header.title.after、conversation.header.actions | [ChatPanel/index.tsx](../../../channels/web/frontend/src/components/ChatPanel/index.tsx) | 文案、图标、Button 与 Dropdown |
 | 聊天输入区：conversation.input.above、conversation.input.below | [ChatPanel/index.tsx](../../../channels/web/frontend/src/components/ChatPanel/index.tsx) | 输入、选择、禁用、草稿和局部布局 |
 | 消息与轮次：message.assistant.meta、conversation.turn.footer.actions、conversation.session.content.after | [MessageItem.tsx](../../../channels/web/frontend/src/components/ChatPanel/MessageItem.tsx) | 消息归属、轮次操作、状态与事件参数 |
@@ -721,7 +723,7 @@ Gateway 仅支持展示型触发子树，不接受 icon。展示子树和菜单 
 | 修改默认值或 size / variant 语义 | 前端 defaults / prepare 与适配器回退、后端等价的缺省校验、主题和受影响宿主 |
 | 修改事件及 data | 插件 Handler、两端事件规则、action_validation、适配器 emit、runtime 门禁及共享事件用例 |
 | 新增 / 删除组件 | componentCatalog、componentRegistry、后端 COMPONENT_RULES、子节点 / 根限制、组件数量与示例 |
-| 改动 Panel / Iframe / MediaSurface 的根规则或 title | 两端槽位与整树规则、useWebUIPanels、页面导航、右侧宿主与背景宿主 |
+| 改动 Panel / Iframe / MediaSurface 的根规则、title 或 icon | 两端槽位与整树规则、useWebUIPanels、右侧加号空白页签、页面导航、右侧宿主与背景宿主 |
 | 修改图标集合 | 图标白名单与生成产物、图标引用方；本文只在 IconName 规则变化时修订 |
 | 不兼容变更 | 明确协议版本 / 兼容策略，更新插件安装副本并重新加载或重装；不能只升级前端 |
 

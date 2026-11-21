@@ -12,7 +12,11 @@ import { preferenceVersion, readInstanceVisibility, subscribePreferences } from 
 export interface WebUIPanelEntry {
   /** Opaque identity including session, slot, package and instance. */
   key: string;
+  /** Opaque identity of the contribution, stable when another conversation mounts the same instance. */
+  panelId: string;
   title: string;
+  /** Optional whitelisted icon name from the root Panel / Iframe `icon` prop. */
+  icon?: string;
 }
 
 const noopSubscribe = (): (() => void) => () => undefined;
@@ -86,16 +90,24 @@ export function useWebUIPanels({ slotId, sessionId, styles }: {
     const scope = runtime.getScopeSnapshot(sessionId, slotId);
     if (!scope.mounted) return [];
     return scope.instanceKeys.flatMap((key) => {
-      const frame = runtime.getInstance(key)?.frame;
+      const instance = runtime.getInstance(key);
+      const frame = instance?.frame;
       const root = frame?.tree;
-      // The protocol validates root types; discovery only consumes their shared title contract.
-      if (!frame || !root || root.props.title === undefined) return [];
+      // The protocol validates root types; discovery only consumes their shared title/icon contract.
+      if (!instance || !frame || !root || root.props.title === undefined) return [];
       try {
         if (!readInstanceVisibility(frame)) return [];
       } catch {
         /* The instance error boundary presents storage read failures. */
       }
-      return [{ key, title: resolveLocalizedText(root.props.title as LocalizedText, language) ?? '' }];
+      const { packageId, instanceKey } = instance.target;
+      const icon = typeof root.props.icon === 'string' ? root.props.icon : undefined;
+      return [{
+        key,
+        panelId: `${packageId}|${instanceKey}`,
+        title: resolveLocalizedText(root.props.title as LocalizedText, language) ?? '',
+        icon,
+      }];
     });
   }, [runtime, sessionId, slotId, handle, version, language, preferences]);
 

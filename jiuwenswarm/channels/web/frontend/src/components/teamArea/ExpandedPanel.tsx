@@ -2,7 +2,7 @@ import { useCallback, useEffect, useId, type ReactNode } from 'react';
 import { useFullscreenPanel } from '../../hooks';
 import { useSessionArtifactsCount } from '../ArtifactsPanel';
 import { ArtifactExpandedPanel } from '../ArtifactsPanel';
-import { ExpandedPanelTabs, useExpandedPanelTabs, type PanelTabItem } from './ExpandedPanelTabs';
+import { ExpandedPanelTabs, useExpandedPanelTabs, type PanelTabAddAction, type PanelTabItem } from './ExpandedPanelTabs';
 import { OrgInfoPanel } from './OrgInfoPanel';
 import { useTeamOrganizationUiEnabled } from '../../features/teamOrganization/featureConfig';
 import { useSessionStore, useChatStore } from '../../stores';
@@ -31,6 +31,7 @@ export interface ExpandedPanelProps {
   renderBrowserContent?: () => ReactNode;
   additionalTab?: PanelTabItem & { content: ReactNode; actions?: ReactNode };
   additionalPanels?: ExpandedPanelContribution[];
+  addTab?: PanelTabAddAction;
   testIdPrefix?: string;
 }
 
@@ -52,6 +53,7 @@ export function ExpandedPanel({
   renderBrowserContent,
   additionalTab,
   additionalPanels = [],
+  addTab,
   testIdPrefix = 'tool-panel',
 }: ExpandedPanelProps) {
   const { t } = useTranslation();
@@ -113,6 +115,7 @@ export function ExpandedPanel({
         onCollapse={onCollapse}
         onToggleFullscreen={handleToggleFullscreen}
         isFullscreen={isFullscreen}
+        addTab={addTab}
         testIdPrefix={testIdPrefix}
         idPrefix={tabPanelId}
       />
