@@ -1606,8 +1606,8 @@ class AgentRuntime:
             )
             return
 
-        # Business waiters have exited. The retained observation subscription
-        # owns delivery, with the Team manager's existing waiter-less fallback.
+        # Business waiters have exited, and the Gateway may close observers
+        # independently. The lifecycle adapter publishes outside those streams.
         try:
             await self._team_lifecycle().publish_pause_completed(
                 request.session_id,
