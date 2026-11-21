@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from collections.abc import Callable
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -76,6 +77,7 @@ class RuntimePromptRail(DeepAgentRail):
         timezone_offset: int = 8,
         agent_id: str | None = None,
         service_id: str | None = None,
+        skill_dirs_provider: Callable[[], str | list[str]] | None = None,
     ) -> None:
         super().__init__()
         self._agent = None
@@ -100,6 +102,7 @@ class RuntimePromptRail(DeepAgentRail):
         self._request_system_prompt: str = ""
         self._agent_id = agent_id
         self._service_id = service_id
+        self._skill_dirs_provider = skill_dirs_provider
 
     def init(self, agent) -> None:
         """从 agent 获取 system_prompt_builder 引用。"""
@@ -271,14 +274,14 @@ class RuntimePromptRail(DeepAgentRail):
         if language == "cn":
             return (
                 f"- Agent 内部数据目录：{agent_workspace_dir}\n"
-                f"- Agent 技能目录：{skills}\n"
+                f"- JiuwenSwarm 内部技能存储目录：{skills}\n"
                 f"- Agent 记忆目录：{memory}\n"
                 f"- Agent 待办目录：{todo}\n"
                 f"- JiuwenSwarm 启动配置目录：{config_dir}\n"
             )
         return (
             f"- Agent internal data directory: {agent_workspace_dir}\n"
-            f"- Agent skills directory: {skills}\n"
+            f"- JiuwenSwarm internal skill storage directory: {skills}\n"
             f"- Agent memory directory: {memory}\n"
             f"- Agent todo directory: {todo}\n"
             f"- JiuwenSwarm startup configuration directory: {config_dir}\n"
@@ -762,6 +765,26 @@ class RuntimePromptRail(DeepAgentRail):
             en_agent_paths = self._format_agent_data_paths(
                 agent_workspace_dir, config_dir, language="en"
             )
+            if self._skill_dirs_provider is not None:
+                skill_dirs = self._skill_dirs_provider()
+                if isinstance(skill_dirs, str):
+                    skill_dirs = [skill_dirs]
+                if skill_dirs:
+                    loading_paths = "\n".join(f"  - {path}" for path in skill_dirs)
+                    cn_agent_paths += f"\n- 当前会话技能加载目录：\n{loading_paths}\n"
+                    en_agent_paths += f"\n- Current session skill loading directories:\n{loading_paths}\n"
+                else:
+                    cn_agent_paths += "\n- 当前会话技能加载目录：未启用\n"
+                    en_agent_paths += "\n- Current session skill loading directories: disabled\n"
+            if self._channel == "officeclaw":
+                cn_agent_paths += (
+                    "\nOfficeAce 技能安装通过宿主提供的安装工具完成，"
+                    "由安装工具选择目标目录并完成注册。\n"
+                )
+                en_agent_paths += (
+                    "\nInstall OfficeAce skills through the host-provided installation tool. "
+                    "The installation tool selects the destination and registers the skill.\n"
+                )
             logger.info(
                 "[RuntimePromptRail] directory context: channel=%s project_dir=%s "
                 "cwd=%s agent_workspace=%s has_project=%s",

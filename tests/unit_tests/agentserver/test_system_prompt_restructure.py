@@ -1284,7 +1284,7 @@ async def test_runtime_rail_multi_tenant_workspace_dirs(monkeypatch):
     assert "workspace" in prompt
     assert "workspace_abc" in prompt
     assert "Agent 内部数据目录" in prompt
-    assert "Agent 技能目录" in prompt
+    assert "JiuwenSwarm 内部技能存储目录" in prompt
 
     expected_config = str(global_root / "config")
     expected_workspace = str(workspace_root)
@@ -1435,3 +1435,94 @@ def test_interface_deep_skill_rail_uses_multi_tenant_paths():
 
     assert len(skill_dirs_single) == 1
     assert skill_dirs_single[0].as_posix() == "/home/user/.jiuwenswarm/skills"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["cn", "en"])
+@pytest.mark.parametrize("skill_source", ["workspace", "shared", "prebuilt"])
+async def test_runtime_prompt_skill_dirs_match_active_loader(
+    monkeypatch, tmp_path, language, skill_source,
+):
+    workspace = tmp_path / "internal"
+    workspace.mkdir()
+    shared_roots = [tmp_path / "official", tmp_path / "user"]
+    extra_root = tmp_path / "extension"
+    adapter = _TestableJiuWenSwarmDeepAdapter()
+    adapter.set_workspace_dir(str(workspace))
+    roots = shared_roots if skill_source == "shared" else [workspace / "skills"]
+    registered_roots = [workspace / "skills"] if skill_source == "workspace" else shared_roots
+    monkeypatch.setattr(
+        interface_module, "is_skill_prebuilt_tenant", lambda *args: skill_source == "prebuilt",
+    )
+    monkeypatch.setattr(interface_module, "resolve_agent_registered_skill_dirs", lambda: registered_roots)
+    monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: language)
+    monkeypatch.setattr(adapter, "_resolve_prompt_channel", lambda: "officeclaw")
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.skill.skill_manager.enabled_skills_from_environ",
+        lambda: None,
+    )
+    adapter._skill_rail = adapter._build_skill_rail({}, extra_skill_dir=str(extra_root))
+    assert adapter._skill_rail is not None
+    expected_roots = [str(root) for root in roots] + [str(extra_root)]
+    assert adapter._skill_rail.skills_dir == expected_roots
+
+    runtime_rail = adapter._build_runtime_prompt_rail()
+    assert runtime_rail is not None
+    builder = SystemPromptBuilder(language=language)
+    runtime_rail.init(_FakeAgent(builder))
+    runtime_rail.set_runtime_paths(workspace_dir=str(workspace))
+    await runtime_rail.before_model_call(AgentCallbackContext(agent=None, inputs=None, session=None))
+
+    prompt = builder.build()
+    storage_label = (
+        "JiuwenSwarm 内部技能存储目录"
+        if language == "cn" else "JiuwenSwarm internal skill storage directory"
+    )
+    loading_label = (
+        "当前会话技能加载目录"
+        if language == "cn" else "Current session skill loading directories"
+    )
+    assert f"{storage_label}:" in prompt or f"{storage_label}：" in prompt
+    loading_paths = prompt.split(loading_label, 1)[1].split("\n\n", 1)[0]
+    assert loading_paths.splitlines()[1:] == [f"  - {root}" for root in expected_roots]
+    install_guidance = (
+        "由安装工具选择目标目录并完成注册"
+        if language == "cn" else "The installation tool selects the destination and registers the skill"
+    )
+    assert install_guidance in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["cn", "en"])
+async def test_runtime_prompt_tracks_replaced_and_disabled_skill_loader(
+    monkeypatch, tmp_path, language,
+):
+    adapter = _TestableJiuWenSwarmDeepAdapter()
+    monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: language)
+    monkeypatch.setattr(adapter, "_resolve_prompt_channel", lambda: "officeclaw")
+    first_root = str(tmp_path / "first")
+    second_root = str(tmp_path / "second")
+    adapter._skill_rail = SkillUseRail(skills_dir=[first_root])
+    runtime_rail = adapter._build_runtime_prompt_rail()
+    assert runtime_rail is not None
+    builder = SystemPromptBuilder(language=language)
+    runtime_rail.init(_FakeAgent(builder))
+    ctx = AgentCallbackContext(agent=None, inputs=None, session=None)
+
+    await runtime_rail.before_model_call(ctx)
+    assert first_root in builder.build()
+
+    adapter._skill_rail = SkillUseRail(skills_dir=second_root)
+    await runtime_rail.before_model_call(ctx)
+    assert second_root in builder.build()
+    assert first_root not in builder.build()
+
+    adapter._skill_rail = None
+    await runtime_rail.before_model_call(ctx)
+    prompt = builder.build()
+    assert second_root not in prompt
+    expected = (
+        "当前会话技能加载目录：未启用"
+        if language == "cn" else "Current session skill loading directories: disabled"
+    )
+    assert expected in prompt
