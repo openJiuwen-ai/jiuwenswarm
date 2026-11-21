@@ -222,23 +222,6 @@ def _unique_override_ids(
     return result
 
 
-def _path_key(item: dict[str, Any]) -> tuple[str, str]:
-    path = str(item.get("path") or "").replace("\\", "/").rstrip("/").casefold()
-    match = str(item.get("match") or "prefix").strip().lower() or "prefix"
-    return (path, match)
-
-
-def _path_keys(layer: dict[str, Any]) -> set[tuple[str, str]]:
-    keys: set[tuple[str, str]] = set()
-    fg = layer.get("file_guard")
-    if not isinstance(fg, dict):
-        return keys
-    for item in fg.get("paths") or []:
-        if isinstance(item, dict):
-            keys.add(_path_key(item))
-    return keys
-
-
 def load_global_permissions() -> dict[str, Any]:
     from jiuwenswarm.common.config import get_config
 
@@ -307,7 +290,21 @@ def overlay_from_effective(
     user_permissions: dict[str, Any] | None = None,
     session_permissions: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Extract a User/Session overlay: Engine snapshot minus lower layers."""
+    """Extract a User/Session overlay: Engine snapshot minus lower layers.
+
+    ``file_guard.paths`` are written as per-axis increments against the layers
+    below (Global⊕User for a Session overlay, Global⊕Session for a User
+    overlay); a whole entry is copied only when that path is new. Copying a
+    whole entry would leak axes the lower layer already granted, and a User
+    overlay would then make this Session's temporary grant permanent.
+    """
+    from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (
+        FILE_GUARD_AXES,
+        compose_path_axes,
+        path_axis_level,
+        path_rule_scope,
+    )
+
     src = effective if isinstance(effective, dict) else {}
     global_layer = _as_permissions_section(
         global_permissions if global_permissions is not None else load_global_permissions()
@@ -336,7 +333,7 @@ def overlay_from_effective(
         | _override_ids(user_layer.get("approval_overrides"))
         | _override_ids(skip_layer.get("approval_overrides"))
     )
-    base_path_keys = _path_keys(global_layer) | _path_keys(user_layer) | _path_keys(skip_layer)
+    base_path_axes = compose_path_axes(global_layer, user_layer, skip_layer)
 
     out: dict[str, Any] = {}
     src_allow = _ordered_tool_names_at_level(src, "allow")
@@ -390,12 +387,47 @@ def overlay_from_effective(
         for item in fg.get("paths") or []:
             if not isinstance(item, dict) or item.get("layer") == "builtin":
                 continue
-            if _path_key(item) in base_path_keys:
+            base = base_path_axes.get(path_rule_scope(item))
+            if base is None:
+                paths.append(item)
                 continue
-            paths.append(item)
+            delta: dict[str, str] = {}
+            for key in FILE_GUARD_AXES:
+                level = path_axis_level(item, key) or "ask"
+                if level == (base.get(key) or "ask"):
+                    continue
+                # A Session overlay only speaks through `allow`: compose drops
+                # its ask/deny, so writing those would be inert noise.
+                if session and level != "allow":
+                    continue
+                delta[key] = level
+            if delta:
+                rest = {key: value for key, value in item.items() if key not in FILE_GUARD_AXES}
+                paths.append({**rest, **delta})
         if paths:
             out["file_guard"] = {"paths": paths}
     return out
+
+
+def _merge_path_entries(current: list[Any], overlay: list[Any]) -> list[Any]:
+    """Union ``file_guard.paths`` by scope; the overlay owns the axes it carries."""
+    from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (
+        path_rule_scope,
+    )
+
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
+    order: list[tuple[str, str]] = []
+    for items in (current, overlay):
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            scope = path_rule_scope(item)
+            if scope in merged:
+                merged[scope].update(item)
+            else:
+                merged[scope] = dict(item)
+                order.append(scope)
+    return [merged[scope] for scope in order]
 
 
 def _merge_overlay_into_current(
@@ -410,19 +442,35 @@ def _merge_overlay_into_current(
     for key in _LIST_KEYS:
         out.pop(key, None)
     out.pop("approval_overrides", None)
-    fg = out.get("file_guard")
-    if isinstance(fg, dict):
-        fg = dict(fg)
-        fg.pop("paths", None)
-        if fg:
-            out["file_guard"] = fg
-        else:
-            out.pop("file_guard", None)
+
+    current_fg = out.pop("file_guard", None)
+    current_fg = dict(current_fg) if isinstance(current_fg, dict) else {}
+    current_paths = current_fg.pop("paths", None)
+    current_paths = (
+        [item for item in current_paths if isinstance(item, dict)]
+        if isinstance(current_paths, list)
+        else []
+    )
+
     out.update(overlay)
     if session:
         out.pop("deny_tools", None)
         out.pop("ask_tools", None)
         out.pop("enabled", None)
+
+    overlay_fg = out.pop("file_guard", None)
+    overlay_fg = dict(overlay_fg) if isinstance(overlay_fg, dict) else {}
+    overlay_paths = overlay_fg.pop("paths", None)
+    overlay_paths = list(overlay_paths) if isinstance(overlay_paths, list) else []
+
+    merged_fg = {**current_fg, **overlay_fg}
+    # A Session overlay replaces its own rules; a User overlay is an increment,
+    # so rules it does not speak about must survive.
+    merged_paths = overlay_paths if session else _merge_path_entries(current_paths, overlay_paths)
+    if merged_paths:
+        merged_fg["paths"] = merged_paths
+    if merged_fg:
+        out["file_guard"] = merged_fg
     return out
 
 
