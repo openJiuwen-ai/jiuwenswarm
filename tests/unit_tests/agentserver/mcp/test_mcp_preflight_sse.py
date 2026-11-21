@@ -41,6 +41,7 @@ def _cfg(
     transport: str = "sse",
     url: str = "https://mcp-pan.baidu.com/sse",
     headers: dict[str, str] | None = None,
+    query_params: dict[str, str] | dict[str, str] | None = None,
 ) -> SimpleNamespace:
     params: dict[str, Any] = {"timeout_s": 5}
     if headers:
@@ -50,7 +51,7 @@ def _cfg(
         server_path=url,
         params=params,
         auth_headers=None,
-        auth_query_params=None,
+        auth_query_params=query_params,
     )
 
 
@@ -132,3 +133,59 @@ async def test_streamable_http_still_probes_with_post() -> None:
     assert reason == "ok (http 200)"
     assert seen["method"] == "POST"
     assert '"method": "initialize"' in seen["body"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("query_params", "expected_app_id"),
+    (
+        pytest.param(None, "2120763488500129793", id="auth-query-params-none"),
+        # Issue #6836: McpServerConfig defaults auth_query_params to {} — the
+        # empty dict must not strip the URL's own "?appId=..." query string.
+        pytest.param({}, "2120763488500129793", id="auth-query-params-empty"),
+    ),
+)
+async def test_probe_keeps_url_query_string(query_params: Any, expected_app_id: str) -> None:
+    """The probe request must keep the query string already present in
+    server_path (e.g. ``?appId=...``) no matter what auth_query_params holds —
+    httpx ``params`` replaces (not merges) the URL query, so the empty default
+    {} used to drop it and the server rejected the probe (issue #6836)."""
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            content=b"event: endpoint\ndata: /message?sessionId=x\n\n",
+        )
+
+    with patch("httpx.AsyncClient", _ClientFactory(handler)):
+        ok, _ = await preflight_mcp_server_reachable(
+            _cfg(url="http://gateway:19998/mcp/agent/sse?appId=2120763488500129793", query_params=query_params)
+        )
+    assert ok is True
+    assert f"appId={expected_app_id}" in seen["url"]
+
+
+@pytest.mark.asyncio
+async def test_probe_merges_url_query_with_auth_query_params() -> None:
+    """Non-empty auth_query_params must merge with (not replace) the URL's own
+    query string; on key clashes the auth param wins."""
+    seen: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={"jsonrpc": "2.0", "id": 0, "result": {}})
+
+    with patch("httpx.AsyncClient", _ClientFactory(handler)):
+        ok, _ = await preflight_mcp_server_reachable(
+            _cfg(
+                transport="streamable-http",
+                url="http://gateway:19998/mcp?appId=url-side&sig=abc",
+                query_params={"appId": "auth-side"},
+            )
+        )
+    assert ok is True
+    assert "appId=auth-side" in seen["url"]
+    assert "sig=abc" in seen["url"]
