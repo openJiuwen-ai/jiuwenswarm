@@ -1948,6 +1948,13 @@ class RuntimeSessionProvisioner:
         )
         self._completed_session_deletes[target] = committed_result
         self._pending_session_delete_metadata.pop(target, None)
+        logger.info(
+            "Runtime session deleted: session_id=%s channel_id=%s is_team=%s team_name=%s",
+            committed_result.session_id,
+            committed_result.channel_id,
+            committed_result.is_team,
+            committed_result.team_name,
+        )
         return committed_result
 
     async def delete_team(
