@@ -5,10 +5,12 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 from contextvars import ContextVar
 from html import unescape
+from typing import Any
 from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import requests
@@ -23,6 +25,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.url_safety import (
     unsafe_public_https_url_reason,
 )
 
+logger = logging.getLogger(__name__)
 _PUBLIC_HTTPS_FETCH: ContextVar[bool] = ContextVar("public_https_fetch", default=False)
 
 
@@ -266,6 +269,52 @@ def _fetch_via_jina_reader_sync(
     }
 
 
+def _extract_trafilatura_title(trafilatura_mod: Any, raw_html: str, url: str) -> str:
+    """Best-effort title extraction via trafilatura metadata."""
+    try:
+        metadata = trafilatura_mod.extract_metadata(raw_html, default_url=url)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.debug("trafilatura metadata extract failed for %s: %s", url, exc)
+        return ""
+    return str(getattr(metadata, "title", "") or "").strip() if metadata else ""
+
+
+def _extract_html_with_trafilatura(raw_html: str, url: str) -> tuple[str, str]:
+    """Extract clean article Markdown and title using trafilatura."""
+    try:
+        # pylint: disable=import-outside-toplevel
+        import trafilatura
+    except ImportError:
+        logger.debug("trafilatura unavailable; falling back to strip_tags")
+        return "", ""
+
+    try:
+        extracted = trafilatura.extract(
+            raw_html,
+            url=url,
+            output_format="markdown",
+            include_comments=False,
+            include_tables=True,
+            favor_precision=True,
+        )
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        logger.debug("trafilatura extract failed for %s: %s", url, exc)
+        return "", ""
+
+    if not extracted or not extracted.strip():
+        return "", ""
+    meta_title = _extract_trafilatura_title(trafilatura, raw_html, url)
+    return extracted.strip(), meta_title
+
+
+def _extract_html_fallback(raw_html: str) -> str:
+    """Fallback plain-text HTML extraction when article parsing yields nothing."""
+    flags = re.IGNORECASE | re.DOTALL
+    cleaned = re.sub(r"<script[^>]*>.*?</script>", " ", raw_html, flags=flags)
+    cleaned = re.sub(r"<style[^>]*>.*?</style>", " ", cleaned, flags=flags)
+    return strip_tags(cleaned)
+
+
 def _fetch_webpage_sync(
     url: str, timeout_seconds: int, *, public_https: bool = False,
 ) -> dict[str, str | int]:
@@ -281,9 +330,14 @@ def _fetch_webpage_sync(
     title = strip_tags(title_match.group(1)) if title_match else ""
 
     if "html" in content_type.lower():
-        text = re.sub(r"<script[^>]*>.*?</script>", " ", text, flags=re.IGNORECASE | re.DOTALL)
-        text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.IGNORECASE | re.DOTALL)
-        text = strip_tags(text)
+        target_url = str(response.url or url)
+        extracted, meta_title = _extract_html_with_trafilatura(text, target_url)
+        if extracted:
+            text = extracted
+            if not title and meta_title:
+                title = meta_title
+        else:
+            text = _extract_html_fallback(text)
     else:
         text = re.sub(r"\s+", " ", text).strip()
 
@@ -345,7 +399,8 @@ mcp_fetch_webpage = _PermissionAwareFetch(
     card=tool(
         name="mcp_fetch_webpage",
         description=(
-            "Fetch webpage text content from URL. Returns status/title/plain text content. "
+            "Fetch webpage content from URL. Extracts clean article Markdown with "
+            "plain-text fallback, and returns status/title/content. "
             "Set max_chars=0 to disable output clipping. "
             "Use a larger timeout_seconds for slow websites."
         ),

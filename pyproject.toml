@@ -86,6 +86,7 @@ dependencies = [
     "uv>=0.4.0,<0.13",
     "gitcode-cli==0.12.0",
     "imageio-ffmpeg>=0.5.1,<1",
+    "trafilatura>=2.0,<3",
     # Enterprise / link-mtls / manager-config. Dockerfile.claw strips this line via
     # openjiuwen_runtime_foundation and reinstalls from AGENT_RUNTIME_*.
     "openjiuwen-runtime-foundation @ git+https://gitcode.com/openJiuwen/agent-runtime.git@develop#subdirectory=foundation",  # openjiuwen_runtime_foundation
