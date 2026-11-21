@@ -1292,6 +1292,27 @@ class AgentRuntime:
         )
         return is_single_agent_mode(deprecate_mode(canonical))
 
+    @staticmethod
+    def _durable_session_exists(session_id: str | None) -> bool:
+        """Read-only durable existence probe for ownership-loss recovery.
+
+        A supervisor worker restart wipes the in-memory ownership while the
+        durable Session stays valid; this distinguishes an orphaned real
+        Session (safe to re-adopt / degrade) from a fabricated session_id
+        (must keep the rejection semantics — never spin up an agent for it).
+        """
+        if not str(session_id or "").strip():
+            return False
+        try:
+            from jiuwenswarm.server.runtime.session.session_metadata import (
+                get_session_metadata,
+            )
+
+            metadata = get_session_metadata(session_id, enable_writeback=False)
+        except Exception:  # noqa: BLE001
+            return False
+        return bool(metadata)
+
     async def _prepare_chat_turn(
         self,
         request: AgentRequest,
@@ -2365,7 +2386,26 @@ class AgentRuntime:
             ):
                 raise ValueError("session input requires a supported single-agent Session")
             snapshot = self._session_coordinator.snapshot_session(request.session_id)
-            if snapshot is None:
+            if snapshot is None and self._durable_session_exists(request.session_id):
+                # A supervisor-managed worker restart wipes this Runtime's
+                # in-memory ownership while the durable Session stays valid;
+                # the gateway keeps labelling the next message steer/follow_up
+                # because its busy bookkeeping outlives the worker. A
+                # supplemental input with no live execution is meaningless —
+                # deliver it as an ordinary turn of the same session instead
+                # of failing with a bare RuntimeError (#6860).
+                params = dict(request.params)
+                params.pop("input_mode", None)
+                params.pop("runtime_mode", None)
+                request = replace(request, params=params)
+                is_session_input = False
+                logger.warning(
+                    "[AgentRuntime] orphaned session input degraded to an ordinary turn "
+                    "session=%s request_id=%s",
+                    request.session_id,
+                    request.request_id,
+                )
+            elif snapshot is None:
                 raise RuntimeStateError("session is not owned by this Runtime")
             if snapshot and snapshot.state in {RuntimeSessionState.CLOSED, RuntimeSessionState.QUIESCING}:
                 raise RuntimeStateError("session is closing or closed")
