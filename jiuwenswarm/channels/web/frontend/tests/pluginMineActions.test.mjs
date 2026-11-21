@@ -30,20 +30,22 @@ await build({
       builder.onResolve({ filter: /^(\.\.\/)+hooks$/ }, () => ({ path: 'hooks', namespace: 'action-exports' }));
       builder.onLoad({ filter: /.*/, namespace: 'action-exports' }, ({ path }) => ({
         contents: path === 'ui'
-          ? ['PageCard', 'EntityHeader', 'DetailPromptChip', 'DetailSection', 'PageToolbarSearch', 'PageHeader', 'CategoryTabs', 'Tabs', 'EmptyState']
+          ? ['PageCard', 'EntityHeader', 'DetailPromptChip', 'DetailSection', 'PageToolbarSearch', 'PageHeader', 'CategoryTabs', 'Tabs', 'EmptyState', 'Button', 'Dialog']
             .map(name => `export { ${name} } from ${JSON.stringify(resolve(`src/components/ui/${name}/${name}.tsx`))};`).join('\n')
           : `export { useHorizontalScrollEdges } from ${JSON.stringify(resolve('src/hooks/useHorizontalScrollEdges.ts'))};`,
         loader: 'js',
         resolveDir: process.cwd(),
       }));
-      builder.onResolve({ filter: /stores\/(pluginPackageStore|connectorStore)$/ }, ({ path }) => ({
-        path: path.endsWith('pluginPackageStore') ? 'plugin' : 'connector',
+      builder.onResolve({ filter: /stores\/(pluginPackageStore|connectorStore|systemPluginStore)$/ }, ({ path }) => ({
+        path: path.endsWith('pluginPackageStore') ? 'plugin' : path.endsWith('systemPluginStore') ? 'system' : 'connector',
         namespace: 'action-store',
       }));
       builder.onLoad({ filter: /.*/, namespace: 'action-store' }, ({ path }) => ({
         contents: path === 'plugin'
           ? 'export const usePluginPackageStore = selector => selector(globalThis.pluginActionState); usePluginPackageStore.getState = () => globalThis.pluginActionState;'
-          : 'export const useConnectorStore = selector => selector(globalThis.connectorActionState); useConnectorStore.getState = () => globalThis.connectorActionState;',
+          : path === 'system'
+            ? 'export const useSystemPluginStore = selector => selector(globalThis.systemPluginActionState); useSystemPluginStore.getState = () => globalThis.systemPluginActionState;'
+            : 'export const useConnectorStore = selector => selector(globalThis.connectorActionState); useConnectorStore.getState = () => globalThis.connectorActionState;',
         loader: 'js',
       }));
       builder.onResolve({ filter: /services\/(pluginPackagesApi|connectorApi)$/ }, ({ path }) => ({
@@ -85,6 +87,7 @@ after(() => {
   }
   delete globalThis.pluginActionState;
   delete globalThis.connectorActionState;
+  delete globalThis.systemPluginActionState;
   dom.window.close();
 });
 
@@ -127,6 +130,11 @@ function resetState({ installed = false, connected = false } = {}) {
     connectors: [connector], builtinConnectors: [], myConnectors: [connector], busyMap: {},
     connect: async name => { calls.connect.push(name); return null; },
   };
+  globalThis.systemPluginActionState = {
+    catalog: [], mine: [], busyIds: {}, loading: false,
+    install: async () => ({ ok: true }),
+    setEnabled: async () => ({ ok: true }),
+  };
   return calls;
 }
 
@@ -143,12 +151,14 @@ async function render(component, props, check) {
   }
 }
 
-function marketProps(calls, topTab = 'my', myKind = 'plugin') {
+function marketProps(calls, topTab = 'my', myKind = 'plugin', pluginKind = 'agent') {
   return {
-    topTab, myKind,
-    onTopTabChange() {}, onMyKindChange() {},
+    topTab, myKind, pluginKind,
+    onTopTabChange() {}, onMyKindChange() {}, onPluginKindChange() {},
     onOpenConnectorDetail() {}, onCreateManual() {}, onCreateWithSkill() {},
     onCreateWithUpload() {}, onRegisterCustomMcp() {},
+    officeSuites: null, onOpenOfficeSuite() {}, onOpenSystemPluginDetail() {},
+    onRefresh: async () => {}, refreshNonce: 0,
     onOpenPluginDetail: id => { calls.detail.push(id); },
     onUse: payload => { calls.use.push(payload); },
   };
@@ -215,6 +225,31 @@ test('my installed disconnected MCP retains the connect action', async () => {
     assert.deepEqual(calls.install, []);
   });
 });
+
+for (const [surface, props] of [
+  ['my extensions', calls => marketProps(calls)],
+  ['plugin marketplace', calls => marketProps(calls, 'plugin', 'plugin', 'system')],
+]) {
+  test(`${surface} system plugin toggles do not replace the card action with installing copy`, async () => {
+    await i18next.changeLanguage('zh');
+    const calls = resetState();
+    const systemPlugin = {
+      id: 'token-weather', packageId: 'token-weather', version: '1.0.0', installedVersion: '1.0.0',
+      displayName: { zh: 'Token 天气', en: 'Token Weather' },
+      displayDescription: { zh: '系统插件', en: 'System plugin' },
+      tags: [], avatar: null, installed: true, active: true, enabled: true,
+    };
+    globalThis.systemPluginActionState.mine = [systemPlugin];
+    globalThis.systemPluginActionState.catalog = [systemPlugin];
+    globalThis.systemPluginActionState.busyIds = { 'token-weather': true };
+
+    await render(MarketplacePage, props(calls), async host => {
+      assert.ok(host.querySelector('[data-testid="connector-market-system-plugin-enabled"]'));
+      assert.doesNotMatch(host.textContent, /安装中/);
+      assert.equal(host.querySelector('[data-testid="connector-market-card-install"]'), null);
+    });
+  });
+}
 
 for (const fromMy of [true, false]) {
   test(`${fromMy ? 'my' : 'marketplace'} uninstalled plugin detail respects the page action scope`, async () => {

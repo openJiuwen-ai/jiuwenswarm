@@ -800,7 +800,7 @@ export function MarketplacePage({
                       tags={systemPluginTags(pkg)}
                       description={localizedText(pkg.displayDescription, i18n.language)}
                       iconUrl={pkg.avatar || undefined}
-                      state={systemBusyIds[pkg.id] ? 'connecting' : pkg.installed ? 'connected' : 'idle'}
+                      state={pkg.installed ? 'connected' : 'idle'}
                       busyKind="install"
                       actionDisabled={!!systemBusyIds[pkg.id]}
                       onOpenDetail={() => onOpenSystemPluginDetail(pkg.id)}
@@ -871,7 +871,7 @@ export function MarketplacePage({
                   tags={systemPluginTags(pkg)}
                   description={localizedText(pkg.displayDescription, i18n.language)}
                   iconUrl={pkg.avatar || undefined}
-                  state={systemBusyIds[pkg.id] ? 'connecting' : pkg.installed ? 'connected' : 'idle'}
+                  state={pkg.installed ? 'connected' : 'idle'}
                   busyKind="install"
                   actionDisabled={!!systemBusyIds[pkg.id]}
                   canOpenDetail
