@@ -1613,3 +1613,65 @@ def test_permission_resume_dispatch_reuses_frozen_root_context() -> None:
     )
 
     assert prepared["run"]["context"]["extra"][ROOT_CONTEXT_KEY] == context.to_mapping()
+
+
+@pytest.mark.asyncio
+async def test_supplement_cascades_stop_to_session_subagents(monkeypatch: pytest.MonkeyPatch) -> None:
+    """SF-1 regression: non-interaction supplement stop must cascade-stop session subagents."""
+    loop_session = MagicMock()
+    loop_session.get_session_id.return_value = "tui_sess_1"
+    loop_session.get_state.return_value = None
+    instance = MagicMock()
+    instance._interaction_started = False
+    instance._loop_session = loop_session
+    rail = MagicMock()
+    rail.get_cancelled_tool_results.return_value = []
+    adapter = _make_adapter(
+        _active_session_ids={},
+        _stream_event_rail=rail,
+        _instance=instance,
+    )
+    spy = AsyncMock(return_value=["sub_a"])
+    monkeypatch.setattr(adapter, "stop_session_subagents", spy)
+
+    response = await adapter.process_interrupt(_build_supplement_request())
+
+    assert response.payload["intent"] == "supplement"
+    assert response.payload.get("stopped_subagents") == ["sub_a"]
+    spy.assert_awaited_once_with("tui_sess_1")
+
+
+@pytest.mark.asyncio
+async def test_interaction_cancel_cascades_stop_to_session_subagents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P3 回归（atomgit 2026-11-18）：交互主停止路径与 supplement 同等级联。
+
+    _process_interaction_interrupt 的共享 teardown 挂接（interface_deep.py
+    stop_session_subagents）此前仅非交互分支有断言；本用例锁定交互路径
+    级联恰一次且结果透出 payload.stopped_subagents。"""
+    goal_manager = MagicMock()
+    goal_manager.get = AsyncMock(return_value=None)
+    goal_manager.pause = AsyncMock()
+
+    instance = MagicMock()
+    instance._interaction_started = True
+    instance.goal_manager = goal_manager
+    instance.cancel_round = AsyncMock(return_value=True)
+
+    rail = MagicMock()
+    rail.get_cancelled_tool_results.return_value = []
+    adapter = _make_adapter(
+        _active_session_ids={"sess-x": 1},
+        _stream_event_rail=rail,
+        _instance=instance,
+    )
+    adapter._cancel_pending_todos = AsyncMock(return_value=None)
+    spy = AsyncMock(return_value=["sub_a"])
+    monkeypatch.setattr(adapter, "stop_session_subagents", spy)
+
+    response = await adapter.process_interrupt(_build_cancel_request("sess-x"))
+
+    assert response.payload["intent"] == "cancel"
+    spy.assert_awaited_once()
+    assert response.payload.get("stopped_subagents") == ["sub_a"]
