@@ -15,6 +15,11 @@ import { equipmentListFilter } from '../../features/equipmentMarketplace';
 import { OfficeSuiteDetail, useOfficeSuites } from '../../features/officeAddins/OfficeSuite';
 import type { SuiteId } from '../../features/officeAddins/officeAddins';
 import { useSystemPluginStore } from '../../stores/systemPluginStore';
+import { isEnterprise } from '../../edition';
+import {
+  connectorApi,
+  type ConnectorSourceProvider,
+} from '../../services/connectorApi';
 
 // "管理我的插件/MCP" 一次性跳转握手：调用方（InputArea.tsx 的扩展面板）先把目标 tab 存进这个
 // 模块级变量，再触发 `jiuwen:nav` 切到 connectorMarket——ConnectorMarketPanel 挂载是这次导航
@@ -92,8 +97,16 @@ export function ConnectorMarketPanel({
 }: ConnectorMarketPanelProps = {}) {
   const { t } = useTranslation();
   const [view, setView] = useState<View>({ name: 'market' });
-  const [topTab, setTopTab] = useState<TopTab>(() => (pendingManageView ? 'my' : 'plugin'));
+  // Enterprise hides the plugin plaza; personal keeps the original default.
+  const [topTab, setTopTab] = useState<TopTab>(() =>
+    pendingManageView ? 'my' : isEnterprise() ? 'mcp' : 'plugin',
+  );
   const [myKind, setMyKind] = useState<MarketKind>(() => {
+    if (isEnterprise()) {
+      // Enterprise "我的扩展" only keeps the connector sub-tab.
+      pendingManageView = null;
+      return 'mcp';
+    }
     const kind = pendingManageView?.myKind ?? 'plugin';
     pendingManageView = null;
     return kind;
@@ -104,9 +117,12 @@ export function ConnectorMarketPanel({
   // Office 加载项套件只有桌面端有：网页端状态接口 404，suites 为 null，广场不出卡片。
   const office = useOfficeSuites();
   const officeStatus = view.name === 'office-suite' ? office.suites?.[view.suite] : undefined;
+  const [connectorSources, setConnectorSources] = useState<ConnectorSourceProvider[]>([]);
+  const [selectedConnectorSourceId, setSelectedConnectorSourceId] = useState('');
 
   const loadConnectorList = useConnectorStore((s) => s.loadList);
   const loadPluginList = usePluginPackageStore((s) => s.loadList);
+  const enterpriseEdition = isEnterprise();
 
   // 2026-08-11：connectorStore/pluginPackageStore 的所有 action（connect/disconnect/enable/
   // disable/registerCustom/deleteConnector/saveCredentialsAndConnect/waitAuth，插件那边同理）
@@ -209,6 +225,47 @@ export function ConnectorMarketPanel({
   // 就是它本身，topTab 是 'my'（我的扩展）时看 myKind 子筛选。
   const activeKind: MarketKind = topTab === 'my' ? myKind : topTab === 'mcp' ? 'mcp' : 'plugin';
 
+  // 企业版拉取连接器远端源；单机不请求，避免多源页签（CMS-V-04）。
+  useEffect(() => {
+    if (!enterpriseEdition) {
+      setConnectorSources([]);
+      setSelectedConnectorSourceId('');
+      return;
+    }
+    let cancelled = false;
+    void connectorApi
+      .listSourceProviders()
+      .then((providers) => {
+        if (cancelled) return;
+        const enabled = providers.filter(
+          (item) =>
+            item.enabled !== false &&
+            (!item.capabilities || item.capabilities.length === 0 || item.capabilities.includes('search')),
+        );
+        // Enterprise catalogue requires source_id; fall back to default Hub when
+        // providers is empty so the square still loads (SPI default source).
+        const effective =
+          enabled.length > 0
+            ? enabled
+            : [{ source_id: 'openjiuwen-hub', display_name: 'OpenJiuwen Hub', enabled: true, capabilities: ['search'] }];
+        setConnectorSources(effective);
+        setSelectedConnectorSourceId((current) => {
+          if (current && effective.some((item) => item.source_id === current)) return current;
+          return effective[0]?.source_id || 'openjiuwen-hub';
+        });
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setConnectorSources([
+          { source_id: 'openjiuwen-hub', display_name: 'OpenJiuwen Hub', enabled: true, capabilities: ['search'] },
+        ]);
+        setSelectedConnectorSourceId((current) => current || 'openjiuwen-hub');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [enterpriseEdition]);
+
   // 进入市场或切换插件/连接器范围时，直接请求当前列表。
   useEffect(() => {
     if (view.name !== 'market') return;
@@ -219,14 +276,34 @@ export function ConnectorMarketPanel({
     // 能覆盖两个 tab 的。
     const scope = topTab === 'my' ? 'mine' : 'catalog';
     if (activeKind === 'mcp') {
-      void loadConnectorList(equipmentListFilter('mcp', scope));
+      // Enterprise catalogue aligns with skills.source.search: no list until a
+      // source is selected; source_id is always sent. Personal omits source_id.
+      if (enterpriseEdition && scope === 'catalog' && !selectedConnectorSourceId) {
+        return;
+      }
+      const catalogSourceId =
+        enterpriseEdition && scope === 'catalog' ? selectedConnectorSourceId : undefined;
+      void loadConnectorList(equipmentListFilter('mcp', scope), {
+        sourceId: catalogSourceId,
+      });
     } else {
       void loadPluginList(equipmentListFilter('plugin', scope));
       // "我的扩展"合并展示 Agent 与系统插件，与上方按 pluginKind 过滤的广场页不同。
       if (topTab === 'my') void loadSystemMine();
       else if (pluginKind === 'system') void loadSystemCatalog();
     }
-  }, [activeKind, topTab, view.name, pluginKind, loadConnectorList, loadPluginList, loadSystemCatalog, loadSystemMine]);
+  }, [
+    activeKind,
+    topTab,
+    view.name,
+    pluginKind,
+    loadConnectorList,
+    loadPluginList,
+    loadSystemCatalog,
+    loadSystemMine,
+    enterpriseEdition,
+    selectedConnectorSourceId,
+  ]);
 
   const [refreshNonce, setRefreshNonce] = useState(0);
 
@@ -234,8 +311,14 @@ export function ConnectorMarketPanel({
   // 前端沿用既有轮询收敛。
   const handleRefresh = async () => {
     setRefreshNonce((value) => value + 1);
-    if (activeKind === 'mcp') await loadConnectorList('builtin', { refresh: true });
-    else if (pluginKind === 'system') await loadSystemCatalog({ refresh: true });
+    if (activeKind === 'mcp') {
+      const scope = topTab === 'my' ? 'mine' : 'catalog';
+      await loadConnectorList(equipmentListFilter('mcp', scope), {
+        refresh: true,
+        sourceId:
+          enterpriseEdition && scope === 'catalog' ? selectedConnectorSourceId : undefined,
+      });
+    } else if (pluginKind === 'system') await loadSystemCatalog({ refresh: true });
     else await loadPluginList('builtin+hub', { refresh: true });
   };
 
@@ -275,6 +358,9 @@ export function ConnectorMarketPanel({
           onRegisterCustomMcp={() => setView({ name: 'register-mcp' })}
           onRefresh={handleRefresh}
           refreshNonce={refreshNonce}
+          connectorSources={enterpriseEdition ? connectorSources : []}
+          selectedConnectorSourceId={selectedConnectorSourceId}
+          onConnectorSourceChange={setSelectedConnectorSourceId}
         />
       )}
 

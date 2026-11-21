@@ -95,7 +95,21 @@ interface McpDetailPageProps {
 // 不再是旧版"不是 connected 就整个拒绝进入"，见 mcpState.ts deriveMcpAvailability。
 export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: McpDetailPageProps) {
   const { t } = useTranslation();
-  const connector = useConnectorStore((s) => s.connectors.find((c) => c.id === name || c.runtimePackageName === name));
+  // Marketplace cards come from builtinConnectors (or search hits); the merged
+  // `connectors` view can be shadowed by a same package_name local entry whose
+  // id is not the Hub asset uuid. Prefer id/hubAssetId match across all lists.
+  const connector = useConnectorStore((s) => {
+    const lists = [s.builtinConnectors, s.connectors, s.myConnectors];
+    for (const list of lists) {
+      const byAsset = list.find((c) => c.id === name || c.hubAssetId === name);
+      if (byAsset) return byAsset;
+    }
+    for (const list of lists) {
+      const byRuntime = list.find((c) => c.runtimePackageName === name);
+      if (byRuntime) return byRuntime;
+    }
+    return undefined;
+  });
   // Cache by the runtime name used by connect/disconnect and detail invalidation.
   const runtimeName = connector?.runtimePackageName ?? name;
   const detail = useConnectorStore((s) => s.detailCache[runtimeName]);
@@ -104,6 +118,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   // 没消费出口——插件详情页（PluginDetailPage.tsx）有对称的"技能"分区，MCP 这边照抄视觉补上。
   const skills = detail?.skills;
   const loadDetail = useConnectorStore((s) => s.loadDetail);
+  const catalogSourceId = useConnectorStore((s) => s.catalogSourceId);
   const connectAction = useConnectorStore((s) => s.connect);
   const installPackage = useConnectorStore((s) => s.installPackage);
   const uninstallPackage = useConnectorStore((s) => s.uninstallPackage);
@@ -138,19 +153,39 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   // detailCache[name] 变成 undefined（不管是最初挂载时没缓存，还是被 connect/disconnect 之类的
   // 操作清空），这个 effect 就会重新触发去重新拉，不用等重新挂载。
   useEffect(() => {
-    // Uninstalled Hub packages have no local directory for mcp.show.
-    if (connector?.source === 'hub' && !connector.installed) return;
-    // mcp.show 一次性带回 skills+tools（见文档 §5.2）；loadDetail 内部已经按 name 缓存，
-    // detailCache[runtimeName] 有值时这里的调用会被它自己的守卫短路，不会产生多余请求。
+    // Need a catalogue card (or at least source_id) before calling mcp.show — enterprise
+    // remote detail rejects requests without source_id.
+    if (!connector) return;
+    // mcp.show 一次性带回 skills+tools（见文档 §5.2）；未安装 Hub 也走远程 get_detail。
+    // detailCache[runtimeName] 有值时 loadDetail 自己的守卫会短路，不会产生多余请求。
     if (!detail) {
-      loadDetail(runtimeName);
+      const sourceId = connector.sourceId || catalogSourceId || undefined;
+      const showId =
+        connector.source === 'hub' && !connector.installed
+          ? connector.hubAssetId || connector.id
+          : runtimeName;
+      loadDetail(runtimeName, { sourceId, id: showId });
     }
-  }, [connector?.source, connector?.installed, runtimeName, detail, loadDetail]);
+  }, [
+    connector,
+    connector?.source,
+    connector?.sourceId,
+    connector?.installed,
+    connector?.hubAssetId,
+    connector?.id,
+    catalogSourceId,
+    runtimeName,
+    detail,
+    loadDetail,
+  ]);
 
   if (!connector) return null;
 
   const connectorId = connector.id;
   const connectorInstalled = connector.installed;
+  const connectorSourceId = connector.sourceId;
+  const connectorVersion = connector.version;
+  const connectorPackageName = connector.runtimePackageName || connector.name;
   // 自定义 MCP 一旦断联（已经解绑过一次），右上角那个按钮的语义从"解绑"变成"卸载"（彻底删除，
   // mcp.delete_custom）——用普通变量而不是每处都重新读 connector.source/!linked，也顺便避开
   // 闭包里 TS 认不出 `connector` 已经非空narrow 的问题（handleUnbind/handleDelete 定义在下面，
@@ -162,7 +197,11 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   async function handleInstall() {
     setInstalling(true);
     if (!connectorInstalled) {
-      const response = await installPackage(connectorId);
+      const response = await installPackage(connectorId, {
+        sourceId: connectorSourceId,
+        versionId: connectorVersion,
+        packageName: connectorPackageName,
+      });
       setInstalling(false);
       if (!response) return;
       const connectResult = response.connect;

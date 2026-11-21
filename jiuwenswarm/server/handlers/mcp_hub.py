@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 async def handle_mcp_list(ctx: RequestContext) -> None:
     """Handle ``mcp.list`` RPC: list marketplace MCPs (read-only).
 
-    filter: builtin(预置目录) | local(已连接预置 + 全部自定义)。缺省传 None，
-    非法值原样透传，由 marketplace 校验/兜底。
+    filter: builtin(单机广场) | hub(企业远端广场) | local(我的)。
+    单机省略时由 marketplace 默认 builtin；企业必须显式 hub|local。
     web 不转发此入口（网关本地已处理），保留只为语义对齐。
     """
     request = ctx.request
@@ -32,18 +32,14 @@ async def handle_mcp_list(ctx: RequestContext) -> None:
             list_mcps_with_hub,
         )
         params = request.params or {}
-        raw_filter = params.get("filter")
-        if raw_filter is None or str(raw_filter).strip() == "":
-            filter_val: str | None = None
-        else:
-            filter_val = str(raw_filter).strip().lower()
+        filter_val = str(params.get("filter") or "").strip().lower() or None
         items = await list_mcps_with_hub(
             filter_val,
             cache_mode=params.get("cache_mode"),
             refresh=params.get("refresh") is True,
             query=str(params.get("query") or ""),
-            source_id=params.get("source_id"),
-            metadata=params.get("metadata"),
+            source_id=str(params.get("source_id") or "").strip() or None,
+            metadata=request.metadata if isinstance(request.metadata, dict) else None,
         )
         resp = AgentResponse(
             request_id=request.request_id,
@@ -71,7 +67,11 @@ async def handle_mcp_show(ctx: RequestContext) -> None:
         name = str(params.get("id") or params.get("name") or "").strip()
         if not name:
             raise ValueError("mcp id or name is required")
-        item = await show_mcp_with_hub(name)
+        item = await show_mcp_with_hub(
+            name,
+            source_id=str(params.get("source_id") or "").strip() or None,
+            metadata=request.metadata if isinstance(request.metadata, dict) else None,
+        )
         if item is None:
             raise KeyError(f"mcp '{name}' not found")
         # Connected MCP but ToolMgr returned no tools: fall back to a
@@ -122,10 +122,10 @@ async def handle_mcp_install(ctx: RequestContext) -> None:
         asset_id = str(params.get("id") or "").strip()
         item = await install_hub_mcp(
             asset_id,
-            source_id=params.get("source_id"),
-            version_id=params.get("version_id"),
-            package_name=params.get("package_name"),
-            metadata=params.get("metadata"),
+            source_id=str(params.get("source_id") or "").strip() or None,
+            version_id=str(params.get("version_id") or "").strip() or None,
+            package_name=str(params.get("package_name") or "").strip() or None,
+            metadata=request.metadata if isinstance(request.metadata, dict) else None,
         )
         name = str(item.get("name") or "").strip()
         # Connect failure is non-fatal after a successful download.
@@ -173,6 +173,38 @@ async def handle_mcp_install(ctx: RequestContext) -> None:
             channel_id=request.channel_id,
             ok=False,
             payload={"type": "install_failed", "error": str(exc), "code": "MCP_INTERNAL"},
+        )
+    await ctx.sink.send_response(resp)
+
+
+async def handle_mcp_sources_providers(ctx: RequestContext) -> None:
+    """Handle ``mcp.sources.providers``: list registered connector catalogue sources."""
+    request = ctx.request
+    try:
+        from jiuwenswarm.server.runtime.mcp.marketplace import (
+            list_connector_source_providers,
+        )
+
+        providers = list_connector_source_providers()
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload={"type": "list", "providers": providers},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "[AgentWebSocketServer] mcp.sources.providers failed: %s", exc
+        )
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=False,
+            payload={
+                "type": "internal_error",
+                "error": str(exc),
+                "code": "MCP_INTERNAL",
+            },
         )
     await ctx.sink.send_response(resp)
 
