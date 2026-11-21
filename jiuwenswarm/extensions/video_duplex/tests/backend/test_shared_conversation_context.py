@@ -45,6 +45,55 @@ async def test_voice_history_never_reads_unflushed_records(monkeypatch):
     read.assert_not_called()
 
 
+async def test_chat_dispatch_sync_survives_busy_history_writer(monkeypatch):
+    """Regression for #6608: ordinary chat dispatch runs this sync for every
+    message; a flush timeout must not fail the whole chat request."""
+    from pathlib import Path
+
+    from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayCursor
+
+    messages = [UserMessage(content="old text")]
+    cursor = HistoryReplayCursor(Path("/tmp/history.jsonl"), 0, (0, 0, 0, 0, 0), 7)
+    context = SimpleNamespace(
+        get_messages=lambda: messages,
+        add_messages=AsyncMock(),
+        duplex_history_cursor=cursor,
+    )
+    agent = SimpleNamespace(react_agent=SimpleNamespace(
+        context_engine=SimpleNamespace(get_context=lambda **_: context, save_contexts=AsyncMock())))
+    monkeypatch.setattr(sync.session_history, "flush_pending_writes", lambda **_: False)
+    read = AsyncMock()
+    monkeypatch.setattr(sync.session_history, "load_history_records", read)
+    # Before the fix this raised RuntimeError("Voice history is still saving").
+    await sync.sync_conversation_context(agent, "web-chat")
+    context.add_messages.assert_not_called()
+    read.assert_not_called()
+    # Busy skip must not advance the cursor; a later sync re-reads the batch.
+    assert context.duplex_history_cursor is cursor
+    assert context.duplex_history_cursor.offset == 7
+
+
+async def test_chat_dispatch_sync_propagates_history_replay_error(monkeypatch):
+    """HistoryReplayError（历史损坏等持久失败）不得被静默吞掉（审查意见：
+    except RuntimeError 过宽连带捕获 HistoryReplayError，会让每条消息都
+    静默 WARNING 且语音上下文永久导入不了）。"""
+    from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
+
+    messages = [UserMessage(content="old text")]
+    context = SimpleNamespace(get_messages=lambda: messages, add_messages=AsyncMock())
+    agent = SimpleNamespace(react_agent=SimpleNamespace(
+        context_engine=SimpleNamespace(get_context=lambda **_: context, save_contexts=AsyncMock())))
+    monkeypatch.setattr(sync.session_history, "flush_pending_writes", lambda **_: True)
+
+    def broken_read(sid, *, is_restorable, cursor=None, **_kwargs):
+        raise HistoryReplayError("corrupted history", code="HISTORY_RESTORE_FAILED")
+
+    monkeypatch.setattr(sync, "read_history_replay", broken_read)
+    with pytest.raises(HistoryReplayError, match="HISTORY_RESTORE_FAILED"):
+        await sync.sync_conversation_context(agent, "web-chat")
+    context.add_messages.assert_not_called()
+
+
 def test_saved_chat_tasks_share_session_but_have_distinct_execution_ids():
     # Verify the internal scheduler predicates without starting its worker loop.
     # pylint: disable=protected-access
