@@ -151,61 +151,9 @@
 }
 .enterprise-context-popover__user { margin: 0 2px 8px; padding: 4px 4px 10px; border-bottom: 1px solid var(--color-border-default); color: var(--color-text-primary); font-size: 13px; font-weight: 600; }
 .enterprise-context-popover__user small { display: block; margin-top: 4px; color: var(--color-text-secondary); font-size: 11px; font-weight: 400; }
-.enterprise-context-popover label { display: block; margin-top: 8px; color: var(--color-text-secondary); font-size: 11px; }
-.enterprise-context-popover__modes {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px;
-  margin: 0 0 4px;
-  padding: 3px;
-  border: 1px solid var(--color-border-default);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--color-surface-card) 70%, transparent);
-}
-.enterprise-context-popover__mode {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  height: 28px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  font-size: 11px;
-}
-.enterprise-context-popover__mode--active {
-  background: var(--color-surface-card);
-  color: var(--color-text-primary);
-  font-weight: 600;
-  box-shadow: var(--effect-shadow-sm, 0 1px 2px rgba(0, 0, 0, 0.06));
-}
-.enterprise-context-popover__mode-check { color: #16a34a; font-size: 12px; font-weight: 700; line-height: 1; }
-.enterprise-context-popover__mode:disabled,
-.enterprise-context-popover__input:disabled,
-.enterprise-context-popover__apply:disabled { cursor: wait; opacity: 0.65; }
 .enterprise-context-popover .editable-combobox { margin-top: 4px; }
-.enterprise-context-popover__input {
-  display: block;
-  box-sizing: border-box;
-  width: 100%;
-  height: 32px;
-  margin-top: 4px;
-  padding: 0 9px;
-  border: 1px solid var(--color-border-default);
-  border-radius: 7px;
-  outline: none;
-  background: var(--color-surface-card);
-  color: var(--color-text-primary);
-  font-size: 12px;
-}
-.enterprise-context-popover__input:focus {
-  border-color: var(--color-action-primary);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-action-primary) 16%, transparent);
-}
-.enterprise-context-popover__apply,
+.enterprise-context-popover__current-agent { margin-top: 8px; color: var(--color-text-secondary); font-size: 11px; line-height: 1.45; }
+.enterprise-context-popover__switch,
 .enterprise-context-popover__logout {
   width: 100%;
   margin-top: 10px;
@@ -217,13 +165,12 @@
   font-size: 12px;
   text-align: center;
 }
-.enterprise-context-popover__apply { background: var(--color-surface-card); color: var(--color-text-primary); }
-.enterprise-context-popover__apply:hover:not(:disabled) { border-color: var(--color-action-primary); color: var(--color-action-primary); }
+.enterprise-context-popover__switch:hover { border-color: var(--color-action-primary); color: var(--color-action-primary); }
+.enterprise-context-popover__switch { margin-top: 12px; color: var(--color-text-primary); }
 .enterprise-context-popover__logout { margin-top: 8px; color: var(--color-feedback-danger); }
 .enterprise-context-popover__logout:hover { background: color-mix(in srgb, var(--color-feedback-danger) 8%, transparent); border-color: var(--color-feedback-danger); }
 .enterprise-context-popover__status { margin-top: 10px; color: var(--color-text-secondary); font-size: 11px; }
 .enterprise-context-popover__error { margin-top: 10px; color: var(--color-feedback-danger); font-size: 11px; line-height: 1.45; }
-.enterprise-context-popover label { display: block; margin-top: 10px; color: var(--color-text-secondary); font-size: 11px; }
 .editable-combobox {
   position: relative;
   margin-top: 5px;
