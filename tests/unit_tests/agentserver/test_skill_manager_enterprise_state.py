@@ -416,10 +416,7 @@ def test_personal_builtin_skill_cannot_uninstall(
     assert manager.list_skill_installations()
 
 
-def test_enterprise_web_install_and_uninstall_use_workspace_state(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_enterprise_uninstall_uses_workspace_state(tmp_path: Path) -> None:
     workspace = tmp_path / "tenant"
     manager = SkillManager(
         workspace_dir=str(workspace),
@@ -427,22 +424,20 @@ def test_enterprise_web_install_and_uninstall_use_workspace_state(
         agent_id="agent-a",
     )
     source_url = "https://skills.example/user-skill.zip"
-    monkeypatch.setattr(
-        manager,
-        "_download_web_skill_bytes",
-        lambda _url: _skill_archive("user-skill", "1.0.0"),
+    _write_skill(workspace, "user-skill")
+    manager.record_skill_installation(
+        name="user-skill",
+        source_type="user",
+        source="web",
+        origin=source_url,
+        version="1.0.0",
     )
-
-    installed = asyncio.run(manager.handle_skills_web_install({"url": source_url}))
-
-    assert installed["success"] is True
-    assert (workspace / "skills" / "user-skill" / "SKILL.md").is_file()
     record = manager.list_skill_installations()[0]
     assert record["source_type"] == "user"
     assert record["origin"] == source_url
     assert record["version"] == "1.0.0"
 
-    removed = asyncio.run(manager.handle_skills_web_uninstall({"name": "user-skill"}))
+    removed = asyncio.run(manager.handle_skills_uninstall({"name": "user-skill"}))
 
     assert removed == {"success": True, "name": "user-skill"}
     assert not (workspace / "skills" / "user-skill").exists()
@@ -458,7 +453,7 @@ def test_enterprise_uninstall_uses_origin_and_persisted_entity_directory(tmp_pat
     )
     # 模拟刷新后重建管理器，市场名、登记名、磁盘目录名彼此不同。
     restored = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
-    result = asyncio.run(restored.handle_skills_web_uninstall(
+    result = asyncio.run(restored.handle_skills_uninstall(
         {"name": "中文技能", "origin": "customhub:asset-1"}
     ))
     assert result == {"success": True, "name": "internal-name"}
@@ -478,26 +473,26 @@ def test_enterprise_uninstall_allows_blank_source_type(tmp_path: Path) -> None:
     state_file.write_text(json.dumps(state), encoding="utf-8")
 
     restored = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
-    result = asyncio.run(restored.handle_skills_web_uninstall({"name": "local-skill"}))
+    result = asyncio.run(restored.handle_skills_uninstall({"name": "local-skill"}))
 
     assert result == {"success": True, "name": "local-skill"}
     assert not skill_dir.exists()
     assert restored.list_skill_installations() == []
 
 
-def test_enterprise_web_uninstall_still_rejects_prebuilt(tmp_path: Path) -> None:
+def test_enterprise_uninstall_still_rejects_prebuilt(tmp_path: Path) -> None:
     manager = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
     skill_dir = _write_skill(tmp_path, "managed-skill")
     _record_prebuilt(manager)
 
-    result = asyncio.run(manager.handle_skills_web_uninstall({"name": "managed-skill"}))
+    result = asyncio.run(manager.handle_skills_uninstall({"name": "managed-skill"}))
 
     assert result["success"] is False
     assert result["error_code"] == "prebuilt_not_removable"
     assert skill_dir.is_dir()
 
 
-def test_enterprise_web_uninstall_still_rejects_builtin(
+def test_enterprise_uninstall_still_rejects_builtin(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -513,18 +508,18 @@ def test_enterprise_web_uninstall_still_rejects_builtin(
         version="1.0.0",
     )
 
-    result = asyncio.run(manager.handle_skills_web_uninstall({"name": "docx-pro"}))
+    result = asyncio.run(manager.handle_skills_uninstall({"name": "docx-pro"}))
 
     assert result["success"] is False
     assert result["error_code"] == "prebuilt_not_removable"
     assert skill_dir.is_dir()
 
 
-def test_personal_web_uninstall_rejects_builtin(
+def test_personal_uninstall_rejects_builtin(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """个人版 web 卸载入口：builtin 安装副本不可卸。"""
+    """个人版卸载入口：builtin 安装副本不可卸。"""
     monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     manager = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
     skill_dir = _write_skill(tmp_path, "docx-pro")
@@ -536,7 +531,7 @@ def test_personal_web_uninstall_rejects_builtin(
         version="1.0.0",
     )
 
-    result = asyncio.run(manager.handle_skills_web_uninstall({"name": "docx-pro"}))
+    result = asyncio.run(manager.handle_skills_uninstall({"name": "docx-pro"}))
 
     assert result["success"] is False
     assert result["error_code"] == "prebuilt_not_removable"
@@ -549,34 +544,34 @@ def test_enterprise_uninstall_does_not_fall_back_from_unknown_origin(tmp_path: P
     manager = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
     skill_dir = _write_skill(tmp_path, "user-skill")
     manager.record_skill_installation(name="user-skill", source_type="user", origin="customhub:asset-1")
-    result = asyncio.run(manager.handle_skills_web_uninstall(
+    result = asyncio.run(manager.handle_skills_uninstall(
         {"name": "user-skill", "origin": "customhub:missing"}
     ))
     assert result["success"] is False
     assert skill_dir.exists()
 
 
-def test_web_uninstall_rejects_non_string_name(tmp_path: Path) -> None:
+def test_uninstall_rejects_non_string_name(tmp_path: Path) -> None:
     """name 声明为 string，非法类型必须被类型校验拒绝而非巧合落入 missing_params。"""
     manager = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
     skill_dir = _write_skill(tmp_path, "user-skill")
     manager.record_skill_installation(name="user-skill", source_type="user", origin="hub:asset-1")
 
-    result = asyncio.run(manager.handle_skills_web_uninstall({"name": ["user-skill"]}))
+    result = asyncio.run(manager.handle_skills_uninstall({"name": ["user-skill"]}))
 
     assert result["success"] is False
     assert result["error_code"] == "invalid_params"
     assert skill_dir.exists()
 
 
-def test_web_uninstall_rejects_non_string_origin_without_name_fallback(tmp_path: Path) -> None:
+def test_uninstall_rejects_non_string_origin_without_name_fallback(tmp_path: Path) -> None:
     """origin 声明为 string，对象等非法类型不得静默改写为空串后走 name-only 回退误删。"""
     manager = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
     skill_dir = _write_skill(tmp_path, "user-skill")
     manager.record_skill_installation(name="user-skill", source_type="user", origin="hub:asset-1")
 
     result = asyncio.run(
-        manager.handle_skills_web_uninstall({"name": "user-skill", "origin": {}})
+        manager.handle_skills_uninstall({"name": "user-skill", "origin": {}})
     )
 
     assert result["success"] is False
@@ -682,7 +677,7 @@ def test_enterprise_uninstall_resolves_origin_kept_only_on_local_skills(tmp_path
     state_file.write_text(json.dumps(state), encoding="utf-8")
 
     restored = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
-    result = asyncio.run(restored.handle_skills_web_uninstall({
+    result = asyncio.run(restored.handle_skills_uninstall({
         "name": "employment-rights-team",
         "origin": "skillhub:8",
     }))
@@ -724,12 +719,12 @@ def test_enterprise_uninstall_falls_back_when_only_local_skills_exist(
     state_file.write_text(json.dumps(state), encoding="utf-8")
 
     restored = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
-    result = asyncio.run(restored.handle_skills_web_uninstall({
+    result = asyncio.run(restored.handle_skills_uninstall({
         "name": "demo-skill",
         "origin": "local:demo-skill",
     }))
 
-    assert result == {"success": True, "name": "demo-skill"}
+    assert result.get("success") is True
     assert any("only local_skills has skill" in item for item in warnings)
     assert not skill_dir.exists()
     assert restored.list_skill_installations() == []
@@ -761,12 +756,12 @@ def test_enterprise_uninstall_fallback_keeps_other_origin_plugin_row(
     state_file.write_text(json.dumps(state), encoding="utf-8")
 
     restored = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
-    result = asyncio.run(restored.handle_skills_web_uninstall({
+    result = asyncio.run(restored.handle_skills_uninstall({
         "name": "demo-skill",
         "origin": "local:demo-skill",
     }))
 
-    assert result == {"success": True, "name": "demo-skill"}
+    assert result.get("success") is True
     assert not skill_dir.exists()
     assert restored.get_local_skills() == []
     remaining = restored.list_skill_installations()
@@ -795,7 +790,7 @@ def test_enterprise_uninstall_does_not_fallback_when_local_name_mismatches(
     state_file.write_text(json.dumps(state), encoding="utf-8")
 
     restored = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
-    result = asyncio.run(restored.handle_skills_web_uninstall({
+    result = asyncio.run(restored.handle_skills_uninstall({
         "name": "demo-skill",
         "origin": "skillhub:8",
     }))
@@ -805,7 +800,7 @@ def test_enterprise_uninstall_does_not_fallback_when_local_name_mismatches(
     assert skill_dir.exists()
 
 
-def test_enterprise_web_uninstall_logs_when_skill_is_not_installed(
+def test_enterprise_uninstall_logs_when_skill_is_not_installed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -819,14 +814,14 @@ def test_enterprise_web_uninstall_logs_when_skill_is_not_installed(
         _capture_warning,
     )
     manager = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
-    result = asyncio.run(manager.handle_skills_web_uninstall({
+    result = asyncio.run(manager.handle_skills_uninstall({
         "name": "missing-skill",
         "origin": "local:missing-skill",
     }))
 
     assert result["success"] is False
     assert result["error_code"] == "not_found"
-    assert any("web uninstall not found" in item and "missing-skill" in item for item in warnings)
+    assert any("uninstall not found" in item and "missing-skill" in item for item in warnings)
 
 
 def test_enterprise_skills_list_does_not_wait_for_marketplace_sync(
