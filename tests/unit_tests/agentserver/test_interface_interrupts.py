@@ -14,6 +14,7 @@ from e2a.constants import (
     E2A_INTERNAL_CANCEL_SOURCE_KEY,
 )
 
+from jiuwenswarm.agents.harness.team.team_manager import PauseSessionResult
 from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 from jiuwenswarm.server.runtime.agent_adapter.interface import (
     _is_ask_user_answer_resume,
@@ -43,9 +44,19 @@ class _FakeTeamManager:
         self.cancel_dispositions: list[str | None] = []
         self.broadcast_events: list[dict] = []
 
-    async def pause_session_runtime(self, session_id: str, reason: str = "") -> bool:
+    async def pause_session_runtime(self, session_id: str, reason: str = "") -> PauseSessionResult:
         self.pause_calls.append((session_id, reason))
-        return self.pause_result
+        if self.pause_result:
+            return PauseSessionResult(
+                work_stopped=True,
+                resumable=True,
+                outcome="parked",
+            )
+        return PauseSessionResult(
+            work_stopped=False,
+            resumable=False,
+            outcome="failed",
+        )
 
     async def cancel_session_runtime(
         self,
@@ -173,19 +184,29 @@ async def test_team_interrupt_pause_like_intents_use_team_manager(
 
     response = await claw.process_interrupt_for_test(_build_team_interrupt_request(intent))
 
-    assert response.payload == {
-        "event_type": "chat.interrupt_result",
-        "intent": intent,
-        "success": True,
-        "message": expected_message,
-    }
-    assert cancelled == [("team-session-1", f"interrupt(intent={intent}): ", 5.0)]
     if intent == "pause":
+        assert response.payload == {
+            "event_type": "chat.interrupt_result",
+            "intent": intent,
+            "success": True,
+            "message": expected_message,
+            "work_stopped": True,
+            "resumable": True,
+            "outcome": "parked",
+            "has_active_task": True,
+        }
         assert fake_manager.pause_calls == [("team-session-1", f"interrupt(intent={intent}): ")]
         assert fake_manager.cancel_calls == []
     else:
+        assert response.payload == {
+            "event_type": "chat.interrupt_result",
+            "intent": intent,
+            "success": True,
+            "message": expected_message,
+        }
         assert fake_manager.cancel_calls == [("team-session-1", f"interrupt(intent={intent}): ")]
         assert fake_manager.pause_calls == []
+    assert cancelled == [("team-session-1", f"interrupt(intent={intent}): ", 5.0)]
 
 
 @pytest.mark.asyncio
@@ -329,6 +350,10 @@ async def test_code_team_interrupt_uses_team_manager_without_team_flag(
         "intent": "pause",
         "success": True,
         "message": "团队已暂停",
+        "work_stopped": True,
+        "resumable": True,
+        "outcome": "parked",
+        "has_active_task": True,
     }
     assert cancelled == [("team-session-1", "interrupt(intent=pause): ", 5.0)]
     assert fake_manager.pause_calls == [("team-session-1", "interrupt(intent=pause): ")]

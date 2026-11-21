@@ -170,24 +170,9 @@ def _load_metadata(request: AgentRequest) -> AgentResponse:
     if not meta:
         return build_error_response(request, "session not found", code="NOT_FOUND")
     payload = dict(meta)
-    # Enterprise HTTP refresh rebuilds pause UI from this flag. Prefer durable
-    # metadata.is_paused (survives Runner pool teardown); OR with live Runner
-    # PAUSED so a just-paused turn still reads true before sync_write is visible.
-    durable_paused = meta.get("is_paused") is True
-    live_paused = False
-    try:
-        from jiuwenswarm.agents.harness.team.team_manager import (
-            is_team_session_paused,
-        )
-
-        live_paused = bool(await is_team_session_paused(sid))
-    except Exception as exc:  # noqa: BLE001
-        logger.debug(
-            "[session_repository] is_paused lookup failed session_id=%s error=%s",
-            sid,
-            exc,
-        )
-    payload["is_paused"] = bool(durable_paused or live_paused)
+    # Front control path is sync: only durable metadata.is_paused.
+    # Live Runner PAUSED OR stays on async session_adapter._handle_get_metadata.
+    payload["is_paused"] = meta.get("is_paused") is True
     return _ok(request, payload)
 
 

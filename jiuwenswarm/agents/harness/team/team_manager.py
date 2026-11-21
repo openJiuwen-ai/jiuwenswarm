@@ -121,6 +121,76 @@ TEAM_EVENT_QUEUE_MAXSIZE = 64
 _WAITER_PUT_RECHECK_TIMEOUT_SEC = 0.1
 _WAITER_PUT_TIMEOUT_LOG_INTERVAL_SEC = 5.0
 _TEAM_ROUND_FINAL_GRACE_SECONDS = 2.0
+# Short TTL for live paused-runner lookups (session.get_metadata burst).
+_PAUSED_RUNNER_CACHE_TTL_SEC = 1.5
+_paused_runner_cache: dict[str, tuple[float, str | None]] = {}
+
+_PAUSE_SUCCESS_OUTCOMES = frozenset({"parked", "already_paused", "already_idle"})
+
+
+@dataclass(frozen=True)
+class PauseSessionResult:
+    """Structured team pause outcome for interrupt_result and lifecycle merge."""
+
+    work_stopped: bool
+    resumable: bool
+    outcome: str
+
+    @property
+    def success(self) -> bool:
+        """User stop intent completed (parked, already paused, or already idle)."""
+        return self.outcome in _PAUSE_SUCCESS_OUTCOMES
+
+
+def merge_pause_session_results(
+    *results: PauseSessionResult | None,
+) -> PauseSessionResult:
+    """OR-merge lifecycle and adapter pause results for one unary interrupt."""
+    present = [item for item in results if item is not None]
+    if not present:
+        return PauseSessionResult(
+            work_stopped=False,
+            resumable=False,
+            outcome="failed",
+        )
+    work_stopped = any(item.work_stopped for item in present)
+    resumable = any(item.resumable for item in present)
+    outcomes = {item.outcome for item in present}
+    if resumable:
+        if "parked" in outcomes:
+            outcome = "parked"
+        elif "already_paused" in outcomes:
+            outcome = "already_paused"
+        else:
+            outcome = "parked"
+    elif work_stopped:
+        outcome = "already_idle"
+    else:
+        for candidate in (
+            "cancel_preempted",
+            "generation_mismatch",
+            "failed",
+        ):
+            if candidate in outcomes:
+                outcome = candidate
+                break
+        else:
+            outcome = "failed"
+    return PauseSessionResult(
+        work_stopped=work_stopped,
+        resumable=resumable,
+        outcome=outcome,
+    )
+
+
+def _invalidate_paused_runner_cache(session_id: str | None = None) -> None:
+    """Drop paused-runner cache for one session or the whole process."""
+    if session_id is None:
+        _paused_runner_cache.clear()
+        return
+    sid = str(session_id or "").strip()
+    if sid:
+        _paused_runner_cache.pop(sid, None)
 
 
 def _persist_session_paused_flag(session_id: str, *, is_paused: bool) -> None:
@@ -128,6 +198,7 @@ def _persist_session_paused_flag(session_id: str, *, is_paused: bool) -> None:
     sid = str(session_id or "").strip()
     if not sid:
         return
+    _invalidate_paused_runner_cache(sid)
     try:
         from jiuwenswarm.server.runtime.session.session_metadata import (
             update_session_metadata,
@@ -4023,11 +4094,22 @@ class TeamManager:
         self._terminal_delete_sessions.discard(target.descriptor.session_id)
 
     @staticmethod
-    async def _find_paused_runner_team_name(session_id: str) -> str | None:
-        """Return the paused Runner team name for a session using the public facade."""
+    async def find_paused_runner_team_name(session_id: str) -> str | None:
+        """Return the paused Runner team name for a session using the public facade.
+
+        Short TTL process cache avoids repeating Runner.list_active_teams() when
+        session.get_metadata is polled in a burst after pause.
+        """
         normalized_session_id = str(session_id or "").strip()
         if not normalized_session_id:
             return None
+
+        now = time.monotonic()
+        cached = _paused_runner_cache.get(normalized_session_id)
+        if cached is not None:
+            cached_at, cached_name = cached
+            if now - cached_at < _PAUSED_RUNNER_CACHE_TTL_SEC:
+                return cached_name
 
         try:
             active_teams = await Runner.list_active_teams()
@@ -4039,12 +4121,15 @@ class TeamManager:
             )
             return None
 
+        found: str | None = None
         for info in active_teams:
             current_session_id = str(info.current_session_id or "").strip()
             if current_session_id == normalized_session_id and info.state == RuntimeState.PAUSED:
                 team_name = str(info.team_name or "").strip()
-                return team_name or None
-        return None
+                found = team_name or None
+                break
+        _paused_runner_cache[normalized_session_id] = (now, found)
+        return found
 
     async def stop_paused_session_runtime(
         self,
@@ -4063,7 +4148,7 @@ class TeamManager:
                 )
                 return False
 
-            team_name = await self._find_paused_runner_team_name(session_id)
+            team_name = await self.find_paused_runner_team_name(session_id)
             if not team_name:
                 logger.debug(
                     "[TeamManager] skip paused runtime stop because no paused Runner entry matched: session_id=%s",
@@ -4141,7 +4226,12 @@ class TeamManager:
                 stopped_count += 1
         return stopped_count
 
-    async def _broadcast_running_task_freeze(self, session_id: str) -> None:
+    async def _broadcast_running_task_freeze(
+        self,
+        session_id: str,
+        *,
+        channel_id: str | None = None,
+    ) -> None:
         """Emit progress_frozen team.task frames for non-terminal board rows.
 
         Pause keeps TaskStatus as in_progress so a later chat.send can resume.
@@ -4167,17 +4257,17 @@ class TeamManager:
             return
         terminal = {"completed", "cancelled", "failed", "stopped"}
         team_id = str(snapshot.get("team_id") or "").strip() or None
-        for task in tasks:
-            if not isinstance(task, dict):
-                continue
+        history_channel = str(channel_id or "").strip() or "web"
+
+        async def _freeze_one(task: dict[str, Any]) -> None:
             task_id = str(task.get("task_id") or "").strip()
             status = str(task.get("status") or "").strip().lower()
             if not task_id or status in terminal:
-                continue
+                return
             event = {
                 "type": "team.task.paused",
                 "task_id": task_id,
-                "status": "in_progress",
+                "status": status or "in_progress",
                 "progress_frozen": True,
                 "title": task.get("title"),
                 "content": task.get("content"),
@@ -4200,7 +4290,7 @@ class TeamManager:
                 append_history_record(
                     session_id=session_id,
                     request_id=f"pause-freeze:{task_id}",
-                    channel_id="web",
+                    channel_id=history_channel,
                     role="assistant",
                     content="",
                     timestamp=time.time(),
@@ -4219,21 +4309,43 @@ class TeamManager:
                     exc,
                 )
 
+        freeze_tasks = [task for task in tasks if isinstance(task, dict)]
+        if not freeze_tasks:
+            return
+        results = await asyncio.gather(
+            *(_freeze_one(task) for task in freeze_tasks),
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                logger.debug(
+                    "[TeamManager] pause freeze task failed: session_id=%s error=%s",
+                    session_id,
+                    result,
+                )
+
     async def pause_session_runtime(
         self,
         session_id: str,
         reason: str = "",
         *,
         generation: int | None = None,
-    ) -> bool:
+    ) -> PauseSessionResult:
         """Pause the current team runtime for this session.
 
         Team runtimes are persistent. The current implementation pauses by
         tearing down the foreground stream task and parking the Runner-owned
         runtime in paused state so a later `chat.send` can resume it.
+
+        Returns a structured result so interrupt_result can distinguish
+        work_stopped (clear processing / freeze) from resumable (续跑 UI).
         """
         if not self.generation_matches(session_id, generation):
-            return False
+            return PauseSessionResult(
+                work_stopped=False,
+                resumable=False,
+                outcome="generation_mismatch",
+            )
         async with self._get_lifecycle_lock(session_id):
             has_stream_task = session_id in self._stream_tasks
             has_local_team_runtime = self._has_local_team_runtime(session_id)
@@ -4246,15 +4358,23 @@ class TeamManager:
             # Idempotent success when Runtime already paused the pool and the
             # adapter interrupt runs again with no local stream/markers left.
             if not has_stream_task and not has_team_runtime:
-                if await self._find_paused_runner_team_name(session_id):
+                if await self.find_paused_runner_team_name(session_id):
                     logger.info(
                         "[TeamManager] %s pause no-op success: already paused session_id=%s",
                         reason,
                         session_id,
                     )
                     _persist_session_paused_flag(session_id, is_paused=True)
-                    return True
-                return False
+                    return PauseSessionResult(
+                        work_stopped=True,
+                        resumable=True,
+                        outcome="already_paused",
+                    )
+                return PauseSessionResult(
+                    work_stopped=True,
+                    resumable=False,
+                    outcome="already_idle",
+                )
 
             # 如果 cancel 请求已到达，中止 pause 并让 cancel 执行
             if self._cancel_requested.get(session_id):
@@ -4262,7 +4382,11 @@ class TeamManager:
                     "[TeamManager] %s pause aborted: cancel requested for session_id=%s",
                     reason, session_id,
                 )
-                return False
+                return PauseSessionResult(
+                    work_stopped=False,
+                    resumable=False,
+                    outcome="cancel_preempted",
+                )
 
             logger.info(
                 "[TeamManager] %s pause team session runtime: session_id=%s",
@@ -4280,7 +4404,11 @@ class TeamManager:
                             "[TeamManager] %s pause aborted before Runner.pause: session_id=%s",
                             reason, session_id,
                         )
-                        return False
+                        return PauseSessionResult(
+                            work_stopped=False,
+                            resumable=False,
+                            outcome="cancel_preempted",
+                        )
 
                     # Park swarmflow runs BEFORE Runner.pause. Runner.pause tears
                     # down the leader harness, whose async-tool runtime cancels
@@ -4293,7 +4421,15 @@ class TeamManager:
                     await self._pause_swarmflow_runs(session_id)
                     # Freeze board rows before tearing down the monitor so a
                     # refresh can replay progress_frozen from history.
-                    await self._broadcast_running_task_freeze(session_id)
+                    team_agent = self.get_team_agent(session_id)
+                    freeze_channel = (
+                        str(getattr(team_agent, "channel_id", None) or "").strip()
+                        or None
+                    )
+                    await self._broadcast_running_task_freeze(
+                        session_id,
+                        channel_id=freeze_channel,
+                    )
 
                     # 注册当前 pause 任务，供 cancel 抢占取消
                     self._active_pause_tasks[session_id] = asyncio.current_task()
@@ -4313,7 +4449,11 @@ class TeamManager:
                                 session_id, team_name, "pause aborted"
                             )
                         await self._finalize_runtime_cleanup(session_id, "pause aborted")
-                        return False
+                        return PauseSessionResult(
+                            work_stopped=False,
+                            resumable=False,
+                            outcome="cancel_preempted",
+                        )
                     finally:
                         self._active_pause_tasks.pop(session_id, None)
 
@@ -4344,7 +4484,11 @@ class TeamManager:
         # was a soft no-op but local cleanup still completed). Refresh rebuilds
         # the board from this durable bit when the pool entry is already gone.
         _persist_session_paused_flag(session_id, is_paused=True)
-        return True
+        return PauseSessionResult(
+            work_stopped=True,
+            resumable=True,
+            outcome="parked",
+        )
 
     async def _cancel_stream_task(self, session_id: str, reason: str) -> None:
         """Cancel one stream task while serializing its lifecycle operations."""
@@ -4416,7 +4560,7 @@ async def is_team_session_paused(session_id: str) -> bool:
     normalized = str(session_id or "").strip()
     if not normalized:
         return False
-    return bool(await TeamManager._find_paused_runner_team_name(normalized))
+    return bool(await TeamManager.find_paused_runner_team_name(normalized))
 
 
 def is_team_session_running(session_id: str) -> bool:

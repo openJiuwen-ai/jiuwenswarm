@@ -509,6 +509,13 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
         Number.isFinite(rawTask.content_original_size)
           ? rawTask.content_original_size
           : existing?.content_original_size,
+      progress_frozen:
+        rawTask.progress_frozen === true ? true : existing?.progress_frozen,
+      progress_frozen_at:
+        typeof rawTask.progress_frozen_at === 'number' &&
+        Number.isFinite(rawTask.progress_frozen_at)
+          ? rawTask.progress_frozen_at
+          : existing?.progress_frozen_at,
     });
     addMember(assignee, timestamp);
   };
