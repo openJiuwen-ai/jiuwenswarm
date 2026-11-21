@@ -12,9 +12,9 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from e2a.hooks import AgentServerChatHookContext, AgentServerHookEvents
+
 from agent_gateway.common.mode_matrix import is_team_mode
-from jiuwenswarm.common.hook_event import AgentServerHookEvents
-from jiuwenswarm.common.hooks_context import AgentServerChatHookContext
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.request import CHAT_TURN_METHODS

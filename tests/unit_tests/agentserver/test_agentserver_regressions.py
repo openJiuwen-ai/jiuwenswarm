@@ -80,7 +80,7 @@ from jiuwenswarm.server.worker import runtime_backend
 
 def _gateway_process(connection, directory):
     async def run():
-        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from e2a.gateway_normalize import e2a_from_agent_fields
         from e2a.wire_codec import parse_agent_server_wire_chunk
         from jiuwenswarm.common.schema.message import ReqMethod
         from agent_gateway.cron.controller import CronController
@@ -135,7 +135,7 @@ async def test_remote_query_does_not_read_agent_store(tmp_path, monkeypatch):
     from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import query_authoritative_cron_job
     from jiuwenswarm.runtime.host_services import install_runtime_push_handler, restore_runtime_push_handler
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-    from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+    from e2a.agent_compat import e2a_to_agent_request
     from e2a.models import E2AEnvelope
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 
