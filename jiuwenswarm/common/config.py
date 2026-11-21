@@ -360,8 +360,15 @@ def validate_persisted_kv_cache_affinity() -> tuple[bool, list[str]]:
 
 
 def set_config(config):
-    with open(CONFIG_YAML_PATH, "w", encoding="utf-8") as f:
-        yaml.safe_dump(config, f, allow_unicode=True, sort_keys=False)
+    """Persist a full config mapping atomically, under the shared write boundary.
+
+    The write must survive a concurrent reader (another PID reading mid-write
+    used to see a truncated file and die on YAML parse) and must not strip the
+    comments/quote styles that dump_yaml_round_trip preserves. Reentrancy: the
+    caller must not already hold config_write_lock.
+    """
+    with config_write_lock():
+        dump_yaml_round_trip(CONFIG_YAML_PATH, config)
 
 
 def _get_evolution_config(config: dict[str, Any] | None) -> dict[str, Any]:
