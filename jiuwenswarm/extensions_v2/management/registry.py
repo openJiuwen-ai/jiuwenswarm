@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from openjiuwen.core.common.exception.codes import StatusCode
@@ -80,6 +81,8 @@ class ExtensionManager:
         self._bus: ExtensionEventBus | None = None
         self._inactive_callback: Callable[[str], Awaitable[None]] | None = None
         self._session_start: SessionStartGate | None = None
+        self._startup_loaded = False
+        self._accepted_roots: set[Path] = set()
 
     @property
     def initialized(self) -> bool:
@@ -224,27 +227,43 @@ class ExtensionManager:
                         source=root,
                     )
                 )
+            succeeded = {report.package_id for report in reports if report.status == "SUCCESS"}
+            for item in opened:
+                if item.manifest.package_id in succeeded:
+                    self._accept_version(item.manifest.package_id, item.manifest.version)
             return reports
         finally:
             for item in opened:
                 item.close()
 
     async def load_installed(self) -> list[ActivationReport]:
-        """Pass only the configured root; Core owns discovery and stable ordering."""
-        self._require_ready()
-        return list(await self._registry.load_installed())
+        """Capture and activate the install directory exactly once for this process."""
+        async with self._operation_lock:
+            self._require_ready()
+            if self._startup_loaded:
+                return []
+            roots = tuple(root.resolve() for root in self._registry.package_manager.list_installed())
+            reports = list(await self._registry.load_installed(roots))
+            self._startup_loaded = True
+            self._accepted_roots.update(roots)
+            return reports
 
     async def uninstall(self, package_id: str, version: str = "") -> ActivationReport:
         """Remove one stored version, or every version when ``version`` is empty."""
 
         async with self._operation_lock:
             self._require_ready()
+            accepted = self._accepted_versions(package_id)
+            if not accepted:
+                return _not_installed(package_id, operation="uninstall")
             was_active = self._registry.runtime.get_active(package_id) is not None
             if version:
                 report = await self._uninstall_version(package_id, version)
             else:
                 report = await self._registry.uninstall(package_id)
         if report.status == "SUCCESS":
+            if not version:
+                self._accepted_roots.difference_update(accepted)
             if was_active and self._registry.runtime.get_active(package_id) is None:
                 await self._notify_inactive(package_id)
             _record_recovery_change(
@@ -260,15 +279,9 @@ class ExtensionManager:
 
         manager = self._registry.package_manager
         root = manager.version_dir(package_id, version)
-        if not root.is_dir() or not has_manifest(root):
-            return _failure(
-                package_id,
-                operation_error(
-                    StatusCode.EXTENSION_PACKAGE_NOT_INSTALLED,
-                    package_id=package_id,
-                    reason=f"install store has no {package_id} {version}",
-                ),
-            )
+        accepted_root = root.resolve()
+        if accepted_root not in self._accepted_roots or not root.is_dir() or not has_manifest(root):
+            return _not_installed(package_id, version, operation="uninstall")
         manifest = load_manifest(root, require_domain=False)
         context = context_for(self._bus)
         service = context.install_report
@@ -298,20 +311,33 @@ class ExtensionManager:
             report = _failure(package_id, exc.as_error())
         finally:
             if token is not None:
-                await service.finish_operation(
-                    token,
-                    report=report,
-                    active=context.runtime.get_active(package_id),
-                    cleanup_pending=False,
-                )
+                try:
+                    await service.finish_operation(
+                        token,
+                        report=report,
+                        active=context.runtime.get_active(package_id),
+                        cleanup_pending=False,
+                    )
+                except ExtensionFailure:
+                    # Match Core's managed lifecycle: a report lock failure must not
+                    # replace a completed local uninstall result with an unknown error.
+                    logger.exception(
+                        "[ExtensionsV2] could not commit version uninstall result for %s@%s",
+                        package_id,
+                        version,
+                    )
         if report is None:  # pragma: no cover - begin_operation always reports one outcome
             raise ExtensionFailure(StatusCode.EXTENSION_LOAD_FAILED, reason="uninstall produced no report")
+        if report.status == "SUCCESS":
+            self._accepted_roots.discard(accepted_root)
         return report
 
     async def reload(self, package_id: str) -> ActivationReport:
         """Hot-switch an active package from its installed copy."""
 
         self._require_ready()
+        if not self._accepted_versions(package_id):
+            return _not_installed(package_id, operation="reload")
         return await self._registry.reload(package_id)
 
     async def enable_version(
@@ -331,6 +357,10 @@ class ExtensionManager:
         self._require_ready()
         store = self._registry.package_manager
         active = self._registry.runtime.get_active(package_id)
+        stored = store.version_dir(package_id, version)
+        accepted_root = stored.resolve()
+        if source is None and accepted_root not in self._accepted_roots:
+            return _not_installed(package_id, version, operation="enable")
         if active is not None and active.version == version and source is None:
             return ActivationReport(
                 plan_id="",
@@ -350,7 +380,6 @@ class ExtensionManager:
             )
             if report.status != "SUCCESS":
                 return report
-        stored = store.version_dir(package_id, version)
         if stored.is_dir():
             context = context_for(self._bus)
             report = await _enable_installed_package(
@@ -393,6 +422,8 @@ class ExtensionManager:
                     reason="package did not start",
                 ),
             )
+        if stored.is_dir():
+            self._accepted_roots.add(accepted_root)
         return report
 
     async def _restore_version(self, package_id: str, version: str) -> None:
@@ -416,6 +447,8 @@ class ExtensionManager:
 
         async with self._operation_lock:
             self._require_ready()
+            if not self._accepted_versions(package_id):
+                return _not_installed(package_id, operation="enable" if enabled else "disable")
             report = await self._registry.set_enabled(package_id, enabled)
         if report.status == "SUCCESS" and not enabled:
             await self._notify_inactive(package_id)
@@ -440,7 +473,26 @@ class ExtensionManager:
                 StatusCode.EXTENSION_LOAD_FAILED,
                 reason="package.query returned no query result",
             )
-        return result
+        installed = tuple(root for root in result.installed if root.resolve() in self._accepted_roots)
+        return replace(result, installed=installed)
+
+    def _accept_version(self, package_id: str, version: str) -> None:
+        root = self._registry.package_manager.version_dir(package_id, version)
+        if root.is_dir() and has_manifest(root):
+            self._accepted_roots.add(root.resolve())
+
+    def _accepted_versions(self, package_id: str) -> tuple[Path, ...]:
+        return tuple(
+            root for root in self._accepted_roots
+            if root.parent.name == package_id and root.is_dir() and has_manifest(root)
+        )
+
+    def accepted_roots(self, package_id: str | None = None) -> tuple[Path, ...]:
+        """Return startup or explicitly installed roots without rescanning the store."""
+        roots = self._accepted_roots
+        if package_id is not None:
+            roots = {root for root in roots if root.parent.name == package_id}
+        return tuple(sorted(roots))
 
     def active_packages(self) -> tuple[ActivePackageRecord, ...]:
         """Return active package facts for consumers such as the UI catalog."""
@@ -509,6 +561,8 @@ class ExtensionManager:
                 self._bus = None
                 self._session_start = None
                 self._registry = Registry()
+                self._startup_loaded = False
+                self._accepted_roots.clear()
 
         for package_id in notifications:
             await self._notify_inactive(package_id)
@@ -544,6 +598,28 @@ def _failure(package_id: str, error: OperationError) -> ActivationReport:
         previous_generation=None,
         current_generation=None,
         error=error,
+    )
+
+
+def _not_installed(
+    package_id: str,
+    version: str = "",
+    *,
+    operation: str,
+) -> ActivationReport:
+    suffix = f" {version}" if version else ""
+    return ActivationReport(
+        plan_id="",
+        package_id=package_id,
+        operation=operation,
+        status="FAILED",
+        previous_generation=None,
+        current_generation=None,
+        error=operation_error(
+            StatusCode.EXTENSION_PACKAGE_NOT_INSTALLED,
+            package_id=package_id,
+            reason=f"install store has no accepted {package_id}{suffix}",
+        ),
     )
 
 

@@ -78,7 +78,7 @@ Gateway 在 `commands.list` 中登记 `/extension` 的说明、用法和示例�
 如果已无法取得对应记录，仍保留原始 Report，前端提示通过查询核对目录。
 
 前端展示明确的 `package_id`、版本和“安装目录”，并提示修改该目录内代码后执行重载命令。
-无参数查询展示共享报告中的包 ID、domain 和生效版本；当前 AgentServer 所属包将运行状态和目录合并在同一包下。
+无参数查询由 Gateway 分别取得本地 Gateway 状态和 AgentServer 域状态，再按包 ID 合并展示；AgentServer 不把共享报告中的 Gateway 行作为自己的查询结果返回。每个包将 domain、生效版本、运行状态和目录合并在同一项下。
 指定 ID 的查询展示同一包的详情。未生效副本也返回可供卸载的 ID；不显示内部进程名称或 generation。
 安装失败时只展示失败报告；热重载读取安装副本，不重新读取最初的 ZIP 来源。
 

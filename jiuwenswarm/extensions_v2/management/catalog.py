@@ -171,6 +171,7 @@ def find_entry(
     *,
     domain: str | None = None,
     install_dir: Path | None = None,
+    accepted_roots: Sequence[Path] = (),
 ) -> MarketEntry:
     """Resolve one package, preferring the installed copy over the preset."""
 
@@ -184,10 +185,18 @@ def find_entry(
         resolved = entry_from_root(root)
         if resolved is not None and (domain is None or resolved.domain == domain):
             return resolved
-    if install_dir is not None:
-        resolved = _installed_entry(package_id, install_dir)
-        if resolved is not None and (domain is None or resolved.domain == domain):
-            return resolved
+    accepted = sorted(
+        (root for root in accepted_roots if root.parent.name == package_id),
+        key=_version_key,
+        reverse=True,
+    )
+    for root in accepted:
+        resolved = entry_from_root(root)
+        if resolved is None or resolved.package_id != package_id:
+            continue
+        if domain is not None and resolved.domain != domain:
+            continue
+        return resolved
     examples = {
         entry.package_id: entry for entry in scan_examples(examples_dir, exposed_only=False, domain=domain)
     }

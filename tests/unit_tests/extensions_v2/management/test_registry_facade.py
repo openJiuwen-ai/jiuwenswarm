@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -11,6 +12,7 @@ from openjiuwen.core.extension import ExtensionFailure, PackageManager
 from openjiuwen.core.extension.manifest import load_manifest
 
 from jiuwenswarm.extensions_v2.management.registry import ExtensionManager
+from tests.unit_tests.extensions_v2.core_compat import requires_rooted_startup
 
 from .support import METADATA_EXTENSION, make_bus, write_package
 
@@ -221,14 +223,37 @@ async def test_uninstall_inactive_installed_copy(tmp_path: Path) -> None:
     bus = make_bus()
     manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(bus)
-    source = write_package(tmp_path / "source")
-    package_manager = PackageManager(manager.install_dir)
-    package_manager.copy_into_store(source, load_manifest(source))
+    source = write_package(tmp_path / "source", enable=False)
+    assert (await manager.install([source]))[0].status == "SUCCESS"
 
     report = await manager.uninstall("test.pkg")
 
     assert report.status == "SUCCESS"
     assert not (manager.install_dir / "test.pkg" / "1.0.0").exists()
+
+
+@requires_rooted_startup
+async def test_late_store_copy_requires_an_explicit_install(tmp_path: Path) -> None:
+    bus = make_bus()
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
+    await manager.init(bus)
+    assert await manager.load_installed() == []
+
+    source = write_package(tmp_path / "source", module_source=METADATA_EXTENSION)
+    copied = PackageManager(manager.install_dir).copy_into_store(source, load_manifest(source))
+
+    assert (await manager.query()).installed == ()
+    assert _code(await manager.set_enabled("test.pkg", True)) == "EXTENSION_PACKAGE_NOT_INSTALLED"
+    assert _code(await manager.reload("test.pkg")) == "EXTENSION_PACKAGE_NOT_INSTALLED"
+    assert _code(await manager.uninstall("test.pkg")) == "EXTENSION_PACKAGE_NOT_INSTALLED"
+    assert await manager.load_installed() == []
+    assert await bus.trigger(Event("test.event", {})) == ("core", {})
+
+    installed = (await manager.install([copied]))[0]
+
+    assert installed.status == "SUCCESS"
+    assert (await manager.query()).installed == (copied.resolve(),)
+    assert (await bus.trigger(Event("test.event", {})))[0] == "test.pkg"
 
 
 async def test_set_enabled_keeps_the_copy_and_changes_handler_publication(tmp_path: Path) -> None:
@@ -269,6 +294,7 @@ async def test_shutdown_releases_handlers_and_preserves_copy(tmp_path: Path) -> 
         await manager.query()
 
 
+@requires_rooted_startup
 async def test_load_installed_uses_highest_version(tmp_path: Path) -> None:
     manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(make_bus())
@@ -289,6 +315,38 @@ async def test_load_installed_uses_highest_version(tmp_path: Path) -> None:
     ]
     record = (await restarted.query()).active[0]
     assert (record.package_id, record.version) == ("test.pkg", "2.0.0")
+
+
+async def test_load_installed_failure_remains_retryable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
+    await manager.init(make_bus())
+    source = write_package(tmp_path / "source")
+    stored = PackageManager(manager.install_dir).copy_into_store(source, load_manifest(source))
+    load_installed = AsyncMock(side_effect=[RuntimeError("startup failed"), []])
+    monkeypatch.setattr(manager.registry, "load_installed", load_installed)
+
+    with pytest.raises(RuntimeError, match="startup failed"):
+        await manager.load_installed()
+
+    assert manager.accepted_roots() == ()
+    assert await manager.load_installed() == []
+    assert manager.accepted_roots() == (stored.resolve(),)
+    assert load_installed.await_count == 2
+
+
+async def test_enable_version_accepts_a_new_source_copy(tmp_path: Path) -> None:
+    manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
+    await manager.init(make_bus())
+    source = write_package(tmp_path / "source", module_source=METADATA_EXTENSION)
+
+    report = await manager.enable_version("test.pkg", "1.0.0", source=source)
+
+    stored = (manager.install_dir / "test.pkg" / "1.0.0").resolve()
+    assert report.status == "SUCCESS"
+    assert manager.accepted_roots() == (stored,)
+    assert (await manager.query()).installed == (stored,)
 
 
 async def test_load_installed_rejects_before_init(tmp_path: Path) -> None:

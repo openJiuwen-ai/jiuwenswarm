@@ -13,10 +13,12 @@ from openjiuwen.core.extension.management import context_for
 
 from jiuwenswarm.extensions_v2 import assembly
 from jiuwenswarm.extensions_v2.management.registry import ExtensionManager
+from tests.unit_tests.extensions_v2.core_compat import requires_rooted_startup
 
 from .support import METADATA_EXTENSION, make_bus, write_package
 
 
+@requires_rooted_startup
 async def test_shutdown_releases_dependents_before_dependencies_and_unbinds_context(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:

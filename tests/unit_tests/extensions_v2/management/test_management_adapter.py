@@ -12,8 +12,15 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.events import Event
-from openjiuwen.core.extension import ActivationReport, ActivePackageRecord
+from openjiuwen.core.extension import (
+    ActivationReport,
+    ActivePackageRecord,
+    ExtensionFailure,
+    PackageInstallState,
+)
+from openjiuwen.core.extension.management import QueryResult
 
 from e2a.models import E2AEnvelope
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
@@ -27,6 +34,7 @@ from jiuwenswarm.server.runtime.marketplace.extension_install_state import (
     ExtensionInstallRecord,
     ExtensionInstallState,
 )
+from tests.unit_tests.extensions_v2.core_compat import requires_rooted_startup
 
 from .support import METADATA_EXTENSION, archive_package, make_bus, write_package
 
@@ -610,9 +618,9 @@ async def test_query_includes_ids_for_installed_but_inactive_packages(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = await _manager(tmp_path, monkeypatch)
-    source = write_package(tmp_path / "source", package_id="inactive.pkg")
+    source = write_package(tmp_path / "source", package_id="inactive.pkg", enable=False)
     installed = manager.install_dir / "inactive.pkg" / "1.0.0"
-    copytree(source, installed)
+    assert (await manager.install([source]))[0].status == "SUCCESS"
     response = await PackageManagementAdapter().handle(
         _request(ReqMethod.EXTENSIONS_V2_QUERY, {"package_id": "inactive.pkg"})
     )
@@ -620,6 +628,37 @@ async def test_query_includes_ids_for_installed_but_inactive_packages(
     assert response.payload["state"]["installed_packages"] == [{
         "package_id": "inactive.pkg", "version": "1.0.0", "domain": "agentserver", "install_path": str(installed),
     }]
+
+
+async def test_query_projects_the_shared_report_to_agentserver_domain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent_root = write_package(tmp_path / "agent", package_id="agent.pkg")
+    inactive_root = write_package(tmp_path / "inactive", package_id="inactive.pkg")
+    state = QueryResult(
+        active=(ActivePackageRecord("agent.pkg", "1.0.0", agent_root, 1, (), "agentserver"),),
+        installed=(agent_root, inactive_root),
+        inflight={"agent.pkg": 1, "inactive.pkg": 2, "gateway.pkg": 3},
+        published={"agent.pkg": ("agent-handler",), "gateway.pkg": ("gateway-handler",)},
+        packages=(
+            PackageInstallState("agent.pkg", "agentserver", "agent", "1.0.0", {}, "success", None, None),
+            PackageInstallState(
+                "inactive.pkg", "agentserver", "inactive", "1.0.0", {}, "success", None, None,
+            ),
+            PackageInstallState("gateway.pkg", "gateway", "gateway", "1.0.0", {}, "success", None, None),
+        ),
+    )
+    manager = SimpleNamespace(initialized=True, query=AsyncMock(return_value=state))
+    monkeypatch.setattr(adapter_module, "get_extension_manager", lambda: manager)
+
+    response = await PackageManagementAdapter().handle(_request(ReqMethod.EXTENSIONS_V2_QUERY, {}))
+
+    assert response.ok
+    assert response.payload["state"]["package_ids"] == ["agent.pkg", "inactive.pkg"]
+    assert [item["package_id"] for item in response.payload["state"]["active"]] == ["agent.pkg"]
+    assert response.payload["state"]["installed"] == [str(agent_root), str(inactive_root)]
+    assert response.payload["state"]["inflight"] == {"agent.pkg": 1, "inactive.pkg": 2}
+    assert list(response.payload["state"]["published"]) == ["agent.pkg"]
 
 
 def test_installed_package_domain_ignores_unreadable_manifest(
@@ -682,6 +721,7 @@ async def test_file_preview_serves_both_domains(
     assert content.payload["path"] == "manifest.json"
 
 
+@requires_rooted_startup
 async def test_file_preview_resolves_an_installed_package_outside_examples(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -702,6 +742,7 @@ async def test_file_preview_resolves_an_installed_package_outside_examples(
         encoding="utf-8",
     )
     (installed / "extension.py").write_text("def create_extension():\n    return None\n", encoding="utf-8")
+    await manager.load_installed()
     monkeypatch.setattr(adapter_module, "resolve_examples_dir", lambda: examples)
     monkeypatch.setattr(adapter_module, "resolve_install_dir", lambda: manager.install_dir)
 
@@ -713,6 +754,7 @@ async def test_file_preview_resolves_an_installed_package_outside_examples(
     assert {node["path"] for node in response.payload["tree"]} == {"manifest.json", "extension.py"}
 
 
+@requires_rooted_startup
 async def test_hub_installed_package_previews_its_local_copy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -733,6 +775,7 @@ async def test_hub_installed_package_previews_its_local_copy(
         encoding="utf-8",
     )
     (installed / "extension.py").write_text("def create_extension():\n    return None\n", encoding="utf-8")
+    await manager.load_installed()
     ExtensionInstallState.for_install_dir(manager.install_dir).activate(
         ExtensionInstallRecord(
             package_id="webui.demo",
@@ -942,13 +985,44 @@ async def test_uninstall_one_version_keeps_the_other_stored_versions(
     assert (await manager.query()).active == ()
 
 
-async def test_uninstall_a_stored_version_keeps_the_active_one(
+async def test_uninstall_one_version_keeps_local_success_when_report_commit_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = await _manager(tmp_path, monkeypatch)
     await manager.install([write_package(tmp_path / "source-1", package_id="webui.demo", version="1.0.0")])
     older = write_package(tmp_path / "source-09", package_id="webui.demo", version="0.9.0")
     copytree(older, manager.install_dir / "webui.demo" / "0.9.0")
+    finish_operation = AsyncMock(
+        side_effect=ExtensionFailure(
+            StatusCode.EXTENSION_REPORT_FAILED,
+            reason="report lock timeout",
+        )
+    )
+    monkeypatch.setattr(manager.registry.context.install_report, "finish_operation", finish_operation)
+
+    removed = await PackageManagementAdapter().handle(
+        _request(
+            ReqMethod.EXTENSIONS_V2_UNINSTALL,
+            {"package_id": "webui.demo", "version": "1.0.0"},
+        )
+    )
+
+    assert removed.ok
+    assert removed.payload["reports"][0]["status"] == "SUCCESS"
+    assert not (manager.install_dir / "webui.demo" / "1.0.0").exists()
+    assert (manager.install_dir / "webui.demo" / "0.9.0").is_dir()
+    assert manager.registry.runtime.get_active("webui.demo") is None
+    finish_operation.assert_awaited_once()
+
+
+async def test_uninstall_a_stored_version_keeps_the_active_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = await _manager(tmp_path, monkeypatch)
+    await manager.install([write_package(tmp_path / "source-1", package_id="webui.demo", version="1.0.0")])
+    older = write_package(tmp_path / "source-09", package_id="webui.demo", version="0.9.0")
+    assert (await manager.install([older]))[0].status == "SUCCESS"
+    assert (await manager.enable_version("webui.demo", "1.0.0")).status == "SUCCESS"
 
     removed = await PackageManagementAdapter().handle(
         _request(
