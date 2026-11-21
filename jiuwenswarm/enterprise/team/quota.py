@@ -315,7 +315,7 @@ def teammate_spawn_slots(team_limit_including_leader: int) -> int:
 
 
 def count_predefined_non_leaders(config_base: dict[str, Any] | None, template_id: str | None) -> int:
-    """How many template members would occupy Y (role != leader)."""
+    """How many template members occupy Y, excluding leader and host-managed identities."""
     cfg = config_base if isinstance(config_base, dict) else {}
     modes = cfg.get("modes") if isinstance(cfg.get("modes"), dict) else {}
     teams = modes.get("team") if isinstance(modes.get("team"), dict) else {}
@@ -340,7 +340,7 @@ def count_predefined_non_leaders(config_base: dict[str, Any] | None, template_id
         if not _clean(item.get("member_name")):
             continue
         role = _clean(item.get("role_type") or item.get("role") or "teammate").lower()
-        if role != "leader":
+        if role not in {"leader", "host_managed"}:
             n += 1
     return n
 

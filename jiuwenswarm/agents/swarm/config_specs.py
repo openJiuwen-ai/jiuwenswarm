@@ -1073,6 +1073,16 @@ def build_member_deep_agent_spec(
         # Written only when enabled so a disabled switch keeps the base spec
         # byte-identical (a YAML base spec may carry its own value).
         update["progressive_tool"] = ProgressiveToolSpec(enabled=True)
+    # New agent-core routes only the supported core startup providers through
+    # tool.register. Keep the update capability-gated so a rolling upgrade can
+    # construct against an older Core; that combination intentionally retains
+    # the legacy direct-registration path, including all swarm.* providers.
+    if registry.supports_tool_registration_event():
+        update["tool_registration_mode"] = registry.TOOL_REGISTRATION_MODE
+        update["event_tool_types"] = list(registry.EVENT_TOOL_TYPES)
+    if registry.supports_subagent_registration_event():
+        update["subagent_registration_mode"] = registry.SUBAGENT_REGISTRATION_MODE
+        update["event_subagent_types"] = list(registry.EVENT_SUBAGENT_TYPES)
     if role == "leader":
         # Leaders use the team task board (create_task / view_task / update_task).
         # Force off agent-core's enable_task_planning auto-inject path so a YAML

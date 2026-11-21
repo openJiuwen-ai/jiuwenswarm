@@ -1,0 +1,13 @@
+id: swarm_connector_hub
+name: swarm_connector_hub
+version: 0.1.0
+description: Swarm Connector Hub provider factory (OpenJiuwen Hub MCP catalogue search / detail / artifact).
+author: jiuwenswarm
+min_jiuwenswarm_version: "0.2.0"
+enabled: true
+roles:
+  - agentserver
+capabilities:
+  - connector-source-v1
+config_schema:
+  type: object

@@ -1,3 +1,5 @@
+import { gatewayFetch } from './services/gatewayFetch';
+import { browserClientCapabilities } from './features/webui/client/browserClient';
 import { isConversationModelGroupBlocked } from './multi-session/state/conversationModelSelection';
 import { restoredGitIdentity } from './components/ChatPanel/executionSettings';
 import { HistoryRefreshQueue } from './features/historyRefreshQueue';
@@ -111,6 +113,13 @@ import { useSingleAgentPanelState } from './features/singleAgentPanelState';
 import { useDesktopBrowserAutoOpen } from './features/desktopBrowserFile';
 import { useBrowserAgentActivity } from './features/browserAgentActivity';
 import {
+  WebUISlotProvider,
+  WebUIPageHost,
+  useWebUIPanels,
+  type WebUIPageTarget,
+  type WebUIStyleOverrides,
+} from './features/webui';
+import {
   applyBrowserDisplaySettings,
   browserDisplayRevision,
   useDesktopBrowserHeadless,
@@ -166,6 +175,8 @@ import {
   subscribeDesignModelGate,
 } from './features/designer/designSessionModelRestore';
 import { chatRoutePath } from './multi-session/routing/route';
+import { ApplicationPresentationHost } from './features/webui/presentation/ApplicationPresentationHost';
+import type { PresentationConversation } from './features/webui/presentation/protocol';
 import { ConversationSidebar, type NewConversationOptions } from './multi-session/sidebar/ConversationSidebar';
 import {
   NEW_CONVERSATION_ID,
@@ -178,6 +189,7 @@ import {
 } from './multi-session/state/newConversationLifecycle';
 import { resolveNewConversationProjectDir } from './multi-session/state/newConversationProject';
 import { clearAttachmentDrafts } from './features/sessionAssets/attachmentDraftRegistry';
+import { clearQueuedDesktopLocalFiles } from './features/workspace/localFilePicker';
 import { toDisplaySessionTitle } from './utils/documentMessage';
 import {
   getHiddenNavItemsForPlatform,
@@ -295,7 +307,12 @@ function normalizeConfigBoolean(value: unknown): boolean {
   );
 }
 
-type MainNavKey = SidebarNavKey | 'connectorMarket' | ApplicationPluginNavKey;
+const rightPanelWebUIStyles: WebUIStyleOverrides = {
+  Panel: { className: 'flex min-h-0 min-w-0 w-full flex-1 flex-col overflow-auto p-3' },
+  Box: { style: { minWidth: 0, minHeight: 0 } },
+};
+
+type MainNavKey = SidebarNavKey | 'connectorMarket' | 'webui' | ApplicationPluginNavKey;
 
 type LoadedHistoryBatch = {
   batchSeq: number;
@@ -454,7 +471,10 @@ function ErrorFallback({ error }: { error: Error | null }) {
         <p className="text-text-muted mb-4" data-testid="app-error-fallback-message">
           {error?.message || t('app.unknownError')}
         </p>
-        <pre className="bg-secondary p-4 rounded-lg text-sm overflow-auto max-h-64 font-mono" data-testid="app-error-fallback-stack">
+        <pre
+          className="bg-secondary p-4 rounded-lg text-sm overflow-auto max-h-64 font-mono"
+          data-testid="app-error-fallback-stack"
+        >
           {error?.stack}
         </pre>
         <button
@@ -494,7 +514,7 @@ async function saveShareImageJob(jobId: string, filename: string): Promise<boole
     return outcome === 'saved';
   }
   if (!window.pywebview) {
-    const response = await fetch(downloadUrl, { method: 'HEAD', cache: 'no-store' });
+    const response = await gatewayFetch(downloadUrl, { method: 'HEAD', cache: 'no-store' });
     if (!response.ok) {
       throw new Error(`share_export_download_http_${response.status}`);
     }
@@ -533,6 +553,10 @@ async function waitForShareImageJob(
     }
   }
   return isCurrentMonitor() ? status : null;
+}
+
+function getClientRequestContextSnapshot(): string {
+  return `${browserClientCapabilities.getEpoch()}:${browserClientCapabilities.isChanging()}:${browserClientCapabilities.isUnavailable()}`;
 }
 
 function AppContent({
@@ -575,6 +599,7 @@ function AppContent({
     }
   }, [isJiuwenMate]);
   const openInstalledExpertRef = useRef<(packageName: string) => void>(() => {});
+  const [webUIPage, setWebUIPage] = useState<WebUIPageTarget | null>(null);
   const masterEnabled = usePersonalContextStore(
     (s) => s.config.collection_enabled || s.config.agent_use_enabled,
   );
@@ -583,6 +608,12 @@ function AppContent({
   const trajectoryDiagnosisEnabled = useTrajectoryDiagnosisEnabled();
   const [configError, setConfigError] = useState<string | null>(null);
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
+  const clientRequestContext = useSyncExternalStore(
+    browserClientCapabilities.subscribe,
+    getClientRequestContextSnapshot,
+    getClientRequestContextSnapshot,
+  );
+  const clientRequestContextReady = !browserClientCapabilities.isChanging() && !browserClientCapabilities.isUnavailable();
   const [restartModalOpen, setRestartModalOpen] = useState(false);
   const [restartSuccess, setRestartSuccess] = useState(false);
   const [exportingShareSessionIds, setExportingShareSessionIds] = useState<ReadonlySet<string>>(() => new Set());
@@ -633,6 +664,7 @@ function AppContent({
   const isRsiNarrowViewport = useMediaQuery('(max-width: 1250px)');
   const rsiHasExperiments = useRsiStore((s) => s.list.length > 0);
   const rsiListKnownEmpty = useRsiStore((s) => s.listLoadedOnce && s.list.length === 0);
+  const webUITaskPageVisible = activeNav === 'webui' && webUIPage?.slotId === 'task.function.main';
 
   const [modelSetupGuideStep, setModelSetupGuideStep] = useState<ModelSetupGuideStep | null>(null);
   // peek 内点击“新建实验”时递增：跳转实验页后自动打开创建对话框；handleNavigate 统一归零防重挂载误触发
@@ -889,6 +921,9 @@ function AppContent({
       setSingleAgentPanelExpanded(false);
       setToolPanelHidden(true);
       return () => { cancelled = true; };
+    } else if (route.kind === 'system-plugin-recovery') {
+      setRequestedSettingsNavigation({ moduleId: 'systemPluginRecovery' });
+      setActiveNav('settings');
     } else if (route.kind === 'chat-new') {
       if (window.location.pathname !== chatRoutePath({ kind: 'chat-new' })) {
         navigate({ kind: 'chat-new' }, { replace: true });
@@ -1328,11 +1363,26 @@ function AppContent({
   const resetHarnessStore = useHarnessStore((s) => s.reset);
   const isElectron = Boolean(window.jiuwenDesktop?.isElectron);
   const appMarketPreview = useSessionStore(s => s.runtimes[sessionId ?? '']?.appMarketPreview);
+  const webUIPanels = useWebUIPanels({
+    slotId: 'conversation.panel.right',
+    sessionId: sessionId && sessionId !== NEW_CONVERSATION_ID ? sessionId : null,
+    styles: rightPanelWebUIStyles,
+  });
+  useEffect(() => {
+    const request = webUIPanels.openRequest;
+    if (!request) return;
+    if (request.sessionId !== sessionId || mode === 'auto_harness') {
+      webUIPanels.consumeOpenRequest(request.id);
+      return;
+    }
+    handleToggleDetailPanel(true);
+  }, [webUIPanels.openRequest, webUIPanels.consumeOpenRequest, sessionId, mode, handleToggleDetailPanel]);
   const toolPanelHasContent = useMemo(() => {
     if (appMarketPreview) return true;
     // Electron 下工具面板始终可达（内置浏览器页签等桌面能力），但新建会话首页
     // 没有任何会话内容，悬浮收起条不应出现（tool-panel-collapsed 首页闪现 bug）。
     if (isElectron) return sessionId !== NEW_CONVERSATION_ID;
+    if (mode !== 'auto_harness' && webUIPanels.panels.length > 0) return true;
     const hasMessages = messages.length > 0;
     const hasCodeEnvironment = sessionProject?.work_mode === 'code' && sessionId !== NEW_CONVERSATION_ID;
     switch (mode) {
@@ -1346,7 +1396,7 @@ function AppContent({
           || hasMessages
           || hasCodeEnvironment;
     }
-  }, [appMarketPreview, isElectron, mode, todos.length, subagentCount, teamTaskEvents.length, teamTasks.length, teamMembers.length, extensionReady?.runtimePath, messages.length, isRestoringTeamHistory, sessionId, sessionProject?.work_mode]);
+  }, [appMarketPreview, isElectron, mode, todos.length, subagentCount, teamTaskEvents.length, teamTasks.length, teamMembers.length, extensionReady?.runtimePath, messages.length, isRestoringTeamHistory, sessionId, sessionProject?.work_mode, webUIPanels.panels.length]);
   // 单 agent 模式同样复用集群模式的展开布局（百分比宽度 + 可拖拽分割线），
   // 避免右侧面板与聊天面板平分空间导致宽度与集群模式不一致；auto_harness 走收起态分支。
   const panelExpanded = mode === 'team' ? teamAreaExpanded : singleAgentPanelExpanded;
@@ -1374,7 +1424,7 @@ function AppContent({
   }, [closeSidebarPeek, designCanvasOpen, setSecondarySidebarCollapsed]);
   const rsiSidebarCollapsed = secondarySidebarCollapsed || isRsiNarrowViewport;
   const hasFixedSecondarySidebar =
-    ((activeNav === 'chat' || activeNav === 'cron') && !conversationSidebarCollapsed) ||
+    ((activeNav === 'chat' || activeNav === 'cron' || webUITaskPageVisible) && !conversationSidebarCollapsed) ||
     (activeNav === 'experiments' && rsiHasExperiments && !rsiSidebarCollapsed);
 
   useEffect(() => {
@@ -2070,12 +2120,14 @@ function AppContent({
   const fetchSessionMetadata = useCallback(async (targetSessionId: string): Promise<Session | null> => {
     const ownerStateRevision = organizationOwnerStateRevision(targetSessionId);
     const snapshotTurnRevision = useChatStore.getState().getRuntime(targetSessionId)?.turnRevision ?? 0;
+    const contextEpoch = browserClientCapabilities.getEpoch();
     const queueSnapshot = useChatStore.getState().beginQueuedSessionMessageSnapshot(targetSessionId);
     try {
       const response = await request<Session & { runtime?: { recovery_pending?: boolean } }>(
         'session.get_metadata',
         { session_id: targetSessionId },
       );
+      if (contextEpoch !== browserClientCapabilities.getEpoch()) return null;
       const { queued_session_messages: queuedMessages, can_continue_queued_session_messages: canContinueQueuedMessages, ...session } = response;
       if ((session as unknown as Record<string, unknown>).archived === true) {
         if (sessionIdRef.current === targetSessionId) {
@@ -2242,6 +2294,7 @@ function AppContent({
       }
       return session;
     } catch (error) {
+      if (contextEpoch !== browserClientCapabilities.getEpoch()) return null;
       console.warn('Failed to fetch session metadata:', error);
       if (sessionIdRef.current === targetSessionId && (error as WebError | undefined)?.code === 'NOT_FOUND') {
         setMissingSessionId(targetSessionId);
@@ -2259,14 +2312,15 @@ function AppContent({
   }, [request, t]);
 
   const loadSessionMetadata = useCallback((targetSessionId: string): Promise<Session | null> => {
-    const inFlight = sessionMetadataRequestsRef.current.get(targetSessionId);
+    const requestKey = JSON.stringify([browserClientCapabilities.getEpoch(), targetSessionId]);
+    const inFlight = sessionMetadataRequestsRef.current.get(requestKey);
     if (inFlight) return inFlight;
     const pending = fetchSessionMetadata(targetSessionId).finally(() => {
-      if (sessionMetadataRequestsRef.current.get(targetSessionId) === pending) {
-        sessionMetadataRequestsRef.current.delete(targetSessionId);
+      if (sessionMetadataRequestsRef.current.get(requestKey) === pending) {
+        sessionMetadataRequestsRef.current.delete(requestKey);
       }
     });
-    sessionMetadataRequestsRef.current.set(targetSessionId, pending);
+    sessionMetadataRequestsRef.current.set(requestKey, pending);
     return pending;
   }, [fetchSessionMetadata]);
 
@@ -2309,9 +2363,11 @@ function AppContent({
 
   // 获取服务端配置（通过 WS 方法）
   const fetchConfig = useCallback(async () => {
+    const contextEpoch = browserClientCapabilities.getEpoch();
     try {
       const collaborationRevision = getMultiModelCollaborationRevision();
       const config = await request<Record<string, unknown>>('config.get');
+      if (contextEpoch !== browserClientCapabilities.getEpoch()) return;
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
       setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
       setTrajectoryDiagnosisEnabled(
@@ -2337,6 +2393,7 @@ function AppContent({
         }
       }
     } catch (error) {
+      if (contextEpoch !== browserClientCapabilities.getEpoch()) return;
       console.error('Failed to fetch config:', error);
       setServerConfig(null);
       setConfigError(t('app.configError'));
@@ -2344,11 +2401,13 @@ function AppContent({
     // 同步获取多模型列表与模型组目录
     try {
       const resp = await request<{ models: ModelEntry[]; active_model: string; model_groups?: unknown }>('models.list');
+      if (contextEpoch !== browserClientCapabilities.getEpoch()) return;
       if (resp?.models) {
         setAvailableModels(resp.models, resp.active_model);
       }
       setAvailableModelGroups(parseModelGroups(resp?.model_groups));
     } catch (error) {
+      if (contextEpoch !== browserClientCapabilities.getEpoch()) return;
       console.warn('Failed to fetch models list:', error);
     }
   }, [request, t, setAvailableModelGroups, setAvailableModels]);
@@ -2683,24 +2742,31 @@ function AppContent({
   const fetchConfigRef = useRef(fetchConfig);
   fetchConfigRef.current = fetchConfig;
 
+  const configInitializationRef = useRef<{ context: string; pending: Promise<void> } | null>(null);
   useEffect(() => {
     if (!isConnected) {
+      configInitializationRef.current = null;
       return;
     }
+    if (!clientRequestContextReady) return;
+    const contextEpoch = browserClientCapabilities.getEpoch();
+    const initialization = configInitializationRef.current;
+    const pending = initialization?.context === clientRequestContext ? initialization.pending : fetchConfigRef.current();
+    configInitializationRef.current = { context: clientRequestContext, pending };
     let cancelled = false;
     void (async () => {
-      await fetchConfigRef.current();
-      if (!cancelled) setInitialDataLoaded(true);
+      await pending;
+      if (!cancelled && contextEpoch === browserClientCapabilities.getEpoch()) setInitialDataLoaded(true);
     })();
     return () => {
       cancelled = true;
     };
-  }, [isConnected]);
+  }, [clientRequestContext, clientRequestContextReady, isConnected]);
 
   const initialProjectsLoadedRef = useRef(false);
 
   useEffect(() => {
-    if (!initialDataLoaded || !isConnected || initialProjectsLoadedRef.current) {
+    if (!initialDataLoaded || !isConnected || !clientRequestContextReady || initialProjectsLoadedRef.current) {
       return;
     }
     let cancelled = false;
@@ -2736,7 +2802,7 @@ function AppContent({
     return () => {
       cancelled = true;
     };
-  }, [initialDataLoaded, isConnected, loadProjects]);
+  }, [clientRequestContext, clientRequestContextReady, initialDataLoaded, isConnected, loadProjects]);
 
   // 记录连接状态跃迁：断线期间终态事件可能丢失，重连后允许用一次元数据快照
   // 把残留的运行态纠正回空闲。
@@ -2751,8 +2817,9 @@ function AppContent({
     if (reconnected) {
       metadataDowngradeAllowedRef.current.add(routeSessionId);
     }
+    if (!clientRequestContextReady) return;
     void loadSessionMetadata(routeSessionId);
-  }, [isConnected, loadSessionMetadata, routeSessionId]);
+  }, [clientRequestContext, clientRequestContextReady, isConnected, loadSessionMetadata, routeSessionId]);
 
   useEffect(() => {
     if (!isConnected || !sessionId) return;
@@ -2821,7 +2888,8 @@ function AppContent({
   useEffect(() => {
     // The canvas restores its own director history through DesignerPage.
     if (route.kind === 'design-project') return;
-    if (!isConnected || !sessionId || sessionId === NEW_CONVERSATION_ID) return;
+    if (!isConnected || !clientRequestContextReady || !sessionId || sessionId === NEW_CONVERSATION_ID) return;
+    const contextEpoch = browserClientCapabilities.getEpoch();
     const forceRefresh = forcedHistoryRefreshRef.current.delete(sessionId);
     const recoveryRefresh = recoveryHistoryRefreshRef.current.delete(sessionId);
     
@@ -2931,6 +2999,7 @@ function AppContent({
         )
       : null;
 
+    let cancelled = false;
     const restoreHandle = beginHistoryRestore({
       sessionId: sessionId,
       shouldApply: recoveryRefresh ? () => {
@@ -2944,6 +3013,7 @@ function AppContent({
         limit: 50,
       }),
       onReady: (messages, cursorMeta) => {
+        if (cancelled || contextEpoch !== browserClientCapabilities.getEpoch()) return;
         const seed = pendingCronUserSeedsRef.current.get(sessionId);
         pendingCronUserSeedsRef.current.delete(sessionId);
         historyRestoreFromPanelHintRef.current = false;
@@ -2993,6 +3063,7 @@ function AppContent({
         useSessionStore.getState().receiveSessionTokenUsage(payload);
       },
       onEmpty: (cursorMeta) => {
+        if (cancelled || contextEpoch !== browserClientCapabilities.getEpoch()) return;
         const seed = pendingCronUserSeedsRef.current.get(sessionId);
         pendingCronUserSeedsRef.current.delete(sessionId);
         replaceHistoryMessages(
@@ -3163,6 +3234,7 @@ function AppContent({
         console.warn('[history.restore]', message);
       },
       onFailure: (failure) => {
+        if (cancelled || contextEpoch !== browserClientCapabilities.getEpoch()) return;
         historyRestoreFromPanelHintRef.current = false;
         if (historyRestoreHandlesRef.current.get(sessionId) === restoreHandle) {
           historyRestoreHandlesRef.current.delete(sessionId);
@@ -3201,6 +3273,7 @@ function AppContent({
           historyRestoreHandlesRef.current.delete(sessionId);
         }
         // 发生错误时，设置 historyPagerMeta 为 null，显示欢迎信息
+        if (cancelled || contextEpoch !== browserClientCapabilities.getEpoch()) return;
         setHistoryPagerMeta(sessionId, null);
         console.error('Failed to load history:', error);
         setLoadingHistory(sessionId, false);
@@ -3215,7 +3288,16 @@ function AppContent({
         }
       }
     })();
+    return () => {
+      cancelled = true;
+      restoreHandle.dispose();
+      if (historyRestoreHandlesRef.current.get(sessionId) === restoreHandle) {
+        historyRestoreHandlesRef.current.delete(sessionId);
+      }
+    };
   }, [
+    clientRequestContext,
+    clientRequestContextReady,
     isConnected,
     sessionId,
     historyBootstrapKey,
@@ -3439,7 +3521,12 @@ function AppContent({
         preserveDraft?: boolean;
         metadata?: Record<string, unknown>;
         mode?: AgentMode;
+        resetAttachmentDrafts?: boolean;
       };
+      if (detail.resetAttachmentDrafts) {
+        clearAttachmentDrafts(NEW_CONVERSATION_ID);
+        clearQueuedDesktopLocalFiles();
+      }
       // 事件显式带了 mode 时用 forceMode，避免未发送的草稿会话把模式改回去
       // （例如「通过聊天创建技能」要求单 Agent，不能停在集群模式）。
       enterNewConversation(
@@ -4007,6 +4094,16 @@ function AppContent({
     void supplement(currentSessionId, trimmed);
   }, [supplement]);
 
+  const cancelAgentConversation = useCallback((targetSessionId: string) => {
+    const runtime = useChatStore.getState().getRuntime(targetSessionId);
+    if (useSessionStore.getState().getRuntime(targetSessionId)?.mode === 'agent' && runtime?.taskQueue.length) {
+      useChatStore.getState().setQueuePaused(targetSessionId, true);
+    }
+    const pending = cancel(targetSessionId);
+    if (useGoalStore.getState().runtimes[targetSessionId]?.goal?.status === 'active') void pauseGoal(targetSessionId);
+    return pending;
+  }, [cancel, pauseGoal]);
+
   const handleCancel = useCallback(() => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) return;
@@ -4022,16 +4119,8 @@ function AppContent({
       if (isGoalActive) void pauseGoal(currentSessionId);
       return;
     }
-    // agent 模式下有队列任务时，暂停队列自动发送
-    if (mode === 'agent') {
-      const runtime = useChatStore.getState().getRuntime(currentSessionId);
-      if (runtime && runtime.taskQueue.length > 0) {
-        useChatStore.getState().setQueuePaused(currentSessionId, true);
-      }
-    }
-    void cancel(currentSessionId);
-    if (isGoalActive) void pauseGoal(currentSessionId);
-  }, [cancel, mode, pause, pauseGoal]);
+    void cancelAgentConversation(currentSessionId);
+  }, [cancel, cancelAgentConversation, mode, pause, pauseGoal]);
 
   /**
    * 删除目标：active 时除了清目标，还要顺带结束当前会话输出——复用停止按钮同一套中断调用
@@ -4278,6 +4367,23 @@ function AppContent({
     },
     [performSessionRestore],
   );
+
+  const preparePresentationConversation = useCallback(async (conversation: PresentationConversation | null) => {
+    if (!conversation) return;
+    if (conversation.sessionId === NEW_CONVERSATION_ID) {
+      await handleNewSession({
+        initialInputValue: useChatStore.getState().getRuntime(NEW_CONVERSATION_ID)?.inputValue ?? '',
+        preserveProject: true,
+        forceMode: 'agent',
+      });
+      return;
+    }
+    const workspace = useWorkspaceStore.getState();
+    const target = [...Object.values(workspace.projectSessions).flat(), ...workspace.pinnedSessions,
+      ...useSessionStore.getState().sessions].find((item) => item.session_id === conversation.sessionId);
+    await handleRestoreSession(conversation.sessionId, target?.mode, target);
+    if (sessionIdRef.current !== conversation.sessionId) throw new Error('TARGET_INACTIVE');
+  }, [handleNewSession, handleRestoreSession]);
 
   const handleOpenContinuedFromSession = useCallback(
     (sourceSessionId: string): void => {
@@ -4827,7 +4933,7 @@ function AppContent({
         await monitorAndSaveShareImageJob(pending, currentSessionId, token);
         return;
       }
-      const createResponse = await fetch('/share-api/jobs', {
+      const createResponse = await gatewayFetch('/share-api/jobs', {
         method: 'POST',
         cache: 'no-store',
         headers: { 'content-type': 'application/json' },
@@ -4996,7 +5102,14 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
     );
   };
 
-  if (isJiuwenMate) {
+  useEffect(() => {
+    if (webUIPage && webUIPage.scope !== 'application' && webUIPage.sessionId !== sessionId) {
+      setWebUIPage(null);
+      if (activeNav === 'webui') setActiveNav('chat');
+    }
+  }, [activeNav, sessionId, webUIPage]);
+
+  if (isJiuwenMate && route.kind !== 'system-plugin-recovery') {
     return (
       <>
         <JiuwenMateApp
@@ -5016,15 +5129,45 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
     );
   }
 
+  const webUIPageSection =
+    webUIPage && (webUIPage.scope === 'application' || (activeNav === 'webui' && webUIPage.sessionId === sessionId)) ? (
+      <div
+        className={`app-section flex min-h-0 min-w-0 flex-col overflow-y-auto${activeNav === 'webui' ? '' : ' is-hidden'}`}
+        data-testid="app-webui-page"
+      >
+        <WebUIPageHost target={webUIPage} />
+      </div>
+    ) : null;
+
   return (
+    <WebUISlotProvider
+      sessionId={sessionId && sessionId !== NEW_CONVERSATION_ID ? sessionId : null}
+      activePage={activeNav === 'webui' ? webUIPage : null}
+      onOpenPage={(target) => {
+        if (handleNavigate('webui')) setWebUIPage(target);
+      }}
+    >
     <div
       className={`shell shell--icon-rail ${activeNav === 'agents' ? 'shell--agent-management' : ''}`}
       data-testid="app-shell"
       data-session-id={sessionId}
     >
       <ApplicationConversationRuntimes sessionId={sessionId} />
+      <ApplicationPresentationHost sessionId={sessionId} connected={isConnected}
+        onSelect={preparePresentationConversation}
+        onSend={async (conversation, text) => {
+          if (conversation.sessionId === NEW_CONVERSATION_ID) {
+            const acceptedSessionId = await handleSendMessage(text);
+            return { accepted: typeof acceptedSessionId === 'string', conversationKey: acceptedSessionId ?? sessionIdRef.current };
+          }
+          const accepted = await sendMessage(text, conversation.sessionId);
+          return { accepted, conversationKey: conversation.conversationKey };
+        }}
+        onStop={(conversation) => cancelAgentConversation(conversation.sessionId)}
+        onWorkspace={preparePresentationConversation} />
       {/* Navigation Sidebar */}
       <SessionSidebar
+        webUIReady={initialDataLoaded && isConnected}
         activeNav={activeNav}
         onNavigate={handleNavItemClick}
         onNewSession={handleNewSession}
@@ -5056,7 +5199,9 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
       ) : null}
 
       {/* Main Content */}
-      <main className={`content ${activeNav === 'chat' ? 'content--chat' : ''} ${effectiveTeamAreaExpanded ? 'content--team-expanded' : ''}`}>
+      <main
+        className={`content ${activeNav === 'chat' ? 'content--chat' : ''} ${effectiveTeamAreaExpanded ? 'content--team-expanded' : ''}`}
+      >
         {configError && (
           <div className="card mb-4" data-testid="app-config-error">
             <div className="text-sm text-text-muted">
@@ -5064,7 +5209,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               <span className="mono"> python -m tests.web_gateway_jiuwenclaw_integration </span>
               {t('app.configErrorDefault')}
               <span className="mono"> jiuwenswarm/channels/web/frontend/.env.local </span>
-              {t('app.configErrorEnv')} <span className="mono">VITE_API_BASE</span> {t('common.and')} <span className="mono">VITE_WS_BASE</span>.
+              {t('app.configErrorEnv')} <span className="mono">VITE_API_BASE</span> {t('common.and')}{' '}
+              <span className="mono">VITE_WS_BASE</span>.
             </div>
           </div>
         )}
@@ -5145,10 +5291,17 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 className={`chat-workspace flex-1 flex min-h-0 overflow-hidden ${insetTrajectoryFloatingTasks ? 'chat-workspace--trajectory-floating-tools' : ''}`}
               >
                 {showConversationNotFound && (
-                  <div className="flex-1 flex flex-col items-center justify-center gap-4" data-testid="app-conversation-not-found">
+                  <div
+                    className="flex-1 flex flex-col items-center justify-center gap-4"
+                    data-testid="app-conversation-not-found"
+                  >
                     <h1 className="text-lg font-semibold text-text" data-testid="app-conversation-not-found-title">{t('multiSession.notFound.title')}</h1>
                     <div className="flex gap-2">
-                      <button className="btn primary" onClick={() => enterNewConversation()} data-testid="app-conversation-not-found-new-button">
+                      <button
+                        className="btn primary"
+                        onClick={() => enterNewConversation()}
+                        data-testid="app-conversation-not-found-new-button"
+                      >
                         {t('multiSession.notFound.newConversation')}
                       </button>
                     </div>
@@ -5295,6 +5448,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 {/* Tool Panel / Expanded Team Panel */}
                 {!toolPanelHidden && trajectoryTaskPanelAvailable && !showConversationNotFound && !heartbeatPanelOpen && (
                   <ToolPanel
+                    webUIPanels={webUIPanels}
                     sessionId={sessionId}
                     project={sessionProject}
                     isNewSessionPromotion={isNewSessionPromotion}
@@ -5446,6 +5600,35 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
             <ApplicationPluginOutlet contribution={activeApplicationPlugin} />
           </div>
         )}
+        {/* 任务功能区的右侧页面：会话列表保留在左，插件页面进入工作区；菜单主页面仍为独立整页 */}
+        {webUIPageSection && webUIPage?.slotId === 'task.function.main' ? (
+          <div
+            className="chat-layout flex-1 flex min-h-0 overflow-hidden"
+            style={{ display: activeNav === 'webui' ? undefined : 'none' }}
+            data-testid="app-webui-task-page"
+          >
+            {activeNav === 'webui' && (
+              <ConversationSidebar
+                activeSessionId={sessionId === NEW_CONVERSATION_ID ? null : sessionId}
+                onNew={(options) => requestSessionNavigation('new', options)}
+                onSelect={requestSessionNavigation}
+                onSelectDesignSession={handleSelectDesignSession}
+                activeDesignSessionId={route.kind === 'design-project' ? route.sessionId : undefined}
+                onProjectRemoved={handleProjectRemoved}
+                onOpenCron={() => handleNavigate('cron')}
+                isCronActive={false}
+                collapsed={conversationSidebarCollapsed}
+                onToggleCollapse={() => { closeSidebarPeek(); setSecondarySidebarCollapsed(true); }}
+                hideCollapseButton={workspaceWorkMode === 'design' && route.kind === 'design-project'}
+              />
+            )}
+            <div className="chat-workspace flex-1 flex min-h-0 overflow-hidden">
+              {webUIPageSection}
+            </div>
+          </div>
+        ) : (
+          webUIPageSection
+        )}
         {FEATURE_APP_UPDATER_UI && activeNav === 'updatepanel' && (
           <div className="app-section">
             <UpdatePanel isConnected={isConnected} request={request} />
@@ -5572,9 +5755,17 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           <div className="app-restart-modal__panel" data-testid="app-restart-modal-panel">
             <div className="flex flex-col items-center text-center" data-testid="app-restart-modal-body">
               {!restartSuccess ? (
-                <div className="w-12 h-12 rounded-full border-4 border-border border-t-accent animate-spin mb-4" data-testid="app-restart-modal-status-icon" data-variant="loading" />
+                <div
+                  className="w-12 h-12 rounded-full border-4 border-border border-t-accent animate-spin mb-4"
+                  data-testid="app-restart-modal-status-icon"
+                  data-variant="loading"
+                />
               ) : (
-                <div className="w-12 h-12 rounded-full bg-ok/15 text-ok flex items-center justify-center mb-4" data-testid="app-restart-modal-status-icon" data-variant="success">
+                <div
+                  className="w-12 h-12 rounded-full bg-ok/15 text-ok flex items-center justify-center mb-4"
+                  data-testid="app-restart-modal-status-icon"
+                  data-variant="success"
+                >
                   <svg className="w-7 h-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2">
                     <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
                   </svg>
@@ -5612,6 +5803,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
       {/* 登录弹窗：默认不显示，由 requestLogin() 等事件唤起 */}
       <LoginDialog />
     </div>
+    </WebUISlotProvider>
   );
 }
 

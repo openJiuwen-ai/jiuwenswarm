@@ -95,7 +95,7 @@ class SwarmBuildContext(BuildContext):
             reacquired from the receiving JiuwenSwarm process.
         config: The resolved ``config.yaml`` mapping (``get_config()``).
         skill_retrieval_toolkit: Per-member, non-serializable Symphony
-            discovery runtime shared by skill_index and its prompt rail.
+            discovery runtime shared by capability_search and its prompt rail.
 
     Note:
         Backward incompatible: the ``team_skills_dir`` field and its seed key
@@ -220,8 +220,9 @@ class SwarmBuildContext(BuildContext):
         plus locally-sourced non-serializable handles. Per-member fields
         (``member_name`` / ``role`` / ``language`` / ``workspace`` /
         ``member_card_id``) are intentionally excluded — ``setup_agent`` fills
-        them per member through ``derive()``. The live ``config`` and
-        ``trajectory_span_processor`` are excluded too: the receiver supplies them.
+        them per member through ``derive()``. The live ``config``,
+        ``trajectory_span_processor`` and ``extension_bus`` are excluded too:
+        the receiver supplies them.
 
         Returns:
             A plain mapping of serializable primitives.
@@ -253,6 +254,7 @@ class SwarmBuildContext(BuildContext):
         *,
         config: dict[str, Any] | None,
         trajectory_span_processor: Any,
+        extension_bus: Any = None,
     ) -> "SwarmBuildContext":
         """Rebuild a context from a :meth:`to_seed` mapping plus local handles.
 
@@ -260,35 +262,42 @@ class SwarmBuildContext(BuildContext):
             seed: The serializable mapping produced by :meth:`to_seed`.
             config: The receiving process's resolved ``config.yaml`` mapping.
             trajectory_span_processor: The process-level Team trajectory processor.
+            extension_bus: The receiving process's live extension bus, when
+                supported by the installed agent-core.
 
         Returns:
             A ``SwarmBuildContext`` with the seed fields restored and the
             non-serializable handles sourced from the receiving process.
         """
-        return cls(
-            execution_settings_managed=seed.get("execution_settings_managed", False),
-            session_id=seed.get("session_id", ""),
-            request_id=seed.get("request_id"),
-            user_id=seed.get("user_id"),
-            channel_id=seed.get("channel_id"),
-            channel=seed.get("channel") or "default",
-            request_metadata=seed.get("request_metadata"),
-            mode=seed.get("mode") or "team",
-            project_dir=seed.get("project_dir"),
-            trusted_dirs=seed.get("trusted_dirs"),
-            disable_teammate_worktree=bool(
+        context_kwargs = {
+            "execution_settings_managed": seed.get("execution_settings_managed", False),
+            "session_id": seed.get("session_id", ""),
+            "request_id": seed.get("request_id"),
+            "user_id": seed.get("user_id"),
+            "channel_id": seed.get("channel_id"),
+            "channel": seed.get("channel") or "default",
+            "request_metadata": seed.get("request_metadata"),
+            "mode": seed.get("mode") or "team",
+            "project_dir": seed.get("project_dir"),
+            "trusted_dirs": seed.get("trusted_dirs"),
+            "disable_teammate_worktree": bool(
                 seed.get("disable_teammate_worktree", False)
             ),
-            team_id=seed.get("team_id", ""),
-            team_ws_root=seed.get("team_ws_root"),
-            task_workspace_root=seed.get("task_workspace_root"),
-            team_outputs_dir=seed.get("team_outputs_dir"),
-            team_skill_visibility_path=seed.get("team_skill_visibility_path"),
-            global_skills_dir=seed.get("global_skills_dir"),
-            trajectory_span_processor=trajectory_span_processor,
-            heartbeat_job_service=get_heartbeat_job_service(),
-            config=config,
-        )
+            "team_id": seed.get("team_id", ""),
+            "team_ws_root": seed.get("team_ws_root"),
+            "task_workspace_root": seed.get("task_workspace_root"),
+            "team_outputs_dir": seed.get("team_outputs_dir"),
+            "team_skill_visibility_path": seed.get("team_skill_visibility_path"),
+            "global_skills_dir": seed.get("global_skills_dir"),
+            "trajectory_span_processor": trajectory_span_processor,
+            "heartbeat_job_service": get_heartbeat_job_service(),
+            "config": config,
+        }
+        if extension_bus is not None:
+            context_kwargs["extras"] = {"team.extension_bus": extension_bus}
+        if "extension_bus" in getattr(cls, "__dataclass_fields__", {}):
+            context_kwargs["extension_bus"] = extension_bus
+        return cls(**context_kwargs)
 
 
 __all__ = [

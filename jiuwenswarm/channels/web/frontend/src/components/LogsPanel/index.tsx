@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -69,7 +70,7 @@ export function LogsPanel({ isConnected: _isConnected }: LogsPanelProps) {
       // tail_bytes keeps the per-poll transfer bounded: the server returns only
       // the trailing 256 KiB regardless of how large ws-dev.log has grown, and
       // parseJsonlTail still takes the last 300 lines from that window.
-      const response = await fetch(`/file-api/file-content?path=${filePath}&tail_bytes=262144`);
+      const response = await gatewayFetch(`/file-api/file-content?path=${filePath}&tail_bytes=262144`);
       if (!response.ok) {
         const detail = await response.text();
         throw new Error(`${t('logsPanel.errors.readLogs')} (HTTP ${response.status})${detail ? `: ${detail.slice(0, 120)}` : ''}`);
@@ -88,7 +89,7 @@ export function LogsPanel({ isConnected: _isConnected }: LogsPanelProps) {
   const fetchWsDebugConfig = useCallback(async () => {
     setWsConfigLoading(true);
     try {
-      const response = await fetch('/file-api/ws-debug-config');
+      const response = await gatewayFetch('/file-api/ws-debug-config');
       if (!response.ok) {
         throw new Error(`${t('logsPanel.errors.readDebugConfig')} (HTTP ${response.status})`);
       }
@@ -105,7 +106,7 @@ export function LogsPanel({ isConnected: _isConnected }: LogsPanelProps) {
     const nextValue = !wsDisableCompress;
     setWsConfigLoading(true);
     try {
-      const response = await fetch('/file-api/ws-debug-config', {
+      const response = await gatewayFetch('/file-api/ws-debug-config', {
         method: 'POST',
         headers: {
           'content-type': 'application/json',

@@ -236,6 +236,27 @@ def _append_to(records, group, message_id, text, at=NOW):
                            archived_message(message_id, at, text=text), source_ref=f"event:{message_id}")
 
 
+@pytest.mark.parametrize("own_access", [True, False])
+async def test_related_search_keeps_the_selected_identity_history_boundary(cross_group_records, own_access):
+    records = cross_group_records
+    group_id = records.first.group_chat_id
+    _grant(records, "agent-b", records.first)
+    for name in (("agent-a", "agent-c") if own_access else ("agent-c",)):
+        records.groups.observe_access("ns-1", name, group_id, f"app-{name}",
+                                      observed_at=NOW + timedelta(seconds=1), source_ref=f"joined:{name}")
+    _append_to(records, records.first, "early", "roadmap")
+    _append_to(records, records.first, "recent", "roadmap", NOW + timedelta(seconds=2))
+    port = _search_port(records.groups, records.archive, None)
+    port.set_related_agents(lambda *_: ("agent-b", "agent-c"))
+
+    query = core.GroupMessageQuery(query="roadmap", group_ids=(group_id,))
+    result = await port.search_messages(_execution(), query)
+    assert result.status == "found"
+    assert [hit.message.message_id for hit in result.hits] == ["recent"]
+    sources = await port.sharing_sources(_execution(), query)
+    assert sources[0]["app_id"] == ("app-agent-a" if own_access else "app-agent-c")
+
+
 def test_search_by_current_name_merges_authorized_group_results_only(cross_group_records):
     records = cross_group_records
     _grant(records, "agent-a", records.first)

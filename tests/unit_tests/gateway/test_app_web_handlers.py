@@ -82,7 +82,16 @@ class FakeWebChannel:
         self.connect_handler = handler
 
     def on_disconnect(self, handler):
-        self.disconnect_handler = handler
+        previous = self.disconnect_handler
+        if previous is None:
+            self.disconnect_handler = handler
+            return
+
+        async def combined(ws, session_ids):
+            await previous(ws, session_ids)
+            await handler(ws, session_ids)
+
+        self.disconnect_handler = combined
 
     async def send_response(self, ws, req_id, *, ok, payload=None, error=None, code=None):
         self.responses.append(
@@ -110,7 +119,8 @@ class FakeWebChannel:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["a4p.authorization.complete", "a4p.config.get", "a4p.config.update"])
-async def test_a4p_rpc_uses_current_websocket_route(method) -> None:
+@pytest.mark.parametrize("untrusted_identity", [False, True])
+async def test_a4p_rpc_uses_current_websocket_route(method, untrusted_identity) -> None:
     class _AgentClient:
         server_ready = True
 
@@ -133,26 +143,40 @@ async def test_a4p_rpc_uses_current_websocket_route(method) -> None:
     ]
     agent_client = _AgentClient()
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=agent_client))
-    ws = SimpleNamespace(_jiuwen_ws_id="ws-1")
+    ws = SimpleNamespace(_jiuwen_ws_id="ws-1", _jiuwen_app_id="app-1")
+    params: dict[str, object] = {}
+    if untrusted_identity:
+        params["agent_ref"] = {"mode": "agent", "id": "untrusted"}
+    if method == "a4p.authorization.complete":
+        params["requestId"] = "intent-1"
+    elif method == "a4p.config.update":
+        params["enabled"] = True
 
     await channel.methods[method](
         ws,
         "rpc-1",
-        {"requestId": "intent-1", "agent_ref": {"mode": "agent", "id": "untrusted"}},
+        params,
         "session-1",
     )
 
-    assert channel.responses[-1]["ok"] is True
-    assert agent_client.envelope.channel_context == {
-        "ws_id": "ws-1",
-        "app_id": "app-1",
-        "agent_ref": {"mode": "team", "id": "research"},
-    }
+    if untrusted_identity and method != "a4p.authorization.complete":
+        assert channel.responses[-1]["ok"] is False
+        assert channel.responses[-1]["code"] == "BAD_REQUEST"
+        assert agent_client.envelope is None
+        return
+    assert channel.responses[-1]["ok"] is True, channel.responses[-1]
     if method == "a4p.authorization.complete":
+        assert agent_client.envelope.channel_context == {
+            "ws_id": "ws-1",
+            "app_id": "app-1",
+            "agent_ref": {"mode": "team", "id": "research"},
+        }
         # 完成授权时把恢复 turn 的输出改绑到当前连接（当前 ws_id 覆盖授权方冻结的旧 ws）。
         assert channel.rebounds == [("session-1", "ws-1")]
         assert channel.forgotten_routes == [(channel.routing_keys[0], "intent-1")]
     else:
+        # Configuration belongs to the application, independently of the active session.
+        assert agent_client.envelope.channel_context == {"app_id": "app-1"}
         assert channel.rebounds == []
         assert channel.forgotten_routes == []
 

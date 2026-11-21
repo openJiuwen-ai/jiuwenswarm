@@ -1,8 +1,12 @@
+import type { JiuwenMateCategory } from '../jiuwenmate/types';
 import type { ModelSelection, AskUserQuestionPayload, UserAnswer } from '../../types';
 import { webClient, webRequest } from '../../services/webClient';
 
 export interface GroupMember {
-  kind: 'agent_template' | 'agent_group';
+  kind: 'agent_template' | 'agent_group' | 'colleague';
+  avatar_url?: string;
+  colleague_category?: JiuwenMateCategory;
+  is_default?: boolean;
   cli_agent?: 'claude' | 'codex';
   id: string;
   member_name: string;

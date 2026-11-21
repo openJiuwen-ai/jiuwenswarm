@@ -97,7 +97,9 @@ describe('a live turn', () => {
       ['chat.error', { error: '模型超时' }],
     ]);
     expect(failed.turn).toBe('idle');
-    expect(shown(failed)).toEqual([{ kind: 'notice', tone: 'error', text: '出错了：模型超时' }]);
+    expect(shown(failed)).toEqual([{
+      kind: 'notice', tone: 'error', text: '出错了：模型超时', failure: { action: 'copyDetails', detail: '模型超时' },
+    }]);
     const cancelled = play([
       ['chat.processing_status', { is_processing: true }],
       ['chat.ask_user_question', PERMISSION],
@@ -105,6 +107,20 @@ describe('a live turn', () => {
     ]);
     expect(cancelled.turn).toBe('idle');
     expect(cancelled.prompt).toBeUndefined();
+  });
+
+  it('names a failure the backend gives a code in plain words, with its one way out and the error word for word', () => {
+    const failure = (payload: JsonObject) => shown(play([['chat.error', payload]]))[0];
+    expect(failure({ error: 'error code: 429 too many requests', code: 'rate_limited', upstream: true })).toEqual({
+      kind: 'notice', tone: 'error', text: '模型服务繁忙或暂时连不上，请稍后重试。',
+      failure: { action: 'retry', detail: 'rate_limited: error code: 429 too many requests' },
+    });
+    expect(failure({ error: 'session not found', code: 'NOT_FOUND' })).toMatchObject({
+      text: '这段对话已被删除或归档，无法继续。', failure: { action: 'newConversation' } });
+    expect(failure({ error: 'no vision', code: 'SESSION_INPUT_IMAGE_UNAVAILABLE' })).toMatchObject({
+      text: '当前模型读不了图片。去掉图片再发，或换一个能看图的模型。', failure: { action: 'copyDetails' } });
+    expect(failure({ error: 'boom', code: 'toString' })).toMatchObject({
+      text: '出错了：boom', failure: { action: 'copyDetails', detail: 'toString: boom' } });
   });
 
   it('says when the model cannot see the images sent, and nothing for other notices', () => {
@@ -225,6 +241,8 @@ describe('a conversation\'s history', () => {
         answers: [{ selected_options: ['本次允许'] }] },
       { role: 'assistant', event_type: 'chat.final', content: '改好了。', request_id: 'r1' },
       { role: 'assistant', event_type: 'chat.final', content: '另一轮。', request_id: 'r2' },
+      { role: 'user', content: '看看这份\n【上传文档】\n@/u/brief.pdf', media_items: { items: [
+        { type: 'document', filename: 'brief.pdf', path: '/u/brief.pdf', size_bytes: 2048 }] } },
       { role: 'user', content: '核对第 5 页', message_origin: 'cross_session_agent', cross_session: {
         message_id: 'm1', source_session_id: 's9', source_title: '市场分析.pptx' } },
     ]);
@@ -235,10 +253,16 @@ describe('a conversation\'s history', () => {
       { kind: 'notice', tone: 'info', text: '已回答：本次允许' },
       { kind: 'assistant', text: '改好了。' },
       { kind: 'assistant', text: '另一轮。' },
+      { kind: 'user', text: '看看这份', files: [{ filename: 'brief.pdf', size: 2048 }] },
       { kind: 'incoming', sourceTitle: '市场分析.pptx', text: '核对第 5 页', status: 'succeeded' },
     ]);
     expect(conversation.prompt).toBeUndefined();
     expect(conversation.turn).toBe('idle');
+  });
+
+  it('keeps a message that writes the documents\' line itself, without documents, as written', () => {
+    const text = '模板第一行是\n【上传文档】\n下面照抄';
+    expect(shown(replayHistory([{ role: 'user', content: text }]))).toEqual([{ kind: 'user', text }]);
   });
 });
 
