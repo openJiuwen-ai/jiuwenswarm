@@ -120,14 +120,19 @@ def _assemble_flash(monkeypatch, *, enabled=True, disabled=None, lazy=True, sele
         monkeypatch.setattr(adapter, "_build_skill_rail", lambda **_: native)
     task_builder = Mock(return_value=None)
     skill_protocol_builder = Mock(return_value=None)
+    flash_skill_protocol_builder = Mock(return_value=None)
     monkeypatch.setattr(interface_deep, "_build_task_execution_rail", task_builder)
     monkeypatch.setattr(interface_deep, "_build_skill_protocol_prompt_rail", skill_protocol_builder)
+    monkeypatch.setattr(interface_flash, "_build_skill_protocol_prompt_rail", flash_skill_protocol_builder)
     monkeypatch.setattr(interface_deep, "_build_heartbeat_rail", lambda: None)
     monkeypatch.setattr(interface_deep, "_build_avatar_rail", lambda: None)
     monkeypatch.setattr(interface_deep, "_build_llm_retry_rail", lambda **_: None)
     rails = adapter._build_agent_rails(config["react"], config, mode="flash")
     task_builder.assert_not_called()
+    # 父类 mode.startswith("agent") 门控对 flash 不触发（interface_deep 侧），
+    # 但 flash _instantiate_rails 显式补装配（interface_flash 侧调用一次）。
     skill_protocol_builder.assert_not_called()
+    flash_skill_protocol_builder.assert_called_once()
     return adapter, rails
 
 
@@ -214,7 +219,7 @@ async def test_relay_empty_prewarm_refreshes_before_first_real_model_call(
             assert not any("当前内部支持：暂无" in str(message.content) for message in messages)
             # The model needs routing guidance, not just a visible tool card.
             system_text = "\n".join(str(message.content) for message in messages if message.role == "system")
-            assert "## 技能加速通道" in system_text
+            assert "# 技能加速通道" in system_text
             assert "todo_modify" not in system_text
             assert f"当前支持：{external}" in system_text
             assert "对当前支持范围内的任务，第一个工具调用必须是 skill_acceleration_exec" in system_text
@@ -333,7 +338,7 @@ async def test_turbo_guide_follows_request_roots_and_actual_tool_visibility(monk
                 await session.post_run()
             messages, _ = model.calls[-1]
             text = "\n".join(str(m.content) for m in messages if m.role == "system")
-            assert ("## 技能加速通道" in text) is expected
+            assert ("# 技能加速通道" in text) is expected
     finally:
         await core.stop()
 
@@ -389,13 +394,13 @@ async def test_turbo_prompt_build_failure_keeps_flash_usable(
         assert len(model.calls) == 1
         messages, tools = model.calls[0]
         assert any(tool.name == TURBO_TOOL_NAME for tool in tools)
-        assert not any("## 技能加速通道" in str(message.content) for message in messages)
+        assert not any("# 技能加速通道" in str(message.content) for message in messages)
     finally:
         await core.stop()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("language,title", [("cn", "## 技能加速通道"), ("en", "## Skill Acceleration Channel")])
+@pytest.mark.parametrize("language,title", [("cn", "# 技能加速通道"), ("en", "# Skill Acceleration Channel")])
 async def test_flash_guide_preserves_priority_and_cleans_up(monkeypatch, skill_roots, language, title):
     adapter, _ = _assemble_flash(monkeypatch)
     rail = adapter._skill_turbo_prompt_rail

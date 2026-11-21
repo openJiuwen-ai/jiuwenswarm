@@ -112,15 +112,20 @@ def assemble_flash(monkeypatch):
         monkeypatch.setattr(adapter, "_task_execution_rail_enabled", lambda: True)
         task_builder = Mock(return_value=None)
         skill_protocol_builder = Mock(return_value=None)
+        flash_skill_protocol_builder = Mock(return_value=None)
         monkeypatch.setattr(interface_deep, "_build_task_execution_rail", task_builder)
         monkeypatch.setattr(interface_deep, "_build_skill_protocol_prompt_rail", skill_protocol_builder)
+        monkeypatch.setattr(interface_flash, "_build_skill_protocol_prompt_rail", flash_skill_protocol_builder)
         monkeypatch.setattr(interface_deep, "_build_heartbeat_rail", lambda: None)
         monkeypatch.setattr(interface_deep, "_build_avatar_rail", lambda: None)
         monkeypatch.setattr(interface_deep, "_build_llm_retry_rail", lambda **_: None)
         rails = adapter._build_agent_rails(config["react"], config, mode="flash")
         task_builder.assert_not_called()
         adapter._build_skill_turbo_prompt_rail.assert_called_once()
+        # 父类 mode.startswith("agent") 门控对 flash 不触发（interface_deep 侧），
+        # 但 flash _instantiate_rails 显式补装配（interface_flash 侧调用一次）。
         skill_protocol_builder.assert_not_called()
+        flash_skill_protocol_builder.assert_called_once()
         return adapter, rails
 
     return assemble

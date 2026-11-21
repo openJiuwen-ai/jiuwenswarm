@@ -1962,6 +1962,26 @@ flash:
     verify_only: false            # 仅漂移校验、不裁决
   section_order:
     enabled: true                 # 段序收口：旧段迁号/剥除 + 动态段 1000 带
+  # ── 线 B 接线 rail 开关（评审：需在模板声明，否则 merge_template_with_override 静默删除）──
+  repeat_call_guard:
+    enabled: true                 # 重复调用守卫（同参数重复调用阶梯提醒，attachment 只提醒不否决）
+    thresholds: [3, 5, 8]
+    include: []                   # 只统计这些工具（空=全部）
+    exclude: []                   # 排除这些工具
+    arguments_preview_chars: 500  # 参数预览截断长度
+  skill_catalog:
+    enabled: true                 # 7xx 技能域常驻重组（manifest 启用集精简清单）
+    manifest_path: ""             # 空=自动解析各 skills 根目录 manifest.yaml
+    catalog_description_max_length: 800
+    catalog_max_entries: 50
+  state:
+    enabled: true                 # 820 时间事实迁 attachment
+  pressure:
+    enabled: true                 # 水位压力注入 70/85 阶梯提醒
+    warning_ratio: 0.70
+    critical_ratio: 0.85
+  relay_merge:
+    enabled: true                 # relay 注入内容去重归并
 
 # ── 模型路由（model_routing rail）──────────────────────────────
 model_routing:
