@@ -173,6 +173,7 @@ function IterationStrip<T extends { status: WorkflowStatus }>({
   selectedIndex: number;
   onSelect: (index: number) => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="flex items-center gap-1 shrink-0">
       {members.map((member, i) => (
@@ -182,7 +183,7 @@ function IterationStrip<T extends { status: WorkflowStatus }>({
           className={`w-2.5 h-2.5 rounded-full transition-all hover:scale-125 ${statusDotColor(member.status)} ${
             i === selectedIndex ? 'ring-2 ring-blue-400 ring-offset-1 ring-offset-card' : ''
           }`}
-          title={`第${i + 1}轮 · ${member.status}`}
+          title={t('swarmflow.iterationDotTitle', { index: i + 1, status: member.status })}
           data-testid="team-area-swarmflow-iteration-dot"
           data-variant={i}
           onClick={(e) => {
@@ -210,6 +211,7 @@ function AgentLoopNode({
   runId: string;
   sessionId: string;
 }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(true);
   const [selectedIdx, setSelectedIdx] = useState(() => findActiveIterationIndex(members));
   const loopStatus = useMemo(() => computeLoopStatus(members), [members]);
@@ -234,7 +236,7 @@ function AgentLoopNode({
         )}
         <RefreshCw className={`w-4 h-4 shrink-0 text-purple-500 ${loopStatus === 'running' ? 'animate-spin' : ''}`} />
         <span className="text-sm font-medium text-text break-words" title={name}>{name}</span>
-        <span className="text-xs text-text-muted shrink-0">×{members.length}轮</span>
+        <span className="text-xs text-text-muted shrink-0">{t('swarmflow.iterationCount', { count: members.length })}</span>
         <span className="text-xs text-text-muted shrink-0">
           {completedCount}/{members.length}
         </span>
@@ -273,7 +275,7 @@ function AgentLoopNode({
                 <div className="w-[18px] shrink-0" />
                 <StatusIcon status={member.status} className="w-3.5 h-3.5" />
                 <span className="text-xs text-text-muted">
-                  第{i + 1}轮
+                  {t('swarmflow.iterationRound', { index: i + 1 })}
                 </span>
                 {(member.outcome ?? member.outcome_preview) && (
                   <span className="text-xs text-text-muted/70 truncate flex-1">
@@ -306,6 +308,7 @@ function PhaseLoopNode({
   runId: string;
   sessionId: string;
 }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(true);
   const [selectedIdx, setSelectedIdx] = useState(() => findActiveIterationIndex(members));
   const loopStatus = useMemo(() => computeLoopStatus(members), [members]);
@@ -329,7 +332,7 @@ function PhaseLoopNode({
         )}
         <RefreshCw className={`w-4 h-4 shrink-0 text-purple-500 ${loopStatus === 'running' ? 'animate-spin' : ''}`} />
         <span className="text-sm font-medium text-text break-words" title={baseName}>{baseName}</span>
-        <span className="text-xs text-text-muted shrink-0">×{members.length}轮</span>
+        <span className="text-xs text-text-muted shrink-0">{t('swarmflow.iterationCount', { count: members.length })}</span>
         <span className="text-xs text-text-muted shrink-0">
           {completedCount}/{members.length}
         </span>
@@ -367,7 +370,7 @@ function PhaseLoopNode({
                 <div className="w-[18px] shrink-0" />
                 <StatusIcon status={phase.status} className="w-3.5 h-3.5" />
                 <span className="text-xs text-text-muted">
-                  第{phase.iteration ?? i + 1}轮
+                  {t('swarmflow.iterationRound', { index: phase.iteration ?? i + 1 })}
                 </span>
                 <span className="text-xs text-text-muted/70 shrink-0">
                   {phase.completed_agent_count ??
@@ -1746,7 +1749,7 @@ function RunNode({
           onClick={() =>
             setRunDetail({
               sections: [
-                { key: 'error', label: '错误', icon: '✕', content: run.error!, accent: 'red' },
+                { key: 'error', label: t('swarmflow.sectionError'), icon: '✕', content: run.error!, accent: 'red' },
               ],
               activeKey: 'error',
             })
@@ -1764,7 +1767,7 @@ function RunNode({
           onClick={() =>
             setRunDetail({
               sections: [
-                { key: 'result', label: '结果', icon: '✓', content: run.result!, accent: 'emerald' },
+                { key: 'result', label: t('swarmflow.sectionResult'), icon: '✓', content: run.result!, accent: 'emerald' },
               ],
               activeKey: 'result',
             })

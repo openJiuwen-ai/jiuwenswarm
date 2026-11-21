@@ -907,7 +907,9 @@ function normalizeAgentMode(rawMode: unknown): AgentMode {
   return 'agent';
 }
 
-function unsupportedEvolutionModeMessage(content: string, mode: AgentMode): string | null {
+type Translate = (key: string, options?: Record<string, unknown>) => string;
+
+function unsupportedEvolutionModeMessage(content: string, mode: AgentMode, t: Translate): string | null {
   const trimmed = content.trim();
   const isEvolutionCommand =
     trimmed === '/evolve' ||
@@ -917,7 +919,7 @@ function unsupportedEvolutionModeMessage(content: string, mode: AgentMode): stri
   if (!isEvolutionCommand || mode === 'agent' || mode === 'team') {
     return null;
   }
-  return `${mode} 模式下演进功能不可用。`;
+  return t('chat.evolutionUnavailableInMode', { mode });
 }
 
 const EVENT_DEDUP_WINDOW_MS = 1500;
@@ -2224,7 +2226,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       if (!stripUploadDocumentBlocks(content).trim() && !hasMedia) return false;
 
       const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
-      const unsupportedEvolutionMode = unsupportedEvolutionModeMessage(content, currentMode ?? 'agent');
+      const unsupportedEvolutionMode = unsupportedEvolutionModeMessage(content, currentMode ?? 'agent', t);
       if (unsupportedEvolutionMode) {
         useChatStore.getState().addMessage(sessionId, {
           id: prefixedMessageId('error-'),
@@ -5414,7 +5416,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const alertMsg =
           typeof payload.message === 'string'
             ? payload.message
-            : '安全警告';
+            : t('app.securityAlertTitle');
 
         window.dispatchEvent(new CustomEvent('security-alert', {
           detail: {
@@ -5433,7 +5435,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const retractMsg =
           typeof event.payload.message === 'string'
             ? event.payload.message
-            : '内容已因安全原因撤回';
+            : t('security.contentRetracted');
 
         const runtime = useChatStore.getState().getRuntime(sessionId);
         const currentStreamId = runtime?.currentStreamId;

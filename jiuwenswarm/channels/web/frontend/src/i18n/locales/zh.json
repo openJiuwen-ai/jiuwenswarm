@@ -118,6 +118,7 @@
     "processing": "处理中…",
     "retry": "重试",
     "selectedCount": "已选 {{count}} 个",
+    "noMatches": "没有匹配项",
     "editMenu": {
       "actionFailed": "无法完成文本编辑操作，请重试。",
       "cut": "剪切",
@@ -131,7 +132,11 @@
     "unavailable": "界面内容暂时无法显示，请稍后重试或重新生成结果。",
     "unavailableTitle": "界面内容暂时无法显示",
     "retry": "请稍后重试或重新生成结果",
-    "unsupportedProtocol": "不支持的 A2UI 协议版本：{{version}}"
+    "unsupportedProtocol": "不支持的 A2UI 协议版本：{{version}}",
+    "multipleChoice": {
+      "maxSelections": "{{description}}（最多选 {{count}} 项）",
+      "searchPlaceholder": "搜索选项"
+    }
   },
   "webui": {
     "entryLabel": "应用界面",
@@ -1931,7 +1936,8 @@
       "showSessions": "展开会话栏",
       "hideTasks": "收起任务栏",
       "showTasks": "展开任务栏"
-    }
+    },
+    "retentionRunning": "轨迹保留清理正在进行，请稍后重试。"
   },
   "teams": {
     "title": "团队管理",
@@ -2397,7 +2403,10 @@
       "providerRefusal": "话题推荐暂不可用，请前往设置检查。",
       "openSettings": "去设置看看",
       "trySettings": "去试试",
-      "disabledHintWithCards": "想让话题更懂你，可以去设置-常规里打开。"
+      "disabledHintWithCards": "想让话题更懂你，可以去设置-常规里打开。",
+      "newsReport": "资讯",
+      "recent": "近期",
+      "openOriginal": "打开原文：{{source}}"
     },
     "promptSuggestionBox": {
       "label": "下一步：",
@@ -2646,7 +2655,36 @@
     "selectTeamMembers": "选择团队成员",
     "noTeamMembersAvailable": "暂无可选择的团队成员",
     "moaReferenceRunning": "正在运行参考模型…",
-    "moaVerifying": "正在评估任务执行进展…"
+    "moaVerifying": "正在评估任务执行进展…",
+    "sessionNotReady": "会话未就绪，请稍后重试",
+    "slash": {
+      "forkFailed": "分叉会话失败，请稍后再试。",
+      "compactBusy": "压缩已在进行中，请稍候。",
+      "compactNoop": "上下文已是最优，无需压缩。",
+      "compactDone": "✓ 上下文已压缩：{{after}}K / {{before}}K tokens（节省 {{rate}}%）",
+      "compactIncomplete": "压缩未完成，请稍后再试。",
+      "compactFailed": "压缩失败：网络异常或请求超时。",
+      "planTeamUnsupported": "计划模式仅对单 agent 开放，集群会话不支持。",
+      "goalNone": "当前会话没有持续目标。",
+      "goalCurrent": "当前目标（{{status}}）：{{objective}}",
+      "goalStatus": {
+        "active": "进行中",
+        "paused": "已暂停",
+        "completed": "已完成",
+        "blocked": "已阻塞"
+      },
+      "goalUsage": "用法：/goal [set <目标>|pause|resume|clear]",
+      "goalNeedSession": "请先开始一个对话再控制持续目标。",
+      "goalBusy": "对话进行中，暂时无法设置目标，请等待执行结束。",
+      "goalPlanActive": "计划模式正在进行，请先退出计划模式再设置目标。",
+      "goalClearBusy": "目标正在执行中，暂时无法清除，请先暂停或等待执行结束。",
+      "goalFailed": "目标命令执行失败，请稍后再试。",
+      "persistExistingSession": "Persist Session 只能在创建新会话时开启，并且创建后不可更改。请点击“新建任务”后再使用 /persist <任务>。",
+      "persistUsage": "用法：/persist <任务>"
+    },
+    "sessionTaskCompleted": "会话任务：【{{description}}】已完成",
+    "receiving": "正在接收中...",
+    "evolutionUnavailableInMode": "{{mode}} 模式下演进功能不可用。"
   },
   "autoHarness": {
     "busy": "当前已有 Auto-Harness 任务在运行",
@@ -2799,6 +2837,7 @@
   },
   "sessionSidebar": {
     "newSession": "新会话",
+    "comboboxOptions": "{{label}}选项",
     "enterpriseContext": {
       "user": "用户",
       "userContext": "用户上下文",
@@ -5166,6 +5205,7 @@
     }
   },
   "network": {
+    "proxyRoutingError": "接口未命中后端服务（返回了 HTML 页面，状态码 {{status}}）。请检查后端服务是否启动，以及统一门户接口前缀代理是否配置正确。",
     "wsError": "WebSocket 连接异常",
     "connectionClosedWithCode": "连接已关闭 ({{code}})",
     "connectionClosed": "连接已关闭",
@@ -5189,6 +5229,7 @@
     "recognitionUnsupported": "浏览器不支持语音识别",
     "recordingUnsupported": "浏览器不支持麦克风录音",
     "synthesisUnsupported": "浏览器不支持语音合成",
+    "codeBlockOmitted": "代码块已省略",
     "errors": {
       "noSpeech": "未检测到语音",
       "noMic": "未检测到麦克风",
@@ -5976,6 +6017,24 @@
     }
   },
   "auth": {
+    "startup": {
+      "manager": "【正式身份认证模式，依赖manager ID认证服务】",
+      "simulate": "【登录认证模拟调试模式已开启】使用默认 Agent 上下文候选值"
+    },
+    "errors": {
+      "authorizeFailed": "获取授权地址失败",
+      "authorizeMalformed": "授权地址返回不完整",
+      "authorizeUnavailable": "无法获取授权地址，请稍后重试",
+      "loginFailed": "登录失败，请重试",
+      "statusFailed": "获取登录状态失败",
+      "modelsFailed": "获取模型列表失败",
+      "quotaFailed": "获取额度失败"
+    },
+    "manager": {
+      "networkFailed": "网络请求失败：{{message}}",
+      "contextFailed": "加载 Agent 上下文失败",
+      "switchClusterFailed": "切换集群失败"
+    },
     "huawei": {
       "title": "登录华为账号",
       "subtitle": "登录后即可使用账号提供的模型，无需配置 API Key。",
@@ -6450,7 +6509,13 @@
     "forkFromSession": "从会话 {{name}} 分叉",
     "forkChildSession": "分叉产生的子会话",
     "executorOrchestration": "【{{name}} 的编排 · {{workflow}}】",
-    "runFoldDivider": "进行中 {{active}} · 已结束 {{ended}}"
+    "runFoldDivider": "进行中 {{active}} · 已结束 {{ended}}",
+    "sectionResult": "结果",
+    "iterationRound": "第{{index}}轮",
+    "iterationDotTitle": "第{{index}}轮 · {{status}}",
+    "iterationCount": "×{{count}}轮",
+    "formatToggleFormatted": "格式化",
+    "formatToggleRaw": "原始"
   },
   "a4pSettings": {
     "title": "A4P 预授权",
@@ -7546,5 +7611,30 @@
       "unavailable": "当前会话的文件预览暂不可用",
       "error": "文件读取失败，请重新选择文件"
     }
+  },
+  "marketplace": {
+    "cache": {
+      "refreshFailed": "目录刷新失败，继续显示上次可用内容。",
+      "stale": "当前显示旧缓存。",
+      "updatedAt": "上次更新时间：{{time}}"
+    }
+  },
+  "assetPublish": {
+    "errors": {
+      "desktopNotReady": "桌面浏览器功能尚未就绪，请重试。",
+      "popupBlocked": "浏览器阻止了授权窗口，请允许打开新标签页。",
+      "openBrowserFailed": "无法打开系统浏览器，请重试。",
+      "oauthUnavailable": "OAuth 登录不可用"
+    }
+  },
+  "hubOAuth": {
+    "startFailed": "无法启动 Hub 授权，请检查本地服务。",
+    "requestExpired": "授权请求已过期，请重新登录。",
+    "windowClosed": "授权窗口已关闭，请重新登录。",
+    "exchangeFailed": "Hub 登录结果兑换失败，请重新授权；若仍失败请联系 Hub 管理员。",
+    "failed": "授权失败，请重试。"
+  },
+  "workspace": {
+    "selectFilesUnavailable": "后端未注册 path.select_files，请重启 jiuwenswarm-start 后再试"
   }
 }
