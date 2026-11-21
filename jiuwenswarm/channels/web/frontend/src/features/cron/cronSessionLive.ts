@@ -11,8 +11,9 @@
  *
  * 重要：live_bus 会回放近一段帧。后台已订过再点进会话、或 effect 重建订阅时，
  * 若不去重就会把同一份终稿画两遍。用跨订阅的 live_seq + 终稿正文去重挡住。
- * 但终态帧（processing=false / error）不吃 live_seq 去重：重复收尾无害，
- * 漏掉一次就再也停不下「任务执行 Xs」。
+ * 终态帧（processing=false / error）不受 live_seq 拦截：漏掉一次就再也停不下
+ * 「任务执行 Xs」。但已见过的终态帧只用于收尾，不再重复注入——chat.error
+ * 重复上屏会多出一条错误气泡。
  */
 import { isEnterprise } from '../../edition';
 import { consumeSseBuffer, sseFrameToWsEvent } from '../../services/webHttpClient';
@@ -266,11 +267,18 @@ export function watchCronExecutionSession(
             const settleEvent = isCronLiveSettledEvent(event.event, event.payload);
             const sequence = event.payload.live_seq;
             if (typeof sequence === 'number' && Number.isSafeInteger(sequence) && sequence > 0) {
-              // 模块级去重：订阅重建 / 点进会话时回放不会再画一遍。
-              // 终态帧不吃去重：重复收尾无害，漏掉一次就再也停不下「任务执行 Xs」。
-              if (!rememberLiveSeq(sessionId, sequence) && !settleEvent) continue;
+              // 模块级去重：订阅重建 / 点进会话时回放不会把同一帧再画一遍。
+              // 终态帧不能因为「已见过」被整帧丢掉，否则新的订阅者再也停不下
+              // 「任务执行 Xs」；但也不要再次上屏：重复注入 chat.error 会多出错误气泡。
+              const fresh = rememberLiveSeq(sessionId, sequence);
+              if (!fresh && !settleEvent) continue;
               if (sequence > lastLiveSequence) lastLiveSequence = sequence;
               seenSequences.add(sequence);
+              if (!fresh) {
+                // 只用于收尾：后台 watcher 仍要停订，前台不再重复注入。
+                if (stopOnSettled) settled = true;
+                continue;
+              }
             }
             const runtime = useChatStore.getState().getRuntime(sessionId);
             // A restored timeline already contains the initial backlog. New
