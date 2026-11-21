@@ -146,10 +146,14 @@ def _apply_runtime_entry_patches() -> None:
     from jiuwenswarm.openjiuwen_fs_rwlock_patch import (
         install_fs_rwlock_task_affinity_patch,
     )
+    from jiuwenswarm.openjiuwen_team_db_lock_patch import (
+        install_team_db_lock_retry_patch,
+    )
 
     install_native_tokenizer_cache()
     install_shell_tool_safety_hooks()
     install_fs_rwlock_task_affinity_patch()
+    install_team_db_lock_retry_patch()
     apply_provider_compat_patches()
     try:
         install_team_workspace_read_guard()

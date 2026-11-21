@@ -48,6 +48,7 @@ generated: true
 | [jiuwenswarm/server/worker](#module-jiuwenswarm-server-worker) |
 | [scripts](#module-scripts) |
 | [tests/fixtures/ttse_plugin](#module-tests-fixtures-ttse_plugin) |
+| [tests/unit_tests](#module-tests-unit_tests) |
 | [tests/unit_tests/agentserver](#module-tests-unit_tests-agentserver) |
 | [tests/unit_tests/gateway](#module-tests-unit_tests-gateway) |
 | [tests/unit_tests/personal_context](#module-tests-unit_tests-personal_context) |
@@ -88,6 +89,7 @@ generated: true
 | [B_20261030_2020_pause-refires-consumed-popups](jiuwenswarm/server/runtime/agent_adapter/B_20261030_2020_pause-refires-consumed-popups.md) | B | 暂停/取消后已消费的 human 弹窗被重放层重投 | xiajing | 无独立 D：重放层过滤由主干既有机制承载，本修复补触发层清场与消费层去重两段。 |
 | [B_20261031_0946_ttse-codecheck-boundaries](jiuwenswarm/B_20261031_0946_ttse-codecheck-boundaries.md) | B | TTSE 相关 CodeCheck 受保护访问与关闭条件复杂度修复 | xinyang_bali | 无独立 D：按用户提供的 20 项 CodeCheck 清单修复实现边界，沿用当前 TTSE 通用运行契约，无独立 D。 |
 | [B_20261031_1053_atomgit-review](jiuwenswarm/server/B_20261031_1053_atomgit-review.md) | B | PR 9317 AtomGit 取消、补丁兼容与注销恢复修复 | xinyang_bali | 无独立 D：根据机器人检视修复现有资源生命周期和可选补丁边界，不引入独立方案。 |
+| [B_20261121_2236_team-db-lock-retry](jiuwenswarm/server/worker/B_20261121_2236_team-db-lock-retry.md) | B | 团队成员执行状态更新遇到 SQLite 锁错误 | GeirvaldrOden | 无独立 D：针对既有 Team Member DAO 写入的短暂 SQLite 锁冲突做局部兼容修复，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-agents-harness-code-rails-heartbeat"></a>
 
@@ -348,6 +350,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261105_1518_worker-dispatch-slot-accounting](jiuwenswarm/server/worker/B_20261105_1518_worker-dispatch-slot-accounting.md) | B | Worker 派发容量排除已返回的 handler | kdgmpw | 无独立 D：按会话中确认的最小修复方案调整 Worker 内部计数。 |
+| [B_20261121_2236_team-db-lock-retry](jiuwenswarm/server/worker/B_20261121_2236_team-db-lock-retry.md) | B | 团队成员执行状态更新遇到 SQLite 锁错误 | GeirvaldrOden | 无独立 D：针对既有 Team Member DAO 写入的短暂 SQLite 锁冲突做局部兼容修复，无独立设计文档。 |
 
 <a id="module-scripts"></a>
 
@@ -366,6 +369,14 @@ generated: true
 |---|---|---|---|---|
 | [B_20261031_1006_ttse-runtime-fixture](tests/unit_tests/agentserver/B_20261031_1006_ttse-runtime-fixture.md) | B | TTSE runtime UT 使用版本化夹具修复整批 setup error | xinyang_bali | 无独立 D：修复用户报告的 CI 测试数据缺失，保持现有 plugin_runtime v1 与生产默认打包路径，无独立 D。 |
 
+<a id="module-tests-unit_tests"></a>
+
+## tests/unit_tests
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261121_2236_team-db-lock-retry](jiuwenswarm/server/worker/B_20261121_2236_team-db-lock-retry.md) | B | 团队成员执行状态更新遇到 SQLite 锁错误 | GeirvaldrOden | 无独立 D：针对既有 Team Member DAO 写入的短暂 SQLite 锁冲突做局部兼容修复，无独立设计文档。 |
+
 <a id="module-tests-unit_tests-agentserver"></a>
 
 ## tests/unit_tests/agentserver
@@ -376,6 +387,7 @@ generated: true
 | [B_20261031_1048_ttse-core-dependent-ut](tests/unit_tests/agentserver/B_20261031_1048_ttse-core-dependent-ut.md) | B | 暂时移除依赖未合入 core 工厂能力的插件 UT | xinyang_bali | 无独立 D：用户明确要求暂时删除依赖 core 的相关 UT，不调整依赖或运行实现，无独立 D。 |
 | [B_20261116_1701_my-plugin-installed-only](jiuwenswarm/server/runtime/B_20261116_1701_my-plugin-installed-only.md) | B | 未安装插件草稿混入我的扩展并显示安装按钮 | lizhiyuan | 无独立 D：用户在本次对话明确确认插件列表归属及按钮策略，属于现有市场行为的小范围修复，无独立设计文档。 |
 | [B_20261117_1050_adapter-ut-fixtures](tests/unit_tests/agentserver/B_20261117_1050_adapter-ut-fixtures.md) | B | 图片降级提示与付费搜索 UT 的测试替身和断言漂移 | TwZhang | 无独立 D：根据用户提供的 UT 报告修正测试替身及副作用断言，无独立设计。 |
+| [B_20261121_2236_team-db-lock-retry](jiuwenswarm/server/worker/B_20261121_2236_team-db-lock-retry.md) | B | 团队成员执行状态更新遇到 SQLite 锁错误 | GeirvaldrOden | 无独立 D：针对既有 Team Member DAO 写入的短暂 SQLite 锁冲突做局部兼容修复，无独立设计文档。 |
 
 <a id="module-tests-unit_tests-gateway"></a>
 
