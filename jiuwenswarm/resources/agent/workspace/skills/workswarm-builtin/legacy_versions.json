@@ -47,6 +47,18 @@
   ],
   "jiuwen-system-plugin-dev": [
     {
+      "digest": "bf7ff0d169bb2b137b0da0d8272e3f0bf1f60f1d75a55f15d71ecf78b8598c53",
+      "revision": "119b0296a1854f6a3e9e945705b323489c134f31"
+    },
+    {
+      "digest": "6527affd66f888e6debdf141981caef7a2c6f319dada0ab5e65daae418c003ea",
+      "revision": "4ac45f2c9569bbac401e98401cba3ab286d9c0fa"
+    },
+    {
+      "digest": "91a089ba7a1f82ac0197611c316fe3909c608da09b9b4f7cf91c36270b8a4416",
+      "revision": "fc3b83ceb0737720e7f8cb3eb4f9aef7122b0df0"
+    },
+    {
       "digest": "251910f70c977d457205ba2a7c898b3b9f04172a392660e6bac6e14fa45fb0e8",
       "revision": "07ffd29b928f97ba8dea2e476fc9d5131ecec5d9"
     }

@@ -114,6 +114,56 @@ def _refresh_catalog_navigation(builtin_dir: Path, catalog: Path, versions: dict
                 os.unlink(temporary)
 
 
+def _refresh_catalog_capabilities(builtin_dir: Path, catalog: Path, versions: dict) -> None:
+    """Refresh unmodified catalog leaves and preserve user-customized copies."""
+    source_root = builtin_dir / BUILTIN_CATALOG_NAME / "references" / "capabilities"
+    target_root = catalog / "references" / "capabilities"
+    if not source_root.is_dir() or not target_root.is_dir():
+        return
+    for source in sorted(source_root.iterdir()):
+        target = target_root / source.name
+        if not source.is_dir() or source.is_symlink():
+            continue
+        if not target.is_dir() or target.is_symlink():
+            continue
+        try:
+            source_digest = skill_tree_digest(source)
+            target_digest = skill_tree_digest(target)
+        except (OSError, ValueError) as exc:
+            logger.warning("Preserving unreadable catalog capability %s: %s", source.name, exc)
+            continue
+        if source_digest == target_digest:
+            continue
+        trusted = {
+            str(item.get("digest") or "")
+            for item in versions.get(source.name, [])
+            if isinstance(item, dict)
+        }
+        if target_digest not in trusted:
+            continue
+
+        backup_root = catalog / ".legacy" / "catalog-capabilities"
+        backup_root.mkdir(parents=True, exist_ok=True)
+        backup = backup_root / f"{source.name}-{target_digest[:12]}"
+        suffix = 0
+        while backup.exists():
+            suffix += 1
+            backup = backup_root / f"{source.name}-{target_digest[:12]}-{suffix}"
+        if not backup.resolve().is_relative_to(catalog.resolve()):
+            raise ValueError("Catalog capability archive escapes workspace")
+
+        with tempfile.TemporaryDirectory(prefix=".builtin-capability-refresh-", dir=target_root) as directory:
+            staged = Path(directory) / source.name
+            shutil.copytree(source, staged)
+            target.rename(backup)
+            try:
+                staged.rename(target)
+            except Exception:
+                if not target.exists() and backup.exists():
+                    backup.rename(target)
+                raise
+
+
 def migrate_builtin_catalog(builtin_dir: Path, skills_dir: Path) -> None:
     """Archive unchanged, source-confirmed legacy installs after catalog install.
 
@@ -135,6 +185,7 @@ def migrate_builtin_catalog(builtin_dir: Path, skills_dir: Path) -> None:
     versions_file = builtin_dir / BUILTIN_CATALOG_NAME / "legacy_versions.json"
     versions = json.loads(versions_file.read_text(encoding="utf-8")) if versions_file.is_file() else {}
     _install_missing_catalog_capabilities(builtin_dir, catalog)
+    _refresh_catalog_capabilities(builtin_dir, catalog, versions)
     _refresh_catalog_navigation(builtin_dir, catalog, versions)
     plugins = state.get("installed_plugins", [])
     configs = state.get("skill_configs", {})
