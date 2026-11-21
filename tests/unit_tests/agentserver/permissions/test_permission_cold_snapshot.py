@@ -114,7 +114,11 @@ async def _suspend(hosts, stored, monkeypatch, mode, count):
     state = instance.loop_session.get_state(INTERRUPTION_KEY)
     assert [call.index for call in state.ai_message.tool_calls] == list(range(count))
     reference = instance.loop_session.get_state(snapshots.SNAPSHOT_KEY)
-    raw = json.loads((snapshots.snapshot_directory(stored.sid) / reference["file"]).read_text())
+    raw = json.loads(
+        (snapshots.snapshot_directory(stored.sid) / reference["file"]).read_text(
+            encoding="utf-8"
+        )
+    )
     pending_ids = {call.id for call in state.ai_message.tool_calls}
     saved_calls = [call for context in raw["contexts"].values() for message in context["messages"]
                    for call in message.get("tool_calls", []) if call["id"] in pending_ids]
@@ -277,7 +281,11 @@ async def test_two_tool_batches_keep_consumption_through_real_runtime_and_restar
     pending = instance.loop_session.get_state(INTERRUPTION_KEY)
     assert [call.id for call in pending.ai_message.tool_calls] == ["unanswered-read"]
     reference = instance.loop_session.get_state(snapshots.SNAPSHOT_KEY)
-    raw = json.loads((snapshots.snapshot_directory(stored.sid) / reference["file"]).read_text())
+    raw = json.loads(
+        (snapshots.snapshot_directory(stored.sid) / reference["file"]).read_text(
+            encoding="utf-8"
+        )
+    )
     assert raw["source"]["offset"] > 0 or "original-query" in raw["covered_requests"]
     await old.adapter._isolate_permission_instance()
     await snapshot_checkpoint()

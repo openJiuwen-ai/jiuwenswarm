@@ -29,7 +29,7 @@ from pathlib import Path
 from shutil import copytree, ignore_patterns, which
 from tempfile import TemporaryDirectory
 from urllib.parse import urlparse
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Coroutine, List, Optional, Tuple
 
 if TYPE_CHECKING:
     from agent_gateway.common.model_selection import ModelSelection
@@ -163,7 +163,6 @@ from jiuwenswarm.runtime.checkpointer import (
 from jiuwenswarm.server.runtime.session.history_io import (
     run_history_io, run_stream_parser, stream_chunk_writes_history,
 )
-
 from jiuwenswarm.server.runtime.agent_adapter.permission_rail_group import (
     PERMISSION_GROUP_TYPES, PERMISSION_RAIL_TYPES, PermissionRailGroup, build_permission_group,
 )
@@ -1284,6 +1283,142 @@ class _RailBuildInfo:
         self.params = self.params or {}
 
 
+_AGENT_BUILD_CONCURRENCY = 1
+_AGENT_BUILD_SLOTS: weakref.WeakKeyDictionary[
+    asyncio.AbstractEventLoop, weakref.ReferenceType[asyncio.Semaphore]
+] = weakref.WeakKeyDictionary()
+
+
+def _agent_build_slots() -> asyncio.Semaphore:
+    """Return the per-event-loop slot protecting shared agent registries."""
+    loop = asyncio.get_running_loop()
+    reference = _AGENT_BUILD_SLOTS.get(loop)
+    slots = reference() if reference is not None else None
+    if slots is None:
+        slots = asyncio.Semaphore(_AGENT_BUILD_CONCURRENCY)
+        _AGENT_BUILD_SLOTS[loop] = weakref.ref(slots)
+    return slots
+
+
+@asynccontextmanager
+async def _agent_build_registry_guard() -> AsyncIterator[None]:
+    """Serialize worker-side mutations of shared agent registries."""
+    slots = _agent_build_slots()
+    await slots.acquire()
+    try:
+        yield
+    finally:
+        slots.release()
+
+
+class _PersistentAgentEventLoop:
+    """Run one agent's async initialization on a long-lived worker loop."""
+
+    def __init__(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        self._closed = threading.Event()
+        self._close_lock = threading.Lock()
+        self._close_requested = False
+        self._thread = threading.Thread(
+            target=self._run,
+            name="deep-agent-initialization",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def _run(self) -> None:
+        asyncio.set_event_loop(self._loop)
+        try:
+            self._loop.run_forever()
+        finally:
+            try:
+                pending = asyncio.all_tasks(self._loop)
+                for task in pending:
+                    task.cancel()
+                if pending:
+                    self._loop.run_until_complete(
+                        asyncio.gather(*pending, return_exceptions=True)
+                    )
+                self._loop.run_until_complete(self._loop.shutdown_asyncgens())
+                self._loop.run_until_complete(self._loop.shutdown_default_executor())
+            finally:
+                self._loop.close()
+                self._closed.set()
+
+    def is_closed(self) -> bool:
+        """Return whether the worker loop has been closed."""
+        return self._closed.is_set() or self._loop.is_closed()
+
+    def is_running(self) -> bool:
+        """Return whether the worker loop is currently servicing tasks."""
+        return self._loop.is_running() and not self.is_closed()
+
+    async def run(self, coroutine: Coroutine[Any, Any, Any]) -> Any:
+        """Run a coroutine on the worker loop and preserve caller cancellation."""
+        if self.is_closed():
+            coroutine.close()
+            raise RuntimeError("agent initialization loop is closed")
+        try:
+            worker_future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+        except BaseException:
+            coroutine.close()
+            raise
+
+        task = asyncio.wrap_future(worker_future)
+        cancelled: asyncio.CancelledError | None = None
+        while True:
+            try:
+                result = await asyncio.shield(task)
+                break
+            except asyncio.CancelledError as exc:
+                if task.cancelled():
+                    raise
+                cancelled = exc
+        if cancelled is not None:
+            raise cancelled
+        return result
+
+    async def close(self) -> None:
+        """Stop the worker loop after its owner has finished cleanup."""
+        with self._close_lock:
+            if self.is_closed():
+                return
+            if not self._close_requested:
+                self._close_requested = True
+                self._loop.call_soon_threadsafe(self._loop.stop)
+        await asyncio.to_thread(self._closed.wait)
+        self._thread.join()
+
+
+async def _run_history_io_with_result(
+    fn: Callable[..., Any],
+    *args: Any,
+    on_result: Callable[[Any], None],
+    **kwargs: Any,
+) -> Any:
+    """Run sync work off-loop and publish its result before cancellation."""
+    task = asyncio.create_task(asyncio.to_thread(fn, *args, **kwargs))
+    cancelled: asyncio.CancelledError | None = None
+    while True:
+        try:
+            result = await asyncio.shield(task)
+            break
+        except asyncio.CancelledError as exc:
+            if task.cancelled():
+                raise
+            cancelled = exc
+    on_result(result)
+    if cancelled is not None:
+        raise cancelled
+    return result
+
+
+def _load_instance_config_sync() -> dict[str, Any]:
+    """Load the instance environment and configuration off the event loop."""
+    load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
+    return get_config()
+
+
 _CRON_TOOL_NAMES = frozenset(
     {
         "cron",
@@ -2287,6 +2422,7 @@ class JiuWenSwarmDeepAdapter:
         self._tool_cards = None
         self._evolution_watcher_tasks: set[asyncio.Task] = set()
         self._ttse_cleanup_tasks: set[asyncio.Task] = set()
+        self._agent_initialization_loop: _PersistentAgentEventLoop | None = None
         self._sys_operation = None
         self._sys_operation_card: SysOperationCard | None = None
         # Ids of the sys operations this adapter currently holds a reference on,
@@ -13468,7 +13604,44 @@ class JiuWenSwarmDeepAdapter:
                 self._tool_cards.append(tool.card)
 
     async def _get_tool_cards(self, agent_id: str):
-        """Get tool cards."""
+        """Build tool cards outside the event loop."""
+        async with _agent_build_registry_guard():
+            return await run_history_io(self._get_tool_cards_sync, agent_id)
+
+    async def _load_instance_config(self) -> dict[str, Any]:
+        """Load the instance environment and configuration outside the event loop."""
+        return await run_history_io(_load_instance_config_sync)
+
+    async def _create_sys_operation_off_loop(self) -> SysOperation | None:
+        """Resolve and register the agent sys operation outside the event loop."""
+        async with _agent_build_registry_guard():
+            return await _run_history_io_with_result(
+                self._create_sys_operation,
+                on_result=lambda sys_operation: setattr(self, "_sys_operation", sys_operation),
+            )
+
+    async def _ensure_instance_initialized_off_loop(self) -> None:
+        """Initialize DeepAgent rails on a worker-owned event loop.
+
+        ``DeepAgent.ensure_initialized`` is async, but its rail lifecycle calls
+        synchronous ``rail.init`` implementations inline. Running the whole
+        coroutine in a worker keeps those calls away from AgentServer's loop.
+        The guard remains held until the worker loop settles so cancellation
+        cannot race shared registry cleanup.
+        """
+        instance = self._instance
+        if instance is None:
+            raise RuntimeError("DeepAgent instance is not available")
+
+        async with _agent_build_registry_guard():
+            initialization_loop = getattr(self, "_agent_initialization_loop", None)
+            if initialization_loop is None or initialization_loop.is_closed():
+                initialization_loop = _PersistentAgentEventLoop()
+                self._agent_initialization_loop = initialization_loop
+            await initialization_loop.run(instance.ensure_initialized())
+
+    def _get_tool_cards_sync(self, agent_id: str):
+        """Synchronous tool discovery and registration implementation."""
         tool_cards = []
 
         for wtool in [
@@ -14021,8 +14194,7 @@ class JiuWenSwarmDeepAdapter:
         self._instance_overrides = dict(config or {}) if isinstance(config, dict) else {}
         if "moa_enabled" in self._instance_overrides and not isinstance(self._instance_overrides["moa_enabled"], bool):
             raise ValueError("moa_enabled must be a boolean")
-        load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
-        config_base = get_config()
+        config_base = await self._load_instance_config()
         # 企业版：create_instance 可带 request，按 routing 读库并合并 model/mcp/permissions
         bootstrap_request = None
         if isinstance(self._instance_overrides, dict):
@@ -14105,42 +14277,18 @@ class JiuWenSwarmDeepAdapter:
         # 权限护栏由 openjiuwen PermissionInterruptRail + ToolPermissionHost 接管；
         # 无需初始化 jiuwenswarm 内置 PermissionEngine（已弃用）。
 
-        sys_operation = self._create_sys_operation()
-        if sys_operation is None:
-            raise RuntimeError("sys_operation is not available, maybe task is not running")
-
-        self._sys_operation = sys_operation
         if self._uses_smart_permission_lifecycle(config_base):
             epoch, global_layer, effective = self._capture_permission_version()
             config_base = {**config_base, "permissions": global_layer}
             self._config_base_cache = config_base.copy()
             self._permission_state.stage_pending_permission_capture(epoch, effective)
-        rails_list = self._build_agent_rails(
-            config,
-            config_base,
-            mode=mode,
-            composition_scope=composition_scope,
-        )
+        sys_operation = await self._create_sys_operation_off_loop()
+        if sys_operation is None:
+            raise RuntimeError("sys_operation is not available, maybe task is not running")
+        self._sys_operation = sys_operation
+
         resolved_language = self._resolve_runtime_language()
         workspace_obj = self._get_memory_workspace(resolved_language, config=config_base)
-        if agent_definition is not None and agent_definition.get("tools") != "*":
-            # Do not build delegates with a broader tool set than the root.
-            configured_subagents = []
-        else:
-            configured_subagents = self._build_subagents_with_general_purpose(
-                model=model,
-                config=config,
-                config_base=config_base,
-                rails=rails_list,
-                tools=tool_cards if tool_cards else [],
-                workspace=workspace_obj,
-                sys_operation=sys_operation,
-                reload=False,
-                allow_general=(
-                    sub_mode == "plan"
-                    or (isinstance(mode, str) and mode.startswith("agent"))
-                ),
-            )
         system_prompt = build_agent_identity_prompt(
             language=self._resolve_prompt_language(),
         )
@@ -14151,7 +14299,10 @@ class JiuWenSwarmDeepAdapter:
             )
             from jiuwenswarm.runtime.tool_allowlist import apply_tool_policy_prompt
 
-            system_prompt = apply_tool_policy_prompt(system_prompt, agent_definition.get("tools", "*"))
+            system_prompt = apply_tool_policy_prompt(
+                system_prompt, agent_definition.get("tools", "*")
+            )
+
         common_kwargs = dict(
             model=model,
             card=agent_card,
@@ -14159,8 +14310,6 @@ class JiuWenSwarmDeepAdapter:
             system_prompt=system_prompt,
             tools=tool_cards if tool_cards else [],
             skills=list(agent_definition.get("skills") or ()) if agent_definition else None,
-            subagents=configured_subagents,
-            rails=rails_list if rails_list else [],
             # Enables AbilityManager deferred-tool assignment (whitelist-based).
             # The bundled ProgressiveToolRail this also mounts is replaced in
             # create_instance with our ToolRetrievalPromptRail.
@@ -14174,7 +14323,7 @@ class JiuWenSwarmDeepAdapter:
             workspace=workspace_obj,
             sys_operation=sys_operation,
             language=resolved_language,
-            auto_create_workspace=False
+            auto_create_workspace=False,
         )
 
         context_model_state = _ContextEngineModelState(
@@ -14189,19 +14338,52 @@ class JiuWenSwarmDeepAdapter:
         )
         kv_cache_affinity_config = _deep_agent_kv_cache_affinity_config(config_base, model)
         self._kv_cache_affinity_enabled = kv_cache_affinity_config.enable_kv_cache_affinity
-        self._instance = create_deep_agent(
-            **common_kwargs,
-            moa=self._moa_runtime.config if self._moa_runtime is not None else None,
-            context_engine_config=context_engine_config,
-            kv_cache_affinity_config=kv_cache_affinity_config,
-            vision_model_config=self._vision_model_config,
-            audio_model_config=self._audio_model_config,
-            enable_read_image_multimodal=self._resolve_enable_read_image_multimodal(config),
-            enable_model_anomaly_detection_rail=(
-                (config_base.get("execution_guard") or {}).get("model_anomaly_detection_rail") or {}
-            ).get("enabled", False),
-            completion_timeout=resolve_task_loop_completion_timeout(config),
-        )
+
+        async with _agent_build_registry_guard():
+            rails_list = await run_history_io(
+                self._build_agent_rails,
+                config,
+                config_base,
+                mode=mode,
+                composition_scope=composition_scope,
+            )
+            if agent_definition is not None and agent_definition.get("tools") != "*":
+                # Do not build delegates with a broader tool set than the root.
+                configured_subagents = []
+            else:
+                configured_subagents = await run_history_io(
+                    self._build_subagents_with_general_purpose,
+                    model=model,
+                    config=config,
+                    config_base=config_base,
+                    rails=rails_list,
+                    tools=tool_cards if tool_cards else [],
+                    workspace=workspace_obj,
+                    sys_operation=sys_operation,
+                    reload=False,
+                    allow_general=(
+                        sub_mode == "plan"
+                        or (isinstance(mode, str) and mode.startswith("agent"))
+                    ),
+                )
+            common_kwargs["subagents"] = configured_subagents
+            self._instance = await _run_history_io_with_result(
+                create_deep_agent,
+                **common_kwargs,
+                rails=rails_list if rails_list else [],
+                moa=self._moa_runtime.config if self._moa_runtime is not None else None,
+                context_engine_config=context_engine_config,
+                kv_cache_affinity_config=kv_cache_affinity_config,
+                vision_model_config=self._vision_model_config,
+                audio_model_config=self._audio_model_config,
+                enable_read_image_multimodal=self._resolve_enable_read_image_multimodal(config),
+                enable_model_anomaly_detection_rail=(
+                    (config_base.get("execution_guard") or {})
+                    .get("model_anomaly_detection_rail") or {}
+                ).get("enabled", False),
+                completion_timeout=resolve_task_loop_completion_timeout(config),
+                on_result=lambda instance: setattr(self, "_instance", instance),
+            )
 
         # progressive_tool_enabled=True armed AbilityManager's deferred-tool
         # assignment (whitelist-based) during _initial_configure. That same
@@ -14257,7 +14439,7 @@ class JiuWenSwarmDeepAdapter:
         self._sync_a2x_runtime_state()
         # Cron tools belong to the agent's standing toolset, not to any one
         # request; build them here so the first turn does not pay for it either.
-        self._ensure_cron_tools_registered(self._parent_session_id)
+        await self._ensure_cron_tools_registered_off_loop(self._parent_session_id)
         self._registered_mcp_server_ids.clear()
         self._registered_mcp_servers.clear()
         # MCP load strategy by channel: the TUI channel loads its global-
@@ -14289,7 +14471,7 @@ class JiuWenSwarmDeepAdapter:
             install_tool_allowlist(self._instance.ability_manager, agent_definition["tools"])
         # Startup rails build discovery indexes and prompts from the ability
         # manager. Apply the boundary first, including to tools added by rails.
-        await self._instance.ensure_initialized()
+        await self._ensure_instance_initialized_off_loop()
         if self._enable_auto_permission:
             expected = PermissionRailGroup(
                 self._permission_rail, self._root_permission_queue_rail,
@@ -15128,6 +15310,11 @@ class JiuWenSwarmDeepAdapter:
                     self._instance.ability_manager.remove(existing.name)
         except Exception as exc:
             logger.debug("[JiuWenSwarmDeepAdapter] 清理 multi-session 工具失败: %s", exc)
+
+    async def _ensure_cron_tools_registered_off_loop(self, session_id: str | None) -> None:
+        """Register startup cron tools without blocking the event loop."""
+        async with _agent_build_registry_guard():
+            await run_history_io(self._ensure_cron_tools_registered, session_id)
 
     def _ensure_cron_tools_registered(self, session_id: str | None) -> None:
         """Register this agent's cron tools once, rebuilding only when they change.
@@ -16201,6 +16388,45 @@ class JiuWenSwarmDeepAdapter:
                 snapshot.cleanup()
                 self._rsi_selected_package_snapshot = None
 
+    async def _close_agent_initialization_loop(self) -> None:
+        """Clean up loop-bound agent resources before stopping its worker loop."""
+        initialization_loop = getattr(self, "_agent_initialization_loop", None)
+        if initialization_loop is None:
+            return
+        instance = getattr(self, "_instance", None)
+
+        async def cleanup_on_owner_loop() -> None:
+            if instance is None:
+                return
+            configured_rails = getattr(instance, "configured_rails", None)
+            unregister_rail = getattr(instance, "unregister_rail", None)
+            rails = list(configured_rails() or []) if callable(configured_rails) else []
+            if callable(unregister_rail):
+                for rail in rails:
+                    try:
+                        await unregister_rail(rail)
+                    except Exception as exc:
+                        logger.warning(
+                            "[JiuWenSwarmDeepAdapter] owner-loop rail cleanup failed: %s",
+                            exc,
+                        )
+            cleanup_task_resources = getattr(instance, "cleanup_task_resources", None)
+            if callable(cleanup_task_resources):
+                await cleanup_task_resources()
+
+        try:
+            if instance is not None:
+                await initialization_loop.run(cleanup_on_owner_loop())
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] owner-loop agent cleanup failed: %s",
+                exc,
+            )
+        finally:
+            await initialization_loop.close()
+            if getattr(self, "_agent_initialization_loop", None) is initialization_loop:
+                self._agent_initialization_loop = None
+
     async def _cleanup_adapter_resources(self) -> None:
         """Release adapter-owned external runtime resources."""
         # TODO(compact): Native compaction bindings are not installed in this interface-only stage.
@@ -16276,6 +16502,7 @@ class JiuWenSwarmDeepAdapter:
                 "[JiuWenSwarmDeepAdapter] PersonalContextRail cleanup failed: %s",
                 exc,
             )
+        await self._close_agent_initialization_loop()
         self._teardown_agent_owned_tools()
         self._release_sys_operations()
         # 取消未到期的延时重索引 task，避免 adapter cleanup 后仍有孤儿 task
