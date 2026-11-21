@@ -9,11 +9,12 @@ import logging
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, cast
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock
 
 import pytest
 
 from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
+from jiuwenswarm.common import host_services
 from jiuwenswarm.runtime import team_session_lifecycle as lifecycle_module
 from jiuwenswarm.runtime.session.model import SessionLifecycleContext
 from jiuwenswarm.runtime.team_session_lifecycle import TeamSessionLifecycleAdapter
@@ -160,7 +161,6 @@ async def test_pause_completion_pushes_member_and_session_states_when_gateway_ca
     from agent_gateway.message_handler.message_handler import MessageHandler
 
     from jiuwenswarm.agents.harness.team import TeamManager
-    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
     from jiuwenswarm.server.runtime.session.session_history import flush_history_writes, read_team_history_records
 
@@ -183,9 +183,6 @@ async def test_pause_completion_pushes_member_and_session_states_when_gateway_ca
             gateway_observer.cancel()
         return True
 
-    server = AsyncMock()
-    server.send_push.side_effect = deliver_push
-    monkeypatch.setattr(AgentWebSocketServer, "get_instance", lambda: server)
     monkeypatch.setattr(
         lifecycle_module,
         "get_session_metadata_async",
@@ -200,7 +197,11 @@ async def test_pause_completion_pushes_member_and_session_states_when_gateway_ca
     )
     monkeypatch.setattr(TeamMonitorHandler, "get_member_list_from_db", read_members)
 
-    await adapter.publish_pause_completed("session-a", generation=2, channel_id="web")
+    previous = host_services.install_runtime_push_handler(deliver_push)
+    try:
+        await adapter.publish_pause_completed("session-a", generation=2, channel_id="web")
+    finally:
+        host_services.restore_runtime_push_handler(deliver_push, previous)
 
     read_members.assert_awaited_once_with("team-a", exclude_leader=True)
     assert gateway_observer.cancelled()
@@ -296,32 +297,33 @@ async def test_pause_completion_survives_member_lookup_failure(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("failure", ["get_instance", "send_push"])
-async def test_pause_completion_falls_back_to_observer_when_push_raises(
+@pytest.mark.parametrize("host_registered", [False, True])
+async def test_pause_completion_falls_back_to_observer_when_host_cannot_deliver(
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
-    failure: str,
+    host_registered: bool,
 ) -> None:
     from jiuwenswarm.agents.harness.team import TeamManager
-    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
     manager = TeamManager()
     observer: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     manager.add_waiter("session-a", "observer", observer, generation=2, attach_only=True)
-    server = AsyncMock()
-    get_instance = Mock(return_value=server)
-    error = RuntimeError("Gateway push unavailable")
-    if failure == "get_instance":
-        get_instance.side_effect = error
-    else:
-        server.send_push.side_effect = error
-    monkeypatch.setattr(AgentWebSocketServer, "get_instance", get_instance)
     monkeypatch.setattr(lifecycle_module, "get_session_metadata_async", AsyncMock(return_value={}))
     adapter = TeamSessionLifecycleAdapter(coordinator=_RecordingCoordinator(), team_manager=manager)
 
-    await adapter.publish_pause_completed("session-a", generation=2, channel_id="web")
+    if host_registered:
+        push = AsyncMock(side_effect=RuntimeError("Gateway push unavailable"))
+        previous = host_services.install_runtime_push_handler(push)
+        try:
+            await adapter.publish_pause_completed("session-a", generation=2, channel_id="web")
+        finally:
+            host_services.restore_runtime_push_handler(push, previous)
+        push.assert_awaited_once()
+        assert "Failed to push Team pause event: session_id=session-a event_type=chat.processing_status" in caplog.text
+    else:
+        monkeypatch.setattr(host_services, "_runtime_push_handler", None)
+        await adapter.publish_pause_completed("session-a", generation=2, channel_id="web")
 
-    get_instance.assert_called_once_with()
     assert observer.get_nowait() == {
         "event_type": "chat.processing_status",
         "session_id": "session-a",
@@ -329,8 +331,7 @@ async def test_pause_completion_falls_back_to_observer_when_push_raises(
         "is_complete": True,
     }
     assert observer.empty()
-    assert "Failed to push Team pause event: session_id=session-a event_type=chat.processing_status" in caplog.text
-    test_logger.info("Observer received one pause terminal after Gateway %s failed", failure)
+    test_logger.info("Observer received one pause terminal with host_registered=%s", host_registered)
 
 
 @pytest.mark.asyncio
@@ -341,18 +342,19 @@ async def test_pause_completion_pushes_terminal_without_waiters(
     delivered: bool,
 ) -> None:
     from jiuwenswarm.agents.harness.team import TeamManager
-    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
     manager = TeamManager()
-    server = AsyncMock()
-    server.send_push.return_value = delivered
-    monkeypatch.setattr(AgentWebSocketServer, "get_instance", lambda: server)
+    push = AsyncMock(return_value=delivered)
     monkeypatch.setattr(lifecycle_module, "get_session_metadata_async", AsyncMock(return_value={}))
     adapter = TeamSessionLifecycleAdapter(coordinator=_RecordingCoordinator(), team_manager=manager)
 
-    await adapter.publish_pause_completed("session-a", generation=None, channel_id="web")
+    previous = host_services.install_runtime_push_handler(push)
+    try:
+        await adapter.publish_pause_completed("session-a", generation=None, channel_id="web")
+    finally:
+        host_services.restore_runtime_push_handler(push, previous)
 
-    server.send_push.assert_awaited_once_with(
+    push.assert_awaited_once_with(
         {
             "request_id": "",
             "channel_id": "web",

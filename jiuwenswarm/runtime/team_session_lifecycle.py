@@ -8,6 +8,7 @@ import logging
 from collections.abc import Callable
 from typing import Any, Protocol
 
+from jiuwenswarm.common.host_services import send_runtime_push
 from jiuwenswarm.runtime.session.model import (
     ExecutionLifecycleContext,
     SessionLifecycleContext,
@@ -243,12 +244,9 @@ class TeamSessionLifecycleAdapter:
         *,
         channel_id: str | None,
     ) -> bool:
-        """Send a pause event through the Gateway and return whether it was delivered."""
+        """Send a pause event through the host and return whether it was delivered."""
         try:
-            from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-
-            server = AgentWebSocketServer.get_instance()
-            return await server.send_push(
+            return await send_runtime_push(
                 {
                     "request_id": "",
                     "channel_id": (channel_id or "").strip() or "web",
