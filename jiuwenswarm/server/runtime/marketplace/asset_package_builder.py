@@ -71,6 +71,7 @@ def _app_private_path(path: Path) -> bool:
     return (
         path.parts[0].casefold() in _APP_PRIVATE_ROOTS
         or path.as_posix().casefold() in _APP_GENERATED_SCRIPTS
+        or path.name.casefold().endswith(".log")
     )
 
 
