@@ -225,8 +225,15 @@ def load_mcp_package(package_dir: Path, *, expected_id: str | None = None) -> Mc
                 )
                 _read_json(credentials_file, "credentials.file")
             except McpPackageError as exc:
+                # A token declaration whose file is unreadable/unsafe leaves no
+                # usable token schema. Downgrade the kind as well, otherwise the
+                # downstream detects KIND_TOKEN and prompts for credentials whose
+                # required_tokens schema is empty (load_token_schema returns None).
+                # Keep the "no file" branch above consistent with this outcome.
                 logger.warning("ignoring credentials.file: %s", exc)
                 credentials_file = None
+                if credentials_type == "token":
+                    credentials_type = "none"
 
     icon_file = None
     if raw.get("icon") is not None:
