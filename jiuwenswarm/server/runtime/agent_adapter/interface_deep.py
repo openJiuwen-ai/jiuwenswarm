@@ -89,10 +89,7 @@ from openjiuwen.harness import (
     DeepAgentConfig,
     VisionModelConfig,
 )
-from openjiuwen.harness.factory import (
-    _inject_general_purpose_subagent,
-    create_deep_agent,
-)
+from openjiuwen.harness import factory as harness_factory
 from openjiuwen.harness.image_modality_probe import get_cached_image_support
 from openjiuwen.harness.prompts import resolve_language
 from openjiuwen.harness.rails import (
@@ -182,10 +179,14 @@ from jiuwenswarm.server.runtime.agent_adapter.permission_dispatch import (
 from jiuwenswarm.server.runtime.agent_adapter.permission_runtime_state import (
     SessionPermissionState,
 )
+from jiuwenswarm.server.runtime.agent_adapter.subagent_registration import (
+    resolve_subagent_registration_plan,
+)
 
 from jiuwenswarm.server.runtime.agent_adapter.trusted_web_search import (
     TrustedWebFreeSearchTool,
 )
+
 from jiuwenswarm.agents.harness.common.rsi.errors import RsiError, RsiHarnessInstallConflict
 from jiuwenswarm.agents.harness.common.recommendation.prompt_suggestion import USER_INTERACTION_EVENTS
 
@@ -812,6 +813,7 @@ from jiuwenswarm.common.utils import (
 )
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
 
+create_deep_agent = harness_factory.create_deep_agent
 load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
 apply_free_search_runtime_defaults()
 TodoModifyTool = CompatibleTodoModifyTool
@@ -6223,23 +6225,44 @@ class JiuWenSwarmDeepAdapter:
                 for rail in self._general_purpose_rail_snapshot
             ]
         self._general_purpose_rail_snapshot = tuple(self._general_purpose_rails(candidates, smart=smart))
-        return _with_general_purpose_max_iterations(
-            _inject_general_purpose_subagent(
-                subagents,
-                add_general_purpose_agent=allow_general and add_general,
-                resolved_language=workspace.language,
-                rails=list(self._general_purpose_rail_snapshot),
-                system_prompt=build_agent_identity_prompt(
+        effective_subagents = list(subagents or [])
+        has_general_purpose = any(
+            (
+                isinstance(spec, SubAgentConfig)
+                and spec.agent_card.name == "general-purpose"
+            )
+            or getattr(getattr(spec, "card", None), "name", None) == "general-purpose"
+            for spec in effective_subagents
+        )
+        if allow_general and add_general and not has_general_purpose:
+            builder = getattr(harness_factory, "build_general_purpose_agent_config", None)
+            builder_kwargs = {
+                "resolved_language": workspace.language,
+                "rails": list(self._general_purpose_rail_snapshot),
+                "system_prompt": build_agent_identity_prompt(
                     language=self._resolve_prompt_language(),
                 ),
-                tools=list(tools),
-                mcps=None,
-                model=model,
-                skills=None,
-                workspace=workspace,
-                sys_operation=sys_operation,
-            )
-            or None,
+                "tools": list(tools),
+                "mcps": None,
+                "model": model,
+                "skills": None,
+                "workspace": workspace,
+                "sys_operation": sys_operation,
+            }
+            if callable(builder):
+                effective_subagents.insert(0, builder(**builder_kwargs))
+            else:
+                # Older agent-core revisions do not expose the public builder;
+                # retain their existing static injector for legacy mode.
+                from openjiuwen.harness.factory import _inject_general_purpose_subagent
+
+                effective_subagents = _inject_general_purpose_subagent(
+                    effective_subagents,
+                    add_general_purpose_agent=True,
+                    **builder_kwargs,
+                )
+        return _with_general_purpose_max_iterations(
+            effective_subagents or None,
             config,
         )
 
@@ -12780,6 +12803,10 @@ class JiuWenSwarmDeepAdapter:
                 or self._session_instance_mode.startswith("agent")
             ),
         )
+        subagent_registration_plan = resolve_subagent_registration_plan(
+            configured_subagents,
+            event_names={"statusline-setup", "general-purpose", "browser_agent"},
+        )
         context_model_state = _ContextEngineModelState(
             full_config=config_base,
             model_name=getattr(getattr(model, "model_config", None), "model_name", ""),
@@ -12792,6 +12819,12 @@ class JiuWenSwarmDeepAdapter:
         )
         kv_cache_affinity_config = _deep_agent_kv_cache_affinity_config(config_base, model)
         self._kv_cache_affinity_enabled = kv_cache_affinity_config.enable_kv_cache_affinity
+        subagent_kwargs: dict[str, Any] = {}
+        if subagent_registration_plan.mode == "event":
+            subagent_kwargs = {
+                "subagent_registration_mode": "event",
+                "event_subagent_configs": subagent_registration_plan.event_subagents,
+            }
         return DeepAgentConfig(
             model=model,
             moa=self._moa_runtime.config if self._moa_runtime is not None else None,
@@ -12805,7 +12838,7 @@ class JiuWenSwarmDeepAdapter:
             enable_task_loop=self._resolve_enable_task_loop(config, config_base),
             enable_subagent_runtime=self._resolve_enable_subagent_runtime(config_base),
             max_iterations=parse_optional_int(config.get("max_iterations")),
-            subagents=configured_subagents,
+            subagents=subagent_registration_plan.static_subagents,
             add_general_purpose_agent=False,
             tools=normalized_tool_cards,
             workspace=workspace_obj,
@@ -12823,6 +12856,7 @@ class JiuWenSwarmDeepAdapter:
             audio_model_config=self._audio_model_config,
             enable_read_image_multimodal=self._resolve_enable_read_image_multimodal(config),
             completion_timeout=resolve_task_loop_completion_timeout(config),
+            **subagent_kwargs,
         )
 
     @staticmethod
@@ -14325,7 +14359,6 @@ class JiuWenSwarmDeepAdapter:
             language=resolved_language,
             auto_create_workspace=False,
         )
-
         context_model_state = _ContextEngineModelState(
             full_config=config_base,
             model_name=getattr(getattr(model, "model_config", None), "model_name", ""),
@@ -14366,7 +14399,17 @@ class JiuWenSwarmDeepAdapter:
                         or (isinstance(mode, str) and mode.startswith("agent"))
                     ),
                 )
-            common_kwargs["subagents"] = configured_subagents
+            subagent_registration_plan = resolve_subagent_registration_plan(
+                configured_subagents,
+                event_names={"statusline-setup", "general-purpose", "browser_agent"},
+            )
+            common_kwargs["subagents"] = subagent_registration_plan.static_subagents
+            if subagent_registration_plan.mode == "event":
+                common_kwargs.update(
+                    subagent_registration_mode="event",
+                    event_subagent_configs=subagent_registration_plan.event_subagents,
+                    extension_bus=subagent_registration_plan.extension_bus,
+                )
             self._instance = await _run_history_io_with_result(
                 create_deep_agent,
                 **common_kwargs,
