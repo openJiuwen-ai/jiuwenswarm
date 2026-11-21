@@ -3450,19 +3450,16 @@ class XiaoyiChannel(BaseChannel):
             self._session_app_vers[logical_session] = app_ver
         metadata = {
             "method": "message/stream",
-            "xiaoyi_session_id": top_session_id,  # 顶层 sessionId（物理回发）
             "xiaoyi_task_id": task_id,
             "xiaoyi_conversation_id": conversation_id,  # 逻辑会话
-            "xiaoyi_push_id": push_id,  # webhook 推送 token
+            "xiaoyi_push_id": push_id or str(self.config.push_id or ""),  # webhook 推送 token（本消息优先，config 兜底）
             "xiaoyi_device_id": device_id,  # 设备标识（备用）
             "xiaoyi_app_ver": app_ver or self._session_app_vers.get(logical_session, ""),  # 手机端版本
             "im_sender_user_id": user_id,  # MessageHandler whoami 用
-            "xiaoyi_session_id": session_id,
+            "xiaoyi_session_id": session_id,  # 逻辑会话（物理会话在 xiaoyi_root_session_id）
             "xiaoyi_root_session_id": root_session_id or session_id,
             "xiaoyi_params_session_id": message.get("params", {}).get("sessionId", ""),
-            "xiaoyi_task_id": task_id,
             "xiaoyi_rpc_id": str(message.get("id") or ""),
-            "xiaoyi_push_id": str(self.config.push_id or ""),
             "xiaoyi_user_id": str(self.config.uid or ""),
             "celia_user_id": str(self.config.uid or ""),
             "conversation_id": session_id,
