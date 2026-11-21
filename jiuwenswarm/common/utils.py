@@ -221,7 +221,8 @@ class SafeRotatingFileHandler(BaseRotatingHandler):
         if self.max_bytes > 0:
             msg = "%s\n" % self.format(record)
             self.stream.seek(0, 2)  # Seek to end of file
-            if self.stream.tell() + len(msg) >= self.max_bytes:
+            # max_bytes is a byte budget; measure the encoded message, not code points
+            if self.stream.tell() + len(msg.encode("utf-8", "replace")) >= self.max_bytes:
                 return True
         return False
 
