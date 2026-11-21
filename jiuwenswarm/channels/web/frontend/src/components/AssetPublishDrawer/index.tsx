@@ -322,7 +322,7 @@ function AssetPublishDrawer({
   restored?: PublishMetadata;
   onClose: () => void;
 }) {
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   const text = (key: MessageKey) => messages[i18n.language.startsWith('zh') ? 'zh' : 'en'][key];
   const publishReference: AssetReference = { kind: reference.kind, local_id: reference.local_id };
   const state = useAssetPublish(publishReference, restored);
@@ -443,15 +443,15 @@ function AssetPublishDrawer({
     try {
       setLoginError('');
       setLoginBusy(true);
-      if (window.__JIUWEN_DESKTOP__ && !desktopOpen) throw new Error('桌面浏览器功能尚未就绪，请重试。');
-      if (!desktopOpen && !browserTab) throw new Error('浏览器阻止了授权窗口，请允许打开新标签页。');
+      if (window.__JIUWEN_DESKTOP__ && !desktopOpen) throw new Error(t('assetPublish.errors.desktopNotReady'));
+      if (!desktopOpen && !browserTab) throw new Error(t('assetPublish.errors.popupBlocked'));
       if (browserTab) browserTab.opener = null;
       const attempt = await beginHubOAuth(provider);
       if (cancelled()) return;
       if (desktopOpen) {
         const opened = await desktopOpen(attempt.authorize_url);
         if (cancelled()) return;
-        if (!opened) throw new Error('无法打开系统浏览器，请重试。');
+        if (!opened) throw new Error(t('assetPublish.errors.openBrowserFailed'));
       } else if (browserTab) browserTab.location.href = attempt.authorize_url;
       loginAbort.current?.abort();
       const controller = new AbortController();
@@ -463,7 +463,7 @@ function AssetPublishDrawer({
       browserTab?.close();
       if (failure instanceof DOMException && failure.name === 'AbortError') return;
       if (generation !== loginGeneration.current) return;
-      setLoginError(failure instanceof Error ? failure.message : 'OAuth 登录不可用');
+      setLoginError(failure instanceof Error ? failure.message : t('assetPublish.errors.oauthUnavailable'));
     } finally {
       if (generation === loginGeneration.current) {
         loginWindow.current = null;

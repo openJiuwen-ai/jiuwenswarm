@@ -4048,10 +4048,10 @@ function AppContent({
   const handlePersistMedia = useCallback((content: string, mediaItems: MediaItem[]) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) {
-      return Promise.reject(new Error('会话未就绪，请稍后重试'));
+      return Promise.reject(new Error(t('chat.sessionNotReady')));
     }
     return persistMedia(content, currentSessionId, mediaItems);
-  }, [persistMedia]);
+  }, [persistMedia, t]);
 
   const handleDiscardMedia = useCallback((sessionId: string, path: string) => {
     if (!sessionId || sessionId === NEW_CONVERSATION_ID || !path) {
@@ -4063,10 +4063,10 @@ function AppContent({
   const handlePersistDocuments = useCallback((content: string, mediaItems: MediaItem[]) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) {
-      return Promise.reject(new Error('会话未就绪，请稍后重试'));
+      return Promise.reject(new Error(t('chat.sessionNotReady')));
     }
     return persistDocuments(content, currentSessionId, mediaItems);
-  }, [persistDocuments]);
+  }, [persistDocuments, t]);
 
   useEffect(() => {
     return setA2UIActionHandler((message) => {

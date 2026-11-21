@@ -1196,7 +1196,7 @@ export class WebHttpClient {
         ok: false,
         error: {
           code: 'PROXY_ROUTING_ERROR',
-          message: `接口未命中后端服务（返回了 HTML 页面，状态码 ${response.status}）。请检查后端服务是否启动，以及统一门户接口前缀代理是否配置正确。`,
+          message: i18n.t('network.proxyRoutingError', { status: response.status }),
         },
       };
     }

@@ -5,6 +5,7 @@
  */
 
 import { create } from 'zustand';
+import i18n from '../i18n';
 import { parseModelSelection } from '../features/settings/modules/models/modelGroupAdapters';
 import {
   buildConversationModelPayload,
@@ -1440,7 +1441,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const tasks: TeamTask[] = [{
         ...task,
         status: task.status ?? 'pending',
-        title: task.title ?? `任务 ${String(task.task_id || '').slice(-6)}`,
+        title: task.title ?? i18n.t('team.taskFallback', { id: String(task.task_id || '').slice(-6) }),
       }, ...runtime.teamTasks];
       return {
         runtimes: {
