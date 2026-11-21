@@ -6,7 +6,7 @@ import logging
 import time
 from typing import Any
 
-from jiuwenswarm.common.e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
+from e2a.constants import E2A_MODEL_AUTH_PARAM_KEY
 from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
 from jiuwenswarm.extensions.video_duplex.backend.tasks.service import TaskModification
 from jiuwenswarm.extensions.video_duplex.backend.tasks.store import task_database
