@@ -25,6 +25,25 @@ type Declaration = {
 };
 type Catalog = { revision: string; items: Declaration[]; errors: Record<string, string> };
 
+/** 存档还原重启后的静默重试间隔：期间不提示“无法加载插件设置”。 */
+const SETTINGS_RETRY_DELAYS = [1000, 3000, 6000, 12000, 24000];
+
+/** 只有后端重启窗口内的可恢复失败才值得重试；权限、声明非法等永久错误应立即提示。 */
+const RETRYABLE_SETTINGS_CODES = new Set([
+  'CONTEXT_CHANGED',
+  'WS_NOT_READY',
+  'WS_CLOSED',
+  'REQUEST_TIMEOUT',
+  'REQUEST_ABORTED',
+  'AGENT_SERVER_TIMEOUT',
+  'SERVICE_UNAVAILABLE',
+]);
+
+function isRetryableSettingsError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && RETRYABLE_SETTINGS_CODES.has(code);
+}
+
 function isText(value: unknown): value is Translation {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const text = value as Record<string, unknown>;
@@ -158,9 +177,14 @@ export function usePluginSettings(base: SettingsPageDefinition) {
   const [catalog, setCatalog] = useState<Catalog>({ revision: '', items: [], errors: {} });
   const [loadError, setLoadError] = useState(false);
   const sequence = useRef(0);
-  const refresh = useCallback(() => {
+  const retryTimer = useRef<number | null>(null);
+  const refresh = useCallback((attempt = 0) => {
     const current = ++sequence.current;
     if (!webui || !isConnected) return;
+    if (retryTimer.current !== null) {
+      window.clearTimeout(retryTimer.current);
+      retryTimer.current = null;
+    }
     void request('webui.settings.catalog', {})
       .then((value) => {
         const next = readSettingsCatalog(value);
@@ -176,16 +200,29 @@ export function usePluginSettings(base: SettingsPageDefinition) {
         setCatalog((current) => (current.revision === next.revision ? current : next));
         setLoadError(false);
       })
-      .catch(() => {
-        if (current === sequence.current) setLoadError(true);
+      .catch((error) => {
+        if (current !== sequence.current) return;
+        const delay = isRetryableSettingsError(error) ? SETTINGS_RETRY_DELAYS[attempt] : undefined;
+        if (delay !== undefined) {
+          // 存档还原重启后 AgentServer 可能还没处理该请求：静默重试，避免直接提示“无法加载插件设置”。
+          setLoadError(false);
+          retryTimer.current = window.setTimeout(() => {
+            retryTimer.current = null;
+            refresh(attempt + 1);
+          }, delay);
+          return;
+        }
+        setLoadError(true);
       });
   }, [i18n, isConnected, request, webui]);
   useEffect(() => {
-    refresh();
-    window.addEventListener('focus', refresh);
+    refresh(0);
+    const onFocus = () => refresh(0);
+    window.addEventListener('focus', onFocus);
     return () => {
       sequence.current++;
-      window.removeEventListener('focus', refresh);
+      if (retryTimer.current !== null) window.clearTimeout(retryTimer.current);
+      window.removeEventListener('focus', onFocus);
     };
   }, [refresh]);
   const contributions = useMemo(() => {

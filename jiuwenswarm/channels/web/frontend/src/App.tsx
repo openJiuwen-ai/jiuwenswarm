@@ -559,6 +559,35 @@ function getClientRequestContextSnapshot(): string {
   return `${browserClientCapabilities.getEpoch()}:${browserClientCapabilities.isChanging()}:${browserClientCapabilities.isUnavailable()}`;
 }
 
+/** 首屏首个客户端能力快照的等待上限，仅用于请求已失败后的补偿重试。 */
+const FIRST_DECLARATION_WAIT_MS = 3000;
+
+/**
+ * 等待首个客户端能力快照：快照到达后插件的请求凭证才会注入。
+ * 已经到达或等待超时都立即返回，不阻塞不支持能力快照的后端。
+ */
+function waitForFirstDeclarations(timeoutMs = FIRST_DECLARATION_WAIT_MS): Promise<boolean> {
+  const host = browserClientCapabilities;
+  if (host.hasDeclarations()) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    let timerId = 0;
+    let settled = false;
+    const finish = (value: boolean) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timerId);
+      unsubscribe();
+      resolve(value);
+    };
+    const unsubscribe = host.subscribe((change) => {
+      if (change.phase === 'ready' && host.hasDeclarations()) finish(true);
+    });
+    // 快照可能在判空与订阅之间到达，订阅后补检一次，避免错过通知白等满超时。
+    if (host.hasDeclarations()) finish(true);
+    else timerId = window.setTimeout(() => finish(host.hasDeclarations()), timeoutMs);
+  });
+}
+
 function AppContent({
   settingsPageDefinition,
   resolveSettingsRequest,
@@ -2362,8 +2391,10 @@ function AppContent({
   }, [designModelGate, isConnected, loadSessionMetadata, route]);
 
   // 获取服务端配置（通过 WS 方法）
-  const fetchConfig = useCallback(async () => {
+  const fetchConfig = useCallback(async (retried = false): Promise<void> => {
     const contextEpoch = browserClientCapabilities.getEpoch();
+    // 首屏请求可能早于首个客户端能力快照，此时插件凭证尚未注入。
+    const hadDeclarations = browserClientCapabilities.hasDeclarations();
     try {
       const collaborationRevision = getMultiModelCollaborationRevision();
       const config = await request<Record<string, unknown>>('config.get');
@@ -2394,6 +2425,12 @@ function AppContent({
       }
     } catch (error) {
       if (contextEpoch !== browserClientCapabilities.getEpoch()) return;
+      // 首个客户端能力快照到达前的请求没有插件凭证，可能被插件策略拒绝：
+      // 等快照到达后补偿重试一次，避免误报“无法通过 WebSocket 获取后端配置”。
+      if (!retried && !hadDeclarations && (await waitForFirstDeclarations())) {
+        if (contextEpoch !== browserClientCapabilities.getEpoch()) return;
+        return fetchConfig(true);
+      }
       console.error('Failed to fetch config:', error);
       setServerConfig(null);
       setConfigError(t('app.configError'));
