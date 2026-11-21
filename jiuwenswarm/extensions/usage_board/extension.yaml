@@ -1,0 +1,15 @@
+id: usage-board
+name: Usage Board
+version: 1.0.0
+description: 用量与费用看板：只读汇总会话 token 用量、缓存命中与费用估算，带预算参照与导出
+author: jiuwenswarm
+min_jiuwenswarm_version: "0.2.5"
+package_type: application
+frontend:
+  - id: usage-board-page
+    nav_key: app:usage-board
+    title: 用量与费用
+    render_mode: iframe
+    entrypoint: index.html
+    position: 770
+dependencies: {}
