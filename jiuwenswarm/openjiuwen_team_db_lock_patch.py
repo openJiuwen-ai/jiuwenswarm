@@ -13,11 +13,12 @@ logger = logging.getLogger(__name__)
 
 _installed = False
 _original_update_member_execution_status: Any = None
+_installed_wrapper: Any = None
 
 
 def install_team_db_lock_retry_patch() -> bool:
     """Retry transient SQLite locks around SDK execution-status updates."""
-    global _installed, _original_update_member_execution_status
+    global _installed, _original_update_member_execution_status, _installed_wrapper
     if _installed:
         return True
 
@@ -32,7 +33,7 @@ def install_team_db_lock_retry_patch() -> bool:
         logger.warning("[TeamDBLockPatch] skip: incompatible MemberDao implementation")
         return False
 
-    if getattr(original, "_jiuwenswarm_lock_retry_patched", False) is True:
+    if original is _installed_wrapper and _installed_wrapper is not None:
         _original_update_member_execution_status = None
         _installed = True
         return True
@@ -66,13 +67,13 @@ def install_team_db_lock_retry_patch() -> bool:
             label=f"update_member_execution_status {member_name}",
         )
 
-    update_member_execution_status._jiuwenswarm_lock_retry_patched = True  # type: ignore[attr-defined]
     try:
         MemberDao.update_member_execution_status = update_member_execution_status
     except (AttributeError, TypeError):
         logger.warning("[TeamDBLockPatch] skip: cannot replace MemberDao method", exc_info=True)
         return False
     _original_update_member_execution_status = original
+    _installed_wrapper = update_member_execution_status
     _installed = True
     logger.info("[TeamDBLockPatch] MemberDao execution-status lock retry patch applied")
     return True
@@ -80,7 +81,7 @@ def install_team_db_lock_retry_patch() -> bool:
 
 def reset_team_db_lock_retry_patch() -> None:
     """Restore the SDK method (tests only)."""
-    global _installed, _original_update_member_execution_status
+    global _installed, _original_update_member_execution_status, _installed_wrapper
     if not _installed:
         return
     try:
@@ -88,7 +89,7 @@ def reset_team_db_lock_retry_patch() -> None:
 
         current = getattr(MemberDao, "update_member_execution_status", None)
         if _original_update_member_execution_status is not None:
-            if getattr(current, "_jiuwenswarm_lock_retry_patched", False) is True:
+            if current is _installed_wrapper:
                 MemberDao.update_member_execution_status = _original_update_member_execution_status
             else:
                 logger.warning(
@@ -100,6 +101,7 @@ def reset_team_db_lock_retry_patch() -> None:
         logger.warning("[TeamDBLockPatch] cannot restore MemberDao method", exc_info=True)
     finally:
         _original_update_member_execution_status = None
+        _installed_wrapper = None
         _installed = False
 
 

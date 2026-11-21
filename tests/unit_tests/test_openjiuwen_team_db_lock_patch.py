@@ -65,7 +65,6 @@ def test_repeated_install_does_not_wrap_method_again():
 
     assert install_team_db_lock_retry_patch()
     wrapper = MemberDao.update_member_execution_status
-    assert getattr(wrapper, "_jiuwenswarm_lock_retry_patched", False) is True
 
     assert install_team_db_lock_retry_patch()
     assert MemberDao.update_member_execution_status is wrapper
