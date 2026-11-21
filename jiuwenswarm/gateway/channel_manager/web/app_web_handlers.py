@@ -6494,7 +6494,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
     async def _sensitive_mask_set_conf(ws, req_id, params, session_id):
-        from jiuwenswarm.gateway.channel_manager.web.sensitive_mask import set_sensitive_mask_config
+        from jiuwenswarm.gateway.channel_manager.web.sensitive_mask import (
+            SensitiveMaskConfigReadOnly,
+            set_sensitive_mask_config,
+        )
 
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
@@ -6506,6 +6509,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         try:
             payload = set_sensitive_mask_config(bool(params.get("enabled")), rules)
             await channel.send_response(ws, req_id, ok=True, payload=payload)
+        except SensitiveMaskConfigReadOnly as e:
+            # 企业版：配置由管理端下发，本端只读。
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="FORBIDDEN")
         except (TypeError, ValueError) as e:
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="BAD_REQUEST")
         except Exception as e:

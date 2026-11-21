@@ -213,6 +213,15 @@ if not _loaded_logging_yaml:
             _shield_logger.addHandler(_perm_fh)
         _shield_logger.addHandler(_perm_sh)
     _shield_logger.propagate = False
+
+    # DLL Guard 注入生命周期（DLL Guard ready / initialization failed）与判定日志同落盘
+    _intercepts_logger = logging.getLogger("agent_shield.intercepts")
+    _intercepts_logger.setLevel(logging.INFO)
+    if not _intercepts_logger.handlers:
+        if _perm_fh is not None:
+            _intercepts_logger.addHandler(_perm_fh)
+        _intercepts_logger.addHandler(_perm_sh)
+    _intercepts_logger.propagate = False
 _log_step_elapsed("permissions_log_handlers", _t_step)
 
 # Load env from user workspace config/.env
