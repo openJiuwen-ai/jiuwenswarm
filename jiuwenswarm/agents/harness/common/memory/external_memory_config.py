@@ -67,6 +67,9 @@ def get_external_memory_config(
         "user_id": ext.get("user_id") or _DEFAULT_USER,
         "scope_id": ext.get("scope_id") or _DEFAULT_SCOPE,
         "allowed_plugins": ext.get("allowed_plugins") or [],
+        # P2（atomgit 2026-11-18 延续）：memory.external.plugins.<provider_name>
+        # 为通用插件的参数下发节——builder 据此把 config 透传给 build_provider。
+        "plugins": ext.get("plugins") or {},
         "openjiuwen": ext.get("openjiuwen") or {},
         "mem0": ext.get("mem0") or {},
         "openviking": ext.get("openviking") or {},

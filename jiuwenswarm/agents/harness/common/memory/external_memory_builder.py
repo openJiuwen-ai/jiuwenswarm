@@ -57,7 +57,12 @@ def build_external_memory_rail(
         elif provider_name == "jiuwenmemory":
             provider = _build_jiuwen_provider(ext_cfg, config)
         else:
-            provider = _load_plugin_provider(provider_name, ext_cfg.get("allowed_plugins") or None)
+            provider = _load_plugin_provider(
+                provider_name,
+                ext_cfg.get("allowed_plugins") or None,
+                (ext_cfg.get("plugins") or {}).get(provider_name),
+                {"user_id": ext_cfg.get("user_id"), "scope_id": ext_cfg.get("scope_id")},
+            )
     except Exception as exc:
         logger.warning(
             "[ExternalMemoryBuilder] build provider '%s' failed: %s",
@@ -479,7 +484,9 @@ def _strip_embeddings_suffix(base_url: str) -> str:
     return base_url
 
 
-def _load_plugin_provider(name: str, allowed: Optional[list] = None):
+def _load_plugin_provider(name: str, allowed: Optional[list] = None,
+                          plugin_cfg: Optional[dict] = None,
+                          identity: Optional[dict] = None):
     try:
         from .plugin_discovery import load_memory_plugin
     except ImportError:
@@ -488,4 +495,10 @@ def _load_plugin_provider(name: str, allowed: Optional[list] = None):
             name,
         )
         return None
-    return load_memory_plugin(name, allowed_plugins=allowed)
+    # P2（atomgit 2026-11-18 上轮延续）：docstring 契约是 build_provider(config)，
+    # 只传白名单不传 config 会让插件在生产路径恒收 {}、参数无法下发。config =
+    # 身份字段（user_id/scope_id）打底＋memory.external.plugins.<name> 子节覆盖；
+    # 整份 ext_cfg 不下发给第三方插件（其他厂商 api_key 等字段隔离）。
+    merged: dict = dict(identity or {})
+    merged.update(plugin_cfg or {})
+    return load_memory_plugin(name, merged, allowed_plugins=allowed)
