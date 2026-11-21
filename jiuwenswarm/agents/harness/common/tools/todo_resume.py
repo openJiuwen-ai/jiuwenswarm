@@ -18,6 +18,8 @@ from typing import Any, List, Sequence
 
 from openjiuwen.harness.tools.todo import TODO_GENERATION_TOKEN_SESSION_KEY
 
+from jiuwenswarm.common.utils import logger
+
 from jiuwenswarm.common.todo_generation import (
     filter_todos_by_generation as filter_todos_by_generation,
     todo_item_generation_token as todo_item_generation_token,
@@ -330,8 +332,12 @@ def has_pending_step_resume(session: Any) -> bool:
     try:
         resume = peek()
     except Exception:  # noqa: BLE001 - a broken peek must read as "no resume", never break the turn
+        logger.debug(
+            "peek_agent_step_resume raised; treating as no step resume", exc_info=True
+        )
         return False
-    return isinstance(getattr(resume, "iteration", None), int)
+    # type() rather than isinstance(): bool is an int subclass and would pass.
+    return type(getattr(resume, "iteration", None)) is int
 
 
 def snapshot_includes_persistent_todos(

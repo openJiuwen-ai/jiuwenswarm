@@ -68,3 +68,17 @@ async def test_before_invoke_emits_todo_updated_only_on_step_resume(monkeypatch,
     await rail.before_invoke(_ctx(_FakeSession(resume)))
 
     assert emitted == expected
+
+
+@pytest.mark.asyncio
+async def test_emit_failure_does_not_break_before_invoke(monkeypatch):
+    """S_20 N1: an emission failure must never take the invoke down with it."""
+    rail = JiuSwarmStreamEventRail()
+
+    async def _explode(session, session_id, **kwargs):
+        raise ValueError("bad todo payload")
+
+    monkeypatch.setattr(rail, "_emit_todo_updated", _explode)
+    monkeypatch.setattr(rail, "_rebind_runtime_cwd", lambda **kwargs: None)
+
+    await rail.before_invoke(_ctx(_FakeSession(SimpleNamespace(iteration=2, query="q"))))

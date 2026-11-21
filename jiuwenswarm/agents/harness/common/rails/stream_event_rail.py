@@ -1162,7 +1162,13 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             # Platform relaunch with the original session never fetches history,
             # so replay the todo list the resumed context carries. The inner
             # invoke has not begun yet, which is what keeps the resume visible.
-            await self._emit_todo_updated(ctx.session, raw_conv_id)
+            # S_20 N1: an emission failure must never block the invoke.
+            try:
+                await self._emit_todo_updated(ctx.session, raw_conv_id)
+            except Exception:
+                logger.debug(
+                    "[StreamEventRail] step-resume todo.updated emit failed", exc_info=True
+                )
         # Carry session_id through ctx.extra so checkpoints (before_model_call,
         # before_tool_call) within this invoke can look up per-session state.
         # Sub-agents inherit this from the parent's invoke since they don't
