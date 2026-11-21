@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from typing import Any
 
 from openjiuwen.core.common.logging import server_logger
@@ -61,6 +62,38 @@ async def _trigger_before_chat_request_hook(request: AgentRequest) -> None:
     await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.BEFORE_CHAT_REQUEST, ctx)
 
 
+async def _consume_runtime_approval_reply(ctx: RequestContext, request: AgentRequest) -> bool:
+    """消费 DLL 运行时审批应答；True 表示请求已处理，不再进入 Agent 分发。
+
+    卡片 ``request_id`` 带 ``dll-runtime:`` 前缀，此时工具仍在进程内等待。把它
+    当成新的对话轮次会让 Agent 重启一次工具，所以 WS/HTTP 都要在流水线入口消费。
+    """
+    if request.req_method != ReqMethod.CHAT_SEND:
+        return False
+    params = request.params if isinstance(request.params, dict) else {}
+    request_id = params.get("request_id")
+    if not isinstance(request_id, str) or not request_id.startswith("dll-runtime:"):
+        return False
+    accepted = False
+    if sys.platform == "win32":
+        from jiuwenswarm.common.config import is_dll_sandbox_enabled
+
+        if is_dll_sandbox_enabled():
+            from jiuwenswarm.server.runtime.runtime_guard import resolve_runtime_reply
+
+            accepted = bool(resolve_runtime_reply(request.session_id, params))
+    await ctx.sink.send_unary(
+        AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=accepted,
+            payload={"event_type": "chat.runtime_approval_result", "accepted": accepted},
+        ),
+        response_id=request.request_id,
+    )
+    return True
+
+
 async def dispatch_parsed_request(
     ctx: RequestContext,
     request: AgentRequest,
@@ -73,6 +106,8 @@ async def dispatch_parsed_request(
     """
     log_bind = bind_log_session(getattr(request, "session_id", None))
     try:
+        if await _consume_runtime_approval_reply(ctx, request):
+            return
         logger.info(
             "[AgentWebSocketServer] 收到请求: request_id=%s channel_id=%s is_stream=%s",
             request.request_id,

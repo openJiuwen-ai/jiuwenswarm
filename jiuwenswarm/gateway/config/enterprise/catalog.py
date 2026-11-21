@@ -39,6 +39,8 @@ ENTERPRISE_RECORD_SPECS: dict[str, EnterpriseRecordSpec] = {
     "a2a_outbound_dispatch": EnterpriseRecordSpec(key_fields=("dispatch_id",)),
     "instance_agent_resource": EnterpriseRecordSpec(key_fields=("resource_id",)),
     "log_masking_rule": EnterpriseRecordSpec(key_fields=("rule_id",)),
+    # 网页出站内容脱敏：整段配置单文档，enabled + rules 一起下发。
+    "content_masking_config": EnterpriseRecordSpec(key_fields=()),
     "workspace_quota_policy": EnterpriseRecordSpec(key_fields=("policy_id",)),
     "workspace_quota_usage": EnterpriseRecordSpec(
         key_fields=("user_id", "group_id", "bot_id"),
