@@ -65,6 +65,10 @@ def _office_claw_tool_env_value(tool: Any, key: str) -> str:
 logger = logging.getLogger(__name__)
 
 _LOG_PREFIX = "[ProgressiveToolRail]"
+# ②号防线未注入 plan_check_allowed_tools 时的兜底校验集（CR-4，2026-11-16）：
+# 仅 plan 态状态机工具。enter/exit_plan_mode 在任何装配方 plan 态都保持可见，
+# 缺席即真异常；switch_mode/lazy 支柱等在 plan 态由 mode rail 设计性排除。
+_PLAN_MACHINE_TOOLS = frozenset({"enter_plan_mode", "exit_plan_mode"})
 _REQUIRED_SKILL_KEY = "required_skill"
 # Registered by agent-core only while compression recall is enabled. Pinning the
 # name here does not register the tool; an input list without it is unchanged.
@@ -170,6 +174,15 @@ class ProgressiveToolRail(DeepAgentRail):
         super().__init__()
         self.enabled = bool(enabled)
         self.eager_tools = list(eager_tools or [])
+        # ②号防线 plan 态校验的设计可见集（None=兜底只校验 plan 状态机工具
+        # _PLAN_MACHINE_TOOLS）。装配方 plan 白名单（work：
+        # WORK_PLAN_ALLOWED_TOOLS；code：_CODE_PLAN_ALLOWED_TOOLS）之外的
+        # eager 成员（tools_search/invoke_tool 等 lazy 支柱、switch_mode）由
+        # 上游 mode rail 设计性排除，缺席非异常；按白名单收敛才不会每轮假
+        # 阳性（评审 CR-1，2026-11-10）。未注入的兜底收敛见 CR-4
+        # （2026-11-16）：合并后 None 消费方仅剩 team 成员轨（!10149 装配
+        # 未注入），全量校验会在其 plan 态每轮误报。由适配器建轨时注入。
+        self.plan_check_allowed_tools: frozenset[str] | None = None
         self.language = language or "cn"
         self.agent_id = agent_id
         self.agent_card_id = str(agent_card_id or "").strip() or None
@@ -956,9 +969,63 @@ class ProgressiveToolRail(DeepAgentRail):
             removed,
             sorted(disabled),
         )
+        # ②号防线（issue 5223 复盘）：eager 名单成员在过滤输入里缺席，
+        # 说明 ability_manager 字典与 inputs.tools 之间发生了上游改写
+        # （如 AgentModeRail 按陈旧 mode 过滤）或注册丢失——只告警不回注：
+        # 盲目回注会绕过 85 号 mode rail 的过滤语义（normal 态重新外泄
+        # plan 工具）。
+        #
+        # 仅 plan 态校验（评审 2026-11-09）：normal 态 enter/exit_plan_mode
+        # 由 AgentModeRail 按设计过滤、switch_mode 由 WorkAgentModeRail 过滤，
+        # 缺席是预期行为，全态比对会在热路径每轮固定误报、淹没真信号。
+        #
+        # 校验范围按设计可见集收敛（评审 CR-1，2026-11-10）：work/code 装配
+        # plan 态走白名单过滤，白名单外的 eager 成员（tools_search/
+        # invoke_tool 等 lazy 支柱、switch_mode）设计性缺席，比对它们同样每轮
+        # 误报。装配方经 plan_check_allowed_tools 注入设计可见集，只校验集内
+        # 成员（缺席即真异常）。未注入（None）兜底收敛到 plan 状态机工具
+        # （CR-4，2026-11-16）：合并后 None 消费方仅剩 team 成员轨（!10149
+        # 装配未注入白名单），其 plan 态白名单设计性排除 switch_mode/
+        # tools_search/invoke_tool 等，全量校验每轮误报；enter/exit_plan_mode
+        # 是 plan 态状态机工具，任何装配方 plan 态都保持可见，缺席即真异常，
+        # eager 不含二者的装配方交集为空，天然不校验。读不了 plan 态时不
+        # 校验，宁漏不误。
+        if self._plan_mode_active_for_check(agent, ctx):
+            allowed = self.plan_check_allowed_tools
+            if allowed is None:
+                allowed = _PLAN_MACHINE_TOOLS
+            # 先按设计可见集收敛候选（G.EXP.04：推导式保持两子句内，
+            # 多条件拆两步）。
+            eager_names = [name for name in self.eager_tools if name in allowed]
+            missing_eager = sorted(
+                name for name in eager_names if name and name not in input_tool_names
+            )
+            if missing_eager:
+                logger.warning(
+                    "%s eager tools missing from filter input: %s "
+                    "(upstream tool-list rewrite or registration loss suspected)",
+                    _LOG_PREFIX,
+                    missing_eager,
+                )
 
         if lazy_load_active:
             await self._add_navigation_section(ctx)
+
+    @staticmethod
+    def _plan_mode_active_for_check(agent: Any, ctx: Any) -> bool:
+        """会话是否处于 plan 态（eager 缺席校验的前置条件）。
+
+        与 ``AgentModeRail`` 同一读取路径（``agent.load_state(session).
+        plan_mode``）；读不到状态一律 False——校验是告警防线，宁漏不误。
+        """
+        session = getattr(ctx, "session", None)
+        if session is None or agent is None:
+            return False
+        try:
+            plan_mode = agent.load_state(session).plan_mode
+        except Exception:  # noqa: BLE001
+            return False
+        return getattr(plan_mode, "mode", "") == "plan"
 
     def _order_tools_by_eager_list(self, tools: list[Any]) -> list[Any]:
         """Stable-sort filtered tools to match ``self.eager_tools`` order."""
