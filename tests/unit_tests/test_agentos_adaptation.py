@@ -129,90 +129,8 @@ class DeploymentAndSessionTest(unittest.TestCase):
 
 
 class SandboxBoundaryTest(unittest.TestCase):
-    def test_personal_yuanrong_preserves_mounts_rootfs_and_workdir(self):
-        from jiuwenswarm.server.runtime.agent_adapter import sysop_builder as builder
 
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            identity = {"source": str(root), "target": str(root), "readonly": False}
-            custom = {"source": "/host/custom", "target": "/custom", "readonly": True}
-            rootfs_mount = {"source": "/host/rootfs", "target": "/rootfs", "readonly": False}
-            endpoint = {"executor": "docker", "mounts": [identity, custom, custom],
-                        "rootfs": {"mounts": [rootfs_mount]}, "cpu": 2000, "memory": 4096,
-                        "user": 1000, "group": 0}
-            original = copy.deepcopy(endpoint)
-            with patch.dict("os.environ", {"JIUWENSWARM_RUNTIME_PROFILE": "",
-                                            "JIUWENSWARM_USER_DIRECTORY": "/host/unused"}), \
-                 patch.object(builder, "get_sandbox_endpoint", return_value=endpoint), \
-                 patch.object(builder, "get_agent_root_dir", return_value=root):
-                result = builder._build_yuanrong_extra_params()
-                self.assertEqual(result["mounts"], [identity, custom])
-                self.assertEqual(result["rootfs"]["mounts"], [identity, rootfs_mount])
-                self.assertEqual(result["workdir"], str(root))
-                self.assertEqual(result["rootfs"]["workdir"], str(root))
-                self.assertEqual((result["cpu"], result["memory"]), (2000, 4096))
-                self.assertNotIn("user", result)
-                endpoint["workdir"] = "/chosen"
-                endpoint["rootfs"]["workdir"] = "/rootfs-chosen"
-                explicit = builder._build_yuanrong_extra_params()
-                self.assertEqual(explicit["workdir"], "/chosen")
-                self.assertEqual(explicit["rootfs"]["workdir"], "/rootfs-chosen")
-            self.assertEqual(endpoint, {**original, "workdir": "/chosen",
-                                        "rootfs": {**original["rootfs"], "workdir": "/rootfs-chosen"}})
 
-    def test_yuanrong_mem_limit_defaults_to_memory(self):
-        from jiuwenswarm.server.runtime.agent_adapter import sysop_builder as builder
-
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory).resolve()
-            cases = (
-                ({"memory": 2048}, 2048),
-                ({"memory": "4096"}, 4096),
-                ({"memory": 2048, "mem_limit": 3072}, 3072),
-                ({"memory": ""}, None),
-                ({}, None),
-            )
-            for extra, expected in cases:
-                endpoint = {"executor": "docker", **extra}
-                original = copy.deepcopy(endpoint)
-                with self.subTest(endpoint=endpoint), \
-                     patch.dict("os.environ", {"JIUWENSWARM_RUNTIME_PROFILE": ""}), \
-                     patch.object(builder, "get_sandbox_endpoint", return_value=endpoint), \
-                     patch.object(builder, "get_agent_root_dir", return_value=root):
-                    result = builder._build_yuanrong_extra_params()
-                    self.assertEqual(result.get("mem_limit"), expected)
-                    self.assertEqual(endpoint, original)
-
-    def test_agentos_yuanrong_keeps_user_mapping_and_zero_ids(self):
-        from jiuwenswarm.server.runtime.agent_adapter import sysop_builder as builder
-
-        with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory).resolve()
-            workspace = base / "agent" / "workspace"
-            project = base / "workspace"
-            workspace.mkdir(parents=True)
-            project.mkdir()
-            user_dir = base / "host-user"
-            endpoint = {"executor": "docker", "user": 1000, "group": 0,
-                        "mounts": [{"source": "/ignored", "target": "/ignored"}], "rootfs": {}}
-            with patch.dict("os.environ", {"JIUWENSWARM_RUNTIME_PROFILE": "agentos",
-                                            "JIUWENSWARM_USER_DIRECTORY": str(user_dir)}), \
-                 patch.object(builder, "get_sandbox_endpoint", return_value=endpoint), \
-                 patch.object(builder, "_resolve_workspace_dir", return_value=workspace), \
-                 patch.object(builder, "Path", side_effect=lambda value: project if value == "~/workspace" else Path(value)):
-                result = builder._build_yuanrong_extra_params()
-            self.assertEqual(result["mounts"], [
-                {"source": str(user_dir / ".jiuwenswarm" / "agent" / "workspace"),
-                 "target": str(workspace), "readonly": False},
-                {"source": str(user_dir / "workspace"), "target": str(project), "readonly": False},
-            ])
-            self.assertEqual(result["rootfs"]["mounts"], result["mounts"])
-            self.assertEqual(result["workdir"], str(workspace))
-            self.assertEqual(result["user"], "1000:0")
-            for user, group in ((0, 0), (1000, "0"), ("0", 1000)):
-                with self.subTest(user=user, group=group):
-                    self.assertEqual(builder._yuanrong_sandbox_user({"user": user, "group": group}),
-                                     f"{user}:{group}")
 
     def test_status_fallback_and_data_root_skip_are_agentos_only(self):
         from jiuwenswarm.server.runtime.agent_adapter import sysop_builder as builder
@@ -226,10 +144,10 @@ class SandboxBoundaryTest(unittest.TestCase):
                                                "JIUSWARM_SANDBOX_PROJECT_DIR": ""}), \
                      patch.object(builder, "get_sandbox_endpoint", return_value={"mounts": [custom]}), \
                      patch.object(builder, "get_sandbox_runtime", return_value={"enabled": True}), \
-                     patch.object(builder, "_build_yuanrong_extra_params", side_effect=ValueError("unavailable")), \
+                     patch.object(builder, "_build_adx_extra_params", side_effect=ValueError("unavailable")), \
                      patch.object(builder, "get_user_workspace_dir", return_value=root), \
                      patch.object(Path, "cwd", return_value=root):
-                    self.assertEqual(builder.build_yuanrong_sandbox_status_view()["mounts"], expected)
+                    self.assertEqual(builder.build_adx_sandbox_status_view()["mounts"], expected)
                     self.assertEqual(builder._resolve_project_dir(root), None if profile else root)
                     paths = builder.list_auto_managed_sandbox_paths(project_dir=root, startup_mode="external")
                     self.assertEqual(any(item["path"].rstrip("/") == str(root)

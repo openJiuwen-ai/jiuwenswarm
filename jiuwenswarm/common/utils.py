@@ -67,7 +67,7 @@ _JSONL_LOG_LOCK = threading.Lock()
 
 # gateway 支持独立的日志目录（与其余组件日志分离），轮转归档文件同样落在该目录下。
 # 默认不启用（gateway.log 与其它日志同目录），由环境变量 AGENTOS_GATEWAY_LOG_DIR 指定，
-# Linux 部署脚本（deploy/yuanrong/gateway_handler.sh）注入 /var/log/agentos。
+# Linux 部署脚本（AgentOS Gateway 部署脚本）注入 /var/log/agentos。
 _GATEWAY_LOG_DIR_ENV = "AGENTOS_GATEWAY_LOG_DIR"
 
 
@@ -3107,7 +3107,7 @@ def install_source_record_masking() -> None:
     覆盖场景：
     - ``app_agentserver.py`` 用 ``logging.getLogger("openjiuwen.harness.security")``
       等 openjiuwen 命名空间 logger；
-    - clawee（yuanrong faas）拉起的 AgentServer 内 openjiuwen SDK 自有 logger；
+    - 平台启动的 AgentServer 内 openjiuwen SDK 自有 logger；
     - httpx/openai SDK 在 DEBUG 级别打印请求头（含 Authorization）。
 
     复用带指纹的 ``_sanitize_log_text``，与 handler 层 ``SensitiveDataFilter``

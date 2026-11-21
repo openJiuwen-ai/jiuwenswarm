@@ -10459,7 +10459,7 @@ class JiuWenSwarmDeepAdapter:
         的同名字段。
 
         注意: 每次都从 ``get_sandbox_endpoint()`` 读最新 sandbox.url/type, 因为
-        ``/sandbox enable`` 会动态写入这两个字段; yuanrong 也会填默认占位 url。
+        ``/sandbox enable`` 会动态写入这两个字段。
 
         副作用: 在 ``self._sys_operation_card`` 保存生成或复用的 SysOperationCard，
         供 ``apply_sandbox_runtime_patch`` 等运行时热更使用。
@@ -10530,7 +10530,7 @@ class JiuWenSwarmDeepAdapter:
           字典让 provider 下次 exec 时读到新值（provider 持 dict 引用）。
         - ``files_changed=True`` 时:
           - jiuwenbox: 调用 ``force_recreate_jiuwenbox_sandbox``
-          - yuanrong: 调用 ``delete_yuanrong_sandbox``，下次 op 懒创建新实例
+          - adx-environment: 调用 ``delete_adx_sandbox``，下次 op 懒创建新实例
 
         Args:
             runtime: ``get_sandbox_runtime()`` 当前完整 runtime。
@@ -10552,21 +10552,21 @@ class JiuWenSwarmDeepAdapter:
             return
 
         sandbox_type = str(getattr(launcher, "sandbox_type", "") or "").strip().lower()
-        if sandbox_type == "yuanrong":
+        if sandbox_type == "adx-environment":
             logger.info(
-                "[JiuWenSwarmDeepAdapter] yuanrong runtime patch "
+                "[JiuWenSwarmDeepAdapter] ADX runtime patch "
                 "(files_changed=%s; policy/exclude ignored)",
                 files_changed,
             )
             if files_changed:
                 try:
-                    from openjiuwen.extensions.sys_operation.sandbox.providers.yuanrong import (
-                        build_yuanrong_shared_scope_key,
-                        delete_yuanrong_sandbox,
+                    from openjiuwen.extensions.sys_operation.sandbox.providers.adx import (
+                        build_adx_shared_scope_key,
+                        delete_adx_sandbox,
                     )
                 except Exception as exc:
                     logger.warning(
-                        "[JiuWenSwarmDeepAdapter] delete_yuanrong_sandbox import "
+                        "[JiuWenSwarmDeepAdapter] delete_adx_sandbox import "
                         "failed: %s",
                         exc,
                     )
@@ -10574,13 +10574,13 @@ class JiuWenSwarmDeepAdapter:
                 try:
                     isolation_key = self._sys_operation_isolation_key(card)
                     shared_key = (
-                        build_yuanrong_shared_scope_key(
+                        build_adx_shared_scope_key(
                             str(launcher.base_url), str(isolation_key)
                         )
                         if isolation_key
                         else None
                     )
-                    deleted = await delete_yuanrong_sandbox(
+                    deleted = await delete_adx_sandbox(
                         shared_key=shared_key,
                         base_url=(
                             str(launcher.base_url)
@@ -10590,13 +10590,13 @@ class JiuWenSwarmDeepAdapter:
                         reason="files_changed",
                     )
                     logger.info(
-                        "[JiuWenSwarmDeepAdapter] yuanrong sandbox deleted for "
+                        "[JiuWenSwarmDeepAdapter] ADX environment deleted for "
                         "recreate: %s",
                         deleted,
                     )
                 except Exception as exc:
                     logger.warning(
-                        "[JiuWenSwarmDeepAdapter] delete_yuanrong_sandbox failed: %s",
+                        "[JiuWenSwarmDeepAdapter] delete_adx_sandbox failed: %s",
                         exc,
                     )
             return
