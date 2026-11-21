@@ -365,6 +365,13 @@ def test_a2ui_officeclaw_component_rules_scoped_by_channel():
         assert "single-select, set maxAllowedSelections to 1" in en
         assert "single-parent" in en
         assert "Do not nest templates" in en
+        # [Text-bold] 在公共段（requested_component）：web channel 也注入，钉住防移回 officeclaw 段
+        assert "[Text-bold]" in en
+        zh = build_a2ui_autonomy_instruction("zh", channel=ch)
+        assert "[文本加粗]" in zh
+        # Text id 禁用 usageHint 枚举值同在公共段（CR-1 延伸）：钉住全渠道注入
+        assert "A Text component id MUST NOT be" in en
+        assert "不得命名为" in zh
 
 
 def test_a2ui_prompt_section_passes_channel_through():
@@ -403,3 +410,29 @@ def test_a2ui_repair_prompt_respects_channel():
         channel="officeclaw",
     )
     assert "outermost structured UI MUST be wrapped in a Card" in oc_repair
+
+
+def test_a2ui_prompt_bold_space_rule_present_cn_en():
+    # CJK 标点结尾的加粗紧跟正文时 markdown-it 不成对（flanking 规则），
+    # 提示词必须引导闭合 ** 后留空格；中英两版同步（缺一即失败）。
+    en = build_a2ui_autonomy_instruction("en")
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "[Text-bold]" in en
+    assert "ends with punctuation" in en
+    assert "one space MUST come after the closing **" in en
+    assert "[文本加粗]" in zh
+    assert "标点结尾" in zh
+    assert "闭合 ** 后必须留一个空格" in zh
+
+
+def test_a2ui_prompt_text_id_enum_ban_present_cn_en():
+    # Text id 禁用 usageHint 枚举值（防循环依赖）：中英两版 presence 断言（CR-1），
+    # 防提示词精简/重构时整句删除而测试全绿。
+    en = build_a2ui_autonomy_instruction("en")
+    zh = build_a2ui_autonomy_instruction("zh")
+
+    assert "A Text component id MUST NOT be" in en
+    assert "usageHint enum values" in en
+    assert "不得命名为" in zh
+    assert "这些是 usageHint 的枚举取值" in zh
