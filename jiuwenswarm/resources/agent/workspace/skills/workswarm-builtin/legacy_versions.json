@@ -2,6 +2,10 @@
   "_catalog_files": {
     "SKILL.md": [
       {
+        "digest": "04c46377ccb5d3330127c3249be8d8e77185ce2ff0b32834dd4ff2d5805ce3f3",
+        "revision": "4ac45f2c9569bbac401e98401cba3ab286d9c0fa"
+      },
+      {
         "digest": "7ce7e37f34ead53a642a4801a5b64d2b3c68d9d0ddcd61aacdeddf78174853d6",
         "revision": "079f09d91efc3442f5200a38595d21b8a5251207"
       },
@@ -22,6 +26,10 @@
     ],
     "references/catalog.md": [
       {
+        "digest": "618635bbbf1b0b1c0aa60a5e545a8f954c0764d9000361f2638d48781a35d74e",
+        "revision": "4ac45f2c9569bbac401e98401cba3ab286d9c0fa"
+      },
+      {
         "digest": "d34e3f20fc5bdcb8e7f758fb1634cfb4223135f8b1dc96a5d9a6976f90bc3385",
         "revision": "4b1b4fcff703578308871a5828d338b90797c05d"
       }
@@ -37,6 +45,12 @@
     {
       "digest": "bd1223e55e77b265476e9b972cff3b29c680c3dbc581c4b10318aaca0de6f313",
       "revision": "f0d0bde84ab48fec40288d6dc3f3bbd2c8a855f7"
+    }
+  ],
+  "deepseek-harness-plugin-converter": [
+    {
+      "digest": "7cc4b4bf5263342a9d27095b82ad774f108d93ac256c7797d44ae093264f1e79",
+      "revision": "ed48877baf8cfc988b06f8bcbcaa9e978d203ff9"
     }
   ],
   "huawei-cloud-maas-setup": [

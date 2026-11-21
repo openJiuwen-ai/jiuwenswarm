@@ -243,9 +243,17 @@ def test_shipped_catalog_has_one_discovery_entry_and_all_leaf_links_work(tmp_pat
     root = skills / BUILTIN_CATALOG_NAME
     catalog = root / "references" / "catalog.md"
     links = re.findall(r"\]\((capabilities/[^)]+/SKILL\.md)\)", catalog.read_text(encoding="utf-8"))
-    assert len(links) == len(json.loads((source / BUILTIN_CATALOG_NAME / "legacy_hashes.json").read_text())) == 36
+    legacy_names = set(json.loads((source / BUILTIN_CATALOG_NAME / "legacy_hashes.json").read_text()))
+    linked_names = {Path(link).parts[1] for link in links}
+    shipped_names = {
+        path.parent.name
+        for path in (source / BUILTIN_CATALOG_NAME / "references/capabilities").glob("*/SKILL.md")
+    }
+    assert linked_names == shipped_names
+    assert legacy_names <= linked_names
     assert all((catalog.parent / link).is_file() for link in links)
     assert "capabilities/jiuwen-system-plugin-dev/SKILL.md" in links
+    assert "capabilities/deepseek-harness-plugin-converter/SKILL.md" in links
     assert not (skills / "jiuwen-system-plugin-dev").exists()
     assert (root / "references" / "capabilities" / "workswarm-app-builder" / "scripts" / "publish.py").is_file()
 
