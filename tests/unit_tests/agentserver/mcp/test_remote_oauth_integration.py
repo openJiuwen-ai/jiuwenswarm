@@ -1,5 +1,6 @@
 """Registry, persistence, and the real pinned SDK's OAuth HTTP transport."""
 
+import asyncio
 import json
 
 import httpx
@@ -159,6 +160,11 @@ async def test_core_registered_transport_initializes_lists_calls_and_refreshes(
         assert await client.call_tool("company", {}) == "verified"
         assert provider.refreshes == 1
         assert seen[-1][2] == "Bearer access-1"
+        # Lifecycle cleanup and reconnect must work from another caller task.
+        assert await asyncio.create_task(client.disconnect())
+        assert await asyncio.create_task(client.connect())
+        assert await client.call_tool("company", {}) == "verified"
+        assert provider.refreshes == 1
     finally:
         await client.disconnect()
 
