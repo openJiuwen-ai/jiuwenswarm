@@ -11318,7 +11318,7 @@ class AgentWebSocketServer:
             await send_wire_payload(ws, wire)
 
     async def _run_mcp_connect_flow(
-        self, name: str, *, rollback_on_probe_failure: bool = True
+        self, name: str, *, rollback_on_probe_failure: bool = True, oauth_session: str | None = None
     ) -> dict[str, Any]:
         """Run the shared connect flow and return a frontend payload."""
         from jiuwenswarm.common.mcp_config import discard_probed_mcp
@@ -11348,6 +11348,9 @@ class AgentWebSocketServer:
             await discard_probed_mcp(name)
             return {"type": "cancelled", "name": name}
         if not probe_ok:
+            if oauth_session:
+                from jiuwenswarm.server.runtime.mcp.registry import cancel_remote_oauth
+                await asyncio.to_thread(cancel_remote_oauth, name, oauth_session)
             logger.warning("[mcp] probe failed for '%s': %s", name, probe_reason)
             if rollback_on_probe_failure:
                 try:
@@ -11366,6 +11369,22 @@ class AgentWebSocketServer:
                 "code": "MCP_UNREACHABLE",
                 "name": name,
             }
+        if oauth_session:
+            from jiuwenswarm.common.mcp_remote_oauth import OAuthError, oauth_manager
+            try:
+                await asyncio.to_thread(oauth_manager().finish, name, oauth_session)
+            except OAuthError:
+                from jiuwenswarm.server.runtime.mcp.state_store import remove_mcp_record
+                manager = oauth_manager()
+                with manager.lock:
+                    try:
+                        grant = manager.grant(name)
+                    except OAuthError:
+                        grant = {}
+                    if not grant or grant.get("oauth_session") == oauth_session:
+                        remove_mcp_record(name)
+                return {"type": "connect_failed", "name": name, "code": "MCP_AUTH_FAILED",
+                        "error": "OAuth authorization was cancelled or replaced. Reconnect."}
         # Promote connecting state and sync skill-only credentials.
         try:
             from jiuwenswarm.server.runtime.mcp.state_store import (
@@ -11398,7 +11417,20 @@ class AgentWebSocketServer:
             name = str(params.get("name", "")).strip()
             if not name:
                 raise ValueError("mcp name is required")
-            payload = await self._run_mcp_connect_flow(name)
+            auth_method = params.get("auth_method")
+            if auth_method in ("oauth", "oauth_cancel"):
+                from jiuwenswarm.server.runtime.mcp.registry import supports_remote_oauth
+                from jiuwenswarm.common.mcp_remote_oauth import oauth_manager
+                if not await asyncio.to_thread(supports_remote_oauth, name):
+                    raise ValueError("Remote OAuth is not available for this connector")
+                if auth_method == "oauth_cancel":
+                    from jiuwenswarm.server.runtime.mcp.registry import cancel_remote_oauth
+                    await asyncio.to_thread(cancel_remote_oauth, name, str(params.get("oauth_session", "")))
+                    payload = {"type": "auth_cancelled", "name": name}
+                else:
+                    payload = await asyncio.to_thread(oauth_manager().begin, name)
+            else:
+                payload = await self._run_mcp_connect_flow(name)
             if payload.get("type") == "connect_failed":
                 resp = AgentResponse(
                     request_id=request.request_id,
@@ -11581,11 +11613,17 @@ class AgentWebSocketServer:
             if not name:
                 raise ValueError("mcp name is required")
             step_index = int(params.get("step_index", 0) or 0)
-            if is_host_oauth_mcp(name):
+            if params.get("oauth_session"):
+                from jiuwenswarm.common.mcp_remote_oauth import oauth_manager
+                await asyncio.to_thread(oauth_manager().wait, name, str(params["oauth_session"]))
+                result = await self._run_mcp_connect_flow(
+                    name, rollback_on_probe_failure=False, oauth_session=str(params["oauth_session"])
+                )
+            elif is_host_oauth_mcp(name):
                 result = await self._await_host_oauth_auth(name)
             else:
                 result = await self._await_cli_auth(name, step_index)
-            if result.get("type") == "auth_failed":
+            if result.get("type") in ("auth_failed", "connect_failed"):
                 resp = AgentResponse(
                     request_id=request.request_id,
                     channel_id=request.channel_id,

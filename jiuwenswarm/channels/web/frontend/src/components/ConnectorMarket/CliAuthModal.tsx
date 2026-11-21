@@ -47,12 +47,32 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
     promise: Promise<ConnectorConnectResponse | null>;
   } | null>(null);
   const [retrySeq, setRetrySeq] = useState(0);
+  const mountedRef = useRef(false);
+  const finishedRef = useRef(false);
+  const remoteSessionRef = useRef(step.oauthSession);
+  remoteSessionRef.current = step.oauthSession;
 
   // Host OAuth connectors (Canva) return an explicit backend sentinel; only then
   // do we call mcp.oauth.start to fetch the real authorize URL.
   const isHostOAuth = initial.hostOAuth === true;
   const currentAuthUrl = step.authUrl;
   const currentStepIndex = step.stepIndex ?? 0;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      // Defer one microtask so StrictMode's setup/cleanup/setup is not a cancel.
+      queueMicrotask(() => {
+        if (!mountedRef.current && !finishedRef.current && remoteSessionRef.current) {
+          void useConnectorStore.getState().cancelOAuth(name, remoteSessionRef.current);
+        }
+      });
+      // 组件卸载后让 in-flight 的 waitAuth 结果失效，避免用户关掉弹窗后过很久收到的
+      // connected/失败还去 setStep/setStatus（这个 promise 本身取消不了，只能靠序号丢弃结果）。
+      requestSeqRef.current += 1;
+    };
+  }, []);
 
   useEffect(() => {
     // Callback and locale updates must not restart authorization side effects.
@@ -88,9 +108,9 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
         window.open(authUrl, '_blank', 'noopener,noreferrer');
       }
       // Reuse effect replays within a round. Each auth_required response starts a new wait.
-      const key = JSON.stringify([name, stepIndex, authUrl, retrySeq, round]);
+      const key = JSON.stringify([name, stepIndex, authUrl, step.oauthSession, retrySeq, round]);
       if (waitAuthRequestRef.current?.key !== key) {
-        waitAuthRequestRef.current = { key, promise: waitAuth(name, stepIndex) };
+        waitAuthRequestRef.current = { key, promise: step.oauthSession ? waitAuth(name, stepIndex, step.oauthSession) : waitAuth(name, stepIndex) };
       }
       return waitAuthRequestRef.current.promise;
     }
@@ -103,6 +123,7 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
         return;
       }
       if (response.type === 'connected') {
+        finishedRef.current = true;
         onConnectedRef.current();
         return;
       }
@@ -122,22 +143,31 @@ export function CliAuthModal({ name, initial, onCancel, onConnected }: CliAuthMo
       // Invalidate this subscription while retaining requests for effect replay.
       requestSeqRef.current += 1;
     };
-  }, [currentAuthUrl, currentStepIndex, name, retrySeq, round, isHostOAuth, startOAuth, waitAuth]);
+  }, [currentAuthUrl, currentStepIndex, step.oauthSession, name, retrySeq, round, isHostOAuth, startOAuth, waitAuth]);
 
   function handleManualOpen() {
     if (step.authUrl) window.open(step.authUrl, '_blank', 'noopener,noreferrer');
   }
 
-  function handleRetry() {
-    setJustAdvanced(false);
-    setRetrySeq((v) => v + 1);
+  async function handleCancel() {
+    requestSeqRef.current += 1;
+    if (step.oauthSession) {
+      await useConnectorStore.getState().cancelOAuth(name, step.oauthSession);
+    } else {
+      void useConnectorStore.getState().cancelConnectAction(name);
+    }
+    finishedRef.current = true;
+    onCancel();
   }
 
-  // 用户中途放弃连接/授权
-  function handleCancel() {
-    requestSeqRef.current += 1;
-    void useConnectorStore.getState().cancelConnectAction(name);
-    onCancel();
+  async function handleRetry() {
+    if (step.oauthSession) {
+      const response = await useConnectorStore.getState().connect(name, 'oauth');
+      if (response?.type === 'auth_required') setAuthorization((current) => ({ step: response, round: current.round + 1 }));
+      return;
+    }
+    setJustAdvanced(false);
+    setRetrySeq((v) => v + 1);
   }
 
   const stepsTotal = step.stepsTotal ?? 1;
