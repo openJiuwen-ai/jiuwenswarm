@@ -146,8 +146,8 @@ def verify_hub_connector_artifact(
             "artifact HMAC key is unavailable",
         )
 
-    asset_id = descriptor.artifact_ref.connector_ref.asset_id
-    version_id = descriptor.artifact_ref.version_id
+    asset_id = str(descriptor.asset_id or "").strip()
+    version_id = str(descriptor.version_id or "").strip()
     # Wire contract identity line is still the Hub artifact digest slot:
     # HMAC(secret, "skillhub-artifact-v1\n{asset_id}\n{version_id}\n{content_sha256}")
     signing_input = f"{_HMAC_SCOPE}\n{asset_id}\n{version_id}\n{declared_sha256}"

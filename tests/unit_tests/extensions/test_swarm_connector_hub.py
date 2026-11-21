@@ -24,7 +24,6 @@ from jiuwenswarm.extensions.swarm_connector_hub.provider import (
 )
 from jiuwenswarm.extensions.sdk.connector_source import (
     ConnectorArtifactDescriptor,
-    ConnectorArtifactRef,
     ConnectorArtifactVerificationError,
     ConnectorRef,
     ConnectorSearchRequest,
@@ -112,13 +111,12 @@ def test_provider_search_detail_artifact_and_updates() -> None:
     assert len(search.items) == 1
     assert search.items[0].source_id == OPENJIUWEN_HUB_SOURCE_ID
     assert search.items[0].package_name == "demo-mcp"
-    assert search.items[0].to_dict()["source"] == OPENJIUWEN_HUB_SOURCE_ID
     assert search.items[0].to_dict()["source_id"] == OPENJIUWEN_HUB_SOURCE_ID
 
     ref = ConnectorRef(source_id=OPENJIUWEN_HUB_SOURCE_ID, asset_id="asset-1")
-    detail = asyncio.run(provider.get_detail(ref, ctx))
-    assert search.items[0].public_latest_version == "1.2.0"
-    assert detail.version == "1.2.0"
+    detail = asyncio.run(provider.get_detail(ref, "1.2.0", ctx))
+    assert search.items[0].version_id == "1.2.0"
+    assert detail.version_id == "1.2.0"
 
     artifact = asyncio.run(provider.get_artifact(ref, "1.2.0", ctx))
     assert artifact.download_url.endswith("demo-mcp.zip")
@@ -169,13 +167,9 @@ def test_verify_hub_connector_artifact_hmac(monkeypatch: pytest.MonkeyPatch) -> 
         hashlib.sha256,
     ).hexdigest()
     descriptor = ConnectorArtifactDescriptor(
-        artifact_ref=ConnectorArtifactRef(
-            connector_ref=ConnectorRef(
-                source_id=OPENJIUWEN_HUB_SOURCE_ID,
-                asset_id=asset_id,
-            ),
-            version_id=version_id,
-        ),
+        source_id=OPENJIUWEN_HUB_SOURCE_ID,
+        asset_id=asset_id,
+        version_id=version_id,
         download_url="https://example.invalid/demo-mcp.zip",
         content_sha256=content_sha256,
         signature=signature,
@@ -214,13 +208,9 @@ def test_verify_if_present_allows_unsigned() -> None:
     content = b"unsigned"
     content_sha256 = hashlib.sha256(content).hexdigest()
     descriptor = ConnectorArtifactDescriptor(
-        artifact_ref=ConnectorArtifactRef(
-            connector_ref=ConnectorRef(
-                source_id=OPENJIUWEN_HUB_SOURCE_ID,
-                asset_id="asset-1",
-            ),
-            version_id="1.0.0",
-        ),
+        source_id=OPENJIUWEN_HUB_SOURCE_ID,
+        asset_id="asset-1",
+        version_id="1.0.0",
         download_url="https://example.invalid/demo-mcp.zip",
         content_sha256=content_sha256,
     )
@@ -247,13 +237,9 @@ def test_verify_off_skips_hmac_even_when_signed(monkeypatch: pytest.MonkeyPatch)
         hashlib.sha256,
     ).hexdigest()
     descriptor = ConnectorArtifactDescriptor(
-        artifact_ref=ConnectorArtifactRef(
-            connector_ref=ConnectorRef(
-                source_id=OPENJIUWEN_HUB_SOURCE_ID,
-                asset_id=asset_id,
-            ),
-            version_id=version_id,
-        ),
+        source_id=OPENJIUWEN_HUB_SOURCE_ID,
+        asset_id=asset_id,
+        version_id=version_id,
         download_url="https://example.invalid/demo-mcp.zip",
         content_sha256=content_sha256,
         signature=signature,

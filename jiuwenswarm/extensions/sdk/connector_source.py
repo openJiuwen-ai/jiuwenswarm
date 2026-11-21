@@ -11,7 +11,6 @@ from __future__ import annotations
 from agent_gateway.extensions.sdk.connector_source import (
     CONNECTOR_CAPABILITIES,
     ConnectorArtifactDescriptor,
-    ConnectorArtifactRef,
     ConnectorArtifactVerificationError,
     ConnectorCandidate,
     ConnectorCapabilityError,
@@ -34,7 +33,6 @@ from agent_gateway.extensions.sdk.connector_source import (
 __all__ = [
     "CONNECTOR_CAPABILITIES",
     "ConnectorArtifactDescriptor",
-    "ConnectorArtifactRef",
     "ConnectorArtifactVerificationError",
     "ConnectorCandidate",
     "ConnectorCapabilityError",
