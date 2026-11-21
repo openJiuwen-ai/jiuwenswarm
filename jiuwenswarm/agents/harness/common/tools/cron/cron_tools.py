@@ -111,6 +111,10 @@ class CronTools:
         self._scheduler_started = False
         # Set by stop_scheduler (tenant eviction); this instance must never start again.
         self._retired = False
+        # 启动临界区锁（per-instance == per-tenant）：并发请求 / 多个 CronRuntimeBridge
+        # 实例可能共享同一 CronTools，无锁时两协程会各自越过 ensure_scheduler 的状态
+        # 检查并双 start，覆盖 self._scheduler 而泄漏旧实例。锁内双检保证 start 恰好一次。
+        self._start_lock: asyncio.Lock = asyncio.Lock()
 
     async def ensure_scheduler(self) -> CronSchedulerService | None:
         """Ensure the Agent-side scheduler is started (needed for relay / AgentServer-only)."""
@@ -125,6 +129,20 @@ class CronTools:
         if self._scheduler_started:
             return self._scheduler
 
+        # 启动临界区串行化（per-instance == per-tenant）：并发请求或多个 bridge
+        # 实例共享同一 CronTools 时，无锁会让两协程各自越过上面的检查并双 start，
+        # 覆盖 self._scheduler 而泄漏旧实例。锁内双检，保证 start 恰好一次。
+        async with self._start_lock:
+            if self._retired:
+                return None
+            if self._scheduler is not None and self._scheduler.is_running():
+                return self._scheduler
+            if self._scheduler_started:
+                return self._scheduler
+            return await self._start_scheduler_once()
+
+    async def _start_scheduler_once(self) -> CronSchedulerService | None:
+        """Start the Agent-side scheduler once (caller holds ``_start_lock``)."""
         from jiuwenswarm.server.runtime.cron_local_runtime import (
             AgentCronRegistry,
             resolve_agent_side_cron_deps,
