@@ -45,7 +45,7 @@ async def test_enterprise_tool_keeps_execution_authorization(
     )
 
     clear_send_file_execution_grant()
-    tool._SENT_FILE_PATHS_BY_SESSION.clear()
+    tool._SENT_FILE_FINGERPRINTS_BY_SESSION.clear()
     source = tmp_path / "tool-output.txt"
     source.write_bytes(b"authorized tool delivery")
     push, history = AsyncMock(return_value=True), Mock()
@@ -95,7 +95,7 @@ async def test_enterprise_tool_keeps_execution_authorization(
         assert not delivery.owner.root.exists()
     finally:
         clear_send_file_execution_grant()
-        tool._SENT_FILE_PATHS_BY_SESSION.clear()
+        tool._SENT_FILE_FINGERPRINTS_BY_SESSION.clear()
 
 
 class ObjectClient:
