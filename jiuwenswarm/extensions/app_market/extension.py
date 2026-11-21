@@ -7,6 +7,7 @@ from pathlib import Path
 import uuid
 from typing import Any
 
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.sdk import (
     ApplicationPluginExtension,
     ApplicationPluginServices,
@@ -19,7 +20,7 @@ from jiuwenswarm.extensions.app_market.manager import (
     AppMarketManager,
     RunConsentRequired,
 )
-from jiuwenswarm.extensions.app_market.editor_sessions import EditorSessionError
+from jiuwenswarm.extensions.app_market.editor_sessions import CoreRequest, EditorSessionError
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,22 @@ class AppMarketPlugin(ApplicationPluginExtension):
         def owner(ws):
             from agent_gateway.channel_manager.web.web_connect import WebChannel
             return WebChannel.connection_user_id(ws) or ""
+
+        def core_request(ws: Any, label: str) -> CoreRequest:
+            from agent_gateway.common.request_method import parse_request_method
+            from agent_gateway.routing.e2a_proxy import fetch_agent_unary
+
+            async def request(method: ReqMethod, payload: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+                gateway_method = parse_request_method(method.value)
+                if gateway_method is None:
+                    return False, {"code": "METHOD_NOT_FOUND", "error": f"Unknown Gateway method: {method.value}"}
+                return await fetch_agent_unary(
+                    agent_client=services.agent_client, req_method=gateway_method, params=payload,
+                    session_id=None, user_id=owner(ws) or None, channel_id=channel.channel_id,
+                    label=label, timeout_seconds=60,
+                )
+
+            return request
 
         async def handle_publish(ws, req_id, params, session_id):  # noqa: ANN001
             if not isinstance(params, dict):
@@ -140,26 +157,13 @@ class AppMarketPlugin(ApplicationPluginExtension):
                 )
                 return
             run_consent = params.get("run_consent")
-            from agent_gateway.routing.e2a_proxy import fetch_agent_unary
-
-            async def project_request(method, payload):
-                return await fetch_agent_unary(
-                    agent_client=services.agent_client,
-                    req_method=method,
-                    params=payload,
-                    session_id=None,
-                    user_id=owner(ws) or None,
-                    channel_id=channel.channel_id,
-                    label="app_market.start",
-                    timeout_seconds=60,
-                )
 
             try:
                 result = await self._manager.start_app(
                     app_id,
                     owner(ws),
                     run_consent if isinstance(run_consent, dict) else None,
-                    project_request=project_request,
+                    project_request=core_request(ws, "app_market.start"),
                 )
             except AppMarketError as exc:
                 await send_market_error(ws, req_id, exc)
@@ -339,8 +343,6 @@ class AppMarketPlugin(ApplicationPluginExtension):
             await channel.send_response(ws, req_id, ok=True, payload=result)
 
         async def handle_edit_session(ws, req_id, params, session_id):
-            from agent_gateway.routing.e2a_proxy import fetch_agent_unary
-
             del session_id
             params = params if isinstance(params, dict) else {}
             app_id = params.get("app_id")
@@ -348,21 +350,11 @@ class AppMarketPlugin(ApplicationPluginExtension):
                 await channel.send_response(ws, req_id, ok=False, error="app_id is required", code="BAD_REQUEST")
                 return
 
-            async def request(method, payload):
-                return await fetch_agent_unary(
-                    agent_client=services.agent_client,
-                    req_method=method,
-                    params=payload,
-                    session_id=None,
-                    user_id=owner(ws) or None,
-                    channel_id=channel.channel_id,
-                    label="app_market.edit_session",
-                    timeout_seconds=60,
-                )
-
             options = {key: params[key] for key in ("title", "model_name", "model_selection") if key in params}
             try:
-                result = await self._manager.edit_session(app_id, owner(ws), request, options)
+                result = await self._manager.edit_session(
+                    app_id, owner(ws), core_request(ws, "app_market.edit_session"), options,
+                )
             except AppMarketError as exc:
                 await send_market_error(ws, req_id, exc)
                 return

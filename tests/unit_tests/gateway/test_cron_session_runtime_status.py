@@ -11,7 +11,7 @@ import pytest_asyncio
 
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
-from jiuwenswarm.common.schema.message import Message, ReqMethod
+from e2a.message import Message, ReqMethod
 from agent_gateway.channel_manager.base import RobotMessageRouter
 from agent_gateway.channel_manager.web.app_web_handlers import (
     WebHandlersBindParams,

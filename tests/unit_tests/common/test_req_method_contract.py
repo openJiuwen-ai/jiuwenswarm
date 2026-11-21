@@ -6,7 +6,7 @@ Gateway 发往 AgentServer 的方法串会在服务端直接走 ``ReqMethod(str)
 （``server/agent_ws_server._payload_to_request``、``server/front/protocol``、
 ``server/ipc/protocol``），未知串会抛 ``ValueError`` 导致整个请求失败。
 因此凡是进入转发名单、或作为 Gateway 出站请求携带的方法串，都必须存在于
-``e2a 协议包`` 的 ``ReqMethod`` 中。
+``jiuwenswarm.common.schema.message`` 的本地 ``ReqMethod`` 中。
 
 不覆盖 ``channel.register_method(...)`` 注册的本地方法：``cron.*`` /
 ``heartbeat.*`` / ``vendors.*`` / ``external_cli.*`` 等只由 Gateway 本地
@@ -21,10 +21,6 @@ from pathlib import Path
 
 import agent_gateway
 import e2a.message as protocol_message
-from agent_gateway.channel_manager.tui.tui_connect import CLI_FORWARD_REQ_METHODS
-from agent_gateway.channel_manager.web.app_web_handlers import (
-    _FORWARD_REQ_METHODS,
-)
 
 from jiuwenswarm.common.schema import agent as schema_agent
 from jiuwenswarm.common.schema import message as schema_message
@@ -55,6 +51,9 @@ def _gateway_req_method_literals() -> set[str]:
 
 
 def _contract_method_strings() -> set[str]:
+    from agent_gateway.channel_manager.tui.tui_connect import CLI_FORWARD_REQ_METHODS
+    from agent_gateway.channel_manager.web.app_web_handlers import _FORWARD_REQ_METHODS
+
     return (
         set(_FORWARD_REQ_METHODS)
         | set(CLI_FORWARD_REQ_METHODS)
@@ -62,15 +61,15 @@ def _contract_method_strings() -> set[str]:
     )
 
 
-def test_forwarded_methods_exist_in_protocol_req_method() -> None:
+def test_forwarded_methods_exist_in_local_req_method() -> None:
     contract_methods = _contract_method_strings()
     assert contract_methods, "未收集到任何转发方法串，检查常量来源是否变更"
 
     unknown = sorted(contract_methods - _REQ_METHOD_VALUES)
     assert not unknown, (
-        "以下方法串会转发到 AgentServer，但 e2a 协议包 的 ReqMethod "
+        "以下方法串会转发到 AgentServer，但 jiuwenswarm 的 ReqMethod "
         f"未定义，服务端 ReqMethod(str) 会抛 ValueError：{unknown}。"
-        "请在 agent-protocol 仓补齐后更新 pyproject/uv.lock 的 pin。"
+        "请在 jiuwenswarm.common.schema.message.ReqMethod 中补齐。"
     )
 
 
@@ -78,8 +77,8 @@ def test_gateway_literal_scan_is_not_empty() -> None:
     assert _gateway_req_method_literals(), "Gateway literal scan must inspect the current source directory"
 
 
-def test_req_method_reexports_are_identical() -> None:
-    """schema.message / schema.agent 必须复用协议枚举，避免双重定义。"""
-    assert schema_message.ReqMethod is protocol_message.ReqMethod
-    assert schema_agent.ReqMethod is protocol_message.ReqMethod
-    assert ReqMethod is protocol_message.ReqMethod
+def test_req_method_reexports_use_the_local_enum() -> None:
+    """Both host import paths expose the same independently owned enum."""
+    assert schema_message.ReqMethod is ReqMethod
+    assert schema_agent.ReqMethod is ReqMethod
+    assert ReqMethod is not protocol_message.ReqMethod

@@ -105,6 +105,8 @@ Hand-built defaults use `source_protocol` = `e2a`. Legacy `binding` migrates to 
 
 At the Gateway-facing WebSocket ingress, AgentServer converts an explicitly supplied method to its own `ReqMethod`. Unknown or non-string methods receive a final error response with `payload.code` set to `METHOD_NOT_FOUND`. Internal requests without a method retain their existing path.
 
+`ReqMethod` is defined locally in `jiuwenswarm.common.schema.message` and re-exported by `common.schema.agent`; JiuwenSwarm no longer re-exports or extends the E2A request enum at runtime. Existing names and string values are unchanged. New AgentServer methods are maintained here without updating the protocol dependency solely for enum members. `Message` and `AgentRequest` retain the shared model fields with the local method type. Outbound requests use `jiuwenswarm.common.e2a.gateway_normalize` to convert enum members to strings; inbound E2A and Worker IPC decode them into the local enum. Cross-repository communication does not depend on Python enum identity.
+
 **Common `params` keys** (extend as needed; names below cooperate with ACP bridging):
 
 | Key | Purpose |

@@ -7,7 +7,7 @@ E2A wire 契约（常量/模型/规范化/适配/线编解码/ACP 辅助）的�
 
 本包只保留两处依赖本仓类型的实现：
 - ``agent_compat.e2a_to_agent_request``：产出本仓 ``schema.agent.AgentRequest``。
-- ``gateway_normalize``：在协议实现之上包装 Team/组织 chat.delta 身份字段。
+- ``gateway_normalize``：将本仓 ReqMethod 转为线协议字符串，并保留 Team/组织 chat.delta 身份字段。
 
 协议说明（中英）：仓库 ``docs/zh/E2A-protocol.md``、``docs/en/E2A-protocol.md``。
 """
