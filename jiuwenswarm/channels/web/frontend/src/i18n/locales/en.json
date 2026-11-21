@@ -2863,6 +2863,7 @@
       "userContext": "User context",
       "agentNameLabel": "Agent name",
       "agentNameHint": "Agent Name",
+      "switchToManager": "Open manager",
       "modeAria": "Context mode",
       "selectAgent": "Select agent",
       "custom": "Custom",

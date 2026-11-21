@@ -41,7 +41,7 @@ export function parseRuntimeScope(search: string): RuntimeScope {
     groupId: pickQueryAlias(query, 'group_id', 'X-Group-Id'),
     botId: pickQueryAlias(query, 'bot_id', 'X-Bot-Id'),
     agentName: pickQueryAlias(query, 'agent_name', 'X-Agent-Name'),
-    agentId: pickQueryAlias(query, 'agent_identity_id', 'X-Agent-Id'),
+    agentId: pickQueryAlias(query, 'agent_identity_id', 'X-Agent-Identity-Id'),
     runtimeTemplateId: pickQueryAlias(query, 'runtime_template_id', 'X-Runtime-Template-Id'),
     agentTemplateId: pickQueryAlias(query, 'agent_template_id', 'X-Agent-Template-Id'),
   };
@@ -113,7 +113,7 @@ export function buildRuntimeIdentityHeaders(
   if (groupId && isByteString(groupId)) headers['X-Group-Id'] = groupId;
   if (botId && isByteString(botId)) headers['X-Bot-Id'] = botId;
   if (agentName && isByteString(agentName)) headers['X-Agent-Name'] = agentName;
-  if (agentId && isByteString(agentId)) headers['X-Agent-Id'] = agentId;
+  if (agentId && isByteString(agentId)) headers['X-Agent-Identity-Id'] = agentId;
   if (runtimeTemplateId && isByteString(runtimeTemplateId)) headers['X-Runtime-Template-Id'] = runtimeTemplateId;
   if (agentTemplateId && isByteString(agentTemplateId)) headers['X-Agent-Template-Id'] = agentTemplateId;
   if (token && isByteString(token)) headers.Authorization = `Bearer ${token}`;

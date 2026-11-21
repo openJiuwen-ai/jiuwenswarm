@@ -2863,6 +2863,7 @@
       "userContext": "用户上下文",
       "agentNameLabel": "Agent 名称",
       "agentNameHint": "Agent名称",
+      "switchToManager": "进入管理面",
       "modeAria": "上下文设定方式",
       "selectAgent": "选择 Agent",
       "custom": "自定义",

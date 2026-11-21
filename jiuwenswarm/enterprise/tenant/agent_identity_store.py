@@ -79,15 +79,15 @@ def persist_agent_identity(
         (
             i
             for i, item in enumerate(entries)
-            if item.get("agent_id") == entry["agent_id"]
+            if item.get("agent_id") == entry.get("agent_id")
         ),
         None,
     )
     if index is None:
         entries.append(entry)
     else:
-        unchanged = current_agent_id == entry["agent_id"] and all(
-            entries[index].get(field) == entry[field] for field in _COMPARED_FIELDS
+        unchanged = current_agent_id == entry.get("agent_id") and all(
+            entries[index].get(field) == entry.get(field) for field in _COMPARED_FIELDS
         )
         if unchanged:
             return
@@ -95,7 +95,7 @@ def persist_agent_identity(
 
     payload = {
         "schema_version": AGENT_IDENTITY_SCHEMA_VERSION,
-        "current_agent_id": entry["agent_id"],
+        "current_agent_id": entry.get("agent_id"),
         "agents": entries,
     }
     try:
@@ -104,7 +104,7 @@ def persist_agent_identity(
         logger.warning(
             "persist_agent_identity failed: tenant_key=%s agent_id=%s error=%s",
             tenant_key,
-            entry["agent_id"],
+            entry.get("agent_id"),
             exc,
         )
 
@@ -152,7 +152,7 @@ def _load_entries(path: Path) -> tuple[str, list[dict[str, str]]]:
             continue
         entry = {field: _clean_text(item.get(field)) for field in _ENTRY_FIELDS}
         entry["updated_at"] = _clean_text(item.get("updated_at"))
-        if any(not entry[field] for field in _REQUIRED_FIELDS):
+        if any(not entry.get(field) for field in _REQUIRED_FIELDS):
             continue
         entries.append(entry)
     return current_agent_id, entries

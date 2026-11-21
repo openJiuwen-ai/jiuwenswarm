@@ -116,10 +116,10 @@ def test_identity_headers_carry_agent_display_identity() -> None:
         },
     )
     headers = assemble_rest_request(envelope, base_url="http://10.0.0.8:8766").headers
-    assert headers["X-Agent-Name"] == "agent_" + _AGENT_ID
     assert headers["X-Agent-Identity-Id"] == _AGENT_ID
     assert headers["X-Runtime-Template-Id"] == "rt-1"
     assert headers["X-Agent-Template-Id"] == "tpl-1"
+    assert "X-Agent-Name" not in headers
 
 
 def test_identity_headers_absent_without_display_identity() -> None:
