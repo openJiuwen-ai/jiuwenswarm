@@ -13,6 +13,8 @@ The current implementation adds a `work_mode` dimension to isolate regular work 
 
 Expert and expert group chats keep model selections per session. Returning to a session retains its selection, and reloading the page restores it from session metadata. Local choices are also retained when switching sessions before sending a message. The chat selector and outgoing requests use the same model selection. If restoration fails, the page shows an error and temporarily disables sending to avoid using the default model unintentionally.
 
+TUI `/mode` can switch the current execution mode within one Session ID. `metadata.mode` identifies the current executor and work/code profile; `work_mode` remains the original project index. A mode switch does not move history or change `project_id`, `project_dir`, or `work_mode`. Only an explicit project rebind changes that ownership.
+
 ### Core Concepts
 
 | Concept | Description |
@@ -22,7 +24,7 @@ Expert and expert group chats keep model selections per session. Returning to a 
 | **Code project Git capabilities** | Real `code` projects expose Git status, init, branch, Diff, history, monitoring, and discard/redo APIs. Default projects and `work` projects do not expose Git operations |
 | **Pinned sessions** | Detached from project groups and fetched via `project.pinned_sessions`, sorted by `pin_order` ascending |
 | **Pinned projects** | Pinned projects appear first, sorted by `pin_order` ascending |
-| **Immutability** | Once `project_id`, `project_dir`, and `work_mode` are bound to a session, they cannot be changed; no cross-project/cross-mode migration API is provided |
+| **Project binding** | TUI `/mode` preserves the bound `project_id`, `project_dir`, and `work_mode`; project rebinding uses a separate entry point |
 
 ### Communication Convention
 
@@ -105,14 +107,14 @@ Returned by `project.get_sessions` / `project.pinned_sessions`.
 
 ### Mode Values
 
+TUI mode switches store these canonical values; older sessions can still contain legacy aliases.
+
 | Value | Description |
 |-------|-------------|
-| `agent.plan` | Agent planning mode |
-| `agent.fast` | Agent fast mode |
-| `code.plan` | Code planning mode |
-| `code.normal` | Code normal mode |
-| `code.team` | Code team mode |
-| `team` | Team mode |
+| `agent.work.normal` / `agent.work.plan` | Work Agent normal / planning mode |
+| `agent.code.normal` / `agent.code.plan` | Code Agent normal / planning mode |
+| `team.work.normal` / `team.work.plan` | Work Team normal / planning mode |
+| `team.code.normal` / `team.code.plan` | Code Team normal / planning mode |
 
 ---
 

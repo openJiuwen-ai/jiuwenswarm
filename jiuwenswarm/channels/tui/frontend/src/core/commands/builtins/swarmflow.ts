@@ -1,6 +1,7 @@
-import { addInfo, addError } from "../helpers.js";
+import { addInfo, addError, resolveCommandSession } from "../helpers.js";
 import { formatModeForDisplay, isTeamMode, type ClientMode } from "../../modes.js";
-import { CommandKind, type SlashCommand } from "../types.js";
+import { CommandKind, type CommandContext, type SlashCommand } from "../types.js";
+import { switchMode } from "./mode.js";
 
 export type SwarmflowToggleTarget = "on" | "off";
 
@@ -37,6 +38,11 @@ function parseSwarmflowBudget(payload: Record<string, unknown> | null): BudgetVa
 /** "unbounded" or "N,NNN tokens" — for from/to display in change messages. */
 function budgetLabel(budget: BudgetValue): string {
   return budget === null ? "unbounded" : `${budget.toLocaleString()} tokens`;
+}
+
+async function resolveActiveMode(ctx: CommandContext): Promise<{ sessionId: string; mode: ClientMode } | null> {
+  const sessionId = await resolveCommandSession(ctx, "SwarmFlow session unavailable");
+  return sessionId === null ? null : { sessionId, mode: ctx.getCurrentMode?.() ?? ctx.mode };
 }
 
 /** Pure toggle planner — mirrors design state matrix for tests and command action. */
@@ -149,19 +155,22 @@ export function createSwarmflowCommand(): SlashCommand {
 
       // Status query: /swarmflow (no subcommand).
       if (!sub) {
-        const modeLabel = formatModeForDisplay(ctx.mode ?? "unknown");
         const payload = await ctx
           .request<Record<string, unknown>>("config.get", {})
           .catch(() => null);
+        const active = await resolveActiveMode(ctx);
+        if (!active) return;
+        const modeLabel = formatModeForDisplay(active.mode);
         const enabled = parseSwarmflowEnabled(payload) === true;
         const budgetValue = parseSwarmflowBudget(payload);
         const budgetInfo = ` · budget: ${budgetLabel(budgetValue)}`;
         // Non-team + on → annotate that swarmflow isn't running here.
         const stateLabel = enabled
-          ? (isTeamMode(ctx.mode) ? "on" : "on (not running in non-team mode)")
+          ? (isTeamMode(active.mode) ? "on" : "on (not running in non-team mode)")
           : "off";
+        if ((ctx.getCurrentSessionId?.() ?? ctx.sessionId) !== active.sessionId) return;
         ctx.addItem(
-          addInfo(ctx.sessionId, `swarmflow: ${stateLabel} · mode: ${modeLabel}${budgetInfo}`, "i"),
+          addInfo(active.sessionId, `swarmflow: ${stateLabel} · mode: ${modeLabel}${budgetInfo}`, "i"),
         );
         return;
       }
@@ -181,12 +190,16 @@ export function createSwarmflowCommand(): SlashCommand {
       const payload = await ctx
         .request<Record<string, unknown>>("config.get", {})
         .catch(() => null);
+      const active = await resolveActiveMode(ctx);
+      if (!active) return;
+      const isCurrentSession = (): boolean =>
+        (ctx.getCurrentSessionId?.() ?? ctx.sessionId) === active.sessionId;
       const currentEnabled = parseSwarmflowEnabled(payload);
       const currentBudget = parseSwarmflowBudget(payload);
       const plan = planSwarmflowToggle({
         target,
         currentEnabled,
-        mode: ctx.mode ?? "unknown",
+        mode: active.mode,
       });
 
       // --- Determine the desired new budget value (for config write + message) ---
@@ -204,6 +217,17 @@ export function createSwarmflowCommand(): SlashCommand {
       const budgetChanged =
         newBudget !== undefined && newBudget !== currentBudget;
 
+      // --- Switch mode before changing global config ---
+      const previousMode = active.mode;
+      let switchedToTeam = false;
+      if (plan.switchToTeam && !isTeamMode(active.mode)) {
+        const nextMode: ClientMode = "team.work.normal";
+        if (!(await switchMode(ctx, nextMode, { announce: false }))) {
+          return;
+        }
+        switchedToTeam = true;
+      }
+
       // --- Write config ---
       // enable_swarmflow: write only when toggle changes (plan.writeConfig).
       // swarmflow_budget: write when toggle changes AND a budget op is present,
@@ -216,6 +240,7 @@ export function createSwarmflowCommand(): SlashCommand {
           : target === "on" && (budget !== null || clearBudget)); // pure budget change
 
       if (writeEnable || writeBudget) {
+        if (!isCurrentSession()) return;
         try {
           const values: Record<string, string | number> = {};
           if (writeEnable) {
@@ -226,20 +251,19 @@ export function createSwarmflowCommand(): SlashCommand {
           }
           await ctx.request("config.set", values);
         } catch (err) {
+          if (!isCurrentSession()) return;
           const message = err instanceof Error ? err.message : String(err);
-          ctx.addItem(addError(ctx.sessionId, `config.set failed: ${message}`));
+          if (switchedToTeam) {
+            const restored = await switchMode(ctx, previousMode, { announce: false });
+            if (!isCurrentSession()) return;
+            if (!restored) {
+              ctx.addItem(addError(active.sessionId,
+                `config.set failed: ${message}. Mode rollback was not confirmed; retry /mode ${previousMode}.`));
+              return;
+            }
+          }
+          ctx.addItem(addError(active.sessionId, `config.set failed: ${message}`));
           return;
-        }
-      }
-
-      // --- Switch mode (best-effort) ---
-      if (plan.switchToTeam && !isTeamMode(ctx.mode)) {
-        const nextMode: ClientMode = "team.work.normal";
-        ctx.setMode(nextMode);
-        try {
-          await ctx.request("mode.set", { mode: nextMode });
-        } catch {
-          // mode.set is best-effort (same as /mode command pattern).
         }
       }
 
@@ -267,7 +291,8 @@ export function createSwarmflowCommand(): SlashCommand {
           message = `${base} ${budgetPart} No changes.`;
         }
       }
-      ctx.addItem(addInfo(ctx.sessionId, message, "i"));
+      if (!isCurrentSession()) return;
+      ctx.addItem(addInfo(active.sessionId, message, "i"));
     },
   };
 }

@@ -232,6 +232,15 @@ export function createWorkspaceCommand(): SlashCommand {
             { label: "project scope", value: result.projectDir },
             ...result.trustedDirs.map((dir, i) => ({ label: `trusted[${i}]`, value: dir })),
           ];
+          if (ctx.isDraftSession) {
+            ctx.addItem(addInfo(
+              ctx.sessionId,
+              `Project scope switched: ${result.projectDir}`,
+              "c",
+              { view: "kv", title: "Set Trusted Dir", items: rebindItems },
+            ));
+            return;
+          }
           try {
             const rebind = await ctx.request<{
               session_id?: string;

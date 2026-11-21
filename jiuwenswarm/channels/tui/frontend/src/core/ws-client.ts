@@ -86,7 +86,7 @@ export class WsClient {
         ws.close();
       }
     }
-    this.rejectAllPending(new Error("disconnected"));
+    this.rejectAllPending(Object.assign(new Error("disconnected"), { code: "TRANSPORT_DISCONNECTED" }));
     this.setStatus("idle");
   }
 
@@ -118,7 +118,7 @@ export class WsClient {
       };
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`request timeout: ${method}`));
+        reject(Object.assign(new Error(`request timeout: ${method}`), { code: "REQUEST_TIMEOUT" }));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       this.send(frame);
@@ -200,13 +200,11 @@ export class WsClient {
         if (frame.ok) {
           setTimeout(() => pending.resolve(frame), 0);
         } else {
-          setTimeout(
-            () =>
-              pending.reject(
-                new Error(frame.error ?? `request failed: ${frame.code ?? "unknown"}`),
-              ),
-            0,
+          const error = Object.assign(
+            new Error(frame.error ?? `request failed: ${frame.code ?? "unknown"}`),
+            { code: frame.code },
           );
+          setTimeout(() => pending.reject(error), 0);
         }
         return;
       }
