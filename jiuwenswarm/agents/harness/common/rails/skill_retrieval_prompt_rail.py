@@ -12,7 +12,7 @@ from openjiuwen.harness.rails import SkillUseRail
 from openjiuwen.harness.rails.base import DeepAgentRail
 
 from openjiuwen.symphony.discovery import (
-    DiscoverySettings,
+    CAPABILITY_SEARCH_TOOL_NAME,
     SkillFS,
     SkillPromptBranch,
     SkillPromptEntry,
@@ -23,16 +23,14 @@ from openjiuwen.symphony.discovery import (
 
 from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
     SkillRetrievalToolkit,
-    build_discovery_settings,
+    build_model_discovery_settings,
     is_skill_retrieval_enabled,
 )
 
 _LEGACY_LIST_SKILL_TOOL_NAMES = frozenset({"list_skill", "list_skills"})
-_SKILL_INDEX_TOOL_NAME = "skill_index"
 _RUNTIME_SKILL_ATTACHMENT_SECTION = "skills.runtime_changes"
 _SYMPHONY_RUNTIME_TOOL_NAMES = frozenset(
     {
-        "skill_index",
         "symphony_compose_score",
         "symphony_read_score",
         "symphony_refresh_score",
@@ -63,27 +61,22 @@ class SkillRetrievalPromptRail(DeepAgentRail):
         toolkit: SkillRetrievalToolkit | None = None,
         session_scope: str = "default",
         incremental_notice_max_chars: int | None = None,
-        discovery_settings: DiscoverySettings | None = None,
         environment: SkillFS | None = None,
         config_base: dict[str, Any] | None = None,
     ) -> None:
         super().__init__()
-        settings = (
-            discovery_settings
-            or (toolkit.settings if toolkit is not None else None)
-            or build_discovery_settings(config_base)
-        )
+        settings = toolkit.settings if toolkit is not None else build_model_discovery_settings(config_base)
         notice_max_chars = (
             incremental_notice_max_chars
             if incremental_notice_max_chars is not None
-            else settings.incremental_notice_max_chars
+            else settings.output.incremental_notice_max_chars
         )
         if notice_max_chars <= 0:
             raise ValueError("incremental_notice_max_chars must be positive")
         self._session_scope = session_scope
         self._source_toolkit = toolkit
         self._incremental_notice_max_chars = notice_max_chars
-        self._discovery_settings = settings
+        self._candidate_budget_tokens = settings.prompt.candidate_budget_tokens
         self._prompt_skillfs: SkillFS | None = environment or (
             toolkit.environment if toolkit is not None else None
         )
@@ -106,6 +99,8 @@ class SkillRetrievalPromptRail(DeepAgentRail):
         )
         try:
             toolkit = self._toolkit()
+            if toolkit is not None:
+                toolkit.bind_ability_manager(lambda: getattr(agent, "ability_manager", None))
             selection_cards = (
                 toolkit.frozen_selection_cards
                 if toolkit is not None
@@ -121,7 +116,6 @@ class SkillRetrievalPromptRail(DeepAgentRail):
             initialize_incremental_skill_notice_state(
                 self._session_scope,
                 selection_cards,
-                discovery_tool_name=_SKILL_INDEX_TOOL_NAME,
             )
         except Exception:
             self._frozen_prompt_snapshot = self._empty_prompt_snapshot()
@@ -139,6 +133,8 @@ class SkillRetrievalPromptRail(DeepAgentRail):
         self.system_prompt_builder = None
         self.attachment_manager = None
         self._prompt_skillfs = None
+        if self._source_toolkit is not None:
+            self._source_toolkit.close()
         self._source_toolkit = None
         self._frozen_prompt_snapshot = None
         self._agent = None
@@ -149,7 +145,7 @@ class SkillRetrievalPromptRail(DeepAgentRail):
         if (
             self._session_enabled
             and callable(get_ability)
-            and get_ability(_SKILL_INDEX_TOOL_NAME) is not None
+            and get_ability(CAPABILITY_SEARCH_TOOL_NAME) is not None
         ):
             self._hide_legacy_list_skill()
 
@@ -171,7 +167,7 @@ class SkillRetrievalPromptRail(DeepAgentRail):
                     agent, "prompt_attachment_manager", None
                 )
 
-        if not self._session_enabled or not self._has_skill_index(ctx):
+        if not self._session_enabled or not self._has_discovery_tool(ctx):
             await self._clear_prompt_attachments(ctx)
             restored_legacy = self._disable_agentic_prompt(ctx)
             self._restore_legacy_list_skill_in_model_inputs(ctx, restored_legacy)
@@ -252,16 +248,11 @@ class SkillRetrievalPromptRail(DeepAgentRail):
         ).strip()
         if tool_name not in _SYMPHONY_RUNTIME_TOOL_NAMES:
             return
-        # The session-owned command toolkit refreshes the SkillFS and consumes
-        # the shared notice cursor as part of its result. Avoid a second scan.
-        if tool_name == _SKILL_INDEX_TOOL_NAME:
-            return
         try:
             reminder = consume_incremental_skill_reminder(
                 self._session_scope,
                 self._scan_selection_cards(),
                 max_chars=self._incremental_notice_max_chars,
-                discovery_tool_name=_SKILL_INDEX_TOOL_NAME,
             )
         except Exception:
             logger.warning(
@@ -423,7 +414,7 @@ class SkillRetrievalPromptRail(DeepAgentRail):
             total_count=0,
             entries=(),
             estimated_candidate_tokens=0,
-            candidate_budget_tokens=(self._discovery_settings.candidate_budget_tokens),
+            candidate_budget_tokens=self._candidate_budget_tokens,
             index_state="missing",
         )
 
@@ -480,13 +471,16 @@ class SkillRetrievalPromptRail(DeepAgentRail):
                     (
                         "No available Skills."
                         if complete
-                        else "No examples shown; use skill_index to find installed Skills."
+                        else (
+                            "No examples shown. Find installed Skills with "
+                            f'{CAPABILITY_SEARCH_TOOL_NAME} (type=["skill"]).'
+                        )
                     )
                     if english
                     else (
                         "当前没有可用 Skill。"
                         if complete
-                        else "未展示示例；可使用 skill_index 检索已安装 Skill。"
+                        else f'未展示示例，可使用 {CAPABILITY_SEARCH_TOOL_NAME} 的 type=["skill"] 检索已安装 Skill。'
                     ),
                 ]
             )
@@ -518,14 +512,12 @@ class SkillRetrievalPromptRail(DeepAgentRail):
         return str(getattr(tool, "name", "") or "")
 
     @classmethod
-    def _has_skill_index(cls, ctx: AgentCallbackContext) -> bool:
+    def _has_discovery_tool(cls, ctx: AgentCallbackContext) -> bool:
         inputs = getattr(ctx, "inputs", None)
         tools = getattr(inputs, "tools", None)
         if not tools:
             return False
-        return any(
-            cls._model_tool_name(tool) == _SKILL_INDEX_TOOL_NAME for tool in tools
-        )
+        return any(cls._model_tool_name(tool) == CAPABILITY_SEARCH_TOOL_NAME for tool in tools)
 
 
 def _render_prompt_entries(

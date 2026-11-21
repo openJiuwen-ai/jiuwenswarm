@@ -171,6 +171,13 @@ async def cli_host(answer_host, monkeypatch):
         client = InProcessRuntimeClient(runtime)
         run = _CliRun(h, runtime, client)
         runs.append(run)
+        manager_cleanup = manager.cleanup
+
+        async def cleanup_manager():
+            await h.adapter.cleanup()
+            await manager_cleanup()
+
+        monkeypatch.setattr(manager, "cleanup", cleanup_manager)
         original_wait = OutputHandoff.wait
 
         async def wait_for_owner(handoff):

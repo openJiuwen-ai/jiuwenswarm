@@ -31,7 +31,7 @@ export default function DesignGenerationModelList({
   testIdPrefix,
 }: DesignGenerationModelListProps) {
   const { t } = useTranslation();
-  const { tooltip, handlers } = useAdaptiveTooltip({ placement: 'top', maxWidth: 320 });
+  const { tooltip, handlers } = useAdaptiveTooltip({ placement: 'right' });
   const key = 'designer.modelConfiguration';
   const options = multimodalModelOptions([...models], slot);
   if (failed) {
@@ -84,7 +84,6 @@ export default function DesignGenerationModelList({
               aria-checked={selected}
               aria-disabled={unsupported || disabled || undefined}
               disabled={disabled && !unsupported}
-              title={unsupported ? reason : (model?.api_base.trim() || undefined)}
               onClick={() => { if (!unsupported && !disabled) onSelect(option.value); }}
               data-testid={`${testIdPrefix}-option`}
               data-variant={option.value}
@@ -97,6 +96,10 @@ export default function DesignGenerationModelList({
                 </span>
                 <span
                   className="chat-mode-select__label"
+                  data-tooltip={
+                    unsupported || !model ? undefined : [model.provider, protocol, model.model_name].join(' · ')
+                  }
+                  {...(!unsupported ? handlers : {})}
                   data-testid={selected ? `${testIdPrefix}-name` : undefined}
                 >
                   {option.label}

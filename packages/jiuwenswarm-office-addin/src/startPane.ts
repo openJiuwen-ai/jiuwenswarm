@@ -7,6 +7,7 @@ import { ClientToolDispatcher, type ClientToolRuntime } from './clientToolDispat
 import { documentCopy } from './copy';
 import { documentDisplayName, documentId, type DocumentId } from './documentIdentity';
 import { GatewayClient } from './gatewayClient';
+import type { HostLine } from './hostLine';
 import { HostWriteQueue } from './hostWriteQueue';
 import { followOfficeTheme } from './officeTheme';
 import { TaskPaneController } from './paneController';
@@ -32,6 +33,10 @@ export interface HostTools {
   runtime: ClientToolRuntime;
   snapshots?: SlideSnapshots;
   cards?: ToolCards;
+  /** What a call waits for the user to do in the document, while it waits. */
+  waiting?: HostLine;
+  /** What the user has selected in the document. */
+  selection?: HostLine;
   /** The state a message to conversation ``sessionId`` carries. */
   clientState?: (sessionId: string) => Promise<ClientState>;
 }
@@ -56,7 +61,7 @@ export function startPane(app: OfficeApp, tools: (context: HostContext) => HostT
 
 /** The pane of a document in a host that is ready, whichever platform the host is of. */
 export async function openPane(app: OfficeApp, { documentId: id, displayName, host, writes, runtime, snapshots,
-  clientState, cards, showPane }: HostTools & {
+  clientState, cards, waiting, selection, showPane }: HostTools & {
   documentId: DocumentId;
   displayName: () => Promise<string>;
   host: OfficeHost;
@@ -76,7 +81,8 @@ export async function openPane(app: OfficeApp, { documentId: id, displayName, ho
   });
   const controller = new TaskPaneController(
     { attachment, sessions, documentId: id, connection: gateway, contract: app.contract, snapshots });
-  mountPane(document.getElementById('app')!, controller, documentCopy[app.surface], { cards });
+  mountPane(document.getElementById('app')!, controller, documentCopy[app.surface],
+    { cards, waiting, selection });
   let prompt = controller.state().conversation.prompt;
   controller.subscribe(({ conversation }) => {
     if (conversation.prompt && conversation.prompt !== prompt) showPane();

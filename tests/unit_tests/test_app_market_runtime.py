@@ -227,12 +227,17 @@ def test_legacy_app_description_falls_back_to_html_title(tmp_path):
 def test_market_assigns_non_conflicting_ports_and_injects_gateway_config(tmp_path):
     import socket
     async def run():
-        page=tmp_path/"app.html";page.write_text("<html>app</html>")
+        pages = []
+        for name in ("first.html", "second.html"):
+            page = tmp_path / name
+            page.write_text("<html>app</html>")
+            pages.append(page)
         manager=AppMarketManager(str(tmp_path/"market"))
         manager._service.configure_gateway(gateway_port=25001,web_port=25000, gateway_host="127.0.0.1")
-        app=await manager.publish_app(str(page),"source")
+        first = await manager.publish_app(str(pages[0]), "source")
+        second = await manager.publish_app(str(pages[1]), "source")
         blocker=socket.socket();blocker.bind(("127.0.0.1",0));blocker.listen()
-        manifest=manager._service.get_app(app["app_id"]);manifest.default_port=blocker.getsockname()[1]
+        manifest=manager._service.get_app(first["app_id"]);manifest.default_port=blocker.getsockname()[1]
         manager._service._storage.save_manifest(manifest.app_id,manifest)
         captured=[]
         original=manager._service._supervisor.start
@@ -241,9 +246,15 @@ def test_market_assigns_non_conflicting_ports_and_injects_gateway_config(tmp_pat
             return await original(**kwargs)
         manager._service._supervisor.start=start
         try:
-            one=await manager.start_app(app["app_id"])
-            two=await manager.start_app(app["app_id"])
+            one=await manager.start_app(first["app_id"])
+            two=await manager.start_app(second["app_id"])
+            repeated=await manager.start_app(first["app_id"])
             assert one and two and one["port"]!=two["port"]!=manifest.default_port
+            # Starting the same app twice is idempotent: the second call must
+            # reuse the running instance instead of creating another server.
+            assert repeated["instance_id"] == one["instance_id"]
+            assert repeated["port"] == one["port"]
+            assert len(captured) == 2
             for env,result in zip(captured,[one,two]):
                 assert env["WORKSWARM_APP_PORT"]==str(result["port"])
                 assert env["WORKSWARM_APP_HOST"]=="127.0.0.1"
@@ -256,6 +267,24 @@ def test_market_assigns_non_conflicting_ports_and_injects_gateway_config(tmp_pat
                 assert manager._service._instance_env(instance)["WORKSWARM_SOURCE_SESSION"] == "source"
         finally:
             blocker.close();await manager.shutdown()
+    asyncio.run(run())
+
+
+def test_personal_repeated_start_reuses_one_instance(tmp_path):
+    """Empty owner is the personal-edition identity; starts stay idempotent."""
+    async def run():
+        page = tmp_path / "personal.html"
+        page.write_text("<html>personal</html>")
+        manager = AppMarketManager(str(tmp_path / "market"))
+        app = await manager.publish_app(str(page), "source")
+        try:
+            one = await manager.start_app(app["app_id"])
+            two = await manager.start_app(app["app_id"])
+            assert one and two
+            assert two["instance_id"] == one["instance_id"]
+            assert len(manager._service.list_instances(app["app_id"])) == 1
+        finally:
+            await manager.shutdown()
     asyncio.run(run())
 
 

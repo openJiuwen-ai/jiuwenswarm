@@ -95,7 +95,7 @@ def test_publish_version_defaults_and_republish_preserves(tmp_path):
     assert manager.list_apps()["apps"][0]["version"] == "1.4.0"
 
 
-def test_publish_reads_meta_version_and_explicit_value_wins(tmp_path):
+def test_publish_reads_meta_version_and_rejects_conflicting_override(tmp_path):
     page = tmp_path / "app.html"
     page.write_text('<html><head><meta name="application-version" content="2.1.0"></head></html>')
     manager = AppMarketManager(str(tmp_path / "market"))
@@ -105,9 +105,10 @@ def test_publish_reads_meta_version_and_explicit_value_wins(tmp_path):
     page.write_text('<html><head><meta name="application-version" content="2.2.0"></head></html>')
     assert asyncio.run(manager.publish_app(str(page), "session"))["version"] == "2.2.0"
 
-    assert asyncio.run(
-        manager.publish_app(str(page), "session", version="3.0.0")
-    )["version"] == "3.0.0"
+    with pytest.raises(ValueError, match="version must match"):
+        asyncio.run(manager.publish_app(str(page), "session", version="3.0.0"))
+    assert manager.list_apps()["apps"][0]["version"] == "2.2.0"
+    assert asyncio.run(manager.publish_app(str(page), "session", version="2.2.0"))["version"] == "2.2.0"
 
 
 def test_publish_rejects_invalid_version_without_replacing_app(tmp_path):

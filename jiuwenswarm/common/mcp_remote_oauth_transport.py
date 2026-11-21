@@ -1,6 +1,7 @@
 """Registered MCP transport: dynamic OAuth with no redirect credential leakage."""
 
 import asyncio
+from contextlib import AsyncExitStack
 from typing import ClassVar
 
 import httpx
@@ -29,7 +30,7 @@ class OAuthStreamableHttpClient(StreamableHttpClient):
 
     __client_name__: ClassVar[list[str]] = ["workswarm-oauth"]
 
-    async def connect(self, *, timeout: float = NO_TIMEOUT) -> bool:
+    async def _do_connect(self, *, timeout: float) -> bool:
         async def guard(request):
             if str(request.url) != QCC_RESOURCE:
                 raise OAuthError("OAuth resource redirect is not permitted.")
@@ -39,6 +40,8 @@ class OAuthStreamableHttpClient(StreamableHttpClient):
                 "Invalid OAuth resource configuration."
             )
             return False
+        await self._close_stale_stack()
+        self._exit_stack = AsyncExitStack()
         task = asyncio.current_task()
         cancellations = task.cancelling() if task else 0
         try:
@@ -60,6 +63,8 @@ class OAuthStreamableHttpClient(StreamableHttpClient):
             )
             await self._session.initialize()
             self._is_disconnected = False
+            self._lazy_reconnect = True
+            self._generation += 1
             return True
         except BaseException as exc:
             # SDK task groups may wrap HTTP failures. Never retain bodies or
@@ -67,7 +72,7 @@ class OAuthStreamableHttpClient(StreamableHttpClient):
             self._last_connect_error = OAuthError(
                 "OAuth MCP connection failed. Check authorization and retry."
             )
-            await self.disconnect()
+            await self._do_disconnect(timeout=3.0)
             # Process-control exceptions must propagate after cleanup.
             if not isinstance(exc, (Exception, asyncio.CancelledError)):
                 raise

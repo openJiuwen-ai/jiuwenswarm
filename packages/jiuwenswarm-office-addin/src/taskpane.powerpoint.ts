@@ -2,8 +2,9 @@
 import { joinRuntimes } from './clientToolDispatcher';
 import { POWERPOINT } from './powerPointApp';
 import { powerPointPackageRuntime, workerSandbox } from './powerPointPackageTools';
-import { powerPointReadRuntime, type PowerPointRun } from './powerPointReadTools';
+import { powerPointReadRuntime, type PowerPointRun, selectedSlides } from './powerPointReadTools';
 import { powerPointSlideDeck, powerPointWriteRuntime } from './powerPointWriteTools';
+import { officeSelectionMoves, selectionLine } from './selectionLine';
 import { SlideSnapshots } from './slideSnapshots';
 import { startPane } from './startPane';
 import { rasterizeSvg } from './svgRaster';
@@ -18,5 +19,6 @@ startPane(POWERPOINT, ({ office, host, writes, displayName }) => {
       sandbox: workerSandbox(() => new Worker(new URL('./ooxmlSandbox.worker.ts', import.meta.url),
         { type: 'module' })),
       rasterize: rasterizeSvg, forgetUndo: () => snapshots.forget() }));
-  return { runtime, snapshots };
+  return { runtime, snapshots,
+    selection: selectionLine(officeSelectionMoves(office.document), () => selectedSlides(run)) };
 });

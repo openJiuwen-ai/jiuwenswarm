@@ -90,3 +90,36 @@ async def test_wait_auth_routes_each_oauth_flow_independently(monkeypatch, kind)
         server._await_cli_auth.assert_awaited_once_with(name, 2)
     else:
         server._await_cli_auth.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_remote_oauth_probe_failure_preserves_cancel_and_rollback(monkeypatch, cancelled):
+    from jiuwenswarm.common import mcp_config
+
+    checks = iter([False, cancelled])
+    monkeypatch.setattr(registry, "connect_mcp", lambda name: {"name": name})
+    monkeypatch.setattr(registry, "was_connect_cancelled", lambda name: next(checks))
+    cancel = Mock()
+    rollback = Mock()
+    discard = AsyncMock()
+    monkeypatch.setattr(registry, "cancel_remote_oauth", cancel)
+    monkeypatch.setattr(registry, "rollback_failed_connect", rollback)
+    monkeypatch.setattr(mcp_config, "discard_probed_mcp", discard)
+    server = SimpleNamespace(
+        _agent_manager=SimpleNamespace(probe_mcp_live_connection=AsyncMock(return_value=(False, "unreachable")))
+    )
+    result = await AgentWebSocketServer._run_mcp_connect_flow(
+        server, "qcc-company", oauth_session="current-session"
+    )
+    if cancelled:
+        assert result == {"type": "cancelled", "name": "qcc-company"}
+        discard.assert_awaited_once_with("qcc-company")
+        cancel.assert_not_called()
+        rollback.assert_not_called()
+    else:
+        assert result["type"] == "connect_failed"
+        assert result["code"] == "MCP_UNREACHABLE"
+        cancel.assert_called_once_with("qcc-company", "current-session")
+        rollback.assert_called_once_with("qcc-company")
+        discard.assert_not_awaited()

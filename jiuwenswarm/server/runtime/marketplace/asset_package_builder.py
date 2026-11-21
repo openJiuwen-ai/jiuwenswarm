@@ -15,7 +15,7 @@ from urllib.parse import urlsplit, parse_qsl
 
 import yaml
 
-from .asset_publish_models import PublishIdentity
+from .asset_publish_models import APP_UPLOAD_BODY_BYTES, PublishIdentity
 
 
 class PackageBuildError(ValueError):
@@ -62,6 +62,27 @@ _EXCLUDED_FILES = {
     "tokens.json",
     ".DS_Store",
 }
+_APP_LIMITS = PackageLimits(zip_bytes=APP_UPLOAD_BODY_BYTES, max_files=1000)
+_APP_PRIVATE_ROOTS = {"data", ".git", ".jiuwenswarm", ".ssh", ".workswarm-app-release"}
+_APP_GENERATED_SCRIPTS = {"scripts/start.ps1", "scripts/start.sh", "scripts/stop.ps1", "scripts/stop.sh"}
+
+
+def _app_private_path(path: Path) -> bool:
+    return (
+        path.parts[0].casefold() in _APP_PRIVATE_ROOTS
+        or path.as_posix().casefold() in _APP_GENERATED_SCRIPTS
+    )
+
+
+_MOUNT_POINT_TAG = getattr(stat, "IO_REPARSE_TAG_MOUNT_POINT", None)  # Windows-only constant
+
+
+def _is_link(path: Path) -> bool:
+    info = path.lstat()
+    if stat.S_ISLNK(info.st_mode):
+        return True
+    # Directory-junction detection; st_reparse_tag only exists on Windows.
+    return _MOUNT_POINT_TAG is not None and getattr(info, "st_reparse_tag", None) == _MOUNT_POINT_TAG
 
 
 def collect_publish_files(
@@ -69,9 +90,10 @@ def collect_publish_files(
     *,
     limits: PackageLimits = PackageLimits(),
     exclude_paths: tuple[Path, ...] = (),
+    app_payload: bool = False,
 ):
     root = Path(root)
-    if root.is_symlink() or not root.is_dir():
+    if not root.is_dir() or _is_link(root):
         raise PackageBuildError("UNSAFE_PATH")
     excluded_absolute = {Path(path).absolute() for path in exclude_paths}
     files, excluded = [], []
@@ -81,24 +103,31 @@ def collect_publish_files(
         names.sort()
         for name in dirs[:]:
             path = Path(directory) / name
-            rel = path.relative_to(root).as_posix()
-            if name in _EXCLUDED_DIRS or path.absolute() in excluded_absolute:
+            rel = path.relative_to(root)
+            dirname = name.casefold() if app_payload else name
+            builtin_excluded = dirname in _EXCLUDED_DIRS and not (app_payload and dirname == "out")
+            private_excluded = app_payload and _app_private_path(rel)
+            if builtin_excluded or path.absolute() in excluded_absolute or private_excluded:
                 dirs.remove(name)
-                excluded.append(rel + "/")
-            elif path.is_symlink():
+                excluded.append(rel.as_posix() + "/")
+            elif _is_link(path):
                 raise PackageBuildError("UNSAFE_PATH")
         for name in names:
             path = Path(directory) / name
             rel = path.relative_to(root)
+            if app_payload:
+                name = name.casefold()
             excluded_environment = name.startswith(".env") and name not in {
                 ".env.example", ".env.template"
             }
             excluded_name = name in _EXCLUDED_FILES or name.endswith((".key", ".p12", ".pfx"))
-            if (
+            private_excluded = app_payload and _app_private_path(rel)
+            excluded_by_name = (
                 path.absolute() in excluded_absolute
                 or excluded_name
                 or excluded_environment
-            ):
+            )
+            if excluded_by_name or private_excluded:
                 excluded.append(rel.as_posix())
                 continue
             info = path.lstat()
@@ -151,7 +180,7 @@ def _open_source_file(root: Path, relative: Path) -> int:
     candidate = root
     for component in relative.parts:
         candidate /= component
-        if candidate.is_symlink():
+        if _is_link(candidate):
             raise PackageBuildError("UNSAFE_PATH")
     return os.open(candidate, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0), 0o600)
 
@@ -259,13 +288,16 @@ def build_asset_package(
     metadata: dict,
     output_dir: Path,
     *,
-    limits: PackageLimits = PackageLimits(),
+    limits: PackageLimits | None = None,
     exclude_paths: tuple[Path, ...] = (),
 ) -> PreparedPackage:
     from . import asset_publish_adapters
 
+    app_payload = identity.kind == "app"
+    if limits is None:
+        limits = _APP_LIMITS if app_payload else PackageLimits()
     source, output_dir = Path(source), Path(output_dir)
-    if source.is_symlink():
+    if not source.is_dir() or _is_link(source):
         raise PackageBuildError("UNSAFE_PATH")
     # Resolve stable OS ancestors (e.g. macOS /var -> /private/var) once.
     # The subsequent descriptor walk rejects any new symlink at that canonical path.
@@ -282,7 +314,7 @@ def build_asset_package(
     ):
         raise PackageBuildError("UNSAFE_PATH")
     files, excluded = collect_publish_files(
-        source, limits=limits, exclude_paths=exclude_paths
+        source, limits=limits, exclude_paths=exclude_paths, app_payload=app_payload
     )
     output_dir.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix="publish-", dir=output_dir))
@@ -291,8 +323,9 @@ def build_asset_package(
     try:
         source_digest = _copy_digest(source, files, limits, snapshot)
         for template in snapshot.rglob("*"):
+            filename = template.name.casefold() if app_payload else template.name
             if (
-                template.name in {".env.example", ".env.template"}
+                filename in {".env.example", ".env.template"}
                 and template.is_file()
             ):
                 _validate_environment_template(template)
@@ -300,15 +333,16 @@ def build_asset_package(
             snapshot, identity, metadata
         )
         current_files, _ = collect_publish_files(
-            source, limits=limits, exclude_paths=exclude_paths
+            source, limits=limits, exclude_paths=exclude_paths, app_payload=app_payload
         )
         if source_digest != _copy_digest(source, current_files, limits):
             raise PackageBuildError("SOURCE_CHANGED")
-        normalized, _ = collect_publish_files(snapshot, limits=limits)
+        normalized, _ = collect_publish_files(snapshot, limits=limits, app_payload=app_payload)
         entries = {}
+        wrapped_payload = identity.kind in {"skill", "skillpack", "app"}
         for path in normalized:
             rel = path.relative_to(snapshot).as_posix()
-            entries[f"{name}/{name}/{rel}" if identity.kind in {"skill", "skillpack"} else rel] = path
+            entries[f"{name}/{name}/{rel}" if wrapped_payload else rel] = path
         wrapper = details.get("wrapper")
         if wrapper:
             entries[f"{name}/plugin.yaml"] = yaml.safe_dump(
@@ -322,16 +356,16 @@ def build_asset_package(
             raise PackageBuildError("LIMIT_EXCEEDED")
         artifact = stage / "artifact.zip"
         expanded = 0
-        with zipfile.ZipFile(
-            artifact, "w", compression=zipfile.ZIP_DEFLATED
-        ) as archive:
+        # Stored app entries stay within Hub's compression ratio limit even for generated bundles.
+        compression = zipfile.ZIP_STORED if app_payload else zipfile.ZIP_DEFLATED
+        with zipfile.ZipFile(artifact, "w", compression=compression) as archive:
             for arcname, value in sorted(entries.items()):
                 size = len(value) if isinstance(value, bytes) else value.stat().st_size
                 expanded += size
                 if size > limits.file_bytes or expanded > limits.total_bytes:
                     raise PackageBuildError("LIMIT_EXCEEDED")
                 info = zipfile.ZipInfo(arcname, date_time=(1980, 1, 1, 0, 0, 0))
-                info.compress_type = zipfile.ZIP_DEFLATED
+                info.compress_type = compression
                 mode = (
                     0o755
                     if isinstance(value, Path) and value.stat().st_mode & 0o111

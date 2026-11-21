@@ -9,6 +9,7 @@ import type { OfficeHost } from './appContract';
 import { cellName, cellsOf, parseBlock } from './excelAddress';
 import type { ExcelRun } from './excelTools';
 import { type HostWriteQueue, type Look, type Looks, UserChanges } from './hostWriteQueue';
+import type { Selection } from './selectionLine';
 import type { ClientState } from './sessionFacade';
 import { quoted } from './stateText';
 
@@ -79,6 +80,21 @@ function cellPlace(sheetId: string, row: number, column: number): string {
 /** A cell as the ledger compares it: its formula, else its value; null when it is empty. */
 function cellLook(formula: unknown): Look {
   return formula === '' || formula === null || formula === undefined ? null : String(formula);
+}
+
+/** The selected chart, or the selected ranges without their sheet, for the pane's selection line. */
+export function selectedCells(run: ExcelRun): Promise<Selection> {
+  return run(async context => {
+    const chart = context.workbook.getActiveChartOrNullObject();
+    chart.load('name');
+    await context.sync();
+    if (!chart.isNullObject) return { kind: 'chart', name: chart.name };
+    // Asked for only when no chart is selected: with a chart selected, Excel fails the read.
+    const selection = context.workbook.getSelectedRanges();
+    selection.load('address');
+    await context.sync();
+    return { kind: 'cells', ranges: selectedRanges(selection.address).map(range => sheetAndCells(range).cells) };
+  });
 }
 
 export class ExcelState {
@@ -216,8 +232,6 @@ export class ExcelState {
       sheet.load('id,name');
       const chart = context.workbook.getActiveChartOrNullObject();
       chart.load('id,name');
-      const selection = context.workbook.getSelectedRanges();
-      selection.load('address');
       await context.sync();
       const name = label(sheet.name, MAX_NAME_CHARS);
       const lines = [`Current active sheet: "${name.shown}" (sheet id ${sheet.id}${
@@ -227,9 +241,15 @@ export class ExcelState {
         await context.sync();
         lines.push(`Selected chart: "${label(chart.title.text || chart.name, MAX_NAME_CHARS).shown}" (id: "${
           label(chart.id, MAX_NAME_CHARS).shown}")`);
-      } else if (selection.address) {
-        lines.push(`Selected ranges: ${selectedRanges(selection.address)
-          .map(range => label(range, MAX_RANGE_CHARS).shown).join(' | ')}`);
+      } else {
+        // Asked for only when no chart is selected: with a chart selected, Excel fails the whole read.
+        const selection = context.workbook.getSelectedRanges();
+        selection.load('address');
+        await context.sync();
+        if (selection.address) {
+          lines.push(`Selected ranges: ${selectedRanges(selection.address)
+            .map(range => label(range, MAX_RANGE_CHARS).shown).join(' | ')}`);
+        }
       }
       return `<user_context>\n${lines.join('\n')}\n</user_context>`;
     });

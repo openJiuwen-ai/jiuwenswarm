@@ -81,7 +81,7 @@ describe('the workbook state a message carries', () => {
 
   it.each([
     ['a chart instead of the ranges', { chart: { id: 'c1', name: 'Chart 1', title: 'Sales by region' } },
-      'Selected chart: "Sales by region" (id: "c1")'],
+      'Current active sheet: "Sales" (sheet id {sheet-1})\nSelected chart: "Sales by region" (id: "c1")'],
     ['a sheet name with characters a state line cannot carry', { sheetName: 'Q1 <draft>\n"final"' },
       'Current active sheet: "Q1 draft final" (sheet id {sheet-1}; name shown with characters removed)'],
   ])('shows %s', async (_case, { chart, sheetName }: { chart?: FakeWorkbook['chart']; sheetName?: string }, line) => {

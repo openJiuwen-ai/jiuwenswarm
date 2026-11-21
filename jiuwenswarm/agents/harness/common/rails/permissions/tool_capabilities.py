@@ -66,6 +66,11 @@ _PATH_TOOLS = {
     "lsp",
     "read_file",
     "read_pdf",
+    "read_docx",
+    "read_spreadsheet",
+    "read_pptx",
+    "inspect_archive",
+    "extract_archive",
     "write_file",
     "edit_file",
     "read_text_file",
@@ -108,7 +113,7 @@ _INTERNAL_READONLY_TOOLS = {
     "cron_list_jobs", "cron_get_job", "cron_preview_job",
     "heartbeat_list_jobs", "heartbeat_get_job", "heartbeat_preview_job",
     "read_terminal_output", "wait_for_terminal_exit", "convert_timestamp_to_utc8_time",
-    "tool_search", "skill_index", "list_skill", "get_current_goal", "recall_compressed_context",
+    "tool_search", "capability_search", "list_skill", "get_current_goal", "recall_compressed_context",
 }
 _ASK_USER_TOOLS = {"ask_user"}
 _SKILL_READ_TOOLS = {"skill_tool"}
@@ -599,6 +604,7 @@ def _redaction_key(resource_class: str) -> str:
 def _is_path_write_tool(tool_name: str) -> bool:
     return tool_name in {
         "apply_patch",
+        "extract_archive",
         "write_file",
         "edit_file",
         "write_text_file",

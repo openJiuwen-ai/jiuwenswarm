@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 from collections.abc import Mapping, MutableMapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from openjiuwen.core.foundation.llm import ToolMessage
 from openjiuwen.core.runner.callback import AbortError
@@ -37,6 +37,9 @@ from jiuwenswarm.agents.harness.common.rails.permissions.tool_decision_facts imp
 from jiuwenswarm.agents.harness.common.rails.permissions.audit import (
     emit_permission_audit,
 )
+from jiuwenswarm.agents.harness.common.rails.permissions.persistent_audit import (
+    LocalAuditDetails,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_decision import ASK_LEVEL
 from jiuwenswarm.agents.harness.common.rails.permissions.openjiuwen_contract import (
     build_manual_approval_required_response,
@@ -54,6 +57,9 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_r
     tool_invocation_key_from_context,
 )
 
+if TYPE_CHECKING:
+    from jiuwenswarm.agents.harness.common.rails.permissions.auto_reviewer import ReviewerRecommendation
+
 
 class AutoPermissionRuntimeBridgeMixin:
     """Phase 8c runtime bridge behavior."""
@@ -64,6 +70,14 @@ class AutoPermissionRuntimeBridgeMixin:
             persistent_writer=self.persistent_audit_writer,
             **kwargs,
         )
+
+    def _local_audit_details(
+        self, context: Any | None, recommendation: ReviewerRecommendation | None = None,
+    ) -> LocalAuditDetails | None:
+        if self.persistent_audit_writer is None:
+            return None
+        key = tool_invocation_key_from_context(context)
+        return LocalAuditDetails(key.invocation_id, recommendation) if key is not None else None
 
     def _emit_permission_result_observation(
         self,
@@ -79,6 +93,7 @@ class AutoPermissionRuntimeBridgeMixin:
         outcome = _permission_terminal_outcome(result)
         source = _permission_terminal_decision_source(decision_source)
         try:
+            local_details = self._local_audit_details(context)
             if outcome is None:
                 self._emit_audit(
                     facts,
@@ -91,6 +106,7 @@ class AutoPermissionRuntimeBridgeMixin:
                         "authorization_stage": "manual_approval",
                         "stage_outcome": "manual_wait",
                     },
+                    local_details=local_details,
                 )
                 return
             extra = {
@@ -107,6 +123,7 @@ class AutoPermissionRuntimeBridgeMixin:
                 reason="permission_terminal",
                 degraded=False,
                 extra=extra,
+                local_details=local_details,
             )
         except Exception:  # noqa: BLE001 - observation must not affect authorization
             logger.exception(

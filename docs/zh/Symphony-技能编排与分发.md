@@ -51,17 +51,15 @@ Symphony（技能交响乐）是 JiuwenSwarm 面向海量已安装技能提供�
 ```text
 安装技能
   ↓
-构建本地技能树索引
+需要时在后台构建本地技能树索引
   ↓
 构建或读取技能图谱
   ↓
 用户发起任务
   ↓
-智能体根据任务选择技能树分支
+智能体读取会话技能清单
   ↓
-skill_branch_explore 展开相关分支
-  ↓
-必要时 skill_branch_peek 查看分支摘要
+通过 capability_search 的 type=["skill"] 列出分类或搜索技能
   ↓
 发现候选技能
   ↓
@@ -78,15 +76,15 @@ skill_branch_explore 展开相关分支
 
 ### 运行时工具
 
-启用技能检索后，智能体会获得技能目录查阅工具；启用技能交响乐后，智能体会获得技能编排工具。通常不需要用户手动调用这些工具，系统会根据任务自动选择。
+Discovery 提供 `capability_search`。技能检索开关控制分类树的构建与使用。启用技能交响乐后，智能体也能使用技能编排工具。系统根据任务选择工具。
 
-#### 技能检索工具
+#### 能力检索工具
 
 | 工具 | 作用 | 使用时机 |
 |------|------|----------|
-| `skill_branch_explore` | 展开技能树分支，披露下一级分支或候选技能 | 主要检索工具，优先用于查看相关分支 |
-| `skill_branch_peek` | 查看分支的轻量摘要和覆盖信息，不展开完整技能树 | 不确定某个分支是否值得展开时使用 |
-| `skill_index_build` | 构建或刷新本地已安装技能树索引 | 仅当检索工具明确提示索引缺失或过期时调用 |
+| `capability_search` | 省略 `type` 会同时查询 Skill、专家和 MCP 服务。传 `"type": ["expert", "mcp"]` 可只查后两类。所选类型共享最多八条查询、分类范围、整页 `top_k` 和一个续页游标，也可用 `operation=list` 浏览。连接器归入 MCP，按服务汇总当前可用的工具和随包 Skill。 | 按任务找能力或所属服务。如果只需要已安装专家，例如安排独立审查，可传 `"type": ["expert"]`。 |
+
+在自动权限模式下，显式指定 `"type": ["skill"]` 的检索可以走只读快速通道。省略 `type` 或选择专家、MCP 时，检索会调用宿主提供的目录，需要人工确认。
 
 当技能检索找到相关技能后，智能体会根据技能名称和描述缩小候选范围；如果后续需要编排，这些候选技能会作为生成技能链的参考。
 
@@ -263,217 +261,100 @@ Symphony 只会使用已安装技能。请先在左侧导航栏 **技能** 页�
 
 ## 配置说明
 
-当前 Web 界面中，**启用技能编排** 开关位于技能图谱页，用于控制技能图谱与编排工具；配置页中的 **启用技能检索** 开关单独控制技能树检索工具。技能索引页提供索引构建、重新构建、取消构建、查看构建状态和查看索引树等操作；技能图谱页会自动读取当前图谱，并提供增量构建、取消构建、全量构建和调整视图等操作。
+用户配置文件为 `~/.jiuwenswarm/config/config.yaml`。`symphony` 节点直接校验为 Core `SymphonyConfig`；Swarm 只解析宿主目录、环境变量、产品缺省值和会话模型上下文。显式配置优先，未知字段按完整路径报错。
 
-构建、检索和编排的高级参数需要在用户运行时配置文件进行配置：
+### 开关、模型和会话
 
-```text
-~/.jiuwenswarm/config/config.yaml
-```
+- `retrieval.enabled` 控制分类树检索。开启「发现技能包」后，Swarm 在运行时启用所需的编排能力，接收新观测并沉淀技能包。Swarm 默认关闭这些开关，`null` 继承缺省值。
+- 面板的「发现技能包」保存 `orchestration.experience.enabled`。规划是否采用已有动态观测由 `orchestration.plan.dynamic_graph_enabled` 独立配置。
+- 分类树和关系图使用宿主默认模型构建；在线编排使用当前会话模型。没有独立检索 `llm` 配置。指纹 `max_output_tokens: null` 沿用宿主模型输出预算。
+- Discovery 的 `retrieval.prompt.context_window_tokens` 缺省由实际会话模型解析，显式值优先。配置保存影响新会话；已建立会话的预算与索引版本保持冻结。工具和提示 Rail 共用绑定在智能体 Runtime 上的能力目录。
+- `capability.sources` 按 `type` 和 `root` 声明目录。Skill 与独立专家包共用一棵分类树。会话 Skill 检索按宿主可见范围和禁用规则过滤。单智能体和团队会话均从宿主已安装目录检索专家。显式配置专家来源时，按已安装独立专家的实际 manifest 路径取交集。省略专家来源时，目录也包含已安装专家组的非队长成员。调用专家需要会话提供 `spawn_expert` 工具。关系图和 Flow 要求恰有一个 Skill 来源。
 
-### 配置项说明
+### 目录与重建
 
-#### `symphony.enabled`
+省略 `capability.sources` 时，Swarm 使用工作区 `skills` 目录。显式列表整体替换默认值。`storage.artifact_root` 为空时使用工作区 `symphony/runtime`。模板允许通过 `SYMPHONY_ARTIFACT_ROOT` 设置产物根目录。多目录或含专家的集合在 `taxonomy_collections/<scope_id>` 下构建分类树。添加专家来源后构建一次共用分类树即可，原单 Skill 树、关系图和 Flow 继续使用原路径。
 
-是否启用技能交响乐的编排能力。默认模板值是 `false`。
+旧的 `paths`、`fingerprint`、`build`、`skill_retrieval`、`evolution` 顶层配置以及旧模型后端节点不再接受。旧缓存签名和目录布局不能复用，需要按新配置重新构建；系统不会自动迁移或删除旧目录。刷新失败保留上一可用版本，取消后不发布。
 
-开启后，智能体可以读取或更新技能图谱，并在已有候选技能基础上生成技能链。关闭后，智能体不再使用技能图谱进行编排。
+部署本次 Retrieval 配置时重新获取 YAML 模板。现行 Runtime 布局中的分类树和 v2 Discovery 会话快照可以继续使用。
 
-该开关控制的是 Symphony 的编排工具；技能检索仍由 `symphony.skill_retrieval.enabled` 单独控制。也就是说，检索负责找到候选技能，编排负责基于任务目标、候选技能和技能图谱生成执行路线。
+### 构建与发现参数
 
-#### `symphony.paths.skills_root` / `symphony.paths.graph_dir`
+以下路径相对于 `symphony`。并发和批量的“模板值”是主模板显式设置，不等同于程序缺省值。
 
-技能来源目录和技能图谱存储目录。通常保持空字符串以使用默认位置；只有需要自定义技能来源或图谱存储位置时才需要设置。
+| 配置 | 缺省/模板 | 作用 |
+|---|---|---|
+| `capability.fingerprint.extraction.max_concurrency` / `batch_size` | 缺省 `1/1`，模板 `4/2` | 指纹提取；实际并发还受构图并发上限限制 |
+| `orchestration.build.max_concurrency` / `matching.batch_size` | 缺省 `1/12`，模板 `4/16` | 关系匹配并发和批量 |
+| `orchestration.min_edge_confidence` | `0.5` | 构图和规划共用的关系阈值 |
+| `orchestration.build.matching.require_consensus` | `false` | 是否要求关系判断共识 |
+| `orchestration.plan.mode` | `fast` | 支持 `fast` 和 `beam`；`top_k` 仅束搜索使用 |
+| `retrieval.index_build.structure.branching_factor` / `max_depth` | `128/6` | 树拆分阈值基数和深度；元戎模板分支为 `12` |
+| `retrieval.index_build.structure.max_capabilities_per_node_multiplier` | `1.5` | 递归构树叶节点容量倍率；一次性构树不依此拆分 |
+| `retrieval.index_build.structure.root_categories` | `null` | 根分类列表或文件；可通过 `children` 预设下级分类 |
+| `retrieval.index_build.request.max_concurrency` / `timeout_seconds` | `2/420` | 构树请求并发和秒级超时 |
+| `retrieval.index_build.request.classification_batch_limit` | `32` | 递归分类调用批量 |
+| `retrieval.index_build.task.total_timeout_seconds` | `0` | 整体构建超时，`0` 表示不限 |
+| `retrieval.output.max_chars` | `12000` | 目录操作输出字符上限 |
+| `orchestration.experience.acceptance.min_successes` | `3` | Flow 接纳成功证据次数 |
 
-#### `symphony.build`
-
-技能图谱的构建参数通常保持默认即可。技能较多、构建耗时较长时，可以调整 `max_candidates_per_skill_relation` 限制每个技能关系的候选数量。
-
-#### `symphony.orchestration`
-
-技能编排的运行参数。当前模板配置如下：
-
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| `mode` | `fast` | 编排模式。当前运行时工具使用快速编排路径，优先给出可执行的技能链 |
-| `max_depth` | `4` | 技能链最大搜索深度，用于限制一次任务中串联技能的长度 |
-| `min_edge_confidence` | `0.5` | 编排使用的最低关联强度；低于该值的连接关系不会优先用于编排 |
-
-这些参数适用于调节“如何把候选技能连成路线”。如果结果过短、经常漏掉中间处理步骤，可以适当增加 `max_depth`；如果路线经常使用低关联强度的连接，可以提高 `min_edge_confidence`。
-
-#### `symphony.skill_retrieval.enabled`
-
-是否启用技能检索。默认模板值是 `false`。该配置可在 web 页面配置。
-
-开启后，新会话会获得 `skill_branch_explore`、`skill_branch_peek`、`skill_index_build` 等技能检索工具，并在系统提示中看到技能树检索方法。关闭后不注册这些工具，不注入技能树提示，严格回到原有技能流程。
-
-适用于需要在大量已安装技能中，根据任务查找相关技能的场景。如果技能数量很少，或者希望完全使用原来的 `list_skills` 流程，可以关闭。
-
-#### `symphony.skill_retrieval.build.root_categories`
-
-树默认分层配置 `root_categories` 的作用，是在构建技能索引时，预先指定技能树的第一层、可选第二层分类边界。
-
-当本地安装了大量 skills 时，如果完全让 LLM 自由生成根分类，分类结果可能不稳定，甚至不同构建之间根节点差异较大。`root_categories` 相当于给构建过程一个稳定的“目录骨架”，让 LLM 先把所有技能分发到这些大类下，再在每个大类内部继续动态拆分。
-
-您可以自己设置技能树构建时的默认分层结构，以最大程度适配您的应用场景。它可以写成 YAML 列表。每个分类建议包含：
-
-- `id`：稳定、短小、只使用英文小写、数字和短横线。
-- `name`：面向人类展示的分类名。
-- `description`：分类覆盖范围。
-- `select_when`：什么时候应该选这个分类。
-- `dont_select_when`：什么时候不应该选这个分类。
-- `children`：可选。用于预设下一层分类。
-
-建议分类满足：
-
-- 覆盖常见任务。
-- 兄弟分类尽量互斥。
-- 描述简洁，便于模型判断。
-
-需要自定义时，请在用户配置文件中手动设置，并重新构建索引。
-
-一层分类示例：
+根分类用于稳定目录骨架，包含 `id`、`name`、`description`，可选 `select_when`、`dont_select_when` 和 `children`。下例显式开启功能；默认模板保持关闭。修改构建策略后重新构建，规划、Flow 阈值和展示设置不会无故使分类树缓存失效。
 
 ```yaml
 symphony:
-  skill_retrieval:
-    build:
-      root_categories:
-        - id: office-docs
-          name: 办公文档
-          description: 办公文件的生成、编辑、转换、提取、排版和结构化处理。
-          select_when: 用户要处理 Word、PDF、PPT、Excel、Markdown、邮件、会议纪要或办公流程产物。
-          dont_select_when: 用户只是写普通文章/营销文案、管理个人知识库/笔记/任务、联网查资料、开发网页、生成图片视频或查询金融行情。
-        - id: system-tools
-          name: 系统工具
-          description: 手机设备、文件云盘、智能体/技能管理、任务自动化、安全合规和连接配置。
-          select_when: 用户请求操作设备系统、管理文件云盘、配置渠道、创建技能/智能体、切换人格、管理任务或做安全校验。
-          dont_select_when: 用户主要要完成一个具体业务任务，如写文档、查资料、做图、出行或金融分析。
-```
-
-两层分类示例：
-
-```yaml
-symphony:
-  skill_retrieval:
-    build:
-      root_categories:
-        - id: office-docs
-          name: 办公文档
-          description: 处理办公文件的读取、转换、抽取、编辑和生成。
-          select_when: 用户任务围绕 PDF、Word、PPT、Excel、CSV、合同、报告或表格文件。
-          dont_select_when: 用户主要是在开发代码、生成媒体、远程操作 SaaS 或做开放式网页搜索。
-          children:
-            - id: pdf-and-ocr
-              name: PDF 与 OCR
-              description: PDF 读取、拆分、合并、OCR、版面识别和文档转文本。
-            - id: spreadsheets-and-tables
-              name: 表格与数据表
-              description: Excel、CSV、表格抽取、公式、字段核对和表格清洗。
-            - id: presentations-and-reports
-              name: 演示与报告
-              description: PPT、正式报告、图表入文档和面向业务的交付物生成。
-```
-
-#### `symphony.skill_retrieval.build.branching_factor`
-
-构建技能树时的拆分阈值基数。当前模板默认值是 `128`。
-
-这个参数不是要求 LLM 每次生成固定数量的分支。它主要用于派生节点停止拆分阈值：当前实现中，一个节点的技能数不超过约 `branching_factor * 1.5` 时，通常会停止继续拆分。
-
-值越小，树会更细，分支更多，构建更慢，但单个叶子节点包含的技能更少；值越大，树会更粗，构建更快，但单个分支下可能出现更多技能。
-
-适用于调节技能树粒度。几百到几千个技能时，如果分支下候选技能过多，可以适当调小；如果构建太慢或树过碎，可以适当调大。
-
-#### 其它技能检索配置项
-
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| `artifact_root` | 空字符串 | 索引产物目录；为空时使用默认工作区 |
-| `build.max_depth` | `6` | 技能树最大深度，达到后停止继续拆分 |
-| `build.max_workers` | `2` | 构建并发数；越大越快，但模型并发压力更高 |
-| `build.max_retries` | `2` | LLM 分类或分组失败后的重试次数 |
-| `build.request_timeout_seconds` | `420` | 单次 LLM 构建请求超时时间 |
-| `build.total_timeout_seconds` | `0` | 整体构建总超时；`0` 表示不限制 |
-| `build.classification_batch_limit` | `32` | 单次分类调用最多放入多少个技能 |
-| `build.discovery_seed` | `42` | 构建采样随机种子，用于提高可复现性 |
-
-
-#### 附：完整配置项示例
-
-```yaml
-symphony:
-  enabled: true
-  paths:
-    skills_root: ""
-    graph_dir: ""
-
-  build:
-    max_candidates_per_skill_relation: 32
-    min_edge_confidence: 0.5
-
-  evolution:
-    flow:
-      enabled: true
-
-  orchestration:
-    mode: fast
-    max_depth: 4
-    min_edge_confidence: 0.5
-
-  skill_retrieval:
-    enabled: true
+  capability:
+    sources:
+      - type: skill
+        root: /path/to/skills
+      - type: expert
+        root: /path/to/agent_templates/local
+    fingerprint:
+      extraction:
+        max_concurrency: 4
+        batch_size: 2
+        max_output_tokens: null
+  storage:
     artifact_root: ""
+  retrieval:
+    enabled: true
+    index_build:
+      structure:
+        branching_factor: 128
+        max_depth: 6
+        max_capabilities_per_node_multiplier: 1.5
+        root_categories:
+          - id: office-docs
+            name: Office documents
+            description: Read, edit and generate office files.
+      request:
+        max_concurrency: 2
+        max_retries: 2
+        timeout_seconds: 420.0
+        classification_batch_limit: 32
+      task:
+        total_timeout_seconds: 0.0
+        preserve_previous_index_on_failure: true
+    use_existing_index: true
+    output:
+      max_chars: 12000
+  orchestration:
+    enabled: true
+    min_edge_confidence: 0.5
     build:
-      branching_factor: 128
-      max_depth: 6
-      root_categories:
-        - id: office-docs
-          name: 办公文档
-          description: 办公文件的生成、编辑、转换、提取、排版和结构化处理。
-          select_when: 用户要处理 Word、PDF、PPT、Excel、Markdown、邮件、会议纪要或办公流程产物。
-          dont_select_when: 用户只是写普通文章/营销文案、管理个人知识库/笔记/任务、联网查资料、开发网页、生成图片视频或查询金融行情。
-        - id: writing-content
-          name: 写作内容
-          description: 文章、故事、新闻、营销文案、内容策划、文本润色和写作风格处理。
-          select_when: 用户要写、改写、润色、策划或生成面向读者的文字内容，而不是操作具体办公文件。
-          dont_select_when: 用户明确要输出 Word/PDF/PPT/Excel 文件、生成图片视频、联网调研、管理知识库或构建智能体/skill。
-        - id: search-research
-          name: 搜索研究
-          description: 网页搜索、内容抓取、新闻、论文、深度调研和知识库检索。
-          select_when: 用户要查找已有信息、联网搜索、读取网页、研究主题、检索论文、查询新闻或使用知识库/笔记/记忆。
-          dont_select_when: 用户已经给定资料且只要求生成具体文件、图片、视频、表格或创作文案。
-        - id: media-creative
-          name: 图片音视频
-          description: 图片理解、图像生成、视觉设计、视频动画、语音音乐、漫画和绘本视觉产物。
-          select_when: 用户输入或输出涉及图片、截图、照片、OCR、音频、语音、音乐、视频、动画、漫画或视觉设计。
-          dont_select_when: 用户主要是在写文本、做办公文件、网页开发、旅行查询或金融分析。
-        - id: life-services
-          name: 生活服务
-          description: 出行旅行、地图天气、健康教育、本地优惠、餐饮和日常生活服务。
-          select_when: 用户请求与真实生活行动、位置、旅行、天气、健康、学习、优惠券、餐饮或本地服务有关。
-          dont_select_when: 请求主要是内容创作、办公文件、网页开发、系统配置或金融投资。
-        - id: product-dev
-          name: 开发产品
-          description: 网页应用、产品需求、UX/UI、部署数据库、代码测试和工程质量。
-          select_when: 用户要设计产品、写 PRD、做网页/应用、部署网站、接数据库、优化前端或测试代码。
-          dont_select_when: 用户只是写营销文案、生成办公文件、做图片视频、查询资料或配置智能体。
-        - id: finance-business
-          name: 金融商业
-          description: 股票行情、投资分析、金融新闻、量化交易、模拟交易和企业信息查询。
-          select_when: 用户询问股票、基金、指数、黄金、行情、投资、金融新闻、企业工商或商业数据。
-          dont_select_when: 用户只是做普通市场调研、表格分析、营销文案或产品竞品分析。
-        - id: system-tools
-          name: 系统工具
-          description: 手机设备、文件云盘、智能体/技能管理、任务自动化、安全合规和连接配置。
-          select_when: 用户请求操作设备系统、管理文件云盘、配置渠道、创建技能/智能体、切换人格、管理任务或做安全校验。
-          dont_select_when: 用户主要要完成一个具体业务任务，如写文档、查资料、做图、出行或金融分析。
-      max_workers: 2
-      max_retries: 2
-      request_timeout_seconds: 420
-      total_timeout_seconds: 0
-      classification_batch_limit: 32
-      discovery_seed: 42
+      max_concurrency: 4
+      matching:
+        batch_size: 16
+        require_consensus: false
+    plan:
+      mode: fast
+      max_depth: 4
+      dynamic_graph_enabled: true
+    experience:
+      enabled: true
+      acceptance:
+        min_successes: 3
+        min_pack_success_rate: 0.8
 ```
 
 ---
@@ -499,7 +380,7 @@ symphony:
 技能 → 技能索引 → 构建索引
 ```
 
-或让模型在工具提示要求下调用 `skill_index_build`。构建完成后再次发起任务。
+构建完成后再次发起任务。
 
 ### 为什么构建时间较长？
 
@@ -568,7 +449,7 @@ SkillPack 是单 Agent 使用的复合 Skill。根 `SKILL.md` 说明成员的执
 
 ### 开启
 
-在“设置 → 实验功能”开启“发现技能包”，统一启用沉淀、确认复用、安装与发布；对应持久化配置为 `symphony.evolution.flow.enabled`，无需额外开启 Symphony。旧 `SKILLPACK_PRODUCTIZATION_ENABLED`、`SKILLPACK_DIRECT_ROUTE_MODE` 和 `skillpack.direct_route_mode` 不再覆盖页面设置。
+在“设置 → 实验功能”开启“发现技能包”，统一启用沉淀、确认复用、安装与发布；对应持久化配置为 `symphony.orchestration.experience.enabled`，无需额外开启 Symphony。旧 `SKILLPACK_PRODUCTIZATION_ENABLED`、`SKILLPACK_DIRECT_ROUTE_MODE` 和 `skillpack.direct_route_mode` 不再覆盖页面设置。
 
 关闭后停止新的自动发现、自动复用、沉淀、安装和发布；保留已安装包的查看、卸载、成员引用保护，以及显式选包后的安全执行。已确认开始的执行、安装或发布不因关闭设置而中断；单个技能包的启停及原有权限校验仍生效。
 
@@ -601,4 +482,4 @@ Pack ZIP 只包含外层 `plugin.yaml`、根说明和 `skillpack.lock.json`，�
 
 安装计划和事务位于当前技能目录的 `.skillpack/`，Hub 来源记录位于各技能 `.archive/hub-provenance.json`。这些文件不随 Pack 发布。关闭产品开关会停止新的沉淀和 Pack 安装；已有普通 Skill 入口及显式选包后的安全执行保留。
 
-部署必须同时使用本特性的 agent-core 和 JiuwenSwarm 改动。依赖与锁文件已使用 Core !3457 合入后的官方提交 `4dbaa84ca568af3f181da4f9cd26b713a5b73039`。真实 Hub 审核、实际模型和各桌面平台的验收结果应单独记录，不能由本地模拟测试替代。
+部署必须同时使用本特性的 agent-core 和 JiuwenSwarm 改动。Core 版本以当前 `pyproject.toml` 与 `uv.lock` 中一致固定的提交为准，必须包含新的 Runtime 接口。真实 Hub 审核、实际模型和各桌面平台的验收结果应单独记录，不能由本地模拟测试替代。

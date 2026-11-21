@@ -49,19 +49,20 @@ from jiuwenswarm.common.utils import (
 from jiuwenswarm.enterprise import is_enterprise
 from jiuwenswarm.extensions.sdk.skill_source import (
     ArtifactDescriptor,
-    ArtifactRef,
     DownloadPolicy,
     InstalledArtifact,
     ProviderInvocationContext,
+    SkillArtifactVerificationError,
+    SkillCandidate,
     SkillRef,
     SkillSearchRequest,
     SkillSourceProvider,
+    SkillVerificationResult,
     SourceConfig,
     SkillSourceExtension,
 )
 from jiuwenswarm.server.runtime.skill.artifact_security import (
-    ArtifactVerificationError,
-    verify_skillhub_artifact,
+    verify_skill_download_hmac,
 )
 from jiuwenswarm.server.runtime.skill.skill_state_lock import (
     skill_state_lock,
@@ -784,7 +785,7 @@ def _get_state_file() -> "Path":
 
 
 def _knowledge_skill_language() -> str:
-    """Return ``"en"`` or ``"zh"`` for Knowledge-to-Skill prompts and errors.
+    """Return ``"en"`` or ``"zh"`` for Skill display, Knowledge-to-Skill prompts and errors.
 
     Follows the top-level ``preferred_language`` in config.yaml; anything that
     is not English (or an unreadable config) keeps the historical Chinese text.
@@ -1578,11 +1579,12 @@ class SkillManager:
             await asyncio.to_thread(self._register_unmanaged_local_skills)
         else:
             self._register_unmanaged_local_skills()
-        local = self._scan_local_skills()
+        language = _knowledge_skill_language()
+        local = self._scan_local_skills(language=language)
         # 企业版：白名单内置已在启动时装进租户工作区，由 local 扫描带出；
         # 不再把未安装的包内目录技能直接挂到列表（与可执行集一致）。
-        builtin = [] if is_enterprise() else self._scan_builtin_skills()
-        marketplace = [] if is_enterprise() else self._scan_marketplace_skills()
+        builtin = [] if is_enterprise() else self._scan_builtin_skills(language=language)
+        marketplace = [] if is_enterprise() else self._scan_marketplace_skills(language=language)
         out: dict[str, Any] = {"skills": local + builtin + marketplace}
         if bool(params.get("with_installed", False)):
             installed = await self.handle_skills_installed(params)
@@ -2418,46 +2420,27 @@ class SkillManager:
             "disabled_skills": sorted(disabled),
         }
 
-    def _skill_retrieval_records(self):
-        """Return the same live enabled inventory used by Agent discovery."""
-
-        from openjiuwen.symphony.discovery import scan_skill_directories
+    @staticmethod
+    def _skill_taxonomy_runtime(*, model=None):
+        from jiuwenswarm.common.symphony_config import configured_skill_roots, load_symphony_config
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
-            skill_sources_from_manager,
-        )
-
-        return scan_skill_directories(
-            [str(self._skills_dir)],
-            disabled_skills=self.list_execution_disabled_skills(),
-            source_by_name=skill_sources_from_manager(self),
-        ).items
-
-    def _skill_taxonomy_runtime(self, records_provider=None):
-        from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
-            skill_retrieval_artifact_root,
+            disabled_skills_from_directories, skill_sources_from_directories,
         )
         from jiuwenswarm.runtime.symphony.skill_retrieval import SkillTaxonomyRuntime
 
+        policy = load_symphony_config()
+        roots = configured_skill_roots(policy)
         return SkillTaxonomyRuntime(
-            records_provider=records_provider or self._skill_retrieval_records,
-            index_root=skill_retrieval_artifact_root(),
+            config=policy, model=model,
+            disabled_capability_ids=lambda: disabled_skills_from_directories(roots),
+            source_by_id=lambda: skill_sources_from_directories(roots),
         )
 
     @staticmethod
     def _skill_retrieval_mode() -> str:
-        from jiuwenswarm.common.config import get_config
+        from jiuwenswarm.common.symphony_config import load_symphony_config
 
-        config = get_config() or {}
-        symphony = config.get("symphony") if isinstance(config, dict) else {}
-        retrieval = (
-            symphony.get("skill_retrieval") if isinstance(symphony, dict) else {}
-        )
-        raw = (
-            str(retrieval.get("mode") or "auto").strip().lower()
-            if isinstance(retrieval, dict)
-            else "auto"
-        )
-        return "flat" if raw == "flat" else "auto"
+        return "auto" if load_symphony_config().retrieval.use_existing_index else "flat"
 
     async def handle_skills_retrieval_status(self, params: dict) -> dict:
         """Return the live flat/indexed directory and optional build status."""
@@ -2465,54 +2448,75 @@ class SkillManager:
         params = params if isinstance(params, dict) else {}
         session_profile = params.get("_session_profile")
         session_profile = session_profile if isinstance(session_profile, dict) else None
-        from dataclasses import replace
+        from types import SimpleNamespace
 
+        from openjiuwen.symphony import SymphonyRuntime
+        from openjiuwen.symphony.discovery import CAPABILITY_SEARCH_TOOL_NAME
         from jiuwenswarm.common.config import get_config
+        from jiuwenswarm.common.symphony_config import configured_skill_roots, load_symphony_config
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
-            build_discovery_settings,
-            is_skill_retrieval_enabled,
-            resolve_skill_retrieval_strategy,
-            skill_retrieval_artifact_root,
-            skill_sources_from_manager,
+            disabled_skills_from_directories,
+            resolve_skill_retrieval_strategy, skill_sources_from_directories,
         )
-        from openjiuwen.symphony.discovery import SkillFS, scan_skill_directories
 
-        disabled = {str(name) for name in self.list_execution_disabled_skills()}
-        all_documents = await asyncio.to_thread(
-            scan_skill_directories,
-            [str(self._skills_dir)],
-            source_by_name=skill_sources_from_manager(self),
-        )
-        visible_documents = tuple(
-            record
-            for record in all_documents.items
-            if record.worker_id not in disabled
-        )
         config = get_config() or {}
-        configured_enabled = is_skill_retrieval_enabled(config)
+
+        policy = load_symphony_config(config)
+        roots = configured_skill_roots(policy)
+        has_expert_sources = any(source.type == "expert" for source in policy.capability.sources)
+        configured_enabled = policy.retrieval.enabled
         enabled = configured_enabled
-        artifact_root = skill_retrieval_artifact_root()
-        settings = build_discovery_settings(config)
-        flat_directory = SkillFS(
-            lambda: visible_documents,
-            settings=replace(settings, use_existing_index=False),
-            artifact_root=artifact_root,
-            index_root=artifact_root,
-        )
-        snapshot = flat_directory.prompt_snapshot()
-        candidate_scale = "small" if snapshot.all_candidates_included else "large"
-        directory = flat_directory
-        if enabled and candidate_scale == "large":
-            directory = SkillFS(
-                lambda: visible_documents,
-                settings=replace(settings, use_existing_index=True),
-                artifact_root=artifact_root,
-                index_root=artifact_root,
-            )
-        build = await asyncio.to_thread(
-            self._skill_taxonomy_runtime(lambda: visible_documents).status,
-        )
-        artifact = directory.artifact
+        settings = policy.retrieval
+        visible_documents = ()
+        all_count = 0
+        installed_enabled_count = 0
+        snapshot = SimpleNamespace(estimated_candidate_tokens=0,
+                                   candidate_budget_tokens=settings.prompt.candidate_budget_tokens,
+                                   all_candidates_included=True)
+        artifact = SimpleNamespace(layout="flat", index_state="missing")
+        candidate_scale = "small"
+        if enabled:
+            runtime = SymphonyRuntime(None, policy)
+            try:
+                flat_config = settings.model_copy(update={"use_existing_index": False})
+                all_count = len(runtime.retrieval.bind_search(config=flat_config).records())
+                directory = runtime.retrieval.bind_search(
+                    config=flat_config,
+                    disabled_capability_ids=lambda: disabled_skills_from_directories(roots),
+                    source_by_id=lambda: skill_sources_from_directories(roots),
+                )
+                visible_documents = directory.records()
+                installed_enabled_count = len(visible_documents)
+                snapshot = directory.prompt_snapshot(refresh=False)
+                candidate_scale = "small" if snapshot.all_candidates_included else "large"
+                if candidate_scale == "large" and settings.use_existing_index:
+                    directory = runtime.retrieval.bind_search(
+                        config=settings,
+                        disabled_capability_ids=lambda: disabled_skills_from_directories(roots),
+                        source_by_id=lambda: skill_sources_from_directories(roots),
+                    )
+                artifact = directory.artifact
+            finally:
+                await runtime.aclose()
+        else:
+            from jiuwenswarm.server.runtime.skill.skilldev.state_utils import load_skill_state
+
+            identifiers = set()
+            for root in roots:
+                state = load_skill_state(skills_dir=root)
+                for key in ("local_skills", "installed_plugins"):
+                    items = state.get(key)
+                    for item in items if isinstance(items, list) else []:
+                        if isinstance(item, dict):
+                            identifier = str(
+                                item.get("worker_id") or item.get("dir_name") or item.get("name") or "",
+                            ).strip()
+                            if identifier:
+                                identifiers.add(identifier)
+            all_count = len(identifiers)
+            installed_enabled_count = len(identifiers - set(disabled_skills_from_directories(roots)))
+        build = await asyncio.to_thread(self._skill_taxonomy_runtime().status,
+                                        build_id=str(params.get("build_id") or "") or None)
         profile_scope = "default"
         profile_session_id = ""
         profile_model_name = ""
@@ -2599,11 +2603,11 @@ class SkillManager:
                     index_state=public_index_state,
                 )
             )
-        build_supported = configured_enabled and candidate_scale == "large"
+        build_supported = configured_enabled and (candidate_scale == "large" or has_expert_sources)
         logs = build.get("logs") if isinstance(build.get("logs"), list) else []
         return {
             "enabled": enabled,
-            "index_enabled": enabled,
+            "index_enabled": enabled and settings.use_existing_index,
             "mode": self._skill_retrieval_mode(),
             "candidate_scale": candidate_scale,
             "estimated_candidate_tokens": estimated_candidate_tokens,
@@ -2620,14 +2624,16 @@ class SkillManager:
             "build_message": str(build.get("message") or ""),
             "build_error": str(build.get("error") or ""),
             "build_id": str(build.get("build_id") or ""),
+            "core_build_id": str(build.get("core_build_id") or ""),
+            "version": str(build.get("version") or ""),
             "build_logs": logs[-50:],
             "index_exists": bool(build.get("index_exists")),
             "fresh": bool(build.get("fresh")),
-            "indexed_count": int(build.get("indexed_count") or 0),
-            "installed_count": all_documents.count,
-            "installed_enabled_count": len(visible_documents),
+            "indexed_count": int(build.get("indexed_skill_count", build.get("indexed_count")) or 0),
+            "installed_count": all_count,
+            "installed_enabled_count": installed_enabled_count,
             "searchable_count": searchable_count,
-            "tool_name": "skill_index",
+            "tool_name": CAPABILITY_SEARCH_TOOL_NAME,
             "profile_scope": profile_scope,
             "profile_session_id": profile_session_id,
             "profile_model_name": profile_model_name,
@@ -2653,7 +2659,7 @@ class SkillManager:
                 "build_status": status["build_status"],
                 "detail": "Enable Skill retrieval before building its taxonomy.",
             }
-        if status["candidate_scale"] == "small":
+        if not status["build_supported"]:
             return {
                 "success": False,
                 "error_code": "skill_index_not_needed",
@@ -2672,10 +2678,16 @@ class SkillManager:
             else bool(raw_force)
         )
         try:
-            payload = await asyncio.to_thread(
-                self._skill_taxonomy_runtime().start_build,
-                force=force,
-            )
+            from jiuwenswarm.common.symphony_config import load_symphony_config
+            from jiuwenswarm.runtime.symphony.service import get_swarm_symphony_service
+
+            model = None
+            try:
+                model = get_swarm_symphony_service().runtime().model
+            except (RuntimeError, ValueError):
+                if not load_symphony_config(config).retrieval.index_build.task.allow_fallback_tree:
+                    raise
+            payload = self._skill_taxonomy_runtime(model=model).start_build(force=force)
         except Exception as exc:
             logger.exception("Unable to start Skill taxonomy build")
             return {
@@ -2705,10 +2717,7 @@ class SkillManager:
 
         build_id = str((params or {}).get("build_id") or "").strip() or None
         try:
-            payload = await asyncio.to_thread(
-                self._skill_taxonomy_runtime().cancel,
-                build_id=build_id,
-            )
+            payload = await self._skill_taxonomy_runtime().cancel(build_id=build_id)
         except Exception as exc:
             logger.exception("Unable to cancel Skill taxonomy build")
             return {
@@ -2730,8 +2739,8 @@ class SkillManager:
     async def handle_skills_retrieval_search(self, params: dict) -> dict:
         """Search installed Skills through the same directory Tool used by Agents."""
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
-            SkillRetrievalToolkit,
-            skill_sources_from_manager,
+            SkillRetrievalToolkit, disabled_skills_from_directories,
+            skill_sources_from_directories,
         )
 
         query = str((params or {}).get("query") or "").strip()
@@ -2742,19 +2751,26 @@ class SkillManager:
                 "detail": "query must not be empty",
                 "matches": [],
             }
+        from jiuwenswarm.common.config import get_config
+        from jiuwenswarm.common.symphony_config import configured_skill_roots, load_symphony_config
+
+        config = get_config() or {}
+
+        policy = load_symphony_config(config)
+        if not policy.retrieval.enabled:
+            return {"success": False, "mode": self._skill_retrieval_mode(),
+                    "error_code": "skill_retrieval_disabled", "matches": [],
+                    "detail": "Enable Skill retrieval before searching its directory."}
+        roots = configured_skill_roots(policy)
         toolkit = SkillRetrievalToolkit(
-            skill_directories=[str(self._skills_dir)],
-            disabled_skills=self.list_execution_disabled_skills,
-            source_by_name=lambda: skill_sources_from_manager(self),
+            skill_directories=roots, config_base=config,
+            disabled_skills=lambda: disabled_skills_from_directories(roots),
+            source_by_name=lambda: skill_sources_from_directories(roots),
         )
-        result = await toolkit.skill_index(
-            operation="search",
-            query=query,
-            paths=["/"],
-            match="content",
-            result="files",
-            pipeline=[{"operation": "limit", "lines": 10}],
-        )
+        try:
+            result = await toolkit.runtime.retrieval.search(query=query, type="skill", top_k=10)
+        finally:
+            await toolkit.aclose()
         diagnostics = dict(result.detailed_output)
         return {
             "success": not bool(diagnostics.get("error")),
@@ -2774,7 +2790,7 @@ class SkillManager:
             "unsupported": True,
             "tree_supported": False,
             "nodes": [],
-            "detail": "Browse the Skill taxonomy through skill_index list operations.",
+            "detail": 'Browse the Skill taxonomy with capability_search, type=["skill"] and operation=list.',
         }
 
     async def handle_skills_graph_build(self, params: dict) -> dict:
@@ -7303,14 +7319,14 @@ class SkillManager:
         return out
 
     @staticmethod
-    def _apply_skill_display(meta: dict, skill_dir: Path) -> None:
-        """将 skill_display.md 展示字段合并进 meta（原地修改）.
+    def _apply_skill_display(
+        meta: dict, skill_dir: Path, *, language: str | None = None,
+    ) -> None:
+        """Apply UI metadata in the configured preferred language, in place.
 
-        - 始终填充 display_name_zh / description_zh（缺失时回退 SKILL.md 的 name / description）
-        - 英文字段可空
-        - 仅当 skill_display.md 提供了对应中文字段时，覆盖响应层的 display_name / description
-          （避免无展示文件时冲掉 ClawHub 等来源的 display_name）
-        - 本地已安装副本若缺少 skill_display.md，回退读取同名内置源中的展示文件
+        Keep both language variants in the response. Missing selected-language
+        fields preserve the original display name and description. Older local
+        installs can reuse display metadata from the corresponding builtin skill.
         """
         display = SkillManager._parse_skill_display_md(skill_dir)
         if not display:
@@ -7339,10 +7355,17 @@ class SkillManager:
         meta["display_name_en"] = display.get("display_name_en", "")
         meta["description_en"] = display.get("description_en", "")
 
-        if zh_name:
-            meta["display_name"] = zh_name
-        if zh_desc:
-            meta["description"] = zh_desc
+        if not display:
+            return
+
+        if language is None:
+            language = _knowledge_skill_language()
+        display_name = display.get(f"display_name_{language}", "")
+        description = display.get(f"description_{language}", "")
+        if display_name:
+            meta["display_name"] = display_name
+        if description:
+            meta["description"] = description
 
     @staticmethod
     def _try_find_skill_file(directory: Path) -> Path | None:
@@ -7411,7 +7434,7 @@ class SkillManager:
     # 目录扫描
     # -----------------------------------------------------------------------
 
-    def _scan_local_skills(self) -> list[dict]:
+    def _scan_local_skills(self, *, language: str | None = None) -> list[dict]:
         """扫描 agent/skills/ 下的本地 skill（跳过 _marketplace）.
 
         Also scans connected MCPs' bundled skills (under
@@ -7420,12 +7443,15 @@ class SkillManager:
         """
         results: list[dict] = []
 
+        if language is None:
+            language = _knowledge_skill_language()
+
         # 1) user skills under <workspace>/skills/
         if _exists_long(self._skills_dir):
             for child in self._skills_dir.iterdir():
                 if not _is_dir_long(child) or child.name.startswith("_"):
                     continue
-                meta = self._scan_one_skill_dir(child)
+                meta = self._scan_one_skill_dir(child, language=language)
                 if meta is not None:
                     results.append(meta)
 
@@ -7439,14 +7465,14 @@ class SkillManager:
             for child in cdir.iterdir():
                 if not _is_dir_long(child) or child.name.startswith("_"):
                     continue
-                meta = self._scan_one_skill_dir(child, source_default="mcp")
+                meta = self._scan_one_skill_dir(child, source_default="mcp", language=language)
                 if meta is not None:
                     results.append(meta)
 
         return results
 
     def _scan_one_skill_dir(
-        self, child: Path, *, source_default: str = "project"
+        self, child: Path, *, source_default: str = "project", language: str | None = None,
     ) -> dict[str, Any] | None:
         """Scan a single skill directory -> meta dict, or None if not a skill."""
         md = self._try_find_skill_file(child)
@@ -7557,7 +7583,7 @@ class SkillManager:
                 )
                 return None
             meta["has_evolutions"] = False
-        self._apply_skill_display(meta, child)
+        self._apply_skill_display(meta, child, language=language)
         # 不在列表中返回 body
         meta.pop("body", None)
         return meta
@@ -7612,7 +7638,7 @@ class SkillManager:
             }
         return meta
 
-    def _scan_builtin_skills(self) -> list[dict]:
+    def _scan_builtin_skills(self, *, language: str | None = None) -> list[dict]:
         """扫描内置技能目录中尚未安装到用户目录的技能.
 
         返回的技能列表仅包含那些存在于内置目录但尚未在用户目录中的技能。
@@ -7624,6 +7650,9 @@ class SkillManager:
 
         if not _is_dir_long(builtin_dir):
             return results
+
+        if language is None:
+            language = _knowledge_skill_language()
 
         for child in builtin_dir.iterdir():
             if not _is_dir_long(child) or child.name.startswith("_"):
@@ -7655,7 +7684,7 @@ class SkillManager:
             meta["has_evolutions"] = False
             self._apply_enabled_config(meta, meta.get("name", ""))
             self.apply_archive_version_and_type(meta, child)
-            self._apply_skill_display(meta, child)
+            self._apply_skill_display(meta, child, language=language)
             # 不在列表中返回 body
             meta.pop("body", None)
             results.append(meta)
@@ -8234,7 +8263,7 @@ class SkillManager:
             return None
         return skill_dir / _EVOLUTION_FILENAME
 
-    def _scan_marketplace_skills(self) -> list[dict]:
+    def _scan_marketplace_skills(self, *, language: str | None = None) -> list[dict]:
         """扫描 _marketplace/ 下已 clone 的仓库中未安装的 skill.
 
         扫描路径：_marketplace/{marketplace_name}/skills/{plugin_name}
@@ -8243,6 +8272,8 @@ class SkillManager:
         if not _exists_long(self._marketplace_dir):
             return results
 
+        if language is None:
+            language = _knowledge_skill_language()
         installed_names = {p.get("name") for p in self._get_installed_plugins()}
 
         enabled_marketplaces = {
@@ -8292,7 +8323,7 @@ class SkillManager:
                 meta["has_evolutions"] = False
                 self._apply_enabled_config(meta, meta.get("name", ""))
                 self.apply_archive_version_and_type(meta, plugin_dir)
-                self._apply_skill_display(meta, plugin_dir)
+                self._apply_skill_display(meta, plugin_dir, language=language)
                 meta.pop("body", None)
                 results.append(meta)
 
@@ -11427,6 +11458,56 @@ class SkillManager:
             "providers": [item.to_dict() for item in self._source_registry.list()],
         }
 
+    @staticmethod
+    def _skill_candidate_to_host_card(candidate: SkillCandidate) -> dict[str, Any]:
+        """Map SPI ``SkillCandidate`` onto the enterprise skills.source.search card.
+
+        Keeps SPI display fields (``short_description`` / ``tags``) and lifts market
+        extras from ``metadata`` to top-level for the UI. Does not emit legacy
+        ``summary`` / ``labels`` aliases.
+        """
+        raw = candidate.to_dict()
+        meta = dict(raw.get("metadata") or {})
+        short_description = str(
+            raw.get("short_description") or meta.get("summary") or meta.get("short_desc") or ""
+        ).strip()
+        tags = [str(tag).strip() for tag in (raw.get("tags") or ()) if str(tag).strip()]
+        if not tags:
+            raw_labels = meta.get("labels")
+            if isinstance(raw_labels, list):
+                for item in raw_labels:
+                    if isinstance(item, dict):
+                        label = str(item.get("name") or item.get("label") or "").strip()
+                    else:
+                        label = str(item or "").strip()
+                    if label:
+                        tags.append(label)
+        card: dict[str, Any] = {
+            **raw,
+            "short_description": short_description or None,
+            "tags": tags,
+        }
+        for key in (
+            "namespace",
+            "slug",
+            "canonical_slug",
+            "owner_display_name",
+            "homepage",
+            "rating_avg",
+            "rating_count",
+            "download_count",
+            "updated_at",
+            "previous_version",
+            "fingerprint",
+            "accessible",
+            "asset_type",
+        ):
+            if key in card and card.get(key) not in (None, "", (), []):
+                continue
+            if key in meta and meta.get(key) not in (None, ""):
+                card[key] = meta[key]
+        return {key: value for key, value in card.items() if value is not None}
+
     async def handle_skills_source_search(self, params: dict) -> dict:
         """Dispatch a normalized search request to one Skill Source Provider."""
         source_id = str(params.get("source_id") or "").strip()
@@ -11479,7 +11560,7 @@ class SkillManager:
                         "source_response_invalid", "provider returned a duplicate artifact"
                     )
                 seen.add(identity)
-                items.append(candidate.to_dict())
+                items.append(self._skill_candidate_to_host_card(candidate))
             return {
                 "success": True,
                 "source": source_id,
@@ -11521,20 +11602,18 @@ class SkillManager:
         skill_id: str,
         version_id: str,
     ) -> None:
-        artifact_ref = descriptor.artifact_ref
         if (
-            artifact_ref.skill_ref.source_id != source_id
-            or artifact_ref.skill_ref.skill_id != skill_id
-            or artifact_ref.version_id != version_id
+            str(descriptor.source_id or "").strip() != source_id
+            or str(descriptor.skill_id or "").strip() != skill_id
+            or str(descriptor.version_id or "").strip() != version_id
         ):
             raise SourceRegistryError(
-                "source_response_invalid", "provider returned a different ArtifactRef"
+                "source_response_invalid",
+                "provider returned a different artifact identity",
             )
-        checksum = str(descriptor.checksum_sha256 or "").strip().lower()
-        artifact_sha = str(descriptor.artifact_sha256 or "").strip().lower()
-        for value in (checksum, artifact_sha):
-            if value and not re.fullmatch(r"[0-9a-f]{64}", value):
-                raise SourceRegistryError("source_response_invalid", "invalid artifact SHA-256")
+        content_sha = str(descriptor.content_sha256 or "").strip().lower()
+        if content_sha and not re.fullmatch(r"[0-9a-f]{64}", content_sha):
+            raise SourceRegistryError("source_response_invalid", "invalid artifact SHA-256")
 
     async def _fetch_verified_source_artifact(
         self,
@@ -11580,9 +11659,47 @@ class SkillManager:
             )
         try:
             verification = await provider.verify_artifact(descriptor, body)
-        except ArtifactVerificationError as exc:
+        except SkillArtifactVerificationError as exc:
             raise SourceRegistryError(exc.code, str(exc)) from exc
-        return descriptor, body, dict(verification) if verification is not None else None
+        return descriptor, body, self._coerce_source_verification_audit(verification)
+
+    @staticmethod
+    def _coerce_source_verification_audit(verification: Any) -> dict[str, Any] | None:
+        """Map Provider verify_artifact outcome to install ledger audit.
+
+        SPI contract: ``None`` skips signature checks; success returns
+        ``SkillVerificationResult(verified=True, ...)``; failures raise.
+        Soft ``verified=False`` or unknown return types must not install.
+        """
+        if verification is None:
+            return None
+        if isinstance(verification, SkillVerificationResult):
+            if verification.verified is not True:
+                raise SourceRegistryError(
+                    "artifact_signature_invalid",
+                    "artifact verification did not succeed",
+                )
+            audit = {
+                "verified": True,
+                "artifact_sha256": verification.content_sha256,
+                "content_sha256": verification.content_sha256,
+                "algorithm": verification.algorithm,
+                "scope": verification.scope,
+                "key_id": verification.key_id,
+                "verified_at": verification.verified_at,
+            }
+            return {k: v for k, v in audit.items() if v is not None}
+        if isinstance(verification, dict):
+            if verification.get("verified") is not True:
+                raise SourceRegistryError(
+                    "artifact_signature_invalid",
+                    "artifact verification did not succeed",
+                )
+            return dict(verification)
+        raise SourceRegistryError(
+            "source_response_invalid",
+            "provider verify_artifact returned an unsupported result",
+        )
 
     @staticmethod
     def _resolve_source_skill_author(*sources: Any) -> str:
@@ -12061,7 +12178,6 @@ class SkillManager:
                         "has_update": bool(status.has_update),
                         "fingerprint_matched": status.fingerprint_matched,
                         "accessible": status.accessible,
-                        "downloadable": status.downloadable,
                         "remote_status": status.remote_status,
                         "error_code": status.error_code,
                         "checked_at": checked_at,
@@ -12079,7 +12195,6 @@ class SkillManager:
                             "latest_version": status.latest_version,
                             "fingerprint_matched": status.fingerprint_matched,
                             "accessible": status.accessible,
-                            "downloadable": status.downloadable,
                             "remote_status": status.remote_status,
                             "update_checked_at": checked_at,
                         }
@@ -12325,10 +12440,6 @@ class SkillManager:
 
     async def handle_skills_web_install(self, params: dict) -> dict:
         """企业 Web 安装兼容入口：下载、校验、落盘并提交 workspace JSON。"""
-        from jiuwenswarm.server.runtime.skill.artifact_security import (
-            verify_skill_download_hmac,
-        )
-
         url = str(params.get("url") or "").strip()
         signature = str(params.get("signature") or "").strip()
         if not url:

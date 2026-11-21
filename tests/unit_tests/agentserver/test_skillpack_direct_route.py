@@ -78,7 +78,7 @@ def _router(*packs: dict[str, Any], skill_root: Path | None = None) -> tuple[Ski
 
 
 def _config(enabled: bool = True):
-    return {"symphony": {"evolution": {"flow": {"enabled": enabled}}}}
+    return {"symphony": {"orchestration": {"experience": {"enabled": enabled}}}}
 
 
 async def _active(
@@ -156,7 +156,7 @@ async def test_discovery_disabled_during_match_does_not_offer_confirmation():
     config = _config()
 
     async def judge(query, candidates, **kwargs):
-        config["symphony"]["evolution"]["flow"]["enabled"] = False
+        config["symphony"]["orchestration"]["experience"]["enabled"] = False
         return candidates
 
     router.judge = judge
@@ -552,7 +552,10 @@ async def test_real_skillfs_recall_joins_fresh_manager_snapshot(tmp_path, monkey
     _write_skill(root / "second-skill", "second-skill")
     _write_pack(root / "demo-pack")
     manager = SkillManager(workspace_dir=str(workspace))
-    toolkit = SkillRetrievalToolkit(skill_directories=[str(root)], artifact_root=tmp_path / "index")
+    toolkit = SkillRetrievalToolkit(skill_directories=[str(root)], config_base={"symphony": {
+        "capability": {"sources": [{"type": "skill", "root": str(root)}]}, "retrieval": {"enabled": True},
+        "storage": {"artifact_root": str(tmp_path / "index")},
+    }})
     router = SkillPackRouter(manager=lambda: manager, toolkit=lambda: toolkit, model=lambda: None)
     router.judge = AsyncMock(side_effect=lambda query, candidates, **kwargs: candidates)
     route = await router.choose("complete demo workflow", [], mode="confirm")

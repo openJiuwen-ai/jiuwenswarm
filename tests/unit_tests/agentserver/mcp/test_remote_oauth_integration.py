@@ -247,13 +247,15 @@ async def test_process_control_exceptions_propagate_after_cleanup(
     def interrupted_client(**_kwargs):
         raise signal()
 
-    async def disconnect():
+    async def disconnect(*, timeout):
         cleaned.append(True)
 
     monkeypatch.setattr(httpx, "AsyncClient", interrupted_client)
-    monkeypatch.setattr(client, "disconnect", disconnect)
+    monkeypatch.setattr(client, "_do_disconnect", disconnect)
+    # Exercise the owner-task hook directly: process-control exceptions must
+    # escape this hook after cleanup, not enter pytest through a child task.
     with pytest.raises(signal):
-        await client.connect()
+        await client._do_connect(timeout=3.0)
     assert cleaned == [True]
 
 

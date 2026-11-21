@@ -49,7 +49,7 @@ def test_spec_collects_lazy_gateway_adapters():
 def gateway_extensions(tmp_path, monkeypatch):
     from agent_gateway.extensions.loader import ExtensionLoader
 
-    for name in ("adx", "agentos", "agent_client"):
+    for name in ("adx", "agentos", "runtime_management_extension"):
         root = tmp_path / "extensions" / name
         root.mkdir(parents=True)
         (root / "extension.yaml").write_text(f"name: {name}\n", encoding="utf-8")
@@ -81,7 +81,7 @@ def test_verifier_loads_physical_extensions_with_relative_imports(gateway_extens
         for name in verifier.sys.modules
         if name.startswith(prefix) and "." not in name.removeprefix(prefix)
     }
-    assert loaded == {"adx", "agentos", "agent_client"}
+    assert loaded == {"adx", "agentos", "runtime_management_extension"}
     for name in loaded:
         module = verifier.sys.modules[prefix + name]
         assert Path(module.__file__) == gateway_extensions / name / "extension.py"

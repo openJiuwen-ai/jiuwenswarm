@@ -1549,6 +1549,44 @@ def _ensure_mcp_builtins(
         pass  # 仅登记到 diff 摘要，文件已解压就位
 
 
+def _migrate_local_gateway_extension_dirs(config_path: Path) -> None:
+    """Add Swarm's built-ins to the old stock Gateway search path."""
+    from agent_gateway.common.config import config_write_lock, dump_yaml_round_trip, load_yaml_round_trip
+
+    legacy_dirs = "${EXTENSION_DIRS:-agent_gateway/extensions}"
+    try:
+        with config_write_lock(config_path=config_path):
+            config = load_yaml_round_trip(config_path)
+            extensions = config.get("extensions") if isinstance(config, dict) else None
+            if isinstance(extensions, dict) and extensions.get("extension_dirs") == legacy_dirs:
+                extensions["extension_dirs"] = f"{legacy_dirs};jiuwenswarm/extensions"
+                dump_yaml_round_trip(config_path, config)
+    except (OSError, YAMLError, portalocker.exceptions.LockException) as exc:
+        logger.warning("Could not migrate local Gateway extension directories in %s: %s", config_path, exc)
+
+
+def prepare_local_gateway_config(env: dict[str, str]) -> None:
+    """Prepare the effective Gateway config for a local Swarm launcher."""
+    key = "JIUWENSWARM_GATEWAY_CONFIG_DIR"
+    if env.get(key, "").strip() or is_agentos_runtime():
+        return
+
+    from agent_gateway.common.paths import get_config_file as get_gateway_config_file
+
+    gateway_config = get_gateway_config_file()
+    if gateway_config.is_file():
+        _migrate_local_gateway_extension_dirs(gateway_config)
+        return
+    env[key] = str(get_config_dir())
+
+    # Gateway reads its own dotenv file even when using the instance's YAML.
+    from dotenv import dotenv_values
+
+    extension_dirs = dotenv_values(get_env_file()).get("EXTENSION_DIRS")
+    if extension_dirs is not None:
+        env["EXTENSION_DIRS"] = extension_dirs
+
+
 def prepare_runtime_workspace(
     *,
     cleanup_stale_descs: bool = True,

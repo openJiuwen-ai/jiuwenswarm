@@ -234,3 +234,32 @@ test('host logos are never dimmed in the detail page', async () => {
     }
   });
 });
+
+test('the WPS card opens the same detail page with the WPS apps, and installs without a certificate prompt', async () => {
+  const wps = installed => ({
+    installed,
+    problems: [],
+    apps: Object.fromEntries(['wps-writer', 'wps-spreadsheet', 'wps-presentation']
+      .map(app => [app, installed ? 'installed' : 'not_installed'])),
+  });
+  const calls = [];
+  const fetch = async (url, init = {}) => {
+    calls.push(`${init.method ?? 'GET'} ${url}`);
+    return json(init.method ? wps(true) : { suites: { office: office(false), wps: wps(false) } });
+  };
+  await withPlaza({ calls, fetch }, async container => {
+    const cards = $$(container, 'connector-market-card');
+    assert.deepEqual(cards.map(element => element.textContent.match(/WorkSwarm for \w+/)[0]),
+      ['WorkSwarm for Office', 'WorkSwarm for WPS']);
+    await click(cards[1]);
+    assert.equal($(container, 'office-addins-title').textContent, 'WorkSwarm for WPS');
+    assert.deepEqual($$(detail(container), 'office-addins-app').map(row => row.textContent),
+      ['WPS 演示未安装', 'WPS 文字未安装', 'WPS 表格未安装']);
+    assert.match($(detail(container), 'office-addins-start').textContent, /重启 WPS.*信任.*打开 WorkSwarm/);
+    await click($(detail(container), 'office-addins-action'));
+    assert.doesNotMatch($(document, 'office-addins-confirm').textContent, /证书|登录密码/);
+    await click($(document, 'office-addins-confirm-ok'));
+    assert.equal(calls.at(-1), 'POST /desktop-api/office-addins/wps/install');
+    assert.equal(statusOf(container, 'wps-presentation'), '已安装');
+  });
+});

@@ -959,7 +959,7 @@ async def test_manager_confirmation_returns_typed_failure_without_writing(enviro
 
     hub, skills, _, installer = environment
     monkeypatch.setattr("jiuwenswarm.common.config.get_config", lambda: {
-        "symphony": {"evolution": {"flow": {"enabled": True}}},
+        "symphony": {"orchestration": {"experience": {"enabled": True}}},
     })
     plan = await _prepare(hub, installer)
     directory = installer.work_dir / "plans" / plan["plan_id"]
@@ -995,7 +995,7 @@ async def test_manager_confirmation_returns_typed_failure_without_writing(enviro
 @pytest.mark.asyncio
 async def test_discovery_off_blocks_new_confirmation_but_not_accepted_install(environment, monkeypatch):
     hub, skills, _, installer = environment
-    config = {"symphony": {"evolution": {"flow": {"enabled": False}}}}
+    config = {"symphony": {"orchestration": {"experience": {"enabled": False}}}}
     monkeypatch.setattr("jiuwenswarm.common.config.get_config", lambda: config)
     # Old deployment settings cannot bypass the persisted UI switch.
     monkeypatch.setenv("SKILLPACK_PRODUCTIZATION_ENABLED", "true")
@@ -1017,11 +1017,11 @@ async def test_discovery_off_blocks_new_confirmation_but_not_accepted_install(en
         return await original_commit(*args, **kwargs)
 
     monkeypatch.setattr(installer, "commit", delayed_commit)
-    config["symphony"]["evolution"]["flow"]["enabled"] = True
+    config["symphony"]["orchestration"]["experience"]["enabled"] = True
     task = asyncio.create_task(manager.handle_skills_team_skills_hub_install(params))
     try:
         await asyncio.wait_for(entered.wait(), timeout=5)
-        config["symphony"]["evolution"]["flow"]["enabled"] = False
+        config["symphony"]["orchestration"]["experience"]["enabled"] = False
     finally:
         resume.set()
     result = await task
@@ -1109,7 +1109,7 @@ async def test_manager_marketplace_confirm_and_shared_member_lifecycle(tmp_path,
     from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 
     monkeypatch.setattr("jiuwenswarm.common.config.get_config", lambda: {
-        "symphony": {"evolution": {"flow": {"enabled": True}}},
+        "symphony": {"orchestration": {"experience": {"enabled": True}}},
     })
     monkeypatch.setenv("TEAM_SKILLS_HUB_BASE_URL", "https://localhost")
     hub = HubFixture()

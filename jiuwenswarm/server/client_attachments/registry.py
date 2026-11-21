@@ -53,6 +53,8 @@ APPS: dict[str, tuple[str, str, frozenset[Capability]]] = {
     "office-word": ("jiuwenswarm/office/word", "office", _TASK_PANE_LEAVES_OUT),
     "office-excel": ("jiuwenswarm/office/excel", "office", _TASK_PANE_LEAVES_OUT),
     "wps-presentation": ("jiuwenswarm/office/powerpoint", "wps", _TASK_PANE_LEAVES_OUT),
+    "wps-spreadsheet": ("jiuwenswarm/office/excel", "wps", _TASK_PANE_LEAVES_OUT),
+    "wps-writer": ("jiuwenswarm/office/word", "wps", _TASK_PANE_LEAVES_OUT),
 }
 
 
