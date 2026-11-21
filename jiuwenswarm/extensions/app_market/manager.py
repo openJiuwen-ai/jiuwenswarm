@@ -747,7 +747,7 @@ class AppMarketManager:
             raise AppMarketError("app_work_dir_missing", "Application not found")
         if manifest.source != "hub":
             raise AppMarketError(
-                "app_work_dir_missing",
+                "app_not_hub_installed",
                 "Only Hub-installed applications support in-place update",
             )
         active = self._active_job(app_id)

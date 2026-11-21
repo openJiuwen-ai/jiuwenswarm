@@ -308,12 +308,16 @@ def test_convert_hub_app_keeps_one_registration_and_directory(tmp_path):
     assert (source_dir / "data" / "save.json").is_file() and (source_dir / ".git").is_dir()
     assert manager.storage.load_install_record(app_id) is None
     assert manager._installed_hub_app(ASSET, OWNER, HUB_URL)[1] is None
-    with pytest.raises(AppMarketError, match="Only Hub-installed applications"):
+    with pytest.raises(AppMarketError) as update_error:
         asyncio.run(manager.start_update(app_id=app_id, owner_id=OWNER))
-    with pytest.raises(hub_install.AppInstallError, match="Hub application not found"):
+    assert update_error.value.code == "app_not_hub_installed"
+    assert "Only Hub-installed applications" in str(update_error.value)
+    with pytest.raises(hub_install.AppInstallError) as uninstall_error:
         asyncio.run(hub_install.uninstall_hub_app(
             manager=manager, app_id=app_id, owner_id=OWNER, remove_files=True,
         ))
+    assert uninstall_error.value.code == "app_not_hub_installed"
+    assert "delete the local app instead" in str(uninstall_error.value)
 
     republished = asyncio.run(manager.publish_app(str(entry), "session", OWNER))
     assert republished["app_id"] == app_id
