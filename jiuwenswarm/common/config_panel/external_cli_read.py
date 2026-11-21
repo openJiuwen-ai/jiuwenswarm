@@ -64,6 +64,9 @@ def flatten_external_cli_agents_for_config_panel(raw: dict[str, Any]) -> dict[st
     histories: Any = raw
     for segment in ("modes", "team", "jiuwen_team", "external_cli_path_histories"):
         histories = histories.get(segment) if isinstance(histories, dict) else None
+    disabled_modes: Any = raw
+    for segment in ("modes", "team", "jiuwen_team", "external_cli_disabled_modes"):
+        disabled_modes = disabled_modes.get(segment) if isinstance(disabled_modes, dict) else None
     configured: dict[str, dict[str, str]] = {}
     if isinstance(agents, list):
         for item in agents:
@@ -83,6 +86,11 @@ def flatten_external_cli_agents_for_config_panel(raw: dict[str, Any]) -> dict[st
         cli_path = entry.get("cli_path", "") if entry is not None else ""
         # The uploaded executable is the custom agent's built-in CLI choice.
         builtin = entry is not None and cli_path in {"", _uploaded_cli_path(cli_agent)}
+        if entry is None:
+            # A disabled agent is dropped from the list; its record keeps the
+            # last explicit built-in/custom mode so re-enabling restores that
+            # choice instead of always reporting custom mode (!10561 检视).
+            builtin = disabled_modes.get(cli_agent) == "true" if isinstance(disabled_modes, dict) else False
         history = histories.get(cli_agent) if isinstance(histories, dict) else None
         # Keep the first occurrence so a hand-edited config cannot show
         # duplicate dropdown options.

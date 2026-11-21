@@ -470,6 +470,10 @@ function ExternalCliSettings({
       };
       const updates: Record<string, string> = {};
       applyExternalCliAgentAtomicUpdates(updates, cliAgent, effectiveDrafts, savedValues);
+      // The kept path joins path_histories SERVER-SIDE (the disable append in
+      // external_cli_path_histories_from_switches) — the frontend must not
+      // write the whole history array from its own snapshot, which could roll
+      // back entries appended concurrently on disk (!10561 第二轮检视).
       if (!Object.keys(updates).length) {
         if (!choice.force) return;
         // An install click must always produce a payload: the backend only

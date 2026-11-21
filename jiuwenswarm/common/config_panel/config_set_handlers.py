@@ -44,6 +44,7 @@ from jiuwenswarm.common.config import (
     DEFAULT_TEAM_MEMBER_MESSAGING_ENABLED,
     DEFAULT_TEAM_TASK_VERIFICATION_ENABLED,
     EXTERNAL_CLI_AGENTS_CONFIG_PATH,
+    EXTERNAL_CLI_DISABLED_MODES_CONFIG_PATH,
     SWARMFLOW_BUDGET_CONFIG_PATH,
     SWARMFLOW_ENABLED_CONFIG_PATH,
     SWARMFLOW_WORKTREE_CONFIG_PATH,
@@ -63,6 +64,7 @@ from jiuwenswarm.common.config import (
     update_default_model_provider_in_config,
     update_enable_free_models_in_config,
     update_external_cli_agents_in_config,
+    update_external_cli_disabled_modes_in_config,
     update_external_cli_path_histories_in_config,
     update_kv_cache_affinity_enabled_in_config,
     update_memory_forbidden_description_in_config,
@@ -1225,10 +1227,12 @@ def external_cli_path_histories_from_switches(raw: dict[str, Any], params: dict[
     Returns:
         ``cli_agent`` to its merged history paths. Kinds whose history key is
         absent from ``params`` keep their persisted history verbatim. When a
-        save switches an agent from one external path to another, the
-        previously effective path is appended so switching never loses it;
-        the currently effective path stays out of the history because it is
-        always the dropdown's first option.
+        save switches an agent from one external path to another, or disables
+        it (the agent leaves the list), the previously effective path is
+        appended SERVER-SIDE against the pre-save config so the frontend never
+        overwrites the disk history with its own snapshot; the currently
+        effective path stays out of the history because it is always the
+        dropdown's first option.
     """
     current = flatten_external_cli_agents_for_config_panel(raw)
     merged: dict[str, list[str]] = {}
@@ -1243,15 +1247,74 @@ def external_cli_path_histories_from_switches(raw: dict[str, Any], params: dict[
         if isinstance(parsed, list):
             history = [str(path) for path in parsed if str(path or "").strip()]
         cli_path_key = external_cli_agent_key(cli_agent, "cli_path")
-        if cli_path_key in params:
+        enabled_key = external_cli_agent_key(cli_agent, "enabled")
+        if cli_path_key in params or enabled_key in params:
             old_path = str(current.get(cli_path_key, "") or "").strip()
-            _, _, new_path = external_cli_agent_effective_state(cli_agent, current, params)
-            # Switching to the built-in CLI reports an empty new path; the
-            # replaced custom path must still land in the history.
-            if old_path and old_path != new_path and old_path not in history:
+            enabled, _, new_path = external_cli_agent_effective_state(cli_agent, current, params)
+            was_enabled = current.get(enabled_key) == "true"
+            # A path replacement (old != new) and the disable transition (the
+            # agent leaves the list) both append the previously effective path
+            # SERVER-SIDE — a frontend snapshot array must never roll back
+            # entries appended concurrently on disk (!10561 第二轮检视).
+            disabled_now = was_enabled and not enabled
+            if old_path and (old_path != new_path or disabled_now) and old_path not in history:
                 history = [*history, old_path]
         if history:
             merged[cli_agent] = history
+    return merged
+
+
+def external_cli_disabled_modes_from_switches(
+    raw: dict[str, Any],
+    params: dict[str, Any],
+    external_cli_agents: list[dict[str, Any]],
+) -> dict[str, str]:
+    """Track each disabled agent's last explicit built-in/custom mode.
+
+    Disabled agents are dropped from ``external_cli_agents`` and the config
+    read would otherwise always report ``use_builtin=false`` for them, so
+    re-enabling could silently restore a stale custom path instead of the
+    built-in CLI the user last chose. Agents whose keys are absent from this
+    save keep their persisted record verbatim; an agent that actually lands
+    in the saved list clears its record because the entry carries the mode
+    again. An agent kept OUT of the list even though its keys say enabled
+    (one-click install deferred while dependencies are prepared) refreshes
+    its record instead — the flatten must not report it back in custom mode.
+
+    Args:
+        raw: The pre-save config snapshot.
+        params: The flattened settings params of this save.
+        external_cli_agents: The list this save is about to persist, after
+            the dependency-install deferral filtering.
+
+    Returns:
+        ``cli_agent`` to ``"true"``/``"false"`` (its ``use_builtin`` switch
+        while absent from the list). An empty mapping removes the whole key.
+    """
+    current = flatten_external_cli_agents_for_config_panel(raw)
+    persisted = get_nested_config_value(raw, EXTERNAL_CLI_DISABLED_MODES_CONFIG_PATH, {})
+    merged: dict[str, str] = {}
+    if isinstance(persisted, dict):
+        for name, mode in persisted.items():
+            key = str(name).strip()
+            if key and mode in {"true", "false"}:
+                merged[key] = mode
+    for cli_agent in external_cli_agent_kinds():
+        touched = any(
+            key.startswith(f"external_cli_agent_{cli_agent}_") and not key.endswith("_path_histories")
+            for key in params
+        )
+        if not touched:
+            continue
+        _, use_builtin, _ = external_cli_agent_effective_state(cli_agent, current, params)
+        in_final_list = any(
+            isinstance(item, dict) and str(item.get("cli_agent") or "").strip() == cli_agent
+            for item in (external_cli_agents or [])
+        )
+        if in_final_list:
+            merged.pop(cli_agent, None)
+        else:
+            merged[cli_agent] = "true" if use_builtin else "false"
     return merged
 
 
@@ -1678,6 +1741,9 @@ def apply_config_payload(
                     )
                     update_external_cli_path_histories_in_config(
                         external_cli_path_histories_from_switches(raw, params)
+                    )
+                    update_external_cli_disabled_modes_in_config(
+                        external_cli_disabled_modes_from_switches(raw, params, external_cli_agents)
                     )
                     refresh_external_cli_builtin_models(
                         external_cli_agents,

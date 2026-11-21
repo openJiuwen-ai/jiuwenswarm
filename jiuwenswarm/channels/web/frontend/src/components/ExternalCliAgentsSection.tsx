@@ -689,9 +689,29 @@ export function ExternalCliAgentsSection({
       if (probe?.path && isInstalledStatus(probe)) {
         return { enabled: true, useBuiltin: false, cliPath: probe.path };
       }
+      // 未配置路径且 PATH 无可执行文件：先试路径历史里最近可用的本地路径，
+      // 都没有才回退内置 CLI——关闭再打开不得静默改用内置（#6753 问题二）。
+      const historyPaths = parseExternalCliPathHistories(
+        draftValues[externalCliKey(cliAgent, 'path_histories')],
+      ).reverse();
+      for (const candidate of historyPaths) {
+        // 单条历史探测失败（传输错误等）视为不可用，继续下一条，
+        // 不得中断整个启用流程丢掉内置回退（!10561 检视）。
+        let historyProbe: ExternalCliDetectResult | undefined;
+        try {
+          historyProbe = await onDetect?.(cliAgent, candidate, false);
+        } catch {
+          continue;
+        }
+        if (historyProbe?.path && isInstalledStatus(historyProbe)) {
+          return { enabled: true, useBuiltin: false, cliPath: historyProbe.path };
+        }
+      }
       return { enabled: true, useBuiltin: true, cliPath: '' };
+      // draftValues 必须入依赖：path_histories 在关闭开关时才写入草稿，缺失会让
+      // 本回调持有挂载时快照，同会话内关闭→重开读到空历史而回退内置（#6753）。
     },
-    [onDetect],
+    [draftValues, onDetect],
   );
 
   // Force dependency repair even when the executable choice is unchanged.

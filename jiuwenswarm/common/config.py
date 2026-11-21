@@ -69,6 +69,10 @@ EXTERNAL_CLI_AGENTS_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli
 EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_path_histories")
 # Cap per-kind CLI path histories so the config file cannot grow unbounded.
 EXTERNAL_CLI_PATH_HISTORY_LIMIT = 10
+# 禁用 agent 会从 external_cli_agents 列表移除，读取侧对其扁平化为
+# use_builtin=false——用户禁用前最后一次显式选择的内置/自定义模式需要单独
+# 记录，重新启用时才能恢复上次选择而不是回退内置（!10561 检视）。
+EXTERNAL_CLI_DISABLED_MODES_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_cli_disabled_modes")
 EXTERNAL_TRANSPORT_CONFIG_PATH = ("modes", "team", "jiuwen_team", "external_transport")
 _BUILTIN_EXTERNAL_CLI_AGENTS = ("claude", "codex")
 # Keep progressive tool search enabled by default for existing user workspaces
@@ -3078,6 +3082,14 @@ def replace_teams_in_config(front_payload: dict[str, Any]) -> None:
             histories = existing_teams["jiuwen_team"].get("external_cli_path_histories")
             if histories:
                 default_team["external_cli_path_histories"] = histories
+    # Same as path histories: the team-editor payload carries no disabled-mode
+    # records, and a plain replace would silently wipe them — a disabled
+    # agent would then flatten back to custom mode on re-enable (!10561 检视).
+    if isinstance(default_team, dict) and "external_cli_disabled_modes" not in default_team:
+        if isinstance(existing_teams, dict) and isinstance(existing_teams.get("jiuwen_team"), dict):
+            disabled_modes = existing_teams["jiuwen_team"].get("external_cli_disabled_modes")
+            if disabled_modes:
+                default_team["external_cli_disabled_modes"] = disabled_modes
     data["modes"]["team"] = team_mapping
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
@@ -3293,6 +3305,34 @@ def update_external_cli_path_histories_in_config(histories: dict[str, list[str]]
         current[EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[-1]] = normalized
     else:
         current.pop(EXTERNAL_CLI_PATH_HISTORIES_CONFIG_PATH[-1], None)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
+def update_external_cli_disabled_modes_in_config(modes: dict[str, str]) -> None:
+    """Persist each disabled external CLI agent's last explicit built-in mode.
+
+    Args:
+        modes: ``cli_agent`` to ``"true"``/``"false"`` (its ``use_builtin``
+            switch when it was disabled); agents absent from the mapping keep
+            their persisted record verbatim, and an empty mapping removes the
+            whole key.
+    """
+    normalized: dict[str, str] = {}
+    for cli_agent, mode in modes.items():
+        name = str(cli_agent).strip()
+        if name and mode in {"true", "false"}:
+            normalized[name] = mode
+
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    current = data
+    path_so_far: list[str] = []
+    for segment in EXTERNAL_CLI_DISABLED_MODES_CONFIG_PATH[:-1]:
+        path_so_far.append(segment)
+        current = _ensure_config_object(current, segment, ".".join(path_so_far))
+    if normalized:
+        current[EXTERNAL_CLI_DISABLED_MODES_CONFIG_PATH[-1]] = normalized
+    else:
+        current.pop(EXTERNAL_CLI_DISABLED_MODES_CONFIG_PATH[-1], None)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
