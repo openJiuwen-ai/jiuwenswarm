@@ -136,6 +136,11 @@ def _tool_visibility(tool: dict[str, Any]) -> list[str]:
     return list(visibility) if isinstance(visibility, list) else ["model", "app"]
 
 
+def _is_model_visible(tool: dict[str, Any]) -> bool:
+    """``False`` for app-only tools (``_meta.ui.visibility`` without ``"model"``)."""
+    return "model" in _tool_visibility(tool)
+
+
 async def list_app_tools(name: str) -> list[dict[str, Any]]:
     """Return the server's raw tool list (name, schema, annotations, ``_meta``)."""
     client = await _client_for(name)
@@ -218,11 +223,12 @@ async def call_app_tool(name: str, tool: str, arguments: dict[str, Any] | None) 
 # ``output["result"]``, so the model-facing text is unchanged.
 
 _raw_call_result: ContextVar[Any] = ContextVar("jws_mcp_raw_call_result", default=None)
-# server name -> (fetched_at, {tool name -> ui resourceUri}); filled lazily per
-# server, dropped on reconnect and refreshed after _UI_RESOURCE_CACHE_TTL_S so
-# tools added/removed/re-linked at runtime are picked up.
+# server name -> (fetched_at, {tool name -> ui resourceUri}, {app-only tool
+# names}); filled lazily per server, dropped on reconnect and refreshed after
+# _UI_RESOURCE_CACHE_TTL_S so tools added/removed/re-linked at runtime are
+# picked up.
 _UI_RESOURCE_CACHE_TTL_S = 60.0
-_ui_resource_cache: dict[str, tuple[float, dict[str, str]]] = {}
+_ui_resource_cache: dict[str, tuple[float, dict[str, str], frozenset[str]]] = {}
 _PATCHED = False
 
 
@@ -233,21 +239,35 @@ def _resource_uri_of(tool: dict[str, Any]) -> str | None:
     return uri if isinstance(uri, str) and uri.startswith("ui://") else None
 
 
-async def _ui_resource_uris(client: Any) -> dict[str, str]:
+async def _tool_ui_index(client: Any) -> tuple[dict[str, str], frozenset[str]]:
+    """``({tool -> ui resourceUri}, {app-only tool names})`` for ``client``."""
     name = str(getattr(client, "_name", "") or "")
     cached = _ui_resource_cache.get(name)
     if cached is not None and time.monotonic() - cached[0] < _UI_RESOURCE_CACHE_TTL_S:
-        return cached[1]
+        return cached[1], cached[2]
     if _session_of(client) is None:
-        return {}
+        return {}, frozenset()
     result = await _with_session(client, lambda session: session.list_tools())
     uris = {}
+    app_only = set()
     for tool in result.tools:
-        uri = _resource_uri_of(_dump(tool))
+        dumped = _dump(tool)
+        uri = _resource_uri_of(dumped)
         if uri:
             uris[tool.name] = uri
-    _ui_resource_cache[name] = (time.monotonic(), uris)
-    return uris
+        if not _is_model_visible(dumped):
+            app_only.add(tool.name)
+    hidden = frozenset(app_only)
+    _ui_resource_cache[name] = (time.monotonic(), uris, hidden)
+    return uris, hidden
+
+
+async def _ui_resource_uris(client: Any) -> dict[str, str]:
+    return (await _tool_ui_index(client))[0]
+
+
+async def _app_only_tool_names(client: Any) -> frozenset[str]:
+    return (await _tool_ui_index(client))[1]
 
 
 def build_mcp_app_block(
@@ -300,6 +320,16 @@ def apply_mcp_apps_patch() -> None:
 
     async def invoke_with_app(self: Any, inputs: Any, **kwargs: Any) -> Any:
         _raw_call_result.set(None)
+        # Defense in depth for tools registered before a server re-marked them
+        # app-only: the model must never initiate an app-only tool.
+        tool_name = getattr(getattr(self, "card", None), "name", None)
+        hidden: frozenset[str] = frozenset()
+        try:
+            hidden = await _app_only_tool_names(_mcp_client_of(self))
+        except Exception:  # noqa: BLE001 - visibility lookup is best effort
+            logger.warning("[mcp.apps] visibility lookup failed before invoke", exc_info=True)
+        if tool_name in hidden:
+            raise PermissionError(f"tool '{tool_name}' is only callable from its MCP App")
         result = await original_invoke(self, inputs, **kwargs)
         if not isinstance(result, dict):
             return result
@@ -320,8 +350,59 @@ def apply_mcp_apps_patch() -> None:
         return result
 
     mcp_base.MCPTool.invoke = invoke_with_app
+    _hide_app_only_tools_from_model()
     _advertise_ui_extension()
     logger.info("[mcp.apps] MCP Apps result patch applied")
+
+
+def _hide_app_only_tools_from_model() -> None:
+    """Drop app-only tools from the tool cards the agent registers.
+
+    MCP Apps: a tool whose ``_meta.ui.visibility`` omits ``"model"`` is
+    reserved for its App (e.g. a submit/pay action the user must click) and
+    must not be offered to the model. openjiuwen's clients flatten
+    ``tools/list`` into ``McpToolCard`` and drop ``_meta``, so filter the cards
+    against the raw listing. ``mcp_app.list_tools`` / ``call_app_tool`` use the
+    raw session and still see these tools.
+    """
+    import importlib
+
+    for module_name, class_name in (
+        ("stdio_client", "StdioClient"),
+        ("sse_client", "SseClient"),
+        ("streamable_http_client", "StreamableHttpClient"),
+    ):
+        module = importlib.import_module(
+            f"openjiuwen.core.foundation.tool.mcp.client.{module_name}"
+        )
+        cls = getattr(module, class_name, None)
+        original_list_tools = getattr(cls, "list_tools", None)
+        if original_list_tools is None:
+            continue
+
+        def make_wrapper(original: Callable[..., Awaitable[Any]]) -> Callable[..., Awaitable[Any]]:
+            async def list_tools_for_model(self: Any, *args: Any, **kwargs: Any) -> Any:
+                cards = await original(self, *args, **kwargs)
+                if not cards:
+                    return cards
+                # A (re)listing is the moment tools may change: refresh.
+                _ui_resource_cache.pop(str(getattr(self, "_name", "") or ""), None)
+                try:
+                    hidden = await _app_only_tool_names(self)
+                except Exception:  # noqa: BLE001 - never break tool listing
+                    logger.warning("[mcp.apps] visibility lookup failed for tools/list", exc_info=True)
+                    return cards
+                if not hidden:
+                    return cards
+                logger.info(
+                    "[mcp.apps] hiding app-only tools from model server=%s tools=%s",
+                    getattr(self, "_name", "?"), sorted(hidden),
+                )
+                return [card for card in cards if getattr(card, "name", None) not in hidden]
+
+            return list_tools_for_model
+
+        cls.list_tools = make_wrapper(original_list_tools)
 
 
 def _advertise_ui_extension() -> None:
