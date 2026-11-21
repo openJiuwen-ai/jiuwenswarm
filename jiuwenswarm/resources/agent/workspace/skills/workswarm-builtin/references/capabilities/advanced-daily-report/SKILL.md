@@ -132,14 +132,25 @@ python ~/.jiuwenswarm/agent/workspace/skills/workswarm-builtin/references/capabi
 
 ### 定时触发
 
-通过 `HEARTBEAT.md` 配置定时执行：
+通过系统的「定时任务」功能周期性触发，**不要**使用已废弃的 `HEARTBEAT.md`：
 
-```markdown
-## 活跃的任务项
-- 生成今日工作日报  # 每天执行
-- 每周五生成周报    # 周报
-- 每月末生成月报    # 月报
+- **日报**：每天 18:00
+- **周报**：每周五 18:00
+- **月报**：每月最后一天 18:00
+
+使用 `cron_create_job` 创建定时任务，示例参数：
+
+```json
+{
+  "name": "每日工作日报",
+  "cron_expr": "0 18 * * *",
+  "timezone": "Asia/Shanghai",
+  "description": "调用 advanced-daily-report 技能生成今日日报并展示结果。",
+  "targets": "web"
+}
 ```
+
+如需绑定当前会话并在原会话中继续，可使用 `heartbeat_create_job`；独立日报提醒推荐使用 `cron_create_job`。
 
 ## 日报模板
 
@@ -217,16 +228,22 @@ EMAIL_PROVIDER=163
 **注意**：`EMAIL_TOKEN` 是邮箱授权码，不是登录密码。
 获取方式：登录163邮箱 → 设置 → POP3/SMTP/IMAP → 开启IMAP服务 → 获取授权码
 
-### 心跳配置
+### 自动化配置
 
-```yaml
-heartbeat:
-  every: 3600
-  target: feishu
-  active_hours:
-    start: 18:00
-    end: 18:30
-```
+创建定时任务时建议参数：
+
+- `name`: 任务名称，如"每日工作日报"
+- `cron_expr`: Cron 表达式，日报用 `0 18 * * *`
+- `timezone`: 时区，建议 `Asia/Shanghai`
+- `description`: 任务提示词，如"调用 advanced-daily-report 技能生成今日日报并展示结果。"
+- `targets`: 推送频道，如 `web` / `feishu` / `dingtalk`
+
+使用 `heartbeat_create_job` 时建议参数：
+
+- `name`: 任务名称
+- `schedule.type`: `cron`
+- `schedule.cron_expr`: `0 18 * * *`
+- `prompt`: "调用 advanced-daily-report 技能生成今日日报并展示结果。"
 
 ## API 参考
 
@@ -286,7 +303,7 @@ monthly = generator.generate_monthly(2026, 3)
 
 1. **Git 仓库**: 确保仓库路径正确且有访问权限
 2. **邮箱授权**: 使用授权码而非登录密码
-3. **心跳时间**: 修改后需重启服务
+3. **定时任务**: 修改调度后由系统的定时任务机制自动生效，无需重启服务
 4. **数据存储**: 报告保存到 `~/.jiuwenswarm/agent/reports/`
 
 ## 更新日志
