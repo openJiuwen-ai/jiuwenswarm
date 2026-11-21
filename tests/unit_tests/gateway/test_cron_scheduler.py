@@ -2551,3 +2551,119 @@ class TestCronUnattendedUserInteraction:
         env = agent.stream_requests[0]
         assert env.params["supports_user_interaction"] is False
         assert env.channel_context["supports_user_interaction"] is False
+
+
+class TestUnaryEmptyFinalAnswerClassification:
+    """cron unary 空文本分流：合法空（empty_final_answer 标记）判成功，
+    提取失败空（无标记）维持 771f6cec0 的降级失败。
+
+    背景（20261114_0500/TC-CJC-ACTION-02）：子会话工具活动正常但最终未产出
+    汇总文本，adapter 返回 ok=True + 空 content，旧逻辑一刀切判 failed。
+    """
+
+    @staticmethod
+    def _make_state(job):
+        return CronRunState(
+            run_id="job-1:1",
+            job_id=job.id,
+            wake_at_iso="2026-11-14T05:19:06+08:00",
+            push_at_iso="2026-11-14T05:19:06+08:00",
+            job_name=job.name,
+            targets=job.targets,
+            session_id=None,
+            chat_type=None,
+            timezone=job.timezone,
+        )
+
+    def _build(self, tmp_path, chat_payload, chat_ok=True):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+
+        class _Client:
+            def __init__(self) -> None:
+                self.calls = []
+
+            async def send_request(self, envelope, *, timeout=None, **kw):
+                self.calls.append(getattr(envelope, "method", ""))
+                return AgentResponse(
+                    request_id=getattr(envelope, "request_id", "") or "",
+                    channel_id=getattr(envelope, "channel", "") or "",
+                    ok=chat_ok,
+                    payload=chat_payload,
+                )
+
+            async def send_request_stream(self, envelope):  # pragma: no cover
+                raise RuntimeError("not used")
+
+        return store, _Client()
+
+    @pytest.mark.asyncio
+    async def test_legitimate_empty_final_answer_succeeds(self, tmp_path):
+        """带 empty_final_answer 标记的空文本 → success + 可见文案（非空）。"""
+        store, client = self._build(
+            tmp_path, {"content": "", "empty_final_answer": True}
+        )
+        job = await _create_one_job(store, targets="web")
+        svc = _TestableScheduler(store=store, agent_client=client, message_handler=FakeMessageHandler())
+        envelope = SimpleNamespace(request_id="job-1:1", method="chat.send", channel="__cron__")
+
+        text, ok = await svc.run_unary_cron_job(
+            envelope=envelope, timeout_seconds=120.0, state=self._make_state(job)
+        )
+
+        assert ok is True
+        assert text == "[cron] 任务执行完成（无文本汇总）"
+
+    @pytest.mark.asyncio
+    async def test_unmarked_empty_text_still_fails(self, tmp_path):
+        """无标记的空文本（提取失败/格式不匹配）→ 维持降级失败（771f6cec0 初衷）。"""
+        for payload in ({"content": ""}, {}, {"unexpected_field": 1}):
+            store, client = self._build(tmp_path, payload)
+            job = await _create_one_job(store, targets="web")
+            svc = _TestableScheduler(store=store, agent_client=client, message_handler=FakeMessageHandler())
+            envelope = SimpleNamespace(request_id="job-1:1", method="chat.send", channel="__cron__")
+
+            text, ok = await svc.run_unary_cron_job(
+                envelope=envelope, timeout_seconds=120.0, state=self._make_state(job)
+            )
+
+            assert ok is False
+            assert text == "[cron] 任务执行完成但未返回结果内容"
+
+    @pytest.mark.asyncio
+    async def test_error_passthrough_unchanged(self, tmp_path):
+        """ok=False 错误响应仍透传错误文本，不受标记逻辑影响。"""
+        store, client = self._build(tmp_path, {"error": "模型调用失败"}, chat_ok=False)
+        job = await _create_one_job(store, targets="web")
+        svc = _TestableScheduler(store=store, agent_client=client, message_handler=FakeMessageHandler())
+        envelope = SimpleNamespace(request_id="job-1:1", method="chat.send", channel="__cron__")
+
+        text, ok = await svc.run_unary_cron_job(
+            envelope=envelope, timeout_seconds=120.0, state=self._make_state(job)
+        )
+
+        assert ok is False
+        assert text == "模型调用失败"
+
+    @pytest.mark.asyncio
+    async def test_marker_survives_wire_roundtrip(self, tmp_path):
+        """empty_final_answer 必须穿过 E2A unary 编解码（gateway 侧才能看到标记）。"""
+        from jiuwenswarm.common.e2a.gateway_normalize import (
+            e2a_response_from_agent_response,
+            e2a_response_to_agent_response,
+        )
+
+        resp = AgentResponse(
+            request_id="job-1:1",
+            channel_id="__cron__",
+            ok=True,
+            payload={"content": "", "empty_final_answer": True},
+        )
+        e2a = e2a_response_from_agent_response(resp, response_id="r1")
+        wire = e2a.to_dict()
+        back = e2a_response_to_agent_response(
+            type(e2a).from_dict(dict(wire))
+        )
+
+        assert back.ok is True
+        assert back.payload.get("empty_final_answer") is True
+        assert back.payload.get("content") == ""

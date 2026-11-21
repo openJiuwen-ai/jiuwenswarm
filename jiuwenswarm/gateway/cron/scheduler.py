@@ -1429,12 +1429,21 @@ class CronSchedulerService:
             )
             text = _extract_text_from_agent_payload(resp.payload)
             ok = bool(resp.ok)
-            # 成功但 result_text 为空：响应格式与 _extract_text_from_agent_payload
-            # 的识别字段不匹配（如 E2A result 非 dict、或字段名不在 error/content/
-            # heartbeat/text 之内）。若放任空字符串进入 state.result_text，会触发
-            # _on_push_update 的 "empty result_text" 跳过 → 真实结果永不补发、
-            # 占位永久留在界面。这里降级为失败并生成可见文案，触发 error 兜底通道。
+            # 成功但 result_text 为空，分两类处理：
+            # ① 合法空（adapter 带 empty_final_answer 标记）：子会话执行完成、
+            #    工具活动正常，仅模型未产出汇总文本——判成功，并生成非空可见文案
+            #    （避免 _on_push_update 的 empty skip 导致静默丢失）。
+            # ② 提取失败空（无标记）：响应格式与 _extract_text_from_agent_payload
+            #    识别字段不匹配（如 E2A result 非 dict、或字段名不在 error/content/
+            #    heartbeat/text 之内）。维持 771f6cec0 的降级失败+可见文案，
+            #    触发 error 兜底通道——"宁可报错，不可沉默"。
             if ok and not text:
+                if isinstance(resp.payload, dict) and resp.payload.get("empty_final_answer"):
+                    logger.info(
+                        "[Cron] unary succeeded with empty final answer (legitimate) request_id=%s",
+                        getattr(envelope, "request_id", ""),
+                    )
+                    return "[cron] 任务执行完成（无文本汇总）", True
                 logger.warning(
                     "[Cron] unary succeeded but result_text empty request_id=%s payload=%s payload_type=%s",
                     getattr(envelope, "request_id", ""),

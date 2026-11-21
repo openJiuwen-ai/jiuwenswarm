@@ -10822,7 +10822,9 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     payload={"event_type": "runtime.accepted", "request_id": request.request_id},
                     metadata=request.metadata,
                 )
+            chunks_seen = 0
             async for chunk in interaction_stream:
+                chunks_seen += 1
                 if hasattr(chunk, "type") and hasattr(chunk, "payload"):
                     _chunk_type_counts[str(chunk.type)] = (
                         _chunk_type_counts.get(str(chunk.type), 0) + 1
@@ -10848,6 +10850,13 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 else:
                     parsed = self._parse_stream_chunk(chunk)
                     if parsed is not None:
+                        # 与 typed 分支同规：dict 形错误事件（chat.error / execution.error）
+                        # 不容静默丢弃——否则"空正文 + 窄口径漏错误"会被误标合法空。
+                        parsed_evt = str(parsed.get("event_type") or "").strip()
+                        if parsed_evt in ("chat.error", "error", ERROR_EVENT_TYPE):
+                            err = parsed.get("error") or parsed.get("message") or ""
+                            if err and not error_text:
+                                error_text = str(err)
                         text = parsed.get("content", "")
                         if text:
                             collected_content.append(text)
@@ -10909,7 +10918,13 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
 
         content = "".join(collected_content) if collected_content else ""
 
-        if not content and not error_text:
+        # 合法空标记：需正向完成证据（本轮至少有 chunk 产出），不能只凭
+        # "无正文且无错误"的否定条件——零 chunk 静默死亡 / 未见错误事件的非
+        # 正常收敛会被误标为合法空，把 771f6cec0 守住的"宁可报错不可沉默"
+        # 翻成假成功（AI 检视 2026-11-19 P2 采纳：正向证据 + 错误采集同规）。
+        empty_final_answer = not content and not error_text and chunks_seen > 0
+
+        if empty_final_answer:
             # 非流式聚合结果为空且无错误文本——上层（如 cron 调度器）只能拿到空 content，
             # 最终显示「任务执行完成但未返回结果内容」。打出 chunk 分布定位根因。
             logger.warning(
@@ -10940,11 +10955,14 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             )
 
         self._mark_history_tail_synced(request.request_id)
+        success_payload: dict[str, Any] = {"content": content}
+        if empty_final_answer:
+            success_payload["empty_final_answer"] = True
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=True,
-            payload={"content": content},
+            payload=success_payload,
             metadata=request.metadata,
         )
 
