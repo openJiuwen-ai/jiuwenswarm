@@ -7,6 +7,7 @@ from pathlib import Path
 import uuid
 from typing import Any
 
+from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.sdk import (
     ApplicationPluginExtension,
     ApplicationPluginServices,
@@ -75,12 +76,16 @@ class AppMarketPlugin(ApplicationPluginExtension):
             return WebChannel.connection_user_id(ws) or ""
 
         def routed_request(user_id: str, label: str) -> CoreRequest:
+            from agent_gateway.common.request_method import parse_request_method
             from agent_gateway.routing.e2a_proxy import fetch_agent_unary
 
-            async def request(method, payload):
+            async def request(method: ReqMethod, payload: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+                gateway_method = parse_request_method(method.value)
+                if gateway_method is None:
+                    return False, {"code": "METHOD_NOT_FOUND", "error": f"Unknown Gateway method: {method.value}"}
                 return await fetch_agent_unary(
                     agent_client=services.agent_client,
-                    req_method=method,
+                    req_method=gateway_method,
                     params=payload,
                     session_id=None,
                     user_id=user_id or None,

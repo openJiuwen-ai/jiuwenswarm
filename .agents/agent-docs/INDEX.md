@@ -503,6 +503,7 @@ generated: true
 | [D-20261103-1444-app-role-session](designs/active/D-20261103-1444-app-role-session/design.md) | D | 应用角色会话的最小提示词运行配置 | kdgmpw | — |
 | [F_20261103_1106_app-market-containers-and-editing](features/app-market-implementation.md) | F | 应用市场浏览器容器与编辑会话 | default | 无独立 D：用户明确授权初步本地实现，无独立设计文档。 |
 | [F_20261103_1501_app-role-session](features/app-role-session.md) | F | 保留基础系统提示的轻量 NPC 会话 | kdgmpw | [D-20261103-1444-app-role-session](designs/active/D-20261103-1444-app-role-session/design.md) |
+| [F_20261116_2021_local-req-method](features/F_20261116_2021_local-req-method.md) | F | ReqMethod 本地维护与 E2A 字符串边界 | mingo007 | 无独立 D：按用户明确要求迁移现有枚举并独立提交 PR，保持线协议兼容，未单独建立设计文档。 |
 | [F_20261119_1039_app-hub](features/F_20261119_1039_app-hub.md) | F | Hub 应用分发与本地安装实施 | kdgmpw | 无独立 D：设计输入为仓库外部的《App Hub 应用资产方案设计》与《App Hub 双仓实施方案》，未在 .agents/agent-docs/designs 建立 D 记录。 |
 | [B_20261103_1433_npc-session-project](bugfix/jiuwenswarm/extensions/app_market/npc-session-project.md) | B | 微缩生活岛 NPC 会话归属错误 | kdgmpw | 无独立 D：根据明确的故障修复要求落实既有项目绑定接口，无独立设计。 |
 | [B_20261105_0941_app-stop-graceful-and-page-close](bugfix/jiuwenswarm/extensions/app_market/app-stop-graceful-and-page-close.md) | B | 应用市场停止强杀跳过应用清理与页面关闭无感知 | kdgmpw | 无独立 D：修复依据既有契约（app-builder SKILL.md 的"应用负责优雅退出和会话清理、市场只终止进程"与扩展 README 的运行描述），无独立 D；新增契约已固化为 specs/jiuwenswarm/extensions/app_market/S_02_app-market-stop-and-page-lifecycle.md。 |
