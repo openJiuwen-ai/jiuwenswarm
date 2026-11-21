@@ -29,6 +29,7 @@ async def test_install_wait_does_not_hold_host_management_lock(
 ) -> None:
     manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(make_bus())
+    await manager.install([write_package(tmp_path / "accepted", enable=False)])
     entered, release = asyncio.Event(), asyncio.Event()
 
     async def blocking_install(paths: list[Path]) -> tuple[ActivationReport, ...]:
@@ -62,6 +63,7 @@ async def test_cancelled_install_wait_propagates_and_other_commands_continue(
 ) -> None:
     manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(make_bus())
+    await manager.install([write_package(tmp_path / "accepted", enable=False)])
     entered = asyncio.Event()
 
     async def waiting_install(paths):
@@ -87,6 +89,7 @@ async def test_failed_or_cancelled_writer_releases_lock(
 ) -> None:
     manager = ExtensionManager(tmp_path / "store", report_path=tmp_path / "report.yaml")
     await manager.init(make_bus())
+    await manager.install([write_package(tmp_path / "accepted", enable=False)])
     error = asyncio.CancelledError if cancel else RuntimeError
     monkeypatch.setattr(manager.registry, "install", AsyncMock(side_effect=error))
     monkeypatch.setattr(manager.registry, "reload", AsyncMock(return_value=_report("reload")))
