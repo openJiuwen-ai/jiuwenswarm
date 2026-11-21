@@ -31,7 +31,7 @@ from jiuwenswarm.common.permission_profile import (
     with_time_directive,
     with_workspace_directive,
 )
-from jiuwenswarm.common.schema.message import EventType
+from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_connect import (
     XiaoyiChannel,
     XiaoyiChannelConfig,
@@ -894,14 +894,14 @@ async def test_ask_user_timeout_loop_skips_text_fallback_entries(
     """
     captured, sent = [], []
     ch = _make_channel(captured, sent)
-    resumed: list[tuple[str, str]] = []
+    canceled: list[tuple[str, str]] = []
     ch._running = True
 
-    async def _fake_resume(logical_session, pending):
-        resumed.append((logical_session, pending["request_id"]))
+    async def _fake_cancel(logical_session, pending):
+        canceled.append((logical_session, pending["request_id"]))
         ch._pending_approvals.pop(logical_session, None)
 
-    monkeypatch.setattr(ch, "_resume_timed_out_ask_user", _fake_resume)
+    monkeypatch.setattr(ch, "_cancel_timed_out_ask_user", _fake_cancel)
     ch._pending_approvals["conv-1"] = {
         "request_id": "req-940",
         "source": "permission_interrupt",
@@ -927,8 +927,8 @@ async def test_ask_user_timeout_loop_skips_text_fallback_entries(
         await ch._ask_user_timeout_loop()
     except asyncio.CancelledError:
         pass
-    # 仅选项卡条目自动续跑；文本回退条目保留到期自然过期
-    assert resumed == [("conv-2", "req-941")]
+    # 仅选项卡条目自动取消；文本回退条目保留到期自然过期
+    assert canceled == [("conv-2", "req-941")]
     assert ch._pending_approvals["conv-1"]["request_id"] == "req-940"
     _cleanup_tasks(ch)
 
@@ -1742,8 +1742,8 @@ async def test_ask_user_invoke_rsp_agent_event_routes_resume(cfg_file):
 
 
 @pytest.mark.asyncio
-async def test_ask_user_timeout_default_answer(cfg_file):
-    """超时兜底：ask_user 每题选第一个选项；权限类 fail-closed 拒绝。"""
+async def test_ask_user_timeout_cancels_task_and_closes_card(cfg_file):
+    """超时兜底：取消整个任务（CHAT_CANCEL）并收口手机卡片（completed）。"""
     captured, sent = [], []
     ch = _make_channel(captured, sent)
     try:
@@ -1752,45 +1752,48 @@ async def test_ask_user_timeout_default_answer(cfg_file):
             "source": "ask_user_interrupt",
             "task_id": "task-2",
             "created_at": time.time() - 3 * 60,
-            "questions": ["你想要什么风格？", "要加图标吗？"],
+            "questions": ["你想要什么风格？"],
             "question_ids": {},
-            "question_options": {
-                "你想要什么风格？": ["深色", "浅色"],
-                "要加图标吗？": [],
-            },
+            "question_options": {"你想要什么风格？": ["深色", "浅色"]},
             "session_id": "top-1",
             "agent_id": "ag",
             "device_id": "dev",
             "push_id": "push",
+            "ask_user_tabs": True,
         }
-        await ch._resume_timed_out_ask_user("conv-1", ch._pending_approvals.pop("conv-1"))
-        m = captured[-1]
-        assert m.params["request_id"] == "req-930"
-        assert m.params["source"] == "ask_user_interrupt"
-        # 有选项的题选第一项；无选项的题给显式默认值"跳过"
-        assert m.params["answers"] == [
-            {"question": "你想要什么风格？", "selected_options": ["深色"], "custom_input": ""},
-            {"question": "要加图标吗？", "selected_options": [], "custom_input": "跳过"},
-        ]
+        # 挂起中的运行（会话活跃）才会真正路由取消
+        ch._active_tasks.add(("top-1", "task-2"))
 
-        ch._pending_approvals["conv-1"] = {
-            "request_id": "req-931",
-            "source": "permission_interrupt",
-            "task_id": "task-2",
-            "created_at": time.time() - 3 * 60,
-            "questions": ["允许执行 bash 吗？"],
-            "question_ids": {},
-            "question_options": {"允许执行 bash 吗？": ["本次允许", "拒绝"]},
-            "session_id": "top-1",
-            "agent_id": "ag",
-            "device_id": "dev",
-            "push_id": "push",
-        }
-        await ch._resume_timed_out_ask_user("conv-1", ch._pending_approvals.pop("conv-1"))
-        m = captured[-1]
-        # 权限类超时绝不默认放行：fail-closed 拒绝
-        assert m.params["answers"][0]["selected_options"] == ["拒绝"]
-        assert "超时未应答" in m.params["answers"][0]["custom_input"]
+        await ch._cancel_timed_out_ask_user(
+            "conv-1", ch._pending_approvals.pop("conv-1")
+        )
+
+        # 路由 CHAT_CANCEL（与桌面停止按钮同链路），取消挂起的运行
+        assert captured, "应路由取消消息"
+        stop = captured[-1]
+        assert stop.req_method == ReqMethod.CHAT_CANCEL
+        assert stop.params["intent"] == "cancel"
+        assert stop.session_id == "top-1"
+        assert stop.params["request_id"] == "task-2"
+        # 会话活跃状态已撤销
+        assert ("top-1", "task-2") not in ch._active_tasks
+        # 向手机发 completed 收口终态关闭卡片
+        states = []
+        for f in sent:
+            if not isinstance(f, dict):
+                continue
+            detail = f.get("msgDetail")
+            if not isinstance(detail, str):
+                continue
+            try:
+                parsed = json.loads(detail)
+            except ValueError:
+                continue
+            if parsed.get("result", {}).get("kind") == "status-update":
+                states.append(
+                    parsed.get("result", {}).get("status", {}).get("state")
+                )
+        assert "completed" in states
     finally:
         _cleanup_tasks(ch)
 

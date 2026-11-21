@@ -101,8 +101,9 @@ _APPROVAL_EVENT_ACTIONS = {
     "deny": "reject",
     "refuse": "reject",
 }
-# 待答复审批有效期（超时后按普通消息处理，避免陈旧 request_id 误恢复）。
-_APPROVAL_EXPIRE_S = 30 * 60
+# 待答复审批有效期：到期未应答取消整个任务并收口手机卡片（不再自动选默认
+# 续跑）。调试期临时 2 分钟，验证通过后改回 48 * 60 * 60。
+_APPROVAL_EXPIRE_S = 2 * 60
 # 文本回退形态（app_ver 未达门限 / 未上报）的审批回复约定话术：随提示正文
 # 下发，引导用户按词表回复。
 _APPROVAL_REPLY_HINT = (
@@ -888,7 +889,7 @@ class XiaoyiChannel(BaseChannel):
         # 非空覆盖）：ask_user 发卡轮快照进 pending 待答登记，resume 请求随
         # params 带回——续跑沿用发卡轮的模型，避免答卡后回落默认模型。
         self._session_model_names: dict[str, str] = {}
-        # AskUser 超时兜底任务：周期扫描待答表，超时未应答自动选默认选项 resume
+        # AskUser 超时兜底任务：周期扫描待答表，超时未应答取消任务并收口卡片
         self._ask_user_timeout_task: asyncio.Task | None = None
         self._reload_permissions_cb: Callable[[], Any] | None = None
         # 流式审计（诊断取证）：task_key → 本轮"正文/思考"帧计数（见 _note_stream_audit）
@@ -949,7 +950,7 @@ class XiaoyiChannel(BaseChannel):
         # V2: 启动 ws 保活任务，周期发 status-update 重置手机端空闲计时
         if self._team_ws_keepalive_interval > 0:
             self._ws_keepalive_task = asyncio.create_task(self._ws_keepalive_loop())
-        # AskUser 超时兜底：超时未应答自动选默认选项续跑（见 _ask_user_timeout_loop）
+        # AskUser 超时兜底：超时未应答取消任务并收口卡片（见 _ask_user_timeout_loop）
         self._ask_user_timeout_task = asyncio.create_task(self._ask_user_timeout_loop())
         logger.info("XiaoyiChannel 已启动（客户端模式，双通道）")
 
@@ -4426,12 +4427,12 @@ class XiaoyiChannel(BaseChannel):
             )
 
     async def _ask_user_timeout_loop(self) -> None:
-        """AskUser 超时兜底：周期扫描待答表，超时未应答自动选默认选项 resume。
+        """AskUser 超时兜底：周期扫描待答表，超时未应答取消整个任务并收口手机卡片。
 
         挂起期间手机端可能始终不回（旧版端侧无回传/用户离开）。到
-        _APPROVAL_EXPIRE_S（30 分钟）仍无应答时：ask_user 每题选第一个选项
-        （无选项按跳过）、权限/确认类 fail-closed 按拒绝，自动 resume 让模型
-        继续思考，续跑结果回到原 task 气泡。
+        _APPROVAL_EXPIRE_S 仍无应答时：路由 CHAT_CANCEL 取消挂起的运行，向
+        手机端发 completed 收口终态（弹框/气泡同时关闭），不再自动选默认选项
+        续跑（用户可重新发起一轮）。
 
         仅处理选项卡路径登记的待答复（ask_user_tabs 标记）；文本回退形态
         （旧版手机端）保持既有语义——到期自然过期，迟到的文本回复按普通
@@ -4452,62 +4453,112 @@ class XiaoyiChannel(BaseChannel):
                     ):
                         continue
                     self._pending_approvals.pop(logical_session, None)
-                    await self._resume_timed_out_ask_user(logical_session, pending)
+                    await self._cancel_timed_out_ask_user(logical_session, pending)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("XiaoYi: AskUser 超时兜底扫描异常")
 
-    async def _resume_timed_out_ask_user(
+    async def _cancel_timed_out_ask_user(
         self, logical_session: str, pending: dict[str, Any]
     ) -> None:
-        """超时的待答审批 → 默认答案 resume（模型继续思考）。"""
-        source = str(pending.get("source") or "").strip()
-        question_options = pending.get("question_options") or {}
-        if source == "ask_user_interrupt":
-            # 每题选第一个选项（模型给的顺序即推荐序）；无选项的问题（自由
-            # 输入题）给显式默认值"跳过"，模型收到明确信号继续，不悬空。
-            answers = []
-            for question in pending.get("questions") or []:
-                labels = question_options.get(str(question)) or []
-                answers.append({
-                    "question": str(question),
-                    "selected_options": [labels[0]] if labels else [],
-                    "custom_input": "" if labels else "跳过",
-                })
-            if not answers:
-                answers = [{"question": "", "selected_options": [], "custom_input": ""}]
-            answer = answers[0]
-            resume_answers = answers
-            log_note = "ask_user 超时→默认选项"
-        else:
-            # 权限/确认/演进类：超时 fail-closed 按拒绝，绝不默认放行。
-            answer = {
-                "selected_options": ["拒绝"],
-                "custom_input": "超时未应答，已自动拒绝",
-            }
-            resume_answers = [answer]
-            log_note = "权限:超时→fail-closed拒绝"
+        """超时的待答审批 → 取消整个任务并收口手机卡片。
+
+        原语义是自动选默认选项续跑（模型继续思考）；改为取消：路由
+        CHAT_CANCEL 终止挂起的运行，向手机端发 completed 收口终态关闭弹框/
+        气泡。清理面对齐 _handle_tasks_cancel / _cancel_superseded_platform_task
+        （挂起运行、断链续投种子与正文缓冲都要清，防串进下一轮）。
+        """
+        session_id = str(pending.get("session_id") or "").strip()
+        task_id = str(pending.get("task_id") or "").strip()
+        if not session_id or not task_id:
+            logger.warning(
+                "XiaoYi: AskUser 超时取消缺少会话/任务 ID "
+                "(logical_session=%s request_id=%s)，跳过收口",
+                logical_session,
+                pending.get("request_id"),
+            )
+            return
         logger.info(
-            "XiaoYi: AskUser 待答复超时（%ds），自动按默认选项续跑 session=%s "
-            "request_id=%s note=%s answers=%r",
+            "XiaoYi: AskUser 待答复超时（%ds），取消整个任务并收口手机卡片 "
+            "session=%s task_id=%s request_id=%s",
             _APPROVAL_EXPIRE_S,
-            logical_session,
+            session_id,
+            task_id,
             pending.get("request_id"),
-            log_note,
-            resume_answers,
         )
-        await self._route_approval_reply(
-            {"id": str(pending.get("task_id") or "")},
-            answer,
-            pending,
-            session_id=str(pending.get("session_id") or ""),
-            logical_session=logical_session,
-            agent_id=str(pending.get("agent_id") or ""),
-            device_id=str(pending.get("device_id") or ""),
-            push_id=str(pending.get("push_id") or ""),
-            answers=resume_answers,
-        )
+        was_active = (session_id, task_id) in self._active_tasks
+        if was_active:
+            # 登记取消时间戳：旧任务的迟到出站帧按 _should_drop_canceled_output 丢弃。
+            self._canceled_platform_tasks[(session_id, task_id)] = time.time()
+            if len(self._canceled_platform_tasks) > 1024:
+                self._canceled_platform_tasks.pop(
+                    next(iter(self._canceled_platform_tasks))
+                )
+            # 与桌面端停止按钮走同一条 chat.interrupt 链路，取消挂起的运行。
+            stop_message = Message(
+                id=f"{task_id}:stop",
+                type="req",
+                channel_id=self.channel_id,
+                session_id=session_id,
+                params={
+                    "desktop_stop": True,
+                    "intent": "cancel",
+                    "session_id": session_id,
+                    "request_id": task_id,
+                },
+                timestamp=time.time(),
+                ok=True,
+                req_method=ReqMethod.CHAT_CANCEL,
+                user_id=str(pending.get("agent_id") or self.config.agent_id or ""),
+                bot_id=self.config.agent_id,
+                app_id=self.app_id,
+                metadata={"xiaoyi_session_id": session_id, "xiaoyi_task_id": task_id},
+            )
+            try:
+                if self._on_message_cb is not None:
+                    result = self._on_message_cb(stop_message)
+                    if inspect.isawaitable(result):
+                        await result
+                else:
+                    await self.bus.route_user_message(stop_message)
+            except BaseException:
+                self._canceled_platform_tasks.pop((session_id, task_id), None)
+                raise
+            # 撤销活跃状态与保活映射：收口期间不再向端侧上报 working。
+            self._pending_approvals.pop(session_id, None)
+            self._clear_session_waiting_for_push(session_id, task_id)
+            self._clear_task_timeout(session_id, task_id)
+            self._clear_session_timeout(session_id, task_id)
+            self._mark_session_completed(session_id, task_id)
+            self._answer_receipts.pop((session_id, task_id), None)
+            self._team_tasks.discard((session_id, task_id))
+            self._team_last_leader_finals.pop((session_id, task_id), None)
+            for agent_id, entry in list(self._active_push_sessions.items()):
+                if entry[1] == task_id:
+                    self._active_push_sessions.pop(agent_id, None)
+            self._ws_flush_buffers.pop(task_id, None)
+            flush_task = self._ws_flush_tasks.pop(task_id, None)
+            if flush_task is not None:
+                flush_task.cancel()
+            # 断链续投种子/正文缓冲就地清理，防串进下一轮。
+            task_key = (session_id, task_id)
+            self._accumulated_texts.pop(task_key, None)
+            self._accumulated_texts.pop(session_id, None)
+            self._streamed_chain_texts.pop(task_key, None)
+            self._pending_resume_seeds.pop(task_key, None)
+            self._text_stream_prefix.pop(task_key, None)
+            self._text_stream_prefix.pop(session_id, None)
+            self._text_stream_pending.pop(task_key, None)
+            self._text_stream_pending.pop(session_id, None)
+        # 取消即消费：completed 终态 + artifact 正文，手机弹框/气泡收口
+        # （canceled 终态会被上游视为未完成而自动重发，见 _handle_tasks_cancel）。
+        await self._send_consumed_close(session_id, task_id, "已超时未应答，任务已取消")
+        if not self._is_session_active(session_id):
+            if session_id:
+                await self._stop_session_heartbeat(session_id)
+            self._clear_task_timeout(session_id)
+            self._clear_session_timeout(session_id)
 
     async def _start_session_heartbeat(self, session_id: str, task_id: str) -> None:
         """启动会话心跳任务，每隔5秒发送空消息直到final消息发出."""
