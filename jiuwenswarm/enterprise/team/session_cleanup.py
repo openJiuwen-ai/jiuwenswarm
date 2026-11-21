@@ -12,12 +12,17 @@ the session directory (pod recycled).
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import logging
+import os
 import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 if TYPE_CHECKING:
     from jiuwenswarm.enterprise.team.control_store import OwnerIdentity
@@ -497,10 +502,18 @@ def _sweep_lock(volume: Path) -> Iterator[None]:
     """One AgentServer replica sweeps at a time. The purge itself is idempotent."""
     handle = open(volume / _SWEEP_LOCK_NAME, "a+")
     try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        if os.name == "nt":
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         yield
     finally:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        if os.name == "nt":
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         handle.close()
 
 
