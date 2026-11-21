@@ -37,7 +37,7 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
 from pathlib import Path
 from threading import RLock
-from typing import Iterable, Optional
+from typing import Any, Iterable, Optional
 
 from jiuwenswarm.common.utils import logger
 

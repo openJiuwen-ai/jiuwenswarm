@@ -2,6 +2,8 @@
 
 """Shared bounded contract for structured ask-user interactions."""
 
+from typing import Any
+
 MAX_STRUCTURED_QUESTIONS = 4
 
 __all__ = ["MAX_STRUCTURED_QUESTIONS", "build_ask_user_interactive_input"]
