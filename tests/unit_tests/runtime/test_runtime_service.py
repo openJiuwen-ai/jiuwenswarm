@@ -1803,7 +1803,19 @@ async def test_team_pause_retains_attach_for_later_mailbox_output(
     session = await coordinator.register_session("session-a", "web")
     manager = TeamManager()
     manager.bind_generation("session-a", session.generation)
-    monkeypatch.setattr(manager, "pause_session_runtime", AsyncMock(return_value=True))
+    from jiuwenswarm.agents.harness.team.team_manager import PauseSessionResult
+
+    monkeypatch.setattr(
+        manager,
+        "pause_session_runtime",
+        AsyncMock(
+            return_value=PauseSessionResult(
+                work_stopped=True,
+                resumable=True,
+                outcome="parked",
+            )
+        ),
+    )
     monkeypatch.setattr(manager, "stop_session_runtime", AsyncMock(return_value=True))
     lifecycle = TeamSessionLifecycleAdapter(coordinator=coordinator, team_manager=manager)
     runtime = AgentRuntime(

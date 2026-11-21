@@ -3522,17 +3522,30 @@ class JiuWenSwarm:
         intent: str,
         success: bool,
         message: str,
+        work_stopped: bool | None = None,
+        resumable: bool | None = None,
+        outcome: str | None = None,
+        has_active_task: bool | None = None,
     ) -> AgentResponse:
+        payload: dict[str, object] = {
+            "event_type": "chat.interrupt_result",
+            "intent": intent,
+            "success": success,
+            "message": message,
+        }
+        if work_stopped is not None:
+            payload["work_stopped"] = work_stopped
+        if resumable is not None:
+            payload["resumable"] = resumable
+        if outcome is not None:
+            payload["outcome"] = outcome
+        if has_active_task is not None:
+            payload["has_active_task"] = has_active_task
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=True,
-            payload={
-                "event_type": "chat.interrupt_result",
-                "intent": intent,
-                "success": success,
-                "message": message,
-            },
+            payload=payload,
             metadata=request.metadata,
         )
 
@@ -3554,6 +3567,7 @@ class JiuWenSwarm:
           message directly to continue a paused session.
         """
         from jiuwenswarm.agents.harness.team import get_team_manager
+        from jiuwenswarm.agents.harness.team.team_manager import PauseSessionResult
         from jiuwenswarm.extensions.video_duplex.backend.tasks.design_execution import control_target
 
         voice_round = control_target(request)
@@ -3571,7 +3585,24 @@ class JiuWenSwarm:
 
         if intent in {"pause", "cancel"}:
             if intent == "pause":
-                paused = await team_manager.pause_session_runtime(session_id, reason=reason)
+                pause_result = await team_manager.pause_session_runtime(
+                    session_id, reason=reason
+                )
+                if not isinstance(pause_result, PauseSessionResult):
+                    # Defensive: older stubs may still return bool.
+                    pause_result = (
+                        PauseSessionResult(
+                            work_stopped=True,
+                            resumable=True,
+                            outcome="parked",
+                        )
+                        if pause_result
+                        else PauseSessionResult(
+                            work_stopped=False,
+                            resumable=False,
+                            outcome="failed",
+                        )
+                    )
                 # Runtime retains pure observation subscriptions and broadcasts
                 # completion after the cancelled business response streams exit.
                 await self._session_manager.cancel_session_task(
@@ -3579,38 +3610,52 @@ class JiuWenSwarm:
                     reason,
                     wait_timeout=5.0,
                 )
-                message = "团队已暂停" if paused else "当前没有可暂停的团队任务"
-            else:
-                # 断连兜底（client_disconnect）→ pause_all 保账本（可冷启动续跑）；用户主动终止 → stop_all 落 seal。
-                metadata = request.metadata if isinstance(request.metadata, dict) else {}
-                cancel_source = metadata.get(E2A_INTERNAL_CANCEL_SOURCE_KEY)
-                workflow_disposition = (
-                    "pause"
-                    if cancel_source == E2A_CANCEL_SOURCE_CLIENT_DISCONNECT
-                    else "stop"
+                if pause_result.resumable:
+                    message = "团队已暂停"
+                elif pause_result.outcome == "already_idle":
+                    message = "当前没有可暂停的团队任务"
+                else:
+                    message = "当前没有可暂停的团队任务"
+                return self._build_interrupt_result_response(
+                    request,
+                    intent=intent,
+                    success=pause_result.success,
+                    message=message,
+                    work_stopped=pause_result.work_stopped,
+                    resumable=pause_result.resumable,
+                    outcome=pause_result.outcome,
+                    has_active_task=pause_result.resumable,
                 )
-                cancelled = await team_manager.cancel_session_runtime(
-                    session_id, reason=reason, workflow_disposition=workflow_disposition
-                )
-                if workflow_disposition == "stop":
-                    from jiuwenswarm.enterprise.team.session_live import (
-                        stop_team_session_live,
-                    )
 
-                    await stop_team_session_live(session_id, drop_queued=True)
-                await self._session_manager.cancel_session_task(
-                    session_id,
-                    reason,
-                    wait_timeout=5.0,
+            # 断连兜底（client_disconnect）→ pause_all 保账本（可冷启动续跑）；用户主动终止 → stop_all 落 seal。
+            metadata = request.metadata if isinstance(request.metadata, dict) else {}
+            cancel_source = metadata.get(E2A_INTERNAL_CANCEL_SOURCE_KEY)
+            workflow_disposition = (
+                "pause"
+                if cancel_source == E2A_CANCEL_SOURCE_CLIENT_DISCONNECT
+                else "stop"
+            )
+            cancelled = await team_manager.cancel_session_runtime(
+                session_id, reason=reason, workflow_disposition=workflow_disposition
+            )
+            if workflow_disposition == "stop":
+                from jiuwenswarm.enterprise.team.session_live import (
+                    stop_team_session_live,
                 )
-                message = "团队当前执行已结束" if cancelled else "当前没有可取消的团队任务"
-            success = paused if intent == "pause" else cancelled
-            if voice_round is not None and intent == "cancel" and cancelled:
+
+                await stop_team_session_live(session_id, drop_queued=True)
+            await self._session_manager.cancel_session_task(
+                session_id,
+                reason,
+                wait_timeout=5.0,
+            )
+            message = "团队当前执行已结束" if cancelled else "当前没有可取消的团队任务"
+            if voice_round is not None and cancelled:
                 await voice_round.settle(cancelled=True)
             return self._build_interrupt_result_response(
                 request,
                 intent=intent,
-                success=success,
+                success=bool(cancelled),
                 message=message,
             )
 

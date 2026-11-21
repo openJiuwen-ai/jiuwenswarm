@@ -469,6 +469,13 @@ export function ToolPanel({
           const mergedTasks = mergeById(historyState.tasks, liveTasksForMerge, task => task.task_id);
           setTeamTasks(sessionId, mergedTasks);
         }
+        // History may restore in_progress without progress_frozen; re-apply
+        // session pause freeze after the board is rebuilt (enterprise HTTP refresh).
+        // develop 无 mergeTeamTaskProgressBaseline，只接 freeze。
+        if (useChatStore.getState().getRuntime(sessionId)?.isPaused) {
+          useSessionStore.getState().freezeRunningTeamTasks(sessionId);
+        }
+
 
         // 同一次调用在两条路径下的 id 不同（实时 stableEventId vs 历史恢复
         // hist-*），按 id 合并会留下两张卡片；调用/结果改按 (member, kind,

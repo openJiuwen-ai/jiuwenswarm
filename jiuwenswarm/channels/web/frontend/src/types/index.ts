@@ -49,6 +49,8 @@ export interface Session {
   is_active?: boolean;
   is_processing?: boolean;
   organization_owner_stopped?: boolean;
+  /** Team runtime parked in Runner pool (RuntimeState.PAUSED); enterprise HTTP refresh source. */
+  is_paused?: boolean;
   queued_session_messages?: Array<{
     message_id: string;
     target_session_id: string;

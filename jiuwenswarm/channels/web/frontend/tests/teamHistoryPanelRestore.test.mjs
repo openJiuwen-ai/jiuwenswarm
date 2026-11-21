@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { parseTeamHistoryPanelRecords } from '../node_modules/.cache/team-history-panel/teamHistoryPanelRestore.mjs';
+import {
+  mergeTeamSnapshotTaskWithHistory,
+  parseTeamHistoryPanelRecords,
+} from '../node_modules/.cache/team-history-panel/teamHistoryPanelRestore.mjs';
 
 function spawnRecord() {
   return {
@@ -185,4 +188,107 @@ test('a mirrored swarmflow worker keeps its run id after its tool frames restore
 
   const member = state.members.find((item) => item.member_id === memberId);
   assert.equal(member?.workflow_run_id, 'wf_1');
+});
+
+test('pause-freeze events with session_id restore progress_frozen on in_progress tasks', () => {
+  const taskRecord = (type, taskId, timestamp, extra = {}) => ({
+    mode: 'team',
+    event_type: 'team.task',
+    session_id: 'session-1',
+    timestamp,
+    event: { type, task_id: taskId, ...extra },
+  });
+  const state = parseTeamHistoryPanelRecords(
+    [
+      taskRecord('team.task.created', 't1-academic', 1_792_080_714, {
+        status: 'pending',
+        title: 'Academic watch-outs',
+      }),
+      taskRecord('team.task.claimed', 't1-academic', 1_792_080_715, {
+        status: 'in_progress',
+        assignee: 'assessment_specialist',
+      }),
+      taskRecord('team.task.paused', 't1-academic', 1_792_080_780, {
+        status: 'in_progress',
+        progress_frozen: true,
+        title: 'Academic watch-outs',
+        assignee: 'assessment_specialist',
+      }),
+    ],
+    'session-1',
+  );
+
+  assert.equal(state.tasks.length, 1);
+  assert.equal(state.tasks[0].task_id, 't1-academic');
+  assert.equal(state.tasks[0].status, 'in_progress');
+  assert.equal(state.tasks[0].progress_frozen, true);
+});
+
+test('pause-freeze events without session_id are skipped by restore filter', () => {
+  const state = parseTeamHistoryPanelRecords(
+    [
+      {
+        mode: 'team',
+        event_type: 'team.task',
+        session_id: 'session-1',
+        timestamp: 1_792_080_714,
+        event: {
+          type: 'team.task.created',
+          task_id: 't1-academic',
+          status: 'pending',
+          title: 'Academic watch-outs',
+        },
+      },
+      {
+        mode: 'team',
+        event_type: 'team.task',
+        session_id: 'session-1',
+        timestamp: 1_792_080_715,
+        event: {
+          type: 'team.task.claimed',
+          task_id: 't1-academic',
+          status: 'in_progress',
+        },
+      },
+      // Missing session_id — matches the pre-fix pause-freeze bug.
+      {
+        mode: 'team',
+        event_type: 'team.task',
+        timestamp: 1_792_080_780,
+        event: {
+          type: 'team.task.paused',
+          task_id: 't1-academic',
+          status: 'in_progress',
+          progress_frozen: true,
+        },
+      },
+    ],
+    'session-1',
+  );
+
+  assert.equal(state.tasks[0].status, 'in_progress');
+  assert.equal(state.tasks[0].progress_frozen, undefined);
+});
+
+test('snapshot merge keeps history progress_frozen when snapshot omits it', () => {
+  const merged = mergeTeamSnapshotTaskWithHistory(
+    {
+      task_id: 't1-academic',
+      title: 'Academic watch-outs',
+      status: 'in_progress',
+      timestamp: 2_000,
+    },
+    {
+      task_id: 't1-academic',
+      title: 'Academic watch-outs',
+      status: 'in_progress',
+      timestamp: 1_000,
+      progress_frozen: true,
+      progress_frozen_at: 1_500,
+    },
+  );
+
+  assert.equal(merged.progress_frozen, true);
+  assert.equal(merged.progress_frozen_at, 1_500);
+  assert.equal(merged.timestamp, 2_000);
 });
