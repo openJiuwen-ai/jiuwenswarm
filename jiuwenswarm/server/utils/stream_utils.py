@@ -589,6 +589,22 @@ def _parse_typed_chunk(
             )
         return None
 
+    if chunk_type == "system_notice":
+        # agent_ras recovery notices (semantic_deadlock etc.): side-channel
+        # system information. Explicit handler keeps this entry point aligned
+        # with deep/stream_parse.py — the generic dict fallback would already
+        # emit chat.system_notice, but without whitespace-only dropping.
+        content = (
+            (payload.get("content") or "") if isinstance(payload, dict) else str(payload)
+        )
+        if not str(content).strip():
+            return None
+        return {
+            "event_type": "chat.system_notice",
+            "content": content,
+            **_propagate_stream_source_id(payload),
+        }
+
     if chunk_type == "llm_output":
         # openjiuwen streams payload.output; SkillTurbo uses payload.content.
         content = (
