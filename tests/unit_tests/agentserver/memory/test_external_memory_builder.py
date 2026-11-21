@@ -512,6 +512,63 @@ def test_plugin_unavailable_returns_none():
     assert emb.build_external_memory_rail(cfg) is None
 
 
+def test_plugin_provider_receives_ext_cfg(monkeypatch):
+    captured = {}
+
+    def _fake_load(name, config=None, allowed_plugins=None, plugin_root=None):
+        captured.update({"name": name, "config": config, "allowed": allowed_plugins})
+        return object()
+
+    pd_name = "jiuwenswarm.agents.harness.common.memory.plugin_discovery"
+    stub = ModuleType(pd_name)
+    stub.load_memory_plugin = _fake_load
+    monkeypatch.setitem(sys.modules, pd_name, stub)
+    cfg = {"memory": {"external": {"provider": "hs1probe",
+                                   "allowed_plugins": ["hs1probe"],
+                                   "hindsight": {"endpoint": "http://nested", "bank_id": "nb"}}}}
+    assert emb.build_external_memory_rail(cfg) is not None
+    assert captured["name"] == "hs1probe"
+    assert captured["allowed"] == ["hs1probe"]
+    assert captured["config"]["provider"] == "hs1probe"  # ext_cfg passed through
+    assert captured["config"]["hindsight"]["endpoint"] == "http://nested"  # sub-block passthrough
+    assert captured["config"]["hindsight"]["bank_id"] == "nb"
+
+
+def test_plugin_explicit_empty_allowlist_reaches_loader(monkeypatch):
+    # `allowed_plugins: []` must stay [] at the loader (reject all), never be
+    # folded to None (accept all).
+    captured = {}
+
+    def _fake_load(name, config=None, allowed_plugins=None, plugin_root=None):
+        captured["allowed"] = allowed_plugins
+        return object()
+
+    pd_name = "jiuwenswarm.agents.harness.common.memory.plugin_discovery"
+    stub = ModuleType(pd_name)
+    stub.load_memory_plugin = _fake_load
+    monkeypatch.setitem(sys.modules, pd_name, stub)
+    cfg = {"memory": {"external": {"provider": "hs1probe",
+                                   "allowed_plugins": []}}}
+    assert emb.build_external_memory_rail(cfg) is not None
+    assert captured["allowed"] == []
+
+
+def test_plugin_unset_allowlist_is_none_at_loader(monkeypatch):
+    captured = {}
+
+    def _fake_load(name, config=None, allowed_plugins=None, plugin_root=None):
+        captured["allowed"] = allowed_plugins
+        return object()
+
+    pd_name = "jiuwenswarm.agents.harness.common.memory.plugin_discovery"
+    stub = ModuleType(pd_name)
+    stub.load_memory_plugin = _fake_load
+    monkeypatch.setitem(sys.modules, pd_name, stub)
+    cfg = {"memory": {"external": {"provider": "hs1probe"}}}
+    assert emb.build_external_memory_rail(cfg) is not None
+    assert captured["allowed"] is None
+
+
 # ---------------------------------------------------------------------------
 # Failure handling — graceful degradation
 # ---------------------------------------------------------------------------
