@@ -100,7 +100,7 @@ def _sync_context_assemble_tool_allowlist(
     assemble: ContextAssembleRail | None,
     progressive: Any | None,
 ) -> None:
-    """Keep ContextAssemble tools-section allowlist aligned with eager schema."""
+    """Keep ContextAssemble tools-section allowlist aligned with the stable schema set."""
     if assemble is None:
         return
     setter = getattr(assemble, "set_tool_name_allowlist", None)
@@ -109,6 +109,13 @@ def _sync_context_assemble_tool_allowlist(
     if progressive is None:
         setter(None)
         return
+    allowlist = getattr(progressive, "prompt_tool_allowlist", None)
+    if callable(allowlist):
+        # eager + floor（BUG20261117410859）：与 schema 稳定段一致，热更新
+        # 不得把保护名单覆盖回 eager-only。
+        setter(list(allowlist()))
+        return
+    # duck-typed 替身 / 旧 rail 无该方法时回落 eager，保持既有行为。
     eager = getattr(progressive, "eager_tools", None) or []
     setter(list(eager))
 

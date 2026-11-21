@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_02 / progressive-disclosure-models |
 | 关联模块 | jiuwenswarm progressive_tool_rail + agent-core progressive_tool_rail |
-| 最近一次修订日期 | 2026-11-13 |
+| 最近一次修订日期 | 2026-11-21 |
 | 关联 feature | [[F_01]] |
 
 ## 范围 / 边界
@@ -38,8 +38,8 @@
 
 ### Swarm 流（[[S_03]] 详述）
 
-1. 模型从 schema 看到 eager + 当前 skill-gated + schema-pinned（`recall_compressed_context`，未 disabled 且非 skill-gated）+ meta-tools。
-2. 对 deferred：先 `tools_search` 拿 schema，再 `invoke_tool` 执行。schema 可见工具（eager 与 pinned）不是二者的合法目标。
+1. 模型从 schema 看到 eager + floor（`protected_eager_tools`，BUG20261117410859：已注册、未 disabled、未声明 `required_skill` 的保护名单工具，注册即可见）+ 当前 skill-gated + schema-pinned（`recall_compressed_context`，未 disabled 且非 skill-gated）+ meta-tools。
+2. 对 deferred：先 `tools_search` 拿 schema，再 `invoke_tool` 执行。schema 可见工具（eager、floor 与 pinned）不是二者的合法目标——对已注册的 floor 工具反查会得到"已直接可见，请直接调用"指引（未注册名单名回落"未找到/未注册"文案，见 [[S_04]] N9）。
 3. `ProgressiveToolRail` 内闭包校验：disabled、OfficeClaw allowlist、deepresearch 上下文等。
 
 ### Core 流
@@ -62,7 +62,7 @@ interface_deep / build_progressive_tool_rail_from_config（agent_adapter/deep/pr
 
 ```
 config_specs → swarm.team_progressive_tool（providers/team_progressive.py）
-  → ProgressiveToolRail(角色常量 eager，不读 yaml eager_tools)
+  → ProgressiveToolRail(角色常量 eager，不读 yaml eager_tools；floor 共用 protected_eager_tools 解析)
   → agent_card_id = {member_card}_s_{session}
 ```
 
@@ -87,5 +87,5 @@ harness factory + progressive_tool_enabled
 ## 与其它 spec 的关系
 
 - [[S_03]] 元工具字段级契约
-- [[S_04]] 四类可见性与 prefix cache
+- [[S_04]] 五类可见性与 prefix cache
 - [[S_08]] 哪条 adapter 启用哪条模型

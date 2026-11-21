@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_08 / adapter-assembly-and-config |
 | 关联模块 | interface_deep.py / interface_code.py / interface_flash.py |
-| 最近一次修订日期 | 2026-11-14 |
+| 最近一次修订日期 | 2026-11-21 |
 | 关联 feature | [[F_01]] |
 
 ## 范围 / 边界
@@ -20,7 +20,8 @@
 | 键 | 用途 |
 |---|---|
 | `tool_lazy_load.enabled` | 控制 lazy 过滤是否生效；false 时 rail 仍可挂载以保留 skill-gated 直接可见（skill-gate-only）；仅 subagent profile 在 `subagents.enabled=false` 时返回 None |
-| `tool_lazy_load.eager_tools` | eager 桶（meta-tools 仍强制存在；pinned 追加在 eager + active skill-gated 之后） |
+| `tool_lazy_load.eager_tools` | eager 桶（meta-tools 仍强制存在；pinned 追加在 eager + floor + active skill-gated 之后） |
+| `tool_lazy_load.protected_eager_tools` | 注册即可见 floor（BUG20261117410859）：名单内已注册、未 disabled、未声明 `required_skill` 的工具懒加载不裁剪；优先于 eager 交集；缺省/None/malformed → 代码默认名单（`resolve_protected_eager_tools`），显式 `[]` → 关闭；主 / subagent（`deep/progressive_tools.py`）与 team 成员（`team_progressive.py`）共用同一解析 |
 | `tool_lazy_load.enable_for_models` | 模型名子串白名单、大小写不敏感；空 = 全部模型启用 lazy |
 | `tool_lazy_load.subagents.enabled` 等 | 子代理 lazy（`is_subagent_tool_lazy_load_enabled`） |
 | `disabled_tools` | DisabledToolsRail + progressive 种子列表 |
@@ -39,8 +40,8 @@
 
 ## 不变量
 
-- **N1（单 agent 构建集中）**：宿主 / 单 agent progressive 参数（agent_id、agent_card_id、enable_for_models、disabled_tools）在 `build_progressive_tool_rail_from_config`（`agent_adapter/deep/progressive_tools.py`）集中注入——勿在 adapter 第二处重复解析 yaml `eager_tools`。
-- **N1b（团队成员独立构建）**：团队成员 progressive **不得**复用 yaml `react.tool_lazy_load.eager_tools`（缺 `send_message` / 任务板）。角色名单在 `team_progressive.py` 常量；仅复用 `enabled` / `enable_for_models` / TTSE / general-purpose 门控与 `_ttse_consult_should_be_eager`。
+- **N1（单 agent 构建集中）**：宿主 / 单 agent progressive 参数（agent_id、agent_card_id、enable_for_models、disabled_tools、protected_eager_tools）在 `build_progressive_tool_rail_from_config`（`agent_adapter/deep/progressive_tools.py`）集中注入——勿在 adapter 第二处重复解析 yaml `eager_tools` / `protected_eager_tools`。
+- **N1b（团队成员独立构建）**：团队成员 progressive **不得**复用 yaml `react.tool_lazy_load.eager_tools`（缺 `send_message` / 任务板）。角色名单在 `team_progressive.py` 常量；仅复用 `enabled` / `enable_for_models` / `protected_eager_tools`（floor 主 / subagent / team 共用 `resolve_protected_eager_tools`）/ TTSE / general-purpose 门控与 `_ttse_consult_should_be_eager`。
 - **N2（热重载重建式）**：progressive / disabled 均**重建**——旧 rail 进 `rails_to_unregister`，其 `uninit()` 回滚（disabled 重新注册 `_removed_cards`）；新 rail `init()` 按新名单重新挂载。adapter 不调用 `DisabledToolsRail.update_config`。
 - **N3（flash eager 替换语义）**：flash 配置对 `eager_tools` 是**整表替换**而非 append——产品 intentional；改 flash 默认须跑 flash 相关测试。
 - **N4（AGENT_RELOAD_CONFIG）**：ops 热重载路径须同时刷新 progressive + disabled（`test_progressive_rail_reload.py`）。
@@ -74,6 +75,7 @@ build_member_capability_specs（team | code.team | team.plan）
   → RailSpec(swarm.team_progressive_tool)
   → team_progressive._build_team_progressive_tool_rail(SwarmBuildContext)
   → ProgressiveToolRail(eager=角色常量 ± ttse_consult ± task_tool,
+                        protected_eager_tools=resolve_protected_eager_tools(lazy_cfg),
                         agent_card_id=成员会话键)
 ```
 
@@ -85,6 +87,7 @@ build_member_capability_specs（team | code.team | team.plan）
 | `test_progressive_rail_reload.py` | 热重载 |
 | `test_progressive_tool_rail_stale_id.py` | tool id / invoke 代理 |
 | `test_progressive_prefix_cache_stability.py` | prefix cache |
+| `test_progressive_protected_eager_tools.py` | 注册即可见 floor（protected_eager_tools）语义 / 排序 / 探测链路 |
 | `test_progressive_deepresearch_context.py` | deepresearch 绑定 |
 | `test_progressive_disabled_tools_filter.py` | disabled ∩ progressive |
 | `test_skill_required_tool_visibility.py` | required_skill |

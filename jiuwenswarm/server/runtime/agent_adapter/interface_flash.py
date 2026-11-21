@@ -1294,7 +1294,9 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             progressive = self._progressive_tool_rail
             rail = _build_context_assemble_rail(
                 disabled_tools=disabled or None,
-                tool_name_allowlist=list(progressive.eager_tools) if progressive is not None else None,
+                tool_name_allowlist=(
+                    progressive.prompt_tool_allowlist() if progressive is not None else None
+                ),
             )
             if rail is None:
                 return

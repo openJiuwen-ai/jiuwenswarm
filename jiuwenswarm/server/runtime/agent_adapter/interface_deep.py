@@ -11054,7 +11054,7 @@ class JiuWenSwarmDeepAdapter:
             self._context_assemble_rail = _build_context_assemble_rail(
                 disabled_tools=disabled_list or None,
                 tool_name_allowlist=(
-                    list(self._progressive_tool_rail.eager_tools)
+                    list(self._progressive_tool_rail.prompt_tool_allowlist())
                     if self._progressive_tool_rail is not None
                     else None
                 ),
@@ -11066,7 +11066,7 @@ class JiuWenSwarmDeepAdapter:
                     "[JiuWenSwarmDeepAdapter] ContextAssembleRail registered for agent mode "
                     "(disabled_tools=%s allowlist=%s)",
                     disabled_list,
-                    list(self._progressive_tool_rail.eager_tools)
+                    list(self._progressive_tool_rail.prompt_tool_allowlist())
                     if self._progressive_tool_rail is not None
                     else None,
                 )
