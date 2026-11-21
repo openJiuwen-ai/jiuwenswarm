@@ -65,3 +65,14 @@ IPC 发送和关闭同时失败时，Front 仍保留原恢复等待；恢复订�
 resident 与 `front_loopback` 均沿用原始输出路由：stdout 继承启动进程的输出，stderr 直接追加写入 `worker-logs/runtime-worker-*.stderr.log`。Supervisor 启动日志和运行诊断提供 stderr 文件路径，异常退出的堆栈保留在该文件中。
 
 Supervisor 不再逐行读取并重标 Worker 输出，也不创建独立的 stdout 日志文件。stderr 可以包含正常 INFO 日志，不能据此判定 Worker 发生错误；排障时结合文件中的原始日志级别、异常堆栈与进程退出码。
+
+Worker stderr 复用应用日志的大小与保留常量：20 MiB 触发轮转，最多保留 20 份归档。Worker 自己的后台线程每 5 秒检查文件，复制归档后截断原文件，保留原有文件描述符；resident Worker 在 Front 退出后仍继续轮转。归档名为 `runtime-worker-<UUID>.stderr_<UTC日期>_<UTC时间>_<纳秒>.log`，同一 Worker 的后缀递增去重，每份不超过 20 MiB。分块边界保留完整 UTF-8 字符。一次突发超过阈值时拆分归档；超过完整归档预算的旧内容被丢弃，最多保留最近 400 MiB。轮询期间当前文件可暂时超过阈值。
+
+Worker 的维护线程首次运行及之后每 60 秒还会清理同目录的历史文件，Front 启动不等待目录扫描：
+
+- 已关闭的 Worker stderr、历史 stdout 及其归档合计保留最新 20 个文件，合计不超过 400 MiB。
+- `supervisor-<PID>-<时间戳>.txt` 诊断快照独立保留最新 20 份，合计不超过 400 MiB。
+- 中断轮转留下的临时归档在确认句柄已关闭、且超过 60 秒保护期后清理，保留其完整源日志。
+- 修改时间距今不足 60 秒的文件暂缓删除。Windows 根据文件共享状态确认基础日志可否删除，保护尚未关闭的 stderr 继承句柄，无需枚举系统进程；POSIX 检查本用户进程打开的文件。无法确认已关闭的基础日志保守保留，继续清理已完成的归档。归档被占用而无法删除时稍后重试，不阻断当前文件轮转。
+
+复制后截断与应用日志采用相同策略；复制快照与截断之间并发写入的内容可能丢失。维护工作在业务事件循环之外运行，维护失败记录告警，关闭时最多等待维护线程 0.2 秒。参数沿用 `common/utils.py` 中的 `_LOG_FILE_MAX_BYTES` 与 `_LOG_FILE_BACKUP_COUNT`，不新增 `config.yaml` 配置项。
