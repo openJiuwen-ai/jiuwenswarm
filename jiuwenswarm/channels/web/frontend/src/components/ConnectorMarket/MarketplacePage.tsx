@@ -18,6 +18,8 @@ import type { PluginPackageSummary } from '../../types/pluginPackage';
 import { MarketCard } from './MarketCard';
 import { MyMarketCard } from './MyMarketCard';
 import { SystemPluginSwitch } from './SystemPluginSwitch';
+import { ConfirmDialog } from './ConfirmDialog';
+import { hasOtherEnabledSystemPlugin } from './systemPluginConflict';
 import { ConnectTokenModal } from './ConnectTokenModal';
 import { CliAuthModal } from './CliAuthModal';
 import type { ConnectorConnectResponse, ConnectorSummary } from '../../types/connector';
@@ -140,6 +142,8 @@ export function MarketplacePage({
   const marketSearchRevisionRef = useRef(0);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [checkingSystemInstallId, setCheckingSystemInstallId] = useState<string | null>(null);
+  const [pendingSystemInstallId, setPendingSystemInstallId] = useState<string | null>(null);
   const createMenuRef = useRef<HTMLDivElement>(null);
   useClickOutside(createMenuRef, () => setCreateMenuOpen(false));
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -205,6 +209,24 @@ export function MarketplacePage({
         />
       </span>
     );
+  };
+
+  const requestSystemPluginInstall = async (installId: string, packageId: string) => {
+    if (checkingSystemInstallId) return;
+    setCheckingSystemInstallId(installId);
+    let hasConflict = false;
+    try {
+      hasConflict = await hasOtherEnabledSystemPlugin(packageId);
+    } catch {
+      // Conflict discovery is advisory; a transient catalog failure must not block installation.
+    } finally {
+      setCheckingSystemInstallId(null);
+    }
+    if (hasConflict) {
+      setPendingSystemInstallId(installId);
+      return;
+    }
+    await installSystemPlugin(installId);
   };
 
   useEffect(() => {
@@ -873,10 +895,16 @@ export function MarketplacePage({
                   iconUrl={pkg.avatar || undefined}
                   state={pkg.installed ? 'connected' : 'idle'}
                   busyKind="install"
-                  actionDisabled={!!systemBusyIds[pkg.id]}
+                  actionDisabled={
+                    !!systemBusyIds[pkg.id]
+                    || checkingSystemInstallId === pkg.id
+                    || pendingSystemInstallId === pkg.id
+                  }
                   canOpenDetail
                   onOpenDetail={() => onOpenSystemPluginDetail(pkg.id)}
-                  onQuickAdd={() => { void installSystemPlugin(pkg.id); }}
+                  onQuickAdd={() => {
+                    void requestSystemPluginInstall(pkg.id, pkg.packageId || pkg.id);
+                  }}
                   headerAction={systemPluginHeaderAction(pkg)}
                   hideConnectedAction
                 />
@@ -958,6 +986,20 @@ export function MarketplacePage({
           initial={authTarget.response}
           onCancel={() => setAuthTarget(null)}
           onConnected={() => setAuthTarget(null)}
+        />
+      )}
+
+      {pendingSystemInstallId && (
+        <ConfirmDialog
+          title={t('connectorMarket.systemPlugin.multiEnableTitle')}
+          message={t('connectorMarket.systemPlugin.multiEnableMessage')}
+          confirmLabel={t('connectorMarket.systemPlugin.multiEnableConfirm')}
+          onCancel={() => setPendingSystemInstallId(null)}
+          onConfirm={() => {
+            const installId = pendingSystemInstallId;
+            setPendingSystemInstallId(null);
+            void installSystemPlugin(installId);
+          }}
         />
       )}
 
