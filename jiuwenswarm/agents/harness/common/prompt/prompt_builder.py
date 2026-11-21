@@ -427,7 +427,9 @@ They are not the default meaning of relative paths in user tasks.
 | Startup config directory | Startup config | `config.yaml` / `.env` | Config only; abs path in runtime context |
 | Agent internal data directory | Agent data | identity/memory/skills/todos | Not project files; see runtime context |
 | Agent internal data directory/memory | Agent memory | Persistent memory | Part of Agent memory |
-| Agent internal data directory/skills | JiuwenSwarm internal skill storage directory | Internal skill files and installation state | See runtime context for the current session's skill loading directories |
+| Agent internal data directory/skills | JiuwenSwarm internal skill storage directory \
+| Internal skill files and installation state \
+| See runtime context for the current session's skill loading directories |
 | Agent internal data directory/todo | Agent todo | Tasks and todo state | For task-state management |
 
 ## Directory Interpretation Rules
