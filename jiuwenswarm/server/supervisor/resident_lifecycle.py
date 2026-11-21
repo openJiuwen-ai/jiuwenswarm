@@ -42,6 +42,32 @@ async def startup_lock(socket_path: str, deadline: float):
         lock.release()
 
 
+def _peer_matches(process: psutil.Process, socket_path: str) -> None:
+    """OS-level proof that ``process`` is our Worker bound to ``socket_path``.
+
+    Deliberately independent of HELLO's ``process_created``: create_time can
+    drift between psutil / build versions, while executable, argv and socket
+    stay stable. Reused both to validate a live peer and to safely reclaim a
+    leftover Worker whose reported identity no longer lines up.
+    """
+    if process.username() != psutil.Process().username():
+        raise RuntimeError("Worker lifecycle refused a different user")
+    executable = os.path.normcase(str(Path(process.exe()).resolve()))
+    expected = {os.path.normcase(str(Path(sys.executable).resolve()))}
+    if not getattr(sys, "frozen", False):
+        expected.add(os.path.normcase(str(Path(getattr(sys, "_base_executable", sys.executable)).resolve())))
+        if sys.platform == "darwin" and executable not in expected:
+            # Framework Python execs Python.app behind its launcher path.
+            # Compare with our own OS executable, retaining all peer checks.
+            expected.add(os.path.normcase(str(Path(psutil.Process().exe()).resolve())))
+    argv = process.cmdline()
+    if executable not in expected or argv[1:3] != ["-m", "jiuwenswarm.server.worker.main"]:
+        raise RuntimeError("Worker lifecycle refused an unrelated process")
+    if ("--socket" not in argv
+            or argv[argv.index("--socket") + 1:argv.index("--socket") + 2] != [socket_path]):
+        raise RuntimeError("Worker lifecycle refused an unrelated process")
+
+
 def worker_process(
     hello: dict,
     socket_path: str,
@@ -70,22 +96,7 @@ def worker_process(
     try:
         process = psutil.Process(pid)
         created = process.create_time()
-        if process.username() != psutil.Process().username():
-            raise RuntimeError("Worker lifecycle refused a different user")
-        executable = os.path.normcase(str(Path(process.exe()).resolve()))
-        expected = {os.path.normcase(str(Path(sys.executable).resolve()))}
-        if not getattr(sys, "frozen", False):
-            expected.add(os.path.normcase(str(Path(getattr(sys, "_base_executable", sys.executable)).resolve())))
-            if sys.platform == "darwin" and executable not in expected:
-                # Framework Python execs Python.app behind its launcher path.
-                # Compare with our own OS executable, retaining all peer checks.
-                expected.add(os.path.normcase(str(Path(psutil.Process().exe()).resolve())))
-        argv = process.cmdline()
-        if executable not in expected or argv[1:3] != ["-m", "jiuwenswarm.server.worker.main"]:
-            raise RuntimeError("Worker lifecycle refused an unrelated process")
-        if ("--socket" not in argv
-                or argv[argv.index("--socket") + 1:argv.index("--socket") + 2] != [socket_path]):
-            raise RuntimeError("Worker lifecycle refused an unrelated process")
+        _peer_matches(process, socket_path)
         if legacy and not getattr(sys, "frozen", False) and expected_pid is None:
             # One interpreter can import either a source checkout or a wheel.
             # Neither cwd nor the caller's package location proves the peer's
@@ -167,3 +178,63 @@ async def retire_worker(connection, hello: dict, socket_path: str, *, deadline: 
     except Timeout as exc:
         raise RuntimeError("Worker IPC lifetime lease is still held") from exc
     return outcome or {"kind": "shutdown.done", "ok": True, "legacy": True}
+
+
+def _unlink_stale_socket(socket_path: str) -> None:
+    """Best-effort removal of a socket name left behind by a reaped Worker."""
+    try:
+        Path(socket_path).unlink()
+    except OSError:
+        pass
+
+
+async def force_retire_worker(socket_path: str, hello: dict, *, deadline: float) -> bool:
+    """Reclaim a leftover Worker whose ``process_created`` no longer matches.
+
+    ``Worker PID identity changed`` means create_time alone can no longer prove
+    ownership, which normally leaves a replaced build wedged. Force-retire only
+    when the OS-level peer checks still identify the process as our Worker, so
+    an upgrade cannot be blocked by its own stale resident Worker. When the PID
+    now belongs to an unrelated (reused) process, leave it untouched and return
+    ``False`` rather than risk killing an innocent process.
+    """
+    pid = hello.get("pid") if isinstance(hello, dict) else None
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0 or pid == os.getpid():
+        return False
+    try:
+        process = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        # The reported Worker is already gone; only its socket name remains.
+        _unlink_stale_socket(socket_path)
+        return True
+    try:
+        _peer_matches(process, socket_path)
+    except (psutil.Error, OSError, RuntimeError):
+        return False
+    try:
+        children = process.children(recursive=True)
+    except (psutil.Error, OSError):
+        children = []
+    for child in reversed(children):
+        try:
+            child.kill()
+        except (psutil.Error, OSError):
+            continue
+    try:
+        process.terminate()
+    except psutil.NoSuchProcess:
+        _unlink_stale_socket(socket_path)
+        return True
+    grace = deadline - min(1.0, max(0.0, deadline - time.monotonic()) / 2)
+    try:
+        await asyncio.to_thread(process.wait, max(0.0, grace - time.monotonic()))
+    except psutil.TimeoutExpired:
+        process.kill()
+        try:
+            await asyncio.to_thread(process.wait, max(0.0, deadline - time.monotonic()))
+        except psutil.TimeoutExpired:
+            return False
+    except psutil.NoSuchProcess:
+        pass
+    _unlink_stale_socket(socket_path)
+    return True
