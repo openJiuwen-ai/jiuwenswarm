@@ -88,20 +88,33 @@ ANSWER_SOURCE_WHITELIST = frozenset(INTERRUPT_RESUME_SOURCES) | frozenset(
 
 
 def validate_answer_source(params: object) -> None:
-    """Reject answers carried under a source no transport defines (#6285).
+    """Reject answers no transport could treat as an interrupt resume (#6285, #6857).
 
-    A ``chat.send`` with ``request_id`` + ``answers`` but a typo'd/unknown
-    ``source`` is not an interrupt resume: it is classified as a plain turn
-    and queues behind the interaction still waiting for that answer,
-    deadlocking the session without a terminal frame. Rejecting here —
-    before lane admission — guarantees the client an error response.
+    The runtime resumes a suspended turn only on a non-empty ``list`` of
+    answers under a resume ``source`` (``answers_paused_calls``). A
+    ``chat.send`` whose answers that check cannot accept is classified as a
+    plain turn and queues behind the interaction still waiting for that
+    answer, deadlocking the session without a terminal frame. This guard
+    rejects the shapes it can decide before lane admission, so the client gets
+    an error response instead of silence.
+
+    Only content-bearing answers are inspected: an empty ``answers`` (``[]``,
+    ``""`` or ``{}``) resumes nothing and stays an ordinary turn. A non-empty
+    mapping is rejected whatever its ``source`` is (#6857) — a whitelisted
+    source must not launder a shape no resume accepts — while any other
+    non-empty sequence is rejected only when its ``source`` is not
+    whitelisted.
     """
     if not isinstance(params, Mapping):
         return
-    if not str(params.get("request_id") or "").strip():
-        return
     answers = params.get("answers")
-    if isinstance(answers, (str, bytes)) or not isinstance(answers, Sequence) or not answers:
+    if not answers:
+        return
+    if isinstance(answers, Mapping):
+        raise InteractionAnswerError(
+            "answers must be a sequence of answers, not a mapping"
+        )
+    if isinstance(answers, (str, bytes)) or not isinstance(answers, Sequence):
         return
     source = str(params.get("source") or "").strip()
     if not source:
