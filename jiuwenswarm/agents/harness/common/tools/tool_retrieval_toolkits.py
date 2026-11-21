@@ -287,6 +287,20 @@ class ToolCatalogueSnapshot(NamedTuple):
     flat_entries: tuple[_FlatToolEntry, ...]
 
 
+def _sync_discovered_categories() -> None:
+    """Merge declarative built-in tool specs into ``_TOOL_CATEGORIES``."""
+    global _TOOL_CATEGORIES  # pylint: disable=global-statement
+    # pylint: disable-next=import-outside-toplevel
+    from jiuwenswarm.agents.harness.common.tools.builtin_tool_registry import (
+        merge_discovered_categories,
+    )
+
+    _TOOL_CATEGORIES = merge_discovered_categories(_TOOL_CATEGORIES, ToolCategory)
+
+
+_sync_discovered_categories()
+
+
 def _tool_index_tool_id(session_scope: str) -> str:
     """Stable per-session tool id for the tool_search LocalFunction."""
 
