@@ -72,3 +72,52 @@ test('release notifications keep the packaging date separate from the latest pub
     assert.equal(container.querySelector('[data-testid="update-panel-info-card-value"][data-variant="latest_version"]').textContent, '0.2.8');
   });
 });
+
+
+test('desktop install stays busy until the original request fails or the app restarts', async t => {
+  const downloaded = {
+    state: 'downloaded', has_update: true, platform_supported: true,
+    downloaded_path: '/updates/WorkSwarm-0.2.10-macos.dmg',
+  };
+  const installer = t.mock.fn(() => new Promise(resolve => { finishInstall = resolve; }));
+  let finishInstall;
+  window.pywebview = { api: { install_update: installer } };
+  t.after(() => { delete window.pywebview; });
+  const installButton = container => container.querySelector('[data-testid="update-panel-install-btn"]');
+  const statusLabel = container => container.querySelector('[data-testid="update-panel-info-card-value"][data-variant="state"]');
+  const errorBanner = container => container.querySelector('[data-testid="update-panel-error"]');
+  const publishDownloaded = () => window.dispatchEvent(new window.CustomEvent('jiuwenswarm:updater-status', {
+    detail: downloaded,
+  }));
+
+  await withPanel(downloaded, 'zh', async container => {
+    await act(async () => {
+      installButton(container).click();
+      installButton(container).click();
+    });
+    assert.equal(installer.mock.callCount(), 1);
+    assert.deepEqual(installer.mock.calls[0].arguments, [downloaded.downloaded_path]);
+    await act(async () => publishDownloaded());
+    assert.equal(installButton(container).disabled, true);
+    assert.equal(statusLabel(container).textContent, '安装中');
+    assert.equal(errorBanner(container), null);
+  });
+
+  await withPanel(downloaded, 'zh', async container => {
+    assert.equal(installButton(container).disabled, true);
+    assert.equal(statusLabel(container).textContent, '安装中');
+    await act(async () => finishInstall(false));
+    await act(async () => publishDownloaded());
+    assert.equal(installButton(container).disabled, false);
+    assert.equal(statusLabel(container).textContent, '已下载完成');
+    assert.match(errorBanner(container).textContent, /启动更新安装失败/);
+
+    await act(async () => installButton(container).click());
+    assert.equal(installer.mock.callCount(), 2);
+    await act(async () => finishInstall(true));
+    await act(async () => publishDownloaded());
+    assert.equal(installButton(container).disabled, true);
+    assert.equal(statusLabel(container).textContent, '安装中');
+    assert.equal(errorBanner(container), null);
+  });
+});
