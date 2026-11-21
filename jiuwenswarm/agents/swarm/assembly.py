@@ -658,11 +658,14 @@ def enrich_team_spec_for_swarm(
         "heartbeat_job_service": get_heartbeat_job_service(),
         "config": config,
     }
+    try:
+        extension_bus = Runner.get_extension_bus()
+    except (AttributeError, RuntimeError):
+        extension_bus = None
+    if extension_bus is not None:
+        context_kwargs["extras"] = {"team.extension_bus": extension_bus}
     if "extension_bus" in getattr(SwarmBuildContext, "__dataclass_fields__", {}):
-        try:
-            context_kwargs["extension_bus"] = Runner.get_extension_bus()
-        except (AttributeError, RuntimeError):
-            context_kwargs["extension_bus"] = None
+        context_kwargs["extension_bus"] = extension_bus
     base = SwarmBuildContext(**context_kwargs)
     mcp_configs = build_enabled_mcp_server_configs(
         config,

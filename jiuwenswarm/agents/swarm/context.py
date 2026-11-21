@@ -293,6 +293,8 @@ class SwarmBuildContext(BuildContext):
             "heartbeat_job_service": get_heartbeat_job_service(),
             "config": config,
         }
+        if extension_bus is not None:
+            context_kwargs["extras"] = {"team.extension_bus": extension_bus}
         if "extension_bus" in getattr(cls, "__dataclass_fields__", {}):
             context_kwargs["extension_bus"] = extension_bus
         return cls(**context_kwargs)

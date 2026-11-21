@@ -14359,13 +14359,6 @@ class JiuWenSwarmDeepAdapter:
             language=resolved_language,
             auto_create_workspace=False,
         )
-        if subagent_registration_plan.mode == "event":
-            common_kwargs.update(
-                subagent_registration_mode="event",
-                event_subagent_configs=subagent_registration_plan.event_subagents,
-                extension_bus=subagent_registration_plan.extension_bus,
-            )
-
         context_model_state = _ContextEngineModelState(
             full_config=config_base,
             model_name=getattr(getattr(model, "model_config", None), "model_name", ""),

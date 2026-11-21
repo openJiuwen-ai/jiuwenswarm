@@ -21,7 +21,7 @@ class SubagentRegistrationPlan:
     """The static and event subsets for one parent DeepAgent."""
 
     mode: Literal["legacy", "event"]
-    static_subagents: list[Any]
+    static_subagents: list[Any] | None
     event_subagents: list[SubAgentConfig]
     extension_bus: Any = None
 
@@ -37,7 +37,7 @@ def resolve_subagent_registration_plan(
     agent-core, so an older local checkout remains on the existing path without
     importing or constructing unsupported event payloads.
     """
-    configured = list(subagents or [])
+    configured = list(subagents) if subagents is not None else None
     try:
         from jiuwenswarm.agents.swarm.registry import (
             supports_subagent_registration_event,
@@ -51,6 +51,9 @@ def resolve_subagent_registration_plan(
 
     if not supported or extension_bus is None:
         return SubagentRegistrationPlan("legacy", configured, [])
+
+    if configured is None:
+        return SubagentRegistrationPlan("event", None, [], extension_bus)
 
     event_subagents = []
     for item in configured:
