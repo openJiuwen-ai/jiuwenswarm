@@ -37,6 +37,12 @@ _CACHE_LOCK = threading.Lock()
 _TITLE_MAX_LEN = 50
 # 心跳任务会话目录前缀，不参与 session.list 等列表展示
 _HEARTBEAT_SESSION_PREFIX = "heartbeat_"
+# cron 执行会话目录前缀（gateway 每次执行新建一个，只增不删），不参与 session.list 列表
+# ——客户端侧栏/desktopSession* 探活/web/tui 均不消费这些行（客户端磁盘兜底路径
+# session-disk.ts 与 isInternalJiuwenSessionId 本就排除它们），扫描成本却随其累积线性上涨。
+# 仅作用于 get_all_sessions_metadata（session.list 列表路径）；collect_all_sessions_metadata
+# （项目统计/置顶聚合）口径不变。
+_CRON_EXEC_SESSION_PREFIX = "__cron__"
 _DELIVERY_KIND_SERVER_PUSH = "server_push"
 
 # 匹配所有小写 XML 块:
@@ -1336,6 +1342,10 @@ def get_all_sessions_metadata(
 
         session_id = session_dir.name
         if session_id.startswith(_HEARTBEAT_SESSION_PREFIX):
+            continue
+        if session_id.startswith(_CRON_EXEC_SESSION_PREFIX):
+            # cron 执行会话不进 session.list 列表：客户端与 web/tui 均不消费，
+            # 且此类目录随定时任务执行只增不删，扫描成本随 N 线性上涨
             continue
         metadata = _read_metadata(session_id)
 

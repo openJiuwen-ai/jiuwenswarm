@@ -239,6 +239,77 @@ _DESKTOP_SESSION_LIMIT_MESSAGE = (
     "请等待其他会话结束后再发起新会话。"
 )
 _DEFAULT_DESKTOP_MAX_PARALLEL_SESSIONS = 5
+
+# session.list 单页行数上限。旧值 200 会迫使桌面端按 ceil(N/200) 页翻页，
+# 而服务端每页都全量扫描会话目录（session_metadata.get_all_sessions_metadata），
+# 会话多时一次侧栏刷新 = 15 页 × 全量扫描，事件循环被打满。
+# 放宽到 5000 后桌面端一次 RPC 即可拉全（配合桌面端 SESSION_LIST_PAGE_LIMIT）；
+# Web/TUI 前端只请求 limit<=20，小值行为不变。
+_SESSION_LIST_PAGE_LIMIT = 5000
+# session.list 单页序列化字节预算（探测口径）：json.dumps(ensure_ascii=False) 的探测字节
+# 实测大于实际 wire 编码字节（真实数据 1,966B/行 探测 vs 1,810B/行 wire），偏保守方向安全。
+# 页超预算时收缩行数并保真 total，客户端按 total 续翻退化为 200/页；不收缩则一旦超过
+# ws_send.send_wire_payload 的 AGENT_WS_SEND_BUDGET_BYTES(6 MiB)，整包会被替换成
+# response_too_large 错误，桌面侧栏将长期空白（每次刷新都同样失败）。
+# 4 MiB 工作线 = 6 MiB 硬限的 66%，为探测与 wire 的口径差留足余量。
+_SESSION_LIST_SEND_BUDGET_BYTES = 4 * 1024 * 1024
+# 骨架行的字符串字段截断上限：单行自身超预算（病态 metadata，如异常大的
+# channel_metadata/附件/历史字段）时，floor=1 行仍发不出去会触发 response_too_large，
+# 退化为骨架行保底——丢弃嵌套/超长字段、保留标量展示字段，行数语义不变
+# （total/offset 对账不受影响），侧栏不空白。
+_SESSION_ROW_STRING_CAP = 512
+
+
+def _skeleton_session_row(row: dict[str, Any]) -> dict[str, Any]:
+    """超预算单行的保底骨架：仅保留标量字段（长字符串截断），丢弃嵌套结构。"""
+    out: dict[str, Any] = {}
+    for k, v in row.items():
+        if isinstance(v, str):
+            out[k] = v[:_SESSION_ROW_STRING_CAP]
+        elif isinstance(v, (int, float, bool)):
+            out[k] = v
+    out.setdefault("session_id", "")
+    return out
+
+
+def _fit_sessions_page_bytes(
+    sessions: list[dict[str, Any]], budget: int = _SESSION_LIST_SEND_BUDGET_BYTES
+) -> list[dict[str, Any]]:
+    """按序列化字节预算收缩 session.list 单页行数，保证不触发 response_too_large。
+
+    纯函数便于单测：探测序列化用 json.dumps(ensure_ascii=False)，实测字节 >= wire 编码
+    字节（保守）。收缩按比例推进并复测；floor 为 1 行——返回空页会让客户端把当前页
+    误判为末页从而漏掉后续会话（total 有余量时空页是错误信号）。
+    单行自身仍超预算（病态 metadata）时降级为骨架行：floor=1 也发不出去，不能把
+    response_too_large 留给客户端（退 200/页拿到的还是同一行，最终侧栏空白）。
+    """
+    if not sessions:
+        return sessions
+
+    def _size(rows: list[dict[str, Any]]) -> int:
+        return len(json.dumps({"sessions": rows}, ensure_ascii=False).encode("utf-8"))
+
+    size = _size(sessions)
+    if size <= budget:
+        return sessions
+    while size > budget and len(sessions) > 1:
+        keep = len(sessions) * budget // size
+        if keep >= len(sessions):
+            keep = len(sessions) - 1
+        sessions = sessions[:max(1, keep)]
+        size = _size(sessions)
+    if size > budget:
+        logger.warning(
+            "[AgentWebSocketServer] session.list 单行超字节预算，降级为骨架行: "
+            "session_id=%s size=%d budget=%d",
+            sessions[0].get("session_id"),
+            size,
+            budget,
+        )
+        sessions = [_skeleton_session_row(sessions[0])]
+    return sessions
+
+
 # session.delete 前先等在途的会话预热（warm pool 前台 prepare）落地：create 回包时
 # 适配器注册与 prepare 仍在后台续跑，delete 抢在该尾巴之前会 cancel 空转、cleanup
 # 撞上"刚注册"的运行态而误判 DELETE_FAILED。超时后照常拆，仍失败则诚实报错。
@@ -3920,7 +3991,7 @@ class AgentWebSocketServer:
         elif isinstance(raw_offset, str) and raw_offset.strip().isdigit():
             offset = int(raw_offset.strip())
 
-        limit = max(1, min(limit, 200))
+        limit = max(1, min(limit, _SESSION_LIST_PAGE_LIMIT))
         offset = max(0, offset)
 
         try:
@@ -3928,6 +3999,21 @@ class AgentWebSocketServer:
         except Exception as exc:
             logger.warning("[AgentWebSocketServer] 获取会话列表失败: %s", exc)
             sessions, total = [], 0
+
+        # 字节预算收缩：页序列化超预算时截断行数、保真 total，客户端按 total 续翻
+        # （退化为 200/页），避免整包被 send_wire_payload 替换为 response_too_large。
+        fitted_rows = len(sessions)
+        sessions = _fit_sessions_page_bytes(sessions)
+        if fitted_rows and len(sessions) != fitted_rows:
+            logger.info(
+                "[AgentWebSocketServer] session.list 页超字节预算已收缩: "
+                "limit=%d offset=%d rows=%d->%d total=%d",
+                limit,
+                offset,
+                fitted_rows,
+                len(sessions),
+                total,
+            )
 
         resp = AgentResponse(
             request_id=request.request_id,
