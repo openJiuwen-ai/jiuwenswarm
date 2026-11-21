@@ -422,9 +422,7 @@ async def test_double_checked_lock_race_loser_closed_in_background(
         state["armed"] = False
         monkeypatch.undo()
     assert rail is not None
-    # close Task 经 call_soon_threadsafe 派发, 登记回调在下一循环节拍执行;
-    # 补一拍后再收集, 避免漏掉尚未登记的 close Task
-    await asyncio.sleep(0)
+    # 循环线程调用就地登记 close Task, 无需补拍
     # 确定性等待竞态落败者的后台 close Task 完成, 而非固定 sleep 赌调度时序
     pending_close = [t for t in m._SSAS_CLOSE_TASKS if not t.done()]
     if pending_close:

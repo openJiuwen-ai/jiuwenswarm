@@ -1034,7 +1034,8 @@ def _close_ssas_backend_in_background(
     资源同样被释放。close Task 登记在 dispatch_loop(缺省为当前线程的
     运行循环); rail 装配运行在 worker 线程时该线程没有运行中的循环,
     由调用方显式透传事件循环, 并经 call_soon_threadsafe 派发, 保证
-    跨线程登记安全。
+    跨线程登记安全; 若当前线程就是 dispatch_loop 的线程则就地 create_task
+    (与旧行为一致, 避免无谓延后一拍改变调用方的可观测时序)。
     """
     if backend is None:
         return
@@ -1049,6 +1050,10 @@ def _close_ssas_backend_in_background(
             # 无运行中事件循环且调用方未提供派发循环:
             # 放弃后台关闭, 资源随进程退出由 OS 回收
             return
+    try:
+        running_loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
     if backend_loop.is_closed():
         close_coro: Any = asyncio.to_thread(
             _close_ssas_backend_in_fresh_loop, close
@@ -1068,6 +1073,10 @@ def _close_ssas_backend_in_background(
             _SSAS_CLOSE_TASKS.add(close_task)
         close_task.add_done_callback(_log_ssas_close_result)
 
+    if running_loop is loop:
+        # 已在目标循环线程: 就地登记, 保持调用方原本可观测的时序
+        _register_close_task()
+        return
     try:
         loop.call_soon_threadsafe(_register_close_task)
     except RuntimeError:
