@@ -96,6 +96,7 @@ async def record_model_token_usage(
             attribution=attribution,
             input_tokens=usage.get("input_tokens"),
             output_tokens=usage.get("output_tokens"),
+            total_cost=usage.get("total_cost"),
             fallback_role=role,
         )
         if isinstance(extra, dict):

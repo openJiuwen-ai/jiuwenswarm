@@ -582,10 +582,12 @@ async def test_front_history_restores_durable_usage_without_usage_records(
             "main": {
                 "input_tokens": 1234, "output_tokens": 500,
                 "input_calls": 1, "output_calls": 1, "calls_total": 1,
+                "priced_calls": 0, "total_cost": None,
             },
             "others": {
                 "input_tokens": 200, "output_tokens": 50,
                 "input_calls": 1, "output_calls": 1, "calls_total": 1,
+                "priced_calls": 0, "total_cost": None,
             },
         }
 

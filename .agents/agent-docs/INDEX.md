@@ -211,6 +211,7 @@ generated: true
 | [F-20261107-1700-coding-document-memory](features/F_20261107_1700_coding-document-memory.md) | F | Coding 接入 agent-memory 文档记忆 | Wang Tao | 无独立 D：依据已确认的跨仓 Coding 文档记忆方案；无独立仓内 D 文档。 |
 | [F_20261027_2015_bilingual-progressive-tool-discovery](features/jiuwenswarm/agents/harness/common/tools/F_20261027_2015_bilingual-progressive-tool-discovery.md) | F | 中英文渐进式工具发现 | MengHan18 | 无独立 D：针对 Issue 5615 后续扩展的已确认实现，未建立独立仓内设计编号 |
 | [F_20261103_1124_sdk-web-retrieval](features/F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
+| [B_20261116_2135_subagent-cost-dropped](bugfix/jiuwenswarm/server/runtime/session/B_20261116_2135_subagent-cost-dropped.md) | B | 会话用量账本丢弃子代理与浏览器代理的计费金额：记录 provider total_cost | MisakaMikasa | 无独立 D：依据实测会话数据与代码路径定位，无独立设计文档；修复范围限定会话用量账本记录与快照，不改变 chat.usage_summary 现有字段语义。 |
 | [B_20261117_2001_deferred-memory-failure](bugfix/jiuwenswarm/agents/harness/common/rails/B_20261117_2001_deferred-memory-failure.md) | B | 延迟调用记忆工具时传播失败状态 | ToNy_St4rk | 无独立 D：修复 Issue 6151 中已有工具结果契约的状态传播，无独立设计。 |
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | — |
 | [S_02_web-retrieval](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_web-retrieval.md) | S | SDK Web 检索接入与免费来源配置 | ShowHsiang | — |
@@ -677,6 +678,7 @@ generated: true
 | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) | D | NPC 主从会话与按需搜索工具 | kdgmpw | — |
 | [F_20261103_1501_app-role-session](features/app-role-session.md) | F | 保留基础系统提示的轻量 NPC 会话 | kdgmpw | [D-20261103-1444-app-role-session](designs/active/D-20261103-1444-app-role-session/design.md) |
 | [F_20261104_1225_npc-team-member-sessions](features/F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
+| [B_20261116_2135_subagent-cost-dropped](bugfix/jiuwenswarm/server/runtime/session/B_20261116_2135_subagent-cost-dropped.md) | B | 会话用量账本丢弃子代理与浏览器代理的计费金额：记录 provider total_cost | MisakaMikasa | 无独立 D：依据实测会话数据与代码路径定位，无独立设计文档；修复范围限定会话用量账本记录与快照，不改变 chat.usage_summary 现有字段语义。 |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 
 <a id="module-jiuwenswarm-server-runtime-skill"></a>

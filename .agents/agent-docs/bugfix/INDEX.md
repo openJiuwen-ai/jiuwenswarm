@@ -42,6 +42,7 @@ generated: true
 | [jiuwenswarm/server/ipc](#module-jiuwenswarm-server-ipc) |
 | [jiuwenswarm/server/runtime](#module-jiuwenswarm-server-runtime) |
 | [jiuwenswarm/server/runtime/agent_adapter](#module-jiuwenswarm-server-runtime-agent_adapter) |
+| [jiuwenswarm/server/runtime/session](#module-jiuwenswarm-server-runtime-session) |
 | [jiuwenswarm/server/runtime/skill](#module-jiuwenswarm-server-runtime-skill) |
 | [jiuwenswarm/server/supervisor](#module-jiuwenswarm-server-supervisor) |
 | [jiuwenswarm/server/worker](#module-jiuwenswarm-server-worker) |
@@ -102,6 +103,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [B_20261116_2135_subagent-cost-dropped](jiuwenswarm/server/runtime/session/B_20261116_2135_subagent-cost-dropped.md) | B | 会话用量账本丢弃子代理与浏览器代理的计费金额：记录 provider total_cost | MisakaMikasa | 无独立 D：依据实测会话数据与代码路径定位，无独立设计文档；修复范围限定会话用量账本记录与快照，不改变 chat.usage_summary 现有字段语义。 |
 | [B_20261117_2001_deferred-memory-failure](jiuwenswarm/agents/harness/common/rails/B_20261117_2001_deferred-memory-failure.md) | B | 延迟调用记忆工具时传播失败状态 | ToNy_St4rk | 无独立 D：修复 Issue 6151 中已有工具结果契约的状态传播，无独立设计。 |
 
 <a id="module-jiuwenswarm-agents-harness-common-rsi"></a>
@@ -310,6 +312,14 @@ generated: true
 | [B_20261031_1053_atomgit-review](jiuwenswarm/server/B_20261031_1053_atomgit-review.md) | B | PR 9317 AtomGit 取消、补丁兼容与注销恢复修复 | xinyang_bali | 无独立 D：根据机器人检视修复现有资源生命周期和可选补丁边界，不引入独立方案。 |
 | [B_20261106_1132_organization-round-cleanup](jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
 | [B_20261119_2249_deep-adapter-sync-build](jiuwenswarm/server/runtime/agent_adapter/B_20261119_2249_deep-adapter-sync-build.md) | B | DeepAdapter 冷启动同步构建阻塞事件循环 | yangzequ | 无独立 D：本次是对现有 DeepAdapter 创建链路的局部阻塞修复，无独立设计文档。 |
+
+<a id="module-jiuwenswarm-server-runtime-session"></a>
+
+## jiuwenswarm/server/runtime/session
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261116_2135_subagent-cost-dropped](jiuwenswarm/server/runtime/session/B_20261116_2135_subagent-cost-dropped.md) | B | 会话用量账本丢弃子代理与浏览器代理的计费金额：记录 provider total_cost | MisakaMikasa | 无独立 D：依据实测会话数据与代码路径定位，无独立设计文档；修复范围限定会话用量账本记录与快照，不改变 chat.usage_summary 现有字段语义。 |
 
 <a id="module-jiuwenswarm-server-runtime-skill"></a>
 

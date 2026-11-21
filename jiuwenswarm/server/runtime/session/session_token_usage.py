@@ -28,6 +28,22 @@ def _token_count(value: Any) -> int | None:
     return value if 0 <= value <= _MAX_TOKEN_COUNT else None
 
 
+def _cost_value(value: Any) -> float | None:
+    """Return a provider-billed USD amount, or None when the cost is unknown.
+
+    Model clients report a missing provider cost as 0.0, so zero is treated as
+    unknown rather than free.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if 0 < value < float("inf") else None
+
+
+def _has_cost_column(connection: sqlite3.Connection) -> bool:
+    columns = connection.execute("PRAGMA table_info(usage_events)").fetchall()
+    return any(column[1] == "total_cost" for column in columns)
+
+
 def classify_usage_owner(
     attribution: Mapping[str, Any] | None,
     *,
@@ -82,6 +98,8 @@ class SessionTokenUsageLedger:
         category: str,
         input_tokens: Any,
         output_tokens: Any,
+        *,
+        total_cost: Any = None,
     ) -> None:
         normalized_request_id = str(request_id or "").strip()
         if not normalized_request_id:
@@ -102,10 +120,14 @@ class SessionTokenUsageLedger:
                         request_id TEXT PRIMARY KEY,
                         category TEXT NOT NULL CHECK (category IN ('main', 'others')),
                         input_tokens INTEGER,
-                        output_tokens INTEGER
+                        output_tokens INTEGER,
+                        total_cost REAL
                     )
                     """
                 )
+                if not _has_cost_column(connection):
+                    # Ledgers created before cost tracking: earlier rows stay unpriced (NULL).
+                    connection.execute("ALTER TABLE usage_events ADD COLUMN total_cost REAL")
                 connection.execute(
                     """
                     CREATE TABLE IF NOT EXISTS usage_state (
@@ -119,10 +141,10 @@ class SessionTokenUsageLedger:
                 cursor = connection.execute(
                     """
                     INSERT OR IGNORE INTO usage_events
-                        (request_id, category, input_tokens, output_tokens)
-                    VALUES (?, ?, ?, ?)
+                        (request_id, category, input_tokens, output_tokens, total_cost)
+                    VALUES (?, ?, ?, ?, ?)
                     """,
-                    (normalized_request_id, category, safe_input, safe_output),
+                    (normalized_request_id, category, safe_input, safe_output, _cost_value(total_cost)),
                 )
                 if cursor.rowcount:
                     connection.execute("UPDATE usage_state SET revision = revision + 1 WHERE singleton = 1")
@@ -146,15 +168,22 @@ class SessionTokenUsageLedger:
             "SELECT revision FROM usage_state WHERE singleton = 1"
         ).fetchone()
         revision = int(row["revision"]) if row is not None else 0
-        totals: dict[str, dict[str, int | None]] = {}
+        totals: dict[str, dict[str, int | float | None]] = {}
+        # Ledgers written before cost tracking have no total_cost column until their next write.
+        cost_sql = (
+            "COUNT(total_cost) AS priced_calls, SUM(total_cost) AS total_cost"
+            if _has_cost_column(connection)
+            else "0 AS priced_calls, NULL AS total_cost"
+        )
         for category in _CATEGORIES:
             aggregate = connection.execute(
-                """
+                f"""
                 SELECT COUNT(*) AS calls_total,
                        COUNT(input_tokens) AS input_calls,
                        SUM(input_tokens) AS input_tokens,
                        COUNT(output_tokens) AS output_calls,
-                       SUM(output_tokens) AS output_tokens
+                       SUM(output_tokens) AS output_tokens,
+                       {cost_sql}
                 FROM usage_events WHERE category = ?
                 """,
                 (category,),
@@ -172,6 +201,10 @@ class SessionTokenUsageLedger:
                 "input_calls": int(aggregate["input_calls"]),
                 "output_calls": int(aggregate["output_calls"]),
                 "calls_total": calls_total,
+                "priced_calls": int(aggregate["priced_calls"]),
+                "total_cost": (
+                    round(aggregate["total_cost"], 6) if aggregate["total_cost"] is not None else None
+                ),
             }
         return {
             "schema_version": 1,
@@ -188,6 +221,8 @@ class SessionTokenUsageLedger:
             "input_calls": 0,
             "output_calls": 0,
             "calls_total": 0,
+            "priced_calls": 0,
+            "total_cost": None,
         }
         return {
             "schema_version": 1,
@@ -206,6 +241,7 @@ def record_session_token_usage(
     input_tokens: Any,
     output_tokens: Any,
     fallback_role: str | None = None,
+    total_cost: Any = None,
 ) -> None:
     """Record one provider result under the durable product Session."""
     from jiuwenswarm.server.runtime.session import lifecycle, session_history
@@ -224,6 +260,7 @@ def record_session_token_usage(
             classify_usage_owner(attribution, fallback_role=fallback_role),
             input_tokens,
             output_tokens,
+            total_cost=total_cost,
         )
 
 
