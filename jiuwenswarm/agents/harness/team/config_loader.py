@@ -16,6 +16,8 @@ from jiuwenswarm.common.config import get_config, _parse_custom_headers
 logger = logging.getLogger(__name__)
 
 _DEFAULT_MAX_ITERATIONS = 200
+# 一轮主对话生命周期内全员内层迭代合计上限
+_DEFAULT_MAX_TOTAL_ROUNDS = 500
 _DEFAULT_COMPLETION_TIMEOUT = 600.0
 _DEFAULT_AGENT_WORKSPACE = {"stable_base": True}
 _DEFAULT_TEAM_WORKSPACE = {"enabled": True}
@@ -343,26 +345,30 @@ def _build_agent_defaults() -> tuple[dict[str, Any], int, float]:
 
 
 def _build_agent_spec_dict(
-    agent_config: dict[str, Any],
-    *,
-    default_model: dict[str, Any],
-    default_workspace: dict[str, Any],
-    max_iterations: int,
-    completion_timeout: float,
+        agent_config: dict[str, Any],
+        *,
+        default_model: dict[str, Any],
+        default_workspace: dict[str, Any],
+        max_iterations: int,
+        completion_timeout: float,
 ) -> dict[str, Any]:
     merged = deepcopy(agent_config)
     merged.setdefault("model", deepcopy(default_model))
     merged.setdefault("workspace", deepcopy(default_workspace))
     merged.setdefault("max_iterations", max_iterations)
+    # 复用团队节 max_iterations 作迭代预算
+    # 来源（内层迭代口径，每次模型调用计一）——该键在团队链路被 task loop
+    # 遮蔽本为死配置，复活即预算，不新增旋钮
+    merged["task_loop_iteration_budget"] = merged["max_iterations"]
     merged.setdefault("completion_timeout", completion_timeout)
     return merged
 
 
 def _build_agents_config(
-    team_raw: dict[str, Any],
-    config_base: dict[str, Any],
-    *,
-    requested_model_name: str | None = None,
+        team_raw: dict[str, Any],
+        config_base: dict[str, Any],
+        *,
+        requested_model_name: str | None = None,
 ) -> dict[str, Any]:
     default_model = _build_default_model_dict(
         config_base,
@@ -571,6 +577,10 @@ def load_team_spec_dict(
 
     spec_dict["team_name"] = str(team_raw.get("team_name") or resolved_template_id or "team").strip() or "team"
     spec_dict["lifecycle"] = team_raw.get("lifecycle", "persistent")
+    # 回合全员轮数合计上限（团队级旋钮）
+    spec_dict["max_total_rounds"] = team_raw.get(
+        "max_total_rounds", _DEFAULT_MAX_TOTAL_ROUNDS,
+    )
     spec_dict["teammate_mode"] = team_raw.get("teammate_mode", "build_mode")
     spec_dict["spawn_mode"] = team_raw.get("spawn_mode", "inprocess")
     spec_dict["enable_hitt"] = team_raw.get("enable_hitt", True)

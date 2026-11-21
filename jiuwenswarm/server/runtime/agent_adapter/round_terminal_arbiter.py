@@ -39,7 +39,7 @@ SETTLE_QUIET_SEC = 2.0
 SETTLE_NONE_MAX_ATTEMPTS = 3
 # 确未落定（False）有界续窗：final 当口的 False 多为 leader 收尾
 # 迁移落库前的毫秒级时序差；持续 False = 确有在途工作，耗尽退回旧行为不强制
-# 收口（防误杀成员长模型调用合法静默，PM-53 实测单调用 300s 级）
+# 收口（防误杀成员长模型调用合法静默，）
 SETTLE_FALSE_RECHECK_SEC = 15.0
 SETTLE_FALSE_MAX_ATTEMPTS = 8
 # 事件驱动重评去抖：落定过程状态帧密集，读数点查不必每帧一次
@@ -60,6 +60,11 @@ class ProposalSource:
     STALL_WATCHDOG = "stall_watchdog"
     STREAM_END = "stream_end"
     INTERACT_FAILED = "interact_failed"
+    # 迭代预算耗尽：agent-core 收尾序列
+    # 已在域内完成（停成员/回池/总结轮），此处只发干净完成帧
+    ITERATION_EXHAUSTED = "iteration_exhausted"
+    # 成员耗尽且回池任务无人接棒：带 error 判死级联
+    MEMBER_EXHAUSTED = "member_exhausted"
 
 
 class Outcome:
@@ -80,6 +85,7 @@ class TerminalProposal(TypedDict, total=False):
     hint: Optional[str]  # settle 类提案预检提示（保留位）
     member_count: Optional[int]  # team_completed 统计（干净帧携带）
     task_count: Optional[int]
+    scope: Optional[str]  # iteration_exhausted 分档：leader / total
 
 
 @dataclass
@@ -361,6 +367,36 @@ class RoundTerminalArbiter:
                 log_reason="instant_final",
             )
 
+        if source == ProposalSource.ITERATION_EXHAUSTED:
+            # 迭代预算耗尽：agent-core 收尾序列已完成
+            # （停成员/回池/总结轮），此处只发干净完成帧——无 error、
+            # 无级联（级联在收尾序列内已做）；scope=leader|total 进日志。
+            # 错误史刻意不携带（拍板：耗尽事实只进日志，用户可见面保持
+            # 正常完成形态——交付总结本身即对"做完/没做完"的表达）。
+            if self._ledger.unrecovered_error:
+                logger.warning(
+                    "[RoundTerminalArbiter] iteration_exhausted drops "
+                    "unrecovered error from terminal frame: session_id=%s "
+                    "round_id=%s error=%s",
+                    self._session_id,
+                    self._round_id,
+                    self._ledger.unrecovered_error,
+                )
+            logger.info(
+                "[RoundTerminalArbiter] proposal source=iteration_exhausted "
+                "session_id=%s round_id=%s scope=%s",
+                self._session_id,
+                self._round_id,
+                proposal.get("scope", "leader"),
+            )
+            return await self._emit_terminal(
+                error=None,
+                stats=None,
+                soft=False,
+                cascade_source=None,
+                log_reason=f"iteration_exhausted:{proposal.get('scope', 'leader')}",
+            )
+
         if source == ProposalSource.INTERACT_FAILED:
             # 投递失败：已广播的 chat.error 同文案收尾（防"失败记成已完成"）
             return await self._emit_terminal(
@@ -369,6 +405,17 @@ class RoundTerminalArbiter:
                 soft=False,
                 cascade_source=None,
                 log_reason="interact_failed",
+            )
+
+        if source == ProposalSource.MEMBER_EXHAUSTED:
+            # 成员耗尽且回池任务无人接棒——带 error 判死级联
+            # （判死族同通路；cascade_source 单独可审计）
+            return await self._emit_terminal(
+                error=proposal.get("error") or UNCONFIRMED_FINAL_STATE_TEXT,
+                stats=None,
+                soft=False,
+                cascade_source="member-exhausted",
+                log_reason="member_exhausted",
             )
 
         if source in (ProposalSource.DEATH_PROBE, ProposalSource.STALL_WATCHDOG):
