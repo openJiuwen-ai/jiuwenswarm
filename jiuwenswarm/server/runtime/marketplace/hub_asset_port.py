@@ -81,6 +81,7 @@ class HubAssetDetail:
     icon_uri: str
     tags: tuple[str, ...]
     package_name: str = ""
+    category_name: str = ""
     preview_url: str = ""
     # Published package profile from the version endpoint; renders detail cards without
     # downloading the package archive.

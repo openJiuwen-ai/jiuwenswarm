@@ -82,7 +82,7 @@ wheels = [
 [[package]]
 name = "agent-gateway"
 version = "0.0.1"
-source = { git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=7c10913f1fb0bdbbcd2e6d91221d0ac90661a7ce#7c10913f1fb0bdbbcd2e6d91221d0ac90661a7ce" }
+source = { git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=dda0e957bd5ae501a326d3ea61a4d336c91ebfc7#dda0e957bd5ae501a326d3ea61a4d336c91ebfc7" }
 dependencies = [
     { name = "aiohttp" },
     { name = "aiosqlite" },
@@ -7501,7 +7501,7 @@ requires-dist = [
     { name = "a2ui-agent-sdk", specifier = "==0.2.1" },
     { name = "a2ui-agent-sdk", marker = "extra == 'harmony'", specifier = "==0.2.1" },
     { name = "a4p", specifier = "==0.1.0" },
-    { name = "agent-gateway", git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=7c10913f1fb0bdbbcd2e6d91221d0ac90661a7ce" },
+    { name = "agent-gateway", git = "https://gitcode.com/openJiuwen/agent-gateway.git?rev=dda0e957bd5ae501a326d3ea61a4d336c91ebfc7" },
     { name = "aiosqlite", specifier = ">=0.22.1,<0.23" },
     { name = "aiosqlite", marker = "extra == 'harmony'", specifier = ">=0.22.1" },
     { name = "anthropic", specifier = ">=0.40.0,<1.0.0" },

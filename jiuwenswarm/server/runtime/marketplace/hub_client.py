@@ -456,6 +456,7 @@ class HubClient(HubAssetPort):
             icon_uri=self._normalize_icon_uri(detail.icon_uri or item.icon_uri),
             tags=detail.tags,
             package_name=detail.name or item.name,
+            category_name=item.category_name,
             preview_url=self._normalize_icon_uri(detail.preview_url),
             package_profile=detail.package_profile,
             versions=item.all_versions,
