@@ -597,6 +597,62 @@ async def test_create_task_rejects_one_parallel_call_without_skipping_the_others
 
 
 @pytest.mark.asyncio
+async def test_summary_team_root_rejects_ordinary_summary_dispatch(monkeypatch):
+    rail = OrganizationAvailabilityRail("owner", "session")
+    root = SimpleNamespace(
+        task_id="root", root_task_id="root", aggregation=SimpleNamespace(mode="SUMMARY_TEAM"),
+    )
+    historical = SimpleNamespace(
+        task_id="misrouted", root_task_id="root", required_capabilities=["summary"], task_type=None,
+    )
+    official = SimpleNamespace(
+        task_id="official", root_task_id="root", required_capabilities=["summary"],
+        task_type="organization.summary",
+    )
+    tasks = {task.task_id: task for task in (root, historical, official)}
+    monkeypatch.setattr(rail, "_task_manager", AsyncMock(return_value=SimpleNamespace(
+        get_task=AsyncMock(side_effect=tasks.get),
+    )))
+    monkeypatch.setattr(rail, "_claim_members", AsyncMock(return_value=[]))
+    availability = AsyncMock(return_value={})
+    monkeypatch.setattr(rail, "_team_availability", availability)
+
+    async def call(name, args):
+        inputs = ToolCallInputs(tool_name=name, tool_args=args, tool_call=SimpleNamespace(id=name))
+        ctx = SimpleNamespace(inputs=inputs, extra={})
+        await rail.before_tool_call(ctx)
+        return ctx
+
+    for name, args in (
+        ("org_create_task", {
+            "parent_task_id": "root", "required_capabilities": ["summary"], "delegated_to_team_id": "tech",
+        }),
+        ("org_delegate_task", {"task_id": "misrouted", "to_team_id": "tech"}),
+        ("org_claim_task", {"task_id": "misrouted"}),
+    ):
+        ctx = await call(name, args)
+        assert ctx.extra == {"_skip_tool_calls": {name: True}}
+        assert "org_create_summary_execution" in ctx.inputs.tool_msg.content
+    availability.assert_not_awaited()
+    historical.required_capabilities = None
+    assert (await call("org_claim_task", {"task_id": "misrouted"})).extra == {}
+    historical.required_capabilities = ["summary"]
+
+    for name, args in (
+        ("org_create_summary_execution", {"root_task_id": "root"}),
+        ("org_claim_task", {"task_id": "official"}),
+        ("org_create_task", {"parent_task_id": "root", "required_capabilities": ["technology-insight"]}),
+    ):
+        assert (await call(name, args)).extra == {}
+
+    root.aggregation.mode = "HIERARCHICAL"
+    assert (await call("org_create_task", {
+        "parent_task_id": "root", "required_capabilities": ["summary"], "delegated_to_team_id": "tech",
+    })).extra == {}
+    availability.assert_awaited_once_with("tech")
+
+
+@pytest.mark.asyncio
 async def test_availability_snapshot_names_the_claim_capability(monkeypatch):
     rail = OrganizationAvailabilityRail("owner", "session")
     leader = SimpleNamespace(

@@ -105,6 +105,14 @@ export function useOrganizationProcessing(sessionId: string | null): boolean {
   );
 }
 
+export function useOrganizationOwnerStopped(sessionId: string | null): boolean {
+  return useSyncExternalStore(
+    subscribe,
+    () => Boolean(sessionId && isOrganizationOwnerStopped(sessionId)),
+    () => false,
+  );
+}
+
 export function startExpertRequest(key: string, requestId: string, source = 'org_expert_direct'): void {
   if (!requestId || stoppedOwners.has(key)) return;
   const requests = activeRequests.get(key) ?? new Map<string, string>();
@@ -189,5 +197,5 @@ export function clearOrganizationRequests(sessionId: string): void {
   ownerStateRevisions.set(sessionId, organizationOwnerStateRevision(sessionId) + 1);
   pendingOwnerStops.delete(sessionId);
   stoppedOwners.delete(sessionId);
-  reconcileOrganizationRequests(sessionId, undefined, [], revision, []);
+  reconcileOrganizationRequests(sessionId, undefined, [], revision, [], false);
 }
