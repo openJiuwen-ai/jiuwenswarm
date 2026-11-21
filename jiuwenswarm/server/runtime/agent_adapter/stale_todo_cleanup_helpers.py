@@ -19,6 +19,7 @@ from openjiuwen.core.single_agent import create_agent_session
 
 from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     bump_todo_generation_token,
+    has_pending_step_resume,
     is_resume_user_query,
 )
 from jiuwenswarm.server.runtime.agent_adapter.interrupt_resume_helpers import (
@@ -112,6 +113,18 @@ async def prepare_stale_todo_cleanup_for_request(
     if params is None:
         logger.info(
             "[JiuWenClaw] prepare_stale_todo_cleanup: EARLY RETURN (no params) session_id=%s",
+            session_id,
+        )
+        return False
+
+    if has_pending_step_resume(runtime_session):
+        # A step-resume turn continues the interrupted run: the todo list was
+        # persisted with the last completed step and is about to be restored.
+        # Bumping the generation token here would mark it stale and the
+        # broadcast layer would filter it out.
+        logger.info(
+            "[JiuWenClaw] prepare_stale_todo_cleanup: keep generation (step resume pending) "
+            "session_id=%s",
             session_id,
         )
         return False
