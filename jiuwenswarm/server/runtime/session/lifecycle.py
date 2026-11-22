@@ -86,12 +86,16 @@ def _read_text_ride_out_sharing(path: Path) -> str:
     Atomic writers publish via tmp+rename; an unlocked reader that lands in
     the replacement window receives Errno 13 even though the file is healthy
     (issue #4923). Ride the window out instead of failing the whole request.
+    POSIX renames are atomic and never expose that window, so the retry is
+    gated to Windows; a PermissionError elsewhere is a real denial.
     """
     attempt = 0
     while True:
         try:
             return path.read_text(encoding="utf-8")
         except PermissionError:
+            if sys.platform != "win32":
+                raise
             attempt += 1
             if attempt >= _SHARING_RETRY_ATTEMPTS:
                 raise

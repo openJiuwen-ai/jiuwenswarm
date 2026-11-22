@@ -10,6 +10,7 @@ even though the background finalizer would have converged.
 """
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -20,15 +21,17 @@ from jiuwenswarm.server.runtime.session import lifecycle as lc
 class _FlakyReplace:
     """os.replace stand-in failing its first N calls, then renaming for real."""
 
-    def __init__(self, failures: int) -> None:
+    def __init__(self, failures: int, real_replace=os.replace) -> None:
         self._failures = failures
+        # Bind the real replace at construction: the test patches os.replace.
+        self._real_replace = real_replace
         self.calls = 0
 
     def __call__(self, src: Path, dst: Path) -> None:
         self.calls += 1
         if self.calls <= self._failures:
             raise PermissionError(5, "Permission denied")
-        Path(src).rename(dst)
+        self._real_replace(src, dst)
 
 
 def test_atomic_json_writes_payload(tmp_path: Path) -> None:
@@ -40,6 +43,7 @@ def test_atomic_json_writes_payload(tmp_path: Path) -> None:
 def test_atomic_json_rides_out_transient_sharing_violation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(lc.sys, "platform", "win32")
     monkeypatch.setattr(lc.time, "sleep", lambda _seconds: None)
     flaky = _FlakyReplace(failures=3)
     monkeypatch.setattr(lc.os, "replace", flaky)
@@ -54,6 +58,7 @@ def test_atomic_json_rides_out_transient_sharing_violation(
 def test_atomic_json_raises_after_exhausting_retry_budget(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(lc.sys, "platform", "win32")
     monkeypatch.setattr(lc.time, "sleep", lambda _seconds: None)
     flaky = _FlakyReplace(failures=lc._SHARING_RETRY_ATTEMPTS + 50)
     monkeypatch.setattr(lc.os, "replace", flaky)
@@ -77,14 +82,30 @@ def test_atomic_json_does_not_retry_other_oserrors(
 ) -> None:
     """Only PermissionError rides the retry loop; other OSErrors propagate
     on the first attempt (e.g. a tmp file deleted by a concurrent scanner)."""
-    flaky = _FlakyReplace(failures=0)
+    calls = 0
 
     def gone(src: Path, dst: Path) -> None:
-        flaky.calls += 1
+        nonlocal calls
+        calls += 1
         raise FileNotFoundError(2, "No such file or directory")
 
     monkeypatch.setattr(lc.os, "replace", gone)
     target = tmp_path / "session_u.json"
     with pytest.raises(FileNotFoundError):
         lc.atomic_json(target, {"session_id": "u"})
+    assert calls == 1
+
+
+def test_atomic_json_does_not_retry_permission_error_on_posix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sharing retry is Windows-only: a POSIX denial is not transient."""
+    monkeypatch.setattr(lc.sys, "platform", "linux")
+    monkeypatch.setattr(lc.time, "sleep", lambda _seconds: None)
+    flaky = _FlakyReplace(failures=1)
+    monkeypatch.setattr(lc.os, "replace", flaky)
+    target = tmp_path / "session_w.json"
+    with pytest.raises(PermissionError):
+        lc.atomic_json(target, {"session_id": "w"})
     assert flaky.calls == 1
+    assert [p.name for p in tmp_path.iterdir() if p.suffix == ".tmp"] == []

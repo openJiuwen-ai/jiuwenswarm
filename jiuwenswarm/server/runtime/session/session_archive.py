@@ -1695,6 +1695,22 @@ class SessionArchiveService:
                     results[sid] = dict(
                         session_id=sid, ok=False, code=exc.code, error=str(exc)
                     )
+            except PermissionError as exc:
+                # Same transient class as the per-session fallback, raised by
+                # lock entry or the project state read instead of _session.
+                logger.warning(
+                    "cron batch delete: filesystem error on project %s: %s",
+                    pid,
+                    exc,
+                    exc_info=True,
+                )
+                for sid, _ in group[index:]:
+                    results[sid] = dict(
+                        session_id=sid,
+                        ok=False,
+                        code="INTERNAL_ERROR",
+                        error=str(exc),
+                    )
         ordered = [results[sid] for sid in sorted(results, key=order.__getitem__)]
         return dict(
             cron_id=cron_id,
@@ -1769,6 +1785,24 @@ class SessionArchiveService:
                             code=exc.code,
                             error=str(exc),
                             **exc.details,
+                        )
+                    )
+                except PermissionError as exc:
+                    # Keep one transient filesystem failure from failing the
+                    # whole batch RPC, matching delete_cron_sessions.
+                    logger.warning(
+                        "project batch %s: filesystem error on session %s: %s",
+                        action,
+                        sid,
+                        exc,
+                        exc_info=True,
+                    )
+                    results.append(
+                        dict(
+                            session_id=sid,
+                            ok=False,
+                            code="INTERNAL_ERROR",
+                            error=str(exc),
                         )
                     )
             succeeded = sum(item["ok"] for item in results)
