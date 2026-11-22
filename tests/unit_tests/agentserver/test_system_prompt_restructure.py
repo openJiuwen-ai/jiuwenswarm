@@ -175,6 +175,7 @@ def test_build_agent_identity_prompt_contains_identity_section_only():
     assert "workspace_default" not in prompt
     assert "运行时目录上下文" in prompt
     assert "绝对路径" in prompt
+    assert "若运行时提供加载目录，则以其为准" in prompt
 
 
 def test_build_agent_identity_prompt_english_uses_logical_paths():
@@ -184,6 +185,7 @@ def test_build_agent_identity_prompt_english_uses_logical_paths():
     assert "Agent internal data directory/skills" in prompt
     assert "workspace_default" not in prompt
     assert "runtime directory context" in prompt
+    assert "Use runtime skill loading directories when provided" in prompt
 
 
 @pytest.mark.asyncio
@@ -1522,7 +1524,7 @@ async def test_runtime_prompt_tracks_replaced_and_disabled_skill_loader(
     prompt = builder.build()
     assert second_root not in prompt
     expected = (
-        "当前会话技能加载目录：未启用"
-        if language == "cn" else "Current session skill loading directories: disabled"
+        "当前会话技能加载目录：暂无可用目录"
+        if language == "cn" else "Current session skill loading directories: none available"
     )
     assert expected in prompt

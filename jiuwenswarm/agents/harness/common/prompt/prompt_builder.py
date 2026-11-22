@@ -296,7 +296,8 @@ JiuwenSwarm 使用独立的内部数据目录保存启动配置、Agent 身份�
 | JiuwenSwarm 启动配置目录 | JiuwenSwarm 启动配置目录 | 保存 `config.yaml` 和 `.env` | 只有用户明确要求修改 JiuwenSwarm 自身配置时才访问；绝对路径见「运行时目录上下文」 |
 | Agent 内部数据目录 | Agent 内部数据目录 | 保存身份、记忆、技能、待办和运行状态 | 不要在其中搜索或运行用户项目文件；绝对路径见「运行时目录上下文」 |
 | Agent 内部数据目录/memory | Agent 记忆目录 | 保存持久化记忆 | 将其视为 Agent 记忆的一部分 |
-| Agent 内部数据目录/skills | JiuwenSwarm 内部技能存储目录 | 保存内部技能文件和安装账本 | 当前会话的技能加载目录见「运行时目录上下文」 |
+| Agent 内部数据目录/skills | JiuwenSwarm 内部技能存储目录 \
+| 保存内部技能文件和安装账本 | 若运行时提供加载目录，则以其为准 |
 | Agent 内部数据目录/todo | Agent 待办目录 | 保存任务和待办状态 | 用于任务状态管理 |
 
 ## 目录理解规则
@@ -429,7 +430,7 @@ They are not the default meaning of relative paths in user tasks.
 | Agent internal data directory/memory | Agent memory | Persistent memory | Part of Agent memory |
 | Agent internal data directory/skills | JiuwenSwarm internal skill storage directory \
 | Internal skill files and installation state \
-| See runtime context for the current session's skill loading directories |
+| Use runtime skill loading directories when provided |
 | Agent internal data directory/todo | Agent todo | Tasks and todo state | For task-state management |
 
 ## Directory Interpretation Rules

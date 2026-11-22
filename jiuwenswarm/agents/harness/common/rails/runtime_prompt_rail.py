@@ -779,8 +779,8 @@ class RuntimePromptRail(DeepAgentRail):
                     cn_agent_paths += f"\n- 当前会话技能加载目录：\n{loading_paths}\n"
                     en_agent_paths += f"\n- Current session skill loading directories:\n{loading_paths}\n"
                 else:
-                    cn_agent_paths += "\n- 当前会话技能加载目录：未启用\n"
-                    en_agent_paths += "\n- Current session skill loading directories: disabled\n"
+                    cn_agent_paths += "\n- 当前会话技能加载目录：暂无可用目录\n"
+                    en_agent_paths += "\n- Current session skill loading directories: none available\n"
             if self._channel == "officeclaw":
                 cn_agent_paths += (
                     "\nOfficeAce 技能安装通过宿主提供的安装工具完成，"
