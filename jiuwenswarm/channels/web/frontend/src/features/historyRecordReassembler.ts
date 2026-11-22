@@ -65,15 +65,17 @@ export class HistoryRecordReassembler {
  * messages render in pairs.
  *
  * The identity key mirrors the store-level precedent
- * ``mergeUniqueMessages`` (``id:content``): neither ``id`` nor
- * ``(id, event_type)`` is unique per record.  The backend builds
- * ``id = f"{request_id}:{role}"`` with no sequence (session_history.py), so
- * one request's N tool calls, a team round's N+1 finals, or two large finals
- * of the same request all share an id (and event_type) while differing in
- * content — deduping on anything weaker than ``id + event_type + content``
- * permanently drops legitimate records at restore time.  A duplicated stream
- * replays byte-identical records, so content completes the key without
- * weakening the dedupe.
+ * ``mergeUniqueMessages`` (``id:content``), strengthened with tool identity:
+ * neither ``id`` nor ``(id, event_type)`` is unique per record.  The backend
+ * builds ``id = f"{request_id}:{role}"`` with no sequence
+ * (session_history.py), so one request's N tool calls, a team round's N+1
+ * finals, or two large finals of the same request all share an id (and
+ * event_type).  Agentic tool-loop frames even share ``content=''`` (verified
+ * 2026-11-22: every chat.tool_call record of one request carried empty
+ * content, distinguished only by ``tool_call.tool_call_id``), so the key
+ * adds the tool identity — ``tool_call.tool_call_id`` for call records,
+ * flattened ``tool_call_id`` for result records.  A duplicated stream
+ * replays byte-identical records, so nothing in the key weakens the dedupe.
  *
  * Records without an ``id`` or ``event_type`` are passed through unchanged —
  * dedupe never drops a frame it cannot identify.
@@ -91,7 +93,12 @@ export class HistoryRecordDeduper {
     const eventType = typeof record.event_type === 'string' ? record.event_type : '';
     if (!eventType) return false;
     const content = record.content;
-    const key = `${id}\u0000${eventType}\u0000${
+    const toolCall = isRecord(record.tool_call) ? record.tool_call : null;
+    const toolCallId =
+      (typeof toolCall?.tool_call_id === 'string' && toolCall.tool_call_id) ||
+      (typeof record.tool_call_id === 'string' && record.tool_call_id) ||
+      '';
+    const key = `${id}\u0000${eventType}\u0000${toolCallId}\u0000${
       typeof content === 'string' ? content : JSON.stringify(content ?? '')
     }`;
     if (this.seen.has(key)) return true;

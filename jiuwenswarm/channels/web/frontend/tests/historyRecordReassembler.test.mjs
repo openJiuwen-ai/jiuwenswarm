@@ -96,3 +96,30 @@ test('非字符串 content 参与判重', () => {
   assert.equal(d.isDuplicate(b), false);
   assert.equal(d.isDuplicate({ ...a }), true);
 });
+
+// 真实 tool-loop 形状（2026-11-22 实测）：同一请求的 N 条 chat.tool_call 全部 content=''，
+// 仅 tool_call.tool_call_id 不同——键必须包含 tool identity，否则第 2..N 条被误删
+test('同 id 空 content 的多条 tool_call 靠 tool_call_id 区分', () => {
+  const d = new HistoryRecordDeduper();
+  const rid = 'cron-job:1795312800:assistant';
+  const mk = (callId, name) => ({
+    id: rid, event_type: 'chat.tool_call', content: '',
+    tool_call: { name, arguments: '{}', tool_call_id: callId },
+  });
+  assert.equal(d.isDuplicate(mk('call_aaa', 'todo_modify')), false);
+  assert.equal(d.isDuplicate(mk('call_bbb', 'powershell')), false);
+  assert.equal(d.isDuplicate(mk('call_ccc', 'send_file_to_user')), false);
+  // 双流重放（字节级相同）仍判重
+  assert.equal(d.isDuplicate(mk('call_aaa', 'todo_modify')), true);
+  assert.equal(d.isDuplicate(mk('call_bbb', 'powershell')), true);
+});
+
+// tool_result 记录的扁平 tool_call_id 同样参与键
+test('tool_result 扁平 tool_call_id 参与键', () => {
+  const d = new HistoryRecordDeduper();
+  const rid = 'cron-job:1795312800:assistant';
+  const mk = (callId) => ({ id: rid, event_type: 'chat.tool_result', content: '', tool_call_id: callId });
+  assert.equal(d.isDuplicate(mk('call_aaa')), false);
+  assert.equal(d.isDuplicate(mk('call_bbb')), false);
+  assert.equal(d.isDuplicate(mk('call_aaa')), true);
+});
