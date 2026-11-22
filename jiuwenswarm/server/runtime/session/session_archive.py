@@ -1665,12 +1665,23 @@ class SessionArchiveService:
                             results[sid] = dict(
                                 session_id=sid, ok=False, code=exc.code, error=str(exc)
                             )
-                        except OSError as exc:
-                            # A transient filesystem failure (e.g. Windows
+                        except PermissionError as exc:
+                            # A transient filesystem failure (e.g. a Windows
                             # sharing violation during a lifecycle write) must
                             # not fail the whole batch RPC.  Record the single
-                            # session as failed; the background finalizer
-                            # retries its cleanup, so the delete converges.
+                            # session as failed and let the operator/consumer
+                            # decide: once mark_finalizing has persisted the
+                            # intent the background finalizer retries cleanup;
+                            # failures before that point need a re-click, same
+                            # as any LifecycleError above.  Other OSErrors
+                            # (disk full, etc.) still fail the batch loudly.
+                            logger.warning(
+                                "cron batch delete: filesystem error on "
+                                "session %s: %s",
+                                sid,
+                                exc,
+                                exc_info=True,
+                            )
                             results[sid] = dict(
                                 session_id=sid,
                                 ok=False,

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 import time
 import uuid
 import threading
@@ -114,8 +115,9 @@ def _replace_ride_out_sharing(temporary: Path, path: Path) -> None:
     not yet entered its own sharing retry) still holds the target open
     (CPython opens files without FILE_SHARE_DELETE).  Ride the window out
     instead of failing the whole lifecycle operation — same short-backoff
-    budget as the read side.  Non-Windows renames are atomic and never hit
-    this, so the retry loop is a no-op there.
+    budget as the read side.  POSIX renames are atomic and PermissionError
+    there can only mean a real ACL/ownership denial that no retry heals, so
+    the retry is gated to Windows; other OSErrors always propagate.
     """
     attempt = 0
     while True:
@@ -123,6 +125,8 @@ def _replace_ride_out_sharing(temporary: Path, path: Path) -> None:
             os.replace(temporary, path)
             return
         except PermissionError:
+            if sys.platform != "win32":
+                raise
             attempt += 1
             if attempt >= _SHARING_RETRY_ATTEMPTS:
                 raise

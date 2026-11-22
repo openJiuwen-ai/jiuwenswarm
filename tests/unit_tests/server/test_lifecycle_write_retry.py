@@ -70,3 +70,21 @@ def test_atomic_json_overwrites_existing_target(tmp_path: Path) -> None:
     lc.atomic_json(target, {"revision": 1})
     lc.atomic_json(target, {"revision": 2})
     assert json.loads(target.read_text(encoding="utf-8")) == {"revision": 2}
+
+
+def test_atomic_json_does_not_retry_other_oserrors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only PermissionError rides the retry loop; other OSErrors propagate
+    on the first attempt (e.g. a tmp file deleted by a concurrent scanner)."""
+    flaky = _FlakyReplace(failures=0)
+
+    def gone(src: Path, dst: Path) -> None:
+        flaky.calls += 1
+        raise FileNotFoundError(2, "No such file or directory")
+
+    monkeypatch.setattr(lc.os, "replace", gone)
+    target = tmp_path / "session_u.json"
+    with pytest.raises(FileNotFoundError):
+        lc.atomic_json(target, {"session_id": "u"})
+    assert flaky.calls == 1
