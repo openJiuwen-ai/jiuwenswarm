@@ -1665,6 +1665,18 @@ class SessionArchiveService:
                             results[sid] = dict(
                                 session_id=sid, ok=False, code=exc.code, error=str(exc)
                             )
+                        except OSError as exc:
+                            # A transient filesystem failure (e.g. Windows
+                            # sharing violation during a lifecycle write) must
+                            # not fail the whole batch RPC.  Record the single
+                            # session as failed; the background finalizer
+                            # retries its cleanup, so the delete converges.
+                            results[sid] = dict(
+                                session_id=sid,
+                                ok=False,
+                                code="INTERNAL_ERROR",
+                                error=str(exc),
+                            )
             except lc.LifecycleError as exc:
                 # Lock entry or the parent-operation check failed for the
                 # group; mirror the former per-session failure entries.

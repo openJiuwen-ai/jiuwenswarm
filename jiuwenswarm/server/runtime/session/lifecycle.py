@@ -106,6 +106,29 @@ def read_json(path: Path) -> dict:
     return value
 
 
+def _replace_ride_out_sharing(temporary: Path, path: Path) -> None:
+    """Publish via tmp+rename, retrying transient Windows sharing violations.
+
+    On Windows ``os.replace`` fails with PermissionError while any unlocked
+    handle (e.g. a concurrent ``read_json`` in another thread/process that has
+    not yet entered its own sharing retry) still holds the target open
+    (CPython opens files without FILE_SHARE_DELETE).  Ride the window out
+    instead of failing the whole lifecycle operation — same short-backoff
+    budget as the read side.  Non-Windows renames are atomic and never hit
+    this, so the retry loop is a no-op there.
+    """
+    attempt = 0
+    while True:
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:
+            attempt += 1
+            if attempt >= _SHARING_RETRY_ATTEMPTS:
+                raise
+            time.sleep(min(0.001 * attempt, 0.01))
+
+
 def atomic_json(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
@@ -114,7 +137,7 @@ def atomic_json(path: Path, value: dict) -> None:
             json.dump(value, stream, ensure_ascii=False)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(temporary, path)
+        _replace_ride_out_sharing(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
 
