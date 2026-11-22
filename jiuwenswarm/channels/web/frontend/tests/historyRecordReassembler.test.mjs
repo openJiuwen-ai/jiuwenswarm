@@ -67,12 +67,32 @@ test('缺 id/event_type 的记录直通', () => {
   assert.equal(d.isDuplicate({ event_type: 'chat.final', content: 'x' }), false);
 });
 
-// reset 清空已见集合（快照切换重拉场景）
-test('reset 后重新收集', () => {
+// 同 id 同 event_type 但 content 不同：合法的多 tool_call/多成员 final 共享 id（后端 id={rid}:{role} 无序号），不能判重
+test('id+event_type 相同但 content 不同不判重', () => {
   const d = new HistoryRecordDeduper();
-  const record = { id: 'r1', event_type: 'chat.final' };
+  const rid = 'cron-job:1795312800:assistant';
+  assert.equal(d.isDuplicate({ id: rid, event_type: 'chat.tool_call', content: 'call_A' }), false);
+  assert.equal(d.isDuplicate({ id: rid, event_type: 'chat.tool_call', content: 'call_B' }), false);
+  assert.equal(d.isDuplicate({ id: rid, event_type: 'chat.tool_call', content: 'call_C' }), false);
+  // 各自第二次（双流重复）仍判重
+  assert.equal(d.isDuplicate({ id: rid, event_type: 'chat.tool_call', content: 'call_A' }), true);
+  assert.equal(d.isDuplicate({ id: rid, event_type: 'chat.tool_call', content: 'call_B' }), true);
+});
+
+// 双流重复的字节级相同记录判重（JW-66 主场景）
+test('完全相同记录判重', () => {
+  const d = new HistoryRecordDeduper();
+  const record = { id: 'req-1:assistant', event_type: 'chat.final', content: 'hello world' };
   assert.equal(d.isDuplicate(record), false);
-  assert.equal(d.isDuplicate(record), true);
-  d.reset();
-  assert.equal(d.isDuplicate(record), false);
+  assert.equal(d.isDuplicate({ ...record }), true);
+});
+
+// 非 string content（对象/数组）也能构成稳定键
+test('非字符串 content 参与判重', () => {
+  const d = new HistoryRecordDeduper();
+  const a = { id: 'r1', event_type: 'chat.tool_call', content: { call_id: 'c1', name: 'web' } };
+  const b = { id: 'r1', event_type: 'chat.tool_call', content: { call_id: 'c2', name: 'web' } };
+  assert.equal(d.isDuplicate(a), false);
+  assert.equal(d.isDuplicate(b), false);
+  assert.equal(d.isDuplicate({ ...a }), true);
 });

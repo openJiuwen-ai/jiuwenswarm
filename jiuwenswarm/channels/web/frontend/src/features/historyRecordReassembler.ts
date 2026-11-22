@@ -62,11 +62,21 @@ export class HistoryRecordReassembler {
  * racing a recovery refresh): ``shouldProcessHistoryPayload`` filters frames
  * by session/subagent/cursor only, so every listener receives the frames of
  * both streams and the same record is merged into the timeline twice —
- * messages render in pairs.  Records are identified by ``id`` + ``event_type``
- * (``id`` alone is NOT unique: ``{request_id}:assistant`` is shared by
- * ``chat.llm_call_start`` / ``chat.llm_call_end`` / ``chat.final``).
- * Records without an ``id`` (or with only an ``event_type``) are passed
- * through unchanged — dedupe never drops a frame it cannot identify.
+ * messages render in pairs.
+ *
+ * The identity key mirrors the store-level precedent
+ * ``mergeUniqueMessages`` (``id:content``): neither ``id`` nor
+ * ``(id, event_type)`` is unique per record.  The backend builds
+ * ``id = f"{request_id}:{role}"`` with no sequence (session_history.py), so
+ * one request's N tool calls, a team round's N+1 finals, or two large finals
+ * of the same request all share an id (and event_type) while differing in
+ * content — deduping on anything weaker than ``id + event_type + content``
+ * permanently drops legitimate records at restore time.  A duplicated stream
+ * replays byte-identical records, so content completes the key without
+ * weakening the dedupe.
+ *
+ * Records without an ``id`` or ``event_type`` are passed through unchanged —
+ * dedupe never drops a frame it cannot identify.
  */
 export class HistoryRecordDeduper {
   private seen = new Set<string>();
@@ -80,14 +90,13 @@ export class HistoryRecordDeduper {
     if (!id) return false;
     const eventType = typeof record.event_type === 'string' ? record.event_type : '';
     if (!eventType) return false;
-    const key = `${id}\u0000${eventType}`;
+    const content = record.content;
+    const key = `${id}\u0000${eventType}\u0000${
+      typeof content === 'string' ? content : JSON.stringify(content ?? '')
+    }`;
     if (this.seen.has(key)) return true;
     this.seen.add(key);
     return false;
-  }
-
-  reset(): void {
-    this.seen.clear();
   }
 }
 
