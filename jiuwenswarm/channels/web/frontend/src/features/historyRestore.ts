@@ -21,7 +21,7 @@ import {
   buildGoalCompletedContent,
   isGoalCompletedContent,
 } from '../components/GoalBar/goalCompletedMessage';
-import { HistoryRecordReassembler } from './historyRecordReassembler';
+import { HistoryRecordDeduper, HistoryRecordReassembler } from './historyRecordReassembler';
 import { stripMentionAppendix } from './designer/designerMentions';
 import { expertTeamId } from './teamOrganization/conversation';
 import { isTeamOrganizationUiEnabled } from './teamOrganization/featureConfig';
@@ -2406,6 +2406,10 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
   let finalized = false;
   let restoreTimer: ReturnType<typeof setTimeout> | null = null;
   const reassembler = new HistoryRecordReassembler();
+  // A session may briefly run two concurrent history.get streams (bootstrap
+  // racing a recovery refresh); without this the surviving listener merges
+  // both streams' frames and every record renders twice (JW-66).
+  const deduper = new HistoryRecordDeduper();
 
   const unsubscribe = webClient.on(HISTORY_MESSAGE_EVENT, (event: WsEvent) => {
     if (disposed) {
@@ -2467,6 +2471,9 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     if (record) {
       const full = reassembler.feed(record);
       if (!full) {
+        return;
+      }
+      if (deduper.isDuplicate(full)) {
         return;
       }
       const entry = parseHistoryTimelineEntry(full, options.sessionId, options.subagentId);
@@ -2716,6 +2723,9 @@ export function fetchHistoryCursorBatch(
   let finalized = false;
   let restoreTimer: ReturnType<typeof setTimeout> | null = null;
   const reassembler = new HistoryRecordReassembler();
+  // Same cross-stream dedupe as beginHistoryRestore (JW-66): cursor-based
+  // fetches must also drop records already seen by this handle.
+  const deduper = new HistoryRecordDeduper();
 
   const unsubscribe = webClient.on(HISTORY_MESSAGE_EVENT, (event: WsEvent) => {
     if (disposed) return;
@@ -2763,6 +2773,7 @@ export function fetchHistoryCursorBatch(
     if (record) {
       const full = reassembler.feed(record);
       if (!full) return;
+      if (deduper.isDuplicate(full)) return;
       const entry = parseHistoryTimelineEntry(full, options.sessionId, options.subagentId);
       if (entry) entries.unshift(entry);
       const reasoningText = extractHistoryReasoningText(full);

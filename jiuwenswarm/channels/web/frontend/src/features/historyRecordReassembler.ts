@@ -55,6 +55,42 @@ export class HistoryRecordReassembler {
   }
 }
 
+/**
+ * Cross-stream record dedupe for one history restore handle.
+ *
+ * A session can end up with two concurrent ``history.get`` streams (bootstrap
+ * racing a recovery refresh): ``shouldProcessHistoryPayload`` filters frames
+ * by session/subagent/cursor only, so every listener receives the frames of
+ * both streams and the same record is merged into the timeline twice —
+ * messages render in pairs.  Records are identified by ``id`` + ``event_type``
+ * (``id`` alone is NOT unique: ``{request_id}:assistant`` is shared by
+ * ``chat.llm_call_start`` / ``chat.llm_call_end`` / ``chat.final``).
+ * Records without an ``id`` (or with only an ``event_type``) are passed
+ * through unchanged — dedupe never drops a frame it cannot identify.
+ */
+export class HistoryRecordDeduper {
+  private seen = new Set<string>();
+
+  /**
+   * Returns true when the record was already observed by this handle and
+   * should be dropped; false (and registers it) for first sightings.
+   */
+  isDuplicate(record: Record<string, unknown>): boolean {
+    const id = typeof record.id === 'string' ? record.id : '';
+    if (!id) return false;
+    const eventType = typeof record.event_type === 'string' ? record.event_type : '';
+    if (!eventType) return false;
+    const key = `${id}\u0000${eventType}`;
+    if (this.seen.has(key)) return true;
+    this.seen.add(key);
+    return false;
+  }
+
+  reset(): void {
+    this.seen.clear();
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
