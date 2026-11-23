@@ -325,6 +325,21 @@ def _compact_stats_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return stats
 
 
+def _should_persist_generic_compaction(params: Any) -> bool:
+    """团队压缩由 team_helpers 统一落盘，避免同一 boundary 被写两次。
+
+    判定必须与团队路由同源：interface_deep 只按 canonical mode 进入
+    team_helpers，`params["team"]` 标志本身不决定路由。若仅凭 team 标志
+    跳过通用落盘，而 mode 实际不是团队，两条链路都不会写 boundary。
+    因此 mode 存在时只看 mode；team flag 不再作为覆盖判据。
+    """
+    if isinstance(params, dict):
+        mode = str(params.get("mode") or "").strip().lower()
+        if mode:
+            return not is_team_mode(mode)
+    return True
+
+
 def _is_successful_compaction_payload(payload: dict[str, Any]) -> bool:
     if payload.get("error"):
         return False
@@ -3105,7 +3120,9 @@ class JiuWenSwarm:
                                     payload=_round_err_payload,
                                     is_complete=False,
                                 )
-                            if et == "context.compression_state":
+                            if et == "context.compression_state" and _should_persist_generic_compaction(
+                                request.params
+                            ):
                                 _append_compact_history_from_payload(
                                     payload=data.payload,
                                     session_id=session_id,
@@ -3295,7 +3312,9 @@ class JiuWenSwarm:
                         should_record = et.startswith("chat.")
                         if not should_record and et == EventType.TEAM_MESSAGE.value:
                             should_record = True
-                        if et == "context.compression_state":
+                        if et == "context.compression_state" and _should_persist_generic_compaction(
+                            request.params
+                        ):
                             _append_compact_history_from_payload(
                                 payload=data,
                                 session_id=session_id,
@@ -3518,7 +3537,7 @@ class JiuWenSwarm:
             adapter=adapter,
             request=request,
         )
-        
+
         finalized_assistant_message = await finalize_assistant_response_if_a2ui(
             assistant_message,
             channel=cid,

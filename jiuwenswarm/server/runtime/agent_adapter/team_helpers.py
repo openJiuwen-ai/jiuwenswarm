@@ -134,6 +134,7 @@ from jiuwenswarm.server.runtime.debug_trace.directives import (
     DEBUG_PREFIX as _DEBUG_PREFIX,
     strip_slash_directive as _strip_directive,
 )
+
 _FOLLOWUP_INTERACT_BOUNDARY_TIMEOUT_SEC = 10.0
 _FOLLOWUP_INTERACT_POLL_INTERVAL_SEC = 0.05
 
@@ -176,6 +177,7 @@ _INTERACT_REASON_ERROR_MAP: dict[str, str] = {
     "pause_in_progress": "Team is pausing, please retry in a moment",
 }
 
+
 # ── fan_out 规则（表驱动）──────────────────────────────────────
 # 所有 team 事件均显式产出 fan_out，godview 始终在 fan_out 中（不靠 Gateway 兜底）。
 # 规则按两个独立维度组织，分别用一张表：
@@ -195,7 +197,7 @@ def _tgt_godview() -> dict:
 
 
 def _tgt_mention(
-    member_names, *, mention_all: bool = False, speaker: str | None = None
+        member_names, *, mention_all: bool = False, speaker: str | None = None
 ) -> dict:
     """mention intent：投递给被点名成员并带 @（飞书 <at>）。"""
     tgt: dict = {
@@ -313,10 +315,10 @@ class _FollowupInteractBoundaryResult:
 
 
 async def _interact_with_request_metadata(
-    team_manager: Any,
-    session_id: str,
-    query: Any,
-    request_metadata: dict[str, Any] | None,
+        team_manager: Any,
+        session_id: str,
+        query: Any,
+        request_metadata: dict[str, Any] | None,
 ) -> tuple[bool, str | None]:
     interact = team_manager.interact
     try:
@@ -384,14 +386,14 @@ def build_team_request_metadata(request: Any) -> dict[str, Any]:
 
 
 async def _deliver_followup_interact_across_boundary(
-    team_manager: Any,
-    session_id: str,
-    query: Any,
-    *,
-    request_metadata: dict[str, Any] | None = None,
-    initial_reason: str | None = None,
-    timeout_sec: float = _FOLLOWUP_INTERACT_BOUNDARY_TIMEOUT_SEC,
-    poll_interval_sec: float = _FOLLOWUP_INTERACT_POLL_INTERVAL_SEC,
+        team_manager: Any,
+        session_id: str,
+        query: Any,
+        *,
+        request_metadata: dict[str, Any] | None = None,
+        initial_reason: str | None = None,
+        timeout_sec: float = _FOLLOWUP_INTERACT_BOUNDARY_TIMEOUT_SEC,
+        poll_interval_sec: float = _FOLLOWUP_INTERACT_POLL_INTERVAL_SEC,
 ) -> _FollowupInteractBoundaryResult:
     """Deliver a follow-up until interact succeeds or the session becomes first-run ready."""
     deadline = time.monotonic() + max(0.0, timeout_sec)
@@ -423,12 +425,12 @@ async def _deliver_followup_interact_across_boundary(
 
 
 async def _deliver_followup_with_request_metadata(
-    team_manager: Any,
-    session_id: str,
-    query: Any,
-    *,
-    request_metadata: dict[str, Any] | None,
-    initial_reason: str | None,
+        team_manager: Any,
+        session_id: str,
+        query: Any,
+        *,
+        request_metadata: dict[str, Any] | None,
+        initial_reason: str | None,
 ) -> _FollowupInteractBoundaryResult:
     delivery = _deliver_followup_interact_across_boundary
     parameters = inspect.signature(delivery).parameters.values()
@@ -496,12 +498,12 @@ class _FirstTeamRequestPreparation:
 
 
 async def _prepare_first_team_request(
-    *,
-    team_manager: Any,
-    session_id: str,
-    channel_id: str | None,
-    request_id: str,
-    query: Any,
+        *,
+        team_manager: Any,
+        session_id: str,
+        channel_id: str | None,
+        request_id: str,
+        query: Any,
 ) -> _FirstTeamRequestPreparation:
     """Apply first-request preprocessing shared by cold starts and fallback starts."""
     from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
@@ -588,12 +590,12 @@ async def _prepare_first_team_request(
 
 
 def sync_team_identity_metadata(
-    *,
-    channel_id: str | None,
-    session_id: str,
-    mode: str,
-    ready_team_name: str,
-    activation_kind: str | None,
+        *,
+        channel_id: str | None,
+        session_id: str,
+        mode: str,
+        ready_team_name: str,
+        activation_kind: str | None,
 ) -> None:
     """Persist team identity when a team runtime becomes ready."""
     metadata = get_session_metadata(session_id)
@@ -733,9 +735,9 @@ async def _team_session_has_runtime(team_manager: TeamManager, session_id: str) 
     # InteractiveInput recovery and must not make a fresh text request
     # look like a follow-up after the previous round has ended.
     return (
-        team_manager.is_runtime_active(session_id)
-        or team_manager.is_runtime_pending(session_id)
-        or bool(team_manager.has_stream_task(session_id))
+            team_manager.is_runtime_active(session_id)
+            or team_manager.is_runtime_pending(session_id)
+            or bool(team_manager.has_stream_task(session_id))
     )
 
 
@@ -805,8 +807,8 @@ def _schedule_stale_running_entry_teardown(team_manager: TeamManager, session_id
                 )
                 return
             if (
-                team_manager.is_runtime_active(session_id)
-                or team_manager.is_runtime_pending(session_id)
+                    team_manager.is_runtime_active(session_id)
+                    or team_manager.is_runtime_pending(session_id)
             ):
                 logger.info(
                     "[TeamHelpers] stale-entry teardown skipped (runtime re-registered): "
@@ -863,7 +865,7 @@ def _schedule_stale_running_entry_teardown(team_manager: TeamManager, session_id
 
 
 async def query_team_human_members_for_join(
-    session_id: str, team_name: str,
+        session_id: str, team_name: str,
 ) -> list[dict[str, Any]]:
     """直查 team.db 取该 team 的全部成员（未 role 过滤，交调用方过滤）。
 
@@ -885,11 +887,11 @@ async def query_team_human_members_for_join(
 
 
 async def ensure_monitor_handlers_for_active_runtime(
-    channel_id: str | None,
-    session_id: str,
-    team_name: str,
-    hide_dm: bool = False,
-    enable_swarmflow: bool = False,
+        channel_id: str | None,
+        session_id: str,
+        team_name: str,
+        hide_dm: bool = False,
+        enable_swarmflow: bool = False,
 ) -> None:
     """Attach TeamMonitorHandler and optionally WorkflowMonitorHandler for the active runtime.
 
@@ -1019,12 +1021,12 @@ def _is_cron_request_id(request_id: str) -> bool:
 
 
 async def _wait_for_cron_team_round_events(
-    *,
-    request_queue: asyncio.Queue,
-    round_state: dict[str, Any],
-    request_id: str,
-    channel_id: str | None,
-    session_id: str,
+        *,
+        request_queue: asyncio.Queue,
+        round_state: dict[str, Any],
+        request_id: str,
+        channel_id: str | None,
+        session_id: str,
 ) -> AsyncIterator[dict[str, Any]]:
     """Yield team events until cron round completion signals align across modes."""
     while True:
@@ -1073,8 +1075,8 @@ async def _wait_for_cron_team_round_events(
         if cron_team_round_should_end(round_state):
             if _cron_solo_harness_end_pending(round_state):
                 for grace_event in await _drain_cron_delegation_grace_events(
-                    request_queue=request_queue,
-                    round_state=round_state,
+                        request_queue=request_queue,
+                        round_state=round_state,
                 ):
                     yield grace_event
                 if not cron_team_round_should_end(round_state):
@@ -1098,9 +1100,9 @@ _CRON_DELEGATION_GRACE_SECONDS = 2.0
 
 
 async def _finish_cron_team_stream_after_delegation_grace(
-    channel_id: str | None,
-    session_id: str,
-    round_id: Any,
+        channel_id: str | None,
+        session_id: str,
+        round_id: Any,
 ) -> None:
     """Wait briefly after a solo harness final before ending the cron team stream."""
     await asyncio.sleep(_CRON_DELEGATION_GRACE_SECONDS)
@@ -1118,9 +1120,9 @@ async def _finish_cron_team_stream_after_delegation_grace(
 
 
 async def _finish_cron_team_stream_after_round(
-    channel_id: str | None,
-    session_id: str,
-    round_id: Any,
+        channel_id: str | None,
+        session_id: str,
+        round_id: Any,
 ) -> None:
     """Cancel the background team stream once cron SwarmFlow + leader report are done."""
     resolved_channel_id = _resolve_channel_id(channel_id)
@@ -1161,9 +1163,9 @@ async def _finish_cron_team_stream_after_round(
 
 
 def _try_finish_cron_team_stream(
-    channel_id: str | None,
-    session_id: str,
-    event: dict[str, Any],
+        channel_id: str | None,
+        session_id: str,
+        event: dict[str, Any],
 ) -> None:
     """End persistent team streams for cron once workflow completes and leader reports."""
     team_manager = get_team_manager(channel_id)
@@ -1212,7 +1214,7 @@ _TEAM_BUILDING_EVENT_TYPES = frozenset({
 
 
 async def _broadcast_event(
-    channel_id: str | None, session_id: str, event: dict[str, Any]
+        channel_id: str | None, session_id: str, event: dict[str, Any]
 ) -> None:
     """Broadcast an event to all request queues waiting on the same session."""
     tm = get_team_manager(channel_id)
@@ -1267,8 +1269,8 @@ def _is_legal_member_transition(old_status: str, new_status: str) -> bool:
 
 
 async def _broadcast_team_state_snapshot(
-    channel_id: str | None,
-    session_id: str,
+        channel_id: str | None,
+        session_id: str,
 ) -> None:
     """Broadcast a snapshot of all member and task states.
 
@@ -1378,12 +1380,12 @@ async def _broadcast_team_state_snapshot(
 
 
 def _approval_result_from_event_or_items(
-    *,
-    skill_name: str,
-    event: Any,
-    items: list[Any],
-    no_changes_output: str,
-    invalid_output: str,
+        *,
+        skill_name: str,
+        event: Any,
+        items: list[Any],
+        no_changes_output: str,
+        invalid_output: str,
 ) -> dict[str, Any]:
     approval_chunk = _approval_chunk_from_event(event)
     if approval_chunk is not None:
@@ -1506,8 +1508,8 @@ def _truncate_team_tool_result_event(parsed: dict[str, Any]) -> dict[str, Any]:
 
 
 def _is_duplicate_ask_user_question(
-    parsed: dict[str, Any],
-    emitted_request_ids: set[str],
+        parsed: dict[str, Any],
+        emitted_request_ids: set[str],
 ) -> bool:
     if parsed.get("event_type") != "chat.ask_user_question":
         return False
@@ -1521,9 +1523,9 @@ def _is_duplicate_ask_user_question(
 
 
 def _team_processing_done_chunk(
-    request_id: str,
-    channel_id: str | None,
-    session_id: str,
+        request_id: str,
+        channel_id: str | None,
+        session_id: str,
 ) -> AgentResponseChunk:
     return AgentResponseChunk(
         request_id=request_id,
@@ -1539,8 +1541,8 @@ def _team_processing_done_chunk(
 
 
 def _group_team_evolution_approvals(
-    session_id: str,
-    events: list[Any],
+        session_id: str,
+        events: list[Any],
 ) -> tuple[dict[str, list[Any]], list[str]]:
     def _warn_missing_request_id(warn_session_id: str) -> None:
         logger.warning(
@@ -1556,10 +1558,10 @@ def _group_team_evolution_approvals(
 
 
 def ensure_team_evolution_watcher(
-    channel_id: str | None,
-    session_id: str,
-    *,
-    source: str = "unknown",
+        channel_id: str | None,
+        session_id: str,
+        *,
+        source: str = "unknown",
 ) -> None:
     """Launch the per-session team evolution monitor once the team session is ready."""
     tm = get_team_manager(channel_id)
@@ -1609,25 +1611,24 @@ def ensure_team_evolution_watcher(
     tm.register_team_evolution_watcher(session_id, task)
 
 
-
 async def _handle_team_slash_command(
-    channel_id: str | None,
-    session_id: str,
-    query: str,
-    *,
-    defer_missing_rail: bool = False,
-    skills_dir: str | list[str] | None = None,
-    language: str = "cn",
+        channel_id: str | None,
+        session_id: str,
+        query: str,
+        *,
+        defer_missing_rail: bool = False,
+        skills_dir: str | list[str] | None = None,
+        language: str = "cn",
 ) -> dict[str, Any] | None:
     """Handle team-only slash commands before entering the team stream."""
     stripped = str(query or "").strip()
     if not (
-        stripped.startswith("/evolve_list")
-        or stripped.startswith("/evolve_rebuild")
-        or stripped.startswith("/evolve_rollback")
-        or stripped.startswith("/evolve_simplify")
-        or stripped == "/evolve"
-        or stripped.startswith("/evolve ")
+            stripped.startswith("/evolve_list")
+            or stripped.startswith("/evolve_rebuild")
+            or stripped.startswith("/evolve_rollback")
+            or stripped.startswith("/evolve_simplify")
+            or stripped == "/evolve"
+            or stripped.startswith("/evolve ")
     ):
         return None
 
@@ -1648,12 +1649,12 @@ async def _handle_team_slash_command(
 
     return await handle_evolution_slash_command(
         stripped,
-            EvolutionSlashContext(
-                mode="team",
-                session_id=session_id,
-                skills_dir=resolved_skills_dir,
-                evolution_enabled=True,
-                language=language,
+        EvolutionSlashContext(
+            mode="team",
+            session_id=session_id,
+            skills_dir=resolved_skills_dir,
+            evolution_enabled=True,
+            language=language,
         ),
     )
 
@@ -1777,18 +1778,18 @@ def _persist_team_file_monitor_roots(session_id: str, team_spec: Any) -> None:
 
 
 async def _start_team_stream_round(
-    *,
-    channel_id: str | None,
-    session_id: str,
-    request_id: str,
-    team_manager: Any,
-    team_name: str,
-    team_spec: Any,
-    query: str,
-    hide_dm: bool = False,
-    debug: bool = False,
-    source: str = "first",
-    request_metadata: dict[str, Any] | None = None,
+        *,
+        channel_id: str | None,
+        session_id: str,
+        request_id: str,
+        team_manager: Any,
+        team_name: str,
+        team_spec: Any,
+        query: str,
+        hide_dm: bool = False,
+        debug: bool = False,
+        source: str = "first",
+        request_metadata: dict[str, Any] | None = None,
 ) -> asyncio.Queue:
     """Start a team stream round and register its waiter queue."""
     # Sync team observability with current config before streaming.
@@ -1828,6 +1829,7 @@ async def _start_team_stream_round(
             team_spec,
             query,
             round_id=round_id,
+            request_id=request_id,
             envs=stream_envs or None,
         )
     )
@@ -1836,9 +1838,9 @@ async def _start_team_stream_round(
 
 
 async def process_team_message_stream(
-    request: Any,
-    inputs: dict[str, Any],
-    deep_agent: DeepAgent,
+        request: Any,
+        inputs: dict[str, Any],
+        deep_agent: DeepAgent,
 ) -> AsyncIterator[AgentResponseChunk]:
     """Process a team-mode streaming request."""
     session_id = request.session_id or "default"
@@ -1846,6 +1848,11 @@ async def process_team_message_stream(
     channel_id = request.channel_id
 
     team_manager = get_team_manager(channel_id)
+    # 长寿命团队流内压缩事件按「当前用户轮」落盘：每个用户请求入口更新一次
+    # 最近 request_id，避免沿用流启动时的旧 id。
+    _set_current_request_id = getattr(team_manager, "set_current_request_id", None)
+    if callable(_set_current_request_id):
+        _set_current_request_id(session_id, rid)
     # 用户轮次号（HITL 挂起标记的 epoch 清除门判据）不在此处入口 bump：
     # 入口 bump 发生在任何投递尝试之前，投递失败（not_active/runner_failed）
     # 也会推高 epoch，同轮晚到的 final/delta 随即误清挂起标记。所有用户侧
@@ -1913,9 +1920,9 @@ async def process_team_message_stream(
 
     has_active_waiters = team_manager.has_waiters(session_id)
     is_first_request = (
-        not team_manager.has_stream_task(session_id)
-        and not has_active_waiters
-        and not team_manager.is_session_initialized(session_id)
+            not team_manager.has_stream_task(session_id)
+            and not has_active_waiters
+            and not team_manager.is_session_initialized(session_id)
     )
     request_queue: asyncio.Queue | None = None
 
@@ -1967,10 +1974,10 @@ async def process_team_message_stream(
         # per-agent model is set in config.yaml.
         params_obj = getattr(request, "params", None)
         requested_model_name = (
-            str(params_obj.get("model_name") or "").strip()
-            if isinstance(params_obj, dict)
-            else ""
-        ) or None
+                                   str(params_obj.get("model_name") or "").strip()
+                                   if isinstance(params_obj, dict)
+                                   else ""
+                               ) or None
         # Provider-based assembly: build members from the shared config source,
         # no pre-built parent DeepAgent required.
         team_spec = await team_manager.get_swarm_enriched_team_spec(
@@ -2120,10 +2127,10 @@ async def process_team_message_stream(
                         # 永远撞 gate_closed、永不自愈（用户只能重启进程）——主动拆除
                         # 残留运行时，让本请求落入冷重建（recover_team 唤醒）而非报错。
                         if (
-                            not success
-                            and not first_request_ready
-                            and (reason or "") == "gate_closed"
-                            and await _team_session_has_runtime(team_manager, session_id)
+                                not success
+                                and not first_request_ready
+                                and (reason or "") == "gate_closed"
+                                and await _team_session_has_runtime(team_manager, session_id)
                         ):
                             logger.warning(
                                 "[TeamHelpers] stale runtime with closed gate detected, "
@@ -2212,11 +2219,11 @@ async def process_team_message_stream(
                     round_state = new_cron_team_round_state()
                     try:
                         async for event in _wait_for_cron_team_round_events(
-                            request_queue=request_queue,
-                            round_state=round_state,
-                            request_id=rid,
-                            channel_id=channel_id,
-                            session_id=session_id,
+                                request_queue=request_queue,
+                                round_state=round_state,
+                                request_id=rid,
+                                channel_id=channel_id,
+                                session_id=session_id,
                         ):
                             _cron_agent_ref, _cron_meta = _build_team_event_chunk_meta(event)
                             yield AgentResponseChunk(
@@ -2312,11 +2319,11 @@ async def process_team_message_stream(
             if _is_cron_request_id(rid) and request_queue is not None:
                 cron_round_state = new_cron_team_round_state()
                 async for event in _wait_for_cron_team_round_events(
-                    request_queue=request_queue,
-                    round_state=cron_round_state,
-                    request_id=rid,
-                    channel_id=channel_id,
-                    session_id=session_id,
+                        request_queue=request_queue,
+                        round_state=cron_round_state,
+                        request_id=rid,
+                        channel_id=channel_id,
+                        session_id=session_id,
                 ):
                     _cron_agent_ref, _cron_meta = _build_team_event_chunk_meta(event)
                     yield AgentResponseChunk(
@@ -2486,8 +2493,8 @@ async def _count_in_flight_members(channel_id: str | None, session_id: str) -> i
         count = 0
         for m in snapshot.get("members", []):
             if (
-                m.get("status") in MEMBER_IN_FLIGHT_STATUSES
-                or m.get("execution_status") in _MEMBER_IN_FLIGHT_EXEC_STATUSES
+                    m.get("status") in MEMBER_IN_FLIGHT_STATUSES
+                    or m.get("execution_status") in _MEMBER_IN_FLIGHT_EXEC_STATUSES
             ):
                 count += 1
         return count
@@ -2595,8 +2602,8 @@ def _schedule_leader_round_death_probe(
                     {
                         "source": ProposalSource.DEATH_PROBE,
                         "error": (
-                            error_text.strip()
-                            or "Leader round did not recover after model error"
+                                error_text.strip()
+                                or "Leader round did not recover after model error"
                         ),
                     }
                 )
@@ -3080,13 +3087,14 @@ def _cascade_park_runtime_after_terminal(
 
 
 async def _consume_stream_with_query(
-    channel_id: str | None,
-    session_id: str,
-    team_spec: Any,
-    initial_query: str,
-    *,
-    round_id: int,
-    envs: dict[str, Any] | None = None,
+        channel_id: str | None,
+        session_id: str,
+        team_spec: Any,
+        initial_query: str,
+        *,
+        round_id: int,
+        request_id: str | None = None,
+        envs: dict[str, Any] | None = None,
 ) -> None:
     """Consume the team stream in the background and broadcast parsed events."""
     _envs = envs or {}
@@ -3159,7 +3167,7 @@ async def _consume_stream_with_query(
 
     # 回合终态裁决器：七条收尾路径的判定与发帧单点——
     # 去重/豁免/形态/时机/级联全在裁决器内，本循环只提交提案与喂账本
-    #（note_*）。终态相关轮级状态（completion_signals/错误史/产出标记/
+    # （note_*）。终态相关轮级状态（completion_signals/错误史/产出标记/
     # 团队活动/建团尝试/挂起交互/重评标记/静默窗与补评任务）全部收编进裁决器账本。
     arbiter = RoundTerminalArbiter(
         session_id=session_id,
@@ -3187,10 +3195,10 @@ async def _consume_stream_with_query(
         且收尾信号来自 task_completion（leader 任务真实完成）。
         should_finish_round 判定与 finish_after_final 即时收尾判定共用。"""
         return (
-            final_from_completion
-            and not tm_.has_seen_team_events(session_id)
-            and not saw_tool_call
-            and not saw_teammate_output
+                final_from_completion
+                and not tm_.has_seen_team_events(session_id)
+                and not saw_tool_call
+                and not saw_teammate_output
         )
 
     try:
@@ -3243,11 +3251,11 @@ async def _consume_stream_with_query(
         )
         runner_entered_at = time.monotonic()
         async for chunk in Runner.run_agent_team_streaming(
-            agent_team=team_spec,
-            inputs={"query": initial_query},
-            session=session_id,
-            envs=envs,
-            stream_logger=lg,
+                agent_team=team_spec,
+                inputs={"query": initial_query},
+                session=session_id,
+                envs=envs,
+                stream_logger=lg,
         ):
             # 纯文本/已完成工作流回合即时收尾：上轮 chat.final 已发 + 回合完成
             # 信号已广播，剩余 trailing chunk（usage 等）不再需要
@@ -3300,9 +3308,9 @@ async def _consume_stream_with_query(
             # 重试风暴期间前端零交代，用户只见"正在生成"）。
             _raw_payload = getattr(chunk, "payload", None)
             if (
-                getattr(chunk, "type", None) == "llm_output"
-                and isinstance(_raw_payload, dict)
-                and _raw_payload.get("retrying")
+                    getattr(chunk, "type", None) == "llm_output"
+                    and isinstance(_raw_payload, dict)
+                    and _raw_payload.get("retrying")
             ):
                 # 成员归因：teammate chunk 带 source_member（同 _enrich_teammate_event
                 # 口径），前端据此把重试状态路由到成员行（成员重试不再挤占主对话
@@ -3360,7 +3368,7 @@ async def _consume_stream_with_query(
                 _parsed_event_type = parsed.get("event_type")
                 if _parsed_event_type in ("chat.delta", "chat.reasoning", "chat.tool_call"):
                     # 内容帧：计数 + 终态标记清除（认所有内容帧）+ 再武装
-                    #（只认 leader——成员迟到产出复位会让流末兜底给已干净
+                    # （只认 leader——成员迟到产出复位会让流末兜底给已干净
                     # 终态的回合再补带 error 帧）全部收编在裁决器
                     arbiter.note_content_frame(is_leader=is_leader)
                 # HITL 答案到达后的恢复产出 = 挂起已解除——清除本轮挂起
@@ -3376,10 +3384,10 @@ async def _consume_stream_with_query(
                 # 标记的窄清除面不冲突：final 清 HITL 标记安全（轮次号门挡住
                 # 同轮晚到 final），但清回合终态标记不安全，故两者分列。
                 if (
-                    _parsed_event_type
-                    in ("chat.delta", "chat.reasoning", "chat.tool_call", "chat.final")
-                    and is_leader
-                    and tm_.user_turn_epoch(session_id) != pending_interaction_turn
+                        _parsed_event_type
+                        in ("chat.delta", "chat.reasoning", "chat.tool_call", "chat.final")
+                        and is_leader
+                        and tm_.user_turn_epoch(session_id) != pending_interaction_turn
                 ):
                     arbiter.clear_pending_interaction()
                 # 本轮团队活动置位（dissolved 判定的本轮 scope 判据；复位在
@@ -3456,8 +3464,8 @@ async def _consume_stream_with_query(
                     # final 不产 delta」形态）。挂起标记的清除带用户轮次号门：
                     # 同一暂停轮 ask 之后晚到的带正文 final 不是恢复证据，不得清。
                     if (
-                        parsed.get("event_type") in ("chat.delta", "chat.final")
-                        and str(parsed.get("content") or "").strip()
+                            parsed.get("event_type") in ("chat.delta", "chat.final")
+                            and str(parsed.get("content") or "").strip()
                     ):
                         arbiter.note_leader_output(str(parsed.get("content") or ""))
                         if tm_.user_turn_epoch(session_id) != pending_interaction_turn:
@@ -3524,8 +3532,8 @@ async def _consume_stream_with_query(
                     # 成员 spawn（含运行时 /join 进来的人类席位）：刷新人类入站回调注册
                     inner_member_event = parsed.get("event")
                     if (
-                        isinstance(inner_member_event, dict)
-                        and inner_member_event.get("type") == "team.member.spawned"
+                            isinstance(inner_member_event, dict)
+                            and inner_member_event.get("type") == "team.member.spawned"
                     ):
                         await _register_human_inbound_hooks(
                             channel_id, session_id, team_spec.team_name
@@ -3672,7 +3680,7 @@ async def _consume_stream_with_query(
                 if parsed.get("event_type") == "chat.final":
                     tm_ = get_team_manager(channel_id)
                     should_finish_round = (
-                        tm_.is_workflow_completed(session_id) or _is_clean_text_round()
+                            tm_.is_workflow_completed(session_id) or _is_clean_text_round()
                     )
                     # 多气泡：leader 每次发言各打一卡序号——
                     # 客户端同 seq 覆盖（重试去重）、新 seq 封段开新卡；
@@ -3683,22 +3691,22 @@ async def _consume_stream_with_query(
                         # 防同文双发开两卡 + 历史同 id 双写。比对后即消费合成文本，
                         # 避免误伤后续周期同文的新发言；不同文（真重新生成）正常放行。
                         if (
-                            not final_from_completion
-                            and leader_synth_text
-                            and str(parsed.get("content") or "") == leader_synth_text
+                                not final_from_completion
+                                and leader_synth_text
+                                and str(parsed.get("content") or "") == leader_synth_text
                         ):
                             leader_synth_text = ""
                             # 打标帧与合成帧同文被去重时，stop_reason 仍必须
                             # 被消费——否则预算耗尽会被"同文双发去重"吞掉，
                             # 裁决器收不到 ITERATION_EXHAUSTED 提案。
                             if await _handle_budget_stop_frame(
-                                parsed=parsed,
-                                is_leader=is_leader,
-                                chunk=chunk,
-                                channel_id=channel_id,
-                                session_id=session_id,
-                                arbiter=arbiter,
-                                round_id=round_id,
+                                    parsed=parsed,
+                                    is_leader=is_leader,
+                                    chunk=chunk,
+                                    channel_id=channel_id,
+                                    session_id=session_id,
+                                    arbiter=arbiter,
+                                    round_id=round_id,
                             ):
                                 finish_after_final = True
                             continue
@@ -3721,13 +3729,13 @@ async def _consume_stream_with_query(
                     # 干净终态；成员帧武装判死兜底。
                     if parsed.get("stop_reason") in ("max_rounds", "budget_total"):
                         if await _handle_budget_stop_frame(
-                            parsed=parsed,
-                            is_leader=is_leader,
-                            chunk=chunk,
-                            channel_id=channel_id,
-                            session_id=session_id,
-                            arbiter=arbiter,
-                            round_id=round_id,
+                                parsed=parsed,
+                                is_leader=is_leader,
+                                chunk=chunk,
+                                channel_id=channel_id,
+                                session_id=session_id,
+                                arbiter=arbiter,
+                                round_id=round_id,
                         ):
                             # 收尾序列已级联停止成员，回合可即时收流
                             finish_after_final = True
@@ -3746,7 +3754,7 @@ async def _consume_stream_with_query(
                         continue
                     if should_finish_round:
                         # 即时收尾（纯文本轮/workflow 完成）——提案裁决器
-                        #（去重/打标/账本复位/错误史携带单点）
+                        # （去重/打标/账本复位/错误史携带单点）
                         outcome = await arbiter.propose(
                             {"source": ProposalSource.INSTANT_FINAL},
                         )
@@ -3772,11 +3780,30 @@ async def _consume_stream_with_query(
                 # 修复前团队链路只广播不落盘，重进会话/重启后压缩痕迹全丢。
                 if _parsed_event_type == "context.compression_state":
                     _compression_member = getattr(chunk, "source_member", None)
+                    _log_team_compression_event(
+                        session_id,
+                        round_id,
+                        (
+                            "leader"
+                            if is_leader
+                            else (str(_compression_member) if _compression_member else "unknown")
+                        ),
+                        parsed,
+                    )
+                    _compression_request_id, _request_id_source = (
+                        _resolve_compression_request_id(
+                            channel_id,
+                            session_id,
+                            fallback=request_id,
+                        )
+                    )
                     _persist_team_compression_state(
                         channel_id,
                         session_id,
                         round_id,
                         parsed,
+                        request_id=_compression_request_id,
+                        request_id_source=_request_id_source,
                         member_name=(
                             None
                             if is_leader or not _compression_member
@@ -3889,7 +3916,7 @@ async def _consume_stream_with_query(
                 # 流末收口提案（stream_end）：裁决器内部依序处理——去重（本轮
                 # 已终态即否决）、挂起交互/pause 豁免、本流评估过 settle 则先试
                 # settle 补发（发帧点四闸复查+复核+四岔）、否则强制补发
-                #（复核 True 补干净、False/None 补带 error 不粉饰、撞未建立
+                # （复核 True 补干净、False/None 补带 error 不粉饰、撞未建立
                 # 软岔干净收口/第四岔带 error 不级联——流已尽）。
                 try:
                     await arbiter.propose({"source": ProposalSource.STREAM_END})
@@ -3941,9 +3968,9 @@ async def _consume_stream_with_query(
 
 
 async def _consume_monitor_events(
-    channel_id: str | None,
-    session_id: str,
-    monitor_handler: TeamMonitorHandler,
+        channel_id: str | None,
+        session_id: str,
+        monitor_handler: TeamMonitorHandler,
 ) -> None:
     """Consume monitor events in the background and broadcast them."""
     try:
@@ -3999,18 +4026,18 @@ _WF_PHASE_STATUS_TO_TASK: dict[str, tuple[str, str]] = {
 
 
 def _team_event_envelope(
-    category: str, session_id: str, event: dict[str, Any]
+        category: str, session_id: str, event: dict[str, Any]
 ) -> dict[str, Any]:
     """Wrap an inner team event dict in the standard broadcast envelope."""
     return {"event_type": category, "session_id": session_id, "event": event}
 
 
 def _workflow_updated_to_team_events(
-    event: dict[str, Any],
-    session_id: str,
-    seen_phase: dict[str, str],
-    seen_agent: dict[str, str],
-    spawned_members: set[str],
+        event: dict[str, Any],
+        session_id: str,
+        seen_phase: dict[str, str],
+        seen_agent: dict[str, str],
+        spawned_members: set[str],
 ) -> list[dict[str, Any]]:
     """Convert one ``workflow.updated`` event into web ``team.member`` / ``team.task`` events.
 
@@ -4103,9 +4130,9 @@ def _workflow_updated_to_team_events(
 
 
 async def _consume_workflow_events(
-    channel_id: str | None,
-    session_id: str,
-    workflow_handler: WorkflowMonitorHandler,
+        channel_id: str | None,
+        session_id: str,
+        workflow_handler: WorkflowMonitorHandler,
 ) -> None:
     """Consume workflow events in the background and broadcast them.
 
@@ -4154,7 +4181,7 @@ async def _consume_workflow_events(
                     get_team_manager(channel_id).mark_workflow_completed(session_id)
                 continue
             for team_ev in _workflow_updated_to_team_events(
-                event, session_id, seen_phase, seen_agent, spawned_members
+                    event, session_id, seen_phase, seen_agent, spawned_members
             ):
                 _persist_team_history_event(channel_id, session_id, team_ev)
                 await _broadcast_event(channel_id, session_id, team_ev)
@@ -4189,12 +4216,94 @@ async def _consume_workflow_events(
         )
 
 
+def _log_team_compression_event(
+        session_id: str,
+        round_id: int,
+        member_name: str | None,
+        payload: dict[str, Any],
+) -> None:
+    """团队压缩事件全状态日志（started=DEBUG，终态=INFO）。
+
+    与 `_persist_team_compression_state` 的区别：这里覆盖 noop/skipped/failed
+    等不会落盘的状态，并把前后 tokens/messages、节省比例、耗时与处理器
+    一并打出，排查"为什么没压/压了多少"不需要再翻 agent-core 日志。
+    """
+    status = str(payload.get("status") or "").strip().lower()
+    before = payload.get("before") if isinstance(payload.get("before"), dict) else {}
+    after = payload.get("after") if isinstance(payload.get("after"), dict) else {}
+    saved = payload.get("saved") if isinstance(payload.get("saved"), dict) else {}
+    level = logging.DEBUG if status == "started" else logging.INFO
+    logger.log(
+        level,
+        "[TeamHelpers] compression event: session_id=%s round_id=%s member=%s "
+        "status=%s processor=%s op=%s before_tokens=%s before_messages=%s "
+        "after_tokens=%s after_messages=%s saved_percent=%s duration_ms=%s "
+        "summary_chars=%s error=%s",
+        session_id,
+        round_id,
+        member_name or "leader",
+        status or "unknown",
+        payload.get("processor"),
+        payload.get("operation_id"),
+        before.get("tokens"),
+        before.get("messages"),
+        after.get("tokens"),
+        after.get("messages"),
+        saved.get("percent"),
+        payload.get("duration_ms"),
+        # 与落盘口径保持一致：compact_summary 才是压缩摘要正文
+        len(str(payload.get("compact_summary") or "")),
+        payload.get("error"),
+    )
+
+
+def _resolve_compression_request_id(
+        channel_id: str | None,
+        session_id: str,
+        *,
+        fallback: str | None,
+) -> tuple[str | None, str]:
+    """Resolve the current user-turn request id at compression-event time.
+
+    Team streams are long-lived; the stream-start request id can lag behind the
+    user turn that actually owns the compression. Prefer TeamManager's latest
+    request id, then degrade explicitly to the stream-start id (or round_id to
+    be supplied by the caller).
+    """
+    try:
+        manager = get_team_manager(channel_id)
+        getter = getattr(manager, "current_request_id", None)
+        if callable(getter):
+            current = getter(session_id)
+            if current:
+                return str(current), "session_current"
+        logger.warning(
+            "[TeamHelpers] compression boundary request_id unavailable from session; "
+            "falling back to stream-start request_id: session_id=%s fallback=%s",
+            session_id,
+            fallback,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[TeamHelpers] compression boundary request_id lookup failed; "
+            "falling back to stream-start request_id: session_id=%s fallback=%s error=%s",
+            session_id,
+            fallback,
+            exc,
+        )
+    if fallback:
+        return str(fallback), "stream_start_fallback"
+    return None, "round_id_fallback"
+
+
 def _persist_team_compression_state(
         channel_id: str | None,
         session_id: str,
-        round_id: str,
+        round_id: int,
         payload: dict[str, Any],
         *,
+        request_id: str | None = None,
+        request_id_source: str = "session_current",
         member_name: str | None = None,
 ) -> None:
     """团队链路 compression_state 落盘（修复前只广播不落盘 → 收尾分隔条永缺）。
@@ -4202,6 +4311,12 @@ def _persist_team_compression_state(
     口径对齐单 agent 路径（interface._append_compact_history_from_payload）：
     只落成功压缩（compact_summary 非空、状态非 error/failed/skipped、无 error 字段）；
     成员帧把归因写进 compact_metadata.member_name，供历史回放分流到成员视图。
+
+    request_id：当前用户轮 id。历史时间线按用户消息 request_id 归轮；团队
+    链路曾误用 round_id，导致主对话/成员视图无法与该轮对齐，与通用链路
+    形成双写后由主对话回放成无归因的四条记录。round_id 仅作
+    排障信息保留在 stats 中。request_id_source 标注取值来源：
+    session_current / stream_start_fallback / round_id_fallback。
     """
     summary_text = str(payload.get("compact_summary") or "").strip()
     status = str(payload.get("status") or "").strip().lower()
@@ -4212,11 +4327,13 @@ def _persist_team_compression_state(
         for key in ("status", "phase", "processor", "model", "before", "after", "saved", "duration_ms")
         if key in payload
     }
+    stats["round_id"] = round_id
+    stats["request_id_source"] = request_id_source
     if member_name:
         stats["member_name"] = member_name
     append_compact_history_records(
         session_id=session_id,
-        request_id=round_id,
+        request_id=request_id or str(round_id),
         channel_id=_resolve_channel_id(channel_id),
         summary=summary_text,
         timestamp=time.time(),
@@ -4227,18 +4344,20 @@ def _persist_team_compression_state(
     )
     logger.info(
         "[TeamHelpers] persisted team compression boundary: session_id=%s round_id=%s"
-        " member=%s status=%s",
+        " request_id=%s request_id_source=%s member=%s status=%s",
         session_id,
         round_id,
+        request_id or str(round_id),
+        request_id_source,
         member_name or "leader",
         status,
     )
 
 
 def _persist_team_history_event(
-    channel_id: str | None,
-    session_id: str,
-    event: dict[str, Any],
+        channel_id: str | None,
+        session_id: str,
+        event: dict[str, Any],
 ) -> None:
     """Persist team monitor events required by team.history.get panel restore."""
     evt_type = event.get("event_type")
@@ -4263,8 +4382,8 @@ def _persist_team_history_event(
         if not member_id:
             return
         if (
-            member_event_type == "team.member.status_changed"
-            and not str(payload.get("new_status") or "").strip()
+                member_event_type == "team.member.status_changed"
+                and not str(payload.get("new_status") or "").strip()
         ):
             return
         request_key = f"{member_id}-{member_event_type.rsplit('.', 1)[-1]}"
@@ -4330,7 +4449,7 @@ async def _register_human_inbound_hooks(
         str(m.get("member_id") or "").strip()
         for m in members
         if isinstance(m, dict) and m.get("role") == "human_agent"
-        and str(m.get("member_id") or "").strip()
+           and str(m.get("member_id") or "").strip()
     ]
     if not human_names:
         return
@@ -4540,9 +4659,9 @@ def _on_team_watcher_done(task: asyncio.Task) -> None:
 
 
 async def _watch_team_evolution_and_push(
-    channel_id: str | None,
-    session_id: str,
-    rail: Any,
+        channel_id: str | None,
+        session_id: str,
+        rail: Any,
 ) -> None:
     """Monitor TeamSkillEvolutionRail and push stable status/approval events for every evolution cycle."""
     from jiuwenswarm.server.gateway_push import WebSocketGatewayPushTransport
@@ -4573,8 +4692,8 @@ async def _watch_team_evolution_and_push(
             )
 
     async def _push_cycle_start(
-        request_id: str,
-        progress_statuses: list[EvolutionProgressStatus],
+            request_id: str,
+            progress_statuses: list[EvolutionProgressStatus],
     ) -> bool:
         if request_id in closed_request_ids:
             return False
@@ -4685,16 +4804,16 @@ async def _watch_team_evolution_and_push(
                 if first_request_id is None:
                     for terminal_request_id, terminal in terminal_progress:
                         if (
-                            terminal_request_id
-                            or terminal_stage(terminal)
-                            not in TEAM_EVOLUTION_HIDDEN_TERMINAL_STAGES
+                                terminal_request_id
+                                or terminal_stage(terminal)
+                                not in TEAM_EVOLUTION_HIDDEN_TERMINAL_STAGES
                         ):
                             first_request_id = terminal_request_id
                             break
                 if first_request_id is None:
                     if any(
-                        progress_status.request_id is None
-                        for progress_status in visible_progress_statuses
+                            progress_status.request_id is None
+                            for progress_status in visible_progress_statuses
                     ):
                         fallback_cycle_index += 1
                         first_request_id = make_team_evolution_cycle_request_id(
@@ -4702,10 +4821,10 @@ async def _watch_team_evolution_and_push(
                             fallback_cycle_index,
                         )
                     elif any(
-                        terminal_request_id is None
-                        and terminal_stage(terminal)
-                        not in TEAM_EVOLUTION_HIDDEN_TERMINAL_STAGES
-                        for terminal_request_id, terminal in terminal_progress
+                            terminal_request_id is None
+                            and terminal_stage(terminal)
+                            not in TEAM_EVOLUTION_HIDDEN_TERMINAL_STAGES
+                            for terminal_request_id, terminal in terminal_progress
                     ):
                         fallback_cycle_index += 1
                         first_request_id = make_team_evolution_cycle_request_id(
@@ -4800,8 +4919,8 @@ async def _watch_team_evolution_and_push(
                     if active_cycle_request_id is None:
                         continue
                     if (
-                        terminal_request_id is not None
-                        and terminal_request_id != active_cycle_request_id
+                            terminal_request_id is not None
+                            and terminal_request_id != active_cycle_request_id
                     ):
                         continue
                     terminal = candidate_terminal
