@@ -50,6 +50,10 @@ DOMAIN_ID = "domain.id"
 APP_ID = "app.id"
 
 JIUWENCLAW_CLAW_ID = "jiuwenclaw.claw.id"
+# 客户端（OfficeClaw）版本：云端契约字段为下划线形式 claw_version，
+# 与 relay-claw 写入 OTEL_RESOURCE_ATTRIBUTES 的 claw_version 对齐；
+# service.version 始终承载 jiuwenswarm 包版本，两者不可混用。
+JIUWENCLAW_CLAW_VERSION = "claw_version"
 JIUWENCLAW_CHANNEL_ID = "jiuwenclaw.channel.id"
 JIUWENCLAW_SESSION_ID = "jiuwenclaw.session.id"
 JIUWENCLAW_USER_ID = "jiuwenclaw.user.id"

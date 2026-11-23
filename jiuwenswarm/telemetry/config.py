@@ -37,6 +37,7 @@ class TelemetryConfig:
     redact_completions: bool = False
     log_messages: bool = True
     claw_id: str | None = None
+    claw_version: str | None = None
     session_stuck_threshold_ms: float = 300000.0
     session_stuck_check_interval_s: float = 30.0
 
@@ -276,6 +277,7 @@ def load_telemetry_config() -> TelemetryConfig:
     )
 
     claw_id = _string_value("OTEL_CLAW_ID", yaml_cfg.get("claw_id"), "") or None
+    claw_version = _string_value("OTEL_CLAW_VERSION", yaml_cfg.get("claw_version"), "") or None
     return TelemetryConfig(
         enabled=_coerce_value("OTEL_ENABLED", yaml_cfg.get("enabled"), False, _parse_bool),
         exporter=exporter,
@@ -310,6 +312,7 @@ def load_telemetry_config() -> TelemetryConfig:
             "OTEL_LOG_MESSAGES", yaml_cfg.get("log_messages"), True, _parse_bool
         ),
         claw_id=claw_id,
+        claw_version=claw_version,
         session_stuck_threshold_ms=max(
             0.0,
             _coerce_value(

@@ -30,7 +30,7 @@ from opentelemetry.sdk.trace.export import (
     SimpleSpanProcessor,
 )
 
-from jiuwenswarm.telemetry.attributes import JIUWENCLAW_CLAW_ID
+from jiuwenswarm.telemetry.attributes import JIUWENCLAW_CLAW_ID, JIUWENCLAW_CLAW_VERSION
 from jiuwenswarm.telemetry.config import TelemetryConfig
 
 _CUMULATIVE_TEMPORALITY = {
@@ -179,6 +179,10 @@ def build_default_providers(cfg: TelemetryConfig) -> ProviderBundle:
     }
     if cfg.claw_id is not None:
         attributes[JIUWENCLAW_CLAW_ID] = cfg.claw_id
+    if cfg.claw_version is not None:
+        # 独立的客户端版本字段：service.version 承载的是 jiuwenswarm 包版本，
+        # 云端需要区分「客户端/分身版本」与「sidecar 包版本」。
+        attributes[JIUWENCLAW_CLAW_VERSION] = cfg.claw_version
     resource = Resource.create(attributes)
 
     tracer_provider = _build_tracer_provider(cfg, resource)
