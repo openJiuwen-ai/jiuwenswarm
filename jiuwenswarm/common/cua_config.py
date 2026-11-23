@@ -59,16 +59,18 @@ def cua_repl_unavailable_reason() -> str:
             return "unsupported_platform"
         if not bundle:
             return "backend_missing"
-        root = Path(bundle) / "computer_use/_resources/os_adapter"
+        root = Path(bundle) / "computer_use/_resources"
         if sys.platform == "darwin":
-            driver = root / "macos/.build/ComputerUseDriver.app/Contents/MacOS/computer-use-driver"
+            from computer_use.paths import native_driver
+
+            driver = Path(native_driver(platform="darwin", root=root)["command"])
             available = driver.is_file() and os.access(driver, os.X_OK)
         else:
-            directory = root / "windows/.build"
+            directory = root / "os_adapter/windows/.build"
             files = ("computer-use-driver.exe", "computer-use-capture.exe", "Interop.NativeUIA.dll")
             available = all((directory / name).is_file() for name in files)
         return "" if available else "backend_missing"
-    except (ImportError, OSError, ValueError):
+    except (ImportError, OSError, ValueError, TypeError, KeyError, AttributeError):
         return "backend_missing"
 
 
@@ -78,18 +80,11 @@ def is_cua_repl_available() -> bool:
 
 
 def is_legacy_cua_available() -> bool:
-    """Check the prerequisites of agent-core's single-step desktop tools."""
+    """Check whether Linux can use agent-core's single-step desktop tools."""
     try:
-        if _is_harmony_desktop():
+        if not sys.platform.startswith("linux") or _is_harmony_desktop() or not os.getenv("DISPLAY"):
             return False
-        modules = ("pyautogui", "PIL")
-        if sys.platform.startswith("linux"):
-            if not os.getenv("DISPLAY"):
-                return False
-            modules += ("Xlib",)
-        elif sys.platform != "win32":
-            return False
-        return all(importlib.util.find_spec(name) is not None for name in modules)
+        return all(importlib.util.find_spec(name) is not None for name in ("pyautogui", "PIL", "Xlib"))
     except (ImportError, OSError, ValueError):
         return False
 

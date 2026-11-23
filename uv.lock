@@ -4210,11 +4210,22 @@ zmq = [
 
 [[package]]
 name = "openjiuwen-computeruse"
-version = "0.0.1"
-source = { git = "https://gitcode.com/openJiuwen/computer-use.git?rev=2c8171fb6783dba589dd396263b3161186c5f3e4#2c8171fb6783dba589dd396263b3161186c5f3e4" }
+version = "0.1.0b1"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pillow" },
     { name = "regex" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/96/e0/72ba57a53a8e53704f48159ce053290c4788974135098f29cd10840201eb/openjiuwen_computeruse-0.1.0b1-cp311-abi3-macosx_14_0_arm64.whl", hash = "sha256:6481e93fbae6970ac50631d3fc7e1009f7ddce71d955850eb48299ef55d31171", size = 8054125, upload-time = "2026-11-20T01:53:32.811Z" },
+    { url = "https://files.pythonhosted.org/packages/8f/31/91cbed4bf705183c9624283deae0a6f68b18004e2bae4e868f065675f9ed/openjiuwen_computeruse-0.1.0b1-cp311-abi3-macosx_14_0_x86_64.whl", hash = "sha256:1bdf44a37eeaff1524043f01941d60cee045a82db6972e9d1db8caf4e1308ed7", size = 8584336, upload-time = "2026-11-20T01:53:41.981Z" },
+    { url = "https://files.pythonhosted.org/packages/e5/ea/537509016f78ef65891ff4a803e388cde0c087862652b478d2993686e0ba/openjiuwen_computeruse-0.1.0b1-cp311-abi3-manylinux_2_34_aarch64.whl", hash = "sha256:ef344d9764b65627c7972194f64dae7efe0551fcec7ac51bcffaeb01da78b57d", size = 5170130, upload-time = "2026-11-20T02:14:05.499Z" },
+    { url = "https://files.pythonhosted.org/packages/01/18/1c73c77148dd9a7792058b0ea99385219f4f989a5abbc152e01d7f005245/openjiuwen_computeruse-0.1.0b1-cp311-abi3-manylinux_2_34_x86_64.whl", hash = "sha256:a4913165685575d59160496a6730809efcb9eaf4a4ec3a351b20a159c15d4ddd", size = 5492775, upload-time = "2026-11-20T01:53:35.588Z" },
+    { url = "https://files.pythonhosted.org/packages/43/f9/daf2e84eef350950dccf130eb8feaed12c1f6400b363524ad2418047de2d/openjiuwen_computeruse-0.1.0b1-cp311-abi3-win_amd64.whl", hash = "sha256:04382dfdf80aaa0b3e2eba261f53688b9b2947dcb0beee6ba162ad74b13e0c47", size = 4110355, upload-time = "2026-11-20T01:53:38.38Z" },
+    { url = "https://files.pythonhosted.org/packages/51/1c/5d6dd3665e02be236c83bbf4274b976d33e28e4c9d5046bc3872424e299b/openjiuwen_computeruse-0.1.0b1-cp311-cp311-macosx_14_0_arm64.whl", hash = "sha256:00fdc18fb76832fc37e133302337c14c519f6aa95373354725ae79ba6527d883", size = 8049807, upload-time = "2026-11-19T12:50:22.19Z" },
+    { url = "https://files.pythonhosted.org/packages/dd/58/36b4f56bd407a241fd02f097e00d3a7fff9941dc5e73a482d1859b8f860c/openjiuwen_computeruse-0.1.0b1-cp311-cp311-macosx_14_0_x86_64.whl", hash = "sha256:8f08e4508f6c4147551961ba1e66fb2d718f6d3164d855fb4b0850cc2a399583", size = 8993146, upload-time = "2026-11-19T12:50:31.779Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/fc/4eac27354a5d7b7b38918920f499a1ef723fe6c265f7a4ce09829532ce65/openjiuwen_computeruse-0.1.0b1-cp311-cp311-manylinux_2_34_x86_64.whl", hash = "sha256:3e16dba59506094d3d123d62639c0c0d820b5f0e2cab679eddc6d1222c3a81d7", size = 5774665, upload-time = "2026-11-19T12:50:25.441Z" },
+    { url = "https://files.pythonhosted.org/packages/7f/41/123bdf2e0c47abc355961ccea17e14ad9030285edc8741d1981127ea7cfc/openjiuwen_computeruse-0.1.0b1-cp311-cp311-win_amd64.whl", hash = "sha256:674acd44a60e823b72119d06504c7dc84f3c804269b81065f6b35a63ae308280", size = 4115616, upload-time = "2026-11-19T12:50:28.312Z" },
 ]
 
 [[package]]
@@ -7695,7 +7706,7 @@ requires-dist = [
     { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=02b2ce4538b60cc4fd6085db36021b48ee5a1d99" },
     { name = "openjiuwen", extras = ["cua"], marker = "extra == 'cua'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=02b2ce4538b60cc4fd6085db36021b48ee5a1d99" },
     { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=02b2ce4538b60cc4fd6085db36021b48ee5a1d99" },
-    { name = "openjiuwen-computeruse", git = "https://gitcode.com/openJiuwen/computer-use.git?rev=2c8171fb6783dba589dd396263b3161186c5f3e4" },
+    { name = "openjiuwen-computeruse", specifier = "==0.1.0b1" },
     { name = "openjiuwen-e2a", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=openjiuwen-e2a&rev=10ad4a2eeff11e0600c06a8235a797c5dd9f0a38" },
     { name = "openjiuwen-runtime-foundation", specifier = "==0.1.2b1" },
     { name = "openjiuwen-security", specifier = "==0.0.1b2" },

@@ -1,4 +1,4 @@
-"""Keep temporary Core and Gateway forks out of distributable artifacts."""
+"""Pin release dependencies to official repositories and immutable commits."""
 
 from __future__ import annotations
 
