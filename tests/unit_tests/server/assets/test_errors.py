@@ -9,6 +9,7 @@ import pytest
 from jiuwenswarm.server.runtime.assets.errors import (
     AssetError,
     AssetErrorCode,
+    asset_http_error_status,
     map_internal_error,
 )
 
@@ -109,3 +110,24 @@ def test_map_internal_error_maps_real_package_build_error() -> None:
     mapped = map_internal_error(PackageBuildError("LIMIT_EXCEEDED"))
     assert mapped is not None
     assert mapped.code == AssetErrorCode.LIMIT_EXCEEDED
+
+
+@pytest.mark.parametrize(
+    ("code", "expected"),
+    [
+        ("ASSET_NOT_FOUND", 404),
+        ("ASSET_EXPORT_FORBIDDEN", 403),
+        ("ASSET_INVALID_PACKAGE", 400),
+        ("ASSET_UNSAFE_PATH", 400),
+        ("ASSET_CREDENTIAL_DETECTED", 400),
+        ("ASSET_LIMIT_EXCEEDED", 413),
+        ("ASSET_ALREADY_EXISTS", 409),
+        ("ASSET_BUILTIN_READ_ONLY", 403),
+        # 入口层码：内部故障显式 500，参数错误与未知码按 400 兜底
+        ("INTERNAL_ERROR", 500),
+        ("INVALID_PARAMS", 400),
+        ("ASSET_FUTURE_CODE", 400),
+    ],
+)
+def test_asset_http_error_status(code, expected) -> None:
+    assert asset_http_error_status(code) == expected

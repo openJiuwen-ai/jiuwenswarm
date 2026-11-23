@@ -2660,7 +2660,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             handle_assets_upload_temp_http,
         )
 
-        if self._parse_content_length() > MAX_ASSETS_UPLOAD_BYTES:
+        length = self._parse_content_length()
+        if length > MAX_ASSETS_UPLOAD_BYTES:
+            # 不消费请求体就提前应答会复位连接，浏览器收不到 413 JSON
+            # 而报 "Failed to fetch"（与 _handle_designer_upload 同一处理）。
+            self._discard_request_body(length)
             self._write_json(
                 413,
                 {

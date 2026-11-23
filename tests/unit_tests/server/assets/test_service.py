@@ -382,7 +382,13 @@ class _FakeSink:
         self.responses.append(response)
 
 
-def _make_ctx(params: dict, *, session_id: str | None = None, user_id: str = "") -> SimpleNamespace:
+def _make_ctx(
+    params: dict,
+    *,
+    session_id: str | None = None,
+    user_id: str = "",
+    metadata: dict | None = None,
+) -> SimpleNamespace:
     return SimpleNamespace(
         request=SimpleNamespace(
             request_id="req-1",
@@ -390,6 +396,7 @@ def _make_ctx(params: dict, *, session_id: str | None = None, user_id: str = "")
             session_id=session_id,
             user_id=user_id,
             params=params,
+            metadata=metadata,
         ),
         sink=_FakeSink(),
     )
@@ -414,12 +421,15 @@ def test_handler_export_ok(workspace, isolated_registry, agent_source, monkeypat
         {"kind": "agent_template", "local_id": "my-expert"},
         session_id="sess-9",
         user_id="user-9",
+        metadata={"trace-id": "t-9"},
     )
     _run(handle_assets_export(ctx))
     response = ctx.sink.responses[0]
     assert response.ok is True
     assert response.request_id == "req-1"
     assert response.channel_id == "chan-1"
+    # 请求 metadata 原样透传进响应（与 session_assets 等兄弟 handler 一致）
+    assert response.metadata == {"trace-id": "t-9"}
     assert response.payload["filename"] == "my-expert.zip"
     # 会话与用户身份进入 token 签发（AgentOS 下载代理依赖 user_id 查询参数）
     assert captured["session_id"] == "sess-9"

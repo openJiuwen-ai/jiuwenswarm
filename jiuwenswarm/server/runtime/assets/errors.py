@@ -101,11 +101,14 @@ _HTTP_STATUS: dict[str, int] = {
     AssetErrorCode.LIMIT_EXCEEDED: 413,
     AssetErrorCode.ALREADY_EXISTS: 409,
     AssetErrorCode.BUILTIN_READ_ONLY: 403,
+    # 入口层内部故障码（全仓既有约定）：服务端故障显式 500，
+    # 不得落未知码 400 兜底伪装成客户端错误。
+    "INTERNAL_ERROR": 500,
 }
 
 
 def asset_http_error_status(code: str) -> int:
-    """契约错误码 → HTTP 状态码；未知码按 400 兜底。"""
+    """错误码 → HTTP 状态码；INTERNAL_ERROR 显式 500，未知码（如 INVALID_PARAMS）按 400 兜底。"""
     return _HTTP_STATUS.get(code, 400)
 
 
@@ -141,7 +144,9 @@ def converge_error_payload(exc: BaseException) -> dict[str, Any]:
 
     1. :class:`AssetError` —— 契约异常原样透传；
     2. 带 ``.code`` 的内部异常 —— :func:`map_internal_error` 查表收敛；
-    3. 无内部码的 ``ValueError`` —— 契约层参数校验失败，``INVALID_PARAMS``；
+    3. 无内部码的 ``ValueError`` —— 契约层参数校验失败，``INVALID_PARAMS``
+       （与 session_assets、extensions_v2.management 等一致的入口层参数
+       错误码，不属于八类业务契约码，前端落通用失败提示）；
     4. 其余 —— ``INTERNAL_ERROR`` 兜底。
     """
     if isinstance(exc, AssetError):

@@ -29,6 +29,7 @@ def _respond(ctx: RequestContext, ok: bool, payload: dict[str, Any]) -> AgentRes
         channel_id=request.channel_id,
         ok=ok,
         payload=payload,
+        metadata=request.metadata,
     )
 
 
