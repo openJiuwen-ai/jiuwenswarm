@@ -51,8 +51,15 @@ export interface ConnectorSummary {
   icon?: string | null;
   // "我的"vs"广场"归属的唯一依据，见文件头注释。
   source: ConnectorSource;
+  /** Hub / multi-source catalogue id; absent for built_in / customize. */
+  sourceId?: string;
   installed: boolean;
+  /** Catalogue / remote latest version (enterprise SPI list keeps this when installed). */
   version?: string;
+  /** Local ledger version when installed (enterprise SPI list). */
+  installedVersion?: string;
+  /** True when installed_version differs from version (enterprise SPI list). */
+  hasUpdate?: boolean;
   tags?: string[];
 }
 
