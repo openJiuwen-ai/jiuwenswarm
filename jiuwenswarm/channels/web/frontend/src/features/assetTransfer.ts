@@ -6,7 +6,9 @@
 // 出参 {kind, id, pending_connectors?}。业务错误由服务端收敛为八类 ASSET_* 码
 // （上传暂存接口返回同一码表），assetIssueKey 只做码 → i18n key 映射，
 // 不做业务分支；各 kind 的差异全部留在服务端适配器层。
+import { gatewayFetch } from '../services/gatewayFetch';
 import { webRequest } from '../services/webClient';
+import { resolveApiUrl } from '../utils/env';
 import { saveBlobWithResult, type BlobSaveResult } from '../utils/desktopSave';
 
 export type AssetKind = 'skill' | 'skillpack' | 'agent_template' | 'agent_group' | 'plugin';
@@ -36,7 +38,7 @@ export interface AssetImportResult {
 
 export type AssetRequestFn = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>;
 
-/** 传输依赖可注入：缺省 webRequest（WS/HTTP 自动切换）、全局 fetch、desktopSave 双路径保存。 */
+/** 传输依赖可注入：缺省 webRequest（WS/HTTP 自动切换）、gatewayFetch（与技能上传同规）、desktopSave 双路径保存。 */
 export interface AssetTransferDeps {
   request?: AssetRequestFn;
   fetchImpl?: typeof fetch;
@@ -112,10 +114,12 @@ export async function exportAssetToLocalFile(
   deps: AssetTransferDeps = {},
 ): Promise<BlobSaveResult> {
   const info = await requestAssetExport(params, deps);
-  const doFetch = deps.fetchImpl ?? fetch;
+  const doFetch = deps.fetchImpl ?? gatewayFetch;
   let response: Response;
   try {
-    response = await doFetch(info.download_url);
+    // download_url 为服务端签发的相对路径：经 resolveApiUrl 拼部署前缀
+    // （前缀为空时原样返回），与 artifactDownloadUrl 同规。
+    response = await doFetch(resolveApiUrl(info.download_url));
   } catch (error) {
     throw new AssetTransferError(
       'ASSET_DOWNLOAD_FAILED',
@@ -131,12 +135,13 @@ export async function exportAssetToLocalFile(
 
 /** 上传资产包到受控暂存目录（TTL 1 小时），返回供 assets.import 使用的服务端路径。 */
 export async function uploadAssetPackage(file: File, deps: AssetTransferDeps = {}): Promise<string> {
-  const doFetch = deps.fetchImpl ?? fetch;
+  // 与技能上传（/file-api/skills/upload-temp）同规：经 gatewayFetch 携带网关上下文。
+  const doFetch = deps.fetchImpl ?? gatewayFetch;
   const form = new FormData();
   form.append('file', file);
   let response: Response;
   try {
-    response = await doFetch(ASSET_UPLOAD_ENDPOINT, { method: 'POST', body: form });
+    response = await doFetch(resolveApiUrl(ASSET_UPLOAD_ENDPOINT), { method: 'POST', body: form });
   } catch (error) {
     throw new AssetTransferError(
       'ASSET_UPLOAD_FAILED',
