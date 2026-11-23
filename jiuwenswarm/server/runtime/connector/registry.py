@@ -19,7 +19,7 @@ from jiuwenswarm.extensions.sdk.connector_source import (
 _ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 
 
-class SourceRegistryError(RuntimeError):
+class ConnectorSourceRegistryError(RuntimeError):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
@@ -34,7 +34,7 @@ class _ProviderEntry:
     start_lock: asyncio.Lock | None = None
 
 
-class SourceRegistry:
+class ConnectorSourceRegistry:
     """Keeps runtime provider instances only; it never stores marketplace state."""
 
     def __init__(self) -> None:
@@ -50,25 +50,25 @@ class SourceRegistry:
         source_id = str(config.source_id or "").strip()
         provider_type = str(config.provider_type or "").strip()
         if not _ID_RE.fullmatch(source_id):
-            raise SourceRegistryError(
+            raise ConnectorSourceRegistryError(
                 "source_misconfigured", f"invalid source_id: {source_id}"
             )
         if not _ID_RE.fullmatch(provider_type):
-            raise SourceRegistryError(
+            raise ConnectorSourceRegistryError(
                 "source_misconfigured", f"invalid provider_type: {provider_type}"
             )
         if source_id in self._entries:
-            raise SourceRegistryError(
+            raise ConnectorSourceRegistryError(
                 "source_misconfigured", f"duplicate source_id: {source_id}"
             )
         if str(provider.source_id or "").strip() != source_id:
-            raise SourceRegistryError(
+            raise ConnectorSourceRegistryError(
                 "source_misconfigured", "provider source_id does not match config"
             )
         declared = frozenset(provider.capabilities)
         configured = frozenset(config.capabilities)
         if configured and not configured.issubset(declared):
-            raise SourceRegistryError(
+            raise ConnectorSourceRegistryError(
                 "source_misconfigured",
                 f"provider {provider_type} does not implement {sorted(configured - declared)}",
             )
@@ -110,7 +110,7 @@ class SourceRegistry:
         display_name: str | None = None,
     ) -> ConnectorSourceProvider:
         if str(extension.provider_type or "").strip() != config.provider_type:
-            raise SourceRegistryError(
+            raise ConnectorSourceRegistryError(
                 "source_misconfigured", "extension provider_type does not match config"
             )
         provider = extension.create_provider(config)
@@ -136,7 +136,7 @@ class SourceRegistry:
     def get_config(self, source_id: str) -> ConnectorSourceConfig:
         entry = self._entries.get(str(source_id or "").strip())
         if entry is None:
-            raise SourceRegistryError(
+            raise ConnectorSourceRegistryError(
                 "source_not_found", f"connector source not found: {source_id}"
             )
         return entry.config
@@ -144,16 +144,16 @@ class SourceRegistry:
     async def get(self, source_id: str, capability: str) -> ConnectorSourceProvider:
         entry = self._entries.get(str(source_id or "").strip())
         if entry is None:
-            raise SourceRegistryError(
+            raise ConnectorSourceRegistryError(
                 "source_not_found", f"connector source not found: {source_id}"
             )
         if not entry.config.enabled:
-            raise SourceRegistryError(
+            raise ConnectorSourceRegistryError(
                 "source_disabled", f"connector source is disabled: {source_id}"
             )
         capabilities = frozenset(entry.config.capabilities or entry.provider.capabilities)
         if capability not in capabilities:
-            raise SourceRegistryError(
+            raise ConnectorSourceRegistryError(
                 "source_capability_unsupported",
                 f"connector source {source_id} does not support {capability}",
             )
@@ -165,7 +165,7 @@ class SourceRegistry:
                     try:
                         await entry.provider.start()
                     except Exception as exc:
-                        raise SourceRegistryError(
+                        raise ConnectorSourceRegistryError(
                             "source_unavailable",
                             f"connector source {source_id} failed to start: {exc}",
                         ) from exc

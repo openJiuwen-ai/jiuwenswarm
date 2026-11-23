@@ -2,8 +2,9 @@
 
 """Swarm Connector Hub extension entry.
 
-Registers the ``openjiuwen-hub`` Provider factory into ExtensionRegistry;
-Connector SourceRuntime binds the default source through ``default_source_config``.
+Registers the ``openjiuwen-hub`` Provider factory into ExtensionRegistry.
+Process ``ConnectorSourceManager`` binds ``default_source_config()`` on first
+``get_connector_source_manager()`` (same idea as skill hub builtins).
 """
 
 from __future__ import annotations
@@ -22,7 +23,6 @@ from jiuwenswarm.extensions.sdk.connector_source import (
     ConnectorSourceExtension,
     ConnectorSourceProvider,
 )
-from jiuwenswarm.server.runtime.connector.source_registry import SourceRegistryError
 from jiuwenswarm.server.runtime.marketplace.hub_client import DEFAULT_HUB_BASE_URL
 
 from .constants import OPENJIUWEN_HUB_PROVIDER_TYPE, OPENJIUWEN_HUB_SOURCE_ID
@@ -168,14 +168,4 @@ class SwarmConnectorHubSourceExtension(ConnectorSourceExtension):
 async def register_extensions(registry):
     extension = SwarmConnectorHubSourceExtension()
     registry.register_connector_source_extension(extension)
-    try:
-        from jiuwenswarm.server.runtime.connector import get_source_runtime
-
-        runtime = get_source_runtime()
-        already = {item.source_id for item in runtime.registry.list()}
-        config = extension.default_source_config()
-        if config is not None and config.source_id not in already:
-            runtime.bind_extension(config, extension)
-    except (SourceRegistryError, RuntimeError, ValueError) as exc:
-        logger.warning("default openjiuwen-hub connector source not bound: %s", exc)
     return [extension]

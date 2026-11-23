@@ -1,11 +1,12 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Host runtime for Connector Source SPI: defaults + ``connector_sources`` apply."""
+"""Host manager for Connector Source SPI: defaults + ``connector_sources`` apply."""
 
 from __future__ import annotations
 
 import json
 import logging
+from contextvars import ContextVar, Token
 from typing import Any
 
 from jiuwenswarm.extensions.sdk.connector_source import (
@@ -15,9 +16,9 @@ from jiuwenswarm.extensions.sdk.connector_source import (
     DownloadPolicy,
 )
 from jiuwenswarm.extensions.swarm_connector_hub.constants import OPENJIUWEN_HUB_SOURCE_ID
-from jiuwenswarm.server.runtime.connector.source_registry import (
-    SourceRegistry,
-    SourceRegistryError,
+from jiuwenswarm.server.runtime.connector.registry import (
+    ConnectorSourceRegistry,
+    ConnectorSourceRegistryError,
 )
 
 logger = logging.getLogger(__name__)
@@ -32,18 +33,22 @@ def _is_enterprise() -> bool:
         return False
 
 
-class SourceRuntime:
-    """Owns the process-local connector SourceRegistry and config application.
+class ConnectorSourceManager:
+    """Owns a ConnectorSourceRegistry and config application.
 
-    Skill-side equivalent responsibilities live on ``SkillManager``; this type
-    keeps connector multi-source binding out of ``mcp.registry`` (connect state).
+    Skill-side equivalent responsibilities live on ``SkillManager``. Hosts
+    currently use the process default from :func:`get_connector_source_manager`
+    with extension ``default_source_config()`` entries only.
+    :meth:`apply_connector_source_configs` remains for a future global
+    application_config reload (logging_config-style); effective-policy
+    ``custom_config.connector_sources`` is not wired.
     """
 
     def __init__(self) -> None:
-        self._registry = SourceRegistry()
+        self._registry = ConnectorSourceRegistry()
 
     @property
-    def registry(self) -> SourceRegistry:
+    def registry(self) -> ConnectorSourceRegistry:
         return self._registry
 
     def list_providers(self) -> list[dict[str, Any]]:
@@ -96,7 +101,7 @@ class SourceRuntime:
     @classmethod
     def _register_default_sources(
         cls,
-        registry: SourceRegistry,
+        registry: ConnectorSourceRegistry,
         *,
         skip: set[str] | None = None,
     ) -> None:
@@ -115,7 +120,7 @@ class SourceRuntime:
                 continue
             try:
                 registry.bind_extension(config, factory)
-            except (SourceRegistryError, ValueError) as exc:
+            except (ConnectorSourceRegistryError, ValueError) as exc:
                 logger.warning(
                     "default connector source %s rejected: %s", config.source_id, exc
                 )
@@ -129,7 +134,7 @@ class SourceRuntime:
             try:
                 raw = json.loads(raw)
             except json.JSONDecodeError as exc:
-                raise SourceRegistryError(
+                raise ConnectorSourceRegistryError(
                     "source_misconfigured", "extension custom_config is not valid JSON"
                 ) from exc
         return raw if isinstance(raw, dict) else None
@@ -138,23 +143,23 @@ class SourceRuntime:
     def _parse_source_config(raw: dict[str, Any]) -> ConnectorSourceConfig:
         capabilities = raw.get("capabilities") or []
         if not isinstance(capabilities, list):
-            raise SourceRegistryError(
+            raise ConnectorSourceRegistryError(
                 "source_misconfigured", "capabilities must be an array"
             )
         options = raw.get("options") or {}
         if not isinstance(options, dict):
-            raise SourceRegistryError(
+            raise ConnectorSourceRegistryError(
                 "source_misconfigured", "options must be an object"
             )
         verify_ssl = raw.get("verify_ssl", True)
         if not isinstance(verify_ssl, bool):
-            raise SourceRegistryError(
+            raise ConnectorSourceRegistryError(
                 "source_misconfigured", "verify_ssl must be a boolean"
             )
         try:
             priority = int(raw.get("priority", 0))
         except (TypeError, ValueError) as exc:
-            raise SourceRegistryError(
+            raise ConnectorSourceRegistryError(
                 "source_misconfigured", "priority must be an integer"
             ) from exc
         download_raw = raw.get("download_policy")
@@ -162,7 +167,7 @@ class SourceRuntime:
         if isinstance(download_raw, dict):
             allowed_hosts = download_raw.get("allowed_hosts") or []
             if not isinstance(allowed_hosts, list):
-                raise SourceRegistryError(
+                raise ConnectorSourceRegistryError(
                     "source_misconfigured",
                     "download_policy.allowed_hosts must be an array",
                 )
@@ -170,11 +175,11 @@ class SourceRuntime:
                 max_bytes = int(download_raw.get("max_bytes", 64 * 1024 * 1024))
                 timeout_seconds = float(download_raw.get("timeout_seconds", 60.0))
             except (TypeError, ValueError) as exc:
-                raise SourceRegistryError(
+                raise ConnectorSourceRegistryError(
                     "source_misconfigured", "download policy limits must be numeric"
                 ) from exc
             if max_bytes <= 0 or timeout_seconds <= 0:
-                raise SourceRegistryError(
+                raise ConnectorSourceRegistryError(
                     "source_misconfigured", "download policy limits must be positive"
                 )
             known_keys = {"allowed_hosts", "max_bytes", "timeout_seconds", "metadata"}
@@ -186,7 +191,7 @@ class SourceRuntime:
                     if key not in known_keys
                 }
             elif not isinstance(metadata_raw, dict):
-                raise SourceRegistryError(
+                raise ConnectorSourceRegistryError(
                     "source_misconfigured",
                     "download_policy.metadata must be an object",
                 )
@@ -222,11 +227,14 @@ class SourceRuntime:
         self,
         extension_config: list[dict[str, Any]] | None,
     ) -> dict[str, Any]:
-        """Atomically apply ``custom_config.connector_sources`` from effective policy.
+        """Atomically apply ``custom_config.connector_sources`` payload.
 
         Distinguishes ``connector_sources`` absent (leave registry unchanged) from
         an explicit empty array (clear configured sources, keep defaults only).
-        Non-enterprise editions ignore configured non-default sources (D-07).
+        Non-enterprise editions ignore configured non-default sources.
+
+        Host paths do not call this from effective policy today; reserved for a
+        future global application_config reload.
         """
         raw_sources: list[dict[str, Any]] = []
         connector_sources_present = False
@@ -239,13 +247,13 @@ class SourceRuntime:
             connector_sources_present = True
             configured = custom.get("connector_sources")
             if not isinstance(configured, list):
-                raise SourceRegistryError(
+                raise ConnectorSourceRegistryError(
                     "source_misconfigured",
                     "custom_config.connector_sources must be an array",
                 )
             for item in configured:
                 if not isinstance(item, dict):
-                    raise SourceRegistryError(
+                    raise ConnectorSourceRegistryError(
                         "source_misconfigured",
                         "connector_sources entries must be objects",
                     )
@@ -264,21 +272,23 @@ class SourceRuntime:
                 if item.source_id == OPENJIUWEN_HUB_SOURCE_ID
             ]
 
-        candidate = SourceRegistry()
+        candidate = ConnectorSourceRegistry()
         configured_ids = {config.source_id for config in configs}
         self._register_default_sources(candidate, skip=configured_ids)
 
         for config in configs:
             extension = self._get_extension(config.provider_type)
             if extension is None:
-                raise SourceRegistryError(
+                raise ConnectorSourceRegistryError(
                     "source_misconfigured",
                     f"provider_type is not registered: {config.provider_type}",
                 )
             try:
                 candidate.bind_extension(config, extension)
             except ValueError as exc:
-                raise SourceRegistryError("source_misconfigured", str(exc)) from exc
+                raise ConnectorSourceRegistryError(
+                    "source_misconfigured", str(exc)
+                ) from exc
 
         previous = self._registry
         self._registry = candidate
@@ -286,17 +296,47 @@ class SourceRuntime:
         return {"applied": True, "source_count": len(candidate.list())}
 
 
-_RUNTIME: SourceRuntime | None = None
+_MANAGER: ConnectorSourceManager | None = None
+
+# Optional task override (tests / future scoped reload). Production marketplace
+# uses the process default with extension defaults only.
+_CONTEXT_MANAGER: ContextVar[ConnectorSourceManager | None] = ContextVar(
+    "connector_source_manager",
+    default=None,
+)
 
 
-def get_source_runtime() -> SourceRuntime:
-    global _RUNTIME
-    if _RUNTIME is None:
-        _RUNTIME = SourceRuntime()
-    return _RUNTIME
+def get_connector_source_manager() -> ConnectorSourceManager:
+    """Return the request-bound manager when set, else the process default.
+
+    First construction registers extension ``default_source_config()`` entries
+    (same idea as SkillManager builtin skill sources).
+    """
+    bound = _CONTEXT_MANAGER.get()
+    if bound is not None:
+        return bound
+    global _MANAGER
+    if _MANAGER is None:
+        _MANAGER = ConnectorSourceManager()
+        _MANAGER.register_default_sources()
+    return _MANAGER
 
 
-def reset_source_runtime() -> None:
-    """Test helper: drop the process-local runtime singleton."""
-    global _RUNTIME
-    _RUNTIME = None
+def bind_connector_source_manager(manager: ConnectorSourceManager) -> Token:
+    """Bind ``manager`` for the current asyncio Task / context (tests / future)."""
+    return _CONTEXT_MANAGER.set(manager)
+
+
+def reset_connector_source_manager_binding(token: Token | None = None) -> None:
+    """Clear or restore the request-bound manager override."""
+    if token is not None:
+        _CONTEXT_MANAGER.reset(token)
+        return
+    _CONTEXT_MANAGER.set(None)
+
+
+def reset_connector_source_manager() -> None:
+    """Test helper: drop the process-local manager singleton and context binding."""
+    global _MANAGER
+    _MANAGER = None
+    _CONTEXT_MANAGER.set(None)

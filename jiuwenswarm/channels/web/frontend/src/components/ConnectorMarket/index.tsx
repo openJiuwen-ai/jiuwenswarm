@@ -17,6 +17,11 @@ import type { SuiteId } from '../../features/officeAddins/officeAddins';
 import { useSystemPluginStore } from '../../stores/systemPluginStore';
 import { webClient } from '../../services/webClient';
 import { browserClientCapabilities } from '../../features/webui/client/browserClient';
+import { isEnterprise } from '../../edition';
+import {
+  connectorApi,
+  type ConnectorSourceProvider,
+} from '../../services/connectorApi';
 
 // "管理我的插件/MCP" 一次性跳转握手：调用方（InputArea.tsx 的扩展面板）先把目标 tab 存进这个
 // 模块级变量，再触发 `jiuwen:nav` 切到 connectorMarket——ConnectorMarketPanel 挂载是这次导航
@@ -94,8 +99,16 @@ export function ConnectorMarketPanel({
 }: ConnectorMarketPanelProps = {}) {
   const { t } = useTranslation();
   const [view, setView] = useState<View>({ name: 'market' });
-  const [topTab, setTopTab] = useState<TopTab>(() => (pendingManageView ? 'my' : 'plugin'));
+  // Enterprise hides the plugin plaza; personal keeps the original default.
+  const [topTab, setTopTab] = useState<TopTab>(() =>
+    pendingManageView ? 'my' : isEnterprise() ? 'mcp' : 'plugin',
+  );
   const [myKind, setMyKind] = useState<MarketKind>(() => {
+    if (isEnterprise()) {
+      // Enterprise "我的扩展" only keeps the connector sub-tab.
+      pendingManageView = null;
+      return 'mcp';
+    }
     const kind = pendingManageView?.myKind ?? 'plugin';
     pendingManageView = null;
     return kind;
@@ -106,9 +119,12 @@ export function ConnectorMarketPanel({
   // Office 加载项套件只有桌面端有：网页端状态接口 404，suites 为 null，广场不出卡片。
   const office = useOfficeSuites();
   const officeStatus = view.name === 'office-suite' ? office.suites?.[view.suite] : undefined;
+  const [connectorSources, setConnectorSources] = useState<ConnectorSourceProvider[]>([]);
+  const [selectedConnectorSourceId, setSelectedConnectorSourceId] = useState('');
 
   const loadConnectorList = useConnectorStore((s) => s.loadList);
   const loadPluginList = usePluginPackageStore((s) => s.loadList);
+  const enterpriseEdition = isEnterprise();
 
   // 2026-08-11：connectorStore/pluginPackageStore 的所有 action（connect/disconnect/enable/
   // disable/registerCustom/deleteConnector/saveCredentialsAndConnect/waitAuth，插件那边同理）
@@ -211,6 +227,57 @@ export function ConnectorMarketPanel({
   // 就是它本身，topTab 是 'my'（我的扩展）时看 myKind 子筛选。
   const activeKind: MarketKind = topTab === 'my' ? myKind : topTab === 'mcp' ? 'mcp' : 'plugin';
 
+  // 企业版拉取连接器远端源；单机不请求，避免多源页签（CMS-V-04）。
+  // Empty enabled list ≠ request failure: do not forge a fake source; catalogue
+  // effect already skips when selectedConnectorSourceId is empty.
+  useEffect(() => {
+    if (!enterpriseEdition) {
+      setConnectorSources([]);
+      setSelectedConnectorSourceId('');
+      return;
+    }
+    let cancelled = false;
+    void connectorApi
+      .listSourceProviders()
+      .then((providers) => {
+        if (cancelled) return;
+        const enabled = providers.filter(
+          (item) =>
+            item.enabled !== false &&
+            (!item.capabilities || item.capabilities.length === 0 || item.capabilities.includes('search')),
+        );
+        setConnectorSources(enabled);
+        setSelectedConnectorSourceId((current) => {
+          if (current && enabled.some((item) => item.source_id === current)) return current;
+          return enabled[0]?.source_id || '';
+        });
+        if (enabled.length === 0) {
+          toast.open({
+            content: t('connectorMarket.sources.noSources'),
+            variant: 'info',
+            duration: 5,
+            testId: 'connector-market-toast',
+          });
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        // Keep prior connectorSources / selection; surface failure instead of
+        // forging DEFAULT_CONNECTOR_SOURCE_ID (openjiuwen-hub).
+        toast.open({
+          id: CONNECTOR_ERROR_TOAST_ID,
+          content: t('connectorMarket.sources.loadFailed'),
+          variant: 'error',
+          duration: 5,
+          testId: 'connector-market-toast',
+          dataVariant: 'error',
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [enterpriseEdition, t]);
+
   // 一键还原会重启后端，此时列表请求必然失败，还原前的旧快照（开关仍为开启）会留在页面上。
   // 记录连接与客户端声明是否就绪：未就绪时先不拉取，就绪后（含重连成功）effect 会自动重跑。
   const [connected, setConnected] = useState(() => webClient.getState() === 'ready');
@@ -230,7 +297,17 @@ export function ConnectorMarketPanel({
     const scope = topTab === 'my' ? 'mine' : 'catalog';
     const options = { silent };
     if (activeKind === 'mcp') {
-      return loadConnectorList(equipmentListFilter('mcp', scope), options);
+      // Enterprise catalogue aligns with skills.source.search: no list until a
+      // source is selected; source_id is always sent. Personal omits source_id.
+      if (enterpriseEdition && scope === 'catalog' && !selectedConnectorSourceId) {
+        return true;
+      }
+      const catalogSourceId =
+        enterpriseEdition && scope === 'catalog' ? selectedConnectorSourceId : undefined;
+      return loadConnectorList(equipmentListFilter('mcp', scope), {
+        ...options,
+        sourceId: catalogSourceId,
+      });
     }
     const results = await Promise.all([
       loadPluginList(equipmentListFilter('plugin', scope), options),
@@ -239,7 +316,20 @@ export function ConnectorMarketPanel({
         : pluginKind === 'system' ? loadSystemCatalog(options) : Promise.resolve(true),
     ]);
     return results.every(Boolean);
-  }, [activeKind, topTab, pluginKind, view.name, connected, clientContextReady, loadConnectorList, loadPluginList, loadSystemCatalog, loadSystemMine]);
+  }, [
+    activeKind,
+    topTab,
+    pluginKind,
+    view.name,
+    connected,
+    clientContextReady,
+    loadConnectorList,
+    loadPluginList,
+    loadSystemCatalog,
+    loadSystemMine,
+    enterpriseEdition,
+    selectedConnectorSourceId,
+  ]);
 
   // 还原重启后 AgentServer 仍在启动，首批列表请求会超时；只对失败结果按梯度静默重试，
   // 避免用户必须手动刷新才能看到还原后的开关状态。
@@ -284,7 +374,17 @@ export function ConnectorMarketPanel({
     void (async () => {
       if (!(await reloadRef.current(false))) scheduleReload();
     })();
-  }, [view.name, activeKind, topTab, pluginKind, connected, clientContextReady, scheduleReload]);
+  }, [
+    view.name,
+    activeKind,
+    topTab,
+    pluginKind,
+    connected,
+    clientContextReady,
+    scheduleReload,
+    selectedConnectorSourceId,
+    enterpriseEdition,
+  ]);
 
   useEffect(() => webClient.on('extensions.v2.installed', () => scheduleReload()), [scheduleReload]);
 
@@ -294,8 +394,14 @@ export function ConnectorMarketPanel({
   // 前端沿用既有轮询收敛。
   const handleRefresh = async () => {
     setRefreshNonce((value) => value + 1);
-    if (activeKind === 'mcp') await loadConnectorList('builtin', { refresh: true });
-    else if (pluginKind === 'system') await loadSystemCatalog({ refresh: true });
+    if (activeKind === 'mcp') {
+      const scope = topTab === 'my' ? 'mine' : 'catalog';
+      await loadConnectorList(equipmentListFilter('mcp', scope), {
+        refresh: true,
+        sourceId:
+          enterpriseEdition && scope === 'catalog' ? selectedConnectorSourceId : undefined,
+      });
+    } else if (pluginKind === 'system') await loadSystemCatalog({ refresh: true });
     else await loadPluginList('builtin+hub', { refresh: true });
   };
 
@@ -335,6 +441,9 @@ export function ConnectorMarketPanel({
           onRegisterCustomMcp={() => setView({ name: 'register-mcp' })}
           onRefresh={handleRefresh}
           refreshNonce={refreshNonce}
+          connectorSources={enterpriseEdition ? connectorSources : []}
+          selectedConnectorSourceId={selectedConnectorSourceId}
+          onConnectorSourceChange={setSelectedConnectorSourceId}
         />
       )}
 

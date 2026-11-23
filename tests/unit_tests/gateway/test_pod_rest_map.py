@@ -112,6 +112,7 @@ def test_forwarded_methods_with_handlers_get_dedicated_urls() -> None:
         "mcp.register_custom": "/api/v1/mcp/actions/register-custom",
         "mcp.delete_custom": "/api/v1/mcp/actions/delete-custom",
         "mcp.save_credentials": "/api/v1/mcp/actions/save-credentials",
+        "mcp.sources.providers": "/api/v1/mcp/actions/sources-providers",
         "swarmflow.pause": "/api/v1/sessions/sess-1/swarmflow/actions/pause",
         "swarmflow.resume": "/api/v1/sessions/sess-1/swarmflow/actions/resume",
         "swarmflow.stop": "/api/v1/sessions/sess-1/swarmflow/actions/stop",

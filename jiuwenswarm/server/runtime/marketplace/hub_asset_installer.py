@@ -29,6 +29,7 @@ from jiuwenswarm.server.runtime.marketplace.hub_asset_port import (
 from jiuwenswarm.server.runtime.marketplace.hub_install_state import (
     HubInstallRecord,
     HubInstallStateStore,
+    normalize_install_source_id,
 )
 
 
@@ -114,11 +115,13 @@ async def install_hub_asset_package(
     version: str = "",
     expected_sha256: str = "",
     package_root_locator: PackageRootLocator | None = None,
+    source_id: str | None = None,
 ) -> HubPackageInstallResult:
     """Resolve, validate, download, atomically commit, and record one Hub package."""
     asset = str(asset_id or "").strip()
     if not asset:
         raise ValueError(f"Hub {kind} asset id is required")
+    resolved_source_id = normalize_install_source_id(source_id)
     port = hub_port or create_default_hub_asset_port()
     detail = await port.query_asset(
         HubAssetQuery(kind=kind, asset_id=asset, version=str(version or "").strip())
@@ -141,10 +144,12 @@ async def install_hub_asset_package(
         )
     if conflict_validator is not None:
         conflict_validator(package_id)
-    owner = state_store.get_by_package_id(package_id) if state_store is not None else None
-    if owner is not None and owner.asset_id != asset:
-        raise ValueError(
-            f"Hub {kind} package id {package_id!r} is owned by another Hub asset"
+    if state_store is not None:
+        state_store.assert_package_id_available(
+            package_id,
+            asset_id=asset,
+            source_id=resolved_source_id,
+            kind=kind,
         )
 
     artifact = await port.resolve_download(
@@ -212,6 +217,7 @@ async def install_hub_asset_package(
         version=artifact.version,
         checksum_sha256=artifact.checksum_sha256,
         installed_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        source_id=resolved_source_id,
     )
     try:
         if state_store is not None:
@@ -222,7 +228,7 @@ async def install_hub_asset_package(
         shutil.rmtree(destination, ignore_errors=True)
         if state_store is not None:
             try:
-                state_store.remove(asset)
+                state_store.remove(asset, source_id=resolved_source_id)
             except Exception:
                 logger.exception("Failed to remove Hub install state during rollback")
         if on_rollback is not None:
