@@ -210,17 +210,19 @@ curl -H "Authorization: Bearer $JIUWENBOX_API_TOKEN" http://127.0.0.1:8321/healt
 
 ```json
 {
-  "stdout": "/var/log/jiuwenbox/agent.out",
-  "stderr": "/var/log/jiuwenbox/agent.err"
+  "stdout": "/opt/adx/logs/runtime/agent.out",
+  "stderr": "/opt/adx/logs/runtime/agent.err"
 }
 ```
 
 两字段默认空字符串，查询结果也返回相同的配置。
 
-路径由可信部署管理员配置，是宿主路径。管理服务在进入命名空间、降权之前
-打开文件，无需给沙箱增加日志目录挂载或文件系统权限。父目录须已存在且服务
-可访问；文件追加写入，新文件权限 `0600`，不修改已有权限；拒绝最终路径的
-符号链接、FIFO 和其它非普通文件。此类创建不使用已固定 stdio 的预热槽。
+文件必须直接位于 `JIUWENBOX_RUNTIME_LOG_DIR` 下，默认目录为
+`/opt/adx/logs/runtime`，AgentOS 默认用 `/var/log/agentos/adx_sessions/runtime`。
+ADX 自定义 `runtime_logs.directory` 时，Jiuwenbox 需配置同一路径。目录由管理服务
+持有，禁止组或其他用户写入。新文件权限为 `0600`，仅使用服务持有的普通文件，
+拒绝符号链接和硬链接。沙箱只接收写描述符，每个沙箱使用独立日志文件。
+此类创建跳过已固定 stdio 的预热槽。
 
 后台常驻进程继承已配置的输出流，未配置的后台流仍丢弃；同步 `exec` 继续
 返回捕获的输出。后台状态的 `stdout/stderr` 仍为空，原始内容从宿主文件读取。

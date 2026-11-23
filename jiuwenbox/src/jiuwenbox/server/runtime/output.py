@@ -6,7 +6,17 @@ import os
 import stat
 import tempfile
 from contextlib import ExitStack
+from pathlib import Path
 from typing import BinaryIO
+
+
+def _log_root() -> Path:
+    configured = os.environ.get("JIUWENBOX_RUNTIME_LOG_DIR")
+    if configured:
+        return Path(configured)
+    if os.environ.get("JIUWENBOX_RUNTIME_PROFILE") == "agentos":
+        return Path("/var/log/agentos/adx_sessions/runtime")
+    return Path("/opt/adx/logs/runtime")
 
 
 class _StartupLog:
@@ -31,9 +41,8 @@ class _StartupLog:
 class RuntimeOutput:
     """Append to optional host files; keep unspecified streams in startup capture.
 
-    Parents must exist. New files are private, final symlinks and non-regular
-    files are rejected, and opening a second stream never leaks the first FD.
-    The daemon inherits the files; closing the parent's copies is independent.
+    Redirected streams are write-only for the daemon. The host reads the startup
+    marker through a separate descriptor on the same stderr file.
     """
 
     def __init__(self, stdout_path: str | None, stderr_path: str | None) -> None:
@@ -42,18 +51,37 @@ class RuntimeOutput:
             capture = self._files.enter_context(tempfile.TemporaryFile())
             self.stdout = self._open(stdout_path) if stdout_path else capture
             self.stderr = self._open(stderr_path) if stderr_path else capture
-            self.startup_log = _StartupLog(self.stderr)
+            stderr_reader = capture
+            if stderr_path:
+                stderr_reader = self._files.enter_context(
+                    open(f"/proc/self/fd/{self.stderr.fileno()}", "rb", buffering=0)
+                )
+            self.startup_log = _StartupLog(stderr_reader)
         except BaseException:
             self.close()
             raise
 
     def _open(self, path: str) -> BinaryIO:
-        flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
-        fd = os.open(path, flags, 0o600)
+        target = Path(path)
+        root = _log_root()
+        if not root.is_absolute() or target.parent != root:
+            raise PermissionError("runtime output must be directly under JIUWENBOX_RUNTIME_LOG_DIR")
+        directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
         try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
+            metadata = os.fstat(directory)
+            if metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+                raise PermissionError("runtime log directory must be owned by the management service")
+            fd = os.open(target.name, flags, 0o600, dir_fd=directory)
+        finally:
+            os.close(directory)
+        try:
+            metadata = os.fstat(fd)
+            if not stat.S_ISREG(metadata.st_mode):
                 raise OSError(errno.EINVAL, "runtime output must be a regular file", path)
-            stream = os.fdopen(fd, "a+b", buffering=0)
+            if metadata.st_nlink != 1 or metadata.st_uid != os.geteuid() or metadata.st_mode & 0o022:
+                raise PermissionError("runtime output must be a service-owned file without hard links")
+            stream = os.fdopen(fd, "ab", buffering=0)
         except BaseException:
             os.close(fd)
             raise

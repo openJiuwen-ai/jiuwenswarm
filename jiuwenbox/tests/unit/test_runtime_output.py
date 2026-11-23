@@ -1,6 +1,7 @@
 """Host-owned Supervisor logs survive privilege and namespace changes."""
 from __future__ import annotations
 
+import fcntl
 import os
 import subprocess
 import sys
@@ -11,12 +12,19 @@ from jiuwenbox.models.policy import SecurityPolicy
 from jiuwenbox.server.runtime.output import RuntimeOutput
 
 
+@pytest.fixture(autouse=True)
+def runtime_log_root(tmp_path, monkeypatch):
+    monkeypatch.setenv("JIUWENBOX_RUNTIME_LOG_DIR", str(tmp_path))
+
+
 def test_output_pair_is_separate_append_only_and_ignores_old_ready(tmp_path):
     stdout = tmp_path / "agent.out"
     stderr = tmp_path / "agent.err"
     stdout.write_bytes(b"previous output\n")
     stderr.write_bytes(b"JIUWENBOX_DAEMON_READY\n")
     with RuntimeOutput(str(stdout), str(stderr)) as output:
+        for stream in (output.stdout, output.stderr):
+            assert fcntl.fcntl(stream.fileno(), fcntl.F_GETFL) & os.O_ACCMODE == os.O_WRONLY
         output.startup_log.seek(0)
         assert output.startup_log.read() == b""
         child = subprocess.Popen(
@@ -81,6 +89,22 @@ def test_log_file_is_private_and_rejects_symlink_fifo_and_directory(tmp_path):
     assert path.read_bytes() == b""
 
 
+def test_output_cannot_open_other_directories_or_hard_links(tmp_path, monkeypatch):
+    logs = tmp_path / "logs"
+    logs.mkdir(mode=0o700)
+    monkeypatch.setenv("JIUWENBOX_RUNTIME_LOG_DIR", str(logs))
+    ordinary_file = tmp_path / "elsewhere.txt"
+    ordinary_file.write_text("unchanged")
+    alias = logs / "linked.out"
+    alias.hardlink_to(ordinary_file)
+
+    with pytest.raises(PermissionError):
+        RuntimeOutput(str(ordinary_file), None)
+    with pytest.raises(PermissionError):
+        RuntimeOutput(str(alias), None)
+    assert ordinary_file.read_text() == "unchanged"
+
+
 def test_second_open_failure_closes_first_descriptor(tmp_path, monkeypatch):
     opened = []
     real_open = os.open
@@ -116,7 +140,10 @@ except PermissionError:
     sys.exit(0)
 raise AssertionError('host log permission check was bypassed')
 """
-    child = subprocess.run([sys.executable, "-c", script, str(target)], capture_output=True, timeout=10)
+    child = subprocess.run(
+        [sys.executable, "-c", script, str(target)], capture_output=True, timeout=10,
+        env={**os.environ, "JIUWENBOX_RUNTIME_LOG_DIR": str(directory)},
+    )
     assert child.returncode == 0, child.stderr.decode()
     assert not target.exists()
 

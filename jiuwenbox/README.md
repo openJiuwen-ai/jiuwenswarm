@@ -225,19 +225,20 @@ top-level `stdout` / `stderr` fields on `POST /api/v1/sandboxes`:
 
 ```json
 {
-  "stdout": "/var/log/jiuwenbox/agent.out",
-  "stderr": "/var/log/jiuwenbox/agent.err"
+  "stdout": "/opt/adx/logs/runtime/agent.out",
+  "stderr": "/opt/adx/logs/runtime/agent.err"
 }
 ```
 
-Omitted fields default to empty strings. These are **host paths**, opened by the privileged management server before
-sandbox namespaces and privilege drop. Prepare the parent directories with
-appropriate server permissions. Files are appended, newly created files use
-mode `0600`, and final symlinks, FIFOs and other non-regular files are rejected.
-Existing file permissions are unchanged. No extra guest mount or filesystem
-allow rule is needed. Only trusted deployment administrators should select
-these paths. Redirected launches bypass parked warm slots because their stdio
-descriptors are already fixed.
+Omitted fields default to empty strings. For redirection, prepare a dedicated
+directory owned by the management service. Paths must be directly under
+`JIUWENBOX_RUNTIME_LOG_DIR` (default `/opt/adx/logs/runtime`, or
+`/var/log/agentos/adx_sessions/runtime` for the AgentOS profile). If ADX uses
+a custom `runtime_logs.directory`, configure the same value on Jiuwenbox.
+The directory must not be group- or world-writable. Files use mode `0600` when
+created and must be regular, service-owned files without symlinks or hard
+links. The daemon receives write-only output descriptors. Use a separate
+log pair for each sandbox. Redirected launches bypass parked warm slots.
 
 Background commands inherit only the configured streams. Unconfigured background
 streams remain discarded; synchronous `exec` still returns its captured output.

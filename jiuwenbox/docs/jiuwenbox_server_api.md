@@ -572,7 +572,7 @@ print(resp.json())
 | `stdin` | string | 否 | 标准输入文本 |
 | `timeout_seconds` | int | 否 | 预留字段 |
 
-后台任务不在状态接口捕获 stdout/stderr。Supervisor 创建请求顶层设置 `stdout` / `stderr` 时，对应后台输出追加到指定宿主文件；未设置的流仍丢弃。父目录需已存在，新文件权限为 `0600`，拒绝最终符号链接和非普通文件。该路径由管理服务在降权之前打开，无需沙箱文件挂载权限。`BackgroundExecResult.stdout_redirected` / `stderr_redirected` 为实际生效确认，旧版服务未提供或返回 false 时不能认定重定向成功。同步 `exec` 仍返回捕获的输出。
+后台任务不在状态接口捕获 stdout/stderr。Supervisor 创建请求顶层设置 `stdout` / `stderr` 时，对应后台输出追加到宿主日志。文件必须直接位于 `JIUWENBOX_RUNTIME_LOG_DIR` 下，由管理服务持有，且为无硬链接的普通文件。沙箱继承写描述符。未设置的流仍丢弃。`BackgroundExecResult.stdout_redirected` / `stderr_redirected` 为实际生效确认。同步 `exec` 仍返回捕获的输出。
 
 错误码：`job_id` 格式非法 → **400**；同 sandbox 内 `job_id` 已占用 → **409**；沙箱非 ready → **409**。
 
