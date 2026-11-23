@@ -108,3 +108,34 @@ test('root attachment and artifact URLs retain tenant scope and signed external 
     else globalThis.window = saved;
   }
 });
+
+test('artifact preview URLs preserve external signed links and non-file resources', async () => {
+  const preview = await loadModule('src/components/ArtifactsPanel/filePreviewModel.ts', {});
+  for (const value of [
+    'https://obs.test/file?signature=a%2Fb&name=image%20one.png#page=2',
+    '//cdn.test/image.png?signature=a%2Fb',
+    'https://obs.test/file-api/download?signature=abc',
+    '/reports/image.png?signature=abc',
+    'data:image/png;base64,x',
+    'blob:https://example.test/id',
+  ]) {
+    assert.equal(preview.artifactDownloadUrl({ downloadUrl: value }), value);
+    assert.equal(preview.artifactBinaryPreviewUrl({ downloadUrl: value }, 'https://example.test'), value);
+    assert.equal(preview.artifactTextPreviewUrl({ downloadUrl: value }, 'https://example.test'), value);
+    assert.equal(preview.inlineDownloadUrl(value, 'https://example.test'), value);
+  }
+});
+
+test('local file previews request inline delivery and preserve tokens and fragments', async () => {
+  const preview = await loadModule('src/components/ArtifactsPanel/filePreviewModel.ts', {});
+  for (const value of [
+    '/file-api/download?token=a%2Fb#page=2',
+    'https://example.test/file-api/download?token=a%2Fb#page=2',
+    '//example.test/file-api/download?token=a%2Fb#page=2',
+    '/file-api/download?token=a%2Fb&inline=0#page=2',
+  ]) {
+    const expected = '/file-api/download?token=a%2Fb&inline=1#page=2';
+    assert.equal(preview.artifactBinaryPreviewUrl({ downloadUrl: value }, 'https://example.test'), expected);
+    assert.equal(preview.artifactTextPreviewUrl({ downloadUrl: value }, 'https://example.test'), expected);
+  }
+});
