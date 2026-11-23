@@ -24,7 +24,7 @@ def proc_start_ticks(pid: int, *, proc_root: Path = Path("/proc")) -> int | None
         fields = text[closing_paren + 2:].split()
         ticks = int(fields[19])
         return ticks if ticks > 0 else None
-    except (OSError, UnicodeError, IndexError, ValueError):
+    except (OSError, IndexError, ValueError):
         return None
 
 
@@ -93,9 +93,10 @@ def validate_process_identity(
     """Validate HELLO identity fields and retain the identity actually checked."""
     identity = read_process_identity(pid, process=process)
     created, ticks = hello.get("process_created"), hello.get("process_start_ticks")
-    if created is not None and (isinstance(created, bool) or not isinstance(created, (int, float))
-                                or not math.isfinite(created)):
-        raise RuntimeError("Worker returned an invalid process creation time")
+    if created is not None:
+        invalid_type = isinstance(created, bool) or not isinstance(created, (int, float))
+        if invalid_type or not math.isfinite(created):
+            raise RuntimeError("Worker returned an invalid process creation time")
     if ticks is not None:
         if type(ticks) is not int or ticks <= 0:
             raise RuntimeError("Worker returned invalid process start ticks")

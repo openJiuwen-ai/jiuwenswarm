@@ -52,8 +52,11 @@ def _pending_workers(paths: list[str]) -> dict[str, list[tuple[psutil.Process, P
 def _pending_worker_alive(workers: list[tuple[psutil.Process, ProcessIdentity | None]]) -> bool:
     for process, created in workers:
         try:
-            if (process.is_running() and (created is None or process_identity_matches(process.pid, created, process=process))
-                    and process.status() != psutil.STATUS_ZOMBIE):
+            if not process.is_running():
+                continue
+            if created is not None and not process_identity_matches(process.pid, created, process=process):
+                continue
+            if process.status() != psutil.STATUS_ZOMBIE:
                 return True
         except psutil.NoSuchProcess:
             continue

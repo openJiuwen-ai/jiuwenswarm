@@ -16,7 +16,10 @@ files:
   - jiuwenswarm/common/process_supervision.py
   - jiuwenswarm/server/worker/service.py
   - jiuwenswarm/server/worker/stub.py
+  - jiuwenswarm/server/worker/main.py
+  - jiuwenswarm/server/worker/diagnostics.py
   - jiuwenswarm/server/supervisor/runtime_supervisor.py
+  - jiuwenswarm/server/supervisor/worker_process.py
   - jiuwenswarm/server/supervisor/resident_lifecycle.py
   - jiuwenswarm/server/supervisor/shutdown.py
   - jiuwenswarm/server/runtime/session/lifecycle.py
@@ -25,6 +28,8 @@ files:
   - jiuwenswarm/instance_manager/status.py
   - jiuwenswarm/extensions/app_market/resources.py
   - tests/unit_tests/agentserver/test_worker_process_identity.py
+  - tests/unit_tests/agentserver/test_worker_failure_diagnostics.py
+  - tests/unit_tests/agentserver/test_ipc_backpressure.py
 designs: []
 design_note: 按用户明确修复任务和已有受限系统回退补齐调用方，无独立设计。
 ---
@@ -49,13 +54,24 @@ HELLO、stub、常驻/attached 校验、退出回收和 pending Worker 观察成
 群 owner、实例启动器、服务树清理和应用资源采样中的同类直接读取也使用公共回退。
 
 未采用只删除 `process_created`、只比较 PID 或用当前时间冒充创建时间：这些做法削弱 PID 重用保护。
-未直接复制参考分支的依赖与日志体系修改：参考基线是独立 0.2.9 构建，本次目标是当前 develop 的身份读取问题。
+参考基线是独立 0.2.9 构建，不复制其依赖。用户随后明确要求补入 `worker-log-path-routing.md` 中的日志诊断链路，
+本次按 develop 现有的后台日志与原始输出路由补齐实现。
 旧 HELLO 按主干既有兼容行为处理；新 Worker 两种身份都不可读时明确失败，不能发送无身份 HELLO。
+
+`JIUWEN_WORKER_LOG_DIR` 指定 Worker 日志目录，未设置或为空时保留 socket 父目录下的 `worker-logs`。
+每次启动的 stderr 使用 UUID 文件名；Supervisor 清理固定诊断文件并注入 `JIUWEN_WORKER_DIAGNOSTIC_PATH`。
+Worker 在日志初始化之前的顶层异常、强制退出、ERROR 日志及 HELLO 失败均保留 PID 和 traceback；
+ERROR handler 在现有后台日志启用前装配，继续由后台写入。诊断写入失败不替换原异常。
+HELLO 失败通过共享诊断工具在关闭 IPC 前落盘，避免 EOF 触发父进程回收时后台队列尚未写入。
+Supervisor 对自己启动失败的 Worker 在清理时读取诊断文件末尾最多 16 KiB，报告路径或不可读原因，不转发原始 stdout/stderr。
+
+CodeCheck 的重复父子异常捕获改为仅捕获 `ValueError`（已包含 `UnicodeError`）；HELLO 创建时间校验拆分类型检查，
+pending Worker 检查用提前跳过拆分条件并消除超长行，保持原有校验与保守存活语义。
 
 ## 当前契约与防错约束
 
 见 [S_01_process-identity](../../../specs/jiuwenswarm/common/S_01_process-identity.md)。
-`jiuwenswarm/AGENTS.md` 明确禁止新增无异常处理的 `create_time()`，并要求权限拒绝及回退失败的行为回归。
+后续 `create_time()` 调用的异常处理、公共工具复用、身份比较和行为回归要求，统一维护在上述规约的“后续开发与检视约束”章节。
 
 ## 回归证据与适用范围
 
@@ -63,20 +79,23 @@ Windows、Python 3.11.15、psutil 7.2.2；core 为锁定的 `0b1aa2102104a2eeadd
 gateway 为 `dda0e957bd5ae501a326d3ea61a4d336c91ebfc7`，从本地只读 editable 环境加载。
 本任务使用独立 `.venv` 和临时数据；补齐该环境缺少的 pywin32 DLL，不修改源依赖声明。
 
-初步定向结果：新增身份行为 34 passed，原 runtime owner 18 passed。
-调用方回归为 227 passed、1 skipped、8 failed；8 项均在相同 develop 基线重现，是 Windows 不具备 POSIX API/端口语义的既有失败。
-首次较大回归还遇到环境缺少 pywintypes；补齐独立环境后群 owner 原有回归通过。
-对照参考方案前的 Worker 生命周期回归为 255 passed、4 skipped。
-对照后补充 ticks 优先比较、HELLO 失败日志、未知 booting Worker 和实例 PID 文件等场景，身份专项为 43 passed。
-最终 14 个相关测试文件合并回归为 **528 passed、5 skipped、8 deselected**，耗时 231.53 秒；包含新增身份、
-原 owner、loopback、常驻退出、重连、inflight stream 恢复、实例管理、服务树监督、应用资源及群 owner 消费方。
-8 个 deselected 是前述已在未修改基线复现的平台失败，不解释为通过；未执行全仓测试或远端 CI。
-完整命令和 JUnit 分别位于本地任务目录的 `final-command.txt`、`final-regression.xml`。
+身份专项为 **50 passed**，包含权限拒绝、双字段校验、PID 重用、非法创建时间、未知 booting Worker 和实例 PID 文件。
+最终 18 个相关测试文件的合并回归为 **611 passed、8 skipped、31 deselected**，覆盖日志、入口、导入隔离、
+原 owner、两种 IPC、常驻退出、重连、inflight stream 恢复、实例管理、服务树监督、应用资源及群 owner 消费方。
+主批次排除 8 个已在未修改 develop 基线复现的 Windows 平台失败和 23 个标记 slow 的用例。
+其中日志 sink 阻塞用例单独执行为 **1 passed**；其余未执行项不计为通过。
+一次前置回归曾在认证前等待启动 PID 时超过 10 秒；候选与原基线的单项复跑通过，随后完整回归通过。
+首次环境缺少 pywintypes 的问题在独立环境补齐，不改变项目依赖声明。
+完整命令和 JUnit 位于本地任务目录的 `logging-final-command.txt`、`logging-final.xml` 和 `logging-final-blocked.xml`；
+未执行全仓测试，远端 CI 状态以 PR 对应提交的报告为准。
 
 真实 loopback 子进程的受控实验：两版均注入 `create_time()` 权限拒绝；Windows 的 start counter 是用真实进程创建时间生成的模拟计数。
 原 develop 在 IPC 已连接后报 `ipc connection closed`；候选可以完成 HELLO、AGENT_READY 和实际 stub 请求响应。
 最终候选的 loopback 和 resident 均启动成功并响应 stub 请求，记录了 venv launcher 与实际 Worker PID，关闭后两者均退出。
 loopback 监听端口与 resident IPC 端点也已关闭，没有遗留锁。两种身份都拒绝时启动失败，Worker 私有日志包含 HELLO 阶段、PID 和 traceback，进程及端口仍完成清理。
+日志链路的生产启动入口重测覆盖 loopback、resident 与双来源均拒绝三种情况；前两者完成真实 stub 请求，
+后者在诊断文件中保留 AccessDenied、HELLO、PID 和 traceback，Supervisor 读取并输出该诊断。三组均独立确认进程、端口、端点与锁完成清理。
+真实日志 sink 阻塞的已有回归通过，Worker 请求与心跳继续响应，最终退出没有等待该 sink 恢复。
 原始记录保存在本地任务目录
 `D:/work_space/.codex-temp/harmony-process-identity-20261123/`，不提交运行产物。
 

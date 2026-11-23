@@ -28,6 +28,17 @@ files:
 进程身份来自操作系统；HELLO 和持久记录携带待验证的声明，不能单独授予终止权限。
 HarmonyOS 的应用沙箱可能拒绝全局 `/proc/stat`，同时允许读取 `/proc/<pid>/stat`。
 
+## 后续开发与检视约束
+
+- 读取进程创建身份必须处理 HarmonyOS 沙箱拒绝访问 `/proc/stat` 的情况；不得新增无异常处理的
+  `psutil.Process(...).create_time()` 调用。
+- 归属、存活、重连和终止前的 PID 重用校验统一复用 `jiuwenswarm/common/process_identity.py`，
+  使用创建时间或 `/proc/<pid>/stat` 的 start ticks。两者单位必须分开，不得互相比大小，
+  不得用当前时间或 PID 单独代替身份。
+- 身份不可验证时保留未知状态或受控失败，不能静默放行。
+- 确实需要 wall-clock 时间的调用须显式处理 `psutil.Error`/`OSError`；修改相关路径时增加
+  `AccessDenied` 及回退不可用的行为回归。
+
 ## 数据与接口
 
 `read_process_identity(pid)` 优先读取 psutil 创建时间；失败时读取进程 stat 的第 22 字段。

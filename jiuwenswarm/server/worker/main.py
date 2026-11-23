@@ -8,9 +8,13 @@ import argparse
 import asyncio
 from collections.abc import Callable
 import logging
+import os
 from os import _exit as exit_process
+from pathlib import Path
 import signal
 import sys
+
+from jiuwenswarm.server.worker.diagnostics import write_worker_failure
 
 
 def _install_stop_handlers(loop: asyncio.AbstractEventLoop, task: asyncio.Task) -> Callable[[], None]:
@@ -61,10 +65,24 @@ def _install_stop_handlers(loop: asyncio.AbstractEventLoop, task: asyncio.Task) 
 async def _wait_for_worker(task: asyncio.Task) -> None:
     await task
 
-from jiuwenswarm.common.utils import (
-    configure_openjiuwen_core_logging,
-    configure_openjiuwen_runtime_logging,
-)
+
+def _configure_worker_diagnostic_logging() -> logging.FileHandler | None:
+    """Include ERROR records from Worker and asyncio loggers in diagnostics."""
+    target_value = os.environ.get("JIUWEN_WORKER_DIAGNOSTIC_PATH")
+    if not target_value:
+        return None
+    try:
+        target = Path(target_value)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.FileHandler(target, encoding="utf-8")
+    except (OSError, ValueError):
+        return None
+    handler.setLevel(logging.ERROR)
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s pid=%(process)d %(name)s: %(message)s"))
+    logging.getLogger().addHandler(handler)
+    # The package logger intentionally does not propagate to the root logger.
+    logging.getLogger("jiuwenswarm").addHandler(handler)
+    return handler
 
 
 def _activate_managed_external_cli_paths() -> None:
@@ -90,12 +108,26 @@ def _activate_managed_external_cli_paths() -> None:
 
 
 def main() -> None:
+    try:
+        _run_worker()
+    except Exception as exc:
+        write_worker_failure(exc)
+        raise
+
+
+def _run_worker() -> None:
+    from jiuwenswarm.common.utils import (
+        configure_openjiuwen_core_logging,
+        configure_openjiuwen_runtime_logging,
+    )
+
     # 日志引导：须先于任何可能创建 openjiwen logger 的导入执行。
     # 置于 main() 而非模块级：front/supervisor 进程也会 import 本模块，
     # 模块级调用会在导入期加载 openjiuwen，破坏 front 侧导入隔离契约。
     configure_openjiuwen_runtime_logging()
     configure_openjiuwen_core_logging()
     logging.basicConfig(level=logging.INFO)
+    _configure_worker_diagnostic_logging()
     from jiuwenswarm.common.background_logging import (
         enable_background_logging,
         stop_background_logging,
@@ -157,8 +189,12 @@ def main() -> None:
                 )
             )
             exit_code = 0
-        except StubExit:
+        except StubExit as exc:
+            write_worker_failure(exc)
             raise SystemExit(1) from None
+        except Exception as exc:
+            write_worker_failure(exc)
+            raise
         finally:
             if not stop_background_logging():
                 exit_process(exit_code)
@@ -182,6 +218,7 @@ def main() -> None:
         # A signal may arrive before serve_worker enters its cancellation guard.
         exit_code = 0
     except WorkerForceExit as exc:
+        write_worker_failure(exc)
         logging.getLogger(__name__).exception("[Worker] fatal exit with unfinished shutdown steps: %s", exc)
         # The parent owns stderr; file-only logging must not hide fatal diagnostics.
         if sys.stderr is not None:
@@ -197,6 +234,9 @@ def main() -> None:
         # A cancelled to_thread load may still own non-daemon executor threads.
         # SystemExit waits for those threads and can exceed the shared deadline.
         exit_process(1)
+    except Exception as exc:
+        write_worker_failure(exc)
+        raise
     finally:
         try:
             # Also drain SDK-owned tasks, async generators and the executor.

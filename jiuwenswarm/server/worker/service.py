@@ -87,7 +87,11 @@ async def serve_worker(socket_path: str, *, host: str, port: int,
                     instance=instance,
                     code_identity_value=worker_code_identity,
                 )
-            except (OSError, RuntimeError):
+            except (OSError, RuntimeError) as exc:
+                from jiuwenswarm.server.worker.diagnostics import write_worker_failure
+
+                write_worker_failure(exc, stage="HELLO")
+                logger.exception("[Worker] HELLO handshake failed pid=%s", os.getpid())
                 await _retire_session(holder, dispatcher)
                 await conn.close()
                 if session_source is not None and not session_source.reconnectable:

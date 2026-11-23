@@ -1,13 +1,15 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Leave native thread stacks before Supervisor times out a stalled Worker."""
+"""Persist Worker failures and native thread stacks before parent cleanup."""
 
 from __future__ import annotations
 
 import faulthandler
 import os
 import time
+import traceback
 from contextlib import AbstractContextManager, nullcontext
+from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.server.ipc.protocol import KIND_HEARTBEAT
@@ -16,6 +18,27 @@ from jiuwenswarm.server.worker.stall_context import BusinessTracker
 _STALL_DUMP_TIMEOUT = 25.0  # Before the Supervisor's 30-second health deadline.
 _enabled = False
 _last_arm = 0.0
+
+
+def write_worker_failure(exc: BaseException, *, stage: str = "worker", path: Path | None = None) -> None:
+    """Persist a failure before IPC closure lets the parent terminate the child.
+
+    Args:
+        exc: Original exception whose traceback must remain observable.
+        stage: Worker phase recorded alongside the PID.
+        path: Explicit target, otherwise use the Supervisor-provided path.
+    """
+    target_value = path or os.environ.get("JIUWEN_WORKER_DIAGNOSTIC_PATH")
+    if not target_value:
+        return
+    try:
+        target = Path(target_value)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("a", encoding="utf-8") as stream:
+            stream.write(f"[Worker] pid={os.getpid()} stage={stage} failure={type(exc).__name__}: {exc}\n")
+            traceback.print_exception(type(exc), exc, exc.__traceback__, file=stream)
+    except Exception:  # noqa: BLE001 - diagnostics must not replace the original failure
+        return
 
 
 def enable_worker_diagnostics() -> None:

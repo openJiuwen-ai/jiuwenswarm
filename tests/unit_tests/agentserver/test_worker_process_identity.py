@@ -43,12 +43,14 @@ def test_proc_ticks_parse_field_22_after_process_name(tmp_path, comm):
     assert identity.proc_start_ticks(123, proc_root=tmp_path) == 4242
 
 
-@pytest.mark.parametrize("content", ["", "123 python S", "123 (worker) S", "123 (worker) " + "0 " * 20])
+@pytest.mark.parametrize("content", [
+    b"", b"123 python S", b"123 (worker) S", b"123 (worker) " + b"0 " * 20, b"\xff",
+])
 def test_unreadable_or_malformed_proc_is_not_identity(tmp_path, content):
     assert identity.proc_start_ticks(123, proc_root=tmp_path) is None
     path = tmp_path / "123"
     path.mkdir()
-    (path / "stat").write_text(content, encoding="utf-8")
+    (path / "stat").write_bytes(content)
     assert identity.proc_start_ticks(123, proc_root=tmp_path) is None
 
 
@@ -125,8 +127,10 @@ def test_unreadable_optional_ticks_keep_comparable_timestamps(monkeypatch, restr
     {"process_created": 123.0},
     {"process_start_ticks": True},
     {"process_start_ticks": "4242"},
+    {"process_created": True},
     {"process_created": "4242"},
     {"process_created": float("nan")},
+    {"process_created": float("inf")},
 ])
 def test_hello_rejects_reused_or_malformed_process_identity(restricted_process, fields):
     restricted_process.create_time.side_effect = None
@@ -236,6 +240,25 @@ def test_booting_worker_observation_uses_ticks(monkeypatch, restricted_process):
     pending = shutdown._pending_workers(["worker"])
     assert pending["worker"] == [(restricted_process, "proc_start_ticks:4242")]
     assert shutdown._pending_worker_alive(pending["worker"])
+
+
+@pytest.mark.parametrize("phase", ["exited", "reused", "zombie", "unobservable"])
+def test_pending_worker_liveness_preserves_guard_order(monkeypatch, restricted_process, phase):
+    from jiuwenswarm.server.supervisor import shutdown
+
+    if phase == "exited":
+        restricted_process.is_running = lambda: False
+        monkeypatch.setattr(identity, "proc_start_ticks", Mock(side_effect=AssertionError("exited process")))
+        restricted_process.status = Mock(side_effect=AssertionError("exited process"))
+    elif phase == "reused":
+        monkeypatch.setattr(identity, "proc_start_ticks", lambda pid: 4243)
+        restricted_process.status = Mock(side_effect=AssertionError("reused process"))
+    elif phase == "zombie":
+        restricted_process.status = lambda: psutil.STATUS_ZOMBIE
+    else:
+        restricted_process.status = Mock(side_effect=psutil.AccessDenied(123))
+
+    assert shutdown._pending_worker_alive([(restricted_process, "proc_start_ticks:4242")]) is (phase == "unobservable")
 
 
 def test_group_owner_has_pid_reuse_protection_without_creation_time(monkeypatch, restricted_process):

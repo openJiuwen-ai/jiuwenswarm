@@ -11,6 +11,7 @@ import time
 import uuid
 from collections import OrderedDict, deque
 from dataclasses import dataclass
+from os import SEEK_END
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +70,7 @@ def _is_server_push(payload: dict[str, Any]) -> bool:
 _HEARTBEAT_INTERVAL = 10.0
 _HEARTBEAT_TIMEOUT = 30.0
 _HELLO_TIMEOUT = 10.0
+_MAX_WORKER_DIAGNOSTIC_BYTES = 16 * 1024
 _RECOVERY_BACKOFF_INITIAL = 30.0
 _RECOVERY_BACKOFF_MAX = 300.0
 _POST_READY_CRASH_WINDOW = 600.0
@@ -799,6 +801,25 @@ class RuntimeSupervisor:
         await self._stop_spawned_process()
         self._clear_attached_worker_identity()
 
+    @staticmethod
+    def _log_worker_startup_diagnostic(process: WorkerProcess | None) -> None:
+        """Report the failed owned launch without forwarding raw output streams."""
+        path = getattr(process, "diagnostic_path", None)
+        if not isinstance(path, (str, Path)):
+            return
+        if type(getattr(process, "pid", None)) is not int:
+            return
+        path = Path(path)
+        try:
+            with path.open("rb") as stream:
+                size = stream.seek(0, SEEK_END)
+                stream.seek(max(0, size - _MAX_WORKER_DIAGNOSTIC_BYTES))
+                detail = stream.read(_MAX_WORKER_DIAGNOSTIC_BYTES).decode("utf-8", errors="replace")
+        except OSError as exc:
+            logger.warning("[Supervisor] Worker startup diagnostic unavailable path=%s: %s", path, exc)
+            return
+        logger.warning("[Supervisor] Worker startup diagnostic path=%s\n%s", path, detail or "<empty>")
+
     async def _connect_resident(self) -> tuple[dict, Any, ProcessIdentity]:
         """Elect and validate a resident Worker while retaining the startup lock."""
         from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, deployment_scope
@@ -910,7 +931,7 @@ class RuntimeSupervisor:
                             self._fatal_reason = str(exc)
                             raise
                         break
-                    except (Exception, asyncio.CancelledError):
+                    except (Exception, asyncio.CancelledError) as exc:
                         self._conn = None
                         self._validated_conn = None
                         try:
@@ -920,7 +941,11 @@ class RuntimeSupervisor:
                             if process is not None:
                                 budget = (5.0 if self._stop_deadline is None else
                                           max(0.0, self._stop_deadline - time.monotonic()))
-                                await process.stop(timeout=budget)
+                                try:
+                                    await process.stop(timeout=budget)
+                                finally:
+                                    if isinstance(exc, Exception):
+                                        self._log_worker_startup_diagnostic(process)
                                 if (self._process is process
                                         and (process.pid is None or process.returncode is not None)):
                                     self._process = None
@@ -957,11 +982,15 @@ class RuntimeSupervisor:
                     )
                 self._conn = accepted.result()
                 return process.launch_identity
-            except BaseException:
+            except BaseException as exc:
                 if self._conn is not None:
                     await self._conn.close()
                     self._conn = None
-                await self._stop_spawned_process()
+                try:
+                    await self._stop_spawned_process()
+                finally:
+                    if isinstance(exc, Exception):
+                        self._log_worker_startup_diagnostic(process)
                 raise
             finally:
                 for task in tasks:
@@ -1014,12 +1043,17 @@ class RuntimeSupervisor:
                     raise RuntimeError(f"attached Worker HELLO pid={pid} process identity failed: {exc}") from exc
                 if self._stopping or self._terminating:
                     raise RuntimeError("Worker startup cancelled by supervisor stop")
-            except BaseException:
+            except BaseException as exc:
+                failed_process = self._process
                 self._conn = None
                 try:
                     await conn.close()
                 finally:
-                    await self._stop_spawned_process()
+                    try:
+                        await self._stop_spawned_process()
+                    finally:
+                        if isinstance(exc, Exception):
+                            self._log_worker_startup_diagnostic(failed_process)
                 raise
         else:
             hello, validated_process, validated_created = await self._connect_resident()
