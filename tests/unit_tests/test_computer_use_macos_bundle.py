@@ -18,13 +18,15 @@ def test_macos_bundle_path_is_relative_to_the_sdk_root(tmp_path, monkeypatch, ab
     monkeypatch.chdir(tmp_path)
     module = runpy.run_path(str(Path(__file__).resolve().parents[2] / "scripts/build_computer_use.py"))
     bundle = Path("os_adapter/macos/.build/Jiuwen CUA.app")
+    sdk = tmp_path / "sdk"
 
     def native_driver(*, platform, root):
+        assert root == sdk.resolve()
         executable = bundle / "Contents/MacOS/computer-use-driver"
         return {"command": str(root.resolve() / executable if absolute else executable)}
 
     monkeypatch.setattr(paths, "native_driver", native_driver)
-    assert module["macos_bundle_relative_path"]() == bundle
+    assert module["macos_bundle_relative_path"](sdk) == bundle
 
 
 @pytest.mark.skipif(os.name != "posix", reason="macOS signing uses a POSIX shell")
@@ -54,7 +56,7 @@ def test_macos_signing_requires_the_embedded_driver(tmp_path, embedded):
 def test_macos_driver_is_staged_for_restoration_as_a_whole_app(tmp_path, monkeypatch):
     root = Path(__file__).resolve().parents[2]
     module = runpy.run_path(str(root / "scripts/build_computer_use.py"))
-    relative = Path("os_adapter/macos/.build/Jiuwen CUA.app")
+    relative = Path("os_adapter/macos/.build/Test Driver.app")
     sdk_root = tmp_path / "sdk"
     executable = relative / "Contents/MacOS/computer-use-driver"
     driver = sdk_root / executable
@@ -70,11 +72,16 @@ def test_macos_driver_is_staged_for_restoration_as_a_whole_app(tmp_path, monkeyp
 
     project = tmp_path / "project"
     entries = module["bundle_data"](project)
-    assert not any("Jiuwen CUA.app" in target for _, target in entries)
+    assert not any(relative.name in target for _, target in entries)
     assert {Path(source).name for source, _ in entries} == {"cursor.svg", "manifest.json"}
     manifest = project / "build/computer-use/resources/manifest.json"
     assert executable.as_posix() in json.loads(manifest.read_bytes())
 
+    def native_driver(*, platform, root):
+        assert platform == "darwin" and root == manifest.parent.resolve()
+        return {"command": str(root / executable)}
+
+    monkeypatch.setattr(paths, "native_driver", native_driver)
     collection = tmp_path / "collected"
     bundle = tmp_path / "JiuwenSwarm.app"
 

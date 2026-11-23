@@ -62,19 +62,20 @@ def bundle_data(project_root: Path) -> list[tuple[str, str]]:
     ]
 
 
-def macos_bundle_relative_path() -> Path:
+def macos_bundle_relative_path(root: Path) -> Path:
     """Return the macOS app path relative to the SDK resource root."""
     from computer_use.paths import native_driver
 
-    root = Path(".").resolve()
+    root = root.resolve()
     executable = Path(native_driver(platform="darwin", root=root)["command"])
-    return executable.resolve().relative_to(root).parents[2]
+    return (root / executable).resolve().relative_to(root).parents[2]
 
 
 def finalize_macos_bundle(project_root: Path, collection_root: Path, app_bundle: Path) -> None:
     """Preserve the signed helper bundle after PyInstaller resource relocation."""
-    relative = macos_bundle_relative_path()
-    source = project_root / "build/computer-use/resources" / relative
+    stage = project_root / "build/computer-use/resources"
+    relative = macos_bundle_relative_path(stage)
+    source = stage / relative
     for runtime_root in (collection_root, app_bundle / "Contents/Resources"):
         destination = runtime_root / RESOURCE_DESTINATION / relative
         if destination.is_symlink():
@@ -87,4 +88,5 @@ def finalize_macos_bundle(project_root: Path, collection_root: Path, app_bundle:
 
 
 if __name__ == "__main__":
-    print(macos_bundle_relative_path().name)
+    stage = Path(__file__).resolve().parents[1] / "build/computer-use/resources"
+    sys.stdout.write(f"{macos_bundle_relative_path(stage).name}\n")

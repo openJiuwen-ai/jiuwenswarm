@@ -21,6 +21,7 @@ from .rails.cua_extension_rail import CuaExtensionRail
 
 _LOG = logging.getLogger(__name__)
 COMPUTER_USE_FACTORY_NAME = "jiuwenswarm.computer_use"
+_FACTORY_HOOK_MARKER = "_jiuwenswarm_computer_use"
 
 
 def build_cua_agent_config(
@@ -117,22 +118,26 @@ def _create_cua_agent(parent, spec: SubAgentConfig, subsession_id: str):
     agent.add_rail(CuaProgressRail(""))
     agent.add_rail(MultimodalContextSummarizerRail(spec.factory_kwargs["cua_snapshot_keep_last_k"]))
     agent.register_task_resource_cleanup(agent.close)
-    return parent._bind_inherited_artifact_root(agent)
+    # The pinned core exposes artifact inheritance only through this factory hook.
+    return parent._bind_inherited_artifact_root(agent)  # pylint: disable=protected-access
 
 
 def _install_cua_subagent_factory() -> None:
     # The pinned DeepAgent resolves its built-in runtime factories internally.
     original = DeepAgent.create_subagent
-    if getattr(original, "_jiuwenswarm_computer_use", False):
+    if getattr(original, _FACTORY_HOOK_MARKER, False):
         return
 
     @wraps(original)
     def create_subagent(parent, subagent_type, subsession_id, browser_capabilities=None):
-        if subagent_type == "cua_agent":
-            spec = parent._find_subagent_spec(subagent_type)
-            if isinstance(spec, SubAgentConfig) and spec.factory_name == COMPUTER_USE_FACTORY_NAME:
-                return _create_cua_agent(parent, spec, subsession_id)
+        if subagent_type == "cua_agent" and parent.deep_config is not None:
+            for spec in parent.deep_config.subagents or ():
+                card = spec.agent_card if isinstance(spec, SubAgentConfig) else getattr(spec, "card", None)
+                if getattr(card, "name", None) == subagent_type:
+                    if isinstance(spec, SubAgentConfig) and spec.factory_name == COMPUTER_USE_FACTORY_NAME:
+                        return _create_cua_agent(parent, spec, subsession_id)
+                    break
         return original(parent, subagent_type, subsession_id, browser_capabilities)
 
-    create_subagent._jiuwenswarm_computer_use = True
+    setattr(create_subagent, _FACTORY_HOOK_MARKER, True)
     DeepAgent.create_subagent = create_subagent

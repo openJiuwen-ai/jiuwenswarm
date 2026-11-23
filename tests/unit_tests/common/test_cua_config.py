@@ -143,6 +143,11 @@ def test_frozen_backend_uses_external_resource_layout(tmp_path, monkeypatch, sys
     monkeypatch.setattr(cua_config.sys, "_MEIPASS", str(tmp_path), raising=False)
     monkeypatch.setattr(cua_config.platform, "mac_ver", lambda: ("14.0", (), ""))
     monkeypatch.setattr(cua_config.importlib.util, "find_spec", lambda name: object())
+    if system == "darwin":
+        from computer_use import paths
+
+        prepare = Mock(side_effect=AssertionError("The settings probe must not prepare SDK resources"))
+        monkeypatch.setattr(paths, "repository_root", prepare)
     assert not cua_config.is_cua_repl_available()
     root = tmp_path / "computer_use/_resources/os_adapter"
     files = (["macos/.build/Jiuwen CUA.app/Contents/MacOS/computer-use-driver"] if system == "darwin"
@@ -160,6 +165,8 @@ def test_frozen_backend_uses_external_resource_layout(tmp_path, monkeypatch, sys
     monkeypatch.setattr(cua_config.importlib.util, "find_spec", lambda name: object())
     path.unlink()
     assert not cua_config.is_cua_repl_available()
+    if system == "darwin":
+        prepare.assert_not_called()
 
 
 @pytest.mark.parametrize("result", [None, {}, {"command": None}, AttributeError("SDK probe failed")])

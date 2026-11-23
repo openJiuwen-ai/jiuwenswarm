@@ -48,7 +48,8 @@ def cua_repl_unavailable_reason() -> str:
             return "unsupported_platform"
         if sys.platform == "darwin" and int(platform.mac_ver()[0].split(".")[0]) < 14:
             return "unsupported_platform"
-        if any(importlib.util.find_spec(name) is None for name in ("computer_use", "computer_use_mcp", "computer_use_agent")):
+        sdk_modules = ("computer_use", "computer_use_mcp", "computer_use_agent")
+        if any(importlib.util.find_spec(name) is None for name in sdk_modules):
             return "backend_missing"
         if not getattr(sys, "frozen", False):
             if importlib.util.find_spec("computer_use_native_tools") is None:
@@ -63,6 +64,7 @@ def cua_repl_unavailable_reason() -> str:
         if sys.platform == "darwin":
             from computer_use.paths import native_driver
 
+            # The explicit root makes this a path lookup without materializing SDK resources.
             driver = Path(native_driver(platform="darwin", root=root)["command"])
             available = driver.is_file() and os.access(driver, os.X_OK)
         else:
