@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -71,6 +72,14 @@ _DISK_ONLY_EVOLUTION_METHODS: frozenset[str] = frozenset(
 
 def _normalize_channel_id(channel_id: str | None) -> str:
     return str(channel_id or "default").strip() or "default"
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name, "")
+    try:
+        return int(raw) if raw.strip() else default
+    except ValueError:
+        return default
 
 
 def _session_id_prefix_for_channel(channel_id: str | None) -> str:
@@ -332,8 +341,15 @@ class AgentManager:
         # _evict_lru_session_agents_if_over_cap).  Keyed by id(agent).
         self._agent_last_used: dict[int, float] = {}
         self._session_agent_max_live = _session_agent_max_live_default()
-        self._pending_tui_retirements: set[int] = set()
+        self._pending_idle_retirements: set[int] = set()
         self._retirement_tasks: dict[int, asyncio.Task] = {}
+        # 周期清扫逐项目根缓存(issue#6787):会话 adapter 由 TTL 逐出时没有
+        # 管理器参与的退出路径,Web 逐会话项目根会无限累积直至 OOM。默认
+        # 60s 扫一次,仅回收"无会话运行时/无在途借用/无后台 pin"的空闲根。
+        self._idle_root_sweep_interval = _env_int(
+            "JIUWENSWARM_AGENT_IDLE_ROOT_SWEEP_INTERVAL", 60
+        )
+        self._idle_root_sweep_task: asyncio.Task | None = None
         self._agent_create_locks: WeakValueDictionary[
             tuple[str, str], asyncio.Lock
         ] = WeakValueDictionary()
@@ -458,7 +474,7 @@ class AgentManager:
         if borrowers:
             return
         self._agent_borrowers.pop(agent_id, None)
-        self._schedule_pending_tui_retirement(agent_id)
+        self._schedule_pending_idle_retirement(agent_id)
 
     def pin_agent(self, agent: "JiuWenSwarm") -> None:
         """Keep a cached agent alive for a persistent background owner."""
@@ -473,7 +489,7 @@ class AgentManager:
             self._agent_pins[agent_id] = remaining
             return
         self._agent_pins.pop(agent_id, None)
-        self._schedule_pending_tui_retirement(agent_id)
+        self._schedule_pending_idle_retirement(agent_id)
 
     def _has_agent_borrowers(
         self,
@@ -492,8 +508,8 @@ class AgentManager:
             self._agent_borrowers.pop(agent_id, None)
         return any(task is not exclude for task in live)
 
-    def _schedule_pending_tui_retirement(self, agent_id: int) -> None:
-        if agent_id not in self._pending_tui_retirements:
+    def _schedule_pending_idle_retirement(self, agent_id: int) -> None:
+        if agent_id not in self._pending_idle_retirements:
             return
         if agent_id in self._agent_pins or self._agent_borrowers.get(agent_id):
             return
@@ -502,7 +518,7 @@ class AgentManager:
             return
         try:
             task = asyncio.create_task(
-                self._retire_pending_tui_agent(agent_id)
+                self._retire_pending_idle_agent(agent_id)
             )
         except RuntimeError:
             return
@@ -526,45 +542,48 @@ class AgentManager:
             pass
         except Exception:
             logger.exception(
-                "[AgentManager] deferred TUI root retirement failed: agent_id=%s",
+                "[AgentManager] deferred idle root retirement failed: agent_id=%s",
                 agent_id,
             )
 
-    async def _retire_pending_tui_agent(self, agent_id: int) -> None:
-        channel_agents = self.agents.get("tui")
-        if not isinstance(channel_agents, dict):
-            self._pending_tui_retirements.discard(agent_id)
-            return
-        for cache_key, agent in list(channel_agents.items()):
-            if id(agent) != agent_id:
+    async def _retire_pending_idle_agent(self, agent_id: int) -> None:
+        for channel_key, channel_agents in list(self.agents.items()):
+            if not isinstance(channel_agents, dict):
                 continue
-            await self._retire_tui_agent_if_idle(
-                cache_key,
-                agent,
-                channel_agents,
-            )
-            return
-        self._pending_tui_retirements.discard(agent_id)
+            for cache_key, agent in list(channel_agents.items()):
+                if id(agent) != agent_id:
+                    continue
+                await self._retire_idle_root_agent(
+                    channel_key,
+                    cache_key,
+                    agent,
+                    channel_agents,
+                )
+                return
+        self._pending_idle_retirements.discard(agent_id)
 
-    async def _retire_tui_agent_if_idle(
+    async def _retire_idle_root_agent(
         self,
+        channel_key: str,
         cache_key: str,
         agent: "JiuWenSwarm",
         channel_agents: dict[str, "JiuWenSwarm"],
         *,
         exclude_borrower: asyncio.Task | None = None,
     ) -> bool:
-        create_lock = self._get_agent_create_lock("tui", cache_key)
+        create_lock = self._get_agent_create_lock(channel_key, cache_key)
         async with create_lock:
-            return await self._retire_tui_agent_if_idle_locked(
+            return await self._retire_idle_root_agent_locked(
+                channel_key,
                 cache_key,
                 agent,
                 channel_agents,
                 exclude_borrower=exclude_borrower,
             )
 
-    async def _retire_tui_agent_if_idle_locked(
+    async def _retire_idle_root_agent_locked(
         self,
+        channel_key: str,
         cache_key: str,
         agent: "JiuWenSwarm",
         channel_agents: dict[str, "JiuWenSwarm"],
@@ -576,7 +595,7 @@ class AgentManager:
             self._agent_pins.get(agent_id, 0) > 0
             or self._has_agent_borrowers(agent, exclude=exclude_borrower)
         ):
-            self._pending_tui_retirements.add(agent_id)
+            self._pending_idle_retirements.add(agent_id)
             return False
 
         has_runtime = getattr(agent, "has_session_runtime", None)
@@ -584,7 +603,7 @@ class AgentManager:
             return False
         try:
             if bool(has_runtime()):
-                self._pending_tui_retirements.discard(agent_id)
+                self._pending_idle_retirements.discard(agent_id)
                 return False
         except Exception:
             logger.exception(
@@ -593,30 +612,32 @@ class AgentManager:
             )
             raise
         if channel_agents.get(cache_key) is not agent:
-            self._pending_tui_retirements.discard(agent_id)
+            self._pending_idle_retirements.discard(agent_id)
             return False
 
         # Detach before awaiting cleanup so a new request creates a fresh
         # root rather than receiving one that is being torn down.
         channel_agents.pop(cache_key, None)
-        channel_params = self._agent_create_params.get("tui")
+        channel_params = self._agent_create_params.get(channel_key)
         create_params = None
         if isinstance(channel_params, dict):
             create_params = channel_params.pop(cache_key, None)
         self._agent_last_used.pop(agent_id, None)
-        self._pending_tui_retirements.discard(agent_id)
+        self._pending_idle_retirements.discard(agent_id)
         try:
             await agent.cleanup()
         except Exception:
             logger.exception(
-                "[AgentManager] idle TUI root agent cleanup failed: cache_key=%s",
+                "[AgentManager] idle root agent cleanup failed: "
+                "channel_id=%s cache_key=%s",
+                channel_key,
                 cache_key,
             )
-            restored_agents = self.agents.setdefault("tui", channel_agents)
+            restored_agents = self.agents.setdefault(channel_key, channel_agents)
             if cache_key not in restored_agents:
                 restored_agents[cache_key] = agent
                 if create_params is not None:
-                    self._agent_create_params.setdefault("tui", {})[
+                    self._agent_create_params.setdefault(channel_key, {})[
                         cache_key
                     ] = create_params
                 # 与另两处回插（LRU 驱逐、cleanup_session_runtime）一致：
@@ -625,14 +646,91 @@ class AgentManager:
             raise
         else:
             logger.info(
-                "[AgentManager] idle TUI root agent removed: cache_key=%s",
+                "[AgentManager] idle root agent removed: channel_id=%s cache_key=%s",
+                channel_key,
                 cache_key,
             )
-        if not channel_agents and self.agents.get("tui") is channel_agents:
-            self.agents.pop("tui", None)
+        if not channel_agents and self.agents.get(channel_key) is channel_agents:
+            self.agents.pop(channel_key, None)
         if isinstance(channel_params, dict) and not channel_params:
-            self._agent_create_params.pop("tui", None)
+            self._agent_create_params.pop(channel_key, None)
         return True
+
+    def _ensure_idle_root_sweep_started(self) -> None:
+        """Lazily start the periodic per-project idle-root sweep (issue#6787)."""
+        if self._idle_root_sweep_interval <= 0:
+            return
+        task = self._idle_root_sweep_task
+        if task is not None and not task.done():
+            return
+        try:
+            # 空上下文创建(CR-10670-02):create_task 拷贝当前上下文,而本方法
+            # 由 _create_agent 在请求处理上下文内调用(租户 env overlay 等
+            # ContextVar 已绑定)。后台清扫不得继承这些请求级快照——所有
+            # ContextVar 读值回落默认,与 session_manager 的 copy_context
+            # 显式管理上下文同一原则。
+            self._idle_root_sweep_task = contextvars.Context().run(
+                asyncio.create_task,
+                self._idle_root_sweep_loop(),
+                name="agent-idle-root-sweep",
+            )
+        except RuntimeError:
+            # No running loop (sync construction); retry on next creation.
+            self._idle_root_sweep_task = None
+
+    async def _idle_root_sweep_loop(self) -> None:
+        # CancelledError 属 BaseException,不会被 except Exception 吞掉,
+        # 取消(cleanup)自然传播终止循环,无需显式捕获重抛(G.ERR.13)。
+        while True:
+            await asyncio.sleep(self._idle_root_sweep_interval)
+            try:
+                retired = await self._sweep_idle_project_roots()
+                if retired:
+                    logger.info(
+                        "[AgentManager] idle root sweep retired %d project root(s)",
+                        retired,
+                    )
+            except Exception:
+                logger.exception(
+                    "[AgentManager] idle root sweep failed"
+                )
+
+    async def _sweep_idle_project_roots(self) -> int:
+        """Retire fully idle per-project cached roots across all channels.
+
+        Only cache keys that carry an explicit ``project_dir`` are candidates:
+        shared no-project keys (``agent::``) are one per mode/channel and must
+        stay warm; per-project roots recreate on demand from disk history.
+        """
+        retired = 0
+        for channel_key, channel_agents in list(self.agents.items()):
+            if not isinstance(channel_agents, dict):
+                continue
+            for cache_key, agent in list(channel_agents.items()):
+                if not getattr(agent, "_jiuwenswarm_agent_project_dir", ""):
+                    continue
+                try:
+                    # 先触发该根自己的空闲 adapter TTL 逐出(规则由 adapter
+                    # 所有):无后续流量的根也能让过期会话运行时落地释放,
+                    # 否则 has_session_runtime 永真、根永远视为忙。
+                    evict_fn = getattr(agent, "evict_idle_session_adapters", None)
+                    if callable(evict_fn):
+                        await evict_fn()
+                    if await self._retire_idle_root_agent(
+                        channel_key,
+                        cache_key,
+                        agent,
+                        channel_agents,
+                    ):
+                        retired += 1
+                except Exception:
+                    logger.exception(
+                        "[AgentManager] idle root sweep retire failed: "
+                        "channel_id=%s cache_key=%s",
+                        channel_key,
+                        cache_key,
+                    )
+        return retired
 
 
     @staticmethod
@@ -751,6 +849,8 @@ class AgentManager:
             setattr(agent, "_jiuwenswarm_agent_sub_mode", sub_mode_key)
             setattr(agent, "_jiuwenswarm_agent_project_dir", project_dir)
             self.agents.setdefault(channel_key, {})[agent_cache_key] = agent
+            # 首个根创建后再启动周期清扫(懒启动,避免无 agent 时空转)。
+            self._ensure_idle_root_sweep_started()
             # 记录创建参数, recreate_agent() 时可原样复用
             self._agent_create_params.setdefault(channel_key, {})[agent_cache_key] = {
                 "mode": mode_key,
@@ -947,7 +1047,10 @@ class AgentManager:
         ``cleanup_session_runtime(session_id)``. For ``tui`` channel agents that
         become idle after cleanup (no pins, no borrowers, no remaining session
         runtime), the cached root agent itself is retired so short-lived TUI
-        processes do not accumulate one root per project.
+        processes do not accumulate one root per project. For other channels
+        (e.g. ``web``) the same idle retirement applies to roots bound to an
+        explicit ``project_dir`` (issue#6787: one root per per-session project
+        otherwise accumulates without bound); shared no-project keys stay warm.
 
         Returns:
             ``True`` if at least one agent reported cleanup, ``False`` when the
@@ -1041,10 +1144,19 @@ class AgentManager:
                         )
                     continue
 
-            if channel_key != "tui":
+            # 会话运行时已清空的根实例若不再承载其它会话则退役:
+            # - tui: 沿用既有行为(短生命周期 TUI 进程根全部回收);
+            # - 其它通道(web 等): 仅回收带显式 project_dir 的逐项目根
+            #   (issue#6787: Web 逐会话项目根会随会话数无限累积直至 OOM);
+            #   共享无项目键(如 ``agent::``)每 mode 仅一条,保持常驻。
+            #   (无项目逐会话 ``:session:`` 键由上方分支与 LRU 上限管理。)
+            if channel_key != "tui" and not getattr(
+                agent, "_jiuwenswarm_agent_project_dir", ""
+            ):
                 continue
             try:
-                await self._retire_tui_agent_if_idle(
+                await self._retire_idle_root_agent(
+                    channel_key,
                     cache_key,
                     agent,
                     channel_agents,
@@ -2363,6 +2475,22 @@ class AgentManager:
     async def cleanup(self) -> None:
         """清理所有 agent 实例."""
         await self.warm_pool.close()
+        # 先取消并**等待**清扫任务退出(CR-10670-01):cancel() 不是同步抢占,
+        # 若清扫正挂在 agent.cleanup() 上,不等待就继续清理 self.agents 会与
+        # 清扫并发二次 cleanup 同一实例;句柄置 None 防止后续误判重启。
+        sweep_task = self._idle_root_sweep_task
+        self._idle_root_sweep_task = None
+        if sweep_task is not None and not sweep_task.done():
+            sweep_task.cancel()
+            try:
+                await sweep_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.warning(
+                    "[AgentManager] idle root sweep task teardown failed",
+                    exc_info=True,
+                )
         retirement_tasks = [
             task
             for task in self._retirement_tasks.values()
@@ -2383,7 +2511,7 @@ class AgentManager:
         self._session_create_tokens.clear()
         self._agent_borrowers.clear()
         self._agent_pins.clear()
-        self._pending_tui_retirements.clear()
+        self._pending_idle_retirements.clear()
         self._retirement_tasks.clear()
         self._agent_create_locks.clear()
         logger.info("[AgentManager] All agents cleaned up")

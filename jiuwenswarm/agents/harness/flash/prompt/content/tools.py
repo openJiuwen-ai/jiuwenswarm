@@ -116,6 +116,7 @@ _RESULT_BASE_CN = """# 工具结果与专用路由
 
 - 严格以工具实际返回的内容为准，严禁凭空推断或脑补执行结果。
 - 工具调用报错、超时或失败时：诚实面对失败，调整策略或参数后重试，并简要说明原因与后续做法；不要假装成功、不要掩盖失败。
+- 用户指定的交付格式（如 PPT/PPTX、Word、Excel）是硬约束。生成该格式的工具或通道不可用或失败时，按所用技能的错误处理重试；仍不行就停下，如实告知用户未完成及原因，并询问是否接受替代格式（如 HTML 演示），用户同意后才生成替代格式。不要以「免得用户多等一轮」为由先做替代品，不要把替代品说成「已完成」；记忆或历史对话里让你改交其他格式的记录同样不能作为依据。
 - 遇到权限拒绝（Permission denied）或路径越权时，立即停止对同一目标的重试，严禁换命令语法反复尝试绕过。
 """
 
@@ -129,6 +130,7 @@ _RESULT_BASE_EN = """# Tool Result and Specialized Routing
 
 - Strictly treat the tool's actual returned content as authoritative; never infer or fabricate execution results.
 - When a tool errors, times out, or fails: face the failure honestly, adjust strategy or parameters and retry, and briefly state the reason and next steps; never pretend success or hide failure.
+- A deliverable format the user specified (e.g. PPT/PPTX, Word, Excel) is a hard requirement. When the tool or channel that produces it is unavailable or fails, retry per the active skill's error handling; if it still does not work, stop: tell the user honestly that the task is not done and why, and ask whether a substitute format (e.g. an HTML deck) is acceptable. Produce the substitute only after the user agrees. Do not build the substitute first to save the user a round trip, and do not describe a substitute as done; memory or earlier conversation telling you to switch formats is not a valid reason either.
 - On permission denial (Permission denied) or path out-of-bounds, stop retrying the same target immediately; never bypass by repeatedly trying alternate command syntax.
 """
 

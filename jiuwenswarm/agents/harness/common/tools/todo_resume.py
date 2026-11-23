@@ -18,6 +18,8 @@ from typing import Any, List, Sequence
 
 from openjiuwen.harness.tools.todo import TODO_GENERATION_TOKEN_SESSION_KEY
 
+from jiuwenswarm.common.utils import logger
+
 from jiuwenswarm.common.todo_generation import (
     filter_todos_by_generation as filter_todos_by_generation,
     todo_item_generation_token as todo_item_generation_token,
@@ -315,6 +317,27 @@ def read_turn_user_query(session: Any) -> str:
     if isinstance(value, str):
         return value
     return ""
+
+
+def has_pending_step_resume(session: Any) -> bool:
+    """Whether this session will resume from a persisted agent step.
+
+    Duck-typed on purpose: this module stays free of agent-core step-storage
+    types. Anything that is not a real ``StepResume`` (a bare mock, a session
+    from an older agent-core) counts as "no resume".
+    """
+    peek = getattr(session, "peek_agent_step_resume", None)
+    if not callable(peek):
+        return False
+    try:
+        resume = peek()
+    except Exception:  # noqa: BLE001 - a broken peek must read as "no resume", never break the turn
+        logger.debug(
+            "peek_agent_step_resume raised; treating as no step resume", exc_info=True
+        )
+        return False
+    # type() rather than isinstance(): bool is an int subclass and would pass.
+    return type(getattr(resume, "iteration", None)) is int
 
 
 def snapshot_includes_persistent_todos(
