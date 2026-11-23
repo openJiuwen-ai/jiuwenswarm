@@ -86,13 +86,13 @@ sequenceDiagram
 
 ### 4.2 已安装包
 
-`manager.load_installed()` 委托 Core 从根目录完整发现、选版和稳定排序，再选择 `agentserver` 的包加载。共享报告和 domain 规则见 [F_32](F_32_domain-install-report.md)。单包失败不阻断独立包。
+`manager.load_installed()` 在本进程首次调用时截取安装目录快照，委托 Core 在快照内选版和稳定排序，再选择 `agentserver` 的包加载；同一进程不再次扫描。共享报告和 domain 规则见 [F_32](F_32_domain-install-report.md)。单包失败不阻断独立包。
 
 ### 4.3 新包来源
 
 启动只加载 `config.yaml` 中 `extensions.install_dir` 指定的安装目录，默认是
 `~/.jiuwenswarm/extension_pkgs`；不扫描源码中的 `examples/`，也不从中复制或补装包。
-新包通过 `/extension install` 或对应管理请求传入 ZIP 文件。已有安装副本由启动加载和热重载复用。
+新包通过 `/extension install` 或对应管理请求传入 ZIP 文件。已有安装副本由启动加载和热重载复用。程序运行期间直接放入安装目录的副本，要到下次启动、还原后的重启或显式安装时才会被接纳。
 
 ## 5. 失败与停机
 

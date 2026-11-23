@@ -16,6 +16,7 @@ from jiuwenswarm.extensions_v2.event_types.context_usage import (
     register_context_usage_events,
 )
 from jiuwenswarm.extensions_v2.management import ExtensionManager
+from tests.unit_tests.extensions_v2.core_compat import requires_rooted_startup
 from tests.unit_tests.extensions_v2.management.support import make_bus
 
 PACKAGE_ID = "example.state-probe"
@@ -103,6 +104,7 @@ async def _trigger(bus, session_id: str) -> None:
     assert result.accepted
 
 
+@requires_rooted_startup
 async def test_zip_state_survives_restart_and_uninstall_deletes(tmp_path) -> None:
     manager, bus = await _manager(tmp_path)
     assert (await manager.install([_archive(tmp_path)]))[0].status == "SUCCESS"

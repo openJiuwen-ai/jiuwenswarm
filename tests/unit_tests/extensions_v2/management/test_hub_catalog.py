@@ -10,6 +10,7 @@ import pytest
 
 from jiuwenswarm.extensions_v2.management import hub_catalog
 from jiuwenswarm.extensions_v2.management.catalog import (
+    PackageNotFound,
     build_state_index,
     entry_from_root,
     find_entry,
@@ -147,6 +148,18 @@ def test_find_entry_uses_the_installed_version_when_a_preset_exists(tmp_path: Pa
     entry = find_entry("webui.demo", examples, state, install_dir=tmp_path / "installed")
 
     assert entry.version == "1.0.1"
+
+
+def test_find_entry_does_not_discover_an_unaccepted_store_copy(tmp_path: Path) -> None:
+    installed = write_package(tmp_path / "installed", package_id="webui.late")
+
+    with pytest.raises(PackageNotFound):
+        find_entry(
+            "webui.late",
+            tmp_path / "examples",
+            SimpleNamespace(active=[], installed=[]),
+            install_dir=installed.parent,
+        )
 
 
 def test_install_state_prefers_the_active_record(tmp_path: Path) -> None:

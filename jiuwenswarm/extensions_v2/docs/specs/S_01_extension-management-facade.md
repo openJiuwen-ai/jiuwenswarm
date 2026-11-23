@@ -39,6 +39,7 @@
 | --- | --- |
 | 生效 | Handler 已写入 EventBus，且 `Runtime` 存在 `ActivePackageRecord` |
 | 安装副本 | `<install_dir>/<package_id>/<version>/` 下的包目录 |
+| 已接纳副本 | 本进程启动快照中的副本，或本进程通过显式安装成功接纳的副本 |
 | generation | 同一包每次成功安装或重载递增的序号 |
 | 未生效副本 | 安装目录中存在、但 `Runtime` 没有生效记录的包 |
 | 禁用副本 | 安装目录中存在且 `manifest.json.enable` 为 `false` 的系统插件；不登记 Handler |
@@ -51,6 +52,7 @@
 4. 启动激活对每个 `package_id` 最多选择一个版本。
 5. 卸载成功或停机完成后，该包 Handler 不再对新调用可见。
 6. 停机不删除安装目录。
+7. 每个进程只截取一次启动快照；启动后直接写入安装目录的新副本不进入查询、启停、重载或卸载，直到下次启动、还原重启或显式安装。
 
 ## 4. 数据类型
 
@@ -71,7 +73,7 @@
 | 字段 | 类型 | 含义 |
 | --- | --- | --- |
 | `active` | `tuple[ActivePackageRecord, ...]` | 当前生效包 |
-| `installed` | `tuple[Path, ...]` | 安装目录中的版本目录 |
+| `installed` | `tuple[Path, ...]` | 当前进程已接纳的版本目录 |
 | `inflight` | `dict[str, int]` | 每个生效包的在途调用数 |
 | `published` | `dict[str, tuple[HandlerId, ...]]` | 每个生效包登记的 Handler id |
 | `packages` | `tuple[PackageInstallState, ...]` | 共享报告中经过存活判断的包状态 |
@@ -148,10 +150,11 @@ async def install(paths: Sequence[Path]) -> list[ActivationReport]
 async def load_installed() -> list[ActivationReport]
 ```
 
-- 只委托 Core.load_installed；Core 从安装根目录完整发现，选择最高合法版本、检查依赖环并稳定排序，最后选择 `agentserver` 的包。
+- 首次调用截取安装根目录快照并委托 `Core.load_installed(roots)`；Core 只在该快照中选择最高合法版本、检查依赖环并稳定排序，最后选择 `agentserver` 的包。后续调用直接返回空列表，不重新扫描目录。
 - 已在本地生效的包跳过；非法声明返回失败报告，独立包继续。全部队列为空时返回空列表。
 - 同 ID 跨域拒绝；另一域依赖未就绪时按配置等待。
 - 禁用副本保留在安装目录中，不参与启动激活。
+- 显式安装成功后把对应版本加入当前进程的已接纳集合；查询、启停、重载和卸载只处理该集合。
 
 ### 5.5 卸载
 
