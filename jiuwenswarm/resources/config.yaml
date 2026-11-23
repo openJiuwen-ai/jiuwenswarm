@@ -178,6 +178,8 @@ memory:
       session_id: ""               # 记忆 session，原样透传；不自动绑定聊天会话，影子搜索跨 session
       agent_id: main_agent         # Work/Code/Team 共用；默认兼容旧 main_agent 记忆
       space: ""                    # 只认显式传入，不从 scope_id 猜测
+      experience_space: "own"  # 跟随上面的 space；也可指定独立经验空间，清空关闭
+      experience_capabilities: []  # Optional skill-sync allowlist; does not filter experience search
       identity_org: local          # http 模式认证身份 org（对齐 dev 认证器缺省）
       identity_user: developer     # http 模式认证身份 user
       session_end_extract: false   # Work uninit 时批量 EXTRACT；Code 不使用此项

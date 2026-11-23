@@ -82,7 +82,15 @@ When switching to the SDK with a Swarm-managed Markdown root, Swarm archives a l
 
 For a selected project, Swarm derives its memory coordinate from the directory name and a hash of the normalized absolute path. Local long-term memory uses `memory/<directory-name>-<path-hash>/MEMORY.md`. Omit the memory tool's `project` argument to use the current session's coordinate. Existing memory stored under a bare directory name remains accessible by explicitly selecting that legacy coordinate.
 
-JiuwenSwarm defaults to **built-in memory** (`memory.engine: builtin`), based on local Markdown files; switching to JiuwenMemory uses remote structured backends. The key difference is not "tool names" but **how memory is triggered**:
+New installs use the JiuwenMemory SDK for built-in memory. Set `memory.builtin.jiuwen.space` to your project space. With `experience_space: own`, derived experience uses that organization and space, and members with read access can search it. A named `experience_space` selects a separate space. Leaving the effective experience space empty disables experience. Clear the built-in provider to use native Markdown file memory.
+
+Experience search does not filter by `experience_capabilities`; procedural experience remains searchable when the list is empty. A nonempty list only filters skill synchronization. Reading experience does not change tool execution permissions.
+
+When SDK experience is enabled, Swarm passes an experience callback to Core’s existing `JiuwenMemoryRail` for Work and `JiuwenMemoryCodingRail` for single-agent Code. The same rail keeps ordinary recall and dialogue synchronization, and optionally captures and submits experience. Disabling experience leaves task-status tools and trajectory capture off; Swarm does not implement another experience state machine.
+
+Experience extraction uses the same SDK model configuration as ordinary memory extraction. Trajectory submission requires a Core version whose Memory Rails accept the experience callback. An older Core or SDK can still serve ordinary memory. Experience-enabled Work and Code Rails use an SDK runtime with the extraction profile enabled. Team and single-Agent Rails with experience disabled use the shared document runtime. Experience uses the configured SDK embedder or the SDK default.
+
+Swarm registers experience Dreaming with an eight-hour interval from the first registration. After it becomes due, the job triggers once when Swarm has no foreground work running. In the default document setup, the server persists the schedule in the local SQLite file `memory/experience/experience-dreaming.db` so it can resume after restart.
 
 - **Built-in memory**: No auto-trigger. The Agent must **actively call** `memory_*` tools (`memory_search` / `write_memory`, etc.) to read or write memory — nothing happens if it doesn't call them.
 - **JiuwenMemory**: Driven automatically by the **ExternalMemoryRail (memory rail)**. At the start of each turn it auto-retrieves relevant memory and injects it into context; at the end of each turn it auto-persists the turn — **not necessarily calling any tool**, all outside the Agent's view.

@@ -55,7 +55,7 @@ def memory_dependencies(monkeypatch):
     monkeypatch.setattr(rails, "JiuwenMemoryRail", JiuwenMemoryRail, raising=False)
     monkeypatch.setattr(rails, "JiuwenMemoryCodingRail", JiuwenMemoryCodingRail, raising=False)
     monkeypatch.setattr(rails, "JiuwenTeamMemoryRail", JiuwenTeamMemoryRail, raising=False)
-    monkeypatch.setattr(builder, "_build_security_provider", lambda org, user: object())
+    monkeypatch.setattr(builder, "_build_security_provider", lambda org, user, *, space="": object())
 
 
 def config():

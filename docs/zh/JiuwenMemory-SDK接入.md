@@ -82,7 +82,15 @@ Swarm 使用 JiuwenMemory 接入模式启动时不会预置 `MEMORY.md`。未选
 
 选中项目时，Swarm 用目录名和规范化绝对路径的哈希生成记忆项目坐标。本地长期记忆使用 `memory/<目录名>-<路径哈希>/MEMORY.md`。调用记忆工具时省略 `project` 参数即可使用当前会话的坐标。以前按目录名存放的记忆仍可通过显式指定旧坐标访问。
 
-JiuwenSwarm 默认用**内置记忆**（`memory.engine: builtin`），基于本地 Markdown 文件；切到 JiuwenMemory 则是远程结构化后端。两者最本质的差别不在"工具名"，而在**记忆如何被触发**：
+新安装默认在**内置记忆**（`memory.engine: builtin`）中启用 JiuwenMemory SDK。将 `memory.builtin.jiuwen.space` 设置为项目空间。默认的 `experience_space: own` 使提炼后的经验复用对应的组织和空间，有读取权限的项目成员可以搜索。显式指定经验空间名可使用独立空间，解析出的空间为空时关闭经验功能。清空 provider 可切回原生 Markdown 文件记忆。
+
+经验检索不受 `experience_capabilities` 限制；不配置清单也可以检索方法类经验。此清单非空时仅用于筛选同步的技能，读取经验不改变工具执行权限。
+
+SDK 经验已开启时，Swarm 向 Work 模式的 `JiuwenMemoryRail` 和单人 Code 模式的 `JiuwenMemoryCodingRail` 传入经验提交回调。两条 Rail 分别保留普通记忆检索与对话回写，并按需采集、提交经验。关闭经验时不注册任务状态工具、不采集轨迹。经验状态机不在 Swarm 重复实现。
+
+经验提炼与普通记忆提取使用同一套 SDK 模型配置。轨迹提交需要 Core 的 Memory Rail 支持经验回调，旧版 Core 或 SDK 仍可使用普通记忆。开启经验的 Work 和 Code 使用具备经验提炼流程的 SDK Runtime。Team，以及未开启经验的单 Agent，使用共享文档 Runtime。经验沿用 SDK 中配置的嵌入模型，未显式配置时使用 SDK 默认值。
+
+Swarm 首次注册经验 Dreaming 即使用 8 小时间隔。到期后等 Swarm 的前台任务空闲再触发一次。默认文档模式下，服务端将计划保存在本地 SQLite 文件 `memory/experience/experience-dreaming.db`，供重启后恢复。
 
 - **内置记忆**：没有自动触发机制。Agent 需要在对话中**主动调用** `memory_*` 工具（`memory_search` / `write_memory` 等）来检索或写入记忆，不调用就不会发生记忆行为。
 - **JiuwenMemory**：由 **ExternalMemoryRail（记忆轨道）自动驱动**。每轮对话开始时自动检索相关记忆注入上下文、每轮结束时自动沉淀当轮对话——**不一定调用任何工具**，这些发生在 Agent 视线之外。

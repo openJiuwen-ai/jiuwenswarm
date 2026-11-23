@@ -56,6 +56,7 @@ import os
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from dataclasses import dataclass, field
+from inspect import signature
 from pathlib import Path
 from typing import Any, Dict, Optional
 from uuid import uuid4
@@ -65,6 +66,7 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
 )
 from jiuwenswarm.common import memory_config
 from jiuwenswarm.common.coding_memory_paths import resolve_coding_memory_project_name
+from jiuwenswarm.common.utils import get_agent_skills_dir
 
 from .config import _load_config, get_embed_config
 
@@ -282,16 +284,16 @@ def _inject_sdk_creds_and_root(
     return cfg
 
 
-def _build_security_provider(org: str, user: str) -> Any:
+def _build_security_provider(org: str, user: str, *, space: str = "") -> Any:
     """进程内直连（sdk）模式的可信身份来源（mem2.0 P1-2 角色感知授权）。
 
     mem2.0 起身份不由业务 scope 自述——provider 只声明「要操作哪个 scope」，
     不能声明「我是谁」。进程内直连没有网络认证层，身份由本装配层（composition
-    root）显式产出：actor 用 user 单主体（org=scope_id、user=user_id），
+    root）显式产出：actor 绑定配置中的 org、space 与 user，
     ``role=USER`` 保留 org 硬边界；agent/session 维留空，在默认 ``USER_AGENT``
     主体路径下覆盖该 user 名下任意 agent（provider 的 ``bound_scope`` 把 target
-    映射成 ``Scope(org=scope_id, user=user_id, agent=agent_id, session=session_id)``，
-    与 actor 的 org/user 精确对齐）。
+    映射成 ``Scope(org=scope_id, space=space, user=user_id, agent=agent_id, session=session_id)``，
+    与 actor 的 org/space/user 精确对齐）。
 
     安全类型走函数内 import——与文件头部约定的 lazy import 语义一致：缺包
     只影响 sdk 装配，不影响模块加载。
@@ -304,7 +306,7 @@ def _build_security_provider(org: str, user: str) -> Any:
 
     context = new_request_context(
         AuthContext(
-            actor=Scope(org=org, user=user),
+            actor=Scope(org=org, space=space, user=user),
             role=Role.USER,
             credential_type="internal",
             auth_method="internal",
@@ -437,6 +439,142 @@ SCENE_FACTORIES: dict[str, Callable[[Mapping[str, Any], str], MemoryRailSpec]] =
 }
 
 
+def _build_experience_grant_store(config: Any) -> Any:
+    """Load the deployment's initial grant into each new local SDK runtime."""
+    from jiuwen_memory.common.security.authorization.authorization_impl.memory_stores import (
+        InMemoryGrantStore,
+    )
+    from jiuwen_memory.common.security.types import Action, Grant
+    from jiuwen_memory.common.type_def import Scope
+
+    store = InMemoryGrantStore()
+    org = config.params["org"]
+    actions = {Action.READ}
+    if config.params.get("consolidation", False):
+        # The standard authorizer checks WRITE; the space-aware authorizer checks UPDATE.
+        actions.update({Action.WRITE, Action.UPDATE})
+    store.create_grant(
+        Grant(
+            grantor=Scope(org=org, space=config.params["space"]),
+            grantee=Scope(
+                org=org,
+                space=config.params.get("actor_space", ""),
+                user=config.params["user"],
+            ),
+            actions=frozenset(actions),
+            grant_id="swarm-shared-experience-read",
+        )
+    )
+    return store
+
+
+def _configure_sdk_experience(
+    sdk: dict[str, Any], scope: dict[str, str], space: str, *, consolidation: bool = False,
+) -> None:
+    if not space:
+        return
+    if "authorizer" not in sdk and "grant_store" not in sdk:
+        from jiuwen_memory.common.security.authorization.store import GrantStoreProducer
+
+        if "swarm_experience" not in GrantStoreProducer.known():
+            GrantStoreProducer.register(
+                "swarm_experience", config_inspectors={"at_rest_locations": lambda config: {}},
+            )(_build_experience_grant_store)
+
+        sdk["grant_store"] = {
+            "default": {
+                "target": "swarm_experience",
+                "params": {
+                    "org": scope["org"],
+                    "user": scope["user"],
+                    "space": space,
+                    "actor_space": scope["space"],
+                    "consolidation": consolidation,
+                },
+            },
+        }
+
+
+def get_jiuwen_experience_space(config: dict[str, Any] | None = None) -> str:
+    """Resolve the experience space from trusted built-in memory configuration."""
+    jiuwen = get_jiuwen_builtin_config(config)
+    configured = str(jiuwen.get("experience_space") or "").strip()
+    if configured == "own":
+        return str(jiuwen.get("space") or "").strip()
+    return configured
+
+
+def _experience_capabilities(config: dict[str, Any]) -> list[str]:
+    configured = config.get("experience_capabilities")
+    if not isinstance(configured, list):
+        return []
+    return [item.strip() for item in configured if isinstance(item, str) and item.strip()]
+
+
+def _experience_spaces_match(
+    sdk: dict[str, Any], scope: dict[str, str], experience_space: str,
+) -> bool:
+    experience = (sdk.get("globals") or {}).get("experience") or {}
+    write_space = experience.get("default_space", experience_space)
+    if write_space == "own":
+        write_space = scope["space"]
+    return write_space == experience_space
+
+
+def build_experience_dreaming_provider(config: dict[str, Any] | None = None):
+    """Build the server-owned scheduler against the single-Agent SDK storage."""
+    config = config if config is not None else _load_config()
+    if not is_jiuwen_builtin_memory(config) or get_jiuwen_builtin_mode(config) != "sdk":
+        return None
+    jiuwen = get_jiuwen_builtin_config(config)
+    experience_space = get_jiuwen_experience_space(config)
+    if not experience_space:
+        return None
+
+    try:
+        from jiuwen_memory_adapter.jiuwenswarm.agent_memory_provider import AgentMemoryMemoryProvider
+    except ImportError:
+        logger.warning("Experience Dreaming requires a compatible agent-memory SDK")
+        return None
+    if not callable(getattr(AgentMemoryMemoryProvider, "ensure_experience_dreaming", None)):
+        logger.warning("Experience Dreaming requires a compatible agent-memory SDK")
+        return None
+
+    scope = get_jiuwen_memory_scope(config)
+    inline = _sdk_inline_config(jiuwen, shared_document_root=True)
+    if not _experience_spaces_match(inline, scope, experience_space):
+        logger.warning("Experience write and search spaces differ; Dreaming disabled")
+        return None
+    _inject_sdk_creds_and_root(inline, config)
+    kv = inline.setdefault("kv_store", {})
+    default_kv = kv.get("default", "memory")
+    kv_target = default_kv.get("target") if isinstance(default_kv, dict) else default_kv
+    if kv_target == "memory":
+        # Document-mode experience is shared through Markdown and its SQLite index.
+        # The server's scheduler needs its own durable registration when KV is in-memory.
+        root = Path(inline["markdown_store"]["default"]["params"]["root"])
+        kv["default"] = {
+            "target": "sqlite",
+            "params": {
+                "db_path": str(root / "memory" / "experience" / "experience-dreaming.db"),
+                "fixed_path": True,
+            },
+        }
+    _configure_sdk_experience(inline, scope, experience_space, consolidation=True)
+    provider = AgentMemoryMemoryProvider(
+        config_dict=inline or None,
+        user_id=scope["user"],
+        agent_id=scope["agent"],
+        space=scope["space"],
+        security_provider=_build_security_provider(scope["org"], scope["user"], space=scope["space"]),
+        experience_space=experience_space,
+        experience_capabilities=_experience_capabilities(jiuwen),
+        skills_dir=str(get_agent_skills_dir()),
+        portal={"enabled": False},
+    )
+    return provider, scope
+
+
 def build_jiuwen_memory_rail(
     config: Optional[Dict[str, Any]] = None,
     agent_name: Optional[str] = None,
@@ -560,15 +698,26 @@ def build_jiuwen_memory_rail(
             # mem2.0 进程内直连需注入可信身份（fail-closed）：缺 security_provider
             # 时 provider.is_available() 为 False，rail 静默降级（memory 停用）。
             # 身份由本装配层产出（composition root），不从业务 user_id/scope_id 自述。
-            security_provider = _build_security_provider(scope_id, user_id)
+            security_provider = _build_security_provider(scope_id, user_id, space=scope["space"])
             inline = _sdk_inline_config(j, shared_document_root=True)
-            if inline:
+            experience_space = get_jiuwen_experience_space(config) if scene != "team" else ""
+            if experience_space and not callable(getattr(AgentMemoryMemoryProvider, "sync_experience", None)):
+                logger.warning("Single Agent experience capture requires a compatible agent-memory SDK")
+                experience_space = ""
+            if experience_space and not _experience_spaces_match(inline, scope, experience_space):
+                logger.warning("Experience write and search spaces differ; experience disabled")
+                experience_space = ""
+            if inline or experience_space:
                 _inject_sdk_creds_and_root(inline, config)
             markdown = inline.get("markdown_store")
             store = markdown.get("default") if isinstance(markdown, dict) else None
             params = store.get("params") if isinstance(store, dict) else None
             if isinstance(params, dict) and params.get("root"):
                 markdown_root = str(params["root"])
+            if experience_space and str(j.get("experience_space") or "").strip() == "own":
+                # The Provider needs the concrete scope for recall; writes inherit the source scope.
+                inline["globals"].setdefault("experience", {}).setdefault("default_space", "own")
+            _configure_sdk_experience(inline, scope, experience_space)
             # An explicit empty mapping preserves the caller's local/sandbox gate.
             if sdk_media_globals is None:
                 full_config = config if config is not None else _load_config()
@@ -577,14 +726,25 @@ def build_jiuwen_memory_rail(
                 inline.setdefault("globals", {}).update(deepcopy(sdk_media_globals))
             from .document_runtime_holder import DOCUMENT_RUNTIME_HOLDER
 
+            experience_options = {}
+            if experience_space:
+                experience_options = {
+                    "experience_space": experience_space,
+                    "experience_capabilities": _experience_capabilities(j),
+                    "register_experience_jobs": False,
+                    "skills_dir": str(get_agent_skills_dir()),
+                }
+            # The shared SDK runtime assembles the ordinary document profile.
+            # Let the SDK assemble its experience profile for enabled single Agents.
             provider = SwarmMemoryProvider(
-                document_runtime_holder=DOCUMENT_RUNTIME_HOLDER,
+                document_runtime_holder=None if experience_space else DOCUMENT_RUNTIME_HOLDER,
                 config_dict=inline or None,
                 user_id=user_id,
                 agent_id=agent_id,
                 space=scope["space"],
                 security_provider=security_provider,
                 **spec.provider_options,
+                **experience_options,
             )
             config_desc = "merged-config-dict" if inline else "provider-builtin-agent-default"
         else:
@@ -607,13 +767,20 @@ def build_jiuwen_memory_rail(
                 "[JiuwenRailBuilder] AgentMemory provider unavailable (no base_url)"
             )
             return None
+        rail_options = dict(spec.rail_options)
+        if mode == "sdk" and experience_space:
+            sync_experience = getattr(provider, "sync_experience", None)
+            if callable(sync_experience) and "sync_experience" in signature(spec.rail_factory).parameters:
+                rail_options["sync_experience"] = sync_experience
+            else:
+                logger.warning("Single Agent experience capture requires a compatible Core and Provider")
         rail = spec.rail_factory(
             provider,
             user_id=user_id,
             scope_id=scope_id,
             agent_id=agent_id,
             session_id=session_id,
-            **spec.rail_options,
+            **rail_options,
         )
     except Exception as exc:
         logger.warning("[JiuwenRailBuilder] build JiuwenMemoryRail failed: %s", exc)
@@ -665,6 +832,8 @@ def jiuwen_builtin_config_fingerprint(
         str(bool(j.get("session_end_extract", False))),
     ]
     if mode == "sdk":
+        parts.append(get_jiuwen_experience_space(config))
+        parts.extend(_experience_capabilities(j))
         sdk_dict = _custom_sdk_config_dict(j)
         if sdk_dict:
             try:
