@@ -829,6 +829,7 @@ from jiuwenswarm.server.runtime.agent_adapter.deepagent_task_plan_binding_patch 
     apply_deepagent_task_plan_binding_patch,
 )
 from jiuwenswarm.common.mcp_call_timeout_patch import apply_mcp_call_timeout_patch
+from jiuwenswarm.common.mcp_http_hook import apply_mcp_http_auth_patch
 from jiuwenswarm.common.mcp_tool_list_refresh_patch import (
     apply_mcp_tool_list_refresh_patch,
     refresh_registered_mcp_tool_lists,
@@ -1125,6 +1126,10 @@ class JiuWenSwarmDeepAdapter:
         # 企业 MCP 模板：远端 list_tools 结果可按 TTL 刷新进 ResourceMgr，
         # 避免会话中途新加工具一直看不到。幂等。
         apply_mcp_tool_list_refresh_patch()
+        # MCP HTTP 出口埋点（before_mcp_http）：扩展可逐请求改写发往 MCP 的
+        # 鉴权头（短时令牌 / 每请求签名）。协议头与 Content-Type 等由宿主保留。
+        # 幂等；扩展未注册时零副作用。
+        apply_mcp_http_auth_patch()
         # 绑定交互续轮的 task id 到 TaskPlan 任务，使外层循环收敛。幂等。
         apply_deepagent_task_plan_binding_patch()
         self._instance: DeepAgent | None = None

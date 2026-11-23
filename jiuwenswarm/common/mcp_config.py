@@ -46,6 +46,11 @@ try:
 except ImportError:
     pass
 
+from jiuwenswarm.common.mcp_http_hook import (
+    current_mcp_request_scope,
+    reset_mcp_request_scope,
+    set_mcp_request_scope,
+)
 from jiuwenswarm.edition import is_enterprise
 
 _HTTP_MCP_TRANSPORTS = frozenset({"sse", "http", "streamable-http", "streamable_http"})
@@ -982,7 +987,7 @@ class McpWorkerStoppedError(RuntimeError):
 class _McpCallRequest:
     """One call_tool request handed from an invoke task to the owner task."""
 
-    __slots__ = ("tool_name", "arguments", "meta", "list_tools", "future")
+    __slots__ = ("tool_name", "arguments", "meta", "list_tools", "future", "request_scope")
 
     def __init__(
         self,
@@ -991,11 +996,13 @@ class _McpCallRequest:
         meta: dict[str, str] | None = None,
         *,
         list_tools: bool = False,
+        request_scope: tuple[str, str] | None = None,
     ) -> None:
         self.tool_name = tool_name
         self.list_tools = list_tools
         self.arguments = arguments
         self.meta = meta
+        self.request_scope = request_scope
         self.future: asyncio.Future = asyncio.get_running_loop().create_future()
 
 
@@ -1049,7 +1056,9 @@ class _PooledMcpWorker:
         """Submit a call_tool to the owner task and await its result.
 
         ``reserved`` 表示分组池选中本 worker 时已替这次调用占了一个 inflight 名额，
-        这里只负责归还。
+        这里只负责归还。调用方用 ``set_mcp_request_scope()`` 绑定的
+        ``(request_id, session_id)`` 会随这次调用带给 owner task，供
+        ``before_mcp_http`` 扩展识别请求归属。
         """
         if not reserved:
             self.inflight += 1
@@ -1063,7 +1072,12 @@ class _PooledMcpWorker:
                     f"request-scoped MCP worker for '{self.server_name}' is not running"
                 )
             self.last_used = time.monotonic()
-            req = _McpCallRequest(name, arguments, dict(meta) if meta else None)
+            req = _McpCallRequest(
+                name,
+                arguments,
+                dict(meta) if meta else None,
+                request_scope=current_mcp_request_scope(),
+            )
             await self.queue.put(req)
             return await req.future
         finally:
@@ -1144,6 +1158,7 @@ async def _run_mcp_worker(
             req = await worker.queue.get()
             if req is None:
                 break
+            scope_token = set_mcp_request_scope(getattr(req, "request_scope", None))
             try:
                 # remote 的 patch 可能在调用中重连，因此整个调用也留在 owner。
                 try:
@@ -1201,6 +1216,8 @@ async def _run_mcp_worker(
                     raise
                 # 普通调用失败：保留循环，让 invoke 的 force_rebuild 重建 worker。
                 continue
+            finally:
+                reset_mcp_request_scope(scope_token)
             if not req.future.done():
                 req.future.set_result(result)
             worker.queue.task_done()
@@ -2787,6 +2804,7 @@ class RequestScopedOfficeClawMcpTool(Tool):
         runtime_group: str = "",
         request_owned_worker: bool = False,
         catalog_host: bool = False,
+        session_id: str = "",
     ) -> None:
         super().__init__(card)
         # Deep-copy env so concurrent registrations cannot mutate each other's
@@ -2797,6 +2815,8 @@ class RequestScopedOfficeClawMcpTool(Tool):
             copied["env"] = dict(env)
         self._params = copied
         self._request_id = str(request_id or "")
+        # 只用于 before_mcp_http 的请求归属，不参与连接身份。
+        self._session_id = str(session_id or "")
         self._server_name = str(server_name or "")
         self._use_global_pool = bool(use_global_pool)
         self._unavailable_connectors: dict[str, str] = {}
@@ -2927,6 +2947,10 @@ class RequestScopedOfficeClawMcpTool(Tool):
 
         arguments = inputs if isinstance(inputs, dict) else {}
         remote_name = self._remote_tool_name or self._card.name
+        # before_mcp_http 需要知道这次调用属于哪个请求。ContextVar 不会跨 task
+        # 自动传播，所以在调用任务里绑定、由 worker 在自己的 owner task 里转绑；
+        # 传输层的 call_tool 签名保持不变（测试替身与 SDK 适配器都不受影响）。
+        scope_token = set_mcp_request_scope((self._request_id, self._session_id))
         try:
             if self._use_global_pool and self._runtime_via == "meta":
                 result = await self._call_through_group_pool(remote_name, arguments)
@@ -2970,6 +2994,8 @@ class RequestScopedOfficeClawMcpTool(Tool):
                 method="invoke",
                 card=self._card,
             ) from exc
+        finally:
+            reset_mcp_request_scope(scope_token)
 
 
 def create_request_scoped_mcp_tool(
@@ -3006,6 +3032,7 @@ def create_request_scoped_mcp_tool(
         remote_tool_name=name, runtime_params=runtime_params,
         runtime_via=runtime_delivery[0], runtime_group=runtime_delivery[1],
         request_owned_worker=runtime_delivery[2], catalog_host=catalog_host,
+        session_id=session_id,
     )
 
 
