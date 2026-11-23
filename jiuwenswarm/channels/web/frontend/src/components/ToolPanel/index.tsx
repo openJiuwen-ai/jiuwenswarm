@@ -30,8 +30,8 @@ import { CollapsibleSection } from './CollapsibleSection';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { isTeamLeaderMember } from '../../utils/teamMemberAvatar';
 import { getMemberAvatarIdentity, getMemberAvatarKey, getMemberPlainName, type TabType, type TeamDetailTab } from '../teamArea/shared';
+import { useWebUIPluginPanelTabs } from '../../features/webui';
 import type { useWebUIPanels } from '../../features/webui';
-import PluginIcon from '../../assets/agent-management/extension.svg?react';
 
 import type { TeamMemberExecutionEvent, TeamTask, TeamTaskStatus } from '../../stores/sessionStore';
 import type { ProjectInfo, TodoItem, TodoStatus } from '../../types';
@@ -369,15 +369,6 @@ export function ToolPanel({
     !browserHeadless &&
     !desktopBrowserTabFlags.closed &&
     (hasBrowserAgentActivity || desktopBrowserTabFlags.requested);
-  const handleTabClose = (tab: string) => {
-    if (tab === 'browser') closeDesktopBrowserTab();
-    else if (tab === 'app') useSessionStore.getState().setAppMarketPreview(resolvedSessionId, undefined);
-    else if (pluginPanels.some((panel) => panel.key === tab)) {
-      setClosedPluginKeys((previous) => new Set([...previous, tab]));
-      if (pluginSelection?.key === tab) setPluginSelection(null);
-    }
-  };
-
   useEffect(() => {
     if (!onCloseFloating || isUltraWide) return;
     const handler = (e: MouseEvent) => {
@@ -527,59 +518,33 @@ export function ToolPanel({
 
   const panelExpanded = mode === 'team' ? teamAreaExpanded : singleAgentPanelExpanded;
   const nativePanelTab = mode === 'team' ? teamAreaActiveTab : singleAgentPanelActiveTab;
-  const { panels, renderPanel, openRequest, consumeOpenRequest } = webUIPanels;
-  const [pluginSelection, setPluginSelection] = useState<{
-    key: string; sessionId: string; mode: string; nativeTab: string;
-  } | null>(null);
-  const [closedPluginKeys, setClosedPluginKeys] = useState<ReadonlySet<string>>(() => new Set());
-  const pluginPanels = panels
-    .filter((panel) => !closedPluginKeys.has(`webui:${panel.key}`))
-    .map((panel) => ({
-      key: `webui:${panel.key}`,
-      label: panel.title,
-      icon: <PluginIcon className="h-4 w-4 shrink-0" aria-hidden />,
-      closable: true,
-      content: renderPanel(panel.key),
-    }));
-  const selectedPluginPanel = pluginSelection?.sessionId === resolvedSessionId
-    && pluginSelection.mode === mode && pluginSelection.nativeTab === nativePanelTab
-    ? pluginPanels.find((panel) => panel.key === pluginSelection.key) : undefined;
-  const selectedPluginKey = selectedPluginPanel?.key;
+  // Discovery mounts the slot and keeps every contribution available; the plus button creates a
+  // blank plugin tab whose picker converts that tab into the chosen plugin tab.
+  const pluginTabs = useWebUIPluginPanelTabs({
+    slotId: 'conversation.panel.right',
+    sessionId: resolvedSessionId && resolvedSessionId !== 'new' ? resolvedSessionId : null,
+    panels: webUIPanels.panels,
+    renderPanel: webUIPanels.renderPanel,
+    openRequest: webUIPanels.openRequest,
+    consumeOpenRequest: webUIPanels.consumeOpenRequest,
+    enabled: mode !== 'auto_harness',
+  });
 
-  useEffect(() => {
-    if (pluginSelection && !selectedPluginKey) setPluginSelection(null);
-  }, [pluginSelection, selectedPluginKey]);
-
-  useEffect(() => {
-    if (
-      !openRequest ||
-      openRequest.sessionId !== resolvedSessionId ||
-      mode === 'auto_harness' ||
-      !panels.some((panel) => panel.key === openRequest.key)
-    ) return;
-    const key = `webui:${openRequest.key}`;
-    setClosedPluginKeys((previous) => {
-      const next = new Set(previous);
-      next.delete(key);
-      return next;
-    });
-    setPluginSelection({ key, sessionId: resolvedSessionId, mode, nativeTab: nativePanelTab });
-    consumeOpenRequest(openRequest.id);
-  }, [
-    openRequest,
-    resolvedSessionId,
-    mode,
-    nativePanelTab,
-    panels,
-    consumeOpenRequest,
-  ]);
-
-  const handlePanelTabChange = (key: string) => {
-    if (pluginPanels.some((panel) => panel.key === key)) {
-      setPluginSelection({ key, sessionId: resolvedSessionId, mode, nativeTab: nativePanelTab });
+  const handleTabClose = (tab: string) => {
+    if (tab === 'browser') {
+      closeDesktopBrowserTab();
       return;
     }
-    setPluginSelection(null);
+    if (tab === 'app') {
+      useSessionStore.getState().setAppMarketPreview(resolvedSessionId, undefined);
+      return;
+    }
+    pluginTabs.closeTab(tab);
+  };
+
+  const handlePanelTabChange = (key: string) => {
+    if (pluginTabs.selectTab(key)) return;
+    pluginTabs.selectNativeTab();
     if (mode === 'team') {
       setTeamAreaActiveTab(key as TabType);
       if (key === 'team') setTeamAreaSelectedMemberId('');
@@ -600,9 +565,13 @@ export function ToolPanel({
       >
         <div className="tool-panel-expanded-content h-full flex flex-col overflow-hidden">
           <ExpandedPanel
-            activeTab={selectedPluginPanel?.key ?? nativePanelTab}
+            activeTab={pluginTabs.activeTabKey ?? nativePanelTab}
             onTabChange={handlePanelTabChange}
-            additionalPanels={pluginPanels}
+            additionalPanels={pluginTabs.tabs}
+            addTab={{
+              label: t('toolPanel.plugins.add'),
+              onOpen: pluginTabs.openDraft,
+            }}
             onTabClose={handleTabClose}
             onCollapse={
               isTeam
@@ -716,7 +685,7 @@ export function ToolPanel({
         expanded: planningExpanded,
       };
   const expandTo = (tab: TabType | SingleAgentToolTab, teamMemberId?: string) => {
-    setPluginSelection(null);
+    pluginTabs.selectNativeTab();
     if (isTeam) {
       setTeamAreaActiveTab(tab as TabType);
       if (tab === 'team') {

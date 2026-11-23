@@ -531,6 +531,17 @@ datas += _sqlite_vec_datas
 hiddenimports += _sqlite_vec_hidden
 _bundled_binaries = _bundled_binaries + _sqlite_vec_binaries
 
+# AgentSSAS（agent_ssas）把检测模块与决策策略写成包内 YAML
+# （core/detection_modules/*/module.yaml、backend_client/openjiuwen/
+# decision_policies.yaml），并按 YAML 动态装配检测模块与 rail；PyInstaller
+# 静态分析既收不到这些数据文件，也跟不到动态导入的模块。冻结包缺
+# decision_policies.yaml 时策略模式会静默降级为默认行为，因此统一用
+# collect_all 收集数据文件与子模块。
+_agent_ssas_datas, _agent_ssas_binaries, _agent_ssas_hidden = collect_all("agent_ssas")
+datas += _agent_ssas_datas
+hiddenimports += _agent_ssas_hidden
+_bundled_binaries = _bundled_binaries + _agent_ssas_binaries
+
 a = Analysis(
     [entry_script],
     pathex=[project_root],

@@ -8,6 +8,7 @@ import pytest
 
 import jiuwenswarm.extensions_v2.assembly as assembly
 from jiuwenswarm.extensions_v2.webui.models import RenderNode, RenderTarget, UiRenderInput
+from tests.unit_tests.extensions_v2.core_compat import requires_rooted_startup
 from .management.support import write_package
 
 
@@ -35,6 +36,7 @@ def _reset_runner_extension_bus() -> None:
 
 
 @pytest.mark.asyncio
+@requires_rooted_startup
 async def test_install_extensions_only_activates_installed_packages_once(tmp_path: Path, monkeypatch) -> None:
     _reset_runner_extension_bus()
     monkeypatch.setattr(assembly, "_ASSEMBLY", None)

@@ -14,6 +14,7 @@ import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
 import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import { SystemPluginSwitch } from './SystemPluginSwitch';
+import { hasOtherEnabledSystemPlugin } from './systemPluginConflict';
 import { openAssetPublish } from '../../features/assetPublishEvents';
 import './ConnectorMarket.css';
 
@@ -46,6 +47,8 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
   const [failed, setFailed] = useState(false);
   const [confirmUninstall, setConfirmUninstall] = useState(false);
   const [pendingVersion, setPendingVersion] = useState<string | null>(null);
+  const [pendingInstallVersion, setPendingInstallVersion] = useState<string | null>(null);
+  const [installCheckPending, setInstallCheckPending] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [tab, setTab] = useState<DetailTab>('content');
   const [files, setFiles] = useState<DefinitionFileEntry[]>([]);
@@ -131,6 +134,8 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
     setReadmeClipped(false);
     setSelectedVersion(null);
     setPendingVersion(null);
+    setPendingInstallVersion(null);
+    setInstallCheckPending(false);
     versionRef.current = undefined;
     resetPanes();
     requestDetail();
@@ -199,7 +204,7 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
     : detail.source === 'local'
       ? t('connectorMarket.systemPlugin.sourceLocal')
       : '';
-  const busyBlocked = busy || loading || versionLoading;
+  const busyBlocked = busy || loading || versionLoading || installCheckPending;
   const versions = detail.versions ?? [];
   const installedVersion = detail.installedVersion || (detail.installed ? detail.version : '');
   const initialVersion = installedVersion && versions.includes(installedVersion)
@@ -233,6 +238,24 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
       if (result.ok) await loadDetail(id, version);
       return result;
     });
+  }
+
+  async function requestInstall(version = currentVersion) {
+    setActionError(null);
+    setInstallCheckPending(true);
+    let hasConflict = false;
+    try {
+      hasConflict = await hasOtherEnabledSystemPlugin(packageId);
+    } catch {
+      // Conflict discovery is advisory; a transient catalog failure must not block installation.
+    } finally {
+      setInstallCheckPending(false);
+    }
+    if (hasConflict) {
+      setPendingInstallVersion(version);
+      return;
+    }
+    await handleInstall(version);
   }
 
   async function handleReload() {
@@ -342,7 +365,7 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
                   type="button"
                   className="detail-action detail-action--install"
                   disabled={busyBlocked}
-                  onClick={() => { void handleInstall(); }}
+                  onClick={() => { void requestInstall(); }}
                 >
                   {t('connectorMarket.systemPlugin.install')}
                 </button>
@@ -554,6 +577,20 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
           onSecondary={() => { void handleUninstall(uninstallTarget); }}
           onCancel={() => setConfirmUninstall(false)}
           onConfirm={() => { void handleUninstall(); }}
+        />
+      )}
+
+      {pendingInstallVersion && (
+        <ConfirmDialog
+          title={t('connectorMarket.systemPlugin.multiEnableTitle')}
+          message={t('connectorMarket.systemPlugin.multiEnableMessage')}
+          confirmLabel={t('connectorMarket.systemPlugin.multiEnableConfirm')}
+          onCancel={() => setPendingInstallVersion(null)}
+          onConfirm={() => {
+            const version = pendingInstallVersion;
+            setPendingInstallVersion(null);
+            void handleInstall(version);
+          }}
         />
       )}
 

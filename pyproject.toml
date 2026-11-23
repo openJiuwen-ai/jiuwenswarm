@@ -84,6 +84,7 @@ dependencies = [
     "playwright>=1.40,<2",
     "tiktoken>=0.12.0,<0.13",
     "uv>=0.4.0,<0.13",
+    "openjiuwen-security==0.0.1b2",
     "gitcode-cli==0.12.0",
     "imageio-ffmpeg>=0.5.1,<1",
     # Enterprise / link-mtls / manager-config.

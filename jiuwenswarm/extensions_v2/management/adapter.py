@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 import tempfile
 from collections.abc import Sequence
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, fields, is_dataclass, replace
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -165,6 +165,7 @@ async def _dispatch(manager: ExtensionManager, method: str, parsed: _Request) ->
                 state,
                 domain=DOMAIN_AGENT_SERVER,
                 install_dir=install_dir,
+                accepted_roots=manager.accepted_roots(parsed.package_id),
             )
         except PackageNotFound:
             record = store.get(parsed.package_id) or store.by_asset(parsed.package_id)
@@ -209,6 +210,7 @@ async def _dispatch(manager: ExtensionManager, method: str, parsed: _Request) ->
                 resolve_examples_dir(),
                 state,
                 install_dir=install_dir,
+                accepted_roots=manager.accepted_roots(package_id),
             )
         except PackageNotFound:
             return await _hub_file_payload(
@@ -263,7 +265,7 @@ async def _dispatch(manager: ExtensionManager, method: str, parsed: _Request) ->
             else:
                 store.mark(parsed.package_id, active=False, enabled=False)
         return {"reports": [report]}
-    return {"state": await manager.query(parsed.package_id or None)}
+    return {"state": _agentserver_query_result(await manager.query(parsed.package_id or None))}
 
 
 async def _install_package_ids(
@@ -618,7 +620,7 @@ async def _failed_request(
         extra["query_error"] = query_error
     else:
         try:
-            extra["state"] = _encode(state)
+            extra["state"] = _encode(_agentserver_query_result(state))
         except Exception:  # noqa: BLE001 - keep the original operation error if state encoding fails
             logger.exception("[ExtensionsV2] could not encode current package state")
             extra["query_error"] = "Current package state could not be confirmed"
@@ -654,6 +656,28 @@ def _encode(value: object) -> Any:
     if value is None or isinstance(value, (str, bool, int, float)):
         return value
     raise TypeError(f"unsupported management result type: {type(value).__name__}")
+
+
+def _agentserver_query_result(state: QueryResult) -> QueryResult:
+    """Project the shared Core report onto the AgentServer-owned domain."""
+
+    packages = tuple(record for record in state.packages if record.domain == DOMAIN_AGENT_SERVER)
+    domain_ids = {record.package_id for record in state.active}
+    domain_ids.update(record.package_id for record in packages)
+    return replace(
+        state,
+        inflight={
+            package_id: count
+            for package_id, count in state.inflight.items()
+            if package_id in domain_ids
+        },
+        published={
+            package_id: handlers
+            for package_id, handlers in state.published.items()
+            if package_id in domain_ids
+        },
+        packages=packages,
+    )
 
 
 def _installed_package_domain(root: Path) -> str | None:

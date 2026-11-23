@@ -43,6 +43,21 @@
       }
     ],
     [
+      "Panel",
+      {
+        "title": "Panel",
+        "icon": "not-in-whitelist"
+      }
+    ],
+    [
+      "Iframe",
+      {
+        "title": "Preview",
+        "src": "/preview",
+        "icon": 7
+      }
+    ],
+    [
       "Button",
       {
         "icon": "ellipsis"
@@ -930,14 +945,16 @@
     [
       "Panel",
       {
-        "title": "Panel"
+        "title": "Panel",
+        "icon": "folder-open"
       }
     ],
     [
       "Iframe",
       {
         "title": "Preview",
-        "src": "/preview"
+        "src": "/preview",
+        "icon": "globe"
       }
     ],
     [
