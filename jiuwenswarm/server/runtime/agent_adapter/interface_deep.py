@@ -16027,15 +16027,26 @@ class JiuWenSwarmDeepAdapter:
             getattr(existing, "name", "")
             for existing in (self._instance.ability_manager.list() or [])
         }
-        eligible = bool(
-            normalized_session_id
-            and not normalized_session_id.startswith(
-                ("heartbeat", "health_check", "cron")
+        # cron 执行会话（__cron__/cron 前缀或持久化 cron_id）按设计不参与跨会话
+        # 消息（SessionMessageService._supported 拒绝 cron_id 会话）。不识别的话
+        # rail 仍挂着 service，每次模型调用都吃一条服务端拒绝 + state_unavailable
+        # 假快照注入（JW-69）；与 HeartbeatRail 的 cron 会话跳过同一判定。
+        if self._is_cron_execution_session(normalized_session_id or getattr(self, "_parent_session_id", None)):
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] skip SessionMessaging for cron session %s",
+                normalized_session_id or getattr(self, "_parent_session_id", None),
             )
-            and str(channel_id or "").strip().lower() in {"web", "tui"}
-            and not is_team_mode(deprecate_mode(self._last_mode))
-            and getattr(runtime, "session_message_service", None) is not None
-        )
+            eligible = False
+        else:
+            eligible = bool(
+                normalized_session_id
+                and not normalized_session_id.startswith(
+                    ("heartbeat", "health_check", "cron")
+                )
+                and str(channel_id or "").strip().lower() in {"web", "tui"}
+                and not is_team_mode(deprecate_mode(self._last_mode))
+                and getattr(runtime, "session_message_service", None) is not None
+            )
         messaging_rail = getattr(self, "_session_messaging_route_rail", None)
         if messaging_rail is not None:
             messaging_rail.set_service(runtime.session_message_service if eligible else None)

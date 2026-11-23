@@ -209,7 +209,15 @@ class SessionMessagingRouteRail(DeepAgentRail):
             return
         try:
             state = await self._service.pending_context(route.source_for_list())
-        except (SessionMessagingError, OSError, sqlite3.Error):
+        except SessionMessagingError as exc:
+            # 服务端设计内拒绝（会话类型不支持跨会话消息、目标已删除）：正常
+            # 现象，逐次模型调用告警只会淹没日志，也不应注入误导快照。跳过本段
+            # 提示；服务端拒绝语义保持不变（JW-69）。
+            logger.debug(
+                "Skipping cross-Session queue context: %s (%s)", exc, exc.code
+            )
+            return
+        except (OSError, sqlite3.Error):
             logger.warning("Could not refresh cross-Session queue context", exc_info=True)
             state = {"state_unavailable": True}
         content = (
