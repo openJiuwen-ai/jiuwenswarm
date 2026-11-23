@@ -189,9 +189,11 @@ def _redact_secrets(text: str) -> str:
 def _strip_internal_wrapper(text: str) -> str:
     """Drop a leading ``[181001] model call failed:``-style wrapper if present.
 
-    Shared by both the long-error excerpt path and the short-error path so a
-    short unknown error never exposes the internal numeric code / generic
-    phrase to the user.  If stripping would leave nothing, keep the original.
+    Used only by the long/multiline-error excerpt path: that excerpt is appended
+    to a generic hint, so removing the internal numeric code / generic phrase
+    keeps it actionable.  Short errors intentionally keep their full original
+    text (callers such as Symphony preflight surface it verbatim).  If stripping
+    would leave nothing, keep the original.
     """
     stripped = _INTERNAL_WRAPPER_PREFIX.sub("", text, count=1)
     return stripped if stripped.strip() else text
@@ -325,10 +327,14 @@ def user_facing_model_error(
     if len(raw) > _MAX_RAW_ERROR_CHARS or "\n" in raw:
         excerpt = _error_cause_excerpt(raw)
         return f"{_INTERNAL_MESSAGE}：{excerpt}" if excerpt else _INTERNAL_MESSAGE
-    # Short errors keep their original wording, but any leading internal
-    # wrapper must be stripped and credentials echoed by some SDKs redacted
-    # before the text is shown to the user (consistent with the long path).
-    return _redact_secrets(_strip_internal_wrapper(raw))
+    # Short errors keep their original wording.  Callers such as the Symphony
+    # model preflight deliberately surface the complete provider error (including
+    # its ``[181001] model call failed, reason: ...`` prefix) in status/graph
+    # fields, so the wrapper must NOT be stripped here; only credentials echoed
+    # by some SDKs are masked before the text reaches the user.  The long/multiline
+    # path above is different: there the raw text is a diagnostic excerpt, and
+    # stripping the internal wrapper there keeps the excerpt actionable.
+    return _redact_secrets(raw)
 
 
 def is_non_retryable_model_error(error: Any) -> bool:

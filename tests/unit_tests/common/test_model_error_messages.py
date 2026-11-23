@@ -255,14 +255,17 @@ def test_dict_repr_and_jwt_credentials_are_redacted() -> None:
     assert "******" in result
 
 
-def test_short_internal_wrapper_is_stripped() -> None:
-    """Short unknown errors must not expose the internal wrapper code (#6790)."""
-    result = user_facing_model_error(
-        "[181001] model call failed: some unknown issue"
-    )
-    assert "181001" not in result
-    assert "model call failed" not in result
-    assert "some unknown issue" in result
+def test_short_error_keeps_full_provider_text_for_diagnostics() -> None:
+    """Short errors keep their full wording, including the internal wrapper.
+
+    Callers such as the Symphony model preflight surface ``user_facing_model_error``'s
+    output verbatim in status/graph/detail fields, where the complete provider
+    error (code + reason) is the diagnostic contract.  Only credentials are
+    masked; the ``[181001] model call failed, reason: ...`` prefix is preserved
+    (only the long/multiline excerpt path strips it).
+    """
+    raw = "[181001] model call failed, reason: model unavailable"
+    assert user_facing_model_error(raw) == raw
 
 
 def test_short_error_unchanged_when_no_secret() -> None:
