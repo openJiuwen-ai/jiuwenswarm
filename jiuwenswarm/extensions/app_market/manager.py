@@ -475,7 +475,11 @@ class AppMarketManager:
             self._reject_active_job(app_id)
             manifest = self._service.get_app(app_id)
             if manifest is not None and manifest.owner_id and manifest.owner_id != owner_id:
-                raise AppMarketError("permission_denied", "Application belongs to another user")
+                # Empty owner is the local single-user identity, so a local app
+                # that records an owner stays startable there. Enterprise
+                # deployments keep the strict ownership rule.
+                if owner_id or _owner_identity_required():
+                    raise AppMarketError("permission_denied", "Application belongs to another user")
             if manifest is not None and manifest.source == "hub":
                 # Empty owner is the local single-user identity; an app owned by
                 # a named user still requires that exact identity.
@@ -898,6 +902,12 @@ class AppMarketManager:
     ) -> None:
         from .hub_install import AppInstallError, install_hub_app
 
+        committed_result: dict[str, Any] | None = None
+
+        def remember_commit(result: dict[str, Any]) -> None:
+            nonlocal committed_result
+            committed_result = result
+
         job.state = "running"
         job.phase = "resolving"
         try:
@@ -915,14 +925,20 @@ class AppMarketManager:
                     operation_dir=self._operation_dir,
                     job_id=job.job_id,
                     project_request=project_request,
+                    on_committed=remember_commit,
                 )
             job.state = "done"
             job.phase = "done"
             job.cancellable = False
             job.result = result
         except asyncio.CancelledError:
-            job.state = "cancelled"
-            job.phase = "cancelled"
+            if committed_result is None:
+                job.state = "cancelled"
+                job.phase = "cancelled"
+            else:
+                job.state = "done"
+                job.phase = "done"
+                job.result = committed_result
             job.cancellable = False
             raise
         except AppInstallError as exc:

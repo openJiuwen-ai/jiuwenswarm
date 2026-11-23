@@ -133,13 +133,15 @@ class AppEditorSessions:
             session = await call(ReqMethod.SESSION_GET_METADATA, {"session_id": session_id})
             # Publishing can update metadata while creation is awaiting Core.
             current = self._storage.load_manifest(app_id)
-            if (
-                current is None
-                or current.owner_id != owner_id
-                or current.work_dir != manifest.work_dir
-                or current.editor_create_token != create_token
+            conflict = {"error": "Application changed while opening editor", "code": "CONFLICT"}
+            if current is None:
+                raise EditorSessionError(conflict)
+            if (current.owner_id, current.work_dir, current.editor_create_token) != (
+                owner_id,
+                manifest.work_dir,
+                create_token,
             ):
-                raise EditorSessionError({"error": "Application changed while opening editor", "code": "CONFLICT"})
+                raise EditorSessionError(conflict)
             if current.editor_session_id and current.editor_session_id not in current.editor_session_ids:
                 current.editor_session_ids.append(current.editor_session_id)
             if session_id not in current.editor_session_ids:

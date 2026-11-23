@@ -130,7 +130,9 @@ class AppMarketPlugin(ApplicationPluginExtension):
             del session_id
             editor_session_id = params.get("editor_session_id") if isinstance(params, dict) else None
             if not isinstance(editor_session_id, str) or not editor_session_id.strip():
-                await channel.send_response(ws, req_id, ok=False, error="editor_session_id is required", code="BAD_REQUEST")
+                await channel.send_response(
+                    ws, req_id, ok=False, error="editor_session_id is required", code="BAD_REQUEST",
+                )
                 return
             app = self._manager.get_editor_app(editor_session_id.strip(), owner(ws))
             await channel.send_response(ws, req_id, ok=True, payload={"app": app})
@@ -380,7 +382,11 @@ class AppMarketPlugin(ApplicationPluginExtension):
                 await channel.send_response(ws, req_id, ok=False, error="app_id is required", code="BAD_REQUEST")
                 return
 
-            options = {key: params[key] for key in ("title", "model_name", "model_selection", "edit_token") if key in params}
+            options = {
+                key: params[key]
+                for key in ("title", "model_name", "model_selection", "edit_token")
+                if key in params
+            }
             owner_id = owner(ws)
             request = routed_request(owner_id, "app_market.edit_session")
             try:

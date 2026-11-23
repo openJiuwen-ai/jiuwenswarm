@@ -20,7 +20,7 @@ The leader assigns each teammate a speaking task for the turn. Each non-empty `c
 
 Existing `mode:"agent"` requests with a roster retain independent role sessions and the `ask_<name>` consultation protocol. Use Team mode above for new apps with independent character speech. The roster is fixed at creation. Both modes reject host tool injection.
 
-Every market app needs an available project before it can start. Hub apps get their project at installation. The market links a project before launch for local apps that lack one. Read `WORKSWARM_APP_PROJECT_ID` and `WORKSWARM_APP_WORK_MODE` together. On older hosts, a local app can query `session.get_metadata` using `WORKSWARM_SOURCE_SESSION`. NPC sessions appear under the resolved project and can use a separate execution profile.
+Every market app needs an available project before it can start. The market tries to link a project after installing a Hub app. The app stays installed if linking fails or is cancelled. The market links any unbound app to a project before launch. Read `WORKSWARM_APP_PROJECT_ID` and `WORKSWARM_APP_WORK_MODE` together. On older hosts, a local app can query `session.get_metadata` using `WORKSWARM_SOURCE_SESSION`. NPC sessions appear under the resolved project and can use a separate execution profile.
 
 The creation response includes `execution_profile: "app_role"`, `npc_session: true`, and the actual session ID. If the host lacks the lightweight profile, report that it needs an upgrade. Create a new session to change the character rules.
 

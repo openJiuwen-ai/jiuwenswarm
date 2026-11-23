@@ -14,9 +14,11 @@ files:
 
 # 应用角色会话的项目归属
 
+最近修订日期为 2026-11-24。
+
 应用市场在启动与停止脚本的环境中设置 `WORKSWARM_SOURCE_SESSION`，值为应用清单的 `source_session`；未登记来源时为空，不继承宿主进程中其他应用的来源值。
 
-市场应用运行时都需要可用项目。Hub 应用在安装时按安装目录创建或复用项目并保存归属。本地发布应用与旧安装缺少绑定时在启动前补齐。启停脚本获得 `WORKSWARM_APP_PROJECT_ID`、`WORKSWARM_APP_PROJECT_DIR` 和项目实际的 `WORKSWARM_APP_WORK_MODE`。本地来源应用可沿用来源会话的项目。
+市场应用运行时都需要可用项目。Hub 应用安装提交后按安装目录尝试创建或复用项目并保存归属。绑定失败或被取消时保留已安装应用，所有缺少绑定的市场应用均在启动前补齐。启停脚本获得 `WORKSWARM_APP_PROJECT_ID`、`WORKSWARM_APP_PROJECT_DIR` 和项目实际的 `WORKSWARM_APP_WORK_MODE`。本地来源应用可沿用来源会话的项目。
 
 应用服务端使用既有 Gateway `session.get_metadata` 查询来源会话的 `project_id` 与 `work_mode`，在 `session.create` 中传入这两个字段。消息请求沿用相同工作模式。项目路径由既有创建接口解析，不以应用所在子目录推断项目。工作模式必须与项目匹配，不能固定为 `work`。
 

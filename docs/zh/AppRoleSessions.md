@@ -36,7 +36,7 @@
 
 `mode:"agent"` 携带成员名册时沿用原来的独立角色会话与 `ask_<name>` 咨询协议。新应用需要各角色独立发言时使用上述 Team 模式。成员名册创建后固定；两种模式均拒绝请求注入宿主工具。
 
-市场应用启动前都会绑定可用项目。Hub 应用安装时就会绑定，本地应用缺少绑定时在启动前补齐。应用服务端成对读取 `WORKSWARM_APP_PROJECT_ID` 和 `WORKSWARM_APP_WORK_MODE`。兼容旧宿主时，本地应用可用 `WORKSWARM_SOURCE_SESSION` 和 `session.get_metadata` 查询项目与工作模式。角色会话在该项目下展示，执行配置可独立选择。
+市场应用启动前都会绑定可用项目。Hub 应用在安装提交后尝试绑定项目，绑定失败或被取消时应用仍然保留。所有缺少绑定的市场应用均在启动前补齐。应用服务端成对读取 `WORKSWARM_APP_PROJECT_ID` 和 `WORKSWARM_APP_WORK_MODE`。兼容旧宿主时，本地应用可用 `WORKSWARM_SOURCE_SESSION` 和 `session.get_metadata` 查询项目与工作模式。角色会话在该项目下展示，执行配置可独立选择。
 
 创建响应包含 `execution_profile: app_role`、`npc_session: true` 和真实会话 ID。轻量执行配置不可用时提示升级宿主。`role_instructions` 要求 1–12000 字符，创建后固定。改变角色规则时新建会话。
 

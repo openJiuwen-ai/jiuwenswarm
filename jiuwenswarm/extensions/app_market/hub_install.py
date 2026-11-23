@@ -549,8 +549,9 @@ async def install_hub_app(
     operation_dir: Path | None = None,
     job_id: str = "",
     project_request: CoreRequest | None = None,
+    on_committed: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    """Install one Hub app and register it with the local app market."""
+    """Register a Hub app and report its committed result before project binding."""
     asset = str(asset_id or "").strip()
     if not asset:
         raise AppInstallError("invalid_plugin_structure", "asset_id is required")
@@ -647,9 +648,6 @@ async def install_hub_app(
             artifact_sha256=result.record.checksum_sha256,
             owner_id=owner_id,
         )
-        if project_request is not None:
-            await manager.bind_app_project(manifest, project_request)
-            manager.storage.save_manifest(app_id, manifest)
         manager.storage.save_install_record(app_id, record)
     except (Exception, asyncio.CancelledError) as exc:
         _recover_after_failure(operation, manager.storage, operation_dir)
@@ -664,8 +662,7 @@ async def install_hub_app(
 
     _cleanup_stage(operation)
     _remove_operation(operation_dir, operation["job_id"])
-    progress("done")
-    return {
+    installed = {
         "app_id": app_id,
         "name": manifest.name,
         "version": manifest.version,
@@ -677,6 +674,22 @@ async def install_hub_app(
         "permissions": list(detail.permissions),
         "has_server_script": bool(detail.has_server_script),
     }
+    if on_committed is not None:
+        on_committed(installed)
+    if project_request is not None:
+        # Binding is a start precondition, not part of the install transaction.
+        # The package is already downloaded, verified and registered here, so a
+        # failed resolve/create RPC must not discard it: the app stays installed
+        # and unbound, and start_app binds it again before launch.
+        try:
+            await manager.bind_app_project(manifest, project_request)
+            manager.storage.save_manifest(app_id, manifest)
+        except Exception as exc:
+            logger.warning("Project binding failed after installing %s: %s", app_id, exc)
+        else:
+            installed["project_id"] = manifest.project_id
+    progress("done")
+    return installed
 
 
 async def _register_installed_app(

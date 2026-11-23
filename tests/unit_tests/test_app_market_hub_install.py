@@ -480,6 +480,116 @@ def test_install_binds_project_before_conversion(tmp_path, monkeypatch, requires
     ]
 
 
+def test_install_keeps_app_when_project_binding_fails(tmp_path):
+    manager = _manager(tmp_path)
+    manager.service.allow_hub_code = True
+    payload = _app_zip()
+    port = FakePort(payload, requires_project=True)
+
+    async def failing_request(method, params):
+        return False, {"code": "project_rpc_unavailable", "message": "agent unavailable"}
+
+    async def run():
+        return await hub_install.install_hub_app(
+            manager=manager,
+            asset_id=ASSET,
+            install_root=tmp_path / "installs",
+            owner_id=OWNER,
+            hub_port=port,
+            downloader=_downloader(payload),
+            project_request=failing_request,
+        )
+
+    installed = asyncio.run(run())
+    app_id = installed["app_id"]
+    destination = Path(installed["work_dir"])
+    # A failed bind must not discard a package that is already installed.
+    assert destination.is_dir()
+    assert (destination / "index.html").is_file()
+    assert installed["project_id"] == ""
+    manifest = manager.storage.load_manifest(app_id)
+    assert manifest is not None and not manifest.project_id
+    assert manager.storage.load_install_record(app_id) is not None
+
+
+def test_install_stays_done_when_project_binding_is_cancelled(tmp_path, monkeypatch):
+    manager = _manager(tmp_path)
+    payload = _app_zip()
+    port = FakePort(payload, requires_project=True)
+    monkeypatch.setattr(manager, "_hub_port", lambda: port)
+    monkeypatch.setattr(hub_install, "hub_app_downloader", lambda: _downloader(payload))
+    install_params = {"asset_id": ASSET, "install_dir": str(tmp_path / "installs"), "owner_id": OWNER}
+
+    async def run():
+        binding_started = asyncio.Event()
+
+        async def request(method, params):
+            assert method == ReqMethod.PROJECT_LIST
+            binding_started.set()
+            await asyncio.Future()
+
+        response = await manager.start_install(**install_params, project_request=request)
+        job_id, app_id = response["job_id"], response["app_id"]
+        task = manager._get_job(job_id, OWNER).task
+        await asyncio.wait_for(binding_started.wait(), timeout=5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        status = manager.install_status(job_id, OWNER)
+        assert status["state"] == status["phase"] == "done"
+        assert not status["cancellable"]
+        assert status["result"]["app_id"] == app_id
+        assert status["result"]["project_id"] == ""
+        assert (Path(status["result"]["work_dir"]) / "index.html").is_file()
+        assert manager.storage.load_install_record(app_id) is not None
+        assert manager.storage.load_manifest(app_id).project_id == ""
+        retry = await manager.start_install(**install_params)
+        assert retry["app_id"] == app_id and retry["already_installed"]
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("launch_fails", [False, True])
+def test_local_app_with_recorded_owner_preserves_ownership(tmp_path, monkeypatch, launch_fails):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "personal")
+
+    manager = _manager(tmp_path)
+    page = tmp_path / "gomoku.html"
+    page.write_text('<html><meta name="description" content="Play"><body>gomoku</body></html>')
+
+    async def run():
+        app = await manager.publish_app(str(page), "session", owner_id=OWNER)
+        app_id = app["app_id"]
+        manifest = manager.storage.load_manifest(app_id)
+        manifest.project_id = "proj_local"
+        manifest.project_dir = str(tmp_path)
+        manifest.project_work_mode = "code"
+        manager.storage.save_manifest(app_id, manifest)
+        spawn = AsyncMock(return_value=1234)
+        if launch_fails:
+            spawn.side_effect = OSError("spawn failed")
+        monkeypatch.setattr(manager._service._supervisor, "start", spawn)
+        monkeypatch.setattr(manager._service, "_wait_for_running", AsyncMock(return_value=True))
+
+        started = await manager.start_app(app_id, owner_id="")
+
+        if launch_fails:
+            assert started is None
+        else:
+            assert started and started["state"] == "running"
+        assert spawn.await_count == 1
+        assert manager.storage.load_manifest(app_id).owner_id == OWNER
+        assert [app["app_id"] for app in manager.list_apps(OWNER)["apps"]] == [app_id]
+
+        monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+        with pytest.raises(AppMarketError) as failure:
+            await manager.start_app(app_id, owner_id="")
+        assert failure.value.code == "permission_denied"
+
+    asyncio.run(run())
+
+
 def test_legacy_hub_install_binds_project_before_launch(tmp_path, monkeypatch):
     manager = _manager(tmp_path)
     manager.service.allow_hub_code = True

@@ -8,6 +8,8 @@ from pathlib import Path
 import uuid
 from datetime import datetime, timezone
 
+from jiuwenswarm.enterprise.edition import is_enterprise
+
 from .models import AppManifest, AppInstance, InstanceStatus, platform_key
 from .storage import MarketStorage
 from .port_manager import PortManager
@@ -190,7 +192,11 @@ class MarketService:
                 return None
 
             if manifest.owner_id and manifest.owner_id != owner_id:
-                raise PermissionError("Application belongs to another user")
+                # Empty owner is the local single-user identity, so local apps
+                # that recorded an owner stay startable there. Enterprise keeps
+                # the strict ownership rule.
+                if owner_id or is_enterprise():
+                    raise PermissionError("Application belongs to another user")
             if manifest.source == "hub":
                 if not self._skill_adapter.has_generated_static_start(manifest):
                     raise RuntimeError("Hub application start script must match the market template")
@@ -208,8 +214,9 @@ class MarketService:
                     return existing
                 existing.state = "stopping"
                 self._storage.save_instance(existing)
-            # Legacy local registrations bind to the admitted WebChannel owner.
-            manifest.owner_id = owner_id
+            # Assign an owner only to legacy registrations that lack one.
+            if not manifest.owner_id:
+                manifest.owner_id = owner_id
             entry = Path(manifest.work_dir) / (manifest.page_entry_path or "index.html")
             if (
                 manifest.source != "hub"

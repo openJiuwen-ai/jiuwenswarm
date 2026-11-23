@@ -194,7 +194,8 @@ def load_project_info(params: dict[str, Any]) -> tuple[dict[str, Any] | None, st
             for key in ("last_message_at", "last_user_message_at"):
                 value = session.get(key)
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
-                    if stats[key] is None or value > stats[key]:
+                    previous = stats.get(key)
+                    if previous is None or value > previous:
                         stats[key] = value
 
     info = project_info_payload(project, default_id=default_id, stats=stats)
