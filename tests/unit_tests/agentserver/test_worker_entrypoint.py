@@ -209,6 +209,53 @@ def test_worker_stub_mode_skips_external_cli_activation(
     assert order == ["stub"]
 
 
+def test_worker_stub_failure_keeps_exit_status_after_diagnostics_and_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    restore_process_state: None,
+) -> None:
+    """A stub failure must remain exit 1 after diagnostics and log cleanup."""
+    from jiuwenswarm.common import background_logging
+    from jiuwenswarm.server.worker import stub as worker_stub
+
+    _patch_scaffolding(monkeypatch)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["jiuwenswarm-runtime-worker", "--socket", "unused-ipc.sock", "--stub"],
+    )
+    target = tmp_path / "latest-worker-error.log"
+    monkeypatch.setenv("JIUWEN_WORKER_DIAGNOSTIC_PATH", str(target))
+    monkeypatch.setattr(worker_main, "_configure_worker_diagnostic_logging", lambda: None)
+    order: list[str] = []
+
+    async def fail_stub(*_args, **_kwargs):
+        try:
+            raise worker_stub.StubExit("stub exit status probe")
+        finally:
+            order.append("stub stopped")
+
+    def stop_logging(*_args, **_kwargs):
+        diagnostic = target.read_text(encoding="utf-8")
+        assert "StubExit: stub exit status probe" in diagnostic
+        assert "Traceback" in diagnostic
+        order.append("logging stopped")
+        return True
+
+    def unexpected_hard_exit(code):
+        pytest.fail(f"unexpected hard exit: {code}")
+
+    monkeypatch.setattr(worker_stub, "serve_stub", fail_stub)
+    monkeypatch.setattr(background_logging, "stop_background_logging", stop_logging)
+    monkeypatch.setattr(worker_main, "exit_process", unexpected_hard_exit)
+
+    with pytest.raises(SystemExit) as caught:
+        worker_main.main()
+
+    assert caught.value.code == 1
+    assert order == ["stub stopped", "logging stopped"]
+
+
 def test_worker_entry_activation_appends_managed_site_packages_when_frozen(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

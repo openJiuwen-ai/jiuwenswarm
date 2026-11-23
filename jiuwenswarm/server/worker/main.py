@@ -109,13 +109,15 @@ def _activate_managed_external_cli_paths() -> None:
 
 def main() -> None:
     try:
-        _run_worker()
+        exit_code = _run_worker()
     except Exception as exc:
         write_worker_failure(exc)
         raise
+    if exit_code:
+        raise SystemExit(exit_code)
 
 
-def _run_worker() -> None:
+def _run_worker() -> int:
     from jiuwenswarm.common.utils import (
         configure_openjiuwen_core_logging,
         configure_openjiuwen_runtime_logging,
@@ -191,14 +193,13 @@ def _run_worker() -> None:
             exit_code = 0
         except StubExit as exc:
             write_worker_failure(exc)
-            raise SystemExit(1) from None
         except Exception as exc:
             write_worker_failure(exc)
             raise
         finally:
             if not stop_background_logging():
                 exit_process(exit_code)
-        return
+        return exit_code
 
     _activate_managed_external_cli_paths()
     from jiuwenswarm.server.worker.service import WorkerForceExit, serve_worker
@@ -251,6 +252,7 @@ def _run_worker() -> None:
             finally:
                 if restore_handlers is not None:
                     restore_handlers()
+    return exit_code
 
 
 if __name__ == "__main__":

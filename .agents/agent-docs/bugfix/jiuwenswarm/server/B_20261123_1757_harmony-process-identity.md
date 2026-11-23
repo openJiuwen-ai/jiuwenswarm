@@ -29,6 +29,7 @@ files:
   - jiuwenswarm/extensions/app_market/resources.py
   - tests/unit_tests/agentserver/test_worker_process_identity.py
   - tests/unit_tests/agentserver/test_worker_failure_diagnostics.py
+  - tests/unit_tests/agentserver/test_worker_entrypoint.py
   - tests/unit_tests/agentserver/test_ipc_backpressure.py
 designs: []
 design_note: 按用户明确修复任务和已有受限系统回退补齐调用方，无独立设计。
@@ -67,6 +68,8 @@ Supervisor 对自己启动失败的 Worker 在清理时读取诊断文件末尾�
 
 CodeCheck 的重复父子异常捕获改为仅捕获 `ValueError`（已包含 `UnicodeError`）；HELLO 创建时间校验拆分类型检查，
 pending Worker 检查用提前跳过拆分条件并消除超长行，保持原有校验与保守存活语义。
+后续 G.ERR.11 告警来自启动逻辑提取后，原 `main()` 内的 `SystemExit` 留在普通函数 `_run_worker()` 中。
+内部运行函数改为返回退出码，由入口 `main()` 统一退出；stub 失败仍先写诊断并清理后台日志，再以状态 1 退出。
 
 ## 当前契约与防错约束
 
@@ -96,6 +99,8 @@ loopback 监听端口与 resident IPC 端点也已关闭，没有遗留锁。两
 日志链路的生产启动入口重测覆盖 loopback、resident 与双来源均拒绝三种情况；前两者完成真实 stub 请求，
 后者在诊断文件中保留 AccessDenied、HELLO、PID 和 traceback，Supervisor 读取并输出该诊断。三组均独立确认进程、端口、端点与锁完成清理。
 真实日志 sink 阻塞的已有回归通过，Worker 请求与心跳继续响应，最终退出没有等待该 sink 恢复。
+上述合并回归对应 `30f24e4aa`；G.ERR.11 收尾调整的定向验证为 **24 passed**，覆盖入口、诊断、真实 stub 请求触发退出
+和 Front 导入隔离。新增回归确认诊断已写入、后台日志已清理且最终退出码保持 1；该轮未重跑完整合并回归。
 原始记录保存在本地任务目录
 `D:/work_space/.codex-temp/harmony-process-identity-20261123/`，不提交运行产物。
 
