@@ -14,7 +14,9 @@ from jiuwenbox.server.sandbox_manager import SandboxManager
 
 @pytest.mark.asyncio
 async def test_create_stdio_reaches_runtime_and_survives_stopped_lifecycle_restart(tmp_path, monkeypatch):
-    runtime = SimpleNamespace(create=AsyncMock(return_value=123), is_running=AsyncMock(return_value=True))
+    runtime = SimpleNamespace(
+        create=AsyncMock(return_value=123), is_running=AsyncMock(return_value=True), stop=AsyncMock(),
+    )
     manager = SandboxManager(runtime=runtime, audit_logger=Mock(), state_dir=tmp_path)
     monkeypatch.setattr(manager.policy_engine, "write_sandbox_policy", lambda *_: tmp_path / "policy")
     monkeypatch.setattr(manager, "_resolve_sandbox_ip_address", AsyncMock(return_value=None))
@@ -37,9 +39,11 @@ async def test_create_stdio_reaches_runtime_and_survives_stopped_lifecycle_resta
         assert ref.phase == SandboxPhase.READY
         assert runtime.create.call_args.kwargs["stdout"] == payload["stdout"]
         assert runtime.create.call_args.kwargs["stderr"] == payload["stderr"]
-        ref.phase = SandboxPhase.STOPPED
-        manager._save_state(ref)
+        stopped = await client.post("/api/v1/sandboxes/logs-create/stop")
+        assert stopped.status_code == 200, stopped.text
+        runtime.stop.assert_awaited_once_with(ref.id)
         saved = SandboxRef.model_validate_json((tmp_path / (ref.id + ".json")).read_text())
+        assert saved.phase == SandboxPhase.STOPPED
         assert saved.stdout == payload["stdout"]
         assert saved.stderr == payload["stderr"]
         started = await client.post("/api/v1/sandboxes/logs-create/start")

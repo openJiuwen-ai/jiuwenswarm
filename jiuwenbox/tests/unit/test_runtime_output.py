@@ -153,10 +153,13 @@ async def test_redirected_create_bypasses_parked_warm_slot(tmp_path, monkeypatch
     from jiuwenbox.server.runtime.process import ProcessRuntime
     runtime = ProcessRuntime()
     monkeypatch.setattr(runtime, "_load_policy", lambda _: SecurityPolicy())
+
     async def unexpected_adopt(*_args):
         raise AssertionError("redirected creation cannot adopt parked stdio")
+
     def stop_before_setup(*_args):
         raise RuntimeError("cold path reached")
+
     monkeypatch.setattr(runtime, "_try_warm_adopt", unexpected_adopt)
     monkeypatch.setattr(runtime, "_ensure_named_netns", stop_before_setup)
     with pytest.raises(RuntimeError, match="cold path reached"):

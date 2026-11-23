@@ -5,7 +5,8 @@ import errno
 import os
 import stat
 import tempfile
-from contextlib import ExitStack
+from collections.abc import Iterator
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import BinaryIO
 
@@ -38,6 +39,12 @@ class _StartupLog:
         return data
 
 
+@contextmanager
+def _open_stderr_reader(writer: BinaryIO) -> Iterator[BinaryIO]:
+    with open(f"/proc/self/fd/{writer.fileno()}", "rb", buffering=0) as reader:
+        yield reader
+
+
 class RuntimeOutput:
     """Append to optional host files; keep unspecified streams in startup capture.
 
@@ -53,9 +60,7 @@ class RuntimeOutput:
             self.stderr = self._open(stderr_path) if stderr_path else capture
             stderr_reader = capture
             if stderr_path:
-                stderr_reader = self._files.enter_context(
-                    open(f"/proc/self/fd/{self.stderr.fileno()}", "rb", buffering=0)
-                )
+                stderr_reader = self._files.enter_context(_open_stderr_reader(self.stderr))
             self.startup_log = _StartupLog(stderr_reader)
         except BaseException:
             self.close()
@@ -66,7 +71,9 @@ class RuntimeOutput:
         root = _log_root()
         if not root.is_absolute() or target.parent != root:
             raise PermissionError("runtime output must be directly under JIUWENBOX_RUNTIME_LOG_DIR")
-        directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW)
+        directory = os.open(
+            root, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | os.O_NOFOLLOW, mode=0o700,
+        )
         flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_CLOEXEC | os.O_NOFOLLOW | os.O_NONBLOCK
         try:
             metadata = os.fstat(directory)
