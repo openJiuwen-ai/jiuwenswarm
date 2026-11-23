@@ -29,6 +29,8 @@ def test_session_token_usage_aggregates_two_categories_and_deduplicates_calls(tm
             "input_calls": 2,
             "output_calls": 2,
             "calls_total": 2,
+            "priced_calls": 0,
+            "total_cost": None,
         },
         "others": {
             "input_tokens": 80,
@@ -36,6 +38,8 @@ def test_session_token_usage_aggregates_two_categories_and_deduplicates_calls(tm
             "input_calls": 1,
             "output_calls": 1,
             "calls_total": 1,
+            "priced_calls": 0,
+            "total_cost": None,
         },
     }
 
@@ -54,6 +58,8 @@ def test_session_token_usage_keeps_missing_values_unknown(tmp_path):
         "input_calls": 1,
         "output_calls": 0,
         "calls_total": 1,
+        "priced_calls": 0,
+        "total_cost": None,
     }
     assert snapshot["others"]["input_tokens"] == 0
     assert snapshot["others"]["output_tokens"] == 0
@@ -74,6 +80,8 @@ def test_snapshot_treats_an_existing_database_without_ledger_tables_as_empty(tmp
             "input_calls": 0,
             "output_calls": 0,
             "calls_total": 0,
+            "priced_calls": 0,
+            "total_cost": None,
         },
         "others": {
             "input_tokens": None,
@@ -81,6 +89,8 @@ def test_snapshot_treats_an_existing_database_without_ledger_tables_as_empty(tmp
             "input_calls": 0,
             "output_calls": 0,
             "calls_total": 0,
+            "priced_calls": 0,
+            "total_cost": None,
         },
     }
 
@@ -135,6 +145,8 @@ async def test_model_calls_without_usage_remain_in_incomplete_totals(tmp_path, m
         "input_calls": 0,
         "output_calls": 0,
         "calls_total": 1,
+        "priced_calls": 0,
+        "total_cost": None,
     }
 
     ctx.inputs.context_usage_request_id = "reported-call"
@@ -148,6 +160,8 @@ async def test_model_calls_without_usage_remain_in_incomplete_totals(tmp_path, m
         "input_calls": 1,
         "output_calls": 1,
         "calls_total": 2,
+        "priced_calls": 0,
+        "total_cost": None,
     }
 
 
@@ -221,3 +235,103 @@ def test_public_usage_read_and_write_follow_workspace_journal(tmp_path, monkeypa
     assert usage.get_session_token_usage("session")["main"]["input_tokens"] == 7
     with sqlite3.connect(tmp_path / "session" / "session_token_usage.sqlite3") as connection:
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+
+
+def test_session_token_usage_totals_billed_cost_per_category(tmp_path):
+    ledger = SessionTokenUsageLedger(tmp_path, "sess_usage")
+    ledger.record("call-main", "main", 100, 20, total_cost=0.0125)
+    ledger.record("call-child-1", "others", 900, 40, total_cost=0.25)
+    ledger.record("call-child-2", "others", 800, 30, total_cost=0.5)
+    snapshot = ledger.snapshot()
+
+    assert snapshot["main"]["priced_calls"] == 1
+    assert snapshot["main"]["total_cost"] == 0.0125
+    assert snapshot["others"]["priced_calls"] == 2
+    assert snapshot["others"]["total_cost"] == 0.75
+    assert snapshot["others"]["calls_total"] == 2
+
+
+@pytest.mark.parametrize("cost", [None, 0, 0.0, -0.5, "0.25", True, float("nan"), float("inf")])
+def test_session_token_usage_keeps_missing_or_invalid_cost_unknown(tmp_path, cost):
+    ledger = SessionTokenUsageLedger(tmp_path, "sess_usage")
+    ledger.record("call-priced", "others", 10, 2, total_cost=0.5)
+    ledger.record("call-unpriced", "others", 10, 2, total_cost=cost)
+    snapshot = ledger.snapshot()
+
+    assert snapshot["others"]["calls_total"] == 2
+    assert snapshot["others"]["priced_calls"] == 1
+    assert snapshot["others"]["total_cost"] == 0.5
+
+
+def test_session_token_usage_upgrades_ledger_written_before_cost_tracking(tmp_path):
+    import sqlite3
+
+    with sqlite3.connect(tmp_path / "session_token_usage.sqlite3") as connection:
+        connection.execute(
+            """
+            CREATE TABLE usage_events (
+                request_id TEXT PRIMARY KEY,
+                category TEXT NOT NULL CHECK (category IN ('main', 'others')),
+                input_tokens INTEGER,
+                output_tokens INTEGER
+            )
+            """
+        )
+        connection.execute("CREATE TABLE usage_state (singleton INTEGER PRIMARY KEY, revision INTEGER NOT NULL)")
+        connection.execute("INSERT INTO usage_state VALUES (1, 1)")
+        connection.execute("INSERT INTO usage_events VALUES ('old-call', 'others', 70, 30)")
+    ledger = SessionTokenUsageLedger(tmp_path, "sess_usage")
+
+    before = ledger.snapshot()["others"]
+    assert (before["calls_total"], before["priced_calls"], before["total_cost"]) == (1, 0, None)
+
+    ledger.record("new-call", "others", 50, 10, total_cost=0.2)
+    after = ledger.snapshot()
+    assert after["revision"] == 2
+    assert after["others"]["calls_total"] == 2
+    assert after["others"]["input_tokens"] == 120
+    assert after["others"]["priced_calls"] == 1
+    assert after["others"]["total_cost"] == 0.2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_subagent, category", [(False, "main"), (True, "others")])
+async def test_model_call_records_provider_billed_cost(tmp_path, monkeypatch, is_subagent, category):
+    from jiuwenswarm.agents.harness.common.rails.session_token_usage_rail import record_model_token_usage
+    from jiuwenswarm.server.runtime.session import lifecycle, session_history
+
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(lifecycle, "get_agent_sessions_dir", lambda: tmp_path)
+    ctx = SimpleNamespace(
+        extra={},
+        inputs=SimpleNamespace(
+            context_usage_request_id="billed-call",
+            context_usage_attribution={"product_session_id": "sess_usage"},
+            response=SimpleNamespace(
+                usage_metadata={"input_tokens": 1000, "output_tokens": 50, "total_cost": 0.0042},
+            ),
+        ),
+    )
+    await record_model_token_usage(ctx, is_subagent=is_subagent)
+
+    snapshot = SessionTokenUsageLedger(tmp_path / "sess_usage", "sess_usage").snapshot()
+    assert snapshot[category]["priced_calls"] == 1
+    assert snapshot[category]["total_cost"] == 0.0042
+
+
+def test_public_usage_write_records_billed_cost(tmp_path, monkeypatch):
+    from jiuwenswarm.server.runtime.session import session_token_usage as usage, session_history, lifecycle
+
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(lifecycle, "get_agent_sessions_dir", lambda: tmp_path)
+    usage.record_session_token_usage(
+        session_id="session",
+        request_id="call",
+        attribution={"role": "teammate"},
+        input_tokens=7,
+        output_tokens=2,
+        total_cost=0.003,
+    )
+    snapshot = usage.get_session_token_usage("session")
+    assert snapshot["others"]["priced_calls"] == 1
+    assert snapshot["others"]["total_cost"] == 0.003
