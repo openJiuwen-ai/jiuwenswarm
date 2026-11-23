@@ -77,6 +77,7 @@ class _FakePackageBuildError(ValueError):
         ("OUTPUT_INSIDE_SOURCE", "ASSET_UNSAFE_PATH"),
         ("LIMIT_EXCEEDED", "ASSET_LIMIT_EXCEEDED"),
         ("CREDENTIAL_VALUE", "ASSET_CREDENTIAL_DETECTED"),
+        ("INVALID_PACKAGE", "ASSET_INVALID_PACKAGE"),
     ],
 )
 def test_map_internal_error_known_codes(internal_code, expected) -> None:

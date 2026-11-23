@@ -84,6 +84,9 @@ _PACKAGE_BUILD_CODE_MAP: dict[str, str] = {
     "OUTPUT_INSIDE_SOURCE": AssetErrorCode.UNSAFE_PATH,
     "LIMIT_EXCEEDED": AssetErrorCode.LIMIT_EXCEEDED,
     "CREDENTIAL_VALUE": AssetErrorCode.CREDENTIAL_DETECTED,
+    # 损坏、加密、不支持的压缩包与非 UTF-8 包内容：确定性的无效资产包，
+    # 不得落入 INTERNAL_ERROR 兜底，否则调用方无法与可重试故障区分。
+    "INVALID_PACKAGE": AssetErrorCode.INVALID_PACKAGE,
 }
 
 
