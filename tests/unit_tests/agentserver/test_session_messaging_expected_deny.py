@@ -76,6 +76,34 @@ async def test_server_rejection_skips_prompt_without_warning(caplog):
 
 
 @pytest.mark.asyncio
+async def test_unexpected_messaging_error_keeps_warning_with_snapshot(caplog):
+    """Only design-level denials go silent; unexpected codes stay observable."""
+    service = Mock()
+    service.pending_context = AsyncMock(
+        side_effect=SessionMessagingError(
+            "STORE_CORRUPT", "mailbox store returned an invalid record"
+        )
+    )
+    rail, builder = _rail_with_builder(service)
+    route = SessionMessagingRoute(session_id="source-1", request_id="query")
+    try:
+        with caplog.at_level(logging.WARNING, logger="jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit"):
+            await rail.before_model_call(_route_ctx(route))
+        assert builder.add_section.call_count == 1
+        section = builder.add_section.call_args.args[0]
+        state = json.loads(section.content["en"].split("\n", 1)[1])
+        assert state == {"state_unavailable": True}
+        warnings = [r for r in caplog.records if "Could not refresh cross-Session queue context" in r.message]
+        assert len(warnings) == 1
+        assert warnings[0].levelno == logging.WARNING
+        assert any(
+            "SessionMessagingError" in line for line in caplog.text.splitlines()
+        )
+    finally:
+        rail.uninit(None)
+
+
+@pytest.mark.asyncio
 async def test_real_io_failure_keeps_warning_with_snapshot(caplog):
     """OSError/sqlite3.Error remain WARNING with traceback and the fail-safe snapshot."""
     service = Mock()
