@@ -2059,9 +2059,9 @@ class JiuWenSwarmDeepAdapter:
                 exc,
             )
 
-    async def _evict_idle_session_adapters(self) -> None:
+    async def _evict_idle_session_adapters(self) -> int:
         if self._is_session_scoped_adapter:
-            return
+            return 0
 
         now = time.time()
         evicted = 0
@@ -2094,6 +2094,7 @@ class JiuWenSwarmDeepAdapter:
                 continue
             if await self.cleanup_session_adapter(sid):
                 evicted += 1
+        return evicted
 
     async def cleanup_session_adapter(self, session_id: str | None) -> bool:
         """Release an idle session-scoped adapter without deleting session history."""
