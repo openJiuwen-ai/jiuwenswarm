@@ -1601,10 +1601,16 @@ class RuntimeSupervisor:
                 self._readiness.mark_runtime_warming()
             self._readiness.note_warmup_retry(reason or "runtime warming")
         elif state == ReadinessState.FAILED.value:
-            self._fatal = True
-            self._fatal_reason = reason or "runtime worker failed"
+            # A Worker-reported FAILED differs from a spawn/startup failure:
+            # the Worker process stays resident on its IPC socket and never
+            # retries on its own, so leaving the state sticky would keep the
+            # IPC endpoint occupied until a full Front restart. Route it
+            # through the retryable-failure path — automatic recovery shuts
+            # down the failed resident before restarting (the same semantics
+            # recover_from_failed applies to reload-triggered retries). Pure
+            # config failures still recover on a user-triggered reload.
             self._registry.mark_ready("primary", ready=False)
-            self._readiness.mark_failed(self._fatal_reason)
+            self._mark_retryable_failure(reason or "runtime worker failed")
         self._readiness.note_runtime_progress(
             runtime_phase=message.get("runtime_phase"),
             capability_readiness=message.get("capability_readiness"),
