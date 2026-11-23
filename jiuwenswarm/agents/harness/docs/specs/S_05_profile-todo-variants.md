@@ -4,7 +4,7 @@
 |---|---|
 | Spec ID | S_05 |
 | 状态 | 当前实现的真实描述（含未装配遗留的登记） |
-| 修订日期 | 2026-11-18 |
+| 修订日期 | 2026-11-22 |
 | 关联模块 | `jiuwenswarm/agents/harness/code/rails/code_task_planning_rail.py`（code 侧装配 rail，~290 行）<br>`jiuwenswarm/agents/harness/code/tools/code_todo_tools.py`（四子类，115 行）<br>`jiuwenswarm/agents/harness/code/prompt/code_todo_tool_prompts.py`（CC 对齐描述与 schema，174 行）<br>`jiuwenswarm/agents/harness/flash/tools/flash_todo.py`（UnifiedTodoTool 4 合 1，222 行）<br>`jiuwenswarm/agents/harness/flash/rails/flash_todo_rail.py`（flash 侧挂载 rail，310 行）<br>`jiuwenswarm/agents/harness/flash/permissions/tool_policy_projection.py`（统一名权限投影，~95-126）<br>`jiuwenswarm/agents/harness/common/tools/todo_compat.py`（openjiuwen 兼容 shim + 持久提醒，404 行）<br>`jiuwenswarm/agents/harness/common/tools/todo_resume.py`（持久提醒 / 代际 token / 续跑词汇层，476 行）<br>`jiuwenswarm/agents/harness/common/tools/user_todo_tool.py`（用户个人待办，400 行）<br>`jiuwenswarm/agents/harness/common/tools/todo_toolkits.py`（markdown 行式工具链，**未装配遗留**，367 行） |
 | 装配点 | code：`server/runtime/agent_adapter/interface_code.py` `_build_code_task_planning_rail()`（~885）+ `agents/swarm/providers/code_rails.py`（~434，swarm 编排路径）<br>flash：`server/runtime/agent_adapter/interface_flash.py` `_build_task_planning_rail()`（~994，替换 stock `TaskPlanningRail` 的 4→1 位点）<br>compat：`interface_deep.py` 模块级 `install_todo_modify_compat_patch()`（~744，import 时执行，详见 [[S_01]]）<br>user_todos：`interface_code.py` 工具构建映射 `"user_todos" → _build_user_todos_tool`（~309/~1593）+ `agents/swarm/providers/tools.py` `build_user_todos`（~565）+ `resources/config*.yaml` 三份的工具清单 |
 | 消费点 | 前端 `channels/web/frontend/src/utils/toolProtocol.ts`（工具名白名单 + `todo_` 前缀兜底）、`AvatarPermEditor.tsx`（权限编辑器列五个历史名）、subagent 展示层（`includes('todo')` 宽匹配） |
@@ -137,7 +137,7 @@ modify 的 update/append 必须提供 `todos` 数组，单项修改也使用数�
 ## 4. 数据结构
 
 - **code**：无新结构——复用 openjiuwen `TodoItem` / `TodoStatus`；prompt 层 `_CODE_TODO_ITEM_PROPERTIES_EN` 定义五字段（id / content / activeForm / description / status）
-- **flash**：统一工具参数 = `action` + 引擎原生参数（modify 再带 `modify_action` 六种：update / delete / cancel / append / insert_before / insert_after）；`_UNIFIED_TODO_ACTIONS = ("create", "list", "get", "modify")`
+- **flash**：统一工具参数 = `action` + 引擎原生参数（modify 再带 `modify_action` 六种：update / delete / cancel / append / insert_before / insert_after）；`_UNIFIED_TODO_ACTIONS = ("create", "list", "get", "modify")`。create 的规范列表键是 `tasks`、modify 的规范列表键是 `todos`；两者互为别名，`normalize_todo_arguments` 在解析前按当前 action 把别名值复制到规范键（执行路径与权限投影共用，不修改调用方入参）
 - **todo_toolkits（未装配）**：`TaskStatus`（WAITING / RUNNING / COMPLETED / CANCELLED）、`TodoTask(idx, tasks, status, result)`、行格式 `- [ ] 1. task | status [| result]`、`TODO_FILENAME="todo.md"`
 - **todo_resume**：`PERSISTENT_TODO_META_KEY="persistent"`（挂在条目 `meta_data` 内）、`TURN_USER_QUERY_KEY="todo_turn_user_query"`、`TODO_RESUME_SNAPSHOT_PENDING_KEY`、代际 token（uuid str，存 session state，键来自 openjiuwen `TODO_GENERATION_TOKEN_SESSION_KEY`）
 - **user_todo_tool**：`TodoItem` dataclass（id / title / status / priority / due_at / remind_at / created_at / updated_at / created_by / description）+ YAML frontmatter markdown
@@ -151,7 +151,7 @@ modify 的 update/append 必须提供 `todos` 数组，单项修改也使用数�
 `interface_flash._build_task_planning_rail(config)`（兼容带参与不带参两种调用）→ `FlashTodoRail()` → `init(agent)`：取 workspace TODO 节点 + `shared_lock = TodoLockManager()` + 四引擎 + `UnifiedTodoTool` → `add_ability` 原子注册 → `before_model_call`：直接读取 Flash 目标正文（`_TODO_DISCIPLINE_*` + `NO_MODEL_SELECTION_PROMPT`）注入。撤段行为（`todo` 被 `react.disabled_tools` 禁用时移除 430）依赖 `interface_flash` 的 `disabled_tools` 接线（冷启动传参 + 热更新重灌），**当前待批次 C1 接线落地**。
 
 **P3 flash 统一调用**
-模型发 `todo(action=..., ...)` → `invoke` 透传 session → 按 action 分发引擎 → modify 再按 modify_action 分发 → 结构化 ToolOutput 整包返回（无增量流式）→ 权限面 `project_operations` 展开引擎名 + 历史 fallback 名。
+模型发 `todo(action=..., ...)` → `normalize_todo_arguments` 归一 create/modify 列表键别名 → `invoke` 透传 session → 按 action 分发引擎 → modify 再按 modify_action 分发 → 结构化 ToolOutput 整包返回（无增量流式）→ 权限面 `project_operations` 展开引擎名 + 历史 fallback 名。
 
 **P4 compat patch 与 flash 的接合**
 `interface_deep` import → `install_todo_modify_compat_patch()`（幂等）→ openjiuwen 命名空间 `TodoModifyTool = CompatibleTodoModifyTool` → flash 的 modify 引擎实例化时即兼容类（deleted/canceled 容忍）。细节归 [[S_01]]。

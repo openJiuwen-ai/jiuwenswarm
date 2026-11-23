@@ -21,8 +21,28 @@ class TodoArgumentError(ValueError):
         )
 
 
+def normalize_todo_arguments(args: dict[str, Any]) -> dict[str, Any]:
+    """把 create/modify 的列表键别名归一到规范键。
+
+    create 的规范键是 ``tasks``、modify 的规范键是 ``todos``。模型混用时按当前
+    action 复制一次，不删除原键也不改动调用方传入的 dict；未命中别名时原样返回，
+    避免无谓拷贝。
+    """
+    action = str(args.get("action") or "").strip().lower()
+    canonical, alias = ("tasks", "todos") if action == "create" else ("todos", "tasks")
+    if isinstance(args.get(canonical), list):
+        return args
+    alias_value = args.get(alias)
+    if not isinstance(alias_value, list) or not alias_value:
+        return args
+    normalized = dict(args)
+    normalized[canonical] = alias_value
+    return normalized
+
+
 def parse_todo_operation(args: dict[str, Any]) -> tuple[str, str | None]:
     """Resolve operation names without changing the input or touching task state."""
+    args = normalize_todo_arguments(args)
     action = str(args.get("action") or "").strip().lower()
     if action not in TODO_ACTIONS:
         raise TodoArgumentError(f"unsupported todo action. Use {', '.join(TODO_ACTIONS)}.")

@@ -370,6 +370,31 @@ async def test_unified_todo_get_requires_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_unified_todo_create_accepts_todos_alias() -> None:
+    """create 的规范键是 tasks；模型写成 modify 侧的 todos 时按别名归一。"""
+    engine = _StubTodoEngine()
+    tool = UnifiedTodoTool({"create": engine}, language="cn")
+    rows = [{"id": "t1", "content": "提交测试报告", "activeForm": "提交测试报告", "description": "d"}]
+
+    result = await tool.invoke({"action": "create", "todos": rows}, session="s1")
+
+    assert result == {"ok": True}
+    assert engine.calls == [({"tasks": rows, "plan_action": None}, {"session": "s1"})]
+
+
+@pytest.mark.asyncio
+async def test_unified_todo_update_accepts_tasks_alias() -> None:
+    """modify 的规范键是 todos；模型写成 create 侧的 tasks 时同样归一。"""
+    engine = _StubTodoEngine()
+    tool = UnifiedTodoTool({"modify": engine}, language="cn")
+    rows = [{"id": "env", "status": "completed"}]
+
+    await tool.invoke({"action": "modify", "modify_action": "update", "tasks": rows}, session="s1")
+
+    assert engine.calls == [({"action": "update", "todos": rows}, {"session": "s1"})]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("todos", [None, {"id": "env", "status": "completed"}])
 async def test_unified_todo_update_requires_array_before_invoking_engine(todos) -> None:
     engine = _StubTodoEngine()

@@ -17,7 +17,13 @@ from openjiuwen.core.common.exception.errors import BaseError
 from openjiuwen.core.foundation.tool.base import Tool, ToolCard
 from openjiuwen.harness.tools.base_tool import ToolOutput
 
-from .todo_arguments import MODIFY_ACTIONS, TODO_ACTIONS, TodoArgumentError, parse_todo_operation
+from .todo_arguments import (
+    MODIFY_ACTIONS,
+    TODO_ACTIONS,
+    TodoArgumentError,
+    normalize_todo_arguments,
+    parse_todo_operation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -208,7 +214,7 @@ class UnifiedTodoTool(Tool):
         # 不 raise——交给模型读到错误后自行纠正参数。
         if not isinstance(inputs, dict):
             return ToolOutput(success=False, error="todo inputs must be a JSON object")
-        data = dict(inputs)
+        data = normalize_todo_arguments(dict(inputs))
         try:
             action, modify_action = parse_todo_operation(data)
         except TodoArgumentError as exc:
@@ -219,7 +225,8 @@ class UnifiedTodoTool(Tool):
             if not tasks or not isinstance(tasks, list):
                 return ToolOutput(
                     success=False,
-                    error="'tasks' is required for action=create and must be a JSON array",
+                    error="'tasks' is required for action=create and must be a JSON array "
+                    "(the same list 'todos' uses for modify). This call did not modify the todo list.",
                 )
             return await self._engines["create"].invoke(
                 {"tasks": tasks, "plan_action": data.get("plan_action")}, **kwargs
