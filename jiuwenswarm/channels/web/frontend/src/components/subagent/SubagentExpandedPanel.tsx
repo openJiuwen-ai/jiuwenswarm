@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { LoadingSpinner } from '../ui/LoadingSpinner/LoadingSpinner';
 import BackIcon from '../../assets/back.svg?react';
 import { getSubagentStatusLabelKey } from '../../features/subagent/subagentStatusPresentation';
+import { resolveSubagentDisplayName } from '../../features/subagent/subagentNormalizer';
 import {
   extractSubagentTasks,
   finalizeSubagentTasks,
@@ -236,7 +237,7 @@ function SubagentDetail({
   subagentId: string;
   onBack?: () => void;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [tasksExpanded, setTasksExpanded] = useState(false);
   const runtime = useSubagentStore((state) => state.runtimes[sessionId]);
   const activities = selectSubagentActivities(runtime, subagentId);
@@ -253,7 +254,8 @@ function SubagentDetail({
     );
   }
 
-  const taskDescription = subagent.task_description?.trim() || subagent.display_name;
+  const displayName = resolveSubagentDisplayName(subagent, i18n.language);
+  const taskDescription = subagent.task_description?.trim() || displayName;
   const hasFailed = subagent.closed_reason === 'failed' || subagent.turn_outcome === 'failed';
   const visibleTurns: SubagentTurn[] =
     turns.length > 0
@@ -301,7 +303,7 @@ function SubagentDetail({
         ) : null}
         <div className="flex min-w-0 items-center gap-2">
           <h2 className="truncate text-sm font-semibold text-text" data-testid="subagent-detail-name">
-            {subagent.display_name}
+            {displayName}
           </h2>
           {subagent.role ? (
             <span className="truncate text-sm text-text-muted" data-testid="subagent-detail-role">
@@ -367,11 +369,12 @@ function SubagentDetail({
                 <div className="subagent-identity" data-testid="subagent-turn-identity">
                   <TeamMemberAvatar
                     member={subagent.subagent_id}
-                    alt={subagent.display_name}
+                    avatarUrl={subagent.avatar}
+                    alt={displayName}
                     className="h-8 w-8 rounded-xl"
                     imageClassName="rounded-xl"
                   />
-                  <div className="subagent-message__name">{subagent.display_name}</div>
+                  <div className="subagent-message__name">{displayName}</div>
                 </div>
 
                 <div className="subagent-activity-section" data-testid="subagent-turn-activity-section">
@@ -562,7 +565,7 @@ const SubagentOverviewCard = memo(function SubagentOverviewCard({
   sequence: number;
   onClick?: () => void;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const runtime = useSubagentStore((state) => state.runtimes[sessionId]);
   const activities = selectSubagentActivities(runtime, subagent.subagent_id);
   const processItems = useMemo(
@@ -573,7 +576,8 @@ const SubagentOverviewCard = memo(function SubagentOverviewCard({
   return (
     <MemberOverviewCard
       memberId={subagent.subagent_id}
-      displayName={subagent.display_name}
+      displayName={resolveSubagentDisplayName(subagent, i18n.language)}
+      avatarUrl={subagent.avatar}
       sequence={sequence}
       statusIcon={
         <SubagentStatusIcon
@@ -598,7 +602,7 @@ export function SubagentExpandedPanel({
   selectedSubagentId: string | null;
   onSelectSubagent: (subagentId: string | null) => void;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const runtime = useSubagentStore((state) => state.runtimes[sessionId]);
   const subagents = selectSubagents(runtime);
   const activeCount = subagents.filter((subagent) => subagent.status === 'running').length;
@@ -635,6 +639,7 @@ export function SubagentExpandedPanel({
         </div>
         <div className="space-y-3 px-[24px] py-4">
           {subagents.map((subagent) => {
+            const displayName = resolveSubagentDisplayName(subagent, i18n.language);
             const statusLabel = t(
               getSubagentStatusLabelKey(subagent.status, subagent.closed_reason, subagent.turn_outcome),
             );
@@ -645,13 +650,14 @@ export function SubagentExpandedPanel({
                 className={`subagent-expanded-row ${subagent.subagent_id === selectedSubagentId ? 'subagent-expanded-row--selected' : ''}`}
                 onClick={() => openDetail(subagent.subagent_id)}
                 aria-pressed={subagent.subagent_id === selectedSubagentId}
-                aria-label={t('subagent.selectWithStatus', { name: subagent.display_name, status: statusLabel })}
+                aria-label={t('subagent.selectWithStatus', { name: displayName, status: statusLabel })}
                 data-testid="subagent-expanded-row"
                 data-variant={subagent.subagent_id}
               >
                 <TeamMemberAvatar
                   member={subagent.subagent_id}
-                  alt={subagent.display_name}
+                  avatarUrl={subagent.avatar}
+                  alt={displayName}
                   className="h-8 w-8 rounded-xl"
                   imageClassName="rounded-xl"
                 />
@@ -659,9 +665,9 @@ export function SubagentExpandedPanel({
                   <span
                     className="block truncate text-sm font-semibold text-text"
                     data-testid="subagent-expanded-row-name"
-                    title={subagent.display_name}
+                    title={displayName}
                   >
-                    {subagent.display_name}
+                    {displayName}
                   </span>
                   {subagent.role || subagent.task_description ? (
                     <span

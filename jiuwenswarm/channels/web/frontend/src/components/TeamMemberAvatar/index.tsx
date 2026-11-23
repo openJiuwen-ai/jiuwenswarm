@@ -1,6 +1,6 @@
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import clsx from 'clsx';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import { useAgentGroupVisualIdentity } from '../../features/agentManagement/useAgentGroupAvatars';
@@ -12,6 +12,7 @@ interface TeamMemberAvatarProps {
   className?: string;
   imageClassName?: string;
   alt?: string;
+  avatarUrl?: string;
   /**
    * 显式指定成员身份，覆盖名册查询。给"上下文本身已经确定了身份、但成员未必在
    * 名册里"的场景用（如人类成员邀请卡——邀请指令只对 human_agent 存在），
@@ -61,8 +62,10 @@ export function TeamMemberAvatar({
   className,
   imageClassName,
   alt,
+  avatarUrl,
   identity,
 }: TeamMemberAvatarProps): JSX.Element {
+  const [failedAvatarUrl, setFailedAvatarUrl] = useState<string>();
   const rosterIdentity = useTeamMemberIdentity(member);
   const effectiveIdentity = identity ?? rosterIdentity;
   const packageMember = useIsAgentGroupMember(member, effectiveIdentity);
@@ -72,6 +75,7 @@ export function TeamMemberAvatar({
   );
   const defaultImageRadius = avatar.kind === 'user' ? 'rounded-xl' : 'rounded-2xl';
   const label = alt ?? `${member || 'Unknown'} avatar`;
+  const customAvatar = avatarUrl && avatarUrl !== failedAvatarUrl ? avatarUrl : undefined;
 
   const face = (
     <div
@@ -80,12 +84,14 @@ export function TeamMemberAvatar({
         'relative shrink-0 overflow-hidden rounded-xl bg-transparent',
         className
       )}
-      style={avatar.backgroundColor ? { backgroundColor: avatar.backgroundColor } : undefined}
+      style={!customAvatar && avatar.backgroundColor ? { backgroundColor: avatar.backgroundColor } : undefined}
       data-avatar-kind={avatar.kind}
     >
       <img
-        src={avatar.src}
+        src={customAvatar ?? avatar.src}
         alt={label}
+        onError={customAvatar ? () => setFailedAvatarUrl(customAvatar) : undefined}
+        data-testid="team-member-avatar-image"
         className={clsx(
           'h-full w-full object-cover',
           defaultImageRadius,
