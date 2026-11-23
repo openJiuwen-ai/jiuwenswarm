@@ -18,7 +18,9 @@ COPY jiuwenswarm/resources/ /build/jiuwenswarm/resources/
 # User Web images retain their Manager-compatible base; standalone builds can pass '/'.
 ARG VITE_BASE_PATH=./
 ARG VITE_API_PREFIX=""
-RUN VITE_BASE_PATH="${VITE_BASE_PATH}" VITE_API_PREFIX="${VITE_API_PREFIX}" npm run build
+# prebuild 会把图标白名单写到前端目录之外，父目录不存在时 writeFileSync 会 ENOENT。
+RUN mkdir -p /build/jiuwenswarm/extensions_v2/webui \
+    && VITE_BASE_PATH="${VITE_BASE_PATH}" VITE_API_PREFIX="${VITE_API_PREFIX}" npm run build
 
 # ---------- 阶段2:nginx 运行 ----------
 FROM ${NGINX_IMAGE}
