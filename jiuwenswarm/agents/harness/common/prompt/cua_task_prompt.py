@@ -134,14 +134,11 @@ def build_cua_unavailable_prompt(language: str = "cn", *, backend_available: boo
     return prompts.get(language, prompts["cn"])
 
 
-def build_cua_repl_prompt(language: str, *, legacy_available: bool) -> str:
+def build_cua_repl_prompt(language: str) -> str:
     """Return host-specific guidance for the desktop subagent's REPL."""
     if language == "en":
         intro = (
-            "Use single-step tools for simple actions and cua_repl for multi-step workflows. "
-            "Keep their references and screenshot coordinates separate."
-            if legacy_available
-            else "Operate the host desktop through cua_repl. Only act on apps needed for the user's task. "
+            "Operate the host desktop through cua_repl. Only act on apps needed for the user's task. "
             "Leave web page automation to the browser agent. Verify the outcome by observing it."
         )
         instructions = (
@@ -152,9 +149,7 @@ def build_cua_repl_prompt(language: str, *, legacy_available: bool) -> str:
         )
     else:
         intro = (
-            "简单动作使用单步工具，多步流程使用 cua_repl。两类工具的引用和截图坐标分别使用。"
-            if legacy_available
-            else "使用 cua_repl 操作本机桌面，仅操作用户任务所需的应用。"
+            "使用 cua_repl 操作本机桌面，仅操作用户任务所需的应用。"
             "网页自动化交给浏览器子代理。操作后观察结果以确认是否完成。"
         )
         instructions = (

@@ -27,7 +27,6 @@ from openjiuwen.harness.image_modality_probe import (
 from openjiuwen.harness.rails.subagent import SubagentRail
 from openjiuwen.harness.schema.deep_agent_spec import SubAgentConfig
 from openjiuwen.harness.subagents.cua_agent import (
-    CUA_AGENT_FACTORY_NAME,
     DEFAULT_CUA_AGENT_DESCRIPTION,
     create_cua_agent,
 )
@@ -74,9 +73,8 @@ def _cua_spec(subagents):
 
 
 @pytest.fixture(autouse=True)
-def legacy_factory_by_default(monkeypatch):
-    monkeypatch.setattr(cua_config, "is_cua_repl_available", lambda: False)
-    monkeypatch.setattr(cua_config, "is_legacy_cua_available", lambda: True)
+def repl_available_by_default(monkeypatch):
+    monkeypatch.setattr(cua_config, "is_cua_repl_available", lambda: True)
 
 
 # ── single-agent (agent mode) path ───────────────────────────────────────
@@ -102,7 +100,7 @@ def test_single_agent_mounts_cua_agent_only_when_explicitly_enabled(
     )
 
     spec = _cua_spec(subagents)
-    assert spec.factory_name == CUA_AGENT_FACTORY_NAME
+    assert spec.factory_name == cua_factory.COMPUTER_USE_FACTORY_NAME
     assert spec.max_iterations == 7
     assert "永远不要使用 `subprocess`" in spec.system_prompt
     # Shares the parent's filesystem boundary like every other built-in spec.
@@ -159,7 +157,7 @@ def test_code_mode_mounts_cua_agent_when_enabled(monkeypatch, tmp_path):
     )
 
     spec = _cua_spec(subagents)
-    assert spec.factory_name == CUA_AGENT_FACTORY_NAME
+    assert spec.factory_name == cua_factory.COMPUTER_USE_FACTORY_NAME
     assert spec.sys_operation is adapter._sys_operation
     # Code mode never lets sub-agents create their own workspace.
     assert spec.factory_kwargs["auto_create_workspace"] is False
@@ -233,12 +231,11 @@ def test_swarm_cua_provider_builds_cua_factory_spec():
     spec = build_swarm_cua_agent({"max_iterations": 11}, ctx)
 
     assert spec is not None
-    assert spec.factory_name == CUA_AGENT_FACTORY_NAME
+    assert spec.factory_name == cua_factory.COMPUTER_USE_FACTORY_NAME
     assert spec.agent_card.name == "cua_agent"
     assert spec.max_iterations == 11
     # agent-core's cua_* kwargs survive; the swarm only adds the workspace flag.
     assert spec.factory_kwargs["auto_create_workspace"] is False
-    assert "cua_capabilities" in spec.factory_kwargs
 
 
 # ── snapshot retention / pause knobs ─────────────────────────────
@@ -675,7 +672,7 @@ def test_no_unavailable_notice_when_cua_is_mounted_or_not_enabled():
 
 
 def test_enabled_cua_is_skipped_when_the_host_has_no_backend(monkeypatch, tmp_path):
-    monkeypatch.setattr(cua_config, "is_legacy_cua_available", lambda: False)
+    monkeypatch.setattr(cua_config, "is_cua_repl_available", lambda: False)
     react = {"subagents": {"cua_agent": {"enabled": True}}}
     model = MagicMock()
     for adapter in (_deep_adapter(monkeypatch, tmp_path), _code_adapter(monkeypatch, tmp_path)):
@@ -691,15 +688,12 @@ def test_enabled_cua_is_skipped_when_the_host_has_no_backend(monkeypatch, tmp_pa
     assert "No computer control backend is available" in prompt
 
 
-@pytest.mark.parametrize("legacy_available", [False, True])
 @pytest.mark.parametrize(("language", "guidance"), [("cn", "直接调用同步 SDK 方法"), ("en", "Call SDK methods synchronously")])
-def test_cua_factory_keeps_caller_rails_with_repl(monkeypatch, legacy_available, language, guidance):
-    from openjiuwen.harness.tools.cua.rails import CuaProgressRail
+def test_cua_factory_keeps_caller_rails_with_repl(monkeypatch, language, guidance):
     from jiuwenswarm.agents.harness.common.rails.cua_extension_rail import CuaExtensionRail
 
     sdk_instructions = pytest.importorskip("computer_use_mcp.instructions").DESCRIPTION
     monkeypatch.setattr(cua_config, "is_cua_repl_available", lambda: True)
-    monkeypatch.setattr(cua_config, "is_legacy_cua_available", lambda: legacy_available)
     caller_rail = object()
 
     spec = cua_factory.build_cua_agent_config(
@@ -708,27 +702,29 @@ def test_cua_factory_keeps_caller_rails_with_repl(monkeypatch, legacy_available,
 
     assert spec.rails[0] is caller_rail
     assert any(isinstance(rail, CuaExtensionRail) for rail in spec.rails)
-    assert spec.factory_name == (CUA_AGENT_FACTORY_NAME if legacy_available else None)
+    assert spec.factory_name == cua_factory.COMPUTER_USE_FACTORY_NAME
     assert spec.system_prompt.count(sdk_instructions) == 1
     host_prompt = spec.system_prompt.removesuffix(sdk_instructions)
-    assert ("get_window_state" in host_prompt) is legacy_available
+    assert "get_window_state" not in host_prompt
     assert guidance in spec.system_prompt
     launch_rule = "Never use `subprocess`" if language == "en" else "永远不要使用 `subprocess`"
     assert host_prompt.count(launch_rule) == 1
     assert "macOS" not in host_prompt
     assert 'app.read(view="both")' in host_prompt
     assert ("无需打印或截取" if language == "cn" else "no need to print or slice") in host_prompt
-    assert any(isinstance(rail, CuaProgressRail) for rail in spec.rails) is not legacy_available
 
 
 @pytest.mark.asyncio
-async def test_repl_only_subagent_registers_repl_without_legacy_tools_or_sdk_instructions(monkeypatch, tmp_path):
+async def test_repl_only_subagent_is_a_computer_use_agent(monkeypatch, tmp_path):
+    from computer_use_agent import ComputerUseAgent
+    from openjiuwen.core.foundation.llm import Model, ModelClientConfig, ModelRequestConfig
+    from openjiuwen.core.runner import Runner
     from openjiuwen.harness import create_deep_agent
 
-    monkeypatch.setitem(sys.modules, "computer_use_mcp.instructions", None)
-    monkeypatch.setattr(cua_config, "is_cua_repl_available", lambda: True)
-    monkeypatch.setattr(cua_config, "is_legacy_cua_available", lambda: False)
-    model = MagicMock()
+    model = Model(
+        model_client_config=ModelClientConfig(client_provider="OpenAI", api_key="offline", api_base="http://127.0.0.1:1/v1"),
+        model_config=ModelRequestConfig(model="offline"),
+    )
     subagents, _ = _deep_adapter(monkeypatch, tmp_path)._build_configured_subagents(
         model, {"subagents": {"cua_agent": {"enabled": True}}}, {},
     )
@@ -737,12 +733,23 @@ async def test_repl_only_subagent_registers_repl_without_legacy_tools_or_sdk_ins
         enable_read_image_multimodal=False, enable_sys_operation=False,
     )
     child = parent.create_subagent("cua_agent", "repl-only-test")
+    sibling = parent.create_subagent("cua_agent", "repl-only-sibling")
     try:
-        await child._ensure_initialized()
-        names = {tool.name for tool in await child.ability_manager.list_tool_info()}
-        assert names == {"cua_repl"}
+        assert isinstance(child, ComputerUseAgent)
+        for agent in (child, sibling):
+            await agent.ensure_initialized()
+            assert {tool.name for tool in await agent.ability_manager.list_tool_info()} == {"cua_repl"}
+        child_tool = child.ability_manager.get("cua_repl")
+        sibling_tool = sibling.ability_manager.get("cua_repl")
+        assert child_tool.id != sibling_tool.id
+        await child.cleanup_task_resources()
+        assert Runner.resource_mgr.get_tool(child_tool.id) is None
+        assert Runner.resource_mgr.get_tool(sibling_tool.id) is not None
     finally:
+        await child.cleanup_task_resources()
+        await sibling.cleanup_task_resources()
         await child.stop()
+        await sibling.stop()
         await parent.stop()
 
 

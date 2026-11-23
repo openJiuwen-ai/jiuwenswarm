@@ -48,7 +48,7 @@ def cua_repl_unavailable_reason() -> str:
             return "unsupported_platform"
         if sys.platform == "darwin" and int(platform.mac_ver()[0].split(".")[0]) < 14:
             return "unsupported_platform"
-        if any(importlib.util.find_spec(name) is None for name in ("computer_use", "computer_use_mcp")):
+        if any(importlib.util.find_spec(name) is None for name in ("computer_use", "computer_use_mcp", "computer_use_agent")):
             return "backend_missing"
         if not getattr(sys, "frozen", False):
             if importlib.util.find_spec("computer_use_native_tools") is None:
@@ -79,24 +79,14 @@ def is_cua_repl_available() -> bool:
     return not cua_repl_unavailable_reason()
 
 
-def is_legacy_cua_available() -> bool:
-    """Check whether Linux can use agent-core's single-step desktop tools."""
-    try:
-        if not sys.platform.startswith("linux") or _is_harmony_desktop() or not os.getenv("DISPLAY"):
-            return False
-        return all(importlib.util.find_spec(name) is not None for name in ("pyautogui", "PIL", "Xlib"))
-    except (ImportError, OSError, ValueError):
-        return False
-
-
 def is_cua_backend_available() -> bool:
     """Report installation capability independently of permissions and preferences."""
-    return is_cua_repl_available() or is_legacy_cua_available()
+    return is_cua_repl_available()
 
 
 def cua_backend_settings() -> dict[str, str]:
     """Provide the same read-only capability to both settings transports."""
-    reason = "" if is_legacy_cua_available() else cua_repl_unavailable_reason()
+    reason = cua_repl_unavailable_reason()
     return {
         "cua_backend_available": "false" if reason else "true",
         "cua_backend_unavailable_reason": reason,

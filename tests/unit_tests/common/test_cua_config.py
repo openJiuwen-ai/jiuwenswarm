@@ -30,7 +30,6 @@ def panel_config(tmp_path, monkeypatch):
     monkeypatch.setattr(handlers, "ENV_FILE", tmp_path / ".env")
     monkeypatch.setattr(handlers, "_get_crypto_provider", lambda: None)
     monkeypatch.setattr(cua_config, "cua_repl_unavailable_reason", lambda: "native_build_failed")
-    monkeypatch.setattr(cua_config, "is_legacy_cua_available", lambda: False)
     monkeypatch.setattr(config_service, "get_config_file", lambda: path)
     monkeypatch.setattr(config_service, "get_env_file", lambda: tmp_path / ".env")
     original = handlers.provider
@@ -220,26 +219,18 @@ def test_source_sdk_needs_the_paths_module_but_can_lack_the_status_probe(monkeyp
     assert cua_config.cua_repl_unavailable_reason() == expected
 
 
-@pytest.mark.parametrize(("system", "legacy_available"), [
-    ("darwin", False), ("win32", False), ("linux", True),
-])
-def test_legacy_fallback_after_repl_build_failure_is_linux_only(monkeypatch, system, legacy_available):
-    monkeypatch.setattr(cua_config, "sys", SimpleNamespace(platform=system))
-    monkeypatch.setattr(cua_config, "_is_harmony_desktop", lambda: False)
-    monkeypatch.setenv("DISPLAY", ":0")
-    monkeypatch.setattr(cua_config.importlib.util, "find_spec", lambda name: object())
+def test_linux_switch_is_unavailable_without_the_repl_backend(monkeypatch):
+    monkeypatch.setattr(cua_config, "sys", SimpleNamespace(platform="linux"))
     monkeypatch.setattr(cua_config, "cua_repl_unavailable_reason", lambda: "native_build_failed")
 
-    assert not cua_config.is_cua_repl_available()
-    assert cua_config.is_legacy_cua_available() is legacy_available
-    assert cua_config.is_cua_backend_available() is legacy_available
+    assert not cua_config.is_cua_backend_available()
     assert cua_config.cua_backend_settings() == {
-        "cua_backend_available": "true" if legacy_available else "false",
-        "cua_backend_unavailable_reason": "" if legacy_available else "native_build_failed",
+        "cua_backend_available": "false",
+        "cua_backend_unavailable_reason": "native_build_failed",
     }
 
 
-def test_harmony_has_no_desktop_backend_even_with_sdk_and_legacy_dependencies(monkeypatch):
+def test_harmony_has_no_desktop_backend_even_with_sdk_installed(monkeypatch):
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_PLATFORM", " Harmony ")
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setattr(cua_config.sys, "platform", "linux")
@@ -247,5 +238,4 @@ def test_harmony_has_no_desktop_backend_even_with_sdk_and_legacy_dependencies(mo
     monkeypatch.setattr(cua_config.importlib.util, "find_spec", lambda name: object())
 
     assert not cua_config.is_cua_repl_available()
-    assert not cua_config.is_legacy_cua_available()
     assert not cua_config.is_cua_backend_available()
