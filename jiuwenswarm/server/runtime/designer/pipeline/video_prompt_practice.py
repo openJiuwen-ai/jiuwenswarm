@@ -1103,12 +1103,13 @@ def compose_practice_prompt(
         who = _name_for_id(token, graph) or str(token)
         if who.casefold() in gone_names:
             continue
-        if token.casefold() in turnaround or who.casefold() in turnaround:
-            turnaround_words.append(_image_word(index, family))
+        image_word = cast_word(index, who)
+        if image_word and (token.casefold() in turnaround or who.casefold() in turnaround):
+            turnaround_words.append(image_word)
         sentences.append(
             _story_cast_sentence(
                 who=who,
-                image_word=cast_word(index, who),
+                image_word=image_word,
                 wardrobe=_wardrobe_for(token, cfg, graph, lang),
                 seat=_seat_for(token, cfg, graph, lang),
                 doing=_action_for(token, cfg, graph, action),

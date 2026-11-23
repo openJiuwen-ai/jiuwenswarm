@@ -1137,7 +1137,7 @@ class DesignerGraphToolkit:
             pass
         node["config"] = cfg
 
-        # Gated same-scene last-frame chain before prompt so Wan binding matches attach order.
+        # Collect references before composing so image bindings follow attach order.
         clip_index = node_clip_index(node)
         try:
             slots = attachable_slots(collect_clip_reference_slots(self.ctx, clip_index, node=node))
