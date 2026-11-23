@@ -172,8 +172,11 @@ class FlashRepeatCallGuardRail(DeepAgentRail):
         include: tuple[str, ...] = (),
         exclude: tuple[str, ...] = (),
         arguments_preview_chars: int = _DEFAULT_ARGUMENTS_PREVIEW_CHARS,
+        config_provider: Any = None,
     ) -> None:
         super().__init__()
+        self._enabled = True
+        self._config_provider = config_provider
         self._thresholds = _validate_thresholds(list(thresholds))
         self._threshold_set = set(self._thresholds)
         self._include_patterns = [_wildcard_to_regex(p) for p in include]
@@ -188,6 +191,33 @@ class FlashRepeatCallGuardRail(DeepAgentRail):
         self._attachment_manager: Any = None
         self._system_prompt_builder: Any = None
 
+    def _apply_config(self) -> None:
+        """每轮现读 enabled + 阈值/过滤/预览（热重载同步）；非法值忽略并保留旧值。"""
+        config: Any = {}
+        if self._config_provider is not None:
+            try:
+                config = self._config_provider()
+            except Exception:
+                config = {}
+        config = config if isinstance(config, dict) else {}
+        self._enabled = bool(config.get("enabled", True))
+        try:
+            thresholds = config.get("thresholds")
+            if isinstance(thresholds, (list, tuple)) and thresholds:
+                self._thresholds = _validate_thresholds(list(int(t) for t in thresholds))
+                self._threshold_set = set(self._thresholds)
+            include = config.get("include")
+            if isinstance(include, (list, tuple)):
+                self._include_patterns = [_wildcard_to_regex(p) for p in include]
+            exclude = config.get("exclude")
+            if isinstance(exclude, (list, tuple)):
+                self._exclude_patterns = [_wildcard_to_regex(p) for p in exclude]
+            preview = config.get("arguments_preview_chars")
+            if isinstance(preview, int) and preview >= 1:
+                self._arguments_preview_chars = preview
+        except (ValueError, TypeError) as exc:
+            logger.warning("[FlashRepeatCallGuardRail] 配置非法，保留旧值: %s", exc)
+
     def init(self, agent: Any) -> None:
         self._attachment_manager = getattr(agent, "prompt_attachment_manager", None)
         self._system_prompt_builder = getattr(agent, "system_prompt_builder", None)
@@ -199,6 +229,11 @@ class FlashRepeatCallGuardRail(DeepAgentRail):
 
     async def before_invoke(self, ctx: AgentCallbackContext) -> None:
         """每条新消息重置当前会话的重复链（用户插话 = 上下文改变，非循环）。"""
+        self._apply_config()
+        if not self._enabled:
+            # 禁用：清掉上一轮残留提醒后不再观测（热重载后下一轮生效）。
+            await self._clear_reminder(ctx)
+            return
         sid = _resolve_session_id(ctx)
         self._remember_chain(sid, None)
         await self._clear_reminder(ctx)
@@ -213,6 +248,8 @@ class FlashRepeatCallGuardRail(DeepAgentRail):
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
         """观测一次工具调用；命中阈值则 upsert 提醒，链路断裂则清空。"""
+        if not self._enabled:
+            return
         tool_call = getattr(getattr(ctx, "inputs", None), "tool_call", None)
         if tool_call is None:
             return

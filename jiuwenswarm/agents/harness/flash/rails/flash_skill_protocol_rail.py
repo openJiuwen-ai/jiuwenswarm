@@ -24,6 +24,7 @@ flash 技能域接管成功后，执行规范正文被拆成 730 ``skill_executi
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
@@ -64,6 +65,55 @@ def _rewrite_todo_names(text: str) -> str | None:
     return rewritten
 
 
+def _strip_todo_rules(text: str, language: str) -> str | None:
+    """todo 禁用时删掉「必须使用 todo」整条（规则 2）并把规则 9 的 todo 引用改中性。
+
+    锚点守卫：规则 2 的起止锚点任一缺失即返回 ``None``（调用方保留原正文），避免
+    上游改文案后盲删导致整段丢失。规则 9 的引用替换是 best-effort——替换不到就
+    保留原句、不抛错。
+    """
+    if language == "cn":
+        rule2 = "2. **必须使用 todo**："
+        rule3 = "\n3. **严格顺序**"
+        neutral2 = "2. **无需维护 todo**：当前环境未启用 todo 工具，本任务无需创建或更新 todo 列表。"
+    else:
+        rule2 = "2. **Use todo (mandatory)**:"
+        rule3 = "\n3. **Strict order**"
+        neutral2 = (
+            "2. **No todo needed**: the todo tool is disabled in this environment; "
+            "do not create or update a todo list for this task."
+        )
+
+    idx2 = text.find(rule2)
+    idx3 = text.find(rule3)
+    if idx2 < 0 or idx3 < 0 or idx2 >= idx3:
+        return None
+    text = text[:idx2] + neutral2 + text[idx3:]
+
+    if language == "cn":
+        text = text.replace(
+            "先用 `todo_modify` 把所有 `in_progress`/`pending` 项标为 `cancelled`，再回应新请求。",
+            "直接回应新请求。",
+        )
+        text = text.replace(
+            "按第 2 条的适用规则处理 todo，不要沿用旧 todo。",
+            "不要沿用旧任务步骤。",
+        )
+    else:
+        text = re.sub(
+            r"abandoned: first call\s+`todo_modify` to mark every "
+            r"`in_progress`/`pending` item `cancelled`, then respond to the new request\.",
+            "abandoned: respond to the new request directly.",
+            text,
+        )
+        text = re.sub(
+            r"handle todos under the applicable rules in item 2\s+instead of reusing the old one\.",
+            "do not reuse the old task steps.",
+            text,
+        )
+    return text
+
+
 class FlashSkillProtocolRail(DeepAgentRail):
     """flash 侧修正技能执行规范正文里的旧 todo 工具名（不改 priority、不改其它规则）。"""
 
@@ -71,10 +121,21 @@ class FlashSkillProtocolRail(DeepAgentRail):
     priority = 3
     inherit_to_subagents = False
 
-    def __init__(self) -> None:
+    def __init__(self, disabled_tools_provider: Any = None) -> None:
         super().__init__()
         self._system_prompt_builder: Any = None
         self._warned_guard_miss = False
+        self._disabled_tools_provider = disabled_tools_provider
+
+    def _todo_disabled(self) -> bool:
+        """每轮现读禁用工具集，判断 todo 是否被禁（provider 缺省时 false，保持旧行为）。"""
+        provider = self._disabled_tools_provider
+        if provider is None:
+            return False
+        try:
+            return "todo" in set(provider() or ())
+        except Exception:
+            return False
 
     def init(self, agent: Any) -> None:
         self._system_prompt_builder = getattr(agent, "system_prompt_builder", None)
@@ -98,6 +159,7 @@ class FlashSkillProtocolRail(DeepAgentRail):
         if not isinstance(content, dict):
             return
 
+        todo_disabled = self._todo_disabled()
         rewritten_content: dict[str, str] = {}
         changed = False
         guard_miss = False
@@ -105,7 +167,13 @@ class FlashSkillProtocolRail(DeepAgentRail):
             if not isinstance(text, str):
                 rewritten_content[lang] = text
                 continue
-            new_text = _rewrite_todo_names(text)
+            lang_key = "cn" if lang in ("cn", "zh") else "en"
+            if todo_disabled:
+                # 待办被禁用时：删掉「必须使用待办」整条并中和规则 9 残留待办引用，
+                # 而非只改工具名（评审 #2）。守卫未命中返回 None → 保留原段。
+                new_text = _strip_todo_rules(text, lang_key)
+            else:
+                new_text = _rewrite_todo_names(text)
             if new_text is None:
                 guard_miss = True
                 rewritten_content[lang] = text
@@ -114,11 +182,11 @@ class FlashSkillProtocolRail(DeepAgentRail):
                 changed = changed or (new_text != text)
 
         if guard_miss and not self._warned_guard_miss:
-            # 上游已移除旧 todo 工具名（或改文案）：保留原段、不改写，且只告警一次。
+            # 上游已移除旧 todo 工具名/规则 2 锚点缺失（或改文案）：保留原段、不改写，且只告警一次。
             self._warned_guard_miss = True
             logger.warning(
-                "[FlashSkillProtocolRail] %s 正文已无 todo_create/todo_modify "
-                "旧工具名，守卫未命中——保留原段（上游文案已变，需确认是否已适配 flash 统一 todo）",
+                "[FlashSkillProtocolRail] %s 正文守卫未命中（todo_create/todo_modify 已不存在，"
+                "或「必须使用 todo」锚点缺失）——保留原段，需确认是否已适配 flash 统一 todo / todo 禁用",
                 name,
             )
         if not changed:

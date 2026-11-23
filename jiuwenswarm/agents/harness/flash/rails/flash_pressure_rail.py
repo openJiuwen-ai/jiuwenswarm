@@ -84,13 +84,42 @@ class FlashPressureRail(DeepAgentRail):
         self,
         warning_ratio: float = _DEFAULT_WARNING_RATIO,
         critical_ratio: float = _DEFAULT_CRITICAL_RATIO,
+        config_provider: Any = None,
     ) -> None:
         super().__init__()
         _validate_ratios(float(warning_ratio), float(critical_ratio))
+        self._enabled = True
+        self._config_provider = config_provider
         self._warning_ratio = float(warning_ratio)
         self._critical_ratio = float(critical_ratio)
         self._attachment_manager: Any = None
         self._system_prompt_builder: Any = None
+
+    def _apply_config(self) -> None:
+        """每轮现读 enabled + 水位阈值（热重载同步）；非法值忽略并保留旧值。"""
+        config: Any = {}
+        if self._config_provider is not None:
+            try:
+                config = self._config_provider()
+            except Exception:
+                config = {}
+        config = config if isinstance(config, dict) else {}
+        self._enabled = bool(config.get("enabled", True))
+        try:
+            warning = config.get("warning_ratio")
+            critical = config.get("critical_ratio")
+            if warning is None and critical is None:
+                return
+            _validate_ratios(
+                float(warning) if warning is not None else self._warning_ratio,
+                float(critical) if critical is not None else self._critical_ratio,
+            )
+            if warning is not None:
+                self._warning_ratio = float(warning)
+            if critical is not None:
+                self._critical_ratio = float(critical)
+        except (ValueError, TypeError) as exc:
+            logger.warning("[FlashPressureRail] 配置非法，保留旧值: %s", exc)
 
     def init(self, agent: Any) -> None:
         self._attachment_manager = getattr(agent, "prompt_attachment_manager", None)
@@ -102,6 +131,11 @@ class FlashPressureRail(DeepAgentRail):
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
         """按当前水位注入或清空压力提醒。"""
+        self._apply_config()
+        if not self._enabled:
+            # 禁用：清掉残留 context_pressure 附件后返回（热重载后下一轮生效）。
+            await self._clear(ctx)
+            return
         text = self._resolve_pressure_text(ctx)
         if text is None:
             await self._clear(ctx)
