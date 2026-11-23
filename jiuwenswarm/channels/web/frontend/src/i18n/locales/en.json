@@ -2276,6 +2276,7 @@
         "WAITING_SOURCES": "Awaiting results",
         "CLAIMED": "Claimed",
         "IN_PROGRESS": "In progress",
+        "OWNER_STOPPED": "Stopped",
         "COMPLETED": "Completed",
         "FAILED": "Failed"
       },
@@ -2289,6 +2290,7 @@
       "displayName": "Name",
       "description": "Description",
       "ownerTeam": "Owner Team",
+      "summaryTeam": "Summary Team",
       "teams": "Teams",
       "leadTeam": "Team",
       "leadMember": "Leader",

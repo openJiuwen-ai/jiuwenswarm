@@ -14,7 +14,7 @@ import {
 import { resolveTeamGroupDisplayName } from '../../features/teamGroupIdentity';
 import type { AgentGroupCatalogItem } from '../../features/agentManagement/types';
 import type { RuntimeTeamInfo } from '../../stores/teamSelectorStore';
-import { buildOrganizationTeamTree } from './organizationTree';
+import { buildOrganizationTeamTree, resolveOrganizationRoster } from './organizationTree';
 
 /** Uses the same session roster and conversation action as the composer TeamSelector. */
 export function OrganizationTeamsList({ groups: providedGroups, variant = 'compact' }: {
@@ -41,7 +41,9 @@ export function OrganizationTeamsList({ groups: providedGroups, variant = 'compa
   }, [realSession, sessionId, runtime?.loaded, fetchTeams]);
 
   if (!realSession || !sessionId) return null;
-  const teams = runtime?.teams ?? [];
+  const { visibleTeams: teams, teamIds } = resolveOrganizationRoster(runtime?.teams ?? []);
+  const selectedId = runtime?.selectedTeamId;
+  const visibleSelectedId = selectedId ? teamIds.get(selectedId) ?? selectedId : null;
 
   const renderTeam = (team: RuntimeTeamInfo) => {
     const identity = resolveOrganizationTeamIdentity(
@@ -52,7 +54,7 @@ export function OrganizationTeamsList({ groups: providedGroups, variant = 'compa
     const label = identity
       ? resolveTeamGroupDisplayName(identity, i18n.language)
       : resolveOrganizationTeamLabel(team, groups, team.team_id);
-    const selected = runtime?.selectedTeamId === team.team_id;
+    const selected = visibleSelectedId === team.team_id;
     // Match the composer: a live Team runtime can remain "running" after team.idle.
     const key = conversationKey(sessionId, team.is_owner ? null : team.team_id);
     const running = team.available !== false && Boolean(

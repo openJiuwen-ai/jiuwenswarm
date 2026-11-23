@@ -2276,6 +2276,7 @@
         "WAITING_SOURCES": "等待成果",
         "CLAIMED": "已认领",
         "IN_PROGRESS": "进行中",
+        "OWNER_STOPPED": "已停止",
         "COMPLETED": "已完成",
         "FAILED": "失败"
       },
@@ -2289,6 +2290,7 @@
       "displayName": "名称",
       "description": "描述",
       "ownerTeam": "主团",
+      "summaryTeam": "汇总团队",
       "teams": "团队",
       "leadTeam": "Team",
       "leadMember": "Leader",
