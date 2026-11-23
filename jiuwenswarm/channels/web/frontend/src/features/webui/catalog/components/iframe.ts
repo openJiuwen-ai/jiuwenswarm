@@ -1,5 +1,6 @@
-import { component, validURL } from './shared.ts';
+import { component, token, validURL } from './shared.ts';
 import { hasNonEmptyLocalizedText, localizedTextRule } from './localizedText.ts';
+import { WEBUI_ICON_NAMES } from '../../icons/names.ts';
 
 function validIframeURL(value: unknown): boolean {
   if (typeof value !== 'string' || !validURL(value) || /[\u0000-\u001f\u007f\\]/.test(value)) return false;
@@ -25,6 +26,7 @@ export const iframeRule = component(
     srcDoc: localizedTextRule,
     title: localizedTextRule,
     minWidth: { kind: 'number', min: 0, max: 4096 },
+    icon: token(...WEBUI_ICON_NAMES),
   },
   {
     required: ['title'],

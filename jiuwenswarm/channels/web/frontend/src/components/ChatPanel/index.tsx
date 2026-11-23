@@ -114,7 +114,7 @@ import {
 } from '../../features/topicStarterVisibility';
 
 const pluginHeaderActionStyles: WebUIStyleOverrides = {
-  Button: { className: 'shrink-0' },
+  Button: { className: 'chat-panel-header__plugin-action shrink-0' },
   Box: { unstyled: true, className: 'flex min-w-0 items-center gap-2' },
 };
 
@@ -2436,7 +2436,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                 onClick={() => onToggleHeartbeatPanel?.()}
                 title={t('heartbeat.panel.title')}
               >
-                <Activity size={14} strokeWidth={2} />
+                <Activity size={18} strokeWidth={2} />
               </button>
             )}
             <button

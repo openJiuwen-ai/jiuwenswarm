@@ -2737,7 +2737,17 @@
     "contextCompression": "上下文窗口",
     "memoryUsage": "内存占用",
     "poweredBy": "Powered by openJiuwen",
-    "fileNotPreviewable": "此文件类型不支持预览"
+    "fileNotPreviewable": "此文件类型不支持预览",
+    "plugins": {
+      "title": "新标签页",
+      "description": "选择要在此面板中打开的插件页签。",
+      "empty": "暂时没有可用的插件",
+      "added": "已添加",
+      "add": "新标签页",
+      "addTab": "添加",
+      "draftTab": "新标签页",
+      "closeTab": "关闭插件页签"
+    }
   },
   "todoList": {
     "title": "任务列表",

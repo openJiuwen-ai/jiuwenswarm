@@ -193,10 +193,14 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         },
         "required": ("file",),
     },
-    "Panel": {"props": {"title": {"kind": "string", "maxBytes": 200}}, "required": ("title",), "children": True},
+    "Panel": {"props": {
+        "title": {"kind": "string", "maxBytes": 200},
+        "icon": token(*WEBUI_ICON_NAMES),
+    }, "required": ("title",), "children": True},
     "Iframe": {"props": {
         "src": LOCALIZED_TEXT, "srcDoc": LOCALIZED_TEXT, "title": LOCALIZED_TEXT,
         "minWidth": {"kind": "number", "min": 0, "max": 4096},
+        "icon": token(*WEBUI_ICON_NAMES),
     }, "required": ("title",)},
     "Dropdown": {
         "props": {

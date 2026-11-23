@@ -1,0 +1,196 @@
+.webui-panel-home {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  flex-direction: column;
+  gap: 20px;
+  overflow-y: auto;
+  padding: 24px;
+  background: var(--color-surface-card);
+}
+
+.webui-panel-home__intro {
+  display: flex;
+  width: 100%;
+  max-width: 960px;
+  flex-shrink: 0;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 auto;
+}
+
+.webui-panel-home__title {
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 28px;
+}
+
+.webui-panel-home__description {
+  margin: 0;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 22px;
+}
+
+.webui-panel-home__list {
+  display: grid;
+  width: 100%;
+  max-width: 960px;
+  flex-shrink: 0;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px;
+  margin: 0 auto;
+  padding: 0;
+  list-style: none;
+}
+
+.webui-panel-home__list > li {
+  min-width: 0;
+}
+
+.webui-panel-home__item {
+  display: grid;
+  width: 100%;
+  min-height: 68px;
+  min-width: 0;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 0;
+  border-radius: 10px;
+  background: rgba(var(--color-surface-page-rgb), 0.55);
+  color: var(--color-text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 160ms ease;
+}
+
+.webui-panel-home__item:hover,
+.webui-panel-home__item:focus-visible {
+  background: rgba(var(--color-border-accent-rgb), 0.1);
+}
+
+.webui-panel-home__item:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 3px;
+}
+
+.webui-panel-home__item:active {
+  background: rgba(var(--color-border-accent-rgb), 0.14);
+}
+
+.webui-panel-home__icon {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  background: var(--color-chat-accent-subtle);
+  color: var(--color-chat-accent);
+}
+
+.webui-panel-home__icon svg {
+  width: 18px;
+  height: 18px;
+}
+
+.webui-panel-home__name {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  line-height: 20px;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.webui-panel-home__action,
+.webui-panel-home__badge {
+  display: inline-flex;
+  min-height: 22px;
+  align-items: center;
+  justify-self: end;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.webui-panel-home__action {
+  color: var(--color-text-secondary);
+  transition: color 160ms ease;
+}
+
+.webui-panel-home__action::after {
+  width: 5px;
+  height: 5px;
+  border-top: 1px solid currentColor;
+  border-right: 1px solid currentColor;
+  content: '';
+  transform: rotate(45deg);
+  transition: transform 160ms ease;
+}
+
+.webui-panel-home__item:hover .webui-panel-home__action,
+.webui-panel-home__item:focus-visible .webui-panel-home__action {
+  color: var(--color-text-primary);
+}
+
+.webui-panel-home__item:hover .webui-panel-home__action::after,
+.webui-panel-home__item:focus-visible .webui-panel-home__action::after {
+  transform: translateX(3px) rotate(45deg);
+}
+
+.webui-panel-home__badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--color-chat-accent-subtle);
+  color: var(--color-chat-accent);
+}
+
+.webui-panel-home__badge::before {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  content: '';
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .webui-panel-home__intro,
+  .webui-panel-home__list {
+    animation: webui-panel-home-appear 180ms ease-out;
+  }
+}
+
+@keyframes webui-panel-home-appear {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .webui-panel-home__item,
+  .webui-panel-home__action,
+  .webui-panel-home__action::after {
+    transition: none;
+  }
+
+  .webui-panel-home__item:hover .webui-panel-home__action::after,
+  .webui-panel-home__item:focus-visible .webui-panel-home__action::after {
+    transform: rotate(45deg);
+  }
+}
