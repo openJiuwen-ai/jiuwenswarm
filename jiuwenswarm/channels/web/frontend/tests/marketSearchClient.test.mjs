@@ -80,3 +80,70 @@ test('connector list preserves the visible display name', async () => {
   const items = await connectorApi.list('local');
   assert.equal(items[0].displayName, '回归连接器');
 });
+
+test('connector catalogue RPCs forward optional source_id', async () => {
+  const calls = [];
+  webClient.request = async (method, params) => {
+    calls.push([method, params]);
+    if (method === 'mcp.list') return { items: [] };
+    if (method === 'mcp.show') {
+      return {
+        item: {
+          id: 'asset-1',
+          name: 'pkg-1',
+          display_name: 'Pkg',
+          description: '',
+          category: '',
+          integration_type: 'stdio-mcp',
+          connection_state: 'disconnected',
+          has_bundled_skills: false,
+          source: 'hub',
+          source_id: 'corp-hub',
+          installed: false,
+          connected: false,
+          bundled_skills: [],
+          skills: [],
+          tools: [],
+        },
+      };
+    }
+    if (method === 'mcp.install') {
+      return { type: 'installed', item: { id: 'asset-1', name: 'pkg-1', installed: true } };
+    }
+    if (method === 'mcp.sources.providers') {
+      return {
+        type: 'list',
+        providers: [
+          {
+            source_id: 'openjiuwen-hub',
+            display_name: 'OpenJiuwen Hub',
+            enabled: true,
+            capabilities: ['search'],
+          },
+          {
+            source_id: 'corp-hub',
+            display_name: 'Corp Hub',
+            enabled: true,
+            capabilities: ['search'],
+          },
+        ],
+      };
+    }
+    throw new Error(`Unexpected method: ${method}`);
+  };
+
+  await connectorApi.list('hub', '钉钉', { sourceId: 'corp-hub' });
+  const detail = await connectorApi.show('asset-1', { sourceId: 'corp-hub' });
+  await connectorApi.install('asset-1', { sourceId: 'corp-hub' });
+  const providers = await connectorApi.listSourceProviders();
+
+  assert.deepEqual(calls, [
+    ['mcp.list', { filter: 'hub', query: '钉钉', source_id: 'corp-hub' }],
+    ['mcp.show', { id: 'asset-1', source_id: 'corp-hub' }],
+    ['mcp.install', { id: 'asset-1', source_id: 'corp-hub' }],
+    ['mcp.sources.providers', {}],
+  ]);
+  assert.equal(detail.sourceId, 'corp-hub');
+  assert.equal(providers.length, 2);
+  assert.equal(providers[1].source_id, 'corp-hub');
+});

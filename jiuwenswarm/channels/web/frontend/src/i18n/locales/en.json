@@ -5842,6 +5842,11 @@
       "mcp": "Search connectors",
       "my": "Search my extensions"
     },
+    "sources": {
+      "tabsLabel": "Connector catalogue sources",
+      "noSources": "No connector sources available",
+      "loadFailed": "Failed to load connector sources"
+    },
     "statusFilter": {
       "all": "All",
       "pending": "Pending install/connect",
@@ -5896,6 +5901,8 @@
       "use": "Use",
       "useNotWired": "Not wired yet — use it from the \"+\" panel in the chat input instead.",
       "install": "Install",
+      "update": "Update",
+      "updateNotSupportedYet": "Connector upgrade is not wired yet.",
       "installing": "Installing",
       "connecting": "Connecting",
       "disconnecting": "Disconnecting",

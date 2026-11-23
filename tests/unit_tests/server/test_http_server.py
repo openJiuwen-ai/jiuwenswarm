@@ -972,6 +972,7 @@ def test_unhandled_urls_are_not_registered() -> None:
     assert ("GET", "/api/v1/heartbeat/config") not in routes
     assert ("POST", "/api/v1/sessions") in routes
     assert ("POST", "/api/v1/mcp/actions/list") in routes
+    assert ("POST", "/api/v1/mcp/actions/sources-providers") in routes
     assert ("POST", "/api/v1/sessions/{session_id}/swarmflow/actions/pause") in routes
     assert ("POST", "/api/v1/proactive/actions/feedback") in routes
     assert ("POST", "/api/v1/rpc/{method}") not in routes
