@@ -123,7 +123,7 @@ class FlashSkillProtocolRail(DeepAgentRail):
                 continue
             lang_key = "cn" if lang in ("cn", "zh") else "en"
             if todo_disabled:
-                # todo 被禁：删掉「必须使用 todo」整条并中和规则 9 残留 todo 引用，
+                # 待办被禁用时：删掉「必须使用待办」整条并中和规则 9 残留待办引用，
                 # 而非只改工具名（评审 #2）。守卫未命中返回 None → 保留原段。
                 new_text = _strip_todo_rules(text, lang_key)
             else:

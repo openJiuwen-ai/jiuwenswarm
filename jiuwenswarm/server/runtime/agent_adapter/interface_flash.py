@@ -1092,8 +1092,8 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         try:
             if self._skill_manager is not None:
                 disabled = set(self._skill_manager.list_execution_disabled_skills())
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[FlashAdapter] list_execution_disabled_skills failed: %s", exc)
         out: list[tuple[str, str]] = []
         for meta in (metas or []):
             name = getattr(meta, "name", None)
@@ -1234,10 +1234,12 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                 FlashSkillRail,
             )
 
-            kwargs["config_provider"] = lambda: self._flash_config("skill_catalog", {})
-            kwargs["disabled_tools_provider"] = self._read_disabled_tools
-            kwargs["fallback_skills_provider"] = self._read_fallback_skills
-            return FlashSkillRail(**kwargs)
+            return FlashSkillRail(
+                config_provider=lambda: self._flash_config("skill_catalog", {}),
+                disabled_tools_provider=self._read_disabled_tools,
+                fallback_skills_provider=self._read_fallback_skills,
+                **kwargs,
+            )
         except Exception as exc:
             logger.warning("[FlashAdapter] FlashSkillRail create failed: %s", exc, exc_info=True)
             return None

@@ -164,7 +164,8 @@ def _strip_todo_rules(text: str, language: str) -> str | None:
         text = text.replace("、todo 及新任务清理旧 todo 的顺序要求", "及新任务清理旧步骤的顺序要求")
     else:
         text = re.sub(
-            r"abandoned: first call\s+`todo_modify` to mark every `in_progress`/`pending` item `cancelled`, then respond to the new request\.",
+            r"abandoned: first call\s+`todo_modify` to mark every "
+            r"`in_progress`/`pending` item `cancelled`, then respond to the new request\.",
             "abandoned: respond to the new request directly.",
             text,
         )
