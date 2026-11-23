@@ -29,6 +29,7 @@ Design notes (see ``CONTEXT_09_new_attr.md``):
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import re
 import time
@@ -73,6 +74,25 @@ WorkspaceResolver = Callable[[str], str]
 ModelFactory = Callable[[Any], Any]
 
 _REWARD_CARD_ID = "attribution-reward-agent"
+
+
+def _improvement_kwargs() -> dict[str, bool]:
+    """Ask Reward for a game design suggestion when this core knows the flag.
+
+    releases/0.2.9 pins a core that does not have the parameter yet. Passing it
+    there would crash diagnosis. The agent-core PR adds the parameter.
+    """
+    if "generate_improvements" in inspect.signature(run_diagnosis).parameters:
+        return {"generate_improvements": True}
+    return {}
+
+
+def _design_suggestion(diagnosis: Any) -> str | None:
+    """The game design text Reward wrote, or None for other tasks."""
+    reward = (getattr(diagnosis, "run_meta", None) or {}).get("reward") or {}
+    return str(reward.get("artifact_improvement") or "").strip() or None
+
+
 _TASK_PARSE_TIMEOUT_S = 180.0
 
 #: Core LLM status stages mapped onto the three zhou stage ids.
@@ -881,6 +901,7 @@ class AttributionCoreEngine:
         else:
             # Nothing to attribute is a normal outcome, not a failure.
             result = await self._result_without_signals(context, task_parse, diagnosis)
+        result.design_suggestion = _design_suggestion(diagnosis)
         if context.summary_tree is not None:
             result.summary_tree = context.summary_tree.to_dict()
             result.trajectory_summary = (
@@ -1024,6 +1045,7 @@ class AttributionCoreEngine:
             status_sink=context.sink,
             model_name=context.model_name,
             status_counter=context.counter,
+            **_improvement_kwargs(),
         )
         for signal in diagnosis.signals:
             queue.put_nowait(

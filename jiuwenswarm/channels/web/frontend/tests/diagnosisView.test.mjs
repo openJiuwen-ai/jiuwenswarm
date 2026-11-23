@@ -438,6 +438,16 @@ test('artifactSuggestion joins cause suggestions, or uses the experimental whole
   assert.equal(artifactSuggestion(record, true), 'legacy block');
 });
 
+test('a game design suggestion is the artifact fix sent to the next version', () => {
+  const record = {
+    reward_failure_causes: [{ suggestion: ['把提示字号调到 13px'] }],
+    artifact_improvement: 'legacy block',
+    design_suggestion: ' ## 下一版怎么玩\n开局先选首步向右还是向下。 ',
+  };
+  assert.equal(artifactSuggestion(record, false), '## 下一版怎么玩\n开局先选首步向右还是向下。');
+  assert.equal(artifactSuggestion(record, true), '## 下一版怎么玩\n开局先选首步向右还是向下。');
+});
+
 test('a legacy artifact fix has its own outlet and never doubles the new card', () => {
   const legacy = { reward_failure_causes: [], evolution_judge: [], suggestions: { artifact_fix: { instruction: 'old' } } };
   assert.equal(artifactSuggestion(legacy, false), '');

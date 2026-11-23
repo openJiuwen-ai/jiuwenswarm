@@ -11,6 +11,7 @@ semantics the host relies on.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from types import SimpleNamespace
 from typing import Any
 
@@ -34,6 +35,8 @@ from jiuwenswarm.diagnosis.attribution_engine import (
     _flatten_span,
     _prepare_nodes,
     _render_llm_line,
+    _design_suggestion,
+    _improvement_kwargs,
     _translate_evolution_judge,
     _translate_reward_failure_causes,
 )
@@ -1097,3 +1100,21 @@ def test_production_host_runs_diagnoses_with_the_attribution_core_engine() -> No
     from jiuwenswarm.server.diagnosis.host import build_diagnosis_engine
 
     assert isinstance(build_diagnosis_engine(), AttributionCoreEngine)
+
+
+def test_only_a_game_carries_a_design_suggestion() -> None:
+    diagnosis = SimpleNamespace(run_meta={"reward": {"artifact_improvement": "下一版开局先选守桥还是守坡。"}})
+
+    assert _design_suggestion(diagnosis) == "下一版开局先选守桥还是守坡。"
+    assert _design_suggestion(SimpleNamespace(run_meta={"reward": {}})) is None
+    assert _design_suggestion(SimpleNamespace(run_meta={})) is None
+
+
+def test_improvement_flag_matches_the_core_that_is_installed() -> None:
+    from openjiuwen.agent_evolving.attribution import run_diagnosis
+
+    flag = _improvement_kwargs()
+    if "generate_improvements" in inspect.signature(run_diagnosis).parameters:
+        assert flag == {"generate_improvements": True}
+    else:
+        assert flag == {}
