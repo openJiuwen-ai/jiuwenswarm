@@ -1624,6 +1624,15 @@ async def test_pause_session_runtime_refuses_round_outside_fence(
     can tell the round the user paused from a newer one that started while
     the pause request was in flight.
     """
+    from jiuwenswarm.server.runtime import team_recovery
+
+    recovery_stops = []
+
+    def stop_recovery(session_id, reason):
+        recovery_stops.append((session_id, reason))
+        return False
+
+    monkeypatch.setattr(team_recovery, "stop", stop_recovery)
     manager = _TeamManagerHarness()
     manager.set_active_runtime_for_test("sess-1", "demo-team")
     manager.begin_round("sess-1", "req-old", terminal_armed=True)
@@ -1645,6 +1654,7 @@ async def test_pause_session_runtime_refuses_round_outside_fence(
     assert paused.work_stopped is False
     assert paused.outcome == "round_fence_refused"
     assert manager.is_runtime_active("sess-1") is True
+    assert recovery_stops == []
 
     # An empty fence means nothing was live when the caller snapshotted:
     # any active round is newer, so the pause must refuse instead of
@@ -1658,6 +1668,7 @@ async def test_pause_session_runtime_refuses_round_outside_fence(
     assert paused.work_stopped is False
     assert paused.outcome == "round_fence_refused"
     assert manager.is_runtime_active("sess-1") is True
+    assert recovery_stops == []
 
     pause_calls: list[tuple[str, str]] = []
 
@@ -1680,6 +1691,7 @@ async def test_pause_session_runtime_refuses_round_outside_fence(
     assert paused.outcome == "parked"
     assert pause_calls == [("demo-team", "sess-1")]
     assert manager.is_runtime_active("sess-1") is False
+    assert recovery_stops == [("sess-1", "paused")]
 
 
 @pytest.mark.asyncio

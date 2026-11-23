@@ -441,6 +441,7 @@ class AgentRuntime:
         ] = {}
         self._session_run_end_tasks: dict[str, tuple[int, asyncio.Task[None]]] = {}
         self._session_runtime_locks: dict[str, asyncio.Lock] = {}
+        self._team_recovery_consumers: set[asyncio.Task] = set()
         if team_execution_controller is not None:
             set_reporter = getattr(
                 team_execution_controller,
@@ -3959,6 +3960,9 @@ class AgentRuntime:
                 raise
             except BaseException as exc:
                 cleanup_errors.append(exc)
+            consumers = tuple(getattr(self, "_team_recovery_consumers", ()))
+            if consumers:
+                await asyncio.gather(*consumers, return_exceptions=True)
             try:
                 await self._session_provisioner.close_background_tasks()
             except BaseException as exc:
@@ -4580,6 +4584,66 @@ class AgentRuntime:
             context,
             reason=cause.value,
         )
+
+    async def recover_team_execution(
+        self,
+        session_id: str,
+        channel_id: str,
+        request_id: str,
+        restore: Callable[[int], Awaitable[asyncio.Task | None]],
+    ) -> None:
+        """Adopt interrupted Team work without manufacturing a chat request.
+
+        Return when restore admission settles. The Coordinator retains the
+        recovered stream as owned background execution until it exits or is
+        explicitly cancelled through the usual Session lifecycle.
+        """
+        self._require_started()
+        await self._register_session(session_id=session_id, channel_id=channel_id)
+        manager = await self.resolve_manager()
+        admitted = asyncio.get_running_loop().create_future()
+
+        async def operation(context: TeamExecutionContext) -> AsyncIterator[None]:
+            stream_task = await restore(context.session.generation)
+            yield None
+            if stream_task is not None:
+                await stream_task
+
+        async def consume() -> None:
+            from jiuwenswarm.runtime.context import reset_runtime_context, set_runtime_context
+
+            context_token = set_runtime_context(self, manager)
+            try:
+                events = self._session_coordinator.run_team_stream(
+                    session_id, request_id, SessionWorkKind.TEAM_BACKGROUND, operation,
+                    details=TeamExecutionDetails(background_trigger="worker_recovery", waiter_kind=TeamWaiterKind.NONE),
+                    channel_id=channel_id,
+                )
+                async with aclosing(events):
+                    async for _ in events:
+                        if not admitted.done():
+                            admitted.set_result(None)
+            except BaseException as exc:
+                if not admitted.done():
+                    admitted.set_exception(exc)
+                elif not isinstance(exc, asyncio.CancelledError):
+                    logger.exception("[Runtime] recovered Team stream failed session=%s", session_id)
+            finally:
+                if not admitted.done():
+                    admitted.set_exception(
+                        RuntimeStateError("Team recovery stream ended before admission"),
+                    )
+                reset_runtime_context(context_token)
+
+        consumer = asyncio.create_task(consume(), name=f"team-recovery-owner:{session_id}")
+        self._team_recovery_consumers.add(consumer)
+        consumer.add_done_callback(self._team_recovery_consumers.discard)
+        try:
+            await admitted
+        except BaseException:
+            consumer.cancel()
+            await asyncio.gather(consumer, return_exceptions=True)
+            raise
 
     async def _ensure_session_registered(self, request: AgentRequest) -> None:
         """Idempotently adopt direct callers that already own a product ID."""

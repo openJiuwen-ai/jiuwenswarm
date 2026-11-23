@@ -468,6 +468,15 @@ async def test_team_cancel_workflow_disposition_from_cancel_source(
     metadata: dict | None,
     expected_disposition: str,
 ) -> None:
+    from jiuwenswarm.server.runtime import team_recovery
+
+    recovery_stops = []
+
+    def stop_recovery(session_id, reason):
+        recovery_stops.append((session_id, reason))
+        return False
+
+    monkeypatch.setattr(team_recovery, "stop", stop_recovery)
     claw = _InterruptHarness()
     fake_manager = _FakeTeamManager(cancel_result=True)
 
@@ -496,6 +505,9 @@ async def test_team_cancel_workflow_disposition_from_cancel_source(
     assert response.payload["success"] is True
     assert fake_manager.cancel_calls == [("team-session-1", "interrupt(intent=cancel): ")]
     assert fake_manager.cancel_dispositions == [expected_disposition]
+    assert recovery_stops == (
+        [("team-session-1", "cancelled")] if expected_disposition == "stop" else []
+    )
 
 
 def test_is_ask_user_answer_resume_identifies_ask_user_interrupt_answer_payload():

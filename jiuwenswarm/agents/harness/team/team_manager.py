@@ -928,7 +928,9 @@ class TeamManager:
         waiters = self._select_broadcast_waiters(session_id)
 
         if not waiters:
-            if self._is_workflow_terminal_event(event):
+            if self._is_workflow_terminal_event(event) or event_type == "team.recovery":
+                # Recovery runs without an interactive waiter. Its state must
+                # still reach the page through the existing server-push path.
                 # A cancel/stop kills the chat stream (and with it the waiters)
                 # before the engine unwinds and emits the terminal workflow
                 # status ~1s later; the normal broadcast has nowhere to land and
@@ -3898,6 +3900,10 @@ class TeamManager:
         """
         if not self.generation_matches(session_id, generation):
             return False
+        if workflow_disposition == "stop":
+            from jiuwenswarm.server.runtime.team_recovery import stop as stop_recovery
+
+            await asyncio.to_thread(stop_recovery, session_id, "cancelled")
         logger.info(
             "[TeamManager] cancel_session_runtime 入口: session_id=%s reason=%s",
             session_id, reason,
@@ -4437,6 +4443,33 @@ class TeamManager:
                 outcome="generation_mismatch",
             )
         async with self._get_lifecycle_lock(session_id):
+            # Round fence: consecutive rounds share one session generation, so
+            # the generation check alone cannot tell the paused round from a
+            # newer one admitted while this request was in flight.
+            active_round = self._active_rounds.get(session_id)
+            if (
+                expected_request_ids is not None
+                and active_round is not None
+                and active_round.request_id not in expected_request_ids
+            ):
+                logger.info(
+                    "[TeamManager] %s pause refused by round fence: session_id=%s "
+                    "active_request_id=%s expected_request_ids=%s",
+                    reason,
+                    session_id,
+                    active_round.request_id,
+                    sorted(expected_request_ids),
+                )
+                return PauseSessionResult(
+                    work_stopped=False,
+                    resumable=False,
+                    outcome="round_fence_refused",
+                )
+
+            if not self._cancel_requested.get(session_id):
+                from jiuwenswarm.server.runtime.team_recovery import stop as stop_recovery
+
+                await asyncio.to_thread(stop_recovery, session_id, "paused")
             has_stream_task = session_id in self._stream_tasks
             has_local_team_runtime = self._has_local_team_runtime(session_id)
             has_team_runtime = (
@@ -4476,29 +4509,6 @@ class TeamManager:
                     work_stopped=False,
                     resumable=False,
                     outcome="cancel_preempted",
-                )
-
-            # Round fence: consecutive rounds share one session generation, so
-            # the generation check alone cannot tell the paused round from a
-            # newer one admitted while this request was in flight.
-            active_round = self._active_rounds.get(session_id)
-            if (
-                expected_request_ids is not None
-                and active_round is not None
-                and active_round.request_id not in expected_request_ids
-            ):
-                logger.info(
-                    "[TeamManager] %s pause refused by round fence: session_id=%s "
-                    "active_request_id=%s expected_request_ids=%s",
-                    reason,
-                    session_id,
-                    active_round.request_id,
-                    sorted(expected_request_ids),
-                )
-                return PauseSessionResult(
-                    work_stopped=False,
-                    resumable=False,
-                    outcome="round_fence_refused",
                 )
 
             logger.info(

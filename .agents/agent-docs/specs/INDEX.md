@@ -124,6 +124,7 @@ generated: true
 |---|---|---|---|---|
 | [S_01_team-goal-config](jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 | [S_02_app-role-npc-team](jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
+| [S_02_team-automatic-recovery](jiuwenswarm/server/runtime/S_02_team-automatic-recovery.md) | S | 普通持久 Team 的 Worker 换代自动续跑 | MengHan18 | — |
 
 <a id="module-jiuwenswarm-agents-swarm"></a>
 
@@ -271,6 +272,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [S_02_app-role-npc-team](jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
+| [S_02_team-automatic-recovery](jiuwenswarm/server/runtime/S_02_team-automatic-recovery.md) | S | 普通持久 Team 的 Worker 换代自动续跑 | MengHan18 | — |
 
 <a id="module-jiuwenswarm-server-control"></a>
 
@@ -298,6 +300,7 @@ generated: true
 | [S_01_plugin-marketplace](jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
 | [S_02_app-role-npc-team](jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 | [S_02_colleague-swarmchat](jiuwenswarm/server/runtime/S_02_colleague-swarmchat.md) | S | SwarmChat AI 同事接入契约 | weichenhao | — |
+| [S_02_team-automatic-recovery](jiuwenswarm/server/runtime/S_02_team-automatic-recovery.md) | S | 普通持久 Team 的 Worker 换代自动续跑 | MengHan18 | — |
 
 <a id="module-jiuwenswarm-server-runtime-agent_adapter"></a>
 

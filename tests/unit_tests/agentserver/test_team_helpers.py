@@ -6398,10 +6398,34 @@ async def test_finalize_org_bound_team_after_idle_skips_non_org(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_consume_stream_with_query_reports_team_idle_as_round_end(monkeypatch):
+@pytest.mark.parametrize("silent_close", [False, True])
+@pytest.mark.parametrize("snapshot_failure", [None, "json", "lifecycle"])
+async def test_consume_stream_with_query_reports_team_idle_as_round_end(
+    monkeypatch, silent_close, snapshot_failure,
+):
     """A team.idle marker ends the round for clients, just like team.completed."""
     broadcasted: list[dict] = []
     finalize_calls: list[tuple[str, str]] = []
+    from jiuwenswarm.server.runtime import team_recovery
+
+    observed = []
+    released = []
+
+    def snapshot(sid):
+        if snapshot_failure == "json":
+            raise json.JSONDecodeError("invalid lifecycle data", "", 0)
+        if snapshot_failure == "lifecycle":
+            from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
+
+            raise LifecycleError("OPERATION_IN_PROGRESS", "session is being deleted")
+        return {"state": "running"}
+
+    def observe(sid, token, event):
+        observed.append(event["event_type"])
+        return False
+
+    monkeypatch.setattr(team_recovery, "observe", observe)
+    monkeypatch.setattr(team_recovery, "snapshot", snapshot)
 
     async def _fake_finalize(*, session_id: str, team_name: str) -> None:
         finalize_calls.append((session_id, team_name))
@@ -6412,6 +6436,8 @@ async def test_consume_stream_with_query_reports_team_idle_as_round_end(monkeypa
             payload={"output": {"output": "leader answer"}, "result_type": "answer"},
             role=TeamRole.LEADER,
         )
+        if silent_close:
+            return
         yield SimpleNamespace(
             type="message",
             payload={
@@ -6436,7 +6462,7 @@ async def test_consume_stream_with_query_reports_team_idle_as_round_end(monkeypa
 
         @staticmethod
         def pop_stream_task(session_id: str, *, generation: int | None = None) -> None:
-            pass
+            released.append(session_id)
 
         @staticmethod
         def get_monitor(session_id: str):
@@ -6467,12 +6493,22 @@ async def test_consume_stream_with_query_reports_team_idle_as_round_end(monkeypa
     monkeypatch.setattr(team_helpers, "update_session_metadata", lambda **kwargs: None)
     monkeypatch.setattr(team_helpers, "_finalize_org_bound_team_after_idle", _fake_finalize)
 
-    await _TeamHelpersTestApi.consume_stream_with_query(
+    await team_helpers._consume_stream_with_query(
         "web",
         "sess-team-idle",
         SimpleNamespace(team_name="demo-team"),
         "hello",
+        round_id=1,
+        recovery_token="test-generation",
     )
+
+    assert released == ["sess-team-idle"]
+    if snapshot_failure is None or not silent_close:
+        assert "team.idle" in observed
+    if silent_close:
+        assert broadcasted[-1]["is_complete"] is True
+        assert broadcasted[-1]["is_processing"] is False
+        return
 
     # The marker never reaches clients on its own — it is translated into the
     # same round-end signal team.completed produces.

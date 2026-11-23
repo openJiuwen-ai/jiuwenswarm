@@ -291,12 +291,14 @@ generated: true
 | [D-20261111-1722-team-goal-config](designs/active/D-20261111-1722-team-goal-config/design.md) | D | Swarm 团队 Goal 配置接入方案 | alan_cheng | — |
 | [F_20261104_1225_npc-team-member-sessions](features/F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
 | [F_20261111_1755_team-leader-goal](features/F_20261111_1755_team-leader-goal.md) | F | 调度模式领导目标驱动设置实施与验证 | alan_cheng | [D-20261111-1722-team-goal-config](designs/active/D-20261111-1722-team-goal-config/design.md) |
+| [F_20261123_1801_team-worker-automatic-recovery](features/F_20261123_1801_team-worker-automatic-recovery.md) | F | Worker 换代后自动恢复原 Team 并补足事故取证 | MengHan18 | 无独立 D：按用户确认的故障恢复任务清单实施；沿用现有 Runtime、Session Coordinator、lifecycle 与 SDK 检查点，无独立 D 文档。 |
 | [B_20261112_1405_stop-btn-stuck-after-skip](bugfix/jiuwenswarm/B_20261112_1405_stop-btn-stuck-after-skip.md) | B | 集群模式跳过后停止按钮永久卡死：interrupt 收尾窗口护栏 | xiajing | 无独立 D：依据现场日志与轨迹定位，无独立设计文档；修复范围限定前端状态机护栏，并补后端判据不变量测试。 |
 | [B_20261121_1545_team-pause-teardown-admission-race](bugfix/jiuwenswarm/B_20261121_1545_team-pause-teardown-admission-race.md) | B | 团队暂停双执行与收尾窗口新消息误投递：回合交接竞态 | zhanglongmin | 无独立 D：依据运行日志时间线与代码逐跳核实定位，无独立设计文档；修复范围限定回合交接的暂停单入口、统一收尾屏障与路由守卫，不改变 Core 侧收尾顺序。 |
 | [B_20261121_1817_parked-team-busy-snapshot-reseed](bugfix/jiuwenswarm/B_20261121_1817_parked-team-busy-snapshot-reseed.md) | B | 暂停后页面持续转圈：挂起团队忙闲快照读到内存名册残留 | zhanglongmin | 无独立 D：依据运行日志与逐跳代码核实定位，无独立设计文档；修复走 Core 既有公开契约，不修改 agent-core。 |
 | [B_20261126_1045_ui-lang-over-yaml-zh](bugfix/jiuwenswarm/enterprise/config/B_20261126_1045_ui-lang-over-yaml-zh.md) | B | 企业版 UI 语言被 AgentServer yaml preferred_language zh 盖过 | whds5279 | 无独立 D：无独立 D；依据 issue |
 | [S_01_team-goal-config](specs/jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
+| [S_02_team-automatic-recovery](specs/jiuwenswarm/server/runtime/S_02_team-automatic-recovery.md) | S | 普通持久 Team 的 Worker 换代自动续跑 | MengHan18 | — |
 
 <a id="module-jiuwenswarm-agents-harness-team-rails"></a>
 
@@ -702,10 +704,12 @@ generated: true
 | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) | D | NPC 主从会话与按需搜索工具 | kdgmpw | — |
 | [F_20261103_1501_app-role-session](features/app-role-session.md) | F | 保留基础系统提示的轻量 NPC 会话 | kdgmpw | [D-20261103-1444-app-role-session](designs/active/D-20261103-1444-app-role-session/design.md) |
 | [F_20261104_1225_npc-team-member-sessions](features/F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
+| [F_20261123_1801_team-worker-automatic-recovery](features/F_20261123_1801_team-worker-automatic-recovery.md) | F | Worker 换代后自动恢复原 Team 并补足事故取证 | MengHan18 | 无独立 D：按用户确认的故障恢复任务清单实施；沿用现有 Runtime、Session Coordinator、lifecycle 与 SDK 检查点，无独立 D 文档。 |
 | [B_20261120_0927_unknown-answer-source-hang](bugfix/jiuwenswarm/runtime/B_20261120_0927_unknown-answer-source-hang.md) | B | 未知 source 的 answers 请求在团队会话中排队死锁、无终止帧 | openjiuwen_ai | 无独立 D：仅收紧既有 chat.send answers 校验的适用条件，不改变交互恢复协议、source 白名单与会话 lane 语义；无独立设计。 |
 | [B_20261121_1545_team-pause-teardown-admission-race](bugfix/jiuwenswarm/B_20261121_1545_team-pause-teardown-admission-race.md) | B | 团队暂停双执行与收尾窗口新消息误投递：回合交接竞态 | zhanglongmin | 无独立 D：依据运行日志时间线与代码逐跳核实定位，无独立设计文档；修复范围限定回合交接的暂停单入口、统一收尾屏障与路由守卫，不改变 Core 侧收尾顺序。 |
 | [B_20261121_1817_parked-team-busy-snapshot-reseed](bugfix/jiuwenswarm/B_20261121_1817_parked-team-busy-snapshot-reseed.md) | B | 暂停后页面持续转圈：挂起团队忙闲快照读到内存名册残留 | zhanglongmin | 无独立 D：依据运行日志与逐跳代码核实定位，无独立设计文档；修复走 Core 既有公开契约，不修改 agent-core。 |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
+| [S_02_team-automatic-recovery](specs/jiuwenswarm/server/runtime/S_02_team-automatic-recovery.md) | S | 普通持久 Team 的 Worker 换代自动续跑 | MengHan18 | — |
 
 <a id="module-jiuwenswarm-server"></a>
 
@@ -783,11 +787,13 @@ generated: true
 | [F_20261110_1438_opencode-go-provider](features/F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 | [F_20261117_1752_colleague-swarmchat](features/F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
 | [F_20261121_0906_swarmchat-auto-reply](features/F_20261121_0906_swarmchat-auto-reply.md) | F | SwarmChat 群成员自动判断回复实施记录 | weichenhao | [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) |
+| [F_20261123_1801_team-worker-automatic-recovery](features/F_20261123_1801_team-worker-automatic-recovery.md) | F | Worker 换代后自动恢复原 Team 并补足事故取证 | MengHan18 | 无独立 D：按用户确认的故障恢复任务清单实施；沿用现有 Runtime、Session Coordinator、lifecycle 与 SDK 检查点，无独立 D 文档。 |
 | [B_20261110_1849_group-lock-cancellation](bugfix/jiuwenswarm/server/runtime/B_20261110_1849_group-lock-cancellation.md) | B | 群任务取消期间等待文件锁清理完成 | ShowHsiang | 无独立 D：修复现有群锁的取消清理契约，不新增管理器或调整任务并发策略。 |
 | [B_20261116_1701_my-plugin-installed-only](bugfix/jiuwenswarm/server/runtime/B_20261116_1701_my-plugin-installed-only.md) | B | 未安装插件草稿混入我的扩展并显示安装按钮 | lizhiyuan | 无独立 D：用户在本次对话明确确认插件列表归属及按钮策略，属于现有市场行为的小范围修复，无独立设计文档。 |
 | [S_01_plugin-marketplace](specs/jiuwenswarm/server/runtime/S_01_plugin-marketplace.md) | S | 插件市场列表归属与操作契约 | lizhiyuan | — |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 | [S_02_colleague-swarmchat](specs/jiuwenswarm/server/runtime/S_02_colleague-swarmchat.md) | S | SwarmChat AI 同事接入契约 | weichenhao | — |
+| [S_02_team-automatic-recovery](specs/jiuwenswarm/server/runtime/S_02_team-automatic-recovery.md) | S | 普通持久 Team 的 Worker 换代自动续跑 | MengHan18 | — |
 
 <a id="module-jiuwenswarm-server-runtime-agent_adapter"></a>
 
@@ -868,6 +874,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [F_20261123_1801_team-worker-automatic-recovery](features/F_20261123_1801_team-worker-automatic-recovery.md) | F | Worker 换代后自动恢复原 Team 并补足事故取证 | MengHan18 | 无独立 D：按用户确认的故障恢复任务清单实施；沿用现有 Runtime、Session Coordinator、lifecycle 与 SDK 检查点，无独立 D 文档。 |
 | [B_20261107_1505_6226-forwarding-replay](bugfix/jiuwenswarm/server/supervisor/B_20261107_1505_6226-forwarding-replay.md) | B | 历史回放触发转发队列溢出及前端计时不收尾 | kdgmpw | 无独立 D：对现有有界转发及前端终态处理的小范围修复，无独立设计。 |
 | [B_20261110_1042_issue6191-ipc-recovery](bugfix/jiuwenswarm/server/ipc/B_20261110_1042_issue6191-ipc-recovery.md) | B | IPC 突发积压与降级就绪重连导致 Runtime 失败 | 刘瑜 | 无独立 D：对现有有界 IPC 和 Runtime 恢复状态机的小范围修复，无独立设计。 |
 
@@ -877,6 +884,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [F_20261123_1801_team-worker-automatic-recovery](features/F_20261123_1801_team-worker-automatic-recovery.md) | F | Worker 换代后自动恢复原 Team 并补足事故取证 | MengHan18 | 无独立 D：按用户确认的故障恢复任务清单实施；沿用现有 Runtime、Session Coordinator、lifecycle 与 SDK 检查点，无独立 D 文档。 |
 | [B_20261105_1518_worker-dispatch-slot-accounting](bugfix/jiuwenswarm/server/worker/B_20261105_1518_worker-dispatch-slot-accounting.md) | B | Worker 派发容量排除已返回的 handler | kdgmpw | 无独立 D：按会话中确认的最小修复方案调整 Worker 内部计数。 |
 
 <a id="module-openjiuwen-agent_teams"></a>

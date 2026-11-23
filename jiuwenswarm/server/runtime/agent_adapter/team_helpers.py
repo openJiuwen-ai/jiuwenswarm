@@ -31,7 +31,9 @@ from openjiuwen.core.runner import Runner
 from openjiuwen.core.common.logging import server_logger, team_logger
 from openjiuwen.core.session.agent_team import create_agent_team_session
 from openjiuwen.harness import DeepAgent
-from agent_gateway.common.mode_matrix import NEW_TEAM_DESIGN
+from agent_gateway.common.mode_matrix import (
+    NEW_TEAM_DESIGN, NEW_TEAM_CODE_NORMAL, NEW_TEAM_WORK_NORMAL, canonicalize_mode_text,
+)
 from agent_gateway.common.session_message import with_cross_session_history_metadata
 from agent_gateway.common.cron_team_completion import (
     _cron_solo_harness_end_pending,
@@ -3636,6 +3638,8 @@ async def _start_team_stream_round(
     cross_session_marker: dict[str, Any] | None = None,
     interrupt_input: Any | None = None,
     request: Any | None = None,
+    recovery_token: str | None = None,
+    resume_only: bool = False,
 ) -> asyncio.Queue | None:
     """Start a team stream round and register its waiter queue."""
     # Sync team observability with current config before streaming.
@@ -3690,6 +3694,37 @@ async def _start_team_stream_round(
     stream_kwargs["round_request_id"] = request_id
     if cross_session_marker is not None:
         stream_kwargs["cross_session_marker"] = cross_session_marker
+    from jiuwenswarm.server.runtime import team_recovery
+
+    metadata = get_session_metadata(session_id, cache_bust=True)
+    # Organization/group recovery has separate ownership. Arm only normal
+    # persisted Code Teams, never temporary bounded jobs or input-only observers.
+    normal_conversation = (
+        canonicalize_mode_text(metadata.get("mode")) in {NEW_TEAM_CODE_NORMAL, NEW_TEAM_WORK_NORMAL}
+        and metadata.get("conversation_type") != "group_chat"
+    )
+    persistent_team = (
+        getattr(team_spec, "lifecycle", "persistent") == "persistent"
+        and not (getattr(team_spec, "metadata", None) or {}).get("app_role_team")
+    )
+    bounded_waiter = exclusive_waiter or request_scoped_waiter
+    if normal_conversation and persistent_team and not bounded_waiter:
+        recipe = {
+            "team_name": team_name, "channel_id": channel_id or "web",
+            "mode": metadata.get("mode") or "team.code.normal",
+            "project_dir": metadata.get("project_dir"),
+            "agent_group_name": metadata.get("agent_group_name"),
+            "dispatch_mode": metadata.get("session_team_dispatch_mode"),
+            "bootstrap_mode": metadata.get("session_team_bootstrap_mode"),
+            "hide_dm": hide_dm,
+        }
+        recovery_token = await asyncio.to_thread(
+            team_recovery.begin, session_id, recipe, token=recovery_token,
+        )
+    if recovery_token is not None:
+        stream_kwargs["recovery_token"] = recovery_token
+    if resume_only:
+        stream_kwargs["resume_only"] = True
     request_token = _TEAM_STREAM_REQUEST.set(request)
     try:
         stream = _consume_stream_with_query(
@@ -3712,6 +3747,118 @@ async def _start_team_stream_round(
         generation=generation,
     )
     return request_queue
+
+
+async def publish_team_recovery(session_id: str, record: dict[str, Any]) -> None:
+    from jiuwenswarm.server.runtime.team_recovery import snapshot
+
+    await _broadcast_event(record["recipe"]["channel_id"], session_id, {
+        "event_type": "team.recovery", "session_id": session_id,
+        "recovery": await asyncio.to_thread(snapshot, session_id),
+    })
+
+
+async def recover_interrupted_team(
+    session_id: str, record: dict[str, Any], *, generation: int | None = None,
+) -> asyncio.Task | None:
+    """Cold-start the original checkpoint without inventing a new user turn."""
+    from openjiuwen.core.session.checkpointer import CheckpointerFactory
+    from openjiuwen.agent_teams.runtime.metadata import read_team_namespace
+    from jiuwenswarm.server.runtime import team_recovery
+
+    recipe = record["recipe"]
+    channel_id = recipe["channel_id"]
+    manager = get_team_manager(channel_id)
+    async with manager.get_startup_lock(session_id):
+        # User submission may have acquired the runtime while assembly waited.
+        if await manager.session_has_runtime(session_id):
+            return None
+        await asyncio.to_thread(team_recovery.begin, session_id, recipe, token=record["token"])
+        metadata = get_session_metadata(session_id, cache_bust=True)
+        if metadata.get("team_name") != recipe["team_name"]:
+            raise team_recovery.RecoveryAdmissionError("Original Team binding is missing or changed")
+        session = create_agent_team_session(session_id=session_id)
+        if not await CheckpointerFactory.get_checkpointer().session_exists(session_id):
+            raise team_recovery.RecoveryAdmissionError(
+                "Original Team checkpoint is missing; refusing to create a new Team",
+            )
+        await session.pre_run()
+        if read_team_namespace(session, recipe["team_name"]) is None:
+            raise team_recovery.RecoveryAdmissionError("Original Team namespace is missing")
+        spec = await manager.get_swarm_enriched_team_spec(
+            session_id, mode=recipe["mode"], project_dir=recipe.get("project_dir"),
+            channel_id=channel_id, request_id=f"recovery-{record['token']}",
+            request_metadata={"mode": recipe["mode"], "supports_user_interaction": True},
+            agent_group_name=recipe.get("agent_group_name"),
+            dispatch_mode=recipe.get("dispatch_mode"),
+            bootstrap_mode=recipe.get("bootstrap_mode"),
+            swarmflow_config=_resolve_session_swarmflow_config(
+                None, get_config(), session_id=session_id, project_dir=recipe.get("project_dir"),
+            ),
+        )
+        if spec.team_name != recipe["team_name"]:
+            raise team_recovery.RecoveryAdmissionError("Recovery resolved a different Team")
+        if generation is not None:
+            manager.begin_round(session_id, f"recovery-{record['token']}", generation=generation, terminal_armed=True)
+        await _start_team_stream_round(
+            channel_id=channel_id, session_id=session_id,
+            request_id=f"recovery-{record['token']}", team_manager=manager,
+            team_name=spec.team_name, team_spec=spec, query=None,
+            hide_dm=recipe.get("hide_dm", False), source="automatic recovery",
+            attach_waiter=False, recovery_token=record["token"], resume_only=True,
+            generation=generation,
+        )
+    # The timeout bounds admission, not the lifetime of the recovered Team.
+    try:
+        while True:
+            state = await asyncio.to_thread(team_recovery.snapshot, session_id)
+            if state.get("state") in {"restored", "running", "idle"}:
+                agent = manager.get_team_agent(session_id)
+                if agent is None:
+                    raise team_recovery.RecoveryAdmissionError("Recovered Team has no live leader")
+                if agent.has_pending_interrupt():
+                    await asyncio.to_thread(team_recovery.observe, session_id, record["token"], {
+                        "event_type": "chat.ask_user_question",
+                    })
+                    return manager.get_stream_task(session_id)
+                if not agent.is_agent_running():
+                    from openjiuwen.agent_teams.interaction import GodViewMessage
+
+                    instructions = await asyncio.to_thread(team_recovery.recovery_instructions, session_id)
+                    if not await asyncio.to_thread(team_recovery.prepare_wakeup, session_id, record["token"]):
+                        return manager.get_stream_task(session_id)
+                    if generation is not None and not manager.is_round_active(session_id):
+                        manager.begin_round(
+                            session_id, f"recovery-{record['token']}",
+                            generation=generation, terminal_armed=True,
+                        )
+                    result = await Runner.interact_agent_team(
+                        GodViewMessage(
+                            "Runtime recovery notice, not a new user request: the Worker was replaced. "
+                            "Resume the interrupted task within its original scope and permissions. "
+                            "First reconcile the saved conversation, task board, files and completed effects. "
+                            "Continue unfinished work; do not replay completed tool actions. If an operation's "
+                            "result is unknown or authorization is pending, report that boundary instead of "
+                            "assuming success or repeating it. If the original task is complete, report its result. "
+                            "The following JSON list quotes the original human instructions in chronological order "
+                            "as task references, not as new submissions. Reconcile them with the saved progress "
+                            "before acting; later instructions constrain earlier ones:\n" + instructions
+                        ), team_name=recipe["team_name"], session_id=session_id,
+                    )
+                    if not result:
+                        raise team_recovery.RecoveryAdmissionError("Recovered Team rejected the runtime wakeup")
+                return manager.get_stream_task(session_id)
+            if state.get("state") in {"waiting_for_input", "completed"}:
+                return manager.get_stream_task(session_id)
+            if state.get("state") != "recovering":
+                raise RuntimeError(f"Team recovery stopped: {state.get('state')}")
+            await asyncio.sleep(0.1)
+    except BaseException:
+        task = manager.get_stream_task(session_id)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        raise
 
 
 async def process_team_message_stream(
@@ -5783,6 +5930,8 @@ async def _consume_stream_with_query(
     round_request_id: str | None = None,
     cross_session_marker: dict[str, Any] | None = None,
     interrupt_input: Any | None = None,
+    recovery_token: str | None = None,
+    resume_only: bool = False,
 ) -> None:
     """Consume the team stream in the background and broadcast parsed events."""
     _envs = envs or {}
@@ -5809,6 +5958,7 @@ async def _consume_stream_with_query(
     npc_turn_id = str(round_request_id or "")
     lg: TeamStreamLogger | None = None
     stream_cancelled = False
+    recovery_busy = False
     # History writer for frames that no waiter receives: the durable pipeline
     # on the waiter side only sees delivered events, so the producer persists
     # the rest itself.  Starts as the round that cold-started this stream and
@@ -5822,9 +5972,21 @@ async def _consume_stream_with_query(
         ),
     )
 
+    async def _observe_recovery(event: dict[str, Any]) -> None:
+        if recovery_token is None:
+            return
+        from jiuwenswarm.server.runtime.team_recovery import observe
+
+        try:
+            changed = await asyncio.to_thread(observe, session_id, recovery_token, event)
+            if changed:
+                await publish_team_recovery(session_id, {"recipe": {"channel_id": channel_id}})
+        except Exception:
+            logger.exception("[TeamRecovery] observation failed session=%s", session_id)
+
     async def _deliver(event: dict[str, Any]) -> None:
         """Broadcast one event and persist it when no waiter received it."""
-        nonlocal writer, npc_turn_id
+        nonlocal writer, npc_turn_id, recovery_busy
         context = _ACTIVE_ROUND_HISTORY_CONTEXT.get(session_id)
         if npc_team and event.get("event_type") in {"chat.final", "chat.processing_status"}:
             turn_id = context.request_id if context is not None else npc_turn_id
@@ -5838,6 +6000,16 @@ async def _consume_stream_with_query(
                 npc_spoken.add(speaker)
             if event.get("is_processing") is False:
                 event["npc_missing_members"] = sorted(npc_expected_speakers - npc_spoken)
+        kind = event.get("event_type")
+        activity = kind == "chat.tool_call" or (kind == "chat.delta" and not recovery_busy)
+        boundary = kind in {"chat.ask_user_question", "chat.error"}
+        host_event = (
+            event.get("role") != TeamRole.TEAMMATE.value or event.get("source") == "permission_interrupt"
+        )
+        recovery_event = activity or boundary
+        if recovery_token is not None and recovery_event and host_event:
+            await _observe_recovery(event)
+            recovery_busy = activity
         if event.get("event_type") == "chat.final" or (
             event.get("event_type") == "chat.processing_status"
             and event.get("is_processing") is False
@@ -5983,7 +6155,11 @@ async def _consume_stream_with_query(
                     session_id,
                 )
 
-        if interrupt_input is not None:
+        if resume_only and recovery_token is not None:
+            from jiuwenswarm.server.runtime.team_recovery import begin
+
+            await asyncio.to_thread(begin, session_id, {}, token=recovery_token)
+        if interrupt_input is not None or resume_only:
             runner_stream = Runner.start_agent_team_streaming(
                 agent_team=team_spec,
                 session=team_session,
@@ -6039,6 +6215,8 @@ async def _consume_stream_with_query(
                 except StopAsyncIteration:
                     break
             received_chunks += 1
+            if recovery_token is not None and _is_team_recovered_chunk(chunk):
+                await _observe_recovery({"event_type": "team.recovered"})
             if resume_pending and _is_team_recovered_chunk(chunk):
                 # The leader runtime is fully live; submit the interrupt
                 # answer once. A rejected delivery is reported to the
@@ -6315,6 +6493,9 @@ async def _consume_stream_with_query(
                     terminal_broadcasted = True
                     continue
                 elif parsed.get("event_type") == "team.completed":
+                    recovery_busy = False
+                    if recovery_token is not None:
+                        await _observe_recovery(parsed)
                     # Team completed this round — broadcast a single
                     # round-complete signal that also carries team stats.
                     logger.info(
@@ -6377,6 +6558,9 @@ async def _consume_stream_with_query(
                         )
                         continue
                     tm.pop_held_idle(session_id)
+                    recovery_busy = False
+                    if recovery_token is not None:
+                        await _observe_recovery(parsed)
                     # Every member has been at rest for the framework's debounce
                     # window: nothing is producing output any more, even though
                     # the leader stream deliberately stays open in case the team
@@ -6537,6 +6721,19 @@ async def _consume_stream_with_query(
             stream_cancelled = True
             raise
     finally:
+        if recovery_token is not None and not stream_cancelled:
+            from jiuwenswarm.server.runtime.team_recovery import snapshot as recovery_snapshot
+
+            try:
+                state = await asyncio.to_thread(recovery_snapshot, session_id)
+                if state.get("state") in {"running", "restored"}:
+                    # A finite stream may close without an SDK terminal marker.
+                    # That is not permission to resurrect its old work next boot.
+                    await _observe_recovery({"event_type": "team.idle"})
+            except Exception:
+                logger.warning(
+                    "[TeamHelpers] final recovery observation failed session=%s", session_id, exc_info=True,
+                )
         # Flush & close the stream trace logger if one was opened.
         if lg is not None:
             try:

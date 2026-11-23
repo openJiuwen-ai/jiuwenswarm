@@ -16,8 +16,11 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, ClassVar, NamedTuple, Optional
+from typing import TYPE_CHECKING, Any, ClassVar, NamedTuple, Optional
 from weakref import WeakValueDictionary
+
+if TYPE_CHECKING:
+    from jiuwenswarm.server.runtime.team_recovery import TeamRecoveryService
 
 from openjiuwen.core.common.logging import server_logger
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
@@ -1442,6 +1445,7 @@ class AgentWebSocketServer:
         self._sandbox_start_task: asyncio.Task[None] | None = None
         # checkpointer 后台预热任务 (start() 里 fire-and-forget, stop() 时 cancel)
         self._checkpointer_warmup_task: Optional[asyncio.Task] = None
+        self._team_recovery_service: TeamRecoveryService | None = None
         self._team_session_reconcile_task: Optional[asyncio.Task] = None
         # MCP 连接缓存预热任务 (同上, 建 Runner.resource_mgr 供首轮对话命中)
         self._mcp_prewarm_task: Optional[asyncio.Task] = None
@@ -1868,16 +1872,30 @@ class AgentWebSocketServer:
                 # Optional imports, downloads and recovery may start only after
                 # the required Runtime/Heartbeat initialization succeeded.
                 preparation.mark_minimum_ready()
-
                 from jiuwenswarm.enterprise.team.session_cleanup import (
                     bind_startup_sweep,
                     run_startup_sweep,
+                    wait_for_startup_sweep,
                 )
 
                 self._team_session_reconcile_task = asyncio.create_task(
                     run_startup_sweep(), name="team-session-reconcile",
                 )
                 bind_startup_sweep(self._team_session_reconcile_task)
+                from jiuwenswarm.server.runtime.team_recovery import TeamRecoveryService
+                from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+                    publish_team_recovery, recover_interrupted_team,
+                )
+
+                async def restore_team(session_id: str, record: dict[str, Any]) -> None:
+                    await wait_for_startup_sweep()
+                    await self._runtime.recover_team_execution(
+                        session_id, record["recipe"]["channel_id"], f"recovery-{record['token']}",
+                        lambda generation: recover_interrupted_team(session_id, record, generation=generation),
+                    )
+
+                self._team_recovery_service = TeamRecoveryService(restore_team, publish_team_recovery)
+                self._team_recovery_service.start()
                 return
 
         self._checkpointer_warmup_task = asyncio.create_task(
@@ -2297,6 +2315,10 @@ class AgentWebSocketServer:
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[AgentWebSocketServer] checkpointer warmup stop failed: %s", exc)
         close_client_attachments()
+        recovery = getattr(self, "_team_recovery_service", None)
+        if recovery is not None:
+            await recovery.close()
+            self._team_recovery_service = None
         await self._stop_recommendation_host()
         preparation = getattr(self, "_preparation_registry", None)
         if preparation is not None:
@@ -8260,6 +8282,10 @@ class AgentWebSocketServer:
             "runtime_available": runtime_available,
             "recovery_required": recovery_required,
         }
+        if session_id:
+            from jiuwenswarm.server.runtime.team_recovery import snapshot as recovery_snapshot
+
+            payload["recovery"] = await asyncio.to_thread(recovery_snapshot, session_id)
         members = payload.get("members") if isinstance(payload, dict) else []
         tasks = _snapshot_tasks(payload if isinstance(payload, dict) else None)
         logger.info(
