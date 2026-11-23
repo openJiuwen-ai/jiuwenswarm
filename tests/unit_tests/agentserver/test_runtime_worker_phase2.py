@@ -1137,8 +1137,13 @@ async def test_failed_startup_refuses_unpublished_worker(monkeypatch, validated)
         supervisor._ipc_ready.set()
 
     monkeypatch.setattr(supervisor, "_supervise", report_failed)
-    with pytest.raises(RuntimeError, match="startup interrupted"):
-        await asyncio.wait_for(supervisor.run_until_ipc_ready(), 1)
+    try:
+        with pytest.raises(RuntimeError, match="startup interrupted"):
+            await asyncio.wait_for(supervisor.run_until_ipc_ready(), 1)
+    finally:
+        # A Worker-reported FAILED now schedules automatic recovery (JW-68);
+        # stop so the pending backoff task is cancelled with the test.
+        await supervisor.stop()
 
 
 @pytest.mark.asyncio
