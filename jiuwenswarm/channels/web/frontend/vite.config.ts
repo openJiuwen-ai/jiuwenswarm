@@ -1,5 +1,5 @@
 import type { Plugin } from 'vite'
-import { defineConfig, loadEnv, searchForWorkspaceRoot } from 'vite'
+import { defineConfig, searchForWorkspaceRoot } from 'vite'
 import react from '@vitejs/plugin-react'
 import svgr from 'vite-plugin-svgr'
 import { spawn, spawnSync, type ChildProcess } from 'child_process'
@@ -1967,9 +1967,9 @@ const webTarget = `http://127.0.0.1:${webPort}`
 // a second in-memory handoff implementation.
 const hubOAuthBroker = process.env.JIUWENSWARM_HUB_OAUTH_BROKER_URL
 
-export default defineConfig(({ mode }) => ({
-  // Standalone Web uses root URLs; container builds may specify a Manager/portal base.
-  base: process.env.ELECTRON === 'true' ? './' : loadEnv(mode, process.cwd(), '').VITE_BASE_PATH?.trim() || '/',
+export default defineConfig({
+  // Both Web editions use root URLs; Electron loads relative local assets.
+  base: process.env.ELECTRON === 'true' ? './' : '/',
   plugins: [suppressWsProxySocketErrors(), devWsTrafficLogger(), devFileContentApi(), react(), svgr()],
   build: {
     rollupOptions: {
@@ -2041,4 +2041,4 @@ export default defineConfig(({ mode }) => ({
       },
     },
   },
-}))
+})

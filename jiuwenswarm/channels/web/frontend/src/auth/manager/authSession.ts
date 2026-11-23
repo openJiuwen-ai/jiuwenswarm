@@ -1,5 +1,4 @@
 import { isUserLoginRoute, userWebPaths } from './userWebPaths';
-import { resolveApiUrl } from '../../utils/env';
 
 const ACCESS_KEY = 'openjiuwen_access_token';
 const ACCESS_COOKIE = 'openjiuwen_user_access_token';
@@ -61,7 +60,7 @@ export function clearManagerTokens(): void {
 }
 
 export async function clearActiveUserCluster(): Promise<void> {
-  await fetch(resolveApiUrl('/manager-api/v1/user-console/active-cluster'), {
+  await fetch('/manager-api/v1/user-console/active-cluster', {
     method: 'DELETE', credentials: 'same-origin',
   }).catch(() => undefined);
 }
@@ -102,7 +101,7 @@ async function performRefresh(): Promise<boolean> {
   const accessBeforeRefresh = getManagerAccessToken();
   if (!refreshToken) return false;
   try {
-    const response = await fetch(resolveApiUrl('/idp/v1/auth/refresh?surface=user'), {
+    const response = await fetch('/idp/v1/auth/refresh?surface=user', {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
