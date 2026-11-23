@@ -45,6 +45,15 @@ def _reject(code: str, message: str) -> tuple[int, dict[str, Any]]:
     return asset_http_error_status(code), asset_http_error_body(code, message)
 
 
+def _is_illegal_filename(filename: Any) -> bool:
+    """上传文件名合法性：须为非空常规名，不含路径分隔符或 NUL，非 Windows 保留名。"""
+    if not isinstance(filename, str) or filename in {"", ".", ".."}:
+        return True
+    if any(char in filename for char in "/\\:\x00"):
+        return True
+    return PureWindowsPath(filename).is_reserved()
+
+
 def handle_assets_upload_temp_http(
     *,
     content_type: str,
@@ -71,12 +80,7 @@ def handle_assets_upload_temp_http(
         ):
             return _reject(AssetErrorCode.INVALID_PACKAGE, "缺少 file 字段")
         filename = file_field.get("filename")
-        if (
-            not isinstance(filename, str)
-            or filename in {"", ".", ".."}
-            or any(char in filename for char in "/\\:\x00")
-            or PureWindowsPath(filename).is_reserved()
-        ):
+        if _is_illegal_filename(filename):
             return _reject(AssetErrorCode.UNSAFE_PATH, "文件名非法")
         if not filename.lower().endswith(".zip"):
             return _reject(AssetErrorCode.INVALID_PACKAGE, "资产包仅支持 .zip 格式")
