@@ -246,3 +246,29 @@ test('each continuation retains the original per-batch restore timeout', async (
     context.mock.timers.reset();
   }
 });
+
+test('frames replayed by a concurrent history.get are deduped, user records included', async () => {
+  const state = restore();
+  const meta = {
+    cursor: null,
+    subagent_id: '',
+    next_cursor: null,
+    has_more: false,
+    snapshot_id: 'snapshot',
+    snapshot_end: 100000,
+  };
+  try {
+    // 两条 history.get 并发：同一批记录各到一次，done 只来一次
+    for (const message of visibleRecords) emit(state.sessionId, 'history.message', { ...meta, message });
+    for (const message of visibleRecords) emit(state.sessionId, 'history.message', { ...meta, message });
+    emit(state.sessionId, 'history.message', { ...meta, status: 'done' });
+    await flush();
+    assert.equal(state.calls.ready.length, 1);
+    assert.deepEqual(
+      state.calls.ready[0].messages.map((message) => message.content),
+      ['Earlier user message', 'Earlier reply'],
+    );
+  } finally {
+    state.handle.dispose();
+  }
+});

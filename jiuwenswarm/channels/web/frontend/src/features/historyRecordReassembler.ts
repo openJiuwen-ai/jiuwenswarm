@@ -74,11 +74,16 @@ export class HistoryRecordReassembler {
  * 2026-11-22: every chat.tool_call record of one request carried empty
  * content, distinguished only by ``tool_call.tool_call_id``), so the key
  * adds the tool identity — ``tool_call.tool_call_id`` for call records,
- * flattened ``tool_call_id`` for result records.  A duplicated stream
- * replays byte-identical records, so nothing in the key weakens the dedupe.
+ * flattened ``tool_call_id`` for result records, and the nested
+ * ``tool_result.tool_call_id`` shape written when a run is cancelled
+ * (interface_deep.py).  A duplicated stream replays byte-identical records,
+ * so nothing in the key weakens the dedupe.
  *
- * Records without an ``id`` or ``event_type`` are passed through unchanged —
- * dedupe never drops a frame it cannot identify.
+ * Records without an ``id`` are passed through unchanged — dedupe never drops
+ * a frame it cannot identify.  ``event_type`` may legitimately be absent
+ * (user records never carry one — see session_history.py), so it defaults to
+ * ``''`` instead of disabling dedupe; otherwise the duplicated user bubbles
+ * of JW-66 would survive.
  */
 export class HistoryRecordDeduper {
   private seen = new Set<string>();
@@ -91,12 +96,13 @@ export class HistoryRecordDeduper {
     const id = typeof record.id === 'string' ? record.id : '';
     if (!id) return false;
     const eventType = typeof record.event_type === 'string' ? record.event_type : '';
-    if (!eventType) return false;
     const content = record.content;
     const toolCall = isRecord(record.tool_call) ? record.tool_call : null;
+    const toolResult = isRecord(record.tool_result) ? record.tool_result : null;
     const toolCallId =
       (typeof toolCall?.tool_call_id === 'string' && toolCall.tool_call_id) ||
       (typeof record.tool_call_id === 'string' && record.tool_call_id) ||
+      (typeof toolResult?.tool_call_id === 'string' && toolResult.tool_call_id) ||
       '';
     const key = `${id}\u0000${eventType}\u0000${toolCallId}\u0000${
       typeof content === 'string' ? content : JSON.stringify(content ?? '')

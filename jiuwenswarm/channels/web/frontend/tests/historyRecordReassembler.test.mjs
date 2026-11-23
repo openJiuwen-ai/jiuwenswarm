@@ -57,14 +57,15 @@ test('id 相同 event_type 不同不判重', () => {
   assert.equal(d.isDuplicate({ id, event_type: 'chat.final' }), true);
 });
 
-// 缺 id 或缺 event_type 的记录放行，永不误删
-test('缺 id/event_type 的记录直通', () => {
+// 缺 id 的记录放行，永不误删；缺 event_type 仍要判重（用户消息没有 event_type）
+test('缺 id 直通，缺 event_type 仍判重', () => {
   const d = new HistoryRecordDeduper();
   assert.equal(d.isDuplicate({ event_type: 'chat.final', content: 'x' }), false);
-  assert.equal(d.isDuplicate({ id: 'only-id', content: 'x' }), false);
-  assert.equal(d.isDuplicate({ content: 'x' }), false);
-  // 再来一次仍直通（未注册）
   assert.equal(d.isDuplicate({ event_type: 'chat.final', content: 'x' }), false);
+  const user = { id: 'req-1:user', content: 'hi' };
+  assert.equal(d.isDuplicate(user), false);
+  assert.equal(d.isDuplicate({ ...user }), true);
+  assert.equal(d.isDuplicate({ id: 'req-1:user', content: 'another' }), false);
 });
 
 // 同 id 同 event_type 但 content 不同：合法的多 tool_call/多成员 final 共享 id（后端 id={rid}:{role} 无序号），不能判重
@@ -122,4 +123,22 @@ test('tool_result 扁平 tool_call_id 参与键', () => {
   assert.equal(d.isDuplicate(mk('call_aaa')), false);
   assert.equal(d.isDuplicate(mk('call_bbb')), false);
   assert.equal(d.isDuplicate(mk('call_aaa')), true);
+});
+
+// 取消路径（interface_deep.py）把 tool_call_id 嵌在 tool_result 下，且 result 文本固定相同：
+// 键必须覆盖该形状，否则同一请求的多条取消结果被误删，刷新后工具气泡卡在 pending
+test('tool_result 嵌套 tool_call_id 参与键', () => {
+  const d = new HistoryRecordDeduper();
+  const rid = 'cron-job:1795312800:assistant';
+  const cancelled = '[Interrupted] Tool execution cancelled by user.';
+  const mk = (callId) => ({
+    id: rid,
+    event_type: 'chat.tool_result',
+    content: cancelled,
+    tool_result: { tool_name: 'bash', tool_call_id: callId, result: cancelled, status: 'error' },
+  });
+  assert.equal(d.isDuplicate(mk('call_aaa')), false);
+  assert.equal(d.isDuplicate(mk('call_bbb')), false);
+  assert.equal(d.isDuplicate(mk('call_aaa')), true);
+  assert.equal(d.isDuplicate(mk('call_bbb')), true);
 });
