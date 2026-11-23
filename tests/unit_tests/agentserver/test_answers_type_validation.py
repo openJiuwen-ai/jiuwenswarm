@@ -231,6 +231,109 @@ async def test_unknown_interrupt_source_without_query_is_invalid_argument_before
     assert "unsupported interrupt source" in payload["error"]
 
 
+@pytest.mark.parametrize("answers", [[], None])
+def test_build_inputs_rejects_unknown_interrupt_source_without_query_without_answers(
+    monkeypatch: pytest.MonkeyPatch,
+    answers: list | None,
+) -> None:
+    swarm = _make_swarm(monkeypatch)
+    params = {
+        "query": "",
+        "source": "unknown_interrupt",
+        "request_id": "pending-card",
+    }
+    if answers is not None:
+        params["answers"] = answers
+    request = _make_request(params)
+
+    with pytest.raises(interface_module._InvalidChatInputError) as exc_info:
+        swarm._build_inputs(request)
+
+    assert "unsupported interrupt source" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("answers", [[], None])
+async def test_unknown_interrupt_source_without_query_is_invalid_argument_without_answers(
+    monkeypatch: pytest.MonkeyPatch,
+    streaming: bool,
+    answers: list | None,
+) -> None:
+    class FakeAdapter:
+        async def handle_heartbeat(self, _request):
+            return None
+
+        async def process_message_impl(self, *_args, **_kwargs):
+            raise AssertionError("adapter must not be reached for invalid interrupt source")
+
+        async def process_message_stream_impl(self, *_args, **_kwargs):
+            raise AssertionError("adapter must not be reached for invalid interrupt source")
+
+    monkeypatch.setattr(
+        interface_module.JiuWenSwarm,
+        "_ensure_adapter",
+        lambda *_args, **_kwargs: FakeAdapter(),
+    )
+    monkeypatch.setattr(interface_module, "append_history_record", lambda **_kwargs: None)
+    swarm = _make_swarm(monkeypatch)
+    params = {
+        "query": "",
+        "source": "unknown_interrupt",
+        "request_id": "pending-card",
+    }
+    if answers is not None:
+        params["answers"] = answers
+    request = _make_request(params)
+
+    if streaming:
+        chunks = [chunk async for chunk in swarm.process_message_stream(request)]
+        assert len(chunks) == 1
+        assert chunks[0].is_complete is True
+        payload = chunks[0].payload
+        assert payload["event_type"] == "chat.error"
+    else:
+        response = await swarm.process_message(request)
+        assert not response.ok
+        payload = response.payload
+
+    assert payload["code"] == "INVALID_ARGUMENT"
+    assert "unsupported interrupt source" in payload["error"]
+
+
+@pytest.mark.parametrize("source", [" unknown_interrupt ", "unknown_interrupt\t"])
+def test_build_inputs_rejects_unknown_interrupt_source_with_surrounding_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+    source: str,
+) -> None:
+    swarm = _make_swarm(monkeypatch)
+    request = _make_request({
+        "query": "",
+        "source": source,
+        "request_id": "pending-card",
+        "answers": [{"selected_options": ["本次允许"]}],
+    })
+
+    with pytest.raises(interface_module._InvalidChatInputError) as exc_info:
+        swarm._build_inputs(request)
+
+    assert "unsupported interrupt source" in str(exc_info.value)
+
+
+def test_build_inputs_allows_team_plan_approval_source_with_surrounding_whitespace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    swarm = _make_swarm(monkeypatch)
+    inputs, _, _ = swarm._build_inputs(_make_request({
+        "query": "",
+        "source": " team_plan_approval ",
+        "request_id": "team-card",
+        "answers": [{"selected_options": ["approve"]}],
+    }))
+
+    assert inputs["query"] == "stub-prompt"
+
+
 @pytest.mark.parametrize("text_field", ["query", "content"])
 def test_unknown_interrupt_source_with_user_text_keeps_new_turn_compatibility(
     monkeypatch: pytest.MonkeyPatch,

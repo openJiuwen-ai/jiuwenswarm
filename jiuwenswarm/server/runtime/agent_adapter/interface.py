@@ -70,6 +70,7 @@ from jiuwenswarm.agents.harness.common.auto_memory import (
 )
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     EVOLUTION_INTERRUPT_METADATA_SOURCES,
+    INTERRUPT_RESUME_SOURCES,
     is_interrupt_resume_payload,
 )
 
@@ -127,6 +128,14 @@ class EmptyAgentStreamError(RuntimeError):
     """An ordinary chat exhausted its producer without any response event."""
 
     code = "AGENT_STREAM_EMPTY"
+
+
+_LEGACY_TEAM_PLAN_APPROVAL_SOURCE = "team_plan_approval"
+_ALLOWED_INTERRUPT_RESUME_SOURCES = frozenset(
+    INTERRUPT_RESUME_SOURCES
+    | EVOLUTION_INTERRUPT_METADATA_SOURCES
+    | {_LEGACY_TEAM_PLAN_APPROVAL_SOURCE}
+)
 
 
 def _schedule_symphony_session_feedback(session_id: str, request_id: str) -> None:
@@ -1293,19 +1302,29 @@ class JiuWenSwarm:
             final_query = query
             built_user_context: dict[str, Any] | None = None
         else:
+            source = str(params.get("source") or "").strip()
+            if (
+                source
+                and source not in _ALLOWED_INTERRUPT_RESUME_SOURCES
+                and (not isinstance(query, str) or not query.strip())
+            ):
+                raise _InvalidChatInputError(
+                    "unsupported interrupt source; "
+                    "supply a non-empty query to start a new turn"
+                )
+
             answers = params.get("answers")
             if answers is not None and not isinstance(answers, list):
                 raise _InvalidAnswersTypeError(
                     f"answers must be a list, got {type(answers).__name__}"
                 )
             empty_expert_answer = (
-                answers == [] and params.get("source") == "confirm_interrupt"
+                answers == [] and source == "confirm_interrupt"
                 and isinstance(params.get("request_id"), str)
                 and params["request_id"].startswith(("symphony-plan:", "symphony-no-plan:"))
             )
             if answers or empty_expert_answer:
                 request_id = params.get("request_id", "")
-                source = params.get("source", "")
                 raw_original_request = params.get("original_request") if source == "ask_user_interrupt" else ""
                 original_request = raw_original_request.strip() if isinstance(raw_original_request, str) else ""
                 interactive_input = self._build_interactive_input_from_answers(
@@ -1318,16 +1337,6 @@ class JiuWenSwarm:
                     final_query = interactive_input
                     built_user_context = None
                 else:
-                    # Unknown interrupt sources must not silently enter the
-                    # pending runtime with an empty query; team_plan_approval
-                    # keeps its legacy raw-query fallback path.
-                    if source != "team_plan_approval" and (
-                        not isinstance(query, str) or not query.strip()
-                    ):
-                        raise _InvalidChatInputError(
-                            "unsupported interrupt source; "
-                            "supply a non-empty query to start a new turn"
-                        )
                     built = build_user_prompt(
                         query,
                         files=params.get("files", {}),
