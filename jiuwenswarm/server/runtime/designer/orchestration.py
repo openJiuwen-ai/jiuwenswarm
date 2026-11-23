@@ -2659,8 +2659,7 @@ class Director:
                     changed = True
             except Exception:  # noqa: BLE001
                 pass
-            # Character consistency / costume still injected below for the leaf;
-            # the video API body is rewritten by director_prepare_video_prompt.
+            # Character consistency / costume remain available to the leaf agent.
             prior_shots = collect_prior_clip_prompts(graph, clip_index=clip_index)
             if not prior_shots and str(cfg.get("previous_clip_action") or "").strip():
                 prior_shots = [
@@ -2675,25 +2674,17 @@ class Director:
                 ]
             try:
                 from jiuwenswarm.server.runtime.designer.pipeline.shot_consistency_contract import (
-                    apply_consistency_contract,
-                    prompt_violates_consistency,
+                    merge_storyboard_consistency,
                 )
 
-                cfg, prompt, cont_notes = apply_consistency_contract(
+                cfg, cont_notes = merge_storyboard_consistency(
                     cfg,
                     graph=graph if isinstance(graph, dict) else {},
-                    prompt=prompt,
                 )
                 for n in cont_notes:
                     if n and n not in notes:
                         notes.append(n)
                         changed = True
-                # Hard reject: blank contaminated draft so director rewrite uses
-                # this storyboard row + structured holds (not prior Wan prose).
-                if prompt_violates_consistency(prompt, cfg=cfg):
-                    prompt = ""
-                    notes.append("reject_continuity_violation_blank_prompt")
-                    changed = True
             except Exception:  # noqa: BLE001
                 pass
             # Keep prior_shots available for debug / regenerate packets only.
@@ -2878,11 +2869,6 @@ class Director:
                         break
 
         if role == "clip":
-            from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
-                ensure_story_lock_coverage,
-                director_approve_video_prompt,
-            )
-
             # Stamp film-wide / shot ToD onto cfg before story-form coverage.
             if not isinstance(cfg.get("time_of_day_lock"), dict) or not (
                 cfg.get("time_of_day_lock") or {}
@@ -2935,33 +2921,6 @@ class Director:
                         cfg["time_of_day_lock"] = tod
                 except Exception:  # noqa: BLE001
                     pass
-
-            approved, reasons = director_approve_video_prompt(
-                prompt,
-                cfg=cfg,
-                graph=graph if isinstance(graph, dict) else {},
-                clip_index=clip_index,
-                action=str(cfg.get("clip_action") or ""),
-                camera=str(cfg.get("camera") or ""),
-            )
-            if approved != str(prompt or "").strip():
-                notes.append("director_rewrote_video_prompt")
-                prompt = approved
-                changed = True
-            cfg["director_video_prompt_notes"] = reasons
-            cfg["director_video_prompt_notes"] = reasons
-            cfg["director_video_prompt_approved"] = True
-            # After story-form rewrite: fill missing language / ToD / style as prose
-            # (never LOCK essays — those get scrubbed on the next pass).
-            covered, cov_notes = ensure_story_lock_coverage(
-                prompt,
-                cfg,
-                graph=graph if isinstance(graph, dict) else {},
-            )
-            if covered != str(prompt or "").strip():
-                prompt = covered
-                notes.extend(cov_notes or ["ensure_story_lock_coverage"])
-                changed = True
 
         # Always stamp Director lock gate; patched=True when prompt text changed.
         # Images + clips: positive practice prompts only (no LOCK essays on tool body).

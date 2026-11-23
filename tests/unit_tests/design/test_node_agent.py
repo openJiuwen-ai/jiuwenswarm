@@ -187,6 +187,39 @@ def test_vllm_omni_clip_waits_as_long_as_the_video_poll(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("prompt", ["阿岚回头。", "STYLE LOCK: watercolor. Sam waves. Do not add extras."])
+async def test_call_video_model_preserves_short_and_labeled_agent_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    prompt: str,
+) -> None:
+    from jiuwenswarm.server.runtime.designer.handlers.types import NodeExecutionContext
+
+    saved = tmp_path / "clip.mp4"
+    saved.write_bytes(b"mp4" * 200)
+    calls = []
+
+    async def generate(prompt: str, **kwargs) -> dict[str, str]:
+        calls.append(prompt)
+        return {"video_path": str(saved)}
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.designer.handlers.clip.generate_clip_video", generate,
+    )
+    node = {
+        "id": "n_clip_1",
+        "type": "video",
+        "config": {"pipeline": "clip", "clip_index": 1, "clip_action": "A different action"},
+    }
+    ctx = NodeExecutionContext(graph={"nodes": [node]}, run_id="run_video", node_id="n_clip_1")
+    toolkit = DesignerGraphToolkit(_DummySpawner(), ctx)
+    result = await toolkit.call_video_model(prompt=prompt)
+    assert result.startswith("video_ready")
+    assert calls == [prompt]
+    assert toolkit.completed is not None
+
+
+@pytest.mark.asyncio
 async def test_call_image_model_uses_designer_helper_not_localfunction(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

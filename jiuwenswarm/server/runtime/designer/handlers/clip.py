@@ -5,7 +5,6 @@
 from __future__ import annotations
 
 import logging
-import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -560,23 +559,6 @@ def _storyboard_narrative_action(shot: dict[str, Any] | None) -> str:
     return str(shot.get("character_action") or "").strip()
 
 
-def _extract_action_from_generate_prompt(text: str) -> str:
-    """Pull a clean Action: … beat from a lock-stuffed generate.prompt when present."""
-    raw = str(text or "").strip()
-    if not raw:
-        return ""
-    match = re.search(
-        r"(?i)(?:^|\n)\s*(?:Primary action for shot\s+\d+\s*:|Action)\s*:\s*(.+?)(?:\n|$)",
-        raw,
-    )
-    if match:
-        return match.group(1).strip()[:500]
-    # Fallback: first non-lock sentence if prompt is short and narrative-only.
-    if not _looks_like_contaminated_prompt(raw) and len(raw) <= 500:
-        return raw[:500]
-    return ""
-
-
 def _shot_for_node(
     graph: DesignerExecutionGraph,
     node: DesignerGraphNode,
@@ -589,109 +571,43 @@ def _shot_for_node(
     return index, None
 
 
-def _looks_like_contaminated_prompt(text: str) -> bool:
-    """True only for pasted handoff/assignment dumps — not normal SCENE SPECS / staging."""
-    raw = (text or "").upper()
-    needles = (
-        "PRIOR CLIP PROMPT",
-        "PREVIOUS CLIP HAD",
-        "PRIOR SHOT CONSISTENCY",
-        "PREVIOUS CLIP HAD",
-        "YOUR ASSIGNMENT",
-        "MASTER SCENE PROMPT",
-        "CHARACTER CONSISTENCY (MANAGER)",
-        "PRIOR CLIP WAN",
-        "PREVIOUS WAN PROMPT",
-    )
-    return any(n in raw for n in needles)
-
-
 def build_clip_prompt(
     graph: DesignerExecutionGraph,
     node: DesignerGraphNode,
     ctx: NodeExecutionContext | None = None,
     slots: list[ReferenceSlot] | None = None,
 ) -> str:
-    """Shot-specific clip prompt. Prefer shot row over full Brief to avoid identical clips.
+    """Use the authored prompt, or seed a new prompt from this storyboard row.
 
-    ``slots`` are the images the call will attach; image numbers follow them.
+    Only a missing draft is composed. Existing prose is never classified or
+    replaced based on its language, wording, or similarity to other shots.
     """
-    clip_index, shot = _shot_for_node(graph, node, ctx)
-    cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
-    cfg = dict(cfg)
-    try:
-        from jiuwenswarm.server.runtime.designer.pipeline.clip_story_state import (
-            ensure_prior_clip_story_on_cfg,
-        )
-
-        cfg = ensure_prior_clip_story_on_cfg(
-            cfg, graph if isinstance(graph, dict) else {}
-        )
-        if isinstance(node, dict):
-            node["config"] = cfg
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        from jiuwenswarm.server.runtime.designer.pipeline.clip_last_frame_handoff import (
-            scrub_restated_speech,
-        )
-
-        cfg = scrub_restated_speech(cfg)
-        if isinstance(node, dict):
-            node["config"] = cfg
-    except Exception:  # noqa: BLE001
-        pass
-    sb_action = _storyboard_narrative_action(shot if isinstance(shot, dict) else None)
-    action = str(sb_action or cfg.get("clip_action") or "").strip()
-    if not action:
-        local = str(cfg.get("prompt") or "").strip()
-        user = str(graph.get("description") or "")
-        try:
-            from jiuwenswarm.server.runtime.designer.pipeline.clip_scope import (
-                looks_like_full_story_restatement,
-            )
-
-            if local and not looks_like_full_story_restatement(local, user) and len(local) <= 400:
-                action = local
-        except Exception:  # noqa: BLE001
-            if local and len(local) <= 220:
-                action = local
-    camera = str(
-        (shot or {}).get("camera") or cfg.get("camera") or ""
-    ).strip()
-    generate_cfg = cfg.get("generate")
-    override = str(generate_cfg.get("prompt") or "").strip() if isinstance(generate_cfg, dict) else ""
-    if override and not sb_action and not action:
-        extracted = _extract_action_from_generate_prompt(override)
-        if extracted:
-            action = extracted
-    if not str(cfg.get("costume_lock") or "").strip():
-        try:
-            from jiuwenswarm.server.runtime.designer.pipeline.clothing_lock import (
-                ensure_cfg_clothing_lock,
-            )
-
-            analysis_chars = list(
-                ((graph.get("metadata") or {}).get("script_analysis") or {}).get("characters")
-                or []
-            )
-            ensure_cfg_clothing_lock(cfg, characters=analysis_chars)
-        except Exception:  # noqa: BLE001
-            logger.debug("ensure_cfg_clothing_lock failed in build_clip_prompt", exc_info=True)
     from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
-        director_approve_video_prompt,
+        compose_practice_prompt,
+        resolve_user_origin_prompt,
     )
 
-    approved, _notes = director_approve_video_prompt(
-        action or "",
+    cfg = node.get("config") if isinstance(node.get("config"), dict) else {}
+    user_text = resolve_user_origin_prompt(cfg)
+    generate = cfg.get("generate") if isinstance(cfg.get("generate"), dict) else {}
+    # generate_node_output injects this call's authored text into cfg.prompt.
+    for candidate in (user_text, cfg.get("prompt"), generate.get("prompt")):
+        if candidate is None or candidate == "":
+            continue
+        if not isinstance(candidate, str) or not candidate.strip():
+            raise ValueError("Video prompt must be a non-empty string")
+        return candidate.strip()
+    _clip_index, shot = _shot_for_node(graph, node, ctx)
+    action = _storyboard_narrative_action(shot) or str(cfg.get("clip_action") or "").strip()
+    if not action:
+        raise ValueError("Video prompt or storyboard action required")
+    return compose_practice_prompt(
         cfg=cfg,
-        graph=graph if isinstance(graph, dict) else {},
-        clip_index=clip_index,
+        graph=graph,
         action=action,
-        camera=camera,
+        camera=str((shot or {}).get("camera") or cfg.get("camera") or ""),
         slots=slots,
     )
-    return approved
 
 
 async def generate_clip_video(

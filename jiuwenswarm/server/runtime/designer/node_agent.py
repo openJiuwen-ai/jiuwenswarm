@@ -1100,8 +1100,6 @@ class DesignerGraphToolkit:
         self.raise_media_error()
         _ = first_frame
         from jiuwenswarm.server.runtime.designer.handlers.clip import (
-            _looks_like_contaminated_prompt,
-            build_clip_prompt,
             attachable_slots,
             collect_clip_reference_slots,
             connected_payload_clause,
@@ -1146,78 +1144,20 @@ class DesignerGraphToolkit:
             raise
         ref_files = [str(slot.path) for slot in slots]
 
-        # Agent writes P2 (continuation). Structured prompt is fallback / lock scaffold.
-        structured = ""
-        try:
-            structured = str(
-                build_clip_prompt(self.ctx.graph, node, self.ctx, slots=slots) or ""
-            ).strip()
-        except Exception:  # noqa: BLE001
-            logger.debug("build_clip_prompt failed in call_video_model", exc_info=True)
-        agent_text = str(prompt or "").strip()
-        prior_p1 = str(cfg.get("previous_clip_action") or cfg.get("previous_clip_wan_prompt") or "").strip()
-        meta = graph.get("metadata") if isinstance(graph.get("metadata"), dict) else {}
-        user_prompt = str(graph.get("description") or meta.get("user_prompt") or "")
-        try:
-            from jiuwenswarm.server.runtime.designer.pipeline.shot_consistency_contract import (
-                merge_storyboard_consistency,
-                prompt_violates_consistency,
-            )
+        from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
+            resolve_user_origin_prompt,
+        )
+        from jiuwenswarm.server.runtime.designer.pipeline.shot_consistency_contract import (
+            merge_storyboard_consistency,
+        )
 
-            cfg, _ = merge_storyboard_consistency(cfg, graph=graph)
-            node["config"] = cfg
-        except Exception:  # noqa: BLE001
-            pass
-        if agent_text:
-            try:
-                from jiuwenswarm.server.runtime.designer.pipeline.clip_scope import (
-                    looks_like_full_story_restatement,
-                    looks_like_prior_copy,
-                )
-                from jiuwenswarm.server.runtime.designer.pipeline.clip_story_state import (
-                    narrative_from_wan_prompt,
-                )
-                from jiuwenswarm.server.runtime.designer.pipeline.clip_prompt_handoff import (
-                    agent_replays_finished_events,
-                )
-
-                body = narrative_from_wan_prompt(agent_text, limit=2500) or agent_text
-                if looks_like_full_story_restatement(body, user_prompt):
-                    agent_text = ""
-                elif prior_p1 and looks_like_prior_copy(
-                    body, str(cfg.get("previous_clip_wan_prompt") or prior_p1)
-                ):
-                    agent_text = ""
-                elif agent_replays_finished_events(
-                    body,
-                    already_done=[str(x) for x in (cfg.get("already_done") or []) if str(x)],
-                    this_action=str(cfg.get("clip_action") or ""),
-                ):
-                    agent_text = ""
-                elif prompt_violates_consistency(body, cfg=cfg):
-                    agent_text = ""
-            except Exception:  # noqa: BLE001
-                pass
-        if (
-            prior_p1
-            and agent_text
-            and agent_text[:180].casefold() == prior_p1[:180].casefold()
-        ):
-            agent_text = ""
-        if (
-            agent_text
-            and not _looks_like_contaminated_prompt(agent_text)
-            and len(agent_text) >= 40
-        ):
-            text = agent_text
-        elif structured:
-            text = structured
-        else:
-            text = agent_text or str(
-                (node.get("config") or {}).get("prompt")
-                or graph_prompt(self.ctx.graph, node)
-                or ""
-            )
+        cfg, _ = merge_storyboard_consistency(cfg, graph=graph)
+        node["config"] = cfg
+        prompt = resolve_user_origin_prompt(cfg) or prompt
+        # The tool argument is authored prose. Do not reject it using semantic heuristics.
+        if not isinstance(prompt, str) or not prompt.strip():
+            return "call_video_model error: prompt required"
+        text = prompt.strip()
         payload = connected_payload_clause(
             edge_text_inputs(self.ctx, node),
             edge_video_inputs(self.ctx, node),
@@ -1255,13 +1195,9 @@ class DesignerGraphToolkit:
         from jiuwenswarm.server.runtime.designer.pipeline.wan_call_locks import (
             apply_wan_call_locks,
         )
-        from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
-            resolve_user_origin_prompt,
-        )
 
         meta = graph.get("metadata") if isinstance(graph.get("metadata"), dict) else {}
-        # Clip calls are rewritten to the short image-binding form. Speech and
-        # score stay on cfg and are spoken as positive lines, not lock essays.
+        # Preserve the authored body; the call contract binds actual attachments.
         from jiuwenswarm.server.runtime.designer.pipeline.wan_prompt_hygiene import (
             apply_regenerate_packet,
         )

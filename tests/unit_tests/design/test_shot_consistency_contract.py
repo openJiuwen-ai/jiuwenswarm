@@ -85,33 +85,6 @@ def test_enforce_speech_uniqueness_clears_duplicate() -> None:
     assert "cleared_duplicate_speech" in n2
 
 
-def test_prompt_violates_restated_speech_and_prior_action() -> None:
-    from jiuwenswarm.server.runtime.designer.pipeline.shot_consistency_contract import (
-        prompt_violates_consistency,
-    )
-
-    cfg = {
-        "clip_action": "Alex walks to the window",
-        "previous_clip_action": "Alex turns to look at the calendar",
-        "already_done": ["shot 1 already filmed: Alex turns to look at the calendar"],
-        "forbidden_speech": ["Oh no, it's Valentine's Day!"],
-        "previous_clip_speech": "Oh no, it's Valentine's Day!",
-    }
-    bad = (
-        'Alex turns to look at the calendar. Alex says: "Oh no, it\'s Valentine\'s Day!"'
-    )
-    reasons = prompt_violates_consistency(bad, cfg=cfg)
-    assert reasons
-    assert (
-        "restates_forbidden_speech" in reasons
-        or "replays_finished_events" in reasons
-        or "films_prior_action_not_this_row" in reasons
-    )
-
-    good = "Alex walks to the window and looks outside quietly."
-    assert not prompt_violates_consistency(good, cfg=cfg)
-
-
 def test_cross_setting_does_not_carry_speech() -> None:
     from jiuwenswarm.server.runtime.designer.pipeline.shot_consistency_contract import (
         merge_storyboard_consistency,
