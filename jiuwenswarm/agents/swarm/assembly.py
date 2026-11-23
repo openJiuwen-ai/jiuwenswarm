@@ -667,6 +667,20 @@ def enrich_team_spec_for_swarm(
     if "extension_bus" in getattr(SwarmBuildContext, "__dataclass_fields__", {}):
         context_kwargs["extension_bus"] = extension_bus
     base = SwarmBuildContext(**context_kwargs)
+    from jiuwenswarm.common.team_memory_binding import team_memory_key, uses_jiuwen_team_memory
+    if uses_jiuwen_team_memory(config, mode):
+        from jiuwenswarm.common.coding_memory_paths import resolve_coding_memory_project_name
+        from jiuwenswarm.agents.harness.common.memory.jiuwen_rail_builder import (
+            get_jiuwen_memory_scope,
+        )
+        identity = get_jiuwen_memory_scope(config)
+        base.memory_agent_name = identity["agent"]
+        base.memory_project = resolve_coding_memory_project_name(project_dir)
+        base.memory_team = team_memory_key(identity["org"], identity["user"],
+            base.memory_project, agent_group_name or "")
+        if spec.memory is not None:
+            spec.memory = spec.memory.model_copy(update={"enabled": False})
+
     mcp_configs = build_enabled_mcp_server_configs(
         config,
         server_id_scope=f"team:{spec.team_name}",

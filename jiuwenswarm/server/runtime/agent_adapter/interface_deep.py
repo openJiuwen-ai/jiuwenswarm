@@ -2640,7 +2640,6 @@ class JiuWenSwarmDeepAdapter:
         self._extension_compact_context = None
         self._workspace_dir: str = str(get_agent_workspace_dir())
         self._memory_media_workspace: str | None = None
-        self._memory_media_upload_root: Path | None = None
         self._permission_workspace_root: Path | None = None
         self._permission_runtime_paths: RuntimeWorkspacePaths | None = None
         self._session_workspace_snapshot: RuntimeWorkspacePaths | None = None
@@ -12431,25 +12430,22 @@ class JiuWenSwarmDeepAdapter:
 
     def _jiuwen_memory_media_globals(self, config: dict[str, Any]) -> dict[str, Any]:
         workspace = getattr(self, "_memory_media_workspace", None)
-        upload_root = getattr(self, "_memory_media_upload_root", None)
-        if not workspace and upload_root is None:
-            return {}
         if getattr(self._sys_operation_card, "mode", None) != OperationMode.LOCAL:
             return {}
         if get_jiuwen_builtin_mode(config) != "sdk":
             return {}
 
         runtime_config = self._config_base_cache or {}
-        if (
-            not self._permissions_explicitly_disabled(runtime_config)
-            or self._enable_auto_permission
-            or self._instance_overrides.get("run_permissions_enabled")
-        ):
+        allow_uploads = (
+            self._permissions_explicitly_disabled(runtime_config)
+            and not self._enable_auto_permission
+            and not self._instance_overrides.get("run_permissions_enabled")
+        )
+        if not allow_uploads:
             workspace = None
-            upload_root = None
         return get_jiuwen_sdk_media_globals(
             config, runtime_config, workspace=workspace, agent_name=self._agent_name,
-            session_upload_root=upload_root,
+            allow_session_uploads=allow_uploads,
         )
 
     def _build_memory_rail(
@@ -16774,11 +16770,6 @@ class JiuWenSwarmDeepAdapter:
         self._memory_media_workspace = (
             task_workspace if bind_request and runtime_config.channel_id == "web" else None
         )
-        self._memory_media_upload_root = None
-        if bind_request and runtime_config.channel_id == "web":
-            from jiuwenswarm.server.runtime.attachments.video_attachments import session_video_upload_root
-
-            self._memory_media_upload_root = session_video_upload_root(runtime_config.session_id)
         await self._update_rails_for_mode(runtime_config.mode)
         stage_timer.mark("rails_for_mode")
 
@@ -21860,6 +21851,10 @@ class JiuWenSwarmDeepAdapter:
 
         # Team 模式处理
         if is_team_mode(mode):
+            from jiuwenswarm.common.team_memory_binding import uses_jiuwen_team_memory
+            if uses_jiuwen_team_memory(get_config(), mode):
+                await self._handle_memory_rail_by_config(mode)
+
             from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
                 bind_team_heartbeat_service,
                 process_team_message_stream,
@@ -24456,6 +24451,14 @@ class JiuWenSwarmDeepAdapter:
 
     async def _handle_memory_rail_by_config(self, mode: str):
         config = get_config()
+        from jiuwenswarm.common.team_memory_binding import uses_jiuwen_team_memory
+        if uses_jiuwen_team_memory(config, mode):
+            if self._memory_rail is not None:
+                await self._drain_jiuwen_memory_rail(self._memory_rail)
+                await self._instance.unregister_rail(self._memory_rail)
+                self._memory_rail = None
+            return
+
         if get_memory_mode(config) == "local":
             # 引擎门禁：memory.engine 未放行内置时，等同于禁用
             builtin_on = (
