@@ -20,7 +20,6 @@ from openjiuwen.core.foundation.llm import (
 )
 from openjiuwen.core.foundation.tool import LocalFunction, ToolCard
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
-from openjiuwen.core.common.run_context import HeartbeatReason
 from openjiuwen.core.single_agent.rail.base import (
     AgentCallbackContext,
     InvokeInputs,
@@ -39,6 +38,7 @@ from jiuwenswarm.agents.swarm.providers.member_rails import (
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
 )
+from tests.unit_tests.agentserver.test_symphony_expert_task_dispatch import _node, _plan
 
 
 class _ScriptedClient(BaseModelClient):
@@ -99,6 +99,8 @@ def _tool(name: str, func: Any) -> LocalFunction:
     properties = {
         "symphony_compose_graph": {
             "query": {"type": "string"},
+            "type": {"type": "string", "enum": ["skill", "expert"]},
+            "candidate_ids": {"type": "array", "items": {"type": "string"}},
             "candidate_skill_ids": {"type": "array", "items": {"type": "string"}},
         },
         "skill_tool": {"skill_name": {"type": "string"}},
@@ -144,6 +146,13 @@ def _outer_ctx(
     )
 
 
+async def _record_expert_plan(rail: SymphonyOrchestrationRail, ctx: AgentCallbackContext) -> None:
+    await rail.after_tool_call(_inner_tool_ctx(
+        ctx, name=rail.COMPOSE_TOOL_NAME, call_id="compose",
+        result=_plan({"review": _node("review", "report")}),
+    ))
+
+
 async def _pause_for_test(
     rail: SymphonyOrchestrationRail,
     ctx: AgentCallbackContext,
@@ -154,8 +163,7 @@ async def _pause_for_test(
     conflict: bool = False,
 ) -> None:
     await rail.before_invoke(ctx)
-    state = rail._outer_states[id(ctx)]
-    state.awaiting_input = True
+    await _record_expert_plan(rail, ctx)
     result: dict[str, Any] = {"result_type": "interrupt"}
     if interrupt_ids:
         result["interrupt_ids"] = [component_id]
@@ -170,7 +178,7 @@ async def _pause_for_test(
 async def _resumed_state_for_test() -> tuple[
     SymphonyOrchestrationRail, AgentCallbackContext
 ]:
-    rail = SymphonyOrchestrationRail()
+    rail = SymphonyOrchestrationRail(enable_expert_task_dispatch=True)
     await _pause_for_test(rail, _outer_ctx("task"), "ask")
     answer = InteractiveInput()
     answer.update("ask", {"answers": {"Audience": "engineering"}})
@@ -209,21 +217,23 @@ def _inner_tool_ctx(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["agent", "team"])
 @pytest.mark.parametrize("addressed_by", ["tool_call_id", "interrupt_id"])
-async def test_real_deep_agent_routes_needs_input_resume_without_shared_extra(
+async def test_host_can_clarify_and_choose_new_compose_arguments(
     mode: str,
     addressed_by: str,
 ) -> None:
     compose_calls: list[dict] = []
     skill_calls: list[dict] = []
+    capability_type = "expert" if mode == "team" else "skill"
+    candidate = f"{capability_type}-a"
 
     async def compose(**kwargs: Any) -> dict:
         compose_calls.append(kwargs)
         return {
             "planned_graph": {
                 "graph": {
-                    "metadata": {
-                        "status": "needs_input" if len(compose_calls) == 1 else "ready"
-                    }
+                    "metadata": {"status": "ready", "missing_inputs": ["audience"]},
+                    "nodes": {candidate: {"metadata": {"missing_inputs": ["audience"]}}},
+                    "edges": [],
                 }
             }
         }
@@ -236,7 +246,7 @@ async def test_real_deep_agent_routes_needs_input_resume_without_shared_extra(
         [
             _call(
                 "symphony_compose_graph",
-                '{"query":"task","candidate_skill_ids":["skill-a"]}',
+                json.dumps({"query": "task", "type": capability_type, "candidate_ids": [candidate]}),
                 "compose-1",
             ),
             _call("skill_tool", '{"skill_name":"skill-a"}', "skill-before-answer"),
@@ -248,7 +258,8 @@ async def test_real_deep_agent_routes_needs_input_resume_without_shared_extra(
             _call("skill_tool", '{"skill_name":"skill-a"}', "skill-after-answer"),
             _call(
                 "symphony_compose_graph",
-                '{"query":"drift","candidate_skill_ids":["other"]}',
+                json.dumps({"query": "drift", "type": "expert" if capability_type == "skill" else "skill",
+                            "candidate_ids": ["other"]}),
                 "compose-2",
             ),
             _call("skill_tool", '{"skill_name":"skill-a"}', "skill-allowed"),
@@ -289,23 +300,24 @@ async def test_real_deep_agent_routes_needs_input_resume_without_shared_extra(
         answer.update("ask-1", value)
     resumed = await agent.invoke(_inputs(answer, mode=mode))
     assert resumed["result_type"] == "answer"
-    assert compose_calls[1]["candidate_skill_ids"] == ["skill-a"]
-    assert compose_calls[1]["query"] == (
-        'task\n\n补充信息：\n- Audience: "engineering"\n- api_key: "secret"'
-    )
+    assert compose_calls[1]["type"] == ("expert" if capability_type == "skill" else "skill")
+    assert compose_calls[1]["candidate_ids"] == ["other"]
+    assert compose_calls[1]["query"] == "drift"
     assert skill_calls == [{"skill_name": "skill-a"}] * 3
     assert client.index == len(client.responses)
 
 
 @pytest.mark.asyncio
-async def test_real_deep_agent_rekeys_two_needs_input_rounds() -> None:
+async def test_host_can_replan_before_or_after_asking_a_question() -> None:
     compose_calls: list[dict[str, Any]] = []
     skill_calls: list[dict[str, Any]] = []
 
     async def compose(**kwargs: Any) -> dict:
         compose_calls.append(kwargs)
-        status = "ready" if len(compose_calls) == 3 else "needs_input"
-        return {"planned_graph": {"graph": {"metadata": {"status": status}}}}
+        return {"planned_graph": {"graph": {
+            "metadata": {"status": "ready", "missing_inputs": ["audience"]},
+            "nodes": {"draft": {"metadata": {"missing_inputs": ["audience"]}}}, "edges": [],
+        }}}
 
     async def skill(**kwargs: Any) -> dict:
         skill_calls.append(kwargs)
@@ -314,13 +326,13 @@ async def test_real_deep_agent_rekeys_two_needs_input_rounds() -> None:
     client = _ScriptedClient(
         [
             _call(
-                "symphony_compose_graph", '{"candidate_skill_ids":["skill-a"]}', "c1"
+                "symphony_compose_graph", '{"type":"skill","candidate_ids":["skill-a"]}', "c1"
             ),
             _call("skill_tool", '{"skill_name":"skill-a"}', "skill-before-answer-1"),
             _call(
                 "symphony_compose_graph",
                 '{"query":"drift","candidate_skill_ids":["drift"]}',
-                "compose-blocked-original",
+                "compose-before-answer",
             ),
             _call("ask_user", '{"questions":[{"question":"Audience"}]}', "ask-1"),
             _call("skill_tool", '{"skill_name":"skill-a"}', "skill-after-answer-1"),
@@ -341,7 +353,7 @@ async def test_real_deep_agent_rekeys_two_needs_input_rounds() -> None:
             _tool("symphony_compose_graph", compose),
             _tool("skill_tool", skill),
         ],
-        rails=[SymphonyOrchestrationRail(), AskUserRail()],
+        rails=[SymphonyOrchestrationRail(enable_expert_task_dispatch=True), AskUserRail()],
         # Keep every scripted response assigned to the interaction sequence.
         enable_read_image_multimodal=False,
         auto_create_workspace=False,
@@ -349,9 +361,7 @@ async def test_real_deep_agent_rekeys_two_needs_input_rounds() -> None:
         max_iterations=12,
     )
     assert (await agent.invoke(_inputs("task")))["result_type"] == "interrupt"
-    # The original turn is not allowed to retry compose before the exact
-    # AskUser response; its model call is consumed but the tool is not run.
-    assert len(compose_calls) == 1
+    assert len(compose_calls) == 2
     first_answer = InteractiveInput()
     first_answer.update("ask-1", {"answers": {"Audience": "engineering"}})
     assert (await agent.invoke(_inputs(first_answer)))["result_type"] == "interrupt"
@@ -359,20 +369,19 @@ async def test_real_deep_agent_rekeys_two_needs_input_rounds() -> None:
     second_answer.update("ask-2", {"answers": {"Scope": "platform"}})
     assert (await agent.invoke(_inputs(second_answer)))["result_type"] == "answer"
 
-    assert [call["candidate_skill_ids"] for call in compose_calls] == [
-        ["skill-a"],
-        ["skill-a"],
-        ["skill-a"],
+    assert [{key: value for key, value in call.items() if value is not None} for call in compose_calls] == [
+        {"type": "skill", "candidate_ids": ["skill-a"]},
+        {"query": "drift", "candidate_skill_ids": ["drift"]},
+        {"candidate_skill_ids": ["drift"]},
+        {"candidate_skill_ids": ["drift"]},
     ]
-    assert "engineering" in compose_calls[-1]["query"]
-    assert "platform" in compose_calls[-1]["query"]
     assert skill_calls == [{"skill_name": "skill-a"}] * 5
     assert client.index == len(client.responses)
 
 
 @pytest.mark.asyncio
 async def test_route_binding_clones_run_context_without_losing_runtime_fields() -> None:
-    rail = SymphonyOrchestrationRail()
+    rail = SymphonyOrchestrationRail(enable_expert_task_dispatch=True)
     nested = {"keep": ["shared-shallow-value"]}
     caller_context = RunContext(
         reason=HeartbeatReason.MANUAL,
@@ -403,11 +412,11 @@ async def test_route_binding_clones_run_context_without_losing_runtime_fields() 
 
 @pytest.mark.asyncio
 async def test_late_interrupted_invokes_cannot_revive_invalidated_generation() -> None:
-    rail = SymphonyOrchestrationRail()
+    rail = SymphonyOrchestrationRail(enable_expert_task_dispatch=True)
     invokes = [_outer_ctx(f"task-{index}") for index in range(3)]
     await asyncio.gather(*(rail.before_invoke(ctx) for ctx in invokes))
     for index, ctx in enumerate(invokes):
-        rail._outer_states[id(ctx)].awaiting_input = True
+        await _record_expert_plan(rail, ctx)
         ctx.inputs.result = {
             "result_type": "interrupt",
             "component_ids": [f"i-{index}"],
@@ -421,10 +430,10 @@ async def test_late_interrupted_invokes_cannot_revive_invalidated_generation() -
 
 @pytest.mark.asyncio
 async def test_new_turn_or_uninit_rejects_late_interrupt_after_callbacks() -> None:
-    rail = SymphonyOrchestrationRail()
+    rail = SymphonyOrchestrationRail(enable_expert_task_dispatch=True)
     old = _outer_ctx("old")
     await rail.before_invoke(old)
-    rail._outer_states[id(old)].awaiting_input = True
+    await _record_expert_plan(rail, old)
     new = _outer_ctx("new")
     await rail.before_invoke(new)
     old.inputs.result = {"result_type": "error", "success": False}
@@ -440,7 +449,7 @@ async def test_new_turn_or_uninit_rejects_late_interrupt_after_callbacks() -> No
 
     late = _outer_ctx("late")
     await rail.before_invoke(late)
-    rail._outer_states[id(late)].awaiting_input = True
+    await _record_expert_plan(rail, late)
     rail.uninit(SimpleNamespace())
     late.inputs.result = {"result_type": "interrupt", "component_ids": ["late-id"]}
     await rail.after_invoke(late)
@@ -449,7 +458,7 @@ async def test_new_turn_or_uninit_rejects_late_interrupt_after_callbacks() -> No
 
 @pytest.mark.asyncio
 async def test_exact_ids_and_valid_ask_user_payload_are_required_to_claim() -> None:
-    rail = SymphonyOrchestrationRail()
+    rail = SymphonyOrchestrationRail(enable_expert_task_dispatch=True)
     await _pause_for_test(rail, _outer_ctx("task"), "same", both_ids=True)
     assert len(rail._paused_states) == 1
 
@@ -458,19 +467,19 @@ async def test_exact_ids_and_valid_ask_user_payload_are_required_to_claim() -> N
     await rail.before_invoke(_outer_ctx(malformed))
     assert not rail._paused_states
 
-    conflict_rail = SymphonyOrchestrationRail()
+    conflict_rail = SymphonyOrchestrationRail(enable_expert_task_dispatch=True)
     await _pause_for_test(
         conflict_rail, _outer_ctx("task"), "conflict", both_ids=True, conflict=True
     )
     assert not conflict_rail._paused_states
-    alias_rail = SymphonyOrchestrationRail()
+    alias_rail = SymphonyOrchestrationRail(enable_expert_task_dispatch=True)
     await _pause_for_test(alias_rail, _outer_ctx("task"), "alias", interrupt_ids=True)
     assert [key.component_id for key in alias_rail._paused_states] == ["alias"]
 
 
 @pytest.mark.asyncio
 async def test_cross_session_cannot_claim_and_all_answers_are_preserved() -> None:
-    rail = SymphonyOrchestrationRail()
+    rail = SymphonyOrchestrationRail(enable_expert_task_dispatch=True)
     await _pause_for_test(rail, _outer_ctx("task", session_id="s-a"), "ask-a")
     answer = InteractiveInput()
     answer.update("ask-a", {"answers": {"api_key": "leak", "token": "also-leak"}})
@@ -491,7 +500,7 @@ async def test_cross_session_cannot_claim_and_all_answers_are_preserved() -> Non
 
 @pytest.mark.asyncio
 async def test_resume_preserves_complete_ordered_answers_across_rounds() -> None:
-    rail = SymphonyOrchestrationRail()
+    rail = SymphonyOrchestrationRail(enable_expert_task_dispatch=True)
     original_query = '原始任务：生成 "方案"\n保留任务边界'
     labels = (
         "password",
@@ -537,11 +546,12 @@ async def test_resume_preserves_complete_ordered_answers_across_rounds() -> None
             call_id=f"compose-{index}",
             args={"query": "drift"},
             result={
-                "planned_graph": {"graph": {"metadata": {"status": "needs_input"}}}
+                "planned_graph": {"graph": {"metadata": {"status": "ready", "missing_inputs": ["source"]}}}
             },
         )
         await rail.before_tool_call(compose)
-        assert compose.inputs.tool_args["query"] == (
+        assert compose.inputs.tool_args["query"] == "drift"
+        assert state.expert_plans["test-plan"].request == (
             f"{original_query}\n\n补充信息：\n"
             + "\n".join(f"- {line}" for line in expected_lines)
         )
@@ -558,10 +568,10 @@ async def test_resume_preserves_complete_ordered_answers_across_rounds() -> None
 
 @pytest.mark.asyncio
 async def test_cancelled_after_invoke_drops_pending_state() -> None:
-    rail = SymphonyOrchestrationRail()
+    rail = SymphonyOrchestrationRail(enable_expert_task_dispatch=True)
     ctx = _outer_ctx("task")
     await rail.before_invoke(ctx)
-    rail._outer_states[id(ctx)].awaiting_input = True
+    await _record_expert_plan(rail, ctx)
     ctx.inputs.result = {"result_type": "error", "success": False}
     await rail.after_invoke(ctx)
     assert not rail._paused_states
@@ -570,7 +580,7 @@ async def test_cancelled_after_invoke_drops_pending_state() -> None:
 
 @pytest.mark.asyncio
 async def test_late_inner_after_tool_cannot_mutate_new_outer_invocation() -> None:
-    rail = SymphonyOrchestrationRail()
+    rail = SymphonyOrchestrationRail(enable_expert_task_dispatch=True)
     shared_context = RunContext(extra={"capture_mode": "agent", "member_id": "owner-1"})
     old_outer = _outer_ctx("old", run_context=shared_context)
     await rail.before_invoke(old_outer)
@@ -592,15 +602,12 @@ async def test_late_inner_after_tool_cannot_mutate_new_outer_invocation() -> Non
         inputs=ToolCallInputs(
             tool_name=rail.COMPOSE_TOOL_NAME,
             tool_args={"candidate_skill_ids": ["old-skill"]},
-            tool_result={
-                "planned_graph": {"graph": {"metadata": {"status": "needs_input"}}}
-            },
+            tool_result=_plan({"review": _node("review", "report")}),
         ),
     )
     await rail.after_tool_call(old_inner)
 
-    assert not new_state.awaiting_input
-    assert new_state.candidate_skill_ids == []
+    assert not new_state.expert_plans
 
 
 @pytest.mark.asyncio
@@ -614,7 +621,7 @@ async def test_late_inner_after_tool_cannot_mutate_new_outer_invocation() -> Non
 async def test_invalid_ask_user_answers_do_not_claim_paused_state(
     answers: dict[str, Any],
 ) -> None:
-    rail = SymphonyOrchestrationRail()
+    rail = SymphonyOrchestrationRail(enable_expert_task_dispatch=True)
     await _pause_for_test(rail, _outer_ctx("task"), "ask")
     response = InteractiveInput()
     response.update("ask", {"answers": answers})
@@ -650,7 +657,7 @@ async def test_resumed_nonready_compose_does_not_block_skill_tool(result: Any) -
 
     assert skill.inputs.tool_result is None
     assert skill.extra.get("_skip_tool_calls") is None
-    assert rail._active_state_for_ctx(skill).pending_recompose
+    assert "test-plan" in rail._active_state_for_ctx(skill).expert_plans
 
 
 @pytest.mark.asyncio
@@ -663,7 +670,7 @@ async def test_resumed_compose_exception_does_not_block_skill_tool() -> None:
         args={"query": "drift", "candidate_skill_ids": ["drift"]},
     )
     await rail.before_tool_call(compose)
-    assert isinstance(compose.inputs.tool_call.arguments, dict)
+    assert compose.inputs.tool_args == {"query": "drift", "candidate_skill_ids": ["drift"]}
     await rail.on_tool_exception(compose)
     assert isinstance(compose.inputs.tool_call.arguments, str)
     skill = _inner_tool_ctx(resumed, name="skill_tool", call_id="skill-exception")
@@ -671,12 +678,12 @@ async def test_resumed_compose_exception_does_not_block_skill_tool() -> None:
 
     assert skill.inputs.tool_result is None
     assert skill.extra.get("_skip_tool_calls") is None
-    assert rail._active_state_for_ctx(skill).pending_recompose
+    assert "test-plan" in rail._active_state_for_ctx(skill).expert_plans
 
 
 @pytest.mark.asyncio
 async def test_completed_scope_releases_generation_but_paused_scope_keeps_it() -> None:
-    rail = SymphonyOrchestrationRail()
+    rail = SymphonyOrchestrationRail(enable_expert_task_dispatch=True)
     for session_id in ("completed-1", "completed-2"):
         completed = _outer_ctx("task", session_id=session_id)
         await rail.before_invoke(completed)

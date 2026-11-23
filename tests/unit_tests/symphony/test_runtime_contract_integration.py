@@ -100,7 +100,10 @@ symphony:
     config = load_symphony_config(raw)
     default_model, session_model = LifecycleModel("build-model"), LifecycleModel("session-model")
     default_llm, session_llm = LLMConfig(model="build-model"), LLMConfig(model="session-model")
-    resolve_model = lambda llm, **_kwargs: session_model if llm.model == "session-model" else default_model
+
+    def resolve_model(llm, **_kwargs):
+        return session_model if llm.model == "session-model" else default_model
+
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config)
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.get_config", lambda: raw)
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.LLMConfig.from_default_model", lambda: default_llm)
@@ -126,7 +129,7 @@ symphony:
         assert "extract" in str(found) or "summarize" in str(found)
         calls_before_plan = len(default_model.calls)
         planned = await service.plan("Extract and summarize the document", candidate_skill_ids=["extract", "summarize"],
-                                     llm_config=session_llm)
+                                     capability_type="skill", llm_config=session_llm)
         assert planned["success"]
         assert planned["planned_graph"]["graph_snapshot"]["static_revision"]
         assert set(planned["planned_graph"]["graph"]["nodes"]) == {"extract", "summarize"}

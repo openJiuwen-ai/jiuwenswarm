@@ -910,13 +910,13 @@ def test_swarm_list_skill_composes_member_team_and_global_visibility(
     assert tools.visible_skill_names_for_list_skill(ctx) == {"alpha", "beta"}
 
 
-@pytest.mark.parametrize("extra_source_kind", [None, "expert", "connector"])
+@pytest.mark.parametrize("extra_source_kind", [None, "expert", "mcp", "connector", "unknown"])
 def test_swarm_skill_retrieval_prompt_uses_same_live_inventory(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     extra_source_kind: str | None,
 ) -> None:
-    """Use the member inventory when Core can start and skip unsupported configurations."""
+    """Use the member inventory with supported sources, including the legacy connector alias."""
     workspace_root = str(tmp_path / "member-workspace")
     global_skills_dir = tmp_path / "global-skills"
     skill_dir = global_skills_dir / "demo-skill"
@@ -948,7 +948,7 @@ def test_swarm_skill_retrieval_prompt_uses_same_live_inventory(
         ),
     )
 
-    if extra_source_kind == "connector":
+    if extra_source_kind == "unknown":
         assert rail is None
         return
 
