@@ -11,6 +11,8 @@ A resident Worker keeps Runtime loaded across Front restarts for desktop and ord
 
 Endpoints are scoped by installation, Python environment, data directory, and runtime profile. HELLO validates code/build identity, installed dependencies, and process creation time. Changed source, dependencies, or native build instances cannot silently reuse old code. Each wheel or native backend build receives a fresh ID, even with identical inputs. Wheels validate contents at build time; startup reads the artifact manifest and observes installed dependencies. Source checkouts continue content validation.
 
+When a HarmonyOS sandbox denies access to global `/proc/stat`, the Worker and Supervisor can validate process identity using the start counter in `/proc/<pid>/stat`, transmitted separately from the creation timestamp. If neither source is readable, startup fails with a HELLO log containing the PID, stage, and traceback. Cleanup also refuses to terminate an unverified target based on its PID alone.
+
 Successful shutdown requires a successful acknowledgement and observed PID exit. Forced termination, missing acknowledgements, and negative acknowledgements report failure. Install helpers also require this update attempt's successful shutdown receipt before replacing backend files. Legacy peers without acknowledgement support use verified process exit as their compatibility condition.
 
 Instances sharing a data directory retain distinct endpoint and deployment identities through `JIUWENSWARM_RUNTIME_INSTANCE` (preferred) or `HOSTNAME`. Stop commands must retain that instance's environment. Historical Workers owned by another instance are left running.

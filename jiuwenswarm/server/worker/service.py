@@ -350,7 +350,14 @@ async def _send_hello(
     code_identity_value: str | None = None,
 ) -> None:
     from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, deployment_scope
+    from jiuwenswarm.common.process_identity import process_identity_fields
     import psutil
+
+    try:
+        process_fields = process_identity_fields(os.getpid())
+    except (psutil.Error, OSError) as exc:
+        logger.exception("[Worker] HELLO pid=%s process identity failed: %s", os.getpid(), exc)
+        raise RuntimeError(f"Worker HELLO pid={os.getpid()} process identity failed: {exc}") from exc
     identity = code_identity_value if code_identity_value is not None else await asyncio.to_thread(code_identity)
     await conn.send(
         {
@@ -365,7 +372,7 @@ async def _send_hello(
             "deployment_scope": deployment_scope(),
             "shutdown_ack": True,
             "heartbeat_probe": True,
-            "process_created": psutil.Process().create_time(),
+            **process_fields,
             "code_identity": identity,
         }
     )

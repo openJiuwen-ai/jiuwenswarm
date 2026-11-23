@@ -14,6 +14,8 @@ workspace 准备期间正式 Quit 会取消后续服务启动。完整桌面模�
 
 IPC 端点按安装位置、Python 环境、数据目录和运行配置隔离。Worker HELLO 还携带代码/构建身份、实际安装依赖身份及进程创建时间；版本、依赖或构建改变后不复用旧代码进程。WHL 和原生桌面每次后端构建获得独立构建 ID，即使输入源码相同也会更换 ID。WHL 在构建时写入成品身份，启动读取该身份并检查实际依赖；源码 checkout 继续校验内容。
 
+HarmonyOS 沙箱拒绝读取全局 `/proc/stat` 时，Worker 和 Supervisor 可使用 `/proc/<pid>/stat` 的进程启动计数继续校验身份；它与创建时间戳分开传输。两种来源都不可读时，HELLO 失败日志包含 PID、阶段和异常栈，启动失败；后续清理也不会仅凭 PID 终止未经身份校验的目标。
+
 共享数据目录中的不同服务实例继续通过 `JIUWENSWARM_RUNTIME_INSTANCE`（优先）或 `HOSTNAME` 区分端点和部署身份。停止命令须使用对应实例的相同环境；不得将其他实例的历史 Worker 当成当前实例的进程回收。
 
 最终关闭命令在 AgentServer 尚未执行启动迁移时也检查历史端点，但只自动关闭可验证归属的 Worker；缺少部署身份的旧 Python Worker 仍需显式指定 PID。

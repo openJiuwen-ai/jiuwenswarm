@@ -97,7 +97,14 @@ async def _serve_one(
     code_identity_value: str | None = None,
 ) -> bool:
     from jiuwenswarm.server.supervisor.identity import code_identity, data_scope, deployment_scope
+    from jiuwenswarm.common.process_identity import process_identity_fields
     import psutil
+
+    try:
+        process_fields = process_identity_fields(os.getpid())
+    except (psutil.Error, OSError) as exc:
+        logger.exception("[Worker] stub HELLO pid=%s process identity failed: %s", os.getpid(), exc)
+        raise RuntimeError(f"Worker stub HELLO pid={os.getpid()} process identity failed: {exc}") from exc
 
     send = getattr(conn, "send")
     recv = getattr(conn, "recv")
@@ -114,7 +121,7 @@ async def _serve_one(
             "deployment_scope": deployment_scope(),
             "shutdown_ack": True,
             "heartbeat_probe": True,
-            "process_created": psutil.Process().create_time(),
+            **process_fields,
             "code_identity": code_identity_value if code_identity_value is not None else code_identity(),
         }
     )

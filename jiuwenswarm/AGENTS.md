@@ -54,6 +54,13 @@
   不吞掉异常或将部分成功、结果未知改写为完整成功。
 - 系统操作和安全相关修改须检查输入校验、权限及副作用发生的顺序，并覆盖适用的拒绝和清理路径。
   涉及文件与进程操作时兼顾 Windows、macOS 和 Linux。
+- 读取进程创建身份必须处理 HarmonyOS 沙箱拒绝访问 `/proc/stat` 的情况；不得新增无异常处理的
+  `psutil.Process(...).create_time()`。归属、存活、重连和终止前的 PID 重用校验统一复用
+  `common/process_identity.py`，使用创建时间或 `/proc/<pid>/stat` 的 start ticks；两者单位必须分开，
+  不得互相比大小或用当前时间、PID 单独代替身份。身份不可验证时保留未知状态或受控失败，不能静默放行。
+  确实需要 wall-clock 时间的调用须显式处理 `psutil.Error`/`OSError`；修改相关路径时增加 `AccessDenied`
+  及回退不可用的行为回归，规范见
+  [进程身份规约](../.agents/agent-docs/specs/jiuwenswarm/common/S_01_process-identity.md)。
 
 ### 编码与维护
 
