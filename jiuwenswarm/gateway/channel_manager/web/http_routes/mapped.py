@@ -219,7 +219,7 @@ _SENSITIVE_MASK_ROUTES: tuple[WebHttpMappedRoute, ...] = (
     ),
     WebHttpMappedRoute(
         "PUT", "/sensitive-mask", "sensitive_mask.set_conf",
-        "sensitive-mask", "写网页回答脱敏开关和正则列表",
+        "sensitive-mask", "写网页回答脱敏开关和正则列表（企业版由管理端管控，本端只读）",
         accept_body=True,
     ),
 )

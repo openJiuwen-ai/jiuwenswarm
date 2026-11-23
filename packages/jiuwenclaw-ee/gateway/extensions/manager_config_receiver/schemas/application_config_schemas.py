@@ -83,6 +83,24 @@ class LogMaskingRuleUpdateRequest(BaseModel):
     data: dict[str, Any] | None = None
 
 
+class ContentMaskingRule(BaseModel):
+    """网页出站脱敏规则：与个人版 ``sensitive_mask.rules`` 同构。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="ignore")
+
+    title: str = Field(..., min_length=1, max_length=64)
+    pattern: str = Field(..., min_length=1, max_length=256)
+
+
+class ContentMaskingConfigUpsertRequest(BaseModel):
+    """整段内容脱敏配置（单文档）；PUT 即全量替换，DELETE 回退 config.yaml。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="ignore")
+
+    enabled: bool
+    rules: list[ContentMaskingRule] = Field(..., max_length=32)
+
+
 class InstanceDataLifecycleRequest(BaseModel):
     """实例数据生命周期（默认 purge）。
 

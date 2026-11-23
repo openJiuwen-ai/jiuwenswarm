@@ -961,6 +961,26 @@ class AgentWebSocketServer:
                     )
                     return
             explicit_mode = get_sandbox_startup_mode_explicit()
+            if explicit_mode == "dll":
+                if sys.platform != "win32":
+                    # 个人版非 Windows 残留 dll 配置：归一为 internal 继续拉起
+                    # jiuwenbox，不能只告警后跳过，否则工具会退到无防护本地执行。
+                    logger.warning(
+                        "[sandbox_lifecycle] sandbox.startup_mode=dll requires "
+                        "Windows x64; falling back to internal on %r", sys.platform,
+                    )
+                    explicit_mode = "internal"
+                else:
+                    from jiuwenswarm.server.runtime.runtime_guard import (
+                        require_dll_sandbox_runtime,
+                    )
+
+                    require_dll_sandbox_runtime()
+                    logger.info(
+                        "[sandbox_lifecycle] sandbox.startup_mode=dll, skipping "
+                        "jiuwenbox auto-start (Windows x64 LOCAL runtime Guard)"
+                    )
+                    return
             if explicit_mode is None:
                 logger.info(
                     "[AgentWebSocketServer] sandbox.startup_mode 未在 config.yaml "

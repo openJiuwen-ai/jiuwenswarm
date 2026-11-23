@@ -760,9 +760,11 @@ from jiuwenswarm.common.config import (
     get_evolution_signal_trigger_enabled,
     get_passive_skill_evolution_triggers,
     get_skill_evolution_enabled,
+    get_jiuwenbox_startup_mode,
     get_sandbox_endpoint,
     get_sandbox_runtime,
     get_sandbox_startup_mode,
+    is_dll_sandbox_enabled,
     get_skill_create_enabled,
     get_skill_sleep_call_threshold,
     get_skill_sleep_config,
@@ -6017,7 +6019,7 @@ class JiuWenSwarmDeepAdapter:
             fallback_on_failure=bool(runtime.get("fallback_on_failure", False)),
             project_dir=project_dir,
             is_code_agent=self._is_code_agent,
-            startup_mode=get_sandbox_startup_mode(),
+            startup_mode=get_jiuwenbox_startup_mode(),
             shared_dir=shared_dir,
         )
         return card
@@ -6213,8 +6215,17 @@ class JiuWenSwarmDeepAdapter:
                         "failed, fall back to config/holder url: %s", exc,
                     )
             runtime = get_sandbox_runtime()
+            # G.CTL.03：复合判断先收成变量。DLL 沙箱由运行时 Guard 接管，不创建
+            # jiuwenbox sys_operation，也不打 create_sandbox 审计 UA；判据在 add
+            # 成功后复用，避免两处条件漂移。
+            use_sandbox_sysop = bool(
+                runtime.get("enabled")
+                and not is_dll_sandbox_enabled()
+                and sandbox_url
+                and sandbox_type
+            )
             sysop_card: SysOperationCard | None
-            if runtime.get("enabled") and sandbox_url and sandbox_type:
+            if use_sandbox_sysop:
                 # 走 ``self.`` 而不是 ``JiuWenSwarmDeepAdapter.``——_create_sandbox_
                 # sys_operation 已从 staticmethod 改成 instance method (要透传
                 # ``self._is_code_agent``), 用类名直接调会绕过 MRO 把 Code 子类
@@ -6261,7 +6272,7 @@ class JiuWenSwarmDeepAdapter:
                 logger.warning("[JiuWenSwarmDeepAdapter] add sys_operation failed: %s", result.msg())
                 return None
             # 仅在真正 add 成功（非复用）时打 create_sandbox UA
-            if runtime.get("enabled") and sandbox_url and sandbox_type:
+            if use_sandbox_sysop:
                 from jiuwenswarm.common.audit_emit import emit_audit_ua
                 from jiuwenswarm.common.audit_net import resolve_peer_ip
 
@@ -6740,7 +6751,7 @@ class JiuWenSwarmDeepAdapter:
             runtime.get("files") or {},
             project_dir=self._resolve_project_dir_for_sandbox(),
             is_code_agent=self._is_code_agent,
-            startup_mode=get_sandbox_startup_mode(),
+            startup_mode=get_jiuwenbox_startup_mode(),
             shared_dir=shared_dir,
         )
         extra["policy"] = new_policy
@@ -10162,6 +10173,22 @@ class JiuWenSwarmDeepAdapter:
                 await asyncio.sleep(0)
                 await self._instance.ensure_initialized()
                 self._apply_local_sysop_to_all_rails()
+                # DLL 沙箱：在会话级 Agent 的 invoke/stream 上绑定运行时 Guard。
+                # 仅个人版 Windows 生效；企业 Linux 连模块都不导入（其 dll_guard
+                # 顶层依赖 ctypes.wintypes，非 Windows 导入即失败）。
+                if (
+                    self._is_session_scoped_adapter
+                    and sys.platform == "win32"
+                    and is_dll_sandbox_enabled()
+                ):
+                    from jiuwenswarm.server.runtime.runtime_guard import assemble_guarded_agent
+
+                    assemble_guarded_agent(
+                        self._instance,
+                        session_id=self._parent_session_id,
+                        permission_rail=lambda: self._permission_rail,
+                        workspace=str(self._project_dir or self._workspace_dir or ""),
+                    )
                 logger.info(
                     "[SandboxPerf] rail_sysop_bind+ensure_init: request_id=%s agent=%s "
                     "backend=%s elapsed_ms=%.1f",
@@ -12781,6 +12808,15 @@ class JiuWenSwarmDeepAdapter:
 
     async def cleanup(self) -> None:
         """Release adapter-owned external runtime resources."""
+        # Guard 装配在 DeepAgent 实例上（见 assemble_guarded_agent），不是 adapter 自身；
+        # 读错对象会让 manager 永不关闭，原生注入会话与授权缓存泄漏到下一个会话。
+        instance = getattr(self, "_instance", None)
+        dll_manager = getattr(instance, "dll_guard_manager", None)
+        if dll_manager is not None:
+            instance.dll_guard_manager = None
+            from jiuwenswarm.server.runtime.runtime_guard import release_manager
+
+            await release_manager(self._parent_session_id, dll_manager)
         await self._cancel_evolution_watchers()
         eternal_conversation_rail = getattr(self, "_eternal_conversation_rail", None)
         if eternal_conversation_rail is not None:
