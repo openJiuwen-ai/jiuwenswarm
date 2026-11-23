@@ -3,7 +3,7 @@
  * 以便 antd 主题桥接从计算样式读取。半透明规则只在应用背景显示时生效。
  */
 
-import { DEFAULT_SURFACE_OPACITY, type WebUIAppearance } from './appearance.ts';
+import { DEFAULT_SURFACE_OPACITY, type WebUIColors } from './appearance.ts';
 
 export type RGB = readonly [number, number, number];
 
@@ -127,7 +127,7 @@ const block = (selector: string, variables: Record<string, string>) =>
   `${selector}{${Object.entries(variables).map(([name, value]) => `${name}:${value}`).join(';')}}`;
 
 /** Build the contribution style sheet for one appearance object. */
-export function buildAppearanceCss(appearance: WebUIAppearance, bases: SurfaceBases): string {
+export function buildAppearanceCss(appearance: WebUIColors, bases: SurfaceBases): string {
   const rules: string[] = [];
   const variables = { ...(appearance.accent ? accentVariables(appearance.accent) : {}), ...appearance.tokens };
   if (Object.keys(variables).length) rules.push(block(ACCENT_ROOT, variables));

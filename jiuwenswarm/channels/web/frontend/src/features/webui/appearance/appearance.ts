@@ -1,9 +1,19 @@
 /**
- * 受控外观的对象与下行帧校验（Gateway S_08 第 2、4 节）。
+ * 受控外观的部件校验与下行快照（Gateway S_08 第 2、4 节）。
  * Gateway `webui/appearance.py` 执行同样的规则；两端共用 gatewayAppearanceCases.json。
  */
 
+import { validMediaURL } from '../catalog/components/mediaSurface.ts';
+
 export const WEBUI_APPEARANCE_EVENT = 'webui.appearance';
+
+/** Every part, in snapshot order. */
+export const APPEARANCE_PARTS = ['colors', 'identity', 'welcome', 'mascot'] as const;
+export type WebUIAppearancePart = (typeof APPEARANCE_PARTS)[number];
+
+/** Work modes the welcome text can address; host defaults cover the rest. */
+export const WELCOME_MODES = ['work', 'code', 'design'] as const;
+export type WebUIWelcomeMode = (typeof WELCOME_MODES)[number];
 
 /** Decorative variables a package may set directly; text and surfaces stay host-owned. */
 export const APPEARANCE_TOKEN_NAMES: readonly string[] = [
@@ -18,33 +28,81 @@ export const APPEARANCE_TOKEN_NAMES: readonly string[] = [
 ];
 
 export const DEFAULT_SURFACE_OPACITY = 0.86;
+export const MAX_NAME_CHARS = 32;
+export const MAX_WELCOME_CHARS = 64;
+export const MIN_HOVER_MS = 500;
+export const MAX_HOVER_MS = 10_000;
 const MIN_SURFACE_OPACITY = 0.3;
-const FIELDS = ['accent', 'surface', 'surfaceOpacity', 'tokens'];
+const COLOR_FIELDS = ['accent', 'surface', 'surfaceOpacity', 'tokens'];
+const LANGUAGES = ['zh', 'en'] as const;
+const IMAGE_SUFFIXES = ['.png', '.webp', '.svg', '.gif'];
 const ACCENT = /^#[0-9A-Fa-f]{6}$/;
 const HEX_COLOR = /^#(?:[0-9A-Fa-f]{3}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8})$/;
 const CHANNEL = ' *([0-9]{1,3}) *';
 const ALPHA = ' *(0(?:\\.[0-9]+)?|1(?:\\.0+)?|\\.[0-9]+) *';
 const RGB = new RegExp(`^rgb\\(${CHANNEL},${CHANNEL},${CHANNEL}\\)$`);
 const RGBA = new RegExp(`^rgba\\(${CHANNEL},${CHANNEL},${CHANNEL},${ALPHA}\\)$`);
+// Python's unicodedata categories Cc, Zl and Zp.
+const LINE_BREAKING = /[\p{Cc}\p{Zl}\p{Zp}]/u;
 
-export interface WebUIAppearance {
+/** The colors part. */
+export interface WebUIColors {
   accent?: string;
   surface?: 'opaque' | 'translucent';
   surfaceOpacity?: number;
   tokens?: Readonly<Record<string, string>>;
 }
 
-export interface WebUIAppearanceFrame {
+export type WebUILocalizedText = Readonly<Partial<Record<'zh' | 'en', string>>>;
+
+/** Brand name, logo and tab icon; `favicon` is already filled from `logo` when omitted. */
+export interface WebUIIdentity {
+  name?: string;
+  logo?: string;
+  favicon?: string;
+}
+
+/** The second half of the welcome line. */
+export interface WebUIWelcome {
+  default?: WebUILocalizedText;
+  modes?: Readonly<Partial<Record<WebUIWelcomeMode, WebUILocalizedText>>>;
+}
+
+export interface WebUIMascot {
+  src: string;
+  hoverSrc?: string;
+  hoverMs?: number;
+}
+
+export interface WebUIAppearanceParts {
+  colors: WebUIColors;
+  identity: WebUIIdentity;
+  welcome: WebUIWelcome;
+  mascot: WebUIMascot;
+}
+
+/** What one `ops.appearance.apply` call sets (a value) or withdraws (null) per part. */
+export type WebUIAppearanceChange = { [P in WebUIAppearancePart]?: WebUIAppearanceParts[P] | null };
+
+export interface WebUIAppearancePartValue<T> {
   packageId: string;
+  value: T;
+}
+
+/** The composed appearance of a Gateway connection; parts without a provider are host defaults. */
+export interface WebUIAppearanceSnapshot {
   revision: number;
-  /** null revokes the current contribution. */
-  appearance: WebUIAppearance | null;
+  parts: { readonly [P in WebUIAppearancePart]?: WebUIAppearancePartValue<WebUIAppearanceParts[P]> };
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
   const prototype = Object.getPrototypeOf(value);
   return prototype === Object.prototype || prototype === null;
+}
+
+function onlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
 }
 
 export function validColor(value: unknown): boolean {
@@ -54,12 +112,12 @@ export function validColor(value: unknown): boolean {
   return !!match && match.slice(1, 4).every((channel) => Number(channel) <= 255);
 }
 
-/** Return a copy of a valid appearance object, or null when any rule fails. */
-export function validateAppearance(value: unknown): WebUIAppearance | null {
+/** Return a copy of a valid colors part, or null when any rule fails. */
+export function validateColors(value: unknown): WebUIColors | null {
   if (!isPlainObject(value)) return null;
   const keys = Object.keys(value);
-  if (keys.length === 0 || keys.some((key) => !FIELDS.includes(key))) return null;
-  const result: { -readonly [K in keyof WebUIAppearance]: WebUIAppearance[K] } = {};
+  if (keys.length === 0 || !onlyKeys(value, COLOR_FIELDS)) return null;
+  const result: { -readonly [K in keyof WebUIColors]: WebUIColors[K] } = {};
   if ('accent' in value) {
     if (typeof value.accent !== 'string' || !ACCENT.test(value.accent)) return null;
     result.accent = value.accent;
@@ -86,53 +144,163 @@ export function validateAppearance(value: unknown): WebUIAppearance | null {
   return result;
 }
 
-/** Read one `webui.appearance` payload; malformed frames return null and are ignored. */
-export function readAppearanceFrame(payload: unknown): WebUIAppearanceFrame | null {
-  if (!isPlainObject(payload)) return null;
-  if ('parts' in payload) return readSnapshotFrame(payload);
-  if (Object.keys(payload).some((key) => !['package_id', 'revision', 'appearance', 'activation_generation'].includes(key))) {
-    return null;
-  }
-  const { package_id: packageId, revision, appearance } = payload;
-  if (typeof packageId !== 'string' || !packageId || packageId.length > 128) return null;
-  if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 1) return null;
-  if (appearance === null) return { packageId, revision, appearance: null };
-  const valid = validateAppearance(appearance);
-  return valid ? { packageId, revision, appearance: valid } : null;
+/** Plain single-line text of 1 to `limit` characters (code points), trimmed; null otherwise. */
+function text(value: unknown, limit: number): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  const length = [...trimmed].length;
+  return length > 0 && length <= limit && !LINE_BREAKING.test(trimmed) ? trimmed : null;
 }
 
-const SNAPSHOT_FIELDS = ['revision', 'parts', 'activation_generation'];
-const PART_NAMES = ['colors', 'identity', 'welcome', 'mascot'] as const;
+function localized(value: unknown, limit: number): WebUILocalizedText | null {
+  if (!isPlainObject(value) || Object.keys(value).length === 0 || !onlyKeys(value, LANGUAGES)) return null;
+  const result: Partial<Record<'zh' | 'en', string>> = {};
+  for (const language of LANGUAGES) {
+    if (!(language in value)) continue;
+    const item = text(value[language], limit);
+    if (item === null) return null;
+    result[language] = item;
+  }
+  return result;
+}
+
+/** A package or data asset path naming a supported image; ownership is checked by the Gateway. */
+export function validImage(value: unknown): value is string {
+  if (typeof value !== 'string' || !validMediaURL(value)) return false;
+  const path = value.split(/[?#]/, 1)[0].toLowerCase();
+  return IMAGE_SUFFIXES.some((suffix) => path.endsWith(suffix));
+}
+
+export function validateIdentity(value: unknown): WebUIIdentity | null {
+  if (!isPlainObject(value) || Object.keys(value).length === 0 || !onlyKeys(value, ['name', 'logo', 'favicon'])) return null;
+  const result: { -readonly [K in keyof WebUIIdentity]: WebUIIdentity[K] } = {};
+  if ('name' in value) {
+    const name = text(value.name, MAX_NAME_CHARS);
+    if (name === null) return null;
+    result.name = name;
+  }
+  if ('logo' in value) {
+    if (!validImage(value.logo)) return null;
+    result.logo = value.logo;
+  }
+  if ('favicon' in value) {
+    if (!validImage(value.favicon)) return null;
+    result.favicon = value.favicon;
+  } else if (result.logo !== undefined) {
+    result.favicon = result.logo;
+  }
+  return result;
+}
+
+export function validateWelcome(value: unknown): WebUIWelcome | null {
+  if (!isPlainObject(value) || Object.keys(value).length === 0 || !onlyKeys(value, ['default', 'modes'])) return null;
+  const result: { -readonly [K in keyof WebUIWelcome]: WebUIWelcome[K] } = {};
+  if ('default' in value) {
+    const item = localized(value.default, MAX_WELCOME_CHARS);
+    if (item === null) return null;
+    result.default = item;
+  }
+  if ('modes' in value) {
+    const modes = value.modes;
+    if (!isPlainObject(modes) || Object.keys(modes).length === 0 || !onlyKeys(modes, WELCOME_MODES)) return null;
+    const items: Partial<Record<WebUIWelcomeMode, WebUILocalizedText>> = {};
+    for (const mode of WELCOME_MODES) {
+      if (!(mode in modes)) continue;
+      const item = localized(modes[mode], MAX_WELCOME_CHARS);
+      if (item === null) return null;
+      items[mode] = item;
+    }
+    result.modes = items;
+  }
+  return result;
+}
+
+export function validateMascot(value: unknown): WebUIMascot | null {
+  if (!isPlainObject(value) || !('src' in value) || !onlyKeys(value, ['src', 'hoverSrc', 'hoverMs'])) return null;
+  if (('hoverSrc' in value) !== ('hoverMs' in value) || !validImage(value.src)) return null;
+  const result: WebUIMascot = { src: value.src };
+  if ('hoverSrc' in value) {
+    const duration = value.hoverMs;
+    if (typeof duration !== 'number' || !Number.isInteger(duration) || duration < MIN_HOVER_MS || duration > MAX_HOVER_MS
+      || !validImage(value.hoverSrc)) return null;
+    return { ...result, hoverSrc: value.hoverSrc, hoverMs: duration };
+  }
+  return result;
+}
+
+const PART_VALIDATORS: { [P in WebUIAppearancePart]: (value: unknown) => WebUIAppearanceParts[P] | null } = {
+  colors: validateColors,
+  identity: validateIdentity,
+  welcome: validateWelcome,
+  mascot: validateMascot,
+};
 
 /**
- * Read the host's composed snapshot (Gateway S_08): ``parts`` holds one provider per part.
- *
- * Only the colors part is applied here. Other parts are validated by the host and ignored
- * until this client renders them; unknown part names are ignored too, so a host that adds a
- * part later does not make the colors it sends unusable.
+ * The parts an appearance object sets or withdraws, or null when any rule fails (Gateway S_08 section 1).
+ * An object made only of color fields is the colors part.
  */
-function readSnapshotFrame(payload: Record<string, unknown>): WebUIAppearanceFrame | null {
-  if (Object.keys(payload).some((key) => !SNAPSHOT_FIELDS.includes(key))) return null;
-  const revision = payload.revision;
-  if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 1) return null;
-  const parts = payload.parts;
-  if (!isPlainObject(parts)) return null;
-  const colors = parts.colors;
-  if (colors === undefined) {
-    // No colors provider: the host defaults apply, and the first provider still names the splash owner.
-    let packageId = '';
-    for (const name of PART_NAMES) {
-      const part = parts[name];
-      if (isPlainObject(part) && typeof part.package_id === 'string' && part.package_id) {
-        packageId = part.package_id;
-        break;
-      }
-    }
-    return { packageId, revision, appearance: null };
+export function validateAppearance(value: unknown): WebUIAppearanceChange | null {
+  if (!isPlainObject(value)) return null;
+  const keys = Object.keys(value);
+  if (keys.length === 0 || keys.some((key) => !COLOR_FIELDS.includes(key) && !APPEARANCE_PARTS.includes(key as WebUIAppearancePart))) {
+    return null;
   }
-  if (!isPlainObject(colors) || typeof colors.package_id !== 'string' || !colors.package_id
-    || colors.package_id.length > 128 || !('value' in colors)) return null;
-  if (colors.value === null) return { packageId: colors.package_id, revision, appearance: null };
-  const valid = validateAppearance(colors.value);
-  return valid ? { packageId: colors.package_id, revision, appearance: valid } : null;
+  if (keys.every((key) => COLOR_FIELDS.includes(key))) {
+    const colors = validateColors(value);
+    return colors ? { colors } : null;
+  }
+  if (keys.some((key) => COLOR_FIELDS.includes(key))) return null;
+  const result: Record<string, unknown> = {};
+  for (const part of APPEARANCE_PARTS) {
+    if (!(part in value)) continue;
+    if (value[part] === null) {
+      result[part] = null;
+      continue;
+    }
+    const valid = PART_VALIDATORS[part](value[part]);
+    if (valid === null) return null;
+    result[part] = valid;
+  }
+  return result as WebUIAppearanceChange;
+}
+
+/**
+ * Read one `webui.appearance` snapshot; malformed frames return null and are ignored.
+ *
+ * Part names this client does not know are skipped, so a host that adds a part later does not make the
+ * parts it also sends unusable; the known parts are still checked in full. `activation_generation` is
+ * the transport's activation stamp and carries no appearance.
+ */
+export function readAppearanceFrame(payload: unknown): WebUIAppearanceSnapshot | null {
+  if (!isPlainObject(payload) || !onlyKeys(payload, ['revision', 'parts', 'activation_generation'])) return null;
+  const { revision, parts } = payload;
+  if (typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 1) return null;
+  if (!isPlainObject(parts)) return null;
+  const result: Record<string, WebUIAppearancePartValue<unknown>> = {};
+  for (const part of APPEARANCE_PARTS) {
+    if (!(part in parts)) continue;
+    const entry = parts[part];
+    if (!isPlainObject(entry) || !onlyKeys(entry, ['package_id', 'value'])) return null;
+    const packageId = entry.package_id;
+    if (typeof packageId !== 'string' || !packageId || packageId.length > 128) return null;
+    const value = PART_VALIDATORS[part](entry.value);
+    if (value === null) return null;
+    result[part] = { packageId, value };
+  }
+  return { revision, parts: result as WebUIAppearanceSnapshot['parts'] };
+}
+
+/** Pick the text of the interface language: `zh` for languages starting with zh, `en` otherwise, then the other one. */
+export function localizedText(value: WebUILocalizedText | undefined, language: string): string | null {
+  if (!value) return null;
+  const preferred = language.toLowerCase().startsWith('zh') ? 'zh' : 'en';
+  return value[preferred] ?? value[preferred === 'zh' ? 'en' : 'zh'] ?? null;
+}
+
+/** The welcome suffix a package provides for a mode, or null for the host default (Gateway S_08 section 2.5). */
+export function welcomeSuffix(welcome: WebUIWelcome | undefined, mode: string, language: string): string | null {
+  if (!welcome) return null;
+  const forMode = (WELCOME_MODES as readonly string[]).includes(mode)
+    ? welcome.modes?.[mode as WebUIWelcomeMode] : undefined;
+  return localizedText(forMode, language) ?? localizedText(welcome.default, language);
 }

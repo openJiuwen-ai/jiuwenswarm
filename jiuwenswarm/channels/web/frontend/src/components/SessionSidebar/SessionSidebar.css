@@ -52,6 +52,8 @@
 
 .icon-rail-logo img {
   display: block;
+  /* A package logo keeps its proportions inside the host's square. */
+  object-fit: contain;
 }
 
 /* Nav items in icon rail */
