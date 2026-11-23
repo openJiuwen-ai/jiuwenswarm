@@ -300,3 +300,10 @@ PYTHONPATH，因此其子进程 core 仍来自环境已安装的 `2f4bedb9c5d85a
 - 相比前次核对，补入 18 项：MCP 来源提供方、会话分离、资产导入与导出、4 个 WebUI 方法及 10 个 Extensions V2 方法。Host 独有的四项另以固定协议字符串测试，避免删去成员后往返用例随枚举自动减少而未检出。
 - WebUI 资源与设置测试、浏览器集成测试按字符串跨 Gateway/Host，不再假设枚举对象相同。应用市场启动与编辑会话的回调共用 Gateway 的方法名解析接口，以原代理保留超时、重试和响应契约；两个注册入口均通过真实代理验证出站方法、参数及用户身份。
 - Windows / Python 3.14 最终定向组合：1806 passed, 1 skipped（112.95 秒）。保留仓库 conftest，使用无头 Edge 运行 WebUI 浏览器集成；跳过项为当前账户无法创建符号链接。覆盖前述协议、视频、Front、Gateway 回归及新增 WebUI、扩展管理、会话分离、资产契约、应用市场网关、编辑会话与 Hub 安装用例。一次中间运行出现 Hub 目录重命名 WinError 5，同一用例单跑及最终组合均通过；未改动安装逻辑。未运行全量 UT/ST 或 Linux CI。
+
+## 2026-11-23：同步 develop 并复核 Gateway 方法目录
+
+- 已 rebase 到 develop `46fdbb96b`。保留上游 Front 测试的两阶段超时（连接 30 秒、连接成功后等 ACK 10 秒）和本分支的失败日志、连接清理；fixture 回归分别验证两阶段的超时信息。
+- 锁定源码：agent-protocol `10ad4a2ee`、agent-gateway `dda0e957b`、agent-core `0b1aa2102`。E2A 434 项、Gateway 默认 531 项（含企业团队注册后 538 项）、develop 本仓注册及团队清单 138 项；并集与本地 563 项逐一同名同值，没有缺项或多项。新出现的 `app_market.pin` 由 Gateway 在 Web 端处理，不经过 AgentServer。
+- 检查 1724 个生产 Python 文件：引用的 477 个不同成员均已定义，未发现引用 E2A/Gateway 的 ReqMethod。本次无需新增生产枚举。
+- Windows / Python 3.14 定向组合：1830 passed, 3 skipped（137.93 秒），含原生 Front 控制查询、恢复时效、Worker trace context 和无头 Edge 集成。两项跳过需要锁定 core 未提供的 `Registry.load_installed(roots)` 接口，一项因 Windows 测试账户不能创建符号链接而跳过。未运行全量 UT 或集群 ST，以上结果不代表此前三个 ST 用例已恢复。
