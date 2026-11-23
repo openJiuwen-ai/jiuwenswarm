@@ -46,8 +46,19 @@ _TEAM_HISTORY_DEFAULT_LIMIT = 500
 _TEAM_HISTORY_MAX_LIMIT = 1000
 _TEAM_HISTORY_DEFAULT_MAX_BYTES = 2 * 1024 * 1024
 _TEAM_HISTORY_MIN_MAX_BYTES = 2048
-_TEAM_HISTORY_MAX_MAX_BYTES = 6 * 1024 * 1024
-_TEAM_HISTORY_FRAME_OVERHEAD_BYTES = 1024
+# Keep the largest allowed page comfortably below the WebSocket send budget
+# (``agent_gateway.common.ws_limits.AGENT_WS_SEND_BUDGET_BYTES``, 6 MiB).  A page
+# selected at exactly 6 MiB grows again when encode_agent_response_for_wire()
+# adds envelope fields (request_id/response_id/sequence/metadata/...), so the
+# final wire payload exceeds the budget and send_wire_payload() replaces it with
+# an error frame (#6859).  Reserving 2 MiB for that envelope keeps long team
+# history sessions syncable via pagination instead of failing outright.
+_TEAM_HISTORY_MAX_MAX_BYTES = 4 * 1024 * 1024
+# The per-page record budget is max_bytes minus this overhead.  E2A encoding
+# adds several KB of envelope per response; 1 KiB was far too small and let the
+# serialized wire payload cross the 6 MiB budget.  64 KiB leaves a realistic
+# margin without materially changing page sizes for normal requests.
+_TEAM_HISTORY_FRAME_OVERHEAD_BYTES = 64 * 1024
 _WORKFLOW_AGENT_FIELD_PART_BYTES = 32 * 1024
 _WORKFLOW_LIST_DEFAULT_LIMIT = 50
 _WORKFLOW_LIST_MAX_LIMIT = 200
