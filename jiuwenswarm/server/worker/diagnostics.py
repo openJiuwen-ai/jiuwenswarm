@@ -4,11 +4,13 @@
 
 from __future__ import annotations
 
+import atexit
 import faulthandler
+import logging
 import os
 import time
-from contextlib import AbstractContextManager, nullcontext
-from typing import Any
+from contextlib import AbstractContextManager, ExitStack, nullcontext
+from typing import Any, TextIO
 
 from jiuwenswarm.server.ipc.protocol import KIND_HEARTBEAT
 from jiuwenswarm.server.worker.stall_context import BusinessTracker
@@ -16,12 +18,50 @@ from jiuwenswarm.server.worker.stall_context import BusinessTracker
 _STALL_DUMP_TIMEOUT = 25.0  # Before the Supervisor's 30-second health deadline.
 _enabled = False
 _last_arm = 0.0
+_fault_output: TextIO | None = None
+_fault_resources = ExitStack()
 
 
 def enable_worker_diagnostics() -> None:
-    global _enabled
-    faulthandler.enable(all_threads=True)
+    global _enabled, _fault_output, _fault_resources
+    from jiuwenswarm.common.paths import get_agent_logs_dir
+
+    if _enabled:
+        return
+    try:
+        directory = get_agent_logs_dir() / "runtime_diagnostics"
+        directory.mkdir(parents=True, exist_ok=True)
+        existing = sorted(directory.glob("worker-*.fault.log"), key=lambda path: path.stat().st_mtime)
+        for old in existing[:-7]:
+            old.unlink(missing_ok=True)
+        path = directory / f"worker-{os.getpid()}-{time.time_ns()}.fault.log"
+        with ExitStack() as resources:
+            output = resources.enter_context(path.open("a", encoding="utf-8"))
+            faulthandler.enable(file=output, all_threads=True)
+            _fault_output = output
+            _fault_resources = resources.pop_all()
+        logging.getLogger(__name__).info("[Worker] native fault stacks=%s", path)
+    except OSError:
+        # Diagnostic storage failure must never prevent runtime startup.
+        faulthandler.enable(all_threads=True)
     _enabled = True
+
+
+def disable_worker_diagnostics() -> None:
+    """Release the process-owned fault file after native handlers stop using it."""
+    global _enabled, _fault_output, _last_arm
+    try:
+        if _enabled:
+            faulthandler.cancel_dump_traceback_later()
+            faulthandler.disable()
+    finally:
+        _enabled = False
+        _last_arm = 0.0
+        _fault_output = None
+        _fault_resources.close()
+
+
+atexit.register(disable_worker_diagnostics)
 
 
 def arm_stall_dump(*, beat_age: float | None = None) -> None:
@@ -31,10 +71,19 @@ def arm_stall_dump(*, beat_age: float | None = None) -> None:
         # Off-loop pongs must not postpone the native dump of a stalled loop.
         return
     if _enabled and now - _last_arm >= min(5.0, _STALL_DUMP_TIMEOUT / 2):
-        # This native timer still fires when Python's event loop is blocked.
-        # Every incoming IPC frame rearms it. A detached resident Worker has
-        # no active timer, so normal Front restarts do not create false dumps.
-        faulthandler.dump_traceback_later(_STALL_DUMP_TIMEOUT)
+        try:
+            if _fault_output is not None and os.fstat(_fault_output.fileno()).st_size > 5 * 1024 * 1024:
+                faulthandler.cancel_dump_traceback_later()
+                _fault_output.seek(0)
+                _fault_output.truncate()
+            # This native timer fires even when Python's event loop is blocked.
+            if _fault_output is None:
+                faulthandler.dump_traceback_later(_STALL_DUMP_TIMEOUT)
+            else:
+                faulthandler.dump_traceback_later(_STALL_DUMP_TIMEOUT, file=_fault_output)
+        except (OSError, ValueError, RuntimeError):
+            # Disk/storage faults must not break the heartbeat that diagnoses them.
+            logging.getLogger(__name__).warning("[Worker] could not arm fault diagnostics", exc_info=True)
         _last_arm = now
 
 

@@ -69,7 +69,7 @@ The 90-second budget applies to transport recovery, not normal execution time. C
 
 If both IPC send and close fail, Front retains the original recovery waiters. A failed recovery subscription retires that connection before all preserved streams resume. Service stop cleans up waiters and background tasks even when IPC close raises.
 
-## Worker output logs
+## Worker output logs and incident evidence
 
 Both resident and `front_loopback` Workers use the original output routing: stdout inherits the launching process's output, while stderr is appended directly to `logs/worker-logs/runtime-worker-*.stderr.log`. Supervisor startup logs and runtime diagnostics expose the stderr file path. Exception tracebacks remain in that file.
 
@@ -86,3 +86,7 @@ The Worker maintenance thread cleans up historical files on its first run and ev
 - Files modified within the last 60 seconds are temporarily protected. Windows probes file delete sharing to protect inherited stderr handles without enumerating system processes. POSIX matches numeric real, effective, and saved UIDs before inspecting open files, so unresolved usernames and inaccessible files in other users' processes do not block cleanup. If process ownership or handles remain inaccessible, or the scan exceeds two seconds, base logs are retained with a warning; a partial scan is never treated as proof of closure. Completed archives can still be pruned. Archives that cannot be deleted while open in a viewer are retried later without blocking active-file rotation.
 
 Copy/truncate follows the application logger's existing policy; writes concurrent with the interval between the copied snapshot and truncation can be lost. Maintenance runs outside the business event loop, failures produce warnings, and shutdown waits at most 0.2 seconds for the maintenance thread. When a configured stderr file cannot be validated at startup, rotation stays disabled and emits a warning; missing parent configuration remains an expected silent skip. Limits reuse `_LOG_FILE_MAX_BYTES` and `_LOG_FILE_BACKUP_COUNT` in `common/utils.py`; no `config.yaml` option is added.
+
+Real Workers also write fatal and stalled-loop Python stacks to `get_agent_logs_dir()/runtime_diagnostics/worker-<pid>-<time>.fault.log`, separate from stderr. Eight files are retained; healthy heartbeats truncate the current stall log above 5 MiB, with a fatal stack potentially appending more data. These are not native OS minidumps and cannot replace native access-violation stack analysis.
+
+Supervisor incidents include observation time, Worker instance, available exit code, RSS, thread count and available system memory. Twelve snapshots are retained. No command lines, model inputs or queued business payloads are collected. Evidence failures do not block recovery; these improvements do not prove the underlying heartbeat or crash cause is fixed.

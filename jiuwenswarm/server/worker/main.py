@@ -105,9 +105,8 @@ def main() -> None:
     )
 
     enable_background_logging()
-    from jiuwenswarm.server.worker.diagnostics import enable_worker_diagnostics
+    from jiuwenswarm.server.worker.diagnostics import disable_worker_diagnostics, enable_worker_diagnostics
 
-    enable_worker_diagnostics()
     parser = argparse.ArgumentParser(prog="jiuwenswarm-runtime-worker")
     parser.add_argument(
         "--socket", help="Unix socket or named-pipe path (resident mode)."
@@ -167,6 +166,7 @@ def main() -> None:
                 exit_process(exit_code)
         return
 
+    enable_worker_diagnostics()
     _activate_managed_external_cli_paths()
     from jiuwenswarm.server.worker.service import WorkerForceExit, serve_worker
 
@@ -212,8 +212,11 @@ def main() -> None:
                 if not stop_background_logging():
                     exit_process(exit_code)
             finally:
-                if restore_handlers is not None:
-                    restore_handlers()
+                try:
+                    disable_worker_diagnostics()
+                finally:
+                    if restore_handlers is not None:
+                        restore_handlers()
 
 
 if __name__ == "__main__":
