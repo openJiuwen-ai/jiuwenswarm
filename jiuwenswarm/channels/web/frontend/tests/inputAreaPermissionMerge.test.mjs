@@ -172,6 +172,9 @@ const { setTeamOrganizationUiEnabled } = await import('../node_modules/.cache/in
 const { isMultiModelCollaborationEnabled, setMultiModelCollaborationEnabled } =
   await import('../node_modules/.cache/input-area-permission-merge/features/multiModelCollaboration/featureConfig.js');
 const { webClient } = await import('../node_modules/.cache/input-area-permission-merge/services/webClient.js');
+const { useGoalStore } = await import('../node_modules/.cache/input-area-permission-merge/stores/index.js');
+const { beginPromptSubmit, endPromptSubmit, isPromptSubmitInFlight, queueActionAfterModeCommit } =
+  await import('../node_modules/.cache/input-area-permission-merge/features/sessionMode/modeSwitchGate.js');
 const { useSessionAssetsStore } =
   await import('../node_modules/.cache/input-area-permission-merge/features/sessionAssets/sessionAssets.js');
 
@@ -530,6 +533,8 @@ async function mount(
   await i18n.changeLanguage(language);
   const saved = [];
   const switched = [];
+  // Whether the next mode switch commits; a refused one leaves the mode as it was.
+  const switchControl = { commits: true };
   const inputAreaRef = createRef();
   const props = {
     onSubmit() {},
@@ -539,9 +544,11 @@ async function mount(
       media_items: mediaItems.map((item) => ({ ...item, path: `C:/test/${item.filename}` })),
     }),
     onPersistDocuments: async () => ({}),
-    onSwitchMode: (next) => {
+    onSwitchMode: async (next) => {
       switched.push(next);
+      if (!switchControl.commits) return false;
       useSessionStore.getState().setMode(sessionId, next);
+      return true;
     },
     isProcessing: false,
     permissionProfile: profile,
@@ -555,7 +562,7 @@ async function mount(
   const unmountInputArea = async () => act(async () => root.render(null));
   try {
     await render();
-    await run({ saved, switched, props, render, unmountInputArea, sessionId, inputAreaRef });
+    await run({ saved, switched, switchControl, props, render, unmountInputArea, sessionId, inputAreaRef });
   } finally {
     await act(async () => {
       for (const button of document.querySelectorAll('[data-testid="chat-panel-input-attachment-remove"]')) {
@@ -1688,4 +1695,280 @@ test('actual Owner composer remains disabled after stop and metadata refresh whi
       });
     }
   });
+});
+
+// ---- Ordering between an in-place mode switch and prompts (one tab) ----
+
+for (const mode of ['agent', 'team']) {
+  test(`${mode}: a prompt submitted while a mode switch is pending waits in the queue`, async () => {
+    await mount({ mode }, async ({ props, render, sessionId }) => {
+      const sent = [];
+      props.onSubmit = (...args) => sent.push(args);
+      props.onInterrupt = () => assert.fail('a held prompt must not interrupt');
+      await act(async () => useChatStore.getState().setModeSwitchPending(sessionId, true));
+      try {
+        await render();
+        await typeInput('sent right after the switch');
+        await click(byId('chat-panel-input-send'));
+        assert.deepEqual(sent, [], 'nothing may reach the server before the switch settles');
+        const queue = useChatStore.getState().getRuntime(sessionId).taskQueue;
+        assert.deepEqual(queue.map((task) => [task.content, task.status]), [['sent right after the switch', 'queued']]);
+      } finally {
+        await act(async () => useChatStore.getState().setModeSwitchPending(sessionId, false));
+      }
+    });
+  });
+}
+
+test('team: an idle composer without a pending switch still submits directly', async () => {
+  await mount({ mode: 'team' }, async ({ props, render, sessionId }) => {
+    const sent = [];
+    props.onSubmit = (text) => sent.push(text);
+    await render();
+    await typeInput('ordinary team input');
+    await click(byId('chat-panel-input-send'));
+    assert.deepEqual(sent, ['ordinary team input']);
+    assert.deepEqual(useChatStore.getState().getRuntime(sessionId).taskQueue, []);
+  });
+});
+
+test('a pending mode switch locks the mode control', async () => {
+  await mount({}, async ({ render, sessionId, switched }) => {
+    await act(async () => useChatStore.getState().setModeSwitchPending(sessionId, true));
+    try {
+      await render();
+      await click(byId('chat-panel-mode-select-trigger'));
+      assert.equal(document.querySelector('[data-testid="chat-panel-mode-select-menu"]'), null);
+      assert.deepEqual(switched, []);
+    } finally {
+      await act(async () => useChatStore.getState().setModeSwitchPending(sessionId, false));
+    }
+    await render();
+    await click(byId('chat-panel-mode-select-trigger'));
+    await click(byId('chat-panel-mode-select-option', 'team'));
+    assert.deepEqual(switched, ['team']);
+  });
+});
+
+for (const commits of [false, true]) {
+  test(`a mode switch that ${commits ? 'commits drops' : 'is refused keeps'} the selected skills and their chips`, async () => {
+    await mount({ sessionId: 'mode-switch-skills' }, async ({ sessionId, switched, switchControl }) => {
+      switchControl.commits = commits;
+      await act(async () => useSessionStore.getState().addSelectedSkill(sessionId, 'test-skill'));
+      assert.ok(byId('chat-panel-input').querySelector('[data-skill="test-skill"]'));
+      await click(byId('chat-panel-mode-select-trigger'));
+      await click(byId('chat-panel-mode-select-option', 'team'));
+      assert.deepEqual(switched, ['team']);
+      const kept = commits ? [] : ['test-skill'];
+      assert.deepEqual(useSessionStore.getState().getRuntime(sessionId).selectedSkills, kept);
+      assert.equal(Boolean(byId('chat-panel-input').querySelector('[data-skill="test-skill"]')), !commits);
+    });
+  });
+}
+
+test('a mode switch picked from an open menu is dropped once a prompt is being sent', async () => {
+  await mount({}, async ({ sessionId, switched }) => {
+    await click(byId('chat-panel-mode-select-trigger'));
+    const option = byId('chat-panel-mode-select-option', 'team');
+    beginPromptSubmit(sessionId);
+    try {
+      await click(option);
+    } finally {
+      endPromptSubmit(sessionId);
+    }
+    assert.deepEqual(switched, [], 'the prompt pressed first keeps the mode it was sent in');
+  });
+});
+
+test('a goal submitted while a mode switch is pending is held with its draft', async () => {
+  await mount({}, async ({ props, render, sessionId }) => {
+    const goals = [];
+    props.onSetGoal = (...args) => goals.push(args);
+    props.onSubmit = () => assert.fail('a held goal must not be submitted');
+    await act(async () => {
+      useGoalStore.getState().setArmed(sessionId, true);
+      useChatStore.getState().setModeSwitchPending(sessionId, true);
+    });
+    try {
+      await render();
+      await typeInput('finish the report');
+      await click(byId('chat-panel-input-send'));
+      assert.deepEqual(goals, []);
+      assert.deepEqual(useChatStore.getState().getRuntime(sessionId).taskQueue, []);
+      assert.equal(byId('chat-panel-input').textContent, 'finish the report', 'the draft stays for a later send');
+    } finally {
+      await act(async () => {
+        useChatStore.getState().setModeSwitchPending(sessionId, false);
+        useGoalStore.getState().setArmed(sessionId, false);
+      });
+    }
+  });
+});
+
+function loadSwitchSessionModeInPlace({ outcome, drained, toasts, sessionId }) {
+  const observed = { pendingDuringCommit: undefined, modes: [] };
+  const switchSessionModeInPlace = loadCallback('App.tsx', 'switchSessionModeInPlace', {
+    sessionModeCommitsRef: { current: new Set() },
+    useChatStore,
+    useSessionStore,
+    useWorkspaceStore,
+    commitSessionMode: async () => {
+      observed.pendingDuringCommit = useChatStore.getState().getRuntime(sessionId)?.modeSwitchPending;
+      return outcome;
+    },
+    request: async () => assert.fail('the commit is stubbed'),
+    resolveOutgoingMode: (_id, mode) => `${mode}.work.normal`,
+    stripPlanSuffix: (mode) => mode.split('.')[0],
+    setMode: (id, mode) => observed.modes.push([id, mode]),
+    queueActionAfterModeCommit,
+    drainTaskQueueIfIdle: (id) => drained.push(id),
+    t: (key) => key,
+    toast: { open: (options) => toasts.push(options.dataVariant) },
+  });
+  return { switchSessionModeInPlace, observed };
+}
+
+test('a committed mode switch releases the queue in the new mode', async () => {
+  const sessionId = 'mode-switch-commit-drains';
+  const chat = useChatStore.getState();
+  chat.ensureRuntime(sessionId);
+  try {
+    chat.addToTaskQueue(sessionId, 'waiting prompt');
+    const drained = [];
+    const toasts = [];
+    const { switchSessionModeInPlace, observed } = loadSwitchSessionModeInPlace({
+      outcome: { status: 'committed', mode: 'team.work.normal', changed: true }, drained, toasts, sessionId,
+    });
+    assert.equal(await switchSessionModeInPlace(sessionId, 'agent', 'team'), true);
+    assert.equal(observed.pendingDuringCommit, true, 'prompts are held while mode.set is in flight');
+    assert.equal(chat.getRuntime(sessionId).modeSwitchPending, false);
+    assert.deepEqual(observed.modes, [[sessionId, 'team']]);
+    assert.deepEqual(drained, [sessionId]);
+    assert.equal(chat.getRuntime(sessionId).queuePaused, false);
+    assert.deepEqual(toasts, []);
+  } finally {
+    chat.removeRuntime(sessionId);
+  }
+});
+
+for (const outcome of [
+  { status: 'busy' },
+  { status: 'failed', code: 'BAD_REQUEST', error: new Error('refused') },
+  { status: 'uncertain', error: new Error('lost') },
+  { status: 'not_applied', mode: 'agent.work.normal' },
+]) {
+  test(`a mode switch that ends ${outcome.status} keeps waiting prompts queued and paused`, async () => {
+    const sessionId = `mode-switch-${outcome.status}-pauses`;
+    const chat = useChatStore.getState();
+    chat.ensureRuntime(sessionId);
+    try {
+      chat.addToTaskQueue(sessionId, 'waiting prompt');
+      const drained = [];
+      const toasts = [];
+      const { switchSessionModeInPlace } = loadSwitchSessionModeInPlace({ outcome, drained, toasts, sessionId });
+      assert.equal(await switchSessionModeInPlace(sessionId, 'agent', 'team'), false);
+      const runtime = chat.getRuntime(sessionId);
+      assert.equal(runtime.modeSwitchPending, false);
+      assert.deepEqual(drained, [], 'nothing is sent in a mode the user did not expect');
+      assert.equal(runtime.queuePaused, true);
+      assert.deepEqual(runtime.taskQueue.map((task) => task.content), ['waiting prompt']);
+      assert.deepEqual(toasts, [outcome.status]);
+    } finally {
+      chat.removeRuntime(sessionId);
+    }
+  });
+}
+
+test('a mode switch reports whether this Session switched in place', async () => {
+  const sessionId = 'mode-switch-result';
+  const chat = useChatStore.getState();
+  chat.ensureRuntime(sessionId);
+  const load = (overrides) => loadCallback('App.tsx', 'handleSwitchMode', {
+    sessionIdRef: { current: sessionId },
+    useChatStore,
+    isPromptSubmitInFlight,
+    useSessionStore: { getState: () => ({ getRuntime: () => ({ mode: 'agent' }) }) },
+    NEW_CONVERSATION_ID: 'new',
+    setMode: () => {},
+    canSwitchSessionModeInPlace: () => true,
+    isEnterprise: () => false,
+    getWebTransport: () => 'websocket',
+    switchSessionModeInPlace: async () => true,
+    enterNewConversation: () => {},
+    ...overrides,
+  });
+  try {
+    assert.equal(await load({})('team'), true);
+    assert.equal(await load({ switchSessionModeInPlace: async () => false })('team'), false);
+    assert.equal(await load({ sessionIdRef: { current: 'new' } })('team'), true, 'a draft switches at once');
+    const opened = [];
+    const fresh = load({ canSwitchSessionModeInPlace: () => false, enterNewConversation: (mode) => opened.push(mode) });
+    assert.equal(await fresh('team'), false, 'a fresh conversation leaves this Session as it was');
+    assert.deepEqual(opened, ['team']);
+    chat.setProcessing(sessionId, true);
+    assert.equal(await load({})('team'), false);
+  } finally {
+    chat.removeRuntime(sessionId);
+  }
+});
+
+test('a mode switch is refused from the moment a prompt is submitted', async () => {
+  const sessionId = 'mode-switch-after-prompt';
+  const chat = useChatStore.getState();
+  chat.ensureRuntime(sessionId);
+  const switches = [];
+  const handleSwitchMode = loadCallback('App.tsx', 'handleSwitchMode', {
+    sessionIdRef: { current: sessionId },
+    useChatStore,
+    isPromptSubmitInFlight,
+    useSessionStore: { getState: () => ({ getRuntime: () => ({ mode: 'agent' }) }) },
+    NEW_CONVERSATION_ID: 'new',
+    setMode: () => assert.fail('a saved Session switches in place'),
+    canSwitchSessionModeInPlace: () => true,
+    isEnterprise: () => false,
+    getWebTransport: () => 'websocket',
+    switchSessionModeInPlace: (...args) => switches.push(args),
+    enterNewConversation: () => assert.fail('a saved Session switches in place'),
+  });
+  let releaseFlush;
+  const sentPrompts = [];
+  const handleSendMessage = loadCallback('components/ChatPanel/index.tsx', 'handleSendMessage', {
+    takeNextInputSubmission: () => ({ provenance: { input_origin: 'manual_free_text' }, settle() {} }),
+    activeSessionId: sessionId,
+    beginPromptSubmit,
+    endPromptSubmit,
+    // A plugin flush keeps the prompt between "send pressed" and the actual send.
+    flushApplicationConversationHistory: () => new Promise((resolve) => { releaseFlush = resolve; }),
+    toast: { open: () => assert.fail('the flush succeeds') },
+    t: (key) => key,
+    setIsSending() {},
+    // The real send path marks the Session busy before its first await.
+    onSendMessage: (content) => {
+      sentPrompts.push(content);
+      chat.setProcessing(sessionId, true);
+      return Promise.resolve(sessionId);
+    },
+    visibleTopicSlateRef: { current: null },
+    acceptingDynamicRef: { current: false },
+    ensureTopicStarterExposureAcknowledged: async () => {},
+    sendTopicStarterEvent: async () => {},
+    buildDirectInputEvent: () => ({}),
+    setTopicStarterErrorKey() {},
+  });
+  try {
+    const submitted = handleSendMessage('prompt pressed first');
+    handleSwitchMode('team');
+    assert.deepEqual(switches, [], 'refused while the prompt is still being prepared');
+    releaseFlush();
+    await submitted;
+    assert.deepEqual(sentPrompts, ['prompt pressed first']);
+    assert.equal(isPromptSubmitInFlight(sessionId), false);
+    handleSwitchMode('team');
+    assert.deepEqual(switches, [], 'refused while the prompt runs');
+    chat.setProcessing(sessionId, false);
+    handleSwitchMode('team');
+    assert.deepEqual(switches, [[sessionId, 'agent', 'team']]);
+  } finally {
+    chat.removeRuntime(sessionId);
+  }
 });

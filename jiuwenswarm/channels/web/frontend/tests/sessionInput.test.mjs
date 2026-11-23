@@ -2365,3 +2365,105 @@ test('history without an explicit completion boundary still restores unfinished 
     await c.dispose();
   }
 });
+
+test('a prompt sent while a mode switch is pending waits in the queue until the switch settles', async (context) => {
+  const c = await mount(context);
+  try {
+    c.receive('chat.processing_status', { is_processing: false, request_id: 'original' });
+    await c.flush();
+    act(() => c.store.setModeSwitchPending(c.sid, true));
+    let sent;
+    await act(async () => {
+      sent = await c.api().sendMessage('held prompt', c.sid);
+    });
+    assert.equal(sent, true, 'the prompt is accepted into the queue, not refused');
+    assert.equal(c.requests().length, 0);
+    const held = c.runtime().taskQueue[0];
+    assert.equal(held.content, 'held prompt');
+    assert.equal(c.runtime().isProcessing, false, 'a held prompt does not mark the Session busy');
+
+    // Steering and automatic draining wait as well, without a failure banner.
+    await act(async () => {
+      sent = await c.api().sendMessage('', c.sid, [], { queuedTaskId: held.id });
+    });
+    assert.equal(sent, false);
+    act(() => c.api().drainTaskQueueIfIdle(c.sid));
+    assert.equal(c.requests().length, 0);
+    assert.equal(c.runtime().taskQueue[0].status, 'queued');
+    assert.equal(c.runtime().interruptResult, null);
+
+    act(() => c.store.setModeSwitchPending(c.sid, false));
+    act(() => c.api().drainTaskQueueIfIdle(c.sid));
+    await c.flush();
+    assert.equal(c.requests().length, 1);
+    assert.equal(c.requests()[0].params.content, 'held prompt');
+    assert.equal(c.runtime().taskQueue.length, 0);
+    act(() => c.socket.response(c.requests()[0].id));
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('team mode shows prompts left in the queue and sends them one at a time', async (context) => {
+  const c = await mount(context);
+  try {
+    const first = c.queue('first leftover');
+    const second = c.queue('second leftover');
+    act(() => useSessionStore.getState().setMode(c.sid, 'team'));
+    assert.ok(c.find(first, 'delete'), 'Team mode shows the queue');
+    assert.equal(c.find(first, 'send'), null, 'steering a queued prompt is Agent-only');
+
+    c.receive('chat.processing_status', { is_processing: false, request_id: 'original' });
+    await c.flush();
+    assert.equal(c.requests().length, 1);
+    const firstRequest = c.requests()[0];
+    assert.equal(firstRequest.params.content, 'first leftover');
+    assert.match(String(firstRequest.params.mode), /^team/);
+    assert.equal(firstRequest.params.input_mode, undefined, 'an ordinary Leader prompt, not steering');
+    assert.deepEqual(c.runtime().taskQueue.map((task) => task.id), [second]);
+    act(() => c.socket.response(firstRequest.id));
+
+    c.receive('chat.processing_status', { is_processing: true, request_id: firstRequest.id });
+    assert.equal(c.requests().length, 1, 'the next prompt waits for this round');
+    c.receive('chat.processing_status', { is_processing: false, request_id: firstRequest.id });
+    await c.flush();
+    assert.equal(c.requests().length, 2);
+    assert.equal(c.requests()[1].params.content, 'second leftover');
+    assert.equal(c.runtime().taskQueue.length, 0);
+    act(() => c.socket.response(c.requests()[1].id));
+  } finally {
+    await c.dispose();
+  }
+});
+
+test('team mode Stop pauses the queue instead of sending the next prompt', async (context) => {
+  const { loadCallback } = await import('./loadProductionCallback.mjs');
+  const c = await mount(context);
+  try {
+    c.queue('must wait after stop');
+    act(() => useSessionStore.getState().setMode(c.sid, 'team'));
+    const paused = [];
+    const handleCancel = loadCallback('App.tsx', 'handleCancel', {
+      sessionIdRef: { current: c.sid },
+      NEW_CONVERSATION_ID: 'new',
+      useGoalStore,
+      useChatStore,
+      mode: 'team',
+      organizationOwnerStopTarget: () => null,
+      cancel: () => assert.fail('a Team round is paused, not cancelled'),
+      pause: (id) => paused.push(id),
+      pauseGoal: () => assert.fail('no goal is active'),
+    });
+    act(() => handleCancel());
+    assert.deepEqual(paused, [c.sid]);
+    assert.equal(c.runtime().queuePaused, true);
+    // The stopped round ends with an ordinary processing_status(false).
+    c.receive('chat.processing_status', { is_processing: false, request_id: 'original' });
+    await c.flush();
+    assert.equal(c.requests().length, 0);
+    assert.equal(c.runtime().taskQueue.length, 1);
+    assert.ok(document.querySelector('[data-testid="chat-panel-task-queue-resume"]'), 'Resume is offered in Team mode');
+  } finally {
+    await c.dispose();
+  }
+});

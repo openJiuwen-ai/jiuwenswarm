@@ -16,6 +16,7 @@ await build({
     'src/services/webClient.ts',
     'src/services/obsUpload.ts',
     'src/features/sessionAssets/sessionAssets.ts',
+    'src/features/sessionMode/modeSwitchGate.ts',
   ],
   outbase: 'src',
   outdir: 'node_modules/.cache/input-area-permission-merge',

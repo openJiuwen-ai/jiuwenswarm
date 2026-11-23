@@ -2582,6 +2582,12 @@
       "noBreakdown": "后端未返回分类明细"
     },
     "modeSwitchDisabledProcessing": "当前对话运行中，请新建对话后选择模式",
+    "sessionModeSwitch": {
+      "busy": "当前对话仍在执行，请停止后再切换模式。",
+      "conflict": "未切换：该对话的模式已在其他地方更改。",
+      "uncertain": "无法确认模式是否已切换，请检查连接后重试。",
+      "failed": "切换模式失败：{{error}}"
+    },
     "teamSelect": {
       "unavailable": "不可用",
       "unavailableHint": "该专家团已不可用，请重新安装专家团后继续；历史记录仍可查看。",

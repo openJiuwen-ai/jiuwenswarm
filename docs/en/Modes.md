@@ -17,6 +17,16 @@ The Web frontend provides two execution modes:
 
 ![Mode Selector](../assets/images/current-ui-en/02-Mode-Selector.png)
 
+### In-conversation mode switch
+
+A conversation that already has messages can switch between Agent and Team mode in place: choose the other mode in the mode selector and the conversation continues in the new mode, keeping its history.
+
+- The switch is committed with the `mode.set` request, and `mode.get` reads the result back when a reply is lost. The server's mode is authoritative.
+- It is refused while the conversation is still running (stop it first), and for conversations bound to an agent group, an external agent, or a scheduled task, and for application role (NPC) conversations, whose form is fixed when they are created.
+- After a Team turn finishes, keeping the conversation open to receive events does not prevent a mode switch.
+- A committed switch increments `mode_revision` in the Session's `metadata.json` and appends a `session.mode_changed` record to `history.jsonl`.
+- It applies to the personal edition over WebSocket. The enterprise edition chooses the mode when a conversation starts: once the conversation has messages the mode selector is locked, and the server refuses `mode.set`. Leaving Auto Harness still starts a new conversation.
+
 ---
 
 ## Command-Line Modes (IM/TUI)

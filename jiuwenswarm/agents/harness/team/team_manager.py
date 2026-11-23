@@ -628,6 +628,10 @@ class TeamManager:
         if attach_only:
             self._attach_waiter_ids.setdefault(session_id, set()).add(request_id)
 
+    def is_attach_waiter(self, session_id: str, request_id: str) -> bool:
+        """Whether a registered request only observes Team events."""
+        return request_id in self._attach_waiter_ids.get(session_id, ())
+
     def remove_waiter(
         self,
         session_id: str,
@@ -4342,28 +4346,32 @@ def team_session_has_active_work(session_id: str) -> bool:
 
 
 def team_session_has_parked_request(session_id: str, request_ids) -> bool:
-    """Whether every listed chat request is parked on a released Team round.
+    """Whether every request only observes events or parks on a released round.
 
     Companion of :func:`is_team_session_running` for the archive guard: a
     request whose round was released no longer owns team work even though its
     response handler stays alive on the persistent leader stream.  Once that
     stream ends the markers are cleared, so a handler still draining the
-    stream's tail counts as busy again rather than parked.
+    stream's tail counts as busy again rather than parked. Registered attach
+    waiters never own a round and can remain idle even without a live stream.
     """
     manager = _team_manager
     if manager is None:
         return False
     if (
-        not manager.has_stream_task(session_id)
         # ``request_ids`` only covers WebSocket chat handlers.  Automation
         # (and other non-Web ingress) can own a Team round without appearing
         # there, so no active Team state may coexist with a parked exemption.
-        or manager.has_inflight_request(session_id)
+        manager.has_inflight_request(session_id)
         or manager.is_round_active(session_id)
     ):
         return False
     return all(
-        manager.is_round_ended_request(session_id, request_id)
+        manager.is_attach_waiter(session_id, request_id)
+        or (
+            manager.has_stream_task(session_id)
+            and manager.is_round_ended_request(session_id, request_id)
+        )
         for request_id in request_ids
     )
 

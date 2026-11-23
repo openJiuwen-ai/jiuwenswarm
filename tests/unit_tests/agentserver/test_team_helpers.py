@@ -2670,6 +2670,53 @@ async def test_attach_only_stream_aligns_execution_to_idle_round(monkeypatch):
     assert reported == [("sess-attach-idle", None, False)]
 
 
+@pytest.mark.anyio
+async def test_attach_only_stream_is_not_an_inflight_turn(monkeypatch):
+    """An attach-only subscription observes; it must not count as a Team turn in flight.
+
+    Entering a Team Session from Web opens this subscription and keeps it for
+    the Session's lifetime. Counted as in flight, it never ends, so the
+    Session stays busy and mode.set can never leave Team mode.
+    """
+    from jiuwenswarm.agents.harness.team import TeamManager, team_manager
+    from jiuwenswarm.runtime.session.model import TEAM_ATTACH_ONLY_PARAM
+
+    manager = TeamManager()
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager)
+    monkeypatch.setattr(team_manager, "_team_manager", manager)
+    request = AgentRequest(
+        request_id="attach-observer-1",
+        channel_id="web",
+        session_id="sess-attach-observer",
+        metadata=None,
+        params={"mode": "team.work.normal", TEAM_ATTACH_ONLY_PARAM: True},
+    )
+
+    async def _consume() -> None:
+        async for _chunk in team_helpers.process_team_message_stream(
+            request, {"query": ""}, object(),
+        ):
+            break
+
+    consumer = asyncio.create_task(_consume())
+    try:
+        async def _wait_attached() -> None:
+            while not manager.is_attach_waiter("sess-attach-observer", "attach-observer-1"):
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(_wait_attached(), timeout=2.0)
+        assert manager.has_inflight_request("sess-attach-observer") is False
+        assert team_manager.team_session_has_active_work("sess-attach-observer") is False
+        assert team_manager.team_session_has_parked_request(
+            "sess-attach-observer", {"attach-observer-1"},
+        ) is True
+    finally:
+        consumer.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await consumer
+    assert manager.is_attach_waiter("sess-attach-observer", "attach-observer-1") is False
+
+
 def test_report_round_state_requires_generation_and_match():
     from jiuwenswarm.agents.harness.team import TeamManager
 

@@ -2,7 +2,12 @@
  * Hooks 导出
  */
 
-export { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveMessages } from './useWebSocket';
+export {
+  useWebSocket,
+  mergePersistedGoalCompletionMessages,
+  resolveOutgoingMode,
+  stampGoalObjectiveMessages,
+} from './useWebSocket';
 export { useSpeechRecognition, useSpeechSynthesis } from './useSpeech';
 export { useDesktopLocalFilePickerReady } from './useDesktopLocalFilePickerReady';
 export {

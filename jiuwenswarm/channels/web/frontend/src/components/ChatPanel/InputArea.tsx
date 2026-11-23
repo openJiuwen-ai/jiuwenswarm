@@ -233,6 +233,9 @@ import { isImeCompositionKey } from './imeComposition';
 import { useTaskAsr } from '../../features/taskAsr/useTaskAsr';
 import { RecordingWaveform } from '../../features/taskAsr/RecordingWaveform';
 import { useTaskAsrEnabled } from '../../features/taskAsr/featureFlag';
+import { allowsInPlaceModeSwitch } from '../../features/sessionMode/inPlaceModeSwitch';
+import { isPromptSubmitInFlight, promptWaitsForModeSwitch } from '../../features/sessionMode/modeSwitchGate';
+import { getWebTransport } from '../../utils/env';
 import { ApplicationPluginTaskInputActions } from '../../applicationPlugins/ApplicationPluginOutlet';
 
 /** 输入栏下拉所需的最小技能数据结构（与 SkillPanel 中的 SkillItem 保持一致） */
@@ -375,7 +378,8 @@ interface InputAreaProps {
   onDiscardMedia?: (sessionId: string, path: string) => Promise<unknown>;
   onInterrupt: (newInput?: string) => void;
   onCancel: () => void;
-  onSwitchMode: (mode: AgentMode) => void;
+  /** Resolves true only when the current Session itself switched to `mode`. */
+  onSwitchMode: (mode: AgentMode) => Promise<boolean>;
   isProcessing: boolean;
   autoFocusKey?: string | null;
   /** 跳转到技能管理页 */
@@ -1178,6 +1182,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const isPaused = conversationIsPaused;
   const ownerOrganizationIsProcessing = conversationId === activeSessionId && organizationIsProcessing;
   const queuePaused = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.queuePaused ?? false);
+  const modeSwitchPending = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.modeSwitchPending ?? false);
   const isLoadingHistory = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.isLoadingHistory ?? false);
   const inputValue = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.inputValue ?? '');
   const evolutionStatus = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.evolutionStatus ?? null);
@@ -1227,7 +1232,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     teamSessionLive,
     NEW_CONVERSATION_ID,
   );
-  const modeLocked = hasHistory || isProcessing;
+  // A conversation with history changes mode in place via mode.set (personal edition over WebSocket).
+  const inPlaceModeSwitchAllowed = allowsInPlaceModeSwitch({
+    enterprise,
+    transport: getWebTransport(),
+  });
+  // Upstream no longer locks enterprise outright: a conversation without history picks its mode
+  // locally. In-place switching stays personal-only, so enterprise locks as soon as history exists.
+  const modeLocked = isProcessing || modeSwitchPending || (hasHistory && !inPlaceModeSwitchAllowed);
   const [teamQuotaHint, setTeamQuotaHint] = useState('');
   const [teamCreateBlocked, setTeamCreateBlocked] = useState(false);
 
@@ -3008,7 +3020,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
     const sid = useChatStore.getState().activeSessionId;
     let sentViaTaskQueue = false;
-    if (goalArmed && trimmedBase && sid && onSetGoal && sid !== NEW_CONVERSATION_ID) {
+    if (sid && promptWaitsForModeSwitch(sid, useChatStore.getState().getRuntime(sid)?.modeSwitchPending)) {
+      // The user switched mode before this prompt: it waits in the queue and is
+      // sent in the committed mode. A goal cannot wait there, so its draft stays.
+      if (goalArmed && trimmedBase) return;
+      useChatStore.getState().addToTaskQueue(sid, submitContent, readyMediaItems);
+      sentViaTaskQueue = true;
+    } else if (goalArmed && trimmedBase && sid && onSetGoal && sid !== NEW_CONVERSATION_ID) {
       // command.goal carries a text objective only; silently dropping attachments
       // would make users believe they were sent, so block explicitly with an alert.
       if (readyMediaItems.length > 0) {
@@ -4060,30 +4078,43 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const handleModeSwitch = useCallback(
     async (targetMode: AgentMode) => {
       if (modeLocked || mode === targetMode) return;
-      // Draft-session in-place mode switch: skills picked for the previous
-      // mode no longer apply, so drop them from the store and remove their
-      // inline chips from the editor. (Switching from a real session enters a
-      // fresh conversation instead, whose rebuilt runtime starts without
-      // skills, so the old session keeps its picks.)
+      // Read the latest state too: a prompt sent or a switch started since the
+      // last render must not lose the selected skills below to a refused switch.
+      const current = activeSessionId ? useChatStore.getState().getRuntime(activeSessionId) : undefined;
+      if (current?.isProcessing || current?.modeSwitchPending || isPromptSubmitInFlight(activeSessionId)) return;
       const sid = activeSessionId;
-      if (sid && sid === NEW_CONVERSATION_ID) {
-        clearSelectedSkills(sid);
-        const el = inputRef.current;
-        if (el) {
-          el.querySelectorAll('[data-skill]').forEach((chip) => {
-            // Also drop the zero-width-space spacer after the chip.
-            const next = chip.nextSibling;
-            if (next && next.nodeType === Node.TEXT_NODE && next.textContent === '\u200B') {
-              next.remove();
-            }
-            chip.remove();
-          });
-          useChatStore.getState().setInputValue(sid, extractPlainText());
-        }
+      // Once this Session has switched in place (a draft, or a saved session
+      // whose mode.set committed), skills picked for the previous mode no
+      // longer apply: drop them from the store and remove their inline chips
+      // from the editor. A refused switch keeps the draft as it was; switching
+      // a real session that cannot change in place enters a fresh conversation,
+      // whose rebuilt runtime starts without skills, so the old session keeps
+      // its picks.
+      if (!sid || !(await onSwitchMode(targetMode))) return;
+      clearSelectedSkills(sid);
+      // mode.set can take a while; the editor may show another Session by now.
+      if (useChatStore.getState().activeSessionId !== sid) return;
+      const el = inputRef.current;
+      if (el) {
+        el.querySelectorAll('[data-skill]').forEach((chip) => {
+          // Also drop the zero-width-space spacer after the chip.
+          const next = chip.nextSibling;
+          if (next && next.nodeType === Node.TEXT_NODE && next.textContent === '\u200B') {
+            next.remove();
+          }
+          chip.remove();
+        });
+        useChatStore.getState().setInputValue(sid, extractPlainText());
       }
-      onSwitchMode(targetMode);
     },
-    [activeSessionId, clearSelectedSkills, extractPlainText, hasHistory, isProcessing, mode, onSwitchMode],
+    [
+      activeSessionId,
+      clearSelectedSkills,
+      extractPlainText,
+      modeLocked,
+      mode,
+      onSwitchMode,
+    ],
   );
 
   const handleModeSelect = useCallback(

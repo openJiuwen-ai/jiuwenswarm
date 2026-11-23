@@ -131,6 +131,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [B_20261112_1405_stop-btn-stuck-after-skip](jiuwenswarm/B_20261112_1405_stop-btn-stuck-after-skip.md) | B | 集群模式跳过后停止按钮永久卡死：interrupt 收尾窗口护栏 | xiajing | 无独立 D：依据现场日志与轨迹定位，无独立设计文档；修复范围限定前端状态机护栏，并补后端判据不变量测试。 |
+| [B_20261117_0452_team-attach-subscription-inflight](jiuwenswarm/server/B_20261117_0452_team-attach-subscription-inflight.md) | B | Team 旁听订阅被记为在途请求，导致会话一直忙碌、无法从 Team 切回 Agent | 待确认 | 无独立 D：修复既有忙碌判定对旁听订阅的误判，不改变 mode.set 与归档的契约，无独立设计。关联实施记录见 F_20261116_1710_web-session-mode-switch。 |
 
 <a id="module-jiuwenswarm-agents-swarm"></a>
 
@@ -184,6 +185,7 @@ generated: true
 | [B_20261116_1652_cli-auth-effect-loop](jiuwenswarm/channels/web/B_20261116_1652_cli-auth-effect-loop.md) | B | CLI MCP 授权因父级重渲染重复开窗和请求 | TwZhang | 无独立 D：用户明确授权修复现有 CLI 授权生命周期缺陷，无独立设计。 |
 | [B_20261116_1701_my-plugin-installed-only](jiuwenswarm/server/runtime/B_20261116_1701_my-plugin-installed-only.md) | B | 未安装插件草稿混入我的扩展并显示安装按钮 | lizhiyuan | 无独立 D：用户在本次对话明确确认插件列表归属及按钮策略，属于现有市场行为的小范围修复，无独立设计文档。 |
 | [B_20261117_1522_team-plan-toggle-lock](jiuwenswarm/B_20261117_1522_team-plan-toggle-lock.md) | B | 集群会话计划模式开关是假开关：建队后冻结并让位动态工作流 | chenchunzhou | 无独立 D：由 issue 6361 现象逆向定位，无独立设计文档；方案与取舍记录在 OpenSpec 变更 issue-6361-team-plan-toggle-lock 的 proposal/design/specs，修复范围限定 Web 前端开关闸门与提示文案。 |
+| [B_20261118_0611_session-mode-switch-retry-and-draft](jiuwenswarm/channels/web/B_20261118_0611_session-mode-switch-retry-and-draft.md) | B | Web 会话内模式切换：重试遇忙核对模式，失败不清空已选技能 | Yanqing-Shi | 无独立 D：共享会话检视（2026-11-17）的两个 P2 问题；实现见 F_20261116_1710_web-session-mode-switch，无独立 D。 |
 | [B_20261118_1055_worker-close-after-final-error](jiuwenswarm/channels/web/frontend/B_20261118_1055_worker-close-after-final-error.md) | B | 任务正常收尾后 worker 关闭被渲染为对话错误 | openjiuwen_ai | 无独立 D：只在 Web 前端区分「本轮已收尾」与「处理中失败」，不改 supervisor/gateway 的错误码与生命周期协议；无独立设计。 |
 | [B_20261118_1527_session-delete-plan-runtime](jiuwenswarm/channels/web/frontend/B_20261118_1527_session-delete-plan-runtime.md) | B | 侧边栏删除会话漏清 planStore runtime，Plan 模式状态在内存永久残留 | gunner_beat | 无独立 D：会话生命周期清理的一致性补齐，复用 usePlanStore 既有 removeRuntime，无独立设计文档。缺陷检视清单 |
 | [B_20261119_1039_video-memory-submit-pending](jiuwenswarm/channels/web/frontend/B_20261119_1039_video-memory-submit-pending.md) | B | 视频记忆任务 pending 导致提交工具持续执行中 | ToNy_St4rk | 无独立 D：现有工具结果状态的局部修复，无独立设计。 |
@@ -285,6 +287,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [B_20261117_0452_team-attach-subscription-inflight](jiuwenswarm/server/B_20261117_0452_team-attach-subscription-inflight.md) | B | Team 旁听订阅被记为在途请求，导致会话一直忙碌、无法从 Team 切回 Agent | 待确认 | 无独立 D：修复既有忙碌判定对旁听订阅的误判，不改变 mode.set 与归档的契约，无独立设计。关联实施记录见 F_20261116_1710_web-session-mode-switch。 |
 | [B_20261120_0927_unknown-answer-source-hang](jiuwenswarm/runtime/B_20261120_0927_unknown-answer-source-hang.md) | B | 未知 source 的 answers 请求在团队会话中排队死锁、无终止帧 | openjiuwen_ai | 无独立 D：仅收紧既有 chat.send answers 校验的适用条件，不改变交互恢复协议、source 白名单与会话 lane 语义；无独立设计。 |
 
 <a id="module-jiuwenswarm-server"></a>
@@ -333,6 +336,7 @@ generated: true
 | [B_20261031_1042_pr9317-review](jiuwenswarm/server/B_20261031_1042_pr9317-review.md) | B | PR 9317 插件模式校验与 Front 遗留启动链清理 | xinyang_bali | 无独立 D：根据 openJiuwen-bot 检视意见清理现有实现，不引入新接口或架构方案，无独立 D。 |
 | [B_20261031_1053_atomgit-review](jiuwenswarm/server/B_20261031_1053_atomgit-review.md) | B | PR 9317 AtomGit 取消、补丁兼容与注销恢复修复 | xinyang_bali | 无独立 D：根据机器人检视修复现有资源生命周期和可选补丁边界，不引入独立方案。 |
 | [B_20261106_1132_organization-round-cleanup](jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
+| [B_20261117_0452_team-attach-subscription-inflight](jiuwenswarm/server/B_20261117_0452_team-attach-subscription-inflight.md) | B | Team 旁听订阅被记为在途请求，导致会话一直忙碌、无法从 Team 切回 Agent | 待确认 | 无独立 D：修复既有忙碌判定对旁听订阅的误判，不改变 mode.set 与归档的契约，无独立设计。关联实施记录见 F_20261116_1710_web-session-mode-switch。 |
 | [B_20261119_2249_deep-adapter-sync-build](jiuwenswarm/server/runtime/agent_adapter/B_20261119_2249_deep-adapter-sync-build.md) | B | DeepAdapter 冷启动同步构建阻塞事件循环 | yangzequ | 无独立 D：本次是对现有 DeepAdapter 创建链路的局部阻塞修复，无独立设计文档。 |
 
 <a id="module-jiuwenswarm-server-runtime-marketplace"></a>

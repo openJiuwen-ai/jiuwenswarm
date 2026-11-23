@@ -267,7 +267,9 @@ generated: true
 | [D-20261111-1722-team-goal-config](designs/active/D-20261111-1722-team-goal-config/design.md) | D | Swarm 团队 Goal 配置接入方案 | alan_cheng | — |
 | [F_20261104_1225_npc-team-member-sessions](features/F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
 | [F_20261111_1755_team-leader-goal](features/F_20261111_1755_team-leader-goal.md) | F | 调度模式领导目标驱动设置实施与验证 | alan_cheng | [D-20261111-1722-team-goal-config](designs/active/D-20261111-1722-team-goal-config/design.md) |
+| [F_20261116_1710_web-session-mode-switch](features/F_20261116_1710_web-session-mode-switch.md) | F | Web 会话内模式切换（mode.set / mode.get） | Yanqing-Shi | 无独立 D：无独立 D。本次在服务端新增 mode.set / mode.get，只受理 Web 通道，方案在开发会话中与用户确认，未单独立项设计。 |
 | [B_20261112_1405_stop-btn-stuck-after-skip](bugfix/jiuwenswarm/B_20261112_1405_stop-btn-stuck-after-skip.md) | B | 集群模式跳过后停止按钮永久卡死：interrupt 收尾窗口护栏 | xiajing | 无独立 D：依据现场日志与轨迹定位，无独立设计文档；修复范围限定前端状态机护栏，并补后端判据不变量测试。 |
+| [B_20261117_0452_team-attach-subscription-inflight](bugfix/jiuwenswarm/server/B_20261117_0452_team-attach-subscription-inflight.md) | B | Team 旁听订阅被记为在途请求，导致会话一直忙碌、无法从 Team 切回 Agent | 待确认 | 无独立 D：修复既有忙碌判定对旁听订阅的误判，不改变 mode.set 与归档的契约，无独立设计。关联实施记录见 F_20261116_1710_web-session-mode-switch。 |
 | [S_01_team-goal-config](specs/jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 
@@ -351,6 +353,7 @@ generated: true
 | [F_20261103_1124_sdk-web-retrieval](features/F_20261103_1124_sdk-web-retrieval.md) | F | 接入 SDK Web 质量控制与检索预算 | ShowHsiang | 无独立 D：用户在对话中确认实际搜索案例分析后的调整策略，无独立设计文档。 |
 | [F_20261103_1149_builtin-skill-catalog](features/builtin-skill-catalog.md) | F | 内置能力总目录实施记录 | kdgmpw | [D-20261103-1123-builtin-skill-catalog](designs/active/D-20261103-1123-builtin-skill-catalog/design.md) |
 | [F_20261110_1438_opencode-go-provider](features/F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
+| [F_20261116_1710_web-session-mode-switch](features/F_20261116_1710_web-session-mode-switch.md) | F | Web 会话内模式切换（mode.set / mode.get） | Yanqing-Shi | 无独立 D：无独立 D。本次在服务端新增 mode.set / mode.get，只受理 Web 通道，方案在开发会话中与用户确认，未单独立项设计。 |
 | [F_20261117_1752_colleague-swarmchat](features/F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
 | [F_20261119_1039_app-hub](features/F_20261119_1039_app-hub.md) | F | Hub 应用分发与本地安装实施 | kdgmpw | 无独立 D：设计输入为仓库外部的《App Hub 应用资产方案设计》与《App Hub 双仓实施方案》，未在 .agents/agent-docs/designs 建立 D 记录。 |
 | [B_20261030_1250_org-snapshot-removes-mirrored-workers](bugfix/jiuwenswarm/channels/web/frontend/B_20261030_1250_org-snapshot-removes-mirrored-workers.md) | B | 组织 UI 快照投影整表覆盖导致镜像 workflow worker 从成员面板消失 | xiajing | 无独立 D：对既有"快照完整替换"契约（跨 Team 切换不串数据）的成员级例外修复，属 F_20261027_1026 特性线的验证期 bugfix，无独立设计文档。 |
@@ -363,6 +366,7 @@ generated: true
 | [B_20261116_1652_cli-auth-effect-loop](bugfix/jiuwenswarm/channels/web/B_20261116_1652_cli-auth-effect-loop.md) | B | CLI MCP 授权因父级重渲染重复开窗和请求 | TwZhang | 无独立 D：用户明确授权修复现有 CLI 授权生命周期缺陷，无独立设计。 |
 | [B_20261116_1701_my-plugin-installed-only](bugfix/jiuwenswarm/server/runtime/B_20261116_1701_my-plugin-installed-only.md) | B | 未安装插件草稿混入我的扩展并显示安装按钮 | lizhiyuan | 无独立 D：用户在本次对话明确确认插件列表归属及按钮策略，属于现有市场行为的小范围修复，无独立设计文档。 |
 | [B_20261117_1522_team-plan-toggle-lock](bugfix/jiuwenswarm/B_20261117_1522_team-plan-toggle-lock.md) | B | 集群会话计划模式开关是假开关：建队后冻结并让位动态工作流 | chenchunzhou | 无独立 D：由 issue 6361 现象逆向定位，无独立设计文档；方案与取舍记录在 OpenSpec 变更 issue-6361-team-plan-toggle-lock 的 proposal/design/specs，修复范围限定 Web 前端开关闸门与提示文案。 |
+| [B_20261118_0611_session-mode-switch-retry-and-draft](bugfix/jiuwenswarm/channels/web/B_20261118_0611_session-mode-switch-retry-and-draft.md) | B | Web 会话内模式切换：重试遇忙核对模式，失败不清空已选技能 | Yanqing-Shi | 无独立 D：共享会话检视（2026-11-17）的两个 P2 问题；实现见 F_20261116_1710_web-session-mode-switch，无独立 D。 |
 | [B_20261118_1055_worker-close-after-final-error](bugfix/jiuwenswarm/channels/web/frontend/B_20261118_1055_worker-close-after-final-error.md) | B | 任务正常收尾后 worker 关闭被渲染为对话错误 | openjiuwen_ai | 无独立 D：只在 Web 前端区分「本轮已收尾」与「处理中失败」，不改 supervisor/gateway 的错误码与生命周期协议；无独立设计。 |
 | [B_20261118_1527_session-delete-plan-runtime](bugfix/jiuwenswarm/channels/web/frontend/B_20261118_1527_session-delete-plan-runtime.md) | B | 侧边栏删除会话漏清 planStore runtime，Plan 模式状态在内存永久残留 | gunner_beat | 无独立 D：会话生命周期清理的一致性补齐，复用 usePlanStore 既有 removeRuntime，无独立设计文档。缺陷检视清单 |
 | [B_20261119_1039_video-memory-submit-pending](bugfix/jiuwenswarm/channels/web/frontend/B_20261119_1039_video-memory-submit-pending.md) | B | 视频记忆任务 pending 导致提交工具持续执行中 | ToNy_St4rk | 无独立 D：现有工具结果状态的局部修复，无独立设计。 |
@@ -441,6 +445,7 @@ generated: true
 | [F_20261110_2026_affinity-settings](features/F_20261110_2026_affinity-settings.md) | F | 实验功能算力亲和开关与自定义模型能力接入 | MengHan18 | 无独立 D：外部初始方案为 docs_HM_kvc/E前端开关打开/01 和 02；全局准入和交互按用户确认的 04 小白版文档替代，无仓库内 D 标识。 |
 | [F_20261111_1528_unified-observability-config](features/F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
 | [F_20261111_1755_team-leader-goal](features/F_20261111_1755_team-leader-goal.md) | F | 调度模式领导目标驱动设置实施与验证 | alan_cheng | [D-20261111-1722-team-goal-config](designs/active/D-20261111-1722-team-goal-config/design.md) |
+| [F_20261116_1710_web-session-mode-switch](features/F_20261116_1710_web-session-mode-switch.md) | F | Web 会话内模式切换（mode.set / mode.get） | Yanqing-Shi | 无独立 D：无独立 D。本次在服务端新增 mode.set / mode.get，只受理 Web 通道，方案在开发会话中与用户确认，未单独立项设计。 |
 | [F_20261119_1624_beta3-extensions-develop-port](features/F_20261119_1624_beta3-extensions-develop-port.md) | F | beta3 扩展能力线性迁入 develop | lizhiyuan | 无独立 D：按用户明确确认的逐笔迁移、保留 develop 行为和 Gateway 跨仓边界执行；本次没有另立设计，原扩展契约沿用模块内规约。 |
 | [B_20261103_1636_builtin-catalog-upgrade](bugfix/jiuwenswarm/server/runtime/skill/builtin-catalog-upgrade.md) | B | 旧内置技能未归一与应用市场入口不明显 | kdgmpw | [D-20261103-1123-builtin-skill-catalog](designs/active/D-20261103-1123-builtin-skill-catalog/design.md) |
 | [B_20261112_1716_affinity-status-read](bugfix/jiuwenswarm/server/control/B_20261112_1716_affinity-status-read.md) | B | 控制面遗漏亲和状态导致开关与说明不一致 | MengHan18 | 无独立 D：修复 F_20261110_2026_affinity-settings 的读入口遗漏及用户反馈的开启交互。 |
@@ -587,6 +592,8 @@ generated: true
 | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) | D | NPC 主从会话与按需搜索工具 | kdgmpw | — |
 | [F_20261103_1501_app-role-session](features/app-role-session.md) | F | 保留基础系统提示的轻量 NPC 会话 | kdgmpw | [D-20261103-1444-app-role-session](designs/active/D-20261103-1444-app-role-session/design.md) |
 | [F_20261104_1225_npc-team-member-sessions](features/F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
+| [F_20261116_1710_web-session-mode-switch](features/F_20261116_1710_web-session-mode-switch.md) | F | Web 会话内模式切换（mode.set / mode.get） | Yanqing-Shi | 无独立 D：无独立 D。本次在服务端新增 mode.set / mode.get，只受理 Web 通道，方案在开发会话中与用户确认，未单独立项设计。 |
+| [B_20261117_0452_team-attach-subscription-inflight](bugfix/jiuwenswarm/server/B_20261117_0452_team-attach-subscription-inflight.md) | B | Team 旁听订阅被记为在途请求，导致会话一直忙碌、无法从 Team 切回 Agent | 待确认 | 无独立 D：修复既有忙碌判定对旁听订阅的误判，不改变 mode.set 与归档的契约，无独立设计。关联实施记录见 F_20261116_1710_web-session-mode-switch。 |
 | [B_20261120_0927_unknown-answer-source-hang](bugfix/jiuwenswarm/runtime/B_20261120_0927_unknown-answer-source-hang.md) | B | 未知 source 的 answers 请求在团队会话中排队死锁、无终止帧 | openjiuwen_ai | 无独立 D：仅收紧既有 chat.send answers 校验的适用条件，不改变交互恢复协议、source 白名单与会话 lane 语义；无独立设计。 |
 | [S_02_app-role-npc-team](specs/jiuwenswarm/server/runtime/agent_adapter/S_02_app-role-npc-team.md) | S | app_role 的团队 NPC 与轻量咨询契约 | kdgmpw | — |
 
@@ -598,6 +605,7 @@ generated: true
 |---|---|---|---|---|
 | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) | D | NPC 主从会话与按需搜索工具 | kdgmpw | — |
 | [F_20261104_1225_npc-team-member-sessions](features/F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
+| [F_20261116_1710_web-session-mode-switch](features/F_20261116_1710_web-session-mode-switch.md) | F | Web 会话内模式切换（mode.set / mode.get） | Yanqing-Shi | 无独立 D：无独立 D。本次在服务端新增 mode.set / mode.get，只受理 Web 通道，方案在开发会话中与用户确认，未单独立项设计。 |
 | [F_20261119_1624_beta3-extensions-develop-port](features/F_20261119_1624_beta3-extensions-develop-port.md) | F | beta3 扩展能力线性迁入 develop | lizhiyuan | 无独立 D：按用户明确确认的逐笔迁移、保留 develop 行为和 Gateway 跨仓边界执行；本次没有另立设计，原扩展契约沿用模块内规约。 |
 | [B_20261029_0927_missing-supervisor-entry](bugfix/jiuwenswarm/server/B_20261029_0927_missing-supervisor-entry.md) | B | 重启 AgentServer 时缺少 supervisor 启动函数 | xinyang_bali | 无独立 D：用户请求重启时发现当前工作区入口不完整，恢复既有 Front/Worker 启动契约。 |
 | [B_20261031_1042_pr9317-review](bugfix/jiuwenswarm/server/B_20261031_1042_pr9317-review.md) | B | PR 9317 插件模式校验与 Front 遗留启动链清理 | xinyang_bali | 无独立 D：根据 openJiuwen-bot 检视意见清理现有实现，不引入新接口或架构方案，无独立 D。 |
@@ -672,6 +680,7 @@ generated: true
 | [B_20261031_1042_pr9317-review](bugfix/jiuwenswarm/server/B_20261031_1042_pr9317-review.md) | B | PR 9317 插件模式校验与 Front 遗留启动链清理 | xinyang_bali | 无独立 D：根据 openJiuwen-bot 检视意见清理现有实现，不引入新接口或架构方案，无独立 D。 |
 | [B_20261031_1053_atomgit-review](bugfix/jiuwenswarm/server/B_20261031_1053_atomgit-review.md) | B | PR 9317 AtomGit 取消、补丁兼容与注销恢复修复 | xinyang_bali | 无独立 D：根据机器人检视修复现有资源生命周期和可选补丁边界，不引入独立方案。 |
 | [B_20261106_1132_organization-round-cleanup](bugfix/jiuwenswarm/agents/swarm/B_20261106_1132_organization-round-cleanup.md) | B | 组织回合澄清等待、失败尝试与初次建卡取消的收尾修复 | “ZhangRan-Zora | 无独立 D：按 PR 9636 三条检视意见修复既有组织生命周期边界，无独立设计。 |
+| [B_20261117_0452_team-attach-subscription-inflight](bugfix/jiuwenswarm/server/B_20261117_0452_team-attach-subscription-inflight.md) | B | Team 旁听订阅被记为在途请求，导致会话一直忙碌、无法从 Team 切回 Agent | 待确认 | 无独立 D：修复既有忙碌判定对旁听订阅的误判，不改变 mode.set 与归档的契约，无独立设计。关联实施记录见 F_20261116_1710_web-session-mode-switch。 |
 | [B_20261119_2249_deep-adapter-sync-build](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261119_2249_deep-adapter-sync-build.md) | B | DeepAdapter 冷启动同步构建阻塞事件循环 | yangzequ | 无独立 D：本次是对现有 DeepAdapter 创建链路的局部阻塞修复，无独立设计文档。 |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_team-goal-config](specs/jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
@@ -688,8 +697,8 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F_20261119_1039_app-hub](features/F_20261119_1039_app-hub.md) | F | Hub 应用分发与本地安装实施 | kdgmpw | 无独立 D：设计输入为仓库外部的《App Hub 应用资产方案设计》与《App Hub 双仓实施方案》，未在 .agents/agent-docs/designs 建立 D 记录。 |
-| [S_03_app-hub-distribution](specs/jiuwenswarm/extensions/app_market/S_03_app-hub-distribution.md) | S | Hub 应用分发与本地安装契约 | kdgmpw | — |
 | [B_20261116_2059_hub-package-root](bugfix/jiuwenswarm/server/runtime/B_20261116_2059_hub-package-root.md) | B | Hub 安装把包内子资产 manifest 误判为多个包根 | openjiuwen_ai | 无独立 D：仅修正包根识别的深度判定，不改变 Hub 包格式、安装状态机与 marketplace 契约；无独立设计。 |
+| [S_03_app-hub-distribution](specs/jiuwenswarm/extensions/app_market/S_03_app-hub-distribution.md) | S | Hub 应用分发与本地安装契约 | kdgmpw | — |
 
 <a id="module-jiuwenswarm-server-runtime-session"></a>
 

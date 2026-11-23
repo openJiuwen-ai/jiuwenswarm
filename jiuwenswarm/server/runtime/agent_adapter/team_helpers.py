@@ -3640,6 +3640,7 @@ async def _process_team_message_stream_locked(
     session_id = request.session_id or "default"
     request_id = str(request.request_id or "")
     from jiuwenswarm.runtime.session.model import (
+        TEAM_ATTACH_ONLY_PARAM,
         TEAM_EXECUTION_CONTEXT_METADATA_KEY,
         TeamExecutionContext,
     )
@@ -3663,7 +3664,12 @@ async def _process_team_message_stream_locked(
     # （round 之前的 spec 组装 / 运行时激活等准备阶段也要覆盖）。
     begin_request = getattr(team_manager, "begin_request", None)
     end_request = getattr(team_manager, "end_request", None)
-    if callable(begin_request):
+    # An attach-only subscription submits no input and never owns a round, so
+    # it is not an in-flight turn. Marking it would keep the Session busy for
+    # as long as the observer stays connected.
+    request_params = request.params if isinstance(request.params, dict) else {}
+    attach_only = request_params.get(TEAM_ATTACH_ONLY_PARAM) is True
+    if callable(begin_request) and not attach_only:
         begin_request(session_id, request_id, generation=generation)
     execution_ids = []
     submitted = False
