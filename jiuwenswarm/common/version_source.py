@@ -35,6 +35,12 @@ PYPI_VERSION_JSON_API = "https://pypi.org/pypi/{package}/{version}/json"
 #: returns an empty timestamp, keeping the release info already resolved.
 PYPI_PUBLISH_TIME_TOTAL_TIMEOUT_SECONDS = 10.0
 
+#: Number of attempts for transient network errors (timeout, connection
+#: reset) before giving up.  Each attempt uses the full request timeout,
+#: so the worst-case wall-clock time is ``retries × timeout``.
+_FETCH_RETRY_ATTEMPTS = 2
+_FETCH_RETRY_DELAY_SECONDS = 0.5
+
 # Matches pre-release markers: 0.2.0-beta1, 0.2.0.beta.1, 0.2.0alpha, 0.2.0rc2, 0.2.0.dev0, etc.
 _PRERELEASE_PATTERN = re.compile(
     r"\d[.\-_]?(?:alpha|beta|rc|dev|pre|a|b)(?:\.?\d+)?(?:\b|$)",
@@ -360,20 +366,26 @@ class VersionSource(ABC):
         return json.loads(self._fetch_text(url, headers))
 
     def _fetch_text(self, url: str, headers: dict[str, str] | None = None) -> str:
-        request = Request(url, headers=headers or {})
-        try:
-            with urlopen(request, timeout=self._timeout) as response:
-                return response.read().decode("utf-8")
-        except HTTPError as exc:
-            raise RuntimeError(f"HTTP {exc.code} when requesting {url}") from exc
-        except socket.timeout as exc:
+        last_exc: Exception | None = None
+        for attempt in range(_FETCH_RETRY_ATTEMPTS):
+            request = Request(url, headers=headers or {})
+            try:
+                with urlopen(request, timeout=self._timeout) as response:
+                    return response.read().decode("utf-8")
+            except HTTPError as exc:
+                raise RuntimeError(f"HTTP {exc.code} when requesting {url}") from exc
+            except (socket.timeout, URLError) as exc:
+                last_exc = exc
+                if attempt < _FETCH_RETRY_ATTEMPTS - 1:
+                    time.sleep(_FETCH_RETRY_DELAY_SECONDS)
+                    continue
+        if isinstance(last_exc, socket.timeout):
             raise RuntimeError(
                 f"Timeout ({self._timeout}s) when requesting {url}"
-            ) from exc
-        except URLError as exc:
-            raise RuntimeError(
-                f"Network error when requesting {url}: {exc.reason}"
-            ) from exc
+            ) from last_exc
+        raise RuntimeError(
+            f"Network error when requesting {url}: {last_exc.reason}"
+        ) from last_exc
 
 
 class GitHubReleasesSource(VersionSource):

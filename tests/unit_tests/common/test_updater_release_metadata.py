@@ -239,3 +239,91 @@ def test_publish_time_gives_up_within_budget_when_upstream_hangs(monkeypatch):
     assert release.version == "1.2.3"
     assert release.assets[0].name == "workswarm-1.2.3-py3-none-any.whl"
     assert elapsed < 1.0
+
+
+@pytest.mark.parametrize("uv_command,index_flag", [(None, "-i"), ("uv", "--index-url")])
+@pytest.mark.parametrize(
+    "mirror,expected_index",
+    [
+        # Legacy configs saved by older builds must be migrated at the final
+        # pip boundary even when they bypass UpdaterService._load_config
+        # (issue 6288).
+        ("https://mirrors.aliyun.com/pypi", "https://mirrors.aliyun.com/pypi/simple/"),
+        ("https://mirrors.aliyun.com/pypi/", "https://mirrors.aliyun.com/pypi/simple/"),
+        # Explicit index URLs and empty mirrors keep their current semantics.
+        (
+            "https://pypi.tuna.tsinghua.edu.cn/simple",
+            "https://pypi.tuna.tsinghua.edu.cn/simple",
+        ),
+        ("", ""),
+    ],
+)
+def test_install_args_normalize_legacy_mirror_at_pip_boundary(
+    monkeypatch, uv_command, index_flag, mirror, expected_index
+):
+    monkeypatch.setattr(
+        upgrade_executor.PipExecutor, "_resolve_uv_command", staticmethod(lambda: uv_command)
+    )
+    executor = upgrade_executor.PipExecutor({"pypi_mirror": mirror}, lambda updates: None)
+    args = executor._build_install_args("workswarm", 20)
+
+    assert "workswarm" in args
+    if expected_index:
+        assert args[args.index(index_flag) + 1] == expected_index
+    else:
+        assert index_flag not in args
+
+
+def test_fetch_text_retries_transient_timeout(monkeypatch):
+    """_fetch_text retries transient timeout errors before giving up.
+
+    Regression test for issue #6950: the GitCode release API occasionally
+    times out on the first request.  A single retry gives the endpoint a
+    second chance instead of surfacing the error immediately.
+    """
+    call_count = 0
+
+    def fake_urlopen(request, timeout):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            raise version_source.URLError(
+                version_source.socket.timeout("timed out")
+            )
+        return JsonResponse({"tag_name": "v1.2.3"})
+
+    monkeypatch.setattr(version_source, "urlopen", fake_urlopen)
+    monkeypatch.setattr(version_source, "_FETCH_RETRY_DELAY_SECONDS", 0.01)
+
+    source = version_source.GitCodeReleasesSource(
+        owner="openJiuwen",
+        repo="jiuwenswarm",
+        timeout_seconds=5,
+    )
+    result = source._fetch_json("https://example.test/api")  # pylint: disable=protected-access
+    assert call_count == 2
+    assert result == {"tag_name": "v1.2.3"}
+
+
+def test_fetch_text_gives_up_after_retries(monkeypatch):
+    """_fetch_text gives up after exhausting retries on persistent timeout."""
+    call_count = 0
+
+    def fake_urlopen(request, timeout):
+        nonlocal call_count
+        call_count += 1
+        raise version_source.URLError(
+            version_source.socket.timeout("timed out")
+        )
+
+    monkeypatch.setattr(version_source, "urlopen", fake_urlopen)
+    monkeypatch.setattr(version_source, "_FETCH_RETRY_DELAY_SECONDS", 0.01)
+
+    source = version_source.GitCodeReleasesSource(
+        owner="openJiuwen",
+        repo="jiuwenswarm",
+        timeout_seconds=5,
+    )
+    with pytest.raises(RuntimeError, match="Network error"):
+        source._fetch_text("https://example.test/api")  # pylint: disable=protected-access
+    assert call_count == version_source._FETCH_RETRY_ATTEMPTS
