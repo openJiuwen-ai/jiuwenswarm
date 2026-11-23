@@ -1012,6 +1012,40 @@ def test_reload_resyncs_todo_disabled_tools_after_disabled_rail_rebuild(monkeypa
 
 
 # ---------------------------------------------------------------------------
+# 评审 #1/#3：flash 配置热更新改为每轮 config_provider 现读；fallback 目录兜底
+# ---------------------------------------------------------------------------
+
+
+def test_read_fallback_skills_filters_disabled():
+    """fallback 目录来自实际加载技能，并过滤 list_execution_disabled_skills（评审 #3）。"""
+    adapter = object.__new__(JiuwenSwarmFlashAdapter)
+    adapter._skill_rail = SimpleNamespace(
+        skills_meta=[
+            SimpleNamespace(name="a", description="A"),
+            SimpleNamespace(name="b", description="B"),
+        ],
+    )
+    adapter._skill_manager = SimpleNamespace(list_execution_disabled_skills=lambda: {"b"})
+
+    assert adapter._read_fallback_skills() == [("a", "A")]
+
+
+def test_read_fallback_skills_empty_without_skill_rail():
+    adapter = object.__new__(JiuwenSwarmFlashAdapter)
+    adapter._skill_rail = None
+    adapter._skill_manager = None
+
+    assert adapter._read_fallback_skills() == []
+
+
+def test_read_disabled_tools_from_config_cache():
+    adapter = object.__new__(JiuwenSwarmFlashAdapter)
+    adapter._config_cache = {"disabled_tools": ["todo", "bash"]}
+
+    assert adapter._read_disabled_tools() == ["todo", "bash"]
+
+
+# ---------------------------------------------------------------------------
 # #3a resolve_agent_request_mode: flash injection / direct dispatch
 # ---------------------------------------------------------------------------
 

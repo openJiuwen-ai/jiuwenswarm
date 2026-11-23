@@ -30,6 +30,10 @@ from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.rails.base import DeepAgentRail
 
+from jiuwenswarm.agents.harness.common.rails.skill_protocol_prompt_rail import (
+    _strip_todo_rules,
+)
+
 logger = logging.getLogger(__name__)
 
 _SKILL_PROTOCOL_SECTION_NAME = "skill_protocol"
@@ -71,10 +75,21 @@ class FlashSkillProtocolRail(DeepAgentRail):
     priority = 3
     inherit_to_subagents = False
 
-    def __init__(self) -> None:
+    def __init__(self, disabled_tools_provider: Any = None) -> None:
         super().__init__()
         self._system_prompt_builder: Any = None
         self._warned_guard_miss = False
+        self._disabled_tools_provider = disabled_tools_provider
+
+    def _todo_disabled(self) -> bool:
+        """每轮现读禁用工具集，判断 todo 是否被禁（provider 缺省时 false，保持旧行为）。"""
+        provider = self._disabled_tools_provider
+        if provider is None:
+            return False
+        try:
+            return "todo" in set(provider() or ())
+        except Exception:
+            return False
 
     def init(self, agent: Any) -> None:
         self._system_prompt_builder = getattr(agent, "system_prompt_builder", None)
@@ -98,6 +113,7 @@ class FlashSkillProtocolRail(DeepAgentRail):
         if not isinstance(content, dict):
             return
 
+        todo_disabled = self._todo_disabled()
         rewritten_content: dict[str, str] = {}
         changed = False
         guard_miss = False
@@ -105,7 +121,13 @@ class FlashSkillProtocolRail(DeepAgentRail):
             if not isinstance(text, str):
                 rewritten_content[lang] = text
                 continue
-            new_text = _rewrite_todo_names(text)
+            lang_key = "cn" if lang in ("cn", "zh") else "en"
+            if todo_disabled:
+                # todo 被禁：删掉「必须使用 todo」整条并中和规则 9 残留 todo 引用，
+                # 而非只改工具名（评审 #2）。守卫未命中返回 None → 保留原段。
+                new_text = _strip_todo_rules(text, lang_key)
+            else:
+                new_text = _rewrite_todo_names(text)
             if new_text is None:
                 guard_miss = True
                 rewritten_content[lang] = text
@@ -114,11 +136,11 @@ class FlashSkillProtocolRail(DeepAgentRail):
                 changed = changed or (new_text != text)
 
         if guard_miss and not self._warned_guard_miss:
-            # 上游已移除旧 todo 工具名（或改文案）：保留原段、不改写，且只告警一次。
+            # 上游已移除旧 todo 工具名/规则 2 锚点缺失（或改文案）：保留原段、不改写，且只告警一次。
             self._warned_guard_miss = True
             logger.warning(
-                "[FlashSkillProtocolRail] %s 正文已无 todo_create/todo_modify "
-                "旧工具名，守卫未命中——保留原段（上游文案已变，需确认是否已适配 flash 统一 todo）",
+                "[FlashSkillProtocolRail] %s 正文守卫未命中（todo_create/todo_modify 已不存在，"
+                "或「必须使用 todo」锚点缺失）——保留原段，需确认是否已适配 flash 统一 todo / todo 禁用",
                 name,
             )
         if not changed:

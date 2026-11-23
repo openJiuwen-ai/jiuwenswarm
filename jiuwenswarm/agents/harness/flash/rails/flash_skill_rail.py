@@ -11,9 +11,10 @@
 - 730 技能执行规范（执行纪律 9 条；取自 skill_protocol 段抽取，⚠️ 并入第 9 条）
 - 740 技能清单（manifest.yaml 启用集：名称 + 一句话描述，~5k）
 
-740 数据源 = relay 技能仓 ``relay_claw/office-claw-skills/manifest.yaml`` 的
-``default_enabled: true`` 条目（部署侧 /opt/officeace/office-claw-skills/，只读，
-不改 relay）。清单是唯一常驻技能索引；未列出的技能走 ``search_skill`` 检索。
+740 数据源 = manifest.yaml 的 ``default_enabled: true`` 条目（部署侧 relay 技能仓，
+只读、不改 relay）。manifest 缺失/解析失败时回退到实际已加载且允许执行的技能
+（``fallback_skills_provider``），并把 manifest 未覆盖的本地技能合并进清单，避免私有
+技能随接管消失；两者皆空时才提示走 ``search_skill`` 检索。
 
 750 加速通道（skill_turbo_guide）由 FlashTurboPromptRail 注入、FlashSectionOrderRail
 收口到 750；shared ``skill_protocol`` 段在 flash 技能域接管成功后被收口器剥除
@@ -282,6 +283,9 @@ class FlashSkillRail(DeepAgentRail):
         skills_dirs: Optional[list[str]] = None,
         catalog_description_max_length: int = _DEFAULT_DESCRIPTION_MAX_LENGTH,
         catalog_max_entries: int = _DEFAULT_MAX_ENTRIES,
+        disabled_tools_provider: Any = None,
+        fallback_skills_provider: Any = None,
+        config_provider: Any = None,
     ) -> None:
         super().__init__()
         self._manifest_path = Path(manifest_path) if manifest_path else None
@@ -292,6 +296,9 @@ class FlashSkillRail(DeepAgentRail):
             raise ValueError("skill-catalog: catalog_max_entries 必须 >= 1")
         self._description_max_length = catalog_description_max_length
         self._max_entries = catalog_max_entries
+        self._disabled_tools_provider = disabled_tools_provider
+        self._fallback_skills_provider = fallback_skills_provider
+        self._config_provider = config_provider
 
         self._system_prompt_builder: Any = None
         # 缓存清单路径与解析结果；manifest 属于部署配置，会话内不变。解析结果按
@@ -300,6 +307,17 @@ class FlashSkillRail(DeepAgentRail):
         self._manifest_missing: bool = False
         self._enabled_cache: Optional[tuple[tuple[int, int], list[tuple[str, str]]]] = None
         self._warned_extract_miss = False
+
+    def _enabled_by_config(self) -> bool:
+        """每轮现读 flash.skill_catalog.enabled（热重载同步）。provider 缺省时默认启用。"""
+        provider = self._config_provider
+        if provider is None:
+            return True
+        try:
+            config = provider()
+        except Exception:
+            return True
+        return bool(config.get("enabled", True)) if isinstance(config, dict) else True
 
     def init(self, agent: Any) -> None:
         self._system_prompt_builder = getattr(agent, "system_prompt_builder", None)
@@ -313,16 +331,39 @@ class FlashSkillRail(DeepAgentRail):
             return
         self._system_prompt_builder = builder
 
+        if not self._enabled_by_config():
+            # 禁用：撤下本 rail 注入的 700–740 五段、不再删原生 skills 段。
+            for name in (
+                _SECTION_OVERVIEW,
+                _SECTION_LOADING,
+                _SECTION_CHOICE,
+                _SECTION_EXECUTION,
+                _SECTION_CATALOG,
+            ):
+                builder.remove_section(name)
+            return
+
         language = self._resolve_language()
+        todo_disabled = self._todo_disabled()
         manifest = self._resolve_manifest()
-        enabled: list[tuple[str, str]] | None = None
+        manifest_entries: list[tuple[str, str]] | None = None
         if manifest is not None:
-            enabled = self._load_enabled_skills_cached(manifest)
-            if enabled is None:
+            manifest_entries = self._load_enabled_skills_cached(manifest)
+            if manifest_entries is None:
                 logger.warning(
-                    "FlashSkillRail: manifest 解析失败（%s），注入空技能清单",
+                    "FlashSkillRail: manifest 解析失败（%s），回退本地已加载技能生成清单",
                     manifest,
                 )
+
+        # 评审 #3：manifest 缺失/解析失败时用实际已加载技能兜底；manifest 存在但
+        # 未覆盖的本地技能合并进清单，避免私有技能随接管消失。
+        fallback = self._fallback_skills()
+        if manifest_entries is None:
+            enabled = fallback if fallback else None
+        else:
+            names = {n for n, _ in manifest_entries}
+            extra = [(n, d) for n, d in fallback if n not in names]
+            enabled = list(manifest_entries) + extra
 
         # 撤下原生全量 skills 段（SkillUseRail 本轮已重建）。原生段在无技能命中时
         # 提示「用 read_file 读 SKILL.md」，与 skill_protocol「禁止 read_file、只走
@@ -336,14 +377,14 @@ class FlashSkillRail(DeepAgentRail):
         # 避免「H1 段顶 → H3 子块」跳级；收口器统一重锚 H2 后即为「## 加载 → ### 子块」。
         loading_base = _LOADING_CN if language == "cn" else _LOADING_EN
         loading_extra = _extract_loading_blocks(
-            _build_skill_protocol_section_text(language), language,
+            _build_skill_protocol_section_text(language, todo_disabled=todo_disabled), language,
         )
         if loading_extra is not None:
             loading_extra = _promote_h3_to_h2(loading_extra)
 
         # 730 技能执行规范：9 条执行纪律（⚠️ 已并入第 9 条）。
         execution_rules = _extract_execution_rules(
-            _build_skill_protocol_section_text(language), language,
+            _build_skill_protocol_section_text(language, todo_disabled=todo_disabled), language,
         )
 
         if (loading_extra is None or execution_rules is None) and not self._warned_extract_miss:
@@ -436,6 +477,30 @@ class FlashSkillRail(DeepAgentRail):
     def _resolve_language(self) -> str:
         lang = getattr(self._system_prompt_builder, "language", None) or "cn"
         return "cn" if lang in ("cn", "zh") else "en"
+
+    def _todo_disabled(self) -> bool:
+        """每轮现读禁用工具集，判断 todo 是否被禁（决定 730 是否去掉「必须使用 todo」）。"""
+        provider = self._disabled_tools_provider
+        if provider is None:
+            return False
+        try:
+            return "todo" in set(provider() or ())
+        except Exception:
+            return False
+
+    def _fallback_skills(self) -> list[tuple[str, str]]:
+        """从 fallback provider 取实际已加载技能 (name, description)（评审 #3）。"""
+        provider = self._fallback_skills_provider
+        if provider is None:
+            return []
+        try:
+            result = provider()
+        except Exception as exc:
+            logger.warning("[FlashSkillRail] fallback skills provider failed: %s", exc)
+            return []
+        if not result:
+            return []
+        return [(str(n), str(d or "")) for n, d in result]
 
     def _render_catalog(self, enabled: list[tuple[str, str]] | None, language: str) -> str:
         header = (

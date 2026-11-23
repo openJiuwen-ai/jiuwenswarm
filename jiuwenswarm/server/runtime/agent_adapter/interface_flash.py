@@ -143,7 +143,6 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _DEFAULT_PROGRESSIVE_EAGER_TOOLS,
     _RailBuildInfo,
     _build_context_assemble_rail,
-    _build_skill_protocol_prompt_rail,
     _resolve_instance_config_base,
     acp_chat,
     create_vision_tools,
@@ -970,7 +969,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         # 与 430「todo 纪律」段的两套工具名冲突会复现。
         rail_infos.append(_RailBuildInfo(
             "_skill_protocol_prompt_rail",
-            _build_skill_protocol_prompt_rail,
+            self._build_flash_skill_protocol_prompt_rail,
         ))
         rails = super()._instantiate_rails(rail_infos, config_base)
         selection = self._build_flash_skill_selection_rail(config_base)
@@ -1069,6 +1068,59 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
         ).hexdigest()
 
+    def _read_disabled_tools(self) -> list[str]:
+        """每轮现读 react.disabled_tools（供各 rail 判断 todo 是否被禁，评审 #2）。"""
+        try:
+            return resolve_string_or_list_config(
+                (self._config_cache or {}).get("disabled_tools")
+            )
+        except Exception as exc:
+            logger.warning("[FlashAdapter] ignore malformed disabled_tools: %s", exc)
+            return []
+
+    def _read_fallback_skills(self) -> list[tuple[str, str]]:
+        """实际已加载且允许执行的技能清单，供 manifest 缺失时兜底（评审 #3）。"""
+        skill_rail = self._skill_rail
+        if skill_rail is None:
+            return []
+        try:
+            metas = skill_rail.skills_meta
+        except Exception as exc:
+            logger.warning("[FlashAdapter] skills_meta read failed: %s", exc)
+            return []
+        disabled: set[str] = set()
+        try:
+            if self._skill_manager is not None:
+                disabled = set(self._skill_manager.list_execution_disabled_skills())
+        except Exception:
+            pass
+        out: list[tuple[str, str]] = []
+        for meta in (metas or []):
+            name = getattr(meta, "name", None)
+            if not name or str(name) in disabled:
+                continue
+            desc = getattr(meta, "description", None)
+            out.append((str(name), str(desc or "")))
+        return out
+
+    def _build_flash_skill_protocol_prompt_rail(self) -> Any | None:
+        """flash 侧装配技能执行规范段，注入 disabled_tools provider（评审 #2）。"""
+        try:
+            from jiuwenswarm.agents.harness.common.rails.skill_protocol_prompt_rail import (
+                SkillProtocolPromptRail,
+            )
+
+            return SkillProtocolPromptRail(
+                disabled_tools_provider=self._read_disabled_tools,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[FlashAdapter] SkillProtocolPromptRail create failed: %s",
+                exc,
+                exc_info=True,
+            )
+            return None
+
     def _build_flash_prompt_composer_rail(self) -> Any | None:
         """Build the single static text-composition entry for Flash.
 
@@ -1137,53 +1189,33 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                 FlashSkillProtocolRail,
             )
 
-            return FlashSkillProtocolRail()
+            return FlashSkillProtocolRail(
+                disabled_tools_provider=self._read_disabled_tools,
+            )
         except Exception as exc:
             logger.warning("[FlashAdapter] FlashSkillProtocolRail create failed: %s", exc, exc_info=True)
             return None
 
     def _build_flash_repeat_call_guard_rail(self) -> Any | None:
-        """重复调用守卫：attachment 只提醒不否决。配置 flash.repeat_call_guard。"""
+        """重复调用守卫：attachment 只提醒不否决（flash.repeat_call_guard，每轮现读）。"""
         try:
-            guard_config = self._flash_config("repeat_call_guard", {})
-            if not isinstance(guard_config, dict):
-                guard_config = {}
-            if not guard_config.get("enabled", True):
-                return None
             from jiuwenswarm.agents.harness.flash.rails.flash_repeat_call_guard_rail import (
                 FlashRepeatCallGuardRail,
             )
 
-            thresholds = guard_config.get("thresholds")
-            kwargs: dict[str, Any] = {}
-            if isinstance(thresholds, (list, tuple)) and thresholds:
-                kwargs["thresholds"] = tuple(int(t) for t in thresholds)
-            include = guard_config.get("include")
-            if isinstance(include, (list, tuple)):
-                kwargs["include"] = tuple(str(p) for p in include)
-            exclude = guard_config.get("exclude")
-            if isinstance(exclude, (list, tuple)):
-                kwargs["exclude"] = tuple(str(p) for p in exclude)
-            preview = guard_config.get("arguments_preview_chars")
-            if isinstance(preview, int) and preview >= 1:
-                kwargs["arguments_preview_chars"] = preview
-            return FlashRepeatCallGuardRail(**kwargs)
+            return FlashRepeatCallGuardRail(
+                config_provider=lambda: self._flash_config("repeat_call_guard", {}),
+            )
         except Exception as exc:
             logger.warning("[FlashAdapter] FlashRepeatCallGuardRail create failed: %s", exc, exc_info=True)
             return None
 
     def _build_flash_skill_rail(self) -> Any | None:
-        """7xx 技能域常驻重组：manifest.yaml 启用集精简清单翻牌（配置 flash.skill_catalog）。"""
+        """7xx 技能域常驻重组：manifest 启用集精简清单翻牌（flash.skill_catalog，enabled 每轮现读）。"""
         try:
             catalog_config = self._flash_config("skill_catalog", {})
             if not isinstance(catalog_config, dict):
                 catalog_config = {}
-            if not catalog_config.get("enabled", True):
-                return None
-            from jiuwenswarm.agents.harness.flash.rails.flash_skill_rail import (
-                FlashSkillRail,
-            )
-
             kwargs: dict[str, Any] = {}
             manifest_path = catalog_config.get("manifest_path")
             if isinstance(manifest_path, str) and manifest_path.strip():
@@ -1194,87 +1226,66 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             max_entries = catalog_config.get("catalog_max_entries")
             if isinstance(max_entries, int) and max_entries >= 1:
                 kwargs["catalog_max_entries"] = max_entries
-            # 自动解析 manifest：优先各 skills 根目录下的 manifest.yaml。
             try:
                 kwargs["skills_dirs"] = list(self._resolve_skill_dirs())
             except Exception:
                 kwargs["skills_dirs"] = []
+            from jiuwenswarm.agents.harness.flash.rails.flash_skill_rail import (
+                FlashSkillRail,
+            )
+
+            kwargs["config_provider"] = lambda: self._flash_config("skill_catalog", {})
+            kwargs["disabled_tools_provider"] = self._read_disabled_tools
+            kwargs["fallback_skills_provider"] = self._read_fallback_skills
             return FlashSkillRail(**kwargs)
         except Exception as exc:
             logger.warning("[FlashAdapter] FlashSkillRail create failed: %s", exc, exc_info=True)
             return None
 
     def _build_flash_state_rail(self) -> Any | None:
-        """③ 运行时收口：820 时间事实迁 attachment（配置 flash.state）。"""
+        """③ 运行时收口：820 时间事实迁 attachment（flash.state，每轮现读）。"""
         try:
-            state_config = self._flash_config("state", {})
-            if not isinstance(state_config, dict):
-                state_config = {}
-            if not state_config.get("enabled", True):
-                return None
             from jiuwenswarm.agents.harness.flash.rails.flash_state_rail import (
                 FlashStateRail,
             )
 
-            return FlashStateRail()
+            return FlashStateRail(config_provider=lambda: self._flash_config("state", {}))
         except Exception as exc:
             logger.warning("[FlashAdapter] FlashStateRail create failed: %s", exc, exc_info=True)
             return None
 
     def _build_flash_pressure_rail(self) -> Any | None:
-        """⑥ 水位压力注入：70/85 阶梯提醒（配置 flash.pressure）。"""
+        """⑥ 水位压力注入：70/85 阶梯提醒（flash.pressure，每轮现读）。"""
         try:
-            pressure_config = self._flash_config("pressure", {})
-            if not isinstance(pressure_config, dict):
-                pressure_config = {}
-            if not pressure_config.get("enabled", True):
-                return None
             from jiuwenswarm.agents.harness.flash.rails.flash_pressure_rail import (
                 FlashPressureRail,
             )
 
-            kwargs: dict[str, Any] = {}
-            warning = pressure_config.get("warning_ratio")
-            if isinstance(warning, (int, float)):
-                kwargs["warning_ratio"] = float(warning)
-            critical = pressure_config.get("critical_ratio")
-            if isinstance(critical, (int, float)):
-                kwargs["critical_ratio"] = float(critical)
-            return FlashPressureRail(**kwargs)
+            return FlashPressureRail(config_provider=lambda: self._flash_config("pressure", {}))
         except Exception as exc:
             logger.warning("[FlashAdapter] FlashPressureRail create failed: %s", exc, exc_info=True)
             return None
 
     def _build_flash_relay_merge_rail(self) -> Any | None:
-        """relay 注入内容去重归并：剥 [文件输出约束]+[记忆纠正规则]（配置 flash.relay_merge）。"""
+        """relay 注入去重归并：剥 [文件输出约束]（flash.relay_merge，每轮现读）。"""
         try:
-            relay_merge_config = self._flash_config("relay_merge", {})
-            if not isinstance(relay_merge_config, dict):
-                relay_merge_config = {}
-            if not relay_merge_config.get("enabled", True):
-                return None
             from jiuwenswarm.agents.harness.flash.rails.flash_relay_merge_rail import (
                 FlashRelayMergeRail,
             )
 
-            return FlashRelayMergeRail()
+            return FlashRelayMergeRail(config_provider=lambda: self._flash_config("relay_merge", {}))
         except Exception as exc:
             logger.warning("[FlashAdapter] FlashRelayMergeRail create failed: %s", exc, exc_info=True)
             return None
 
     def _build_flash_section_order_rail(self) -> Any | None:
-        """段序收口：旧段迁号/剥除 + 动态段 1000 带（配置 flash.section_order，默认开）。"""
+        """段序收口：旧段迁号/剥除 + 动态段 1000 带（flash.section_order，每轮现读）。"""
         try:
-            order_config = self._flash_config("section_order", {})
-            if not isinstance(order_config, dict):
-                order_config = {}
-            if not order_config.get("enabled", True):
-                return None
             from jiuwenswarm.agents.harness.flash.rails.flash_section_order_rail import (
                 FlashSectionOrderRail,
             )
 
-            return FlashSectionOrderRail()
+            return FlashSectionOrderRail(config_provider=lambda: self._flash_config("section_order", {}))
         except Exception as exc:
             logger.warning("[FlashAdapter] FlashSectionOrderRail create failed: %s", exc, exc_info=True)
             return None

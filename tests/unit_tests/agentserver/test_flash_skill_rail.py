@@ -5,7 +5,8 @@
 重点覆盖本轮的接管语义修正：原生 ``skills`` 段在无技能命中时提示「用 read_file
 读 SKILL.md」，与 skill_protocol「禁止 read_file、只走 skill_tool」直接冲突；故无论
 manifest 是否可用，FlashSkillRail 都要撤下原生段并注入 700–740 常驻规则段（730 执行
-规范、740 清单），只有 740 清单依赖 manifest（缺失时注入空清单提示，而非回退原生段）。
+规范、740 清单）。740 清单优先 manifest 的 default_enabled 条目，缺失/解析失败时
+回退到 fallback 已加载技能，并把 manifest 未覆盖的本地技能合并（评审 #3）。
 """
 
 from __future__ import annotations
@@ -193,3 +194,98 @@ def test_catalog_excerpt_keeps_short_description_intact() -> None:
 
 def test_catalog_excerpt_empty_returns_empty() -> None:
     assert _catalog_excerpt("", 800) == ""
+
+
+@pytest.mark.asyncio
+async def test_manifest_missing_uses_fallback_skills(tmp_path) -> None:
+    """manifest 缺失但有 fallback provider 时，740 列出实际已加载技能（评审 #3）。"""
+    builder = _FakeBuilder("cn")
+    agent = _FakeAgent(builder)
+    rail = FlashSkillRail(
+        manifest_path=tmp_path / "nope" / "manifest.yaml",
+        fallback_skills_provider=lambda: [("local-skill", "本地技能说明")],
+    )
+    rail.init(agent)
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+
+    catalog = builder.sections["skill_catalog"].content["cn"]
+    assert "local-skill" in catalog
+    assert "本地技能说明" in catalog
+    assert "manifest.yaml 缺失" not in catalog
+
+
+@pytest.mark.asyncio
+async def test_manifest_merges_uncovered_local_skills(tmp_path) -> None:
+    """manifest 存在但未覆盖的本地技能合并进目录，避免私有技能消失（评审 #3）。"""
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        "skills:\n"
+        "  xlsx-craft:\n"
+        "    default_enabled: true\n"
+        "    description: Excel 制作\n",
+        encoding="utf-8",
+    )
+    builder = _FakeBuilder("cn")
+    agent = _FakeAgent(builder)
+    rail = FlashSkillRail(
+        manifest_path=manifest,
+        fallback_skills_provider=lambda: [
+            ("xlsx-craft", "manifest 里也有"),
+            ("local-pptx", "本地私有技能"),
+        ],
+    )
+    rail.init(agent)
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+
+    catalog = builder.sections["skill_catalog"].content["cn"]
+    assert "xlsx-craft" in catalog
+    assert "local-pptx" in catalog
+    assert "本地私有技能" in catalog
+
+
+@pytest.mark.asyncio
+async def test_disabled_restores_native_skills(tmp_path) -> None:
+    """禁用 skill_catalog 后不再撤下原生 skills 段、也不注入 700–740（评审 #1）。"""
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        "skills:\n  xlsx-craft:\n    default_enabled: true\n    description: Excel\n",
+        encoding="utf-8",
+    )
+    builder = _FakeBuilder("cn")
+    agent = _FakeAgent(builder)
+    rail = FlashSkillRail(
+        manifest_path=manifest,
+        config_provider=lambda: {"enabled": False},
+    )
+    rail.init(agent)
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+
+    assert "skills" not in builder.removed
+    assert builder.sections == {}
+
+
+@pytest.mark.asyncio
+async def test_hot_reload_toggles_catalog(tmp_path) -> None:
+    """config_provider 每轮现读：enabled 翻 false 后恢复原生 skills、撤下 700–740。"""
+    manifest = tmp_path / "manifest.yaml"
+    manifest.write_text(
+        "skills:\n  xlsx-craft:\n    default_enabled: true\n    description: Excel\n",
+        encoding="utf-8",
+    )
+    state = {"enabled": True}
+    rail = FlashSkillRail(manifest_path=manifest, config_provider=lambda: state)
+
+    builder = _FakeBuilder("cn")
+    agent = _FakeAgent(builder)
+    rail.init(agent)
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+    assert "skills" in builder.removed
+    assert "skill_catalog" in builder.sections
+
+    # reload 后新 builder + enabled 翻 false：不再删原生段、也不注入 700–740。
+    state["enabled"] = False
+    builder2 = _FakeBuilder("cn")
+    agent2 = _FakeAgent(builder2)
+    await rail.before_model_call(SimpleNamespace(agent=agent2))
+    assert "skills" not in builder2.removed
+    assert builder2.sections == {}
