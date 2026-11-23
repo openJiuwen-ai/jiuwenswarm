@@ -11,6 +11,9 @@ and exposes MCP records for the ``mcp.*`` RPC handlers. Connection state is deri
 from __future__ import annotations
 
 import logging
+import re
+import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -608,7 +611,6 @@ def _skill_description(skill_dir: Path) -> str:
     except OSError:
         return ""
     # frontmatter: ---\n...description: ...\n---
-    import re
     m = re.search(r"^description:\s*(.+?)$", text, re.MULTILINE | re.IGNORECASE)
     return m.group(1).strip().strip("\"'") if m else ""
 
@@ -789,6 +791,48 @@ def clear_connect_cancel(name: str) -> None:
     _CONNECT_CANCELLED.discard(str(name or "").strip())
 
 
+def _check_uv_runtime(entry: dict[str, Any]) -> None:
+    """Check known offline Python launch options before asking for credentials."""
+    command = entry.get("command", "")
+    args = entry.get("args", [])
+    if entry.get("transport") != "stdio" or command.lower() not in {"uv", "uv.exe"}:
+        return
+    if args[:2] != ["run", "--no-project"]:
+        return
+    options = args[2:]
+    if options[:1] == ["--offline"]:
+        options = options[1:]
+    if options[:2] != ["--no-python-downloads", "--python"] or len(options) < 4:
+        return
+    requirement = options[2]
+    if options[3] not in {"python", "--with"} or not re.fullmatch(r">=\d+\.\d+(?:\.\d+)?", requirement):
+        return
+    if any(key.upper().startswith(("UV_", "PYTHON")) or key.upper() in {"PATH", "VIRTUAL_ENV"}
+           for key in entry.get("env", {})):
+        return  # A package-specific runtime environment needs the live probe.
+    executable = shutil.which(command)
+    if executable is None:
+        raise CliConnectError(CODE_RUNTIME_MISSING, "Install uv where JiuwenSwarm runs.", runtime="uv")
+    try:
+        result = subprocess.run(
+            [executable, "python", "find", "--no-project", "--offline", "--no-python-downloads", requirement],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=5,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        logger.debug("MCP Python availability check could not complete", exc_info=True)
+        return
+    if result.returncode and b"no interpreter found" in result.stderr.lower():
+        runtime = "Python " + requirement.removeprefix(">=") + "+"
+        raise CliConnectError(
+            CODE_RUNTIME_MISSING, f"Install {runtime} where JiuwenSwarm runs.", runtime=runtime
+        )
+
+
 def connect_mcp(name: str, *, install_only: bool = False) -> dict[str, Any]:
     """Install a marketplace MCP (dispatch by integration_type).
 
@@ -858,6 +902,8 @@ def connect_mcp(name: str, *, install_only: bool = False) -> dict[str, Any]:
     itype = package.integration_type
     if itype != "cli":
         entry = build_config_entry(n)
+        if entry is not None:
+            _check_uv_runtime(entry)
         from jiuwenswarm.server.runtime.mcp.credential import (
             CredentialStore,
             KIND_OAUTH,

@@ -13,6 +13,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 
 from jiuwenswarm.server.runtime.mcp import registry
 from tests.unit_tests.agentserver.mcp.manifest_helpers import write_manifest
@@ -52,6 +54,42 @@ def test_connect_token_connector_returns_credentials_required(tmp_path: Path) ->
     assert result.get("credentials_required") is True
     assert "TIANYANCHA_API_KEY" in result["required_tokens"]
     assert result["credential_kind"] == "token"
+
+
+@pytest.mark.parametrize(
+    "uv_path, result, missing",
+    [
+        (None, None, "uv"),
+        ("uv.exe", (1, b"error: No interpreter found for Python >=3.11"), "Python 3.11+"),
+        ("uv.exe", (0, b""), None),
+    ],
+)
+def test_uv_preflight_runs_before_credentials(tmp_path, uv_path, result, missing):
+    _mk_marketplace(tmp_path, "tyc-mcp", {"mcpServers": {"tyc-mcp": {
+        "command": "uv",
+        "args": ["run", "--no-project", "--offline", "--no-python-downloads", "--python", ">=3.11",
+                 "python", "server.py"],
+        "env": {"TOKEN": "${TIANYANCHA_API_KEY}"},
+    }}})
+    with _ws(tmp_path), patch.object(registry.shutil, "which", return_value=uv_path), \
+         patch.object(registry.subprocess, "run") as run, \
+         patch("jiuwenswarm.server.runtime.mcp.state_store.upsert_mcp_record") as upsert:
+        if result is not None:
+            run.return_value.returncode, run.return_value.stderr = result
+        if missing is None:
+            assert registry.connect_mcp("tyc-mcp")["credentials_required"] is True
+        else:
+            with pytest.raises(registry.CliConnectError) as error:
+                registry.connect_mcp("tyc-mcp")
+            assert error.value.code == registry.CODE_RUNTIME_MISSING
+            assert error.value.runtime == missing
+        upsert.assert_not_called()
+        if uv_path is None:
+            run.assert_not_called()
+        else:
+            assert run.call_args.args[0] == [
+                "uv.exe", "python", "find", "--no-project", "--offline", "--no-python-downloads", ">=3.11"
+            ]
 
 
 def test_connect_after_save_keeps_placeholder_in_state(tmp_path: Path) -> None:
