@@ -189,6 +189,7 @@ interface ChatPanelProps {
   isHistoryRestoring?: boolean;
   /** Show an already-created empty conversation with the regular bottom composer. */
   conversationCreated?: boolean;
+  npcSession?: boolean;
   headerActions?: React.ReactNode;
   /** 右侧面板展开状态：展开时隐藏对话框上方的活跃成员，null 表示面板隐藏 */
   teamAreaExpanded?: boolean | null;
@@ -1214,6 +1215,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   historyPager = null,
   isHistoryRestoring = false,
   conversationCreated = false,
+  npcSession = false,
   headerActions,
   teamAreaExpanded = false,
   autoFocusKey = null,
@@ -1307,7 +1309,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   const hasTimelineContent = messages.length > 0 || toolExecutionOrder.length > 0;
   // 还在等你点选时，不能退回首页欢迎语。提问卡片要留在普通聊天页里。
   const hasConversation = Boolean(
-    conversationCreated || isHistoryRestoring || historyPager || hasTimelineContent || hasPendingQuestion,
+    npcSession || conversationCreated || isHistoryRestoring || historyPager || hasTimelineContent || hasPendingQuestion,
   );
   const isGroupCreateWelcome = welcomeVariant === 'group-create';
   const historyLoadedBatchSeq = historyPager?.loadedBatchSeq ?? 0;
@@ -1386,7 +1388,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   } = promptSuggestionBox;
   const nextInputSuggestionKey = nextInputSuggestions.map(item => item.suggestionId).join('\n');
   const shouldShowChatHeader = hasConversation;
-  const composerDockVisible = composerDocked && hasConversation;
+  const composerDockVisible = composerDocked && hasConversation && !npcSession;
   // Report the composer's measured height so the docked trajectory view can
   // keep its last records clear of it. A collapsed or undocked composer covers
   // nothing, so it reports zero rather than its laid-out size.
@@ -2514,7 +2516,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                     <HumanShareCard commands={teamHumanShareCommands} onShare={() => setHumanShareOpen(true)} />
                   )}
                   {/* 内联审批卡片（演进审批 & 权限审批共用） */}
-                  <InlineQuestionCard onSubmit={onUserAnswer} />
+                  {!npcSession && <InlineQuestionCard onSubmit={onUserAnswer} />}
                   <ContextCompressionLines runtime={contextCompressionRuntime} summary={contextCompressionSummary} />
                   <MoaProgress phase={moaPhase} />
                 </>
@@ -2716,7 +2718,12 @@ export const ChatPanel = React.memo(function ChatPanel({
         </div>
       </div>
 
-      {hasConversation && (
+      {npcSession && (
+        <div className="shrink-0 px-4 py-3 text-center text-sm text-text-muted" data-testid="chat-panel-npc-read-only">
+          {t('chat.npcSessionReadOnly')}
+        </div>
+      )}
+      {hasConversation && !npcSession && (
         <div ref={composeRef} className="chat-compose" data-testid="chat-panel-compose">
           <WebUIHost slotId="conversation.input.above" className="chat-input-webui-above" />
           <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />

@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path, PureWindowsPath
 import shutil
-from urllib.parse import urlsplit, parse_qsl, unquote
+from pathlib import Path, PureWindowsPath
+from urllib.parse import parse_qsl, unquote, urlsplit
 
 import yaml
 
@@ -442,6 +442,28 @@ def _system_plugin(root: Path, identity: PublishIdentity, metadata: dict) -> dic
     return {"normalizations": changes, "dependencies": [], "wrapper": None}
 
 
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_MAX_APP_ICON_BYTES = 5 * 1024 * 1024
+
+
+def _app_icon_png(root: Path, icon_href: str) -> bytes:
+    """Read the current local PNG icon from the validated publishing snapshot."""
+    try:
+        url = urlsplit(icon_href or "icon.png")
+        if url.scheme or url.netloc:
+            return b""
+        candidate = (root / unquote(url.path).lstrip("/")).resolve()
+        if not candidate.is_relative_to(root.resolve()) or candidate.suffix.lower() != ".png":
+            return b""
+        with candidate.open("rb") as icon:
+            data = icon.read(_MAX_APP_ICON_BYTES + 1)
+    except (OSError, ValueError):
+        return b""
+    if data.startswith(_PNG_MAGIC) and len(data) <= _MAX_APP_ICON_BYTES:
+        return data
+    return b""
+
+
 def _app(root: Path, identity: PublishIdentity, metadata: dict[str, object]) -> dict[str, object]:
     from jiuwenswarm.extensions.app_market.hub_install import (
         AppInstallError,
@@ -471,7 +493,7 @@ def _app(root: Path, identity: PublishIdentity, metadata: dict[str, object]) -> 
             changes.append(f"index.html: copied from {entry.name}")
     try:
         app_package_validator(root, identity.package_name)
-        read_entry_metadata(root, identity.version)
+        entry_metadata = read_entry_metadata(root, identity.version)
     except AppInstallError as exc:
         code = "APP_VERSION_MISMATCH" if exc.code == "app_artifact_changed" else "INVALID_PACKAGE"
         _fail(code, "index.html", str(exc))
@@ -479,12 +501,11 @@ def _app(root: Path, identity: PublishIdentity, metadata: dict[str, object]) -> 
     display_name = _text(metadata.get("display_name"), "display_name").strip()
     description = metadata.get("description", "")
     tags = metadata.get("tags", [])
-    requires_project = metadata.get("requires_project", False)
     permissions = metadata.get("app_permissions", [])
     types_valid = (
         isinstance(description, str)
         and isinstance(tags, list)
-        and isinstance(requires_project, bool)
+        and isinstance(metadata.get("requires_project", True), bool)
         and isinstance(permissions, list)
     )
     items_valid = (
@@ -495,6 +516,7 @@ def _app(root: Path, identity: PublishIdentity, metadata: dict[str, object]) -> 
         _fail()
     return {
         "normalizations": changes,
+        "icon_png": _app_icon_png(root, entry_metadata["icon_href"]),
         "wrapper": {
             "name": identity.package_name,
             "version": identity.version,
@@ -504,7 +526,7 @@ def _app(root: Path, identity: PublishIdentity, metadata: dict[str, object]) -> 
             "metadata": {
                 "author": "unknown",
                 "tags": [tag.strip() for tag in tags if tag.strip()],
-                "app": {"requires_project": requires_project, "permissions": permissions},
+                "app": {"requires_project": True, "permissions": permissions},
             },
         },
     }

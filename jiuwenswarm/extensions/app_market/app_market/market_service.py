@@ -133,6 +133,8 @@ class MarketService:
             if existing and existing.owner_id == manifest.owner_id:
                 manifest.editor_session_id = existing.editor_session_id
                 manifest.editor_create_token = existing.editor_create_token
+                manifest.editor_create_pending = existing.editor_create_pending
+                manifest.editor_session_ids = existing.editor_session_ids
                 # Republishing/updating the same app must not silently drop its
                 # distribution provenance or project binding.
                 for field in (
@@ -158,6 +160,13 @@ class MarketService:
             return None
 
     # ── 应用启动 ──────────────────────────────────────────
+
+    @staticmethod
+    def has_project_binding(manifest: AppManifest) -> bool:
+        return bool(
+            manifest.project_id and manifest.project_work_mode and manifest.project_dir
+            and Path(manifest.project_dir).is_dir()
+        )
 
     async def start_app(self, app_id: str, owner_id: str = "") -> AppInstance | None:
         """Start one app per owner at a time, making repeated starts idempotent."""
@@ -187,19 +196,8 @@ class MarketService:
                     raise RuntimeError("Hub application start script must match the market template")
                 if not self.allow_hub_code and (Path(manifest.work_dir) / "scripts/app_server.py").is_file():
                     raise RuntimeError("Running Hub server scripts is disabled for this deployment")
-            if manifest.requires_project:
-                project_dir = (manifest.project_dir or "").strip()
-                project_id = (manifest.project_id or "").strip()
-                if not project_id or not manifest.project_work_mode:
-                    raise RuntimeError(
-                        "app_project_unavailable: application declares requires_project "
-                        "but its project binding is missing"
-                    )
-                if not project_dir or not Path(project_dir).is_dir():
-                    raise RuntimeError(
-                        "app_project_unavailable: application declares requires_project "
-                        "but its project binding is missing"
-                    )
+            if not self.has_project_binding(manifest):
+                raise RuntimeError("app_project_unavailable: application project binding is missing")
             # Starting an already running app should be idempotent. Reuse the
             # existing instance so opening the market card twice cannot create
             # duplicate static servers and duplicate AI sessions.

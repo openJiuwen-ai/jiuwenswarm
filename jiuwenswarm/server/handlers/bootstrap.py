@@ -199,6 +199,7 @@ async def handle_session_create(ctx: RequestContext) -> None:
                 role_instructions=params.get("role_instructions", ""),
                 npc_team=params.get("npc_team"),
                 role_tools=params.get("tools"),
+                npc_session=params.get("npc_session", False),
             )
         )
         params.pop("_work_mode_explicit", None)
@@ -224,6 +225,8 @@ async def handle_session_create(ctx: RequestContext) -> None:
         if result.execution_profile != "default":
             payload["execution_profile"] = result.execution_profile
             payload["mode"] = result.canonical_mode
+        if result.npc_session:
+            payload["npc_session"] = True
         if result.explicit_id_compatibility:
             payload.update(
                 {

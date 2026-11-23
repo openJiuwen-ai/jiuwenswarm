@@ -9,7 +9,11 @@ import { appMarketStartTimeoutMs, openAppMarketView, type InstanceInfo } from '.
 import { AppMarketResources } from './AppMarketResources';
 import './AppMarketPanel.css';
 
-type EditorApp = { app_id: string; name: string; editor_session_id: string; startup_timeout_seconds?: number };
+type EditorApp = {
+  app_id: string;
+  name: string;
+  startup_timeout_seconds?: number;
+};
 
 export function AppMarketEditorAction({ sessionId, onOpen }: {
   sessionId: string;
@@ -22,8 +26,8 @@ export function AppMarketEditorAction({ sessionId, onOpen }: {
   useEffect(() => {
     active.current = true;
     let current = true;
-    void webRequest<{ apps: EditorApp[] }>('app_market.list').then(({ apps }) => {
-      if (current) setApp(apps.find(item => item.editor_session_id === sessionId) ?? null);
+    void webRequest<{ app: EditorApp | null }>('app_market.editor_app', { editor_session_id: sessionId }).then(({ app }) => {
+      if (current) setApp(app);
     }).catch(() => undefined);
     return () => { current = false; active.current = false; };
   }, [sessionId]);

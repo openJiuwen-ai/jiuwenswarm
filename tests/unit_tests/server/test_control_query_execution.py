@@ -64,6 +64,21 @@ async def test_project_scan_leaves_front_loop_running(monkeypatch, method, loade
 
 
 @pytest.mark.asyncio
+async def test_project_info_can_skip_scanning_session_history(monkeypatch):
+    from jiuwenswarm.server.control.store import project_queries
+
+    def unexpected_scan():
+        pytest.fail("binding lookup should not scan sessions")
+
+    monkeypatch.setattr(project_queries, "collect_all_sessions_metadata", unexpected_scan)
+    request = _request(ReqMethod.PROJECT_INFO)
+    request.params["include_session_stats"] = False
+    response = await project_repository.handle_project_request(request)
+    assert response.ok
+    assert response.payload["project"]["project_id"] == "default"
+
+
+@pytest.mark.asyncio
 async def test_unary_history_scan_preserves_loop_and_request_context(monkeypatch):
     from jiuwenswarm.server.control import history_service
 

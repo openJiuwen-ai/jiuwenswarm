@@ -177,7 +177,6 @@ def _app_defaults(app: AppManifest) -> dict:
         "description": get_app_description(app),
         "tags": [],
         "visibility": "public",
-        "requires_project": app.requires_project,
     }
 
 
@@ -467,6 +466,7 @@ class AssetPublishAPI:
                     "dependency_sources",
                 }
                 if kind == "app":
+                    # Accept the flag sent by older publishers. The package always requires a project.
                     allowed_fields.add("requires_project")
                 if set(metadata) - allowed_fields:
                     raise PublishAPIError("INVALID_METADATA")
@@ -491,7 +491,6 @@ class AssetPublishAPI:
                 }
                 package_metadata["force"] = force
                 if isinstance(source, AppManifest):
-                    package_metadata.setdefault("requires_project", source.requires_project)
                     package_metadata["app_entry"] = source.page_entry_path or "index.html"
                     package_metadata["app_permissions"] = source.permissions
                     prepared = await self.service.prepare_snapshot(

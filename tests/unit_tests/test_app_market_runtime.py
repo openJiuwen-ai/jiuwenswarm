@@ -9,10 +9,21 @@ from urllib.parse import urlsplit
 import psutil
 import pytest
 
-from jiuwenswarm.extensions.app_market.manager import AppMarketManager
+from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.extensions.app_market.manager import AppMarketError, AppMarketManager
 from jiuwenswarm.extensions.app_market.app_market.models import AppManifest, platform_key
 from jiuwenswarm.extensions.app_market.app_market.skill_adapter import SkillAdapter
 from jiuwenswarm.extensions.app_market.app_market.process_supervisor import ProcessSupervisor
+
+
+async def _publish_bound_app(manager, page, source_session):
+    app = await manager.publish_app(str(page), source_session)
+    manifest = manager.storage.load_manifest(app["app_id"])
+    manifest.project_id = "project"
+    manifest.project_dir = str(page.parent)
+    manifest.project_work_mode = "code"
+    manager.storage.save_manifest(app["app_id"], manifest)
+    return app
 
 
 def test_static_app_start_open_stop_and_restart(tmp_path):
@@ -21,8 +32,28 @@ def test_static_app_start_open_stop_and_restart(tmp_path):
         page.write_text('<html><meta name="description" content="Play five in a row"><body>gomoku</body></html>')
         manager = AppMarketManager(str(tmp_path / "market"))
         app = await manager.publish_app(str(page), "session")
+        manifest = manager.storage.load_manifest(app["app_id"])
+        assert not manifest.requires_project and not manifest.project_id
+        with pytest.raises(AppMarketError) as error:
+            await manager.start_app(app["app_id"])
+        assert error.value.code == "app_project_unavailable"
+        assert manager._service.list_instances() == []
+
+        project = {"project_id": "source-project", "project_dir": str(tmp_path), "work_mode": "code"}
+        project_calls = []
+
+        async def get_project(method, params):
+            project_calls.append(method)
+            if method == ReqMethod.PROJECT_LIST:
+                return True, {"projects": [project]}
+            if method == ReqMethod.PROJECT_INFO:
+                assert params == {"project_id": "source-project", "include_hidden": True, "include_session_stats": False}
+                return True, {"project": project}
+            assert method == ReqMethod.SESSION_GET_METADATA and params["session_id"] == "session"
+            return True, {"project_id": "source-project"}
+
         for _ in range(2):
-            result = await manager.start_app(app["app_id"])
+            result = await manager.start_app(app["app_id"], project_request=get_project)
             try:
                 assert result and result["state"] == "running"
                 assert result["url"].endswith("/gomoku.html")
@@ -42,11 +73,13 @@ def test_static_app_start_open_stop_and_restart(tmp_path):
                 status = json.load(urllib.request.urlopen(request))
                 assert status["instance_id"] == instance.instance_id
                 assert status["app_id"] == app["app_id"]
+                assert manager.storage.load_manifest(app["app_id"]).project_id == "source-project"
             finally:
                 await manager.shutdown()
             assert not manager._service._supervisor.is_alive(instance.pid)
             assert not manager._service._port_manager.is_allocated(instance.port)
         assert manager.list_apps()["apps"][0]["description"] == "Play five in a row"
+        assert project_calls == [ReqMethod.PROJECT_LIST, ReqMethod.SESSION_GET_METADATA, ReqMethod.PROJECT_INFO]
     asyncio.run(scenario())
 
 
@@ -55,7 +88,7 @@ def test_static_server_accepts_market_web_origin_only(tmp_path):
         page = tmp_path / "index.html"
         page.write_text("<html><body>web origin</body></html>")
         manager = AppMarketManager(str(tmp_path / "market"))
-        app = await manager.publish_app(str(page), "session")
+        app = await _publish_bound_app(manager, page, "session")
         started = await manager.start_app(app["app_id"])
         assert started and started["state"] == "running"
         web_url = urlsplit(started["web_url"])
@@ -81,7 +114,8 @@ def test_failed_spawn_releases_port_and_records_failure(tmp_path):
     async def scenario():
         manager = AppMarketManager(str(tmp_path / "market"))
         manifest = AppManifest(app_id="broken", name="broken", version="1", run_type="managed",
-            start_script={platform_key(): "missing-command"}, work_dir=str(tmp_path), default_port=18991)
+            start_script={platform_key(): "missing-command"}, work_dir=str(tmp_path), default_port=18991,
+            project_id="project", project_dir=str(tmp_path), project_work_mode="code")
         manager._service._storage.save_manifest("broken", manifest)
         assert await manager.start_app("broken") is None
         assert not manager._service._port_manager.is_allocated(18991)
@@ -127,7 +161,7 @@ def test_unconfirmed_readiness_is_failure_and_releases_resources(tmp_path, monke
         page = tmp_path / "app.html"
         page.write_text("<html>hello</html>")
         manager = AppMarketManager(str(tmp_path / "market"))
-        app = await manager.publish_app(str(page), "session")
+        app = await _publish_bound_app(manager, page, "session")
         manifest_path = tmp_path / "market" / "apps" / app["app_id"] / "manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest["startup_timeout_seconds"] = 300
@@ -152,7 +186,7 @@ def test_cancelled_start_cleans_up_before_retry_even_when_cancelled_again(tmp_pa
         page = tmp_path / "app.html"
         page.write_text("<html>hello</html>", encoding="utf-8")
         manager = AppMarketManager(str(tmp_path / "market"))
-        app_id = (await manager.publish_app(str(page), "session"))["app_id"]
+        app_id = (await _publish_bound_app(manager, page, "session"))["app_id"]
         service = manager._service
         waiting, cleaning, resume = asyncio.Event(), asyncio.Event(), asyncio.Event()
         wait_for_running = service._wait_for_running
@@ -234,8 +268,8 @@ def test_market_assigns_non_conflicting_ports_and_injects_gateway_config(tmp_pat
             pages.append(page)
         manager=AppMarketManager(str(tmp_path/"market"))
         manager._service.configure_gateway(gateway_port=25001,web_port=25000, gateway_host="127.0.0.1")
-        first = await manager.publish_app(str(pages[0]), "source")
-        second = await manager.publish_app(str(pages[1]), "source")
+        first = await _publish_bound_app(manager, pages[0], "source")
+        second = await _publish_bound_app(manager, pages[1], "source")
         blocker=socket.socket();blocker.bind(("127.0.0.1",0));blocker.listen()
         manifest=manager._service.get_app(first["app_id"]);manifest.default_port=blocker.getsockname()[1]
         manager._service._storage.save_manifest(manifest.app_id,manifest)
@@ -276,7 +310,7 @@ def test_personal_repeated_start_reuses_one_instance(tmp_path):
         page = tmp_path / "personal.html"
         page.write_text("<html>personal</html>")
         manager = AppMarketManager(str(tmp_path / "market"))
-        app = await manager.publish_app(str(page), "source")
+        app = await _publish_bound_app(manager, page, "source")
         try:
             one = await manager.start_app(app["app_id"])
             two = await manager.start_app(app["app_id"])
@@ -303,7 +337,7 @@ def test_market_reuses_running_instance_for_same_owner_and_app(tmp_path):
         page = tmp_path / "app.html"
         page.write_text("<html>app</html>")
         manager = AppMarketManager(str(tmp_path / "market"))
-        app = await manager.publish_app(str(page), "source")
+        app = await _publish_bound_app(manager, page, "source")
         try:
             one = await manager.start_app(app["app_id"], owner_id="owner")
             two = await manager.start_app(app["app_id"], owner_id="owner")
@@ -321,7 +355,7 @@ def test_shutdown_endpoint_requires_token_and_stops_the_static_server(tmp_path):
         page = tmp_path / "gomoku.html"
         page.write_text("<html><body>gomoku</body></html>")
         manager = AppMarketManager(str(tmp_path / "market"))
-        app = await manager.publish_app(str(page), "session")
+        app = await _publish_bound_app(manager, page, "session")
         started = await manager.start_app(app["app_id"])
         assert started and started["state"] == "running"
         instance = manager._service.get_instance(started["instance_id"])
@@ -350,7 +384,7 @@ def test_stop_app_requests_graceful_shutdown_before_killing(tmp_path):
         page = tmp_path / "gomoku.html"
         page.write_text("<html><body>gomoku</body></html>")
         manager = AppMarketManager(str(tmp_path / "market"))
-        app = await manager.publish_app(str(page), "session")
+        app = await _publish_bound_app(manager, page, "session")
         started = await manager.start_app(app["app_id"])
         instance = manager._service.get_instance(started["instance_id"])
         # Hold the Popen so the exit code survives supervisor cleanup tracking.
@@ -368,7 +402,7 @@ def test_stop_app_falls_back_to_force_kill_without_shutdown_endpoint(tmp_path, m
         page = tmp_path / "gomoku.html"
         page.write_text("<html><body>gomoku</body></html>")
         manager = AppMarketManager(str(tmp_path / "market"))
-        app = await manager.publish_app(str(page), "session")
+        app = await _publish_bound_app(manager, page, "session")
         started = await manager.start_app(app["app_id"])
         instance = manager._service.get_instance(started["instance_id"])
         popen = manager._service._supervisor._processes[instance.pid]
@@ -396,7 +430,7 @@ def test_static_pages_are_served_uncached(tmp_path):
         page = tmp_path / "gomoku.html"
         page.write_text("<html><body>gomoku</body></html>")
         manager = AppMarketManager(str(tmp_path / "market"))
-        app = await manager.publish_app(str(page), "session")
+        app = await _publish_bound_app(manager, page, "session")
         started = await manager.start_app(app["app_id"])
         assert started and started["state"] == "running"
         try:
@@ -432,7 +466,7 @@ def test_graceful_stop_reclaims_children_after_parent_exits(tmp_path, monkeypatc
         manager = AppMarketManager(str(tmp_path / "market"))
         child = None
         try:
-            app = await manager.publish_app(str(page), "session")
+            app = await _publish_bound_app(manager, page, "session")
             started = await manager.start_app(app["app_id"])
             assert started and started["state"] == "running"
             instance = manager._service.get_instance(started["instance_id"])

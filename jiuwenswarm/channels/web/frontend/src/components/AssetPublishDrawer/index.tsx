@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { HelpCircle, CircleCheck, Clock3, CircleAlert, RefreshCw } from 'lucide-react';
+import { AppWindow, HelpCircle, CircleCheck, Clock3, CircleAlert, RefreshCw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { FormDrawer, Input, Textarea } from '../ui';
 import {
@@ -176,7 +176,6 @@ const messages = {
     invalidVersion: '请输入 1.0.0 格式版本号或七位小写提交号。',
     invalidAppName: '以小写字母开头，仅用小写字母、数字和连字符，最多 64 字符，避开系统保留名称。',
     invalidAppVersion: '输入 1 至 4 段数字，可带 - 或 + 后缀，总长最多 32 字符。',
-    appRequiresProject: '安装时为应用创建项目',
     invalidDisplayName: '请输入展示名称，最长 128 个字符。',
     assetNameHelp: '发布名称是 Hub 中资源包的技术标识，只支持小写字母、数字、下划线和连字符，最长 64 个字符。',
     assetNameHelpSystemPlugin: '系统插件名称以小写字母开头，可包含小写字母、数字、点与连字符，最长 64 个字符。',
@@ -310,7 +309,6 @@ const messages = {
     invalidVersion: 'Enter a version such as 1.0.0 or a seven-character lowercase revision.',
     invalidAppName: 'Start with a lowercase letter. Use up to 64 lowercase letters, digits, or hyphens. Avoid reserved names.',
     invalidAppVersion: 'Use 1 to 4 numeric parts and an optional - or + suffix, up to 32 characters.',
-    appRequiresProject: 'Create a project when the app is installed',
     invalidDisplayName: 'Enter a display name of at most 128 characters.',
     assetNameHelp:
       'The package identifier in Hub. Use lowercase letters, numbers, underscores, or hyphens; maximum 64 characters.',
@@ -549,6 +547,11 @@ function AssetPublishDrawer({
     system_plugin: zh ? '系统插件' : 'System plugin',
     app: zh ? '应用' : 'App',
   }[reference.kind];
+  const resourceName = state.metadata.display_name || (isApp ? assetType : reference.local_id);
+  const appVersion = showResult
+    ? state.record?.result?.version || state.record?.version || state.metadata.version
+    : state.metadata.version;
+  const appDescription = isApp ? state.metadata.description.trim() : '';
   const packStageLabels: Record<string, MessageKey> = {
     publishing_members: 'packStagePublishingMembers',
     waiting_member_review: 'packStageWaitingMembers',
@@ -713,7 +716,11 @@ function AssetPublishDrawer({
         </>
       }
     >
-      <section className="asset-publish-resource-summary" data-testid="asset-publish-resource-summary">
+      <section
+        className="asset-publish-resource-summary"
+        data-testid="asset-publish-resource-summary"
+        data-variant={reference.kind}
+      >
         <span className="asset-publish-resource-avatar" aria-hidden="true">
           {reference.avatar_url && !avatarFailed ? (
             <img
@@ -722,23 +729,36 @@ function AssetPublishDrawer({
               data-testid="asset-publish-resource-avatar-image"
               onError={() => setAvatarFailed(true)}
             />
+          ) : isApp ? (
+            <AppWindow size={24} />
           ) : (
-            (state.metadata.display_name || reference.local_id).trim().charAt(0).toUpperCase()
+            resourceName.trim().charAt(0).toUpperCase()
           )}
         </span>
         <div className="asset-publish-resource-copy">
-          <strong>{state.metadata.display_name || reference.local_id}</strong>
+          <strong data-testid="asset-publish-resource-name">{resourceName}</strong>
           <div className="asset-publish-resource-meta">
-            <span>{assetType}</span>
-            <span>{text('localSource')}</span>
+            {(!isApp || state.metadata.display_name) && <span data-testid="asset-publish-resource-kind">{assetType}</span>}
+            {isApp ? (
+              appVersion && <span data-testid="asset-publish-resource-version">v{appVersion}</span>
+            ) : (
+              <span>{text('localSource')}</span>
+            )}
           </div>
-          <span
-            className="asset-publish-resource-id"
-            data-testid="asset-publish-resource-id"
-            title={reference.local_id}
-          >
-            {reference.local_id}
-          </span>
+          {appDescription && (
+            <p className="asset-publish-resource-description" data-testid="asset-publish-resource-description">
+              {appDescription}
+            </p>
+          )}
+          {!isApp && (
+            <span
+              className="asset-publish-resource-id"
+              data-testid="asset-publish-resource-id"
+              title={reference.local_id}
+            >
+              {reference.local_id}
+            </span>
+          )}
         </div>
       </section>
       {state.loggedIn ? (
@@ -894,17 +914,6 @@ function AssetPublishDrawer({
                 </div>
               </div>
               {renderField('version_desc')}
-              {isApp && (
-                <label className="asset-publish-checkbox">
-                  <input
-                    type="checkbox"
-                    data-testid="asset-publish-app-requires-project"
-                    checked={Boolean(state.metadata.requires_project)}
-                    onChange={(event) => state.edit({ requires_project: event.target.checked })}
-                  />
-                  {text('appRequiresProject')}
-                </label>
-              )}
             </section>
             <details
               className="asset-publish-advanced"

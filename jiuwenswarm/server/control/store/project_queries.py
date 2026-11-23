@@ -171,36 +171,33 @@ def load_project_info(params: dict[str, Any]) -> tuple[dict[str, Any] | None, st
     if not project_id:
         return None, "project_id is required", "BAD_REQUEST"
 
-    all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
-    visible_project_ids, removed_project_ids = split_project_ids(all_projects)
-    stats: dict[str, Any] = {
-        "session_count": 0,
-        "last_message_at": None,
-        "last_user_message_at": None,
-    }
-    for session in collect_all_sessions_metadata():
-        if session.get("channel_id") != "web" or session.get("pinned") or session.get("cron_id"):
-            continue
-        if attribute_session_project(
-            session, visible_project_ids, removed_project_ids
-        ) != project_id:
-            continue
-        stats["session_count"] += 1
-        for key in ("last_message_at", "last_user_message_at"):
-            value = session.get(key)
-            if isinstance(value, (int, float)) and not isinstance(value, bool):
-                if stats[key] is None or value > stats[key]:
-                    stats[key] = value
+    default_id = project_id if is_default_project_id(project_id) else None
+    project = None
+    if default_id is None:
+        project = project_store.get_project_by_id(project_id, cache_bust=True)
+        if project is None or (project.hidden and not params.get("include_hidden")):
+            return None, "project not found", "NOT_FOUND"
 
-    if is_default_project_id(project_id):
-        info = project_info_payload(None, default_id=project_id, stats=stats)
-        return {"project": info, **info}, None, None
+    stats = None
+    if params.get("include_session_stats") is not False:
+        all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
+        visible_project_ids, removed_project_ids = split_project_ids(all_projects)
+        stats = {"session_count": 0, "last_message_at": None, "last_user_message_at": None}
+        for session in collect_all_sessions_metadata():
+            if session.get("channel_id") != "web" or session.get("pinned") or session.get("cron_id"):
+                continue
+            if attribute_session_project(
+                session, visible_project_ids, removed_project_ids
+            ) != project_id:
+                continue
+            stats["session_count"] += 1
+            for key in ("last_message_at", "last_user_message_at"):
+                value = session.get(key)
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    if stats[key] is None or value > stats[key]:
+                        stats[key] = value
 
-    include_hidden = bool(params.get("include_hidden"))
-    project = project_store.get_project_by_id(project_id, cache_bust=True)
-    if project is None or (project.hidden and not include_hidden):
-        return None, "project not found", "NOT_FOUND"
-    info = project_info_payload(project, stats=stats)
+    info = project_info_payload(project, default_id=default_id, stats=stats)
     return {"project": info, **info}, None, None
 
 

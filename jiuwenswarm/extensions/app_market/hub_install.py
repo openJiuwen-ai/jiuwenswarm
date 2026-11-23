@@ -48,6 +48,7 @@ from jiuwenswarm.server.runtime.marketplace.hub_package_downloader import (
 )
 
 from .app_market.models import AppManifest
+from .editor_sessions import CoreRequest
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +159,7 @@ class _HtmlMeta(html.parser.HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
         self.values: dict[str, str] = {}
+        self.icon_href = ""
         self.in_head = False
         self.head_complete = False
 
@@ -171,6 +173,10 @@ class _HtmlMeta(html.parser.HTMLParser):
             values = {key: value or "" for key, value in attrs}
             name = values.get("name", "").strip().lower()
             self.values[name] = values.get("content", "").strip()
+        elif tag == "link" and self.in_head:
+            values = {key: value or "" for key, value in attrs}
+            if "icon" in values.get("rel", "").lower().split():
+                self.icon_href = values.get("href", "").strip()
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "head":
@@ -193,7 +199,7 @@ def read_entry_metadata(package_root: Path, version: str) -> dict[str, str]:
     declared = parser.values.get("application-version", "")
     if declared and declared != version:
         raise AppInstallError("app_artifact_changed", "HTML entry version differs from Hub version")
-    return parser.values
+    return {**parser.values, "icon_href": parser.icon_href}
 
 
 def _require_app_detail(detail: HubAssetDetail) -> None:
@@ -542,6 +548,7 @@ async def install_hub_app(
     cancelled: Callable[[], bool] | None = None,
     operation_dir: Path | None = None,
     job_id: str = "",
+    project_request: CoreRequest | None = None,
 ) -> dict[str, Any]:
     """Install one Hub app and register it with the local app market."""
     asset = str(asset_id or "").strip()
@@ -640,6 +647,9 @@ async def install_hub_app(
             artifact_sha256=result.record.checksum_sha256,
             owner_id=owner_id,
         )
+        if project_request is not None:
+            await manager.bind_app_project(manifest, project_request)
+            manager.storage.save_manifest(app_id, manifest)
         manager.storage.save_install_record(app_id, record)
     except (Exception, asyncio.CancelledError) as exc:
         _recover_after_failure(operation, manager.storage, operation_dir)
@@ -662,6 +672,7 @@ async def install_hub_app(
         "work_dir": str(destination),
         "install_root": str(root),
         "package_name": package_name,
+        "project_id": manifest.project_id,
         "requires_project": bool(detail.requires_project),
         "permissions": list(detail.permissions),
         "has_server_script": bool(detail.has_server_script),
@@ -722,6 +733,15 @@ def _ensure_disk_space(root: Path, source_size: int) -> None:
 def load_install_record(manager: Any, app_id: str) -> dict[str, Any] | None:
     record = manager.storage.load_install_record(app_id)
     return record if isinstance(record, dict) else None
+
+
+def _reject_busy_editor(
+    manifest: AppManifest, editor_is_busy: Callable[[str], bool] | None,
+) -> None:
+    if editor_is_busy is not None and any(
+        editor_is_busy(session_id) for session_id in manifest.iter_editor_session_ids()
+    ):
+        raise AppInstallError("app_operation_conflict", "Stop the active editor session before updating")
 
 
 async def update_hub_app(
@@ -818,21 +838,18 @@ async def update_hub_app(
             raise AppInstallError("app_operation_conflict", "Application changed during update")
         if _directory_identity(destination) != old_identity:
             raise AppInstallError("app_operation_conflict", "Application directory changed during update")
-        if current.editor_session_id and editor_is_busy and editor_is_busy(current.editor_session_id):
-            raise AppInstallError("app_operation_conflict", "Stop the active editor session before updating")
+        _reject_busy_editor(current, editor_is_busy)
 
         progress("committing")
         for instance in manager.service.list_instances(app_id):
             if instance.state in ("starting", "running", "stopping"):
                 if not await manager.service.stop_app(instance.instance_id):
                     raise AppInstallError("app_operation_conflict", "Failed to stop application instances")
-        if current.editor_session_id and editor_is_busy and editor_is_busy(current.editor_session_id):
-            raise AppInstallError("app_operation_conflict", "Stop the active editor session before updating")
+        _reject_busy_editor(current, editor_is_busy)
 
         # Keep the old working tree intact in the backup, including any user edits.
         await asyncio.to_thread(_copy_preserved_paths, destination, staged.destination)
-        if current.editor_session_id and editor_is_busy and editor_is_busy(current.editor_session_id):
-            raise AppInstallError("app_operation_conflict", "Stop the active editor session before updating")
+        _reject_busy_editor(current, editor_is_busy)
         if _directory_identity(destination) != old_identity:
             raise AppInstallError("app_operation_conflict", "Application directory changed during update")
         archive_root = _archive_root(install_root)

@@ -160,6 +160,38 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.asset-publish-resource-summary[data-variant='app'] {
+  align-items: flex-start;
+  gap: 14px;
+  padding: 16px;
+  border-radius: 12px;
+}
+.asset-publish-resource-summary[data-variant='app'] .asset-publish-resource-avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 12px;
+}
+.asset-publish-resource-summary[data-variant='app'] .asset-publish-resource-copy {
+  flex: 1;
+  gap: 6px;
+}
+.asset-publish-resource-summary[data-variant='app'] .asset-publish-resource-copy strong {
+  font-size: 18px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+.asset-publish-resource-summary[data-variant='app'] .asset-publish-resource-meta:empty {
+  display: none;
+}
+.asset-publish-resource-summary[data-variant='app'] .asset-publish-resource-description {
+  display: -webkit-box;
+  overflow: hidden;
+  margin: 0;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
 .asset-publish-account-card {
   position: relative;
   display: grid;

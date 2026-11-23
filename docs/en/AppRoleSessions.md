@@ -20,9 +20,11 @@ The leader assigns each teammate a speaking task for the turn. Each non-empty `c
 
 Existing `mode:"agent"` requests with a roster retain independent role sessions and the `ask_<name>` consultation protocol. Use Team mode above for new apps with independent character speech. The roster is fixed at creation. Both modes reject host tool injection.
 
-The application obtains its source session from `WORKSWARM_SOURCE_SESSION` and queries `session.get_metadata` for project ownership. Execution profile and project ownership are independent: NPCs remain visible under the project that created the application. Do not hardcode project paths or models.
+Every market app needs an available project before it can start. Hub apps get their project at installation. The market links a project before launch for local apps that lack one. Read `WORKSWARM_APP_PROJECT_ID` and `WORKSWARM_APP_WORK_MODE` together. On older hosts, a local app can query `session.get_metadata` using `WORKSWARM_SOURCE_SESSION`. NPC sessions appear under the resolved project and can use a separate execution profile.
 
-The creation response must contain `execution_profile: "app_role"` and the actual session ID. If that marker is absent, report that the host needs upgrading rather than falling back to a general assistant. The profile and instructions are immutable; create a new session to change character rules.
+The creation response includes `execution_profile: "app_role"`, `npc_session: true`, and the actual session ID. If the host lacks the lightweight profile, report that it needs an upgrade. Create a new session to change the character rules.
+
+Swarm labels NPC conversations and shows their history in a read-only view. Players continue the conversation inside the application. Existing `app_role` conversations are recognized automatically. When a character needs host tools and uses the default execution profile, include `npc_session: true` at creation.
 
 Send only current player input or scene JSON through `chat.send`. Reuse one session per stable role. Wait for `chat.final`; acceptance is not an answer. The host restores recent complete dialogue pairs from that session's history. Model input is bounded to 48000 characters; oldest pairs are omitted without modifying persisted history. Oversized fixed instructions plus current input produce an explicit error. Existing default-model selection applies.
 
@@ -32,6 +34,6 @@ The legacy consultation form adds `npc.member` events (`phase: started | finishe
 
 Streaming, usage events, cancellation, forks, and deletion are supported. Forking the lead cascades fresh member sessions (member history is not copied); forking a single member detaches it into an independent NPC session. The lightweight consultation path does not support host tool equipment, pause/resume, cron execution, persistent memory, and explicit enhanced agent execution. Sessions without this profile retain existing behavior.
 
-Deploy and restart the host before enabling the profile. Existing NPC sessions are not migrated automatically. Application restart may delete old NPC conversations if its existing lifecycle implements that behavior.
+Deploy and restart the host to use the new behavior. Older character sessions created with the default profile need to be recreated with `npc_session: true` to gain the NPC label. Application restart may delete old NPC conversations according to the application's lifecycle.
 
 Before consulting, the host verifies that the member still belongs to the lead and is executable. A missing, deleted, or rebound member produces a consultation error without creating a general assistant. Gateway preserves the complete `npc.member` payload and includes the lead request ID.

@@ -20,6 +20,8 @@ export type ModelSelection =
 
 export interface Session {
   type?: 'chat' | 'group_chat';
+  /** Application NPC conversations are read-only in the Swarm chat surface. */
+  npc_session?: boolean;
   session_id: string;
   title: string;
   project_id: string;

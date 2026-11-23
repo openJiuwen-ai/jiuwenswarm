@@ -16,7 +16,7 @@ files:
 
 应用市场在启动与停止脚本的环境中设置 `WORKSWARM_SOURCE_SESSION`，值为应用清单的 `source_session`；未登记来源时为空，不继承宿主进程中其他应用的来源值。
 
-需要项目的 Hub 应用声明 `metadata.app.requires_project: true`。市场在启动前解析项目并向启停脚本注入 `WORKSWARM_APP_PROJECT_ID` 和项目实际的 `WORKSWARM_APP_WORK_MODE`。应用优先使用这对字段，缺省时回退来源会话协议。
+市场应用运行时都需要可用项目。Hub 应用在安装时按安装目录创建或复用项目并保存归属。本地发布应用与旧安装缺少绑定时在启动前补齐。启停脚本获得 `WORKSWARM_APP_PROJECT_ID`、`WORKSWARM_APP_PROJECT_DIR` 和项目实际的 `WORKSWARM_APP_WORK_MODE`。本地来源应用可沿用来源会话的项目。
 
 应用服务端使用既有 Gateway `session.get_metadata` 查询来源会话的 `project_id` 与 `work_mode`，在 `session.create` 中传入这两个字段。消息请求沿用相同工作模式。项目路径由既有创建接口解析，不以应用所在子目录推断项目。工作模式必须与项目匹配，不能固定为 `work`。
 
@@ -24,7 +24,7 @@ files:
 
 市场只提供运行上下文，不承担 AI 转发、角色记忆或会话创建；具体应用负责消费上下文。既有应用需要更新自己的客户端才能遵循此约定。
 
-纯对话角色可使用独立的 `execution_profile: app_role`，不改变以上项目与 work_mode 约束。创建时同时传入非空 `role_instructions`（最长 12000 字符），服务端持久化两者并固定到该 session；缺省 profile 的既有会话保持普通执行行为。轻量创建响应额外携带 `execution_profile: app_role`，普通创建响应保持原字段集合。
+纯对话角色可使用独立的 `execution_profile: app_role`，不改变以上项目与 work_mode 约束。创建时同时传入非空 `role_instructions`（最长 12000 字符），服务端持久化两者并固定到该 session。角色会话的独立标识和 Swarm 历史查看约束见 [NPC 会话规约](../../server/runtime/agent_adapter/S_02_app-role-npc-team.md#npc-会话标识)。
 
 模型输入包含精简基础系统提示、应用角色规则、该 session 最近完整对话和当前用户文本。基础系统规则定义角色助手身份、输入数据边界、能力边界与格式遵循，不为空。轻量执行不构建通用 DeepAgent，因此不加载项目指令、项目/个人记忆、技能、MCP、插件、工具或子代理。后续聊天不得变更 profile 和人格或装备工具。
 

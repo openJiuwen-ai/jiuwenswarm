@@ -10,6 +10,7 @@ import shutil
 import zipfile
 from dataclasses import asdict
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -386,39 +387,65 @@ def test_update_preserves_data_git_and_project_binding(tmp_path):
     assert manager.storage.load_install_record(app_id)["version"] == "2.0.0"
 
 
-@pytest.mark.parametrize("name_conflict", [False, True])
-def test_requires_project_is_resolved_before_start(tmp_path, name_conflict):
+@pytest.mark.parametrize(("history", "busy_on_check"), [(True, 1), (True, 2), (True, 3), (False, 1)])
+def test_update_refuses_any_busy_editor_before_directory_swap(tmp_path, history, busy_on_check):
     manager = _manager(tmp_path)
-    work_dir = tmp_path / "apps" / "needs-project"
-    work_dir.mkdir(parents=True)
-    (work_dir / "index.html").write_text("<html></html>", encoding="utf-8")
-    manifest = AppManifest(
-        app_id="hub-needs",
-        name="Needs Project",
-        version="1.0.0",
-        run_type="static",
-        work_dir=str(work_dir),
-        owner_id=OWNER,
-        source="hub",
-        artifact_sha256="a" * 64,
-        requires_project=True,
-    )
-    manager.service.storage.save_manifest(manifest.app_id, manifest)
+    original = _app_zip("1.0.0", "v1")
+    installed = asyncio.run(hub_install.install_hub_app(
+        manager=manager, asset_id=ASSET, install_root=tmp_path / "apps", owner_id=OWNER,
+        hub_port=FakePort(original, version="1.0.0"), downloader=_downloader(original),
+    ))
+    app_id = installed["app_id"]
+    manifest = manager.storage.load_manifest(app_id)
+    manifest.editor_session_id = "latest"
+    if history:
+        manifest.editor_session_ids = ["older", "latest"]
+    manager.storage.save_manifest(app_id, manifest)
+    editor_id = "older" if history else "latest"
+    checks = 0
 
-    with pytest.raises(AppMarketError) as missing:
-        asyncio.run(manager._ensure_runtime_project(manifest.app_id, None))
-    assert missing.value.code == "app_project_unavailable"
+    def editor_is_busy(session_id):
+        nonlocal checks
+        if session_id != editor_id:
+            return False
+        checks += 1
+        return checks == busy_on_check
 
+    replacement = _app_zip("2.0.0", "v2")
+    with pytest.raises(hub_install.AppInstallError, match="Stop the active editor session") as failure:
+        asyncio.run(hub_install.update_hub_app(
+            manager=manager, app_id=app_id, owner_id=OWNER,
+            hub_port=FakePort(replacement, version="2.0.0"),
+            downloader=_downloader(replacement), editor_is_busy=editor_is_busy,
+        ))
+    assert failure.value.code == "app_operation_conflict"
+    assert checks == busy_on_check
+    assert manager.storage.load_manifest(app_id) == manifest
+    assert "v1" in (Path(installed["work_dir"]) / "assets" / "app.js").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("requires_project", [False, True])
+def test_install_binds_project_before_conversion(tmp_path, monkeypatch, requires_project):
+    manager = _manager(tmp_path)
+    manager.service.allow_hub_code = True
+    payload = _app_zip()
+    port = FakePort(payload, requires_project=requires_project)
+    monkeypatch.setattr(manager, "_hub_port", lambda: port)
+    monkeypatch.setattr(hub_install, "hub_app_downloader", lambda: _downloader(payload))
     calls = []
-    suffixed_name = f"{manifest.name}-{manifest.app_id[-8:]}"
-    occupied_names = {manifest.name, suffixed_name} if name_conflict else set()
+    source_dir = tmp_path / "installs" / "gomoku"
+    install_params = {"asset_id": ASSET, "install_dir": str(source_dir.parent), "owner_id": OWNER}
 
     async def request(method, params):
         calls.append((method, params))
         if method == ReqMethod.PROJECT_LIST:
-            return True, {"projects": [{"name": name, "work_mode": "code"} for name in occupied_names]}
+            return True, {"projects": []}
         if method == ReqMethod.PROJECT_CREATE:
-            assert params["name"] not in occupied_names
+            assert Path(params["project_dir"]) == source_dir
+            assert source_dir.is_dir()
+            existing = await manager.start_install(**install_params)
+            assert existing["state"] == "running"
+            assert existing["job_id"]
             return True, {
                 "project": {
                     "project_id": "proj_app",
@@ -428,16 +455,65 @@ def test_requires_project_is_resolved_before_start(tmp_path, name_conflict):
             }
         raise AssertionError(method)
 
-    asyncio.run(manager._ensure_runtime_project(manifest.app_id, request))
-    saved = manager.service.storage.load_manifest(manifest.app_id)
+    async def install():
+        response = await manager.start_install(**install_params, project_request=request)
+        job_id = response["job_id"]
+        await manager._get_job(job_id, OWNER).task
+        status = manager.install_status(job_id, OWNER)
+        assert status["state"] == "done", status
+        return status["result"]
+
+    installed = asyncio.run(install())
+    app_id = installed["app_id"]
+    before = manager.storage.load_manifest(app_id)
+    assert before.requires_project is requires_project
+    assert installed["project_id"] == before.project_id == "proj_app"
+    converted = asyncio.run(manager.convert_to_local(app_id, OWNER))
+    saved = manager.service.storage.load_manifest(app_id)
+    assert converted["project_id"] == "proj_app"
     assert saved.project_id == "proj_app"
-    assert saved.project_dir == str(work_dir)
+    assert saved.project_dir == str(source_dir)
     assert saved.project_work_mode == "code"
-    assert calls[-1][1]["name"] == (f"{suffixed_name}-2" if name_conflict else manifest.name)
     assert [method for method, _ in calls] == [
         ReqMethod.PROJECT_LIST,
         ReqMethod.PROJECT_CREATE,
     ]
+
+
+def test_legacy_hub_install_binds_project_before_launch(tmp_path, monkeypatch):
+    manager = _manager(tmp_path)
+    manager.service.allow_hub_code = True
+    payload = _app_zip()
+    port = FakePort(payload, requires_project=False)
+
+    async def run():
+        installed = await hub_install.install_hub_app(
+            manager=manager, asset_id=ASSET, install_root=tmp_path / "installs",
+            owner_id=OWNER, hub_port=port, downloader=_downloader(payload),
+        )
+        app_id = installed["app_id"]
+        manifest = manager.storage.load_manifest(app_id)
+        assert not manifest.requires_project and not manifest.project_id
+        spawn = AsyncMock(return_value=1234)
+        monkeypatch.setattr(manager.service._supervisor, "start", spawn)
+        monkeypatch.setattr(manager.service, "_wait_for_running", AsyncMock(return_value=True))
+
+        async def request(method, params):
+            if method == ReqMethod.PROJECT_LIST:
+                return True, {"projects": []}
+            assert method == ReqMethod.PROJECT_CREATE
+            return True, {"project": {
+                "project_id": "proj_app", "project_dir": params["project_dir"], "work_mode": "code",
+            }}
+
+        started = await manager.start_app(app_id, OWNER, {"artifact_sha256": port.checksum}, request)
+        assert started["state"] == "running"
+        env = spawn.await_args.kwargs["env"]
+        assert env["WORKSWARM_APP_PROJECT_ID"] == "proj_app"
+        assert env["WORKSWARM_APP_WORK_MODE"] == "code"
+        assert manager.storage.load_manifest(app_id).project_id == "proj_app"
+
+    asyncio.run(run())
 
 
 def test_recovery_does_not_delete_an_unowned_target_or_backup(tmp_path):

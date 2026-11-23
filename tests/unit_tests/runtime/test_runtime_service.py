@@ -152,6 +152,45 @@ async def test_runtime_entry_wait_retains_deadline_without_cancelling_request():
 
 
 @pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("metadata", [
+    {"execution_profile": "app_role"},
+    {"npc_session": True},
+])
+@pytest.mark.asyncio
+async def test_swarm_cannot_send_chat_to_npc(monkeypatch, streaming, metadata):
+    load_metadata = MagicMock(return_value={"mode": "agent.work.normal", "work_mode": "work", **metadata})
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        load_metadata,
+    )
+    runtime = AgentRuntime(agent_manager=FakeAgentManager())
+    runtime._started = True
+    runtime._ensure_session_registered = AsyncMock()
+    request = AgentRequest(
+        request_id="attempt", session_id="app-npc", channel_id="web",
+        req_method=ReqMethod.CHAT_SEND, is_stream=streaming,
+        params={"chat_surface": "swarm", "query": "hello"},
+    )
+    events = await _collect_events(runtime.stream(request)) if streaming else await runtime.invoke(request)
+    assert len(events) == 1
+    assert events[0].payload["code"] == "NPC_SESSION_READ_ONLY"
+    assert events[0].is_complete and not events[0].ok
+    runtime._ensure_session_registered.assert_not_awaited()
+    load_metadata.assert_called_once()
+
+
+def test_npc_chat_keeps_app_messages_and_read_only_attachments():
+    request = AgentRequest(
+        request_id="app", session_id="app-npc", channel_id="web", req_method=ReqMethod.CHAT_SEND,
+        params={"query": "player input"},
+    )
+    metadata = {"npc_session": True}
+    assert AgentRuntime._swarm_npc_chat_refusal(request, metadata) is None
+    request.params = {"chat_surface": "swarm", "attach_only": True, "query": ""}
+    assert AgentRuntime._swarm_npc_chat_refusal(request, metadata) is None
+
+
+@pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("work_mode", ["work", "code"])
 @pytest.mark.parametrize("session_type", ["agent", "team"])
 async def test_runtime_corrects_mode_before_scheduling(monkeypatch, streaming, work_mode, session_type):
