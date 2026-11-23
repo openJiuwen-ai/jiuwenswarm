@@ -13570,6 +13570,11 @@ class AgentWebSocketServer:
         scopes = (reload_options or {}).get("reload_scopes") or []
         if applied and (not scopes or "model" in scopes):
             self._jiuwenmate_web.schedule_model_refresh(config_payload)
+        if not scopes or "model" in scopes:
+            self.schedule_image_modality_warmup(
+                reason="model config change",
+                reset_cache=True,
+            )
         return applied
 
     async def _handle_agent_reload_config(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:

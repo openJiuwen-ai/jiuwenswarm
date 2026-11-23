@@ -27,9 +27,27 @@ class MultimodalImageRail(DeepAgentRail):
         super().__init__()
         self._enable_image_multimodal = enable_image_multimodal
         self._deep_agent: Any | None = None
+        self._turn_image_files: list[dict[str, Any]] | None = None
+        self._turn_binding_token: Any = None
 
     def init(self, agent: Any) -> None:
         self._deep_agent = agent
+
+    def bind_turn_image_files(self, image_files: list[dict[str, Any]]) -> Any:
+        self._turn_image_files = list(image_files or [])
+        self._turn_binding_token = token = object()
+        return token
+
+    def restore_turn_image_files(self, token: Any) -> None:
+        if token is None or token is not self._turn_binding_token:
+            return
+        self._turn_binding_token = None
+        self._turn_image_files = None
+
+    def _current_turn_image_files(self) -> list[dict[str, Any]]:
+        if self._turn_image_files is not None:
+            return self._turn_image_files
+        return current_multimodal_image_files()
 
     def _read_image_multimodal_enabled(self) -> bool:
         if self._enable_image_multimodal is not None:
@@ -40,7 +58,7 @@ class MultimodalImageRail(DeepAgentRail):
         if ctx.context is None:
             return
         if self._read_image_multimodal_enabled():
-            image_files = current_multimodal_image_files()
+            image_files = self._current_turn_image_files()
             installed = ensure_multimodal_image_window_mutator(
                 ctx.context,
                 image_files,

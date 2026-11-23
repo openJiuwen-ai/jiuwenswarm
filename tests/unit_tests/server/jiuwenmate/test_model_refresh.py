@@ -2,7 +2,7 @@
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -26,6 +26,7 @@ async def test_model_save_returns_before_persistent_refresh_completes():
     server = SimpleNamespace(
         _agent_manager=SimpleNamespace(reload_agents_config=AsyncMock()),
         _jiuwenmate_web=adapter,
+        schedule_image_modality_warmup=Mock(),
     )
     task = asyncio.create_task(AgentWebSocketServer._reload_after_config_save(
         server, {"models.defaults"}, reload_options={"reload_scopes": ["model"]},
@@ -220,6 +221,7 @@ async def test_reload_without_models_preserves_latest_saved_snapshot(tmp_path, r
     adapter._service = service
     server = SimpleNamespace(
         _agent_manager=SimpleNamespace(reload_agents_config=AsyncMock()), _jiuwenmate_web=adapter,
+        schedule_image_modality_warmup=Mock(),
     )
     try:
         for payload in [model_payload(131072), reload_payload]:

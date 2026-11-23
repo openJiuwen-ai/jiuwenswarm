@@ -9945,6 +9945,36 @@ class JiuWenSwarmDeepAdapter:
         )
         return updated
 
+    def _bind_turn_image_state(
+        self,
+        request: AgentRequest,
+        image_files: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        if _is_attach_only_subscription(request.params):
+            return None
+        tokens: dict[str, Any] = {}
+        multimodal_image_rail = getattr(self, "_multimodal_image_rail", None)
+        if multimodal_image_rail is not None:
+            tokens["multimodal_image"] = multimodal_image_rail.bind_turn_image_files(
+                image_files
+            )
+        runtime_prompt_rail = getattr(self, "_runtime_prompt_rail", None)
+        if runtime_prompt_rail is not None:
+            tokens["runtime_prompt"] = runtime_prompt_rail.bind_turn_image_files(
+                image_files
+            )
+        return tokens or None
+
+    def _restore_turn_image_state(self, tokens: dict[str, Any] | None) -> None:
+        if not tokens:
+            return
+        multimodal_image_rail = getattr(self, "_multimodal_image_rail", None)
+        if multimodal_image_rail is not None and "multimodal_image" in tokens:
+            multimodal_image_rail.restore_turn_image_files(tokens["multimodal_image"])
+        runtime_prompt_rail = getattr(self, "_runtime_prompt_rail", None)
+        if runtime_prompt_rail is not None and "runtime_prompt" in tokens:
+            runtime_prompt_rail.restore_turn_image_files(tokens["runtime_prompt"])
+
     @staticmethod
     def _prepare_react_image_tool_prompt(
         request: AgentRequest,
@@ -17769,6 +17799,8 @@ class JiuWenSwarmDeepAdapter:
         inputs: dict[str, Any],
         *,
         send_without_output: bool,
+        turn_image_files: list[dict[str, Any]] | None = None,
+        image_binding_tokens_out: dict[str, Any] | None = None,
     ) -> tuple[Any | None, bool]:
         answer = inputs.get(_ROOT_PERMISSION_ANSWER_KEY)
         if answer is not None and not isinstance(answer, RootPermissionAnswer):
@@ -17777,6 +17809,7 @@ class JiuWenSwarmDeepAdapter:
         if self._enable_auto_permission and not isinstance(handoff, RootPermissionDispatchHandoff):
             raise RootPermissionQueueError("permission_dispatch_handoff_missing")
         stream = None
+        image_binding_tokens: dict[str, Any] | None = None
         try:
             # Ordinary and Smart interrupt answers wait for the old reader.
             # An ACK-only inject into a lease with EOF already queued can lose
@@ -17825,6 +17858,11 @@ class JiuWenSwarmDeepAdapter:
 
                 stream = OutputHandoff(self._instance, stream)
                 self._interaction_output_handoff = stream
+                image_binding_tokens = self._bind_turn_image_state(
+                    request, turn_image_files or [],
+                )
+                if image_binding_tokens and image_binding_tokens_out is not None:
+                    image_binding_tokens_out.update(image_binding_tokens)
             mode = self._resolve_input_dispatch_mode(request.params)
             from jiuwenswarm.runtime.execution_telemetry import observe_execution_entry
             observe_execution_entry(request, str((request.params or {}).get("mode")
@@ -17838,6 +17876,9 @@ class JiuWenSwarmDeepAdapter:
             )
             return stream, dispatched
         except BaseException:
+            self._restore_turn_image_state(image_binding_tokens)
+            if image_binding_tokens and image_binding_tokens_out is not None:
+                image_binding_tokens_out.clear()
             self._permission_dispatch.release(inputs)
             if stream is not None:
                 try:
@@ -20288,6 +20329,7 @@ class JiuWenSwarmDeepAdapter:
         if self._stream_event_rail is not None:
             self._stream_event_rail.reset_abort(session_id)
         image_files_token = None
+        image_binding_tokens: dict[str, Any] = {}
         image_tool_fallback_notice: dict[str, Any] | None = None
         _run_span: Any = None
         _run_exception: BaseException | None = None
@@ -20374,9 +20416,8 @@ class JiuWenSwarmDeepAdapter:
                 set_current_multimodal_image_files,
             )
 
-            image_files_token = set_current_multimodal_image_files(
-                inputs.pop("_multimodal_image_files", []) or []
-            )
+            turn_image_files = inputs.pop("_multimodal_image_files", []) or []
+            image_files_token = set_current_multimodal_image_files(turn_image_files)
             # Sync single-agent / coding-agent observability with current
             # config before running, and open a root span so OtelCallbackHandler
             # has a parent for LLM/tool spans (see streaming path for details).
@@ -20428,6 +20469,8 @@ class JiuWenSwarmDeepAdapter:
                         request,
                         inputs,
                         send_without_output=True,
+                        turn_image_files=turn_image_files,
+                        image_binding_tokens_out=image_binding_tokens,
                     )
                 )
             else:
@@ -20436,6 +20479,8 @@ class JiuWenSwarmDeepAdapter:
                         request,
                         inputs,
                         send_without_output=False,
+                        turn_image_files=turn_image_files,
+                        image_binding_tokens_out=image_binding_tokens,
                     )
                 )
                 if interaction_stream is None and not permission_dispatched:
@@ -20554,6 +20599,7 @@ class JiuWenSwarmDeepAdapter:
                 )
 
                 reset_current_multimodal_image_files(image_files_token)
+            self._restore_turn_image_state(image_binding_tokens)
             self._permission_dispatch.finalize(inputs)
             self._unregister_session_agent_task(session_id)
             cleanup_permission_context(token_perm)
@@ -21184,13 +21230,6 @@ class JiuWenSwarmDeepAdapter:
                     payload=image_tool_fallback_notice,
                     is_complete=False,
                 )
-            from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
-                set_current_multimodal_image_files,
-            )
-
-            image_files_token = set_current_multimodal_image_files(
-                inputs.pop("_multimodal_image_files", []) or []
-            )
             # The public stream wrapper owns channel/request identity. Team keeps
             # only its owner-scoped permission context here; background tasks
             # inherit both bindings through the asyncio context snapshot.
@@ -21221,7 +21260,19 @@ class JiuWenSwarmDeepAdapter:
                 getattr(self, "_heartbeat_service", None)
             )
             AUTHORIZATION_EXECUTION_CONTEXTS.activate(authorization_context)
+            image_files_token = None
+            image_binding_tokens: dict[str, Any] | None = None
             try:
+                from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
+                    set_current_multimodal_image_files,
+                )
+
+                turn_image_files = inputs.pop("_multimodal_image_files", []) or []
+                image_files_token = set_current_multimodal_image_files(turn_image_files)
+                if not self._should_inject_into_existing_interaction(request.params):
+                    image_binding_tokens = self._bind_turn_image_state(
+                        request, turn_image_files,
+                    )
                 team_stream = process_team_message_stream(request, inputs, self._instance)
                 async with aclosing(team_stream):
                     async for chunk in team_stream:
@@ -21250,7 +21301,9 @@ class JiuWenSwarmDeepAdapter:
                     reset_current_multimodal_image_files,
                 )
 
-                reset_current_multimodal_image_files(image_files_token)
+                if image_files_token is not None:
+                    reset_current_multimodal_image_files(image_files_token)
+                self._restore_turn_image_state(image_binding_tokens)
                 reset_team_heartbeat_service(token_heartbeat_service)
                 cleanup_permission_context(token_perm)
                 AUTHORIZATION_EXECUTION_CONTEXTS.release(
@@ -21634,6 +21687,7 @@ class JiuWenSwarmDeepAdapter:
         stream_consumer_cancelled = False
         permission_prepare_rejected = False
         image_files_token = None
+        image_binding_tokens: dict[str, Any] = {}
         _run_span: Any = None
         _run_exception: BaseException | None = None
         run_failure: tuple[str, str] | None = None
@@ -21725,9 +21779,8 @@ class JiuWenSwarmDeepAdapter:
                 set_current_multimodal_image_files,
             )
 
-            image_files_token = set_current_multimodal_image_files(
-                inputs.pop("_multimodal_image_files", []) or []
-            )
+            turn_image_files = inputs.pop("_multimodal_image_files", []) or []
+            image_files_token = set_current_multimodal_image_files(turn_image_files)
             # Resolve debug-trace settings early: its otel_enabled drives the
             # OTel force-enable below. Best-effort (config read never raises).
             from jiuwenswarm.server.runtime.debug_trace.config import (
@@ -22010,6 +22063,8 @@ class JiuWenSwarmDeepAdapter:
                         request,
                         inputs,
                         send_without_output=True,
+                        turn_image_files=turn_image_files,
+                        image_binding_tokens_out=image_binding_tokens,
                     )
                 )
                 server_logger.info(
@@ -22044,6 +22099,8 @@ class JiuWenSwarmDeepAdapter:
                         request,
                         inputs,
                         send_without_output=False,
+                        turn_image_files=turn_image_files,
+                        image_binding_tokens_out=image_binding_tokens,
                     )
                 )
                 if interaction_stream is None:
@@ -22686,6 +22743,7 @@ class JiuWenSwarmDeepAdapter:
                 )
 
                 reset_current_multimodal_image_files(image_files_token)
+            self._restore_turn_image_state(image_binding_tokens)
             moa_close_cancellation = None
             try:
                 if moa_stream is not None:
