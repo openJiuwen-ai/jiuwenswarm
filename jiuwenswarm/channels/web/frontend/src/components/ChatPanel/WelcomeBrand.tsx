@@ -30,7 +30,7 @@ function pageBackground(): string {
   return value || (root.getAttribute('data-color-mode') === 'dark' ? '#111111' : '#ffffff');
 }
 
-/** Colour or two-stop gradient for the brand name, kept readable on the current page (Gateway S_08 section 3.3). */
+/** Colour or two-stop gradient for the highlighted text, kept readable on the current page (Gateway S_08 section 3.3). */
 function useHighlightStyle(highlight: readonly string[] | undefined): CSSProperties | undefined {
   const background = useSyncExternalStore(subscribeTheme, pageBackground, () => '#ffffff');
   return useMemo(() => {
@@ -56,6 +56,8 @@ export function WelcomeHeading({ workMode }: { workMode: string }) {
   const suffix = welcomeSuffix(welcome ?? undefined, workMode, i18n.language)
     ?? t(workMode === 'design' ? 'chat.welcomeSuffix.design' : 'chat.welcomeSuffix.work');
   const highlight = useHighlightStyle(welcome?.highlight);
+  // The second half takes the same colour only when the package asks for the whole line.
+  const suffixStyle = welcome?.highlightScope === 'line' ? highlight : undefined;
 
   return (
     <>
@@ -63,7 +65,8 @@ export function WelcomeHeading({ workMode }: { workMode: string }) {
         data-variant={highlight ? 'custom' : 'default'} style={highlight}>
         {identity?.name ?? DEFAULT_BRAND_NAME}
       </span>
-      <span data-testid="chat-panel-welcome-heading-suffix">{suffix}</span>
+      <span data-testid="chat-panel-welcome-heading-suffix" data-variant={suffixStyle ? 'custom' : 'default'}
+        style={suffixStyle}>{suffix}</span>
     </>
   );
 }

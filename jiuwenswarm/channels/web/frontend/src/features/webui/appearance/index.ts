@@ -27,6 +27,7 @@ export type {
   WebUIAppearancePartValue,
   WebUIAppearanceSnapshot,
   WebUIColors,
+  WebUIHighlightScope,
   WebUIIdentity,
   WebUILocalizedText,
   WebUIMascot,

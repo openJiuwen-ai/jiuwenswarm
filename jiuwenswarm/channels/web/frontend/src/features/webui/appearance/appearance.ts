@@ -63,12 +63,17 @@ export interface WebUIIdentity {
   favicon?: string;
 }
 
+/** What the welcome highlight colours: the brand name only, or the whole line. */
+export type WebUIHighlightScope = 'brand' | 'line';
+
 /** The second half of the welcome line, and the colour of the brand name before it. */
 export interface WebUIWelcome {
   default?: WebUILocalizedText;
   modes?: Readonly<Partial<Record<WebUIWelcomeMode, WebUILocalizedText>>>;
   /** One colour, or two for a left-to-right gradient; the host adjusts them for contrast. */
   highlight?: readonly string[];
+  /** 'brand' (the default) colours the brand name; 'line' also the second half. Needs highlight. */
+  highlightScope?: WebUIHighlightScope;
 }
 
 export interface WebUIMascot {
@@ -196,7 +201,8 @@ export function validateIdentity(value: unknown): WebUIIdentity | null {
 }
 
 export function validateWelcome(value: unknown): WebUIWelcome | null {
-  if (!isPlainObject(value) || Object.keys(value).length === 0 || !onlyKeys(value, ['default', 'modes', 'highlight'])) {
+  if (!isPlainObject(value) || Object.keys(value).length === 0
+    || !onlyKeys(value, ['default', 'modes', 'highlight', 'highlightScope'])) {
     return null;
   }
   const result: { -readonly [K in keyof WebUIWelcome]: WebUIWelcome[K] } = {};
@@ -222,6 +228,11 @@ export function validateWelcome(value: unknown): WebUIWelcome | null {
     if (!Array.isArray(colors) || colors.length === 0 || colors.length > MAX_HIGHLIGHT_COLORS
       || !colors.every((color) => typeof color === 'string' && ACCENT.test(color))) return null;
     result.highlight = [...colors];
+  }
+  if ('highlightScope' in value) {
+    const scope = value.highlightScope;
+    if ((scope !== 'brand' && scope !== 'line') || result.highlight === undefined) return null;
+    result.highlightScope = scope;
   }
   return result;
 }
