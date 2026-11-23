@@ -768,6 +768,70 @@ def update_channel_in_config(channel_id: str, conf: dict[str, Any]) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+_CHANNEL_CONFIG_SYNC_SECTIONS = frozenset({"feishu", "dingtalk", "welink"})
+_CHANNEL_APP_LIST_SYNC_SECTIONS = frozenset({"xiaoyi"})
+
+
+def apply_channel_config_snapshot(channels: Any) -> bool:
+    """Merge a Gateway channel snapshot into the local AgentServer config."""
+    if not isinstance(channels, dict) or not channels:
+        return False
+
+    changed = False
+
+    def _mutate(data: dict[str, Any]) -> dict[str, Any] | None:
+        nonlocal changed
+        current = data.get("channels")
+        if not isinstance(current, dict):
+            current = {}
+            data["channels"] = current
+        for channel_id, section in channels.items():
+            if not isinstance(channel_id, str) or not isinstance(section, dict):
+                continue
+            if channel_id == "feishu_enterprise":
+                # feishu_enterprise is a dynamic bot map. Keep only bots present
+                # in the snapshot, while preserving local fields on retained bots.
+                previous = current.get(channel_id)
+                previous = previous if isinstance(previous, dict) else {}
+                merged = {}
+                for bot_id, bot_conf in section.items():
+                    old_bot = previous.get(bot_id)
+                    if isinstance(old_bot, dict) and isinstance(bot_conf, dict):
+                        bot_conf = {**deepcopy(old_bot), **deepcopy(bot_conf)}
+                    else:
+                        bot_conf = deepcopy(bot_conf)
+                    merged[bot_id] = bot_conf
+                current[channel_id] = merged
+                changed = True
+            elif channel_id in _CHANNEL_CONFIG_SYNC_SECTIONS or channel_id in _CHANNEL_APP_LIST_SYNC_SECTIONS:
+                # Gateway owns the app list. Replace apps as a whole; preserve
+                # local-only fields such as dingtalk file settings unless the
+                # snapshot explicitly provides a replacement.
+                target = current.get(channel_id)
+                if not isinstance(target, dict):
+                    target = {}
+                    current[channel_id] = target
+                if "apps" in section:
+                    target["apps"] = deepcopy(section["apps"])
+                elif channel_id in _CHANNEL_CONFIG_SYNC_SECTIONS:
+                    target.pop("apps", None)
+                for key, value in section.items():
+                    if key != "apps":
+                        target[key] = deepcopy(value)
+                changed = True
+            elif "send_file_allowed" in section:
+                target = current.get(channel_id)
+                if not isinstance(target, dict):
+                    target = {}
+                    current[channel_id] = target
+                target["send_file_allowed"] = deepcopy(section["send_file_allowed"])
+                changed = True
+        return data if changed else None
+
+    update_config(_mutate)
+    return changed
+
+
 def _as_plain_yaml_str(value: Any) -> Any:
     """字符串写成无引号 plain scalar，避免顶层/apps 因旧值风格（如 ``''``）不一致。"""
     if isinstance(value, str):

@@ -3386,6 +3386,43 @@ class AgentWebSocketServer:
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
         """Dispatch an already-parsed request. Used by Front after CONTROL_READY."""
+        if request.req_method == ReqMethod.JIUWENMATE_CHANNEL_CONFIG_SYNC:
+            params = request.params if isinstance(request.params, dict) else {}
+            channels = params.get("channels")
+            try:
+                from jiuwenswarm.common.config import apply_channel_config_snapshot
+
+                applied = await asyncio.to_thread(apply_channel_config_snapshot, channels)
+                if applied:
+                    ok, payload = True, {"applied": True}
+                else:
+                    ok, payload = False, {
+                        "applied": False,
+                        "error": "channel snapshot was not applied",
+                        "code": "BAD_REQUEST",
+                    }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[AgentServer] channel config sync failed: %s",
+                    type(exc).__name__,
+                )
+                ok, payload = False, {
+                    "applied": False,
+                    "error": "channel config sync failed",
+                    "code": "INTERNAL_ERROR",
+                }
+            response = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=ok,
+                payload=payload,
+                metadata=request.metadata,
+            )
+            async with send_lock:
+                await send_wire_payload(
+                    ws, encode_agent_response_for_wire(response, response_id=request.request_id)
+                )
+            return
         if request.req_method == ReqMethod.JIUWENMATE_FEISHU_PREPARE:
             params = request.params if isinstance(request.params, dict) else {}
             agent_id = params.get("agent_id")
