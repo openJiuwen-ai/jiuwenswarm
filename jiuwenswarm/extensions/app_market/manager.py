@@ -10,6 +10,7 @@ import shutil
 import time
 import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 from html.parser import HTMLParser
@@ -327,8 +328,29 @@ class AppMarketManager:
                 logger.warning("Could not clear the old Hub metadata for %s", app_id, exc_info=True)
             return {"app_id": app_id, "name": manifest.name, "version": manifest.version}
 
+    @staticmethod
+    def _created_at_key(app: AppManifest) -> datetime:
+        """Parse timestamps emitted by local and Hub registrations."""
+        raw = str(app.created_at or "").strip()
+        if not raw:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        try:
+            value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        except ValueError:
+            return datetime.min.replace(tzinfo=timezone.utc)
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value
+
+    @classmethod
+    def _sorted_apps(cls, apps: list[AppManifest]) -> list[AppManifest]:
+        """Pinned first, then newest registrations; stable within equal times."""
+        ordered = sorted(apps, key=cls._created_at_key, reverse=True)
+        ordered.sort(key=lambda app: not app.pinned)
+        return ordered
+
     def list_apps(self, owner_id: str = "") -> dict[str, Any]:
-        apps = [a for a in self._service.list_apps() if a.owner_id == owner_id]
+        apps = self._sorted_apps([a for a in self._service.list_apps() if a.owner_id == owner_id])
         return {
             "apps": [
                 {
@@ -345,6 +367,7 @@ class AppMarketManager:
                     "status_mode": a.status_mode,
                     "startup_timeout_seconds": a.startup_timeout_seconds,
                     "created_at": a.created_at,
+                    "pinned": bool(a.pinned),
                     "source": a.source,
                     "hub_asset_id": a.hub_asset_id,
                     "artifact_sha256": a.artifact_sha256,
@@ -356,6 +379,18 @@ class AppMarketManager:
                 for a in apps
             ]
         }
+
+    def set_app_pinned(self, app_id: str, owner_id: str = "", pinned: bool = False) -> dict[str, Any]:
+        """Pin or unpin one registration; the list order is recomputed on read."""
+        manifest = self._service.get_app(app_id)
+        if manifest is None or manifest.owner_id != owner_id:
+            raise AppMarketError("not_found", "Application not found")
+        manifest.pinned = bool(pinned)
+        try:
+            self.storage.save_manifest(app_id, manifest)
+        except OSError as exc:
+            raise AppMarketError("app_register_failed", "Could not save the application") from exc
+        return {"app_id": app_id, "pinned": manifest.pinned}
 
     def list_instances(self, owner_id: str = "") -> dict[str, Any]:
         instances = [i for i in self._service.list_instances() if i.owner_id == owner_id]

@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PageHeader } from '../ui';
 import { AppMarketPanel, type AppMarketEditHandler } from './index';
@@ -10,15 +11,18 @@ import { AppMarketPanel, type AppMarketEditHandler } from './index';
  */
 export function AppMarketPage({ onEditApp }: { onEditApp?: AppMarketEditHandler }) {
   const { t } = useTranslation();
+  const [detailOpen, setDetailOpen] = useState(false);
   return (
     <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden" data-testid="app-market-page">
-      <div className="page-shell flex-none">
-        <PageHeader
-          title={t('appMarket.title')}
-          titleTestId="app-market-page-title"
-        />
-      </div>
-      <AppMarketPanel onEdit={onEditApp} />
+      {!detailOpen && (
+        <div className="page-shell flex-none">
+          <PageHeader
+            title={t('appMarket.title')}
+            titleTestId="app-market-page-title"
+          />
+        </div>
+      )}
+      <AppMarketPanel onEdit={onEditApp} onDetailChange={setDetailOpen} />
     </div>
   );
 }

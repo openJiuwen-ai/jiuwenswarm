@@ -48,6 +48,7 @@ class AppManifest:
     permissions: list[str] = field(default_factory=list)
     source_session: str | None = None  # 来源会话 ID
     created_at: str = ""
+    pinned: bool = False
     description: str = ""
     icon_url: str = ""
     owner_id: str = ""
