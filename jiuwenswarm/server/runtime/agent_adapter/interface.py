@@ -115,7 +115,11 @@ class _TeamPlanApprovalPayloadError(ValueError):
     """Raised when a structured team.plan approval payload is malformed."""
 
 
-class _InvalidAnswersTypeError(ValueError):
+class _InvalidChatInputError(ValueError):
+    """Raised when chat input must be rejected before runtime dispatch."""
+
+
+class _InvalidAnswersTypeError(_InvalidChatInputError):
     """Raised when HITL continuation answers is not a list."""
 
 
@@ -1314,6 +1318,16 @@ class JiuWenSwarm:
                     final_query = interactive_input
                     built_user_context = None
                 else:
+                    # Unknown interrupt sources must not silently enter the
+                    # pending runtime with an empty query; team_plan_approval
+                    # keeps its legacy raw-query fallback path.
+                    if source != "team_plan_approval" and (
+                        not isinstance(query, str) or not query.strip()
+                    ):
+                        raise _InvalidChatInputError(
+                            "unsupported interrupt source; "
+                            "supply a non-empty query to start a new turn"
+                        )
                     built = build_user_prompt(
                         query,
                         files=params.get("files", {}),
@@ -2347,7 +2361,12 @@ class JiuWenSwarm:
                 payload={"error": str(exc)},
                 metadata=request.metadata,
             )
-        except _InvalidAnswersTypeError as exc:
+        except _InvalidChatInputError as exc:
+            logger.warning(
+                "[JiuWenSwarm] invalid chat input: request_id=%s error=%s",
+                request.request_id,
+                exc,
+            )
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -2614,7 +2633,12 @@ class JiuWenSwarm:
                 is_complete=True,
             )
             return
-        except _InvalidAnswersTypeError as exc:
+        except _InvalidChatInputError as exc:
+            logger.warning(
+                "[JiuWenSwarm] invalid chat input: request_id=%s error=%s",
+                rid,
+                exc,
+            )
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=cid,
