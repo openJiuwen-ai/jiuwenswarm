@@ -26,7 +26,18 @@ def test_app_web_exports_enterprise_backend(monkeypatch):
         monkeypatch.setenv(name, value)
 
     app = create_enterprise_app()
-    paths = {route.path for route in app.routes}
+    # FastAPI >=0.165 keeps include_router results as _IncludedRouter (no .path);
+    # walk nested original_router.routes so both old and new layouts work.
+    paths: set[str] = set()
+    stack = list(app.routes)
+    while stack:
+        route = stack.pop()
+        path = getattr(route, "path", None)
+        if isinstance(path, str):
+            paths.add(path)
+        nested = getattr(route, "original_router", None)
+        if nested is not None:
+            stack.extend(nested.routes)
     assert {"/ready", "/api/v1/user-console/agent-contexts", "/{path:path}"} <= paths
 
 
