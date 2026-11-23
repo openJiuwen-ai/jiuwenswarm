@@ -20,8 +20,8 @@ from jiuwenswarm.agents.harness.common.prompt.cua_task_prompt import (
     build_cua_task_prompt,
     build_cua_unavailable_prompt,
 )
+from jiuwenswarm.agents.harness.common.rails.symphony.task_tool import SymphonyTaskTool, general_purpose_recipe
 from jiuwenswarm.common.cua_config import is_cua_backend_available
-from .symphony.task_tool import SymphonyTaskTool, general_purpose_recipe
 
 if TYPE_CHECKING:
     from openjiuwen.harness.deep_agent import DeepAgent
