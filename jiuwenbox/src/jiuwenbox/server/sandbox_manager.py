@@ -96,12 +96,28 @@ from jiuwenbox.server.runtime.base import (
     RuntimeFileOpResult,
 )
 from jiuwenbox.server.runtime.process import BackgroundJobNotFoundError, ProcessRuntime
+from jiuwenbox.supervisor.network import NetworkSetupError
 from jiuwenbox.server.workspace import JIUWENBOX_HOME
 from jiuwenbox.server.policy_update_store import PolicyUpdateStore
-from jiuwenbox.server.runtime.errors import SandboxNotFoundError, SandboxConflictError, SandboxStateError
+from jiuwenbox.server.runtime.errors import (
+    SandboxConflictError,
+    SandboxCreateError,
+    SandboxNotFoundError,
+    SandboxStateError,
+)
 
 RUNTIME_PROCESS = "process"
 RUNTIME_CONCH = "conch"
+
+
+def _public_start_error(error: Exception, fallback: str) -> str:
+    if isinstance(error, SandboxCreateError):
+        return error.public_message
+    if isinstance(error, NetworkSetupError):
+        if "xtables lock" in str(error).lower():
+            return "Sandbox network setup failed: xtables lock is busy"
+        return "Sandbox network setup failed"
+    return fallback
 
 
 def normalize_sandbox_runtime(sandbox_runtime: str | None) -> str:
@@ -686,7 +702,7 @@ class SandboxManager:
                 if current_ref is not ref or ref.phase == SandboxPhase.DELETING:
                     return ref
                 ref.phase = SandboxPhase.ERROR
-                ref.error_message = str(e)
+                ref.error_message = _public_start_error(e, "Sandbox backend failed to create the sandbox")
                 ref.ip_address = None
                 logger.error("Failed to create sandbox %s: %s", sandbox_id, e)
                 self._save_state(ref)
@@ -753,7 +769,7 @@ class SandboxManager:
         except Exception as e:
             logger.error("Failed to start sandbox %s: %s", sandbox_id, e, exc_info=True)
             ref.phase = SandboxPhase.ERROR
-            ref.error_message = str(e)
+            ref.error_message = _public_start_error(e, "Sandbox backend failed to start the sandbox")
             ref.ip_address = None
 
         self._save_state(ref)
