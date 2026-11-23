@@ -63,6 +63,13 @@ design_note: 仅修正更新检查的版本基线取值与 PyPI 源对最新版�
   比较新旧，避免每日构建通道永远判定「已是最新」。`PyPIVersionSource`
   选取最新版本也改用 `distribution_sort_key`：发布版本相同时干净发布优先，
   同一条目下的多个日期构建按日期取最新，避免 `max` 在等键时取到最旧条目。
+- 评审第三轮补充：构建日期可能只出现在 PEP 440 local 段
+  （`0.2.9+local.20261119`），而 `_BUILD_DATE_PATTERN` 原先只认 `dev`/`post`
+  段。此时两侧归一化后同为 `0.2.9`、日期都取不到，「双方都带日期」规则不生效，
+  每日构建通道恒判「已是最新」。现让 `_BUILD_DATE_PATTERN` 同时识别
+  `+local.<8位日期>` / `local.<8位日期>`，并让 `PyPIVersionSource` 解析文件名
+  时保留 PEP 440 local 段（此前版本正则会在 `+` 处截断或整条文件名匹配失败，
+  local 日期在源头即丢失）。
 - 不改变 pip 安装命令（仍为 `pip install --upgrade <package>`）、更新源配置与
   前端对 `latest_version` / `published_at` 的展示契约：更新源上最新发布版本
   依旧如实展示，只是状态正确落到「已是最新版本」，且可升级时才展示与
@@ -89,10 +96,18 @@ design_note: 仅修正更新检查的版本基线取值与 PyPI 源对最新版�
   `0.2.9.beta4.dev20261119` 仍能升级到更新的 beta5 构建；
   `0.2.9.dev20261119` 归一化后高于同基线 beta5 构建，不误报升级。
 
+- `test_build_date_suffix_reads_dev_post_and_local_segments`：`.dev<日期>`、
+  `.post<日期>`、`+local.<日期>`、`local.<日期>` 都能取到构建日期；
+  `+local`（无日期）、`+local.abc`、`.dev1`、干净版本返回 0。
+- `test_pip_check_orders_local_daily_builds_by_build_date`：更新源只有
+  `0.2.9+local.20261119` 与 `0.2.9+local.20261120` 时，已安装 1119 能升级到
+  1120；已安装 1120/1121 不回退；干净 `0.2.9` 与同日构建等价；
+  `0.2.8` 仍能升级到 local 构建。
+
 `tests/unit_tests/test_updater_install_mode.py` 中依赖 `updater.__version__`
 的用例改为注入 `updater.get_runtime_version`。
 
-三个测试文件共 89 个用例全部通过（含本轮新增定向用例）。
+三个测试文件共 105 个用例全部通过（含本轮新增定向用例）。
 
 ## 遗留
 

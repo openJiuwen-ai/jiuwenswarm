@@ -73,8 +73,10 @@ _BUILD_SUFFIX_PATTERN = re.compile(
 )
 
 
+# The build date travels either inside a ``dev``/``post`` segment or in the
+# PEP 440 local version daily builds use (``0.2.9+local.20261119``).
 _BUILD_DATE_PATTERN = re.compile(
-    r"(?:dev|post)[.\-_]?(\d{8,})(?!\d)",
+    r"(?:(?:dev|post)[.\-_]?|\+?local[.\-_]?)(\d{8,})(?!\d)",
     re.IGNORECASE,
 )
 
@@ -97,7 +99,12 @@ def strip_build_suffix(version: str) -> str:
 
 
 def build_date_suffix(version: str) -> int:
-    """Return the daily-build date number (``20261119``) or 0 when absent."""
+    """Return the daily-build date number (``20261119``) or 0 when absent.
+
+    Daily wheels carry the date in a ``dev``/``post`` segment
+    (``0.2.9.beta5.dev20261119``) or in the PEP 440 local part
+    (``0.2.9+local.20261119``); both forms identify the build.
+    """
     m = _BUILD_DATE_PATTERN.search((version or "").strip())
     return int(m.group(1)) if m else 0
 
@@ -687,7 +694,13 @@ class PyPIVersionSource(VersionSource):
         versions_by_filename: dict[str, str] = {}
         for entry in whl_entries:
             fn = str(entry.get("filename", ""))
-            m = re.match(rf"{re.escape(self._name)}-([\d.]+(?:[.\-_]?(?:alpha|beta|rc|dev|pre|a|b)(?:\.?\d+)?)*)-", fn)
+            m = re.match(
+                rf"{re.escape(self._name)}-"
+                r"([\d.]+(?:[.\-_]?(?:alpha|beta|rc|dev|pre|a|b)(?:\.?\d+)?)*"
+                r"(?:\+[0-9a-z]+(?:\.[0-9a-z]+)*)?)-",
+                fn,
+                re.IGNORECASE,
+            )
             if m:
                 versions_by_filename[fn] = m.group(1)
         if not versions_by_filename:

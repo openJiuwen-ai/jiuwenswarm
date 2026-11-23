@@ -395,6 +395,8 @@ def test_pip_check_orders_daily_builds_by_build_date(
         ("0.2.9.dev20261119", "0.2.9"),
         ("0.2.5.beta1.dev20261009+local", "0.2.5.beta1"),
         ("0.2.9.post20261119", "0.2.9"),
+        ("0.2.9+local.20261119", "0.2.9"),
+        ("0.2.5.beta1+local.20261009", "0.2.5.beta1"),
         # Release and pre-release versions keep their meaning.
         ("0.2.9b3", "0.2.9b3"),
         ("0.2.9.beta5", "0.2.9.beta5"),
@@ -405,5 +407,76 @@ def test_pip_check_orders_daily_builds_by_build_date(
 def test_strip_build_suffix_keeps_release_version(raw, expected):
     """#6849 review: only build-time suffixes are dropped before ordering."""
     assert version_source.strip_build_suffix(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("0.2.9.beta5.dev20261119", 20261119),
+        ("0.2.9.post20261119", 20261119),
+        ("0.2.9+local.20261119", 20261119),
+        ("0.2.9.local.20261119", 20261119),
+        ("0.2.5.beta1+local.20261009", 20261009),
+        # No 8-digit build date: the segment is not a dated daily build.
+        ("0.2.9+local", 0),
+        ("0.2.9+local.abc", 0),
+        ("0.2.9.dev1", 0),
+        ("0.2.9", 0),
+    ],
+)
+def test_build_date_suffix_reads_dev_post_and_local_segments(raw, expected):
+    """#6849 review: the +local daily channel must expose its build date."""
+    assert version_source.build_date_suffix(raw) == expected
+
+
+@pytest.mark.parametrize(
+    ("installed", "expected_latest", "has_update"),
+    [
+        # The next day's +local build is an upgrade of the same release.
+        ("0.2.9+local.20261119", "0.2.9+local.20261120", True),
+        # The same build is not an upgrade; an older one must never be offered.
+        ("0.2.9+local.20261120", "0.2.9+local.20261120", False),
+        ("0.2.9+local.20261121", "0.2.9+local.20261120", False),
+        # A dated build and its clean release are equivalent.
+        ("0.2.9", "0.2.9+local.20261120", False),
+        # A build cut from a newer release is still an upgrade.
+        ("0.2.8", "0.2.9+local.20261120", True),
+    ],
+)
+def test_pip_check_orders_local_daily_builds_by_build_date(
+    monkeypatch, installed, expected_latest, has_update
+):
+    """#6849 review: the +local daily channel must not look always up to date."""
+
+    def fake_urlopen(request, timeout):
+        del request, timeout
+        return JsonResponse({
+            "files": [
+                {
+                    "filename": "workswarm-0.2.9+local.20261119-py3-none-any.whl",
+                    "url": "../../p/workswarm-0.2.9+local.20261119-py3-none-any.whl",
+                    "upload-time": "2026-11-19T02:36:00Z",
+                },
+                {
+                    "filename": "workswarm-0.2.9+local.20261120-py3-none-any.whl",
+                    "url": "../../p/workswarm-0.2.9+local.20261120-py3-none-any.whl",
+                    "upload-time": "2026-11-20T02:36:00Z",
+                },
+            ],
+        })
+
+    monkeypatch.setattr(updater, "get_config_raw", lambda: {"updater": {"enabled": True}})
+    monkeypatch.setattr(updater, "get_runtime_version", lambda: installed)
+    monkeypatch.setattr(version_source, "urlopen", fake_urlopen)
+
+    status = updater.UpdaterService().check(manual=True)
+
+    assert status["current_version"] == installed
+    assert status["latest_version"] == expected_latest
+    assert status["has_update"] is has_update
+    expected_asset = (
+        f"workswarm-{expected_latest}-py3-none-any.whl" if has_update else ""
+    )
+    assert status["matched_asset"] == expected_asset
 
 
