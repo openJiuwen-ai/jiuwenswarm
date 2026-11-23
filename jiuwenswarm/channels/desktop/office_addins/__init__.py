@@ -16,7 +16,7 @@ import sys
 import threading
 import uuid
 from collections.abc import Callable, Collection, Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, TypeVar
 
@@ -52,8 +52,9 @@ Problem = Literal[
 ]
 
 # An app this machine does not have yet is not a problem of the suite: the suite installs into the
-# apps it finds, and installing again after the app has run once adds it.
-AppState = Literal["installed", "not_installed", "host_not_found"]
+# apps it finds, and installing again after the app has run once adds it. An app older than its
+# manifest requires would never load the pane, so the suite leaves it out the same way.
+AppState = Literal["installed", "not_installed", "host_not_found", "host_outdated"]
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,8 @@ class SuiteStatus:
     installed: bool
     problems: tuple[Problem, ...]
     apps: dict[str, AppState]
+    # The version each ``host_outdated`` app must be updated to.
+    required: dict[str, str] = field(default_factory=dict)
 
 
 def _user_id_file(workspace: Path) -> Path:
@@ -114,7 +117,10 @@ def _machine(workspace: Path) -> tuple[TlsFiles, TrustStore, dict[str, Registrat
     if sys.platform == "win32":
         registry = WinRegistry()
         trust: TrustStore = certificate.WindowsTrustStore()
-        registrations = {app: WindowsRegistration(workspace / "office-addin", registry, app) for app in HOSTS}
+        registrations = {
+            app: WindowsRegistration(workspace / "office-addin", registry, app, registry.office_version)
+            for app in HOSTS
+        }
         wps_base, wps_editions = Path(os.environ["APPDATA"]), WPS_WINDOWS_EDITIONS
     else:
         home = Path.home()
@@ -211,7 +217,7 @@ class OfficeAddins:
     def install(self, suite: str) -> SuiteStatus:
         with self._lock:
             refused: list[str] = []
-            hosts = _per_app(self.suites[suite].apps, lambda app: self._registrations[app].host_found(), refused)
+            hosts = _per_app(self.suites[suite].apps, self._ready, refused)
             apps = [app for app, found in hosts.items() if found]
             if not apps or (self.suites[suite].https and not self._serve_https()):
                 return self._status(suite, refused)
@@ -280,13 +286,20 @@ class OfficeAddins:
         template = (self._office_dist / manifest_name(app)).read_text(encoding="utf-8")
         return render_manifest(app, template, self._listener.origin, user_id)
 
-    def _observe(self, app: str, user_id: str | None) -> tuple[bool, str | None, bool]:
-        """Whether the host is here, its registration, and whether that points elsewhere than this process."""
+    def _ready(self, app: str) -> bool:
+        """Whether ``app`` is here and new enough to load its pane."""
+        registration = self._registrations[app]
+        return registration.host_found() and registration.outdated() is None
+
+    def _observe(self, app: str, user_id: str | None) -> tuple[bool, str | None, str | None, bool]:
+        """Whether the host is here, the version it must be updated to, its registration, and whether that points
+        elsewhere than this process.
+        """
         registration = self._registrations[app]
         registered = registration.read()
         # WPS urls carry no user id; an Office manifest is current only with this install's one.
         stale = registered is not None and registered != self._manifest(app, user_id or "")
-        return registration.host_found(), registered, stale
+        return registration.host_found(), registration.outdated(), registered, stale
 
     def _status(self, suite: str, refused: Collection[str] = ()) -> SuiteStatus:
         """``refused``: apps whose registration the system refused to write or delete just now."""
@@ -295,12 +308,16 @@ class OfficeAddins:
         observed = _per_app(self.suites[suite].apps, lambda app: self._observe(app, user_id), unreadable)
         found: list[Problem] = []
         apps: dict[str, AppState] = {}
+        required: dict[str, str] = {}
         for app in self.suites[suite].apps:
-            host_found, registered, stale = observed.get(app, (True, None, False))
+            host_found, outdated, registered, stale = observed.get(app, (True, None, None, False))
             if app in refused or app in unreadable:
                 found.append("permission_denied")
             if not host_found:
                 apps[app] = "host_not_found"
+                continue
+            if outdated is not None:
+                apps[app], required[app] = "host_outdated", outdated
                 continue
             if stale:
                 found.append("stale_origin")
@@ -309,7 +326,7 @@ class OfficeAddins:
             found += self._https_problems(registered="installed" in apps.values())
         states = set(apps.values())
         installed = "installed" in states and "not_installed" not in states
-        return SuiteStatus(installed=installed, problems=tuple(dict.fromkeys(found)), apps=apps)
+        return SuiteStatus(installed=installed, problems=tuple(dict.fromkeys(found)), apps=apps, required=required)
 
     def _https_problems(self, *, registered: bool) -> list[Problem]:
         if not self._tls.exist():

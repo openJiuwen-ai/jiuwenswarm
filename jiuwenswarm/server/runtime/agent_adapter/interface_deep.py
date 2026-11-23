@@ -3065,7 +3065,7 @@ class JiuWenSwarmDeepAdapter:
             .strip()
             .split("_", 1)[0],
         ]
-        return any(
+        return self._leaves_out(Capability.SCHEDULING) or any(
             not is_heartbeat_supported(candidate)
             for candidate in candidates
             if candidate
@@ -3082,7 +3082,7 @@ class JiuWenSwarmDeepAdapter:
             .strip()
             .split("_", 1)[0],
         ]
-        return any(
+        return self._leaves_out(Capability.SCHEDULING) or any(
             not is_scheduled_task_supported(candidate)
             for candidate in candidates
             if candidate
@@ -6108,7 +6108,9 @@ class JiuWenSwarmDeepAdapter:
 
     def _leaves_out(self, capability: Capability) -> bool:
         """Whether this conversation's client app builds its agent without ``capability``."""
-        return capability in self._instance_overrides.get("left_out_capabilities", frozenset())
+        # A bare-built adapter (some unit tests set only the fields they need) belongs to no client app.
+        overrides = getattr(self, "_instance_overrides", {})
+        return capability in overrides.get("left_out_capabilities", frozenset())
 
     def _skill_include_tools_for_profile(self) -> bool:
         if self._is_acp_tool_profile(self._instance_overrides):
