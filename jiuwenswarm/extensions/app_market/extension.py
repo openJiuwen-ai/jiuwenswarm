@@ -130,6 +130,24 @@ class AppMarketPlugin(ApplicationPluginExtension):
                 ws, req_id, ok=False, error=str(exc), code=code, payload=payload
             )
 
+        async def handle_pin(ws, req_id, params, session_id):  # noqa: ANN001
+            del session_id
+            params = params if isinstance(params, dict) else {}
+            app_id = params.get("app_id")
+            if _invalid_app_id(app_id):
+                await channel.send_response(ws, req_id, ok=False, error="app_id is required", code="BAD_REQUEST")
+                return
+            pinned = params.get("pinned")
+            if not isinstance(pinned, bool):
+                await channel.send_response(ws, req_id, ok=False, error="pinned must be boolean", code="BAD_REQUEST")
+                return
+            try:
+                result = self._manager.set_app_pinned(app_id, owner(ws), pinned)
+            except AppMarketError as exc:
+                await send_market_error(ws, req_id, exc)
+                return
+            await channel.send_response(ws, req_id, ok=True, payload=result)
+
         async def handle_start(ws, req_id, params, session_id):  # noqa: ANN001
             del session_id
             params = params if isinstance(params, dict) else {}
@@ -381,6 +399,7 @@ class AppMarketPlugin(ApplicationPluginExtension):
         channel.register_method("app_market.convert_to_local", handle_convert_to_local)
         channel.register_method("app_market.publish", handle_publish)
         channel.register_method("app_market.list", handle_list)
+        channel.register_method("app_market.pin", handle_pin)
         channel.register_method("app_market.instances", handle_instances)
         channel.register_method("app_market.resources", handle_resources)
         channel.register_method("app_market.start", handle_start)

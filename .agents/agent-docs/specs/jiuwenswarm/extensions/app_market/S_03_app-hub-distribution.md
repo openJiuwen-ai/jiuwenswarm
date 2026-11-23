@@ -82,10 +82,10 @@ files:
 
 ## 生命周期 RPC
 
-- 新增 `app_market.market_list/market_detail/install_dir_default/install/install_status/install_cancel/update/uninstall`；安装与更新共用 `job_id`、`state`（`queued/running/done/failed/cancelled`）与 `phase`（`resolving/downloading/verifying/extracting/committing/registering/done`）。
+- 新增 `app_market.market_list/market_detail/install_dir_default/install/install_status/install_cancel/update/uninstall`；安装与更新共用 `job_id`、`state`（`queued/running/done/failed/cancelled`）与 `phase`（`resolving/downloading/verifying/extracting/committing/registering/done`）。`app_market.pin` 按所有者切换应用的 `pinned` 状态并持久化到清单。
 - 同一应用存在进行中的安装/更新任务时，重复 `install/update` 返回现有 `job_id`；启动返回 `app_operation_conflict`。
 - 所有写操作按连接所有者校验；任务查询、取消、更新、卸载均拒绝跨所有者访问。提交点之后的取消返回最终状态。
-- `app_market.list` 为每个应用返回 `work_dir_missing`；目录缺失时前端禁用启动/编辑，并为 Hub 来源提供“重新安装”（删除失效登记后回到市场）。本地应用保留登记，恢复原目录后可继续使用。
+- `app_market.list` 为每个应用返回 `work_dir_missing` 和 `pinned`；列表先展示置顶应用，再按 `created_at` 从新到旧排列。目录缺失时前端禁用启动/编辑，并为 Hub 来源提供“重新安装”（删除失效登记后回到市场）。本地应用保留登记，恢复原目录后可继续使用。
 - 更新与启动、编辑入口和卸载按应用互斥。更新先准备新版本，检查编辑会话是否忙碌，停止实例并复制 `data/` 和 `.git` 到新目录。原工作树（含未提交编辑）完整保存在安装根的 `.app-archive/`，成功响应返回 `backup_dir`。
 - 卸载先停止实例并移除应用市场登记，默认保留本地程序文件、数据、项目与 Git 历史。用户选择清理时，市场验证应用目录归属、归档 `data/` 和 `.git`，再删除程序目录。归属核验、归档或删除失败时，卸载 RPC 仍成功，并通过 `cleanup_warning` 和 `work_dir` 提示检查本地文件。旧安装可在首次成功更新后获得发布标记。既有 `app_market.delete` 对 Hub 应用使用默认卸载行为。
 
