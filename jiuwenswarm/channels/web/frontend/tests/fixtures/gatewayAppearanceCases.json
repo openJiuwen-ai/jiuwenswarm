@@ -758,6 +758,70 @@
     "valid": true
   },
   {
+    "name": "welcome highlight over the whole line",
+    "appearance": {
+      "welcome": {
+        "default": {
+          "zh": "今天也要高效协作！"
+        },
+        "highlight": [
+          "#6a5ae0",
+          "#2aa8c9"
+        ],
+        "highlightScope": "line"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "welcome highlight on the brand name stated",
+    "appearance": {
+      "welcome": {
+        "highlight": [
+          "#b45309"
+        ],
+        "highlightScope": "brand"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "welcome highlight scope without highlight",
+    "appearance": {
+      "welcome": {
+        "default": {
+          "zh": "你好"
+        },
+        "highlightScope": "line"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "welcome highlight scope unknown",
+    "appearance": {
+      "welcome": {
+        "highlight": [
+          "#b45309"
+        ],
+        "highlightScope": "suffix"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "welcome highlight scope as a boolean",
+    "appearance": {
+      "welcome": {
+        "highlight": [
+          "#b45309"
+        ],
+        "highlightScope": true
+      }
+    },
+    "valid": false
+  },
+  {
     "name": "welcome highlight as a plain string",
     "appearance": {
       "welcome": {

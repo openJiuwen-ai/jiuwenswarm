@@ -5088,9 +5088,29 @@ test('the brand name follows the welcome highlight as a colour or a gradient', a
       assert.match(brand().style.backgroundImage, /linear-gradient\(90deg, #5b4fc4, #/);
       assert.equal(brand().style.color, 'transparent');
       // The suffix keeps the host text colour; only the brand name changes.
-      assert.equal(view.query('chat-panel-welcome-heading-suffix').getAttribute('style'), null);
-      await act(async () => transport.appearance({ revision: 3, parts: {} }));
+      const suffix = () => view.query('chat-panel-welcome-heading-suffix');
+      assert.equal(suffix().getAttribute('style'), null);
+      assert.equal(suffix().dataset.variant, 'default');
+      // highlightScope 'line' colours the second half the same way.
+      await act(async () => transport.appearance({ revision: 3, parts: {
+        welcome: { package_id: 'pkg.theme', value: {
+          default: { zh: '今天也要高效协作！', en: 'Make today count!' },
+          highlight: ['#5b4fc4', '#17b893'], highlightScope: 'line',
+        } },
+      } }));
+      assert.equal(suffix().dataset.variant, 'custom');
+      assert.equal(suffix().style.backgroundImage, brand().style.backgroundImage);
+      assert.equal(suffix().style.color, 'transparent');
+      await act(async () => transport.appearance({ revision: 4, parts: {
+        welcome: { package_id: 'pkg.theme', value: { highlight: ['#5b4fc4'], highlightScope: 'brand' } },
+      } }));
+      // React clears the properties and leaves an empty style attribute behind.
+      assert.equal(suffix().style.cssText, '');
+      assert.equal(suffix().dataset.variant, 'default');
+      assert.equal(brand().style.color, 'rgb(91, 79, 196)');
+      await act(async () => transport.appearance({ revision: 5, parts: {} }));
       assert.equal(brand().dataset.variant, 'default');
+      assert.equal(suffix().dataset.variant, 'default');
     } finally {
       await view.unmount();
     }
