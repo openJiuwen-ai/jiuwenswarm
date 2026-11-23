@@ -711,6 +711,7 @@ from jiuwenswarm.agents.harness.common.tools.archive_tools import (
     extract_archive,
     inspect_archive,
 )
+from jiuwenswarm.agents.harness.common.tools.diff_tools import diff_files
 from jiuwenswarm.agents.harness.common.tools.docx_tools import read_docx
 from jiuwenswarm.agents.harness.common.tools.pdf_tools import read_pdf
 from jiuwenswarm.agents.harness.common.tools.pptx_tools import read_pptx
@@ -14238,6 +14239,7 @@ class JiuWenSwarmDeepAdapter:
             read_pptx,
             inspect_archive,
             extract_archive,
+            diff_files,
         ]:
             self._register_shared_tool(wtool)
             tool_cards.append(wtool.card)
