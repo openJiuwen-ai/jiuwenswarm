@@ -970,9 +970,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         # 与 430「todo 纪律」段的两套工具名冲突会复现。
         rail_infos.append(_RailBuildInfo(
             "_skill_protocol_prompt_rail",
-            lambda: _build_skill_protocol_prompt_rail(
-                disabled_tools_provider=self._read_disabled_tools,
-            ),
+            _build_skill_protocol_prompt_rail,
         ))
         rails = super()._instantiate_rails(rail_infos, config_base)
         selection = self._build_flash_skill_selection_rail(config_base)
@@ -1221,7 +1219,6 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
 
             return FlashSkillRail(
                 config_provider=lambda: self._flash_config("skill_catalog", {}),
-                disabled_tools_provider=self._read_disabled_tools,
                 fallback_skills_provider=self._read_fallback_skills,
                 **kwargs,
             )

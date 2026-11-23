@@ -283,7 +283,6 @@ class FlashSkillRail(DeepAgentRail):
         skills_dirs: Optional[list[str]] = None,
         catalog_description_max_length: int = _DEFAULT_DESCRIPTION_MAX_LENGTH,
         catalog_max_entries: int = _DEFAULT_MAX_ENTRIES,
-        disabled_tools_provider: Any = None,
         fallback_skills_provider: Any = None,
         config_provider: Any = None,
     ) -> None:
@@ -296,7 +295,6 @@ class FlashSkillRail(DeepAgentRail):
             raise ValueError("skill-catalog: catalog_max_entries 必须 >= 1")
         self._description_max_length = catalog_description_max_length
         self._max_entries = catalog_max_entries
-        self._disabled_tools_provider = disabled_tools_provider
         self._fallback_skills_provider = fallback_skills_provider
         self._config_provider = config_provider
 
@@ -344,7 +342,6 @@ class FlashSkillRail(DeepAgentRail):
             return
 
         language = self._resolve_language()
-        todo_disabled = self._todo_disabled()
         manifest = self._resolve_manifest()
         manifest_entries: list[tuple[str, str]] | None = None
         if manifest is not None:
@@ -377,14 +374,14 @@ class FlashSkillRail(DeepAgentRail):
         # 避免「H1 段顶 → H3 子块」跳级；收口器统一重锚 H2 后即为「## 加载 → ### 子块」。
         loading_base = _LOADING_CN if language == "cn" else _LOADING_EN
         loading_extra = _extract_loading_blocks(
-            _build_skill_protocol_section_text(language, todo_disabled=todo_disabled), language,
+            _build_skill_protocol_section_text(language), language,
         )
         if loading_extra is not None:
             loading_extra = _promote_h3_to_h2(loading_extra)
 
         # 730 技能执行规范：9 条执行纪律（⚠️ 已并入第 9 条）。
         execution_rules = _extract_execution_rules(
-            _build_skill_protocol_section_text(language, todo_disabled=todo_disabled), language,
+            _build_skill_protocol_section_text(language), language,
         )
 
         if (loading_extra is None or execution_rules is None) and not self._warned_extract_miss:
@@ -477,16 +474,6 @@ class FlashSkillRail(DeepAgentRail):
     def _resolve_language(self) -> str:
         lang = getattr(self._system_prompt_builder, "language", None) or "cn"
         return "cn" if lang in ("cn", "zh") else "en"
-
-    def _todo_disabled(self) -> bool:
-        """每轮现读禁用工具集，判断 todo 是否被禁（决定 730 是否去掉「必须使用 todo」）。"""
-        provider = self._disabled_tools_provider
-        if provider is None:
-            return False
-        try:
-            return "todo" in set(provider() or ())
-        except Exception:
-            return False
 
     def _fallback_skills(self) -> list[tuple[str, str]]:
         """从 fallback provider 取实际已加载技能 (name, description)（评审 #3）。"""

@@ -166,19 +166,22 @@ async def test_before_model_call_non_dict_content_noop() -> None:
 
 
 # ── 3. todo 禁用时删掉「必须使用 todo」整条（评审 #2） ─────────────────────
-def test_build_protocol_text_todo_disabled() -> None:
-    """_build_skill_protocol_section_text(todo_disabled=True) 去掉 todo 强制规则。"""
+def test_strip_todo_rules_removes_mandatory_todo() -> None:
+    """flash 本地 _strip_todo_rules 去掉 todo 强制规则（评审 #2）。"""
     from jiuwenswarm.agents.harness.common.rails.skill_protocol_prompt_rail import (
         _build_skill_protocol_section_text,
     )
+    from jiuwenswarm.agents.harness.flash.rails.flash_skill_protocol_rail import (
+        _strip_todo_rules,
+    )
 
-    cn = _build_skill_protocol_section_text("cn", todo_disabled=True)
-    en = _build_skill_protocol_section_text("en", todo_disabled=True)
+    cn = _strip_todo_rules(_build_skill_protocol_section_text("cn"), "cn")
+    en = _strip_todo_rules(_build_skill_protocol_section_text("en"), "en")
     assert "必须使用 todo" not in cn
     assert "todo_create" not in cn and "todo_modify" not in cn
     assert "Use todo (mandatory)" not in en
     assert "todo_create" not in en and "todo_modify" not in en
-    # 未禁用时保留规则 2。
+    # 未剥离时保留规则 2。
     assert "必须使用 todo" in _build_skill_protocol_section_text("cn")
     assert "Use todo (mandatory)" in _build_skill_protocol_section_text("en")
 

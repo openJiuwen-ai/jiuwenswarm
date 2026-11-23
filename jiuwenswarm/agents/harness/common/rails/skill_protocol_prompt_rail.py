@@ -12,7 +12,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any
 
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
@@ -125,73 +124,8 @@ Then execute the workflow; the rules below govern execution.
 """
 
 
-def _strip_todo_rules(text: str, language: str) -> str | None:
-    """todo 禁用时删掉「必须使用 todo」整条（规则 2）并把规则 9 的 todo 引用改中性。
-
-    锚点守卫：规则 2 的起止锚点任一缺失即返回 ``None``（调用方保留原正文），避免
-    上游改文案后盲删导致整段丢失。规则 9 的引用替换是 best-effort——替换不到就
-    保留原句、不抛错。
-    """
-    if language == "cn":
-        rule2 = "2. **必须使用 todo**："
-        rule3 = "\n3. **严格顺序**"
-        neutral2 = "2. **无需维护 todo**：当前环境未启用 todo 工具，本任务无需创建或更新 todo 列表。"
-    else:
-        rule2 = "2. **Use todo (mandatory)**:"
-        rule3 = "\n3. **Strict order**"
-        neutral2 = (
-            "2. **No todo needed**: the todo tool is disabled in this environment; "
-            "do not create or update a todo list for this task."
-        )
-
-    idx2 = text.find(rule2)
-    idx3 = text.find(rule3)
-    if idx2 < 0 or idx3 < 0 or idx2 >= idx3:
-        return None
-    text = text[:idx2] + neutral2 + text[idx3:]
-
-    if language == "cn":
-        text = text.replace(
-            "先用 `todo_modify` 把所有 `in_progress`/`pending` 项标为 `cancelled`，再回应新请求。",
-            "直接回应新请求。",
-        )
-        text = text.replace(
-            "按第 2 条的适用规则处理 todo，不要沿用旧 todo。",
-            "不要沿用旧任务步骤。",
-        )
-        # 720 加载块 TTSE 排序语境下的 todo 字样一并中性化（best-effort）。
-        text = text.replace("不得与技能或 todo 工具同批调用", "不得与技能同批调用")
-        text = text.replace("、todo 及新任务清理旧 todo 的顺序要求", "及新任务清理旧步骤的顺序要求")
-    else:
-        text = re.sub(
-            r"abandoned: first call\s+`todo_modify` to mark every "
-            r"`in_progress`/`pending` item `cancelled`, then respond to the new request\.",
-            "abandoned: respond to the new request directly.",
-            text,
-        )
-        text = re.sub(
-            r"handle todos under the applicable rules in item 2\s+instead of reusing the old one\.",
-            "do not reuse the old task steps.",
-            text,
-        )
-        # 720 加载块 TTSE 排序语境下的 todo 字样一并中性化（best-effort）。
-        text = text.replace("skill or todo tools", "skill")
-        text = text.replace(", todo, and old-todo cleanup rules", ", and old-step cleanup rules")
-    return text
-
-
-def _build_skill_protocol_section_text(language: str, todo_disabled: bool = False) -> str:
-    """返回技能执行规范正文；``todo_disabled`` 时去掉「必须使用 todo」等 todo 规则。"""
-    text = _CN_PROTOCOL if language == "cn" else _EN_PROTOCOL
-    if not todo_disabled:
-        return text
-    stripped = _strip_todo_rules(text, language)
-    if stripped is not None:
-        return stripped
-    logger.warning(
-        "[SkillProtocol] _strip_todo_rules 锚点未命中，todo 禁用时保留原「必须使用 todo」正文"
-    )
-    return text
+def _build_skill_protocol_section_text(language: str) -> str:
+    return _CN_PROTOCOL if language == "cn" else _EN_PROTOCOL
 
 
 class SkillProtocolPromptRail(DeepAgentRail):
@@ -199,20 +133,9 @@ class SkillProtocolPromptRail(DeepAgentRail):
 
     priority = 8
 
-    def __init__(self, disabled_tools_provider: Any = None) -> None:
+    def __init__(self) -> None:
         super().__init__()
         self.system_prompt_builder: Any = None
-        self._disabled_tools_provider = disabled_tools_provider
-
-    def _todo_disabled(self) -> bool:
-        """每轮现读禁用工具集，判断 todo 是否被禁（provider 缺省时 false = 保留 Deep 默认行为）。"""
-        provider = self._disabled_tools_provider
-        if provider is None:
-            return False
-        try:
-            return "todo" in set(provider() or ())
-        except Exception:
-            return False
 
     def init(self, agent: Any) -> None:
         self.system_prompt_builder = getattr(agent, "system_prompt_builder", None)
@@ -250,9 +173,7 @@ class SkillProtocolPromptRail(DeepAgentRail):
 
         language = self._resolve_language()
         try:
-            protocol_text = _build_skill_protocol_section_text(
-                language, todo_disabled=self._todo_disabled(),
-            )
+            protocol_text = _build_skill_protocol_section_text(language)
             self.system_prompt_builder.add_section(PromptSection(
                 name=_SKILL_PROTOCOL_SECTION_NAME,
                 content={language: protocol_text},
