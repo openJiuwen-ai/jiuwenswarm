@@ -257,6 +257,11 @@ def persist_exact_permission_allow_rule(
             _, target_asks = _check_approval_accesses(baseline, name, args, root)
             if not target_asks.issubset(set(accesses)):
                 raise PermissionApprovalInvalidated("approval_target_scope_changed")
+            from jiuwenswarm.agents.harness.common.rails.permissions.shell_path_context import current_shell_paths
+
+            shell_paths = current_shell_paths(name, args)
+            if shell_paths is not None and shell_paths.blocks_remember(target_asks):
+                raise PermissionRememberUnavailable("approval_rule_unavailable")
             current = session if session_only else user
             updated = deepcopy(current)
             level, _ = evaluate_tiered_policy(baseline, name, args)

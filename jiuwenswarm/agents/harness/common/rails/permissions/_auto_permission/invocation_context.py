@@ -6,8 +6,8 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
-from types import SimpleNamespace
-from typing import Any
+from types import MethodType, SimpleNamespace
+from typing import TYPE_CHECKING, Any
 
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.sys_operation.cwd import _cwd_state, get_cwd, get_workspace
@@ -48,6 +48,9 @@ from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
     ROOT_PERMISSION_QUEUE_USER_INPUT_KEY,
 )
+
+if TYPE_CHECKING:
+    from jiuwenswarm.agents.harness.common.rails.permissions.shell_path_context import ShellPathScope
 
 _SEND_FILE_TOOL_NAME = "send_file_to_user"
 
@@ -530,9 +533,31 @@ def _replace_invocation_tool_args(
     )
 
 
+def _has_empty_execution_overlay(resolver: Any) -> bool:
+    """Recognize SDK and Host resolvers that add no environment at dispatch."""
+    if resolver is None:
+        return True
+    if not isinstance(resolver, MethodType):
+        return False
+    from openjiuwen.harness.schema.build_context import BuildContext
+
+    if resolver.__func__ is BuildContext.resolve_execution_environment:
+        return isinstance(resolver.__self__, BuildContext)
+
+    from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+
+    return (
+        resolver.__func__ is SwarmBuildContext.resolve_execution_environment
+        and isinstance(resolver.__self__, SwarmBuildContext)
+        and not resolver.__self__.execution_settings_managed
+    )
+
+
 def _normalize_command_invocation_for_execution(
     invocation: ToolInvocation,
     kwargs: dict[str, Any],
+    *,
+    shell_path_scope: ShellPathScope | None = None,
 ) -> tuple[ToolInvocation, str]:
     """Freeze the supported shell executor's actual directory without aliases."""
 
@@ -585,6 +610,12 @@ def _normalize_command_invocation_for_execution(
         _write_invocation_tool_args(invocation, kwargs, execution_args)
     except (AttributeError, RuntimeError, TypeError, ValueError):
         return invocation, "command_workdir_writeback_failed"
+    if invocation.tool_name == "bash" and shell_path_scope is not None:
+        manager = invocation.ctx.agent.ability_manager
+        if hasattr(manager, "execution_environment_resolver") and _has_empty_execution_overlay(
+            manager.execution_environment_resolver,
+        ):
+            shell_path_scope.bind(tool, execution_args)
     return _replace_invocation_tool_args(invocation, execution_args), ""
 
 
