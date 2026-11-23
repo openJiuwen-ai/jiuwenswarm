@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Legacy migration pages close cancelled requests without splitting tool batches."""
+"""Legacy migration pages close terminal requests without splitting tool batches."""
 
 import json
 
@@ -11,7 +11,9 @@ from jiuwenswarm.server.runtime.session import context_migration as migration
 from jiuwenswarm.server.runtime.session import context_snapshot as snapshots
 from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
 from jiuwenswarm.server.runtime.session.history_stream import iter_history_rows
-from tests.unit_tests.test_context_snapshots import stored as stored, user
+from tests.unit_tests.test_context_snapshots import stored as snapshot_storage, user
+
+stored = snapshot_storage
 
 
 def _call(request_id, call_id):
@@ -124,6 +126,60 @@ def test_record_paging_waits_for_a_parallel_tool_batch(stored):
     assert pages[1] == [user("next")]
 
 
+@pytest.mark.parametrize("suffix", [".jsonl", ".json"])
+def test_large_independent_record_uses_the_previous_safe_page_boundary(stored, suffix):
+    rows = [user("small", "a" * (450 * 1024)), user("large", "b" * (3700 * 1024)), user("next")]
+    path = stored.path.with_suffix(suffix)
+    if suffix == ".json":
+        path.write_text(json.dumps(rows), encoding="utf-8")
+    else:
+        stored.write(rows)
+    original = path.read_bytes()
+    offsets = [row.end for row in iter_history_rows(path, session_id=stored.sid)]
+    pending = {"offset": 0, "done": False, "had_compaction": False}
+    iterator = iter_history_rows(path, session_id=stored.sid)
+    try:
+        for record, offset in zip(rows, offsets, strict=True):
+            assert migration._next_page(iterator, pending, None, set()) == [record]
+            assert pending["offset"] == offset
+        assert pending["done"]
+    finally:
+        iterator.close()
+    assert path.read_bytes() == original
+
+
+def test_deferred_tool_group_preserves_cancellation_scope_and_exact_cursor(stored, monkeypatch):
+    monkeypatch.setattr(migration, "_PAGE_AT_RECORDS", 3)
+    monkeypatch.setattr(migration, "_MAX_PAGE_RECORDS", 4)
+    legacy_call = _call("active", "orphan")
+    legacy_call.pop("request_id")
+    summary = {"event_type": "context.compact_summary", "request_id": "active"}
+    rows = [user("previous"), _completion("previous", "success"), user("active"),
+            legacy_call, _call("active", "paired"), summary, _result("active", "paired"),
+            _completion("active"), user("covered"), user("stop")]
+    stored.write(rows)
+    offsets = [(row.start, row.end) for row in iter_history_rows(stored.path, session_id=stored.sid)]
+    pending = {"offset": 0, "done": False, "had_compaction": False}
+    iterator = iter_history_rows(stored.path, session_id=stored.sid)
+    try:
+        def read_page():
+            return migration._next_page(iterator, pending, "stop", {"covered"})
+
+        assert read_page() == [rows[0], rows[2]]
+        assert pending["offset"] == offsets[2][1]
+        assert pending["legacy_request_scope"] == ("active",)
+        assert not pending["had_compaction"]
+        assert read_page() == [legacy_call, rows[4], rows[6]]
+        assert pending["offset"] == offsets[7][1]
+        assert pending["legacy_request_scope"] == ()
+        assert pending["had_compaction"]
+        assert read_page() == []
+        assert pending["done"]
+        assert pending["offset"] == offsets[9][0]
+    finally:
+        iterator.close()
+
+
 def test_cancellation_only_closes_its_own_request_even_with_reused_tool_ids(stored):
     stored.write(
         [
@@ -138,7 +194,8 @@ def test_cancellation_only_closes_its_own_request_even_with_reused_tool_ids(stor
         _read_pages(stored.path, stored.sid)
 
 
-def test_cancellation_preserves_reasoning_and_completed_parallel_results(stored):
+@pytest.mark.parametrize("status", ["success", "error", "failed", "cancelled"])
+def test_terminal_receipt_preserves_reasoning_and_completed_parallel_results(stored, status):
     from jiuwenswarm.agents.harness.common.session_ops_service import (
         _build_context_messages_from_history,
     )
@@ -153,7 +210,7 @@ def test_cancellation_preserves_reasoning_and_completed_parallel_results(stored)
         _call("cancelled", "completed"),
         _call("cancelled", "orphan"),
         _result("cancelled", "completed", "KEEP_RESULT"),
-        _completion("cancelled"),
+        _completion("cancelled", status),
         user("next"),
     ]
     stored.write(rows)
@@ -176,18 +233,97 @@ def test_cancellation_preserves_reasoning_and_completed_parallel_results(stored)
     [
         _completion("other"),
         _completion(""),
-        _completion("pending", "success"),
+        _completion("pending", "success") | {"id": "other:request_completed"},
+        _completion("pending", "success") | {"id": ""},
+        _completion("pending", "success") | {"feedback_only": False},
+        _completion("pending", "error") | {"timestamp": "invalid"},
+        _completion("pending", "cancelled") | {"timestamp": None},
+        _completion("pending", "failed") | {"role": "teammate"},
+        _completion("pending", "unknown"),
         _completion("pending", "waiting_user"),
         _completion("pending", "running"),
     ],
 )
-def test_unrelated_or_non_cancelled_completion_does_not_hide_unfinished_calls(
+def test_unrelated_or_unconfirmed_completion_does_not_hide_unfinished_calls(
     stored, completion
 ):
     stored.write([_call("pending", "unfinished"), completion, user("next")])
 
     with pytest.raises(HistoryReplayError, match="unfinished tool group"):
         _read_pages(stored.path, stored.sid)
+
+
+@pytest.mark.parametrize("role", ["assistant", "teammate"])
+def test_success_receipt_releases_legacy_calls_without_matching_tool_results(stored, role):
+    call = _call("request", "orphan") | {"role": role}
+    interrupt = {
+        "id": "interrupt:assistant", "role": "assistant", "request_id": "interrupt",
+        "event_type": "chat.tool_result", "content": "",
+    }
+    rows = [user("request"), call, interrupt, _completion("request", "success")]
+    tail = [user(f"next-{i}", "small") for i in range(2050)]
+    stored.write(rows + tail)
+    original = stored.path.read_bytes()
+
+    pages, pending = _read_pages(stored.path, stored.sid)
+
+    expected = [rows[0], call, interrupt] if role == "assistant" else [rows[0], interrupt]
+    assert [r for page in pages for r in page] == expected + tail
+    assert pending["done"] and pending["offset"] == len(original)
+    assert stored.path.read_bytes() == original
+
+
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+def test_team_display_calls_do_not_own_model_pairs(stored, role):
+    from jiuwenswarm.agents.harness.common.session_ops_service import _build_context_messages_from_history
+
+    display = _call("team", "shared") | {"role": role}
+    model_call = _call("model", "shared")
+    model_result = _result("model", "shared")
+    rows = [display, user("model"), model_call, model_result]
+    stored.write(rows)
+    pages, _ = _read_pages(stored.path, stored.sid)
+    records = [r for page in pages for r in page]
+    assert records == rows[1:]
+    messages, _ = _build_context_messages_from_history(records)
+    assert [call.id for msg in messages if isinstance(msg, AssistantMessage) for call in msg.tool_calls] == ["shared"]
+    assert [msg.tool_call_id for msg in messages if isinstance(msg, ToolMessage)] == ["shared"]
+
+    stored.write([model_call, model_result | {"role": role}, _completion("other", "success")])
+    with pytest.raises(HistoryReplayError, match="unfinished tool group"):
+        _read_pages(stored.path, stored.sid)
+
+
+@pytest.mark.parametrize("anonymous_result", [False, True])
+def test_receipt_before_late_tool_result_keeps_the_pair(stored, anonymous_result):
+    from jiuwenswarm.agents.harness.common.session_ops_service import _build_context_messages_from_history
+
+    call = _call("original", "late")
+    result = _result("original", "late")
+    if anonymous_result:
+        result.pop("request_id")
+    rows = [user("original"), call, _completion("original", "success"), user("other"), result]
+    stored.write(rows)
+
+    pages, _ = _read_pages(stored.path, stored.sid)
+    messages = [m for page in pages for m in _build_context_messages_from_history(page)[0]]
+    assert any(isinstance(m, AssistantMessage) and m.tool_calls[0].id == "late" for m in messages)
+    assert [m.content for m in messages if isinstance(m, ToolMessage)] == ["result"]
+
+
+def test_team_display_bytes_and_invalid_calls_do_not_consume_model_group_budget(stored, monkeypatch):
+    monkeypatch.setattr(migration, "_MAX_CONTEXT_BYTES", 1000)
+    call = _call("model", "real")
+    result = _result("model", "real")
+    display = {"role": "teammate", "event_type": "chat.final", "content": "x" * 2048}
+    invalid = _call("model", "ignored") | {"tool_call": {"id": "audit-object"}}
+    rows = [invalid, call, display, result, user("next")]
+    stored.write(rows)
+    original = stored.path.read_bytes()
+
+    pages, pending = _read_pages(stored.path, stored.sid)
+    assert [r for page in pages for r in page] == [call, result, rows[-1]]
+    assert pending["offset"] == len(original) and stored.path.read_bytes() == original
 
 
 def test_result_from_another_request_does_not_close_a_tool_call(stored):
@@ -288,19 +424,36 @@ def test_completed_requests_do_not_make_a_later_legacy_call_ambiguous(stored):
     assert [record for page in pages for record in page] == rows[:3] + rows[4:6]
 
 
-@pytest.mark.parametrize("budget", ["bytes", "records"])
-def test_an_oversized_unclosed_group_still_fails(stored, budget):
-    rows = [_call("pending", "tool")]
-    if budget == "bytes":
-        rows.extend(user("pending", "x" * (1024 * 1024)) for _ in range(4))
+@pytest.mark.parametrize("case", ["single", "open_bytes", "open_records", "closed_bytes"])
+def test_indivisible_history_limit_reports_only_counts_and_offsets(stored, monkeypatch, caplog, case):
+    secret = "private-history-marker"
+    prefix = [user("prior"), _completion("prior", "success")]
+    if case == "single":
+        monkeypatch.setattr(migration, "_MAX_CONTEXT_BYTES", 1024)
+        group = [user(secret, "x" * 1100)]
+    elif case == "closed_bytes":
+        monkeypatch.setattr(migration, "_MAX_CONTEXT_BYTES", 1024)
+        group = [_call(secret, "private-tool-id"), _result(secret, "private-tool-id", "x" * 1100)]
+    elif case == "open_bytes":
+        group = [_call(secret, "private-tool-id")] + [user(secret, "x" * (1024 * 1024)) for _ in range(4)]
     else:
-        rows.extend(user("pending", "small") for _ in range(2048))
-    stored.write(rows + [_completion("pending")])
+        group = [_call(secret, "private-tool-id")] + [user(secret, "small") for _ in range(2048)]
+    stored.write(prefix + group + [_completion(secret)])
+    spans = [(r.start, r.end) for r in iter_history_rows(stored.path, session_id=stored.sid)]
+    size = sum(len(json.dumps(record, ensure_ascii=False).encode("utf-8")) for record in group)
 
-    with pytest.raises(HistoryReplayError) as error:
+    with pytest.raises(HistoryReplayError, match="A legacy tool group exceeds the migration budget") as error:
         _read_pages(stored.path, stored.sid)
 
     assert error.value.code == "HISTORY_RESTORE_LIMIT"
+    warnings = [record.getMessage() for record in caplog.records if record.name == migration.__name__]
+    assert warnings == [
+        f"history migration limit: unit={'single_record' if case == 'single' else 'tool_group'} "
+        f"byte_limit_exceeded={case != 'open_records'} record_limit_exceeded={case == 'open_records'} "
+        f"counted_bytes={size} records={len(group)} unmatched_calls={int(case.startswith('open_'))} "
+        f"start_offset={spans[len(prefix)][0]} end_offset={spans[-2][1]}"
+    ]
+    assert secret not in caplog.text and "private-tool-id" not in caplog.text
 
 
 def test_completion_keeps_the_excluded_request_and_covered_prefix_out_of_the_page(

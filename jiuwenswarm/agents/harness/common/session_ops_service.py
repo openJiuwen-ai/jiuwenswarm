@@ -1,7 +1,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 from __future__ import annotations
 
-import asyncio
+import codecs
 import copy
 import json
 import logging
@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,7 +26,9 @@ from jiuwenswarm.server.runtime.session.history_replay import (
     HistoryReplayCursor,
     HistoryReplayError,
     read_history_replay,
+    try_prefetch_history_prefix,
 )
+from jiuwenswarm.server.runtime.session.recovery_budget import LegacyGroupLimit, LegacyLimitSource
 from jiuwenswarm.server.runtime.session.session_history import (
     flush_history_writes,
     get_read_history_path,
@@ -41,6 +43,10 @@ if TYPE_CHECKING:
     from openjiuwen.harness import DeepAgent
 
 logger = logging.getLogger(__name__)
+
+# Speculative reads run alongside adapter assembly, before recovery admission.
+# Larger files are decoded only by the admitted restore.
+_MAX_HISTORY_PREFETCH_BYTES = 128 * 1024
 
 
 @dataclass(frozen=True)
@@ -90,38 +96,29 @@ def prefetch_session_history(
 
     if has_snapshot_hint(session_id):
         return None
+    owner = None
+
+    def eligible(path: Path, size: int, state: dict[str, Any]) -> bool:
+        nonlocal owner
+        owner = _history_runtime_owner(state)
+        return (
+            owner is not None and not state.get("write_blocked")
+            and size <= _MAX_HISTORY_PREFETCH_BYTES
+            and _path_has_recovery_prefix(path, session_id, boundary, size)
+        )
+
     try:
-        with lc.resource_lock("session", session_id):
-            lc.guard(session_id)
-            value = lc.state("session", session_id)
-            owner = _history_runtime_owner(value)
-            if owner is None or value.get("write_blocked"):
-                return None
-            path = get_read_history_path(session_id)
-            if not path.exists():
-                return None
-            identity = _history_file_identity(path)
-            batch = read_history_replay(session_id, before_request_id=boundary)
-            records = batch.records
-            if get_read_history_path(session_id) != path or identity != _history_file_identity(path):
-                return None
-            if not any(
-                str(record.get("request_id") or "").strip() == boundary
-                and record.get("role") in {"user", "human"}
-                for record in records
-            ):
-                return None
-            return SessionHistorySnapshot(
-                session_id, boundary, int(value.get("generation", 0)), owner,
-                path, identity, tuple(records), batch.prefix_cursor,
-            )
-    except HistoryReplayError as exc:
-        if exc.code == "HISTORY_RESTORE_LIMIT":
-            # The live Session (available after start_interaction) is needed
-            # for controlled migration and its real configured compressor.
+        batch = try_prefetch_history_prefix(session_id, boundary, eligible)
+        if batch is None or owner is None:
             return None
-        raise
+        if not any(record.get("role") in {"user", "human"}
+                   and str(record.get("request_id") or "").strip() == boundary for record in batch.records):
+            return None
+        cursor = batch.prefix_cursor
+        return SessionHistorySnapshot(session_id, boundary, cursor.generation, owner, cursor.path,
+                                      cursor.identity, tuple(batch.records), cursor)
     except Exception as exc:
+        # The admitted restore rereads the source and reports any authoritative error.
         logger.debug("session history pre-read unavailable for %s: %s", session_id, exc)
         return None
 
@@ -144,6 +141,82 @@ def _history_snapshot_is_current(
             )
     except Exception:
         return False
+
+
+def _legacy_limit_source_is_current(source: LegacyLimitSource) -> bool:
+    try:
+        cursor = source.cursor
+        with lc.resource_lock("session", source.session_id, blocking=False):
+            lc.guard(source.session_id)
+            state = lc.state("session", source.session_id)
+            return (
+                not state.get("write_blocked")
+                and int(state.get("generation", 0)) == cursor.generation
+                and get_read_history_path(source.session_id) == cursor.path
+                and _history_file_identity(cursor.path) == cursor.identity
+            )
+    except Exception:
+        # An unverifiable cached limit must defer to the admitted history reader.
+        return False
+
+
+def _has_recovery_prefix(session_id: str, boundary: str) -> bool:
+    """Check if a restore might be needed without materializing history payloads."""
+    try:
+        # This speculative check runs before recovery admission. A busy lock
+        # must defer to the admitted reader, never occupy the shared executor.
+        with lc.resource_lock("session", session_id, blocking=False):
+            if not history_exists(session_id):
+                return False
+            lc.guard(session_id)
+            path = get_read_history_path(session_id)
+            return _path_has_recovery_prefix(path, session_id, boundary, path.stat().st_size)
+    except (OSError, ValueError, lc.LifecycleError):
+        return True
+
+
+def _path_has_recovery_prefix(path: Path, session_id: str, boundary: str, size: int) -> bool:
+    from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayLimits
+    from jiuwenswarm.server.runtime.session.history_stream import iter_history_rows
+
+    if not size:
+        return False
+    if not boundary and size > _MAX_HISTORY_PREFETCH_BYTES:
+        return True
+    if size > HistoryReplayLimits().max_record_bytes:
+        return True
+    jsonl = path.suffix.lower() == ".jsonl"
+    try:
+        with closing(iter_history_rows(path, session_id=session_id, metadata_only=True, end=size)) as rows:
+            first = next(rows, None)
+            if first is None:
+                if not jsonl:
+                    return False  # The scanner consumed and validated the entire empty array.
+                # A BOM on an otherwise blank JSONL line is a nonempty, invalid
+                # record for the line-oriented reader. Ordinary whitespace is empty.
+                with path.open("rb") as source:
+                    return source.read(len(codecs.BOM_UTF8)) == codecs.BOM_UTF8
+            if (not boundary or first.record.get("role") not in {"user", "human"}
+                    or str(first.record.get("request_id") or "").strip() != boundary):
+                return True
+            if not jsonl:
+                # Verify the closing array and any trailing whitespace. Leave
+                # longer tails to the admitted reader.
+                return size - first.end > _MAX_HISTORY_PREFETCH_BYTES or next(rows, None) is not None
+            if first.end != size:
+                return True
+            # The migration scanner accepts multiline objects. Only bypass for
+            # one complete physical JSONL record, including any leading BOM.
+            with path.open("rb") as source:
+                remaining = first.value_end
+                while remaining:
+                    chunk = source.read(min(65536, remaining))
+                    if not chunk or b"\n" in chunk:
+                        return True
+                    remaining -= len(chunk)
+            return False
+    except (HistoryReplayError, ValueError, TypeError, RecursionError):
+        return True
 
 _FORK_HISTORY_SESSION_KEYS = frozenset({
     "session_id",
@@ -1605,6 +1678,7 @@ async def warmup_session_context(
     history_before_request_id: str | None = None,
     history_snapshot: SessionHistorySnapshot | None = None,
     refresh_existing: bool = False,
+    prior_limit: LegacyLimitSource | None = None,
 ) -> bool:
     """Restart-safe restore of context_engine messages from on-disk history.
 
@@ -1647,27 +1721,53 @@ async def warmup_session_context(
         # 内存上下文已存在（进程未重启 / 已 warmup / rewind 重建过）
         return True
 
-    session = resolve_live_agent_session(deep_agent, session_id)
-    if session is not None and callable(getattr(session, "get_state", None)):
-        from jiuwenswarm.server.runtime.session.context_snapshot import restore_checkpoint_context
+    from jiuwenswarm.server.runtime.session.context_snapshot import has_checkpoint_reference, restore_checkpoint_context
+    from jiuwenswarm.server.runtime.session.recovery_budget import admit_context_recovery
 
-        if await restore_checkpoint_context(
+    session = live_session
+    get_state = getattr(session, "get_state", None)
+    boundary_request_id = str(history_before_request_id or "").strip()
+    same_failed_prefix = (
+        prior_limit is not None and prior_limit.session_id == session_id
+        and prior_limit.before_request_id == boundary_request_id
+        and callable(get_state) and callable(getattr(session, "commit", None))
+        and await run_history_io(_legacy_limit_source_is_current, prior_limit)
+    )
+    has_snapshot = callable(get_state) and has_checkpoint_reference(session)
+    if same_failed_prefix and not has_snapshot:
+        logger.info("Reused overlapping legacy group limit: session=%s", session_id)
+        raise LegacyGroupLimit(prior_limit)
+    if not has_snapshot and not await run_history_io(_has_recovery_prefix, session_id, boundary_request_id):
+        return False
+
+    async with admit_context_recovery(session_id):
+        existing_context = context_engine.get_context(session_id=session_id)
+        if existing_context is not None and not refresh_existing:
+            return True
+        # Another owner may have published a checkpoint while this request waited.
+        if callable(get_state) and await restore_checkpoint_context(
             context_engine=context_engine, session=session, processors=_get_context_processors(react_agent),
             before_request_id=history_before_request_id,
         ):
             return True
+        return await _restore_history_prefix(
+            deep_agent, session_id, react_agent, context_engine, session, existing_context,
+            boundary_request_id, history_snapshot, refresh_existing,
+        )
 
-    boundary_request_id = str(history_before_request_id or "").strip()
+
+async def _restore_history_prefix(
+    deep_agent: "DeepAgent", session_id: str, react_agent: Any, context_engine: Any,
+    session: Any, existing_context: Any, boundary_request_id: str,
+    history_snapshot: SessionHistorySnapshot | None, refresh_existing: bool,
+) -> bool:
     replay_cursor = None
-    if history_snapshot is not None and _history_snapshot_is_current(
-        history_snapshot, session_id, boundary_request_id,
+    if history_snapshot is not None and await run_history_io(
+        _history_snapshot_is_current, history_snapshot, session_id, boundary_request_id,
     ):
         history_records = list(history_snapshot.records)
         replay_cursor = history_snapshot.replay_cursor
     else:
-        if not history_exists(session_id):
-            # 全新会话，磁盘无历史，静默跳过
-            return False
         try:
             batch = await run_history_io(read_history_replay, session_id,
                                          before_request_id=boundary_request_id)
@@ -1678,7 +1778,7 @@ async def warmup_session_context(
 
             return await migrate_history_context(
                 context_engine=context_engine, session=session, processors=_get_context_processors(react_agent),
-                before_request_id=history_before_request_id,
+                before_request_id=boundary_request_id,
             )
         except MemoryError as exc:
             raise HistoryReplayError("Insufficient memory while reading restored history",
@@ -1697,7 +1797,7 @@ async def warmup_session_context(
 
         return await migrate_history_context(
             context_engine=context_engine, session=session, processors=_get_context_processors(react_agent),
-            before_request_id=history_before_request_id,
+            before_request_id=boundary_request_id,
         )
 
     if not isinstance(history_records, list) or not history_records:

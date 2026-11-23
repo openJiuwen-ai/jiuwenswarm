@@ -1929,6 +1929,7 @@ class AgentRuntime:
         admission_started = False
         events: list[RuntimeEvent] = []
         agent: Any = None
+        plan_state_ready = False
         execution_error: Exception | None = None
         cancellation: asyncio.CancelledError | None = None
         readonly_goal_get = self._is_readonly_goal_get_request(request)
@@ -1976,6 +1977,7 @@ class AgentRuntime:
                         sub_mode,
                         agent,
                     )
+                    plan_state_ready = True
                     await self._emit_control_events(
                         request,
                         plan_result.events,
@@ -2017,7 +2019,7 @@ class AgentRuntime:
             admission_error: BaseException | None = None
             end_error: BaseException | None = None
             try:
-                if agent is not None and not stateless and not readonly_goal_get:
+                if plan_state_ready:
                     await self._emit_control_events(
                         request,
                         await self._plan_controller.check_post_process_exit(
@@ -2659,6 +2661,7 @@ class AgentRuntime:
         error: Exception | None = None
         cancellation: asyncio.CancelledError | None = None
         generator_exit: GeneratorExit | None = None
+        plan_state_ready = False
         supersede_attempted = False
         mailbox_turn = background and isinstance(
             (request.params or {}).get(SESSION_MESSAGE_INTERNAL_KEY), dict
@@ -2713,6 +2716,7 @@ class AgentRuntime:
                         sub_mode,
                         agent,
                     )
+                    plan_state_ready = True
                     control_events = self._control_events(request, plan_result.events)
                     if on_control_event is not None:
                         for event in control_events:
@@ -2800,11 +2804,8 @@ class AgentRuntime:
             plan_error: BaseException | None = None
             admission_error: BaseException | None = None
             end_error: BaseException | None = None
-            should_check_plan_exit = (
-                agent is not None and not stateless and not readonly_goal_get
-            )
             try:
-                if should_check_plan_exit:
+                if plan_state_ready:
                     control_events = self._control_events(
                         request,
                         await self._plan_controller.check_post_process_exit(

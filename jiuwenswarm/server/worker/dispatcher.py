@@ -168,7 +168,7 @@ class WorkerDispatcher:
             # Loop-driven fallback: the named-pipe fast path already answered
             # this ping off-loop, so this branch serves stream transports.
             beat_age = self._beat.age if self._beat is not None else None
-            await conn.send(heartbeat_reply(beat_age))
+            await conn.send(heartbeat_reply(beat_age, probe_id=message.get("probe_id")))
             return True
         if kind == KIND_DELIVERY_ACK:
             self._bridge.acknowledge(message)

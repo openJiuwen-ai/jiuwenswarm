@@ -12,12 +12,13 @@ the session directory (pod recycled).
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import logging
 import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
+
+import portalocker
 
 if TYPE_CHECKING:
     from jiuwenswarm.enterprise.team.control_store import OwnerIdentity
@@ -495,13 +496,18 @@ def _owner_session_dir(owner: OwnerIdentity, session_id: str) -> Path:
 @contextmanager
 def _sweep_lock(volume: Path) -> Iterator[None]:
     """One AgentServer replica sweeps at a time. The purge itself is idempotent."""
-    handle = open(volume / _SWEEP_LOCK_NAME, "a+")
-    try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-        yield
-    finally:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        handle.close()
+    with (volume / _SWEEP_LOCK_NAME).open("a+") as handle:
+        while True:
+            try:
+                portalocker.lock(handle, portalocker.LOCK_EX)
+                break
+            except portalocker.AlreadyLocked:
+                # Windows blocking byte-range locks have a finite retry period.
+                continue
+        try:
+            yield
+        finally:
+            portalocker.unlock(handle)
 
 
 def reconcile_teams_with_sessions(*, identity: OwnerIdentity | None = None) -> int:

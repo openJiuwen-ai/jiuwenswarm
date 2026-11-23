@@ -458,12 +458,26 @@ async def _prepare_context_snapshot_locked(*, context_engine: Any, session: Any,
     return states
 
 
+def has_checkpoint_reference(session: Any) -> bool:
+    """Classify failures reading the native reference before entering admission."""
+    try:
+        return isinstance(session.get_state(SNAPSHOT_KEY), dict)
+    except HistoryReplayError:
+        raise
+    except MemoryError as exc:
+        raise HistoryReplayError("Insufficient memory for context restore", code="HISTORY_RESTORE_RESOURCE") from exc
+    except Exception as exc:
+        raise HistoryReplayError("The committed context could not be restored") from exc
+
+
 async def restore_checkpoint_context(*, context_engine: Any, session: Any, processors: Any,
                                       before_request_id: str | None) -> bool:
     from jiuwenswarm.server.runtime.session.recovery_budget import admit_context_recovery
 
     try:
-        async with admit_context_recovery():
+        if not has_checkpoint_reference(session):
+            return False
+        async with admit_context_recovery(str(session.get_session_id())):
             return await _restore_checkpoint_context(context_engine=context_engine, session=session,
                                                       processors=processors, before_request_id=before_request_id)
     except HistoryReplayError:
