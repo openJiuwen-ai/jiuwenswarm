@@ -1,0 +1,1 @@
+"""REA setup Gateway extension."""
