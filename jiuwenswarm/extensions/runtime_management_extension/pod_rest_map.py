@@ -204,6 +204,10 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("plugins.uninstall", "DELETE", "/plugins/{name}"),
     ("plugins.enable", "POST", "/plugins/{name}/actions/enable"),
     ("plugins.disable", "POST", "/plugins/{name}/actions/disable"),
+    # 统一资产导入导出：包体经 /file-api/assets/upload-temp 上传、
+    # /file-api/download 短效链接下载，此处只登记控制面 RPC。
+    ("assets.export", "POST", "/assets/export"),
+    ("assets.import", "POST", "/assets/import"),
     ("schedule.check_config", "GET", "/schedule/config"),
     ("schedule.update_config", "PATCH", "/schedule/config"),
     ("schedule.list", "GET", "/schedule/tasks"),

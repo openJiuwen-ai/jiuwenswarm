@@ -297,6 +297,38 @@ function handleFileStreamError(res: ServerResponse, error: NodeJS.ErrnoException
   }))
 }
 
+/** 从 multipart/form-data 请求体中取出 file 字段；找不到时返回 null。 */
+function readMultipartFileField(
+  body: Buffer,
+  contentType: string,
+): { buffer: Buffer; filename: string } | null {
+  const boundaryMatch = contentType.match(/boundary=(?:"([^"]+)"|([^;]+))/)
+  if (!boundaryMatch) return null
+  const boundary = boundaryMatch[1] || boundaryMatch[2]
+  const boundaryBuf = Buffer.from(`--${boundary}`)
+  let start = body.indexOf(boundaryBuf)
+  if (start === -1) return null
+  start += boundaryBuf.length
+
+  while (start < body.length) {
+    const nextBoundary = body.indexOf(boundaryBuf, start)
+    if (nextBoundary === -1) break
+    const part = body.slice(start, nextBoundary)
+    start = nextBoundary + boundaryBuf.length
+    const headerEnd = part.indexOf('\r\n\r\n')
+    if (headerEnd === -1) continue
+    const header = part.slice(0, headerEnd).toString('utf-8')
+    const nameMatch = header.match(/name="([^"]+)"/)
+    if (!nameMatch || nameMatch[1] !== 'file') continue
+    const filenameMatch = header.match(/filename="([^"]+)"/)
+    return {
+      buffer: part.slice(headerEnd + 4, part.length - 2),
+      filename: filenameMatch ? filenameMatch[1] : 'upload.bin',
+    }
+  }
+  return null
+}
+
 function resolveFileDownloadSecret(): string | null {
   const envSecret = process.env.JIUWENSWARM_FILE_DOWNLOAD_SECRET
   if (envSecret && envSecret.length >= 32) return envSecret
@@ -1726,6 +1758,64 @@ function devFileContentApi(): Plugin {
             res.statusCode = 500
             res.setHeader('content-type', 'application/json; charset=utf-8')
             res.end(JSON.stringify({ error: (error as Error).message }))
+          }
+        })
+      })
+
+      // 资产包上传：接收 multipart 文件，保存到临时目录，返回文件路径
+      // （开发态替代 app_web.py 的 /file-api/assets/upload-temp，错误响应带契约码）。
+      // 前端拿到路径后再通过 RPC 调用 assets.import。
+      server.middlewares.use('/file-api/assets/upload-temp', (req, res) => {
+        if (req.method !== 'POST') {
+          res.statusCode = 405
+          res.setHeader('content-type', 'application/json; charset=utf-8')
+          res.end(JSON.stringify({ code: 'ASSET_INVALID_PACKAGE', message: 'method_not_allowed', error: 'method_not_allowed' }))
+          return
+        }
+
+        const contentType = req.headers['content-type'] || ''
+        const chunks: Buffer[] = []
+
+        req.on('data', (chunk: Buffer) => chunks.push(chunk))
+        req.on('end', () => {
+          try {
+            const body = Buffer.concat(chunks)
+            let fileBuffer: Buffer | null = null
+            let filename = 'upload.zip'
+
+            if (contentType.includes('multipart/form-data')) {
+              const parsed = readMultipartFileField(body, contentType)
+              if (parsed) {
+                fileBuffer = parsed.buffer
+                filename = parsed.filename
+              }
+            } else {
+              fileBuffer = body
+              const url = new URL(req.url || '/file-api/assets/upload-temp', 'http://localhost')
+              const nameParam = url.searchParams.get('filename')
+              if (nameParam) filename = nameParam
+            }
+
+            if (!fileBuffer || fileBuffer.length === 0) {
+              res.statusCode = 400
+              res.setHeader('content-type', 'application/json; charset=utf-8')
+              res.end(JSON.stringify({ code: 'ASSET_INVALID_PACKAGE', message: '缺少 file 字段', error: '缺少 file 字段' }))
+              return
+            }
+
+            const tmpDir = path.join(os.tmpdir(), 'jiuwenswarm_asset_upload')
+            fs.mkdirSync(tmpDir, { recursive: true })
+            const safeName = path.basename(filename).replace(/[^a-zA-Z0-9._-]/g, '_')
+            const tempPath = path.join(tmpDir, `${Date.now()}_${safeName}`)
+            fs.writeFileSync(tempPath, fileBuffer)
+
+            res.statusCode = 200
+            res.setHeader('content-type', 'application/json; charset=utf-8')
+            res.end(JSON.stringify({ path: tempPath }))
+          } catch (error) {
+            res.statusCode = 500
+            res.setHeader('content-type', 'application/json; charset=utf-8')
+            res.end(JSON.stringify({ code: 'INTERNAL_ERROR', message: (error as Error).message, error: (error as Error).message }))
           }
         })
       })

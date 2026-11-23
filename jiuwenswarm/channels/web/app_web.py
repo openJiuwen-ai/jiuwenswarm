@@ -2073,6 +2073,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
         try:
             from jiuwenswarm.agents.harness.common.tools.web_file_download import (
+                PURPOSE_ASSET_EXPORT,
                 PURPOSE_SKILL_CONTENT_IMAGE,
                 validate_file_download_token,
             )
@@ -2126,6 +2127,12 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 return
             self._serve_verified_local_download(str(file_path), inline=True)
             return
+        # 资产导出 token 为短时效令牌，不享受交付产物的过期豁免：过期即 403，
+        # 未过期则继续走下方通用文件桥（含 AgentOS 代理）。
+        if payload is not None and str(payload.get("purpose") or "") == PURPOSE_ASSET_EXPORT:
+            if validate_file_download_token(token, check_expiry=True) is None:
+                self._write_json(403, {"error": "invalid_or_expired_token"})
+                return
         verified_download_name: str | None = None
         if payload is not None:
             # 本进程 secret 能校验并不意味着 token 的路径位于 Gateway 宿主机。
@@ -2528,6 +2535,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/file-api/skills/upload-temp":
             self._handle_skills_upload_temp()
             return
+        if parsed.path == "/file-api/assets/upload-temp":
+            self._handle_assets_upload_temp()
+            return
         if parsed.path == "/file-api/external-cli/custom-agents":
             self._handle_custom_agent_upload()
             return
@@ -2639,6 +2649,32 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         )
 
         status, payload = handle_skills_upload_temp_http(
+            content_type=self.headers.get("Content-Type", ""),
+            body=self._read_request_body(),
+        )
+        self._write_json(status, payload)
+
+    def _handle_assets_upload_temp(self) -> None:
+        from jiuwenswarm.server.runtime.assets.upload_http import (
+            MAX_ASSETS_UPLOAD_BYTES,
+            handle_assets_upload_temp_http,
+        )
+
+        length = self._parse_content_length()
+        if length > MAX_ASSETS_UPLOAD_BYTES:
+            # 不消费请求体就提前应答会复位连接，浏览器收不到 413 JSON
+            # 而报 "Failed to fetch"（与 _handle_designer_upload 同一处理）。
+            self._discard_request_body(length)
+            self._write_json(
+                413,
+                {
+                    "code": "ASSET_LIMIT_EXCEEDED",
+                    "message": "upload too large",
+                    "error": "upload too large",
+                },
+            )
+            return
+        status, payload = handle_assets_upload_temp_http(
             content_type=self.headers.get("Content-Type", ""),
             body=self._read_request_body(),
         )
