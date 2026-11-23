@@ -5053,3 +5053,46 @@ test('a ready for one changed package does not touch the first-paint record', as
     }
   });
 });
+
+test('the welcome highlight stays readable on light and dark pages', () => {
+  const { readableOn, readableHighlight, contrastRatio, parseColor } = appearanceModule;
+  const light = [245, 247, 249];
+  const dark = [17, 17, 17];
+  for (const color of ['#ffdd00', '#17b893', '#5b4fc4', '#ffffff', '#000000']) {
+    const rgb = parseColor(color);
+    assert.ok(contrastRatio(readableOn(rgb, light), light) >= 3, `${color} on light`);
+    assert.ok(contrastRatio(readableOn(rgb, dark), dark) >= 3, `${color} on dark`);
+  }
+  // A colour that already reads well is kept as given.
+  assert.deepEqual(readableHighlight(['#5b4fc4'], light), ['#5b4fc4']);
+  assert.notDeepEqual(readableHighlight(['#ffdd00'], light), ['#ffdd00'], 'pale yellow is darkened on a light page');
+  assert.deepEqual(readableHighlight(['#5b4fc4', 'red'], light), ['#5b4fc4'], 'unreadable values are dropped');
+});
+
+test('the brand name follows the welcome highlight as a colour or a gradient', async () => {
+  await withBrandRecords(async () => {
+    const transport = splashTransport({});
+    const view = await renderBrandSpots(transport);
+    const brand = () => view.query('chat-panel-welcome-heading-brand');
+    try {
+      assert.equal(brand().dataset.variant, 'default');
+      assert.equal(brand().getAttribute('style'), null, 'the host colour applies without a highlight');
+      await act(async () => transport.appearance({ revision: 1, parts: {
+        welcome: { package_id: 'pkg.theme', value: { highlight: ['#5b4fc4'] } },
+      } }));
+      assert.equal(brand().dataset.variant, 'custom');
+      assert.equal(brand().style.color, 'rgb(91, 79, 196)');
+      await act(async () => transport.appearance({ revision: 2, parts: {
+        welcome: { package_id: 'pkg.theme', value: { highlight: ['#5b4fc4', '#17b893'] } },
+      } }));
+      assert.match(brand().style.backgroundImage, /linear-gradient\(90deg, #5b4fc4, #/);
+      assert.equal(brand().style.color, 'transparent');
+      // The suffix keeps the host text colour; only the brand name changes.
+      assert.equal(view.query('chat-panel-welcome-heading-suffix').getAttribute('style'), null);
+      await act(async () => transport.appearance({ revision: 3, parts: {} }));
+      assert.equal(brand().dataset.variant, 'default');
+    } finally {
+      await view.unmount();
+    }
+  });
+});

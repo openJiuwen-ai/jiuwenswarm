@@ -32,6 +32,7 @@ export const MAX_NAME_CHARS = 32;
 export const MAX_WELCOME_CHARS = 64;
 export const MIN_HOVER_MS = 500;
 export const MAX_HOVER_MS = 10_000;
+export const MAX_HIGHLIGHT_COLORS = 2;
 const MIN_SURFACE_OPACITY = 0.3;
 const COLOR_FIELDS = ['accent', 'surface', 'surfaceOpacity', 'tokens'];
 const LANGUAGES = ['zh', 'en'] as const;
@@ -62,10 +63,12 @@ export interface WebUIIdentity {
   favicon?: string;
 }
 
-/** The second half of the welcome line. */
+/** The second half of the welcome line, and the colour of the brand name before it. */
 export interface WebUIWelcome {
   default?: WebUILocalizedText;
   modes?: Readonly<Partial<Record<WebUIWelcomeMode, WebUILocalizedText>>>;
+  /** One colour, or two for a left-to-right gradient; the host adjusts them for contrast. */
+  highlight?: readonly string[];
 }
 
 export interface WebUIMascot {
@@ -193,7 +196,9 @@ export function validateIdentity(value: unknown): WebUIIdentity | null {
 }
 
 export function validateWelcome(value: unknown): WebUIWelcome | null {
-  if (!isPlainObject(value) || Object.keys(value).length === 0 || !onlyKeys(value, ['default', 'modes'])) return null;
+  if (!isPlainObject(value) || Object.keys(value).length === 0 || !onlyKeys(value, ['default', 'modes', 'highlight'])) {
+    return null;
+  }
   const result: { -readonly [K in keyof WebUIWelcome]: WebUIWelcome[K] } = {};
   if ('default' in value) {
     const item = localized(value.default, MAX_WELCOME_CHARS);
@@ -211,6 +216,12 @@ export function validateWelcome(value: unknown): WebUIWelcome | null {
       items[mode] = item;
     }
     result.modes = items;
+  }
+  if ('highlight' in value) {
+    const colors = value.highlight;
+    if (!Array.isArray(colors) || colors.length === 0 || colors.length > MAX_HIGHLIGHT_COLORS
+      || !colors.every((color) => typeof color === 'string' && ACCENT.test(color))) return null;
+    result.highlight = [...colors];
   }
   return result;
 }

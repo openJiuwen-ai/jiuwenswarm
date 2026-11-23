@@ -730,5 +730,84 @@
       }
     },
     "valid": false
+  },
+  {
+    "name": "welcome highlight colour only",
+    "appearance": {
+      "welcome": {
+        "highlight": [
+          "#b45309"
+        ]
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "welcome highlight gradient with text",
+    "appearance": {
+      "welcome": {
+        "default": {
+          "zh": "让每个想法都落地！"
+        },
+        "highlight": [
+          "#5b4fc4",
+          "#17B893"
+        ]
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "welcome highlight as a plain string",
+    "appearance": {
+      "welcome": {
+        "highlight": "#b45309"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "empty welcome highlight",
+    "appearance": {
+      "welcome": {
+        "highlight": []
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "welcome highlight with three colours",
+    "appearance": {
+      "welcome": {
+        "highlight": [
+          "#111111",
+          "#222222",
+          "#333333"
+        ]
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "welcome highlight with a short colour",
+    "appearance": {
+      "welcome": {
+        "highlight": [
+          "#abc"
+        ]
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "welcome highlight with an rgb colour",
+    "appearance": {
+      "welcome": {
+        "highlight": [
+          "rgb(1, 2, 3)"
+        ]
+      }
+    },
+    "valid": false
   }
 ]

@@ -3,13 +3,50 @@
  * 外观插件可以替换品牌名、后半句与吉祥物；没有提供者或图片加载失败时显示宿主默认。
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import beeFlyingIcon from '../../assets/bee-flying.webp';
 import beeStaticIcon from '../../assets/bee-static.png';
-import { DEFAULT_BRAND_NAME, useAppearancePart, useBrandIdentity, welcomeSuffix } from '../../features/webui';
+import {
+  DEFAULT_BRAND_NAME, parseColor, readableHighlight, useAppearancePart, useBrandIdentity, welcomeSuffix,
+} from '../../features/webui';
 
 export const BEE_ANIMATION_DURATION = 4536;
+
+const THEME_ATTRIBUTES = ['data-theme', 'data-color-mode', 'data-webui-appearance', 'data-webui-surface'];
+const WHITE: [number, number, number] = [255, 255, 255];
+
+function subscribeTheme(listener: () => void): () => void {
+  if (typeof MutationObserver === 'undefined' || typeof document === 'undefined') return () => undefined;
+  const observer = new MutationObserver(listener);
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: THEME_ATTRIBUTES });
+  return () => observer.disconnect();
+}
+
+/** The page surface the welcome line sits on; it changes with the theme, colour mode and appearance. */
+function pageBackground(): string {
+  const root = document.documentElement;
+  const value = getComputedStyle(root).getPropertyValue('--color-surface-page').trim();
+  return value || (root.getAttribute('data-color-mode') === 'dark' ? '#111111' : '#ffffff');
+}
+
+/** Colour or two-stop gradient for the brand name, kept readable on the current page (Gateway S_08 section 3.3). */
+function useHighlightStyle(highlight: readonly string[] | undefined): CSSProperties | undefined {
+  const background = useSyncExternalStore(subscribeTheme, pageBackground, () => '#ffffff');
+  return useMemo(() => {
+    if (!highlight?.length) return undefined;
+    const colors = readableHighlight(highlight, parseColor(background) ?? WHITE);
+    if (colors.length === 1) return { color: colors[0] };
+    if (colors.length !== 2) return undefined;
+    return {
+      backgroundImage: `linear-gradient(90deg, ${colors[0]}, ${colors[1]})`,
+      WebkitBackgroundClip: 'text',
+      backgroundClip: 'text',
+      WebkitTextFillColor: 'transparent',
+      color: 'transparent',
+    };
+  }, [highlight, background]);
+}
 
 /** Brand name plus a per-mode suffix; packages may replace either part (Gateway S_08 section 3.3). */
 export function WelcomeHeading({ workMode }: { workMode: string }) {
@@ -18,10 +55,12 @@ export function WelcomeHeading({ workMode }: { workMode: string }) {
   const welcome = useAppearancePart('welcome');
   const suffix = welcomeSuffix(welcome ?? undefined, workMode, i18n.language)
     ?? t(workMode === 'design' ? 'chat.welcomeSuffix.design' : 'chat.welcomeSuffix.work');
+  const highlight = useHighlightStyle(welcome?.highlight);
 
   return (
     <>
-      <span className="chat-welcome__heading-highlight" data-testid="chat-panel-welcome-heading-brand">
+      <span className="chat-welcome__heading-highlight" data-testid="chat-panel-welcome-heading-brand"
+        data-variant={highlight ? 'custom' : 'default'} style={highlight}>
         {identity?.name ?? DEFAULT_BRAND_NAME}
       </span>
       <span data-testid="chat-panel-welcome-heading-suffix">{suffix}</span>

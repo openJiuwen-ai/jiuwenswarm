@@ -2,6 +2,7 @@ export {
   APPEARANCE_PARTS,
   APPEARANCE_TOKEN_NAMES,
   DEFAULT_SURFACE_OPACITY,
+  MAX_HIGHLIGHT_COLORS,
   MAX_HOVER_MS,
   MAX_NAME_CHARS,
   MAX_WELCOME_CHARS,
@@ -40,6 +41,8 @@ export {
   hoverAccent,
   parseColor,
   readSurfaceBases,
+  readableHighlight,
+  readableOn,
   strongAccent,
   translucentVariables,
 } from './derive.ts';

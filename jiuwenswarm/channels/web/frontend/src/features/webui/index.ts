@@ -23,6 +23,7 @@ export {
   useBrandImage,
 } from './react/appearanceBrand.tsx';
 export { localizedText, welcomeSuffix } from './appearance/appearance.ts';
+export { parseColor, readableHighlight } from './appearance/derive.ts';
 export type { WebUIIdentity, WebUIMascot, WebUIWelcome } from './appearance/appearance.ts';
 export { WebUISplashGate } from './react/WebUISplashGate.tsx';
 export type { WebUISplashGateProps } from './react/WebUISplashGate.tsx';
