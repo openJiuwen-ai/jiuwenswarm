@@ -16,6 +16,8 @@ skill 侧转发模块出现过"新符号 + 新 pin"耦合导致的依赖漂移 b
 
 from __future__ import annotations
 
+import logging
+
 from agent_gateway.extensions.sdk.connector_source import (
     ConnectorArtifactDescriptor,
     ConnectorCandidate,
@@ -41,7 +43,16 @@ try:  # SPI v2 符号随未来 pin 升级演进；旧版 gateway 缺失时使用
         ConnectorDownloadError,
         ConnectorVerificationResult,
     )
-except ImportError:  # pragma: no cover - 仅在依赖版本漂移（pin 未同步）时触发
+except ImportError as exc:  # pragma: no cover - 仅在依赖版本漂移（pin 未同步）时触发
+    # 降级必须可见：静默降级会把安装审计失败（artifact_signature_invalid）等表象
+    # 引向签名/供应链方向，掩盖真实根因（agent-gateway pin 未同步）。
+    logging.getLogger(__name__).warning(
+        "agent-gateway is missing SPI v2 connector symbols (%s); degrading: "
+        "CONNECTOR_CAPABILITIES degraded to empty set, verification results are "
+        "fail-closed (verified=False), optional symbols set to None. "
+        "Sync the agent-gateway pin to restore.",
+        exc,
+    )
     # 能力集合降为空集，保证调用方的 membership 判断不会因 None 抛错。
     CONNECTOR_CAPABILITIES = frozenset()
 
