@@ -3881,7 +3881,7 @@ class AgentRuntime:
 
     @classmethod
     def _validate_answer_source(cls, request: AgentRequest) -> None:
-        """Reject answers carried under an unknown source (#6285, #6857).
+        """Reject answers lane admission would not resume (#6285, #6857).
 
         Runs before session lane admission; the raised
         ``InteractionAnswerError`` reaches the client as an error response

@@ -7,14 +7,22 @@
 到任何结束帧。校验必须在 lane 准入之前完成，保证客户端必然收到错误帧。
 
 #6857 补充：answers 为非空 mapping 时同样会绕过恢复识别并卡住（运行时只把非空
-list 识别为中断恢复），因此非空 mapping 载荷无论 source 是什么一律拒绝；
-request_id 也不再作为校验前提。空 mapping 与空 list 一样视为「无 answers」。
+list 识别为中断恢复），因此非空 mapping、字符串及其他非 list 载荷无论 source
+是什么一律拒绝。校验不再自建白名单判定，而是直接复用 lane 准入使用的
+`agent_gateway.common.interrupt_resume.answers_paused_calls`：除
+client_tool_interrupt 外，缺少 request_id 的载荷不会被识别为恢复，同样会卡住。
+空 mapping 与空 list 一样视为「无 answers」；空白 source 不声明恢复，保持普通
+回合行为。
 """
 
 from __future__ import annotations
 
 import pytest
 
+from agent_gateway.common.interrupt_resume import (
+    INTERRUPT_RESUME_SOURCES,
+    answers_paused_calls,
+)
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.interaction import (
@@ -75,10 +83,44 @@ class TestValidateAnswerSource:
         with pytest.raises(InteractionAnswerError):
             validate_answer_source({"answers": {"q": "v"}})
 
-    def test_missing_request_id_with_known_source_passes(self) -> None:
+    def test_missing_request_id_with_client_tool_source_passes(self) -> None:
         validate_answer_source(
             _answer_params(request_id="", source="client_tool_interrupt")
         )
+
+    @pytest.mark.parametrize(
+        "source", sorted(ANSWER_SOURCE_WHITELIST - {"client_tool_interrupt"})
+    )
+    def test_missing_request_id_with_whitelisted_source_is_rejected(
+        self, source
+    ) -> None:
+        """Only client_tool_interrupt may resume without naming a question."""
+        with pytest.raises(InteractionAnswerError) as excinfo:
+            validate_answer_source(_answer_params(request_id="", source=source))
+
+        assert "request_id" in str(excinfo.value)
+
+    @pytest.mark.parametrize(
+        "answers", ["answer", b"answer", 1, ({"selected_options": []},)]
+    )
+    def test_non_list_answers_are_rejected(self, answers) -> None:
+        """A shape no resume predicate accepts must not reach lane admission."""
+        with pytest.raises(InteractionAnswerError):
+            validate_answer_source(_answer_params(answers=answers))
+
+    @pytest.mark.parametrize("source", sorted(INTERRUPT_RESUME_SOURCES))
+    @pytest.mark.parametrize("request_id", ["interrupt-1", "   ", ""])
+    def test_guard_matches_the_lane_resume_predicate(
+        self, source, request_id
+    ) -> None:
+        """Accept exactly what lane admission resumes, from the same primitive."""
+        params = _answer_params(request_id=request_id, source=source)
+
+        if answers_paused_calls(params):
+            validate_answer_source(params)
+            return
+        with pytest.raises(InteractionAnswerError):
+            validate_answer_source(params)
 
     def test_unknown_source_without_answers_passes(self) -> None:
         """Ordinary turns may tag themselves (e.g. video_tool); only answers are checked."""
