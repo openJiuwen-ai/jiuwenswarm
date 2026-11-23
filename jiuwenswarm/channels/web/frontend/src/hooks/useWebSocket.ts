@@ -7,6 +7,7 @@
 import { isConversationModelGroupBlocked } from '../multi-session/state/conversationModelSelection';
 import { parseModelSelection } from '../features/settings/modules/models/modelGroupAdapters';
 import { mayProcessingTrueFrameRelight } from '../features/interruptSettleGuard';
+import { promptWaitsForModeSwitch, queueDrainsInMode } from '../features/sessionMode/modeSwitchGate';
 import { isMultiModelCollaborationEnabled } from '../features/multiModelCollaboration/featureConfig';
 import { foldEnterpriseStreamText } from '../features/enterpriseStreamText';
 import { isRestoredOutputReplay, readOutputOrder } from '../features/sessionOutput';
@@ -599,7 +600,7 @@ function getSessionWorkMode(sessionId: string): string | undefined {
  * 时还要带上 work_mode，以便 `resolvePlanWireMode` 路由到 `team.work.plan` /
  * `team.code.plan`。
  */
-function resolveOutgoingMode(sessionId: string, baseMode: AgentMode | string | undefined): string {
+export function resolveOutgoingMode(sessionId: string, baseMode: AgentMode | string | undefined): string {
   // profile（work/code）取自 per-session 的 Session.work_mode（getSessionWorkMode
   // 优先 session，再 project、最后全局 workMode），否则 session 切换时全局 workMode
   // 不同步，跨 profile 看历史会话 / interrupt resume / 队列重发会产出
@@ -772,7 +773,6 @@ interface UseWebSocketReturn {
   cancel: (sessionId: string) => Promise<boolean>;
   supplement: (sessionId: string, newInput: string) => Promise<void>;
   resume: (sessionId: string) => Promise<void>;
-  switchMode: (sessionId: string, mode: AgentMode) => Promise<void>;
   disconnect: () => void;
   sendUserAnswer: (
     sessionId: string,
@@ -2106,9 +2106,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
    */
   const drainTaskQueueIfIdle = useCallback((sessionId: string) => {
     const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
-    if (currentMode !== 'agent') return;
+    if (!queueDrainsInMode(currentMode)) return;
     const runtime = useChatStore.getState().getRuntime(sessionId);
-    if (runtime?.isProcessing || runtime?.queuePaused) return;
+    // A pending mode switch releases the queue itself once it settles.
+    if (runtime?.isProcessing || runtime?.queuePaused || runtime?.modeSwitchPending) return;
     if (!sendMessageRef.current) return;
     const sessionState = useSessionStore.getState();
     const sessionMetadata = sessionState.currentSession?.session_id === sessionId
@@ -2138,6 +2139,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         assistance_origin: 'none',
       },
     ): Promise<boolean> => {
+      // A prompt must not overtake the mode switch the user made before it:
+      // keep it queued until the switch settles. Steering a queued item waits too.
+      if (promptWaitsForModeSwitch(sessionId, useChatStore.getState().getRuntime(sessionId)?.modeSwitchPending)) {
+        if (options?.queuedTaskId) return false;
+        if (!content.trim() && !mediaItems.length) return false;
+        useChatStore.getState().addToTaskQueue(sessionId, content, mediaItems);
+        return true;
+      }
       if (!options?.queuedTaskId && selectedExpertTeamId(sessionId)) {
         if (!content.trim() && !mediaItems.length) return false;
         try {
@@ -2857,43 +2866,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }
     },
     [interrupt, t]
-  );
-
-  // 切换模式
-  const switchMode = useCallback(
-    async (sessionId: string, mode: AgentMode) => {
-      // 标记正在切换模式
-      useChatStore.getState().setSwitchingMode(sessionId, true);
-
-      const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
-      // Reset harnessStore when leaving auto_harness mode
-      if (currentMode === 'auto_harness' && mode !== 'auto_harness') {
-        useHarnessStore.getState().reset(sessionId);
-      }
-
-      // 只有在有任务执行时才调用 interrupt
-      if (sessionId && sessionId !== 'new') {
-        const runtime = useChatStore.getState().getRuntime(sessionId);
-        if (runtime?.isProcessing || runtime?.isPaused) {
-          try {
-            await interrupt(sessionId, 'cancel');
-          } catch {
-            // 忽略中断错误
-          }
-        }
-      }
-
-      clearConnectionPresentationForUserAction(sessionId);
-      useSessionStore.getState().setMode(sessionId, mode);
-      if (sessionId && sessionId !== 'new') {
-        updateSession(sessionId, { mode });
-      }
-      // 延迟重置标志
-      setTimeout(() => {
-        useChatStore.getState().setSwitchingMode(sessionId, false);
-      }, 300);
-    },
-    [clearConnectionPresentationForUserAction, updateSession, interrupt],
   );
 
   // 发送用户回答
@@ -5137,8 +5109,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             window.dispatchEvent(new CustomEvent('heartbeat-list-refresh', { detail: { sessionId } }));
           }
 
-          // 检查是否有等待的任务队列
-          const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
+          // 检查是否有等待的任务队列（模式判断由 drainTaskQueueIfIdle 统一负责）
           const runtime = useChatStore.getState().getRuntime(sessionId);
           const taskQueue = runtime?.taskQueue ?? [];
           const queuePaused = runtime?.queuePaused ?? false;
@@ -5158,12 +5129,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           }
           if (
             !skipAutoDrain &&
-            currentMode === 'agent' &&
             !resumeAlreadyCompleted &&
             !queuePaused &&
             taskQueue.length > 0
           ) {
-            // 智能执行/单Agent模式下，自动处理队列中的下一个任务
+            // 单 Agent 与 Team 模式下，自动处理队列中的下一个任务
             drainTaskQueueIfIdle(sessionId);
           }
         }
@@ -5544,12 +5514,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               useChatStore.getState().setPaused(sessionId, false);
               useChatStore.getState().setProcessing(sessionId, false);
               useChatStore.getState().setThinking(sessionId, false);
-              // 任务已完成时，检查并触发队列中的下一个任务
-              const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
+              // 任务已完成时，检查并触发队列中的下一个任务（模式判断由 drainTaskQueueIfIdle 负责）
               const runtime = useChatStore.getState().getRuntime(sessionId);
               const taskQueue = runtime?.taskQueue ?? [];
               const queuePaused = runtime?.queuePaused ?? false;
-              if (currentMode === 'agent' && !queuePaused && taskQueue.length > 0) {
+              if (!queuePaused && taskQueue.length > 0) {
                 drainTaskQueueIfIdle(sessionId);
               }
             }
@@ -6499,7 +6468,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     cancel,
     supplement,
     resume,
-    switchMode,
     disconnect,
     sendUserAnswer,
     respondActivate,

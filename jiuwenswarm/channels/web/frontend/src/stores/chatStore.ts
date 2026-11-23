@@ -226,6 +226,13 @@ export interface ChatRuntime {
   pausedTask: string | null;
   interruptResult: InterruptResultPayload | null;
   switchingMode: boolean;
+  /**
+   * An in-place `mode.set` for this Session is waiting for its outcome. Prompts
+   * wait in `taskQueue` and nothing leaves the queue until it settles, so a
+   * prompt cannot reach the server before the switch the user made first.
+   * Only the commit that set it clears it; runtime resets keep it.
+   */
+  modeSwitchPending: boolean;
   isNewSession: boolean;
   currentStreamContent: string;
   currentStreamId: string | null;
@@ -307,6 +314,7 @@ function createEmptyRuntime(): ChatRuntime {
     interruptResult: null,
     interruptSettledEpoch: null,
     switchingMode: false,
+    modeSwitchPending: false,
     isNewSession: false,
     currentStreamContent: '',
     currentStreamId: null,
@@ -455,6 +463,7 @@ interface ChatState {
    */
   settleLifecycleStoppedSession: (sessionId: string) => void;
   setSwitchingMode: (sessionId: string, switching: boolean) => void;
+  setModeSwitchPending: (sessionId: string, pending: boolean) => void;
   setNewSession: (sessionId: string, isNew: boolean) => void;
   addToolCall: (
     sessionId: string,
@@ -1294,6 +1303,21 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     });
   },
 
+  setModeSwitchPending: (sessionId, pending) => {
+    set((state) => {
+      const existing = state.runtimes[sessionId];
+      if (existing ? existing.modeSwitchPending === pending : !pending) return state;
+      // A pending switch is recorded even before the Session's runtime exists.
+      const runtime = existing ?? createEmptyRuntime();
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, modeSwitchPending: pending },
+        },
+      };
+    });
+  },
+
   setCanContinueQueuedSessionMessages: (sessionId, canContinue) => {
     set((state) => {
       const runtime = state.runtimes[sessionId] ?? createEmptyRuntime();
@@ -2051,6 +2075,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         !runtime ||
         runtime.isProcessing ||
         runtime.isPaused ||
+        runtime.modeSwitchPending ||
         runtime.pendingQuestions.length ||
         runtime.taskQueue.some((task) => task.status === 'sending')
       )
@@ -2082,6 +2107,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         runtime.isPaused ||
         runtime.isLoadingHistory ||
         runtime.switchingMode ||
+        runtime.modeSwitchPending ||
         runtime.pendingQuestions.length
       )
         return state;

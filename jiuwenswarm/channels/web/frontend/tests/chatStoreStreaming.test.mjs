@@ -343,3 +343,43 @@ test('answered ask_user questions are dropped and never re-enqueued from runtime
     store.removeRuntime(sessionId);
   }
 });
+
+test('a pending mode switch blocks queue claims and steer claims until it settles', () => {
+  const sessionId = 'mode-switch-pending-claims';
+  const store = useChatStore.getState();
+  store.ensureRuntime(sessionId);
+  try {
+    store.addToTaskQueue(sessionId, 'first');
+    store.addToTaskQueue(sessionId, 'second');
+    const [first, second] = store.getRuntime(sessionId).taskQueue;
+    store.setModeSwitchPending(sessionId, true);
+    assert.equal(store.getRuntime(sessionId).modeSwitchPending, true);
+    assert.equal(store.claimQueuedTask(sessionId), undefined);
+    assert.equal(store.claimQueuedTask(sessionId, first.id), undefined);
+    assert.equal(store.claimTaskInput(sessionId, second.id), undefined);
+    assert.deepEqual(store.getRuntime(sessionId).taskQueue.map((task) => task.status), ['queued', 'queued']);
+
+    // A history reset while the switch is pending keeps the hold.
+    store.clearMessages(sessionId);
+    assert.equal(store.getRuntime(sessionId).modeSwitchPending, true);
+
+    store.setModeSwitchPending(sessionId, false);
+    store.addToTaskQueue(sessionId, 'third');
+    assert.equal(store.claimQueuedTask(sessionId)?.content, 'third');
+  } finally {
+    store.removeRuntime(sessionId);
+  }
+});
+
+test('a pending mode switch is recorded even before the Session runtime exists', () => {
+  const sessionId = 'mode-switch-pending-without-runtime';
+  const store = useChatStore.getState();
+  try {
+    store.setModeSwitchPending(sessionId, false);
+    assert.equal(store.getRuntime(sessionId), undefined, 'clearing must not create a runtime');
+    store.setModeSwitchPending(sessionId, true);
+    assert.equal(store.getRuntime(sessionId)?.modeSwitchPending, true);
+  } finally {
+    store.removeRuntime(sessionId);
+  }
+});

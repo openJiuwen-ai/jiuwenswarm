@@ -20,6 +20,8 @@ from datetime import datetime, timezone
 from agent_gateway.common.mode_matrix import (
     NEW_AGENT_CODE_NORMAL,
     NEW_AGENT_WORK_NORMAL,
+    NEW_CANONICAL_MODES,
+    base_mode_without_plan,
     deprecate_mode,
     is_new_canonical_mode,
     is_team_mode,
@@ -142,6 +144,166 @@ def patch_session_metadata(session_id: str, fields: dict[str, Any]) -> dict[str,
     written = _write_metadata_sync(session_id, metadata, options)
     _refresh_written_cache(session_id, written, options)
     return written
+
+
+class SessionModeConflictError(ValueError):
+    """The stored Session mode changed before an explicit mode switch."""
+
+
+class SessionModeBusyError(ValueError):
+    """Another AgentServer still owns this Session's Runtime."""
+
+
+# Channels whose clients commit a Session's execution mode with mode.set and
+# read it back with mode.get.
+MODE_SWITCH_CHANNELS = frozenset({"web"})
+
+
+def normalize_switchable_session_mode(mode: Any) -> str | None:
+    """Resolve supported switchable routes without inventing a missing route."""
+    if not isinstance(mode, str):
+        return None
+    resolved = deprecate_mode(mode)
+    return resolved if resolved in NEW_CANONICAL_MODES and resolved != "team.design" else None
+
+
+def mode_switch_channel_owns(metadata: dict[str, Any], channel_id: str | None) -> bool:
+    """Whether a mode-switch channel owns the Session these metadata describe."""
+    if channel_id not in MODE_SWITCH_CHANNELS:
+        return False
+    # A Session without a recorded channel belongs to no mode-switch channel.
+    return str(metadata.get("channel_id") or "").strip() == channel_id
+
+
+def mode_switch_session_visible_to(
+    metadata: dict[str, Any],
+    *,
+    channel_id: str | None,
+    user_id: str,
+) -> bool:
+    """Whether a mode-switch caller may address the Session these metadata describe.
+
+    Only the recorded owner may. A blank owner is the anonymous user, so it
+    matches only an anonymous caller (the single-user edition); an identified
+    caller cannot address an ownerless Session.
+    """
+    if not mode_switch_channel_owns(metadata, channel_id):
+        return False
+    stored_user_id = str(metadata.get("user_id") or "").strip()
+    return stored_user_id == str(user_id or "").strip()
+
+
+def session_mode_switch_blocker(metadata: dict[str, Any]) -> str | None:
+    """Return why a Session's executor is fixed, or None when mode.set may route it.
+
+    Agent groups, external CLI harnesses, and scheduled tasks bind one executor
+    for the Session's whole life; changing its mode would orphan that binding.
+    An application role fixes its form at creation: a single character, a lead
+    consulting member Sessions, or a native Team roster selected by its mode.
+    """
+    if str(metadata.get("agent_group_name") or "").strip() or isinstance(
+        metadata.get("team_group_identity"), dict
+    ):
+        return "agent group sessions cannot switch mode"
+    if metadata.get("session_runtime_binding") is not None:
+        return "external agent sessions cannot switch mode"
+    if str(metadata.get("cron_id") or "").strip():
+        return "scheduled task sessions cannot switch mode"
+    if metadata.get("execution_profile") == "app_role":
+        return "application role sessions cannot switch mode"
+    return None
+
+
+def compare_and_set_session_mode(
+    session_id: str,
+    target_mode: str,
+    expected_mode: str | None,
+    *,
+    channel_id: str,
+    user_id: str,
+) -> tuple[str | None, dict[str, Any], bool]:
+    """Commit a mode change while keeping the Session's project index fixed."""
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+
+    initial = lc.raw_metadata(session_id)
+    if not initial:
+        raise FileNotFoundError(f"session not found: {session_id}")
+    project_id = lc.project_id_for(initial)
+    with lc.resource_lock("project", project_id), lc.resource_lock("session", session_id):
+        lc.write_guard(session_id, None)
+        with _FILE_LOCK:
+            current = lc.raw_metadata(session_id)
+            if not current:
+                raise FileNotFoundError(f"session not found: {session_id}")
+            if not mode_switch_session_visible_to(
+                current, channel_id=channel_id, user_id=user_id,
+            ):
+                raise FileNotFoundError(f"session not found: {session_id}")
+            if lc.project_id_for(current) != project_id:
+                raise SessionModeConflictError("session project changed during mode switch")
+            previous_mode = normalize_switchable_session_mode(current.get("mode"))
+            if previous_mode == target_mode:
+                return previous_mode, dict(current, mode=previous_mode), False
+            # Chat adoption uses claim_runtime under this same cross-process
+            # Session lock. A foreign live owner may still be executing after
+            # its request stream is parked, so local probes are insufficient.
+            try:
+                lc.assert_runtime_owner(session_id)
+            except lc.LifecycleError as exc:
+                raise SessionModeBusyError(str(exc)) from exc
+            # An explicit target repairs unknown legacy routes. Once a route
+            # is known, stale clients must still pass the normal CAS check.
+            # Plan entry and exit bypass mode.set, so plan state alone may
+            # differ from the client's; only another route is a conflict.
+            expected_route = normalize_switchable_session_mode(expected_mode)
+            if previous_mode is not None and expected_mode is not None:
+                if (
+                    expected_route is None
+                    or base_mode_without_plan(previous_mode) != base_mode_without_plan(expected_route)
+                ):
+                    raise SessionModeConflictError(
+                        f"session mode changed from {expected_mode!r} to {previous_mode!r}"
+                    )
+            revision = _mode_revision(current.get("mode_revision")) + 1
+            options = _MetadataWriteOptions(
+                merge_fields=frozenset({"mode", "mode_revision"}),
+            )
+            written = _write_metadata_unfenced(
+                session_id,
+                {"mode": target_mode, "mode_revision": revision},
+                options,
+            )
+        with _CACHE_LOCK:
+            key = _metadata_cache_key(session_id)
+            _METADATA_CACHE.pop(key, None)
+            _METADATA_CACHE_GENERATIONS.pop(key, None)
+            _CACHE_DISK_STAMPS.pop(key, None)
+            # Only the route was committed; other queued fields stay readable.
+            pending = _PENDING_FIELDS.get(key)
+            if pending:
+                pending.pop("mode", None)
+                pending.pop("mode_revision", None)
+        return previous_mode, written, True
+
+
+def _mode_revision(value: Any) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else 0
+
+
+def _request_mode_keeps_committed_route(metadata: dict[str, Any], requested_mode: str) -> bool:
+    """Whether a request's explicit mode may replace the stored mode.
+
+    After mode.set committed a route (``mode_revision`` is present), a request
+    may change only plan state, which is entered and left without mode.set.
+    ``AgentRuntime.normalize_request`` applies the same rule to chat requests;
+    this keeps it for writers that reach the metadata without that step.
+    """
+    if "mode_revision" not in metadata:
+        return True
+    stored_mode = metadata.get("mode")
+    if not isinstance(stored_mode, str) or not stored_mode.strip():
+        return True
+    return base_mode_without_plan(requested_mode) == base_mode_without_plan(deprecate_mode(stored_mode))
 
 # 会话级 project 重绑版本号: 每次 rebind_session_project 自增。
 # _enqueue_write 入队时捕获当前值; worker 处理时若发现入队值 < 当前值,
@@ -394,7 +556,7 @@ def _apply_metadata_defaults_with_inference(
     # 静默映射到新三段命名 canonical（agent.work.normal 等）。仅迁移非空且非新
     # canonical 的 mode 字段；映射后写盘以避免后续读路径重复迁移。
     existing_mode = metadata.get("mode")
-    if existing_mode and not is_new_canonical_mode(existing_mode):
+    if isinstance(existing_mode, str) and existing_mode and not is_new_canonical_mode(existing_mode):
         new_mode = deprecate_mode(existing_mode)
         if new_mode != existing_mode:
             logger.log(logging.INFO if enable_writeback else logging.DEBUG,
@@ -746,6 +908,15 @@ def _write_metadata_unfenced(
         if current is not None and isinstance(current.get("team_group_identity"), dict):
             to_write = to_write.copy()
             to_write["team_group_identity"] = copy.deepcopy(current["team_group_identity"])
+
+        # A queued chat snapshot captured before mode.set cannot restore its
+        # old route, including through the identity recovery path above.
+        if current is not None and _mode_revision(current.get("mode_revision")) > _mode_revision(
+            metadata.get("mode_revision")
+        ):
+            to_write = to_write.copy()
+            to_write["mode"] = current["mode"]
+            to_write["mode_revision"] = current["mode_revision"]
 
         # External Harness runtime selection is a first-binding field. Preserve
         # the authoritative on-disk value against stale queued snapshots and
@@ -1521,6 +1692,8 @@ def sync_session_request_metadata(
         时才覆盖磁盘值；未显式携带（如只读 RPC 用默认推断值）则保持磁盘原值，不腐蚀
         已锁定的会话 mode（如 team 会话被只读 RPC 默认推断成 agent）。调用方应传入
         canonical mode（"agent.plan"/"team"）。与 append_history_record 联动一致。
+        已由 mode.set 提交路由（存在 ``mode_revision``）的会话，请求只能改变计划态，
+        换路由的值被忽略。
       - persist_session：**初始化后不可变**。新 Session 由 ``session.create`` 显式写入；
         仅为兼容旧客户端，历史 metadata 缺字段时允许第一条旧式 chat 请求完成一次初始化，
         此后任何不一致请求只告警、不覆盖。
@@ -1682,13 +1855,22 @@ def sync_session_request_metadata(
         if mode is not None and explicit_mode_provided:
             new_mode = deprecate_mode(mode)
             old_mode = metadata.get("mode")
-            if new_mode != old_mode:
-                logger.info(
-                    "session_metadata 显式更新 mode: session=%s '%s' -> '%s' "
-                    "(raw=%r)",
-                    session_id, old_mode, new_mode, mode,
+            if not _request_mode_keeps_committed_route(metadata, new_mode):
+                # mode_revision guards only queued snapshots; a fresh request
+                # value would otherwise undo a committed mode.set.
+                logger.warning(
+                    "session_metadata 保留 mode.set 已提交的路由，忽略请求 mode: "
+                    "session=%s stored=%r requested=%r",
+                    session_id, old_mode, new_mode,
                 )
-            metadata["mode"] = new_mode
+            else:
+                if new_mode != old_mode:
+                    logger.info(
+                        "session_metadata 显式更新 mode: session=%s '%s' -> '%s' "
+                        "(raw=%r)",
+                        session_id, old_mode, new_mode, mode,
+                    )
+                metadata["mode"] = new_mode
         # channel_id：首次锁定——仅当磁盘值为空时写入，后续不覆盖
         # （与 project_dir/project_id/cron_id/user_id/work_mode 一致语义）
         if channel_id and not (
@@ -1696,10 +1878,9 @@ def sync_session_request_metadata(
             and metadata.get("channel_id", "").strip()
         ):
             metadata["channel_id"] = channel_id
-        # user_id：首次锁定，已锁定则忽略请求值（与 project_id/cron_id 一致不可改）。
-        # 由 envelope.user_id 透传，供 gateway 列表接口按用户隔离会话历史。
-        if user_id and not (isinstance(metadata.get("user_id"), str) and metadata.get("user_id", "").strip()):
-            metadata["user_id"] = user_id
+        # user_id：只在创建时记录（见上方新建分支），已有会话不再由请求补写。
+        # 归属者为空即匿名用户；若在此补写，任意已识别用户发一条消息就能
+        # 成为无归属会话的归属者，绕过 mode.set 的归属校验。
         # last_message_at：仅 chat 轮次刷新。语义为「agent 最后输出时间」，
         # 只读 RPC 无 agent 输出，不应刷新——否则只读查询会把历史会话的排序时间
         # 刷新成「现在」，导致旧会话被置顶。

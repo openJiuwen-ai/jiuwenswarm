@@ -91,6 +91,7 @@ import {
 } from '../../features/workspace/localFilePicker';
 import { useDesktopLocalFilePickerReady, useWelcomeBubblePosition } from '../../hooks';
 import { flushApplicationConversationHistory } from '../../applicationPlugins/ApplicationPluginOutlet';
+import { beginPromptSubmit, endPromptSubmit, queueDrainsInMode } from '../../features/sessionMode/modeSwitchGate';
 import { toast } from '../ui/Toast/toastStore';
 import { useOrganizationConversationKey } from '../../features/teamOrganization/conversation';
 import { useOrganizationProcessing } from '../../features/teamOrganization/processing';
@@ -165,7 +166,8 @@ interface ChatPanelProps {
   onDiscardMedia?: (sessionId: string, path: string) => Promise<unknown>;
   onInterrupt: (newInput?: string) => void;
   onCancel: () => void;
-  onSwitchMode: (mode: AgentMode) => void;
+  /** Resolves true only when the current Session itself switched to `mode`. */
+  onSwitchMode: (mode: AgentMode) => Promise<boolean>;
   isProcessing: boolean;
   isConnected: boolean;
   onUserAnswer: (
@@ -419,7 +421,7 @@ function ActiveTeamGroupEntry({
   );
 }
 
-/** 单 Agent 模式的消息队列卡片，展示在输入框上方 */
+/** 单 Agent 与 Team 模式的消息队列卡片，展示在输入框上方 */
 export function AgentActivityCard({
   isProcessing: _isProcessing,
   onSendTask,
@@ -447,7 +449,9 @@ export function AgentActivityCard({
   const setInputValue = useChatStore((s) => s.setInputValue);
 
   const isAgentMode = mode === 'agent';
-  const visibleTaskQueue = isAgentMode ? taskQueue : [];
+  // Team mode also shows the queue: prompts wait there for a pending mode switch,
+  // and items queued in Agent mode stay visible after switching.
+  const visibleTaskQueue = queueDrainsInMode(mode) ? taskQueue : [];
 
   // 有等待任务时自动展开
   useEffect(() => {
@@ -522,6 +526,8 @@ export function AgentActivityCard({
     e.stopPropagation();
     const sid = useChatStore.getState().activeSessionId;
     if (!sid) return;
+    // Steering waits for a pending mode switch like every other queued prompt.
+    if (useChatStore.getState().getRuntime(sid)?.modeSwitchPending) return;
     onSendTask?.(content, mediaItems, { queuedTaskId: taskId });
   };
 
@@ -752,15 +758,18 @@ export function AgentActivityCard({
                   )}
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '4px', flexShrink: 0 }}>
-                  <button
-                    type="button"
-                    className="chat-input-task-action chat-input-task-action--send"
-                    data-testid="chat-panel-task-queue-item-send"
-                    title={t('chat.sendTask')}
-                    onClick={(e) => handleSendTask(e, task.id, task.content, task.mediaItems)}
-                  >
-                    <img src={loadSendIcon} alt="" className="w-3.5 h-3.5" />
-                  </button>
+                  {/* Steering a queued prompt into the running turn is an Agent-mode feature. */}
+                  {isAgentMode && (
+                    <button
+                      type="button"
+                      className="chat-input-task-action chat-input-task-action--send"
+                      data-testid="chat-panel-task-queue-item-send"
+                      title={t('chat.sendTask')}
+                      onClick={(e) => handleSendTask(e, task.id, task.content, task.mediaItems)}
+                    >
+                      <img src={loadSendIcon} alt="" className="w-3.5 h-3.5" />
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="chat-input-task-action chat-input-task-action--edit"
@@ -2070,16 +2079,26 @@ export const ChatPanel = React.memo(function ChatPanel({
       const queued = options && 'queuedTaskId' in options;
       // Capture submission provenance before awaiting the history flush.
       const nextInput = queued ? null : takeNextInputSubmission(content);
+      // From here the prompt counts as sent: a mode switch must not overtake it
+      // while the flush below is awaited. The send path sets the processing
+      // flag synchronously, which takes over once the marker ends.
+      const submittingSessionId = activeSessionId;
+      beginPromptSubmit(submittingSessionId);
       try {
         if (activeSessionId) await flushApplicationConversationHistory(activeSessionId);
       } catch (error) {
+        endPromptSubmit(submittingSessionId);
         nextInput?.settle(false);
         toast.open({ content: error instanceof Error ? error.message : t('network.requestFailed'), variant: 'error' });
         return;
       }
       if (queued || !nextInput) {
         setIsSending(true);
-        onSendMessage(content, mediaItems, options);
+        try {
+          onSendMessage(content, mediaItems, options);
+        } finally {
+          endPromptSubmit(submittingSessionId);
+        }
         return;
       }
       const slate = visibleTopicSlateRef.current;
@@ -2089,7 +2108,13 @@ export const ChatPanel = React.memo(function ChatPanel({
           ? ensureTopicStarterExposureAcknowledged(slate).then(() => sendTopicStarterEvent(buildDirectInputEvent(slate)))
           : Promise.resolve();
       setIsSending(true);
-      const sent = Promise.resolve(onSendMessage(content, mediaItems, nextInput.provenance)).then(
+      let sending: ReturnType<typeof onSendMessage>;
+      try {
+        sending = onSendMessage(content, mediaItems, nextInput.provenance);
+      } finally {
+        endPromptSubmit(submittingSessionId);
+      }
+      const sent = Promise.resolve(sending).then(
         sessionId => nextInput.settle(Boolean(sessionId)),
         error => {
           nextInput.settle(false);

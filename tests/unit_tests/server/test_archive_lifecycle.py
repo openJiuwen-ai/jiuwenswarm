@@ -1121,6 +1121,7 @@ async def test_parked_team_stream_archive_proceeds_without_touching_stream(
         has_inflight_request=lambda sid: False,
         is_round_active=lambda sid: False,
         is_round_ended_request=lambda sid, rid: True,
+        is_attach_waiter=lambda sid, rid: False,
         stop_session_runtime=stop_session_runtime,
     )
     monkeypatch.setattr(team_manager, "_team_manager", manager)
@@ -1164,6 +1165,7 @@ async def test_parked_team_stream_delete_proceeds_and_stops_runtime(archive, mon
         has_inflight_request=lambda sid: False,
         is_round_active=lambda sid: sid == "sess_b",
         is_round_ended_request=lambda sid, rid: True,
+        is_attach_waiter=lambda sid, rid: False,
     )
     monkeypatch.setattr(team_manager, "_team_manager", manager)
     runtime._pending_chat_requests = {"sess_a": {"req_1"}, "sess_b": {"req_2"}}
@@ -1236,6 +1238,7 @@ def test_has_parked_team_streams_requires_all_requests_round_ended(monkeypatch):
         has_inflight_request=lambda sid: False,
         is_round_active=lambda sid: False,
         is_round_ended_request=lambda sid, rid: rid in ended,
+        is_attach_waiter=lambda sid, rid: False,
     )
     monkeypatch.setattr(team_manager, "_team_manager", manager)
     # A request without a released round (preparing or mid-round) is live.

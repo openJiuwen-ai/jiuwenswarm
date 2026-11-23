@@ -2583,6 +2583,12 @@
     },
     "configLockedHistory": "Session has messages — create a new session to change config",
     "modeSwitchDisabledProcessing": "This conversation is running. Start a new conversation to choose another mode",
+    "sessionModeSwitch": {
+      "busy": "This conversation is still running. Stop it, then switch modes again.",
+      "conflict": "Mode not switched: this conversation's mode was changed elsewhere.",
+      "uncertain": "Couldn't confirm the mode switch. Check the connection and try again.",
+      "failed": "Failed to switch mode: {{error}}"
+    },
     "teamSelect": {
       "unavailable": "Unavailable",
       "unavailableHint": "This Expert Team is unavailable. Reinstall its package to continue; history is preserved.",

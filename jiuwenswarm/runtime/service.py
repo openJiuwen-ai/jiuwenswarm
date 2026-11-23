@@ -20,6 +20,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from agent_gateway.common.mode_matrix import (
+    base_mode_without_plan,
     deprecate_mode,
     is_code_profile_mode,
     is_single_agent_mode,
@@ -347,6 +348,14 @@ def _client_tool_answer_mismatch(request: AgentRequest) -> Iterator[None]:
 
 def _awaits_answers(execution: SessionExecutionSnapshot) -> bool:
     return bool(execution.waiting_control_ids) and not execution.state.terminal
+
+
+class SessionModeSwitchError(ValueError):
+    """A requested Session mode change cannot be committed."""
+
+    def __init__(self, message: str, *, code: str) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 class AgentRuntime:
@@ -1801,7 +1810,7 @@ class AgentRuntime:
     ) -> list[RuntimeEvent]:
         """Execute one non-streaming request and return Runtime events."""
         await self.start()
-        request = self.normalize_request(request)
+        request = await self._normalize_chat_after_claim(request)
         attachment_completion = self._non_team_attachment_completion(request)
         if attachment_completion is not None:
             return [attachment_completion]
@@ -2345,7 +2354,7 @@ class AgentRuntime:
             set_runtime_context,
         )
 
-        request = self.normalize_request(request)
+        request = await self._normalize_chat_after_claim(request)
         attachment_completion = self._non_team_attachment_completion(request)
         if attachment_completion is not None:
             yield attachment_completion
@@ -3348,6 +3357,150 @@ class AgentRuntime:
         if not requests:
             self._pending_chat_requests.pop(session_id, None)
 
+    def switch_session_mode(
+        self,
+        *,
+        session_id: str,
+        target_mode: str,
+        expected_mode: str | None,
+        channel_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        """Synchronously commit a Session route while retaining project ownership."""
+        from jiuwenswarm.enterprise.edition import is_enterprise
+        from jiuwenswarm.server.runtime.session.session_history import (
+            append_session_mode_changed,
+        )
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            SessionModeBusyError,
+            SessionModeConflictError,
+            compare_and_set_session_mode,
+            get_session_metadata,
+            mode_switch_session_visible_to,
+            normalize_switchable_session_mode,
+            session_mode_switch_blocker,
+        )
+
+        if normalize_switchable_session_mode(target_mode) != target_mode:
+            raise SessionModeSwitchError("unsupported mode", code="BAD_REQUEST")
+        if is_enterprise():
+            # The enterprise Web UI fixes the mode once a conversation has messages and
+            # never sends mode.set; refuse it here so the rule does not rest on the client.
+            raise SessionModeSwitchError("enterprise edition sessions cannot switch mode", code="BAD_REQUEST")
+        metadata = get_session_metadata(
+            session_id, cache_bust=True, enable_writeback=False,
+        )
+        if not metadata or not mode_switch_session_visible_to(
+            metadata, channel_id=channel_id, user_id=user_id,
+        ):
+            raise SessionModeSwitchError("session not found", code="NOT_FOUND")
+        blocker = session_mode_switch_blocker(metadata)
+        if blocker is not None:
+            raise SessionModeSwitchError(blocker, code="BAD_REQUEST")
+        already_current = normalize_switchable_session_mode(metadata.get("mode")) == target_mode
+        busy_reason = None if already_current else self._session_mode_switch_busy_reason(session_id)
+        if busy_reason is not None:
+            # SESSION_BUSY alone cannot be diagnosed; name the signal that refused.
+            logger.info(
+                "Session mode switch refused as busy: session=%s target=%s reason=%s",
+                session_id, target_mode, busy_reason,
+            )
+            raise SessionModeSwitchError("session is busy", code="SESSION_BUSY")
+        try:
+            previous_mode, written, changed = compare_and_set_session_mode(
+                session_id, target_mode, expected_mode,
+                channel_id=channel_id, user_id=user_id,
+            )
+        except SessionModeConflictError as exc:
+            raise SessionModeSwitchError(str(exc), code="MODE_CONFLICT") from exc
+        except SessionModeBusyError as exc:
+            raise SessionModeSwitchError(str(exc), code="SESSION_BUSY") from exc
+        except FileNotFoundError as exc:
+            raise SessionModeSwitchError("session not found", code="NOT_FOUND") from exc
+        if changed:
+            try:
+                append_session_mode_changed(
+                    session_id=session_id,
+                    channel_id=channel_id,
+                    previous_mode=previous_mode,
+                    mode=target_mode,
+                )
+            except Exception:
+                logger.warning("failed to record session mode change: %s", session_id, exc_info=True)
+        return {
+            "previous_mode": previous_mode,
+            "mode": written["mode"],
+            "work_mode": written.get("work_mode"),
+            "project_id": written.get("project_id"),
+            "changed": changed,
+        }
+
+    @staticmethod
+    def get_session_mode(*, session_id: str, channel_id: str, user_id: str) -> dict[str, Any]:
+        """Return the persisted Session route for an uncertain client retry."""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+            mode_switch_session_visible_to,
+            normalize_switchable_session_mode,
+        )
+
+        metadata = get_session_metadata(
+            session_id, cache_bust=True, enable_writeback=False,
+        )
+        if not metadata or not mode_switch_session_visible_to(
+            metadata, channel_id=channel_id, user_id=user_id,
+        ):
+            raise SessionModeSwitchError("session not found", code="NOT_FOUND")
+        mode = normalize_switchable_session_mode(metadata.get("mode"))
+        if mode is None:
+            raise SessionModeSwitchError(
+                "session mode is unknown; choose an explicit mode",
+                code="MODE_UNKNOWN",
+            )
+        return {
+            "mode": mode,
+            "work_mode": metadata.get("work_mode"),
+            "project_id": metadata.get("project_id"),
+        }
+
+    def _session_mode_switch_busy_reason(self, session_id: str) -> str | None:
+        """Name the signal that keeps a Session busy for mode.set, or None when idle."""
+        pending = self._pending_chat_requests.get(session_id)
+        if pending and not self.has_parked_team_streams(session_id):
+            return f"pending_chat_requests={sorted(pending)}"
+        controller = self._admission_controller
+        for name in ("is_user_active", "is_heartbeat_active", "has_pending_interaction"):
+            probe = getattr(controller, name, None)
+            if callable(probe) and probe(session_id):
+                return f"admission.{name}"
+        snapshot = self._session_coordinator.snapshot_session(session_id)
+        for execution in snapshot.executions if snapshot else ():
+            if self._execution_blocks_mode_switch(session_id, execution):
+                return (
+                    f"execution request={execution.request_id} kind={execution.work_kind.value} "
+                    f"state={execution.state.value}"
+                )
+        if self.is_session_running(session_id):
+            return "team_session_running"
+        return None
+
+    def _execution_blocks_mode_switch(
+        self, session_id: str, execution: SessionExecutionSnapshot,
+    ) -> bool:
+        """Whether one coordinator execution still owns work that mode.set must not interrupt."""
+        if execution.state in {
+            SessionExecutionState.QUEUED,
+            SessionExecutionState.RUNNING,
+            SessionExecutionState.WAITING_FOR_CONTROL,
+        }:
+            return True
+        if execution.state is not SessionExecutionState.WAITING_FOR_INPUT:
+            return False
+        # A Team observer, or a request parked on a released Team round, owns no turn.
+        if execution.team and execution.team.observation_only:
+            return False
+        return not self.has_parked_team_streams(session_id)
+
     def is_session_running(
         self, session_id: str, *, ignore_heartbeats: bool = False
     ) -> bool:
@@ -3378,14 +3531,15 @@ class AgentRuntime:
         return is_team_session_running(session_id)
 
     def has_parked_team_streams(self, session_id: str) -> bool:
-        """Whether every pending chat request is parked on a released Team round.
+        """Whether pending chat requests only observe or park on released rounds.
 
         A Team first-request handler stays alive for the whole persistent
         leader stream; once its round was released it no longer owns team
         work, only the parked response stream.  Lifecycle actions may pass
         such handlers and leave that stream alone.  A request still
         preparing or mid-round has no released-round marker, so mixed states
-        keep the Session running.
+        keep the Session running. Registered attach-only subscriptions never
+        own a round and do not require a released-round marker.
         """
         requests = getattr(self, "_pending_chat_requests", {}).get(session_id)
         if not requests:
@@ -4095,6 +4249,7 @@ class AgentRuntime:
         if not session_id:
             return request
         from jiuwenswarm.server.runtime.session.session_metadata import (
+            MODE_SWITCH_CHANNELS,
             get_session_metadata,
         )
 
@@ -4125,10 +4280,16 @@ class AgentRuntime:
             if not isinstance(work_mode, str) or work_mode.strip().lower() not in {"code", "work"}:
                 work_mode = "code" if is_code_profile_mode(resolved_mode) else "work"
             requested_mode = resolve_request_runtime_mode(request, work_mode=work_mode)
-            if requested_mode.is_team == is_team_mode(resolved_mode):
+            # A committed mode.set fixes the route; chat may only drift plan state.
+            if request.channel_id in MODE_SWITCH_CHANNELS and "mode_revision" in metadata:
+                if base_mode_without_plan(requested_mode.canonical_mode) == base_mode_without_plan(
+                    resolved_mode
+                ):
+                    return request
+            elif requested_mode.is_team == is_team_mode(resolved_mode):
                 return request
             logger.warning(
-                "Runtime corrected cross-type mode: session=%s request=%s channel=%s "
+                "Runtime corrected uncommitted mode: session=%s request=%s channel=%s "
                 "requested=%r effective=%r",
                 session_id, request.request_id, request.channel_id, raw_mode, resolved_mode,
             )
@@ -4137,6 +4298,50 @@ class AgentRuntime:
         if not normalized_params.get("work_mode") and metadata.get("work_mode"):
             normalized_params["work_mode"] = metadata["work_mode"]
         return replace(request, params=normalized_params)
+
+    async def _normalize_chat_after_claim(self, request: AgentRequest) -> AgentRequest:
+        """Claim a persisted mode-switch Session before deciding its chat work kind.
+
+        A mode.set in another AgentServer may commit between an early route
+        read and Runtime admission. Claiming first and then reading metadata
+        again makes the subsequent Agent/Team classification use the committed
+        mode; mode.set cannot commit after the claim while this owner is live.
+        """
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            MODE_SWITCH_CHANNELS,
+            get_session_metadata,
+            mode_switch_channel_owns,
+        )
+
+        if (
+            request.channel_id in MODE_SWITCH_CHANNELS
+            and request.session_id
+            and request.req_method in self._chat_turn_methods()
+        ):
+            # An already-adopted Session needs only the authoritative route read
+            # in normalize_request. Cold Sessions still check metadata before
+            # adoption, then read again after claiming to avoid a mode race.
+            snapshot = self._session_coordinator.snapshot_session(request.session_id)
+            if snapshot is not None and snapshot.state not in {
+                RuntimeSessionState.QUIESCING,
+                RuntimeSessionState.CLOSED,
+            }:
+                await self._ensure_session_registered(request)
+                return self.normalize_request(request)
+
+            try:
+                metadata = get_session_metadata(
+                    request.session_id, cache_bust=True, enable_writeback=False,
+                )
+            except (OSError, ValueError) as exc:
+                logger.warning(
+                    "Runtime admission could not read session %s: %s",
+                    request.session_id, exc,
+                )
+                metadata = None
+            if metadata and mode_switch_channel_owns(metadata, request.channel_id):
+                await self._ensure_session_registered(request)
+        return self.normalize_request(request)
 
     @classmethod
     def uses_session_runtime(
