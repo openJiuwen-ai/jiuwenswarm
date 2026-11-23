@@ -27,6 +27,9 @@ export { WebUIBackgroundHost } from '../../src/features/webui/react/WebUIBackgro
 export { WebUIAppearanceHost } from '../../src/features/webui/react/WebUIAppearanceHost.tsx';
 export * as appearanceModule from '../../src/features/webui/appearance/index.ts';
 export * as splashModule from '../../src/features/webui/splash/index.ts';
+export * as brandModule from '../../src/features/webui/react/appearanceBrand.tsx';
+export { WelcomeHeading, WelcomeMascot, BEE_ANIMATION_DURATION } from '../../src/components/ChatPanel/WelcomeBrand.tsx';
+export { SidebarBrandLogo } from '../../src/components/SessionSidebar/SidebarBrandLogo.tsx';
 export { WebUISplashGate } from '../../src/features/webui/react/WebUISplashGate.tsx';
 export { MediaSurfacePolicyContext } from '../../src/features/webui/renderer/adapters/webuiMediaSurface/hostPolicy.ts';
 export { WebUIProvider } from '../../src/features/webui/react/WebUIProvider.tsx';

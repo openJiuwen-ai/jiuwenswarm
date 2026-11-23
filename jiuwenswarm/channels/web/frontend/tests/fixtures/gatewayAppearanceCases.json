@@ -307,5 +307,428 @@
       }
     },
     "valid": false
+  },
+  {
+    "name": "colors part",
+    "appearance": {
+      "colors": {
+        "accent": "#b45309"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "colors part withdrawn",
+    "appearance": {
+      "colors": null
+    },
+    "valid": true
+  },
+  {
+    "name": "every part",
+    "appearance": {
+      "colors": {
+        "surface": "translucent",
+        "surfaceOpacity": 0.8
+      },
+      "identity": {
+        "name": "Acme",
+        "logo": "/extension-assets/pkg.logo/g1/logo.svg",
+        "favicon": "/extension-assets/pkg.logo/g1.data/icon.png"
+      },
+      "welcome": {
+        "default": {
+          "zh": "让工作更轻松",
+          "en": "makes work easier"
+        },
+        "modes": {
+          "design": {
+            "zh": "解决设计问题"
+          }
+        }
+      },
+      "mascot": {
+        "src": "/extension-assets/pkg.theme/g2/mascot/idle.webp",
+        "hoverSrc": "/extension-assets/pkg.theme/g2/mascot/fly.gif",
+        "hoverMs": 3000
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "every part withdrawn",
+    "appearance": {
+      "colors": null,
+      "identity": null,
+      "welcome": null,
+      "mascot": null
+    },
+    "valid": true
+  },
+  {
+    "name": "identity name only",
+    "appearance": {
+      "identity": {
+        "name": "Acme"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "identity name is trimmed",
+    "appearance": {
+      "identity": {
+        "name": "  Acme  "
+      }
+    },
+    "valid": true,
+    "normalized": {
+      "identity": {
+        "name": "Acme"
+      }
+    }
+  },
+  {
+    "name": "identity favicon defaults to logo",
+    "appearance": {
+      "identity": {
+        "logo": "/extension-assets/pkg.logo/g1/logo.svg"
+      }
+    },
+    "valid": true,
+    "normalized": {
+      "identity": {
+        "logo": "/extension-assets/pkg.logo/g1/logo.svg",
+        "favicon": "/extension-assets/pkg.logo/g1/logo.svg"
+      }
+    }
+  },
+  {
+    "name": "identity name of 32 characters",
+    "appearance": {
+      "identity": {
+        "name": "蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "welcome modes only",
+    "appearance": {
+      "welcome": {
+        "modes": {
+          "work": {
+            "en": "gets it done"
+          },
+          "code": {
+            "zh": "写好代码"
+          }
+        }
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "mascot without hover",
+    "appearance": {
+      "mascot": {
+        "src": "/extension-assets/pkg.theme/g2/mascot/idle.webp"
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "mascot hover bounds",
+    "appearance": {
+      "mascot": {
+        "src": "/extension-assets/pkg.theme/g2/mascot/idle.webp",
+        "hoverSrc": "/extension-assets/pkg.theme/g2/mascot/fly.gif",
+        "hoverMs": 500
+      }
+    },
+    "valid": true
+  },
+  {
+    "name": "color fields mixed with parts",
+    "appearance": {
+      "accent": "#b45309",
+      "mascot": {
+        "src": "/extension-assets/pkg.theme/g2/mascot/idle.webp"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown part",
+    "appearance": {
+      "background": {
+        "src": "/extension-assets/pkg.theme/g2/mascot/idle.webp"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "empty colors part",
+    "appearance": {
+      "colors": {}
+    },
+    "valid": false
+  },
+  {
+    "name": "invalid colors part",
+    "appearance": {
+      "colors": {
+        "accent": "red"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "empty identity",
+    "appearance": {
+      "identity": {}
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown identity field",
+    "appearance": {
+      "identity": {
+        "name": "Acme",
+        "title": "Acme"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "blank identity name",
+    "appearance": {
+      "identity": {
+        "name": "   "
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "identity name of 33 characters",
+    "appearance": {
+      "identity": {
+        "name": "蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂蜂"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "identity name on two lines",
+    "appearance": {
+      "identity": {
+        "name": "Acme\nInc"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "identity name with a control character",
+    "appearance": {
+      "identity": {
+        "name": "Acme\u0007"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "non-string identity name",
+    "appearance": {
+      "identity": {
+        "name": 7
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "external logo",
+    "appearance": {
+      "identity": {
+        "logo": "https://example.com/logo.svg"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "logo outside the asset route",
+    "appearance": {
+      "identity": {
+        "logo": "/logo.svg"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "logo climbing out",
+    "appearance": {
+      "identity": {
+        "logo": "/extension-assets/pkg.logo/g1/../x/logo.svg"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "logo that is not an image",
+    "appearance": {
+      "identity": {
+        "logo": "/extension-assets/pkg.logo/g1/logo.html"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "data url logo",
+    "appearance": {
+      "identity": {
+        "logo": "data:image/png;base64,AAAA"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "empty welcome",
+    "appearance": {
+      "welcome": {}
+    },
+    "valid": false
+  },
+  {
+    "name": "unknown welcome mode",
+    "appearance": {
+      "welcome": {
+        "modes": {
+          "chat": {
+            "en": "hi"
+          }
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "empty welcome modes",
+    "appearance": {
+      "welcome": {
+        "modes": {}
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "welcome text without language",
+    "appearance": {
+      "welcome": {
+        "default": {}
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "welcome text in an unknown language",
+    "appearance": {
+      "welcome": {
+        "default": {
+          "fr": "bonjour"
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "welcome text as a plain string",
+    "appearance": {
+      "welcome": {
+        "default": "hello"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "welcome text of 65 characters",
+    "appearance": {
+      "welcome": {
+        "default": {
+          "en": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+        }
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "mascot without src",
+    "appearance": {
+      "mascot": {
+        "hoverSrc": "/extension-assets/pkg.theme/g2/mascot/fly.gif",
+        "hoverMs": 3000
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "mascot hover without duration",
+    "appearance": {
+      "mascot": {
+        "src": "/extension-assets/pkg.theme/g2/mascot/idle.webp",
+        "hoverSrc": "/extension-assets/pkg.theme/g2/mascot/fly.gif"
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "mascot duration without hover",
+    "appearance": {
+      "mascot": {
+        "src": "/extension-assets/pkg.theme/g2/mascot/idle.webp",
+        "hoverMs": 3000
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "mascot hover too short",
+    "appearance": {
+      "mascot": {
+        "src": "/extension-assets/pkg.theme/g2/mascot/idle.webp",
+        "hoverSrc": "/extension-assets/pkg.theme/g2/mascot/fly.gif",
+        "hoverMs": 499
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "mascot hover too long",
+    "appearance": {
+      "mascot": {
+        "src": "/extension-assets/pkg.theme/g2/mascot/idle.webp",
+        "hoverSrc": "/extension-assets/pkg.theme/g2/mascot/fly.gif",
+        "hoverMs": 10001
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "fractional mascot hover",
+    "appearance": {
+      "mascot": {
+        "src": "/extension-assets/pkg.theme/g2/mascot/idle.webp",
+        "hoverSrc": "/extension-assets/pkg.theme/g2/mascot/fly.gif",
+        "hoverMs": 3000.5
+      }
+    },
+    "valid": false
+  },
+  {
+    "name": "video mascot",
+    "appearance": {
+      "mascot": {
+        "src": "/extension-assets/pkg.theme/g2/idle.mp4"
+      }
+    },
+    "valid": false
   }
 ]

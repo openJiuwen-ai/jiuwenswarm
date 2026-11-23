@@ -8,7 +8,6 @@ import { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import './SessionSidebar.css';
 import PlusIcon from '../../assets/sidebar/plus.svg?react';
-import logoIcon from '/logo.svg';
 import SettingsIcon from '../../assets/settings/app-navigation/settings.svg?react';
 import UpdateIcon from '../../assets/sidebar/download-update.svg?react';
 import WorkIcon from '../../assets/工作.svg?react';
@@ -24,6 +23,7 @@ import type {
 import { EnterpriseContextSwitcher } from './EnterpriseContextSwitcher';
 import { JiuwenMateModeSwitch } from '../../features/jiuwenmate/components/JiuwenMateModeSwitch';
 import { WebUIHost, WebUINavigationHost, type WebUIStyleOverrides } from '../../features/webui';
+import { SidebarBrandLogo } from './SidebarBrandLogo';
 
 const pluginNavigationStyles: WebUIStyleOverrides = {
   Button: {
@@ -206,7 +206,7 @@ export function SessionSidebar({
   return (
     <aside className="sidebar sidebar--icon-rail" data-testid="session-sidebar-rail">
       <div className="icon-rail-logo" data-testid="session-sidebar-logo">
-        <img src={logoIcon} alt="Logo" width="28" height="28" />
+        <SidebarBrandLogo />
       </div>
 
       {showNewSession && (

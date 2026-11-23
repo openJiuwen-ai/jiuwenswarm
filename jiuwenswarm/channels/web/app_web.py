@@ -102,8 +102,8 @@ def _get_user_workspace_dir() -> Path:
     return (Path(user_home) if user_home else Path.home()) / ".jiuwenswarm"
 
 
-#: Startup splash candidate hint (Gateway S_09 section 4); answered locally because
-#: the page may load before the Gateway is up.
+#: Startup gate hint: splash candidates and appearance providers (Gateway S_09 section 4);
+#: answered locally because the page may load before the Gateway is up.
 SPLASH_HINT_PATH = "/extension-splash/hint"
 
 
@@ -119,6 +119,21 @@ def _splash_candidates() -> bool:
         return bool(installed_splash_providers())
     except Exception:  # noqa: BLE001 - an unreadable install counts as none; the Gateway answer decides
         logging.getLogger(__name__).debug("splash hint unavailable", exc_info=True)
+        return False
+
+
+def _appearance_providers() -> bool:
+    """Whether an installed Gateway package declares ``application.appearance`` (Gateway S_09 section 4).
+
+    The startup gate waits for these packages to apply their appearance; like the splash hint this
+    reads manifests only, and the browser still asks the Gateway once connected.
+    """
+    try:
+        from agent_gateway.extensions_v2.splash_hint import installed_appearance_providers
+
+        return bool(installed_appearance_providers())
+    except Exception:  # noqa: BLE001 - an unreadable install counts as none; the Gateway answer decides
+        logging.getLogger(__name__).debug("appearance hint unavailable", exc_info=True)
         return False
 
 
@@ -3001,7 +3016,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self.end_headers()
             return
         if parsed.path == SPLASH_HINT_PATH:
-            self._write_json(200, {"candidates": _splash_candidates()})
+            self._write_json(200, {"candidates": _splash_candidates(), "appearance": _appearance_providers()})
             return
         if parsed.path == "/oauth/hub/done":
             body = (

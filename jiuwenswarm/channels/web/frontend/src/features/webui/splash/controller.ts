@@ -1,5 +1,5 @@
 /**
- * 开场队列控制（Gateway S_09 第 5 节）：判定是否等待、依次准备与播放提供者、计时与跳过、结束通知。
+ * 开场队列控制（Gateway S_09 第 5 节）：判定是否等待、外观准备、依次准备与播放提供者、计时与跳过、结束通知。
  * 每个等待都有时限，门控总会开放；结束先在本地关闭，再通知提供者。
  */
 
@@ -7,7 +7,11 @@ import { isRecord } from '../protocol/utils.ts';
 import type { MediaSurfaceEvent } from '../renderer/adapters/webuiMediaSurface/hostPolicy.ts';
 import type { WebUIRuntime } from '../runtime/types.ts';
 import type { WebUIDispatchReceipt } from '../transport/types.ts';
-import { SPLASH_EXPECTED_KEY, SPLASH_PLAYED_KEY, writeItem, type SplashHint, type SplashLaunch } from './launch.ts';
+import { APPEARANCE_READY_MS, type AppearancePreparation } from '../appearance/preparation.ts';
+import {
+  APPEARANCE_EXPECTED_KEY, SPLASH_EXPECTED_KEY, SPLASH_PLAYED_KEY, UNKNOWN_HINT, readItem, writeItem,
+  type SplashLaunch, type StartupHint,
+} from './launch.ts';
 
 export const SPLASH_SLOT_ID = 'application.splash';
 export const SPLASH_INSTANCE_KEY = 'main';
@@ -17,6 +21,8 @@ const MAX_SPLASH_MS = 60_000;
 
 export const SPLASH_TIMEOUTS = {
   hint: 1_500,
+  /** Waiting for appearance providers (Gateway S_09 section 5). */
+  appearance: APPEARANCE_READY_MS,
   /** Waiting for the Gateway when the Web server reported candidates. */
   connectHinted: 30_000,
   /** Waiting for the Gateway when no hint was available. */
@@ -40,7 +46,7 @@ export interface SplashState {
   phase: SplashPhase;
   provider: SplashProvider | null;
   instanceKey: string | null;
-  /** The hint named splash candidates: while deciding, the gate already shows the neutral backdrop. */
+  /** The hint named splash candidates or appearance providers: while deciding, the gate shows the neutral backdrop. */
   expected: boolean;
 }
 
@@ -52,10 +58,12 @@ export interface SplashTimers {
 export interface SplashControllerOptions {
   runtime: WebUIRuntime;
   launch: SplashLaunch;
-  hint(): Promise<SplashHint>;
+  hint(): Promise<StartupHint>;
   requestProviders(): Promise<unknown>;
-  /** The package that last provided the appearance plays first unless the user saved an order. */
-  preferredProvider?: string | null;
+  /** Appearance providers to wait for before the splash decision; every page load waits, at most 3 seconds. */
+  appearance?: AppearancePreparation;
+  /** The current colors provider plays first unless the user saved an order; asked when the queue is built. */
+  preferredProvider?: () => string | null;
   reducedMotion(): boolean;
   timers?: SplashTimers;
 }
@@ -246,33 +254,66 @@ export function createSplashController(options: SplashControllerOptions): Splash
     }
   }
 
+  /** Stop waiting for appearance providers; snapshots arriving later still apply. */
+  function finishAppearance(): void {
+    if (!disposed) options.appearance?.finish();
+  }
+
   async function start(): Promise<void> {
     if (started || disposed) return;
     started = true;
-    if (launch.completed) {
+    const { appearance } = options;
+    // A reload of a completed launch opens at once unless the last page had appearance providers to wait for;
+    // the preparation still asks the Gateway and corrects the record for the next page.
+    if (launch.completed && (!appearance || readItem(APPEARANCE_EXPECTED_KEY) !== '1')) {
+      finishAppearance();
       open();
       return;
     }
-    const hint = await delay(Promise.resolve().then(options.hint), SPLASH_TIMEOUTS.hint, 'unknown' as SplashHint);
+    // Waiting only for appearance counts from here, the hint and the connection included.
+    let deadline: unknown = null;
+    const appearanceDeadline = new Promise<null>((resolve) => {
+      deadline = timers.set(() => resolve(null), SPLASH_TIMEOUTS.appearance);
+    });
+    try {
+      await decide(appearanceDeadline);
+    } finally {
+      timers.clear(deadline);
+    }
+  }
+
+  async function decide(appearanceDeadline: Promise<null>): Promise<void> {
+    const { appearance } = options;
+    const hint = await delay(Promise.resolve().then(options.hint), SPLASH_TIMEOUTS.hint, UNKNOWN_HINT);
     if (disposed) return;
-    if (hint !== 'unknown') writeItem(SPLASH_EXPECTED_KEY, hint === 'candidates' ? '1' : '0');
-    if (hint === 'candidates') {
+    // A completed launch plays no splash; the appearance is still prepared on every page load.
+    const splash = launch.completed ? null : hint.splash;
+    const waitAppearance = hint.appearance !== false;
+    if (splash && splash !== 'unknown') writeItem(SPLASH_EXPECTED_KEY, splash === 'candidates' ? '1' : '0');
+    if (splash === 'candidates' || (appearance && hint.appearance === true)) {
       // Waiting for the Gateway can take a while; show the splash backdrop rather than a blank page meanwhile.
       expected = true;
       set(state);
     }
-    if (hint === 'none') {
-      // The gate opens at once and stays open; the Gateway's answer only corrects the hint for the next start.
+    if (splash !== 'candidates' && splash !== 'unknown') {
+      if (waitAppearance && appearance) await Promise.race([appearance.ready(), appearanceDeadline]);
+      if (disposed) return;
+      finishAppearance();
       open();
-      await refreshHint();
+      // After a "none" hint the gate stays open; the Gateway's answer only corrects the hint for the next start.
+      if (splash === 'none') await refreshHint();
       return;
     }
-    const connected = await waitConnected(hint === 'candidates' ? SPLASH_TIMEOUTS.connectHinted : SPLASH_TIMEOUTS.connectUnknown);
+    const connected = await waitConnected(splash === 'candidates' ? SPLASH_TIMEOUTS.connectHinted : SPLASH_TIMEOUTS.connectUnknown);
     if (disposed) return;
     if (!connected) {
+      finishAppearance();
       open();
       return;
     }
+    if (waitAppearance && appearance) await delay(appearance.ready(), SPLASH_TIMEOUTS.appearance, null);
+    if (disposed) return;
+    finishAppearance();
     for (const provider of await askProviders()) {
       if (disposed) return;
       await play(provider);
@@ -282,7 +323,7 @@ export function createSplashController(options: SplashControllerOptions): Splash
 
   async function askProviders(): Promise<SplashProvider[]> {
     const answer = await delay(Promise.resolve().then(options.requestProviders), SPLASH_TIMEOUTS.answer, null);
-    const providers = orderProviders(parseProviders(answer), options.preferredProvider, parseCustomized(answer));
+    const providers = orderProviders(parseProviders(answer), options.preferredProvider?.(), parseCustomized(answer));
     if (answer !== null) writeItem(SPLASH_EXPECTED_KEY, providers.length ? '1' : '0');
     return providers;
   }
