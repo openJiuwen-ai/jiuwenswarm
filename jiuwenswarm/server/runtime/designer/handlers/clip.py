@@ -731,16 +731,24 @@ class ClipNodeHandler:
             reference_paths=[str(p) for p in ref_files],
         )
         ref_files = [Path(p) for p in ref_files]
+        from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
+            video_generation_overrides,
+        )
         from jiuwenswarm.server.runtime.designer.pipeline.wan_call_locks import (
             apply_wan_call_locks,
         )
 
+        overrides = video_generation_overrides(
+            cfg,
+            graph,
+            [str(p) for p in ref_files],
+        )
         prompt = apply_wan_call_locks(
             prompt,
             cfg=cfg,
             graph=graph,
             clip_index=clip_index,
-            slots=reindex_slots(slots, ref_files),
+            slots=reindex_slots(slots, overrides["reference_images"] or []),
         )
         try:
             from jiuwenswarm.server.runtime.designer.pipeline.media_prompt_limits import (
@@ -786,15 +794,6 @@ class ClipNodeHandler:
 
         meta = graph.get("metadata") if isinstance(graph.get("metadata"), dict) else {}
         want_audio, _model_override = resolve_video_audio_request(cfg, meta)
-        from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
-            video_generation_overrides,
-        )
-
-        overrides = video_generation_overrides(
-            cfg,
-            graph,
-            [str(p) for p in ref_files],
-        )
         try:
             result = await generate_clip_video(
                 prompt,

@@ -76,12 +76,7 @@ export function DesignerDeleteNodeDialog({ onCancel, onConfirm }: DesignerDelete
                   data-testid="designer-delete-node-scene-warning-item"
                   data-variant={impact.clipId}
                 >
-                  {impact.outcome.kind === 'rebind'
-                    ? t('designer.nodeActions.deleteSceneRebind', {
-                        clip: impact.clipLabel,
-                        scene: impact.outcome.sceneLabel,
-                      })
-                    : t('designer.nodeActions.deleteSceneMissing', { clip: impact.clipLabel })}
+                  {t('designer.nodeActions.deleteSceneMissing', { clip: impact.clipLabel })}
                 </li>
               ))}
             </ul>

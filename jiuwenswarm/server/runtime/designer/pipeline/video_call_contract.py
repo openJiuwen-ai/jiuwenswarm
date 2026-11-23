@@ -13,7 +13,7 @@ def prepare_video_prompt(
     *,
     cfg: dict[str, Any] | None = None,
     graph: dict[str, Any] | None = None,
-) -> tuple[str, list[str]]:
+) -> str:
     """Preserve authored prose and append explicitly assigned dialogue if absent.
 
     This checks the prompt's type and presence, not its narrative, language,
@@ -24,7 +24,6 @@ def prepare_video_prompt(
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("Video prompt must be a non-empty string")
     text = prompt.strip()
-    notes = ["kept_agent_prompt"]
     metadata = (graph or {}).get("metadata")
     metadata = metadata if isinstance(metadata, dict) else {}
     analysis = metadata.get("script_analysis")
@@ -63,6 +62,4 @@ def prepare_video_prompt(
         else:
             label = f"{who}: " if who else ""
             text += f'\n\nDialogue: {label}"{line}"'
-        if "appended_explicit_dialogue" not in notes:
-            notes.append("appended_explicit_dialogue")
-    return text, notes
+    return text

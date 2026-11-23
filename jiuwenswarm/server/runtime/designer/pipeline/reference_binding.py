@@ -10,9 +10,11 @@ narrative only; they never author image numbers.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal
+from urllib.parse import unquote, urlparse
 
 from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
     current_content_language,
@@ -68,17 +70,37 @@ def image_word(index: int, family: str) -> str:
     return f"Image {index}"
 
 
+def _local_reference_path(raw: str | Path) -> Path:
+    text = str(raw).strip()
+    if text.startswith("file:"):
+        parsed = urlparse(text)
+        path = unquote(parsed.path)
+        if len(path) >= 3 and path[0] == "/" and path[2] == ":":
+            path = path[1:]
+        return Path(path).resolve()
+    return Path(text).resolve()
+
+
+def reference_path_key(raw: str | Path) -> str:
+    """Stable identity for a local path or file URI; remote URLs stay verbatim."""
+    text = str(raw).strip()
+    parsed = urlparse(text)
+    if parsed.scheme and parsed.scheme != "file" and "://" in text:
+        return text
+    return os.path.normcase(str(_local_reference_path(text)))
+
+
 def reindex_slots(slots: list[ReferenceSlot], paths: list[str] | list[Path]) -> list[ReferenceSlot]:
     """Slots for the files actually sent, in send order.
 
     A file that was not collected as a slot (for example one restored from a
     regenerate packet) is bound as a generic connected reference.
     """
-    by_path = {str(slot.path.resolve()): slot for slot in slots}
+    by_path = {reference_path_key(slot.path): slot for slot in slots}
     out: list[ReferenceSlot] = []
     for index, raw in enumerate(paths, start=1):
-        path = Path(raw).resolve()
-        known = by_path.get(str(path))
+        path = _local_reference_path(raw)
+        known = by_path.get(reference_path_key(path))
         if known is not None:
             out.append(replace(known, index=index, path=path))
         else:

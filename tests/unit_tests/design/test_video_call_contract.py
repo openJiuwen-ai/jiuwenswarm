@@ -29,7 +29,6 @@ def test_authored_video_prompt_is_not_semantically_rewritten(prompt: str) -> Non
         "time_of_day_lock": {"time_of_day": "morning"},
     }
     assert apply_wan_call_locks(prompt, cfg=cfg, graph={}) == prompt
-    assert cfg["director_video_prompt_notes"] == ["kept_agent_prompt"]
     assert cfg["last_wan_prompt"] == prompt
 
 
@@ -63,7 +62,6 @@ def test_missing_dialogue_is_appended_once_without_changing_the_original_prompt(
     cfg = {"speech_by_character": {"char_1": "早上好。", "char_2": "来一杯咖啡，谢谢。"}}
     sent = apply_wan_call_locks(prompt, cfg=cfg, graph=graph)
     assert sent == prompt + '\n\nDialogue: 小林: "来一杯咖啡，谢谢。"'
-    assert "appended_explicit_dialogue" in cfg["director_video_prompt_notes"]
     assert apply_wan_call_locks(sent, cfg=cfg, graph=graph) == sent
 
 

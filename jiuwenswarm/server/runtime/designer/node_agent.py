@@ -17,6 +17,7 @@ from jiuwenswarm.common.schema.designer_graph import (
     DESIGNER_AGENT_GROUP_NAME,
     NODE_ROLE_CLIP,
     NODE_ROLE_COMPOSE,
+    NODE_ROLE_STORYBOARD,
     AssetRef,
     DesignerExecutionGraph,
     DesignerGraphNode,
@@ -1159,7 +1160,11 @@ class DesignerGraphToolkit:
             return "call_video_model error: prompt required"
         text = prompt.strip()
         payload = connected_payload_clause(
-            edge_text_inputs(self.ctx, node),
+            edge_text_inputs(
+                self.ctx,
+                node,
+                exclude_roles=frozenset({NODE_ROLE_STORYBOARD}),
+            ),
             edge_video_inputs(self.ctx, node),
         )
         if payload and payload not in text:
@@ -1213,12 +1218,17 @@ class DesignerGraphToolkit:
             prompt=text,
             reference_paths=ref_files,
         )
+        from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
+            video_generation_overrides,
+        )
+
+        overrides = video_generation_overrides(cfg, graph, ref_files)
         text = apply_wan_call_locks(
             text,
             cfg=cfg,
             graph=graph,
             clip_index=clip_index,
-            slots=reindex_slots(slots, [Path(p) for p in ref_files]),
+            slots=reindex_slots(slots, overrides["reference_images"] or []),
         )
         cfg["prompt"] = text
         want_audio, _model_override = resolve_video_audio_request(cfg, meta)
@@ -1257,15 +1267,6 @@ class DesignerGraphToolkit:
             from jiuwenswarm.server.runtime.designer.media_settings import video_settings
 
             video = video_settings(graph)
-            from jiuwenswarm.server.runtime.designer.pipeline.reference_led import (
-                video_generation_overrides,
-            )
-
-            overrides = video_generation_overrides(
-                cfg,
-                graph,
-                [str(p) for p in (ref_files or [])],
-            )
             result = await generate_clip_video(
                 prompt=text,
                 save_dir=str(self._media_save_dir()),

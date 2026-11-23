@@ -52,17 +52,14 @@ test('no warning when the clip binds as declared or never declared a scene', () 
   assert.equal(clipSceneReferenceWarning(nodes, scene('n_scene_x', 'set_1')), null);
 });
 
-test('a deleted declared scene warns rebind or missing by what remains', () => {
+test('a deleted declared scene always warns that its explicit reference is missing', () => {
   const s1 = scene('n_scene_1', 'set_1', 'Library');
   const s2 = scene('n_scene_2', 'set_2');
   const gone = { scene_node_id: 'n_scene_gone' };
   const rebound = clip('n_clip_1', { ...gone, setting_id: 'set_1' });
   const orphaned = clip('n_clip_2', { ...gone, setting_id: 'set_9' });
 
-  assert.deepEqual(clipSceneReferenceWarning([s1, s2, rebound], rebound), {
-    kind: 'rebind',
-    sceneLabel: 'Library',
-  });
+  assert.deepEqual(clipSceneReferenceWarning([s1, s2, rebound], rebound), { kind: 'missing' });
   assert.deepEqual(clipSceneReferenceWarning([s1, s2, orphaned], orphaned), { kind: 'missing' });
 });
 
@@ -84,11 +81,10 @@ test('deletion impacts list only clips bound to the deleted scene', () => {
   const c3 = clip('n_clip_3', { setting_id: 'set_2' }, 'Walking');
   const nodes = [s1, s2, c1, c2, c3];
 
-  // Deleting set_1's card: c1 declared it and has no setting_id, so the lone
-  // remaining card (Pier) takes over; c2's setting set_1 has no card left and
-  // the lone Pier card belongs to set_2, so it goes missing. c3 is untouched.
+  // Deletion removes the scene edge and never creates a replacement edge, so
+  // both affected clips lose their scene reference. c3 is untouched.
   assert.deepEqual(collectSceneDeletionImpacts(nodes, ['n_scene_1']), [
-    { clipId: 'n_clip_1', clipLabel: 'Opening', outcome: { kind: 'rebind', sceneLabel: 'Pier' } },
+    { clipId: 'n_clip_1', clipLabel: 'Opening', outcome: { kind: 'missing' } },
     { clipId: 'n_clip_2', clipLabel: 'Reading', outcome: { kind: 'missing' } },
   ]);
   // Deleting set_2's card: c3's setting has no other card, and the lone
@@ -100,7 +96,7 @@ test('deletion impacts list only clips bound to the deleted scene', () => {
   assert.deepEqual(collectSceneDeletionImpacts(nodes, ['n_clip_1']), []);
 });
 
-test('a clip rebound to a surviving same-setting scene reports the rebind', () => {
+test('a surviving same-setting scene is not claimed as an automatic rebind', () => {
   const primary = scene('n_scene_1', 'set_1', 'Library day');
   const duplicate = scene('n_scene_1b', 'set_1', 'Library night');
   const c1 = clip('n_clip_1', { scene_node_id: 'n_scene_1' }, 'Opening');
@@ -109,7 +105,7 @@ test('a clip rebound to a surviving same-setting scene reports the rebind', () =
     {
       clipId: 'n_clip_1',
       clipLabel: 'Opening',
-      outcome: { kind: 'rebind', sceneLabel: 'Library night' },
+      outcome: { kind: 'missing' },
     },
   ]);
 });

@@ -854,7 +854,7 @@ def _scene_name_is_placeholder(name: str, scene_id: str) -> bool:
         return True
     if value == sid:
         return True
-    return value.startswith("set_") and value[4:].isdigit()
+    return bool(re.fullmatch(r"(?:set|scene|setting)[ _-]*\d+", value))
 
 
 def _heuristic_lean_shot(

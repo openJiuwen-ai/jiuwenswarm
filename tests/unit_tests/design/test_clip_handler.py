@@ -154,7 +154,16 @@ async def test_clip_handler_sends_character_and_scene_as_references(
         },
     )
     assert collect_clip_reference_images(ctx) == [character.resolve(), scene.resolve()]
-    graph["nodes"][-1]["config"]["prompt"] = "The traveler steps onto the platform."
+    graph["nodes"][-1]["config"].update(
+        {
+            "prompt": "The traveler steps onto the platform.",
+            "reference_call_mode": "r2v",
+            "reference_image_plan": [
+                {"role": NODE_ROLE_SCENE, "path": scene.resolve().as_uri()},
+                {"role": NODE_ROLE_CHARACTER, "path": character.resolve().as_uri()},
+            ],
+        }
+    )
     prompt = build_clip_prompt(graph, graph["nodes"][-1], ctx)
     assert prompt
 
@@ -179,14 +188,14 @@ async def test_clip_handler_sends_character_and_scene_as_references(
         fake_generate,
     )
     await ClipNodeHandler().execute(graph["nodes"][-1], ctx)
-    refs = [Path(x).resolve() for x in (seen.get("reference_images") or [])]
-    assert character.resolve() in refs
-    assert scene.resolve() in refs
-    assert frame.resolve() not in refs
+    refs = [str(x) for x in (seen.get("reference_images") or [])]
+    assert refs == [scene.resolve().as_uri(), character.resolve().as_uri()]
+    assert frame.resolve().as_uri() not in refs
     assert seen.get("first_frame") in (None, "")
     assert seen.get("force_reference_mode") is True
     assert seen["reference_file"] in (None, "")
-    assert seen["prompt"]
+    assert "Image 1 is the scene: scene." in str(seen["prompt"])
+    assert "Image 2 is the identity reference for character." in str(seen["prompt"])
 
 
 @pytest.mark.asyncio

@@ -149,6 +149,17 @@ def test_reindex_binds_restored_files_as_connected_references(tmp_path: Path) ->
     assert [(s.index, s.role, s.label) for s in out] == [(1, "other", "restored"), (2, "character", "Ada")]
 
 
+def test_reindex_matches_file_uri_to_the_known_slot(tmp_path: Path) -> None:
+    scene = (tmp_path / "library.png").resolve()
+    slots = [ReferenceSlot(1, "scene", "the old library", scene)]
+
+    out = reindex_slots(slots, [scene.as_uri()])
+
+    assert [(slot.index, slot.role, slot.label, slot.path) for slot in out] == [
+        (1, "scene", "the old library", scene)
+    ]
+
+
 def test_rewrite_with_slots_numbers_cast_and_never_invents_a_room(tmp_path: Path) -> None:
     from jiuwenswarm.server.runtime.designer.pipeline.video_prompt_practice import (
         compose_practice_prompt,
@@ -204,15 +215,22 @@ def test_call_locks_append_binding_from_attached_slots(tmp_path: Path) -> None:
     assert again.count("Image 2 is the scene") == 1
 
 
-def test_reference_led_call_gets_no_appended_binding(tmp_path: Path) -> None:
+def test_reference_led_call_gets_actual_appended_binding(tmp_path: Path) -> None:
     from jiuwenswarm.server.runtime.designer.pipeline.wan_call_locks import apply_wan_call_locks
 
-    cfg = {"reference_call_mode": "character", "clip_action": "Ada waves."}
+    cfg = {"reference_call_mode": "r2v", "clip_action": "Ada waves."}
     slots = [ReferenceSlot(1, "character", "Ada", tmp_path / "ada.png")]
 
     text = apply_wan_call_locks("Ada waves.", cfg=cfg, graph={}, clip_index=1, slots=slots)
 
-    assert "identity reference" not in text
+    assert text.endswith("Image 1 is the identity reference for Ada.")
+
+
+@pytest.mark.parametrize("name", ["set_2", "scene_2", "Scene 2", "setting-2"])
+def test_scene_number_names_are_placeholders(name: str) -> None:
+    from jiuwenswarm.server.runtime.designer.script_analysis import _scene_name_is_placeholder
+
+    assert _scene_name_is_placeholder(name, "set_2") is True
 
 
 def test_shot_brief_names_the_scene_as_plain_text() -> None:

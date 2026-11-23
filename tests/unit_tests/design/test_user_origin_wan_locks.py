@@ -41,19 +41,15 @@ def test_user_origin_keeps_toolbar_prop_over_stale_beat() -> None:
     user_prompt = _practice_prompt(f"raises a {_USER_PROP}")
     cfg = _cfg(origin="user", user_prompt=user_prompt)
     approved = apply_wan_call_locks("agent ignored", cfg=cfg, graph={})
-    notes = cfg["director_video_prompt_notes"]
     assert _USER_PROP in approved
     assert _STALE_PROP not in approved
-    assert notes == ["kept_user_prompt"]
 
 
 def test_storyboard_origin_preserves_authored_prompt() -> None:
     user_prompt = _practice_prompt(f"raises a {_USER_PROP}")
     cfg = _cfg(origin="storyboard", user_prompt=user_prompt)
     approved = apply_wan_call_locks(user_prompt, cfg=cfg, graph={})
-    notes = cfg["director_video_prompt_notes"]
     assert approved == user_prompt
-    assert "kept_user_prompt" not in notes
 
 
 def test_apply_wan_call_locks_stamps_sent_prompt_on_caller_cfg() -> None:
@@ -65,8 +61,6 @@ def test_apply_wan_call_locks_stamps_sent_prompt_on_caller_cfg() -> None:
     assert _USER_PROP in str(cfg.get("last_wan_prompt") or "")
     assert _USER_PROP in str((cfg.get("generate") or {}).get("prompt") or "")
     assert (cfg.get("generate") or {}).get("prompt_origin") == "user"
-    assert cfg.get("director_video_prompt_approved") is True
-    assert isinstance(cfg.get("director_video_prompt_notes"), list)
 
 
 def test_user_origin_text_is_not_mined_or_rewritten() -> None:
@@ -87,7 +81,6 @@ def test_empty_user_surface_keeps_agent_text() -> None:
     cfg["prompt"] = ""
     cfg.pop("regenerate_packet", None)
     approved = apply_wan_call_locks("agent text without binding", cfg=cfg, graph={})
-    assert "kept_user_prompt" not in cfg["director_video_prompt_notes"]
     assert approved == "agent text without binding"
 
 

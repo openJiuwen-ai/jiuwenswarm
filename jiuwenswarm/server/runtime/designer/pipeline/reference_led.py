@@ -1717,12 +1717,17 @@ def _paths_from_plan(cfg: dict[str, Any], graph: dict[str, Any] | None) -> list[
 
 def _merge_ref_paths(planned: list[str], fallback: list[str]) -> list[str]:
     """Keep plan order, then append any edge-collected paths the plan missed."""
+    from jiuwenswarm.server.runtime.designer.pipeline.reference_binding import (
+        reference_path_key,
+    )
+
     out: list[str] = []
     seen: set[str] = set()
     for path in list(planned or []) + list(fallback or []):
         text = str(path or "").strip()
-        if not text or text in seen:
+        key = reference_path_key(text) if text else ""
+        if not key or key in seen:
             continue
-        seen.add(text)
+        seen.add(key)
         out.append(text)
     return out

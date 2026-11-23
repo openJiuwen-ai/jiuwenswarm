@@ -21,9 +21,7 @@ export type DesignerSceneBindingNode = {
   config?: Record<string, unknown>;
 };
 
-export type ClipSceneWarning =
-  | { kind: 'rebind'; sceneLabel: string }
-  | { kind: 'missing' };
+export type ClipSceneWarning = { kind: 'missing' };
 
 export type SceneDeletionImpact = {
   clipId: string;
@@ -92,7 +90,6 @@ export function resolveClipScene(
 /**
  * Warning for a clip whose declared scene cannot be bound as declared.
  *
- * `rebind`: the named scene card is gone but another card takes over.
  * `missing`: the clip declared a scene (explicit card or setting) that no
  * scene card provides — generation runs without a scene reference.
  * Null when the clip binds as declared or never declared a scene.
@@ -106,10 +103,7 @@ export function clipSceneReferenceWarning(
   const declaredId = declaredSceneNodeId(config);
   if (declaredId) {
     if (nodes.some((node) => node.id === declaredId)) return null;
-    const fallback = resolveClipScene(nodes, config);
-    return fallback
-      ? { kind: 'rebind', sceneLabel: nodeLabel(fallback) }
-      : { kind: 'missing' };
+    return { kind: 'missing' };
   }
   if (!asText(config.setting_id)) return null;
   const resolved = resolveClipScene(nodes, config);
@@ -118,7 +112,8 @@ export function clipSceneReferenceWarning(
 
 /**
  * Clips whose current scene card is inside `deletingIds`, with the outcome
- * after the deletion: rebound to another card or left without a scene.
+ * after the deletion. Deletion removes the scene edge and does not create a
+ * replacement edge, so every affected clip loses its scene reference.
  */
 export function collectSceneDeletionImpacts(
   nodes: DesignerSceneBindingNode[],
@@ -126,20 +121,16 @@ export function collectSceneDeletionImpacts(
 ): SceneDeletionImpact[] {
   if (!deletingIds.length) return [];
   const deleting = new Set(deletingIds);
-  const remaining = nodes.filter((node) => !deleting.has(node.id));
   const impacts: SceneDeletionImpact[] = [];
   for (const node of nodes) {
     if (designerNodePipeline(node) !== DESIGNER_NODE_ROLE_CLIP) continue;
     const config = asConfig(node);
     const current = resolveClipScene(nodes, config);
     if (!current || !deleting.has(current.id)) continue;
-    const after = resolveClipScene(remaining, config);
     impacts.push({
       clipId: node.id,
       clipLabel: nodeLabel(node),
-      outcome: after
-        ? { kind: 'rebind', sceneLabel: nodeLabel(after) }
-        : { kind: 'missing' },
+      outcome: { kind: 'missing' },
     });
   }
   return impacts;

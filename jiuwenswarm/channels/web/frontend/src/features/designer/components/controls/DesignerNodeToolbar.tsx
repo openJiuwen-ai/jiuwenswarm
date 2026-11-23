@@ -149,9 +149,7 @@ export function DesignerNodeToolbar({ nodeId, nodeType }: DesignerNodeToolbarPro
               data-testid="designer-node-toolbar-scene-warning"
               data-variant={sceneWarning.kind}
             >
-              {sceneWarning.kind === 'rebind'
-                ? t('designer.toolbar.sceneReferenceRebind', { scene: sceneWarning.sceneLabel })
-                : t('designer.toolbar.sceneReferenceMissing')}
+              {t('designer.toolbar.sceneReferenceMissing')}
             </p>
           ) : null}
           {comfyui ? <DesignerComfyuiParamsForm nodeId={nodeId} comfyui={comfyui} /> : null}

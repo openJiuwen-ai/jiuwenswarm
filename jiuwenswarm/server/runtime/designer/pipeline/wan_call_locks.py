@@ -130,19 +130,14 @@ def apply_wan_call_locks(
         raise ValueError("Video prompt must be a non-empty string")
     # Remove only a previously stamped binding, then render the actual attach order.
     candidate = strip_reference_binding(candidate, cfg_map)
-    prepared, notes = prepare_video_prompt(candidate, cfg=cfg_map, graph=graph)
-    notes[0] = "kept_user_prompt" if user_text else "kept_agent_prompt"
-    if slots is not None and not str(cfg_map.get("reference_call_mode") or "").strip():
+    prepared = prepare_video_prompt(candidate, cfg=cfg_map, graph=graph)
+    if slots is not None:
         prepared = append_reference_binding(
             prepared,
             slots,
             cfg=cfg_map,
             family=active_video_family(),
         )
-        notes.append("bound_actual_references")
-    cfg_map["director_video_prompt_notes"] = notes
-    # This legacy field denotes contract preparation, not semantic approval.
-    cfg_map["director_video_prompt_approved"] = True
     _stamp_sent_prompt(
         cfg_map,
         prepared,
