@@ -13,6 +13,7 @@ const { pipeline } = require('node:stream/promises');
 const { reserveLoopbackPortSync, waitForOwnedCdpTarget } = require('./cdp_port.cjs');
 const { createShareImageExporter } = require('./share_image_export.cjs');
 const { registerDisplayMediaHandler } = require('./display_media_picker.cjs');
+const { registerMediaDevicePermissions } = require('./media_device_permissions.cjs');
 const { createApplicationPresentation } = require('./application_presentation.cjs');
 const { SHARED_BROWSER_PARTITION, panelIdentity, hasLiveLease, evictionCandidates, createTargetHandler } = require('./browser_panels.cjs');
 const { createBrowserDownloadService } = require('./browser_downloads.cjs');
@@ -3282,6 +3283,7 @@ async function createMainWindow() {
     if (isMainFrame && !isInPlace) applicationPresentation?.close('workspace_navigation');
   });
   mainWindow.webContents.on('render-process-gone', () => applicationPresentation?.close('workspace_renderer_gone'));
+  registerMediaDevicePermissions({ window: mainWindow, app, dialog, getFrontendUrl: () => currentFrontendUrl });
   registerDisplayMediaHandler({
     session: mainWindow.webContents.session,
     desktopCapturer,
