@@ -85,6 +85,16 @@ class SkillAdapter:
             owner_id=options.get("owner_id", ""),
             source_session=source_session,
             created_at=datetime.now(timezone.utc).isoformat(),
+            # Empty means "unspecified"; publish_app fills local/hub while
+            # preserving the existing registration when republishing.
+            source=str(options.get("source") or ""),
+            hub_asset_id=str(options.get("hub_asset_id") or ""),
+            hub_url=str(options.get("hub_url") or ""),
+            artifact_sha256=str(options.get("artifact_sha256") or ""),
+            requires_project=bool(options.get("requires_project", False)),
+            project_id=str(options.get("project_id") or ""),
+            project_dir=str(options.get("project_dir") or ""),
+            project_work_mode=str(options.get("project_work_mode") or ""),
         )
 
         self._logger.info(
@@ -209,6 +219,23 @@ class SkillAdapter:
         if original in generated_templates:
             content = self._generate_windows_start if pk == "windows" else self._generate_unix_start
             path.write_text(content("static", manifest.status_mode), encoding="utf-8")
+
+    def has_generated_static_start(self, manifest: AppManifest) -> bool:
+        """Check that a distributed app still uses the market-owned entry script."""
+        from pathlib import Path
+
+        pk = platform_key()
+        relative = "scripts/start.ps1" if pk == "windows" else "scripts/start.sh"
+        if manifest.run_type != "static" or manifest.start_script.get(pk) != relative:
+            return False
+        root = Path(manifest.work_dir).resolve()
+        path = root / relative
+        if not path.is_file() or path.resolve() != path:
+            return False
+        template = self._generate_windows_start if pk == "windows" else self._generate_unix_start
+        expected = template("static", manifest.status_mode)
+        with path.open(encoding="utf-8-sig", errors="replace") as script:
+            return script.read(len(expected) + 1) == expected
 
     @staticmethod
     def _legacy_windows_start(run_type: str, status_mode: str) -> str:

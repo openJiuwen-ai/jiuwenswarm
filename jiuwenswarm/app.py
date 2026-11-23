@@ -29,6 +29,7 @@ from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
     cleanup_stale_openjiuwen_descs,
     get_env_file,
+    prepare_local_gateway_config,
     prepare_runtime_workspace,
 )
 
@@ -141,8 +142,7 @@ def main() -> None:
         SUPERVISOR_PID_ENV: str(os.getpid()),
         "JIUWENSWARM_RECOVERY_SESSION_ID": recovery_session_id,
     }
-    if not child_env.get("JIUWENSWARM_GATEWAY_CONFIG_DIR", "").strip():
-        child_env["JIUWENSWARM_GATEWAY_CONFIG_DIR"] = str(_env_file.parent)
+    prepare_local_gateway_config(child_env)
     _popen_kwargs: dict = {"env": child_env}
     if os.name != "nt":
         # Own process group per child so a crash respawn can killpg the dead

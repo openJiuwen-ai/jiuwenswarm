@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path, PureWindowsPath
+import shutil
 from urllib.parse import urlsplit, parse_qsl, unquote
 
 import yaml
@@ -436,6 +437,74 @@ def _system_plugin(root: Path, identity: PublishIdentity, metadata: dict) -> dic
     return {"normalizations": changes, "dependencies": [], "wrapper": None}
 
 
+def _app(root: Path, identity: PublishIdentity, metadata: dict[str, object]) -> dict[str, object]:
+    from jiuwenswarm.extensions.app_market.hub_install import (
+        AppInstallError,
+        app_package_validator,
+        read_entry_metadata,
+        validate_package_name,
+    )
+
+    try:
+        validate_package_name(identity.package_name)
+    except AppInstallError as exc:
+        _fail(field="asset_name", message=str(exc))
+    entry = _path(root, metadata.get("app_entry", "index.html"), "index.html")
+    if entry.parent != root or entry.suffix.lower() not in {".html", ".htm"}:
+        _fail("APP_INVALID_ENTRY", "index.html")
+    changes = []
+    if entry.name != "index.html":
+        index = root / "index.html"
+        case_only = entry.name.casefold() == index.name
+        if index.exists() and not (case_only and entry.samefile(index)):
+            _fail("APP_INVALID_ENTRY", "index.html")
+        if case_only:
+            entry.replace(index)
+            changes.append(f"index.html: renamed from {entry.name}")
+        else:
+            shutil.copyfile(entry, index)
+            changes.append(f"index.html: copied from {entry.name}")
+    try:
+        app_package_validator(root, identity.package_name)
+        read_entry_metadata(root, identity.version)
+    except AppInstallError as exc:
+        code = "APP_VERSION_MISMATCH" if exc.code == "app_artifact_changed" else "INVALID_PACKAGE"
+        _fail(code, "index.html", str(exc))
+
+    display_name = _text(metadata.get("display_name"), "display_name").strip()
+    description = metadata.get("description", "")
+    tags = metadata.get("tags", [])
+    requires_project = metadata.get("requires_project", False)
+    permissions = metadata.get("app_permissions", [])
+    types_valid = (
+        isinstance(description, str)
+        and isinstance(tags, list)
+        and isinstance(requires_project, bool)
+        and isinstance(permissions, list)
+    )
+    items_valid = (
+        all(isinstance(tag, str) for tag in tags)
+        and all(permission == "ai" for permission in permissions)
+    )
+    if len(display_name) > 128 or not types_valid or not items_valid:
+        _fail()
+    return {
+        "normalizations": changes,
+        "wrapper": {
+            "name": identity.package_name,
+            "version": identity.version,
+            "display_name": display_name,
+            "description": description,
+            "runtime": {"type": "app"},
+            "metadata": {
+                "author": "unknown",
+                "tags": [tag.strip() for tag in tags if tag.strip()],
+                "app": {"requires_project": requires_project, "permissions": permissions},
+            },
+        },
+    }
+
+
 def normalize_and_validate(
     snapshot: Path, identity: PublishIdentity, metadata: dict[str, object]
 ) -> dict[str, object]:
@@ -460,6 +529,8 @@ def normalize_and_validate(
         return _agent_group(root, identity, metadata)
     if identity.kind == "system_plugin":
         return _system_plugin(root, identity, metadata)
+    if identity.kind == "app":
+        return _app(root, identity, metadata)
     if len(list(root.rglob("manifest.json"))) != 1:
         _fail(
             "MULTIPLE_MANIFESTS",

@@ -95,6 +95,7 @@ class _ColdBuild:
 @pytest.fixture
 async def cold(tmp_path, monkeypatch):
     adapter = interface_deep.JiuWenSwarmDeepAdapter()
+    adapter_cleanup = adapter.cleanup
     adapter.mark_as_session_scoped(f"cold-{tmp_path.name}")
     h = _ColdBuild(adapter, tmp_path)
     monkeypatch.setattr(interface_deep, "get_config", lambda: deepcopy(h.raw))
@@ -167,16 +168,22 @@ async def cold(tmp_path, monkeypatch):
     try:
         yield h
     finally:
-        for instance in h.instances:
-            for rail in list(instance.configured_rails()):
-                try:
-                    await instance.unregister_rail(rail)
-                except BaseException:
-                    pass
-            await instance._agent_callback_manager.clear()
-            if instance.react_agent is not None:
-                await instance.react_agent.agent_callback_manager.clear()
-            instance.ability_manager.teardown_tools()
+        if getattr(adapter, "_agent_initialization_loop", None) is not None:
+            await adapter_cleanup()
+        else:
+            for instance in h.instances:
+                rails = list(instance.configured_rails())
+                if not rails:
+                    continue
+                for rail in rails:
+                    try:
+                        await instance.unregister_rail(rail)
+                    except BaseException:
+                        pass
+                await instance._agent_callback_manager.clear()
+                if instance.react_agent is not None:
+                    await instance.react_agent.agent_callback_manager.clear()
+                instance.ability_manager.teardown_tools()
         # A failed assertion must not leave the deliberately registered probe behind.
         if Runner.resource_mgr.get_tool(h.tool.card.id) is not None:
             Runner.resource_mgr.remove_tool(h.tool.card.id)

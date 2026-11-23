@@ -19,6 +19,7 @@ from urllib.parse import urlparse
 import httpx
 
 from jiuwenswarm.server.runtime.marketplace.asset_publish_models import (
+    APP_UPLOAD_BODY_BYTES,
     PublishIdentity,
     PublishProtocolError,
     PublishResult,
@@ -207,7 +208,8 @@ class HubPublishClient:
                 raise PublishUploadError("artifact_changed")
             if not stat.S_ISREG(file_stat.st_mode):
                 raise PublishUploadError("invalid_artifact")
-            if file_stat.st_size > self.max_zip_bytes:
+            zip_limit = APP_UPLOAD_BODY_BYTES if request.identity.kind == "app" else self.max_zip_bytes
+            if file_stat.st_size > zip_limit:
                 raise PublishUploadError("file_too_large")
             digest = hashlib.sha256()
             first = True
@@ -245,6 +247,10 @@ class HubPublishClient:
             "visibility": request.visibility,
             "force": str(request.force).lower(),
         }
+        if request.identity.kind == "app":
+            # Hub reads these fields from the app's plugin.yaml and normalizes its tags.
+            for name in ("display_name", "description", "tags"):
+                fields.pop(name)
         if request.identity.target_asset_id is not None:
             fields["plugin_id"] = request.identity.target_asset_id
         boundary = secrets.token_hex(24)
@@ -262,6 +268,9 @@ class HubPublishClient:
             ).encode()
         )
         suffix = f"\r\n--{boundary}--\r\n".encode()
+        body_size = len(prefix) + size + len(suffix)
+        if request.identity.kind == "app" and body_size > APP_UPLOAD_BODY_BYTES:
+            raise PublishUploadError("file_too_large")
 
         async def content():
             yield prefix
@@ -285,7 +294,7 @@ class HubPublishClient:
             "Accept-Encoding": "identity",
             "X-Checksum-SHA256": request.artifact_sha256,
             "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "Content-Length": str(len(prefix) + size + len(suffix)),
+            "Content-Length": str(body_size),
         }
         if auth.oauth_provider:
             headers["X-OAuth-Provider"] = auth.oauth_provider

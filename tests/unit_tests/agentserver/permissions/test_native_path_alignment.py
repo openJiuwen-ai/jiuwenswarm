@@ -460,3 +460,168 @@ def test_smart_construction_leaves_process_file_registry_unchanged(tmp_path):
         assert lookup_file_tool_specs("read_pdf") is None
     '''), str(tmp_path)], capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+@pytest.fixture
+def native_history(native):
+    from openjiuwen.core.single_agent.agent_callback_manager import AgentCallbackManager
+    from jiuwenswarm.agents.harness.common.rails.permissions.artifact_path_provenance import SessionArtifactPaths
+    from jiuwenswarm.agents.harness.common.rails.permissions.auto_reviewer import AutoReviewer
+    from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import RootPermissionQueue
+    from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
+        RootPermissionQueueRail, bind_root_permission_request, reset_root_permission_request,
+    )
+    from tests.unit_tests.agentserver.permissions.auto_permission_test_support import PolicyEvaluation, StaticPolicyEvaluator
+    from tests.unit_tests.agentserver.permissions.test_auto_permission_pipeline import _Session
+    from tests.unit_tests.agentserver.permissions.auto_permission_test_support import StaticReviewerClient
+
+    owner = SessionArtifactPaths("session-a")
+    owner.configure(native.root, host_visible=True)
+    client = StaticReviewerClient(outcome="allow_once")
+    native.rail.session_artifact_paths = owner
+    native.rail.policy_evaluator = StaticPolicyEvaluator(PolicyEvaluation(level="ask", reason="ask"))
+    native.rail.auto_reviewer = AutoReviewer(client=client)
+    queue = RootPermissionQueue()
+    queue_rail = RootPermissionQueueRail(queue)
+    callbacks = AgentCallbackManager(f"native-history-{id(owner)}")
+    agent = SimpleNamespace(ability_manager=native.manager, agent_callback_manager=callbacks)
+    session = _Session()
+    call_count = 0
+
+    async def execute(name, args):
+        nonlocal call_count
+        async def before(ctx):
+            await queue_rail.before_tool_call(ctx)
+            await native.rail.before_tool_call(ctx)
+        async def after(ctx):
+            await native.rail.after_tool_call(ctx)
+        if call_count == 0:
+            await callbacks.register_callback(AgentCallbackEvent.BEFORE_TOOL_CALL, before)
+            await callbacks.register_callback(AgentCallbackEvent.AFTER_TOOL_CALL, after)
+        call_count += 1
+        call = ToolCall(id=f"native-history-{call_count}", type="function",
+                        name=name, arguments=json.dumps(args))
+        parent = AgentCallbackContext(agent=agent, session=session, extra={})
+        token = bind_root_permission_request(root_session_id="session-a", request_id="native-history",
+                                             enabled=True, queue=queue)
+        try:
+            return await native.manager.execute(parent, call, session=session)
+        finally:
+            reset_root_permission_request(token)
+
+    yield SimpleNamespace(**vars(native), owner=owner, client=client, execute=execute)
+    owner.dispose()
+
+
+async def test_successful_native_write_two_edits_and_read_keep_exact_history(native_history):
+    h = native_history
+    await h.execute("write_file", {"file_path": "../outputs/draft.txt", "content": "one"})
+    await h.execute("edit_file", {"file_path": "../outputs/draft.txt", "old_string": "one", "new_string": "two"})
+    await h.execute("edit_file", {"file_path": "../outputs/draft.txt", "old_string": "two", "new_string": "three"})
+    await h.execute("read_file", {"file_path": "../outputs/draft.txt"})
+    assert (h.root / "outputs/draft.txt").read_text() == "three"
+    assert len(h.client.requests) == 4
+    assert "session_write_evidence" not in h.client.requests[0].review_evidence
+    for request in h.client.requests[1:]:
+        assert request.to_json_dict()["review_evidence"]["session_write_evidence"] == [{"path": "outputs/draft.txt", "native_write_completed": True}]
+        assert "trusted_session_artifact_paths" not in request.review_evidence
+    # Only the actual native target enters history.
+    assert tuple(h.owner._accepted) == ("outputs/draft.txt",)
+    assert not h.owner._pending
+    assert NATIVE_PATH_ACCESS.get() is None
+
+
+async def test_editing_existing_file_does_not_require_history_or_claim_creation(native_history):
+    h = native_history
+    await h.execute("read_file", {"file_path": "inside.txt"})
+    await h.execute("edit_file", {"file_path": "inside.txt", "old_string": "native fixture", "new_string": "existing edit"})
+    assert (h.work / "inside.txt").read_text() == "existing edit\n"
+    assert len(h.client.requests) == 2
+    assert "session_write_evidence" not in h.client.requests[1].review_evidence
+    await h.execute("read_file", {"file_path": "inside.txt"})
+    assert h.client.requests[2].review_evidence["session_write_evidence"] == [{"path": "work/inside.txt", "native_write_completed": True}]
+
+
+async def test_history_cannot_bypass_current_file_guard_deny(native_history):
+    from tests.unit_tests.agentserver.permissions.auto_permission_test_support import PolicyEvaluation
+    h = native_history
+    await h.execute("write_file", {"file_path": "../outputs/draft.txt", "content": "one"})
+    h.rail.policy_evaluator.result = PolicyEvaluation(level="deny", reason="current_readonly_policy")
+    await h.execute("edit_file", {"file_path": "../outputs/draft.txt", "old_string": "one", "new_string": "blocked"})
+    assert len(h.client.requests) == 1
+    assert (h.root / "outputs/draft.txt").read_text() == "one"
+    assert not h.owner._pending
+
+
+async def test_native_bash_uses_same_frozen_workdir_for_review_and_execution(native_history):
+    from openjiuwen.harness.tools.shell.bash._tool import BashTool
+
+    h = native_history
+    tool = BashTool(h.operation)
+    h.manager.add_ability(tool.card, tool)
+    (h.work / "sub").mkdir()
+    (h.work / "output.txt").write_text("ROOT_INPUT")
+    await h.execute("bash", {"command": "cd sub && printf '%s' SUB_OUTPUT > output.txt"})
+    request = h.client.requests[0].to_json_dict()
+    assert request["review_evidence"]["reviewable_payload"]["workdir"] == str(h.work)
+    assert (h.work / "output.txt").read_text() == "ROOT_INPUT"
+    assert (h.work / "sub" / "output.txt").read_text() == "SUB_OUTPUT"
+    assert not h.owner._accepted
+
+
+def test_bash_name_alone_does_not_freeze_workdir(native):
+    args = {"command": "pwd"}
+    invocation = _invocation(native, "bash", args)
+    result, error = inv._normalize_command_invocation_for_execution(invocation, {})
+    assert not error
+    assert result is invocation
+
+
+@pytest.mark.parametrize("arguments", ["{}", "{invalid"])
+def test_native_bash_leaves_empty_or_invalid_arguments_to_existing_validation(native, arguments):
+    from openjiuwen.harness.tools.shell.bash._tool import BashTool
+
+    tool = BashTool(native.operation)
+    native.manager.add_ability(tool.card, tool)
+    invocation = _invocation(native, "bash", {})
+    invocation.ctx.inputs.tool_args = arguments
+    invocation.tool_call.arguments = arguments
+    invocation = inv._extract_invocation((invocation.ctx,), {})
+    result, error = inv._normalize_command_invocation_for_execution(invocation, {})
+    assert not error
+    assert result is invocation
+    assert invocation.tool_call.arguments == arguments
+
+
+def test_native_bash_failed_partial_workdir_writeback_still_blocks(native):
+    from openjiuwen.harness.tools.shell.bash._tool import BashTool
+
+    tool = BashTool(native.operation)
+    native.manager.add_ability(tool.card, tool)
+    invocation = _invocation(native, "bash", {"command": "pwd"})
+    inputs = invocation.ctx.inputs
+
+    class ReadOnlyInputs:
+        tool_name = inputs.tool_name
+        tool_call = inputs.tool_call
+
+        @property
+        def tool_args(self):
+            return inputs.tool_args
+
+    invocation.ctx.inputs = ReadOnlyInputs()
+    result, error = inv._normalize_command_invocation_for_execution(invocation, {})
+    assert error == "command_workdir_writeback_failed"
+    assert result is invocation
+    assert json.loads(invocation.tool_call.arguments)["workdir"] == str(native.work)
+
+
+def test_native_bash_preserves_explicit_relative_workdir(native):
+    from openjiuwen.harness.tools.shell.bash._tool import BashTool
+
+    tool = BashTool(native.operation)
+    native.manager.add_ability(tool.card, tool)
+    invocation = _invocation(native, "bash", {"command": "pwd", "workdir": "sub"})
+    result, error = inv._normalize_command_invocation_for_execution(invocation, {})
+    assert not error
+    assert result is invocation

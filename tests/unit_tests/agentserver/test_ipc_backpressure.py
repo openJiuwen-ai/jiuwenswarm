@@ -1255,7 +1255,7 @@ async def test_event_loop_lag_dump_is_bounded_and_omits_queue_payload(
     assert "ASYNCIO TASKS" in text and "THREAD STACKS" in text
     assert (
         text.index("THREAD STACKS")
-        < text.index("in dump_runtime_state")
+        < text.index("PYTHON STACK TRACE")
         < text.index("ASYNCIO TASKS")
     )
     assert "DO_NOT_COPY_BUSINESS_PAYLOAD" not in text

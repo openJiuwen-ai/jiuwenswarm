@@ -4624,12 +4624,12 @@ function AppContent({
       if (creatingSessionRef.current) return;
       let pending = pendingAppEditsRef.current.get(target.appId);
       if (!pending) {
-        pending = request<{ session: Session; created: boolean }>(
+        pending = request<{ session: Session; created: boolean; git_available?: boolean | null; git_initialized?: boolean | null }>(
           'app_market.edit_session', {
             app_id: target.appId,
             title: t('appMarket.editSessionTitle', { name: target.name }),
             ...useSessionStore.getState().getModelSelectionPayload(sessionIdRef.current),
-          }, { timeoutMs: 180_000 }).then(({ session, created }) => {
+          }, { timeoutMs: 180_000 }).then(({ session, created, git_available }) => {
             // Initialize only the new session, even if navigation was canceled.
             // An existing runtime includes drafts the user deliberately cleared.
             const chatStore = useChatStore.getState();
@@ -4637,6 +4637,12 @@ function AppContent({
               chatStore.ensureRuntime(session.session_id);
               chatStore.setInputValue(session.session_id,
                 t('appMarket.editPrompt', { name: target.name, entryPath: target.entryPath }));
+            }
+            if (created) {
+              toast.open({
+                content: t(git_available === false ? 'appMarket.gitUnavailableHint' : 'appMarket.gitHint'),
+                variant: 'info',
+              });
             }
             return session;
           }).finally(() => pendingAppEditsRef.current.delete(target.appId));

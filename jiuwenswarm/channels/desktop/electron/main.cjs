@@ -250,7 +250,7 @@ function serviceCommand(name, extraArgs = []) {
   }
   const moduleNames = {
     agent: 'jiuwenswarm.server.app_agentserver',
-    gateway: 'agent_gateway.app_gateway',
+    gateway: 'jiuwenswarm.channels.desktop.gateway_entry',
     web: 'jiuwenswarm.channels.web.app_web',
     lifecycle: 'jiuwenswarm.server.supervisor.shutdown',
     recovery: 'jiuwenswarm.common.system_plugin_recovery_sidecar',

@@ -7,7 +7,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
-HubAssetKind = Literal["agent_template", "agent_group", "plugin", "mcp", "system_plugin"]
+HubAssetKind = Literal["agent_template", "agent_group", "plugin", "mcp", "system_plugin", "app"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,11 +81,19 @@ class HubAssetDetail:
     icon_uri: str
     tags: tuple[str, ...]
     package_name: str = ""
+    category_name: str = ""
     preview_url: str = ""
     # Published package profile from the version endpoint; renders detail cards without
     # downloading the package archive.
     package_profile: dict[str, Any] | None = None
     versions: tuple[str, ...] = ()
+    # App-only distribution metadata (absent for other kinds).
+    file_size: int | None = None
+    source_size: int | None = None
+    requires_project: bool | None = None
+    permissions: tuple[str, ...] = ()
+    has_server_script: bool | None = None
+    checksum_sha256: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +104,7 @@ class HubResolvedDownload:
     download_url: str
     checksum_sha256: str
     package_name: str = ""
+    file_size: int | None = None
 
 
 class HubAssetPort(Protocol):

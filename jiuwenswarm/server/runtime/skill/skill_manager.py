@@ -49,19 +49,20 @@ from jiuwenswarm.common.utils import (
 from jiuwenswarm.enterprise import is_enterprise
 from jiuwenswarm.extensions.sdk.skill_source import (
     ArtifactDescriptor,
-    ArtifactRef,
     DownloadPolicy,
     InstalledArtifact,
     ProviderInvocationContext,
+    SkillArtifactVerificationError,
+    SkillCandidate,
     SkillRef,
     SkillSearchRequest,
     SkillSourceProvider,
+    SkillVerificationResult,
     SourceConfig,
     SkillSourceExtension,
 )
 from jiuwenswarm.server.runtime.skill.artifact_security import (
-    ArtifactVerificationError,
-    verify_skillhub_artifact,
+    verify_skill_download_hmac,
 )
 from jiuwenswarm.server.runtime.skill.skill_state_lock import (
     skill_state_lock,
@@ -11457,6 +11458,56 @@ class SkillManager:
             "providers": [item.to_dict() for item in self._source_registry.list()],
         }
 
+    @staticmethod
+    def _skill_candidate_to_host_card(candidate: SkillCandidate) -> dict[str, Any]:
+        """Map SPI ``SkillCandidate`` onto the enterprise skills.source.search card.
+
+        Keeps SPI display fields (``short_description`` / ``tags``) and lifts market
+        extras from ``metadata`` to top-level for the UI. Does not emit legacy
+        ``summary`` / ``labels`` aliases.
+        """
+        raw = candidate.to_dict()
+        meta = dict(raw.get("metadata") or {})
+        short_description = str(
+            raw.get("short_description") or meta.get("summary") or meta.get("short_desc") or ""
+        ).strip()
+        tags = [str(tag).strip() for tag in (raw.get("tags") or ()) if str(tag).strip()]
+        if not tags:
+            raw_labels = meta.get("labels")
+            if isinstance(raw_labels, list):
+                for item in raw_labels:
+                    if isinstance(item, dict):
+                        label = str(item.get("name") or item.get("label") or "").strip()
+                    else:
+                        label = str(item or "").strip()
+                    if label:
+                        tags.append(label)
+        card: dict[str, Any] = {
+            **raw,
+            "short_description": short_description or None,
+            "tags": tags,
+        }
+        for key in (
+            "namespace",
+            "slug",
+            "canonical_slug",
+            "owner_display_name",
+            "homepage",
+            "rating_avg",
+            "rating_count",
+            "download_count",
+            "updated_at",
+            "previous_version",
+            "fingerprint",
+            "accessible",
+            "asset_type",
+        ):
+            if key in card and card.get(key) not in (None, "", (), []):
+                continue
+            if key in meta and meta.get(key) not in (None, ""):
+                card[key] = meta[key]
+        return {key: value for key, value in card.items() if value is not None}
+
     async def handle_skills_source_search(self, params: dict) -> dict:
         """Dispatch a normalized search request to one Skill Source Provider."""
         source_id = str(params.get("source_id") or "").strip()
@@ -11509,7 +11560,7 @@ class SkillManager:
                         "source_response_invalid", "provider returned a duplicate artifact"
                     )
                 seen.add(identity)
-                items.append(candidate.to_dict())
+                items.append(self._skill_candidate_to_host_card(candidate))
             return {
                 "success": True,
                 "source": source_id,
@@ -11551,20 +11602,18 @@ class SkillManager:
         skill_id: str,
         version_id: str,
     ) -> None:
-        artifact_ref = descriptor.artifact_ref
         if (
-            artifact_ref.skill_ref.source_id != source_id
-            or artifact_ref.skill_ref.skill_id != skill_id
-            or artifact_ref.version_id != version_id
+            str(descriptor.source_id or "").strip() != source_id
+            or str(descriptor.skill_id or "").strip() != skill_id
+            or str(descriptor.version_id or "").strip() != version_id
         ):
             raise SourceRegistryError(
-                "source_response_invalid", "provider returned a different ArtifactRef"
+                "source_response_invalid",
+                "provider returned a different artifact identity",
             )
-        checksum = str(descriptor.checksum_sha256 or "").strip().lower()
-        artifact_sha = str(descriptor.artifact_sha256 or "").strip().lower()
-        for value in (checksum, artifact_sha):
-            if value and not re.fullmatch(r"[0-9a-f]{64}", value):
-                raise SourceRegistryError("source_response_invalid", "invalid artifact SHA-256")
+        content_sha = str(descriptor.content_sha256 or "").strip().lower()
+        if content_sha and not re.fullmatch(r"[0-9a-f]{64}", content_sha):
+            raise SourceRegistryError("source_response_invalid", "invalid artifact SHA-256")
 
     async def _fetch_verified_source_artifact(
         self,
@@ -11610,9 +11659,47 @@ class SkillManager:
             )
         try:
             verification = await provider.verify_artifact(descriptor, body)
-        except ArtifactVerificationError as exc:
+        except SkillArtifactVerificationError as exc:
             raise SourceRegistryError(exc.code, str(exc)) from exc
-        return descriptor, body, dict(verification) if verification is not None else None
+        return descriptor, body, self._coerce_source_verification_audit(verification)
+
+    @staticmethod
+    def _coerce_source_verification_audit(verification: Any) -> dict[str, Any] | None:
+        """Map Provider verify_artifact outcome to install ledger audit.
+
+        SPI contract: ``None`` skips signature checks; success returns
+        ``SkillVerificationResult(verified=True, ...)``; failures raise.
+        Soft ``verified=False`` or unknown return types must not install.
+        """
+        if verification is None:
+            return None
+        if isinstance(verification, SkillVerificationResult):
+            if verification.verified is not True:
+                raise SourceRegistryError(
+                    "artifact_signature_invalid",
+                    "artifact verification did not succeed",
+                )
+            audit = {
+                "verified": True,
+                "artifact_sha256": verification.content_sha256,
+                "content_sha256": verification.content_sha256,
+                "algorithm": verification.algorithm,
+                "scope": verification.scope,
+                "key_id": verification.key_id,
+                "verified_at": verification.verified_at,
+            }
+            return {k: v for k, v in audit.items() if v is not None}
+        if isinstance(verification, dict):
+            if verification.get("verified") is not True:
+                raise SourceRegistryError(
+                    "artifact_signature_invalid",
+                    "artifact verification did not succeed",
+                )
+            return dict(verification)
+        raise SourceRegistryError(
+            "source_response_invalid",
+            "provider verify_artifact returned an unsupported result",
+        )
 
     @staticmethod
     def _resolve_source_skill_author(*sources: Any) -> str:
@@ -12091,7 +12178,6 @@ class SkillManager:
                         "has_update": bool(status.has_update),
                         "fingerprint_matched": status.fingerprint_matched,
                         "accessible": status.accessible,
-                        "downloadable": status.downloadable,
                         "remote_status": status.remote_status,
                         "error_code": status.error_code,
                         "checked_at": checked_at,
@@ -12109,7 +12195,6 @@ class SkillManager:
                             "latest_version": status.latest_version,
                             "fingerprint_matched": status.fingerprint_matched,
                             "accessible": status.accessible,
-                            "downloadable": status.downloadable,
                             "remote_status": status.remote_status,
                             "update_checked_at": checked_at,
                         }
@@ -12355,10 +12440,6 @@ class SkillManager:
 
     async def handle_skills_web_install(self, params: dict) -> dict:
         """企业 Web 安装兼容入口：下载、校验、落盘并提交 workspace JSON。"""
-        from jiuwenswarm.server.runtime.skill.artifact_security import (
-            verify_skill_download_hmac,
-        )
-
         url = str(params.get("url") or "").strip()
         signature = str(params.get("signature") or "").strip()
         if not url:

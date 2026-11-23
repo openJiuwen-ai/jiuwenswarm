@@ -2819,6 +2819,57 @@ def test_leader_deep_agent_spec_forces_enable_task_planning_off(mode: str) -> No
 
 
 @pytest.mark.parametrize("mode", ["team", "code.team", "team.plan.normal", "team.plan.code"])
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+def test_member_spec_selects_event_tool_registration_when_core_supports_it(
+    mode: str,
+    role: str,
+) -> None:
+    """Swarm opts into event registration only on the new Core contract."""
+    spec = build_member_deep_agent_spec({}, mode, role, DeepAgentSpec())
+
+    expected = (
+        registry.TOOL_REGISTRATION_MODE
+        if registry.supports_tool_registration_event()
+        else "legacy"
+    )
+    assert getattr(spec, "tool_registration_mode", "legacy") == expected
+    if expected == registry.TOOL_REGISTRATION_MODE:
+        assert spec.event_tool_types == list(registry.EVENT_TOOL_TYPES)
+
+
+def test_member_spec_event_allowlist_excludes_swarm_owned_tools() -> None:
+    """The first event slice never opts swarm-owned providers into the bridge."""
+    spec = build_member_deep_agent_spec({}, "team", "leader", DeepAgentSpec())
+
+    declared_types = {
+        tool.type for tool in spec.tools or [] if isinstance(tool, BuiltinToolSpec)
+    }
+    assert set(registry.EVENT_TOOL_TYPES).issubset(declared_types)
+    assert not set(spec.event_tool_types or ()) & {
+        tool_type for tool_type in declared_types if tool_type.startswith("swarm.")
+    }
+
+
+def test_member_spec_forwards_team_extension_bus_into_agent_core() -> None:
+    """The live Team build context reaches agent-core's event-mode parts."""
+    bus = object()
+    spec = DeepAgentSpec(
+        tool_registration_mode=registry.TOOL_REGISTRATION_MODE,
+        enable_task_loop=False,
+        enable_sys_operation=False,
+        enable_security_rail=False,
+        rails=[],
+    )
+    context = SwarmBuildContext(extras={"team.extension_bus": bus})
+
+    parts = spec.resolve_parts(context)
+
+    assert parts.config.tool_registration_mode == registry.TOOL_REGISTRATION_MODE
+    assert parts.event_tool_instances is None
+    assert parts.extension_bus is bus
+
+
+@pytest.mark.parametrize("mode", ["team", "code.team", "team.plan.normal", "team.plan.code"])
 def test_leader_deep_agent_spec_pins_subagents_empty(mode: str) -> None:
     """Leaders carry no sub-agents: an empty list keeps SubagentRail (task_tool) unmounted."""
     register_swarm_providers()

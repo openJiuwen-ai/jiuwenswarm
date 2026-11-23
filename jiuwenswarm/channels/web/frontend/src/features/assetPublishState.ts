@@ -58,19 +58,22 @@ export function canRetrySkillPack(record: PublishRecord): boolean {
 export function canStartNewVersion(record: PublishRecord): boolean {
   return !isSubmissionLocked(record);
 }
-export function validateMetadata(
-  metadata: PublishMetadata,
-  kind?: PublishAssetKind,
-): string[] {
+export function validateMetadata(metadata: PublishMetadata, kind?: PublishAssetKind): string[] {
   const errors: string[] = [];
-  const systemPluginName = /^[a-z][a-z0-9.-]{0,63}$/.test(metadata.asset_name)
-    && !metadata.asset_name.includes('..')
-    && !metadata.asset_name.endsWith('.');
-  const nameValid = kind === 'system_plugin'
-    ? systemPluginName
-    : /^[a-z0-9][a-z0-9_-]{0,63}$/.test(metadata.asset_name);
+  let nameValid = /^[a-z0-9][a-z0-9_-]{0,63}$/.test(metadata.asset_name);
+  if (kind === 'system_plugin') {
+    nameValid = /^[a-z][a-z0-9.-]{0,63}$/.test(metadata.asset_name)
+      && !metadata.asset_name.includes('..')
+      && !metadata.asset_name.endsWith('.');
+  } else if (kind === 'app') {
+    nameValid = /^[a-z][a-z0-9-]{0,63}$/.test(metadata.asset_name)
+      && !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/.test(metadata.asset_name);
+  }
+  const versionValid = kind === 'app'
+    ? metadata.version.length <= 32 && /^\d+(?:\.\d+){0,3}(?:[-+][0-9A-Za-z.-]{1,16})?$/.test(metadata.version)
+    : /^(?:\d+\.\d+\.\d+|[0-9a-f]{7})$/.test(metadata.version);
   if (!nameValid) errors.push('asset_name');
-  if (!/^(?:\d+\.\d+\.\d+|[0-9a-f]{7})$/.test(metadata.version)) errors.push('version');
+  if (!versionValid) errors.push('version');
   if (!metadata.display_name.trim() || metadata.display_name.length > 128) errors.push('display_name');
   return errors;
 }

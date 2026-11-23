@@ -3971,16 +3971,24 @@ def migrate_config_from_template(
 
         # Deep merge: template provides defaults, user values preserved.
         # user_data is updated in place, which keeps comments and formatting.
-        if "extensions" in user_data and user_data["extensions"] is None:
-            template_extensions = template_data.get("extensions")
-            if (
-                isinstance(template_extensions, dict)
-                and template_extensions.get("extension_dirs") == "${EXTENSION_DIRS:-jiuwenswarm/extensions}"
-                and _has_local_team_config(user_data)
-            ):
+        changes = 0
+        template_extensions = template_data.get("extensions")
+        local_extension_dirs = "${EXTENSION_DIRS:-};jiuwenswarm/extensions"
+        if (
+            isinstance(template_extensions, dict)
+            and template_extensions.get("extension_dirs") == local_extension_dirs
+            and _has_local_team_config(user_data)
+        ):
+            extensions = user_data.get("extensions")
+            if "extensions" in user_data and extensions is None:
                 # Environment-driven markers can resolve differently after a child reloads its dotenv files.
                 user_data["extensions"] = {}
-        changes = _deep_merge(template_data, user_data, prune=prune)
+            elif isinstance(extensions, dict) and (
+                extensions.get("extension_dirs") == "${EXTENSION_DIRS:-jiuwenswarm/extensions}"
+            ):
+                extensions["extension_dirs"] = local_extension_dirs
+                changes += 1
+        changes += _deep_merge(template_data, user_data, prune=prune)
         if legacy_observability_migrated:
             changes += 1
         if legacy_symphony_migrated:

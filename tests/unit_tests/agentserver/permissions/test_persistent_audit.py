@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
+import stat
+import sys
 from pathlib import Path
 
 import pytest
 
+from jiuwenswarm.agents.harness.common.rails.permissions.auto_reviewer import ReviewerRecommendation
 from jiuwenswarm.agents.harness.common.rails.permissions.persistent_audit import (
     AUDIT_TEXT_REDACTED,
+    MAX_MODEL_RATIONALE_LENGTH,
+    LocalAuditDetails,
     PersistentAuditWriter,
     resolve_persistent_audit_root,
     sanitize_audit_field,
@@ -21,6 +26,92 @@ class ExplodingString:
 
     def __str__(self) -> str:
         raise RuntimeError("cannot render audit value")
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux owner-only audit file check")
+def test_local_audit_redacts_complete_model_output_before_bounding(tmp_path: Path) -> None:
+    writer = PersistentAuditWriter(data_root=tmp_path)
+    private_path = "/home/example-user/PRIVATE_PATH_ONLY.txt"
+    synthetic_secret = "sk-synthetic-value-only"
+    rationale = f"路径 {private_path} 凭据 {synthetic_secret}。" + "检查" * MAX_MODEL_RATIONALE_LENGTH
+    result = writer.write(
+        _facts(tmp_path),
+        decision="deny",
+        reason="reviewer_deny",
+        degraded=False,
+        extra={"record_kind": "permission_reviewer_assessment"},
+        local_details=LocalAuditDetails(
+            "tiv_synthetic",
+            ReviewerRecommendation("deny", synthetic_secret, rationale),
+        ),
+    )
+
+    assert result.persisted is True
+    assert stat.S_IMODE(result.path.stat().st_mode) == 0o600
+    text = result.path.read_text(encoding="utf-8")
+    assert "PRIVATE_PATH_ONLY" not in text and synthetic_secret not in text
+    model = json.loads(text)["model_recommendation"]
+    assert model["outcome"] == "deny"
+    assert model["reason_code"] == AUDIT_TEXT_REDACTED
+    assert model["rationale"].startswith("路径 [path] 凭据 [redacted]。")
+    assert model["rationale"].endswith("...")
+    assert len(model["rationale"]) == MAX_MODEL_RATIONALE_LENGTH
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux owner-only audit file check")
+@pytest.mark.parametrize("rationale,private_fragment", [
+    ("拒绝读取/etc/PRIVATE_AUDIT_SENTINEL", "PRIVATE_AUDIT_SENTINEL"),
+    ("检查" * 508 + " sk-synthetic-value-near-boundary", "sk-synt"),
+])
+def test_local_audit_masks_adjacent_paths_and_secrets_at_the_limit(tmp_path, rationale, private_fragment):
+    writer = PersistentAuditWriter(data_root=tmp_path)
+    result = writer.write(
+        _facts(tmp_path),
+        decision="deny",
+        reason="reviewer_deny",
+        degraded=False,
+        extra={"record_kind": "permission_reviewer_assessment"},
+        local_details=LocalAuditDetails("tiv_synthetic", ReviewerRecommendation("deny", "test", rationale)),
+    )
+
+    assert result.persisted is True
+    text = json.loads(result.path.read_text(encoding="utf-8"))["model_recommendation"]["rationale"]
+    assert private_fragment not in text
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux owner-only audit file check")
+@pytest.mark.parametrize("symlink", [False, True])
+def test_existing_shared_or_symlink_audit_does_not_get_model_details(tmp_path: Path, symlink: bool) -> None:
+    writer = PersistentAuditWriter(data_root=tmp_path)
+    writer.audit_path.parent.mkdir()
+    target = tmp_path / "outside-audit.jsonl" if symlink else writer.audit_path
+    target.touch()
+    target.chmod(0o600 if symlink else 0o664)
+    if symlink:
+        writer.audit_path.symlink_to(target)
+
+    result = writer.write(
+        _facts(tmp_path),
+        decision="allow",
+        reason="reviewer_allow_once",
+        degraded=False,
+        extra={"record_kind": "permission_reviewer_assessment"},
+        local_details=LocalAuditDetails(
+            "tiv_synthetic",
+            ReviewerRecommendation("allow_once", "aligned", "批准当前操作。"),
+        ),
+    )
+
+    content = target.read_text(encoding="utf-8")
+    if symlink:
+        assert result.persisted is False
+        assert content == ""
+    else:
+        assert result.persisted is True
+        assert stat.S_IMODE(target.stat().st_mode) == 0o664
+        record = json.loads(content)
+        assert record["decision"] == "allow"
+        assert "model_recommendation" not in record and "invocation_id" not in record
 
 
 def _facts(tmp_path: Path):

@@ -294,6 +294,25 @@ def convert_code_config_to_deep_agent_spec(
         language=language,
         project_dir=project_dir,
     )
+    subagent_event_kwargs: dict[str, Any] = {}
+    try:
+        from openjiuwen.core.runner import Runner
+        from jiuwenswarm.agents.swarm.registry import (
+            EVENT_SUBAGENT_TYPES,
+            SUBAGENT_REGISTRATION_MODE,
+            supports_subagent_registration_event,
+        )
+
+        extension_bus = Runner.get_extension_bus()
+        if supports_subagent_registration_event() and extension_bus is not None:
+            context.extension_bus = extension_bus
+            subagent_event_kwargs = {
+                "subagent_registration_mode": SUBAGENT_REGISTRATION_MODE,
+                "event_subagent_types": list(EVENT_SUBAGENT_TYPES),
+            }
+    except (AttributeError, ImportError, RuntimeError, TypeError, ValueError):
+        # An older local agent-core keeps the existing static subagent path.
+        subagent_event_kwargs = {}
     spec = DeepAgentSpec(
         model=_model_spec(model),
         card=card,
@@ -340,6 +359,7 @@ def convert_code_config_to_deep_agent_spec(
         progressive_tool=ProgressiveToolSpec(
             enabled=get_progressive_tool_enabled(config_snapshot)
         ),
+        **subagent_event_kwargs,
     )
     return spec, context
 

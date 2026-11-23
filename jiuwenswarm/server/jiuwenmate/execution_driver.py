@@ -54,6 +54,7 @@ from jiuwenswarm.server.jiuwenmate.vision_runtime import vision_guidance
 from jiuwenswarm.server.jiuwenmate.lark_cli_runtime import FeishuCliRuntime
 from jiuwenswarm.server.jiuwenmate.agent_mail_runtime import AgentMailRuntimeService
 from jiuwenswarm.server.jiuwenmate.agent_mail_tool import prepare_agent_mail_invocation
+from jiuwenswarm.server.jiuwenmate.swarmchat.roster_tool import prepare_group_roster_invocation
 from jiuwenswarm.server.jiuwenmate.welink_office_tool import prepare_welink_office_invocation, welink_execution_guidance
 from jiuwenswarm.server.jiuwenmate.dingtalk_cli_tool import (
     DingTalkCliCommitGuard,
@@ -161,8 +162,10 @@ class ExecutionDriver:
         dingtalk_cli_runtime: DingTalkCliRuntimeService | None = None,
         permission_approvals: PermissionApprovalRepository | None = None,
         group_sharing=None,
+        swarmchat_service=None,
     ) -> None:
         self._snapshots = snapshots
+        self._swarmchat_service = swarmchat_service
         self._commit_port = commit_port
         self._queue = queue
         self._budget_port = budget_port
@@ -172,9 +175,10 @@ class ExecutionDriver:
         self._groups = groups
         self._group_archive = group_archive
         self._group_search = ConversationSearch(group_archive) if group_archive is not None else None
-        self._group_search_cursors = (
-            GroupSearchCursorRepository(groups.db_path) if groups is not None else None
-        )
+        cursor_db = groups.db_path if groups is not None else None
+        if cursor_db is None and swarmchat_service is not None and sessions is not None:
+            cursor_db = sessions.db_path
+        self._group_search_cursors = GroupSearchCursorRepository(cursor_db) if cursor_db is not None else None
         self._sessions = sessions
         self._verify_group_membership = verify_group_membership
         self._refresh_group_messages = refresh_group_messages
@@ -192,8 +196,20 @@ class ExecutionDriver:
         return ExecutionHandle(self._abort)
 
     async def _prepare_runtime_spec(self, spec, context, record):
-        spec = prepare_group_directory_invocation(spec, context, self._groups)
+        directory = self._groups
+        if self._swarmchat_service is not None and record.namespace_id == "local":
+            from jiuwenswarm.server.jiuwenmate.swarmchat.membership import ColleagueGroupDirectory, require_membership
+
+            owner = None
+            if record.route_snapshot is not None and record.route_snapshot.channel == "swarmchat":
+                group, _ = require_membership(record.route_snapshot.target_id, record.agent_id)
+                owner = group["user_id"]
+            directory = ColleagueGroupDirectory(self._groups, self._swarmchat_service, owner=owner)
+        spec = prepare_group_directory_invocation(spec, context, directory)
         spec = await prepare_agent_mail_invocation(spec, context, self._agent_mail_runtime)
+        spec = await prepare_group_roster_invocation(
+            spec, context, record, self._sessions, self._swarmchat_service,
+        )
         spec = await prepare_dingtalk_cli_invocation(
             spec, context, self._dingtalk_cli_runtime,
             request_input=record.request_input, route_snapshot=record.route_snapshot,
@@ -260,16 +276,13 @@ class ExecutionDriver:
                 enforce_session_boundary=record.request_input.kind == "group_message",
             )
             group_chat_port = None
+            has_group_history_store = self._group_search_cursors is not None and self._sessions is not None
             can_read_groups = (
                 record.request_input.kind in ("direct_message", "group_message")
                 and self._groups is not None
                 and (self._group_archive is not None)
             )
-            if can_read_groups and (
-                self._group_search is not None
-                and self._group_search_cursors is not None
-                and (self._sessions is not None)
-            ):
+            if can_read_groups and self._group_search is not None and has_group_history_store:
                 group_chat_port = HostGroupChatPort(
                     self._groups, self._group_archive, self._sessions,
                     namespace_id=record.namespace_id, agent_id=record.agent_id,
@@ -279,10 +292,32 @@ class ExecutionDriver:
                     cursors=self._group_search_cursors,
                     clock=self._clock,
                 )
+                if self._swarmchat_service is not None:
+                    def related_agents(namespace_id, agent_id):
+                        config = self._swarmchat_service.get_config(namespace_id, agent_id)
+                        return [item.agent_id for item in self._swarmchat_service.list_agents(namespace_id)
+                                if item.config_id == config.agent_id and item.enabled]
+                    group_chat_port.set_related_agents(related_agents)
                 if self._group_sharing is not None:
                     from jiuwenswarm.server.jiuwenmate.group_sharing_service import GuardedGroupChatPort
 
                     group_chat_port = GuardedGroupChatPort(group_chat_port, self._group_sharing)
+            has_im_group_port = group_chat_port is not None
+            if self._swarmchat_service is not None and has_group_history_store and record.namespace_id == "local":
+                from jiuwenswarm.server.jiuwenmate.swarmchat.port import (
+                    CompositeGroupChatPort, SwarmChatGroupChatPort,
+                )
+
+                swarm_port = SwarmChatGroupChatPort(
+                    self._sessions, self._swarmchat_service,
+                    self._group_search_cursors,
+                ).bind(record.namespace_id, record.agent_id)
+                if group_chat_port is not None:
+                    group_chat_port = CompositeGroupChatPort(
+                        group_chat_port, swarm_port, self._sessions, self._group_search_cursors,
+                    )
+                elif record.route_snapshot is not None and record.route_snapshot.channel == "swarmchat":
+                    group_chat_port = swarm_port
             dingtalk_commit_guard = DingTalkCliCommitGuard(self._commit_port)
             ports = core.PersistentPorts(
                 commit=dingtalk_commit_guard,
@@ -318,6 +353,14 @@ class ExecutionDriver:
                         )
                         roster = []
                     guidance = build_group_execution_guidance(roster)
+            swarm_session = (self._sessions.get_session(record.namespace_id, record.session_id)
+                             if self._sessions is not None else None)
+            if swarm_session is not None and swarm_session.conversation.kind == "swarm_group":
+                from jiuwenswarm.server.jiuwenmate.swarmchat.membership import require_membership
+                from jiuwenswarm.server.jiuwenmate.swarmchat.files import execution_guidance
+
+                group, _ = require_membership(swarm_session.conversation.key, record.agent_id)
+                guidance = execution_guidance(group, record.agent_id)
             guidance_items = (
                 await shell_environment_guidance(getattr(published_spec, "language", None) or "cn"),
                 guidance,
@@ -342,7 +385,7 @@ class ExecutionDriver:
                 )
             dingtalk_commit_guard.bind_context(context)
             group_cli = None
-            if group_chat_port is not None and self._group_sharing is not None:
+            if has_im_group_port and self._group_sharing is not None:
                 from jiuwenswarm.server.jiuwenmate.cli_group_sharing import CliGroupSharing
 
                 group_cli = CliGroupSharing(sharing=self._group_sharing, group_port=group_chat_port,
@@ -358,7 +401,7 @@ class ExecutionDriver:
             inputs = record.request_input
             if record.request_input.kind == "group_message" and ports.group_chat is not None:
                 trigger = await ports.group_chat.current_trigger(context.execution, inputs.trigger_message_id)
-                if trigger.status in {"recalled", "unavailable"}:
+                if trigger is None or trigger.status in {"recalled", "unavailable"}:
                     raise PersistentAgentError("group trigger is no longer readable", code="TRIGGER_UNAVAILABLE")
                 source = trigger
                 if inputs.source is not None:

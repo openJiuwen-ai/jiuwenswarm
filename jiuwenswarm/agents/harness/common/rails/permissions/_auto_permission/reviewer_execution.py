@@ -227,8 +227,14 @@ class AutoPermissionReviewerExecutionMixin:
             no_auto_allow_reason=route.no_auto_allow_reason,
             original_user_intent=original_user_intent,
             domain_route=domain_route,
+            request_channel=channel_kind if runtime_ctx is not None else "",
+            session_write_evidence=(
+                self.session_artifact_paths.evidence(facts, root_session_id=session_id)
+                if self.session_artifact_paths is not None else ()
+            ),
         )
         assessment = await self.auto_reviewer.assess(request)
+        local_details = self._local_audit_details(runtime_ctx, assessment.recommendation)
         audit_extra = {
             "action_summary": _reviewer_action_summary(facts),
             "channel_kind": channel_kind,
@@ -281,6 +287,7 @@ class AutoPermissionReviewerExecutionMixin:
                         request_id=request_id,
                         tool_call_id=tool_call_id,
                         channel_kind=channel_kind,
+                        local_details=local_details,
                     ),
                     "send_file_authorization",
                 )
@@ -297,6 +304,7 @@ class AutoPermissionReviewerExecutionMixin:
                 reason="reviewer_allow_once",
                 degraded=False,
                 extra=audit_extra,
+                local_details=local_details,
             )
             decision_source = (
                 "manual_approval"
@@ -309,6 +317,7 @@ class AutoPermissionReviewerExecutionMixin:
                 facts,
                 channel_kind=channel_kind,
                 audit_extra=audit_extra,
+                local_details=local_details,
             )
             return PermissionHandlingResult(
                 True,
@@ -334,6 +343,7 @@ class AutoPermissionReviewerExecutionMixin:
                         request_id=request_id,
                         tool_call_id=tool_call_id,
                         channel_kind=channel_kind,
+                        local_details=local_details,
                     ),
                     "send_file_authorization",
                 )
@@ -350,6 +360,7 @@ class AutoPermissionReviewerExecutionMixin:
                 reason="user_allow_once_after_reviewer_manual",
                 degraded=False,
                 extra=audit_extra,
+                local_details=local_details,
             )
             return PermissionHandlingResult(True, None, "manual_approval")
         manual_metadata = {
@@ -384,6 +395,7 @@ class AutoPermissionReviewerExecutionMixin:
                 request_id=request_id,
                 tool_call_id=tool_call_id,
                 channel_kind=channel_kind,
+                local_details=local_details,
             ),
             "auto_reviewer",
         )

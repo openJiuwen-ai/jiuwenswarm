@@ -266,3 +266,59 @@ async def test_resume_does_not_restore_another_questions_org(service, push, mism
     rail = GroupAskUserRail(SimpleNamespace(session_id=gid, member_name='advisor'), {})
     await rail.before_invoke(ctx)
     assert TURN_KEY not in ctx.extra
+
+
+@pytest.mark.asyncio
+async def test_colleague_permission_question_resumes_exact_tool_call(service, push):
+    group = await create(service)
+    manager = Mock()
+    manager.is_swarmchat_approval_pending.return_value = True
+    manager.answer_swarmchat_approval = AsyncMock()
+    target = register_question_target(group["group_id"], "colleague-session", "advisor", manager)
+    store = GroupQuestions(group["group_id"])
+    await store.ask({"request_id": "approval-1", "questions": [{
+        "question": "Approve operation?", "options": [
+            {"label": "Allow", "tool_call_id": "call-1"}, {"label": "Deny"},
+        ],
+    }]}, target, "advisor", None, source="colleague_permission")
+    pending, = store.pending()
+    await store.answer(pending["request_id"], [{"question": "Approve operation?", "selected_options": ["Allow"]}])
+    manager.answer_swarmchat_approval.assert_awaited_once_with(
+        group["group_id"], "approval-1", "approve", tool_call_id="call-1",
+    )
+    assert not store.pending()
+    assert push.await_args.args[-1]["payload"]["event_type"] == "chat.ask_user_answer"
+    assert push.await_args.args[-1]["payload"]["request_id"] == pending["request_id"]
+
+
+async def test_colleague_approval_shows_distinct_redacted_call_details(monkeypatch):
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from jiuwenswarm.server.jiuwenmate.swarmchat import bridge
+    from jiuwenswarm.server.runtime import group_questions
+
+    monkeypatch.setattr(bridge, "require_membership", lambda *args: (
+        {"group_id": "group", "name": "Project chat"}, {"member_name": "mate"},
+    ))
+    monkeypatch.setattr(group_questions, "register_question_target", lambda *args: "target")
+    ask = AsyncMock()
+    monkeypatch.setattr(group_questions, "GroupQuestions", lambda *args: SimpleNamespace(ask=ask))
+    calls = [
+        {"tool_name": "bash", "tool_call_id": "call-1",
+         "arguments": json.dumps({"description": "Inspect repository", "command": "git status"})},
+        {"tool_name": "bash", "tool_call_id": "call-2",
+         "arguments": json.dumps({"description": "Fetch summary", "command": "API_KEY=secret-value ./summary"})},
+    ]
+    await bridge.publish_permission_approval(object(), SimpleNamespace(
+        route=SimpleNamespace(target_id="group"), agent_id="mate", session_id="session",
+        approval_id="approval", intercepted=calls,
+    ))
+    question = ask.await_args.args[0]["questions"][0]
+    assert "Project chat" in question["question"]
+    first, second, reject = question["options"]
+    assert first["tool_call_id"] == "call-1" and "git status" in first["description"]
+    assert second["tool_call_id"] == "call-2" and "Fetch summary" in second["description"]
+    assert "secret-value" not in second["description"]
+    assert "tool_call_id" not in reject

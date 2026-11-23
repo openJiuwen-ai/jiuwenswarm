@@ -26,7 +26,7 @@ from jiuwenswarm.server.runtime.connector.source_registry import SourceRegistryE
 from jiuwenswarm.server.runtime.marketplace.hub_client import DEFAULT_HUB_BASE_URL
 
 from .constants import OPENJIUWEN_HUB_PROVIDER_TYPE, OPENJIUWEN_HUB_SOURCE_ID
-from .hub_verify import VERIFICATION_MODES, HubTrustPolicy
+from .hub_verify import HubTrustPolicy
 from .provider import SwarmConnectorHubProvider
 
 logger = logging.getLogger(__name__)
@@ -85,9 +85,6 @@ def trust_policy_from_config() -> HubTrustPolicy:
         _config_value("hmac_secret_ref") or "env://SKILL_DOWNLOAD_HMAC_SECRET"
     ).strip()
     verification = str(_config_value("verification") or "off").strip().lower()
-    if verification not in VERIFICATION_MODES:
-        logger.warning("Invalid verification=%s; using off", verification)
-        verification = "off"
     return HubTrustPolicy(
         verification=verification,
         hmac_key_id=key_id,

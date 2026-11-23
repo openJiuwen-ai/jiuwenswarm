@@ -39,9 +39,9 @@ sequenceDiagram
 - **状态上报**：每个运行实例签发独立的状态令牌（经 `WORKSWARM_STATUS_TOKEN` 注入），应用按 push 主动上报运行状态，或由市场按 pull 轮询应用的 `/_workswarm/status` 读取（静态托管默认 pull）。上报携带单调递增序号，旧消息不会覆盖新状态；市场据此跟踪 `starting / running / stopping` 生命周期——启动后等待应用进入 `running`（最长 30 秒），发现应用自行退出则转入 `stopping` 清理。
 - **AI 能力**：应用自己的客户端或服务直接访问 Gateway，不经过应用市场。应用按 AI 角色管理会话，复用默认模型策略和历史；超时、重试、清空及退出删除均由应用负责。
 
-市场通过 `WORKSWARM_SOURCE_SESSION` 向启动和停止脚本传入创建应用的来源会话 ID（未登记来源时为空）。应用服务端通过 Gateway 的 `session.get_metadata` 查询其 `project_id` 与 `work_mode`，创建角色会话时继承这两个字段，使 NPC 会话展示在创建应用的项目下；后续消息使用相同工作模式。来源缺失或查询失败时应明确报错，不能静默创建到默认项目。旧市场可使用应用自身保存的来源会话配置。
+需要项目的 Hub 应用在包里声明 `metadata.app.requires_project: true`。应用优先使用市场注入的 `WORKSWARM_APP_PROJECT_ID` 与 `WORKSWARM_APP_WORK_MODE`。旧应用和本地发布应用仍可用 `WORKSWARM_SOURCE_SESSION` 查询 Gateway 的 `session.get_metadata`。两种方式均使用实际项目和工作模式，缺失时明确报错。
 
-`WORKSWARM_SOURCE_SESSION` passes the manifest's source session ID to start and stop scripts. The app queries `session.get_metadata` through Gateway and inherits `project_id` and `work_mode` when creating NPC sessions and sending messages. Missing or unavailable sources must produce an explicit error. Apps on older hosts may use their own saved source session configuration.
+Hub apps that require a project declare `metadata.app.requires_project: true` in the package. Use `WORKSWARM_APP_PROJECT_ID` and `WORKSWARM_APP_WORK_MODE` when both are present. For existing or locally published apps, use `WORKSWARM_SOURCE_SESSION` to query `session.get_metadata`. Pass the resolved project and work mode to NPC sessions and report an error if both sources are unavailable.
 
 纯对话 NPC 可在 `session.create` 中指定 `execution_profile:"app_role"` 和 `role_instructions`：保留精简基础系统提示、应用角色规则及自身历史，不加载项目指令、记忆、技能或工具。项目归属不变，支持流式响应和取消。详见[角色会话说明](../../../docs/zh/AppRoleSessions.md)。
 
@@ -50,6 +50,20 @@ Text-only NPCs can create sessions with `execution_profile:"app_role"` and `role
 市场注入的 `WORKSWARM_GATEWAY_API_URL` 为 Web Channel `/ws`，`WORKSWARM_GATEWAY_URL` 为通用 `/tui`；地址缺失时应用明确报错。状态令牌仅用于状态上报，不能用作会话接口凭据。纯静态托管不提供 AI 转发；有服务端需求的应用可提供自己的 `scripts/app_server.py`，由启动模板运行。
 
 应用市场不承载具体应用的业务逻辑、角色记忆或 AI 消息转发。应用、技能和市场扩展分别维护：更新技能不需要重启 WorkSwarm，修改应用通常只需刷新页面或重启该应用。
+
+## Hub 应用更新与二次开发 / Updates and local development
+
+在已安装的 Hub 应用卡片点击「转为本地应用」，即可在原目录编辑、运行或发布。转换保留同一张卡片、项目、数据和 Git 历史，应用退出原 Hub 资产的更新流程。
+
+Choose **Convert to Local App** on an installed Hub app to edit, run, or publish it from its current directory. The card, project, data, and Git history stay in place. The app stops receiving updates for the original Hub asset.
+
+更新时会备份完整的旧工作目录，成功提示会显示备份位置。安装目录内的 `data/` 和 Git 仓库会复制到新版本。Hub 随包服务脚本仅继承启动所需的系统环境变量，默认在 WebChannel 绑定回环地址的部署开启。共享部署可设 `APP_MARKET_ALLOW_HUB_CODE=0`，受信部署可设为 `1`。
+
+Updates back up the entire previous working directory and report its location. The installed `data/` directory and Git repository are copied to the new release. Bundled Hub servers inherit only the system environment needed to launch. Execution defaults to enabled for loopback WebChannel bindings. Set `APP_MARKET_ALLOW_HUB_CODE=0` on shared deployments or opt in with `1` on trusted deployments.
+
+卸载会从应用市场移除应用，默认保留本地文件。选择同时清理本地文件时，如果清理未完成，市场会提示检查安装目录。
+
+Uninstalling removes the app from App Market and keeps local files by default. If you choose to remove local files and cleanup is incomplete, App Market shows the installation directory to check.
 
 ## 打开应用：Web 与桌面分开
 
@@ -100,3 +114,7 @@ Closing an app page leaves its service running. The market removes the correspon
 `app_market.edit_session` resolves the app-owned persistent editor conversation through routed Core RPCs. First use creates an empty conversation in the source project; subsequent clicks preserve its history and draft. Only a confirmed missing session permits replacement. Transient errors retain the binding; republishing preserves it, while deleting an app does not delete its conversation. Concurrent requests are serialized per app.
 
 编辑会话标题栏提供“打开应用预览”，关闭侧栏或刷新后都可恢复；应用未运行时先启动。普通会话不显示此入口。The editor header keeps an Open app preview action after closing the pane or refreshing. It starts a stopped app before restoring its preview; ordinary conversations do not show this action.
+
+Web 和桌面端都可在应用市场翻页选择 Hub 应用，并在安装前确认目录。更新应用需要连接首次安装时使用的 Hub。本地开发应用目录缺失时，恢复原路径即可继续使用。
+
+In the web and desktop clients, browse the market pages and confirm the installation directory. Connect to the original Hub to update an installed app. For a local development app with a missing directory, restore its original path to use its existing registration.

@@ -32,6 +32,8 @@ MoA configuration. A successful response contains `configured` and, when ready,
 AgentServer client is absent or not ready, the Gateway returns
 `SERVICE_UNAVAILABLE` instead of evaluating configuration in its own directory.
 
+AgentServer preserves the Gateway-injected top-level `traceparent` in request metadata across Worker IPC. A truthy top-level value takes precedence over a channel-context value; when the top-level value is absent, the channel-context value is preserved (compatibility with channel-context-only writers). The Worker binds a valid W3C parent context only in the request execution task and restores the previous context on completion, failure, or cancellation. Missing or invalid input keeps the existing SDK context behavior; tracing enablement and exporter settings retain their existing precedence.
+
 ---
 
 ## 2. Pitfall: two meanings of `method` (required reading)
@@ -72,6 +74,7 @@ The same field **`method`** means different things by origin. It is **not** two 
 | `session_id` | string / null | Session |
 | `message_id` | string / null | Platform or A2A message id; do not conflate with `request_id` |
 | `is_stream` | boolean | Streamed response or not |
+| `traceparent` | string / null | Gateway-injected W3C parent context; AgentServer normalizes it into request metadata. A truthy top-level value overrides a `channel_context` value; when absent, the channel value is preserved |
 
 ### 4.2 `provenance` (`E2AProvenance`)
 
