@@ -143,6 +143,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _DEFAULT_PROGRESSIVE_EAGER_TOOLS,
     _RailBuildInfo,
     _build_context_assemble_rail,
+    _build_skill_protocol_prompt_rail,
     _resolve_instance_config_base,
     acp_chat,
     create_vision_tools,
@@ -969,7 +970,9 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         # 与 430「todo 纪律」段的两套工具名冲突会复现。
         rail_infos.append(_RailBuildInfo(
             "_skill_protocol_prompt_rail",
-            self._build_flash_skill_protocol_prompt_rail,
+            lambda: _build_skill_protocol_prompt_rail(
+                disabled_tools_provider=self._read_disabled_tools,
+            ),
         ))
         rails = super()._instantiate_rails(rail_infos, config_base)
         selection = self._build_flash_skill_selection_rail(config_base)
@@ -1102,24 +1105,6 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             desc = getattr(meta, "description", None)
             out.append((str(name), str(desc or "")))
         return out
-
-    def _build_flash_skill_protocol_prompt_rail(self) -> Any | None:
-        """flash 侧装配技能执行规范段，注入 disabled_tools provider（评审 #2）。"""
-        try:
-            from jiuwenswarm.agents.harness.common.rails.skill_protocol_prompt_rail import (
-                SkillProtocolPromptRail,
-            )
-
-            return SkillProtocolPromptRail(
-                disabled_tools_provider=self._read_disabled_tools,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[FlashAdapter] SkillProtocolPromptRail create failed: %s",
-                exc,
-                exc_info=True,
-            )
-            return None
 
     def _build_flash_prompt_composer_rail(self) -> Any | None:
         """Build the single static text-composition entry for Flash.

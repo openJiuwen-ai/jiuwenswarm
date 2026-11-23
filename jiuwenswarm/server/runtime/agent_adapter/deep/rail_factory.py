@@ -351,13 +351,18 @@ def _should_register_acp_runtime_tools(
     return has_runtime_capability
 
 
-def _build_skill_protocol_prompt_rail() -> Any | None:
-    """构建 SkillProtocolPromptRail: 注入技能执行规范提示词。"""
+def _build_skill_protocol_prompt_rail(disabled_tools_provider=None) -> Any | None:
+    """构建 SkillProtocolPromptRail: 注入技能执行规范提示词。
+
+    ``disabled_tools_provider`` 可选，缺省 None（保持 Deep 默认：不感知 todo 禁用）；
+    flash 侧经 ``interface_flash`` 注入 ``_read_disabled_tools``，使禁用 todo 时不再
+    注入「必须使用 todo」规则（评审 #2）。
+    """
     try:
         from jiuwenswarm.agents.harness.common.rails.skill_protocol_prompt_rail import (
             SkillProtocolPromptRail,
         )
-        rail = SkillProtocolPromptRail()
+        rail = SkillProtocolPromptRail(disabled_tools_provider=disabled_tools_provider)
         logger.info("[JiuWenSwarmDeepAdapter] SkillProtocolPromptRail create success")
         return rail
     except Exception as exc:
