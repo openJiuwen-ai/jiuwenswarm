@@ -4,14 +4,12 @@ from __future__ import annotations
 
 from functools import wraps
 import logging
-from pathlib import Path
 from uuid import uuid4
 
-from openjiuwen.harness import DeepAgent
 from openjiuwen.harness.rails.multimodal_context_summarizer_rail import MultimodalContextSummarizerRail
 from openjiuwen.harness.schema.config import SubAgentConfig
+from openjiuwen.harness.subagents import cua_agent as core_cua_agent
 from openjiuwen.harness.tools.cua.rails import CuaProgressRail
-from openjiuwen.harness.workspace.workspace import Workspace
 
 from jiuwenswarm.common import cua_config
 
@@ -20,7 +18,7 @@ from .prompt.cua_task_prompt import build_cua_app_launch_prompt, build_cua_repl_
 from .rails.cua_extension_rail import CuaExtensionRail
 
 _LOG = logging.getLogger(__name__)
-COMPUTER_USE_FACTORY_NAME = "jiuwenswarm.computer_use"
+COMPUTER_USE_FACTORY_NAME = core_cua_agent.CUA_AGENT_FACTORY_NAME
 _FACTORY_HOOK_MARKER = "_jiuwenswarm_computer_use"
 
 
@@ -63,6 +61,7 @@ def build_cua_agent_config(
         ],
         factory_name=COMPUTER_USE_FACTORY_NAME,
         factory_kwargs={
+            "jiuwenswarm_hosted_repl": True,
             "cua_snapshot_keep_last_k": cua_snapshot_keep_last_k,
             "cua_pause_on_user_input": cua_pause_on_user_input,
         },
@@ -70,38 +69,27 @@ def build_cua_agent_config(
     )
 
 
-def _create_cua_agent(parent, spec: SubAgentConfig, subsession_id: str):
+def _create_cua_agent(
+    model,
+    *,
+    rails=None,
+    cua_snapshot_keep_last_k=3,
+    auto_create_workspace=True,
+    **agent_options,
+):
     from computer_use_agent import AgentConfig, RoutingConfig, create_agent
     from computer_use_agent.rails import ComputerUseRail
     from openjiuwen.harness.rails.context_engineer.context_processor_rail import ContextProcessorRail
     from openjiuwen.harness.rails.model_anomaly_detection_rail import ModelAnomalyDetectionRail
     from openjiuwen.harness.rails.tool_call_resilience_rail import ToolCallResilienceRail
 
-    inherited = parent.deep_config
-    workspace = spec.workspace
-    if workspace is None:
-        root = getattr(inherited.workspace, "root_path", inherited.workspace) or "."
-        workspace = Workspace(root_path=Path(root) / "sub_agents" / subsession_id, language=inherited.language)
-
     agent = create_agent(
-        spec.model if spec.model is not None else inherited.model,
-        card=spec.agent_card,
+        model,
         config=AgentConfig(routing=RoutingConfig(enabled=False), check_desktop=False),
         tool_owner_id=uuid4().hex,
-        system_prompt=spec.system_prompt,
-        language=spec.language,
-        workspace=workspace,
         context_engine_config=None,
-        max_iterations=spec.max_iterations if spec.max_iterations is not None else inherited.max_iterations,
-        prompt_mode=spec.prompt_mode or inherited.prompt_mode,
-        backend=spec.backend if spec.backend is not None else inherited.backend,
-        invocation_log_dir=spec.invocation_log_dir or inherited.invocation_log_dir,
-        enable_read_image_multimodal=(
-            spec.enable_read_image_multimodal if spec.enable_read_image_multimodal is not None
-            else inherited.enable_read_image_multimodal
-        ),
-        kv_cache_affinity_config=inherited.kv_cache_affinity_config,
-        auto_create_workspace=spec.factory_kwargs.get("auto_create_workspace", True),
+        auto_create_workspace=auto_create_workspace,
+        **agent_options,
     )
 
     # The published Agent installs its stand-alone toolkit before returning.
@@ -112,32 +100,27 @@ def _create_cua_agent(parent, spec: SubAgentConfig, subsession_id: str):
     agent.add_rail(ModelAnomalyDetectionRail())
     agent.deep_config.enable_tool_resilience_rail = True
     agent.add_rail(ToolCallResilienceRail())
-    for rail in spec.rails or ():
-        fork = getattr(rail, "fork_for_agent", None)
-        agent.add_rail(fork() if callable(fork) else rail)
+    for rail in rails or ():
+        agent.add_rail(rail)
     agent.add_rail(CuaProgressRail(""))
-    agent.add_rail(MultimodalContextSummarizerRail(spec.factory_kwargs["cua_snapshot_keep_last_k"]))
+    agent.add_rail(MultimodalContextSummarizerRail(cua_snapshot_keep_last_k))
     agent.register_task_resource_cleanup(agent.close)
-    # The pinned core exposes artifact inheritance only through this factory hook.
-    return parent._bind_inherited_artifact_root(agent)  # pylint: disable=protected-access
+    return agent
 
 
 def _install_cua_subagent_factory() -> None:
-    # The pinned DeepAgent resolves its built-in runtime factories internally.
-    original = DeepAgent.create_subagent
+    # Keep DeepAgent's dispatch, artifact binding and accounting hooks in place.
+    original = core_cua_agent.create_cua_agent
     if getattr(original, _FACTORY_HOOK_MARKER, False):
         return
 
     @wraps(original)
-    def create_subagent(parent, subagent_type, subsession_id, browser_capabilities=None):
-        if subagent_type == "cua_agent" and parent.deep_config is not None:
-            for spec in parent.deep_config.subagents or ():
-                card = spec.agent_card if isinstance(spec, SubAgentConfig) else getattr(spec, "card", None)
-                if getattr(card, "name", None) == subagent_type:
-                    if isinstance(spec, SubAgentConfig) and spec.factory_name == COMPUTER_USE_FACTORY_NAME:
-                        return _create_cua_agent(parent, spec, subsession_id)
-                    break
-        return original(parent, subagent_type, subsession_id, browser_capabilities)
+    def create_cua_agent(*args, jiuwenswarm_hosted_repl=False, **kwargs):
+        if jiuwenswarm_hosted_repl:
+            # The hosted extension rail already holds the pause preference.
+            kwargs.pop("cua_pause_on_user_input", None)
+            return _create_cua_agent(*args, **kwargs)
+        return original(*args, **kwargs)
 
-    setattr(create_subagent, _FACTORY_HOOK_MARKER, True)
-    DeepAgent.create_subagent = create_subagent
+    setattr(create_cua_agent, _FACTORY_HOOK_MARKER, True)
+    core_cua_agent.create_cua_agent = create_cua_agent
