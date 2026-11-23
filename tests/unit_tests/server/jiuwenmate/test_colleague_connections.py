@@ -725,7 +725,14 @@ class _ColleagueGateway:
 
 @pytest.fixture
 async def colleague_gateway(tmp_path, monkeypatch):
+    from agent_gateway.channel_manager.web import channel_sync, welink_bindings
     from agent_gateway.common import config as config_module
+
+    async def _skip_channel_sync(*_args, **_kwargs):
+        return False
+
+    monkeypatch.setattr(channel_sync, "sync_channel_config", _skip_channel_sync)
+    monkeypatch.setattr(welink_bindings, "schedule_channel_config", lambda *_args, **_kwargs: None)
 
     host = WebHost(tmp_path)
     config_id, other_id = await host.colleague(), await host.colleague()

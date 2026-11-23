@@ -509,6 +509,7 @@ def test_start_services_terminates_peer_waiter_after_first_readiness_failure(
     monkeypatch.setattr(runtime, "_preflight_gateway_singleton", lambda: None)
     monkeypatch.setattr(desktop_app, "_warmup_page_cache_background", lambda: None)
     monkeypatch.setattr(desktop_app, "prepare_runtime_workspace", lambda: None)
+    monkeypatch.setattr(desktop_app, "ensure_gateway_config", lambda: None)
     monkeypatch.setattr(
         runtime,
         "_start_managed_process",
@@ -582,6 +583,7 @@ def test_start_services_reports_web_ready_when_backend_fails_at_same_time(
     monkeypatch.setattr(runtime, "_preflight_gateway_singleton", lambda: None)
     monkeypatch.setattr(desktop_app, "_warmup_page_cache_background", lambda: None)
     monkeypatch.setattr(desktop_app, "prepare_runtime_workspace", lambda: None)
+    monkeypatch.setattr(desktop_app, "ensure_gateway_config", lambda: None)
     monkeypatch.setattr(
         runtime,
         "_start_managed_process",
