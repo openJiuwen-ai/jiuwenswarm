@@ -473,11 +473,15 @@ def _inject_user_web_runtime_config(document: str) -> str:
         document.replace("__JIUWENSWARM_EDITION_VALUE__", edition)
         .replace("__JIUWEN_WEB_TRANSPORT_VALUE__", _runtime_web_transport())
         .replace("__JIUWEN_LOGIN_AUTH_SIMULATE_VALUE__", login_auth_simulate)
+        .replace("__JIUWEN_IFRAME_HOST_ISOLATION_VALUE__", str(edition == "personal").lower())
     )
 
 
 class _SpaStaticHandler(SimpleHTTPRequestHandler):
     """Static file handler with SPA fallback to index.html."""
+
+    _TOP_LEVEL_DOCUMENT_CSP = "frame-ancestors 'none'"
+    _EMBEDDABLE_DOCUMENT_CSP = "sandbox allow-scripts allow-forms allow-popups allow-modals allow-downloads"
 
     extensions_map = {
         **SimpleHTTPRequestHandler.extensions_map,
@@ -894,9 +898,12 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             resp_body = b"" if stream_response else resp.read()
 
             self.send_response(resp.status, resp.reason)
+            document_policy = self._host_document_policy()
             for key, value in resp.getheaders():
                 if key.lower() in self._HOP_BY_HOP_HEADERS:
                     continue
+                if key.lower() == "content-security-policy" and value == document_policy:
+                    continue  # end_headers sends this policy once for the outer origin.
                 self.send_header(key, value)
             if streaming:
                 self.close_connection = True
@@ -2996,10 +3003,25 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 return candidate
         return None
 
+    def _host_document_policy(self) -> str | None:
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if is_enterprise():
+            return None
+        # Bundled pages and the trusted login callback run top-level with their
+        # original origin. All other documents on this origin stay sandboxed,
+        # including proxied content and files opened outside an iframe.
+        if getattr(self, "_static_cache_control", None) or urlparse(self.path).path == "/api/v1/auth/callback":
+            return self._TOP_LEVEL_DOCUMENT_CSP
+        return self._EMBEDDABLE_DOCUMENT_CSP
+
     def end_headers(self) -> None:
         # 缓存策略在 send_head 里决定、这里统一落头：super().send_head() 内部
         # 就会调用 end_headers，之后再追加头已来不及。非静态路径不设置该
         # 标记，API/代理响应仍走各自的 no-store。
+        document_policy = self._host_document_policy()
+        if document_policy:
+            self.send_header("Content-Security-Policy", document_policy)
         cache_control = getattr(self, "_static_cache_control", None)
         if cache_control:
             self._static_cache_control = None

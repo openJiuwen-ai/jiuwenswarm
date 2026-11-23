@@ -13,6 +13,7 @@ from urllib.parse import urljoin, urlsplit
 from jiuwenswarm.extensions_v2.webui.constants import MAX_LIST_ITEMS, MAX_PROP_DEPTH, MAX_TEXT_BYTES
 from jiuwenswarm.extensions_v2.webui.appearance import PREFERENCE
 from jiuwenswarm.extensions_v2.webui.icon_whitelist_generated import WEBUI_ICON_NAMES
+from jiuwenswarm.extensions_v2.webui.models import effective_render_props
 
 
 def token(*values: str) -> dict[str, Any]:
@@ -201,6 +202,7 @@ COMPONENT_RULES: dict[str, dict[str, Any]] = {
         "src": LOCALIZED_TEXT, "srcDoc": LOCALIZED_TEXT, "title": LOCALIZED_TEXT,
         "minWidth": {"kind": "number", "min": 0, "max": 4096},
         "icon": token(*WEBUI_ICON_NAMES),
+        "permissions": array(TEXT),
     }, "required": ("title",)},
     "Dropdown": {
         "props": {
@@ -367,6 +369,7 @@ def valid_url(value: str, *, iframe: bool = False) -> bool:
 def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
     """Validate types, required fields and dependent component properties."""
     rule = COMPONENT_RULES[component]
+    props = effective_render_props(component, props)
     if not set(rule.get("required", ())) <= props.keys():
         return "required component prop missing"
     for key, value in props.items():
@@ -487,6 +490,8 @@ def validate_props(component: str, props: Mapping[str, Any]) -> str | None:
             return "invalid iframe title"
         if ("src" in props) == ("srcDoc" in props):
             return "Iframe requires exactly one document source"
+        if any(not re.fullmatch(r"[A-Za-z0-9_.-]+", name) for name in props.get("permissions", ())):
+            return "invalid iframe permission name"
         document = props.get("srcDoc")
         if document is not None:
             documents = [document] if isinstance(document, str) else list(document.values())

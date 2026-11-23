@@ -7,7 +7,13 @@ import { resolvePluginResourceURL } from '../../../resources/urls.ts';
 
 export function WebUIIframe({ node, context, appearance }: WebUIAdapterProps) {
   const active = useContentActivity();
-  const p = node.props as { src?: LocalizedText; srcDoc?: LocalizedText; title: LocalizedText; minWidth?: number };
+  const p = node.props as {
+    src?: LocalizedText;
+    srcDoc?: LocalizedText;
+    title: LocalizedText;
+    minWidth?: number;
+    permissions?: readonly string[];
+  };
   const title = useLocalizedText(p.title)!;
   const srcDoc = useLocalizedText(p.srcDoc);
   const source = useLocalizedText(p.src);
@@ -18,6 +24,7 @@ export function WebUIIframe({ node, context, appearance }: WebUIAdapterProps) {
       srcDoc={srcDoc}
       title={title}
       minWidth={p.minWidth}
+      permissions={p.permissions}
       active={active && context.connected}
       className={appearance?.className}
       style={appearance?.style}

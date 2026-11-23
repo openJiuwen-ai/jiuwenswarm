@@ -666,6 +666,7 @@ test('Iframe selects complete localized documents and keeps the fixed sandbox wi
     assert.equal(first.title, 'Usage details');
     assert.equal(first.getAttribute('srcdoc'), documents.en);
     assert.equal(first.hasAttribute('src'), false);
+    assert.equal(first.hasAttribute('allow'), false);
     assert.equal(app.container.querySelector('[data-testid="webui-iframe-open-source"]'), null);
     assert.equal(app.container.querySelector('[data-testid="webui-iframe-source"]').textContent, 'Plugin page');
     assert.equal(first.getAttribute('sandbox'), 'allow-scripts allow-forms allow-popups allow-modals allow-downloads');
@@ -1925,7 +1926,7 @@ for (const source of [{ src: 'https://example.com/wide' }, { srcDoc: '<p>Wide pa
   });
 }
 
-test('Iframe reload retries the same URL and retains plugin minimum width and sandbox permissions', async () => {
+test('Iframe reload keeps the URL and minimum width without adding permissions', async () => {
   const app = await setup(
     {
       component: 'Iframe',
@@ -1939,6 +1940,7 @@ test('Iframe reload retries the same URL and retains plugin minimum width and sa
   );
   try {
     const first = app.container.querySelector('iframe');
+    assert.equal(first.hasAttribute('allow'), false);
     await act(async () => first.dispatchEvent(new window.Event('load')));
     const source = app.container.querySelector('[data-testid="webui-iframe-source"]');
     assert.equal(source.textContent, 'https://example.com/retry');
@@ -1948,6 +1950,7 @@ test('Iframe reload retries the same URL and retains plugin minimum width and sa
     assert.notEqual(reloaded, first);
     assert.equal(reloaded.src, first.src);
     assert.equal(reloaded.getAttribute('sandbox'), first.getAttribute('sandbox'));
+    assert.equal(reloaded.getAttribute('allow'), first.getAttribute('allow'));
     assert.equal(getComputedStyle(reloaded).minWidth, '720px');
     assert.equal(app.container.querySelector('[data-testid="webui-iframe-state"]').dataset.variant, 'loading');
     await act(async () => reloaded.dispatchEvent(new window.Event('error')));
@@ -1958,6 +1961,7 @@ test('Iframe reload retries the same URL and retains plugin minimum width and sa
     assert.ok(retry);
     assert.equal(retry.src, first.src);
     assert.equal(retry.getAttribute('sandbox'), first.getAttribute('sandbox'));
+    assert.equal(retry.getAttribute('allow'), first.getAttribute('allow'));
     await act(async () => retry.dispatchEvent(new window.Event('load')));
     assert.equal(app.container.querySelector('[data-testid="webui-iframe-state"]'), null);
     const open = app.container.querySelector('[data-testid="webui-iframe-open-source"]');
@@ -1965,6 +1969,81 @@ test('Iframe reload retries the same URL and retains plugin minimum width and sa
     assert.equal(open.target, '_blank');
     assert.equal(open.rel, 'noopener noreferrer');
     assert.equal(app.business().length, 0);
+  } finally {
+    await app.close();
+  }
+});
+
+test('Iframe delegates each explicitly requested browser capability once and remounts on a change', async () => {
+  const tree = (permissions) => ({
+    component: 'Iframe',
+    props: { src: 'https://example.com/editor', title: 'Editor', permissions },
+  });
+  const app = await setup(
+    tree(['clipboard-write', 'fullscreen', 'autoplay', 'fullscreen', 'future-feature']),
+    { ...target, slot_id: 'conversation.panel.right' },
+  );
+  try {
+    const first = app.container.querySelector('iframe');
+    assert.equal(first.getAttribute('allow'), 'clipboard-write; fullscreen; autoplay; future-feature');
+    assert.ok(!first.getAttribute('sandbox').split(/\s+/).includes('allow-same-origin'));
+
+    await app.replace(tree([]));
+    const replacement = app.container.querySelector('iframe');
+    assert.notEqual(replacement, first);
+    assert.equal(replacement.src, first.src);
+    assert.equal(replacement.hasAttribute('allow'), false);
+  } finally {
+    await app.close();
+  }
+});
+
+test('Iframe gives each desktop document with a media declaration its own name', async (context) => {
+  const desktop = window.jiuwenDesktop;
+  window.jiuwenDesktop = { apiBase: 'http://localhost' };
+  context.after(() => {
+    if (desktop === undefined) delete window.jiuwenDesktop;
+    else window.jiuwenDesktop = desktop;
+  });
+  const tree = (permissions) => ({
+    component: 'Iframe',
+    props: { src: 'https://example.com/editor', title: 'Editor', permissions },
+  });
+  const app = await setup(tree(['microphone']), { ...target, slot_id: 'conversation.panel.right' });
+  try {
+    const initialName = app.container.querySelector('iframe').name;
+    assert.ok(initialName.startsWith('workswarm-media-'));
+    await act(async () => app.container.querySelector('[data-testid="webui-iframe-reload"]').click());
+    assert.notEqual(app.container.querySelector('iframe').name, initialName);
+    await app.replace(tree(['fullscreen']));
+    assert.equal(app.container.querySelector('iframe').hasAttribute('name'), false);
+  } finally {
+    await app.close();
+  }
+});
+
+test('Iframe preserves independent HTTP and HTTPS origins when host documents are isolated', async (context) => {
+  const src = 'http://localhost:19500/editor';
+  const marker = document.createElement('meta');
+  marker.name = 'workswarm-iframe-host-isolation';
+  marker.content = 'true';
+  document.head.append(marker);
+  context.after(() => marker.remove());
+  const tree = (src) => ({ component: 'Iframe', props: { src, title: 'Editor' } });
+  const app = await setup(tree(src), { ...target, slot_id: 'conversation.panel.right' });
+  try {
+    const first = app.container.querySelector('iframe');
+    assert.equal(first.src, src);
+    assert.ok(first.getAttribute('sandbox').split(' ').includes('allow-same-origin'));
+    assert.equal(first.hasAttribute('allow'), false);
+    await act(async () => app.container.querySelector('[data-testid="webui-iframe-reload"]').click());
+    const reloaded = app.container.querySelector('iframe');
+    assert.notEqual(reloaded, first);
+    assert.equal(reloaded.getAttribute('sandbox'), first.getAttribute('sandbox'));
+    await app.replace(tree('https://example.com/editor'));
+    const deployed = app.container.querySelector('iframe');
+    assert.equal(deployed.src, 'https://example.com/editor');
+    assert.equal(deployed.getAttribute('sandbox'), first.getAttribute('sandbox'));
   } finally {
     await app.close();
   }
@@ -2015,7 +2094,12 @@ test('Iframe slow loading stays interactive and cancels pending notices on compl
   assert.equal(timers.size, 0, 'unmount cancels pending timers');
 });
 
-test('Iframe keeps relative and absolute host sources sandboxed without same-origin access', async () => {
+test('Iframe keeps host URLs and srcDoc sandboxed when host documents are isolated', async (context) => {
+  const marker = document.createElement('meta');
+  marker.name = 'workswarm-iframe-host-isolation';
+  marker.content = 'true';
+  document.head.append(marker);
+  context.after(() => marker.remove());
   const tree = (src) => ({ component: 'Iframe', props: { src, title: 'Local preview' } });
   const app = await setup(tree('/preview'), { ...target, slot_id: 'conversation.panel.right' });
   try {
@@ -2033,6 +2117,14 @@ test('Iframe keeps relative and absolute host sources sandboxed without same-ori
       assert.ok(!permissions.some((permission) => permission.startsWith('allow-top-navigation')));
       assert.equal(iframe.hasAttribute('srcdoc'), false);
     }
+    await app.replace({
+      component: 'Iframe',
+      props: { srcDoc: '<p>Preview</p>', title: 'Local preview', permissions: ['fullscreen'] },
+    }, 4);
+    const inline = app.container.querySelector('iframe');
+    assert.equal(inline.getAttribute('srcdoc'), '<p>Preview</p>');
+    assert.equal(inline.hasAttribute('allow'), false);
+    assert.ok(!inline.getAttribute('sandbox').split(' ').includes('allow-same-origin'));
   } finally { await app.close(); }
 });
 
