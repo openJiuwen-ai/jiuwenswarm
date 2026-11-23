@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="560" viewBox="0 0 900 560" role="img" aria-labelledby="diagram-title diagram-desc">
+  <title id="diagram-title">Event、Ops、Handler、next_handler、SessionContext</title>
+  <desc id="diagram-desc">五个核心概念之间的关系：Event 进入 Handler，Handler 使用 next_handler 和 Ops，SessionContext 绑定到 Ops，Ops 方法通过事件触发新的 Event。</desc>
+  <defs>
+    <style>
+      text { font-family: "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; }
+      .node-title { font-size: 20px; font-weight: 700; fill: #111827; }
+      .edge-label { font-size: 13px; fill: #475569; }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <rect width="900" height="560" fill="#f8fafc"/>
+
+  <!-- 关系线先绘制，避免穿过节点 -->
+  <path d="M240 260 C280 260 320 250 360 250" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <path d="M560 235 C600 210 625 160 650 120" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <path d="M650 150 C615 185 590 250 560 275" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <path d="M560 300 C595 300 620 320 650 320" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <path d="M750 430 C750 395 750 375 750 360" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <path d="M650 340 C560 500 270 535 40 300 V260 H60" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+  <!-- 关系标签 -->
+  <g class="edge-label">
+    <rect x="285" y="215" width="50" height="24" rx="5" fill="#ffffff"/>
+    <text x="310" y="232" text-anchor="middle">输入</text>
+
+    <rect x="555" y="168" width="50" height="24" rx="5" fill="#ffffff"/>
+    <text x="580" y="185" text-anchor="middle">调用</text>
+
+    <rect x="565" y="245" width="50" height="24" rx="5" fill="#ffffff"/>
+    <text x="590" y="262" text-anchor="middle">继续</text>
+
+    <rect x="555" y="326" width="50" height="24" rx="5" fill="#ffffff"/>
+    <text x="580" y="343" text-anchor="middle">调用</text>
+
+    <rect x="765" y="388" width="50" height="24" rx="5" fill="#ffffff"/>
+    <text x="790" y="405" text-anchor="middle">绑定</text>
+
+    <rect x="380" y="484" width="110" height="24" rx="5" fill="#ffffff"/>
+    <text x="435" y="501" text-anchor="middle">通过事件触发</text>
+  </g>
+
+  <!-- 五个概念节点 -->
+  <g id="event">
+    <rect x="60" y="220" width="180" height="80" rx="10" fill="#eff6ff" stroke="#2563eb" stroke-width="1.8"/>
+    <text x="150" y="268" text-anchor="middle" class="node-title">Event</text>
+  </g>
+
+  <g id="handler">
+    <rect x="360" y="200" width="200" height="100" rx="10" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.8"/>
+    <text x="460" y="258" text-anchor="middle" class="node-title">Handler</text>
+  </g>
+
+  <g id="next-handler">
+    <rect x="650" y="80" width="200" height="80" rx="10" fill="#faf5ff" stroke="#9333ea" stroke-width="1.8"/>
+    <text x="750" y="128" text-anchor="middle" class="node-title">next_handler</text>
+  </g>
+
+  <g id="ops">
+    <rect x="650" y="280" width="200" height="80" rx="10" fill="#fff7ed" stroke="#ea580c" stroke-width="1.8"/>
+    <text x="750" y="328" text-anchor="middle" class="node-title">Ops</text>
+  </g>
+
+  <g id="session-context">
+    <rect x="650" y="430" width="200" height="80" rx="10" fill="#f0fdfa" stroke="#0f766e" stroke-width="1.8"/>
+    <text x="750" y="478" text-anchor="middle" class="node-title">SessionContext</text>
+  </g>
+</svg>

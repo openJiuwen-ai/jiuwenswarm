@@ -429,6 +429,15 @@ def _team_hide_teammate_enabled() -> bool:
     """Return whether non-leader teammate frames should be filtered out in team mode."""
     return os.environ.get(_HIDE_TEAMMATE_ENV_KEY, "").strip().lower() == "true"
 
+
+def _is_teammate_permission_card(parsed: dict[str, Any] | None) -> bool:
+    """Return whether a parsed frame is a user-visible teammate permission card."""
+    return (
+        isinstance(parsed, dict)
+        and parsed.get("event_type") == "chat.ask_user_question"
+        and parsed.get("source") == "permission_interrupt"
+    )
+
 _INTERACT_REASON_ERROR_MAP: dict[str, str] = {
     "not_active": "Team is initializing, please try again later",
     "session_mismatch": "Session state mismatch, please refresh and retry",
@@ -2698,15 +2707,22 @@ async def _apply_enterprise_runtime_ready_hooks(
     """Attach the teammate quota guard and back-fill team identity on ready."""
     from jiuwenswarm.infrastructure.db.team_store_actor import run_team_store
 
+    team_agent = await _current_pool_team_agent(runtime_team_name)
+    backend = getattr(team_agent, "team_backend", None)
+    if getattr(backend, "conversation_mode", None) == "group_chat":
+        from jiuwenswarm.enterprise.team.member_limits import detach_teammate_limit_guard
+
+        detach_teammate_limit_guard(team_agent)
+        return
+
     await run_team_store(
         _record_session_team_occupancy,
         request=request,
         session_id=session_id,
         runtime_team_name=runtime_team_name,
     )
-    team_agent = await _current_pool_team_agent(runtime_team_name)
     try:
-        from jiuwenswarm.enterprise.team.member_limits import attach_teammate_limit_guard
+        from jiuwenswarm.enterprise.team.member_limits import attach_teammate_limit_guard, quota_member_names
 
         if team_agent is not None:
             team_id = ""
@@ -2741,12 +2757,7 @@ async def _apply_enterprise_runtime_ready_hooks(
                     leader_name = str(getattr(backend, "leader_member_name", "") or "")
                     names: list[str] = []
                     if backend is not None and getattr(backend, "db", None) is not None:
-                        roster = await backend.db.member.get_member_roster(backend.team_name)
-                        names = [
-                            str(name)
-                            for name, _display, _status in roster
-                            if str(name) and str(name) != leader_name
-                        ]
+                        names = [name for name in await quota_member_names(backend) if name != leader_name]
                     await run_team_store(
                         get_team_quota_service().reconcile_local_roster,
                         team_id,
@@ -2950,7 +2961,14 @@ def _is_duplicate_ask_user_question(
     parsed: dict[str, Any],
     emitted_request_ids: set[str],
 ) -> bool:
+    """Drop an immediate replay of the same ask.
+
+    Any other frame ends that burst. A permission card kept waiting after a
+    sibling runs is written again with the original tool_call_id, and that
+    refresh has to reach the client.
+    """
     if parsed.get("event_type") != "chat.ask_user_question":
+        emitted_request_ids.clear()
         return False
     request_id = str(parsed.get("request_id") or "").strip()
     if not request_id:
@@ -3517,11 +3535,16 @@ async def _process_team_message_stream_with_design(
     the standard team pipeline.
     """
     design_bindings = await _bind_design_round_if_needed(request)
+    npc_team = (getattr(request, "trusted_runtime_binding", None) or {}).get("app_role_team") is True
     try:
         async with aclosing(_process_team_message_stream_locked(
             request, inputs, deep_agent
         )) as stream:
             async for chunk in stream:
+                if npc_team and chunk.payload and chunk.payload.get("event_type") not in {
+                    "chat.final", "chat.error", "chat.processing_status", "chat.input_received",
+                }:
+                    continue
                 if design_bindings is not None:
                     _push_design_tool_activity(request, chunk)
                 if isinstance(chunk.payload, dict) and chunk.payload.get("event_type") == "chat.processing_status":
@@ -3774,8 +3797,17 @@ async def _process_team_message_stream(
     turn = _resolve_user_turn(inputs, channel_id=channel_id, language=language)
     query = turn.text
     private_group_heartbeat = _is_group_heartbeat_request(request)
+    npc_team = (getattr(request, "trusted_runtime_binding", None) or {}).get("app_role_team") is True
     try:
-        group_input = None if private_group_heartbeat else _group_chat_input(request, query)
+        if npc_team:
+            if not isinstance(query, str) or not query.strip():
+                raise ValueError("NPC Team requires a non-empty player message")
+            if (request_params or {}).get("type") == "group_chat":
+                raise ValueError("NPC Team accepts player input only through its leader")
+            # A literal prefix keeps @/$/# routing and slash commands out of player text.
+            query = f"Player input:\n{query}"
+            turn = turn.with_text(query)
+        group_input = None if (private_group_heartbeat or npc_team) else _group_chat_input(request, query)
     except ValueError as exc:
         yield AgentResponseChunk(
             request_id=rid, channel_id=channel_id,
@@ -4047,10 +4079,10 @@ async def _process_team_message_stream(
             hide_dm = preparation.hide_dm
             debug = preparation.debug
 
-    if is_first_request:
+    if is_first_request and group_input is None:
         from jiuwenswarm.enterprise.edition import is_enterprise
 
-        # 超员拒绝只属于企业版。个人版不解析人数，也不为取上限打开配额服务。
+        # Team execution quotas do not limit the public group roster.
         if is_enterprise():
             from jiuwenswarm.enterprise.team.quota import QUOTA_EXCEEDED
 
@@ -4148,7 +4180,8 @@ async def _process_team_message_stream(
         #   - 消息中无 @ → $member_name body（不自动拼接 @team_leader，
         #     HumanAgent 可直接与自己扮演的 agent 对话，如 $reviewer-1 看一下当前有哪些任务）
         member_name = str(request_metadata.get("member_name") or "").strip()
-        if member_name and query_text and not query_text.startswith("$"):
+        direct_member_message = bool(member_name and query_text and not query_text.startswith("$"))
+        if not npc_team and direct_member_message:
             query = f"${member_name} {query_text}"
             query_text = query if isinstance(query, str) else str(query)
             logger.info(
@@ -4340,6 +4373,23 @@ async def _process_team_message_stream(
             model_selection=runtime_model_selection,
             config_base=team_runtime_config,
         )
+        from jiuwenswarm.server.runtime.session.execution_settings import prepare_session_execution
+
+        try:
+            await prepare_session_execution(
+                session_id,
+                team_spec,
+                params_obj.get("execution_settings") if isinstance(params_obj, dict) else None,
+            )
+        except ValueError as exc:
+            # Rejected settings are the client's to fix. Running the team
+            # without them would silently drop the requested Git identity.
+            logger.warning("[team] execution settings rejected: session_id=%s error=%s", session_id, exc)
+            yield AgentResponseChunk(
+                request_id=rid, channel_id=channel_id,
+                payload={"event_type": "chat.error", "error": str(exc)}, is_complete=True,
+            )
+            return
         if group_input is not None:
             update_session_metadata(session_id=session_id,
                 conversation_type="group_chat",
@@ -4665,6 +4715,17 @@ async def _process_team_message_stream(
                     followup_payload,
                     run_context=run_context,
                 )
+                if not success and reason == "interrupt_already_resolved":
+                    # The in-flight round already consumed this permission card.
+                    # Closing it is the admission; a send error would be false.
+                    logger.info(
+                        "[TeamHelpers] permission answer already resolved by the in-flight round: "
+                        "channel_id=%s session_id=%s",
+                        _resolve_channel_id(channel_id),
+                        session_id,
+                    )
+                    success = True
+                    reason = None
                 if not success:
                     logger.warning(
                         "[TeamHelpers] interact failed: channel_id=%s session_id=%s reason=%s query=%s",
@@ -5351,6 +5412,13 @@ async def _consume_stream_with_query(
     # only emits what is new. See _announce_team_roster.
     announced_members: set[str] = set()
     roster_team_name = str(getattr(team_spec, "team_name", "") or "")
+    npc_team = (getattr(team_spec, "metadata", None) or {}).get("app_role_team") is True
+    npc_titles = {
+        member.member_name: member.display_name for member in team_spec.predefined_members
+    } if npc_team else {}
+    npc_expected_speakers = {team_spec.leader.member_name, *npc_titles} if npc_team else set()
+    npc_spoken: set[str] = set()
+    npc_turn_id = str(round_request_id or "")
     lg: TeamStreamLogger | None = None
     stream_cancelled = False
     # History writer for frames that no waiter receives: the durable pipeline
@@ -5368,7 +5436,20 @@ async def _consume_stream_with_query(
 
     async def _deliver(event: dict[str, Any]) -> None:
         """Broadcast one event and persist it when no waiter received it."""
-        nonlocal writer
+        nonlocal writer, npc_turn_id
+        context = _ACTIVE_ROUND_HISTORY_CONTEXT.get(session_id)
+        if npc_team and event.get("event_type") in {"chat.final", "chat.processing_status"}:
+            turn_id = context.request_id if context is not None else npc_turn_id
+            if turn_id != npc_turn_id:
+                npc_turn_id = turn_id
+                npc_spoken.clear()
+            if npc_turn_id:
+                event["turn_request_id"] = npc_turn_id
+            speaker = event.get("member_name")
+            if event["event_type"] == "chat.final" and event.get("content") and speaker in npc_expected_speakers:
+                npc_spoken.add(speaker)
+            if event.get("is_processing") is False:
+                event["npc_missing_members"] = sorted(npc_expected_speakers - npc_spoken)
         if event.get("event_type") == "chat.final" or (
             event.get("event_type") == "chat.processing_status"
             and event.get("is_processing") is False
@@ -5390,7 +5471,6 @@ async def _consume_stream_with_query(
             if delivered:
                 await writer.handover(event)
                 return
-            context = _ACTIVE_ROUND_HISTORY_CONTEXT.get(session_id)
             if (
                 context is not None
                 and writer.request_id != context.request_id
@@ -5584,6 +5664,9 @@ async def _consume_stream_with_query(
                     run_context=run_context,
                 )
                 if not result:
+                    # Busy and unavailable mean this answer was not admitted.
+                    # The runtime does not re-ask, so the frontend must see a
+                    # terminal error and keep the card retryable.
                     reason = str(getattr(result, "reason", None) or "interrupt_resume_rejected")
                     logger.warning(
                         "[TeamHelpers] interrupt resume interact rejected: "
@@ -5645,13 +5728,20 @@ async def _consume_stream_with_query(
                         session_id, getattr(chunk, "role", None), getattr(chunk, "type", None),
                     )
                 continue
-            # Optional: filter out all non-leader frames so the frontend only
-            # sees leader output. Leader-level control events
-            # (team.runtime_ready / team.completed) are kept because
-            # _is_leader_output returns True.
-            if _team_hide_teammate_enabled() and not is_leader:
-                continue
+            # Optional: filter out non-leader frames so the frontend only sees
+            # leader output. Parse first: a teammate permission card is the
+            # one non-leader frame that must still reach the user. Leader
+            # control events stay because _is_leader_output returns True.
+            # NPC Team sessions need every member's final speech, so they skip
+            # the teammate filter entirely.
             parsed = await run_stream_parser(parse_stream_chunk, chunk)
+            hide_teammate = (
+                _team_hide_teammate_enabled()
+                and not is_leader
+                and not _is_teammate_permission_card(parsed)
+            )
+            if not npc_team and hide_teammate:
+                continue
             if parsed is not None:
                 if (
                     parsed.get("event_type") == "chat.error"
@@ -5691,10 +5781,13 @@ async def _consume_stream_with_query(
                     continue
                 if _is_duplicate_ask_user_question(parsed, emitted_ask_user_request_ids):
                     continue
-                # Skip non-leader __interaction__ (permission ASK) — approval
-                # is routed internally via the leader; only leader
-                # interactions are forwarded to the frontend.
-                if not is_leader and parsed.get("event_type") == "chat.ask_user_question":
+                # Teammate questions stay off the frontend, except the user
+                # permission card, which keeps the member identity.
+                if (
+                    not is_leader
+                    and parsed.get("event_type") == "chat.ask_user_question"
+                    and parsed.get("source") != "permission_interrupt"
+                ):
                     continue
                 parsed["rid"] = round_id
                 # 标注来源 team，让前端能把这一帧分流到对应 team 的对话视图。
@@ -5796,6 +5889,31 @@ async def _consume_stream_with_query(
                             "is_complete": True,
                         },
                     )
+                    terminal_broadcasted = True
+                    continue
+                elif parsed.get("event_type") == "team.goal.blocked":
+                    # Core keeps the resident stream open for later user input.
+                    # End this request's processing state without completing its tasks.
+                    fallback = (
+                        "The leader goal is blocked. Add input to continue."
+                        if str(getattr(team_spec, "language", "cn")) == "en"
+                        else "领导目标已阻塞，请补充输入后继续。"
+                    )
+                    await _deliver({
+                        "event_type": "chat.error",
+                        "error": str(parsed.get("reason") or fallback),
+                        "code": "TEAM_GOAL_BLOCKED",
+                        "session_id": session_id,
+                        "rid": round_id,
+                    })
+                    await _deliver({
+                        "event_type": "chat.processing_status",
+                        "session_id": session_id,
+                        "rid": round_id,
+                        "is_processing": False,
+                        "is_complete": True,
+                        "reason": "team.goal.blocked",
+                    })
                     terminal_broadcasted = True
                     continue
                 elif parsed.get("event_type") == "team.completed":
@@ -5924,6 +6042,16 @@ async def _consume_stream_with_query(
                         terminal_broadcasted = True
                     continue
                 if parsed.get("event_type") == "chat.final":
+                    if npc_team:
+                        speaker = str(getattr(chunk, "source_member", None) or "")
+                        if is_leader:
+                            speaker = team_spec.leader.member_name
+                            parsed["display_name"] = team_spec.leader.display_name
+                        elif speaker in npc_titles:
+                            parsed["display_name"] = npc_titles[speaker]
+                        else:
+                            continue
+                        parsed["member_name"] = speaker
                     # A persistent Team stream may emit several leader finals
                     # within one real round.  They are result content, not a
                     # lifecycle boundary.  Only team.completed/team.idle,

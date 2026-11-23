@@ -15,6 +15,9 @@ from dataclasses import asdict
 from enum import Enum
 from typing import Any
 
+from opentelemetry import context as otel_context, trace
+from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
+
 from jiuwenswarm.common.external_cli_runtime import activate_external_cli_runtime_paths
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -165,7 +168,7 @@ class WorkerDispatcher:
             # Loop-driven fallback: the named-pipe fast path already answered
             # this ping off-loop, so this branch serves stream transports.
             beat_age = self._beat.age if self._beat is not None else None
-            await conn.send(heartbeat_reply(beat_age))
+            await conn.send(heartbeat_reply(beat_age, probe_id=message.get("probe_id")))
             return True
         if kind == KIND_DELIVERY_ACK:
             self._bridge.acknowledge(message)
@@ -388,12 +391,26 @@ class WorkerDispatcher:
         return True
 
     async def _run_request(self, request: AgentRequest, generation: int, dispatch_id: str = "") -> None:
-        beat = getattr(self, "_beat", None)
-        if beat is None:
-            await self._dispatch_request(request, generation, dispatch_id)
-        else:
-            with beat.activity(request_metadata(request, dispatch_id)):
+        # Bind the parent in the execution task and restore its ambient context.
+        trace_token = None
+        traceparent = (request.metadata or {}).get("traceparent")
+        if isinstance(traceparent, str) and traceparent:
+            parent = TraceContextTextMapPropagator().extract(
+                {"traceparent": traceparent},
+                context=otel_context.Context(),
+            )
+            if trace.get_current_span(parent).get_span_context().is_valid:
+                trace_token = otel_context.attach(parent)
+        try:
+            beat = getattr(self, "_beat", None)
+            if beat is None:
                 await self._dispatch_request(request, generation, dispatch_id)
+            else:
+                with beat.activity(request_metadata(request, dispatch_id)):
+                    await self._dispatch_request(request, generation, dispatch_id)
+        finally:
+            if trace_token is not None:
+                otel_context.detach(trace_token)
 
     async def _dispatch_request(self, request: AgentRequest, generation: int, dispatch_id: str = "") -> None:
         if not dispatch_id:

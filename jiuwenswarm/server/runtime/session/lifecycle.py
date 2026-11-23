@@ -120,7 +120,7 @@ def atomic_json(path: Path, value: dict) -> None:
 
 
 @contextmanager
-def resource_lock(kind: str, resource_id: str) -> Iterator[None]:
+def resource_lock(kind: str, resource_id: str, *, blocking: bool = True) -> Iterator[None]:
     path = resource_path(kind, resource_id)
     held = getattr(_HELD_LOCKS, "paths", None)
     if held is None:
@@ -128,7 +128,7 @@ def resource_lock(kind: str, resource_id: str) -> Iterator[None]:
     if path in held:
         yield
         return
-    with file_lock(path):
+    with file_lock(path, blocking=blocking):
         held.add(path)
         try:
             yield
@@ -255,6 +255,7 @@ def renew_operation(
 
 
 def update(kind: str, resource_id: str, **changes: Any) -> dict:
+    """Update and return the lifecycle state's operation record."""
     with resource_lock(kind, resource_id):
         value = state(kind, resource_id)
         operation = value["operation"]

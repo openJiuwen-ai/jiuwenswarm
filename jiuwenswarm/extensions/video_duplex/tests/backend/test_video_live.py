@@ -2640,53 +2640,33 @@ async def test_execute_core_agent_extracts_generated_brief_protocol() -> None:
 
 
 @pytest.mark.asyncio
-async def test_execute_core_agent_prefers_chat_final_like_normal_chat() -> None:
-    class FakeAgentClient:
-        async def send_request_stream(self, envelope):
-            del envelope
-            yield SimpleNamespace(
-                payload={"event_type": "chat.delta", "content": "正在查询资料……"},
-            )
-            yield SimpleNamespace(
-                payload={
-                    "event_type": "chat.final",
-                    "content": "香港今天有骤雨，外出建议带伞。",
-                },
-            )
-
+@pytest.mark.parametrize("final", ["香港今天有骤雨，外出建议带伞。", ""])
+async def test_execute_core_agent_prefers_final_or_falls_back_to_deltas(final) -> None:
     result = await video_search.execute_core_agent(
-        FakeAgentClient(),
-        question="香港今天天气如何？",
-        query="香港今日天气",
-        visual_context="室内画面",
-        search_session_id="search-session",
+        make_agent_client(frames=[
+            {"event_type": "chat.delta", "content": "正在查询" if final else "香港今天有骤雨，"},
+            {"event_type": "chat.delta", "content": "资料……" if final else "外出建议带伞。"},
+            {"event_type": "chat.final", "content": final},
+        ]),
+        question="香港今天天气如何？", query="香港今日天气",
+        visual_context="室内画面", search_session_id="search-session",
     )
-
     assert result["answer"] == "香港今天有骤雨，外出建议带伞。"
 
 
 @pytest.mark.asyncio
-async def test_execute_core_agent_empty_final_keeps_streamed_answer() -> None:
-    class FakeAgentClient:
-        async def send_request_stream(self, envelope):
-            del envelope
-            yield SimpleNamespace(
-                payload={"event_type": "chat.delta", "content": "香港今天有骤雨，"},
-            )
-            yield SimpleNamespace(
-                payload={"event_type": "chat.delta", "content": "外出建议带伞。"},
-            )
-            yield SimpleNamespace(payload={"event_type": "chat.final", "content": ""})
+async def test_execute_core_agent_preserves_explicit_core_error() -> None:
+    from jiuwenswarm.extensions.video_duplex.backend.tasks.errors import CoreExecutionError
 
-    result = await video_search.execute_core_agent(
-        FakeAgentClient(),
-        question="香港今天天气如何？",
-        query="香港今日天气",
-        visual_context="室内画面",
-        search_session_id="search-session",
-    )
-
-    assert result["answer"] == "香港今天有骤雨，外出建议带伞。"
+    with pytest.raises(CoreExecutionError, match="Insufficient Balance"):
+        await video_search.execute_core_agent(
+            make_agent_client(frames=[{
+                "event_type": "chat.error",
+                "error": "Insufficient Balance (request_id: provider-request-1)",
+            }]),
+            question="香港今天天气如何？", query="香港今日天气",
+            visual_context="", search_session_id="search-session",
+        )
 
 
 @pytest.mark.asyncio
@@ -2949,21 +2929,12 @@ async def test_execute_core_agent_streams_every_reasoning_delta() -> None:
     async def collect_progress(item):
         progress.append(item)
 
-    class FakeAgentClient:
-        async def send_request_stream(self, envelope):
-            del envelope
-            for content in ("先检查", "，再核实"):
-                yield SimpleNamespace(
-                    payload={"event_type": "chat.reasoning", "content": content},
-                    is_complete=False,
-                )
-            yield SimpleNamespace(
-                payload={"event_type": "chat.final", "content": "完成"},
-                is_complete=True,
-            )
-
     result = await video_search.execute_core_agent(
-        FakeAgentClient(),
+        make_agent_client(frames=[
+            {"event_type": "chat.reasoning", "content": "先检查"},
+            {"event_type": "chat.reasoning", "content": "，再核实"},
+            {"event_type": "chat.final", "content": "完成"},
+        ]),
         question="测试",
         query="测试",
         visual_context="",
@@ -3278,7 +3249,10 @@ async def test_joyai_task_query_then_revision_uses_shared_service(monkeypatch):
     assert tasks[1]["parent_id"] == task["id"]
 
 
-async def test_joyai_voice_form_answer_is_blocked_and_manual_form_resumes_original_task(monkeypatch):
+@pytest.mark.parametrize("native_multi_answer", [False, True])
+async def test_joyai_voice_form_answer_is_blocked_and_manual_form_resumes_original_task(
+    monkeypatch, native_multi_answer,
+):
     from unittest.mock import AsyncMock
     from jiuwenswarm.extensions.video_duplex.tests.backend.test_task_interactions import QuestionExecutor, until
 
@@ -3303,18 +3277,36 @@ async def test_joyai_voice_form_answer_is_blocked_and_manual_form_resumes_origin
         "frame_data_url": "", "instruction": "5000元", "question": "5000元", "request_kind": "user",
         "search_session_id": scope, "joyai_session_id": "joyai-form",
     }, None)
-    assert channel.responses[-1][1]["ok"] is False
-    assert "voice form answers are disabled" in channel.responses[-1][1]["error"]
+    assert channel.responses[-1][1]["payload"]["interaction_answer"] == operation["arguments"]
     assert service.store.read(job["id"])["interaction"]["state"] == "pending"
     assert provider.await_count == 1
+    answers = ["5000元"]
+    if native_multi_answer:
+        def add_question(task):
+            task["interaction"]["questions"].append({"question": "同行人数？"})
+        service.store.update(job["id"], add_question)
+        answers = [
+            {"question": "预算是多少？", "custom_input": "5000元", "selected_options": []},
+            {"question": "同行人数？", "custom_input": "", "selected_options": ["2人"]},
+        ]
+        for invalid in [answers[:1], [answers[1], answers[0]]]:
+            await channel.handlers["video.search.answer"](None, "invalid-answer", {
+                "session_id": "manual-form", "job_id": job["id"],
+                "request_id": pending["interaction"]["request_id"], "answers": invalid,
+            }, None)
+            assert channel.responses[-1][1]["ok"] is False
+            assert service.store.read(job["id"])["interaction"]["state"] == "pending"
     await channel.handlers["video.search.answer"](None, "manual-answer", {
         "session_id": "manual-form", "job_id": job["id"],
-        "request_id": pending["interaction"]["request_id"], "answers": ["5000元"],
+        "request_id": pending["interaction"]["request_id"], "answers": answers,
     }, None)
     assert channel.responses[-1][1]["ok"] is True
     await until(lambda: service.store.read(job["id"])["status"] == "completed")
     tasks, _ = service.list("test-user", scope)
     assert len(tasks) == 1 and tasks[0]["result"]["answer"] == "5000元"
+    if native_multi_answer:
+        submitted = service.executor.calls[-1]["interaction"]["answers"]
+        assert submitted[1] == {"question": "同行人数？", "answer": "", "selected_options": ["2人"]}
 
 
 @pytest.mark.parametrize("frame", ["data:image/jpeg;base64,ZmFrZQ==", ""])
@@ -3859,7 +3851,8 @@ def _scoped_channel(monkeypatch, card_live=True):
     async def query(client, method, params, session, owner):
         if params.get("session_id"):
             return {"user_id": owner, "mode": "agent", "work_mode": "work"}
-        return {"pending": card_live}
+        return {"pending": card_live, "card_binding": {"execution_id": "typed"},
+                "card_state": "applied" if channel.dispatched else "pending"}
 
     monkeypatch.setattr(task_adapter, "task_agent_query", query)
     monkeypatch.setattr(video_live, "_append_joyai_log", lambda _: None)
@@ -3905,10 +3898,11 @@ async def test_joyai_voice_answers_typed_chat_card_with_empty_job_id(monkeypatch
         "job_id": "", "interaction_id": "typed-approval", "answers": [label]}})
     assert channel.responses[-1][1]["ok"], channel.responses[-1]
     assert prompts[0].rstrip().endswith("one answer per card question.") and CARD_STATUS in prompts[0]
-    method, params = channel.dispatched[-1]
-    assert method == "chat.send" and params["request_id"] == "typed-approval"
-    assert params["answers"][0]["selected_options"] == [label]
-    assert '"state": "accepted"' in prompts[1]
+    assert not channel.dispatched
+    assert channel.responses[-1][1]["payload"]["interaction_answer"] == {
+        "job_id": "", "interaction_id": "typed-approval", "answers": [label]}
+    assert len(prompts) == 1, "no model follow-up may assume the answer was applied"
+
 
 
 @pytest.mark.parametrize("spoken, label", [("同意", "本次允许"), ("本会话保持同意", "会话内记住")])
@@ -3927,7 +3921,8 @@ async def test_joyai_voice_answers_managed_task_card(monkeypatch, spoken, label)
     await _joyai_turn(channel, monkeypatch, spoken, {"name": "jiuwen_task_answer", "arguments": {
         "job_id": job["id"], "interaction_id": "card-a", "answers": [label]}})
     assert channel.responses[-1][1]["ok"], channel.responses[-1]
-    assert answer.await_args.args[4] == "card-a" and answer.await_args.kwargs["answers"] == [label]
+    answer.assert_not_called()
+    assert channel.responses[-1][1]["payload"]["interaction_answer"]["answers"] == [label]
 
 
 async def test_joyai_new_request_while_card_waits_is_a_new_task_not_an_answer(monkeypatch):
@@ -3962,50 +3957,88 @@ THINKING = {
 TOOL_CALL = {**THINKING, "seq": 2, "kind": "tool_call", "summary": "screenshot()", "tool_name": "screenshot"}
 
 
-@pytest.mark.parametrize("outcome", ["resumed", "replaced", "closed"])
-async def test_chat_answer_waits_for_card_lifecycle_without_deadline(monkeypatch, outcome):
-    channel = _scoped_channel(monkeypatch)
-    manager = channel.manager
-    manager._on_session_event("chat.ask_user_question", "chat", {
-        "request_id": "typed-approval", "interrupt_id": "exact-interrupt",
-        "source": "confirm_interrupt", "questions": [{
-            "question": "Continue?", "options": [{"label": "Yes"}],
-        }],
-    })
-    submitted = asyncio.Event()
+@pytest.mark.parametrize("source", ["ask_user_interrupt", "permission_interrupt", "confirm_interrupt"])
+async def test_recovered_task_card_follows_original_runtime(tmp_path, monkeypatch, source):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.common.schema.message import ReqMethod
+    from jiuwenswarm.extensions.video_duplex.tests.backend.task_bridge_support import until
+    from jiuwenswarm.extensions.video_duplex.backend import task_adapter
+    from jiuwenswarm.extensions.video_duplex.backend.tasks import service as module
+    from jiuwenswarm.extensions.video_duplex.backend.tasks import TaskService, TaskStore
+    from jiuwenswarm.runtime.session import RuntimeSessionCoordinator
+    from jiuwenswarm.server.runtime.video_task.server_adapter import VoiceTaskServerAdapter
+    from tests.unit_tests.runtime.test_runtime_session_coordinator import _register, _park_on_cards
 
-    async def dispatch(ws, method, params):
-        assert params["interrupt_id"] == "exact-interrupt"
-        submitted.set()
-
-    monkeypatch.setattr(channel, "dispatch_client_request", dispatch)
-    waiting = asyncio.create_task(manager.answer_chat_card(
-        object(), "test-user", "task-duplex:chat", "typed-approval", ["Yes"],
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    await _park_on_cards(coordinator, "native-card")
+    adapter = VoiceTaskServerAdapter(lambda _: True, lambda: SimpleNamespace(
+        get_session_snapshot=lambda _: coordinator.snapshot_session("session-a"),
     ))
+    monkeypatch.setattr("jiuwenswarm.server.runtime.session.lifecycle.guard", lambda _: None)
+    monkeypatch.setattr("jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+                        lambda *args, **kwargs: {"user_id": "alice"})
+    unavailable = True
+
+    async def query(client, method, params, session, owner):
+        if unavailable:
+            raise ConnectionError("temporary disconnect")
+        return (await adapter.handle(SimpleNamespace(
+            req_method=method, params=params, session_id=session, user_id=owner,
+            request_id="probe", channel_id="video_tool", metadata={},
+        ))).payload
+
+    monkeypatch.setattr(task_adapter, "task_agent_query", query)
+    store = TaskStore(tmp_path / "recovered-card.sqlite")
+    executor = task_adapter.AgentTaskExecutor(None, store, None)
+    executor.run = AsyncMock(side_effect=AssertionError("never replay the original execution"))
+    service = TaskService(store, executor)
+    task = service._new("alice", "task-duplex:chat", "work", {})
+    task.update(status="waiting_user", execution_bound=True, execution_settled=True, output_closed=True,
+                interaction={"id": "card", "request_id": "native-card", "source": source,
+                             "state": "pending", "questions": [{"question": "Continue?"}]})
+    with store.transaction() as db:
+        store.put(db, task)
     try:
-        await asyncio.wait_for(submitted.wait(), 2)
-        # Advance beyond the old deadline without a wall-clock sleep.
-        loop = asyncio.get_running_loop()
-        now = loop.time()
-        monkeypatch.setattr(loop, "time", lambda: now + 11)
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        assert not waiting.done()
-        if outcome == "resumed":
-            manager._on_session_event("chat.processing_status", "chat", {"is_processing": True})
-        elif outcome == "replaced":
-            manager._on_session_event("chat.ask_user_question", "chat", {
-                "request_id": "new-card", "source": "confirm_interrupt", "questions": [],
-            })
-        else:
-            await manager.close()
-        receipt = await asyncio.wait_for(waiting, 2)
-        assert receipt["applied"] is (outcome == "resumed")
-        assert receipt["state"] == ("accepted" if outcome == "resumed" else "rejected")
-        assert not manager._chat_resumed
+        service.start("alice", "task-duplex:chat")
+        await asyncio.sleep(0.03)
+        assert store.read(task["id"])["interaction"]["state"] == "pending"
+        assert store.read(task["id"])["status"] == "unknown"
+        unavailable = False
+        await service.refresh("alice", "task-duplex:chat")
+        await until(lambda: store.read(task["id"])["status"] == "waiting_user")
+        assert store.read(task["id"])["interaction"]["card_binding"]["control_id"] == "native-card"
+        assert coordinator.has_control_target("session-a", "native-card")
+        binding = store.read(task["id"])["interaction"]["card_binding"]
+        probe = SimpleNamespace(
+            req_method=ReqMethod.VOICE_TASK_PENDING_INTERRUPT, params={"card_binding": binding},
+            session_id="session-a", user_id="alice", request_id="probe", channel_id="video_tool", metadata={},
+        )
+        snapshot = coordinator.snapshot_session("session-a")
+        failed_delivery = SimpleNamespace(
+            parent_execution_id=binding["execution_id"], execution_id="failed-answer",
+            answered_control_ids={"native-card"}, state=SimpleNamespace(value="failed"),
+        )
+        for observed, expected in [
+            (None, "unknown"),
+            (SimpleNamespace(state=snapshot.state, generation=snapshot.generation,
+                             executions=[*snapshot.executions, failed_delivery]), "pending"),
+        ]:
+            observer = VoiceTaskServerAdapter(lambda _: True, lambda: SimpleNamespace(
+                get_session_snapshot=lambda _: observed,
+            ))
+            assert (await observer.handle(probe)).payload["card_state"] == expected
+        probe.params = {"card_binding": {"generation": 1}}
+        assert (await adapter.handle(probe)).payload["card_state"] == "unknown"
+        # Reconnect/query refreshes the native snapshot without a separate card poll.
+        await coordinator.close_session("session-a")
+        await service.refresh("alice", "task-duplex:chat")
+        await until(lambda: store.read(task["id"])["status"] == "failed")
+        assert store.read(task["id"])["interaction"]["state"] == "expired"
+        executor.run.assert_not_called()
     finally:
-        waiting.cancel()
-        await asyncio.gather(waiting, return_exceptions=True)
+        await service.close()
+        await coordinator.close()
 
 
 @pytest.mark.asyncio

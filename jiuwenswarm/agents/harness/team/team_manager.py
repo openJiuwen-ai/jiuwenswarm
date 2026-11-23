@@ -53,6 +53,9 @@ from jiuwenswarm.agents.harness.team.config_loader import (
     get_effective_team_model_entries,
     load_team_spec_dict,
 )
+from jiuwenswarm.agents.harness.team.rail_registry import (
+    WeakRegistry, WeakRegistryList, weak_mount, weak_pair, weak_value,
+)
 from jiuwenswarm.agents.harness.team.distributed_runtime import (
     ensure_postgresql_for_leader,
     extract_pg_endpoint,
@@ -245,14 +248,25 @@ def shutdown_team_observability() -> None:
         logger.warning("[TeamObservability] shutdown failed: %s", exc)
 
 
-@dataclass
+@dataclass(init=False)
 class TeamRailMountContext:
-    """Context needed to rebuild team rails after a hot config toggle."""
+    """Non-owning context used to rebuild a live harness's rails on hot reload."""
 
-    agent: Any
+    _agent_ref: Callable[[], Any] = field(repr=False)
     member_info: MemberInfo
     runtime: RuntimeInfo
     team_workspace: TeamWorkspaceInfo
+
+    def __init__(self, agent: Any, member_info: MemberInfo, runtime: RuntimeInfo,
+                 team_workspace: TeamWorkspaceInfo):
+        self._agent_ref = weak_value(agent)
+        self.member_info = member_info
+        self.runtime = runtime
+        self.team_workspace = team_workspace
+
+    @property
+    def agent(self) -> Any:
+        return self._agent_ref()
 
 
 @dataclass
@@ -410,22 +424,22 @@ class TeamManager:
         # misidentified as first requests.
         self._initialized_sessions: set[str] = set()
         # session_id → TeamSkillEvolutionRail instance (set by customizer, used for drain/approval)
-        self._team_skill_rails: dict[str, Any] = {}
+        self._team_skill_rails = WeakRegistry()
         # session_id → member SkillEvolutionRail instances
-        self._team_member_skill_evolution_rails: dict[str, list[Any]] = {}
+        self._team_member_skill_evolution_rails: dict[str, WeakRegistryList] = {}
         # session_id → TeamSkillCreateRail instance
-        self._team_skill_create_rails: dict[str, Any] = {}
+        self._team_skill_create_rails = WeakRegistry()
         # session_id → context used to rebuild team rails on config enable
-        self._team_rail_contexts: dict[str, TeamRailMountContext] = {}
+        self._team_rail_contexts = WeakRegistry(weak_mount)
         # session_id → latest in-memory canonical evolution switch.  Slash
         # handling and other request hot paths must consult this snapshot
         # instead of re-reading config.yaml.
         self._team_evolution_enabled: dict[str, bool] = {}
         # session_id → teammate contexts used to rebuild member rails after a
         # disabled → enabled hot toggle without recreating the team runtime.
-        self._team_member_rail_contexts: dict[str, list[TeamRailMountContext]] = {}
+        self._team_member_rail_contexts: dict[str, WeakRegistryList] = {}
         # session_id → live rails and owning DeepAgent, for hot-unregister
-        self._team_live_rails: dict[str, list[tuple[Any, Any]]] = {}
+        self._team_live_rails: dict[str, WeakRegistryList] = {}
         # session_id → evolution watcher task
         self._team_evolution_watchers: dict[str, asyncio.Task] = {}
         # session_id → runtime_ready requested a watcher before the rail registered
@@ -2203,6 +2217,7 @@ class TeamManager:
             assembly is fully declarative, no imperative post-processing).
         """
         from jiuwenswarm.agents.swarm import enrich_team_spec_for_swarm
+        from jiuwenswarm.runtime.app_role import is_app_role_team
 
         # Callers pass the same snapshot single-agent chat already resolved
         # (enterprise model templates included). Falling back to raw
@@ -2210,7 +2225,11 @@ class TeamManager:
         # Team model validation then rejects the blank provider.
         if config_base is None:
             config_base = get_config()
-        self._team_evolution_enabled[session_id] = get_skill_evolution_enabled(config_base)
+        # Plain positional form: same contract as the other readers in this
+        # module, so session-scoped doubles of get_session_metadata keep working.
+        metadata = get_session_metadata(session_id)
+        npc_team = is_app_role_team(metadata)
+        self._team_evolution_enabled[session_id] = not npc_team and get_skill_evolution_enabled(config_base)
         await self._ensure_postgresql_for_leader(config_base)
         spec, has_binding = self._load_session_team_spec(
             session_id,
@@ -2221,6 +2240,19 @@ class TeamManager:
         )
         if not has_binding:
             self._apply_session_scoped_team_name(spec, session_id=session_id)
+        if npc_team:
+            from jiuwenswarm.agents.swarm.assembly import build_app_role_team_spec
+
+            return build_app_role_team_spec(spec, metadata)
+        if dispatch_mode is not None:
+            spec.dispatch_mode = dispatch_mode
+            if dispatch_mode != "scheduled":
+                spec.enable_task_verification = False
+                spec.enable_member_messaging = False
+                spec.max_subtask_depth = 0
+        if spec.dispatch_mode != "scheduled":
+            # Session dispatch overrides must not revive a template leader goal.
+            spec.leader.goal = None
         self.apply_team_plan_mode(spec, request_metadata=request_metadata)
         enrich_team_spec_for_swarm(
             spec,
@@ -2253,12 +2285,6 @@ class TeamManager:
                     spec.worktree = spec.worktree.model_copy(update={"enabled": True})
             elif worktree_flag is False:
                 spec.worktree = None
-        if dispatch_mode is not None:
-            spec.dispatch_mode = dispatch_mode
-            if dispatch_mode != "scheduled":
-                spec.enable_task_verification = False
-                spec.enable_member_messaging = False
-                spec.max_subtask_depth = 0
         if bootstrap_mode is not None:
             spec.bootstrap_mode = bootstrap_mode
         if spec.bootstrap_mode == "framework" and spec.dispatch_mode != "scheduled":
@@ -2833,7 +2859,7 @@ class TeamManager:
 
     def register_team_member_skill_evolution_rail(self, session_id: str, rail: Any) -> None:
         """Register a member SkillEvolutionRail instance for hot config updates."""
-        rails = self._team_member_skill_evolution_rails.setdefault(session_id, [])
+        rails = self._team_member_skill_evolution_rails.setdefault(session_id, WeakRegistryList())
         if rail not in rails:
             rails.append(rail)
 
@@ -2850,7 +2876,7 @@ class TeamManager:
         self, session_id: str, context: TeamRailMountContext
     ) -> None:
         """Remember a teammate mount context for evolution hot re-enable."""
-        contexts = self._team_member_rail_contexts.setdefault(session_id, [])
+        contexts = self._team_member_rail_contexts.setdefault(session_id, WeakRegistryList(reference=weak_mount))
         for existing in contexts:
             if existing.agent is context.agent:
                 return
@@ -2866,7 +2892,7 @@ class TeamManager:
 
     def register_team_live_rail(self, session_id: str, agent: Any, rail: Any) -> None:
         """Remember a live rail owner so hot reload can unregister mounted rails."""
-        rails = self._team_live_rails.setdefault(session_id, [])
+        rails = self._team_live_rails.setdefault(session_id, WeakRegistryList(reference=weak_pair))
         entry = (agent, rail)
         if entry not in rails:
             rails.append(entry)
@@ -2975,7 +3001,7 @@ class TeamManager:
                         exc,
                     )
         if remaining:
-            self._team_live_rails[session_id] = remaining
+            self._team_live_rails[session_id] = WeakRegistryList(remaining, reference=weak_pair)
         else:
             self._team_live_rails.pop(session_id, None)
 
@@ -3007,6 +3033,9 @@ class TeamManager:
         mount_skill_evolution_rail: bool,
     ) -> tuple[Any | None, Any | None]:
         """Rebuild team rails for a session using the stored mount context."""
+        agent = context.agent
+        if agent is None:
+            return None, None
         latest_config = get_config()
         context.team_workspace.config = latest_config
         member_rails = build_member_rails(
@@ -3018,21 +3047,21 @@ class TeamManager:
         team_skill_create_rail: Any | None = None
         for rail in member_rails:
             if isinstance(rail, TeamSkillEvolutionRail) and mount_team_skill_rail:
-                context.agent.add_rail(rail)
-                self.register_team_live_rail(session_id, context.agent, rail)
+                agent.add_rail(rail)
+                self.register_team_live_rail(session_id, agent, rail)
                 team_skill_rail = rail
             elif isinstance(rail, EvolutionInterruptRail) and (
                 mount_team_skill_rail or mount_skill_evolution_rail
             ):
-                context.agent.add_rail(rail)
-                self.register_team_live_rail(session_id, context.agent, rail)
+                agent.add_rail(rail)
+                self.register_team_live_rail(session_id, agent, rail)
             elif isinstance(rail, SkillEvolutionRail) and mount_skill_evolution_rail:
-                context.agent.add_rail(rail)
-                self.register_team_live_rail(session_id, context.agent, rail)
+                agent.add_rail(rail)
+                self.register_team_live_rail(session_id, agent, rail)
                 self.register_team_member_skill_evolution_rail(session_id, rail)
             elif isinstance(rail, TeamSkillCreateRail) and mount_team_skill_create_rail:
-                context.agent.add_rail(rail)
-                self.register_team_live_rail(session_id, context.agent, rail)
+                agent.add_rail(rail)
+                self.register_team_live_rail(session_id, agent, rail)
                 team_skill_create_rail = rail
 
         if team_skill_rail is not None:

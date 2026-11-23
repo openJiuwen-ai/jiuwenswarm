@@ -6,16 +6,18 @@ receives a giant prompt merely to discover the row's event_type at its end.
 from __future__ import annotations
 
 import codecs
-from contextlib import nullcontext
+from contextlib import ExitStack, closing, nullcontext
 import json
 import os
 import re
+import sqlite3
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO, Callable, Iterator
 
+from jiuwenswarm.common.schema.message import SESSION_REQUEST_COMPLETED_EVENT
 from jiuwenswarm.server.runtime.session.history_artifacts import put_chunks
 from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError, is_context_record
 
@@ -23,7 +25,11 @@ _SPECIAL = re.compile(rb'["\\\x00-\x1f]')
 _WHITE = re.compile(rb'[^ \t\r\n]')
 _LARGE_FIELDS = {"content", "rendered_result", "result", "raw_output"}
 _OMIT_FIELDS = {"prompt", "event_payload", "usage", "session_usage"}
-_METADATA_FIELDS = {"role", "event_type", "request_id", "channel_id", "id", "compact_metadata", "cron_failure_record"}
+_METADATA_FIELDS = {
+    "role", "event_type", "request_id", "channel_id", "id", "compact_metadata", "cron_failure_record",
+    # Migration needs cancellation boundaries even when the row has no context content.
+    "status",
+}
 
 
 class _JSONStream:
@@ -106,9 +112,9 @@ class _JSONStream:
             self.string()
         elif char in (123, 91):
             self.advance()
-            closing = 125 if char == 123 else 93
+            closing_byte = 125 if char == 123 else 93
             self.white()
-            if self.peek() == closing:
+            if self.peek() == closing_byte:
                 self.advance()
                 return
             while True:
@@ -119,7 +125,7 @@ class _JSONStream:
                     self.expect(58)
                 self.value(depth + 1)
                 self.white()
-                if self.peek() == closing:
+                if self.peek() == closing_byte:
                     self.advance()
                     return
                 self.expect(44)
@@ -138,12 +144,26 @@ class _JSONStream:
                 raise HistoryReplayError("Invalid legacy JSON token") from exc
 
 
+def history_request_id(record: dict[str, Any]) -> str:
+    request_id = str(record.get("request_id") or "").strip()
+    if request_id:
+        return request_id
+    # History writers also encode the request in their stable record identity.
+    role = record.get("role")
+    suffix = ":request_completed" if record.get("event_type") == SESSION_REQUEST_COMPLETED_EVENT else (
+        f":{role}" if role in {"user", "assistant"} else ""
+    )
+    record_id = str(record.get("id") or "").strip()
+    return record_id[:-len(suffix)].strip() if suffix and record_id.endswith(suffix) else ""
+
+
 @dataclass(frozen=True)
 class HistoryRow:
     record: dict[str, Any]
     start: int
     end: int
     value_end: int
+    has_later_activity: Callable | None = field(default=None, repr=False, compare=False)
 
 
 def _read_value(source: BinaryIO, span: tuple[int, int], *, max_bytes: int) -> Any:
@@ -164,6 +184,27 @@ def _range_chunks(source: BinaryIO, start: int, end: int) -> Iterator[bytes]:
         start += len(chunk)
 
 
+def _later_activity_entries(rows, cutoff: str | None, covered: set[str]):
+    for row in rows:
+        record = row.record
+        owner = history_request_id(record)
+        if cutoff and owner == cutoff and record.get("role") in ("user", "human"):
+            break
+        if owner in covered or record.get("role") in ("leader", "teammate"):
+            continue
+        if not is_context_record(record) or record.get("event_type") == SESSION_REQUEST_COMPLETED_EVENT:
+            continue
+        if (record.get("event_type") == "context.compact_summary"
+                and (record.get("compact_metadata") or {}).get("trigger") != "manual_rewind"):
+            # Terminal receipts and automatic summaries are bookkeeping, not
+            # model continuation. Match the migration reader's semantic rows.
+            continue
+        if owner:
+            yield "request", owner, row.end
+        elif record.get("event_type") == "chat.tool_result" and record.get("tool_call_id"):
+            yield "result", str(record["tool_call_id"]), row.end
+
+
 def iter_history_rows(path: Path, *, session_id: str, start: int = 0, end: int | None = None,
                       metadata_only: bool = False, max_field_bytes: int = 4 * 1024 * 1024,
                       max_scan_bytes: int = 8 * 1024 * 1024 * 1024,
@@ -182,7 +223,29 @@ def iter_history_rows(path: Path, *, session_id: str, start: int = 0, end: int |
         raise HistoryReplayError("Legacy history exceeds the migration disk budget", code="HISTORY_RESTORE_LIMIT")
     if end == 0:
         return
-    with path.open("rb") as source, path.open("rb") as values:
+    with path.open("rb") as source, path.open("rb") as values, ExitStack() as resources:
+        activity = None
+
+        def has_later_activity(owner, owned_calls, offset, cutoff, covered):
+            nonlocal activity
+            if activity is None:
+                # Only an unresolved call at a terminal receipt needs lookahead.
+                # The disk-backed index is bounded in RAM, scanned once, and
+                # removed when the history iterator closes (including rollback).
+                activity = resources.enter_context(closing(sqlite3.connect("", check_same_thread=False)))
+                activity.execute("CREATE TABLE last_seen(kind, id, offset, PRIMARY KEY(kind,id)) WITHOUT ROWID")
+                with closing(iter_history_rows(
+                    path, session_id=session_id, start=offset, end=end, metadata_only=True,
+                    max_scan_bytes=max_scan_bytes, max_seconds=max_seconds,
+                )) as later:
+                    activity.executemany("INSERT OR REPLACE INTO last_seen VALUES (?,?,?)",
+                                         _later_activity_entries(later, cutoff, covered))
+            query = "SELECT 1 FROM last_seen WHERE kind=? AND id=? AND offset>?"
+            if activity.execute(query, ("request", owner, offset)).fetchone():
+                return True
+            return any(activity.execute(query, ("result", call_id, offset)).fetchone()
+                       for _, call_id in owned_calls)
+
         source.seek(start)
         reader = _JSONStream(source, end, deadline=time.monotonic() + max_seconds)
         if start == 0 and reader.peek() == 239:
@@ -222,7 +285,20 @@ def iter_history_rows(path: Path, *, session_id: str, start: int = 0, end: int |
             row_end = reader.position
             record = {key: _read_value(values, span, max_bytes=65536)
                       for key, span in spans.items() if key in _METADATA_FIELDS}
-            selected = include_record(record) if include_record is not None else is_context_record(record)
+            if not metadata_only and record.get("event_type") == SESSION_REQUEST_COMPLETED_EVENT:
+                # Completion receipts carry two small scalars even though the
+                # audit row itself is excluded from context replay.
+                for key in ("feedback_only", "timestamp"):
+                    span = spans.get(key)
+                    if span is not None and span[1] - span[0] <= 128:
+                        record[key] = _read_value(values, span, max_bytes=128)
+            if metadata_only and record.get("event_type") == "chat.tool_result" and not history_request_id(record):
+                span = spans.get("tool_call_id")
+                if span is not None:
+                    record["tool_call_id"] = _read_value(values, span, max_bytes=65536)
+            selected = include_record(record) if include_record is not None else (
+                is_context_record(record) and record.get("role") not in ("leader", "teammate")
+            )
             if not metadata_only and selected:
                 retained = 0
                 for key, span in spans.items():
@@ -263,7 +339,7 @@ def iter_history_rows(path: Path, *, session_id: str, start: int = 0, end: int |
                 reader.white()
             paused_at = time.monotonic()
             try:
-                yield HistoryRow(record, row_start, row_end, value_end)
+                yield HistoryRow(record, row_start, row_end, value_end, has_later_activity)
             finally:
                 reader.deadline += time.monotonic() - paused_at
         if legacy:

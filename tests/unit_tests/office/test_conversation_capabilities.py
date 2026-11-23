@@ -68,6 +68,11 @@ class PromptModel(ScriptedModel):
 @pytest.fixture
 async def server(sessions, tmp_path, monkeypatch):
     """The root adapter of AgentServer's agent; its session children use one model that remembers prompts."""
+    # These assertions cover the native MemoryRail's prompt section and tools.
+    # Select it explicitly so the fixture is independent of the shipped provider.
+    config = copy.deepcopy(get_config())
+    config["memory"]["builtin"]["provider"] = ""
+    update_config(lambda _config: config)
     monkeypatch.setattr(session_metadata, "get_agent_sessions_dir", lambda: sessions)
     # Each test owns a different workspace, so its checkpoint store must match it.
     monkeypatch.setattr(checkpointer, "_PERSISTENT_CHECKPOINTER_READY", False)

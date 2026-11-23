@@ -9,8 +9,11 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
+from unittest.mock import Mock
 import uuid
 
+import psutil
 import pytest
 
 
@@ -40,6 +43,7 @@ def exe_entry():
         (["jiuwenswarm.exe", "--desktop-run-agent"], True),
         (["jiuwenswarm.exe", "--desktop-run-gateway"], True),
         (["jiuwenswarm.exe", "--desktop-install-update"], False),
+        (["jiuwenswarm.exe", "--desktop-stop-bundled-email-mcp"], False),
     ],
 )
 def test_mutex_covers_desktop_process_tree(
@@ -51,8 +55,48 @@ def test_mutex_covers_desktop_process_tree(
     monkeypatch.setattr(exe_entry.sys, "frozen", True, raising=False)
     monkeypatch.setattr(exe_entry.sys, "argv", arguments)
 
-    expected = expected_on_windows if os.name == "nt" else False
-    assert exe_entry._should_hold_windows_app_mutex() is expected
+    monkeypatch.setattr(exe_entry, "os", SimpleNamespace(name="nt"))
+    assert exe_entry._should_hold_windows_app_mutex() is expected_on_windows
+
+
+@pytest.mark.parametrize("outcome", ["exited", "access_denied", "timeout"])
+def test_uninstall_email_mcp_cleanup(exe_entry, monkeypatch, tmp_path, outcome):
+    backend = tmp_path / "resources" / "backend"
+    node = backend / "runtime" / "node-runtime" / "node.exe"
+    package = tmp_path / "npm-cache" / "node_modules"
+    entry = package.joinpath(".bin", "..", "@codefuturist", "email-mcp", "dist", "main.js")
+
+    target = Mock(info={"name": "node.exe"})
+    target.exe.return_value = str(node)
+    target.cmdline.return_value = [str(node), str(entry), "stdio"]
+    unrelated = Mock(info={"name": "node.exe"})
+    unrelated.exe.return_value = str(node)
+    unrelated.cmdline.return_value = [str(node), str(tmp_path / "other.js")]
+    other_install = Mock(info={"name": "node.exe"})
+    other_install.exe.return_value = str(tmp_path / "other-install" / "node.exe")
+    other_install.cmdline.return_value = target.cmdline.return_value
+
+    if outcome == "access_denied":
+        target.cmdline.side_effect = psutil.AccessDenied()
+
+    wait_procs = Mock(return_value=([], [target] if outcome == "timeout" else []))
+    monkeypatch.setattr(psutil, "process_iter", lambda attrs: [unrelated, target, other_install])
+    monkeypatch.setattr(psutil, "wait_procs", wait_procs)
+    monkeypatch.setattr(exe_entry, "os", SimpleNamespace(name="nt", path=os.path))
+    monkeypatch.setattr(exe_entry, "_ensure_stdio", lambda: None)
+    monkeypatch.setattr(exe_entry.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(exe_entry.sys, "executable", str(backend / "workswarm.exe"))
+    monkeypatch.setattr(exe_entry.sys, "argv", ["workswarm.exe", "--desktop-stop-bundled-email-mcp"])
+
+    assert exe_entry._dispatch() == (0 if outcome == "exited" else 1)
+    if outcome == "access_denied":
+        target.kill.assert_not_called()
+        wait_procs.assert_called_once_with([], timeout=3)
+    else:
+        target.kill.assert_called_once_with()
+        wait_procs.assert_called_once_with([target], timeout=3)
+    unrelated.kill.assert_not_called()
+    other_install.kill.assert_not_called()
 
 
 def test_main_acquires_mutex_before_dispatch(exe_entry, monkeypatch):

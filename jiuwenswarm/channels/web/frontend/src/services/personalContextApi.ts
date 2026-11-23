@@ -178,6 +178,8 @@ export type FetchServicePatch = Partial<
 
 export type PersonalContextConfig = {
   configured: boolean;
+  /** Read-only host OS metadata. Older servers may omit it. */
+  host_platform?: string;
   /** 总开关（独立持久化）：控制两个子开关联动，子开关切换不影响它。 */
   master_enabled: boolean;
   collection_enabled: boolean;

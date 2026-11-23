@@ -113,4 +113,27 @@ describe('suggestion cards', () => {
     expect(node.querySelector('.chip')!.textContent).toBe('已修改');
     expect([...node.querySelectorAll('button')].map(button => button.textContent)).toEqual(['撤销']);
   });
+
+  it('applies all of a call\'s pending cards the way the user last applied one, each failure on its own card',
+    async () => {
+      const doc = new FakeDocument(['Liability', 'The liability is capped at 1M per year.', 'The fee is 10 per hour.']);
+      const review = new DocEditReview(new FakeSettings(), doc.run, new HostWriteQueue());
+      const edit = (id: string, old_text: string, new_text: string, comment?: { text: string }) => (
+        { id, section: '', change_summary: id, old_text, new_text, comment });
+      const edits = [CAP, edit('fee', 'fee is 10', 'fee is 12'), edit('gone', 'term of 2 years', 'term of 3 years'),
+        edit('ask', 'Liability', 'Liability', { text: 'Is the cap agreed?' })];
+      review.propose('call_1', 's1', edits.map(({ id }) => id));
+      const render = editCards(review).render.bind(null, 'call_1', { edits } as never) as () => HTMLElement;
+      for (const label of ['作为修订', '全部采用（作为修订）']) {
+        [...render().querySelectorAll('button')].find(button => button.textContent === label)!.click();
+        await new Promise(resolve => setTimeout(resolve, 10));
+      }
+      expect(doc.paras.map(para => para.text).slice(1)).toEqual(
+        ['The liability is capped at 5M per year.', 'The fee is 12 per hour.']);
+      expect([doc.revisions.length, doc.comments.map(comment => comment.content)]).toEqual([2, ['Is the cap agreed?']]);
+      const node = render();
+      expect([...node.querySelectorAll('.chip')].map(chip => chip.textContent))
+        .toEqual(['已作为修订', '已作为修订', '未能应用', '已加批注']);
+      expect(node.querySelectorAll('.edit-card')[2].textContent).toContain('old_text was not found');
+    });
 });

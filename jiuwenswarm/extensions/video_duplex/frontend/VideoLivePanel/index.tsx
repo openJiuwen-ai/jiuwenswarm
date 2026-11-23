@@ -1,5 +1,6 @@
 import { APPROVAL_SOURCES, TASK_ACCEPTED_INSTRUCTIONS, type ApprovalInteraction } from './taskPrompts';
 import { informationInteraction } from './taskInteraction';
+import { answerDuplexQuestion } from '../taskFullDuplexRuntimeStore';
 import { toast } from '../../../../channels/web/frontend/src/components/ui/Toast/toastStore';
 import {
   ChangeEvent,
@@ -89,8 +90,8 @@ export interface VideoLivePanelHandle {
   startScreenSharing: () => Promise<void>;
   deliverToolResult: (payload: SearchJobPayload) => void;
   deliverQuestion: (payload: SearchJobPayload) => void;
-  /** A typed-chat approval card in this conversation; it has no job, so job_id is "". */
-  deliverChatApproval: (interaction: { request_id: string; state: string; source?: string; questions?: unknown[] }) => void;
+  /** Projection of the native question queue; lifecycle stays in the chat store. */
+  deliverChatApproval: (interaction: { request_id: string; duplexJobId?: string; state: string; source?: string; questions?: unknown[] }) => void;
   deliverTaskInteraction: (payload: SearchJobPayload) => void;
 }
 
@@ -160,7 +161,6 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   const renewalResultsRef = useRef(new Map<string, SearchJobPayload>());
   const latestUserInstructionRef = useRef({ text: '', turnId: '' });
   const searchJobsRef = useRef<Map<string, SearchJobState>>(new Map());
-  const pollingSearchJobsRef = useRef<Set<string>>(new Set());
   const pendingScreenAutostartRef = useRef(false);
   const wasDuplexRunningRef = useRef(false);
   const restartRealtimeRef = useRef<() => Promise<void>>(async () => {});
@@ -231,7 +231,6 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
     searchSessionRef.current = '';
     latestUserInstructionRef.current = { text: '', turnId: '' };
     searchJobsRef.current.clear();
-    pollingSearchJobsRef.current.clear();
     if (!headless) {
       setChatHistory([]);
       setStreamingAnswer('');
@@ -301,6 +300,8 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
 
   const getJoyAIProvider = (replyLanguage?: VideoSessionConfig['reply_language']): JoyAIProvider => {
     const callbacks = {
+      answerQuestion: (sessionId: string, answers: Record<string, unknown>) =>
+        answerDuplexQuestion(sessionId, 'jiuwen_task_answer', answers),
       getLatestFrameDataUrl: () => framesRef.current.at(-1)?.data_url || '',
       getFrameCount: () => framesRef.current.length,
       getSearchSessionId: () => searchSessionRef.current,
@@ -526,43 +527,12 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       onCoreAgentProgress?.('failed', payload);
       acceptFailedSearch(payload);
     });
-    const pollTimer = window.setInterval(() => {
-      searchJobsRef.current.forEach((job) => {
-        if (!['running', 'waiting'].includes(job.status) || pollingSearchJobsRef.current.has(job.id)) return;
-        pollingSearchJobsRef.current.add(job.id);
-        void webRequest<SearchJobPayload>(
-          'video.search.status',
-          {
-            job_id: job.id,
-            search_session_id: job.searchSessionId,
-          },
-          { timeoutMs: 5_000 },
-        )
-          .then((payload) => {
-            updateSearchProgress(payload);
-            if (payload.status === 'queued' || payload.status === 'running') {
-              onCoreAgentProgress?.('progress', payload);
-            }
-            if (payload.status === 'completed') {
-              onCoreAgentProgress?.('completed', payload);
-              acceptCompletedSearch(payload);
-            }
-            if (payload.status === 'failed') {
-              onCoreAgentProgress?.('failed', payload);
-              acceptFailedSearch(payload);
-            }
-          })
-          .catch(() => undefined)
-          .finally(() => pollingSearchJobsRef.current.delete(job.id));
-      });
-    }, 1_000);
     return () => {
       unsubscribeStarted();
       unsubscribeProgress();
       unsubscribeCompleted();
       unsubscribeFailed();
       unsubscribeCancelled();
-      window.clearInterval(pollTimer);
     };
   }, [headless, onCoreAgentProgress]);
 
@@ -1099,7 +1069,11 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                 task: call.task,
                 turn_id: latestInstruction.turnId,
               });
-              void webRequest<AgentAction & { call_id?: string; tool_result?: unknown }>(
+              const operation = searchSessionId.startsWith('task-duplex:')
+                && (call.name === 'jiuwen_form_answer' || call.name === 'jiuwen_task_answer')
+                ? answerDuplexQuestion(searchSessionId.replace(/^task-duplex:/, ''), call.name, toolArguments)
+                    .then((tool_result) => ({ tool_result }))
+                : webRequest<AgentAction & { call_id?: string; tool_result?: unknown }>(
                 'video.qwen.tool',
                 {
                   name: call.name,
@@ -1111,8 +1085,15 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
                   frame_data_url: framesRef.current.at(-1)?.data_url || '',
                 },
                 { timeoutMs: 0 },
-              )
-                .then((action) => {
+              );
+              void operation.then(async (action: AgentAction & { tool_result?: unknown }) => {
+                  const answerIntent = (action.tool_result as { interaction_answer?: Record<string, unknown> } | undefined)?.interaction_answer;
+                  if (answerIntent && searchSessionId.startsWith('task-duplex:')) {
+                    if (mediaGeneration !== mediaGenerationRef.current) return;
+                    action = { ...action, tool_result: await answerDuplexQuestion(
+                      searchSessionId.replace(/^task-duplex:/, ''), 'jiuwen_task_answer', answerIntent,
+                    ) };
+                  }
                   reportRealtimeEvent('qwen_tool_call_receipt', {
                     name: call.name, call_id: call.callId,
                     job_id: action.search_job?.id || '',
@@ -1195,10 +1176,14 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   };
   restartRealtimeRef.current = startRealtime;
 
-  const stopRealtime = () => {
+  const stopRealtime = (preserveTasks = false) => {
+    const scope = searchSessionRef.current;
     stopModelTransport();
-    searchSessionRef.current = '';
-    searchJobsRef.current.clear();
+    if (preserveTasks) searchSessionRef.current = scope;
+    else {
+      searchSessionRef.current = '';
+      searchJobsRef.current.clear();
+    }
     setIsRecording(false);
     setIsRealtimeStarting(false);
     setRealtimeStatus('');
@@ -1212,13 +1197,45 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
   }, [headless, isPlaying, screens, source]);
 
   useEffect(() => {
-    if (!isRecording && !isRealtimeStarting) return;
-    return webClient.onStateChange((state) => {
+    let stopped = false;
+    const unsubscribe = webClient.onStateChange((state) => {
+      if (state === 'ready' && !headless) {
+        const scope = searchSessionRef.current;
+        for (const job of searchJobsRef.current.values()) {
+          if (job.status !== 'running' && job.status !== 'waiting') continue;
+          void webRequest<SearchJobPayload>('video.search.status', {
+            job_id: job.id, search_session_id: scope,
+          }).then((payload) => {
+            if (stopped || scope !== searchSessionRef.current || payload.job_id !== job.id) return;
+            updateSearchProgress(payload);
+            if (payload.status === 'completed') {
+              onCoreAgentProgress?.('completed', payload);
+              acceptCompletedSearch(payload);
+            } else if (payload.status === 'failed') {
+              onCoreAgentProgress?.('failed', payload);
+              acceptFailedSearch(payload);
+            } else if (payload.status === 'cancelled') {
+              if (payload.tool_call_id) duplexRef.current?.cancelToolTask(job.id, payload.tool_call_id);
+              searchJobsRef.current.delete(job.id);
+            } else {
+              deliverTaskInteraction(payload);
+              onCoreAgentProgress?.('progress', payload);
+            }
+          }).catch((error) => {
+            if (!stopped) console.warn('Task reconnect lookup failed:', error);
+          });
+        }
+      }
+      if (!isRecording && !isRealtimeStarting) return;
       if (state !== 'closed' && state !== 'reconnecting') return;
       setError((previous) => previous || 'Jiuwen 服务连接已断开，未提供具体原因。请检查网络或本地服务后重新启动全双工。');
-      stopRealtime();
+      stopRealtime(true);
     });
-  }, [isRecording, isRealtimeStarting]);
+    return () => {
+      stopped = true;
+      unsubscribe();
+    };
+  }, [headless, isRecording, isRealtimeStarting, onCoreAgentProgress]);
 
   useEffect(() => {
     const running = isRealtimeStarting || isRecording;
@@ -1327,8 +1344,9 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
       if (payload.job_id && payload.interaction) deliverJoyAIApproval(payload.job_id, payload.interaction);
     },
     deliverChatApproval: (interaction) => {
-      duplexRef.current?.enqueueQuestion('', { ...interaction, id: interaction.request_id } as never);
-      deliverJoyAIApproval('', { ...interaction, id: interaction.request_id } as ApprovalInteraction);
+      const jobId = interaction.duplexJobId || '';
+      duplexRef.current?.enqueueQuestion(jobId, { ...interaction, id: interaction.request_id } as never);
+      deliverJoyAIApproval(jobId, { ...interaction, id: interaction.request_id } as ApprovalInteraction);
     },
   }));
 
@@ -1652,7 +1670,7 @@ export const VideoLivePanel = forwardRef<VideoLivePanelHandle, VideoLivePanelPro
               type="button"
               className={`video-live__mic${isRecording ? ' is-recording' : ''}`}
               data-testid="video-live-session-toggle"
-              onClick={isRecording ? stopRealtime : () => void startRealtime()}
+              onClick={isRecording ? () => stopRealtime() : () => void startRealtime()}
               disabled={isRealtimeStarting && !isRecording}
               aria-label={
                 isRealtimeStarting

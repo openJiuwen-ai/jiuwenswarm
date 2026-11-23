@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import hashlib
 import json
@@ -275,7 +276,7 @@ class GroupExecutions:
 
         if record.get("presentation", "card") != "card":
             return
-        group = read_group(self.group_id)
+        group = await asyncio.to_thread(read_group, self.group_id)
         if group is None or group["status"] == "deleting":
             return
         payload = {

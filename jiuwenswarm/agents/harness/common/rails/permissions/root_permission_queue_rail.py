@@ -133,7 +133,12 @@ def bind_root_permission_request(
 def reset_root_permission_request(
     token: Token[RootPermissionRequestBinding | None | object],
 ) -> None:
-    _ROOT_BINDING.reset(token)
+    try:
+        _ROOT_BINDING.reset(token)
+    except ValueError:
+        # The response stream may be closed by a cancellation task rather
+        # than the request task that created this binding.
+        pass
 
 
 def current_root_permission_queue() -> RootPermissionQueue | None:

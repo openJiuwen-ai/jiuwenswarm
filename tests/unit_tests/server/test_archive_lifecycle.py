@@ -1,6 +1,7 @@
 """Disk-backed lifecycle scenarios; runtime calls are isolated from LLMs."""
 
 import asyncio
+import os
 import re
 import sys
 import threading
@@ -71,6 +72,16 @@ async def test_gateway_session_events_carry_project_id(archive, monkeypatch):
     await methods["session.archive"](
         object(), "req", {"session_ids": ["sess_a"]}, None, "alice"
     )
+    accepted = channel.send_response.await_args.kwargs["payload"]["results"][0]
+    assert accepted["project_id"] == "default"
+    assert accepted["stop_pending"] is True
+    assert events == []
+    # The fixture drains real finalizers, but the first response remains the
+    # acceptance snapshot. A repeated request now observes completed cleanup.
+    assert (root / "sessions_archived" / "sess_a").is_dir()
+    await methods["session.archive"](
+        object(), "req-completed", {"session_ids": ["sess_a"]}, None, "alice"
+    )
     # session.archived 直接事件必须符合 §5.10.11 契约：project_id 必返。
     assert len(events) == 1
     event, payload = events[0]
@@ -79,9 +90,8 @@ async def test_gateway_session_events_carry_project_id(archive, monkeypatch):
     assert payload["project_id"] == "default"
     assert payload["archived"] is True
     assert isinstance(payload["archived_at"], float)
-    # Archive now returns before the directory move; the event says cleanup is
-    # still pending instead of pretending it already finished.
-    assert payload["stop_pending"] is True
+    assert payload["stop_pending"] is False
+    assert payload["finalizing"] is False
     await methods["session.delete"](
         object(), "req", {"session_id": "sess_a"}, None, "alice"
     )
@@ -225,6 +235,39 @@ async def test_idle_archive_restore_preserves_data_and_event_time(archive):
     lc.guard("sess_a")
     assert "archived_at" not in lc.raw_metadata("sess_a")
     runtime.stop_session_for_archive.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_reindex", [False, True])
+async def test_unarchive_operation_fields_preserve_pin_reindex_and_failure(archive, monkeypatch, fail_reindex):
+    service, create, root, _ = archive
+    create(pinned=True, pin_order=1)
+    original_history = (root / "sessions/sess_a/history.json").read_bytes()
+    await service.session("sess_a", "archive", "web")
+    reindex_pins = service.reindex_pins
+    seen = []
+
+    def reindex(*, include_blocked=None):
+        operation = lc.state("session", "sess_a")["operation"]
+        seen.append((include_blocked, operation["operation_id"], operation["pin_reindex_required"]))
+        if fail_reindex:
+            raise OSError("controlled unarchive reindex failure")
+        return reindex_pins(include_blocked=include_blocked)
+
+    monkeypatch.setattr(service, "reindex_pins", reindex)
+    if fail_reindex:
+        with pytest.raises(lc.LifecycleError, match="controlled unarchive reindex failure") as failure:
+            await service.session("sess_a", "unarchive", "web")
+        assert failure.value.code == "RESTORE_FAILED"
+        assert isinstance(failure.value.__cause__, OSError)
+    else:
+        assert (await service.session("sess_a", "unarchive", "web"))["restored"] is True
+        lc.guard("sess_a")
+        assert lc.raw_metadata("sess_a")["pin_order"] == 1
+    operation = lc.state("session", "sess_a")["operation"]
+    assert seen == [("sess_a", operation["operation_id"], True)]
+    assert operation["status"] == ("failed" if fail_reindex else "completed")
+    assert (root / "sessions/sess_a/history.json").read_bytes() == original_history
 
 
 @pytest.mark.asyncio
@@ -1230,10 +1273,17 @@ async def _cancel_mid_move(service, sid, action):
         assert await asyncio.to_thread(reached.wait, 3), "move never reached"
         finalizer = service._finalizing.get(sid)
         task.cancel()
+        if finalizer is not None:
+            finalizer.cancel()
+        await asyncio.sleep(0)
+        for pending in (task, finalizer):
+            if pending is not None:
+                pending.cancel()
+        assert service._locks[("session", sid)].locked()
+        release.set()
         with pytest.raises(asyncio.CancelledError):
             await task
-        if finalizer is not None and not finalizer.done():
-            finalizer.cancel()
+        if finalizer is not None:
             with pytest.raises(asyncio.CancelledError):
                 await finalizer
     finally:
@@ -1273,6 +1323,149 @@ async def test_cancelled_restore_marks_failed_and_recovers_promptly(archive):
     assert (root / "sessions/sess_a").exists()
     lc.guard("sess_a")
     await service.close()
+
+
+def test_recovery_scan_skips_invalid_operation_id_until_file_is_repaired(archive, caplog):
+    service, _, _, _ = archive
+    valid = lc.begin("session", "valid", "archive")
+    path = lc.resource_path("session", "repair")
+    operation = {"kind": "archive", "resource_id": "repair", "status": "running"}
+    parsed = {}
+
+    for index, changes in enumerate(({}, {"operation_id": "bad/path"}), start=1):
+        operation.update(changes)
+        lc.atomic_json(path, {"operation": operation})
+        for _ in range(2):
+            assert service._scan_recovery_operations(parsed) == [valid]
+        assert caplog.text.count(f"invalid operation_id: {path.name}") == index
+        assert lc.read_json(path)["operation"] == operation
+
+    previous = path.stat()
+    operation["operation_id"] = "fixed-id"
+    lc.atomic_json(path, {"operation": operation})
+    os.utime(path, ns=(previous.st_atime_ns, previous.st_mtime_ns))
+    assert path.stat().st_size == previous.st_size
+    assert {item["operation_id"] for item in service._scan_recovery_operations(parsed)} == {
+        valid["operation_id"], "fixed-id",
+    }
+
+
+@pytest.mark.asyncio
+async def test_cancelled_archive_admission_finishes_under_its_owner(archive, monkeypatch):
+    service, create, root, _ = archive
+    create()
+    started, release = threading.Event(), threading.Event()
+    loop_thread = threading.get_ident()
+    mark_finalizing = lc.mark_finalizing
+
+    def stalled_write(*args, **kwargs):
+        started.set()
+        assert threading.get_ident() != loop_thread
+        assert release.wait(5)
+        return mark_finalizing(*args, **kwargs)
+
+    monkeypatch.setattr(lc, "mark_finalizing", stalled_write)
+    task = asyncio.create_task(SessionArchiveService.session(service, "sess_a", "archive", "web"))
+    try:
+        assert await asyncio.to_thread(started.wait, 3)
+        for _ in range(2):
+            task.cancel()
+            await asyncio.sleep(0)
+        assert not task.done()
+        with pytest.raises(lc.LifecycleError, match="already running"):
+            async with service.lock("session", "sess_a"):
+                pytest.fail("cancelled admission released its owner during the write")
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await _wait_until(lambda: lc.state("session", "sess_a")["operation"]["status"] == "completed")
+        assert (root / "sessions_archived" / "sess_a" / "metadata.json").is_file()
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await service.close()
+
+
+@pytest.mark.parametrize("action", ["archive", "unarchive"])
+@pytest.mark.asyncio
+async def test_recovery_candidate_disk_io_yields(archive, monkeypatch, action):
+    service, create, root, _ = archive
+    create()
+    if action == "unarchive":
+        await service.session("sess_a", "archive", "web")
+    operation = lc.begin("session", "sess_a", action)
+    started = threading.Event()
+    release = threading.Event()
+    loop_thread = threading.get_ident()
+    read_metadata = lc.raw_metadata
+
+    def stalled_metadata(sid):
+        if sid == "sess_a" and not started.is_set():
+            started.set()
+            assert threading.get_ident() != loop_thread
+            assert release.wait(5)
+        return read_metadata(sid)
+
+    monkeypatch.setattr(lc, "raw_metadata", stalled_metadata)
+    service._recovery_task = asyncio.create_task(service._recover())
+    try:
+        assert await asyncio.to_thread(started.wait, 3)
+        await asyncio.sleep(0)
+        assert lc.state("session", "sess_a")["operation"]["status"] == "running"
+        release.set()
+        await _wait_until(lambda: lc.state("session", "sess_a")["operation"]["status"] == "completed")
+        assert lc.state("session", "sess_a")["operation"]["operation_id"] == operation["operation_id"]
+        destination = "sessions_archived" if action == "archive" else "sessions"
+        assert (root / destination / "sess_a" / "metadata.json").is_file()
+    finally:
+        release.set()
+        await service.close()
+
+
+@pytest.mark.asyncio
+async def test_recovery_scan_yields_and_cannot_finalize_a_replacement(archive, monkeypatch):
+    service, create, root, _ = archive
+    create()
+    lc.begin("session", "sess_a", "archive")
+    target = lc.resource_path("session", "sess_a")
+    read_started = threading.Event()
+    resume_scan = threading.Event()
+    scan_threads = []
+    read_json = lc.read_json
+
+    def slow_read(path):
+        result = read_json(path)
+        if path == target and not read_started.is_set():
+            scan_threads.append(threading.get_ident())
+            read_started.set()
+            resume_scan.wait(5)
+        return result
+
+    monkeypatch.setattr(lc, "read_json", slow_read)
+    finished = asyncio.Event()
+    spawn = service._spawn_finalizer
+
+    def observe_finalizer(*args, **kwargs):
+        task = spawn(*args, **kwargs)
+        task.add_done_callback(lambda _: finished.set())
+        return task
+
+    monkeypatch.setattr(service, "_spawn_finalizer", observe_finalizer)
+    service._recovery_task = asyncio.create_task(service._recover())
+    try:
+        assert await asyncio.to_thread(read_started.wait, 3)
+        assert scan_threads != [threading.get_ident()]
+        lc.complete("session", "sess_a")
+        replacement = lc.begin("session", "sess_a", "archive")
+        resume_scan.set()
+        await asyncio.wait_for(finished.wait(), timeout=5)
+        operation = lc.state("session", "sess_a")["operation"]
+        assert operation["operation_id"] == replacement["operation_id"]
+        assert operation["status"] == "running"
+        assert (root / "sessions/sess_a").is_dir()
+    finally:
+        resume_scan.set()
+        await service.close()
 
 
 @pytest.mark.asyncio
@@ -2381,7 +2574,9 @@ async def test_queued_archive_retry_cannot_take_over_new_operation(
     lc.update("session", "sess_a", status="failed", stop_generation=1)
     service._finalize_semaphore = asyncio.Semaphore(0)
     if tracked_retry:
-        old_task = service._spawn_finalizer("sess_a", "archive", "web", "default", 1)
+        old_task = service._spawn_finalizer(
+            "sess_a", "archive", "web", "default", 1, operation_id=old_operation["operation_id"]
+        )
     else:
         old_task = asyncio.create_task(service._finalize_session(
             "sess_a", "archive", "web", "default", 1,

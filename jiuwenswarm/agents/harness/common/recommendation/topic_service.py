@@ -49,7 +49,6 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_product import (
     GLOBAL_POOL_TARGET_SIZE,
     HOT_LIST_SOURCE_KIND,
     INPUT_REVISION_RECEIPT_VERSION,
-    NEWS_ONLY_SUCCESSOR,
     POLICY_ID,
     TERMINAL_COMPONENT_IDS,
     InterestFeedback,
@@ -82,7 +81,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_short_intent import 
     ShortIntentStateStore,
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_sources import (
-    CORPUS_VERSION,
+    corpus_version_for_language,
 )
 from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
     TopicStarterStore,
@@ -114,7 +113,6 @@ GenerateFn = Callable[
 RefreshNewsFn = Callable[[ArkBackgroundConfig, str, str], Awaitable[BackgroundGenerationResult]]
 PrepareStateFn = Callable[[ArkBackgroundConfig], Awaitable[str]]
 PrepareShortIntentFn = Callable[[str], Awaitable[str]]
-PrepareOutcomesFn = Callable[[], Awaitable[str]]
 ShortIntentVersionLoader = Callable[[str], int]
 ConfigLoader = Callable[[], ArkBackgroundConfig | None]
 InputRevisionLoader = Callable[[str, str], object]
@@ -183,7 +181,6 @@ class TopicService:
         search_provider_id: str,
         prepare_state: PrepareStateFn | None = None,
         prepare_short_intent: PrepareShortIntentFn | None = None,
-        prepare_outcomes: PrepareOutcomesFn | None = None,
         short_intent_version_loader: ShortIntentVersionLoader | None = None,
         input_revision_loader: InputRevisionLoader | None = None,
         config_loader: ConfigLoader = ArkBackgroundConfig.from_environ,
@@ -191,10 +188,14 @@ class TopicService:
         coordinator: BackgroundGenerationCoordinator | None = None,
         enabled: bool = True,
         history_project_ids_loader: Callable[[], list[str]] = lambda: [],
+        records_loader: Callable[[], dict[str, list[dict]]] | None = None,
+        language_loader: Callable[[], str] = lambda: "zh",
         refresh_news: RefreshNewsFn | None = None,
         hot_list: HotListFeed | None = None,
     ) -> None:
         self.store = store
+        self._language_loader = language_loader
+        self._records_loader = records_loader
         self._generate = generate
         self._refresh_news = refresh_news
         self._hot_list = hot_list if hot_list is not None else HotListFeed(store, now=now)
@@ -206,8 +207,6 @@ class TopicService:
         self._search_provider_id = search_provider_id
         self._prepare_state = prepare_state
         self._prepare_short_intent = prepare_short_intent
-        self._prepare_outcomes = prepare_outcomes
-        self._outcome_task: asyncio.Task[str] | None = None
         self._short_intent_version_loader: ShortIntentVersionLoader
         if short_intent_version_loader is None:
             short_store = ShortIntentStateStore(store)
@@ -291,6 +290,10 @@ class TopicService:
                     self._ark_config = self._config_loader()
                     self._configuration_status = background_configuration_status(self._ark_config)
                 self._accepting_work = True
+                from .topic_history import clear_session_window_cache
+
+                # Seed every scope from one fresh enumeration, not one per scope.
+                clear_session_window_cache()
                 self.schedule_seed("recommendation-enabled")
             return self.configuration_status()
 
@@ -700,7 +703,7 @@ class TopicService:
             short_intent_version=int(
                 self._short_intent_version_loader(context_scope)
             ),
-            negative_preference_version=feedback.version,
+            negative_preference_version=0,
             component_contract_versions={
                 component_id: (
                     "topic-starter-v6-quality-decisions-v2"
@@ -711,7 +714,7 @@ class TopicService:
             },
             model=model,
             generation_config_version=self._generation_config_version(),
-            corpus_version=CORPUS_VERSION,
+            corpus_version=corpus_version_for_language(self._language_loader()),
             document_snapshot_version=f"documents:{local_date}:v2",
             retrieval_config_version=RETRIEVAL_CONFIG_VERSION,
             evidence_extractor_version=EVIDENCE_EXTRACTOR_VERSION,
@@ -727,27 +730,6 @@ class TopicService:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
         return task
-
-    def _start_outcome_collection(self) -> None:
-        """Label earlier exposures without holding up the pool being prepared.
-
-        Generation reads none of the collector's labels or training records, so
-        the pass runs beside it; one pass at a time, drained by shutdown.
-        """
-        if self._prepare_outcomes is None:
-            return
-        if self._outcome_task is not None and not self._outcome_task.done():
-            return
-        prepare_outcomes = self._prepare_outcomes
-
-        async def collect() -> str:
-            try:
-                return str(await prepare_outcomes() or "")
-            except Exception:  # noqa: BLE001 - labels are retried by the next pass
-                logger.warning("[Topic] outcome collection failed", exc_info=True)
-                return "outcome_collector_failed"
-
-        self._outcome_task = self._track(asyncio.create_task(collect()))
 
     def _reason_not_to_run(
         self,
@@ -862,7 +844,6 @@ class TopicService:
         if previous is not None:
             return ("abstained" if previous["event_type"] == "background_generation_abstained"
                     else previous["event_type"])
-        self._start_outcome_collection()
         reason = ""
         if config is not None and self._prepare_state is not None:
             reason = await self._prepare_state(config)
@@ -1093,7 +1074,15 @@ class TopicService:
 
         attempt_id = f"background-attempt-{uuid.uuid4().hex}"
         context_token = _GENERATION_ATTEMPT_ID.set(attempt_id)
+        records_token = None
         try:
+            if self._ark_config is not None and self._records_loader is not None:
+                from . import topic_history as history
+
+                # Pin one history snapshot for revision, summaries, short intent
+                # and generation; model stages can separate those reads by minutes.
+                records = await asyncio.to_thread(self._records_loader)
+                records_token = history.set_run_records_snapshot(records)
             return await self._serve_request(
                 slot,
                 request,
@@ -1103,6 +1092,10 @@ class TopicService:
                 answered=answered,
             )
         finally:
+            if records_token is not None:
+                from . import topic_history as history
+
+                history.reset_run_records_snapshot(records_token)
             _GENERATION_ATTEMPT_ID.reset(context_token)
 
     async def _serve_request(
@@ -1116,6 +1109,12 @@ class TopicService:
         answered: str,
     ) -> str:
         normalized_work_mode = normalize_topic_work_mode(work_mode)
+        # The model is the first gate: without it no pool can be written, so
+        # loading history would only delay the state the page is about to
+        # receive. Returning here keeps the usual report path, which still
+        # publishes "missing_configuration" to the page.
+        if self._ark_config is None:
+            return "missing_configuration"
         input_revision = await asyncio.to_thread(
             self._input_revision_loader, context_scope, normalized_work_mode,
         )
@@ -1344,22 +1343,26 @@ class TopicService:
             return results[0]
         return self._track(asyncio.create_task(prepare_history()))
 
+    @staticmethod
     def _candidate_input_changed(
-        self,
         context_scope: str,
         slot: _ScopeRun,
         *,
         work_mode: str = DEFAULT_TOPIC_WORK_MODE,
     ) -> bool:
+        """Whether a queued request makes the in-flight candidate work stale.
+
+        A queued run means another request arrived after this one started; that
+        run judges the input afresh. Comparing revisions here would scan history
+        synchronously on the event loop, so the queued run is the signal.
+        """
+
+        del context_scope, work_mode
         if slot.queued is None:
             return False
         if slot.receipt is None:
             return False
-        normalized_work_mode = normalize_topic_work_mode(work_mode)
-        return self._input_revision_receipt(
-            context_scope,
-            self._input_revision_loader(context_scope, normalized_work_mode),
-        ) != slot.receipt
+        return True
 
     def candidate_generation_ready(
         self,
@@ -1593,7 +1596,9 @@ class TopicService:
             ),
         )
         if not cards:
-            return empty
+            # With the switch off an unavailable corpus must not let the old
+            # personalized pool resurface; the page stays empty instead.
+            return {"cards": []} if preset_only else empty
         # Compare like with like: the rebuilt pool against what the current pool
         # can still serve, not against the one window it currently exposes.
         current_serviceable = len(empty.get("served_card_ids") or empty["cards"])
@@ -1642,6 +1647,8 @@ class TopicService:
 
         normalized_work_mode = normalize_topic_work_mode(work_mode)
         try:
+            # The store rate-limits itself to one prune per hour; keep its single
+            # throttle rather than a second drifting interval here.
             self.store.prune(now=self._now())
         except Exception:  # noqa: BLE001 - serving must not fail on maintenance
             logger.warning("[Topic] store prune failed", exc_info=True)
@@ -1673,6 +1680,20 @@ class TopicService:
         # to the shared lifestyle corpus (or resurface an older cold-start write).
         allow_packaged_presets = normalized_work_mode == DEFAULT_TOPIC_WORK_MODE
         preset_only = not self._accepting_work or self._ark_config is None
+        if not self._accepting_work and not allow_packaged_presets:
+            # With the switch off only the default welcome page keeps a packaged
+            # stand-in. Design and code have no preset corpus, so a personalized
+            # pool written before the switch was turned off must not resurface.
+            return {
+                "available": False,
+                "reason": "disabled",
+                "preparation_state": "disabled",
+                "session_id": session_id,
+                "policy_id": POLICY_ID,
+                "context_scope": context_scope,
+                "project_id": project_id,
+                "work_mode": normalized_work_mode,
+            }
         if allow_packaged_presets and preset_only:
             # Global and project welcome pages both stand on packaged cards while
             # recommendation is off or the background model is unset.

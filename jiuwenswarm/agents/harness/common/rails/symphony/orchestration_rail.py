@@ -1391,7 +1391,7 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             )
         except Exception:
             return False
-        return bool(config.enabled)
+        return bool(config.orchestration.enabled)
 
     def _resume_is_pending(self, ctx: AgentCallbackContext) -> bool:
         state = self._active_state_for_ctx(ctx)
@@ -1412,6 +1412,10 @@ shortlist. Do not replace that shortlist or retry `needs_input` in this loop.
         return f"""
 ## Skill Orchestration Contract
 
+When the user explicitly requests capability retrieval, call `capability_search`.
+Omit `type` to search Skills, experts and MCP services together, or pass an
+array such as `["expert", "mcp"]` to select specific catalogs.
+
 Call `symphony_compose_graph` with the original user task before executing
 Skills or answering when the user explicitly requests combining or
 orchestrating multiple Skills, the task needs multiple selected Skills, or
@@ -1420,8 +1424,8 @@ Skill IDs are sufficient evidence.
 
 Do not call `symphony_compose_graph` for single Skill use, inspection, or
 question, a simple single-Skill command, pure search, listing, comparison, or
-recommendation, or when the user merely mentions a Skill or 技能. Calling
-`skill_index` alone is also not a compose trigger.
+recommendation, or when the user merely mentions a Skill or 技能. Capability
+discovery alone does not trigger composition.
 
 When composition is required, pass only the selected exact Skill IDs as
 `candidate_skill_ids`; never pass all retrieval results. If no candidate is

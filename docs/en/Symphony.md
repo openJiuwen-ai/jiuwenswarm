@@ -51,17 +51,15 @@ When **Dynamic Graph** is enabled, Core Symphony Observation collects execution 
 ```text
 Install skills
   v
-Build the local skill tree index
+Build the local skill tree index in the background when needed
   v
 Build or read the skill graph
   v
 User sends a task
   v
-The agent selects skill-tree branches for the task
+The agent reads the session skill inventory
   v
-skill_branch_explore expands relevant branches
-  v
-skill_branch_peek checks branch summaries when needed
+capability_search with type=["skill"] lists categories or finds relevant skills
   v
 Candidate skills are found
   v
@@ -78,15 +76,15 @@ Skill Retrieval mainly finds skills. Skill Orchestration organizes candidate ski
 
 ### Runtime tools
 
-When Skill Retrieval is enabled, the agent receives skill-directory browsing tools. When Skill Symphony is enabled, the agent receives graph and orchestration tools. Users usually do not need to call these tools manually; the system chooses them based on the task.
+Discovery exposes `capability_search`. Skill Retrieval controls whether the taxonomy is built and used. When Skill Symphony is enabled, the agent also receives graph and orchestration tools. The system chooses tools based on the task.
 
-#### Skill Retrieval tools
+#### Capability retrieval
 
 | Tool | What it does | When to use |
 |------|--------------|-------------|
-| `skill_branch_explore` | Expands a skill-tree branch and reveals child branches or candidate skills | Main retrieval tool, used to inspect relevant branches |
-| `skill_branch_peek` | Shows a lightweight branch summary without expanding the full tree | Use when it is unclear whether a branch is worth expanding |
-| `skill_index_build` | Builds or refreshes the local installed-skill tree index | Use only when retrieval tools explicitly report a missing or stale index |
+| `capability_search` | Omit `type` to search Skills, experts and MCP services together. Pass `"type": ["expert", "mcp"]` to select a subset. The selected catalogs share up to eight queries, a category scope, one `top_k` limit per page and one cursor. Use `operation=list` to browse. MCP groups session-visible tools and bundled Skills by service. | Find a capability or its service. To look up installed experts for an independent review or specialist assignment, pass `"type": ["expert"]`. |
+
+In automatic permission mode, a search that explicitly selects `"type": ["skill"]` can use the read-only fast path. Omitting `type` or selecting experts or MCP services invokes host-provided catalogs and requires manual approval.
 
 After Skill Retrieval finds relevant skills, the agent narrows the candidate set by skill name and description. If orchestration is needed later, those candidates help guide skill-chain generation.
 
@@ -263,194 +261,100 @@ After seeing the route, you can respond in one of these ways:
 
 ## Configuration
 
-In the Web UI, **Enable skill orchestration** is on the Skill Graph page and controls skill-graph and orchestration tools. The separate **Enable Skill Retrieval** switch remains on the configuration page and controls skill-tree retrieval tools. The Skill Index page provides index build, rebuild, cancel, status, and tree viewing operations. The Skill Graph page reads the current graph automatically and provides incremental build, cancel build, full build, and adjust-view operations.
+The user configuration is `~/.jiuwenswarm/config/config.yaml`. The `symphony` node is validated directly as Core `SymphonyConfig`. Swarm resolves host directories, environment variables, product defaults and session model context. Explicit values win; unknown fields report their complete path.
 
-Advanced build, retrieval, and orchestration settings are configured in the user runtime config file:
+### Switches, models and sessions
 
-```text
-~/.jiuwenswarm/config/config.yaml
-```
+- `retrieval.enabled` controls tree retrieval. Discover SkillPack enables experience collection and supplies its required orchestration setting at runtime. Swarm defaults these switches to `false`, and `null` inherits the default.
+- The Discover SkillPack switch saves `orchestration.experience.enabled`. Set `orchestration.plan.dynamic_graph_enabled` independently to use existing dynamic observations in planning.
+- Tree and graph builds use the host default model. Online planning uses the current session model. There is no retrieval-specific `llm` configuration. Fingerprint `max_output_tokens: null` inherits the host model output budget.
+- Discovery derives `retrieval.prompt.context_window_tokens` from the actual session model unless explicitly configured. Saved settings affect new sessions; existing sessions retain their frozen budget and index version. The tool and prompt Rail share the same capability view bound to the agent's Runtime.
+- `capability.sources` lists directories by `type` and `root`. Skill and standalone expert directories share one taxonomy. Skill discovery uses the host's session visibility and disabled filters. Expert discovery uses the host's installed catalog in single-agent and team sessions. Explicit expert sources restrict it to installed standalone experts whose actual manifest paths are in those sources. Without expert sources it also includes non-leader members of installed expert groups. Calling an expert requires the session's `spawn_expert` tool. Graph and Flow require exactly one Skill source.
 
-### Configuration items
+### Directories and rebuilding
 
-#### `symphony.enabled`
+If `capability.sources` is omitted, Swarm uses the workspace `skills` directory. An explicit list replaces that default. An empty `storage.artifact_root` resolves to workspace `symphony/runtime`. The template supports `SYMPHONY_ARTIFACT_ROOT`. Collections with multiple directories or expert sources build their taxonomy under `taxonomy_collections/<scope_id>`. Build the shared taxonomy once after adding an expert source. The existing single-Skill tree, graph, and Flow retain their original paths.
 
-Whether to enable Symphony orchestration. The default template value is `false`.
+Old top-level `paths`, `fingerprint`, `build`, `skill_retrieval`, `evolution` and model-backend nodes are rejected. Old signatures and layouts are not reused. Rebuild with the new configuration; old directories are neither migrated nor deleted automatically. Failed refreshes preserve the last published version; cancellation prevents publication.
 
-When enabled, the agent can read or refresh the skill graph and build a skill chain from candidate skills. When disabled, the agent no longer uses the skill graph for orchestration.
+For the flattened retrieval configuration, fetch the updated YAML template. Current Runtime indexes and v2 Discovery session snapshots can be reused.
 
-This switch controls Symphony orchestration tools. Skill Retrieval is still controlled separately by `symphony.skill_retrieval.enabled`: retrieval finds candidate skills, and orchestration builds an execution route from the task goal, candidate skills, and the skill graph.
+### Build and discovery settings
 
-#### `symphony.paths.skills_root` / `symphony.paths.graph_dir`
+Paths below are relative to `symphony`. Main-template values are explicit settings, distinct from omitted-field defaults.
 
-The skill source directory and skill graph storage directory. Leave both empty to use the default locations; set them only when you need a custom skill source or graph storage location.
+| Setting | Default / template | Purpose |
+|---|---|---|
+| `capability.fingerprint.extraction.max_concurrency` / `batch_size` | omitted `1/1`, template `4/2` | Extraction; effective concurrency is capped by graph build concurrency |
+| `orchestration.build.max_concurrency` / `matching.batch_size` | omitted `1/12`, template `4/16` | Relation matching concurrency and batch size |
+| `orchestration.min_edge_confidence` | `0.5` | Shared graph build and planning threshold |
+| `orchestration.build.matching.require_consensus` | `false` | Require relation consensus |
+| `orchestration.plan.mode` | `fast` | Supports `fast` and `beam`; `top_k` only affects beam search |
+| `retrieval.index_build.structure.branching_factor` / `max_depth` | `128/6` | Split-threshold base and depth; Yuanrong explicitly uses branching `12` |
+| `retrieval.index_build.structure.max_capabilities_per_node_multiplier` | `1.5` | Recursive leaf capacity multiplier; not a one-shot splitting rule |
+| `retrieval.index_build.structure.root_categories` | `null` | Root category list or file; optional `children` preset lower levels |
+| `retrieval.index_build.request.max_concurrency` / `timeout_seconds` | `2/420` | Tree request concurrency and timeout in seconds |
+| `retrieval.index_build.request.classification_batch_limit` | `32` | Recursive classification batch size |
+| `retrieval.index_build.task.total_timeout_seconds` | `0` | Total build timeout; zero means unlimited |
+| `retrieval.output.max_chars` | `12000` | Directory operation output character limit |
+| `orchestration.experience.acceptance.min_successes` | `3` | Successful evidence count required for Flow acceptance |
 
-#### `symphony.build`
-
-The default graph-build settings are suitable for most users. When many skills make builds take too long, use `max_candidates_per_skill_relation` to limit the candidates considered for each skill relationship.
-
-#### `symphony.orchestration`
-
-Runtime parameters for Skill Orchestration. The current template is:
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `mode` | `fast` | Orchestration mode. The current runtime tools use the fast orchestration path and prioritize an executable skill chain |
-| `max_depth` | `4` | Maximum skill-chain search depth, limiting how many skills can be chained in one task |
-| `min_edge_confidence` | `0.5` | Minimum link strength used by orchestration; relationships below it are not preferred |
-
-These settings tune how candidate skills are connected into a route. If routes are too short or often miss intermediate steps, consider increasing `max_depth`. If routes often use low-link-strength connections, consider increasing `min_edge_confidence`.
-
-#### `symphony.skill_retrieval.enabled`
-
-Whether to enable Skill Retrieval. The default template value is `false`. This setting can be configured from the Web UI.
-
-When enabled, new sessions receive `skill_branch_explore`, `skill_branch_peek`, `skill_index_build`, and related retrieval guidance. When disabled, those tools and prompts are not registered, and the system returns to the original skill flow.
-
-Use it when many installed skills need to be searched by task. If there are only a few skills, or if you want to use the original `list_skills` workflow, leave it disabled.
-
-#### `symphony.skill_retrieval.build.root_categories`
-
-`root_categories` defines the first layer, and optionally the second layer, of the skill tree before index construction starts.
-
-When many skills are installed, letting the LLM freely invent root categories can make the tree unstable across builds. `root_categories` provides a stable directory skeleton: the LLM first distributes skills into these high-level categories, then dynamically splits each category further.
-
-You can customize the default tree hierarchy for your application. It can be written as a YAML list. Each category should include:
-
-- `id`: stable, short, and limited to lowercase letters, numbers, and hyphens.
-- `name`: human-readable display name.
-- `description`: what the category covers.
-- `select_when`: when this category should be selected.
-- `dont_select_when`: when this category should not be selected.
-- `children`: optional preset second-level categories.
-
-Good categories should:
-
-- Cover common tasks.
-- Be as mutually exclusive as practical.
-- Use concise descriptions that are easy for the model to judge.
-
-Set this manually in the user config file when customization is needed, then rebuild the index.
-
-One-level example:
+Root categories stabilize the directory skeleton: provide `id`, `name`, `description` and optional `select_when`, `dont_select_when`, `children`. This example explicitly enables the features; the product template keeps them off. Rebuild after changing build policy. Planning, Flow acceptance and display settings do not invalidate the tree cache unnecessarily.
 
 ```yaml
 symphony:
-  skill_retrieval:
-    build:
-      root_categories:
-        - id: office-docs
-          name: Office documents
-          description: Generate, edit, convert, extract, format, and structure office files.
-          select_when: The user needs to process Word, PDF, PPT, Excel, Markdown, email, meeting notes, or office workflow deliverables.
-          dont_select_when: The user is only writing general articles, managing notes, searching the web, developing web pages, generating media, or checking financial data.
-        - id: system-tools
-          name: System tools
-          description: Device, file, cloud, agent/skill management, automation, safety, and connection configuration.
-          select_when: The user asks to operate devices, manage files or cloud storage, configure channels, create skills/agents, switch personas, manage tasks, or run safety checks.
-          dont_select_when: The user mainly wants a concrete business result such as writing a document, researching, making media, planning travel, or analyzing finance.
-```
-
-Two-level example:
-
-```yaml
-symphony:
-  skill_retrieval:
-    build:
-      root_categories:
-        - id: office-docs
-          name: Office documents
-          description: Read, convert, extract, edit, and generate office files.
-          select_when: The task centers on PDF, Word, PPT, Excel, CSV, contracts, reports, or tables.
-          dont_select_when: The user is mainly developing code, generating media, operating SaaS, or doing open web search.
-          children:
-            - id: pdf-and-ocr
-              name: PDF and OCR
-              description: PDF reading, splitting, merging, OCR, layout recognition, and document-to-text workflows.
-            - id: spreadsheets-and-tables
-              name: Spreadsheets and tables
-              description: Excel, CSV, table extraction, formulas, field checks, and table cleanup.
-            - id: presentations-and-reports
-              name: Presentations and reports
-              description: PPT, formal reports, charts in documents, and business-facing deliverables.
-```
-
-#### `symphony.skill_retrieval.build.branching_factor`
-
-The split-threshold base for skill-tree construction. The current template default is `128`.
-
-This does not require the LLM to generate a fixed number of branches. It is mainly used to derive the stopping threshold for splitting nodes: in the current implementation, a node usually stops splitting when its skill count is no more than about `branching_factor * 1.5`.
-
-Lower values create a finer tree with more branches and slower builds, but fewer skills per leaf. Higher values create a coarser tree with faster builds, but more skills under each branch.
-
-Use it to tune skill-tree granularity. With hundreds or thousands of skills, lower it if each branch still has too many candidate skills; raise it if builds are too slow or the tree is too fragmented.
-
-#### Other Skill Retrieval settings
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `artifact_root` | Empty string | Index artifact directory; empty means the default workspace is used |
-| `build.max_depth` | `6` | Maximum skill-tree depth |
-| `build.max_workers` | `2` | Build concurrency; higher values can be faster but put more pressure on the model provider |
-| `build.max_retries` | `2` | Retry count for failed LLM classification or grouping calls |
-| `build.request_timeout_seconds` | `420` | Timeout for one LLM build request |
-| `build.total_timeout_seconds` | `0` | Total build timeout; `0` means unlimited |
-| `build.classification_batch_limit` | `32` | Maximum number of skills per classification call |
-| `build.discovery_seed` | `42` | Random seed used during build sampling for better reproducibility |
-
-#### Example configuration
-
-```yaml
-symphony:
-  enabled: true
-  paths:
-    skills_root: ""
-    graph_dir: ""
-
-  build:
-    max_candidates_per_skill_relation: 32
-    min_edge_confidence: 0.5
-
-  evolution:
-    flow:
-      enabled: true
-
-  orchestration:
-    mode: fast
-    max_depth: 4
-    min_edge_confidence: 0.5
-
-  skill_retrieval:
-    enabled: true
+  capability:
+    sources:
+      - type: skill
+        root: /path/to/skills
+      - type: expert
+        root: /path/to/agent_templates/local
+    fingerprint:
+      extraction:
+        max_concurrency: 4
+        batch_size: 2
+        max_output_tokens: null
+  storage:
     artifact_root: ""
+  retrieval:
+    enabled: true
+    index_build:
+      structure:
+        branching_factor: 128
+        max_depth: 6
+        max_capabilities_per_node_multiplier: 1.5
+        root_categories:
+          - id: office-docs
+            name: Office documents
+            description: Read, edit and generate office files.
+      request:
+        max_concurrency: 2
+        max_retries: 2
+        timeout_seconds: 420.0
+        classification_batch_limit: 32
+      task:
+        total_timeout_seconds: 0.0
+        preserve_previous_index_on_failure: true
+    use_existing_index: true
+    output:
+      max_chars: 12000
+  orchestration:
+    enabled: true
+    min_edge_confidence: 0.5
     build:
-      branching_factor: 128
-      max_depth: 6
-      root_categories:
-        - id: office-docs
-          name: Office documents
-          description: Generate, edit, convert, extract, format, and structure office files.
-          select_when: The user needs to process Word, PDF, PPT, Excel, Markdown, email, meeting notes, or office workflow deliverables.
-          dont_select_when: The user is only writing general articles, managing notes, searching the web, developing web pages, generating media, or checking financial data.
-        - id: system-tools
-          name: System tools
-          description: Device, file, cloud, agent/skill management, automation, safety, and connection configuration.
-          select_when: The user asks to operate devices, manage files or cloud storage, configure channels, create skills/agents, switch personas, manage tasks, or run safety checks.
-          dont_select_when: The user mainly wants a concrete business result such as writing a document, researching, making media, planning travel, or analyzing finance.
-      max_workers: 2
-      max_retries: 2
-      request_timeout_seconds: 420
-      total_timeout_seconds: 0
-      classification_batch_limit: 32
-      discovery_seed: 42
-      postprocess_enabled: true
-      postprocess_max_passes: 1
-      postprocess_min_skills: 6
-      equivalence_enabled: false
-    retrieve:
-      compact_codes_enabled: false
-      flatten_tree: false
-      max_exposure_depth: 1
+      max_concurrency: 4
+      matching:
+        batch_size: 16
+        require_consensus: false
+    plan:
+      mode: fast
+      max_depth: 4
+      dynamic_graph_enabled: true
+    experience:
+      enabled: true
+      acceptance:
+        min_successes: 3
+        min_pack_success_rate: 0.8
 ```
 
 ---
@@ -476,7 +380,7 @@ Open:
 Skills -> Skill Index -> Build Index
 ```
 
-Alternatively, let the model call `skill_index_build` after a retrieval tool explicitly asks for it. Then retry the task.
+Retry the task after the build finishes.
 
 ### Why does the skill index build take time?
 
@@ -531,7 +435,7 @@ Local simulated tests do not establish real Hub moderation, model or desktop acc
 
 ### Development boundaries
 
-`openjiuwen.symphony` owns retrieval, fingerprint extraction, graph orchestration, and evolution algorithms. JiuwenSwarm owns model configuration and usage, build status, Web/RPC, runtime tools, and skill-package installation. Configuration parsing lives in `jiuwenswarm/common/symphony_config.py`. Deployments require an openjiuwen version with the corresponding public interfaces. Removing unused SDK leftovers does not change persistent graph directories or user configuration paths.
+`openjiuwen.symphony` owns retrieval, fingerprint extraction, graph orchestration, and evolution algorithms. JiuwenSwarm owns model configuration and usage, build status, Web/RPC, runtime tools, and skill-package installation. Configuration parsing lives in `jiuwenswarm/common/symphony_config.py`. Deployments require an openjiuwen version with the corresponding public interfaces. Runtime owns scanning, fingerprint extraction, artifact signatures and lifecycle; the host owns UI scheduling, user isolation and installation approval.
 
 ## SkillPack: distillation, reuse and installation
 
@@ -539,7 +443,7 @@ A SkillPack is a composite Skill executed by one Agent. Its root `SKILL.md` desc
 
 ### Enable
 
-The existing Discover SkillPack setting under Settings → Experimental Features controls distillation, confirmed reuse, installation and publication. Its persisted key is `symphony.evolution.flow.enabled`; no separate Symphony switch is required. Legacy `SKILLPACK_PRODUCTIZATION_ENABLED`, `SKILLPACK_DIRECT_ROUTE_MODE` and `skillpack.direct_route_mode` no longer override this setting.
+The existing Discover SkillPack setting under Settings → Experimental Features controls distillation, confirmed reuse, installation and publication. Its persisted key is `symphony.orchestration.experience.enabled`; no separate Symphony switch is required. Legacy `SKILLPACK_PRODUCTIZATION_ENABLED`, `SKILLPACK_DIRECT_ROUTE_MODE` and `skillpack.direct_route_mode` no longer override this setting.
 
 Disabling discovery stops new automatic work, distillation, installation and publication. Installed Packs remain manageable and can still be selected explicitly for safe execution. Already-confirmed execution, installation and publication continue. Per-Pack enablement, member reference protection and existing permissions still apply.
 
@@ -548,6 +452,8 @@ Disabling discovery stops new automatic work, distillation, installation and pub
 Ask the Agent to distill a completed multi-Skill workflow. `skillpack_distill` reads persisted real execution evidence and produces a candidate. Installation requires confirmation after inspecting the members and instructions.
 
 Automatic discovery checks currently installed Packs. A Pack with the same complete members and directed execution chain suppresses duplicate creation offers across sessions and restarts, even when disabled. A different execution order remains a different combination. Explicit distillation requests, installation confirmation and execution validation are unchanged.
+
+If a Skill or SkillPack with the same name already exists when creating a Pack, the UI reports the failure and keeps the confirmation card. Existing content is not overwritten. Choose not to create it now, or resolve the name conflict and retry; retries still validate current members and execution evidence. WebSocket and HTTP confirmation both wait for the final result; an acceptance ACK alone does not complete creation. HTTP uses the Gateway’s opt-in final-answer response. Timeouts or a connection loss leave the card available and prompt you to check My Skills before retrying.
 
 Installed Packs appear in My Skills and the existing task Skill picker with a SkillPack label. Member changes affect Pack availability. A complete query match offers a confirmation or a choice of Packs before bypassing Symphony composition. Partial or uncertain matches continue through the existing path. Explicitly picking one Pack confirms the selection; mixed selections require a choice. Existing side-effect permissions remain in force. Failure after member execution does not automatically restart composition.
 
@@ -575,4 +481,4 @@ Corrupt journals, changed directory ownership or missing backups stop inventory 
 
 Plans and transaction journals live in the current skills directory under `.skillpack/`. Per-Skill Hub provenance is stored in `.archive/hub-provenance.json`; neither is published. Disabling the product switch stops new distillation and Pack installation. Direct routing has a separate switch.
 
-Deploy the matching agent-core and JiuwenSwarm changes together. The dependency and lockfile pin official commit `4dbaa84ca568af3f181da4f9cd26b713a5b73039`, which includes Core !3457. Local simulated tests do not establish real Hub review, real model or desktop platform acceptance; record those separately.
+Deploy the matching agent-core and JiuwenSwarm changes together. The dependency and lockfile must pin the same Core commit containing the Runtime interface. Local simulated tests do not establish real Hub review, real model or desktop platform acceptance; record those separately.

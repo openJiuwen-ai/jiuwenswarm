@@ -93,12 +93,44 @@ def test_upsert_preserves_omitted_secret_and_encrypts_rotation(catalog_state, mo
 
 
 @pytest.mark.asyncio
+async def test_upsert_treats_blank_temperature_as_unset(catalog_state, monkeypatch):
+    """#6856: models.upsert must not persist or echo a literal empty string."""
+    from jiuwenswarm.common.config_panel import models_handlers
+
+    catalog_state["models"]["defaults"][0]["model_config_obj"] = {"temperature": 0.7}
+
+    saved = config_module.upsert_model_resource(
+        {"model_id": "mdl_a", "model_config_obj": {"temperature": ""}}
+    )
+    assert "temperature" not in saved["model_config_obj"]
+
+    # Flat frontend-style payloads must not raise on float("") either.
+    saved = config_module.upsert_model_resource({"model_id": "mdl_a", "temperature": ""})
+    assert "temperature" not in (saved.get("model_config_obj") or {})
+
+    monkeypatch.setattr(models_handlers, "get_config", lambda: deepcopy(catalog_state))
+    monkeypatch.setattr(
+        models_handlers, "get_default_models", lambda config: config["models"]["defaults"]
+    )
+    channel = SimpleNamespace(send_response=AsyncMock())
+    await models_handlers.models_list_handler(channel, SimpleNamespace(), "r", {}, "s")
+    row = channel.send_response.call_args.kwargs["payload"]["models"][0]
+    assert row["temperature"] is None
+
+    saved = config_module.upsert_model_resource(
+        {"model_id": "mdl_a", "model_config_obj": {"temperature": 0.3}}
+    )
+    assert saved["model_config_obj"]["temperature"] == 0.3
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("legacy", [False, True])
 async def test_vendor_reset_survives_list_and_detail(catalog_state, monkeypatch, legacy):
     from jiuwenswarm.common.config_panel import models_handlers
 
     initial = catalog_state["models"]["defaults"][0]
     client = initial["model_client_config"]
+    initial["model_config_obj"] = {"max_tokens": 16 * 1024}
     identity = initial if legacy else client
     identity.update({"vendor_key": "deepseek", "plan": "custom_api"})
     client["endpoint_profile"] = "deepseek"
@@ -126,6 +158,7 @@ async def test_vendor_reset_survives_list_and_detail(catalog_state, monkeypatch,
     assert response["ok"]
     row = response["payload"]["models"][0]
     assert all(row[key] == "" for key in metadata)
+    assert row["max_tokens"] == 16 * 1024
 
 
 @pytest.mark.parametrize("level", ["on", "off", "high", ""])
@@ -146,6 +179,22 @@ def test_reasoning_resource_round_trip_and_reset(catalog_state, level):
     catalog_state["models"]["defaults"][0] = loaded
     detail = ModelCatalog(catalog_state).get_public_model_detail("mdl_a")
     assert detail["model_config_obj"]["reasoning_level"] == level
+
+
+def test_output_tokens_resource_round_trip_and_unlimited_clear(catalog_state):
+    catalog_state["models"]["defaults"][0]["model_config_obj"] = {"max_tokens": 32 * 1024}
+
+    saved = config_module.upsert_model_resource({
+        "model_id": "mdl_a", "model_config_obj": {"max_tokens": 16 * 1024},
+    })
+    assert saved["model_config_obj"]["max_tokens"] == 16 * 1024
+
+    saved = config_module.upsert_model_resource({
+        "model_id": "mdl_a", "model_config_obj": {"max_tokens": None},
+    })
+    assert "max_tokens" not in saved["model_config_obj"]
+    detail = ModelCatalog(catalog_state).get_public_model_detail("mdl_a")
+    assert "max_tokens" not in detail["model_config_obj"]
 
 
 @pytest.mark.parametrize("level, expected", [(True, "on"), (False, "off")])

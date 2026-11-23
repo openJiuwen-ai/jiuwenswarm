@@ -387,11 +387,11 @@ def test_enterprise_builtin_skill_can_toggle_but_not_uninstall(
     assert skill_dir.is_dir()
 
 
-def test_personal_builtin_skill_can_uninstall(
+def test_personal_builtin_skill_cannot_uninstall(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """个人版内置（builtin）与 develop 一致：安装副本可卸载。"""
+    """个人版内置（builtin）安装副本也不可卸载。"""
     monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     workspace = tmp_path / "tenant"
     manager = SkillManager(workspace_dir=str(workspace))
@@ -409,9 +409,11 @@ def test_personal_builtin_skill_can_uninstall(
             {"name": "docx-pro", "origin": record["origin"]}
         )
     )
-    assert uninstall_result.get("success") is True
-    assert not skill_dir.is_dir()
-    assert manager.list_skill_installations() == []
+    assert uninstall_result["success"] is False
+    assert uninstall_result["error_code"] == "prebuilt_not_removable"
+    assert uninstall_result["detail"] == "内置技能不允许删除"
+    assert skill_dir.is_dir()
+    assert manager.list_skill_installations()
 
 
 def test_enterprise_web_install_and_uninstall_use_workspace_state(
@@ -518,11 +520,11 @@ def test_enterprise_web_uninstall_still_rejects_builtin(
     assert skill_dir.is_dir()
 
 
-def test_personal_web_uninstall_allows_builtin(
+def test_personal_web_uninstall_rejects_builtin(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """个人版 web 卸载入口：builtin 安装副本可卸（与 handle_skills_uninstall 对齐）。"""
+    """个人版 web 卸载入口：builtin 安装副本不可卸。"""
     monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     manager = SkillManager(workspace_dir=str(tmp_path), service_id="svc", agent_id="agent")
     skill_dir = _write_skill(tmp_path, "docx-pro")
@@ -536,9 +538,11 @@ def test_personal_web_uninstall_allows_builtin(
 
     result = asyncio.run(manager.handle_skills_web_uninstall({"name": "docx-pro"}))
 
-    assert result == {"success": True, "name": "docx-pro"}
-    assert not skill_dir.is_dir()
-    assert manager.list_skill_installations() == []
+    assert result["success"] is False
+    assert result["error_code"] == "prebuilt_not_removable"
+    assert result["error_message"] == "内置技能不允许删除"
+    assert skill_dir.is_dir()
+    assert manager.list_skill_installations()
 
 
 def test_enterprise_uninstall_does_not_fall_back_from_unknown_origin(tmp_path: Path) -> None:

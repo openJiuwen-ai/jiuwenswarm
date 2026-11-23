@@ -13,10 +13,9 @@
 import type { OfficeHost } from './appContract';
 import { DEFAULT_RENDER_WIDTH, type PowerPointRun } from './powerPointReadTools';
 import { base64Of, bytesOf, type Parts } from './presentationPackage';
+import type { WpsObject } from './wpsDocument';
+import { WpsFiles } from './wpsFiles';
 import { extractSlidePackage, packageSlideIds, unzipDeck } from './wpsSlidePackage';
-
-/** A WPS object: a COM-like graph whose declarations differ by build, typed only at this boundary. */
-export type WpsObject = Record<string, any>;
 
 /** WPS has no Office.js requirement sets; the adapter offers every PowerPointApi member the runtimes use. */
 export const WPS_HOST: OfficeHost = { isSetSupported: name => name === 'PowerPointApi', worker: true };
@@ -106,12 +105,12 @@ const SOURCE_FORMATTING_UNAVAILABLE = 'WPS Presentation cannot keep the source f
   + 'Slides.InsertFromFile restyles them with this deck\'s theme; import with use_destination_theme';
 
 /** The WPS application at the pane's boundary: its enums, read once per name, and its files. */
-class Host {
+class Host extends WpsFiles {
   private readonly enums = new Map<string, number>();
-  /** Set once a temporary file could not be removed, which is said once. */
-  private leftFile = false;
 
-  constructor(private readonly application: WpsObject) {}
+  constructor(application: WpsObject) {
+    super(application, 'WPS Presentation');
+  }
 
   /** Each read of ``Application.Enum`` crosses into WPS, so a member is read once. */
   enum(name: string): number {
@@ -124,75 +123,6 @@ class Host {
       this.enums.set(name, value);
     }
     return value;
-  }
-
-  temporaryPath(prefix: string, extension: string): string {
-    const { Env, FileSystem } = this.application;
-    const root = String(Env?.GetTempPath?.() ?? FileSystem?.tmpdir?.() ?? '');
-    if (!root) throw new Error('WPS Presentation gave no temporary directory (Env.GetTempPath, FileSystem.tmpdir)');
-    const separator = root.includes('\\') && !root.includes('/') ? '\\' : '/';
-    return `${root.replace(/[\\/]+$/, '')}${separator}${prefix}-${crypto.randomUUID()}${extension}`;
-  }
-
-  write(path: string, bytes: Uint8Array): void {
-    let binary = '';
-    for (let at = 0; at < bytes.length; at += 32768) binary += String.fromCharCode(...bytes.subarray(at, at + 32768));
-    this.application.FileSystem.writeAsBinaryString(path, binary);
-  }
-
-  /** The file's bytes. Some builds upper-case the extension of a file WPS wrote, and ``Exists`` caches, so read. */
-  async read(path: string): Promise<Uint8Array> {
-    try {
-      return await this.readOne(path);
-    } catch (error) {
-      const upper = upperExtension(path);
-      if (upper === path) throw error;
-      return this.readOne(upper);
-    }
-  }
-
-  private async readOne(path: string): Promise<Uint8Array> {
-    const { FileSystem } = this.application;
-    if (typeof FileSystem.ReadFileAsArrayBuffer === 'function') {
-      const buffer: ArrayBuffer | ArrayBufferView = await FileSystem.ReadFileAsArrayBuffer(path);
-      return buffer instanceof ArrayBuffer ? new Uint8Array(buffer)
-        : new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
-    }
-    // readAsBinaryString sign-extends bytes from 0x80, hence the mask.
-    const binary: string = FileSystem.readAsBinaryString(path);
-    return Uint8Array.from(binary, char => char.charCodeAt(0) & 0xff);
-  }
-
-  /**
-   * Removes the file under either spelling of its extension, one of which WPS did not use. A copy of the user's
-   * deck that stays behind is said once.
-   */
-  remove(path: string): void {
-    const { FileSystem } = this.application;
-    const errors: unknown[] = [];
-    for (const candidate of new Set([path, upperExtension(path)])) {
-      try {
-        (FileSystem.unlinkSync ?? FileSystem.Remove).call(FileSystem, candidate);
-        return;
-      } catch (error) {
-        errors.push(error);
-      }
-    }
-    if (this.leftFile) return;
-    this.leftFile = true;
-    console.warn(`WPS Presentation kept the temporary file ${path}`, ...errors);
-  }
-
-  /** ``bytes`` as a file while ``use`` runs; removed after. */
-  async withFile<T>(prefix: string, extension: string, bytes: Uint8Array, use: (path: string) => T | Promise<T>):
-  Promise<T> {
-    const path = this.temporaryPath(prefix, extension);
-    try {
-      this.write(path, bytes);
-      return await use(path);
-    } finally {
-      this.remove(path);
-    }
   }
 }
 
@@ -250,15 +180,8 @@ class Context {
   savedCopy(): Promise<Parts> {
     if (!this.copy) {
       const { host } = this;
-      const copy = (async () => {
-        const path = host.temporaryPath('jiuwenswarm-copy', '.pptx');
-        try {
-          this.wps.SaveCopyAs(path, host.enum('ppSaveAsOpenXMLPresentation'));
-          return unzipDeck(await host.read(path));
-        } finally {
-          host.remove(path);
-        }
-      })();
+      const copy = host.written('jiuwenswarm-copy', '.pptx',
+        path => this.wps.SaveCopyAs(path, host.enum('ppSaveAsOpenXMLPresentation'))).then(unzipDeck);
       copy.catch(() => { if (this.copy === copy) this.copy = undefined; });
       this.copy = copy;
     }
@@ -956,10 +879,6 @@ function hexOf(rgb: unknown): string | null {
 /** The extension WPS expects of a picture file, from its first bytes. */
 function imageExtension(bytes: Uint8Array): string {
   return bytes[0] === 0xff && bytes[1] === 0xd8 ? '.jpg' : bytes[0] === 0x47 && bytes[1] === 0x49 ? '.gif' : '.png';
-}
-
-function upperExtension(path: string): string {
-  return path.replace(/\.(\w+)$/, (_match, extension: string) => `.${extension.toUpperCase()}`);
 }
 
 function errorOf(error: unknown): Error {

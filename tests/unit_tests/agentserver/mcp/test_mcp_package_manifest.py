@@ -71,6 +71,55 @@ def test_loads_stdio_package_from_declared_manifest_paths(tmp_path: Path) -> Non
     assert loaded.server_config["command"] == "npx"
 
 
+def test_stdio_entrypoint_resolves_relative_to_package(tmp_path: Path) -> None:
+    package = tmp_path / "directory with spaces" / "example"
+    _write_json(
+        package / "manifest.json",
+        _manifest("example", {
+            "type": "stdio-mcp", "file": "config/mcp.json", "entrypoint": "code/server.py",
+        }),
+    )
+    args = ["-B", "--", "${MCP_PACKAGE_ENTRYPOINT}", "left-as-is"]
+    config = {"mcpServers": {"example": {"command": "python", "args": args}}}
+    config_path = package / "config/mcp.json"
+    _write_json(config_path, config)
+    entrypoint = package / "code/server.py"
+    entrypoint.parent.mkdir()
+    entrypoint.write_text("pass\n", encoding="utf-8")
+
+    loaded = load_mcp_package(package)
+
+    assert loaded.server_config["args"] == ["-B", "--", str(entrypoint.resolve()), "left-as-is"]
+    assert json.loads(config_path.read_text(encoding="utf-8")) == config
+
+
+@pytest.mark.parametrize(
+    ("kind", "path", "args"),
+    [
+        ("stdio-mcp", "../outside.py", ["${MCP_PACKAGE_ENTRYPOINT}"]),
+        ("stdio-mcp", "missing.py", ["${MCP_PACKAGE_ENTRYPOINT}"]),
+        ("stdio-mcp", "server.py", ["server.py"]),
+        ("stdio-mcp", "server.py", ["${MCP_PACKAGE_ENTRYPOINT}", "${MCP_PACKAGE_ENTRYPOINT}"]),
+        ("remote-mcp", "server.py", ["${MCP_PACKAGE_ENTRYPOINT}"]),
+    ],
+)
+def test_rejects_invalid_package_entrypoints(
+    tmp_path: Path, kind: str, path: str, args: list[str],
+) -> None:
+    package = tmp_path / "example"
+    _write_json(
+        package / "manifest.json",
+        _manifest("example", {"type": kind, "file": "mcp.json", "entrypoint": path}),
+    )
+    _write_json(package / "mcp.json", {"mcpServers": {"example": {
+        "command": "python", "url": "https://example.test/mcp", "args": args,
+    }}})
+    (package / "server.py").write_text("pass\n", encoding="utf-8")
+    (tmp_path / "outside.py").write_text("pass\n", encoding="utf-8")
+
+    with pytest.raises(McpPackageError, match=r"integration\.entrypoint"):
+        load_mcp_package(package)
+
 @pytest.mark.parametrize(
     ("integration_type", "server_config"),
     [

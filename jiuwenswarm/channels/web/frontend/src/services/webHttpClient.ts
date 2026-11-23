@@ -196,6 +196,19 @@ const ROUTES: Record<string, RouteRow> = {
   'skills.enterprise.uninstall': { verb: 'POST', path: '/skills/enterprise/actions/uninstall', kind: 'unary' },
   'skills.enterprise.source.providers': { verb: 'GET', path: '/skills/enterprise/sources', kind: 'unary' },
   'skills.enterprise.source.search': { verb: 'GET', path: '/skills/enterprise/sources/search', kind: 'unary' },
+  // Connector marketplace (enterprise HTTP; paths align with gateway mapped + pod_rest_map).
+  'mcp.list': { verb: 'POST', path: '/mcp/actions/list', kind: 'unary' },
+  'mcp.sources.providers': { verb: 'POST', path: '/mcp/actions/sources-providers', kind: 'unary' },
+  'mcp.show': { verb: 'POST', path: '/mcp/actions/show', kind: 'unary' },
+  'mcp.install': { verb: 'POST', path: '/mcp/actions/install', kind: 'unary' },
+  'mcp.uninstall': { verb: 'POST', path: '/mcp/actions/uninstall', kind: 'unary' },
+  'mcp.connect': { verb: 'POST', path: '/mcp/actions/connect', kind: 'unary' },
+  'mcp.wait_auth': { verb: 'POST', path: '/mcp/actions/wait-auth', kind: 'unary' },
+  'mcp.cancel_connect': { verb: 'POST', path: '/mcp/actions/cancel-connect', kind: 'unary' },
+  'mcp.disconnect': { verb: 'POST', path: '/mcp/actions/disconnect', kind: 'unary' },
+  'mcp.register_custom': { verb: 'POST', path: '/mcp/actions/register-custom', kind: 'unary' },
+  'mcp.delete_custom': { verb: 'POST', path: '/mcp/actions/delete-custom', kind: 'unary' },
+  'mcp.save_credentials': { verb: 'POST', path: '/mcp/actions/save-credentials', kind: 'unary' },
   'skills.marketplace.list': { verb: 'GET', path: '/skills/marketplace', kind: 'unary' },
   'skills.marketplace.add': { verb: 'POST', path: '/skills/marketplace', kind: 'unary' },
   'skills.marketplace.remove': { verb: 'POST', path: '/skills/marketplace/actions/remove', kind: 'unary' },
@@ -260,6 +273,11 @@ const ROUTES: Record<string, RouteRow> = {
   'team.stop': { verb: 'POST', path: '/teams/actions/stop', kind: 'unary' },
   'team.delete': { verb: 'DELETE', path: '/teams/{team_name}', kind: 'unary' },
   'team.quota.get': { verb: 'GET', path: '/teams/quota', kind: 'unary' },
+  // 统一资产导入导出：包体经 /file-api/assets/upload-temp 上传、
+  // /file-api/download 短效链接下载，此处只登记控制面 RPC，
+  // 路径与服务端 pod_rest_map 的声明一致。
+  'assets.export': { verb: 'POST', path: '/assets/export', kind: 'unary' },
+  'assets.import': { verb: 'POST', path: '/assets/import', kind: 'unary' },
 };
 
 const PATH_PLACEHOLDER = /\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
@@ -766,6 +784,9 @@ export class WebHttpClient {
       const error = this.createWebError(i18n.t('network.requestFailed'), 'METHOD_NOT_FOUND', requestId);
       error.httpRouteMissing = true;
       throw error;
+    }
+    if (method === 'chat.user_answer' && options.awaitUserAnswerResult === true) {
+      assembled.query = { ...assembled.query, wait_for_result: 'true' };
     }
 
     const controller = new AbortController();

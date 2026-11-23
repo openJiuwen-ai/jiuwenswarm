@@ -8,6 +8,7 @@ import type {
   TrajectoryRequest, TrajectorySnapshot, TrajectoryTurnModel,
 } from '../trajectory/model.ts'
 import { trajectoryRecordId } from '../trajectory/record.ts'
+import { GoalAssessments } from '../GoalAssessments'
 import type { SharedTurnAxisRange } from '../diagnosis/diagnosisTimeSelection.ts'
 import {
   resolveTimelineMode,
@@ -598,6 +599,8 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
           nowMilliseconds={liveNowMilliseconds}
         />
       </div> : null}
+      {displayMode !== 'overview' && snapshot?.goalAssessments !== undefined && snapshot.goalAssessments.length > 0
+        ? <GoalAssessments t={t} assessments={snapshot.goalAssessments} /> : null}
       </div>
     </TrajectoryThemeProvider>
   )

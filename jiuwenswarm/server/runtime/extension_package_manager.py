@@ -69,6 +69,7 @@ class AgentGroupPackageError(ValueError):
         super().__init__(message)
         self.code = code
 
+
 _CATALOG_PREVIEWABLE_EXTS: frozenset[str] = frozenset(
     {".md", ".mdx", ".json", ".py", ".pdf"}
 )
@@ -97,9 +98,8 @@ _AGENT_TEMPLATE_KIND = "agent_templates"
 _AGENT_GROUP_KIND = "agent_groups"
 _PLUGIN_PACKAGE_KIND = "plugin_packages"
 _HUB_PREVIEW_ARCHIVE_LIMIT = 8
-_EXTERNAL_HARNESS_PROVIDERS = frozenset({"claudecode", "codex", "dsh"})
+_EXTERNAL_HARNESS_PROVIDERS = frozenset({"claudecode", "codex"})
 _EXTERNAL_HARNESS_UNSUPPORTED_FIELDS = ("tools", "rails", "subagents")
-_FORM_HARNESS_PROVIDERS = frozenset({"claudecode", "codex"})
 _EXTERNAL_HARNESS_TAG = {"zh": "三方Harness", "en": "External Harness"}
 
 
@@ -1709,7 +1709,7 @@ def _build_file_tree(directory: Path, root: Path) -> list[dict]:
         # PermissionError is an OSError subclass — do not list both (G.ERR.09).
         return result
     for entry in entries:
-        if entry.name.startswith(".") or entry.is_symlink():
+        if entry.name.startswith(".") or entry.name == "__pycache__" or entry.is_symlink():
             continue
         rel = entry.relative_to(root).as_posix()
         if entry.is_dir():
@@ -1766,6 +1766,11 @@ def _nest_preview_tree(entries: list[tuple[str, int]]) -> list[dict]:
         return dirs + files
 
     return walk(root, "")
+
+
+def preview_file_tree(entries: list[tuple[str, int]]) -> list[dict]:
+    """Build the preview tree JSON from package-relative (path, size) entries."""
+    return _nest_preview_tree(entries)
 
 
 def _reject_preview_path_symlink(pkg_dir: Path, rel: str) -> Path:
@@ -1888,8 +1893,8 @@ def _require_form_runtime(params: dict) -> dict[str, Any] | None:
     if not isinstance(runtime, dict):
         raise ValueError("missing or invalid runtime")
     provider_name = runtime.get("provider_name")
-    if provider_name not in _FORM_HARNESS_PROVIDERS:
-        allowed = ", ".join(sorted(_FORM_HARNESS_PROVIDERS))
+    if provider_name not in _EXTERNAL_HARNESS_PROVIDERS:
+        allowed = ", ".join(sorted(_EXTERNAL_HARNESS_PROVIDERS))
         raise ValueError(
             f"runtime.provider_name must be one of: {allowed}; got {provider_name!r}"
         )
@@ -3810,15 +3815,24 @@ def _read_previewable_file(pkg_dir: Path, rel_path: str) -> dict:
     }
 
 
+def list_package_files(pkg_dir: Path) -> list[dict]:
+    """Return the previewable file tree of one package directory."""
+    return _build_file_tree(pkg_dir, pkg_dir)
+
+
+def read_package_file(pkg_dir: Path, rel_path: str) -> dict:
+    """Read one previewable file from a package directory."""
+    return _read_previewable_file(pkg_dir, rel_path)
+
+
 def list_agent_template_files(name: str) -> list[dict]:
     """Return the file tree for one agent_template package."""
-    pkg_dir = _agent_template_preview_dir(name)
-    return _build_file_tree(pkg_dir, pkg_dir)
+    return list_package_files(_agent_template_preview_dir(name))
 
 
 def read_agent_template_file(name: str, rel_path: str) -> dict:
     """Read one previewable file from an agent_template package."""
-    return _read_previewable_file(_agent_template_preview_dir(name), rel_path)
+    return read_package_file(_agent_template_preview_dir(name), rel_path)
 
 
 async def list_agent_template_files_with_hub(

@@ -96,3 +96,27 @@ export function screenExcelWrite({ path, name, values }: HostWrite): string | un
   }
   return firstThreat(values);
 }
+
+/**
+ * What ``execute_wps_js`` code may not reach from a workbook, lower-cased: the application and the way back to it
+ * (``Parent``), other files and programs, links and queries to other computers, and saving, printing or closing.
+ */
+export const WPS_SHEET_UNREACHABLE: ReadonlySet<string> = new Set(['application', 'parent', 'hyperlinks',
+  'followhyperlink', 'querytables', 'connections', 'oleobjects', 'refreshall', 'linksources', 'changelink',
+  'updatelink', 'openlinks', 'saveas', 'savecopyas', 'save', 'exportasfixedformat', 'printout', 'printpreview',
+  'close', 'run', 'executeexcel4macro', 'evaluate', 'vbproject', 'xmlmaps', 'xmlimport', 'xmlimportxml', 'sendmail',
+  'publishobjects', 'webpagepreview', 'filesystem', 'env', 'shell']);
+/** ``XlPivotTableSourceType.xlDatabase``: a pivot cache over this workbook's cells. */
+const XL_DATABASE = 1;
+
+/** The runner's screen for WPS Spreadsheets: formulas as above, and pivot caches over data outside the workbook. */
+export function screenWpsSheetWrite({ path, name, values }: HostWrite): string | undefined {
+  if (/^Formula(?:R1C1)?Local$/i.test(name)) {
+    return 'Formulas in the user\'s language cannot be checked here; write them in English with Formula or '
+      + 'FormulaR1C1.';
+  }
+  if (/^create$/i.test(name) && /^pivotcaches$/i.test(path.at(-1) ?? '') && values[0] !== XL_DATABASE) {
+    return 'A pivot cache over an external data source reads from outside this workbook.';
+  }
+  return firstThreat(values);
+}

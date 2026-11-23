@@ -5,7 +5,7 @@ import { Button, Loading, Tag } from '../../../../components/ui';
 import { SettingsConfirmDialog, SettingsSection } from '../../components';
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
 import { useMultimodalSettings } from '../../services/useMultimodalSettings';
-import { multimodalErrorDetails, type MultimodalCapability, type MultimodalModel, type PublicMultimodalModel } from '../../services/multimodalSettings';
+import { multimodalErrorDetails, multimodalProviderLabel, type MultimodalCapability, type MultimodalModel, type PublicMultimodalModel } from '../../services/multimodalSettings';
 import { MultimodalModelDialog } from './MultimodalModelDialog';
 import { multimodalErrorMessage, MultimodalReferenceMessage, MultimodalSettingsFeedback } from './MultimodalSettingsFeedback';
 
@@ -68,7 +68,7 @@ export function MultimodalModelsSettings({ disabled = false }: { disabled?: bool
               <h3 data-testid="settings-multimodal-model-name">{model.display_name}</h3>
               <Tag variant="neutral" data-testid="settings-multimodal-model-purpose">{t(`settingsPanel.multimodal.${model.purpose}`)}</Tag>
             </div>
-            <p data-testid="settings-multimodal-model-metadata">{[model.provider, model.model_name].filter(Boolean).join(' · ')}</p>
+            <p data-testid="settings-multimodal-model-metadata">{[multimodalProviderLabel(model), model.model_name].filter(Boolean).join(' · ')}</p>
             <p data-testid="settings-multimodal-model-capabilities">{model.capabilities.map((tool) => t(`settingsPanel.multimodal.tools.${tool}`)).join(t('settingsPanel.multimodal.separator'))}</p>
           </div>
           <div className="settings-model-card__actions">

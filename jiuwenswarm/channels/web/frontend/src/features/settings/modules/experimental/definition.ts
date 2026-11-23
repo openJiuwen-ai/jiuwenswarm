@@ -1,11 +1,11 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 import { settingsNavigationIcons } from '../../../../assets/settings';
 import type { SettingsModuleDefinition } from '../../registry/types';
 import {
   A2UISetting,
   ExternalCliCustomAgentsItem,
   RSISetting,
-  TaskAsrSetting,
-  TaskFullDuplexSetting,
   TrajectoryDiagnosisSetting,
 } from './ExperimentalSettings';
 import { CollaborationVerifierInterval } from './MultiModelCollaborationSettings';
@@ -18,16 +18,6 @@ export const experimentalModule: SettingsModuleDefinition = {
   icon: settingsNavigationIcons.experimental,
   source: 'config',
   sections: [
-    {
-      id: 'asr',
-      titleKey: 'settingsPanel.experimental.taskAsr',
-      items: [{ id: 'task-asr-enabled', component: 'custom', render: TaskAsrSetting }],
-    },
-    {
-      id: 'task-full-duplex',
-      titleKey: 'settingsPanel.experimental.taskFullDuplex',
-      items: [{ id: 'task-full-duplex-enabled', component: 'custom', render: TaskFullDuplexSetting }],
-    },
     {
       id: 'external-cli-custom-agents',
       titleKey: 'settingsPanel.experimental.externalCliAgents',
@@ -98,9 +88,11 @@ export const experimentalModule: SettingsModuleDefinition = {
             disabled: 'when-parent-unchecked',
             uncheckWithParent: true,
             items: [
+              { id: 'team-leader-goal-enabled', component: 'switch', key: 'team_leader_goal_enabled' },
               { id: 'team-task-verification-enabled', component: 'switch', key: 'team_task_verification_enabled' },
               { id: 'team-member-messaging-enabled', component: 'switch', key: 'team_member_messaging_enabled' },
               { id: 'team-member-subtasks-enabled', component: 'switch', key: 'team_member_subtasks_enabled' },
+              { id: 'team-code-todo-reminder-disabled', component: 'switch', key: 'team_code_todo_reminder_disabled' },
             ],
           },
         },

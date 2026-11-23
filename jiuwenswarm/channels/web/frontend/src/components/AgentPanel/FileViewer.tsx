@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
@@ -194,9 +195,12 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
       try {
         const encodedPath = encodeURIComponent(filePath);
         const url = `/file-api/file-content?path=${encodedPath}&encoding=${fileEncoding}`;
-        const response = await fetch(url, { cache: 'no-store' });
+        const response = await gatewayFetch(url, { cache: 'no-store' });
 
         if (!response.ok) {
+          if (response.status === 413) {
+            throw new Error(t('fileViewer.fileTooLarge'));
+          }
           const errorData = await response.text();
           throw new Error(`HTTP ${response.status}: ${errorData.substring(0, 100)}`);
         }
@@ -252,7 +256,7 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
     setSaving(true);
     setSaveError(null);
     try {
-      const response = await fetch('/file-api/file-content', {
+      const response = await gatewayFetch('/file-api/file-content', {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
@@ -457,10 +461,10 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
 
                 return (
                   <>
-                    {renderGroup('进行中', inProgress, 'text-accent', '▶')}
-                    {renderGroup('待处理', pending, 'text-text-muted', '○')}
-                    {renderGroup('已完成', completed, 'text-green-600', '✓')}
-                    {renderGroup('已取消', cancelled, 'text-danger', '×')}
+                    {renderGroup(t('todoList.inProgress'), inProgress, 'text-accent', '▶')}
+                    {renderGroup(t('todoList.pending'), pending, 'text-text-muted', '○')}
+                    {renderGroup(t('todoList.completed'), completed, 'text-green-600', '✓')}
+                    {renderGroup(t('todoList.cancelled'), cancelled, 'text-danger', '×')}
                   </>
                 );
               })()}

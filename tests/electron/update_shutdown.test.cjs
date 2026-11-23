@@ -43,14 +43,14 @@ for (const failure of ['exit', 'spawn', 'timeout', 'service', 'survivor']) {
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const receipt = await createShutdownReceipt(root);
     const source = await fs.readFile(path.join(__dirname, '../../jiuwenswarm/channels/desktop/electron/main.cjs'), 'utf8');
-    const stop = source.slice(source.indexOf('function stopServices()'), source.indexOf('function forceStopServices()'));
+    const stop = source.slice(source.indexOf('async function shutdownResidentWorker('), source.indexOf('function forceStopServices()'));
     const beforeQuit = source.slice(source.indexOf("app.on('before-quit'"), source.indexOf("app.on('activate'"));
     let listener;
     let exitCode;
     let spawns = 0;
     let saves = 0;
     const context = vm.createContext({
-      shutdownPromise: null, finalShutdownPromise: null, shutdownComplete: false,
+      mainWindow: null, applicationPresentation: null, recoveryRestartWatcher: null, shutdownPromise: null, finalShutdownPromise: null, shutdownComplete: false,
       shuttingDown: false, quitRequested: false, requestedExitCode: 0, isFrontendOnly: false,
       serviceProcesses: new Map([['agent', { pid: 123 }]]), RUNTIME_SHUTDOWN_TIMEOUT_MS: 1,
       terminateService: async () => { if (failure === 'service') throw new Error('Front cleanup failed'); },
@@ -104,14 +104,14 @@ for (const packaged of [false, true]) {
     assert.ok(budget, 'the production deadline must be declared');
     const command = source.slice(source.indexOf('function serviceCommand('), source.indexOf('function spawnService('));
     const signal = source.slice(source.indexOf('function signalServiceTree('), source.indexOf('function serviceTreeRunning('));
-    const stop = source.slice(source.indexOf('function stopServices()'), source.indexOf('function forceStopServices()'));
+    const stop = source.slice(source.indexOf('async function shutdownResidentWorker('), source.indexOf('function forceStopServices()'));
     const child = { pid: 123, exitCode: null, spawnEnvironment: { JIUWENSWARM_DATA_DIR: 'this-deployment' } };
     const calls = [];
     const context = vm.createContext({
       app: { isPackaged: packaged }, VITE_DEV_MODE: false, isFrontendOnly: false,
       backendExecutable: () => 'backend.exe',
       process: { platform: 'win32', env: {}, execPath: 'node' },
-      serviceProcesses: new Map([['agent', child]]), shutdownPromise: null, shuttingDown: false,
+      serviceProcesses: new Map([['agent', child]]), recoveryRestartWatcher: null, shutdownPromise: null, shuttingDown: false,
       SERVICE_SHUTDOWN_TIMEOUT_MS: 100, SERVICE_KILL_TIMEOUT_MS: 100,
       serviceWorkingDirectory: () => '.',
       terminateService: async () => { child.exitCode = 0; },
@@ -194,7 +194,7 @@ for (const failure of ['success', 'retry', 'nonzero', 'spawn', 'timeout']) {
     const child = { pid: 123, exitCode: null };
     let detachCalls = 0;
     const context = vm.createContext({
-      serviceProcesses: new Map([['agent', child]]), shutdownPromise: null, shuttingDown: false,
+      serviceProcesses: new Map([['agent', child]]), recoveryRestartWatcher: null, shutdownPromise: null, shuttingDown: false,
       SERVICE_SHUTDOWN_TIMEOUT_MS: 20, SERVICE_KILL_TIMEOUT_MS: 20, RUNTIME_SHUTDOWN_TIMEOUT_MS: 200,
       isFrontendOnly: false,
       serviceCommand: (_, args) => ({ command: 'backend', args }), serviceWorkingDirectory: () => root,
@@ -238,13 +238,15 @@ for (const exited of ['agent', 'gateway']) {
     const errors = [];
     const calls = [];
     const context = vm.createContext({
-      shuttingDown: false, setInterval: callback => { poll = callback; return 1; }, clearInterval() {},
+      shuttingDown: false, backendRestartInProgress: false,
+      setInterval: callback => { poll = callback; return 1; }, clearInterval() {},
       console: { error: (...args) => errors.push(args) },
       terminateService: async child => { calls.push(child); throw new Error('Front cleanup refused'); },
     });
     vm.runInContext(block, context);
     const agent = { exitCode: exited === 'agent' ? 1 : null };
     const gateway = { exitCode: exited === 'gateway' ? 1 : null };
+    context.serviceProcesses = new Map([['agent', agent], ['gateway', gateway]]);
     context.watchBackendPair(agent, gateway);
     poll();
     await new Promise(resolve => setImmediate(resolve));
@@ -294,7 +296,8 @@ test('startup failure preserves its original error and consumes background clean
   const startupError = new Error('Backend startup failed');
   const errors = [];
   const context = vm.createContext({
-    BACKEND_HOST: '127.0.0.1', shuttingDown: false,
+    BACKEND_HOST: '127.0.0.1', shuttingDown: false, path, recoveryRestartSignalPath: '',
+    fs: { mkdir: async () => {}, unlink: async () => {} }, app: { getPath: () => '.' },
     prepareRuntimeWorkspace: async () => {}, spawnService: name => ({ name }),
     waitForTcp: async () => { throw startupError; },
     terminateService: async () => { throw new Error('Background stop failed'); },
@@ -304,5 +307,5 @@ test('startup failure preserves its original error and consumes background clean
   await assert.rejects(context.startBackendServices({ ports: {}, webProcess: { name: 'web' },
     webReady: Promise.resolve() }), error => error === startupError);
   await new Promise(resolve => setImmediate(resolve));
-  assert.equal(errors.filter(args => args[0] === '[electron] background service cleanup incomplete').length, 3);
+  assert.equal(errors.filter(args => args[0] === '[electron] background service cleanup incomplete').length, 4);
 });

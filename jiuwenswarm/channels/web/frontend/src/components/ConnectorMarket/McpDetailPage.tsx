@@ -7,13 +7,13 @@ import { Unlink2, Trash2, Wrench, Terminal, AlertCircle, Info, ExternalLink, Pen
 // 移除。2026-08-19 用户明确要求恢复：自定义 MCP 断联态（已经解绑过一次）的按钮要变成真正的
 // "卸载"（彻底删除，见 mcp.delete_custom），配图标也要换成垃圾桶——Unlink2 是"解绑"语义的图标，
 // 用在"删除"上不对，见下方按钮渲染处的 icon 条件。
-import { useConnectorStore } from '../../stores/connectorStore';
+import { detailCacheKey, useConnectorStore } from '../../stores/connectorStore';
 import { DetailPromptChip, DetailSection, EntityHeader, PageCard } from '../ui';
 import { ConnectTokenModal } from './ConnectTokenModal';
 import { CliAuthModal } from './CliAuthModal';
 import { ConfirmDialog } from './ConfirmDialog';
 import { IconAvatar } from './Buttons';
-import { deriveCardState, deriveMcpAvailability } from './mcpState';
+import { canCancelConnect, deriveCardState, deriveMcpAvailability } from './mcpState';
 import type { ConnectorConnectResponse, ConnectorIntegrationType } from '../../types/connector';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
@@ -95,10 +95,28 @@ interface McpDetailPageProps {
 // 不再是旧版"不是 connected 就整个拒绝进入"，见 mcpState.ts deriveMcpAvailability。
 export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: McpDetailPageProps) {
   const { t } = useTranslation();
-  const connector = useConnectorStore((s) => s.connectors.find((c) => c.id === name || c.runtimePackageName === name));
-  // Cache by the runtime name used by connect/disconnect and detail invalidation.
+  // Marketplace cards come from builtinConnectors (or search hits); the merged
+  // `connectors` view can be shadowed by a same package_name local entry whose
+  // id is not the Hub asset uuid. Prefer id/hubAssetId match across all lists.
+  const connector = useConnectorStore((s) => {
+    const lists = [s.builtinConnectors, s.connectors, s.myConnectors];
+    for (const list of lists) {
+      const byAsset = list.find((c) => c.id === name || c.hubAssetId === name);
+      if (byAsset) return byAsset;
+    }
+    for (const list of lists) {
+      const byRuntime = list.find((c) => c.runtimePackageName === name);
+      if (byRuntime) return byRuntime;
+    }
+    return undefined;
+  });
+  // Cache by runtime name + sourceId (enterprise multi-source); see detailCacheKey.
   const runtimeName = connector?.runtimePackageName ?? name;
-  const detail = useConnectorStore((s) => s.detailCache[runtimeName]);
+  const catalogSourceId = useConnectorStore((s) => s.catalogSourceId);
+  const detailSourceId = connector?.sourceId || catalogSourceId || undefined;
+  const detail = useConnectorStore(
+    (s) => s.detailCache[detailCacheKey(runtimeName, connector?.sourceId || s.catalogSourceId)],
+  );
   const tools = detail?.tools;
   // mcp.show 一次性带回的预置技能（name+description），之前只用了同批返回的 tools，这份完全
   // 没消费出口——插件详情页（PluginDetailPage.tsx）有对称的"技能"分区，MCP 这边照抄视觉补上。
@@ -108,6 +126,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   const installPackage = useConnectorStore((s) => s.installPackage);
   const uninstallPackage = useConnectorStore((s) => s.uninstallPackage);
   const disconnectAction = useConnectorStore((s) => s.disconnect);
+  const cancelConnectAction = useConnectorStore((s) => s.cancelConnectAction);
   const deleteConnectorAction = useConnectorStore((s) => s.deleteConnector);
   const busyMap = useConnectorStore((s) => s.busyMap);
   const [installing, setInstalling] = useState(false);
@@ -118,8 +137,9 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   const confirmActionRef = useRef(false);
 
   // 卡片统一状态机（见 mcpState.ts）。busy 用 busyMap[name]。
+  const detailBusyKind = busyMap[name] ?? busyMap[runtimeName];
   const cardState = connector
-    ? deriveCardState({ connectionState: connector.connectionState, busy: busyMap[name] ?? busyMap[runtimeName] })
+    ? deriveCardState({ connectionState: connector.connectionState, busy: detailBusyKind })
     : 'idle';
   // 详情页可达性：installed=能不能看到这个详情页（"已安装"，含"已安装但未连接"这个中间态），
   // linked=是否已连接（決定"会话使用"能不能点、要不要展示断联 banner）。见 mcpState.ts
@@ -133,22 +153,43 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   // 工具列表理应刷新），但停留在同一个详情页时 name 没变、loadDetail 这个函数引用也没变，这个
   // effect 根本不会重新跑，导致缓存清空后没人再去重新拉，工具/技能区块就那么空着，直到用户退出
   // 详情页重新进（组件重新挂载，effect 才会再跑一次）。现在把 detail 加进依赖——只要
-  // detailCache[name] 变成 undefined（不管是最初挂载时没缓存，还是被 connect/disconnect 之类的
+  // 对应 source 的缓存槽变成 undefined（不管是最初挂载时没缓存，还是被 connect/disconnect 之类的
   // 操作清空），这个 effect 就会重新触发去重新拉，不用等重新挂载。
   useEffect(() => {
-    // Uninstalled Hub packages have no local directory for mcp.show.
-    if (connector?.source === 'hub' && !connector.installed) return;
-    // mcp.show 一次性带回 skills+tools（见文档 §5.2）；loadDetail 内部已经按 name 缓存，
-    // detailCache[runtimeName] 有值时这里的调用会被它自己的守卫短路，不会产生多余请求。
+    // Need a catalogue card (or at least source_id) before calling mcp.show — enterprise
+    // remote detail rejects requests without source_id.
+    if (!connector) return;
+    // mcp.show 一次性带回 skills+tools（见文档 §5.2）；未安装 Hub 也走远程 get_detail。
+    // 当前 source 的 cache key 有值时 loadDetail 自己的守卫会短路，不会产生多余请求。
     if (!detail) {
-      loadDetail(runtimeName);
+      const sourceId = detailSourceId;
+      const showId =
+        connector.source === 'hub' && !connector.installed
+          ? connector.hubAssetId || connector.id
+          : runtimeName;
+      loadDetail(runtimeName, { sourceId, id: showId });
     }
-  }, [connector?.source, connector?.installed, runtimeName, detail, loadDetail]);
+  }, [
+    connector,
+    connector?.source,
+    connector?.sourceId,
+    connector?.installed,
+    connector?.hubAssetId,
+    connector?.id,
+    catalogSourceId,
+    detailSourceId,
+    runtimeName,
+    detail,
+    loadDetail,
+  ]);
 
   if (!connector) return null;
 
   const connectorId = connector.id;
   const connectorInstalled = connector.installed;
+  const connectorSourceId = connector.sourceId;
+  const connectorVersion = connector.version;
+  const connectorPackageName = connector.runtimePackageName || connector.name;
   // 自定义 MCP 一旦断联（已经解绑过一次），右上角那个按钮的语义从"解绑"变成"卸载"（彻底删除，
   // mcp.delete_custom）——用普通变量而不是每处都重新读 connector.source/!linked，也顺便避开
   // 闭包里 TS 认不出 `connector` 已经非空narrow 的问题（handleUnbind/handleDelete 定义在下面，
@@ -160,7 +201,11 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   async function handleInstall() {
     setInstalling(true);
     if (!connectorInstalled) {
-      const response = await installPackage(connectorId);
+      const response = await installPackage(connectorId, {
+        sourceId: connectorSourceId,
+        versionId: connectorVersion,
+        packageName: connectorPackageName,
+      });
       setInstalling(false);
       if (!response) return;
       const connectResult = response.connect;
@@ -321,7 +366,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
                   {isDeleteMode ? t('connectorMarket.card.uninstall') : t('connectorMarket.card.unbind')}
                 </button>
               )}
-              {installed && (
+              {installed && onUse && (
                 // 2026-08-19 用户明确要求：断联态（installed && !linked）"使用"按钮要置灰不可点——
                 // 未连接时点击会静默触发一次后台连接（handleUse 里 linked===false 分支）。收敛到
                 // .detail-action--use 后禁用态样式（not-allowed + 弱化）由共享类统一处理，该类
@@ -370,16 +415,27 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
           >
             {cardState === 'error' ? <AlertCircle size={14} /> : <Info size={14} />}
             <span>{t(cardState === 'error' ? 'connectorMarket.card.stateError' : cardState === 'connecting' ? 'connectorMarket.card.connecting' : 'connectorMarket.detail.mcpDisconnectedBannerSelf')}</span>
-            <button
-              type="button"
-              onClick={handleInstall}
-              disabled={installing || busy || cardState === 'connecting'}
-              className="flex items-center gap-0.5 font-medium text-[color:var(--color-chat-accent)] hover:opacity-80 disabled:opacity-60"
-              data-testid="connector-market-mcp-detail-connect-mcp"
-            >
-              {t('connectorMarket.detail.connectMcp')}
-              <ExternalLink size={12} />
-            </button>
+            {cardState === 'connecting' && canCancelConnect(detailBusyKind) ? (
+              <button
+                type="button"
+                onClick={() => void cancelConnectAction(runtimeName)}
+                className="flex items-center gap-0.5 font-medium text-text-link hover:opacity-80"
+                data-testid="connector-market-mcp-detail-cancel-connect"
+              >
+                {t('connectorMarket.cliAuth.cancelConnect')}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleInstall}
+                disabled={installing || busy || cardState === 'connecting'}
+                className="flex items-center gap-0.5 font-medium text-[color:var(--color-chat-accent)] hover:opacity-80 disabled:opacity-60"
+                data-testid="connector-market-mcp-detail-connect-mcp"
+              >
+                {t('connectorMarket.detail.connectMcp')}
+                <ExternalLink size={12} />
+              </button>
+            )}
           </div>
         )}
 

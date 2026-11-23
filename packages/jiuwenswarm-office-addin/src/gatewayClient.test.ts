@@ -35,7 +35,7 @@ describe('GatewayClient', () => {
     FakeWebSocket.instances = [];
     vi.stubGlobal('WebSocket', FakeWebSocket);
     vi.stubGlobal('window', {
-      location: { protocol: 'https:', host: 'localhost:3001' },
+      location: { protocol: 'https:', host: 'localhost:3001', search: '' },
       localStorage: { getItem: () => 'office-test-owner' },
       addEventListener: vi.fn(),
     });
@@ -43,6 +43,23 @@ describe('GatewayClient', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.useRealTimers();
+  });
+
+  it('gives every host the same user without an installed one, so the hosts see each other\'s documents', async () => {
+    const stored = new Map<string, string>();
+    vi.stubGlobal('window', {
+      location: { protocol: 'http:', host: '127.0.0.1:5373', search: '?doc=a' },
+      localStorage: { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => {
+        stored.set(key, value);
+      } },
+      addEventListener: vi.fn(),
+    });
+    const users = ['office_excel', 'office_powerpoint', 'office_word'].map(app => {
+      void new GatewayClient(app).connect();
+      return new URL(FakeWebSocket.instances.at(-1)!.url).searchParams.get('user_id');
+    });
+    expect(new Set(users).size).toBe(1);
+    expect(users[0]).toMatch(/^office-/);
   });
 
   async function connected(): Promise<{ client: GatewayClient; socket: FakeWebSocket }> {
@@ -70,6 +87,15 @@ describe('GatewayClient', () => {
     expect(listener).toHaveBeenCalledWith({ event: 'chat.client_tool_request',
       payload: { session_id: 'session-a', request_id: 'call-a' } });
     client.disconnect();
+  });
+
+  it.each([
+    ['', 'office-test-owner'],
+    ['?u=office-installed&_host_Info=PowerPoint', 'office-installed'],
+  ])('connects as the user in the pane URL %j, else the stored one', (search, userId) => {
+    window.location.search = search;
+    void new GatewayClient('office_word').connect();
+    expect(FakeWebSocket.instances[0].url).toBe(`wss://localhost:3001/ws?app_id=office_word&user_id=${userId}`);
   });
 
   it('answers a request with its payload, and a refusal with the code of the frame', async () => {

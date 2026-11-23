@@ -8,10 +8,12 @@ Supports ``--dotenv <path>`` for multi-instance isolation.
 from __future__ import annotations
 
 import argparse
+import codecs
 import errno
 import hmac
 import http.client
 import io
+import ipaddress
 import json
 import logging
 import mimetypes
@@ -24,6 +26,7 @@ import ssl
 import sys
 import threading
 import time
+from dataclasses import asdict
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -50,6 +53,7 @@ _resolve_agent_upload_base = resolve_agent_upload_base
 from jiuwenswarm.common.projectless_workspace import get_projectless_tasks_dir
 
 if TYPE_CHECKING:
+    from jiuwenswarm.channels.desktop.office_addins import OfficeAddins
     from jiuwenswarm.channels.web.share_image_export import (
         ShareImageExportManager,
         ShareImageRenderAuth,
@@ -63,6 +67,16 @@ class _BadRequestError(ValueError):
     exception escape the request handler (which drops the connection without a
     response and logs a traceback for every malformed request).
     """
+
+
+def _is_loopback_address(value: object) -> bool:
+    """Return whether a peer address is a loopback IP literal."""
+    if not isinstance(value, str):
+        return False
+    try:
+        return ipaddress.ip_address(value).is_loopback
+    except ValueError:
+        return False
 
 
 def _get_share_image_export_manager() -> ShareImageExportManager:
@@ -81,6 +95,26 @@ def _get_user_workspace_dir() -> Path:
         return Path(configured)
     user_home = os.getenv("JIUWENSWARM_HOME", "").strip()
     return (Path(user_home) if user_home else Path.home()) / ".jiuwenswarm"
+
+
+#: Startup splash candidate hint (Gateway S_09 section 4); answered locally because
+#: the page may load before the Gateway is up.
+SPLASH_HINT_PATH = "/extension-splash/hint"
+
+
+def _splash_candidates() -> bool:
+    """Whether an installed Gateway package may play a splash (Gateway S_09 section 4).
+
+    Shares the Gateway's configuration, manifest rules and splash preferences; the browser still
+    confirms with the Gateway once connected, so this only decides how long to wait.
+    """
+    try:
+        from agent_gateway.extensions_v2.splash_hint import installed_splash_providers
+
+        return bool(installed_splash_providers())
+    except Exception:  # noqa: BLE001 - an unreadable install counts as none; the Gateway answer decides
+        logging.getLogger(__name__).debug("splash hint unavailable", exc_info=True)
+        return False
 
 
 def _get_agent_root_dir() -> Path:
@@ -157,6 +191,140 @@ def _parse_single_byte_range(
     if start >= file_size or end < start:
         return None
     return start, min(end, file_size - 1)
+
+
+# Upper bound for `/file-api/file-content` reads.  The endpoint used to slurp
+# the whole file into memory (raw bytes + decoded str + re-encoded body) with
+# no size check, so previewing a large workspace artifact or polling a
+# long-running log peaked at several times the file size per request and
+# could OOM the backend.  Text preview beyond this bound has little
+# interactive value; download (`/file-api/download`, streamed) covers it.
+MAX_FILE_CONTENT_BYTES = 10 * 1024 * 1024
+
+
+def _decode_bytes_auto(raw_data: bytes, errors: str = "strict") -> tuple[str, str]:
+    """Decode raw bytes with charset detection plus CJK fallbacks.
+
+    Shared by the whole-file and tail reads of ``/file-api/file-content`` so
+    both paths get identical encoding behaviour.  ``errors`` is forwarded to
+    ``bytes.decode``; tail reads pass ``"replace"`` because the window may
+    start mid-character even after line alignment.
+    """
+    import charset_normalizer
+
+    detected = charset_normalizer.from_bytes(raw_data).best()
+    if detected is None:
+        detected_encoding = "utf-8"
+    else:
+        detected_encoding = detected.encoding or "utf-8"
+    try:
+        return raw_data.decode(detected_encoding, errors), detected_encoding
+    except (UnicodeDecodeError, LookupError) as decode_exc:
+        for try_encoding in ["gbk", "gb2312", "big5", "shift_jis", "euc_kr"]:
+            try:
+                return raw_data.decode(try_encoding, errors), try_encoding
+            except (UnicodeDecodeError, LookupError):
+                continue
+    raise OSError("Unable to decode file with any known encoding") from decode_exc
+
+
+_TEXTUAL_MIME_TYPES = frozenset(
+    {
+        "application/javascript",
+        "application/json",
+        "application/xhtml+xml",
+        "application/xml",
+        "application/x-ndjson",
+    }
+)
+_TEXTUAL_EXTENSION_MIME_TYPES = {
+    ".conf": "text/plain",
+    ".csv": "text/csv",
+    ".htm": "text/html",
+    ".html": "text/html",
+    ".ini": "text/plain",
+    ".js": "text/javascript",
+    ".json": "application/json",
+    ".jsonl": "application/x-ndjson",
+    ".log": "text/plain",
+    ".markdown": "text/markdown",
+    ".md": "text/markdown",
+    ".mdx": "text/markdown",
+    ".mjs": "text/javascript",
+    ".ndjson": "application/x-ndjson",
+    ".py": "text/plain",
+    ".text": "text/plain",
+    ".ts": "text/plain",
+    ".tsx": "text/plain",
+    ".txt": "text/plain",
+    ".yaml": "text/yaml",
+    ".yml": "text/yaml",
+}
+_TEXT_CHARSET_READ_BYTES = 65536
+
+
+def _is_textual_mime_type(mime_type: str) -> bool:
+    """Return whether a browser decodes this payload with a text charset."""
+    normalized = mime_type.split(";", 1)[0].strip().lower()
+    return (
+        normalized.startswith("text/")
+        or normalized in _TEXTUAL_MIME_TYPES
+        or normalized.endswith(("+json", "+xml"))
+    )
+
+
+def _guess_text_charset(file_path: Path) -> str:
+    """Sniff a text artifact's charset from its BOM or complete UTF-8 bytes.
+
+    Artifacts are written as UTF-8, but a workspace can still hold legacy GBK
+    files. ``gb18030`` is a superset of GBK/GB2312, so one fallback decodes
+    both. The UTF-8 check is incremental so large files stay bounded in memory;
+    scanning the complete file avoids treating an ASCII-only prefix as evidence
+    that the rest of a legacy file is UTF-8. An incomplete UTF-8 sequence at EOF
+    is tolerated because an artifact may still be in the process of being written.
+    """
+    try:
+        with file_path.open("rb") as file_obj:
+            prefix = file_obj.read(4)
+            if prefix.startswith(codecs.BOM_UTF8):
+                return "utf-8"
+            if prefix.startswith(codecs.BOM_UTF16_LE):
+                return "utf-16le"
+            if prefix.startswith(codecs.BOM_UTF16_BE):
+                return "utf-16be"
+
+            file_obj.seek(0)
+            decoder = codecs.getincrementaldecoder("utf-8")()
+            while True:
+                chunk = file_obj.read(_TEXT_CHARSET_READ_BYTES)
+                if not chunk:
+                    break
+                decoder.decode(chunk, final=False)
+            # Keep a partial trailing character buffered: it must not change
+            # the charset of an otherwise valid UTF-8 document.
+    except OSError:
+        return "utf-8"
+    except UnicodeDecodeError:
+        return "gb18030"
+    return "utf-8"
+
+
+def _text_content_type(
+    mime_type: str, file_path: Path, file_name: str | None = None,
+) -> str:
+    """Declare the charset of a text artifact served to a browser.
+
+    ``/file-api/download`` and ``/file-api/raw-file`` are navigated directly by
+    the desktop built-in browser and by artifact HTML preview iframes.  A text
+    response without ``charset`` is decoded with the browser default instead of
+    the artifact's own encoding, so Chinese artifacts render as mojibake.
+    """
+    normalized_mime_type = _TEXTUAL_EXTENSION_MIME_TYPES.get(
+        Path(file_name or file_path.name).suffix.lower(), mime_type
+    )
+    if not _is_textual_mime_type(normalized_mime_type):
+        return mime_type
+    return f"{normalized_mime_type}; charset={_guess_text_charset(file_path)}"
 
 
 def _get_agent_teams_root(project_root: Path) -> Path:
@@ -335,6 +503,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     # Cookie 名按端口区分: 同 host 多桌面实例(端口偏移)互不覆盖。
     desktop_cookie_name = "__wsdt"
     _DESKTOP_TOKEN_QUERY_PARAM = "dt"
+    # Set only in desktop mode, where the office add-in routes exist.
+    office_addins: OfficeAddins | None = None
+    _OFFICE_ADDINS_PATH = "/desktop-api/office-addins"
 
     project_root = _get_user_workspace_dir()
     workspace_root = _get_agent_root_dir()
@@ -372,9 +543,15 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     _WS_LOG_MAX_CHARS = 2000
     _HTTP_PROXY_TIMEOUT = 30
     _SHARE_IMAGE_UPLOAD_IDLE_TIMEOUT = 60 * 60
+    _HTTP_PROXY_CHUNK_BYTES = 64 * 1024
     _WS_CONNECT_TIMEOUT = 10
     _WS_HANDSHAKE_TIMEOUT = 10
     _WS_SELECT_TIMEOUT = 60
+    # 隧道向浏览器回写时的最长等待。浏览器在渲染大段历史时会短暂停止读取
+    # socket（远程访问尤其明显），内核发送缓冲满后 send 返回 EAGAIN；这只是
+    # 接收端背压，不是对端已死。1 秒即判死会把正在回放的历史和 config.get
+    # 响应一起丢掉，因此这里给足 30 秒，只有持续无法写入才关闭隧道。
+    _WS_WRITE_STALL_TIMEOUT = 30.0
     _WS_RECV_BUFFER = 65536
     _WS_HANDSHAKE_MAX_SIZE = 65536
     _WS_HANDSHAKE_RECV_SIZE = 4096
@@ -539,6 +716,14 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     def _is_api_route(self) -> bool:
         return urlparse(self.path).path.startswith("/api")
 
+    def _is_extension_asset_route(self) -> bool:
+        # Gateway extension package assets live on the same WebChannel as /api.
+        return urlparse(self.path).path.startswith("/extension-assets/")
+
+    def _is_extension_transfer_route(self) -> bool:
+        # Gateway file import and export (S_10 sections 6 and 7); the Gateway's tickets decide access.
+        return urlparse(self.path).path.startswith(("/extension-uploads/", "/extension-downloads/"))
+
     def _is_ws_route(self) -> bool:
         return urlparse(self.path).path.startswith("/ws")
 
@@ -637,6 +822,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     def _proxy_http(
         self, *, target: str | None = None, path: str | None = None,
         stream_sse: bool = False, login_surface: str | None = None,
+        stream_body: bool = False,
     ) -> None:
         outer_host = self._clean_outer_host()
         if outer_host is None:
@@ -658,11 +844,14 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 timeout=self._HTTP_PROXY_TIMEOUT,
             )
 
+        headers_sent = False
         try:
             body = b""
+            length = 0
             if self.command not in ("GET", "HEAD"):
                 length = int(self.headers.get("Content-Length", "0") or "0")
-                body = self.rfile.read(length) if length > 0 else b""
+                if not stream_body:
+                    body = self.rfile.read(length) if length > 0 else b""
 
             forward_headers: dict[str, str] = {}
             for key, value in self.headers.items():
@@ -677,17 +866,32 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     continue
                 forward_headers[key] = value
             forward_headers["Host"] = outer_host
-
             if login_surface:
                 forward_headers["X-Jiuwen-Web-Surface"] = login_surface
-            conn.request(self.command, path or self.path, body=body, headers=forward_headers)
+
+            if stream_body:
+                # Large imports go through in chunks instead of being held in memory.
+                conn.putrequest(self.command, path or self.path, skip_host=True, skip_accept_encoding=True)
+                for key, value in forward_headers.items():
+                    conn.putheader(key, value)
+                conn.endheaders()
+                remaining = length
+                while remaining > 0:
+                    chunk = self.rfile.read(min(remaining, self._HTTP_PROXY_CHUNK_BYTES))
+                    if not chunk:
+                        break
+                    conn.send(chunk)
+                    remaining -= len(chunk)
+            else:
+                conn.request(self.command, path or self.path, body=body, headers=forward_headers)
             resp = conn.getresponse()
             streaming = (
                 stream_sse
                 and self.command != "HEAD"
                 and resp.getheader("Content-Type", "").startswith("text/event-stream")
             )
-            resp_body = b"" if streaming else resp.read()
+            stream_response = streaming or self._is_extension_asset_route() or self._is_extension_transfer_route()
+            resp_body = b"" if stream_response else resp.read()
 
             self.send_response(resp.status, resp.reason)
             for key, value in resp.getheaders():
@@ -698,20 +902,23 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self.close_connection = True
                 self.send_header("Connection", "close")
             self.end_headers()
-            if streaming:
+            headers_sent = True
+            if stream_response and self.command != "HEAD":
+                # Keep SSE flushing and start extension media before the upstream finishes.
                 try:
-                    chunk = resp.read1(65536)
+                    chunk = resp.read1(self._HTTP_PROXY_CHUNK_BYTES)
                     while chunk:
                         self.wfile.write(chunk)
                         self.wfile.flush()
-                        chunk = resp.read1(65536)
+                        chunk = resp.read1(self._HTTP_PROXY_CHUNK_BYTES)
                 except (OSError, http.client.HTTPException):
                     return
             elif self.command != "HEAD":
                 self.wfile.write(resp_body)
         except Exception as exc:  # noqa: BLE001
             self.log_error("proxy http error: %s", exc)
-            self._write_proxy_error(502, "proxy http error")
+            if not headers_sent:
+                self._write_proxy_error(502, "proxy http error")
         finally:
             conn.close()
 
@@ -860,6 +1067,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     direction = "frontend->backend" if sock is self.connection else "backend->frontend"
                     try:
                         data = sock.recv(self._WS_RECV_BUFFER)
+                    except ssl.SSLWantReadError:
+                        # Only part of a TLS record has arrived; select wakes again when the rest does.
+                        continue
                     except OSError as recv_exc:
                         self.log_error(
                             "proxy ws recv failed, closing tunnel: %s",
@@ -902,14 +1112,17 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                             sent = target.send(pending)
                         except OSError as e:
                             would_block = (
-                                getattr(e, "winerror", None) == 10035
+                                isinstance(e, ssl.SSLWantWriteError)
+                                or getattr(e, "winerror", None) == 10035
                                 or e.errno in (errno.EAGAIN, errno.EWOULDBLOCK)
                             )
                             if not would_block:
                                 raise
-                            _, writable, _ = select.select([], [target], [], 1.0)
+                            _, writable, _ = select.select(
+                                [], [target], [], self._WS_WRITE_STALL_TIMEOUT
+                            )
                             if not writable:
-                                # 长时间不可写，对端疑似卡死，关闭隧道避免空转
+                                # 持续无法写入，对端疑似卡死，关闭隧道避免空转
                                 self.log_error(
                                     "proxy ws write stalled, closing tunnel: %s",
                                     _format_ws_diagnostics(
@@ -1013,13 +1226,36 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self._send_desktop_forbidden()
             return True
 
-        cookie_token = self._get_auth_cookie(self.desktop_cookie_name)
-        if cookie_token and hmac.compare_digest(
-            cookie_token.encode("utf-8"), self.desktop_token.encode("utf-8")
-        ):
+        if self._has_desktop_cookie():
             return False
 
         self._send_desktop_forbidden()
+        return True
+
+    def _has_desktop_cookie(self) -> bool:
+        cookie_token = self._get_auth_cookie(self.desktop_cookie_name)
+        return bool(cookie_token) and hmac.compare_digest(
+            cookie_token.encode("utf-8"), self.desktop_token.encode("utf-8")
+        )
+
+    def _dispatch_office_addins(self, parsed: ParseResult) -> bool:
+        """``/desktop-api/office-addins``: exists only for the desktop window, answers 404 to anyone else."""
+        if not parsed.path.startswith(self._OFFICE_ADDINS_PATH):
+            return False
+        route = parsed.path[len(self._OFFICE_ADDINS_PATH):]
+        # A page on another local port shares the cookie; only the desktop window's own page may act.
+        same_origin = self.headers.get("Sec-Fetch-Site") == "same-origin"
+        addins = self.office_addins
+        if addins is None or not self._has_desktop_cookie():
+            self._write_json(404, {"error": "not_found"})
+            return True
+        match (self.command, route.split("/")):
+            case ("GET", [""]):
+                self._write_json(200, {"suites": {name: asdict(status) for name, status in addins.status().items()}})
+            case ("POST", ["", suite, "install" | "remove" as action]) if same_origin and suite in addins.suites:
+                self._write_json(200, asdict(addins.install(suite) if action == "install" else addins.remove(suite)))
+            case _:
+                self._write_json(404, {"error": "not_found"})
         return True
 
     def _resolve_enterprise_upstream(self) -> tuple[str, str] | None:
@@ -1069,6 +1305,24 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if not is_enterprise():
             return False
         path = urlparse(self.path).path
+        backend = os.getenv("USER_WEB_BACKEND_TARGET", "").rstrip("/")
+        if backend:
+            if path.startswith("/manager-api/v1/user-console/"):
+                self._proxy_http(
+                    target=backend, path=self.path.replace("/manager-api", "/api", 1),
+                )
+                return True
+            if self._is_ws_route():
+                if self._is_websocket_upgrade():
+                    self._proxy_websocket_tunnel(target=backend)
+                else:
+                    self.send_error(400, "expected websocket upgrade")
+                return True
+            backend_api = path.startswith(("/idp/", "/gateway-api/")) or path == "/gateway-api"
+            resource_api = self._is_file_api_route() or self._is_share_api_route()
+            if backend_api or self._is_api_route() or resource_api:
+                self._proxy_http(target=backend, stream_sse=True)
+                return True
         if path.startswith("/idp/"):
             target = os.getenv("USER_WEB_IDP_TARGET", "")
             if target:
@@ -1089,7 +1343,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         gateway_api = path == "/gateway-api" or path.startswith("/gateway-api/")
         ws = self._is_ws_route()
         if not (gateway_api or ws or self._is_api_route() or self._is_file_api_route()
-                or self._is_share_api_route()):
+                or self._is_share_api_route() or self._is_extension_asset_route()
+                or self._is_extension_transfer_route()
+                or path == "/system-plugin-recovery/endpoint"):
             return False
         upstream = self._resolve_enterprise_upstream()
         if upstream is None:
@@ -1102,12 +1358,18 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self.send_error(400, "expected websocket upgrade")
         else:
             forward_path = self.path.replace("/gateway-api", "/api", 1) if gateway_api else self.path
-            self._proxy_http(target=http_target, path=forward_path, stream_sse=True)
+            self._proxy_http(
+                target=http_target, path=forward_path, stream_sse=True,
+                stream_body=self._is_extension_transfer_route(),
+            )
         return True
 
     def _dispatch_proxy(self) -> bool:
-        if self._is_api_route():
+        if self._is_api_route() or self._is_extension_asset_route():
             self._proxy_http()
+            return True
+        if self._is_extension_transfer_route():
+            self._proxy_http(stream_body=True)
             return True
         if self._is_ws_route():
             if self._is_websocket_upgrade():
@@ -1116,6 +1378,30 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 self.send_error(400, "expected websocket upgrade")
             return True
         return False
+
+    def _handle_system_plugin_recovery_endpoint(self) -> None:
+        """Return the private loopback page URL without using extension services."""
+        from jiuwenswarm.common.system_plugin_recovery import is_local_recovery_request
+
+        if not is_local_recovery_request(self.headers, self.server.server_address[1]):
+            self._write_json(403, {"error": "forbidden"})
+            return
+        if self._check_desktop_access():
+            return
+        if not self.desktop_token and not _is_loopback_address(self.client_address[0]):
+            self._write_json(403, {"error": "forbidden"})
+            return
+        try:
+            from jiuwenswarm.common.system_plugin_recovery import SystemPluginRecovery
+
+            endpoint = SystemPluginRecovery().endpoint()
+        except Exception:  # noqa: BLE001 - keep the static emergency route isolated
+            self.logger.warning("[SystemPluginRecovery] could not read sidecar endpoint", exc_info=True)
+            endpoint = None
+        if endpoint is None:
+            self._write_json(503, {"error": "recovery_unavailable"})
+            return
+        self._write_json(200, {"url": endpoint})
 
     @staticmethod
     def _is_markdown(path_obj: Path) -> bool:
@@ -1633,7 +1919,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             start, end = byte_range or (0, max(file_size - 1, 0))
             content_length = 0 if file_size == 0 else end - start + 1
             self.send_response(206 if byte_range is not None else 200)
-            self.send_header("Content-Type", mime_type or "application/octet-stream")
+            self.send_header(
+                "Content-Type",
+                _text_content_type(mime_type or "application/octet-stream", full_path),
+            )
             self.send_header("Content-Length", str(content_length))
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Cache-Control", "no-store")
@@ -1655,6 +1944,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if path == "/file-api/file-content":
             file_arg = query.get("path", "")
             encoding_arg = query.get("encoding", "utf-8")
+            tail_arg = str(query.get("tail_bytes", "")).strip()
             if not file_arg:
                 self._write_json(400, {"error": "missing_file_path"})
                 return
@@ -1673,26 +1963,57 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     self._write_json(404, {"error": "file_not_found", "fullPath": str(full_path)})
                     return
 
+            # A length cap keeps int() away from the CPython digit-limit
+            # ValueError on absurdly long digit strings; anything longer is
+            # treated as "no tail" and lands in the 413 gate below.
+            tail_bytes = int(tail_arg) if tail_arg.isascii() and tail_arg.isdecimal() and len(tail_arg) <= 12 else 0
+            try:
+                file_size = full_path.stat().st_size
+            except OSError as exc:
+                self._write_json(500, {"error": str(exc)})
+                return
+            if file_size > MAX_FILE_CONTENT_BYTES and tail_bytes <= 0:
+                self._write_json(413, {
+                    "error": "file_too_large",
+                    "fileSize": file_size,
+                    "maxBytes": MAX_FILE_CONTENT_BYTES,
+                })
+                return
+            # Tail mode reads only the trailing bytes so callers like the
+            # logs panel can poll a growing log without transferring (or
+            # decoding) the whole file every interval.  The window is also
+            # clamped to MAX_FILE_CONTENT_BYTES: an unbounded tail_bytes
+            # would otherwise reopen the whole-file read this limit exists
+            # to prevent.
+            read_size = min(tail_bytes, file_size, MAX_FILE_CONTENT_BYTES) if tail_bytes > 0 else file_size
+            read_offset = file_size - read_size
+            truncated = file_size > read_size
+
             def read_file_with_encoding(file_path: Path, encoding: str) -> tuple[str, str]:
+                if read_size != file_size:
+                    with file_path.open("rb") as file_obj:
+                        file_obj.seek(read_offset)
+                        # Bound the read to the computed window: a growing
+                        # log could otherwise append bytes between the stat
+                        # above and this read, pushing the transfer (and
+                        # the memory peak) past MAX_FILE_CONTENT_BYTES.
+                        raw_data = file_obj.read(read_size)
+                    if truncated:
+                        # The seek lands on an arbitrary byte, possibly inside
+                        # a multi-byte character.  Align to the next newline
+                        # ('\n' never occurs inside UTF-8/GBK/Big5/Shift-JIS
+                        # sequences) so callers always get complete lines;
+                        # decode then uses "replace" as a last resort for
+                        # windows without any newline at all.
+                        newline_pos = raw_data.find(b"\n")
+                        if newline_pos >= 0:
+                            raw_data = raw_data[newline_pos + 1:]
+                    if encoding == "auto":
+                        return _decode_bytes_auto(raw_data, errors="replace")
+                    return raw_data.decode(encoding, errors="replace"), encoding
                 if encoding == "auto":
-                    import charset_normalizer
-                    raw_data = file_path.read_bytes()
-                    detected = charset_normalizer.from_bytes(raw_data).best()
-                    if detected is None:
-                        detected_encoding = "utf-8"
-                    else:
-                        detected_encoding = detected.encoding or "utf-8"
-                    try:
-                        return raw_data.decode(detected_encoding), detected_encoding
-                    except (UnicodeDecodeError, LookupError) as decode_exc:
-                        for try_encoding in ["gbk", "gb2312", "big5", "shift_jis", "euc_kr"]:
-                            try:
-                                return raw_data.decode(try_encoding), try_encoding
-                            except (UnicodeDecodeError, LookupError):
-                                continue
-                        raise OSError("Unable to decode file with any known encoding") from decode_exc
-                else:
-                    return file_path.read_text(encoding=encoding), encoding
+                    return _decode_bytes_auto(file_path.read_bytes())
+                return file_path.read_text(encoding=encoding), encoding
 
             try:
                 data, used_encoding = read_file_with_encoding(full_path, encoding_arg)
@@ -1707,6 +2028,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self.send_header("Content-Type", "text/plain; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("X-Original-Encoding", used_encoding)
+            self.send_header("X-Truncated", "1" if truncated else "0")
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(body)
@@ -1751,6 +2073,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
         try:
             from jiuwenswarm.agents.harness.common.tools.web_file_download import (
+                PURPOSE_ASSET_EXPORT,
                 PURPOSE_SKILL_CONTENT_IMAGE,
                 validate_file_download_token,
             )
@@ -1804,6 +2127,12 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 return
             self._serve_verified_local_download(str(file_path), inline=True)
             return
+        # 资产导出 token 为短时效令牌，不享受交付产物的过期豁免：过期即 403，
+        # 未过期则继续走下方通用文件桥（含 AgentOS 代理）。
+        if payload is not None and str(payload.get("purpose") or "") == PURPOSE_ASSET_EXPORT:
+            if validate_file_download_token(token, check_expiry=True) is None:
+                self._write_json(403, {"error": "invalid_or_expired_token"})
+                return
         verified_download_name: str | None = None
         if payload is not None:
             # 本进程 secret 能校验并不意味着 token 的路径位于 Gateway 宿主机。
@@ -1889,7 +2218,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             start, end = byte_range or (0, max(0, file_size - 1))
             content_length = 0 if file_size == 0 else end - start + 1
             self.send_response(206 if byte_range is not None else 200)
-            self.send_header("Content-Type", mime_type)
+            self.send_header(
+                "Content-Type",
+                _text_content_type(mime_type, Path(file_path), file_name),
+            )
             self.send_header("Content-Length", str(content_length))
             self.send_header("Accept-Ranges", "bytes")
             self.send_header(
@@ -2203,6 +2535,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if parsed.path == "/file-api/skills/upload-temp":
             self._handle_skills_upload_temp()
             return
+        if parsed.path == "/file-api/assets/upload-temp":
+            self._handle_assets_upload_temp()
+            return
         if parsed.path == "/file-api/external-cli/custom-agents":
             self._handle_custom_agent_upload()
             return
@@ -2310,10 +2645,46 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
     def _handle_skills_upload_temp(self) -> None:
         from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
+            SKILL_UPLOAD_MAX_REQUEST_BYTES,
             handle_skills_upload_temp_http,
+            skill_http_error_body,
         )
 
+        length = self._parse_content_length()
+        if length > SKILL_UPLOAD_MAX_REQUEST_BYTES:
+            self._discard_request_body(length)
+            self._write_json(
+                413,
+                skill_http_error_body("SKILL_FILE_TOO_LARGE", "上传包超过限制"),
+            )
+            return
         status, payload = handle_skills_upload_temp_http(
+            content_type=self.headers.get("Content-Type", ""),
+            body=self._read_request_body(),
+        )
+        self._write_json(status, payload)
+
+    def _handle_assets_upload_temp(self) -> None:
+        from jiuwenswarm.server.runtime.assets.upload_http import (
+            MAX_ASSETS_UPLOAD_BYTES,
+            handle_assets_upload_temp_http,
+        )
+
+        length = self._parse_content_length()
+        if length > MAX_ASSETS_UPLOAD_BYTES:
+            # 不消费请求体就提前应答会复位连接，浏览器收不到 413 JSON
+            # 而报 "Failed to fetch"（与 _handle_designer_upload 同一处理）。
+            self._discard_request_body(length)
+            self._write_json(
+                413,
+                {
+                    "code": "ASSET_LIMIT_EXCEEDED",
+                    "message": "upload too large",
+                    "error": "upload too large",
+                },
+            )
+            return
+        status, payload = handle_assets_upload_temp_http(
             content_type=self.headers.get("Content-Type", ""),
             body=self._read_request_body(),
         )
@@ -2424,6 +2795,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self._dispatch_enterprise():
             return
         parsed = urlparse(self.path)
+        if self._dispatch_office_addins(parsed):
+            return
+        if parsed.path == "/system-plugin-recovery/endpoint":
+            self._handle_system_plugin_recovery_endpoint()
+            return
         if parsed.path == "/oauth/hub/callback":
             from jiuwenswarm.channels.web.hub_oauth import complete
 
@@ -2436,6 +2812,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("Content-Length", "0")
             self.end_headers()
+            return
+        if parsed.path == SPLASH_HINT_PATH:
+            self._write_json(200, {"candidates": _splash_candidates()})
             return
         if parsed.path == "/oauth/hub/done":
             body = (
@@ -2468,6 +2847,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self._dispatch_enterprise():
             return
         parsed = urlparse(self.path)
+        if self._dispatch_office_addins(parsed):
+            return
         if parsed.path in {"/marketplace-oauth/hub/start", "/marketplace-oauth/hub/result"}:
             from jiuwenswarm.channels.web.hub_oauth import result, start
 
@@ -2543,6 +2924,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if self._dispatch_enterprise():
             return
         parsed = urlparse(self.path)
+        if parsed.path == "/system-plugin-recovery/endpoint":
+            self._handle_system_plugin_recovery_endpoint()
+            return
         if self._is_share_api_route():
             self._handle_share_api_get(parsed)
             return
@@ -2587,6 +2971,30 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         if cls._IMMUTABLE_ASSET_RE.match(rel_path):
             return cls._IMMUTABLE_CACHE_CONTROL
         return cls._REVALIDATE_CACHE_CONTROL
+
+    @staticmethod
+    def _resolve_route_relative_static(base_dir: Path, rel_path: str) -> Path | None:
+        """Map a route-prefixed static request back onto the static root.
+
+        The Electron build emits relative asset URLs, so a full page reload on a
+        nested route (for example ``/chat/assets/app-xxx.js``) asks the server
+        for the file with the route prefix attached. Serving the matching file
+        keeps deep links working without changing the frontend ``base``.
+        """
+        parts = rel_path.split("/")
+        if len(parts) < 2 or "." not in parts[-1]:
+            return None
+        for start in range(1, len(parts)):
+            # SPA routes never end in a file name, so only file-like tails are
+            # rewritten; anything else keeps the regular index.html fallback.
+            candidate = (base_dir.joinpath(*parts[start:])).resolve()
+            try:
+                in_base = os.path.commonpath([str(base_dir), str(candidate)]) == str(base_dir)
+            except ValueError:
+                continue
+            if in_base and candidate.is_file():
+                return candidate
+        return None
 
     def end_headers(self) -> None:
         # 缓存策略在 send_head 里决定、这里统一落头：super().send_head() 内部
@@ -2680,6 +3088,12 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return super().send_head()
 
         self._static_cache_control = self._REVALIDATE_CACHE_CONTROL
+        route_static = self._resolve_route_relative_static(base_dir, rel_path)
+        if route_static is not None:
+            route_rel_path = route_static.relative_to(base_dir).as_posix()
+            self._static_cache_control = self._cache_control_for_static(route_rel_path)
+            self.path = "/" + route_rel_path
+            return super().send_head()
         self.path = "/index.html"
         if spa_index.is_file():
             return self._injected_index(spa_index)
@@ -2774,6 +3188,18 @@ def _wait_for_tcp_port(
             if attempts < max_attempts:
                 time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
     return False
+
+
+def create_enterprise_app() -> Any:
+    """Create the enterprise user backend served by this module."""
+    from jiuwenswarm.enterprise import is_enterprise
+
+    if not is_enterprise():
+        raise RuntimeError("The enterprise user backend requires JIUWENSWARM_EDITION=enterprise")
+
+    from jiuwenswarm.channels.web.enterprise_backend import create_app
+
+    return create_app()
 
 
 def main() -> None:
@@ -2894,7 +3320,38 @@ def main() -> None:
     _ConfiguredHandler.logs_root = logs_root
     _ConfiguredHandler.logger = logger
     handler = partial(_ConfiguredHandler, directory=str(dist_dir))
+
+    def _cleanup_stale_skill_uploads() -> None:
+        try:
+            from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
+                cleanup_stale_skill_uploads,
+            )
+
+            removed = cleanup_stale_skill_uploads()
+            if removed:
+                logger.info(
+                    "[jiuwenswarm-web] removed %s stale skill uploads", removed
+                )
+        except Exception as exc:  # noqa: BLE001 - 清理失败不应阻断启动
+            logger.debug("[jiuwenswarm-web] skill upload cleanup skipped: %s", exc)
+
+    # 技能导入临时上传的兜底回收放到后台线程，避免拖慢 Web 启动。
+    threading.Thread(
+        target=_cleanup_stale_skill_uploads,
+        name="skill-upload-cleanup",
+        daemon=True,
+    ).start()
     server = ThreadingHTTPServer((args.host, args.port), handler)
+    office_listener = None
+    if desktop_token:
+        from jiuwenswarm.channels.desktop.office_addins import OfficeAddins
+        from jiuwenswarm.channels.desktop.office_addins.listener import TlsListener
+
+        # Office loads task panes only over HTTPS: the same handler, on its own port. WPS loads them from this server.
+        office_listener = TlsListener(int(os.getenv("OFFICE_TLS_PORT", "5443")), handler)
+        _ConfiguredHandler.office_addins = OfficeAddins.for_this_machine(
+            project_root, office_listener, f"http://127.0.0.1:{args.port}", dist_dir / "office",
+        )
 
     # Windows has no SIGUSR1, so avoid importing debug_dump (which itself
     # imports the runtime utility module) in the EXE's critical Web path.
@@ -2945,6 +3402,13 @@ def main() -> None:
             daemon=True,
         ).start()
 
+        if _ConfiguredHandler.office_addins is not None:
+            try:
+                _ConfiguredHandler.office_addins.ensure_registered()
+            except OSError as exc:
+                # The status route reports what is still wrong; the panes are optional.
+                logger.warning("[office-addins] could not restore the installed add-ins: %s", exc)
+
     threading.Thread(
         target=_finish_after_listen,
         name="web-post-listen-setup",
@@ -2962,6 +3426,8 @@ def main() -> None:
         except Exception as exc:
             logger.warning("Failed to remove web process info: %s", exc)
         server.server_close()
+        if office_listener is not None:
+            office_listener.close()
         logger.info("[jiuwenswarm-web] server closed")
 
 

@@ -7,6 +7,7 @@ import {
   createWorkspaceState,
   mergeWorkspaceConversations,
   openChannelTrace,
+  openManagementChannelTrace,
   selectChannel,
   selectColleague,
   selectManagementChannel,
@@ -89,6 +90,16 @@ test('opening a management channel keeps the conversation list selected', () => 
 
   assert.equal(selected.recordTab, 'conversations');
   assert.equal(selected.managementChannelId, 'group-1');
+});
+
+test('a trace opened from the employee center lands in the management panel like the private chat path', () => {
+  const channels = selectRecordTab(createWorkspaceState('agent-learning', 'group-1'), 'channels');
+  const opened = openManagementChannelTrace(channels, 'group-1');
+
+  assert.equal(opened.recordTab, 'conversations');
+  assert.equal(opened.managementChannelId, 'group-1');
+  assert.equal(opened.traceOpen, true);
+  assert.equal(closeChannelTrace(opened).managementChannelId, 'group-1');
 });
 
 test('trace filters are mutually exclusive toggles and reset on close', () => {

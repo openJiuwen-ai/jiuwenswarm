@@ -33,6 +33,7 @@ import json
 import os
 import re
 import sys
+import uuid
 import datetime
 import shutil
 import socket
@@ -55,6 +56,7 @@ from e2a.logging_config import (
     LOG_CONFIG_OP_FIELD,
 )
 from jiuwenswarm.common.agentos_runtime import is_agentos_runtime
+from jiuwenswarm.common.log_exception import format_log_exception
 from jiuwenswarm.common.runtime_log_filter import install_runtime_log_filter
 from jiuwenswarm.enterprise import is_enterprise
 
@@ -692,249 +694,59 @@ def _update_skills_state_for_builtin(
         logger.error(f"保存技能状态文件失败: {e}")
 
 
-def _repair_skill_creator_normal_frontmatter(normal_dir: Path) -> None:
-    """将 ``skill-creator-normal/SKILL.md`` 中残留的 ``name: skill-creator`` 改为目录名.
-
-    仅改目录、不改正文 name 时，skills.list 会扫出两个同名 ``skill-creator``，
-    前端 ``key={skill.name}`` 在切换「团队技能」等过滤时会叠出重复卡片。
-    """
-    skill_md = normal_dir / "SKILL.md"
-    if not skill_md.is_file():
-        return
-    try:
-        text = skill_md.read_text(encoding="utf-8")
-    except OSError:
-        return
-    if "name: skill-creator-normal" in text:
-        return
-    if "name: skill-creator" not in text:
-        return
-    # 新路由入口文案不应落在 normal 目录；若误判则跳过
-    router_markers = (
-        "Routes skill creation",
-        "Unified entry point",
-        "统一入口",
-    )
-    if any(marker in text for marker in router_markers):
-        return
-    updated = text.replace("name: skill-creator", "name: skill-creator-normal", 1)
-    if updated == text:
-        return
-    try:
-        skill_md.write_text(updated, encoding="utf-8")
-        logger.info("已修复 skill-creator-normal frontmatter name")
-    except OSError as exc:
-        logger.warning(f"修复 skill-creator-normal frontmatter 失败: {exc}")
-
-
-def _migrate_skill_creator_router_rename(user_skills_dir: Path) -> None:
-    """一次性迁移：skill-creator-router → skill-creator，旧 skill-creator → skill-creator-normal.
-
-    避免用户目录已有旧 ``skill-creator`` 时跳过安装，导致装不上新的路由入口。
-    迁移后删除旧 router 目录，由后续默认安装从内置资源拷贝新的 ``skill-creator``。
-    """
-    old_router = user_skills_dir / "skill-creator-router"
-    old_creator = user_skills_dir / "skill-creator"
-    normal = user_skills_dir / "skill-creator-normal"
-
-    def _looks_like_legacy_monadic_creator(skill_dir: Path) -> bool:
-        skill_md = skill_dir / "SKILL.md"
-        if not skill_md.is_file():
-            return False
-        try:
-            text = skill_md.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            return False
-        # 新路由 / 旧 router 文案
-        router_markers = (
-            "Routes skill creation",
-            "Unified entry point",
-            "统一入口",
-            "创建/修改的**路由**",
-            "创建/修改的**分发器**",
-        )
-        if any(marker in text for marker in router_markers):
-            return False
-        has_legacy_name = "name: skill-creator" in text
-        has_normal_name = "name: skill-creator-normal" in text
-        return has_legacy_name or has_normal_name
-
-    try:
-        if old_router.is_dir():
-            if old_creator.is_dir() and not normal.exists():
-                old_creator.rename(normal)
-                logger.info("已迁移默认技能: skill-creator -> skill-creator-normal")
-            elif old_creator.is_dir() and normal.exists():
-                shutil.rmtree(old_creator)
-                logger.info("已移除冲突的旧 skill-creator，将安装新的路由 skill-creator")
-            shutil.rmtree(old_router)
-            logger.info("已移除旧 skill-creator-router，将安装新的路由 skill-creator")
-        elif (
-            old_creator.is_dir()
-            and not normal.exists()
-            and _looks_like_legacy_monadic_creator(old_creator)
-        ):
-            # 仅有旧单体 skill-creator、尚无 skill-creator-normal
-            old_creator.rename(normal)
-            logger.info("已迁移默认技能: skill-creator -> skill-creator-normal（无 router 目录）")
-
-        # 无论本次是否刚改名：修复已存在的 normal 目录残留 name
-        if normal.is_dir():
-            _repair_skill_creator_normal_frontmatter(normal)
-    except OSError as exc:
-        logger.warning(f"skill-creator 重命名迁移失败，将尝试按默认列表安装: {exc}")
-
-
 def _install_default_builtin_skills(
     builtin_dir: Path,
     user_skills_dir: Path,
     overwrite: bool,
     cumulative_diff: CopyDiffResult,
 ) -> None:
-    """安装默认的内置技能到用户技能目录.
+    """Install the single catalog and migrate unchanged legacy builtin copies."""
+    from jiuwenswarm.common.builtin_skills import BUILTIN_CATALOG_NAME, migrate_builtin_catalog
 
-    默认安装的技能：
-    - skill-creator: 所有 Skill Creator 的统一入口（创建/修改路由）
-    - skill-creator-normal: 单体技能创建助手（由 skill-creator 路由选中）
-    - swarmskill-creator: Swarm技能创建助手（由 skill-creator 路由选中）
-    - skill-omni-creation: 链接/网页/视频技能创建助手（由 skill-creator 路由选中）
-    - huawei-cloud-maas-setup: 华为云MaaS购买与配置引导
-    - rsi-program-dataset-creator: 程序演进任务设计与评测编排
-    - agent-creator: Agent 模板包创建助手
-    - agent-group-creator: 专家团包创建助手
-    - plugin-creator: 插件能力扩展包创建助手
-    - baoyu-image-gen: AI 图像生成（多平台 API，文生图/参考图/批量生成）
-    - docx-pro: Word 富格式文档生成/Markdown 互转/目录水印
-    - local-doc-ocr: 本地离线 OCR（扫描件 PDF/图片提取文字）
-    - xlsx: 电子表格创建/读取/分析/编辑/修复（零格式损失，中文/CJK 友好）
-    - pdf-extraction: PDF 文本/表格/元数据提取
-    - pptx-generator: PowerPoint 演示文稿生成与编辑
-
-    Args:
-        builtin_dir: 内置技能目录路径
-        user_skills_dir: 用户技能目录路径
-        overwrite: 是否覆盖已存在的技能
-        cumulative_diff: 累积的文件变更追踪结果
-    """
-    # 定义默认安装的技能列表
-    default_skills = [
-        "skill-creator",
-        "skill-creator-normal",
-        "swarmskill-creator",
-        "skill-omni-creation",
-        "huawei-cloud-maas-setup",
-        "rsi-program-dataset-creator",
-        "agent-creator",
-        "agent-group-creator",
-        "plugin-creator",
-        "baoyu-image-gen",
-        "docx-pro",
-        "local-doc-ocr",
-        "xlsx",
-        "pdf-extraction",
-        "pptx-generator",
-    ]
-
-    if not builtin_dir.exists() or not builtin_dir.is_dir():
-        logger.warning(f"内置技能目录不存在，跳过默认技能安装: {builtin_dir}")
+    source = builtin_dir / BUILTIN_CATALOG_NAME
+    target = user_skills_dir / BUILTIN_CATALOG_NAME
+    if not source.is_dir():
+        logger.warning("Builtin catalog not found: %s", source)
         return
-
     user_skills_dir.mkdir(parents=True, exist_ok=True)
-    _migrate_skill_creator_router_rename(user_skills_dir)
-
-    # 记录成功安装的技能，用于后续更新状态文件
-    installed_skills = []
-
-    for skill_name in default_skills:
-        builtin_skill_path = builtin_dir / skill_name
-        user_skill_path = user_skills_dir / skill_name
-
-        # 检查内置技能是否存在
-        if not builtin_skill_path.exists() or not builtin_skill_path.is_dir():
-            logger.warning(f"内置技能不存在，跳过安装: {skill_name}")
-            continue
-
-        # 如果用户目录已存在该技能且不是覆盖模式，则跳过
-        if user_skill_path.exists() and not overwrite:
-            logger.info(f"技能已存在，跳过安装: {skill_name}")
-            continue
-
-        # 复制技能到用户目录
+    with portalocker.Lock(str(user_skills_dir / ".builtin-catalog.lock"), timeout=30):
+        installed = False
         try:
-            with TrackCopyDiff(
-                dest=user_skill_path,
-                cumulative=cumulative_diff,
-                overwrite=overwrite,
-            ):
-                if user_skill_path.exists() and overwrite:
-                    shutil.rmtree(user_skill_path)
-                shutil.copytree(builtin_skill_path, user_skill_path)
-            logger.info(f"已安装默认技能: {skill_name}")
-            installed_skills.append(skill_name)
-        except Exception as e:
-            logger.error(f"安装默认技能失败 {skill_name}: {e}")
-
-    # 更新 skills_state.json，记录已安装的技能
-    if installed_skills:
-        _update_skills_state_for_builtin(user_skills_dir, installed_skills)
+            with TrackCopyDiff(dest=target, cumulative=cumulative_diff, overwrite=overwrite):
+                if not target.exists():
+                    import tempfile
+                    with tempfile.TemporaryDirectory(prefix=".builtin-install-", dir=user_skills_dir) as directory:
+                        staged = Path(directory) / BUILTIN_CATALOG_NAME
+                        shutil.copytree(source, staged)
+                        staged.rename(target)
+                    installed = True
+                elif overwrite:
+                    # Preserve migration archives and preferences outside seed files.
+                    shutil.copytree(source, target, dirs_exist_ok=True)
+                    installed = True
+            if installed:
+                _update_skills_state_for_builtin(user_skills_dir, [BUILTIN_CATALOG_NAME])
+            state_file = user_skills_dir / "skills_state.json"
+            state = json.loads(state_file.read_text(encoding="utf-8")) if state_file.is_file() else {}
+            owned = any(
+                isinstance(item, dict) and item.get("name") == BUILTIN_CATALOG_NAME
+                and item.get("source", item.get("marketplace")) == "builtin"
+                for item in state.get("installed_plugins", [])
+            )
+            if owned:
+                migrate_builtin_catalog(builtin_dir, user_skills_dir)
+        except (OSError, ValueError) as exc:
+            logger.error("Builtin catalog installation/migration failed: %s", exc)
 
 
 def ensure_default_builtin_skills() -> None:
-    """确保所有默认内置技能已安装到用户技能目录（幂等）。
-
-    与 ``prepare_workspace`` 不同，本函数设计为每次启动都可安全调用：
-    仅复制用户目录中尚不存在的默认技能，已存在的技能不会被覆盖或修改，
-    从而让新增的默认技能在老用户工作区中也能自动补齐。
-    """
-    builtin_dir = get_builtin_skills_dir()
-    user_skills_dir = get_agent_skills_dir()
-
-    if not builtin_dir.exists() or not builtin_dir.is_dir():
-        logger.warning(f"内置技能目录不存在，跳过默认技能补齐: {builtin_dir}")
-        return
-
-    default_skills = [
-        "skill-creator",
-        "skill-creator-normal",
-        "swarmskill-creator",
-        "skill-omni-creation",
-        "huawei-cloud-maas-setup",
-        "rsi-program-dataset-creator",
-        "agent-creator",
-        "agent-group-creator",
-        "plugin-creator",
-        "baoyu-image-gen",
-        "docx-pro",
-        "local-doc-ocr",
-        "xlsx",
-        "pdf-extraction",
-        "pptx-generator",
-    ]
-
-    user_skills_dir.mkdir(parents=True, exist_ok=True)
-    _migrate_skill_creator_router_rename(user_skills_dir)
-
-    installed_skills = []
-    for skill_name in default_skills:
-        builtin_skill_path = builtin_dir / skill_name
-        user_skill_path = user_skills_dir / skill_name
-
-        if not builtin_skill_path.exists() or not builtin_skill_path.is_dir():
-            logger.warning(f"内置技能不存在，跳过补齐: {skill_name}")
-            continue
-
-        if user_skill_path.exists():
-            continue
-
-        try:
-            shutil.copytree(builtin_skill_path, user_skill_path)
-            logger.info(f"已补齐默认技能: {skill_name}")
-            installed_skills.append(skill_name)
-        except Exception as e:
-            logger.error(f"补齐默认技能失败 {skill_name}: {e}")
-
-    if installed_skills:
-        _update_skills_state_for_builtin(user_skills_dir, installed_skills)
+    """Install the builtin catalog on startup without replacing user edits."""
+    _install_default_builtin_skills(
+        builtin_dir=get_builtin_skills_dir(),
+        user_skills_dir=get_agent_skills_dir(),
+        overwrite=False,
+        cumulative_diff=CopyDiffResult([], [], []),
+    )
 
 
 def ensure_config_migrated_from_template(
@@ -1116,6 +928,164 @@ def cleanup_stale_openjiuwen_descs() -> None:
                 ) from exc
 
 
+def _read_previous_external_cli_state(config_path: Path) -> dict[str, Any]:
+    """读取 config.yaml 里用户的三方 agent 配置。
+
+    返回 external_cli_agents 列表、路径历史与 external_transport 节点。
+    文件缺失（全新数据目录）返回不含 agent 的空态；**读取/解析失败抛异常**，
+    由调用方区分"读取失败"与"确认无启用 agent"——旁路刷新不得把读取失败
+    当成空态覆盖唯一的恢复备份（!10406 第五轮检视）。
+    """
+    if not config_path.exists():
+        return {"agents": [], "histories": {}, "transport": None}
+    import yaml
+
+    with config_path.open("r", encoding="utf-8") as handle:
+        data = yaml.safe_load(handle) or {}
+    team = ((data.get("modes") or {}).get("team") or {}).get("jiuwen_team") or {}
+    agents = team.get("external_cli_agents")
+    histories = team.get("external_cli_path_histories")
+    if not isinstance(agents, list) or not agents:
+        return {"agents": [], "histories": {}, "transport": team.get("external_transport")}
+    return {
+        "agents": agents,
+        "histories": histories if isinstance(histories, dict) else {},
+        "transport": team.get("external_transport"),
+    }
+
+
+def _restore_previous_external_cli_state(config_path: Path, state: dict[str, Any]) -> None:
+    """把覆盖前的三方 agent 配置写回新 config.yaml（ruamel round-trip 保格式）。
+
+    直接对被覆盖的目标文件做节点级更新——不能用全局 CONFIG_YAML_PATH 的更新
+    函数：prepare_workspace 可能带着与默认数据目录不同的 workspace_dir 被调用。
+    条目按当前允许清单过滤：旧配置里已不被支持的 agent 若原样回写，会在后续
+    配置归一化时抛 ValueError 导致保存失败。任一失败仅记录告警并保留模板
+    默认值，不阻塞 init。
+    """
+    try:
+        from jiuwenswarm.common.config import _allowed_external_cli_agents
+
+        allowed = set(_allowed_external_cli_agents())
+
+        def _allowed_entry(item: Any) -> bool:
+            if isinstance(item, dict):
+                name = str(item.get("cli_agent") or "").strip()
+            elif isinstance(item, str):
+                name = item.strip()
+            else:
+                return False
+            return bool(name) and name in allowed
+
+        agents = [item for item in state["agents"] if _allowed_entry(item)]
+        if not agents:
+            logger.info("覆盖前没有仍受支持的三方 agent 配置可保留")
+            return
+        yaml_rt = YAML()
+        yaml_rt.preserve_quotes = True
+        with config_path.open("r", encoding="utf-8") as handle:
+            data = yaml_rt.load(handle) or {}
+        modes = data.setdefault("modes", {})
+        team = modes.setdefault("team", {})
+        jiuwen_team = team.setdefault("jiuwen_team", {})
+        jiuwen_team["external_cli_agents"] = agents
+        histories = state.get("histories") or {}
+        if histories:
+            jiuwen_team["external_cli_path_histories"] = histories
+        # 跨进程 transport 不变式随 agents 一起恢复：agents 需要跨进程而
+        # transport 节点缺失时，后续配置归一化会直接抛错（!10406 第五轮）。
+        transport = state.get("transport")
+        if transport is not None:
+            jiuwen_team["external_transport"] = transport
+        # 原子写回：恢复写一半崩溃会留下半截 config.yaml，启动直接失败
+        # （!10406 检视），与 config.py 的落盘出口保持同样的原子语义。
+        tmp = config_path.with_name(f"{config_path.stem}.{uuid.uuid4().hex}.yaml.tmp")
+        try:
+            with tmp.open("w", encoding="utf-8") as handle:
+                yaml_rt.dump(data, handle)
+            os.replace(tmp, config_path)
+        except BaseException:
+            try:
+                tmp.unlink()
+            except FileNotFoundError:
+                pass
+            raise
+        logger.info("已保留覆盖前的三方 agent 配置与路径历史")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"保留覆盖前的三方 agent 配置失败: {exc}")
+
+
+def external_cli_state_sidecar_path(workspace_dir: Path) -> Path:
+    """三方 agent 启用状态的旁路文件路径（位于 .jiuwenswarm 数据目录之外）。
+
+    数据目录被整体删除（重装/重置）后 config.yaml 不复存在，启用态无处
+    保留；旁路文件落在用户级应用数据目录，重装不会清除，init 时用于恢复
+    三方 agent 的启用配置。文件名按 workspace_dir 的摘要区分——项目支持
+    多工作区/多实例（JIUWENSWARM_DATA_DIR），旁路不能互相串台。
+    """
+    try:
+        from jiuwenswarm.common._build_config import DISPLAY_NAME as display_name
+    except Exception:  # noqa: BLE001
+        display_name = "WorkSwarm"
+    identity = hashlib.sha1(str(Path(workspace_dir).resolve()).encode("utf-8")).hexdigest()[:10]
+    if os.name == "nt":
+        local_app_data = Path(os.environ.get("LOCALAPPDATA") or (Path.home() / "AppData" / "Local"))
+        return local_app_data / display_name / f"external_cli_state-{identity}.json"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Application Support" / display_name / f"external_cli_state-{identity}.json"
+    return Path.home() / ".config" / display_name / f"external_cli_state-{identity}.json"
+
+
+def refresh_external_cli_state_sidecar(config_path: Path, workspace_dir: Path) -> None:
+    """把 config.yaml 里的三方 agent 配置镜像到数据目录之外的旁路文件。
+
+    配置里没有启用中的 agent 时写入空态，init 依据空态不做恢复。
+    **读取失败与空态语义不同**：读取/解析失败时跳过刷新并保留既有旁路，
+    避免瞬时读失败把唯一的恢复备份覆盖成空态（!10406 第五轮检视）；旁路
+    本身用临时文件 + os.replace 原子写回，避免写一半截断恢复数据。
+    """
+    try:
+        state = _read_previous_external_cli_state(config_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"读取三方 agent 配置失败，跳过旁路刷新（保留既有旁路）: {exc}")
+        return
+    payload = state or {"agents": [], "histories": {}, "transport": None}
+    sidecar = external_cli_state_sidecar_path(workspace_dir)
+    sidecar.parent.mkdir(parents=True, exist_ok=True)
+    tmp = sidecar.with_name(f"{sidecar.stem}.{uuid.uuid4().hex}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False)
+        os.replace(tmp, sidecar)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _read_external_cli_state_sidecar(workspace_dir: Path) -> Optional[dict[str, Any]]:
+    """读取状态旁路文件；缺失/解析失败/无启用 agent 时返回 None。"""
+    try:
+        sidecar = external_cli_state_sidecar_path(workspace_dir)
+        if not sidecar.exists():
+            return None
+        payload = json.loads(sidecar.read_text(encoding="utf-8"))
+        agents = payload.get("agents") if isinstance(payload, dict) else None
+        if not isinstance(agents, list) or not agents:
+            return None
+        histories = payload.get("histories")
+        return {
+            "agents": agents,
+            "histories": histories if isinstance(histories, dict) else {},
+            "transport": payload.get("transport"),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"读取三方 agent 状态旁路文件失败: {exc}")
+        return None
+
+
 def prepare_workspace(
     overwrite: bool = True,
     preferred_language: Optional[str] = None,
@@ -1148,6 +1118,22 @@ def prepare_workspace(
 
     config_initialized = overwrite or not config_yaml_dest.exists()
     if config_initialized:
+        # init/重新部署用模板覆盖 config.yaml——三方 agent 的启用配置不取自被
+        # 覆盖的旧文件，而是从数据目录之外的状态旁路恢复（旁路在每次保存/清理
+        # 时镜像，见 dump_yaml_round_trip 的挂接点）。强制重置（init -f /
+        # overwrite）例外：重置语义完整生效——跳过恢复并清除旁路文件，否则
+        # "重置"名存实亡，且被恢复的 cli_path 指向已删除的安装。
+        if overwrite:
+            # 强制重置：跳过恢复并清除旁路文件（删除失败仅告警，不阻塞 init）
+            try:
+                external_cli_state_sidecar_path(workspace_dir).unlink(missing_ok=True)
+            except OSError as exc:
+                logger.warning(f"清除三方 agent 状态旁路失败: {exc}")
+        pre_restore_state = (
+            _read_external_cli_state_sidecar(workspace_dir)
+            if not overwrite and not config_yaml_dest.exists()
+            else None
+        )
         with TrackCopyDiff(
             dest=config_yaml_dest,
             is_file=True,
@@ -1155,6 +1141,8 @@ def prepare_workspace(
             overwrite=overwrite,
         ):
             shutil.copy2(config_yaml_src, config_yaml_dest)
+        if pre_restore_state is not None:
+            _restore_previous_external_cli_state(config_yaml_dest, pre_restore_state)
 
     resolved_lang = _resolve_preferred_language(config_yaml_dest, preferred_language)
 
@@ -1561,6 +1549,44 @@ def _ensure_mcp_builtins(
         pass  # 仅登记到 diff 摘要，文件已解压就位
 
 
+def _migrate_local_gateway_extension_dirs(config_path: Path) -> None:
+    """Add Swarm's built-ins to the old stock Gateway search path."""
+    from agent_gateway.common.config import config_write_lock, dump_yaml_round_trip, load_yaml_round_trip
+
+    legacy_dirs = "${EXTENSION_DIRS:-agent_gateway/extensions}"
+    try:
+        with config_write_lock(config_path=config_path):
+            config = load_yaml_round_trip(config_path)
+            extensions = config.get("extensions") if isinstance(config, dict) else None
+            if isinstance(extensions, dict) and extensions.get("extension_dirs") == legacy_dirs:
+                extensions["extension_dirs"] = f"{legacy_dirs};jiuwenswarm/extensions"
+                dump_yaml_round_trip(config_path, config)
+    except (OSError, YAMLError, portalocker.exceptions.LockException) as exc:
+        logger.warning("Could not migrate local Gateway extension directories in %s: %s", config_path, exc)
+
+
+def prepare_local_gateway_config(env: dict[str, str]) -> None:
+    """Prepare the effective Gateway config for a local Swarm launcher."""
+    key = "JIUWENSWARM_GATEWAY_CONFIG_DIR"
+    if env.get(key, "").strip() or is_agentos_runtime():
+        return
+
+    from agent_gateway.common.paths import get_config_file as get_gateway_config_file
+
+    gateway_config = get_gateway_config_file()
+    if gateway_config.is_file():
+        _migrate_local_gateway_extension_dirs(gateway_config)
+        return
+    env[key] = str(get_config_dir())
+
+    # Gateway reads its own dotenv file even when using the instance's YAML.
+    from dotenv import dotenv_values
+
+    extension_dirs = dotenv_values(get_env_file()).get("EXTENSION_DIRS")
+    if extension_dirs is not None:
+        env["EXTENSION_DIRS"] = extension_dirs
+
+
 def prepare_runtime_workspace(
     *,
     cleanup_stale_descs: bool = True,
@@ -1927,6 +1953,36 @@ def get_agent_skills_dir() -> Path:
         Path to skills directory: ~/.jiuwenswarm/agent/workspace/skills
     """
     return get_agent_workspace_dir() / "skills"
+
+
+# Project-level Skill roots, relative to the project directory, in precedence
+# order. ``.agents/skills`` is the tool-neutral location, ``.claude/skills`` the
+# Claude Code one; both are scanned so a project set up for either tool works.
+PROJECT_SKILL_DIR_NAMES: tuple[tuple[str, str], ...] = (
+    (".agents", "skills"),
+    (".claude", "skills"),
+)
+
+
+def get_project_skills_dirs(project_dir: str | os.PathLike[str] | None) -> list[str]:
+    """Return the project-level Skill roots under *project_dir*.
+
+    The roots are returned whether or not they exist yet: the Skill rail skips
+    a missing root on every scan, so a directory created mid-session is picked
+    up by the next refresh without rebuilding the rail.
+
+    Args:
+        project_dir: The project directory selected from the frontend, or None.
+
+    Returns:
+        ``<project>/.agents/skills`` and ``<project>/.claude/skills`` as
+        absolute path strings, or an empty list when no project is set.
+    """
+    raw = str(project_dir or "").strip()
+    if not raw:
+        return []
+    root = Path(raw).expanduser().resolve(strict=False)
+    return [str(root.joinpath(*parts)) for parts in PROJECT_SKILL_DIR_NAMES]
 
 
 # Last directory handed to openJiuWen's ``configure_global_skills_dir``. Kept so
@@ -3023,47 +3079,41 @@ def mask_sensitive(text: Any) -> str:
     return _sanitize_log_text(str(text))
 
 
+def _sanitize_log_record(record: logging.LogRecord) -> bool:
+    """Replace failed diagnostics with safe summaries and release raw inputs."""
+    successful = True
+    try:
+        record.msg = _sanitize_record_text(record.getMessage())
+    except Exception:
+        record.msg = "[log message omitted: redaction failed]"
+        successful = False
+    finally:
+        record.args = ()
+
+    try:
+        if record.exc_info or record.exc_text:
+            text = record.exc_text or format_log_exception(record.exc_info)
+            text = _sanitize_record_text(text)
+            if _record_text_exceeds_limit(text):
+                text = "[exception diagnostics omitted: redacted output exceeds UTF-8 byte limit]"
+            record.exc_text = text
+    except Exception:
+        record.exc_text = "[exception diagnostics omitted: formatting or redaction failed]"
+        successful = False
+    finally:
+        # A handler must never retry formatting a raw exception after failure,
+        # or retain its locals while a background sink is blocked.
+        record.exc_info = None
+    record.jiuwen_sensitive_sanitized = True
+    return successful
+
+
 class SensitiveDataFilter(logging.Filter):
     """Mask sensitive data in all log messages and tracebacks."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        if getattr(record, "jiuwen_sensitive_sanitized", False):
-            return True
-
-        sanitized = True
-        try:
-            message = record.getMessage()
-            record.msg = _sanitize_record_text(message)
-            record.args = ()
-        except Exception:
-            # Never block logging because of desensitization failure.
-            sanitized = False
-
-        # Traceback 由 Formatter.formatException() 在 record.exc_text 中单独渲染，
-        # 不经过 record.getMessage()，因此 message 脱敏覆盖不到。这里提前把
-        # traceback 文本脱敏写入 record.exc_text 并清空 record.exc_info，
-        # 使 logger.exception()/exc_info=True 的异常栈也不会泄露 api_key 等。
-        try:
-            exc_info = record.exc_info
-            if exc_info and not record.exc_text:
-                import traceback as _traceback
-
-                # exc_info 是 (type, value, tb) 三元组。Python 3.10+ 的
-                # traceback.format_exception 新签名只接受单个异常实例：
-                # format_exception(exc, /, limit=None, chain=True)。
-                # 旧的 format_exception(*exc_info)（拆包成 3 个位置参数）依赖
-                # 兼容层，未来版本可能移除；改用 exc_info[1]（异常实例）是
-                # 官方推荐写法，面向未来且行为等价（None 时输出 "NoneType: None"）。
-                formatted = "".join(_traceback.format_exception(exc_info[1]))
-                record.exc_text = _sanitize_record_text(formatted)
-                record.exc_info = None
-            elif record.exc_text:
-                record.exc_text = _sanitize_record_text(record.exc_text)
-        except Exception:
-            # 同样不因脱敏失败而阻断日志输出。
-            sanitized = False
-        if sanitized:
-            record.jiuwen_sensitive_sanitized = True
+        if not getattr(record, "jiuwen_sensitive_sanitized", False):
+            _sanitize_log_record(record)
         return True
 
 
@@ -3089,6 +3139,9 @@ def install_source_record_masking() -> None:
     根 logger），在 LogRecord **创建瞬间**就被脱敏 message 与 traceback，
     保证任何来源的 api_key 都不明文落盘。
 
+    异常诊断只读取内存中的栈位置、异常链/组与备注，不查找源码行或捕获局部变量，
+    避免业务线程在 handler 接收日志前触发 linecache / 文件系统 IO。
+
     覆盖场景：
     - ``app_agentserver.py`` 用 ``logging.getLogger("openjiuwen.harness.security")``
       等 openjiuwen 命名空间 logger；
@@ -3107,37 +3160,11 @@ def install_source_record_masking() -> None:
 
     def _sanitizing_record_factory(*args: Any, **kwargs: Any) -> logging.LogRecord:
         record = old_factory(*args, **kwargs)
-        try:
-            # message 脱敏（含 %s/format 格式化后的最终文本）。
-            msg = record.getMessage()
-            record.msg = _sanitize_record_text(msg)
-            record.args = ()
-            # traceback 脱敏：traceback 由 Formatter.formatException 从
-            # record.exc_text 单独渲染，getMessage 覆盖不到。此处提前渲染并脱敏，
-            # 清空 exc_info 使 Formatter 复用已脱敏的 exc_text。
-            exc_info = record.exc_info
-            if exc_info and not record.exc_text:
-                import traceback as _tb
-
-                formatted = "".join(_tb.format_exception(exc_info[1]))
-                record.exc_text = _sanitize_record_text(formatted)
-                record.exc_info = None
-            elif record.exc_text:
-                record.exc_text = _sanitize_record_text(record.exc_text)
-            record.jiuwen_sensitive_sanitized = True
-        except Exception:
-            # 永不因脱敏失败而阻断日志输出。但记录失败（计数 + 首次 stderr 提示），
-            # 避免静默吞掉异常导致 api_key 在无感知下明文泄露。
+        if not _sanitize_log_record(record):
             global _source_masking_failures
             _source_masking_failures += 1
-            if _source_masking_failures == 1:
-                # 仅首次打 stderr（不用 logging，避免自循环），提示运维脱敏失效。
-                # 后续仅靠计数器累积，避免高频失败刷屏。
-                print(
-                    "[jiuwenswarm] source record masking failed — secrets may be "
-                    "exposed in logs; check _source_masking_failures counter",
-                    file=sys.stderr,
-                )
+            # The record already carries fixed safe summaries. Do not retry
+            # raw formatting or perform synchronous diagnostic IO here.
         return record
 
     logging.setLogRecordFactory(_sanitizing_record_factory)
@@ -3145,6 +3172,12 @@ def install_source_record_masking() -> None:
 
 
 _RECORD_BYTE_LIMIT = 64 * 1024
+
+
+def _record_text_exceeds_limit(text: str) -> bool:
+    return len(text) > _RECORD_BYTE_LIMIT or (
+        not text.isascii() and len(text.encode("utf-8", errors="replace")) > _RECORD_BYTE_LIMIT
+    )
 
 
 def _sanitize_record_text(text: str) -> str:
@@ -3156,9 +3189,7 @@ def _sanitize_record_text(text: str) -> str:
     its full-text behavior.
     """
     # Short-circuit on characters to avoid encoding unbounded input.
-    if len(text) > _RECORD_BYTE_LIMIT or (
-        not text.isascii() and len(text.encode("utf-8", errors="replace")) > _RECORD_BYTE_LIMIT
-    ):
+    if _record_text_exceeds_limit(text):
         if text.lstrip().startswith(("{", "[")):
             return json.dumps({
                 "log_payload_omitted": True,

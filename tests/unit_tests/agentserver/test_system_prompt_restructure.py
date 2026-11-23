@@ -79,6 +79,16 @@ class _FakeAgent:
         self.system_prompt_builder = builder
         self.prompt_attachment_manager = PromptAttachmentManager()
 
+async def _prompt_and_runtime_state(agent, builder, session_id: str = "sess1") -> str:
+    """The system prompt plus the runtime.setting attachment the model sees after it.
+
+    Per-conversation paths live in the attachment so the system prompt stays the
+    same for every conversation (a shared provider prefix cache).
+    """
+    items = await agent.prompt_attachment_manager.collect_for_session(session_id)
+    return builder.build() + "\n" + agent.prompt_attachment_manager.render(items)
+
+
 
 class _FakeLiveModeAgent(_FakeAgent):
     def __init__(self, builder: SystemPromptBuilder, mode: str) -> None:
@@ -286,7 +296,7 @@ async def test_symphony_orchestration_rail_respects_config_snapshot():
         extra={},
     )
     enabled_rail = SymphonyOrchestrationRail(
-        config_base={"symphony": {"enabled": True}},
+        config_base={"symphony": {"orchestration": {"enabled": True}}},
     )
     enabled_rail.init(enabled_agent)
     await enabled_rail.before_model_call(enabled_ctx)
@@ -302,7 +312,7 @@ async def test_symphony_orchestration_rail_respects_config_snapshot():
         extra={},
     )
     disabled_rail = SymphonyOrchestrationRail(
-        config_base={"symphony": {"enabled": False}},
+        config_base={"symphony": {"orchestration": {"enabled": False}}},
     )
     disabled_rail.init(disabled_agent)
     await disabled_rail.before_model_call(disabled_ctx)
@@ -321,7 +331,7 @@ async def test_symphony_orchestration_rail_injects_when_tool_visible(
 ):
     monkeypatch.setattr(
         "jiuwenswarm.common.symphony_config.load_symphony_config",
-        lambda: SimpleNamespace(enabled=True),
+        lambda: SimpleNamespace(orchestration=SimpleNamespace(enabled=True)),
     )
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
@@ -346,7 +356,7 @@ async def test_symphony_orchestration_rail_injects_when_tool_visible(
     assert "an ordered or dependent workflow" in normalized_prompt
     assert "selected exact Skill IDs are sufficient evidence" in normalized_prompt
     assert (
-        "Calling `skill_index` alone is also not a compose trigger"
+        "Capability discovery alone does not trigger composition."
         in normalized_prompt
     )
     assert "never pass all retrieval results" in normalized_prompt
@@ -381,7 +391,7 @@ def test_symphony_orchestration_guidance_has_precise_compose_boundaries():
         "Skill or 技能."
     ) in normalized_prompt
 
-    assert "`skill_index`" in prompt
+    assert "Capability discovery alone does not trigger composition." in normalized_prompt
     assert "skill_branch_explore" not in prompt
     assert "only the selected exact Skill IDs" in prompt
     assert "do not call `skill_tool`" in prompt
@@ -419,7 +429,7 @@ async def test_symphony_timeout_is_terminal_manual_build_result(
 
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.tools.symphony_toolkits.load_symphony_config",
-        lambda config=None: SimpleNamespace(enabled=True),
+        lambda config=None: SimpleNamespace(orchestration=SimpleNamespace(enabled=True)),
     )
     monkeypatch.setattr(
         SymphonyToolkit,
@@ -464,7 +474,7 @@ async def test_symphony_graph_preparing_is_terminal_for_current_round():
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
     rail = SymphonyOrchestrationRail(
-        config_base={"symphony": {"enabled": True}},
+        config_base={"symphony": {"orchestration": {"enabled": True}}},
     )
     rail.init(agent)
     invocation_extra: dict = {}
@@ -611,7 +621,7 @@ async def test_symphony_timeout_removes_graph_tools_and_orchestration_prompt():
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
     rail = SymphonyOrchestrationRail(
-        config_base={"symphony": {"enabled": True}},
+        config_base={"symphony": {"orchestration": {"enabled": True}}},
     )
     rail.init(agent)
     ctx = AgentCallbackContext(
@@ -786,7 +796,7 @@ async def test_symphony_orchestration_rail_clears_when_unavailable(
 ):
     monkeypatch.setattr(
         "jiuwenswarm.common.symphony_config.load_symphony_config",
-        lambda: SimpleNamespace(enabled=True),
+        lambda: SimpleNamespace(orchestration=SimpleNamespace(enabled=True)),
     )
     builder = SystemPromptBuilder(language="cn")
     builder.add_section(
@@ -817,7 +827,7 @@ async def test_symphony_orchestration_rail_clears_when_disabled(
 ):
     monkeypatch.setattr(
         "jiuwenswarm.common.symphony_config.load_symphony_config",
-        lambda: SimpleNamespace(enabled=False),
+        lambda: SimpleNamespace(orchestration=SimpleNamespace(enabled=False)),
     )
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
@@ -865,9 +875,9 @@ def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
     monkeypatch.setattr(interface_module.Runner, "resource_mgr", fake_resource)
     monkeypatch.setattr(interface_module, "SymphonyToolkit", FakeSymphonyToolkit)
 
-    adapter._sync_symphony_tools_for_runtime({"symphony": {"enabled": True}})
+    adapter._sync_symphony_tools_for_runtime({"symphony": {"orchestration": {"enabled": True}}})
 
-    assert seen_configs == [{"symphony": {"enabled": True}}]
+    assert seen_configs == [{"symphony": {"orchestration": {"enabled": True}}}]
     assert adapter._symphony_tools_registered is True
     assert [card.name for card in adapter._tool_cards] == [
         "symphony_read_graph",
@@ -882,11 +892,11 @@ def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
     assert fake_instance.ability_manager.added == fake_resource.added
     registered_tools = list(adapter._symphony_tools)
 
-    # Reload re-evaluates the desired group because discovery can change while
-    # Symphony stays enabled. Existing objects and registrations remain stable.
-    adapter._sync_symphony_tools_for_runtime({"symphony": {"enabled": True}})
+    # Re-applying the same enabled snapshot is idempotent. Code cold start and
+    # reload both use this path, so neither cards nor registrations may grow.
+    adapter._sync_symphony_tools_for_runtime({"symphony": {"orchestration": {"enabled": True}}})
 
-    assert seen_configs == [{"symphony": {"enabled": True}}, {"symphony": {"enabled": True}}]
+    assert seen_configs == [{"symphony": {"orchestration": {"enabled": True}}}] * 2
     assert all(current is previous for current, previous in zip(adapter._symphony_tools, registered_tools))
     assert len(adapter._tool_cards) == 3
     assert fake_resource.added == [
@@ -896,7 +906,7 @@ def test_deep_adapter_syncs_symphony_tools_from_config_snapshot(monkeypatch):
     ]
     assert fake_instance.ability_manager.added == fake_resource.added
 
-    adapter._sync_symphony_tools_for_runtime({"symphony": {"enabled": False}})
+    adapter._sync_symphony_tools_for_runtime({"symphony": {"orchestration": {"enabled": False}}})
 
     assert adapter._symphony_tools == []
     assert adapter._symphony_tools_registered is False
@@ -928,7 +938,7 @@ async def test_symphony_tool_model_is_isolated_from_interleaved_adapter_requests
 ):
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.tools.symphony_toolkits.load_symphony_config",
-        lambda config=None: SimpleNamespace(enabled=True),
+        lambda config=None: SimpleNamespace(orchestration=SimpleNamespace(enabled=True)),
     )
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
 
@@ -1058,6 +1068,45 @@ async def test_runtime_environment_section_participates_in_priority_order():
     assert not builder.has_section("language_output")
     assert not builder.has_section("runtime")
     assert "# 运行时状态" not in prompt
+
+
+@pytest.mark.parametrize(("language", "heading", "required"), [
+    (
+        "cn",
+        "# 系统插件包查询",
+        (
+            "`jiuwenswarm extension query --json`",
+            "`JIUWENSWARM_EXECUTABLE` 指向的后端程序",
+            "不得把 `extension` 单独作为系统命令执行",
+        ),
+    ),
+    (
+        "en",
+        "# System Extension Package Query",
+        (
+            "`jiuwenswarm extension query --json`",
+            "backend program identified by `JIUWENSWARM_EXECUTABLE`",
+            "Do not invoke `extension` as a standalone system command",
+        ),
+    ),
+])
+def test_runtime_prompt_adds_bilingual_extension_package_query_guidance(
+    language,
+    heading,
+    required,
+):
+    builder = SystemPromptBuilder(language=language)
+    agent = _FakeAgent(builder)
+    runtime_rail = RuntimePromptRail(language=language, channel="web")
+
+    runtime_rail.init(agent)
+
+    prompt = builder.build()
+    assert heading in prompt
+    assert all(item in prompt for item in required)
+
+    runtime_rail.uninit(agent)
+    assert not builder.has_section("extension_package_management")
 
 
 @pytest.mark.asyncio
@@ -1399,6 +1448,42 @@ async def test_cron_a4p_scope_is_injected_as_runtime_attachment(monkeypatch, cha
 
 
 @pytest.mark.asyncio
+async def test_child_runtime_rail_keeps_its_own_model_after_a_parent_switch(tmp_path, monkeypatch):
+    monkeypatch.setattr(_utils_mod, "get_config_dir", lambda: tmp_path)
+    parent = _FakeAgent(SystemPromptBuilder(language="en"))
+    child = _FakeAgent(SystemPromptBuilder(language="en"))
+    parent_rail = RuntimePromptRail(language="en", channel="web")
+    parent_rail.init(parent)
+    parent_rail.set_model_name("model-a")
+
+    child_rail = parent_rail.fork_for_agent()
+    assert child_rail is not parent_rail
+    child_rail.init(child)
+    assert child_rail.attachment_manager is child.prompt_attachment_manager
+    assert parent_rail.attachment_manager is parent.prompt_attachment_manager
+
+    child_ctx = AgentCallbackContext(agent=child, inputs=None, session=_FakeSession(), extra={})
+    await child_rail.before_model_call(child_ctx)
+
+    parent_rail.set_model_name("model-b")
+    parent_ctx = AgentCallbackContext(agent=parent, inputs=None, session=_FakeSession(), extra={})
+    await parent_rail.before_model_call(parent_ctx)
+
+    parent_items = await parent.prompt_attachment_manager.collect_for_session("sess1")
+    child_items = await child.prompt_attachment_manager.collect_for_session("sess1")
+    assert "Current model: model-b" in parent.prompt_attachment_manager.render(parent_items)
+    assert "Current model: model-a" in child.prompt_attachment_manager.render(child_items)
+
+    child_rail.set_model_name("model-c")
+    await child_rail.before_model_call(child_ctx)
+    await parent_rail.before_model_call(parent_ctx)
+    parent_items = await parent.prompt_attachment_manager.collect_for_session("sess1")
+    child_items = await child.prompt_attachment_manager.collect_for_session("sess1")
+    assert "Current model: model-b" in parent.prompt_attachment_manager.render(parent_items)
+    assert "Current model: model-c" in child.prompt_attachment_manager.render(child_items)
+
+
+@pytest.mark.asyncio
 async def test_runtime_attachment_request_mode_wins_over_localized_snapshot(tmp_path, monkeypatch):
     monkeypatch.setattr(_utils_mod, "get_config_dir", lambda: tmp_path)
     builder = SystemPromptBuilder(language="cn")
@@ -1707,15 +1792,19 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir(tmp_path, monke
     )
     await runtime_rail.before_model_call(ctx)
 
-    prompt = builder.build()
+    prompt = await _prompt_and_runtime_state(agent, builder)
     assert "# Directory and File-Operation Boundaries" in prompt
     assert "# Runtime Directory Context" not in prompt
     assert "# Working Directory Runtime Values" not in prompt
     assert "The project directory is the project root and project-context boundary" in prompt
-    assert f"the current project directory is: `{project_dir}`" in prompt
+    assert "the current project directory is under Current Directories in the runtime state" in prompt
+    assert f"- Current project directory: `{project_dir}`" in prompt
     assert (
-        f"The current working directory (cwd, relative-path base, and Bash default) is: `{current_dir}`"
+        "The current working directory (cwd, relative-path base, and Bash default) is under Current Directories"
         in prompt
+    )
+    assert (
+        f"- Current working directory: `{current_dir}`" in prompt
     )
     assert "Resolve relative paths in user tasks against the current working directory" in prompt
     assert "Agent internal data directory" in prompt
@@ -1764,11 +1853,15 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir_in_chinese(
 
     await runtime_rail.before_model_call(ctx)
 
-    prompt = builder.build()
+    prompt = await _prompt_and_runtime_state(agent, builder)
     assert "项目目录是当前项目的根目录与项目上下文边界" in prompt
-    assert f"当前项目目录是：`{project_dir}`" in prompt
+    assert "当前项目目录见运行时状态中的「当前目录」" in prompt
+    assert f"- 当前项目目录：`{project_dir}`" in prompt
     assert (
-        f"当前工作目录（cwd、相对路径基准及 Bash 默认目录）是：`{current_dir}`" in prompt
+        "当前工作目录（cwd、相对路径基准及 Bash 默认目录）见运行时状态中的「当前目录」" in prompt
+    )
+    assert (
+        f"- 当前工作目录：`{current_dir}`" in prompt
     )
     assert (
         "用户任务中的相对路径必须相对于当前工作目录路径去解析" in prompt
@@ -1888,10 +1981,11 @@ async def test_runtime_prompt_preserves_single_directory_prompt_when_paths_match
 
     await runtime_rail.before_model_call(ctx)
 
-    prompt = builder.build()
+    prompt = await _prompt_and_runtime_state(agent, builder)
     assert "## Project Directory" in prompt
     assert "## Project and Working Directories" not in prompt
-    assert f"the current project directory is: `{project_dir}`" in prompt
+    assert "the current project directory is under Current Directories in the runtime state" in prompt
+    assert f"- Current project directory: `{project_dir}`" in prompt
     assert "Resolve relative paths in user tasks against the current project directory" in prompt
 
 
@@ -1925,9 +2019,10 @@ async def test_runtime_prompt_describes_external_cwd_without_project(tmp_path, m
 
     await runtime_rail.before_model_call(ctx)
 
-    prompt = builder.build()
+    prompt = await _prompt_and_runtime_state(agent, builder)
     assert "## Current Project Directory" in prompt
-    assert f"current runtime workspace: `{task_dir}`" in prompt
+    assert "The project directory is the current runtime workspace; its path is under Current Directories" in prompt
+    assert f"- Project directory: `{task_dir}`" in prompt
     assert "Other accessible directories" not in prompt
     assert "fallen back to the Agent internal data directory" not in prompt
 
@@ -1960,9 +2055,10 @@ async def test_runtime_prompt_describes_agent_data_cwd_fallback(tmp_path, monkey
 
     await runtime_rail.before_model_call(ctx)
 
-    prompt = builder.build()
+    prompt = await _prompt_and_runtime_state(agent, builder)
     assert "# 目录与文件操作边界" in prompt
-    assert f"当前运行时工作空间：`{agent_data_dir}`" in prompt
+    assert "项目目录是当前运行时工作空间，具体路径见运行时状态中的「当前目录」" in prompt
+    assert f"- 项目目录：`{agent_data_dir}`" in prompt
     assert "其他可访问目录" not in prompt
 
 
@@ -1994,7 +2090,7 @@ async def test_process_cli_directory_prompt_refreshes_across_requests(
     for previous, project in ((None, first), (first, second)):
         rail.set_runtime_paths(cwd=str(current), project_dir=str(project), workspace_dir=str(internal))
         await rail.before_model_call(ctx)
-        prompt = builder.build()
+        prompt = await _prompt_and_runtime_state(agent, builder)
         assert str(project) in prompt
         assert str(current) in prompt
         assert str(internal) in prompt
@@ -2131,7 +2227,10 @@ def test_skill_retrieval_prompt_counts_as_skills_without_double_counting(languag
 
     builder = SystemPromptBuilder(language=language)
     builder.add_section(PromptSection(name="identity", content={language: "Core rules."}, priority=10))
-    rail = SkillRetrievalPromptRail(config_base={"symphony": {"skill_retrieval": {"enabled": True}}})
+    rail = SkillRetrievalPromptRail(config_base={"symphony": {
+        "retrieval": {"enabled": True, "prompt": {"context_window_tokens": 4000}},
+    }})
+    assert rail._prompt_snapshot().candidate_budget_tokens == 40
     rail.system_prompt_builder = builder
     rail._add_prompt_builder_section(language, "Use demo Skill.")
     sections = ReActAgent._context_usage_prompt_sections(SimpleNamespace(prompt_builder=builder))
@@ -2168,7 +2267,7 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
             tools=[
                 SimpleNamespace(name="list_skill"),
                 SimpleNamespace(name="list_skills"),
-                SimpleNamespace(name="skill_index"),
+                SimpleNamespace(name="capability_search"),
             ],
         ),
         session=_FakeSession(),
@@ -2176,13 +2275,15 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
     )
 
     toolkit = SkillRetrievalToolkit(
-        skill_directories=[], artifact_root=tmp_path / "skillfs"
+        skill_directories=[], config_base={"symphony": {
+            "retrieval": {"enabled": True}, "storage": {"artifact_root": str(tmp_path / "skillfs")},
+        }}
     )
     rail = SkillRetrievalPromptRail(toolkit=toolkit)
     rail.init(agent)
     await rail.before_model_call(ctx)
 
-    assert [tool.name for tool in ctx.inputs.tools] == ["skill_index"]
+    assert [tool.name for tool in ctx.inputs.tools] == ["capability_search"]
     assert agent.ability_manager.get("list_skill") is None
     assert "旧 list_skill 提示" not in builder.build()
     rendered = agent.prompt_attachment_manager.render(
@@ -2285,7 +2386,9 @@ async def test_skill_retrieval_prompt_clears_section_when_disabled(
         extra={},
     )
     toolkit = SkillRetrievalToolkit(
-        skill_directories=[], artifact_root=tmp_path / "skillfs"
+        skill_directories=[], config_base={"symphony": {
+            "retrieval": {"enabled": True}, "storage": {"artifact_root": str(tmp_path / "skillfs")},
+        }}
     )
     rail = SkillRetrievalPromptRail(toolkit=toolkit)
     rail.init(agent)
@@ -2311,10 +2414,6 @@ def test_resolve_skill_mode_accepts_all_and_auto_list(monkeypatch):
 
 
 def test_deep_adapter_skill_retrieval_prompt_uses_live_toolkit(monkeypatch, tmp_path):
-    monkeypatch.setenv(
-        "SYMPHONY_SKILL_RETRIEVAL_ROOT",
-        str(tmp_path / "skillfs-artifacts"),
-    )
     skill_dir = tmp_path / "alpha"
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text(
@@ -2343,6 +2442,11 @@ def test_deep_adapter_skill_retrieval_prompt_uses_live_toolkit(monkeypatch, tmp_
     manager = FakeManager()
     adapter = _TestableJiuWenSwarmDeepAdapter()
     adapter.set_skill_manager(manager)
+    adapter._config_base_cache = {"symphony": {
+        "capability": {"sources": [{"type": "skill", "root": str(tmp_path)}]},
+        "retrieval": {"enabled": True},
+        "storage": {"artifact_root": str(tmp_path / "skillfs-artifacts")},
+    }}
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.agent_adapter.interface_deep.is_skill_retrieval_enabled",
         lambda *_args: True,
@@ -2362,9 +2466,10 @@ def test_deep_adapter_skill_retrieval_prompt_uses_live_toolkit(monkeypatch, tmp_
     toolkit = captured["toolkit"]
     assert isinstance(toolkit, SkillRetrievalToolkit)
     assert [record.worker_id for record in toolkit.current_records()] == ["alpha"]
-    manager.persisted_disabled.append("alpha")
+    (tmp_path / "skills_state.json").write_text(
+        '{"skill_configs": {"alpha": {"enabled": false}}}', encoding="utf-8",
+    )
     assert toolkit.current_records() == ()
-    assert manager.reload_count >= 2
 
 
 @pytest.mark.asyncio
@@ -2419,7 +2524,7 @@ def test_code_adapter_skill_retrieval_sync_freezes_spec_snapshot():
         adapter._skill_retrieval_tools_enabled_for_runtime(
             {
                 "modes": {"code": {"tools": ["skill_toolkit"]}},
-                "symphony": {"skill_retrieval": {"enabled": True}},
+                "symphony": {"retrieval": {"enabled": True}},
             }
         )
         is False
@@ -2429,7 +2534,7 @@ def test_code_adapter_skill_retrieval_sync_freezes_spec_snapshot():
         adapter._skill_retrieval_tools_enabled_for_runtime(
             {
                 "modes": {"code": {"tools": ["skill_toolkit", "skill_retrieval"]}},
-                "symphony": {"skill_retrieval": {"enabled": True}},
+                "symphony": {"retrieval": {"enabled": True}},
             }
         )
         is True
@@ -2440,7 +2545,7 @@ def test_code_adapter_skill_retrieval_sync_freezes_spec_snapshot():
                 "modes": {
                     "code": {"tools": ["skill_toolkit", "skill_retrieval"]}
                 },
-                "symphony": {"skill_retrieval": {"enabled": False}},
+                "symphony": {"retrieval": {"enabled": False}},
             }
         )
         is False
@@ -2451,7 +2556,7 @@ def test_code_adapter_skill_retrieval_sync_freezes_spec_snapshot():
                 "modes": {
                     "code": {"tools": ["skill_toolkit", "skill_retrieval"]}
                 },
-                "symphony": {"skill_retrieval": {"enabled": True}},
+                "symphony": {"retrieval": {"enabled": True}},
             }
         )
         is True
@@ -2461,7 +2566,7 @@ def test_code_adapter_skill_retrieval_sync_freezes_spec_snapshot():
         adapter._skill_retrieval_tools_enabled_for_runtime(
             {
                 "modes": {"code": {"tools": ["skill_retrieval"]}},
-                "symphony": {"skill_retrieval": {"enabled": False}},
+                "symphony": {"retrieval": {"enabled": False}},
             }
         )
         is False

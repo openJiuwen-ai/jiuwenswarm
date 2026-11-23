@@ -684,14 +684,15 @@ async def test_update_evolution_config_skill_create_enabled_mounts_missing_team_
 @pytest.mark.asyncio
 async def test_register_team_rail_context_keeps_leader_context() -> None:
     manager = TeamManager()
+    leader, member = _FakeAgent(), _FakeAgent()
     leader_context = TeamRailMountContext(
-        agent=_FakeAgent(),
+        agent=leader,
         member_info=MemberInfo(role="leader"),
         runtime=RuntimeInfo(channel="web"),
         team_workspace=TeamWorkspaceInfo(team_id="demo-team"),
     )
     member_context = TeamRailMountContext(
-        agent=_FakeAgent(),
+        agent=member,
         member_info=MemberInfo(role="member"),
         runtime=RuntimeInfo(channel="web"),
         team_workspace=TeamWorkspaceInfo(team_id="demo-team"),
@@ -2088,6 +2089,7 @@ async def test_get_swarm_enriched_team_spec_uses_bound_stable_team_name(
     class _Spec:
         team_name = "template_team"
         bootstrap_mode = "leader"
+        dispatch_mode = "scheduled"
 
     async def fake_ensure_postgresql(self, config_base: dict) -> None:
         _ = self, config_base
@@ -2153,6 +2155,7 @@ async def test_get_swarm_enriched_team_spec_uses_bound_team_entity_snapshot(
     class _Spec:
         team_name = "template_team"
         bootstrap_mode = "leader"
+        dispatch_mode = "scheduled"
 
     async def fake_ensure_postgresql(self, config_base: dict) -> None:
         _ = self, config_base
@@ -2223,6 +2226,7 @@ async def test_get_swarm_enriched_team_spec_keeps_legacy_session_scoped_team_nam
     class _Spec:
         team_name = "template_team"
         bootstrap_mode = "leader"
+        dispatch_mode = "scheduled"
 
     async def fake_ensure_postgresql(self, config_base: dict) -> None:
         _ = self, config_base

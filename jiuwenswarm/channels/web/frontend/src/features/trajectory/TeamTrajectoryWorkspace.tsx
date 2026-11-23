@@ -1,12 +1,15 @@
 /** Team member navigation using the native trajectory overview and ledger. */
 
 import {
+  Fragment,
   memo,
   useCallback,
+  useEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type ReactNode,
 } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
@@ -19,7 +22,12 @@ import {
   type TeamMemberLaneModel,
 } from './teamTrajectoryLanes';
 import {
+  attachWorkflowGroupsToHostLanes,
   groupTeamMemberLanesByWorkflowRun,
+  parseEngineSwarmflowMemberId,
+  swarmflowLaneFullName,
+  swarmflowWorkerMemberName,
+  type SwarmflowWorkerIdentity,
   type WorkflowRunLaneSummary,
 } from './teamTrajectoryWorkflowGroups';
 import {
@@ -56,6 +64,13 @@ export interface TeamTrajectoryWorkspaceProps {
    * `wf-<12hex>` member-name pattern.
    */
   workflowRuns?: readonly WorkflowRunLaneSummary[];
+  /**
+   * Swarmflow worker identities from the session's team member events. A lane
+   * whose worker member name matches one gets its engine member id
+   * (`wf_<runid>:[["par", 0, 0], ["call", 0]]`) as the hover full name, so
+   * same-label operators stay distinguishable.
+   */
+  swarmflowMembers?: readonly SwarmflowWorkerIdentity[];
   /** Currently expanded member subject id, or `null` when every lane is collapsed. */
   selectedSubjectId: string | null;
   onSelectSubject: (subjectId: string | null) => void;
@@ -96,6 +111,22 @@ export interface TeamTrajectoryWorkspaceProps {
     /** Checked agents that currently own a time window. */
     isHighlighted?: (subjectId: string) => boolean;
   };
+}
+
+const EMPTY_WORKER_NAME_INDEX: ReadonlyMap<string, string> = new Map();
+
+/** `sha256(text)[:12]` — the ident the backend mints worker member names with. */
+async function sha256Ident(text: string): Promise<string | null> {
+  const subtle = globalThis.crypto?.subtle;
+  if (subtle === undefined) return null;
+  try {
+    const digest = await subtle.digest('SHA-256', new TextEncoder().encode(text));
+    let hex = '';
+    for (const byte of new Uint8Array(digest)) hex += byte.toString(16).padStart(2, '0');
+    return hex.slice(0, 12);
+  } catch {
+    return null;
+  }
 }
 
 function MemberToolbarControl({
@@ -225,6 +256,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
   groups,
   messages,
   workflowRuns,
+  swarmflowMembers,
   selectedSubjectId,
   onSelectSubject,
   memberView,
@@ -278,6 +310,28 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
     workflowGroupingLanes,
     workflowRuns ?? [],
   );
+  // Place each run group right under the lane of the member who executed it
+  // (issue #6381: a teammate-launched swarmflow otherwise reads as the
+  // leader's). In scheduled mode a task assignee's lane lives inside its task
+  // run row, not in `ungrouped`, so its runs attach there; groups without
+  // resolvable attribution keep the trailing slot. The plan is keyed by the
+  // host lane object, so interleaved task runs of the same member render a
+  // group exactly once.
+  const {
+    attached: attachedWorkflowGroups,
+    trailing: trailingWorkflowGroups,
+  } = useMemo(() => (
+    attachWorkflowGroupsToHostLanes(workflowGroups, [
+      ...ungrouped,
+      ...taskRuns.flatMap(run => (run.member === undefined ? [] : [run.member])),
+    ])
+  ), [workflowGroups, ungrouped, taskRuns]);
+  const renderMemberWithRuns = (lane: TeamMemberLaneModel) => (
+    <Fragment key={lane.subjectId}>
+      {renderLane(lane)}
+      {(attachedWorkflowGroups.get(lane) ?? []).map(renderWorkflowGroup)}
+    </Fragment>
+  );
   const translate = useMemo(() => trajectoryTranslator(messages), [messages]);
   const [actualDuration, setActualDuration] = useState(false);
   const [actualTime, setActualTime] = useState(false);
@@ -286,10 +340,44 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
   const [callsCollapsed, setCallsCollapsed] = useState(false);
   const lanesRef = useRef<HTMLDivElement>(null);
   const laneRowsRef = useRef(new Map<string, HTMLDivElement>());
+  const [selectedTaskRow, setSelectedTaskRow] = useState<{ subjectId: string; key: string } | null>(null);
+  const [expandedHeight, setExpandedHeight] = useState<number | null>(null);
   const [pinToken, setPinToken] = useState(0);
   const [collapsedTaskRuns, setCollapsedTaskRuns] = useState<ReadonlySet<string>>(() => new Set());
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(() => new Set());
   const [collapsedReviews, setCollapsedReviews] = useState<ReadonlySet<string>>(() => new Set());
+  // Worker member name -> engine member id (`wf_<runid>:[["par", 0, 0], ["call", 0]]`).
+  // The ident bridge is async (WebCrypto); until it resolves, lanes fall back
+  // to the plain worker member name.
+  const [memberIdByWorkerName, setMemberIdByWorkerName] = useState<
+    ReadonlyMap<string, string>
+  >(() => EMPTY_WORKER_NAME_INDEX);
+  useEffect(() => {
+    const identities = swarmflowMembers ?? [];
+    if (identities.length === 0) {
+      setMemberIdByWorkerName(current =>
+        current.size === 0 ? current : EMPTY_WORKER_NAME_INDEX);
+      return undefined;
+    }
+    let cancelled = false;
+    void (async () => {
+      const entries: Array<[string, string]> = [];
+      for (const identity of identities) {
+        const parsed = parseEngineSwarmflowMemberId(identity.memberId);
+        if (parsed === null) continue;
+        const ident = await sha256Ident(parsed.callKey);
+        if (ident === null) continue;
+        entries.push([
+          swarmflowWorkerMemberName(parsed.runId, identity.name, ident),
+          identity.memberId,
+        ]);
+      }
+      if (!cancelled) setMemberIdByWorkerName(new Map(entries));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [swarmflowMembers]);
   const localViewState = useMemo<TrajectoryViewState>(() => ({
     actualDuration,
     actualTime,
@@ -304,34 +392,92 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
     turnsCollapsed,
   ]);
   const viewState = externalViewState ?? localViewState;
+  const selectedRowKey = useMemo(() => {
+    if (!scheduledMode || selectedSubjectId === null) return selectedSubjectId;
+    const taskRowKeys = taskRuns
+      .filter(run => run.member?.subjectId === selectedSubjectId && !collapsedTaskRuns.has(run.key))
+      .map(run => `${run.key}:${selectedSubjectId}`);
+    if (selectedTaskRow?.subjectId === selectedSubjectId
+      && (selectedTaskRow.key === selectedSubjectId || taskRowKeys.includes(selectedTaskRow.key))) {
+      return selectedTaskRow.key;
+    }
+    return taskRowKeys[0] ?? selectedSubjectId;
+  }, [collapsedTaskRuns, scheduledMode, selectedSubjectId, selectedTaskRow, taskRuns]);
   useLayoutEffect(() => {
-    if (selectedSubjectId === null) return;
+    if (selectedRowKey === null) return;
     const lanesElement = lanesRef.current;
-    const rowElement = laneRowsRef.current.get(selectedSubjectId);
+    const rowElement = laneRowsRef.current.get(selectedRowKey);
     if (lanesElement === null || rowElement === undefined) return;
     const lanesBounds = lanesElement.getBoundingClientRect();
     const rowBounds = rowElement.getBoundingClientRect();
     lanesElement.scrollTop += rowBounds.top - lanesBounds.top;
-  }, [pinToken, selectedSubjectId]);
+  }, [pinToken, selectedRowKey]);
 
-  const renderLane = (lane: TeamMemberLaneModel) => {
-    const expanded = lane.subjectId === selectedSubjectId;
-    const select = () => onSelectSubject(expanded ? null : lane.subjectId);
+  useLayoutEffect(() => {
+    if (!scheduledMode || selectedRowKey === null) return undefined;
+    const lanesElement = lanesRef.current;
+    const rowElement = laneRowsRef.current.get(selectedRowKey);
+    const tablePane = rowElement?.querySelector<HTMLElement>('[data-trajectory-scroll]');
+    const table = tablePane?.querySelector('table');
+    if (lanesElement === null || rowElement === undefined || tablePane == null || table == null) {
+      return undefined;
+    }
+    const measure = () => {
+      if (!rowElement.isConnected || !tablePane.isConnected || !table.isConnected) return;
+      const fixedHeight = rowElement.clientHeight - tablePane.clientHeight;
+      const contentHeight = fixedHeight + table.offsetHeight;
+      const nextHeight = Math.min(lanesElement.clientHeight, Math.max(120, fixedHeight, contentHeight));
+      setExpandedHeight(current => current === nextHeight ? current : nextHeight);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(lanesElement);
+    observer.observe(table);
+    return () => observer.disconnect();
+  }, [groups.groups, scheduledMode, selectedRowKey]);
+
+  const renderLane = (lane: TeamMemberLaneModel, rowKey = lane.subjectId) => {
+    // Scheduled lanes carry their own fullLabel; swarmflow worker lanes get
+    // the engine member id (call key) so same-label operators stay
+    // distinguishable on hover.
+    const fullName = lane.fullLabel ?? swarmflowLaneFullName(lane, memberIdByWorkerName);
+    const laneModel = fullName === null || fullName === lane.fullLabel
+      ? lane
+      : { ...lane, fullLabel: fullName };
+    const expanded = lane.subjectId === selectedSubjectId
+      && (!scheduledMode || selectedRowKey === rowKey);
+    const select = () => {
+      if (scheduledMode) {
+        setSelectedTaskRow(expanded ? null : { subjectId: lane.subjectId, key: rowKey });
+        setExpandedHeight(null);
+      }
+      onSelectSubject(expanded ? null : lane.subjectId);
+    };
     const expand = () => {
-      if (!expanded) onSelectSubject(lane.subjectId);
+      if (!expanded) {
+        if (scheduledMode) {
+          setSelectedTaskRow({ subjectId: lane.subjectId, key: rowKey });
+          setExpandedHeight(null);
+        }
+        onSelectSubject(lane.subjectId);
+      }
       setPinToken(value => value + 1);
     };
     const scheduled = 'taskId' in lane ? lane as ScheduledReviewerLane : undefined;
     return (
       <div
         ref={(element) => {
-          if (element === null) laneRowsRef.current.delete(lane.subjectId);
-          else laneRowsRef.current.set(lane.subjectId, element);
+          if (element === null) laneRowsRef.current.delete(rowKey);
+          else laneRowsRef.current.set(rowKey, element);
         }}
-        key={lane.subjectId}
+        key={rowKey}
         role="listitem"
         className={`${css.laneRow} ${expanded ? css.laneRowExpanded : ''}`}
+        style={expanded && scheduledMode && expandedHeight !== null
+          ? { '--trajectory-expanded-height': `${expandedHeight}px` } as CSSProperties
+          : undefined}
         data-member-subject={lane.subjectId}
+        data-variant={rowKey}
         data-review-task={scheduled?.taskId}
         data-review-round={scheduled?.round}
         data-review-attempt={scheduled?.attempt}
@@ -343,7 +489,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
           viewState,
           toolbarAddon: (
             <MemberToolbarControl
-              lane={lane}
+              lane={laneModel}
               expanded={expanded}
               onClick={select}
               {...(agentSelection === undefined
@@ -379,7 +525,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
               {t('trajectory.team.schedule.reviewCount', { count: round.lanes.length })}
             </span>
           </div>
-          {round.lanes.map(renderLane)}
+          {round.lanes.map(lane => renderLane(lane))}
         </div>
       ))
   );
@@ -427,12 +573,20 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
           aria-label={t(collapsed
             ? 'trajectory.team.schedule.expandReviews'
             : 'trajectory.team.schedule.collapseReviews')}
-          onClick={() => setCollapsedReviews((current) => {
-            const next = new Set(current);
-            if (next.has(task.taskId)) next.delete(task.taskId);
-            else next.add(task.taskId);
-            return next;
-          })}
+          onClick={() => {
+            if (!collapsedReviews.has(task.taskId)
+              && task.rounds.some(round => round.lanes.some(lane => lane.subjectId === selectedSubjectId))) {
+              onSelectSubject(null);
+              setSelectedTaskRow(null);
+              setExpandedHeight(null);
+            }
+            setCollapsedReviews((current) => {
+              const next = new Set(current);
+              if (next.has(task.taskId)) next.delete(task.taskId);
+              else next.add(task.taskId);
+              return next;
+            });
+          }}
           data-testid="team-trajectory-review-toggle"
         >
           {collapsed ? (
@@ -481,12 +635,19 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
             type="button"
             className={css.taskHeaderToggle}
             aria-expanded={!collapsed}
-            onClick={() => setCollapsedTaskRuns((current) => {
-              const next = new Set(current);
-              if (next.has(run.key)) next.delete(run.key);
-              else next.add(run.key);
-              return next;
-            })}
+            onClick={() => {
+              if (!collapsed && selectedRowKey === `${run.key}:${selectedSubjectId}`) {
+                onSelectSubject(null);
+                setSelectedTaskRow(null);
+                setExpandedHeight(null);
+              }
+              setCollapsedTaskRuns((current) => {
+                const next = new Set(current);
+                if (next.has(run.key)) next.delete(run.key);
+                else next.add(run.key);
+                return next;
+              });
+            }}
             data-testid="team-trajectory-review-task-toggle"
           >
             {collapsed ? (
@@ -514,7 +675,10 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
         </div>
         {collapsed ? null : (
           <div className={css.taskBody}>
-            {run.member === undefined ? null : renderLane(run.member)}
+            {run.member === undefined ? null : renderLane(run.member, `${run.key}:${run.member.subjectId}`)}
+            {run.member === undefined
+              ? null
+              : (attachedWorkflowGroups.get(run.member) ?? []).map(renderWorkflowGroup)}
             <div className={css.taskRunReviews}>
               {run.tasks.length === 1
                 ? renderReviewRounds(firstTask)
@@ -528,15 +692,19 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
 
   const renderWorkflowGroup = (group: (typeof workflowGroups)[number]) => {
     // The selected member's group stays expanded so its lane never disappears
-    // behind a collapse the toggle cannot undo.
+    // behind a collapse the toggle cannot undo. The toggle still flips such a
+    // group: folding closes the lane's trajectory drawer with it, so the
+    // selection never points at a hidden lane.
     const selected = group.lanes.some((lane) => lane.subjectId === selectedSubjectId);
     const expanded = expandedGroups.has(group.runId) || selected;
     const toggle = () => {
+      const next = !expanded;
+      if (!next && selected) onSelectSubject(null);
       setExpandedGroups((current) => {
-        const next = new Set(current);
-        if (next.has(group.runId)) next.delete(group.runId);
-        else next.add(group.runId);
-        return next;
+        const updated = new Set(current);
+        if (next) updated.add(group.runId);
+        else updated.delete(group.runId);
+        return updated;
       });
     };
     return (
@@ -580,7 +748,7 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
         </button>
         {expanded ? (
           <div className={css.workflowGroupLanes} role="list">
-            {group.lanes.map(renderLane)}
+            {group.lanes.map(lane => renderLane(lane))}
           </div>
         ) : null}
       </div>
@@ -640,21 +808,21 @@ export const TeamTrajectoryWorkspace = memo(function TeamTrajectoryWorkspace({
           <>
             {standaloneMembers.length === 0 ? null : (
               <div className={css.laneSection} data-testid="team-trajectory-member-group">
-                {ungrouped.map(renderLane)}
-                {workflowGroups.map(renderWorkflowGroup)}
+                {ungrouped.map(renderMemberWithRuns)}
+                {trailingWorkflowGroups.map(renderWorkflowGroup)}
               </div>
             )}
             {taskRuns.map(renderTaskRun)}
             {laneSections.ungroupedReviewers.length === 0 ? null : (
               <div className={css.laneSection}>
-                {laneSections.ungroupedReviewers.map(renderLane)}
+                {laneSections.ungroupedReviewers.map(lane => renderLane(lane))}
               </div>
             )}
           </>
         ) : (
           <>
-            {ungrouped.map(renderLane)}
-            {workflowGroups.map(renderWorkflowGroup)}
+            {ungrouped.map(renderMemberWithRuns)}
+            {trailingWorkflowGroups.map(renderWorkflowGroup)}
           </>
         )}
       </div>

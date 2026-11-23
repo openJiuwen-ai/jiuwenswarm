@@ -27,10 +27,6 @@ from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
     get_deepagent_user_md_path,
 )
-from jiuwenswarm.server.runtime.session.session_history import load_history_records
-from jiuwenswarm.server.runtime.session.session_metadata import (
-    get_all_sessions_metadata,
-)
 
 _DRIFT_WEIGHTS = (0.4, 0.3, 0.3)
 _DRIFT_THRESHOLD = 0.8
@@ -766,42 +762,6 @@ def _read_user_memory() -> str:
         return path.read_text(encoding="utf-8")[:8000] if path.is_file() else ""
     except OSError:
         return ""
-
-
-def collect_user_evidence() -> list[dict[str, Any]]:
-    """Read a bounded user-owned view of existing openJiuwen session history."""
-
-    sessions, _ = get_all_sessions_metadata(limit=_MAX_SESSIONS, offset=0)
-    cutoff = time.time() - _LOOKBACK_SECONDS
-    evidence: list[dict[str, Any]] = []
-    for metadata in sessions:
-        session_id = str(metadata.get("session_id") or "").strip()
-        if not session_id:
-            continue
-        for record in load_history_records(session_id):
-            if str(record.get("role") or "").strip().lower() not in {"user", "human"}:
-                continue
-            content = str(record.get("content") or "").strip()[:_MAX_EVIDENCE_CHARS]
-            if not content:
-                continue
-            try:
-                timestamp = float(record.get("timestamp") or 0.0)
-            except (TypeError, ValueError):
-                timestamp = 0.0
-            if timestamp and timestamp < cutoff:
-                continue
-            record_id = str(record.get("id") or record.get("request_id") or len(evidence))
-            evidence.append(
-                {
-                    "evidence_id": f"{session_id}:{record_id}",
-                    "session_id": session_id,
-                    "content": content,
-                    "timestamp": timestamp,
-                    "source": "user_message",
-                }
-            )
-    evidence.sort(key=lambda item: float(item.get("timestamp") or 0.0))
-    return evidence[-_MAX_EVIDENCE:]
 
 
 async def _invoke_json(agent: Any, prompt: str, conversation_prefix: str) -> dict[str, Any] | None:
@@ -1815,80 +1775,6 @@ class TopicStarterService:
                 (snapshot or {}).get("drift_reference_evidence_ids") or []
             )
         return self.store.save_snapshot(curated, evidence_until=next_until)
-
-    async def get_topic_starters(self, session_id: str) -> dict[str, Any]:
-        intervened_prompts = self.store.intervened_prompts()
-        evidence: list[dict[str, Any]] = []
-        for item in collect_user_evidence():
-            prompt_key = (
-                str(item.get("session_id") or ""),
-                str(item.get("content") or "").strip(),
-            )
-            if prompt_key in intervened_prompts:
-                intervened_prompts.remove(prompt_key)
-                continue
-            evidence.append(item)
-        user_memory = _read_user_memory()
-        profile_required = bool(evidence or user_memory)
-        snapshot = await self._maybe_update_profile(evidence, user_memory)
-        if snapshot is None and profile_required:
-            return {"available": False, "reason": "profile_unavailable"}
-        profile_view = snapshot or {"version": 0, "interests": [], "evidence_labels": []}
-        today = datetime.now(timezone.utc).date().isoformat()
-        search_queries = _project_topic_slots(profile_view, evidence, user_memory)
-        selection_mode = (
-            "personalized_dynamic"
-            if any(slot.get("grounding_required") is True for slot in search_queries)
-            else "generic_dynamic"
-        )
-        negative_preferences = profile_view.get("negative_preferences")
-        if not isinstance(negative_preferences, list):
-            negative_preferences = []
-        generator_profile_view = {"negative_preferences": negative_preferences}
-        prompt = (
-            "根据冻结画像投影视图为空白新会话生成话题卡。必须严格按下列"
-            "冻结 TopicSlot 的顺序和 intent 分别搜索与输出："
-            f"{json.dumps(search_queries, ensure_ascii=False)}。"
-            "openJiuwen、话题卡、意图类别名是任务描述词，不是用户兴趣，"
-            "禁止作为检索词或话题主题。必须先调用可用的联网搜索工具，"
-            "必要时抓取网页，再根据真实检索结果写展示文案；不得用模型记忆补写最新事实。"
-            "必须避开画像投影视图中的 negative_preferences，不得换一个标题重复推荐同一内容。"
-            "标题不得互相重复。某槽缺少相关联网证据时可省略该槽；"
-            "不得更换槽位 intent，不得借用无关来源凑满四张。"
-            "最外层必须是 JSON 对象，不得直接输出数组，"
-            "格式为 {topics:[...]}；每个话题包含 id、title、prompt、intent、evidence，"
-            "evidence 必须是数组，其中每项至少包含 url、title、"
-            "retrieved_at，可得时补 published_at。\n\n"
-            f"当前日期: {today}\n"
-            f"画像投影视图: {json.dumps(generator_profile_view, ensure_ascii=False)}"
-        )
-        generated = await _invoke_json(self.generator_agent, prompt, "topic-generator")
-        topics, retrieval_health = await _eligible_topics(
-            (generated or {}).get("topics"),
-            search_queries,
-            self.fetch_page,
-        )
-        if len(topics) != 4:
-            return {
-                "available": False,
-                "reason": "insufficient_grounded_topics",
-                "profile_version": int(profile_view.get("version") or 0),
-                "policy_id": _POLICY_ID,
-                "selection_mode": selection_mode,
-                "retrieval_health": retrieval_health,
-            }
-        generated_at = time.time()
-        return {
-            "available": True,
-            "slate_id": f"slate-{uuid.uuid4().hex}",
-            "session_id": session_id,
-            "profile_version": int(profile_view.get("version") or 0),
-            "policy_id": _POLICY_ID,
-            "selection_mode": selection_mode,
-            "retrieval_health": retrieval_health,
-            "generated_at": generated_at,
-            "topics": topics,
-        }
 
     def record_event(self, event: dict[str, Any]) -> bool:
         return self.store.record_event(event)

@@ -4,6 +4,11 @@ from importlib import import_module
 
 _EXPORTS = {
     "set_global_memory_manager": (".memory_tools", "set_global_memory_manager"),
+    "read_docx": (".docx_tools", "read_docx"),
+    "read_spreadsheet": (".spreadsheet_tools", "read_spreadsheet"),
+    "read_pptx": (".pptx_tools", "read_pptx"),
+    "inspect_archive": (".archive_tools", "inspect_archive"),
+    "extract_archive": (".archive_tools", "extract_archive"),
     "init_memory_manager_async": (".memory_tools", "init_memory_manager_async"),
     "get_decorated_tools": (".memory_tools", "get_decorated_tools"),
     "memory_search": (".memory_tools", "memory_search"),
@@ -17,7 +22,6 @@ _EXPORTS = {
     "SkillToolkit": (".skill_toolkits", "SkillToolkit"),
     "build_model_discovery_settings": (".skill_retrieval_toolkits", "build_model_discovery_settings"),
     "is_skill_retrieval_enabled": (".skill_retrieval_toolkits", "is_skill_retrieval_enabled"),
-    "is_skill_retrieval_index_enabled": (".skill_retrieval_toolkits", "is_skill_retrieval_index_enabled"),
     "skill_sources_from_manager": (".skill_retrieval_toolkits", "skill_sources_from_manager"),
     "SkillRetrievalToolkit": (".skill_retrieval_toolkits", "SkillRetrievalToolkit"),
     "SymphonyToolkit": (".symphony_toolkits", "SymphonyToolkit"),
@@ -52,3 +56,18 @@ def __getattr__(name):
         value = process_kernel().recipe(key, lambda: value)
         globals()[name] = value
     return value
+
+
+def _register_discovered_exports() -> None:
+    # pylint: disable-next=import-outside-toplevel
+    from jiuwenswarm.agents.harness.common.tools.builtin_tool_registry import (
+        discover_lazy_exports,
+    )
+
+    extra = discover_lazy_exports(_EXPORTS)
+    if extra:
+        _EXPORTS.update(extra)
+        __all__.extend(name for name in extra if name not in __all__)
+
+
+_register_discovered_exports()

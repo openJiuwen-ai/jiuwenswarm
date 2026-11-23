@@ -26,6 +26,7 @@ def dump_runtime_state(directory: Path, snapshot: dict[str, Any]) -> Path:
         # Flush buffered text before the public API writes to the same file
         # descriptor, keeping the JSON header and thread/task sections ordered.
         out.flush()
+        out.write("PYTHON STACK TRACE\n")
         faulthandler.dump_traceback(file=out, all_threads=True)
         tasks = sorted(asyncio.all_tasks(), key=lambda task: task.get_name())
         out.write(f"ASYNCIO TASKS total={len(tasks)} limit=64\n")

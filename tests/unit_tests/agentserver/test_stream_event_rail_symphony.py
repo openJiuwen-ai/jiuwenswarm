@@ -282,24 +282,23 @@ async def test_stream_event_rail_does_not_add_skill_gap_followup_to_compose_resu
 
 
 @pytest.mark.asyncio
-async def test_stream_event_rail_emits_skill_index_result_as_raw_output():
+async def test_stream_event_rail_emits_skill_discovery_result_as_raw_output():
     rail = JiuSwarmStreamEventRail()
     session = _StreamSession()
     diagnostics = {
-        "command": 'rg -il "office|documents" /',
-        "cwd": "/",
-        "output": "[skill] documents/META.md  desc: Document Writer",
+        "operation": "search",
+        "output": "## Skills\n\n- [skill] documents  desc: Document Writer",
         "observed_skill_ids": ["documents"],
         "candidate_count": 1,
         "error": False,
         "truncated": False,
-        "runtime": "SkillDCI.SkillFSToolkit",
+        "runtime": "Symphony.CapabilitySearch",
     }
     result = SkillDCICommandResult(
         diagnostics["output"],
         detailed_output=diagnostics,
     )
-    ctx = _ctx(session, "skill_index", tool_result=result)
+    ctx = _ctx(session, "capability_search", tool_result=result)
 
     await rail.before_tool_call(ctx)
     await rail.after_tool_call(ctx)

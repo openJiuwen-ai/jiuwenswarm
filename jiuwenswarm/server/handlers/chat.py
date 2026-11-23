@@ -17,6 +17,11 @@ from e2a.constants import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.server.context import RequestContext
+from jiuwenswarm.server.interrupt_intent import (
+    normalized_intent_request,
+    reject_interrupt_result_payload,
+    unknown_interrupt_intent_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +60,29 @@ async def handle_chat_cancel(ctx: RequestContext) -> None:
     """停掉当前这一轮。对方断开时，停完再清掉这条连接占着的运行状态。"""
     request = ctx.request
     services = ctx.services
+    request, intent = normalized_intent_request(request)
+    ctx.request = request
+    # 断连合成请求不是用户输入的 intent，跳过契约校验，确保连接断开后
+    # cleanup_client_disconnect_session_runtime 仍能执行清理。
+    if not _is_client_disconnect_cancel_request(request):
+        # 契约校验前置（早退分支也覆盖）：未知 intent 直接回错误应答、
+        # 不做任何会话/任务操作。
+        intent_error = unknown_interrupt_intent_error(intent)
+        if intent_error:
+            logger.error(
+                "[handlers.chat] cancel: 拒绝未知 intent（未做任何会话操作）: session_id=%s intent=%s",
+                request.session_id or "default",
+                intent,
+            )
+            await ctx.sink.send_response(
+                AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=False,
+                    payload=reject_interrupt_result_payload(intent, intent_error),
+                )
+            )
+            return
     if isinstance(request.params, dict) and (
         request.params.get("target_team_id") or request.params.get("target_request_id")
     ):
@@ -86,7 +114,6 @@ async def handle_chat_cancel(ctx: RequestContext) -> None:
         return
     # 中断请求：根据 intent 决定是否取消流式任务
     sid = request.session_id or "default"
-    intent = request.params.get("intent", "cancel") if isinstance(request.params, dict) else "cancel"
     cleanup_after_cancel = _is_client_disconnect_cancel_request(request)
 
     # 只有 cancel/supplement 才取消流式任务

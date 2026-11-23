@@ -94,6 +94,8 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("mcp.register_custom", "POST", "/mcp/actions/register-custom"),
     ("mcp.delete_custom", "POST", "/mcp/actions/delete-custom"),
     ("mcp.save_credentials", "POST", "/mcp/actions/save-credentials"),
+    # Enterprise connector square needs source_id from providers before mcp.list.
+    ("mcp.sources.providers", "POST", "/mcp/actions/sources-providers"),
     ("command.sandbox", "POST", "/sessions/{session_id}/commands/sandbox"),
     ("command.btw", "POST", "/sessions/{session_id}/commands/btw"),
     ("command.add_dir", "POST", "/sessions/{session_id}/commands/add-dir"),
@@ -204,6 +206,10 @@ _ROUTE_ROWS: tuple[tuple[str, str, str], ...] = (
     ("plugins.uninstall", "DELETE", "/plugins/{name}"),
     ("plugins.enable", "POST", "/plugins/{name}/actions/enable"),
     ("plugins.disable", "POST", "/plugins/{name}/actions/disable"),
+    # 统一资产导入导出：包体经 /file-api/assets/upload-temp 上传、
+    # /file-api/download 短效链接下载，此处只登记控制面 RPC。
+    ("assets.export", "POST", "/assets/export"),
+    ("assets.import", "POST", "/assets/import"),
     ("schedule.check_config", "GET", "/schedule/config"),
     ("schedule.update_config", "PATCH", "/schedule/config"),
     ("schedule.list", "GET", "/schedule/tasks"),

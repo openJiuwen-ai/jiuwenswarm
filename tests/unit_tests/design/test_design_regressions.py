@@ -349,7 +349,13 @@ async def test_compose_handler_refuses_while_clip_still_running(
     ("MiniMax-H3", "4K", "2K"),
     ("MiniMax-H3", "2K", "2K"),
     ("MiniMax-H3", "", "768P"),
+    ("MiniMax-H3-Highspeed", "480P", "480P"),
+    ("MiniMax-H3-Highspeed", "480p", "480P"),
+    ("MiniMax-H3-Highspeed", "2K", "768P"),
+    ("MiniMax-H3-Lite", "480P", "480P"),
+    ("MiniMax-H3-Lite", "2K", "768P"),
     ("MiniMax-H3-Max", "480P", "480P"),
+    ("MiniMax-H3-Max", "2K", "768P"),
     ("wan3.0-video", "480P", "480P"),
 ])
 def test_resolution_snaps_to_the_nearest_lower_or_minimum_tier(model, requested, expected):

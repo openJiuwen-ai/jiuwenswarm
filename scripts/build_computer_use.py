@@ -40,7 +40,13 @@ def bundle_data(project_root: Path) -> list[tuple[str, str]]:
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
     assets = root / "os_adapter/assets"
-    shutil.copytree(assets, stage / "os_adapter/assets")
+    # Windows wheels can ship only the prebuilt driver bundle and its metadata.
+    backend_manifest = root / "backend.json"
+    prebuilt_windows = sys.platform == "win32" and backend_manifest.is_file()
+    if not prebuilt_windows or assets.exists():
+        shutil.copytree(assets, stage / "os_adapter/assets")
+    if prebuilt_windows:
+        shutil.copy2(backend_manifest, stage / backend_manifest.name)
     # The external SDK materializes these immutable resources by manifest hash.
     # Include native binaries in the identity so upgrades cannot reuse an old driver.
     manifest = {path.relative_to(stage).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()

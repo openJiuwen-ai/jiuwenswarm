@@ -74,6 +74,7 @@ _SNAPSHOT_WAIT_ATTEMPTS = 3
 _WATCHDOG_INTERVAL = 5.0
 _FORWARD_QUEUE_SIZE = 256
 _FORWARD_TIMEOUT = 10.0
+_MODELS_READY_RETRY_INITIAL = 1.0
 _FORWARD_DRAIN_TIMEOUT = 1.0
 # Transport stays alive (pongs flow) but the Worker's business loop has not
 # run: warn once it outlasts a heartbeat window, replace the Worker only when
@@ -129,6 +130,10 @@ class _InflightStream:
 # Gateway unary requests default to a 600s timeout, so blocking one reload
 # request for this long stays well inside the caller's patience.
 _RECOVERY_TIMEOUT = 90.0
+
+
+class WorkerExitUnconfirmed(RuntimeError):
+    """The validated Worker may still be exiting after the observation deadline."""
 
 
 class RuntimeSupervisor:
@@ -187,6 +192,7 @@ class RuntimeSupervisor:
         self._retired_streams: OrderedDict[str, None] = OrderedDict()
         self._routes: dict[str, tuple[Any, asyncio.Lock]] = {}
         self._queries: dict[str, asyncio.Future[dict[str, Any]]] = {}
+        self._snapshot_send_task: asyncio.Task[None] | None = None
         self._shutdown_done: asyncio.Future[dict[str, Any]] | None = None
         self._gateway_ws: Any = None
         self._gateway_lock: asyncio.Lock | None = None
@@ -207,9 +213,12 @@ class RuntimeSupervisor:
         self._worker_reached_ready = False
         self._crash_retry_at = 0.0
         self._generation = 0
+        self._models_ready_notification: tuple[int, Any] | None = None
         self._peer_generation: int | None = None
+        self._peer_echoes_probe = False
         self._last_rx = 0.0
         self._worker_last_beat = 0.0
+        self._worker_beat_received_at = 0.0
         self._worker_stall_context: dict[str, Any] = {}
         self._stall_warned_at = 0.0
         self._forward_queue: _ForwardQueue | None = None
@@ -227,8 +236,11 @@ class RuntimeSupervisor:
 
     async def get_runtime_snapshot(self, request: AgentRequest) -> dict[str, Any]:
         conn = self._conn
-        if conn is None:
+        if conn is None or self._validated_conn is not conn:
             return self._recovery_pending("worker_disconnected")
+        if self._snapshot_send_task is not None and not self._snapshot_send_task.done():
+            # Do not queue abandoned observer writes behind a slow native write.
+            return self._recovery_pending("snapshot_transport_pending")
         query_id = uuid.uuid4().hex
         future = asyncio.get_running_loop().create_future()
         self._queries[query_id] = future
@@ -236,12 +248,25 @@ class RuntimeSupervisor:
         resume = resume if isinstance(resume, dict) else {}
         try:
             after = max(0, int(resume.get("after") or 0))
-            await asyncio.wait_for(conn.send({"kind": KIND_SUBSCRIBE, "query_id": query_id,
-                                              "generation": self._peer_generation,
-                                              "payload": dump_agent_request(request),
-                                              "subscribe": bool(resume), "after": after,
-                                              "worker_instance": resume.get("worker_instance")}),
-                                   timeout=_SNAPSHOT_WAIT_SECONDS)
+            sending = asyncio.create_task(self._send_snapshot(conn, {
+                "kind": KIND_SUBSCRIBE, "query_id": query_id,
+                "generation": self._peer_generation,
+                "payload": dump_agent_request(request),
+                "subscribe": bool(resume), "after": after,
+                "worker_instance": resume.get("worker_instance"),
+            }), name="runtime-snapshot-send")
+            self._snapshot_send_task = sending
+            self._side_tasks.append(sending)
+            sending.add_done_callback(self._snapshot_send_done)
+            # Observer cancellation must not cancel the native write. Owner
+            # cancellation retires the write but leaves this query recoverable.
+            done, _ = await asyncio.wait({sending}, timeout=_SNAPSHOT_WAIT_SECONDS)
+            if not done:
+                logger.info("[Supervisor] runtime snapshot write pending query_id=%s", query_id)
+                return self._recovery_pending("snapshot_transport_timeout")
+            if sending.cancelled():
+                return self._recovery_pending("snapshot_transport_cancelled")
+            await sending
             # Retry the wait on the same query. Sending another subscription
             # would replay the journal twice and could race the first recovery.
             for _ in range(_SNAPSHOT_WAIT_ATTEMPTS):
@@ -253,8 +278,6 @@ class RuntimeSupervisor:
             logger.warning("[Supervisor] runtime snapshot pending query_id=%s session_id=%s",
                            query_id, request.session_id)
             return self._recovery_pending("snapshot_timeout")
-        except asyncio.TimeoutError:
-            return self._recovery_pending("snapshot_transport_timeout")
         except (OSError, RuntimeError, ValueError) as exc:
             logger.info("[Supervisor] runtime snapshot unavailable: %s", exc)
             return self._recovery_pending("snapshot_unavailable")
@@ -262,6 +285,24 @@ class RuntimeSupervisor:
             self._queries.pop(query_id, None)
             if not future.done():
                 future.cancel()
+
+    async def _send_snapshot(self, conn: IpcConnection, message: dict[str, Any]) -> None:
+        try:
+            await conn.send(message)
+        except (OSError, RuntimeError):
+            if self._conn is conn:
+                await self._close_failed_connection(conn)
+            raise
+
+    def _snapshot_send_done(self, task: asyncio.Task[None]) -> None:
+        if self._snapshot_send_task is task:
+            self._snapshot_send_task = None
+        if task in self._side_tasks:
+            self._side_tasks.remove(task)
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                logger.warning("[Supervisor] runtime snapshot write failed: %s", type(error).__name__)
 
     def _recovery_pending(self, reason: str) -> dict[str, Any]:
         return {"recovery_pending": True, "recovery_reason": reason,
@@ -299,17 +340,40 @@ class RuntimeSupervisor:
 
     async def run_until_ipc_ready(self) -> None:
         """Connect to a resident Worker, or spawn one, then return."""
+        await self._wait_for_current_ipc()
+        # A validated Worker can report FAILED before this waiter resumes.
+        # Keep Front's recovery endpoint available to repair that live Runtime.
+        if self._fatal and self._published_ipc("primary") is None:
+            raise RuntimeError(self._fatal_reason or "runtime worker failed to start")
+
+    def _published_ipc(self, worker_id: str) -> IpcConnection | None:
+        conn = self._conn
+        if conn is not None and self._validated_conn is conn and self._registry.get(worker_id) is not None:
+            return conn
+        return None
+
+    async def _wait_for_current_ipc(self) -> None:
+        if self._stopping or self._closing or self._terminating:
+            return
         if self._loop_task is None:
             self._loop_task = asyncio.create_task(self._supervise(), name="runtime-supervisor")
-        await self._ipc_ready.wait()
-        if self._fatal and self._conn is None:
-            raise RuntimeError(self._fatal_reason or "runtime worker failed to start")
+        while True:
+            await self._ipc_ready.wait()
+            if self._stopping or self._closing or self._terminating:
+                return
+            if self._fatal:
+                return
+            if self._published_ipc("primary") is not None:
+                return
+            # A waiter may resume after the generation which signalled it retired.
+            self._ipc_ready.clear()
 
     def attach_gateway_connection(self, ws: Any, send_lock: asyncio.Lock) -> None:
         """Remember the Front-owned Gateway socket. The Worker never sees it."""
         self._gateway_ws = ws
         self._gateway_lock = send_lock
         self._schedule(self._notify_gateway(attached=True))
+        self._notify_models_when_ready()
 
     async def on_gateway_disconnect(self, ws: Any, remote: Any) -> None:
         if self._gateway_ws is ws:
@@ -354,6 +418,7 @@ class RuntimeSupervisor:
                     return False
                 # Publish recovery only after retirement succeeded. Refused
                 # ownership or an unobserved exit must leave FAILED sticky.
+                self._ipc_ready.clear()
                 self._worker_reached_ready = False
                 self._fatal = False
                 self._fatal_reason = ""
@@ -423,17 +488,18 @@ class RuntimeSupervisor:
         worker_id = self._affinity.worker_for(request.session_id)
         # connect() publishes the transport before hello validates its identity
         # and registers the Worker. Requests must wait for that whole barrier.
-        connection_pending = (self._conn is None or self._validated_conn is not self._conn
-                              or self._registry.get(worker_id) is None)
-        if connection_pending and not self._fatal:
+        if self._published_ipc(worker_id) is None and not self._fatal:
             try:
-                await asyncio.wait_for(self.run_until_ipc_ready(), timeout=self._connect_timeout)
+                await asyncio.wait_for(self._wait_for_current_ipc(), timeout=self._connect_timeout)
             except asyncio.TimeoutError:
-                await self._emit_error(ws, request, send_lock, "runtime worker IPC is still warming")
+                await self._emit_error(ws, request, send_lock, "runtime worker IPC is still warming",
+                                       code="RUNTIME_WARMING")
                 return
-        slot = self._registry.get(worker_id)
-        conn = self._conn
-        if slot is None or conn is None or self._validated_conn is not conn:
+        if self._stopping or self._closing or self._terminating:
+            await self._emit_error(ws, request, send_lock, "AgentServer is shutting down", code="RUNTIME_DRAINING")
+            return
+        conn = self._published_ipc(worker_id)
+        if self._fatal or conn is None:
             await self._emit_error(
                 ws, request, send_lock, self._fatal_reason or "runtime worker is not connected",
                 code="WORKER_UNSTABLE" if self._crash_retry_at > time.monotonic() else "WORKER_CLOSED",
@@ -615,10 +681,16 @@ class RuntimeSupervisor:
                             await conn.close()
                         await self._retire_unhealthy_worker()
                     except Exception as cleanup_error:
-                        self._fatal = True
-                        self._fatal_reason = f"attached Worker startup cleanup failed: {cleanup_error}"
-                        self._readiness.mark_failed(self._fatal_reason)
-                        self._ipc_ready.set()
+                        reason = f"attached Worker startup cleanup failed (startup error: {exc}): {cleanup_error}"
+                        if (isinstance(cleanup_error, WorkerExitUnconfirmed)
+                                and not isinstance(exc, WorkerIdentityError)):
+                            self._mark_retryable_failure(reason)
+                        else:
+                            self._fatal = True
+                            self._retryable_failure = False
+                            self._fatal_reason = reason
+                            self._readiness.mark_failed(reason)
+                            self._ipc_ready.set()
                         logger.exception("[Supervisor] attached startup cleanup failed")
                         break
                 logger.warning(
@@ -663,7 +735,7 @@ class RuntimeSupervisor:
                 if unhealthy_reason or self._ipc_mode == FRONT_LOOPBACK or exited:
                     self._record_post_ready_exit(reason)
                 if not self._fatal and self._restart_count >= self._max_restarts:
-                    self._mark_restart_exhausted(reason)
+                    self._mark_retryable_failure(reason)
                 if self._fatal:
                     self._readiness.mark_failed(self._fatal_reason or reason)
                     self._ipc_ready.set()
@@ -695,10 +767,17 @@ class RuntimeSupervisor:
                     try:
                         await self._retire_unhealthy_worker()
                     except Exception as exc:  # noqa: BLE001
-                        self._fatal = True
-                        self._fatal_reason = f"unhealthy Worker could not be retired: {exc}"
-                        self._readiness.mark_failed(self._fatal_reason)
-                        self._ipc_ready.set()
+                        reason = f"unhealthy Worker could not be retired: {exc}"
+                        if isinstance(exc, WorkerExitUnconfirmed):
+                            # Recovery rechecks the retained identity and exit
+                            # before it can elect or spawn a replacement.
+                            self._mark_retryable_failure(reason)
+                        else:
+                            self._fatal = True
+                            self._retryable_failure = False
+                            self._fatal_reason = reason
+                            self._readiness.mark_failed(reason)
+                            self._ipc_ready.set()
                         logger.exception("[Supervisor] unhealthy Worker retirement failed")
                         break
                 if self._fatal:
@@ -943,9 +1022,11 @@ class RuntimeSupervisor:
         peer = hello.get("generation")
         self._peer_generation = peer if isinstance(peer, int) else self._generation
         self._runtime_loaded = bool(hello.get("runtime_loaded"))
-        self._last_rx = time.monotonic()
+        self._peer_echoes_probe = hello.get("heartbeat_probe") is True
+        self._last_rx = getattr(conn, "last_received_at", 0.0) or time.monotonic()
         # The hello itself was produced by the Worker's event loop.
         self._worker_last_beat = self._last_rx
+        self._worker_beat_received_at = self._last_rx
         self._worker_stall_context = {}
         self._stall_warned_at = 0.0
         self._worker_pid = validated_process.pid
@@ -1082,8 +1163,11 @@ class RuntimeSupervisor:
         try:
             while not self._stopping and self._generation == generation:
                 message = await conn.recv()
-                self._last_rx = time.monotonic()
-                await self._handle(message)
+                if generation != self._generation or conn is not self._conn:
+                    return
+                received_at = getattr(conn, "last_received_at", 0.0) or time.monotonic()
+                self._last_rx = max(self._last_rx, received_at)
+                await self._handle(message, received_at=received_at)
                 # Buffered IPC reads may not suspend; let the Gateway writer drain
                 # replay bursts before the next frame fills the bounded queue.
                 await asyncio.sleep(0)
@@ -1247,9 +1331,9 @@ class RuntimeSupervisor:
             }
         )
 
-    async def _handle(self, message: dict[str, Any]) -> None:
+    async def _handle(self, message: dict[str, Any], *, received_at: float | None = None) -> None:
         kind = str(message.get("kind") or "")
-        self._note_worker_beat(message)
+        self._note_worker_beat(message, received_at=received_at)
         if kind == KIND_WIRE:
             if not self._accepts_peer_generation(message):
                 logger.warning(
@@ -1311,6 +1395,7 @@ class RuntimeSupervisor:
             return
         if kind == KIND_READINESS:
             self._apply_readiness(message)
+            self._notify_models_when_ready()
             return
         if kind == KIND_HEARTBEAT:
             return
@@ -1407,19 +1492,23 @@ class RuntimeSupervisor:
         raw = message.get("generation")
         return isinstance(raw, int) and raw == self._peer_generation
 
-    def _note_worker_beat(self, message: dict[str, Any]) -> None:
+    def _note_worker_beat(self, message: dict[str, Any], *, received_at: float | None = None) -> None:
         """Track when the Worker's event loop last provably ran.
 
         Every frame is loop-produced except the off-loop heartbeat pong, which
         reports its own stall age instead. A missing field (legacy Worker)
         counts as a fresh beat, keeping old Workers outside stall detection.
         """
+        observed_at = time.monotonic() if received_at is None else received_at
+        if observed_at < self._worker_beat_received_at:
+            return
+        self._worker_beat_received_at = observed_at
         age = message.get("loop_beat_age")
         if isinstance(age, (int, float)) and age >= 0:
-            self._worker_last_beat = time.monotonic() - float(age)
+            self._worker_last_beat = observed_at - float(age)
             self._worker_stall_context = _bounded_stall_context(message.get("loop_stall"))
         else:
-            self._worker_last_beat = time.monotonic()
+            self._worker_last_beat = observed_at
             self._worker_stall_context = {}
 
     def _finish_request(self, message: dict[str, Any]) -> None:
@@ -1433,6 +1522,54 @@ class RuntimeSupervisor:
             if not message.get("ok", False) and dispatch_id in self._streams:
                 self._retire_stream(dispatch_id)
             future.set_result(message)
+
+    def _notify_models_when_ready(self) -> None:
+        """Invalidate model reads once per ready IPC generation and Gateway."""
+        ws, lock = self._gateway_ws, self._gateway_lock
+        if self._stopping or self._closing:
+            return
+        if not self._readiness.snapshot()["agent_ready"] or self._validated_conn is None:
+            return
+        if self._forwarder is None or ws is None or lock is None:
+            return
+        notification = (self._generation, ws)
+        if self._models_ready_notification == notification:
+            return
+        self._models_ready_notification = notification
+        self._side_tasks.append(asyncio.create_task(
+            self._send_models_ready(notification, lock), name="runtime-models-ready",
+        ))
+
+    async def _send_models_ready(self, notification: tuple[int, Any], lock: asyncio.Lock) -> None:
+        from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
+
+        generation, ws = notification
+        connection = self._validated_conn
+        delivered = False
+        delay = _MODELS_READY_RETRY_INITIAL
+        wire = build_server_push_wire({
+            "request_id": f"runtime-models-ready-{generation}",
+            "channel_id": "web",
+            "payload": {"event_type": "models.updated"},
+        })
+        try:
+            while (not self._stopping and not self._closing
+                    and generation == self._generation and ws is self._gateway_ws
+                    and connection is self._validated_conn and connection is self._conn
+                    and self._models_ready_notification == notification
+                    and self._readiness.snapshot()["agent_ready"]):
+                try:
+                    async with asyncio.timeout(_FORWARD_TIMEOUT):
+                        delivered = await self._forwarder.send(wire, ws=ws, send_lock=lock)
+                    if delivered:
+                        return
+                except Exception:
+                    logger.warning("[Supervisor] ready model invalidation push failed; retrying", exc_info=True)
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, 10.0)
+        finally:
+            if not delivered and self._models_ready_notification == notification:
+                self._models_ready_notification = None
 
     def _apply_readiness(self, message: dict[str, Any]) -> None:
         state = str(message.get("state") or "")
@@ -1501,9 +1638,9 @@ class RuntimeSupervisor:
         self._post_ready_crashes.append(now)
         if len(self._post_ready_crashes) >= _POST_READY_CRASH_LIMIT:
             self._crash_retry_at = self._post_ready_crashes[0] + _POST_READY_CRASH_WINDOW
-            self._mark_restart_exhausted(f"runtime worker repeatedly exited after readiness: {reason}")
+            self._mark_retryable_failure(f"runtime worker repeatedly exited after readiness: {reason}")
 
-    def _mark_restart_exhausted(self, reason: str) -> None:
+    def _mark_retryable_failure(self, reason: str) -> None:
         """Publish a transient failure and retry after a bounded cooldown."""
         self._retryable_failure = True
         self._fatal = True
@@ -1522,7 +1659,7 @@ class RuntimeSupervisor:
         delay = _RECOVERY_BACKOFF_INITIAL
         while not self._stopping and not self._closing:
             delay = max(delay, self._crash_retry_at - time.monotonic())
-            logger.warning("[Supervisor] restart budget exhausted; retrying in %.1fs", delay)
+            logger.warning("[Supervisor] runtime recovery pending; retrying in %.1fs", delay)
             await asyncio.sleep(delay)
             if self._stopping or self._closing or self._readiness.state is not ReadinessState.FAILED:
                 return
@@ -1548,7 +1685,7 @@ class RuntimeSupervisor:
             self._ipc_ready.set()
             return False
         if self._restart_count >= self._max_restarts:
-            self._mark_restart_exhausted(reason)
+            self._mark_retryable_failure(reason)
             return False
         self._restart_count += 1
         logger.info(
@@ -1662,6 +1799,8 @@ class RuntimeSupervisor:
                 return
 
     async def _watchdog(self, generation: int) -> None:
+        last_local_stall = 0.0
+        fresh_request_since = 0.0
         while not self._stopping and generation == self._generation:
             expected_wakeup = time.monotonic() + _WATCHDOG_INTERVAL
             await asyncio.sleep(_WATCHDOG_INTERVAL)
@@ -1669,44 +1808,65 @@ class RuntimeSupervisor:
             if generation != self._generation:
                 return
             now = time.monotonic()
+            if self._event_loop_lag >= _WATCHDOG_INTERVAL:
+                last_local_stall = now
+                # Dispatch may run immediately after resume, ahead of this timer.
+                # Require issuance after the missed tick was already a local stall
+                # and within one watchdog interval of this wakeup.
+                fresh_request_since = max(expected_wakeup + _WATCHDOG_INTERVAL, now - _WATCHDOG_INTERVAL)
+                self._observed_loop_lag = max(self._observed_loop_lag, self._event_loop_lag)
             if now - self._last_rx > _HEARTBEAT_TIMEOUT:
-                if self._event_loop_lag >= _WATCHDOG_INTERVAL:
-                    # This Front's own loop stalled, so pending pongs may be
-                    # sitting in resolved futures. Do not execute the Worker
-                    # for our own stall; the next cycle re-checks with fresh
-                    # evidence once the pump has drained. Keep the peak lag
-                    # so the deferred verdict still carries the evidence.
-                    self._observed_loop_lag = max(
-                        self._observed_loop_lag, self._event_loop_lag
-                    )
-                    logger.warning(
-                        "[Supervisor] supervisor event loop stalled %.1fs; "
-                        "deferring worker health verdict",
-                        self._event_loop_lag,
-                    )
-                    continue
-                # A pong accepted earlier in this wakeup is applied by the
-                # pump only on a later turn. Yield once so that evidence
-                # lands before the transport verdict.
-                await asyncio.sleep(0)
-                if self._stopping or generation != self._generation:
+                conn = self._conn
+                if conn is None:
                     return
+                evidence = "no incoming frames"
+                if last_local_stall and self._last_rx <= last_local_stall:
+                    logger.warning(
+                        "[Supervisor] supervisor event loop stalled; probing generation=%s "
+                        "peak_lag=%.1fs probe_budget=%.1fs",
+                        generation, self._observed_loop_lag, _HEARTBEAT_INTERVAL,
+                    )
+                    probe = await conn.probe_heartbeat(
+                        _HEARTBEAT_INTERVAL, correlated=self._peer_echoes_probe,
+                        request_since=max(fresh_request_since, now - _WATCHDOG_INTERVAL),
+                        generation=self._peer_generation, write_grace=_WATCHDOG_INTERVAL,
+                    )
+                    if self._stopping or generation != self._generation or conn is not self._conn:
+                        return
+                    evidence = probe.state
+                    if probe.frame is not None:
+                        logger.info("[Supervisor] worker recovery round trip confirmed generation=%s evidence=%s",
+                                    generation, evidence)
+                        last_local_stall = 0.0
+                        # The I/O reader confirmed the peer even if the pump is still busy.
+                        if self._last_rx < probe.received_at:
+                            self._last_rx = probe.received_at
+                        self._note_worker_beat(probe.frame, received_at=probe.received_at)
+                        continue
+                else:
+                    # A normal wakeup may precede delivery of a completed receive.
+                    await asyncio.sleep(0)
+                    if self._stopping or generation != self._generation or conn is not self._conn:
+                        return
+                    if time.monotonic() - self._last_rx <= _HEARTBEAT_TIMEOUT:
+                        continue
                 now = time.monotonic()
-                if now - self._last_rx <= _HEARTBEAT_TIMEOUT:
-                    continue
+                reason = {
+                    "write_timeout": "runtime worker IPC probe write timed out",
+                    "write_failed": "runtime worker IPC probe write failed",
+                    "connection_closed": "runtime worker IPC connection closed",
+                }.get(evidence, "runtime worker heartbeat timed out")
                 logger.warning(
-                    "[Supervisor] runtime worker heartbeat timed out; last_rx_age=%.1fs "
-                    "forward_queued=%s generation=%s pid=%s",
-                    now - self._last_rx,
+                    "[Supervisor] %s; last_rx_age=%.1fs forward_queued=%s generation=%s pid=%s evidence=%s",
+                    reason, now - self._last_rx,
                     self._forward_queue.qsize() if self._forward_queue is not None else 0,
                     generation,
                     self._worker_pid,
+                    evidence,
                 )
-                self._log_diagnostics("runtime worker heartbeat timed out")
-                self._unhealthy_reason = "runtime worker heartbeat timed out"
-                conn = self._conn
-                if conn is not None:
-                    await conn.close()
+                self._log_diagnostics(reason)
+                self._unhealthy_reason = reason
+                await conn.close()
                 return
             if self._worker_last_beat and await self._classify_worker_stall(now):
                 return
@@ -1863,7 +2023,7 @@ class RuntimeSupervisor:
                 try:
                     process.wait(timeout=max(0.0, deadline - time.monotonic()))
                 except psutil.TimeoutExpired as exit_error:
-                    raise RuntimeError(
+                    raise WorkerExitUnconfirmed(
                         "Validated Worker exit could not be observed before the shutdown deadline"
                     ) from exit_error
         except psutil.NoSuchProcess:

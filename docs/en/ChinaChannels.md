@@ -196,6 +196,8 @@ If the service is already running it will auto-reload; otherwise run `jiuwenswar
 
 After starting the frontend service, open **Channels → Feishu**, enable it, and configure the **App ID** and **App Secret** saved in step 3.
 
+Personal channels and team employee bindings require different Feishu App IDs. To move a bot between them, remove its existing configuration first.
+
 ### 9. Enable Group Digital Avatar (Optional)
 
 After completing the basic Feishu bot setup, you can enable the digital avatar feature so the bot automatically replies in group chats on behalf of a designated user.
@@ -405,6 +407,8 @@ On the **Permission management** page, enable the following permissions as neede
 Copy **client_id** and **client_secret** from **Credentials & basic info** (config keys match DingTalk console naming, both lowercase).
 
 In JiuwenSwarm, open **Channels → DingTalk**, enable it, and configure **client_id** and **client_secret**, then save.
+
+A DingTalk Client ID can be used for a personal channel or a team employee binding. Remove the existing configuration before moving the bot.
 
 ![DingTalk channel](../assets/images/dingding_channel_enable.png)
 

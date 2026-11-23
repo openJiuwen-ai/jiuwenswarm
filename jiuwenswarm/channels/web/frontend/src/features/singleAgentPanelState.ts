@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
+import { activateNativeWebUIPanel } from './webui/react/pluginPanelTabsStore';
 
-export type SingleAgentToolTab = 'planning' | 'subagents' | 'artifacts' | 'review' | 'browser';
+export type SingleAgentToolTab = 'planning' | 'subagents' | 'artifacts' | 'review' | 'browser' | 'app';
 
 export interface SingleAgentPanelState {
   expanded: boolean;
@@ -34,7 +35,7 @@ function normalizeState(value: unknown): SingleAgentPanelState {
   return {
     expanded: typeof raw.expanded === 'boolean' ? raw.expanded : false,
     activeTab:
-      activeTab === 'planning' || activeTab === 'subagents' || activeTab === 'artifacts' || activeTab === 'review' || activeTab === 'browser' ? activeTab : DEFAULT_STATE.activeTab,
+      activeTab === 'planning' || activeTab === 'subagents' || activeTab === 'artifacts' || activeTab === 'review' || activeTab === 'browser' || activeTab === 'app' ? activeTab : DEFAULT_STATE.activeTab,
     ...(typeof raw.selectedArtifactId === 'string' && raw.selectedArtifactId.trim() ? { selectedArtifactId: raw.selectedArtifactId } : {}),
     ...(typeof raw.selectedSubagentId === 'string' && raw.selectedSubagentId.trim() ? { selectedSubagentId: raw.selectedSubagentId } : {}),
   };
@@ -59,6 +60,7 @@ function publishState(state: SingleAgentPanelState): void {
 }
 
 export function openSingleAgentPanel(activeTab: SingleAgentToolTab, selectedArtifactId?: string): void {
+  activateNativeWebUIPanel('conversation.panel.right');
   const nextState: SingleAgentPanelState = {
     ...loadState(),
     expanded: true,
@@ -97,6 +99,7 @@ export function useSingleAgentPanelState(): UseSingleAgentPanelStateResult {
 
   const setSingleAgentPanelActiveTab = useCallback(
     (activeTab: SingleAgentToolTab) => {
+      activateNativeWebUIPanel('conversation.panel.right');
       updateState({ activeTab });
     },
     [updateState],

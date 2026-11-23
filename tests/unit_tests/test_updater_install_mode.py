@@ -511,7 +511,7 @@ def test_desktop_check_uses_timestamp_and_product_agnostic_installer(
             )
 
     monkeypatch.setattr(sys, "platform", platform)
-    monkeypatch.setattr(updater, "__version__", "9.0.0")
+    monkeypatch.setattr(updater, "get_runtime_version", lambda: "9.0.0")
     monkeypatch.setattr(
         updater.UpdaterService,
         "_create_version_source",
@@ -850,7 +850,7 @@ def test_desktop_check_does_not_update_for_same_or_older_timestamp(
                 source_type="gitcode",
             )
 
-    monkeypatch.setattr(updater, "__version__", "0.2.2")
+    monkeypatch.setattr(updater, "get_runtime_version", lambda: "0.2.2")
     monkeypatch.setattr(
         updater.UpdaterService,
         "_create_version_source",
@@ -889,7 +889,7 @@ def test_pip_check_keeps_version_comparison(monkeypatch):
                 source_type="pypi",
             )
 
-    monkeypatch.setattr(updater, "__version__", "0.2.2")
+    monkeypatch.setattr(updater, "get_runtime_version", lambda: "0.2.2")
     monkeypatch.setattr(
         updater.UpdaterService,
         "_create_version_source",
@@ -923,7 +923,7 @@ def test_linux_desktop_keeps_version_comparison(monkeypatch):
             )
 
     monkeypatch.setattr(sys, "platform", "linux")
-    monkeypatch.setattr(updater, "__version__", "9.0.0")
+    monkeypatch.setattr(updater, "get_runtime_version", lambda: "9.0.0")
     monkeypatch.setattr(
         updater.UpdaterService,
         "_create_version_source",

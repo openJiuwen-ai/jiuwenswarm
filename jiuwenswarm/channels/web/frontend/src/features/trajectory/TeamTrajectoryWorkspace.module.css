@@ -381,8 +381,8 @@
 }
 
 .root[data-scheduled-control='true'] .laneRowExpanded {
-  height: clamp(360px, 52vh, 420px);
-  flex: 0 0 clamp(360px, 52vh, 420px);
+  height: var(--trajectory-expanded-height, clamp(360px, 52vh, 420px));
+  flex: 0 0 var(--trajectory-expanded-height, clamp(360px, 52vh, 420px));
 }
 
 .laneSection:has(.laneRowExpanded) {
@@ -398,7 +398,7 @@
 }
 
 .roundSection:has(> .laneRowExpanded) > .laneRowExpanded {
-  flex: 0 0 clamp(360px, 52vh, 420px);
+  flex: 0 0 var(--trajectory-expanded-height, clamp(360px, 52vh, 420px));
 }
 
 .laneRowExpanded :global([data-display-mode='full']) {
@@ -415,15 +415,24 @@
   gap: 8px;
 }
 
-.workflowGroupSelected {
-  height: 100%;
-  min-height: 0;
-  flex: 0 0 100%;
+/* An expanded lane inside a workflow group takes the scheduled lane's measured
+ * height so the group sizes to its content: a group pinned to the lanes area's
+ * full height clips nothing, letting the sibling operator lane spill out of the
+ * group box onto the next workflow group's header. */
+.workflowGroupSelected .laneRowExpanded {
+  height: var(--trajectory-expanded-height, clamp(360px, 52vh, 420px));
+  flex: 0 0 var(--trajectory-expanded-height, clamp(360px, 52vh, 420px));
 }
 
-.workflowGroupSelected .workflowGroupLanes {
-  min-height: 0;
-  flex: 1 1 0;
+/* An attached workflow group shares its task body with the review rounds.
+   Let it take its content height so an expanded operator cannot cover R1. */
+.taskBody .workflowGroupSelected {
+  height: auto;
+  flex: 0 0 auto;
+}
+
+.taskBody .workflowGroupSelected .workflowGroupLanes {
+  flex: 0 0 auto;
 }
 
 .workflowGroupHeader {

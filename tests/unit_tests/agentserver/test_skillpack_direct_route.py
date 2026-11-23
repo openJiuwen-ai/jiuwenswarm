@@ -38,6 +38,7 @@ from tests.unit_tests.agentserver.test_symphony_orchestration_needs_input import
 def _pack(name: str = "weekly-release-pack") -> dict[str, Any]:
     return {
         "id": name, "skill_type": "skillpack", "enabled": True,
+        "validation_revision": f"{name}-revision-1",
         "members": ["release-note", "risk-check"], "blocked_members": [],
         "routing": {key: f"{key}: release note and risk report" for key in ROUTING_SECTIONS},
     }
@@ -77,7 +78,7 @@ def _router(*packs: dict[str, Any], skill_root: Path | None = None) -> tuple[Ski
 
 
 def _config(enabled: bool = True):
-    return {"symphony": {"evolution": {"flow": {"enabled": enabled}}}}
+    return {"symphony": {"orchestration": {"experience": {"enabled": enabled}}}}
 
 
 async def _active(
@@ -155,7 +156,7 @@ async def test_discovery_disabled_during_match_does_not_offer_confirmation():
     config = _config()
 
     async def judge(query, candidates, **kwargs):
-        config["symphony"]["evolution"]["flow"]["enabled"] = False
+        config["symphony"]["orchestration"]["experience"]["enabled"] = False
         return candidates
 
     router.judge = judge
@@ -551,7 +552,10 @@ async def test_real_skillfs_recall_joins_fresh_manager_snapshot(tmp_path, monkey
     _write_skill(root / "second-skill", "second-skill")
     _write_pack(root / "demo-pack")
     manager = SkillManager(workspace_dir=str(workspace))
-    toolkit = SkillRetrievalToolkit(skill_directories=[str(root)], artifact_root=tmp_path / "index")
+    toolkit = SkillRetrievalToolkit(skill_directories=[str(root)], config_base={"symphony": {
+        "capability": {"sources": [{"type": "skill", "root": str(root)}]}, "retrieval": {"enabled": True},
+        "storage": {"artifact_root": str(tmp_path / "index")},
+    }})
     router = SkillPackRouter(manager=lambda: manager, toolkit=lambda: toolkit, model=lambda: None)
     router.judge = AsyncMock(side_effect=lambda query, candidates, **kwargs: candidates)
     route = await router.choose("complete demo workflow", [], mode="confirm")
@@ -678,6 +682,7 @@ async def test_direct_state_survives_permission_pause_without_reauthorizing_acti
     await rail.before_invoke(resumed)
     assert rail._outer_states[id(resumed)] is state
     snapshot["inventory_revision"] = "new"
+    snapshot["skills"][0]["validation_revision"] = "changed-pack"
     call = _tool_ctx(resumed, "skill_tool", {"skill_name": "weekly-release-pack"})
     await rail.before_tool_call(call)
     assert call.inputs.tool_result["reason"] == "skillpack_state_changed"
@@ -883,7 +888,10 @@ async def test_parallel_guard_does_not_resume_after_another_call_blocks(first_fa
             await first_release.wait()
             if first_failure == "snapshot_error":
                 raise TimeoutError("inventory unavailable")
-            return {**snapshot, "inventory_revision": "changed"}
+            changed = copy.deepcopy(snapshot)
+            changed["inventory_revision"] = "changed"
+            changed["skills"][0]["validation_revision"] = "changed-pack"
+            return changed
         return copy.deepcopy(snapshot)
 
     router.snapshot = controlled_snapshot
@@ -1108,6 +1116,7 @@ async def test_real_agent_inventory_failure_finishes_without_another_model_call(
     async def skill(**kwargs):
         executed.append(kwargs["skill_name"])
         snapshot["inventory_revision"] = "changed-after-root"
+        snapshot["skills"][0]["validation_revision"] = "changed-pack-after-root"
         return {"success": True, "content": "root instructions"}
 
     client = _ScriptedClient([

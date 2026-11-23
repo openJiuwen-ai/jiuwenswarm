@@ -107,13 +107,14 @@ def test_env_only_transaction_recovers_at_atomic_env_commit(catalogue, committed
     yaml_hash = sha256(path.read_bytes()).hexdigest()
     old_env, new_env = "VISION_ENABLED=false\n", "VISION_ENABLED=true\n"
     expected = new_env if committed else old_env
-    path.with_name(".env").write_text(expected)
+    # Production commits write these journaled bytes without newline translation.
+    path.with_name(".env").write_bytes(expected.encode("utf-8"))
     path.with_name(".multimodal-transaction.json").write_text(json.dumps({
         "transaction_id": "env-only", "old_yaml_hash": yaml_hash, "new_yaml_hash": yaml_hash,
         "old_env": old_env, "new_env": new_env,
     }))
     with config_write_lock(config_path=path):
-        assert path.with_name(".env").read_text() == expected
+        assert path.with_name(".env").read_bytes() == expected.encode("utf-8")
     assert not path.with_name(".multimodal-transaction.json").exists()
 
 
@@ -122,7 +123,7 @@ def test_settings_reads_do_not_initialize_and_startup_failure_keeps_legacy_data(
     old_yaml = path.read_bytes()
     path.with_name(".env").write_text("VISION_API_BASE=https://old.invalid\nVISION_ENABLED=false\n")
     old_env = path.with_name(".env").read_bytes()
-    with pytest.raises(MultimodalError, match="MM_CONFIG_READ_FAILED"):
+    with pytest.raises(MultimodalError, match="MM_NOT_CONFIGURED"):
         store.read()
     assert path.read_bytes() == old_yaml
     original_write = config_persistence.atomic_write
@@ -164,8 +165,34 @@ def catalogue(tmp_path, monkeypatch):
     return path, multimodal_store.MultimodalStore()
 
 
-def upsert(store, model):
-    return store.mutate("models.upsert", {"mode": "create", "model": model})
+def upsert(store, model, enabled=True):
+    tools = store.read()["tools"]
+    activation_tools = [tool for tool in model["capabilities"] if not tools[tool]["enabled"]]
+    return store.mutate("models.upsert", {"mode": "create", "model": model,
+                                         "tool_activation": {"tools": activation_tools, "enabled": enabled}})
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_activation_confirmation_precedes_commit_and_projects_the_selected_choice(catalogue, enabled):
+    path, store = catalogue
+    store.initialize()
+    original_yaml = path.read_bytes()
+    original_env = path.with_name(".env").read_bytes()
+    model = model_for(["vision", "audio"])
+    params = {"mode": "create", "model": model}
+    with pytest.raises(MultimodalError, match="MM_CONFIRM_REQUIRED"):
+        store.mutate("models.upsert", params)
+    assert path.read_bytes() == original_yaml
+    assert path.with_name(".env").read_bytes() == original_env
+    store.mutate("models.upsert", {
+        **params, "tool_activation": {"tools": ["vision", "audio"], "enabled": enabled},
+    })
+    stored = yaml.safe_load(path.read_text())["multimodal"]
+    env = dotenv_values(path.with_name(".env"))
+    for tool in ("vision", "audio"):
+        assert stored["tools"][tool] == {"model_id": model["model_id"], "enabled": enabled}
+        assert env[f"{tool.upper()}_ENABLED"] == str(enabled).lower()
+        assert env[f"{tool.upper()}_MODEL_NAME"] == model["connection"]["model_name"]
 
 
 def test_save_updates_directory_and_original_execution_slots_and_redacts_list(catalogue):
@@ -354,8 +381,18 @@ async def test_rpc_saved_but_reload_failed_can_retry_apply_without_duplicate_mod
     multimodal_store.initialize_multimodal_models()
     callback = AsyncMock(side_effect=RuntimeError("sensitive exception must not be returned"))
     adapter = MultimodalConfigAdapter(on_config_saved=callback)
+    model = model_for(["vision"])
+    original = path.read_bytes(), path.with_name(".env").read_bytes()
     response = await adapter.handle(AgentRequest(request_id="1", channel_id="web", req_method=ReqMethod.MULTIMODAL_MODELS_UPSERT,
-                                               params={"mode": "create", "model": model_for(["vision"])}))
+                                               params={"mode": "create", "model": model}))
+    assert not response.ok
+    assert response.payload["code"] == "MM_CONFIRM_REQUIRED"
+    assert response.payload["activation_tools"] == ["vision"]
+    assert (path.read_bytes(), path.with_name(".env").read_bytes()) == original
+    callback.assert_not_awaited()
+    response = await adapter.handle(AgentRequest(request_id="confirmed", channel_id="web", req_method=ReqMethod.MULTIMODAL_MODELS_UPSERT,
+                                               params={"mode": "create", "model": model,
+                                                       "tool_activation": {"tools": ["vision"], "enabled": True}}))
     assert response.ok and response.payload["saved"] is True
     assert response.payload["applied_without_restart"] is False
     persisted = yaml.safe_load(path.read_text())["multimodal"]
@@ -433,15 +470,17 @@ async def test_gateway_real_registration_preserves_confirmation_payload(catalogu
                               on_connect=lambda fn: None, on_disconnect=lambda fn: None, send_response=AsyncMock())
     async def request(req):
         return AgentResponse(request_id=req.request_id, channel_id="web", ok=False,
-                             payload={"code": "MM_CONFIRM_REQUIRED", "affected_tools": ["vision", "audio"]})
+                             payload={"code": "MM_CONFIRM_REQUIRED", "affected_tools": ["vision", "audio"],
+                                      "activation_tools": ["visual_gen", "video_gen"]})
     client = SimpleNamespace(server_ready=True, send_request=AsyncMock(side_effect=request))
     monkeypatch.setattr("agent_gateway.enterprise.is_enterprise", lambda: enterprise)
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=client))
     assert len([name for name in methods if name.startswith("multimodal.")]) == 6
-    await methods["multimodal.models.delete"](SimpleNamespace(), "gateway-delete", {"model_id": "some-id"}, None)
+    await methods["multimodal.models.upsert"](SimpleNamespace(), "gateway-upsert", {"mode": "update"}, None)
     response = channel.send_response.call_args.kwargs
     assert response["ok"] is False
     assert response["payload"]["affected_tools"] == ["vision", "audio"]
+    assert response["payload"]["activation_tools"] == ["visual_gen", "video_gen"]
     assert response["payload"]["code"] == "MM_CONFIRM_REQUIRED"
 
 
@@ -750,7 +789,7 @@ def test_historical_acceptance_at_startup(catalogue, monkeypatch, case):
                      "confirmed_tools": ["vision"]})
     if case == "H18":
         old_id = first["tools"]["vision"]["model_id"]
-        upsert(store, model_for(["vision"]))
+        upsert(store, model_for(["vision"]), enabled=False)
         assert store.read()["tools"]["vision"] == {"model_id": old_id, "enabled": False}
     current = yaml.safe_load(path.read_text())["multimodal"]
     restarted = multimodal_store.MultimodalStore()

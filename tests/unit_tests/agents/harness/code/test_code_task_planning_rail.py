@@ -116,6 +116,30 @@ async def _task_reminders(agent: FakeAgent):
 
 
 @pytest.mark.asyncio
+async def test_disabled_reminders_are_not_restored_or_injected() -> None:
+    agent = FakeAgent()
+    history = FakeHistoryContext()
+    reminder_cadence = {
+        "task_reminder_turns_since_management": 1,
+        "task_reminder_turns_between_reminders": 1,
+    }
+    enabled_rail = _rail([], **reminder_cadence)
+    await enabled_rail.before_model_call(_ctx(agent, context=history))
+    assert await agent.prompt_attachment_manager.sync_to_context(history, "sess1") is not None
+
+    disabled_rail = _rail([], enable_task_reminders=False, **reminder_cadence)
+    await disabled_rail.on_user_message(_ctx(agent))
+    await disabled_rail.before_model_call(_ctx(agent))
+    assert await _task_reminders(agent) == []
+
+    resumed_agent = FakeAgent()
+    resumed_ctx = _ctx(resumed_agent, context=history)
+    await disabled_rail.on_user_message(resumed_ctx)
+    await disabled_rail.before_model_call(resumed_ctx)
+    assert await _task_reminders(resumed_agent) == []
+
+
+@pytest.mark.asyncio
 async def test_code_task_planning_rail_does_not_inject_before_threshold():
     agent = FakeAgent()
     rail = _rail([])

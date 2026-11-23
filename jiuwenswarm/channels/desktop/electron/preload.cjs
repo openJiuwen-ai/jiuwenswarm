@@ -10,8 +10,37 @@ const frontendOnly = (() => {
   }
 })();
 
+const launchId = (() => {
+  try {
+    return ipcRenderer.sendSync('desktop:launch-id');
+  } catch {
+    return '';
+  }
+})();
+
 const desktopApi = Object.freeze({
   isElectron: true,
+  presentation: Object.freeze({
+    open: config => invoke('desktop:presentation:open', config),
+    update: (key, payload) => invoke('desktop:presentation:update', key, payload),
+    close: key => invoke('desktop:presentation:close', key),
+    transitionWorkspace: (key, options) => invoke('desktop:presentation:transition-workspace', key, options),
+    respond: (generation, result) => invoke('desktop:presentation:respond', generation, result),
+    resize: (key, width, height) => invoke('desktop:presentation:resize', key, width, height),
+    move: (key, deltaX, deltaY) => invoke('desktop:presentation:move', key, deltaX, deltaY),
+    hitTest: (key, interactive) => invoke('desktop:presentation:hit-test', key, interactive),
+    onRequest: callback => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('desktop:presentation:request', listener);
+      return () => ipcRenderer.removeListener('desktop:presentation:request', listener);
+    },
+    onClosed: callback => {
+      const listener = (_event, payload) => callback(payload);
+      ipcRenderer.on('desktop:presentation:closed', listener);
+      return () => ipcRenderer.removeListener('desktop:presentation:closed', listener);
+    },
+  }),
+  launchId,
   apiBase: frontendOnly ? 'http://127.0.0.1:19000' : '',
   wsBase: frontendOnly ? 'ws://127.0.0.1:19000' : '',
   minimizeWindow: () => invoke('desktop:minimize-window'),
@@ -21,6 +50,11 @@ const desktopApi = Object.freeze({
   setCloseAction: action => invoke('desktop:set-close-action', action),
   openExternalUrl: url => invoke('desktop:open-external-url', url),
   openAppLink: url => invoke('desktop:open-app-link', url),
+  openMarketApp: (appId, url, title, embedded) => invoke('desktop:open-market-app', appId, url, title, embedded === true),
+  closeMarketApp: appId => invoke('desktop:close-market-app', appId),
+  setMarketAppViewport: (appId, bounds, focus) => invoke('desktop:set-market-app-viewport', appId, bounds, focus === true),
+  reloadMarketApp: appId => invoke('desktop:reload-market-app', appId),
+  getMarketAppResources: () => invoke('desktop:market-app-resources'),
   captureOAuthToken: options => invoke('desktop:capture-oauth-token', options),
   exportShareImage: (sessionId, locale) => invoke('desktop:export-share-image', sessionId, locale),
   onShareImageExportProgress: callback => {

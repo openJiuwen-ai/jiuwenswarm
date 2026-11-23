@@ -52,7 +52,7 @@ export class GatewayClient {
     clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const query = new URLSearchParams({ app_id: this.appId, user_id: getOrCreateOfficeUserId(this.appId) });
+    const query = new URLSearchParams({ app_id: this.appId, user_id: getOrCreateOfficeUserId() });
     const socket = new WebSocket(`${protocol}//${window.location.host}/ws?${query}`);
     this.socket = socket;
     const opening = new Promise<void>((resolve, reject) => {
@@ -177,12 +177,18 @@ export class GatewayClient {
   }
 }
 
-function getOrCreateOfficeUserId(appId: string): string {
-  const storageKey = `jiuwenswarm-office-user-id:${appId}`;
-  const existing = window.localStorage.getItem(storageKey);
+/** Kept once per page origin, which WPS's presentation, writer and spreadsheet panes share. */
+const USER_ID_KEY = 'jiuwenswarm-office-user-id';
+
+function getOrCreateOfficeUserId(): string {
+  // The desktop install puts one id for every Office host in the pane URL; WPS panes and a development sideload have
+  // none, so their hosts share the one kept here and see each other's documents.
+  const installed = new URLSearchParams(window.location.search).get('u');
+  if (installed) return installed;
+  const existing = window.localStorage.getItem(USER_ID_KEY);
   if (existing) return existing;
   const created = `office-${crypto.randomUUID()}`;
-  window.localStorage.setItem(storageKey, created);
+  window.localStorage.setItem(USER_ID_KEY, created);
   return created;
 }
 

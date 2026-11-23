@@ -18,7 +18,7 @@ from agent_gateway.app_gateway import RouteConfig
 from agent_gateway.channel_manager.web.app_web_handlers import (
     _FORWARD_NO_LOCAL_HANDLER_METHODS, _FORWARD_REQ_METHODS,
 )
-from tests.unit_tests.gateway.test_app_gateway_acp import build_server, FakeWebSocket
+from tests.unit_tests.gateway.gateway_server_fakes import FakeWebSocket, build_server
 from datetime import datetime, timezone
 from e2a.message import ReqMethod as WireMethod
 from e2a.models import E2AEnvelope
@@ -51,12 +51,12 @@ async def test_resume_is_owned_by_the_original_channel_runtime(tmp_path, channel
     await asyncio.gather(*manager._permission_resume_tasks.values())
     assert manager._resume_permission_approval.await_count == int(expected)
 
-def test_production_web_factory_claims_only_web_approvals(monkeypatch):
+def test_production_web_factory_claims_web_and_swarmchat_approvals(monkeypatch):
     factory = Mock(return_value=object())
     monkeypatch.setattr(web_adapter.AgentManager, "create_default", factory)
     observer = Mock()
     web_adapter._default_manager(object(), on_event=observer)
-    assert factory.call_args.kwargs["approval_channels"] == frozenset({"web"})
+    assert factory.call_args.kwargs["approval_channels"] == frozenset({"web", "swarmchat"})
 
 # --- from test_dingtalk_cli_app_scope.py ---
 

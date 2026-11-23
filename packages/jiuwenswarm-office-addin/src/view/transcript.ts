@@ -1,4 +1,4 @@
-import type { Entry } from '../conversationModel';
+import type { Entry, Failure } from '../conversationModel';
 import { copy, type DocumentCopy } from '../copy';
 import type { UndoState } from '../paneController';
 import type { OpenDocument } from '../sessionFacade';
@@ -11,7 +11,8 @@ import { renderMarkdown } from './markdown';
 
 /** How close to the end a reader must be for the transcript to follow new text. */
 const FOLLOW_THRESHOLD_PX = 72;
-const BEE = '/assets/bee.png';
+/** Relative to the page, which the desktop serves under `/office/`. */
+const BEE = 'assets/bee.png';
 /** How long Copy shows that it copied. */
 const COPIED_MS = 2000;
 
@@ -81,16 +82,22 @@ export interface TranscriptState {
   openReply?: string;
   /** The agent works on a turn and waits for no answer. */
   working: boolean;
+  /** What the dots say while the agent works unseen: it compacts the conversation, or nothing has come for a while. */
+  hint?: string;
   loadingHistory: boolean;
   /** Whether a suggestion of the empty conversation can go to the composer. */
   canSuggest: boolean;
   undo: UndoState;
+  /** The failure that offers its retry. */
+  retry?: string;
 }
 
-/** The user's actions on a turn's undo. */
-export interface UndoActions {
+/** The user's actions on a turn's undo, and a failure's way out. */
+export interface TranscriptActions {
   undo: (card: string, overwrite?: boolean) => void;
   cancelUndo: () => void;
+  retry: () => void;
+  newConversation: () => void;
 }
 
 /**
@@ -115,7 +122,7 @@ export class Transcript {
   private readonly welcomeNode: HTMLElement;
 
   constructor(
-    words: DocumentCopy, suggest: (text: string) => void, private readonly actions: UndoActions,
+    words: DocumentCopy, suggest: (text: string) => void, private readonly actions: TranscriptActions,
     private readonly cards?: ToolCards,
   ) {
     this.suggestions = words.suggestions.map(text => h('button', {
@@ -161,8 +168,10 @@ export class Transcript {
   }
 
   private signature(item: Item, state: TranscriptState): unknown[] {
-    if ('entry' in item) return [item.entry, state.openReply === item.id];
-    if ('thinking' in item) return [];
+    if ('entry' in item) {
+      return [item.entry, state.openReply === item.id, state.retry === item.id, this.copied === item.id];
+    }
+    if ('thinking' in item) return [state.hint];
     if ('cards' in item) return [item.cards.args, this.cards?.version()];
     if ('end' in item) {
       const { reply, changes } = item.end;
@@ -193,14 +202,33 @@ export class Transcript {
     }
     if ('cards' in item) return this.cards?.render(item.cards.id, item.cards.args ?? {}) ?? h('div', { hidden: true });
     if ('thinking' in item) {
-      return h('div', { class: 'entry thinking', role: 'img', 'aria-label': copy.thinking }, h('span'), h('span'), h('span'));
+      return h('div', { class: 'entry thinking', role: 'img', 'aria-label': state.hint ?? copy.thinking },
+        h('span'), h('span'), h('span'), state.hint ? h('p', { class: 'thinking-hint' }, state.hint) : null);
     }
     if ('end' in item) {
       return turnActions(item.id, item.end, state.undo, this.copied === item.id, {
         ...this.actions, copy: () => void this.copy(item.id, item.end.reply),
       });
     }
-    return entryNode(item.entry, state.openReply === item.id);
+    const { entry } = item;
+    if (entry.kind === 'notice' && entry.failure) return this.failureNode(entry, entry.failure, state.retry === entry.id);
+    return entryNode(entry, state.openReply === item.id);
+  }
+
+  /** A failure in its plain words, and its way out: retry while offered, a new conversation, or the details. */
+  private failureNode(entry: { id: string; text: string }, failure: Failure, canRetry: boolean): HTMLElement {
+    const { action, detail } = failure;
+    const copied = this.copied === entry.id;
+    const ways = {
+      retry: { label: copy.retry, run: this.actions.retry },
+      newConversation: { label: copy.newConversation, run: this.actions.newConversation },
+      copyDetails: { label: copied ? copy.copied : copy.copyDetails, run: () => void this.copy(entry.id, detail) },
+    };
+    // A retry no longer offered (a replayed failure, or a turn that wrote) still leaves the details to take along.
+    const way = action === 'retry' && !canRetry ? ways.copyDetails : ways[action];
+    return h('p', { class: 'entry entry-notice tone-error' }, icon('alert'), h('span', {}, entry.text),
+      h('button', { type: 'button', class: 'notice-action', 'data-key': `failure:${entry.id}`, onclick: way.run },
+        way.label));
   }
 
   private async copy(id: string, text: string): Promise<void> {
@@ -231,7 +259,8 @@ function sameSignature(a: unknown[], b: unknown[]): boolean {
  * offered. Undo asks in one line first when it would overwrite later changes.
  */
 function turnActions(
-  id: string, end: TurnEnd, undo: UndoState, copied: boolean, actions: UndoActions & { copy: () => void },
+  id: string, end: TurnEnd, undo: UndoState, copied: boolean,
+  actions: Pick<TranscriptActions, 'undo' | 'cancelUndo'> & { copy: () => void },
 ): HTMLElement {
   const { changes } = end;
   if (changes !== undefined && undo.confirm === changes) {
@@ -260,6 +289,9 @@ function entryNode(entry: Exclude<Entry, Step | { kind: 'changes' }>, streaming:
         entry.images ? h('div', { class: 'user-images' }, ...entry.images.map(({ filename, src }) => (src
           ? h('img', { class: 'user-image', src, alt: filename })
           : h('span', { class: 'chip', title: filename }, icon('image'), filename)))) : null,
+        entry.files ? h('div', { class: 'user-images' }, ...entry.files.map(({ filename, size }) => h('span', {
+          class: 'chip', title: filename }, icon('files'), filename, size === undefined ? '' : ` · ${copy.fileSize(size)}`)))
+          : null,
         entry.text ? h('div', { class: 'bubble' }, entry.text) : null);
     case 'assistant':
       return h('div', { class: `entry entry-assistant${streaming ? ' is-streaming' : ''}` },

@@ -203,6 +203,9 @@ class AutoPermissionBeforeToolMixin:
             queue = optional_root_permission_queue()
             if key is not None and queue is not None:
                 queue.finish_active(key)
+            artifact_owner = getattr(self, "session_artifact_paths", None)
+            if artifact_owner is not None and key is not None:
+                artifact_owner.clear_pending(key)
             raise
         finally:
             NATIVE_PATH_ACCESS.reset(native_token)
@@ -236,6 +239,10 @@ class AutoPermissionBeforeToolMixin:
         clear_send_file_execution_grant()
         clear_trusted_search_producer()
         invocation = _extract_invocation(args, kwargs)
+        artifact_key = tool_invocation_key_from_context(invocation.ctx)
+        artifact_owner = getattr(self, "session_artifact_paths", None)
+        if artifact_owner is not None and artifact_key is not None:
+            artifact_owner.clear_pending(artifact_key)
         if plan_hard_rejected(invocation.ctx):
             return None
         wrapper_resume = consume_permission_wrapper_resume(invocation.ctx)
@@ -398,6 +405,12 @@ class AutoPermissionBeforeToolMixin:
                         "final_reviewer_status": "approved",
                     },
                 )
+            if self.session_artifact_paths is not None and artifact_key is not None:
+                if result is None or classify_permission_result(result) == "allow":
+                    self.session_artifact_paths.stage(
+                        artifact_key, tool_name=facts.tool_name,
+                        tool_args=facts.untrusted_args, facts=facts,
+                    )
             if (
                 manual_resume
                 and decision_source == "manual_approval"

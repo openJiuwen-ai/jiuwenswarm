@@ -688,15 +688,30 @@ async def test_native_front_control_queries_do_not_load_runtime_dependencies(tmp
                                    cwd=root, env=env, stdout=log, stderr=log)
         ws = None
         try:
-            for _ in range(400):
+            # The front server imports a large dependency tree; under parallel
+            # CI load startup routinely exceeds the old 4s window. Wait up to
+            # 60s, and stop early when the child dies so the failure carries
+            # its log instead of a bare assertion.
+            for _ in range(1200):
+                if process.poll() is not None:
+                    break
                 try:
                     ws = await connect(f"ws://127.0.0.1:{port}")
-                    acknowledgement = json.loads(await ws.recv())
-                    assert acknowledgement.get("event") == "connection.ack"
                     break
                 except OSError:
-                    await asyncio.sleep(.01)
-            assert ws is not None
+                    ws = None
+                    await asyncio.sleep(0.05)
+            if ws is None:
+                log.flush()
+                details = (tmp_path / "front.log").read_text(
+                    encoding="utf-8", errors="replace"
+                )
+                pytest.fail(
+                    f"native Front did not become ready (exit={process.poll()}):\n"
+                    f"{details[-16000:]}"
+                )
+            acknowledgement = json.loads(await asyncio.wait_for(ws.recv(), timeout=10))
+            assert acknowledgement.get("event") == "connection.ack"
             for method, params in (("session.list", {}), ("project.list", {}), ("config.get", {}),
                                    ("history.get", {"session_id": "acceptance-0", "page_idx": 1})):
                 await ws.send(json.dumps({"request_id": method, "channel_id": "web", "req_method": method,

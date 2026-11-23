@@ -1,3 +1,5 @@
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 """Static in-code tool category catalogue for progressive ``tool_search``.
 
 The deferred-tool directory is a flat category table frozen into this
@@ -70,9 +72,23 @@ _TOOL_CATEGORIES: tuple[ToolCategory, ...] = (
     ),
     ToolCategory(
         path="documents",
-        description="读取 PDF 文档的文本内容，支持按页与分块读取。",
-        tools=("read_pdf",),
-        description_en="Read PDF text by page or in chunks.",
+        description=(
+            "读取 PDF、Word (docx)、PPTX 演示文稿及表格 (xlsx/csv) 办公文档的内容，"
+            "支持结构化提取与分页。"
+        ),
+        tools=("read_pdf", "read_docx", "read_spreadsheet", "read_pptx"),
+        description_en=(
+            "Read PDF, Word (.docx), PowerPoint (.pptx), and spreadsheet (.xlsx/.csv) "
+            "office documents with structured extraction and pagination."
+        ),
+    ),
+    ToolCategory(
+        path="archive",
+        description="安全查看和解压本地压缩包（.zip, .tar, .tar.gz, .tgz, .bz2）内容。",
+        tools=("inspect_archive", "extract_archive"),
+        description_en=(
+            "Safely inspect and extract archive files (.zip, .tar, .tar.gz, .tgz, .bz2)."
+        ),
     ),
     ToolCategory(
         path="external-agents",
@@ -269,6 +285,20 @@ class ToolCatalogueSnapshot(NamedTuple):
 
     categories: tuple[ToolCategory, ...]
     flat_entries: tuple[_FlatToolEntry, ...]
+
+
+def _sync_discovered_categories() -> None:
+    """Merge declarative built-in tool specs into ``_TOOL_CATEGORIES``."""
+    global _TOOL_CATEGORIES  # pylint: disable=global-statement
+    # pylint: disable-next=import-outside-toplevel
+    from jiuwenswarm.agents.harness.common.tools.builtin_tool_registry import (
+        merge_discovered_categories,
+    )
+
+    _TOOL_CATEGORIES = merge_discovered_categories(_TOOL_CATEGORIES, ToolCategory)
+
+
+_sync_discovered_categories()
 
 
 def _tool_index_tool_id(session_scope: str) -> str:

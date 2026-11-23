@@ -47,6 +47,29 @@ class NoFilters {
   destroy() {}
 }
 
+/** pdf.js calls ``Promise.withResolvers``, which the browser of WPS on the Mac (Chrome 104) lacks. */
+const promises = Promise as PromiseConstructor & { withResolvers?: unknown };
+promises.withResolvers ??= function withResolvers<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((settle, fail) => {
+    resolve = settle;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+};
+
+/**
+ * pdf.js cuts each font's buffer to size with ``ArrayBuffer.prototype.transferToFixedLength`` (Chrome 114). Without
+ * it every page with text fails, an error pdf.js ignores, and the page is never drawn.
+ */
+const buffers = ArrayBuffer.prototype as ArrayBuffer & { transferToFixedLength?: unknown };
+buffers.transferToFixedLength ??= function transferToFixedLength(this: ArrayBuffer, length = this.byteLength) {
+  const copy = new Uint8Array(length);
+  copy.set(new Uint8Array(this, 0, Math.min(length, this.byteLength)));
+  return copy.buffer;
+};
+
 globalThis.onmessage = async ({ data: { pdf, port } }: MessageEvent<PagesRequest>) => {
   let reply: PagesReply;
   try {

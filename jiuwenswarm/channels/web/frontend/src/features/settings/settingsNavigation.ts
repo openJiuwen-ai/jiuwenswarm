@@ -1,4 +1,11 @@
-export type SettingsModuleTarget = 'general' | 'models' | 'agent' | 'personalContext' | 'archivedTasks' | 'experimental';
+export type SettingsModuleTarget =
+  | 'general'
+  | 'models'
+  | 'agent'
+  | 'personalContext'
+  | 'archivedTasks'
+  | 'experimental'
+  | 'systemPluginRecovery';
 export type SettingsNavigationTarget = { moduleId: SettingsModuleTarget; tabId?: string };
 
 export const SETTINGS_MODULE_NAVIGATION_EVENT = 'jiuwen:settings-module';

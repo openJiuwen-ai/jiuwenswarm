@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import threading
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -157,35 +158,88 @@ def read_history_replay(
     """
     if not _READ_SLOTS.acquire(timeout=5):
         raise HistoryReplayError("History restore is busy; retry later", code="HISTORY_RESTORE_BUSY")
+    # A fresh full read can race a concurrent append (e.g. the incoming user
+    # record is written while a brand-new session's first message restores
+    # context), and the end-of-read identity check treats that as corruption.
+    # The append is short and monotonic, so a bounded re-read converges; cursor
+    # reads keep the strict single-attempt semantics.
+    attempts = 3 if cursor is None else 1
+    delay = 0.05
+    held = True
     try:
-        with lc.resource_lock("session", session_id):
-            lc.guard(session_id)
-            from jiuwenswarm.server.runtime.session.session_history import get_read_history_path
+        for attempt in range(attempts):
+            try:
+                with lc.resource_lock("session", session_id):
+                    lc.guard(session_id)
+                    from jiuwenswarm.server.runtime.session.session_history import get_read_history_path
 
-            path = get_read_history_path(session_id)
-            generation = int(lc.state("session", session_id).get("generation", 0))
-            if not path.exists():
-                identity = (0, 0, 0, 0, 0)
-                if cursor is not None:
-                    _check_cursor(cursor, path, generation, identity)
-                empty = HistoryReplayCursor(path, generation, identity, 0)
-                return HistoryReplayBatch([], empty, empty, 0)
-            identity = _identity(path.stat())
-            if cursor is not None:
-                _check_cursor(cursor, path, generation, identity)
-            start = cursor.offset if cursor is not None else 0
-            end_cursor = HistoryReplayCursor(path, generation, identity, identity[2])
-            if voice_only:
-                with _HEAD_LOCK:
-                    head = _HEADS.get(path)
-                if head is not None and head.identity == identity and head.voice_end <= start:
-                    return HistoryReplayBatch([], end_cursor, end_cursor, 0)
-            return _read_prefix(path, generation, identity, start, is_restorable,
-                                before_request_id, limits or HistoryReplayLimits())
+                    path = get_read_history_path(session_id)
+                    generation = int(lc.state("session", session_id).get("generation", 0))
+                    if not path.exists():
+                        identity = (0, 0, 0, 0, 0)
+                        if cursor is not None:
+                            _check_cursor(cursor, path, generation, identity)
+                        empty = HistoryReplayCursor(path, generation, identity, 0)
+                        return HistoryReplayBatch([], empty, empty, 0)
+                    identity = _identity(path.stat())
+                    if cursor is not None:
+                        _check_cursor(cursor, path, generation, identity)
+                    start = cursor.offset if cursor is not None else 0
+                    end_cursor = HistoryReplayCursor(path, generation, identity, identity[2])
+                    if voice_only:
+                        with _HEAD_LOCK:
+                            head = _HEADS.get(path)
+                        if head is not None and head.identity == identity and head.voice_end <= start:
+                            return HistoryReplayBatch([], end_cursor, end_cursor, 0)
+                    return _read_prefix(path, generation, identity, start, is_restorable,
+                                        before_request_id, limits or HistoryReplayLimits())
+            except HistoryReplayError as exc:
+                if attempt + 1 >= attempts or exc.code != "HISTORY_RESTORE_CHANGED":
+                    raise
+                # Give the global read slot back while backing off, so a
+                # concurrent restore is not queued behind a sleeping reader.
+                _READ_SLOTS.release()
+                held = False
+                time.sleep(delay)
+                delay *= 2
+                if not _READ_SLOTS.acquire(timeout=5):
+                    raise HistoryReplayError(
+                        "History restore is busy; retry later", code="HISTORY_RESTORE_BUSY"
+                    ) from exc
+                held = True
+        raise HistoryReplayError("History restore exhausted its retries", code="HISTORY_RESTORE_FAILED")
     except MemoryError as exc:
         raise HistoryReplayError("Insufficient memory for history restore", code="HISTORY_RESTORE_RESOURCE") from exc
     except (OSError, ValueError, TypeError, RecursionError) as exc:
         raise HistoryReplayError(f"History could not be read ({type(exc).__name__})") from exc
+    finally:
+        if held:
+            _READ_SLOTS.release()
+
+
+def try_prefetch_history_prefix(
+    session_id: str, before_request_id: str, eligible: Callable[[Path, int, dict[str, Any]], bool],
+) -> HistoryReplayBatch | None:
+    """Read an optional prefix only if both the reader slot and lifecycle fence are available now."""
+    from jiuwenswarm.server.runtime.session.session_history import get_read_history_path
+
+    if not _READ_SLOTS.acquire(blocking=False):
+        return None
+    try:
+        with lc.resource_lock("session", session_id, blocking=False):
+            lc.guard(session_id)
+            state = lc.state("session", session_id)
+            path = get_read_history_path(session_id)
+            if not path.exists():
+                return None
+            identity = _identity(path.stat())
+            if not eligible(path, identity[2], state):
+                return None
+            batch = _read_prefix(path, int(state.get("generation", 0)), identity, 0,
+                                 is_context_record, before_request_id, HistoryReplayLimits())
+            return batch if get_read_history_path(session_id) == path else None
+    except BlockingIOError:
+        return None
     finally:
         _READ_SLOTS.release()
 
@@ -313,7 +367,20 @@ def _read_prefix(
                                              code="HISTORY_RESTORE_LIMIT")
                 if not raw.strip():
                     continue
-                record = json.loads(raw)
+                try:
+                    record = json.loads(raw)
+                except json.JSONDecodeError as exc:
+                    # A stat taken inside the writer's partial-line window makes
+                    # ``end`` cut the final line short. An unterminated bad line
+                    # at the durable boundary is that benign race, not
+                    # corruption: a retry reads the completed record. A
+                    # newline-terminated bad line is real corruption and stays
+                    # a hard failure.
+                    if offset + len(raw) == end and not raw.endswith(b"\n"):
+                        raise HistoryReplayError(
+                            f"History record at byte {offset} is incomplete", code="HISTORY_RESTORE_CHANGED"
+                        ) from exc
+                    raise
                 keep(record, len(raw), offset)
                 if _is_voice(record):
                     voice_end = source.tell()

@@ -5,7 +5,7 @@ export type ModelConfigDialogExtension = {
   render: (disabled: boolean) => ReactNode;
   renderDisplayName: (disabled: boolean) => ReactNode;
   dirty: boolean;
-  fieldErrors?: Record<string, string>;
+  validate: () => boolean;
   onDraftChange: (updates: Record<string, string>) => void;
   /** Provider resets include the previous name; blur/select commits omit it. */
   onModelNameCommit: (modelName: string, previousModelName?: string) => void;

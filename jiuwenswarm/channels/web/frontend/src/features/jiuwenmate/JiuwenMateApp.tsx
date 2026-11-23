@@ -17,6 +17,7 @@ import {
   finishColleagueAuthorization,
   openColleagueAuthorization,
   openColleagueCreation,
+  clearWorkspaceIntent,
   openColleagueMessages,
   openColleagueProfile,
   openColleagueWorkspace,
@@ -94,6 +95,8 @@ import './jiuwenmate.css';
 export interface JiuwenMateAppProps {
   onExit: () => void;
   renderExistingPage: (nav: JiuwenMateExistingPage, settingsNavigation?: SettingsNavigationTarget) => ReactNode;
+  /** Reused pages whose feature is switched off; they leave the rail and close if open. */
+  hiddenExistingPages?: readonly JiuwenMateExistingPage[];
   confirmDiscardSettings?: () => boolean;
   /** Plaza "use" on an installed expert opens the employee creation page for that package. */
   useInstalledExpertRef?: MutableRefObject<(packageName: string) => void>;
@@ -108,6 +111,7 @@ type PendingConfirm =
 type LoadStatus = 'loading' | 'ready' | 'failed';
 
 const EMPTY_MODEL_CATALOG: JiuwenMateModelCatalog = { models: [], defaultModelId: '', defaultModelLabel: '' };
+const NO_HIDDEN_PAGES: readonly JiuwenMateExistingPage[] = [];
 const SCHEDULE_REFRESH_INTERVAL_MS = 5_000;
 const EMPTY_MISSING_CAPABILITIES: MutableColleagueCapabilitySelections = {
   skills: [],
@@ -134,6 +138,7 @@ interface SkillInstallReply {
 export function JiuwenMateApp({
   onExit,
   renderExistingPage,
+  hiddenExistingPages = NO_HIDDEN_PAGES,
   confirmDiscardSettings,
   useInstalledExpertRef,
   groupId,
@@ -435,6 +440,7 @@ export function JiuwenMateApp({
 
   const handleRailViewChange = (view: JiuwenMateRailView) => {
     if (view === 'office' && groupId) onSelectGroup();
+    if (view === 'messages') setWorkspaceIntent(clearWorkspaceIntent);
     showFeature(view, view === 'office' ? openOffice : openColleagueMessages);
   };
 
@@ -456,6 +462,13 @@ export function JiuwenMateApp({
     window.addEventListener(SETTINGS_MODULE_NAVIGATION_EVENT, handler);
     return () => window.removeEventListener(SETTINGS_MODULE_NAVIGATION_EVENT, handler);
   }, [handleOpenExistingPage]);
+
+  useEffect(() => {
+    if (existingPage && hiddenExistingPages.includes(existingPage)) {
+      setExistingPage(null);
+      setPublicLabel(null);
+    }
+  }, [existingPage, hiddenExistingPages]);
 
   const openPlaza = () => handleOpenExistingPage('agents', 'jiuwenmate.nav.plaza');
   const startCreation = () => {
@@ -1071,6 +1084,7 @@ export function JiuwenMateApp({
       <JiuwenMateRail
         activeView={activeRailView}
         activePublicLabel={publicLabel}
+        hiddenPages={hiddenExistingPages}
         onViewChange={handleRailViewChange}
         onOpenExistingPage={handleOpenExistingPage}
         onExit={onExit}

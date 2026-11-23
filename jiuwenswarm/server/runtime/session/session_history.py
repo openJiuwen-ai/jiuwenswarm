@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import copy
 import datetime
 import hashlib
 import json
@@ -189,6 +190,8 @@ def project_completed_session_prefix(
     for ordinal, record in enumerate(records):
         if not isinstance(record, dict):
             continue
+        if record.get("transcript_only") is True:
+            continue
         request_id = str(record.get("request_id") or "").strip()
         role = str(record.get("role") or "").strip().lower()
         if not request_id:
@@ -310,6 +313,23 @@ def project_completed_session_records(
         else:
             projected.append(record)
     return projected
+
+
+@dataclass(frozen=True)
+class PreparedHistoryRecord:
+    """A canonical record and host-only facts for its metadata update."""
+
+    session_id: str
+    record: dict[str, Any]
+    metadata: dict[str, Any]
+
+
+class HistoryAppendConflict(ValueError):
+    """An existing append identity has a different original request."""
+
+
+class HistoryAppendOutcomeUnknown(OSError):
+    """A failed write could not be rolled back to its original length."""
 
 
 def collapse_file_content_blocks(content: str) -> str:
@@ -726,18 +746,19 @@ def _read_history(path: Path) -> list[dict[str, Any]]:
     return []
 
 
-def _read_history_jsonl(path: Path) -> list[dict[str, Any]]:
-    if not path.exists():
-        return []
+def iter_history_jsonl_rows(path: Path) -> Iterator[dict[str, Any]]:
+    """Yield one parsed, file-content-collapsed row per JSONL line.
 
-    records: list[dict[str, Any]] = []
-    try:
-        # JSONL records are delimited by "\n" only. Do NOT use str.splitlines():
-        # inlined file bodies may contain Unicode line separators (U+2028 etc.)
-        # that splitlines() treats as breaks, corrupting a single JSON object
-        # into fragments and dropping the user turn on refresh.
-        text = path.read_text(encoding="utf-8")
-        for lineno, raw_line in enumerate(text.split("\n"), start=1):
+    Iterating the file keeps a transcript out of memory. JSONL records are
+    delimited by "\\n" only — do NOT use str.splitlines(): inlined file bodies
+    may contain Unicode line separators (U+2028 etc.) that splitlines() treats
+    as breaks, corrupting one JSON object into fragments and dropping the user
+    turn on refresh.
+    """
+    if not path.exists():
+        return
+    with path.open("r", encoding="utf-8") as source:
+        for lineno, raw_line in enumerate(source, start=1):
             line = raw_line.rstrip("\r").strip()
             if not line:
                 continue
@@ -748,26 +769,30 @@ def _read_history_jsonl(path: Path) -> list[dict[str, Any]]:
                     "读取 history.jsonl 第 %d 行失败，已跳过: %s", lineno, exc
                 )
                 continue
-            if isinstance(item, dict):
-                content = item.get("content")
-                if (
-                    item.get("role") in {"user", "human"}
-                    and isinstance(content, str)
-                    and "<file-content" in content
-                ):
-                    item = dict(item)
-                    item["content"] = collapse_file_content_blocks(content)
-                records.append(item)
-            else:
+            if not isinstance(item, dict):
                 logger.warning(
                     "读取 history.jsonl 第 %d 行不是对象记录，已跳过: %s",
                     lineno,
                     type(item).__name__,
                 )
+                continue
+            content = item.get("content")
+            if (
+                item.get("role") in {"user", "human"}
+                and isinstance(content, str)
+                and "<file-content" in content
+            ):
+                item = dict(item)
+                item["content"] = collapse_file_content_blocks(content)
+            yield item
+
+
+def _read_history_jsonl(path: Path) -> list[dict[str, Any]]:
+    try:
+        return list(iter_history_jsonl_rows(path))
     except Exception as exc:  # noqa: BLE001
         logger.warning("读取 history.jsonl 失败，已忽略: %s", exc)
         return []
-    return records
 
 
 def load_history_records(session_id: str, *, subagent_id: str | None = None) -> list[dict[str, Any]]:
@@ -780,6 +805,35 @@ def load_history_records(session_id: str, *, subagent_id: str | None = None) -> 
 def flush_history_writes() -> None:
     """Wait until all history records queued before this call are durable."""
     WRITE_QUEUE.join()
+
+
+def read_committed_main_history(session_id: str) -> list[dict[str, Any]] | None:
+    """Read a strict main-transcript snapshot after the queued-write boundary.
+
+    Unlike display-oriented history readers, this statistics input must not
+    silently turn corrupted or unavailable records into an empty transcript.
+    No session directory is created. Call from a worker thread.
+    """
+    if not session_id or not is_valid_session_id(session_id):
+        raise ValueError("invalid session_id")
+    if not flush_pending_writes():
+        raise TimeoutError("session history write boundary timed out")
+    with FILE_LOCK:
+        path = get_read_history_path(session_id)
+        if not path.parent.is_dir():
+            return None
+        if not path.exists():
+            return []
+        if path.resolve().parent != path.parent.resolve():
+            raise ValueError("session history path escapes managed storage")
+        text = path.read_text(encoding="utf-8")
+        records = (
+            [json.loads(line) for line in text.split("\n") if line.strip()]
+            if path.suffix.lower() == ".jsonl" else json.loads(text)
+        )
+        if not isinstance(records, list) or any(not isinstance(item, dict) for item in records):
+            raise ValueError("session history must contain object records")
+        return records
 
 
 def _write_records_to_path(path: Path, records: list[dict[str, Any]]) -> None:
@@ -1237,37 +1291,43 @@ def _is_team_relevant(item: dict[str, Any]) -> bool:
     return False
 
 
-def read_team_history_records(session_id: str) -> list[dict[str, Any]]:
-    """读取指定会话的历史记录，仅返回 team 模式相关的记录。"""
+def _load_history_records_with_retry(
+    session_id: str,
+    *,
+    label: str,
+) -> list[dict[str, Any]]:
+    """Read all records, retrying the non-atomic write window.
+
+    ``write_text`` truncates before writing, so a read landing in that window
+    sees an empty file; retry with increasing waits instead of mistaking a
+    rewrite for a deleted session.
+    """
     fpath = get_read_history_path(session_id)
     all_records = load_history_records(session_id)
-    # write_text 非原子写入（先截断再写入），读取可能命中截断窗口，
-    # 用递增间隔重试最多 5 次等待写入完成
-    if not all_records and fpath.exists():
-        for attempt in range(1, 6):
-            time.sleep(0.2 * attempt)
-            all_records = load_history_records(session_id)
-            if all_records:
-                logger.info("read_team_history_records: recovered on retry %d", attempt)
-                break
-        if not all_records:
-            logger.warning(
-                "read_team_history_records: all retries exhausted, file_size=%d",
-                fpath.stat().st_size,
-            )
+    if all_records or not fpath.exists():
+        return all_records
+    for attempt in range(1, 6):
+        time.sleep(0.2 * attempt)
+        all_records = load_history_records(session_id)
+        if all_records:
+            logger.info("%s: recovered on retry %d", label, attempt)
+            break
+    if not all_records:
+        logger.warning(
+            "%s: all retries exhausted, file_size=%d", label, fpath.stat().st_size
+        )
+    return all_records
 
+
+def read_team_history_records(session_id: str) -> list[dict[str, Any]]:
+    """读取指定会话的历史记录，仅返回 team 模式相关的记录。"""
+    records = _load_history_records_with_retry(
+        session_id, label="read_team_history_records"
+    )
     return [
-        item
-        for item in all_records
+        item for item in records
         if isinstance(item, dict) and _is_team_relevant(item)
     ]
-
-
-def _read_history_by_path(path: Path) -> list[dict[str, Any]]:
-    """根据文件扩展名选择正确的读取函数。"""
-    if path.suffix.lower() == ".jsonl":
-        return _read_history_jsonl(path)
-    return _read_history(path)
 
 
 def _is_member_relevant(item: dict[str, Any], member_name: str) -> bool:
@@ -1341,26 +1401,10 @@ def read_session_history_records(session_id: str) -> list[dict[str, Any]]:
 
     用于 auto memory 功能提取对话消息。
     """
-    fpath = get_read_history_path(session_id)
-    all_records = _read_history_by_path(fpath)
-    # write_text 非原子写入（先截断再写入），读取可能命中截断窗口，
-    # 用递增间隔重试最多 5 次等待写入完成
-    if not all_records and fpath.exists():
-        for attempt in range(1, 6):
-            time.sleep(0.2 * attempt)
-            all_records = _read_history_by_path(fpath)
-            if all_records:
-                logger.info(
-                    "read_session_history_records: recovered on retry %d", attempt
-                )
-                break
-        if not all_records:
-            logger.warning(
-                "read_session_history_records: all retries exhausted, file_size=%d",
-                fpath.stat().st_size,
-            )
-
-    return [item for item in all_records if isinstance(item, dict)]
+    records = _load_history_records_with_retry(
+        session_id, label="read_session_history_records"
+    )
+    return [item for item in records if isinstance(item, dict)]
 
 
 def _write_item(
@@ -1576,7 +1620,7 @@ def resolve_final_record_timestamp(
     return segment_started_at
 
 
-def append_history_record(
+def prepare_history_record(
     *,
     session_id: str,
     request_id: str,
@@ -1589,8 +1633,8 @@ def append_history_record(
     channel_metadata: dict[str, Any] | None = None,
     mode: str | None = None,
     subagent_id: str | None = None,
-) -> None:
-    """向指定 session 的当前激活历史文件异步追加一条记录."""
+) -> PreparedHistoryRecord | None:
+    """Build a canonical history record without performing persistence."""
     sid = (session_id or "default").strip() or "default"
     if _is_ephemeral_heartbeat_session(sid):
         logger.debug(
@@ -1598,7 +1642,7 @@ def append_history_record(
             sid,
             event_type,
         )
-        return
+        return None
     rid = str(request_id or "").strip()
     cid = str(channel_id or "").strip()
     role_norm = "assistant" if role == "assistant" else "user"
@@ -1613,7 +1657,7 @@ def append_history_record(
             sid,
             event_type or "",
         )
-        return
+        return None
 
     item: dict[str, Any] = {
         "id": f"{rid}:{role_norm}",
@@ -1644,13 +1688,24 @@ def append_history_record(
     if mode:
         item["mode"] = str(mode)
 
+    return PreparedHistoryRecord(sid, item, {
+        "request_id": rid, "channel_id": cid, "role": role_norm,
+        "content": content_text, "timestamp": float(timestamp), "extra": extra,
+        "channel_metadata": channel_metadata, "mode": mode, "subagent_id": subagent_id,
+    })
+
+
+def _update_history_record_metadata(prepared: PreparedHistoryRecord) -> None:
+    facts = prepared.metadata
+    sid, rid, cid = prepared.session_id, facts["request_id"], facts["channel_id"]
+    role_norm, content_text = facts["role"], facts["content"]
+    timestamp, extra = facts["timestamp"], facts["extra"]
+    channel_metadata, mode, subagent_id = facts["channel_metadata"], facts["mode"], facts["subagent_id"]
     is_cross_session_user = bool(
         role_norm == "user"
         and isinstance(extra, dict)
         and extra.get("message_origin") == SESSION_MESSAGE_ORIGIN
     )
-
-    _enqueue_history_item(sid, item, subagent_id=subagent_id)
 
     # 更新会话元数据
     try:
@@ -1722,6 +1777,99 @@ def enqueue_ask_user_stop(
     receipt: Future[None] = Future()
     _enqueue_history_item(session_id, record, receipt=receipt)
     return receipt
+
+
+def append_history_record(
+    *,
+    session_id: str,
+    request_id: str,
+    channel_id: str,
+    role: str,
+    content: Any,
+    timestamp: float,
+    event_type: str | None = None,
+    extra: dict[str, Any] | None = None,
+    channel_metadata: dict[str, Any] | None = None,
+    mode: str | None = None,
+    subagent_id: str | None = None,
+) -> None:
+    """Queue a canonical record using the existing asynchronous writer."""
+    prepared = prepare_history_record(
+        session_id=session_id, request_id=request_id, channel_id=channel_id,
+        role=role, content=content, timestamp=timestamp, event_type=event_type,
+        extra=extra, channel_metadata=channel_metadata, mode=mode, subagent_id=subagent_id,
+    )
+    if prepared is None:
+        return
+    _enqueue_history_item(prepared.session_id, prepared.record, subagent_id=subagent_id)
+    _update_history_record_metadata(prepared)
+
+
+def _iter_committed_history(path: Path) -> Iterator[dict[str, Any]]:
+    if path.suffix != ".jsonl":
+        yield from (row for row in _read_history(path) if isinstance(row, dict))
+        return
+    if not path.exists():
+        return
+    with path.open("r", encoding="utf-8") as stream:
+        for line in stream:
+            try:
+                row = json.loads(line)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(row, dict):
+                yield row
+
+
+def commit_history_record(
+    prepared: PreparedHistoryRecord,
+    *,
+    append_key: str,
+    fingerprint: str,
+    update_metadata: bool,
+) -> tuple[dict[str, Any], bool]:
+    """Commit after queued writes, returning the stored record and duplicate flag.
+
+    No extension code executes while queue/file/lifecycle locks are held.
+    The deduplication marker is written in the same record as its content.
+    """
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+
+    sid = prepared.session_id
+    if prepared.metadata.get("subagent_id"):
+        raise ValueError("committed appends only support main session history")
+    with _QUEUE_ENQUEUE_LOCK:
+        WRITE_QUEUE.join()
+        with FILE_LOCK, lc.resource_lock("session", sid):
+            lc.write_guard(sid, generation=prepared.metadata.get("append_generation"))
+            path = _ensure_legacy_json_bootstrap(sid) if use_legacy_history_json() else _ensure_jsonl_bootstrap(sid)
+            for previous in _iter_committed_history(path):
+                marker = previous.get("_session_append")
+                if isinstance(marker, dict) and marker.get("key") == append_key:
+                    if marker.get("fingerprint") != fingerprint:
+                        raise HistoryAppendConflict("append identity already has different content")
+                    return copy.deepcopy(previous), True
+            record = copy.deepcopy(prepared.record)
+            record["_session_append"] = {"key": append_key, "fingerprint": fingerprint}
+            if path.suffix == ".jsonl":
+                previous_size = path.stat().st_size if path.exists() else 0
+                try:
+                    _append_record_unfenced(path, record)
+                except OSError:
+                    try:
+                        if path.exists():
+                            with path.open("r+b") as stream:
+                                stream.truncate(previous_size)
+                    except OSError as rollback_error:
+                        raise HistoryAppendOutcomeUnknown("history append rollback failed") from rollback_error
+                    raise
+            else:
+                records = _read_history(path)
+                records.append(record)
+                _write_records_unfenced(path, records)
+    if update_metadata:
+        _update_history_record_metadata(prepared)
+    return record, False
 
 
 def enqueue_history_request_completion(

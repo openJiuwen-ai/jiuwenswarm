@@ -442,7 +442,12 @@ def test_bootstrap_import_failure_emits_safe_terminal_result(
         return original_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", broken_import)
-    output = _isolated_stdio(monkeypatch, _document())
+    # Keep a local stderr buffer: pytest log_cli may reinstall sys.stderr mid-test.
+    output = io.StringIO()
+    err = io.StringIO()
+    monkeypatch.setattr(sys, "stdin", io.StringIO(_document()))
+    monkeypatch.setattr(sys, "stdout", output)
+    monkeypatch.setattr(sys, "stderr", err)
 
     assert machine_entry.execute_source("-") == 1
     records = decode_jsonl(output.getvalue())
@@ -450,7 +455,7 @@ def test_bootstrap_import_failure_emits_safe_terminal_result(
     assert records[0].error.code == "STARTUP_FAILED"
     assert records[0].request_id == "external-request"
     assert "secret-bootstrap-detail" not in output.getvalue()
-    assert "secret-bootstrap-detail" not in sys.stderr.getvalue()
+    assert "secret-bootstrap-detail" not in err.getvalue()
 
 
 def test_final_result_is_written_after_asyncio_shutdown(

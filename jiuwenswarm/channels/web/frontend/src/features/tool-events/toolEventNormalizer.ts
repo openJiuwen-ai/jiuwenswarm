@@ -313,6 +313,10 @@ export function normalizeToolCallPayload(payload: UnknownPayload): NormalizedToo
 
 export function normalizeToolResultPayload(payload: UnknownPayload): NormalizedToolResult {
   const toolResultPayload = asRecord(payload.tool_result) ?? payload;
+  const toolName =
+    (typeof toolResultPayload.tool_name === 'string' && toolResultPayload.tool_name) ||
+    (typeof toolResultPayload.name === 'string' && toolResultPayload.name) ||
+    'unknown';
   const rawOutputRecord =
     asRecord(toolResultPayload.raw_output) ?? asRecord(toolResultPayload.rawOutput);
   const rawOutputData = asRecord(rawOutputRecord?.data);
@@ -365,7 +369,11 @@ export function normalizeToolResultPayload(payload: UnknownPayload): NormalizedT
         : typeof rawOutputData?.status === 'string'
           ? rawOutputData.status.trim().toLowerCase()
           : '';
-  const pending = status === 'pending';
+  // Video results describe the ingest job; a pending job does not keep the
+  // submit/status call running. An explicit execution status still takes priority.
+  const videoMemoryTool = toolName === 'agent_memory_video_submit' || toolName === 'agent_memory_video_status';
+  const pending = status === 'pending' &&
+    (!videoMemoryTool || typeof toolResultPayload.status === 'string');
   const timedOut = status === 'timeout' || status === 'timed_out';
   const statusFailed = !pending && (timedOut || ['error', 'failed', 'failure'].includes(status));
   const reviewer = normalizeReviewerMetadata(payload) ?? normalizeReviewerMetadata(toolResultPayload);
@@ -386,10 +394,6 @@ export function normalizeToolResultPayload(payload: UnknownPayload): NormalizedT
       : status ? !statusFailed : true;
   const success = baseSuccess && !permissionFailure && !legacyMarkerFailure &&
     !(reviewerStatus && !pending && isFailureStatus(status));
-  const toolName =
-    (typeof toolResultPayload.tool_name === 'string' && toolResultPayload.tool_name) ||
-    (typeof toolResultPayload.name === 'string' && toolResultPayload.name) ||
-    'unknown';
   const toolCallId = resolveToolCallId(toolResultPayload, payload);
   const summary =
     typeof toolResultPayload.summary === 'string'

@@ -27,6 +27,7 @@ from jiuwenswarm.diagnosis.models import (
     DiagnosisStatus,
     DiagnosisSummary,
     StageStatus,
+    summary_tree_payload,
 )
 
 logger = logging.getLogger(__name__)
@@ -135,6 +136,16 @@ class DiagnosisStore:
         payload = record.model_dump_json(exclude_none=True)
         with self._lock:
             self._atomic_write(path, payload)
+            if record.summary_tree is not None:
+                summary_path = path.parent / "summaries" / path.name
+                summary_payload = {
+                    "diagnosis_id": record.diagnosis_id,
+                    "session_id": record.session_id,
+                    "scope": record.input.scope.model_dump(mode="json"),
+                    "created_at": record.created_at,
+                    "summary_tree": summary_tree_payload(record.summary_tree),
+                }
+                self._atomic_write(summary_path, json.dumps(summary_payload, ensure_ascii=False, indent=2))
 
     def load(self, session_id: str, diagnosis_id: str) -> DiagnosisRecord | None:
         """Return one record, or ``None`` when missing or unreadable."""
@@ -190,6 +201,7 @@ class DiagnosisStore:
                 path.unlink()
             except FileNotFoundError:
                 return False
+            (path.parent / "summaries" / path.name).unlink(missing_ok=True)
         return True
 
     def mark_running_interrupted(self) -> int:

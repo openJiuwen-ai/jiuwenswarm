@@ -42,6 +42,8 @@ export interface ClientToolRequest {
   downloads: Readonly<Record<string, string>>;
   /** The conversation that made the call. */
   sessionId?: SessionId;
+  /** The SVG of the icon an ``insert_icon`` call names, from the backend's icon set. */
+  iconSvg?: string;
 }
 
 export type ContentBlock =
@@ -396,5 +398,7 @@ function parseClientToolRequest(payload: JsonObject): ClientToolRequest | undefi
     ? payload.client_tool.downloads : {};
   const downloads = Object.fromEntries(
     Object.entries(offered).filter((entry): entry is [string, string] => typeof entry[1] === 'string'));
-  return { requestId, interruptId, toolName, input, downloads };
+  const iconSvg = isRecord(payload.client_tool) && typeof payload.client_tool.icon_svg === 'string'
+    ? { iconSvg: payload.client_tool.icon_svg } : {};
+  return { requestId, interruptId, toolName, input, downloads, ...iconSvg };
 }

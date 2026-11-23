@@ -76,7 +76,8 @@ function deckOptions(): FakeDeckOptions {
 function runtimeOn(deck: FakeDeck, upload: Uint8Array<ArrayBuffer>) {
   const snapshots = new SlideSnapshots(powerPointSlideDeck(deck.run), new HostWriteQueue());
   return powerPointPackageRuntime({ run: deck.run, host: deck.host, journal: id => snapshots.journal(id),
-    sandbox: async (_code, base64) => ({ base64, dirty: false }), forgetUndo: () => snapshots.forget(),
+    sandbox: async (_code, base64) => ({ base64, dirty: false }), rasterize: async () => new Uint8Array([1]),
+    forgetUndo: () => snapshots.forget(),
     fetcher: async () => new Response(upload) });
 }
 
@@ -222,6 +223,7 @@ test('the slide package tools take exactly what their input_schema allows', asyn
     duplicate_slide: { slide_id: '256#' },
     import_slides: { after_slide_id: '256#', asset },
     copy_image_between_slides: { from_slide_id: '256#', from_shape_id: '7', to_slide_id: chartSlide },
+    insert_icon: { slide_id: '256#' },
     read_chart_style: { slide_id: chartSlide },
     create_slide_chart: { slide_id: '256#' },
     edit_built_chart: { slide_id: chartSlide },
@@ -255,7 +257,7 @@ test('the slide package tools take exactly what their input_schema allows', asyn
     const expected = probe.expect && !refusal;
     const deck = new FakeDeck({ slides: structuredClone(slides) });
     const response = await runtimeOn(deck, upload).execute({ callId: 'c', toolName: probe.tool, input: probe.input,
-      downloads: DOWNLOADS });
+      downloads: DOWNLOADS, iconSvg: '<svg/>' });
     const taken = response.ok || response.error.code !== 'INVALID_ARGUMENT';
     if (taken !== expected) {
       const why = response.ok ? '' : ` | ${response.error.message}`;

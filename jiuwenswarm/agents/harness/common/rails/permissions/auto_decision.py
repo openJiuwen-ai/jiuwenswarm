@@ -384,34 +384,57 @@ def _bounded_text(value: Any, limit: int, *, empty: bool = False) -> bool:
     return type(value) is str and len(value) <= limit and "\x00" not in value and (empty or bool(value.strip()))
 
 
-def _catalogue_args_valid(name: str, args: Mapping[str, Any]) -> bool:
-    """Accept only finite discovery inputs, including supported retired spellings."""
+def _tool_catalogue_args_valid(args: Mapping[str, Any]) -> bool:
+    """Validate the closed deferred-tool directory arguments."""
     # Exact JSON lists exclude subclasses with overridden iteration or length.
     # pylint: disable=huawei-unidiomatic-typecheck
-    if name == "tool_search":
-        if not args.keys() <= {"operation", "category", "tool", "tools", "query", "cursor", "call_goal"}:
-            return False
-        operation = args.get("operation", "")
-        if not _bounded_text(operation, 32, empty=True) or operation.strip().lower() not in {
-            "", "list", "search", "get_schema",
-        }:
-            return False
-        for key, limit in (("category", 4096), ("tool", 128), ("cursor", 128), ("call_goal", 4096)):
-            if key in args and not _bounded_text(args[key], limit, empty=True):
-                return False
-        tools = args.get("tools", [])
-        if type(tools) is not list or len(tools) > 8 or any(not _bounded_text(item, 128) for item in tools):
-            return False
-        query = args.get("query", "")
-        if not (_bounded_text(query, 4096, empty=True) or (
-            type(query) is list and len(query) <= 8 and all(_bounded_text(item, 512) for item in query)
-        )):
-            return False
-        return operation.strip().lower() != "get_schema" or bool(args.get("tool", "").strip() or tools)
-    if not args.keys() <= {"operation", "category", "query", "cursor"}:
+    if not args.keys() <= {"operation", "category", "tool", "tools", "query", "cursor", "call_goal"}:
         return False
-    if args.get("operation") not in ("list", "search"):
+    operation = args.get("operation", "")
+    if not _bounded_text(operation, 32, empty=True) or operation.strip().lower() not in {
+        "", "list", "search", "get_schema",
+    }:
         return False
+    for key, limit in (("category", 4096), ("tool", 128), ("cursor", 128), ("call_goal", 4096)):
+        if key in args and not _bounded_text(args[key], limit, empty=True):
+            return False
+    tools = args.get("tools", [])
+    if type(tools) is not list or len(tools) > 8 or any(not _bounded_text(item, 128) for item in tools):
+        return False
+    query = args.get("query", "")
+    if not (_bounded_text(query, 4096, empty=True) or (
+        type(query) is list and len(query) <= 8 and all(_bounded_text(item, 512) for item in query)
+    )):
+        return False
+    return operation.strip().lower() != "get_schema" or bool(args.get("tool", "").strip() or tools)
+
+
+def is_skill_only_search(selector: Any) -> bool:
+    """Only an explicit Skill selection can use the local catalog permission."""
+    # pylint: disable=huawei-unidiomatic-typecheck
+    if type(selector) is list or type(selector) is tuple:
+        if len(selector) != 1:
+            return False
+        selector = selector[0]
+    return type(selector) is str and selector == "skill"
+
+
+def _skill_catalogue_args_valid(args: Mapping[str, Any]) -> bool:
+    """Authorize only the local Skill branch of capability_search."""
+    # pylint: disable=huawei-unidiomatic-typecheck
+    if not args.keys() <= {"type", "operation", "category", "query", "cursor", "top_k"}:
+        return False
+    operation = args.get("operation", "search")
+    if not is_skill_only_search(args.get("type")):
+        return False
+    if not _bounded_text(operation, 6) or operation not in ("list", "search"):
+        return False
+    top_k = args.get("top_k")
+    if top_k is not None:
+        if type(top_k) is not int or not 1 <= top_k <= 50:
+            return False
+        if "cursor" in args:
+            return False
     for key, limit in (("category", 4096), ("cursor", 128)):
         if key in args and not _bounded_text(args[key], limit):
             return False
@@ -420,7 +443,7 @@ def _catalogue_args_valid(name: str, args: Mapping[str, Any]) -> bool:
         type(query) is list and len(query) <= 8 and all(_bounded_text(item, 512) for item in query)
     )):
         return False
-    return args["operation"] == "list" or bool(query or args.get("cursor"))
+    return not query if operation == "list" else bool(query or args.get("cursor"))
 
 
 def tool_search_args_valid(args: Mapping[str, Any], *, progressive: bool) -> bool:
@@ -428,7 +451,7 @@ def tool_search_args_valid(args: Mapping[str, Any], *, progressive: bool) -> boo
     if not isinstance(args, Mapping):
         return False
     if not progressive:
-        return _catalogue_args_valid("tool_search", args)
+        return _tool_catalogue_args_valid(args)
     limit = args.get("limit")
     return bool(
         args.keys() <= {"query", "limit"}
@@ -440,11 +463,11 @@ def tool_search_args_valid(args: Mapping[str, Any], *, progressive: bool) -> boo
 
 
 def session_observation_args_valid(name: str, args: Mapping[str, Any]) -> bool | None:
-    """Return None outside the five closed session-observation contracts."""
+    """Return None outside the closed session-observation contracts."""
     if name == "tool_search":
         return tool_search_args_valid(args, progressive=True) or tool_search_args_valid(args, progressive=False)
-    if name == "skill_index":
-        return _catalogue_args_valid(name, args)
+    if name == "capability_search":
+        return _skill_catalogue_args_valid(args)
     if name == "list_skill":
         return args.keys() <= {"query"} and _bounded_text(args.get("query", ""), 4096, empty=True)
     if name == "get_current_goal":
@@ -534,7 +557,7 @@ def _internal_network_scope(facts: ToolDecisionFacts) -> Any:
         # These executors treat queries as local text, including URLs and shell syntax.
         opaque_fields = {
             "tool_search": {"query", "call_goal"},
-            "skill_index": {"query"},
+            "capability_search": {"query"},
             "list_skill": {"query"},
             "recall_compressed_context": {"query"},
         }.get(facts.tool_name, set())
