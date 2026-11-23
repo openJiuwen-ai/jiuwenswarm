@@ -69,7 +69,8 @@ export async function waitForClientContext(): Promise<boolean> {
   });
 }
 
-function reportFailure(payload: SystemPluginReportPayload): string | null {
+function reportFailure(payload: SystemPluginReportPayload | null | undefined): string | null {
+  if (!payload || !Array.isArray(payload.reports)) return 'INVALID_MANAGEMENT_RESPONSE';
   const failed = (payload.reports ?? []).find((report) => report.status !== 'SUCCESS');
   if (!failed) return null;
   return failed.error?.message ?? failed.error?.code ?? 'INSTALL_FAILED';

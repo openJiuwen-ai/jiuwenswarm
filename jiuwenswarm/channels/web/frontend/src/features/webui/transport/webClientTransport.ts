@@ -41,6 +41,27 @@ export function mapWebClientState(state: string): WebUIConnectionState {
   return 'disconnected';
 }
 
+const PACKAGE_NOTICE_DEDUPE_MS = 1000;
+const recentPackageNotices = new Map<string, number>();
+
+function uniquePackageIds(ids: string[]): string[] {
+  const now = Date.now();
+  return ids.filter((id) => {
+    const previous = recentPackageNotices.get(id) ?? 0;
+    if (now - previous < PACKAGE_NOTICE_DEDUPE_MS) return false;
+    recentPackageNotices.set(id, now);
+    return true;
+  });
+}
+
+function prunePackageNotices(): void {
+  while (recentPackageNotices.size > 256) {
+    const oldest = recentPackageNotices.keys().next().value;
+    if (oldest === undefined) return;
+    recentPackageNotices.delete(oldest);
+  }
+}
+
 export function createWebClientTransport(client: WebUIClientLike, capabilities?: ClientCapabilityHost): WebUITransport {
   return {
     subscribe(handlers: WebUITransportHandlers) {
@@ -58,7 +79,11 @@ export function createWebClientTransport(client: WebUIClientLike, capabilities?:
         const ids = event.payload.package_ids;
         if (Array.isArray(ids) && ids.length <= 128 && ids.every((id) => typeof id === 'string' && id.length <= 128)) {
           const sessionId = event.payload.session_id;
-          handlers.onPackagesChanged?.(ids, typeof sessionId === 'string' ? sessionId : undefined);
+          const unique = uniquePackageIds(ids);
+          prunePackageNotices();
+          if (unique.length > 0) {
+            handlers.onPackagesChanged?.(unique, typeof sessionId === 'string' ? sessionId : undefined);
+          }
         }
       });
       const offState = client.onStateChange((state) => {

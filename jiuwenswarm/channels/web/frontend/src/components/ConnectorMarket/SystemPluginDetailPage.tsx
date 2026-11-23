@@ -10,6 +10,7 @@ import type { AgentFileContent, DefinitionFileEntry, RequestStatus } from '../..
 import { systemPluginApi } from '../../services/extensionsV2Api';
 import { useSystemPluginStore } from '../../stores/systemPluginStore';
 import { localizedText } from '../../types/localized';
+import type { SystemPluginMember } from '../../types/systemPlugin';
 import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
 import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
@@ -20,6 +21,7 @@ import './ConnectorMarket.css';
 
 const README_DIALOG_TITLE_ID = 'system-plugin-readme-dialog-title';
 const PREVIEW_DIALOG_TITLE_ID = 'system-plugin-preview-dialog-title';
+const MEMBER_DIALOG_TITLE_ID = 'system-plugin-member-dialog-title';
 
 interface SystemPluginDetailPageProps {
   id: string;
@@ -61,6 +63,8 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
   const [previewOpen, setPreviewOpen] = useState(false);
   const [readmeOpen, setReadmeOpen] = useState(false);
   const [readmeClipped, setReadmeClipped] = useState(false);
+  const [memberTarget, setMemberTarget] = useState<SystemPluginMember | null>(null);
+  const memberDetail = useSystemPluginStore((s) => (memberTarget ? s.detailCache[memberTarget.packageId] : undefined));
   const [selectedVersion, setSelectedVersion] = useState<string | null>(null);
   const [versionLoading, setVersionLoading] = useState(false);
   const readmeRef = useRef<HTMLDivElement>(null);
@@ -192,13 +196,16 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
   const description = localizedText(detail.displayDescription, i18n.language);
   const details = localizedText(detail.details, i18n.language);
   const readme = localizedText(detail.readme, i18n.language);
-  const status = !detail.installed
-    ? t('connectorMarket.systemPlugin.statusAvailable')
-    : !detail.enabled
-      ? t('connectorMarket.systemPlugin.statusDisabled')
-      : detail.active
-        ? t('connectorMarket.systemPlugin.statusActive')
-        : t('connectorMarket.systemPlugin.statusInstalled');
+  const isBundle = detail.kind === 'bundle';
+  const status = isBundle
+    ? t(`connectorMarket.systemPlugin.overall.${detail.overallStatus ?? 'not-installed'}`)
+    : !detail.installed
+      ? t('connectorMarket.systemPlugin.statusAvailable')
+      : !detail.enabled
+        ? t('connectorMarket.systemPlugin.statusDisabled')
+        : detail.active
+          ? t('connectorMarket.systemPlugin.statusActive')
+          : t('connectorMarket.systemPlugin.statusInstalled');
   const source = detail.source === 'hub'
     ? t('connectorMarket.systemPlugin.sourceHub')
     : detail.source === 'local'
@@ -213,7 +220,7 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
   const currentVersion = selectedVersion && versions.includes(selectedVersion)
     ? selectedVersion
     : initialVersion;
-  const uninstallTarget = installedVersion || currentVersion;
+  const uninstallTarget = isBundle ? currentVersion : (installedVersion || currentVersion);
   const versionOptions = [...versions]
     .reverse()
     .map((version) => ({ value: version, label: version }));
@@ -320,6 +327,13 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
       if (result.ok) await loadDetail(id, currentVersion);
       return result;
     });
+  }
+
+  function openMember(member: SystemPluginMember) {
+    setMemberTarget(member);
+    if (!useSystemPluginStore.getState().detailCache[member.packageId]) {
+      void loadDetail(member.packageId);
+    }
   }
 
   return (
@@ -505,7 +519,57 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
           </DetailSection>
         )}
 
-        {detail.events.length > 0 && (
+        {isBundle && (
+          <DetailSection
+            testId="connector-market-system-plugin-detail-system-plugins"
+            titleTestId="connector-market-system-plugin-detail-system-plugins-title"
+            title={t('connectorMarket.systemPlugin.systemPlugins')}
+          >
+            {!detail.installed && (
+              <p
+                className="mb-3 text-[13px] text-text-muted"
+                data-testid="connector-market-system-plugin-detail-system-plugins-hint"
+              >
+                {t('connectorMarket.systemPlugin.systemPluginsHint')}
+              </p>
+            )}
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {(detail.systemPlugins ?? []).map((member) => {
+                const memberName = localizedText(member.displayName, i18n.language) || member.packageId;
+                const clickable = detail.installed && Boolean(member.installedVersion);
+                const memberStatusLabel =
+                  member.status === 'standby'
+                    ? t('connectorMarket.systemPlugin.memberStatusStandby')
+                    : member.status === 'disabled'
+                      ? t('connectorMarket.systemPlugin.memberStatusDisabled')
+                      : member.status === 'pending'
+                        ? t('connectorMarket.systemPlugin.memberStatusPending')
+                        : member.status === 'failed'
+                          ? t('connectorMarket.systemPlugin.memberStatusFailed')
+                          : '';
+                return (
+                  <PageCard
+                    key={member.packageId}
+                    avatar={<IconAvatar icon={<Zap size={21} />} />}
+                    title={memberName}
+                    description={localizedText(member.displayDescription, i18n.language) || '—'}
+                    label={[
+                      member.version ? `v${member.version}` : '',
+                      member.domain ? t('connectorMarket.systemPlugin.memberDomain', { domain: member.domain }) : '',
+                      memberStatusLabel,
+                    ].filter(Boolean)}
+                    interactive={clickable}
+                    disabled={!clickable}
+                    onClick={clickable ? () => openMember(member) : undefined}
+                    testId="connector-market-system-plugin-detail-system-plugin"
+                  />
+                );
+              })}
+            </div>
+          </DetailSection>
+        )}
+
+        {!isBundle && detail.events.length > 0 && (
           <DetailSection
             testId="connector-market-system-plugin-detail-events"
             titleTestId="connector-market-system-plugin-detail-events-title"
@@ -616,7 +680,7 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
           onCancel={() => setPreviewOpen(false)}
           onBackdropClick={() => setPreviewOpen(false)}
         >
-          <div className="flex max-h-[85vh] flex-col">
+          <div className="system-plugin-dialog-body flex flex-col">
             <div className="flex flex-none items-center justify-between gap-4 border-b border-border px-5 py-3">
               <h2 id={PREVIEW_DIALOG_TITLE_ID} className="text-base font-semibold text-text">
                 {title}
@@ -648,7 +712,7 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
           onCancel={() => setReadmeOpen(false)}
           onBackdropClick={() => setReadmeOpen(false)}
         >
-          <div className="flex max-h-[70vh] flex-col">
+          <div className="system-plugin-dialog-body flex flex-col">
             <div className="flex flex-none items-center justify-between gap-4 border-b border-border px-5 py-3">
               <h2 id={README_DIALOG_TITLE_ID} className="text-base font-semibold text-text">
                 {t('connectorMarket.systemPlugin.howItWorks')}
@@ -666,6 +730,102 @@ export function SystemPluginDetailPage({ id, onBack, onDeleted }: SystemPluginDe
                 className="chat-text chat-markdown"
                 testId="connector-market-system-plugin-detail-readme-full"
               />
+            </div>
+          </div>
+        </Dialog>
+      )}
+      {memberTarget && (
+        <Dialog
+          open
+          titleId={MEMBER_DIALOG_TITLE_ID}
+          className="system-plugin-readme-dialog"
+          onCancel={() => setMemberTarget(null)}
+          onBackdropClick={() => setMemberTarget(null)}
+        >
+          <div className="system-plugin-dialog-body flex flex-col" data-testid="connector-market-system-plugin-member-dialog">
+            <div className="flex flex-none items-start justify-between gap-4 border-b border-border px-5 py-3">
+              <div className="min-w-0">
+                <h2 id={MEMBER_DIALOG_TITLE_ID} className="truncate text-base font-semibold text-text">
+                  {localizedText(memberTarget.displayName, i18n.language) || memberTarget.packageId}
+                </h2>
+                <p className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[12px] text-text-muted">
+                  {memberTarget.version && <span>v{memberTarget.version}</span>}
+                  {memberTarget.domain && (
+                    <span data-testid="connector-market-system-plugin-member-dialog-domain">
+                      {t('connectorMarket.systemPlugin.memberDomain', { domain: memberTarget.domain })}
+                    </span>
+                  )}
+                  <span data-testid="connector-market-system-plugin-member-dialog-status">
+                    {t(
+                      memberTarget.status === 'failed'
+                        ? 'connectorMarket.systemPlugin.overall.failed'
+                        : memberTarget.status === 'pending' || (memberTarget.enabled && !memberTarget.active)
+                          ? 'connectorMarket.systemPlugin.overall.partial'
+                          : memberTarget.enabled
+                            ? 'connectorMarket.systemPlugin.statusActive'
+                            : 'connectorMarket.systemPlugin.statusDisabled',
+                    )}
+                  </span>
+                </p>
+              </div>
+              <CloseButton
+                onClick={() => setMemberTarget(null)}
+                ariaLabel={t('common.close')}
+                title={t('common.close')}
+                testId="connector-market-system-plugin-member-dialog-close"
+              />
+            </div>
+            <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+              {memberDetail?.preview && (
+                <img
+                  src={memberDetail.preview}
+                  alt={localizedText(memberTarget.displayName, i18n.language) || memberTarget.packageId}
+                  className="mx-auto block max-h-[240px] max-w-full rounded-lg object-contain"
+                  data-testid="connector-market-system-plugin-member-dialog-preview"
+                />
+              )}
+              <p
+                className="text-[14px] text-text"
+                data-testid="connector-market-system-plugin-member-dialog-description"
+              >
+                {localizedText(memberTarget.displayDescription, i18n.language) || '—'}
+              </p>
+              {memberDetail?.readme && localizedText(memberDetail.readme, i18n.language) && (
+                <div>
+                  <h3 className="mb-2 text-[14px] font-semibold text-text">
+                    {t('connectorMarket.systemPlugin.howItWorks')}
+                  </h3>
+                  <MarkdownRenderer
+                    content={localizedText(memberDetail.readme, i18n.language)}
+                    className="chat-text chat-markdown"
+                    testId="connector-market-system-plugin-member-dialog-readme"
+                  />
+                </div>
+              )}
+              {memberDetail && memberDetail.events.length > 0 && (
+                <div>
+                  <h3 className="mb-2 text-[14px] font-semibold text-text">
+                    {t('connectorMarket.systemPlugin.events')}
+                  </h3>
+                  <ul className="space-y-2">
+                    {memberDetail.events.map((event, index) => (
+                      <li
+                        key={`${event.name}-${index}`}
+                        className="rounded-lg border border-border px-3 py-2"
+                        data-testid="connector-market-system-plugin-member-dialog-event"
+                      >
+                        <p className="text-[13px] font-medium text-text">{event.name}</p>
+                        <p className="text-[12px] text-text-muted">
+                          {localizedText(event.description, i18n.language) || '—'}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {!memberDetail && (
+                <p className="text-[13px] text-text-muted">{t('common.loading')}</p>
+              )}
             </div>
           </div>
         </Dialog>
