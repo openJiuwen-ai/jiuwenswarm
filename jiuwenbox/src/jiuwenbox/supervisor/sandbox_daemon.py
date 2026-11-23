@@ -181,7 +181,12 @@ def _normalize_env(env: Any) -> dict[str, str | None] | None:
 def apply_env_overrides(
     environ: MutableMapping[str, str], overrides: Mapping[str, str | None],
 ) -> None:
-    """Apply exec env overrides in place; a None value deletes the variable."""
+    """Apply exec env overrides in place; a None value deletes the variable.
+
+    The ForkServer worker is a self-contained ``python -c`` script and cannot
+    call this function. ``FORKSERVER_WORKER_SOURCE`` keeps an equivalent copy;
+    change both together.
+    """
     for key, value in overrides.items():
         if value is None:
             environ.pop(key, None)
@@ -1060,6 +1065,19 @@ def _exec_script_in_child(plan):
             type(exc), exc, tb.tb_next if tb is not None else None)
         _flush_std()
         os._exit(1)
+
+
+def apply_env_overrides(environ, overrides):
+    """Apply exec env overrides in place; a None value deletes the variable.
+
+    Copy of ``sandbox_daemon.apply_env_overrides``. This worker is launched
+    with ``python -c`` and cannot import the daemon module.
+    """
+    for key, value in overrides.items():
+        if value is None:
+            environ.pop(key, None)
+        else:
+            environ[key] = value
 
 
 def _run_child(code, stdin_bytes, workdir, env_overrides, timeout, control_fd,
