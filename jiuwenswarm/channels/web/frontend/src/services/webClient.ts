@@ -21,6 +21,7 @@ import { createSessionEventGate } from './sessionEventGate';
 import { RuntimeResume } from './runtimeResume';
 import { useChatStore } from '../stores/chatStore';
 import { browserClientCapabilities } from '../features/webui/client/browserClient.ts';
+import { shouldReportWorkerInterruption } from '../features/interruptSettleGuard';
 
 type RuntimeResumeQuery = ReturnType<RuntimeResume['queries']>[number];
 type RuntimeRecoveryMetadata = Pick<Session, 'status' | 'is_processing'> & { runtime?: Record<string, unknown> };
@@ -743,7 +744,15 @@ class WebClient {
             },
           });
         }
-        if (runtime.interrupted === true) {
+        const dispatches = Array.isArray(runtime.dispatches) ? runtime.dispatches : [];
+        // A worker-instance mismatch invalidates the resume cursor and requires
+        // a history reload, but an idle session was not interrupted. Treat the
+        // snapshot as an execution failure only while work is still active.
+        if (shouldReportWorkerInterruption(
+          runtime.interrupted === true,
+          runtime.is_processing === true,
+          localRuntime?.foregroundIsProcessing === true,
+        )) {
           this.dispatchEvent({
             type: 'event',
             event: 'chat.error',
@@ -756,7 +765,6 @@ class WebClient {
           });
         }
         if (runtime.history_required === true) {
-          const dispatches = Array.isArray(runtime.dispatches) ? runtime.dispatches : [];
           for (const dispatch of dispatches) {
             const interactions = Array.isArray(dispatch.pending_interactions) ? dispatch.pending_interactions : [];
             for (const interaction of interactions) {
