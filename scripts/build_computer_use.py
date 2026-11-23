@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from pathlib import Path
 import shutil
 import subprocess
@@ -89,4 +90,6 @@ def finalize_macos_bundle(project_root: Path, collection_root: Path, app_bundle:
 
 if __name__ == "__main__":
     stage = Path(__file__).resolve().parents[1] / "build/computer-use/resources"
-    sys.stdout.write(f"{macos_bundle_relative_path(stage).name}\n")
+    name = macos_bundle_relative_path(stage).name
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+    logging.getLogger(__name__).info("%s", name)
