@@ -15,8 +15,13 @@ from urllib.parse import urlsplit, parse_qsl, unquote
 
 import yaml
 
+from jiuwenswarm.common.mcp_package_manifest import (
+    MCP_PACKAGE_ENTRYPOINT_ARG,
+    McpPackageError,
+    load_mcp_package,
+)
+
 from .asset_publish_models import PublishIdentity
-from ..mcp.package_manifest import McpPackageError, load_mcp_package
 
 
 class PublishValidationError(ValueError):
@@ -633,6 +638,11 @@ def normalize_and_validate(
                     json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
                 )
                 changes.append("mcp.host_oauth_authorization")
+        if "entrypoint" in package.raw["integration"]:
+            # The loader already validated this argument. Exclude only its occurrence
+            # in args from the credential scan and leave the packaged file intact.
+            args = config["mcpServers"][package.server_name]["args"]
+            args.remove(MCP_PACKAGE_ENTRYPOINT_ARG)
         placeholders = set(_PLACEHOLDER.findall(json.dumps(config)))
         defined = set()
         if package.credentials_file:
