@@ -31,6 +31,24 @@ from jiuwenswarm.extensions.sdk.skill_source import (
     SkillVerificationResult,
 )
 
+if SkillArtifactVerificationError is None or SkillVerificationResult is None:
+    # 依赖版本漂移（旧版 agent-gateway 无 SPI v2 符号）时的降级占位：验证能力
+    # 不可用，本模块仅被 SwarmSkillHubProvider.verify_artifact 调用——构造时
+    # 抛错使 Provider 绑定失败（SourceRegistryError），而不是让 Worker/gateway
+    # 进程加载失败。错误码沿用 SPI 契约。
+    class SkillArtifactVerificationError(RuntimeError):  # type: ignore[no-redef]
+        """Fallback when the installed agent-gateway predates SPI v2."""
+
+        def __init__(self, code: str, message: str):
+            super().__init__(message)
+            self.code = code
+
+    class SkillVerificationResult:  # type: ignore[no-redef]
+        """Fallback result that always fails the install-path audit."""
+
+        def __init__(self) -> None:
+            self.verified = False
+
 _ENV_REF_RE = re.compile(r"[A-Z][A-Z0-9_]{0,127}")
 _DEFAULT_SECRET_REF = "env://SKILL_DOWNLOAD_HMAC_SECRET"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
