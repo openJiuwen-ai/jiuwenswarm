@@ -178,6 +178,14 @@ logging:
   tags:
     user_visible: true
     user_progress_visible: true
+  # 请求级监控汇总日志（issue #6745）
+  # 每个请求结束时输出一行 JSON 汇总（request_id 维度：结局/阶段耗时/LLM/工具/
+  # token 统计），写入 agent_server.log 与 full.log，供线上运维 grep 排障。
+  # 环境变量 JIUWENSWARM_LOG_REQ_SUMMARY 优先于本配置；级别可用
+  # JIUWENSWARM_LOG_REQ_SUMMARY_LEVEL 或 request_summary.level（默认 INFO）。
+  request_summary:
+    enabled: true
+    level: INFO
 
 memory:
   # ============================================================

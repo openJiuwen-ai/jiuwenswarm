@@ -746,6 +746,20 @@ def apply_huawei_maas_span_id_patch() -> None:
             urlsplit(str(getattr(_mcc, "api_base", "") or "")).netloc or "-",
             getattr(_mcc, "stream_idle_timeout", None),
         )
+        # [PERF] 阶段打点（#6745）：首个 LLM 调用的发起时刻 = pre_llm。
+        # 模型客户端流可能跑在不继承请求 ContextVar 的 runtime 任务上，
+        # 复用 resolve_stream_request_id 的多级回退解析 rid。
+        try:
+            from jiuwenswarm.perf.interface_hooks import (
+                mark_request_stage,
+                resolve_stream_request_id,
+            )
+
+            _pre_llm_rid = resolve_stream_request_id()
+            if _pre_llm_rid:
+                mark_request_stage(_pre_llm_rid, "pre_llm")
+        except Exception as exc:
+            logger.debug("[MODEL_HTTP] pre_llm stage mark skipped: %s", exc)
         # [PERF] 打点:LLM 流调用 TTFT 与总时长
         import time as _perf_time
         _t0 = _perf_time.perf_counter()
@@ -774,6 +788,7 @@ def apply_huawei_maas_span_id_patch() -> None:
             raise
         finally:
             # 正常结束、超时、取消都打：失败时也要留下本次尝试的汇总
+            _total_ms = (_perf_time.perf_counter() - _t0) * 1000
             logger.info(
                 "[MODEL_HTTP] end span=%s status=%s chunks=%d ttft_ms=%s producer_ms=%.1f "
                 "total_ms=%.1f exc=%s",
@@ -782,9 +797,21 @@ def apply_huawei_maas_span_id_patch() -> None:
                 _n_chunks,
                 f"{_ttft_ms:.1f}" if _ttft_ms is not None else "-",
                 _producer_s * 1000,
-                (_perf_time.perf_counter() - _t0) * 1000,
+                _total_ms,
                 _exc_name,
             )
+            # [PERF] 落进请求级监控汇总（#6745）：末次调用口径，TPOT 按 chunk 近似
+            try:
+                from jiuwenswarm.perf.interface_hooks import record_llm_stream_timing
+
+                record_llm_stream_timing(
+                    ttft_ms=_ttft_ms,
+                    total_ms=_total_ms,
+                    chunk_count=_n_chunks,
+                    status=_status,
+                )
+            except Exception as exc:
+                logger.debug("[MODEL_HTTP] llm stream timing record skipped: %s", exc)
 
     client_cls.invoke = _invoke_with_maas_span
     client_cls.stream = _stream_with_maas_span

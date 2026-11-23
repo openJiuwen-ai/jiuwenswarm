@@ -71,6 +71,9 @@ class ToolStatsAccumulator:
     durations: list[float] = field(default_factory=list)
     iterations: set[int] = field(default_factory=set)
     by_name: dict[str, int] = field(default_factory=dict)
+    # Per-name durations for the monitoring summary line. Kept separate from
+    # ``by_name`` (count only) so jsonl output stays byte-compatible.
+    _name_stats: dict[str, dict[str, float]] = field(default_factory=dict)
 
     def record(
         self,
@@ -91,12 +94,39 @@ class ToolStatsAccumulator:
             self.iterations.add(iteration)
         if name:
             self.by_name[name] = self.by_name.get(name, 0) + 1
+            stats = self._name_stats.setdefault(
+                name, {"count": 0, "total_ms": 0.0, "max_ms": 0.0, "min_ms": 0.0, "errors": 0}
+            )
+            stats["count"] += 1
+            stats["total_ms"] += duration_ms
+            if stats["count"] == 1 or duration_ms > stats["max_ms"]:
+                stats["max_ms"] = duration_ms
+            if stats["count"] == 1 or duration_ms < stats["min_ms"]:
+                stats["min_ms"] = duration_ms
+            if status != "ok":
+                stats["errors"] += 1
 
     def _tool_list(self) -> list[dict[str, Any]]:
         return [
             {"name": name, "count": count}
             for name, count in sorted(self.by_name.items(), key=lambda item: (-item[1], item[0]))
         ]
+
+    def to_detail_dict(self) -> dict[str, Any]:
+        """Per-tool duration breakdown for the single-line monitoring summary."""
+        detail: dict[str, Any] = {}
+        for name in sorted(self._name_stats):
+            stats = self._name_stats[name]
+            count = int(stats["count"])
+            detail[name] = {
+                "count": count,
+                "total_ms": round(float(stats["total_ms"]), 1),
+                "max_ms": round(float(stats["max_ms"]), 1),
+                "min_ms": round(float(stats["min_ms"]), 1),
+                "avg_ms": round(float(stats["total_ms"]) / count, 1) if count else 0.0,
+                "errors": int(stats["errors"]),
+            }
+        return detail
 
     def to_dict(self) -> dict[str, Any]:
         if self.count == 0:
