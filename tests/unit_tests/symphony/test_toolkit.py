@@ -51,8 +51,8 @@ def _minimal_planned_graph(status="ready"):
 def enabled_symphony_config(monkeypatch):
     def fake_load_symphony_config(config=None):
         raw = config.get("symphony") if isinstance(config, dict) else None
-        enabled = raw.get("enabled", True) if isinstance(raw, dict) else True
-        return SimpleNamespace(enabled=bool(enabled))
+        enabled = raw.get("orchestration", {}).get("enabled", True) if isinstance(raw, dict) else True
+        return SimpleNamespace(orchestration=SimpleNamespace(enabled=bool(enabled)))
 
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.common.tools.symphony_toolkits.load_symphony_config",
@@ -133,7 +133,7 @@ async def test_plan_passes_request_selected_model_config_to_service():
 
 
 @pytest.mark.asyncio
-async def test_refresh_passes_request_selected_model_config_to_service():
+async def test_refresh_uses_host_default_without_session_model_override():
     selected = LLMConfig(model="selected-model")
     seen = {}
 
@@ -147,13 +147,13 @@ async def test_refresh_passes_request_selected_model_config_to_service():
     ).refresh_graph()
 
     assert result["success"] is True
-    assert seen["llm_config"] is selected
+    assert "llm_config" not in seen
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("operation", "method_name"),
-    [("plan", "plan"), ("refresh_graph", "refresh_graph")],
+    [("plan", "plan")],
 )
 async def test_request_model_resolution_failure_is_a_structured_tool_result(
     operation,
@@ -488,12 +488,12 @@ async def test_refresh_timeout_aborts_blocked_progress_without_leaking_worker(
     monkeypatch,
     tmp_path,
 ):
-    config = SimpleNamespace(
-        paths=SimpleNamespace(
-            skills_root=tmp_path / "skills",
-            graph_dir=tmp_path / "graph",
-        )
-    )
+    from jiuwenswarm.common.symphony_config import symphony_config_from_dict
+
+    config = symphony_config_from_dict({
+        "capability": {"sources": [{"type": "skill", "root": tmp_path / "skills"}]},
+        "storage": {"artifact_root": str(tmp_path / "runtime")},
+    })
     callback_entered = asyncio.Event()
     callback_cancelled = asyncio.Event()
 
@@ -551,19 +551,9 @@ async def test_plan_timeout_classifies_cancelled_graph_build_as_terminal_timeout
     monkeypatch,
     tmp_path,
 ):
-    config = SimpleNamespace(
-        paths=SimpleNamespace(
-            skills_root=tmp_path / "skills",
-            graph_dir=tmp_path / "graph",
-        ),
-        orchestration=SimpleNamespace(
-            mode="fast",
-            top_k=3,
-            max_depth=4,
-            min_edge_confidence=0.5,
-        ),
-        evolution=SimpleNamespace(enabled=False),
-    )
+    from jiuwenswarm.common.symphony_config import symphony_config_from_dict
+    config = symphony_config_from_dict({"capability": {"sources": [{"type": "skill", "root": str(tmp_path / "skills")}]},
+        "storage": {"artifact_root": str(tmp_path / "runtime")}, "orchestration": {"enabled": True}})
     build_entered = asyncio.Event()
 
     async def blocking_build(*args, **kwargs):
@@ -662,4 +652,4 @@ def test_get_tools_exposes_only_graph_named_contracts():
 
 
 def test_disabled_config_hides_tools():
-    assert SymphonyToolkit().get_tools({"symphony": {"enabled": False}}) == []
+    assert SymphonyToolkit().get_tools({"symphony": {"orchestration": {"enabled": False}}}) == []

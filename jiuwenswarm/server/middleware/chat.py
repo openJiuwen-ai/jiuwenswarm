@@ -94,55 +94,5 @@ async def ensure_auto_team_binding(request: AgentRequest) -> Any | None:
 
 
 async def try_record_implicit_feedback(request: AgentRequest) -> None:
-    """Best-effort 采集隐式反馈：用户在收到推荐后的文本回复。
-
-    主动推荐送达后，用户若直接用文本回复（"简洁点""不需要"…）而不是点卡片
-    上的赞/踩按钮，这条回复就是隐式反馈。把它关联到该会话最近一条推荐，
-    交由 ``record_implicit_feedback`` 做情感分类后入 buffer，供下次 tick 梯度更新。
-
-    与 Runtime activity participant 同款 best-effort：任何异常只 log debug，
-    绝不阻断主 chat 流。只在 ``chat.send`` 且来源不是 proactive 自己触发的
-    推荐指令时才介入（``source=proactive_recommendation`` 是系统主动塞给主
-    agent 的指令，不是用户说的话，见 proactive_adapter 触发处）。
-    """
-    if request.req_method != ReqMethod.CHAT_SEND:
-        return
-    try:
-        params = request.params if isinstance(request.params, dict) else {}
-        # proactive 自己触发主 agent 的指令带 source=proactive_recommendation，
-        # 那不是用户输入，跳过
-        if str(params.get("source") or "").strip() == "proactive_recommendation":
-            return
-        session_id = str(request.session_id or params.get("session_id") or "").strip()
-        if not session_id:
-            return
-        query = request_query_text(request)
-        if not query:
-            return
-
-        from jiuwenswarm.agents.harness.common.recommendation.feedback_collector import (
-            find_latest_recommendation,
-            record_implicit_feedback,
-        )
-
-        # max_age_seconds=0 砍掉时间窗：不靠时间硬挡"无关反馈"——是否相关、是否
-        # 产生梯度交给梯度更新器的模型判断（看 rec_content + user_reply 语义）。
-        # 配合 record_feedback 的"同 rec_id 只采紧跟第一条、后续不覆盖"逻辑，
-        # 每条推荐只关联它之后紧跟的第一条用户回复。
-        latest = find_latest_recommendation(session_id, max_age_seconds=0)
-        if latest is None:
-            return
-        rec_id = latest.get("id")
-        if not rec_id:
-            return
-
-        # 已对该 rec_id 给过显式反馈（赞/踩）的话，record_feedback 的去重逻辑
-        # 会自动丢弃隐式补充——无需在此预判。
-        record_implicit_feedback(rec_id, query)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug(
-            "[AgentWebSocketServer] implicit feedback hook failed; preserving chat: "
-            "session_id=%s error=%s",
-            request.session_id,
-            exc,
-        )
+    """No-op: proactive recommendation feedback path removed."""
+    _ = request

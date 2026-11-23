@@ -1,0 +1,16 @@
+export * from '../../src/features/webui/presentation/protocol.ts';
+export { conversationActivity, presentationConversations } from '../../src/features/webui/presentation/conversations.ts';
+export { useChatStore } from '../../src/stores/chatStore.ts';
+export { useSessionStore } from '../../src/stores/sessionStore.ts';
+export { useWorkspaceStore } from '../../src/stores/workspaceStore.ts';
+export { ApplicationPresentationHost } from '../../src/features/webui/presentation/ApplicationPresentationHost.tsx';
+export { usePresentationHost } from '../../src/features/webui/presentation/hostContext.ts';
+export { WebUIProvider } from '../../src/features/webui/react/WebUIProvider.tsx';
+export { componentCatalog } from '../../src/features/webui/catalog/componentCatalog.ts';
+export { createRendererRegistry } from '../../src/features/webui/renderer/types.ts';
+export { createWebUIRuntime } from '../../src/features/webui/runtime/index.ts';
+export { createMockTransport } from '../../src/features/webui/transport/index.ts';
+export { createPresentationReplyReader, lastPresentationReply, lastPresentationUserMessage } from '../../src/features/webui/presentation/reply.ts';
+export { selectConversationModel } from '../../src/multi-session/state/modelSelectionActions.ts';
+export { webClient } from '../../src/services/webClient.ts';
+export { PresentationWindow } from '../../src/features/webui/presentation/PresentationWindow.tsx';

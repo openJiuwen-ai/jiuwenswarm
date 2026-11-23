@@ -13,6 +13,14 @@ import os
 import re
 from typing import Any
 
+from jiuwenswarm.common.schema.designer_graph import (
+    CONFIG_KEY_INPUTS,
+    NODE_ROLE_CHARACTER,
+    PIPELINE_COMPOSE,
+    PIPELINE_MUSIC,
+    node_config,
+    node_pipeline,
+)
 from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
     current_content_language,
     dialogue_language_display,
@@ -27,20 +35,29 @@ from jiuwenswarm.server.runtime.designer.pipeline.content_language import (
 
 _PHRASES: dict[str, dict[str, str]] = {
     "en": {
-        "empty_room": "the empty room",
         "while": "{first}, while {second}.",
         "says": '{who} says: "{line}".',
         "says_offscreen": '{who}, heard offscreen, says: "{line}".',
         "voice_says": 'A voice says: "{line}".',
         "audio": "Audio: {bits}.",
+        "sound_diegetic_only": (
+            "Sound: diegetic sound of this shot only — action sound and room tone; "
+            "no music, no score, no underscore, no ambient music bed."
+        ),
+        "sound_cues_only": (
+            "Sound: {cues} only; no music, no score, no underscore, no ambient music bed."
+        ),
+        "sound_silent": "Sound: silent — no dialogue, no effects, no music.",
+        "sound_no_speech": "No one speaks: no dialogue, no monologue, no voiceover.",
         "dialogue_language": "Spoken dialogue is in {name}.",
         "tod_with_lighting": "It is {label}; {lighting}.",
         "tod": "It is {label}.",
         "continue": (
-            "This shot opens already past earlier finished beats in the storyboard — "
+            "This shot opens already past earlier finished moments in the storyboard — "
             "same setting and faces continue from that authored start_state."
         ),
         "scene_as_in": "The scene is as in {scene_word}: {place}.",
+    "scene_as_in_unnamed": "The scene is as shown in {scene_word}.",
         "scene_description": "Scene description: {desc}.",
         "props_in_view": "Props in view: {props}.",
         "connected_still": "{word} is the connected still {label}, and that subject is visible in this shot.",
@@ -50,28 +67,38 @@ _PHRASES: dict[str, dict[str, str]] = {
         "offscreen_wearing": ", wearing {wardrobe},",
         "cast_from": "{who} from {image_word}",
         "cast_wearing": "wearing {wardrobe}",
+        "turnaround_refs": (
+            "{images}: each is one person shown from the front, side, and back, with a head close-up; "
+            "draw that person once in the shot."
+        ),
+        "group_variation": (
+            "Within the group, each person differs in gesture, timing, and attention; "
+            "no two share the same pose."
+        ),
         "cast_seat": "{seat} in the scene from {scene_word}",
         "cast_in_scene": "in the scene from {scene_word} ({scene})",
-        "cast_doing": "is {doing}",
         "cast_partial": "is in the scene from {scene_word}, partially visible",
         "cast_out_of_frame": "is in the scene from {scene_word}, outside this camera frame",
-        "cast_out_of_frame_doing": "({doing})",
         "shot_brief": "Film shot {idx} only. Camera {camera}. Action: {action}.",
         "shot_brief_cast": "Focus cast on screen: {cast}.",
         "shot_brief_default_camera": "medium / eye-level",
     },
     "zh": {
-        "empty_room": "空房间",
         "while": "{first}，同时{second}。",
         "says": "{who}说：“{line}”。",
         "says_offscreen": "{who}在画外说：“{line}”。",
         "voice_says": "画外音说：“{line}”。",
         "audio": "音乐：{bits}。",
+        "sound_diegetic_only": "声音：仅本镜头的现场音（动作声与环境底噪）；不要配乐、不要背景音乐、不要氛围音床。",
+        "sound_cues_only": "声音：仅{cues}；不要配乐、不要背景音乐、不要氛围音床。",
+        "sound_silent": "声音：静音，无对白、无音效、无音乐。",
+        "sound_no_speech": "人物没有台词、对白或独白。",
         "dialogue_language": "对白使用{name}。",
         "tod_with_lighting": "时间是{label}；{lighting}。",
         "tod": "时间是{label}。",
         "continue": "本镜头开始时，分镜中此前已完成的情节不再重演，同一场景和人物从既定的起始状态继续。",
         "scene_as_in": "场景如 {scene_word} 所示：{place}。",
+    "scene_as_in_unnamed": "场景如 {scene_word} 所示。",
         "scene_description": "场景描述：{desc}。",
         "props_in_view": "画面中的道具：{props}。",
         "connected_still": "{word} 是相连的静帧「{label}」，该主体在本镜头中可见。",
@@ -81,12 +108,12 @@ _PHRASES: dict[str, dict[str, str]] = {
         "offscreen_wearing": "（身穿{wardrobe}）",
         "cast_from": "{who}（{image_word}）",
         "cast_wearing": "身穿{wardrobe}",
+        "turnaround_refs": "{images} 各是一个人的正面、侧面、背面三视图加头部特写，镜头里每人只出现一次。",
+        "group_variation": "组内每个人的手势、节奏与注意力各不相同，没有两个人是同一姿势。",
         "cast_seat": "{seat}，位于 {scene_word} 的场景中",
         "cast_in_scene": "位于 {scene_word} 的场景中（{scene}）",
-        "cast_doing": "正在{doing}",
         "cast_partial": "位于 {scene_word} 的场景中，部分可见",
         "cast_out_of_frame": "位于 {scene_word} 的场景中，在本镜头画框之外",
-        "cast_out_of_frame_doing": "（{doing}）",
         "shot_brief": "仅拍第{idx}镜。镜头：{camera}。动作：{action}。",
         "shot_brief_cast": "出镜角色：{cast}。",
         "shot_brief_default_camera": "中景平视",
@@ -186,16 +213,28 @@ def on_screen_names(cfg: dict[str, Any], graph: dict[str, Any] | None) -> list[s
 
 
 def _scene_name(cfg: dict[str, Any], lang: str = "en") -> str:
+    """Best available place label, or "" when the shot names no place.
+
+    Never asserts a place the storyboard did not provide: the former fallback
+    wrote "the empty room" onto outdoor and aerial shots. Omitting the noun is
+    always safer than naming the wrong one.
+    """
     bible = cfg.get("scene_specs") if isinstance(cfg.get("scene_specs"), dict) else {}
-    place = str(bible.get("scene_name") or bible.get("place") or "").strip()
-    if place:
+    for key in ("scene_name", "place", "description"):
+        place = str(bible.get(key) or "").strip()
+        if not place:
+            continue
         place = re.split(r"[.。]", place, maxsplit=1)[0].strip()[:80]
-        if len(place.split()) <= 6:
+        if not place:
+            continue
+        # A short label is a place name; a long clause is prose, not a name.
+        # CJK writes without spaces, so cap characters as well as words.
+        if len(place.split()) <= 8 and len(place) <= 40:
             return place
     setting = str(cfg.get("setting_id") or "").strip()
     if setting and not setting.lower().startswith("set_"):
         return setting
-    return phrase(_PHRASES, lang, "empty_room")
+    return ""
 
 
 def _style_phrase(cfg: dict[str, Any]) -> str:
@@ -206,42 +245,23 @@ def _style_phrase(cfg: dict[str, Any]) -> str:
     return look
 
 
-def _doing_line(cfg: dict[str, Any], graph: dict[str, Any] | None, action: str, lang: str = "en") -> str:
-    actions = cfg.get("cast_actions") if isinstance(cfg.get("cast_actions"), dict) else {}
-    raw_lines = [
-        strip_phrase(value)
-        for value in actions.values()
-        if str(value or "").strip() and not _BAD_DIRECTIVE.search(str(value))
-    ]
-    unique = []
-    for line in raw_lines:
-        if line.casefold() not in {item.casefold() for item in unique}:
-            unique.append(line)
-    zh = lang == "zh"
-    bits: list[str] = []
-    if len(unique) <= 1:
-        bits = []
-    else:
-        for key, value in actions.items():
-            line = strip_phrase(value)
-            if not line or _BAD_DIRECTIVE.search(line):
-                continue
-            who = _name_for_id(str(key), graph)
-            if who and who.lower() not in line.lower():
-                if zh:
-                    bits.append(f"{who}{line}")
-                else:
-                    bits.append(f"{who} {line[:1].lower() + line[1:] if line[:1].isupper() else line}")
-            else:
-                bits.append(line)
-    if len(bits) >= 2:
-        return phrase(_PHRASES, lang, "while", first=bits[0], second=bits[1])
-    if len(bits) == 1:
-        return sentence(bits[0], lang)
-    beat = str(action or cfg.get("clip_action") or cfg.get("character_action") or "").strip()
-    if not beat or _BAD_DIRECTIVE.search(beat):
+# Serialization labels render_storyboard_table uses to append per-cast actions
+# onto the storyboard row's action cell. The per-cast values already render as
+# their own cast sentences, so the leading action sentence drops the appendix.
+_DOING_BLOCK_LABELS = (" Doing: ", " 动作：")
+
+
+def _storyboard_action_text(cfg: dict[str, Any], action: str = "") -> str:
+    """The storyboard's own action text for this shot, verbatim (directives rejected)."""
+    text = str(action or cfg.get("clip_action") or cfg.get("character_action") or "").strip()
+    for label in _DOING_BLOCK_LABELS:
+        idx = text.find(label)
+        if idx > 0:
+            text = text[:idx]
+    text = text.strip()
+    if not text or _BAD_DIRECTIVE.search(text):
         return ""
-    return sentence(beat, lang)
+    return text
 
 
 def _speech_lines(
@@ -272,19 +292,70 @@ def _speech_lines(
     return [phrase(_PHRASES, lang, "voice_says", line=line)]
 
 
-def _music_line(cfg: dict[str, Any], lang: str = "en") -> str:
-    """One positive score phrase. Lock rules and generic defaults stay off the call."""
-    bgm = cfg.get("bgm_lock") if isinstance(cfg.get("bgm_lock"), dict) else {}
-    generic = {"cinematic", "soft underscore", "tasteful non-vocal", "same bed across clips"}
-    bits: list[str] = []
-    for key in ("instruments", "style", "mood"):
-        value = str(bgm.get(key) or "").strip().rstrip(".")
-        if not value or value.casefold() in generic or _BAD_DIRECTIVE.search(value):
+def film_scored_by_music_node(graph: dict[str, Any] | None) -> bool:
+    """A music node feeding compose owns the film score, so no clip may score it."""
+    nodes = [n for n in ((graph or {}).get("nodes") or []) if isinstance(n, dict)]
+    music = {str(n.get("id") or "") for n in nodes if node_pipeline(n) == PIPELINE_MUSIC}
+    music.discard("")
+    if not music:
+        return False
+    compose = {str(n.get("id") or "") for n in nodes if node_pipeline(n) == PIPELINE_COMPOSE}
+    for edge in (graph or {}).get("edges") or []:
+        if not isinstance(edge, dict):
             continue
-        bits.append(value)
-    if not bits:
-        return ""
-    return phrase(_PHRASES, lang, "audio", bits=list_separator(lang).join(bits[:3]))
+        if str(edge.get("source") or "") in music and str(edge.get("target") or "") in compose:
+            return True
+    return any(
+        music.intersection(str(item) for item in (node_config(n).get(CONFIG_KEY_INPUTS) or []))
+        for n in nodes
+        if node_pipeline(n) == PIPELINE_COMPOSE
+    )
+
+
+def _music_line(cfg: dict[str, Any], lang: str = "en", graph: dict[str, Any] | None = None) -> str:
+    """A clip never describes a score.
+
+    The film's music is generated once by the music node and mixed in at compose,
+    so a clip that asked for music made the cut jump and doubled the score. The
+    phrase table and the ``clip_scores_film_music`` validator stay in place to
+    catch a legacy prompt that still carries an in-clip score.
+    """
+    return ""
+
+
+def _has_authored_speech(cfg: dict[str, Any]) -> bool:
+    """True when this shot carries words someone is meant to say."""
+    by_char = cfg.get("speech_by_character") if isinstance(cfg.get("speech_by_character"), dict) else {}
+    if any(str(value or "").strip().strip('"“”') for value in by_char.values()):
+        return True
+    return bool(str(cfg.get("speech_line") or "").strip().strip('"“”'))
+
+
+def _sound_line(cfg: dict[str, Any], lang: str = "en") -> str:
+    """The one audio direction every clip gets: diegetic sound, never a score.
+
+    A native-audio video model fills an unspecified track on its own, and it
+    reaches for a music bed first — so a clip prompt that says nothing about
+    sound ends up scoring itself. When the film's music node then fails, that
+    improvised bed is the only music in the cut and reads as BGM that leaked
+    into the clips. Naming the negative explicitly keeps the track diegetic.
+    The same model also invents dialogue when a shot has no authored lines, so
+    a non-silent shot with no speech says so outright.
+    """
+    if str(cfg.get("audio_policy") or "") == "silent":
+        return phrase(_PHRASES, lang, "sound_silent")
+    cues = [
+        str(c).strip()
+        for c in (cfg.get("sfx") if isinstance(cfg.get("sfx"), list) else [])
+        if str(c).strip() and not _BAD_DIRECTIVE.search(str(c))
+    ][:3]
+    if cues:
+        line = phrase(_PHRASES, lang, "sound_cues_only", cues=list_separator(lang).join(cues))
+    else:
+        line = phrase(_PHRASES, lang, "sound_diegetic_only")
+    if not _has_authored_speech(cfg):
+        line = f"{line} {phrase(_PHRASES, lang, 'sound_no_speech')}"
+    return line
 
 
 def exited_ids(cfg: dict[str, Any] | None) -> list[str]:
@@ -459,17 +530,6 @@ def _tod_covered_in_text(text: str, cfg: dict[str, Any], lang: str = "en") -> bo
     return False
 
 
-_CROWD_EXIT_CUES = ("already left", "clear of", "empty of extras", "crowd gone", "人群已经离开")
-_CROWD_IN_FRAME_CUES = ("extras", "crowd", "colleagues", "background", "群众", "人群")
-_CROWD_COVER_CUES: dict[str, tuple[str, ...]] = {
-    "exited": _CROWD_EXIT_CUES,
-    "empty": ("empty", "没有群众"),
-    "in_frame": _CROWD_IN_FRAME_CUES,
-    "background_hold": _CROWD_IN_FRAME_CUES,
-    "off_camera": ("off-camera", "off camera", "不在镜头内"),
-}
-
-
 def ensure_story_lock_coverage(
     prompt: str,
     cfg: dict[str, Any] | None,
@@ -524,19 +584,13 @@ def ensure_story_lock_coverage(
             notes.append("story_cover_style")
 
     # Crowd disposition as positive prose (never CROWD LOCK banners).
+    # The agent's own hold text is authoritative; we only avoid repeating the
+    # exact same sentence, so nothing here classifies prose by keyword.
     crowd = _ensure_crowd_state(cfg)
     hold = _scrub_lock_phrase(str(crowd.get("hold") or ""))
     if hold and hold.lower() not in pl and not _BAD_DIRECTIVE.search(hold):
-        # Avoid restating if disposition words already present.
-        disp = str(crowd.get("disposition") or "").lower()
-        cues = _CROWD_COVER_CUES.get(disp, ())
-        covered = any(w in pl for w in cues)
-        # "crowd gone" / "人群已经离开" contain the in-frame cues but say the opposite.
-        if covered and disp in {"in_frame", "background_hold"}:
-            covered = not any(w in pl for w in _CROWD_EXIT_CUES)
-        if not covered:
-            additions.append(sentence(hold, content_lang))
-            notes.append("story_cover_crowd_state")
+        additions.append(sentence(hold, content_lang))
+        notes.append("story_cover_crowd_state")
 
     # Opening holds when prior shots exist but prose omitted them.
     for hold_line in (cfg.get("pose_holds") or [])[:3]:
@@ -771,6 +825,9 @@ def _seat_for(token: str, cfg: dict[str, Any], graph: dict[str, Any] | None, lan
     elif zone:
         bits.append(f"在{zone}" if zh else f"at {zone}")
     landmark = _seat_text(anchor.get("landmark"))
+    if not landmark:
+        blocking = cfg.get("blocking") if isinstance(cfg.get("blocking"), dict) else {}
+        landmark = _seat_text(blocking.get("landmark"))
     if landmark:
         if zh:
             bits.append(f"靠近{landmark}")
@@ -779,52 +836,60 @@ def _seat_for(token: str, cfg: dict[str, Any], graph: dict[str, Any] | None, lan
     screen = _seat_text(anchor.get("screen"))
     if screen:
         bits.append(screen)
+
+    def _ref_name(value: Any) -> str:
+        """Resolve a declared cast ref (id or name) to a display name."""
+        raw = str(value or "").strip()
+        if not raw:
+            return ""
+        for char in _analysis(graph).get("characters") or []:
+            if not isinstance(char, dict):
+                continue
+            if str(char.get("id") or "") == raw or str(char.get("name") or "") == raw:
+                return str(char.get("name") or "").strip()
+        # Unresolvable snake_case lock tokens are config, not prose.
+        return "" if _SNAKE_TOKEN.fullmatch(raw) else raw
+
+    gaze = _ref_name(anchor.get("looks_at"))
+    if gaze and gaze.casefold() != name.casefold():
+        bits.append(f"看着{gaze}" if zh else f"looking at {gaze}")
+    addressing = _ref_name(anchor.get("talks_to"))
+    if addressing and addressing.casefold() != name.casefold():
+        bits.append(f"正对{addressing}说话" if zh else f"addressing {addressing}")
     return ("，" if zh else ", ").join(bits)
 
 
 def _action_for(token: str, cfg: dict[str, Any], graph: dict[str, Any] | None, fallback: str) -> str:
+    """This cast member's authored action clause, verbatim.
+
+    Empty when the storyboard action text already covers it (the action
+    sentence leads the cast lines). The clause is never re-conjugated:
+    gluing "is"/"正在" onto an unknown verb form produced "is sits" and
+    "正在seated" macaronics.
+    """
     actions = cfg.get("cast_actions") if isinstance(cfg.get("cast_actions"), dict) else {}
     name = _name_for_id(token, graph) or str(token or "").strip()
+    beat = _storyboard_action_text(cfg, fallback).rstrip(".")
 
-    def _clean_doing(line: str) -> str:
+    def _raw_doing(line: str) -> str:
         text = str(line or "").strip().rstrip(".")
         if not text or _BAD_DIRECTIVE.search(text):
             return ""
-        # Drop leading "Name …" / "The Name is …" so story sentence can say "is <verb…>".
-        if name:
-            text = re.sub(
-                rf"(?i)^(?:the\s+)?{re.escape(name)}\s+(?:is\s+|are\s+)?",
-                "",
-                text,
-            ).strip()
-            # Chinese clauses put the verb right after the name, with no space.
-            if text.startswith(name) and re.match(r"[\u4e00-\u9fff]", text[len(name):len(name) + 1]):
-                text = text[len(name):].strip()
-        text = re.sub(r"(?i)^(is|are|was|were)\s+", "", text).strip()
-        return text[:180]
+        if beat and text.casefold() == beat.casefold():
+            return ""
+        return text[:240]
 
     for key, value in actions.items():
         if str(key) == token or _name_for_id(str(key), graph).casefold() == name.casefold():
-            cleaned = _clean_doing(str(value or ""))
-            if cleaned:
-                return cleaned
-    unique = [
-        _clean_doing(str(v))
-        for v in actions.values()
-        if str(v or "").strip() and not _BAD_DIRECTIVE.search(str(v))
-    ]
-    unique = [u for u in unique if u]
-    if len({u.casefold() for u in unique}) == 1:
-        return unique[0]
-    # Prefer this character's clause inside a shared "A … while B …" beat.
-    beat = str(fallback or cfg.get("clip_action") or "").strip().rstrip(".")
+            return _raw_doing(str(value or ""))
+    # No own entry: prefer this character's clause inside a shared "A ... while B ..." beat.
     if beat and name and " while " in beat.lower():
         for part in re.split(r"(?i)\s+while\s+", beat):
             if name.casefold() in part.casefold():
-                cleaned = _clean_doing(part)
+                cleaned = _raw_doing(part)
                 if cleaned:
                     return cleaned
-    return _clean_doing(beat)
+    return ""
 
 
 def _partial_names(cfg: dict[str, Any], graph: dict[str, Any] | None) -> list[str]:
@@ -854,6 +919,42 @@ def _on_screen_tokens(cfg: dict[str, Any]) -> list[str]:
     ]
 
 
+def _cast_form_for(token: str, name: str, graph: dict[str, Any] | None) -> str:
+    """The character's declared cast_form (``group`` / ``single``), else ''."""
+    for char in _analysis(graph).get("characters") or []:
+        if not isinstance(char, dict):
+            continue
+        cid = str(char.get("id") or "")
+        cname = str(char.get("name") or "")
+        name_matches = bool(name) and cname.casefold() == name.casefold()
+        if cid == token or cname == token or name_matches:
+            return str(char.get("cast_form") or "").strip().lower()
+    return ""
+
+
+def _turnaround_cast(graph: dict[str, Any] | None) -> set[str]:
+    """Casefolded ids and names of cast whose spec sheet is a front/side/back turnaround."""
+    from jiuwenswarm.server.runtime.designer.pipeline.image_prompt_practice import (
+        is_turnaround_sheet,
+    )
+
+    found: set[str] = set()
+    for node in (graph or {}).get("nodes") or []:
+        if not isinstance(node, dict) or node_pipeline(node) != NODE_ROLE_CHARACTER:
+            continue
+        cfg = node_config(node)
+        if not is_turnaround_sheet(cfg):
+            continue
+        tokens = [
+            cfg.get("character_id"),
+            cfg.get("character_name"),
+            *(cfg.get("character_ids") or []),
+            *(cfg.get("character_names") or []),
+        ]
+        found.update(str(t).strip().casefold() for t in tokens if str(t or "").strip())
+    return found
+
+
 def _story_cast_sentence(
     *,
     who: str,
@@ -865,15 +966,14 @@ def _story_cast_sentence(
     scene: str,
     visibility: str = "full",
     lang: str = "en",
+    group: bool = False,
 ) -> str:
-    """One cast member in positive story form (no negatives, no genre examples)."""
+    """One cast member in positive story form (no negatives, no genre examples).
+
+    The authored action clause follows verbatim as its own sentence — never
+    glued onto an auxiliary verb whose tense would corrupt it.
+    """
     zh = lang == "zh"
-
-    def _lower_first(text: str) -> str:
-        if zh:
-            return text
-        return text[:1].lower() + text[1:] if text[:1].isupper() else text
-
     bits = [phrase(_PHRASES, lang, "cast_from", who=who, image_word=image_word)]
     if wardrobe:
         bits.append(phrase(_PHRASES, lang, "cast_wearing", wardrobe=wardrobe))
@@ -882,21 +982,25 @@ def _story_cast_sentence(
             bits.append(phrase(_PHRASES, lang, "cast_seat", seat=seat, scene_word=scene_word))
         else:
             bits.append(phrase(_PHRASES, lang, "cast_in_scene", scene_word=scene_word, scene=scene))
-        if doing and zh and doing.startswith(("正在", "在", "正")):
-            bits.append(doing)
-        elif doing:
-            bits.append(phrase(_PHRASES, lang, "cast_doing", doing=_lower_first(doing)))
     elif visibility == "partial":
         bits.append(phrase(_PHRASES, lang, "cast_partial", scene_word=scene_word))
-        if doing:
-            bits.append(_lower_first(doing))
     else:
         # In-setting but out of this frame (not exited). Positive camera framing only.
         bits.append(phrase(_PHRASES, lang, "cast_out_of_frame", scene_word=scene_word))
-        if doing:
-            bits.append(phrase(_PHRASES, lang, "cast_out_of_frame_doing", doing=doing))
     text = ("，" if zh else ", ").join(bits)
-    return text if text.endswith((".", "。")) else sentence(text, lang)
+    identity = text if text.endswith((".", "。")) else sentence(text, lang)
+    out = identity
+    if doing:
+        if who and who.casefold() not in doing.casefold():
+            # Name binds the clause; a CJK clause takes no space, Latin does.
+            sep = "" if doing[:1] and "一" <= doing[0] <= "鿿" else " "
+            doing = f"{who}{sep}{doing}"
+        out = identity + ("" if zh else " ") + sentence(doing, lang)
+    if group and visibility == "full":
+        # A group plate holds distinct people; the shot must not read as one
+        # synchronized body, so the variation clause rides with the group.
+        out += ("" if zh else " ") + sentence(phrase(_PHRASES, lang, "group_variation"), lang)
+    return out
 
 
 def compose_practice_prompt(
@@ -927,7 +1031,11 @@ def compose_practice_prompt(
     scene_word = _image_word(scene_index, family)
     sentences: list[str] = []
 
-    sentences.append(phrase(_PHRASES, lang, "scene_as_in", scene_word=scene_word, place=strip_phrase(place)))
+    if place:
+        sentences.append(phrase(_PHRASES, lang, "scene_as_in", scene_word=scene_word, place=strip_phrase(place)))
+    else:
+        # No place name in the storyboard: point at the image without inventing one.
+        sentences.append(phrase(_PHRASES, lang, "scene_as_in_unnamed", scene_word=scene_word))
     bible = cfg.get("scene_specs") if isinstance(cfg.get("scene_specs"), dict) else {}
     objects = bible.get("objects") if isinstance(bible.get("objects"), list) else []
     props = [
@@ -954,10 +1062,24 @@ def compose_practice_prompt(
         if line and line not in sentences:
             sentences.append(line)
 
+    # The storyboard's own action text always leads the cast lines: it carries
+    # the causal order and any enumerated content (props, groups, icons).
+    # Per-cast clauses below only anchor it to reference images — they are a
+    # complement, never a replacement, so this sentence is never dropped.
+    action_text = _storyboard_action_text(cfg, action)
+    if action_text:
+        action_sentence = sentence(action_text, lang)
+        if action_sentence not in sentences:
+            sentences.append(action_sentence)
+
+    turnaround = _turnaround_cast(graph)
+    turnaround_words: list[str] = []
     for index, token in enumerate(tokens, start=1):
         who = _name_for_id(token, graph) or str(token)
         if who.casefold() in gone_names:
             continue
+        if token.casefold() in turnaround or who.casefold() in turnaround:
+            turnaround_words.append(_image_word(index, family))
         sentences.append(
             _story_cast_sentence(
                 who=who,
@@ -969,6 +1091,16 @@ def compose_practice_prompt(
                 scene=place,
                 visibility="full",
                 lang=lang,
+                group=_cast_form_for(token, who, graph) == "group",
+            )
+        )
+    if turnaround_words:
+        sentences.append(
+            phrase(
+                _PHRASES,
+                lang,
+                "turnaround_refs",
+                images=list_separator(lang).join(turnaround_words),
             )
         )
 
@@ -1018,18 +1150,16 @@ def compose_practice_prompt(
                 f"The camera {cam[0].lower() + cam[1:] if cam[:1].isupper() else cam}."
             )
 
-    if not any(_action_for(t, cfg, graph, "") for t in tokens):
-        doing = _doing_line(cfg, graph, action, lang)
-        if doing:
-            sentences.append(doing)
-
     sentences.extend(_speech_lines(cfg, graph, names, lang))
     lang_sent = _language_sentence(cfg, lang)
     if lang_sent:
         sentences.append(lang_sent)
-    music = _music_line(cfg, lang)
+    music = _music_line(cfg, lang, graph)
     if music:
         sentences.append(music)
+    sound = _sound_line(cfg, lang)
+    if sound:
+        sentences.append(sound)
     look = _style_phrase(cfg)
     if look and not _BAD_DIRECTIVE.search(look):
         sentences.append(sentence(look, lang))
@@ -1223,6 +1353,15 @@ def prompt_respects_practice(
     if str(cfg.get("previous_clip_wan_prompt") or cfg.get("previous_clip_action") or "").strip():
         if not re.search(r"(?i)\b(?:continue|continues|same setting|same placement|same room)\b", text):
             reasons.append("missing_prior_continue")
+    if film_scored_by_music_node(graph):
+        # A clip never writes a score any more, so a hit here is a stale prompt:
+        # match the score label itself rather than a phrase this build emits.
+        labels = [
+            str(_PHRASES[lang].get("audio") or "").split("{bits}")[0].strip().casefold()
+            for lang in _PHRASES
+        ]
+        if any(label and label in text.casefold() for label in labels):
+            reasons.append("clip_scores_film_music")
     # Toolbar user edits are authoritative for beat fidelity; do not force stale clip_action.
     if not honor_user_origin:
         action = str(cfg.get("clip_action") or "").strip()

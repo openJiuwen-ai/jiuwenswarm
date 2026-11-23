@@ -2,6 +2,9 @@ import type { MediaItem } from '../types';
 import { buildRuntimeIdentityHeaders, getRuntimeScope } from './runtimeScope';
 import { generateUuidV4 } from '../utils/uuid';
 
+// Match the enterprise Gateway's decoded file limit.
+export const ENTERPRISE_ATTACHMENT_MAX_BYTES = 50 * 1024 * 1024;
+
 type FileRecord = { path: string; filename: string; mime_type: string; size_bytes: number };
 type Request = <T>(method: string, params: Record<string, unknown>, options?: { timeoutMs: number }) => Promise<T>;
 
@@ -24,7 +27,12 @@ export async function persistEnterpriseAttachments(
     const raw = item.base64Data || item.base64_data;
     if (!raw) throw new Error('Browser attachment content is required');
     const data = raw.startsWith('data:') ? raw.slice(raw.indexOf(',') + 1) : raw;
-    if (!data || data.length > Math.ceil((50 * 1024 * 1024) / 3) * 4) throw new Error('File exceeds 50 MiB');
+    // Rounded Base64 lengths can be identical on either side of the byte limit.
+    const padding = data.endsWith('==') ? 2 : data.endsWith('=') ? 1 : 0;
+    const decodedBytes = Math.floor(data.length * 3 / 4) - padding;
+    if (!data || decodedBytes > ENTERPRISE_ATTACHMENT_MAX_BYTES) {
+      throw new Error(`File exceeds ${ENTERPRISE_ATTACHMENT_MAX_BYTES / (1024 * 1024)} MiB`);
+    }
     return { filename: item.filename, content_base64: data };
   });
   const imported: FileRecord[] = [];

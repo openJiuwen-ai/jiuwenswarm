@@ -13,7 +13,7 @@ import { ConnectTokenModal } from './ConnectTokenModal';
 import { CliAuthModal } from './CliAuthModal';
 import { ConfirmDialog } from './ConfirmDialog';
 import { IconAvatar } from './Buttons';
-import { deriveCardState, deriveMcpAvailability } from './mcpState';
+import { canCancelConnect, deriveCardState, deriveMcpAvailability } from './mcpState';
 import type { ConnectorConnectResponse, ConnectorIntegrationType } from '../../types/connector';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
@@ -108,6 +108,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   const installPackage = useConnectorStore((s) => s.installPackage);
   const uninstallPackage = useConnectorStore((s) => s.uninstallPackage);
   const disconnectAction = useConnectorStore((s) => s.disconnect);
+  const cancelConnectAction = useConnectorStore((s) => s.cancelConnectAction);
   const deleteConnectorAction = useConnectorStore((s) => s.deleteConnector);
   const busyMap = useConnectorStore((s) => s.busyMap);
   const [installing, setInstalling] = useState(false);
@@ -118,8 +119,9 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   const confirmActionRef = useRef(false);
 
   // 卡片统一状态机（见 mcpState.ts）。busy 用 busyMap[name]。
+  const detailBusyKind = busyMap[name] ?? busyMap[runtimeName];
   const cardState = connector
-    ? deriveCardState({ connectionState: connector.connectionState, busy: busyMap[name] ?? busyMap[runtimeName] })
+    ? deriveCardState({ connectionState: connector.connectionState, busy: detailBusyKind })
     : 'idle';
   // 详情页可达性：installed=能不能看到这个详情页（"已安装"，含"已安装但未连接"这个中间态），
   // linked=是否已连接（決定"会话使用"能不能点、要不要展示断联 banner）。见 mcpState.ts
@@ -321,7 +323,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
                   {isDeleteMode ? t('connectorMarket.card.uninstall') : t('connectorMarket.card.unbind')}
                 </button>
               )}
-              {installed && (
+              {installed && onUse && (
                 // 2026-08-19 用户明确要求：断联态（installed && !linked）"使用"按钮要置灰不可点——
                 // 未连接时点击会静默触发一次后台连接（handleUse 里 linked===false 分支）。收敛到
                 // .detail-action--use 后禁用态样式（not-allowed + 弱化）由共享类统一处理，该类
@@ -370,16 +372,27 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
           >
             {cardState === 'error' ? <AlertCircle size={14} /> : <Info size={14} />}
             <span>{t(cardState === 'error' ? 'connectorMarket.card.stateError' : cardState === 'connecting' ? 'connectorMarket.card.connecting' : 'connectorMarket.detail.mcpDisconnectedBannerSelf')}</span>
-            <button
-              type="button"
-              onClick={handleInstall}
-              disabled={installing || busy || cardState === 'connecting'}
-              className="flex items-center gap-0.5 font-medium text-[color:var(--color-chat-accent)] hover:opacity-80 disabled:opacity-60"
-              data-testid="connector-market-mcp-detail-connect-mcp"
-            >
-              {t('connectorMarket.detail.connectMcp')}
-              <ExternalLink size={12} />
-            </button>
+            {cardState === 'connecting' && canCancelConnect(detailBusyKind) ? (
+              <button
+                type="button"
+                onClick={() => void cancelConnectAction(runtimeName)}
+                className="flex items-center gap-0.5 font-medium text-text-link hover:opacity-80"
+                data-testid="connector-market-mcp-detail-cancel-connect"
+              >
+                {t('connectorMarket.cliAuth.cancelConnect')}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleInstall}
+                disabled={installing || busy || cardState === 'connecting'}
+                className="flex items-center gap-0.5 font-medium text-[color:var(--color-chat-accent)] hover:opacity-80 disabled:opacity-60"
+                data-testid="connector-market-mcp-detail-connect-mcp"
+              >
+                {t('connectorMarket.detail.connectMcp')}
+                <ExternalLink size={12} />
+              </button>
+            )}
           </div>
         )}
 

@@ -1,9 +1,14 @@
 ; JiuwenSwarm Electron Installer Script (Windows)
-; 用法: "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" scripts\installer-electron.iss
+; 使用 build-electron-exe.ps1，从实际载荷计算 MaxPayloadRelativePath。
+; 直接编译需额外传 /DMaxPayloadRelativePath=...；优先 Inno Setup 7，Inno Setup 6 仍可编译。
 ; 应用名 / 版本号 / 壳 exe 名 / 后端 exe 名由 build-electron-exe.ps1 经
 ; /DMyAppName=... /DMyAppVersion=... /DMyAppExeName=... /DBackendExecutableName=...
 ; 传入（来自 build_config，与 pyproject 单一来源，与 installer.iss 的 WorkSwarm
 ; 显示名一致）；直接编译且未传 /D 时使用下方默认值。
+
+#ifndef MaxPayloadRelativePath
+  #error MaxPayloadRelativePath is required. Use scripts/build-electron-exe.ps1.
+#endif
 
 #ifndef MyAppName
   #define MyAppName "WorkSwarm"
@@ -100,6 +105,8 @@ Type: files; Name: "{app}\logo-*.ico"; Check: IsExistingPerUserInstallDir
 ; 卸载前重置外部 CLI 开关（与 installer.iss 一致；Web UI 也能安装外部 CLI，
 ; 其配置在用户目录，需要后端 exe 显式清理）。FrontendOnly 包无后端，跳过。
 Filename: "{app}\resources\backend\{#BackendExecutableName}"; Parameters: "--desktop-reset-external-cli-config"; Flags: runhidden waituntilterminated; RunOnceId: "ResetExternalCliConfig"
+; 撤销 Office 加载项的注册与 localhost 证书信任（都在用户目录与注册表里，卸载程序看不到）。
+Filename: "{app}\resources\backend\{#BackendExecutableName}"; Parameters: "--desktop-remove-office-addins"; Flags: runhidden waituntilterminated; RunOnceId: "RemoveOfficeAddins"
 #endif
 
 [Icons]
@@ -281,6 +288,12 @@ begin
   // Do not remove the installed app until the user confirms installation.
   // This also leaves it intact when a distribution's license is declined.
   Result := '';
+  { Reserve room for the path separator and Inno Setup temporary filenames. }
+  if Length(ExpandConstant('{app}')) + 1 + {#MaxPayloadRelativePath} > 249 then
+  begin
+    Result := '安装路径太长。请选择更短的目录，例如 D:\WorkSwarm。';
+    Exit;
+  end;
   if not PreserveWindowsCli(ExpandConstant('{app}'), 'Preserve') then
   begin
     Result := 'External CLI preservation failed; installation stopped before cleanup.';
@@ -310,3 +323,35 @@ begin
     FinishCliProgress;
   end;
 end;
+
+#ifndef ELECTRON_FRONTEND_ONLY
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+var
+  ResultCode: Integer;
+begin
+  if CurUninstallStep <> usUninstall then
+    Exit;
+
+  if not FileExists(ExpandConstant('{app}\resources\backend\runtime\node-runtime\node.exe')) then
+  begin
+    Log('Bundled Node executable is missing. Skipping email-mcp cleanup.');
+    Exit;
+  end;
+
+  // UninstallRun would continue deleting files even on a nonzero exit code.
+  if not Exec(ExpandConstant('{app}\resources\backend\{#BackendExecutableName}'),
+    '--desktop-stop-bundled-email-mcp', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+  begin
+    Log(Format('Could not start email-mcp cleanup (%d): %s', [ResultCode, SysErrorMessage(ResultCode)]));
+    SuppressibleMsgBox('Could not start email-mcp cleanup. Reinstall WorkSwarm in the same folder and retry uninstalling.',
+      mbError, MB_OK, IDOK);
+    Abort;
+  end;
+  if ResultCode = 0 then
+    Exit;
+
+  Log(Format('Bundled email-mcp cleanup failed (code %d). Uninstall stopped before deleting files.', [ResultCode]));
+  SuppressibleMsgBox('Could not confirm that email-mcp exited. Close it and retry uninstalling.', mbError, MB_OK, IDOK);
+  Abort;
+end;
+#endif

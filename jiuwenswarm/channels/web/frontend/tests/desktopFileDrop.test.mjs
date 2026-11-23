@@ -99,6 +99,41 @@ test('an empty native path result reports an unsupported virtual file', async ()
   assert.equal(f.received.length, 0);
 });
 
+test('a drop while the chat composer is unmounted is not replayed into a later chat', async () => {
+  const previous = globalThis.document;
+  const dom = new JSDOM('<div id="skills"></div>');
+  globalThis.document = dom.window.document;
+  try {
+    const f = await fixture();
+    f.unregister();
+    f.target.__JIUWEN_INGEST_LOCAL_FILES__({ source: 'drop', files: picks, trusted: true });
+    const later = [];
+    f.picker.registerDesktopLocalFilesConsumer((_detail, files) => later.push(files[0].path));
+    assert.deepEqual(later, []);
+    assert.equal((f.target.__JIUWEN_DROP_QUEUE__ || []).length, 0);
+  } finally {
+    dom.window.close();
+    globalThis.document = previous;
+  }
+});
+
+test('a drop during composer remount stays queued while the shell is still mounted', async () => {
+  const previous = globalThis.document;
+  const dom = new JSDOM('<div class="chat-panel-shell"></div>');
+  globalThis.document = dom.window.document;
+  try {
+    const f = await fixture();
+    f.unregister();
+    f.target.__JIUWEN_INGEST_LOCAL_FILES__({ source: 'drop', files: picks, trusted: true });
+    const later = [];
+    f.picker.registerDesktopLocalFilesConsumer((_detail, files) => later.push(files[0].path));
+    assert.deepEqual(later, ['/tmp/bundle.zip']);
+  } finally {
+    dom.window.close();
+    globalThis.document = previous;
+  }
+});
+
 test('older Electron and pywebview shells keep their existing native delivery path', async () => {
   const f = await fixture();
   drop(f.target);
@@ -106,6 +141,110 @@ test('older Electron and pywebview shells keep their existing native delivery pa
   assert.equal(f.received.length, 0);
   f.target.__JIUWEN_INGEST_LOCAL_FILES__({ source: 'drop', files: picks });
   assert.equal(f.received.length, 1);
+});
+
+test('skill upload dialog suppresses only its duplicate drop without replacing the chat consumer', async () => {
+  const f = await fixture();
+  f.unregister();
+
+  const uploadSource = readFileSync(new URL('../src/components/SkillPanel/UploadSkillModal.tsx', import.meta.url), 'utf8');
+  const uploadMarker = uploadSource.indexOf('// 系统级拖拽会同时产生浏览器 File 和桌面桥接事件。');
+  const uploadEffectStart = uploadSource.lastIndexOf('  useLayoutEffect(() => {', uploadMarker);
+  const uploadEffectEnd = uploadSource.indexOf('  }, [desktopReady]);', uploadMarker) + '  }, [desktopReady]);'.length;
+  assert.ok(uploadMarker > 0 && uploadEffectStart >= 0 && uploadEffectEnd > uploadMarker);
+  const mountSkillUploadDialog = new Function(
+    'useLayoutEffect', 'desktopReady', 'registerDesktopLocalFilesSuppressor', 'duplicateDropRef',
+    'SKILL_UPLOAD_DROP_ZONE_CLASS', 'document',
+    transformSync(uploadSource.slice(uploadEffectStart, uploadEffectEnd), { loader: 'ts' }).code,
+  );
+
+  let cleanup;
+  const duplicateDropRef = {
+    current: { filename: 'bundle.zip', size: 12, expiresAt: Date.now() + 1_000 },
+  };
+  mountSkillUploadDialog(
+    (effect) => { cleanup = effect(); },
+    true,
+    f.picker.registerDesktopLocalFilesSuppressor,
+    duplicateDropRef,
+    'skill-panel-upload-skill-dropzone',
+    { elementFromPoint: () => null },
+  );
+
+  f.target.__JIUWEN_INGEST_LOCAL_FILES__({ source: 'drop', files: picks });
+  duplicateDropRef.current.expiresAt = 0;
+  f.target.__JIUWEN_INGEST_LOCAL_FILES__({ source: 'drop', files: picks });
+  cleanup();
+
+  const chatDrops = [];
+  const unregisterChat = f.picker.registerDesktopLocalFilesConsumer((_detail, files) => chatDrops.push(files));
+  try {
+    assert.equal(chatDrops.length, 1);
+    assert.equal(chatDrops[0][0].path, '/tmp/bundle.zip');
+  } finally {
+    unregisterChat();
+  }
+});
+
+test('clearing queued native drops prevents a stale upload package reaching chat', async () => {
+  const f = await fixture();
+  f.unregister();
+  f.target.__JIUWEN_INGEST_LOCAL_FILES__({ source: 'drop', files: picks });
+  f.picker.clearQueuedDesktopLocalFiles();
+
+  const chatDrops = [];
+  const unregisterChat = f.picker.registerDesktopLocalFilesConsumer((_detail, files) => chatDrops.push(files));
+  try {
+    assert.deepEqual(chatDrops, []);
+  } finally {
+    unregisterChat();
+  }
+});
+
+test('go try clears both attachment drafts and queued native drops', () => {
+  const appSource = readFileSync(new URL('../src/App.tsx', import.meta.url), 'utf8');
+  const handlerMarker = appSource.indexOf('// 监听从 SkillPanel 发来的"新建会话并插入技能"事件');
+  const handlerEffectStart = appSource.indexOf('  useEffect(() => {', handlerMarker);
+  const handlerEffectEnd = appSource.indexOf('  }, [enterNewConversation]);', handlerMarker) + '  }, [enterNewConversation]);'.length;
+  assert.ok(handlerMarker > 0 && handlerEffectStart >= 0 && handlerEffectEnd > handlerMarker);
+  const mountGoTryHandler = new Function(
+    'useEffect', 'window', 'clearAttachmentDrafts', 'clearQueuedDesktopLocalFiles',
+    'NEW_CONVERSATION_ID', 'enterNewConversation', 'useSessionStore', 'setTimeout', 'CustomEvent',
+    transformSync(appSource.slice(handlerEffectStart, handlerEffectEnd), { loader: 'ts' }).code,
+  );
+
+  let handler;
+  let cleanup;
+  const fakeWindow = {
+    addEventListener: (name, listener) => {
+      if (name === 'jiuwen:new-conversation') handler = listener;
+    },
+    removeEventListener: () => {},
+    dispatchEvent: () => {},
+  };
+  const clearedDraftSessions = [];
+  let clearedQueueCount = 0;
+  const entered = [];
+  mountGoTryHandler(
+    (effect) => { cleanup = effect(); },
+    fakeWindow,
+    (sessionId) => clearedDraftSessions.push(sessionId),
+    () => { clearedQueueCount += 1; },
+    'new',
+    (...args) => entered.push(args),
+    { getState: () => ({ ensureRuntime: () => {}, setSessionMetadata: () => {} }) },
+    () => 0,
+    class {},
+  );
+
+  try {
+    handler({ detail: { skillName: 'uploaded-skill', resetAttachmentDrafts: true } });
+    assert.deepEqual(clearedDraftSessions, ['new']);
+    assert.equal(clearedQueueCount, 1);
+    assert.deepEqual(entered, [[undefined, {}]]);
+  } finally {
+    cleanup();
+  }
 });
 
 // Exercise the actual ChatPanel registration effect under React's commit lifecycle.

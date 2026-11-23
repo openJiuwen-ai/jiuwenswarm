@@ -76,6 +76,7 @@ DESKTOP_PRESERVED_ENV_KEYS = (
     "AGENT_SERVER_PORT",
     "AGENT_PORT",
     "FRONTEND_PORT",
+    "OFFICE_TLS_PORT",
 )
 
 # Electron owns these values for the lifetime of a desktop launch.  Its CDP
@@ -225,7 +226,10 @@ def _load_bootstrap_by_name_early(name: str, component_name: str) -> Path | None
 
     # Find instances.yaml path (same logic as instance_manager but without imports)
     user_home = os.environ.get("JIUWENSWARM_HOME") or Path.home()
-    yaml_path = Path(user_home) / ".jiuwenswarm" / "instances.yaml"
+    # 分区布局：注册表在 infra/；旧位置兜底读取
+    yaml_path = Path(user_home) / ".jiuwenswarm" / "infra" / "instances.yaml"
+    if not yaml_path.exists():
+        yaml_path = Path(user_home) / ".jiuwenswarm" / "instances.yaml"
 
     if not yaml_path.exists():
         _early_error(component_name, f"instances.yaml not found: {yaml_path}")

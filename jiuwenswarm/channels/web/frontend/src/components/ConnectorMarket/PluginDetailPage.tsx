@@ -88,7 +88,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
   // onAllConnected 里幂等重试 install（真正落盘，文档强调"再次调用同一个 install"）。
   const installFlow = usePendingConnectorFlow(
     () => {
-      clearInstallPending(id);
+      clearInstallPending(id, true);
       void install(id);
     },
     () => {
@@ -233,18 +233,18 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
                   {uninstalling ? t('connectorMarket.card.uninstalling') : t('connectorMarket.card.uninstall')}
                 </button>
               )}
-              {installed && (
+              {(fromMy || installed) && onUse && (
                 <button
                   type="button"
                   className="detail-action detail-action--use"
                   onClick={handleUse}
-                  disabled={!linked || reconnectFlow.active}
+                  disabled={!installed || !linked || reconnectFlow.active}
                   data-testid="connector-market-plugin-detail-use"
                 >
                   {t('connectorMarket.card.use')}
                 </button>
               )}
-              {!installed && (
+              {!fromMy && !installed && (
                 <button
                   type="button"
                   className="detail-action detail-action--install"
@@ -316,11 +316,13 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
             title={t('connectorMarket.detail.sections.examples')}
           >
             <div className="detail-prompt-list" data-testid="connector-market-plugin-detail-examples">
-              {detail.quickInputs.map((quickInput) => {
+              {detail.quickInputs.map((quickInput, index) => {
                 const text = localizedText(quickInput, i18n.language);
+                if (!text) return null;
+                const key = `${text}-${index}`;
                 return onUseExample && linked ? (
                   <DetailPromptChip
-                    key={text}
+                    key={key}
                     text={text}
                     onClick={() => onUseExample(text, detail.runtimePackageName)}
                     testId="connector-market-plugin-detail-example"
@@ -328,7 +330,7 @@ export function PluginDetailPage({ id, onBack, fromMy, onDeleted, onUse, onUseEx
                   />
                 ) : (
                   <DetailPromptChip
-                    key={text}
+                    key={key}
                     text={text}
                     testId="connector-market-plugin-detail-example"
                     variant={text}

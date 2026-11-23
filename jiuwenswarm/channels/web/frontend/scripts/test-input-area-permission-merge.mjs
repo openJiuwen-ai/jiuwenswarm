@@ -14,6 +14,7 @@ await build({
     'src/features/teamOrganization/conversation.ts',
     'src/features/multiModelCollaboration/featureConfig.ts',
     'src/services/webClient.ts',
+    'src/services/obsUpload.ts',
     'src/features/sessionAssets/sessionAssets.ts',
   ],
   outbase: 'src',

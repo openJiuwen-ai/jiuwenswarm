@@ -1,6 +1,7 @@
 """Private-team background ownership, interaction, continuation and provenance."""
 
 import asyncio
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -663,8 +664,13 @@ async def test_private_work_gate_and_stale_start(private_run, monkeypatch):
         key = next(t.params["key"] for t in child.agents["leader"].tools if t.type == gc.COMPLETE_RUN)
         execution_id = gc._private_runs[key]["execution_id"]
         policy = gc.PrivateTaskPolicy(None, key)
-        ctx = SimpleNamespace(
+        bootstrap = SimpleNamespace(
             inputs=SimpleNamespace(tool_name="build_team", tool_call=None), extra={},
+        )
+        await policy.before_tool_call(bootstrap)
+        assert not bootstrap.extra
+        ctx = SimpleNamespace(
+            inputs=SimpleNamespace(tool_name="create_task", tool_call=None), extra={},
         )
         await policy.before_tool_call(ctx)
         assert ctx.extra["_skip_tool"]
@@ -943,3 +949,250 @@ async def test_update_racing_the_queued_runs_start_is_not_lost(private_run, monk
             break
         await asyncio.sleep(0.01)
     assert queries[2] == "Test\n\nAdditional instructions:\n- Cover edge cases"
+
+
+@pytest.mark.asyncio
+async def test_started_work_idle_on_an_interim_note_reminds_the_leader_first(private_run, monkeypatch):
+    run = private_run
+    reminded = asyncio.Event()
+    delivered = AsyncMock(side_effect=lambda *a, **k: (reminded.set(), SimpleNamespace(ok=True, reason=None))[1])
+    monkeypatch.setattr(gc.Runner, "interact_agent_team", delivered)
+
+    async def stream(child, inputs, *, session):
+        key = next(t.params["key"] for t in child.agents["leader"].tools if t.type == gc.COMPLETE_RUN)
+        execution_id = gc._private_runs[key]["execution_id"]
+        assert (await gc.BeginTeamTask(key).invoke({"execution_id": execution_id})).success
+        yield _leader("llm_output", content="Waiting for the last edit.")
+        yield IDLE
+        await reminded.wait()
+        await gc.CompleteTeamRun(key).invoke({"result": "Final report", "execution_id": execution_id})
+        yield IDLE
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+    accepted = await run.proxy.invoke({"run_id": "one", "task": "Write it"})
+    record = await wait_worker(run, accepted)
+
+    assert record["status"] == "completed"
+    assert record["result"] == "Final report"
+    assert delivered.await_count == 1
+    assert delivered.await_args.args[0].body == gc.PRIVATE_RESULT_REMINDER
+
+
+@pytest.mark.asyncio
+async def test_idle_after_the_reminder_falls_back_to_the_reply_with_output_files(private_run, monkeypatch, tmp_path):
+    run = private_run
+    monkeypatch.setattr(gc.Runner, "interact_agent_team", AsyncMock(return_value=SimpleNamespace(ok=True)))
+
+    async def stream(child, inputs, *, session):
+        key = next(t.params["key"] for t in child.agents["leader"].tools if t.type == gc.COMPLETE_RUN)
+        run_state = gc._private_runs[key]
+        execution_id = run_state["execution_id"]
+        outputs = tmp_path / "outputs"
+        outputs.mkdir()
+        run_state["outputs_dir"] = str(outputs)
+        note = outputs / "note.md"
+        note.write_text("deliverable", encoding="utf-8")
+        # Model an output from this run independently of filesystem timestamp resolution.
+        written_at = run_state["started_at"] + 1
+        os.utime(note, (written_at, written_at))
+        assert (await gc.BeginTeamTask(key).invoke({"execution_id": execution_id})).success
+        yield _leader("llm_output", content="Interim note.")
+        yield IDLE
+        yield _leader("llm_output", content="Done, see note.md.")
+        yield IDLE
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+    accepted = await run.proxy.invoke({"run_id": "one", "task": "Write it"})
+    record = await wait_worker(run, accepted)
+
+    assert record["status"] == "completed"
+    assert record["result"] == "Done, see note.md."
+    assert [item["name"] for item in record["attachments"]] == ["note.md"]
+    assert gc.Runner.interact_agent_team.await_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream_ends", [False, True])
+async def test_text_fallback_does_not_complete_unfinished_tasks(private_run, monkeypatch, stream_ends):
+    run = private_run
+    monkeypatch.setattr(gc.Runner, "interact_agent_team", AsyncMock(return_value=SimpleNamespace(ok=True)))
+
+    async def stream(child, inputs, *, session):
+        key = next(t.params["key"] for t in child.agents["leader"].tools if t.type == gc.COMPLETE_RUN)
+        current = gc._private_runs[key]
+        tasks = [SimpleNamespace(
+            task_id="editing", status="in_progress", updated_at=int(current["started_at"] * 1000) + 1,
+        )]
+        backend = SimpleNamespace(task_manager=SimpleNamespace(list_tasks=AsyncMock(return_value=tasks)))
+        current["backend"] = backend
+        tool = gc.CompleteTeamRun(key, backend)
+        assert (await gc.BeginTeamTask(key).invoke({"execution_id": current["execution_id"]})).success
+        yield _leader("llm_output", content="Still editing.")
+        yield IDLE
+        yield _leader("llm_output", content="Waiting for the editor.")
+        if stream_ends:
+            return
+        yield IDLE
+        assert not gc._results[key].done()
+        refused = await tool.invoke({"execution_id": current["execution_id"], "result": "An interim note"})
+        assert not refused.success
+        tasks.clear()
+        yield _leader("tool_result", result="Tasks finished")
+        yield _leader("llm_output", content="Final report")
+        yield IDLE
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+    accepted = await run.proxy.invoke({"run_id": "one", "task": "Write it"})
+    record = await wait_worker(run, accepted)
+
+    if stream_ends:
+        assert record["status"] == "failed"
+        assert record.get("result") != "Waiting for the editor."
+    else:
+        assert record["status"] == "completed"
+        assert record["result"] == "Final report"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("empty_replies", [False, True])
+async def test_idle_timeout_releases_the_session_for_a_queued_continuation(private_run, monkeypatch, empty_replies):
+    run = private_run
+    monkeypatch.setattr(gc, "_PRIVATE_IDLE_GRACE_WINDOWS", 0.1)
+    run.proxy.child_spec.update(stale_claim_idle_timeout=1, stale_pending_idle_timeout=1)
+    monkeypatch.setattr(gc.Runner, "interact_agent_team", AsyncMock(return_value=SimpleNamespace(ok=True)))
+    stalled = asyncio.Event()
+
+    async def stream(child, inputs, *, session):
+        if inputs["query"] != "Stall":
+            await submit_private(child)
+            await asyncio.Event().wait()
+            return
+        key = next(t.params["key"] for t in child.agents["leader"].tools if t.type == gc.COMPLETE_RUN)
+        current = gc._private_runs[key]
+        tasks = [SimpleNamespace(task_id="stuck", status="in_progress", updated_at=current["started_at"] * 1000)]
+        current["backend"] = SimpleNamespace(task_manager=SimpleNamespace(list_tasks=AsyncMock(return_value=tasks)))
+        assert (await gc.BeginTeamTask(key).invoke({"execution_id": current["execution_id"]})).success
+        yield _leader("llm_output", content="Still working")
+        yield IDLE
+        stalled.set()
+        if empty_replies:
+            while True:
+                await asyncio.sleep(0.02)
+                yield _leader("llm_output", content="Still waiting")
+                yield IDLE
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+    seed = await run.proxy.invoke({"run_id": "seed", "task": "Seed"})
+    await wait_worker(run, seed)
+    previous_id = seed.data["execution_id"]
+    stuck = await run.proxy.invoke({
+        "action": "continue", "run_id": "stuck", "content": "Stall", "execution_id": previous_id,
+    })
+    await asyncio.wait_for(stalled.wait(), 1)
+    queued = await run.proxy.invoke({
+        "action": "continue", "run_id": "queued", "content": "Finish", "execution_id": previous_id,
+    })
+    session = private_session(run, stuck)
+    assert private_session(run, queued) == session
+    queued_worker = gc._execution_workers[queued.data["execution_id"]]
+    await asyncio.wait_for(asyncio.shield(queued_worker), 2)
+    failed = run.store.get(stuck.data["execution_id"])
+    assert failed["status"] == "failed"
+    assert any("remained idle" in text for text in posted_errors(run))
+    assert run.store.get(queued.data["execution_id"])["status"] == "completed"
+    assert session not in gc._session_tails
+    assert run.manager.get_stream_task(session) is None
+    assert stuck.data["execution_id"] not in gc._execution_workers
+    assert queued.data["execution_id"] not in gc._waiting_runs
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("progress", ["board", "member", "model", "user"])
+async def test_idle_guard_does_not_expire_after_progress_or_while_waiting(private_run, monkeypatch, progress):
+    run = private_run
+    monkeypatch.setattr(gc, "_PRIVATE_IDLE_GRACE_WINDOWS", 0.12)
+    run.proxy.child_spec.update(stale_claim_idle_timeout=1, stale_pending_idle_timeout=1)
+    monkeypatch.setattr(gc.Runner, "interact_agent_team", AsyncMock(return_value=SimpleNamespace(ok=True)))
+    from jiuwenswarm.server.runtime.group_questions import GroupQuestions
+
+    async def stream(child, inputs, *, session):
+        key = next(t.params["key"] for t in child.agents["leader"].tools if t.type == gc.COMPLETE_RUN)
+        current = gc._private_runs[key]
+        tasks = [SimpleNamespace(task_id="editing", status="in_progress", updated_at=current["started_at"] * 1000)]
+        current["backend"] = SimpleNamespace(task_manager=SimpleNamespace(list_tasks=AsyncMock(return_value=tasks)))
+        assert (await gc.BeginTeamTask(key).invoke({"execution_id": current["execution_id"]})).success
+        yield IDLE
+        await asyncio.sleep(0.08)
+        if progress == "board":
+            tasks[0].updated_at += 1
+        elif progress == "member":
+            yield SimpleNamespace(type="message", payload={
+                "event_type": "team.member", "event": {"new_status": "running"},
+            })
+        elif progress == "model":
+            yield _leader("tool_call", name="bash")
+        else:
+            monkeypatch.setattr(GroupQuestions, "pending", lambda *_: [{"execution_id": current["execution_id"]}])
+        await asyncio.sleep(0.1 if progress == "board" else 0.2)
+        assert not gc._results[key].done()
+        tasks.clear()
+        await submit_private(child)
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(gc.Runner, "run_agent_team_streaming", stream)
+    accepted = await run.proxy.invoke({"run_id": "one", "task": "Write it"})
+    assert (await wait_worker(run, accepted))["status"] == "completed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['typed', 'dict', 'sentinel', 'retry_idle', 'stream_error'])
+async def test_failed_private_response_never_completes_card(private_run, monkeypatch, failure):
+    run = private_run
+
+    async def stream(child, inputs, *, session):
+        key = next(t.params['key'] for t in child.agents['leader'].tools if t.type == gc.COMPLETE_RUN)
+        await gc.BeginTeamTask(key).invoke({'execution_id': gc._private_runs[key]['execution_id']})
+        yield _leader('llm_output', content='About to create the tasks. ')
+        if failure == 'typed':
+            from openjiuwen.core.stream.schema import CustomSchema
+            yield SimpleNamespace(type='custom', role=gc.TeamRole.LEADER,
+                                  payload=CustomSchema(type='task_failed', data=[]))
+        elif failure == 'dict':
+            yield _leader('custom', type='task_failed', data=[])
+        elif failure == 'sentinel':
+            yield _leader('llm_output', content='[Request interrupted by ')
+            yield _leader('llm_output', content='an unexpected error]')
+        elif failure == 'retry_idle':
+            yield _leader('llm_output', content='Retrying', retrying=True)
+        else:
+            raise RuntimeError('stream disconnected')
+        yield IDLE
+
+    monkeypatch.setattr(gc.Runner, 'run_agent_team_streaming', stream)
+    accepted = await run.proxy.invoke({'run_id': 'failed', 'task': 'Research'})
+    record = await wait_worker(run, accepted)
+    assert record['status'] == 'failed'
+    assert record['presentation'] == 'card'
+    assert not record.get('result')
+    assert all(text.startswith('执行失败：') for text in posted_errors(run))
+
+
+@pytest.mark.asyncio
+async def test_retry_then_success_uses_only_recovered_reply(private_run, monkeypatch):
+    run = private_run
+
+    async def stream(child, inputs, *, session):
+        yield _leader('llm_output', content='Incomplete failed attempt. ')
+        yield _leader('llm_output', content='Retrying', retrying=True)
+        yield _leader('llm_output', content='Recovered final answer.')
+        yield IDLE
+
+    monkeypatch.setattr(gc.Runner, 'run_agent_team_streaming', stream)
+    accepted = await run.proxy.invoke({'run_id': 'recover', 'task': 'Research'})
+    record = await wait_worker(run, accepted)
+    assert record['status'] == 'completed'
+    assert record['result'] == 'Recovered final answer.'

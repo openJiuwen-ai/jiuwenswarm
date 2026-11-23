@@ -19,9 +19,10 @@ if _KV_CACHE_MOD not in sys.modules:
         _stub.KVCacheAffinityConfig = type("KVCacheAffinityConfig", (), {})
         sys.modules[_KV_CACHE_MOD] = _stub
 
-from jiuwenswarm.common.e2a.models import E2AEnvelope
+from e2a.models import E2AEnvelope
 from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
     HttpMethodNotHandled,
+    REST_ROUTES,
     assemble_rest_request,
 )
 
@@ -150,6 +151,30 @@ def test_agent_templates_list_uses_the_dedicated_url(monkeypatch: pytest.MonkeyP
     assert sent.query["session_id"] == "sess-1"
 
 
+def test_personal_agent_groups_list_has_no_dedicated_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    with pytest.raises(HttpMethodNotHandled, match="还没有 HTTP 处理"):
+        assemble_rest_request(
+            _envelope("agent_groups.list"),
+            base_url="http://10.0.0.8:8766",
+        )
+
+
+def test_agent_groups_list_uses_the_dedicated_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    sent = assemble_rest_request(
+        _envelope("agent_groups.list"),
+        base_url="http://10.0.0.8:8766",
+    )
+    assert sent.verb == "GET"
+    assert sent.url == "http://10.0.0.8:8766/api/v1/agent-groups"
+    assert sent.used_rpc_fallback is False
+    assert sent.query is not None
+    assert sent.query["session_id"] == "sess-1"
+
+
 def test_skills_list_uses_the_dedicated_url() -> None:
     sent = assemble_rest_request(
         _envelope("skills.list"),
@@ -206,6 +231,55 @@ def test_project_cron_binding_and_lifecycle_use_dedicated_urls() -> None:
     assert "ReqMethod.PROJECT_LIFECYCLE: handle_gateway_adapter" in text
 
 
+def test_project_lifecycle_events_feed_uses_fixed_path_without_project_id() -> None:
+    """Gateway ensure_lifecycle_watch 轮询只带 events=True，不能走 {project_id} 路径。"""
+    from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
+        RestAssemblyError,
+        declared_http_routes,
+    )
+
+    feed = assemble_rest_request(
+        E2AEnvelope(
+            request_id="req-1",
+            channel="web",
+            method="project.lifecycle",
+            params={"events": True},
+        ),
+        base_url="http://10.0.0.8:8766",
+    )
+    inventory = assemble_rest_request(
+        E2AEnvelope(
+            request_id="req-1",
+            channel="web",
+            method="project.lifecycle",
+            params={"inventory": True},
+        ),
+        base_url="http://10.0.0.8:8766",
+    )
+    assert feed.url == "http://10.0.0.8:8766/api/v1/projects/actions/lifecycle"
+    assert feed.json_body == {"events": True}
+    assert inventory.url == "http://10.0.0.8:8766/api/v1/projects/actions/lifecycle"
+    assert inventory.json_body == {"inventory": True}
+
+    with pytest.raises(RestAssemblyError, match="project_id"):
+        assemble_rest_request(
+            E2AEnvelope(
+                request_id="req-1",
+                channel="web",
+                method="project.lifecycle",
+                params={},
+            ),
+            base_url="http://10.0.0.8:8766",
+        )
+
+    routes = declared_http_routes()
+    feed_idx = routes.index(("project.lifecycle", "POST", "/projects/actions/lifecycle"))
+    project_idx = routes.index(
+        ("project.lifecycle", "POST", "/projects/{project_id}/lifecycle")
+    )
+    assert feed_idx < project_idx
+
+
 def test_session_pin_uses_the_dedicated_url() -> None:
     sent = assemble_rest_request(
         E2AEnvelope(
@@ -224,6 +298,63 @@ def test_session_pin_uses_the_dedicated_url() -> None:
     dispatch = Path(__file__).resolve().parents[3] / "jiuwenswarm" / "server" / "dispatch.py"
     text = dispatch.read_text(encoding="utf-8")
     assert "ReqMethod.SESSION_PIN: handle_gateway_adapter" in text
+
+
+def test_session_asset_routes_are_declared_rows() -> None:
+    assert REST_ROUTES["session.assets.list"] == ("GET", "/sessions/{session_id}/assets")
+    assert REST_ROUTES["session.assets.register"] == ("POST", "/sessions/{session_id}/assets")
+    assert REST_ROUTES["session.assets.rename"] == (
+        "PATCH",
+        "/sessions/{session_id}/assets/{asset_id}",
+    )
+
+    listed = assemble_rest_request(
+        E2AEnvelope(
+            request_id="req-1",
+            channel="web",
+            method="session.assets.list",
+            session_id="sess-1",
+            params={"session_id": "sess-1"},
+        ),
+        base_url="http://10.0.0.8:8766",
+    )
+    registered = assemble_rest_request(
+        E2AEnvelope(
+            request_id="req-1",
+            channel="web",
+            method="session.assets.register",
+            session_id="sess-1",
+            params={"session_id": "sess-1", "items": [{"path": "/tmp/a.pdf"}]},
+        ),
+        base_url="http://10.0.0.8:8766",
+    )
+    renamed = assemble_rest_request(
+        E2AEnvelope(
+            request_id="req-1",
+            channel="web",
+            method="session.assets.rename",
+            session_id="sess-1",
+            params={"session_id": "sess-1", "asset_id": "asset_ab", "name": "brief"},
+        ),
+        base_url="http://10.0.0.8:8766",
+    )
+    assert listed.verb == "GET"
+    assert listed.url == "http://10.0.0.8:8766/api/v1/sessions/sess-1/assets"
+    assert listed.json_body is None
+    assert registered.verb == "POST"
+    assert registered.url == listed.url
+    assert registered.json_body == {"items": [{"path": "/tmp/a.pdf"}]}
+    assert renamed.verb == "PATCH"
+    assert renamed.url == "http://10.0.0.8:8766/api/v1/sessions/sess-1/assets/asset_ab"
+    assert renamed.json_body == {"name": "brief"}
+    dispatch = Path(__file__).resolve().parents[3] / "jiuwenswarm" / "server" / "dispatch.py"
+    text = dispatch.read_text(encoding="utf-8")
+    for member in (
+        "SESSION_ASSETS_LIST",
+        "SESSION_ASSETS_REGISTER",
+        "SESSION_ASSETS_RENAME",
+    ):
+        assert f"ReqMethod.{member}: handle_session_assets_request" in text
 
 
 def test_session_delete_is_registered_for_rpc() -> None:

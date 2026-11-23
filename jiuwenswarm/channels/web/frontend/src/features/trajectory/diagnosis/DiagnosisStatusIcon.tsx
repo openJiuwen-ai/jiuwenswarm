@@ -2,7 +2,7 @@
 
 import css from './DiagnosisStatusIcon.module.css';
 
-export type DiagnosisStatusIconKind = 'running' | 'completed' | 'failed' | 'pending' | 'skipped';
+export type DiagnosisStatusIconKind = 'running' | 'completed' | 'degraded' | 'failed' | 'pending' | 'skipped';
 
 export interface DiagnosisStatusIconProps {
   kind: DiagnosisStatusIconKind;
@@ -37,6 +37,12 @@ export function DiagnosisStatusIcon({ kind, size = 16 }: DiagnosisStatusIconProp
         <>
           <circle className={css.fill} cx="8" cy="8" r="7" />
           <path d="M5.6 5.6 10.4 10.4M10.4 5.6 5.6 10.4" className={css.mark} strokeWidth="1.6" strokeLinecap="round" />
+        </>
+      ) : null}
+      {kind === 'degraded' ? (
+        <>
+          <circle cx="8" cy="8" r="6.25" strokeWidth="1.5" />
+          <path d="M8 4.5v4M8 11v.5" strokeWidth="1.6" strokeLinecap="round" />
         </>
       ) : null}
       {kind === 'skipped' ? (

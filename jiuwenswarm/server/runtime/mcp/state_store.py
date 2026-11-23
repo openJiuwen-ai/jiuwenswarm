@@ -353,6 +353,25 @@ def set_mcp_state(name: str, *, state: str) -> None:
         _save(st)
 
 
+def set_mcp_state_if(name: str, *, expected: str, state: str) -> bool:
+    """Flip state only when the record is still in ``expected``.
+
+    Lets a startup probe settle a ``connecting`` record without overwriting a
+    connect that completed while the probe was in flight.
+    """
+    n = str(name or "").strip()
+    if not n:
+        raise ValueError("mcp name is required")
+    with _lock:
+        st = _load()
+        rec = (st.get("mcp") or {}).get(n)
+        if not isinstance(rec, dict) or rec.get("state") != expected:
+            return False
+        rec["state"] = str(state or "").strip()
+        _save(st)
+        return True
+
+
 def record_to_mcp_entry(name: str, record: dict[str, Any]) -> dict[str, Any] | None:
     """Convert a state.json MCP record into an mcp.servers-shaped dict.
 
@@ -420,6 +439,7 @@ __all__ = [
     "upsert_mcp_record",
     "remove_mcp_record",
     "set_mcp_state",
+    "set_mcp_state_if",
     "set_mcp_enabled",
     "record_to_mcp_entry",
 ]
@@ -432,7 +452,7 @@ __all__ = [
 def _register_common_provider() -> None:
     import sys
 
-    from openjiuwen_protocol.provider_domains import PROVIDER_DOMAIN_MCP_STATE
+    from e2a.provider_domains import PROVIDER_DOMAIN_MCP_STATE
 
     from jiuwenswarm.common.external_providers import register
 

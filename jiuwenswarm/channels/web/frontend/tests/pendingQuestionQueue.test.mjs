@@ -8,6 +8,7 @@ import {
   dropAnsweredAskUserQuestions,
   enqueuePendingQuestions,
   isAnsweredAskUserQuestion,
+  isQuestionAnswered,
   markQuestionsAnswered,
   pendingQuestionIdentity,
   shouldClearPermissionQuestionsForLifecycleEvent,
@@ -180,6 +181,19 @@ test('answered ask_user questions are recognised per session and dropped from th
   assert.equal(isAnsweredAskUserQuestion('session-a', pending), false);
   assert.equal(isAnsweredAskUserQuestion('session-b', answered), false);
   assert.deepEqual(dropAnsweredAskUserQuestions('session-a', [answered, pending]), [pending]);
+});
+
+test('history can query answered request ids without a source while live filtering stays source-specific', () => {
+  markQuestionsAnswered('history-source-query', ['answered-without-source']);
+  assert.equal(isQuestionAnswered('history-source-query', 'answered-without-source'), true);
+  assert.equal(isQuestionAnswered('other-source-query', 'answered-without-source'), false);
+  assert.equal(isQuestionAnswered('history-source-query', 'unknown'), false);
+  assert.equal(isAnsweredAskUserQuestion('history-source-query', {
+    request_id: 'answered-without-source', questions: [],
+  }), false);
+  assert.equal(isAnsweredAskUserQuestion('history-source-query', {
+    ...permission('source-query'), request_id: 'answered-without-source',
+  }), false);
 });
 
 test('answered request ids only filter ask_user questions', () => {

@@ -18,12 +18,12 @@ from agent_gateway.routing.agent_client import (
     AgentServerClient,
 )
 
-from jiuwenswarm.common.e2a.constants import (
+from e2a.constants import (
     E2A_RESPONSE_KIND_ACP_OUTPUT_REQUEST,
     E2A_WIRE_SERVER_PUSH_KEY,
 )
-from jiuwenswarm.common.e2a.models import E2AEnvelope
-from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
+from e2a.models import E2AEnvelope
+from e2a.wire_codec import parse_agent_server_wire_chunk
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
 from jiuwenswarm.extensions.runtime_management_extension.pod_rest_map import (
@@ -55,18 +55,18 @@ _PUSH_MAX_CONNECT_FAILURES = 3
 _CANCELLED_RID_TTL_SECONDS = 2.0
 
 
-async def _assemble_with_allowlist(envelope: E2AEnvelope, api_root: str):
-    """企业版先读库再组头。个人版直接组请求。"""
+async def _assemble_with_expert_packages(envelope: E2AEnvelope, api_root: str):
+    """企业版按这只 bot 的模板槽组头。个人版直接组请求。"""
     from agent_gateway.enterprise.edition import is_enterprise
 
     if not is_enterprise():
         return assemble_rest_request(envelope, base_url=api_root)
     from agent_gateway.enterprise.capabilities.experts.allowlist import bind_outbound_allowlist
-    from agent_gateway.enterprise.config.manager_config.core.application_config.package_allowlist import (
-        read_package_allowlist_packages,
-    )
+    from agent_gateway.enterprise.capabilities.experts.bound_packages import packages_for_bot
+    from jiuwenswarm.common.request_identity import web_routing_identity
 
-    packages = await read_package_allowlist_packages()
+    bot_id = web_routing_identity(envelope.channel_context).get("bot_id", "")
+    packages = await packages_for_bot(bot_id)
     with bind_outbound_allowlist(packages):
         return assemble_rest_request(envelope, base_url=api_root)
 
@@ -359,7 +359,7 @@ class HttpSseAgentServerClient(AgentServerClient):
         api_root = self._resolve_api_root(base_url)
         envelope.is_stream = False
         try:
-            assembled = await _assemble_with_allowlist(envelope, api_root)
+            assembled = await _assemble_with_expert_packages(envelope, api_root)
         except HttpMethodNotHandled as exc:
             logger.info(
                 "[E2A][out][http][unary] request_id=%s method=%s 没有 HTTP 处理",
@@ -426,7 +426,7 @@ class HttpSseAgentServerClient(AgentServerClient):
         api_root = self._resolve_api_root(base_url)
         envelope.is_stream = True
         try:
-            assembled = await _assemble_with_allowlist(envelope, api_root)
+            assembled = await _assemble_with_expert_packages(envelope, api_root)
         except HttpMethodNotHandled as exc:
             logger.info(
                 "[E2A][out][http][stream] request_id=%s method=%s 没有 HTTP 处理",
@@ -587,7 +587,11 @@ class HttpSseAgentServerClient(AgentServerClient):
 def _raise_for_pod_http_error(
     response: httpx.Response, *, base_url: str | None
 ) -> None:
-    """企业按次指定 Pod 时，5xx/429 抛给编排换 Pod；开源钉死那台仍转成 ok=False。"""
+    """企业按次指定 Pod 时，5xx/429 抛给编排换 Pod；开源钉死那台仍转成 ok=False。
+
+    业务上的「找不到」保持 HTTP 200。HTTP 404 不换机：它也可能是资源不存在，
+    旧进程缺网址靠重启 AgentServer，不靠把 404 解释成这台 Pod 坏了。
+    """
     if not base_url:
         return
     if response.status_code >= 500 or response.status_code == 429:

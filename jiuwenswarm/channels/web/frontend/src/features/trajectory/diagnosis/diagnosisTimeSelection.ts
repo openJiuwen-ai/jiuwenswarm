@@ -339,6 +339,16 @@ export function collectTurnWallRanges(
 /** Team harness envelopes injected as USER rows are not a chat prompt. */
 const TEAM_HARNESS_USER_MARK = /<team-(?:clock|event|inbound)\b/i;
 
+/**
+ * Cluster delivery wraps a page send with `<team-clock>`, but the envelope
+ * records that the person authored it. Team-leader dispatches do not.
+ */
+const PAGE_SENT_USER_MARK = /"origin_kind"\s*:\s*"external_user_authored"/;
+
+function cellText(cell: WallClockSample): string {
+  return `${cell.text ?? ''}\n${cell.inputDetail ?? ''}`;
+}
+
 type NumberedTurnSamples = {
   turn: number | null;
   groups: readonly { cells: readonly WallClockSample[] }[];
@@ -358,16 +368,22 @@ export function isTeamHarnessNoiseCell(cell: WallClockSample): boolean {
     if (origin === 'harness_internal') return true;
   }
   if (cell.kind !== 'user') return false;
-  const text = `${cell.text ?? ''}\n${cell.inputDetail ?? ''}`;
+  const text = cellText(cell);
+  // The page send is still a user prompt when cluster delivery prepends
+  // `<team-clock>`. Leader task-board / all-done rows are not.
+  if (PAGE_SENT_USER_MARK.test(text)) return false;
   return TEAM_HARNESS_USER_MARK.test(text);
 }
 
 /**
- * True when the cell is an external chat user prompt.
+ * True when the person typed on the page and sent the message.
  *
- * `ask_user` resumes and team harness USER rows (`team-clock` / `team-event` /
- * `team-inbound`) do not open a new `user_turn`. Projector `turn` numbers are
- * unchanged by this check.
+ * `ask_user` resumes do not open a `user_turn`. Cluster-internal USER rows
+ * from the team leader (`team-clock` / `team-event` / `team-inbound`, including
+ * those stored with `origin: external_user`) do not either. A page send still
+ * opens one when its envelope says `origin_kind` is `external_user_authored`,
+ * even if the text starts with `<team-clock>`. Projector `turn` numbers are
+ * unchanged.
  */
 export function isExternalUserPromptCell(cell: WallClockSample): boolean {
   if (cell.kind !== 'user') return false;
@@ -780,12 +796,80 @@ export function userTurnDisplayGaps(
 }
 
 /**
+ * Open interval beside `gap` before the previous blank and after the next one.
+ * A swallowed span is shifted into this room so it stays visible without
+ * painting through another user_turn blank.
+ */
+function gapShoulderRoom(
+  gap: AxisInterval,
+  gaps: readonly AxisInterval[],
+): { roomStart: number; roomEnd: number } {
+  let roomStart = Number.NEGATIVE_INFINITY;
+  let roomEnd = Number.POSITIVE_INFINITY;
+  for (const candidate of gaps) {
+    if (!(candidate.endMs > candidate.startMs) || candidate === gap) continue;
+    if (candidate.endMs <= gap.startMs && candidate.endMs > roomStart) {
+      roomStart = candidate.endMs;
+    }
+    if (candidate.startMs >= gap.endMs && candidate.startMs < roomEnd) {
+      roomEnd = candidate.startMs;
+    }
+  }
+  return { roomStart, roomEnd };
+}
+
+/** Pieces of `piece` that sit strictly outside `gap`. Empty when the piece is swallowed. */
+function piecesOutsideGap(piece: AxisInterval, gap: AxisInterval): AxisInterval[] {
+  if (piece.endMs <= gap.startMs || piece.startMs >= gap.endMs) {
+    return [piece];
+  }
+  const outside: AxisInterval[] = [];
+  if (piece.startMs < gap.startMs) {
+    outside.push({ startMs: piece.startMs, endMs: gap.startMs });
+  }
+  if (piece.endMs > gap.endMs) {
+    outside.push({ startMs: gap.endMs, endMs: piece.endMs });
+  }
+  return outside;
+}
+
+/**
+ * Move a span that lies wholly inside a display blank onto the visible side
+ * of the turn it belongs to. The midpoint and everything to its right belong
+ * to the next turn (the collapsed user_turn start). Duration is kept when the
+ * shoulder has room; otherwise the span becomes a point on that edge.
+ */
+function placeSwallowedPiece(
+  piece: AxisInterval,
+  gap: AxisInterval,
+  gaps: readonly AxisInterval[],
+): AxisInterval {
+  const duration = piece.endMs - piece.startMs;
+  const mid = (gap.startMs + gap.endMs) / 2;
+  const towardNext = piece.startMs >= mid;
+  const { roomStart, roomEnd } = gapShoulderRoom(gap, gaps);
+  if (towardNext) {
+    const endMs = Math.min(gap.endMs + duration, roomEnd);
+    if (!(endMs > gap.endMs)) {
+      return { startMs: gap.endMs, endMs: gap.endMs };
+    }
+    return { startMs: gap.endMs, endMs };
+  }
+  const startMs = Math.max(gap.startMs - duration, roomStart);
+  if (!(startMs < gap.startMs)) {
+    return { startMs: gap.startMs, endMs: gap.startMs };
+  }
+  return { startMs, endMs: gap.startMs };
+}
+
+/**
  * Subtract `user_turn` display gaps from a span.
  *
- * Spans wholly inside a gap disappear; spans that cross a gap split into one
- * piece on each side (call site keeps the same record identity). A zero-duration
- * mark stays, unless that instant lies strictly inside a gap. Input-lane rows
- * are recorded as instants and still need the mark.
+ * Spans that cross a gap split into one piece on each side so a long model or
+ * tool bar does not paint through the blank. A span wholly inside a gap is
+ * not dropped: a zero-duration mark pins to the owning turn's visible edge,
+ * and a positive span shifts onto that edge's shoulder with its duration
+ * kept when the shoulder has room. The call site keeps the same record identity.
  */
 export function clipIntervalAgainstGaps(
   startMs: number,
@@ -800,17 +884,12 @@ export function clipIntervalAgainstGaps(
     if (!(gap.endMs > gap.startMs)) continue;
     const next: AxisInterval[] = [];
     for (const piece of pieces) {
-      if (piece.endMs <= gap.startMs || piece.startMs >= gap.endMs) {
-        next.push(piece);
+      const outside = piecesOutsideGap(piece, gap);
+      if (outside.length === 0) {
+        next.push(placeSwallowedPiece(piece, gap, gaps));
         continue;
       }
-      if (piece.endMs === piece.startMs) continue;
-      if (piece.startMs < gap.startMs) {
-        next.push({ startMs: piece.startMs, endMs: gap.startMs });
-      }
-      if (piece.endMs > gap.endMs) {
-        next.push({ startMs: gap.endMs, endMs: piece.endMs });
-      }
+      next.push(...outside);
     }
     pieces = next;
   }

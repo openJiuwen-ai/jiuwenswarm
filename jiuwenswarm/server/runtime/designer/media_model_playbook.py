@@ -306,7 +306,7 @@ def _infer_style_lock(prompt: str, scene_desc: str) -> dict[str, str]:
     elif any(k in blob for k in _PHOTOREAL_STYLE_WORDS):
         lock["look"] = "photoreal cinematic — continuous color grade; never cartoon restyle"
         lock["lens"] = "35mm cinematic, soft background when close; no comic/grid UI"
-        lock["palette"] = "match scene color temperature and wardrobe dyes across shots"
+        lock["palette"] = "match scene color temperature and clothing dyes across shots"
         lock["medium"] = "photoreal_cinematic"
     return {k: str(v)[:280] for k, v in lock.items()}
 
@@ -320,6 +320,13 @@ _VISUAL_STYLE_HEADING_RE = re.compile(
     r"(?im)^\s*#{1,6}\s*(?:visual\s+style|art\s+style|style|视觉风格|画风)"
     r"\s*$\s*^\s*(?:[-*]\s*)?(.+?)\s*$"
 )
+
+
+def authored_visual_style(text: str) -> str:
+    """The Visual Style wording the Brief wrote, verbatim; '' when it states none."""
+    body = str(text or "").strip()
+    match = _VISUAL_STYLE_HEADING_RE.search(body) or _VISUAL_STYLE_LINE_RE.search(body)
+    return match.group(1).strip().strip("*").strip()[:280] if match else ""
 
 
 def style_lock_from_brief(
@@ -360,6 +367,53 @@ def ensure_visual_style_statement(
     if not look:
         return body
     return (body + f"\n\n## Visual Style\n\n{look}\n").strip()
+
+
+def ensure_audio_statement(
+    text: str,
+    audio_plan: dict[str, Any] | None,
+) -> str:
+    """State the audio plan deterministically, replacing any promised score.
+
+    The brief is the artifact the user reads, so it must not promise a score
+    that no backend can render while the clips stay unscored.
+    """
+    body = str(text or "").rstrip()
+    plan = audio_plan if isinstance(audio_plan, dict) else {}
+    if not plan:
+        return body
+    speech = plan.get("speech") if isinstance(plan.get("speech"), dict) else {}
+    sfx = plan.get("sfx") if isinstance(plan.get("sfx"), dict) else {}
+    music = plan.get("music") if isinstance(plan.get("music"), dict) else {}
+    lines: list[str] = []
+    if speech.get("include", True):
+        lines.append(f"- Speech: {speech.get('kind') or 'dialogue'} in the locked language.")
+    else:
+        lines.append("- Speech: none (the user asked for silence or mime).")
+    sfx_note = str(sfx.get("notes") or "").strip()
+    lines.append(
+        "- Diegetic sound: room tone and action sound only."
+        if not sfx_note
+        else f"- Diegetic sound: {sfx_note}"
+    )
+    if music.get("requested") and music.get("supported"):
+        lines.append("- Music: one film-level score, mixed after the clips are joined.")
+    elif music.get("requested"):
+        lines.append(
+            "- Music: **not supported in this build** — no music backend is configured, "
+            "so the film carries narration/dialogue and diegetic sound only (no score)."
+        )
+    elif speech.get("include", True):
+        lines.append("- Music: none; the clips carry dialogue and diegetic sound only.")
+    else:
+        lines.append("- Music: none; the clips carry diegetic sound only.")
+    block = "## Audio\n\n" + "\n".join(lines)
+    marker = "## Audio"
+    if marker in body:
+        head, _, tail = body.partition(marker)
+        rest = tail.split("\n## ", 1)
+        body = head.rstrip() + ("\n\n## " + rest[1] if len(rest) > 1 else "")
+    return (body.rstrip() + "\n\n" + block + "\n").strip()
 
 
 def synchronize_graph_style_from_brief(
@@ -551,12 +605,12 @@ def wan3_clip_prompt_prefix(
     return (
         f"{layer}"
         f"[Composition]: {camera or 'cinematic shot'}; move={move}. "
-        "If the camera moves, keep landmark L/R anchors stable every beat.\n"
+        "If the camera moves, keep landmark L/R anchors stable in every shot.\n"
         f"{ref_line}\n"
         f"[Positioning]: {positions}. Objects: {objects}. 180-degree rule; Fixed L/R anchors.\n"
         f"[Motion]: {motion}\n"
         f"[Speech/Audio]: {speech}\n"
-        f"[Action beat]: {action}\n"
+        f"[Action]: {action}\n"
         + (f"[Locks]: {locks_line}\n" if locks_line else "")
         + f"[Style]: {style_line}."
     )
@@ -641,7 +695,7 @@ def format_image_ref_bindings(bindings: list[dict[str, Any]] | None) -> str:
         if role == "first_frame":
             lines.append(
                 f"Image {idx} is the FIRST-FRAME reference — animate THIS exact image; "
-                "preserve its art style, faces, wardrobe, architecture, and lighting."
+                "preserve its art style, faces, clothing, architecture, and lighting."
             )
         elif role == "prior_clip":
             lines.append(
@@ -652,7 +706,9 @@ def format_image_ref_bindings(bindings: list[dict[str, Any]] | None) -> str:
             who = name or "this cast member"
             lines.append(
                 f"Image {idx} is the sole identity/costume reference for {who} "
-                "(use face/hair/body/wardrobe only; ignore any backdrop in that sheet)."
+                "(use face/hair/body/clothing only; a sheet may show this one person from "
+                "front, side, and back with a head close-up — draw them once; ignore any "
+                "backdrop in that sheet)."
             )
         elif role == "environment":
             lines.append(

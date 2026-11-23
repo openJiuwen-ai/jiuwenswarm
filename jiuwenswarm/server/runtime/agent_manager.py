@@ -26,8 +26,9 @@ from agent_gateway.common.mode_matrix import (
     resolve_new_canonical_mode,
 )
 
-from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
+from e2a.acp.protocol import build_acp_initialize_result
 from jiuwenswarm.common.config import get_available_models, get_config
+from jiuwenswarm.common.runtime_workspace import RuntimeWorkspacePaths
 from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
     is_auto_permission_enabled,
@@ -1291,6 +1292,9 @@ class AgentManager:
         prewarm_eligible: bool = True,
         moa_enabled: bool = False,
         create_token: str | None = None,
+        execution_profile: str = "default",
+        role_instructions: str = "",
+        npc_team: dict | None = None,
     ):
         token = str(create_token or "").strip()
         key = self.warm_pool.make_key(
@@ -1304,6 +1308,16 @@ class AgentManager:
         # Session，避免为布尔开关复制预热槽。但它属于 session.create 的幂等
         # 身份，同一 create_token 不允许用不同值重试。
         create_signature = (key, bool(prewarm_eligible), bool(persist_session), bool(moa_enabled))
+        if execution_profile != "default":
+            create_signature += (execution_profile, role_instructions)
+            # The roster definition is part of the same
+            # idempotent identity; bindings are host-internal and excluded.
+            create_signature += (
+                tuple(
+                    (member.get("name"), member.get("role_instructions"))
+                    for member in ((npc_team or {}).get("members") or [])
+                ),
+            )
         token_key = (key.channel_id, token)
         async with self._session_create_token_lock:
             if token:
@@ -1490,6 +1504,20 @@ class AgentManager:
         """Borrow ``agent`` while it is still cached; None once it was retired or recreated."""
         if any(agent is cached for channel_agents in self.agents.values() for cached in channel_agents.values()):
             return self._borrow_agent(agent)
+        return None
+
+    def get_session_workspace_paths(self, channel_id: str, session_id: str) -> RuntimeWorkspacePaths | None:
+        """Inspect cached session paths without borrowing or allocating an Agent."""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return None
+        channel_agents = self.agents.get(_normalize_channel_id(channel_id), {})
+        for agent in channel_agents.values():
+            getter = getattr(agent, "get_session_workspace_paths", None)
+            if callable(getter):
+                paths = getter(sid)
+                if paths is not None:
+                    return paths
         return None
 
     def get_auto_permission_agent_for_session_nowait(

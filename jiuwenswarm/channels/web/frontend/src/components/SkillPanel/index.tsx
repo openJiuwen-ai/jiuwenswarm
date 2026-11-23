@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
 import { matchesAssetName } from '../../features/assetNameSearch';
 import { CatalogCacheNotice } from '../marketplace/CatalogCacheNotice';
 /**
@@ -72,6 +73,47 @@ import type {
 
 function errorToMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+const REBUILD_POLL_MS = 3000;
+const REBUILD_WAIT_MS = 30 * 60 * 1000;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function requestRebuildStatus(
+  name: string,
+  rebuildId: string,
+  withSession: (params: { name: string; rebuild_id: string }) => Record<string, unknown>,
+): Promise<SkillRebuildResponse> {
+  const params = withSession({ name, rebuild_id: rebuildId });
+  try {
+    return await webRequest<SkillRebuildResponse>('skills.rebuild_status', params, { timeoutMs: 30_000 });
+  } catch {
+    // 当前 Gateway 转发名单可能还没有 skills.rebuild_status。
+    // skills.rebuild 带上 rebuild_id 时只查状态，不会再开一次重建。
+    return await webRequest<SkillRebuildResponse>('skills.rebuild', params, { timeoutMs: 30_000 });
+  }
+}
+
+async function waitForSkillRebuild(
+  name: string,
+  rebuildId: string,
+  withSession: (params: { name: string; rebuild_id: string }) => Record<string, unknown>,
+): Promise<'done' | 'timeout'> {
+  const deadline = Date.now() + REBUILD_WAIT_MS;
+  while (Date.now() < deadline) {
+    await sleep(REBUILD_POLL_MS);
+    const status = await requestRebuildStatus(name, rebuildId, withSession);
+    if (status.status === 'done' && status.success) return 'done';
+    if (status.status === 'failed' || status.success === false) {
+      throw new Error(status.detail || '技能重建失败。');
+    }
+  }
+  return 'timeout';
 }
 
 type MySkillsSubTab = 'all' | 'enabled' | 'disabled' | 'builtin' | 'prebuilt' | 'user' | 'local';
@@ -561,14 +603,21 @@ export function SkillPanel({
         const data = await webRequest<SkillRebuildResponse>(
           'skills.rebuild',
           withSession({ name: skillName, version }),
-          // 重建会同步跑静默 Agent，给足前端等待窗口（与 Gateway unary 默认 600s / 知识转技能同量级）。
-          { timeoutMs: 600_000 },
+          // 这次只做校验和准备。静默改写在后台跑，不再占用 600 秒的非流式等待。
+          { timeoutMs: 120_000 },
         );
-        if (data.success) {
-          showMessage('success', t('skills.messages.rebuildCompleted'));
-          fetchSkillDetail(skillName);
-          fetchSkillVersions(skillName);
+        if (data.pending && data.rebuild_id) {
+          const outcome = await waitForSkillRebuild(skillName, data.rebuild_id, (params) => withSession(params));
+          if (outcome === 'timeout') {
+            showMessage('loading', t('skills.messages.rebuildStillRunning'));
+            return;
+          }
+        } else if (!data.success) {
+          throw new Error(data.detail || t('skills.messages.rebuildFailed', { detail: '' }));
         }
+        showMessage('success', t('skills.messages.rebuildCompleted'));
+        fetchSkillDetail(skillName);
+        fetchSkillVersions(skillName);
       } catch (error) {
         console.error(error);
         const detail = error instanceof Error ? error.message : String(error);
@@ -640,13 +689,14 @@ export function SkillPanel({
   }, []);
 
   // 新建会话并将技能选中到输入框：只有集群技能进集群模式，其余（普通技能、技能包等）固定单 agent
-  const handleGoToChat = useCallback((skillName: string, skillType?: string) => {
+  const handleGoToChat = useCallback((skillName: string, skillType?: string, resetAttachmentDrafts = false) => {
     window.dispatchEvent(
       new CustomEvent('jiuwen:new-conversation', {
         detail: {
           skillName,
           mode: skillType === 'swarm_skill' ? ('team' as const) : ('agent' as const),
           preserveDraft: true,
+          resetAttachmentDrafts,
         },
       }),
     );
@@ -685,7 +735,7 @@ export function SkillPanel({
       window.dispatchEvent(
         new CustomEvent('jiuwen:new-conversation', {
           detail: {
-            skillName: 'skill-creator',
+            skillName: 'workswarm-builtin',
             suffixText: t('skills.chatPrompts.editSkill'),
             secondSkillName: skillName,
             ...(skillType === 'swarm_skill' ? { mode: 'team' as const } : {}),
@@ -707,7 +757,7 @@ export function SkillPanel({
     window.dispatchEvent(
       new CustomEvent('jiuwen:new-conversation', {
         detail: {
-          skillName: 'skill-creator',
+          skillName: 'workswarm-builtin',
           suffixText: t('skills.chatPrompts.createSkill'),
           mode: 'agent' as const,
           metadata: { scene: 'create_skill' },
@@ -736,7 +786,7 @@ export function SkillPanel({
     async (file: File): Promise<string> => {
       const form = new FormData();
       form.append('file', file);
-      const uploadResp = await fetch('/file-api/skills/upload-temp', { method: 'POST', body: form });
+      const uploadResp = await gatewayFetch('/file-api/skills/upload-temp', { method: 'POST', body: form });
       const uploadData = await uploadResp.json();
       if (!uploadResp.ok || !uploadData.path) {
         throw createUploadError(uploadData.code, uploadResp.status);
@@ -1086,37 +1136,35 @@ export function SkillPanel({
     [installedSkillMap],
   );
 
-  const toggleSkillDisabled = useCallback(
+  const toggleOneSkill = useCallback(
     async (skillName: string) => {
-      // 当前目标状态：优先取详情页状态（成员技能不在顶层列表中，
-      // 从列表取会恒判为 false，导致禁用后无法再启用）
-      const isSelfDetail = selectedSkill?.name === skillName;
-      const listSkill = skills.find((s) => s.name === skillName);
-      const currentEnabled = isSelfDetail ? selectedSkill?.enabled !== false : listSkill?.enabled !== false;
-      const newEnabled = !currentEnabled;
-
-      // 二次确认以服务端实时探测为准：skills.toggle(dry_run) 返回该技能
-      // 当前关联的技能包列表，不依赖页面缓存的列表数据。
-      // 成员技能启用/禁用都会影响所属技能包的可用性，两个方向都确认
-      let parentPacks: string[] = [];
+      setActionTarget(`toggle:${skillName}`);
       try {
-        const probe = await webRequest<{ success: boolean; parent_skillpacks?: string[] }>(
-          'skills.toggle',
-          withSession({ name: skillName, enabled: newEnabled, dry_run: true }),
-        );
-        if (probe.success) parentPacks = probe.parent_skillpacks ?? [];
-      } catch {
-        // 探测失败不阻塞切换：保持与旧行为一致（直接切换，不弹窗）
-      }
-      if (parentPacks.length > 0) {
-        const confirmed = window.confirm(t('skills.packMemberToggleConfirm', { packs: parentPacks.join('、') }));
-        if (!confirmed) return;
-      }
+        // 当前目标状态：优先取详情页状态（成员技能不在顶层列表中，
+        // 从列表取会恒判为 false，导致禁用后无法再启用）
+        const isSelfDetail = selectedSkill?.name === skillName;
+        const listSkill = skills.find((s) => s.name === skillName);
+        const currentEnabled = isSelfDetail ? selectedSkill?.enabled !== false : listSkill?.enabled !== false;
+        const newEnabled = !currentEnabled;
 
-      const toggleKey = `toggle:${skillName}`;
-      setActionTarget(toggleKey);
+        // 二次确认以服务端实时探测为准：skills.toggle(dry_run) 返回该技能
+        // 当前关联的技能包列表，不依赖页面缓存的列表数据。
+        // 成员技能启用/禁用都会影响所属技能包的可用性，两个方向都确认
+        let parentPacks: string[] = [];
+        try {
+          const probe = await webRequest<{ success: boolean; parent_skillpacks?: string[] }>(
+            'skills.toggle',
+            withSession({ name: skillName, enabled: newEnabled, dry_run: true }),
+          );
+          if (probe.success) parentPacks = probe.parent_skillpacks ?? [];
+        } catch {
+          // 探测失败不阻塞切换：保持与旧行为一致（直接切换，不弹窗）
+        }
+        if (parentPacks.length > 0) {
+          const confirmed = window.confirm(t('skills.packMemberToggleConfirm', { packs: parentPacks.join('、') }));
+          if (!confirmed) return;
+        }
 
-      try {
         const result = await webRequest<{
           success: boolean;
           name: string;
@@ -1146,18 +1194,32 @@ export function SkillPanel({
         }
       } catch (error) {
         console.error('Failed to toggle skill enabled:', error);
-        showMessage('error', t('skills.setEnabledError'));
+        const detail = error instanceof Error ? error.message.trim() : '';
+        showMessage('error', detail || t('skills.setEnabledError'));
       } finally {
         setActionTarget(null);
       }
     },
     [skills, selectedSkill, isSkillPackage, fetchSkills, withSession, showMessage, t],
   );
+  const toggleChainRef = useRef<Promise<void>>(Promise.resolve());
+  const toggleSkillDisabled = useCallback(
+    (skillName: string) => {
+      const previous = toggleChainRef.current.catch(() => undefined);
+      let release = () => {};
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      toggleChainRef.current = previous.then(() => gate);
+      return previous.then(() => toggleOneSkill(skillName)).finally(release);
+    },
+    [toggleOneSkill],
+  );
 
   const renderMySkillCard = (skill: SkillItem) => {
     const displayName = skill.display_name || skill.name;
     const isDisabled = skill.enabled === false;
-    const isToggling = actionTarget === `toggle:${skill.name}`;
+    const isToggling = actionTarget?.startsWith('toggle:') ?? false;
     const isUninstalling = actionTarget === `uninstall:${installedSkillMap.get(skill.name)?.plugin_name || skill.name}`;
     const isPackage = isSkillPackage(skill);
     // 技能包含有已卸载成员时整包被禁用，不允许直接启用（需重新下载完整技能包）
@@ -1241,23 +1303,21 @@ export function SkillPanel({
               </button>
               <div className="hidden group-hover:block">
                 <div className="dropdown-menu">
-                  {!isPackage ? (
-                    <button
-                      onClick={
-                        isDisabled
-                          ? undefined
-                          : (e: React.MouseEvent) => {
-                              e.stopPropagation();
-                              handleEditSkill(skill.name, skill.skill_type);
-                            }
-                      }
-                      disabled={isDisabled}
-                      className="flex items-center w-full px-3 py-2 text-xs text-left text-text hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
-                      data-testid="skill-panel-my-skill-card-menu-edit"
-                    >
-                      {t('skills.actions.edit')}
-                    </button>
-                  ) : null}
+                  <button
+                    onClick={
+                      isDisabled
+                        ? undefined
+                        : (e: React.MouseEvent) => {
+                            e.stopPropagation();
+                            handleEditSkill(skill.name, skill.skill_type);
+                          }
+                    }
+                    disabled={isDisabled}
+                    className="flex items-center w-full px-3 py-2 text-xs text-left text-text hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
+                    data-testid="skill-panel-my-skill-card-menu-edit"
+                  >
+                    {t('skills.actions.edit')}
+                  </button>
                   <button
                     onClick={
                       isUninstalling

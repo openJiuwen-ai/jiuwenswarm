@@ -10,6 +10,9 @@ const browser = new JSDOM('<!doctype html>', { url: 'http://localhost' });
 globalThis.window = browser.window;
 globalThis.document = browser.window.document;
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+globalThis.MutationObserver = browser.window.MutationObserver;
+// JSDOM has no layout observer; the scroll-follow effect only adjusts scrollTop.
+globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} };
 const { createRoot } = await import('react-dom/client');
 const { createJiuwenMateApi } = await import('../node_modules/.cache/group-sharing/jiuwenmateApi.js');
 const { ColleagueWorkspacePage } = await import('../node_modules/.cache/group-sharing/pages/ColleagueWorkspacePage.js');
@@ -39,6 +42,11 @@ const grant = {
   created_at: '2026-10-27T00:01:00Z', status: 'active',
 };
 const snapshot = (approvals = [approval], grants = [grant]) => ({ approvals, grants, conversation_id: 'sharing-approvals' });
+const artifact = {
+  group_id: 'source-a', group_name: 'Source team', platform: 'dingtalk', artifact_id: 'artifact-a',
+  artifact_kind: 'file', title: 'Budget sheet', file_name: 'budget.xlsx', file_size: 2048,
+  url: 'https://example.test/budget.xlsx', snippet: null, created_at: '2026-10-27T00:00:00Z',
+};
 const colleague = {
   id: 'config-web', configId: 'config-web', name: 'Colleague', description: '', persona: '', category: 'custom', tags: [],
   capabilities: { model: '', skills: [], connectors: [], plugins: [], knowledge: [], starterPrompts: [] },
@@ -187,6 +195,30 @@ test('background approval polling keeps cards, expanded content and controls ste
   } finally { await view.close(); }
 });
 
+test('expanding exact messages and artifacts switches the summary to the collapse label', async () => {
+  const view = await renderWorkspace(snapshot([{ ...approval, artifacts: [artifact] }]));
+  try {
+    await view.click('open');
+    assert.equal(view.find('messages').open, false);
+    assert.equal(view.find('expand').textContent, 'Review exact messages (1)');
+    await view.click('expand');
+    assert.equal(view.find('messages').open, true);
+    assert.equal(view.find('expand').textContent, 'Hide exact messages (1)');
+    await view.poll();
+    assert.equal(view.find('messages').open, true);
+    assert.equal(view.find('expand').textContent, 'Hide exact messages (1)');
+    await view.click('expand');
+    assert.equal(view.find('messages').open, false);
+    assert.equal(view.find('expand').textContent, 'Review exact messages (1)');
+
+    assert.equal(view.find('artifacts').open, false);
+    assert.equal(view.find('artifacts-expand').textContent, 'Review exact files and documents (1)');
+    await view.click('artifacts-expand');
+    assert.equal(view.find('artifacts').open, true);
+    assert.equal(view.find('artifacts-expand').textContent, 'Hide exact files and documents (1)');
+  } finally { await view.close(); }
+});
+
 for (const decision of ['once', 'permanent', 'reject']) {
   test(`${decision} updates the persistent card and prevents duplicate decisions while in flight`, async () => {
     const view = await renderWorkspace();
@@ -331,17 +363,52 @@ test('sharing UI has matching Chinese and English resources and renders translat
   } finally { await view.close(); await i18n.changeLanguage('en'); }
 });
 
-test('a backend-created private conversation opens approval cards even with zero ordinary Requests', async () => {
+test('an approval-only directory defaults to a private chat and opens approvals only when selected', async () => {
   const view = await renderWorkspace(snapshot(), [{
     conversation_id: 'sharing-approvals', title: 'Approvals', updated_at: '2026-10-27T00:00:00Z',
     last_message: 'Confidential budget summary',
   }]);
   try {
-    assert.ok(view.find('card'));
+    assert.ok(!view.find('card'));
+    assert.ok(view.dom.window.document.querySelector('[data-testid="jiuwenmate-composer-input"]'));
     const record = view.dom.window.document.querySelector('[data-testid="jiuwenmate-conversation-record"]');
     assert.doesNotMatch(record.textContent, /Confidential/);
+    assert.ok(!view.calls.some((call) => call.params.mark_read === true));
+    await act(async () => record.querySelector('button').click());
+    await flush();
+    assert.ok(view.find('card'));
     assert.ok(!view.calls.some((call) => call.method === 'jiuwenmate.chat.history' && call.params.conversation_id === 'sharing-approvals'));
     assert.equal(view.dom.window.document.querySelector('[data-testid="jiuwenmate-composer-input"]'), null);
+  } finally { await view.close(); }
+});
+
+test('the ordinary private chat opens even when the approval conversation is newer', async () => {
+  const view = await renderWorkspace(snapshot(), [{
+    conversation_id: 'sharing-approvals', title: 'Approvals', updated_at: '2026-11-09T02:00:00Z',
+  }, {
+    conversation_id: 'normal', title: 'Normal chat', updated_at: '2026-11-09T01:00:00Z',
+  }]);
+  try {
+    assert.ok(!view.find('card'));
+    assert.ok(view.dom.window.document.querySelector('[data-testid="jiuwenmate-composer-input"]'));
+    assert.ok(view.calls.some((call) => call.method === 'jiuwenmate.chat.history' && call.params.conversation_id === 'normal'));
+    assert.ok(!view.calls.some((call) => call.params.mark_read === true));
+  } finally { await view.close(); }
+});
+
+test('approval updates remain listed without replacing the current private chat during polling', async () => {
+  const normal = { conversation_id: 'normal', title: 'Normal chat', updated_at: '2026-11-09T01:00:00Z' };
+  const view = await renderWorkspace(snapshot(), [normal]);
+  try {
+    view.state.conversations = [{
+      conversation_id: 'sharing-approvals', title: 'Approvals', unread: true,
+      updated_at: '2026-11-09T02:00:00Z',
+    }, normal];
+    await view.poll();
+    assert.ok(!view.find('card'));
+    assert.ok(view.dom.window.document.querySelector('[data-testid="jiuwenmate-composer-input"]'));
+    assert.ok(view.dom.window.document.querySelector('[data-testid="jiuwenmate-sharing-unread"]'));
+    assert.ok(!view.calls.some((call) => call.params.mark_read === true));
   } finally { await view.close(); }
 });
 

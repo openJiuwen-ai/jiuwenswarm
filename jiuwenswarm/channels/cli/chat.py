@@ -51,6 +51,7 @@ from jiuwenswarm.channels.cli.events import (
     needs_user_input,
 )
 from jiuwenswarm.channels.cli.render import HumanRenderer, JsonRenderer, JsonlRenderer
+from jiuwenswarm.common.version import get_runtime_version_label
 
 logger = logging.getLogger(__name__)
 
@@ -331,6 +332,11 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="jiuwenswarm chat",
         description="Chat with JiuwenSwarm from the command line.",
+    )
+    p.add_argument(
+        "--version",
+        action="version",
+        version=f"jiuwenswarm {get_runtime_version_label()}",
     )
     p.add_argument(
         "prompt", nargs="*",
@@ -697,7 +703,7 @@ async def _run_interactive_loop(
             except Exception:
                 logger.warning("Unexpected error while receiving", exc_info=True)
                 write_stderr(
-                    "Error receiving response. Check ~/.jiuwenswarm/agent/.logs/full.log"
+                    "Error receiving response. Check ~/.jiuwenswarm/infra/logs/agent/full.log"
                     " (gateway errors: gateway.log in the same dir"
                     " or $AGENTOS_GATEWAY_LOG_DIR)\n"
                 )

@@ -86,7 +86,42 @@ model: Qwen/Qwen2.5-72B-Instruct
 model_provider: SiliconFlow
 ```
 
+**OpenCode Go** (the vendor dialect is identified by `vendor_key`)
+
+```
+api_base: https://opencode.ai/zen/go/v1
+api_key: sk-your-opencode-go-api-key
+model: <model ID, fill in manually>
+model_provider: OpenAI
+vendor_key: opencode-go
+```
+
+> 💡 **OpenCode Go notes**:
+> - `model_provider` must be `OpenAI`, and `vendor_key` must be `opencode-go`;
+> - `api_base` has no default and must be `https://opencode.ai/zen/go/v1`; fill in a model name your account can actually use;
+> - The session-identifying request header (`x-opencode-session`) is derived and injected per session/member automatically, so no manual `custom_headers` is needed;
+> - The TUI shows the provider as `OpenCode Go`, but saving still writes `client_provider: OpenAI` + `vendor_key: opencode-go`.
+
 > 💡 **Tip**: Most model providers offer OpenAI-compatible APIs. You can adjust `api_base` and `model` parameters based on your actual provider.
+
+#### Reference-style key declaration (exec:)
+
+To keep plaintext keys out of `config.yaml`, `api_key` may reference a secret-manager read command: the command runs once at process startup and its stdout becomes the key value. Only the command itself appears in the config file:
+
+```
+api_key: exec:op read "op://Engineering/OpenAI/apiKey"       # 1Password
+api_key: exec:vault kv get -field=key secret/openai          # HashiCorp Vault
+api_key: exec:pass show openai/api-key                       # pass
+```
+
+**Constraints and semantics**:
+
+- **Command requirements**: a single call, no side effects, stdout is the key. No shell interpretation (pipes `|` and redirects `>` do not work); on Windows, wrap backslash paths in quotes or use forward slashes (e.g., `exec:"C:/tools/op.exe" read ...`).
+- **Effect timing and rotation**: resolution happens at process startup and the value stays in process memory. After rotating the key in your secret manager, **restart the service** to pick up the new value.
+- **Failure behavior**: a failing command (timeout, non-zero exit, empty output) degrades the field to an empty key with a warning — model calls report auth errors while everything else keeps working. After the failure the reference enters a 5-minute backoff window during which the command is not re-executed; once the window passes, the next config read triggers a fresh resolve. In practice, once the secret manager is fixed, the reference recovers automatically by the next model call — no restart needed. Clicking "Test" on the settings page retries immediately.
+- **Settings page interaction**: the edit dialog echoes the reference itself (`exec:...`), never the resolved plaintext; saving without edits preserves the reference. You may also type a new reference command and save — the new command runs immediately on save.
+- **Supported scope**: only `models.*.model_client_config.api_key` and `custom_headers` values in `config.yaml` support references; enterprise templates and `${VAR}` env placeholders do not. The dict form of `custom_headers` is supported (the JSON-string form is not).
+- **Gateway forwarding constraint (transitional)**: the Gateway process does not yet resolve `exec:` references (copy sync is planned as a separate change). During the transition, some Gateway-forwarded paths cannot use reference-style keys — verify with an actual Worker session call after configuring a reference `api_key`.
 
 ### 2.3 Multi-Model Management and Aliases
 
@@ -212,8 +247,16 @@ This section summarizes configuration for search and external services. All item
 Two additional related configuration groups:
 
 - **Free Search Engine Configuration**:
-  - `free_search_ddg_enabled` (DuckDuckGo toggle) and `free_search_bing_enabled` (Bing toggle): control whether the free search engines are enabled. These two toggles are set via the "Configuration" page on the frontend and reset to `false` on every process startup; they must be explicitly enabled in the UI.
+  - Open **Settings > Agent > Web search** to toggle DuckDuckGo and Bing independently. The fields `free_search_ddg_enabled` and `free_search_bing_enabled` persist to `FREE_SEARCH_DDG_ENABLED` and `FREE_SEARCH_BING_ENABLED` in `.env`. Both default to `false`; saved choices survive restart. Changes use the existing search hot-reload path and are read back from the saved configuration.
   - `FREE_SEARCH_PROXY_URL`, `FREE_SEARCH_SSL_VERIFY`, `FREE_SEARCH_DDG_URL`: DuckDuckGo endpoint URL, SSL verification, and proxy URL, written to `.env`. Bing is not enabled by default.
+  - Only one of DuckDuckGo or Bing needs to be enabled for native topic search. With both disabled, preset topics and hot lists remain available, but web-search calls fail without contacting a disabled source. SDK tool input `provider=bing` or `duckduckgo` selects only that enabled provider; `auto` permits configured fallbacks within the budget. The removed 360 source cannot be re-enabled with an old `FREE_SEARCH_360_ENABLED` setting; `provider=360` fails explicitly.
+  - For Work/default Code conversations, when no paid search API key is configured and both free engines are disabled, the main agent gets browser fallback guidance if `browser_agent` is mounted: if you have not specified a search engine or method, it should use synchronous `task_tool` with `subagent_type="browser_agent"` to discover web sources. This does not force a tool call or change paid/free search selection when configured. Known URLs can still use `fetch_webpage`. Your explicit constraints take precedence; unavailable browser tools must be reported. Search failures, access restrictions, and exhausted budgets do not trigger this configuration fallback. It does not apply to background topic search.
+  - Work and default Code agents share an SDK retrieval budget within each invocation: `WEB_RESEARCH_SEARCHES_PER_ENGINE=2`, `WEB_RESEARCH_MAX_ENGINES=2`, `WEB_RESEARCH_MAX_FETCHES=3`, and `WEB_RESEARCH_TIMEOUT_SECONDS=90`. The deadline starts at the first search/fetch. DuckDuckGo and its reader endpoint count as one provider. New invocations get fresh budgets. These limits do not govern custom MCP, browser, or paid-search tools.
+  - SDK Bing markets are configured in `.env`, not the settings panel: `FREE_SEARCH_BING_MARKET=en-US` selects the primary profile independently of query language. Supported profiles are `en-US` and `zh-CN`. `FREE_SEARCH_BING_FALLBACK_MARKET` defaults to the other profile; set it to `none` to disable fallback. Identical profiles are tried only once; unsupported values fail explicitly. Only a nonempty result set rejected for low relevance triggers one alternate-market request. Empty results, access restrictions, transport errors, and accepted provisional candidates do not. The primary request consumes one Bing search slot; its single market fallback costs no additional slot, but still uses the remaining retrieval time. The default two slots allow at most two logical Bing searches, each with up to two market requests; rephrasing starts another logical search and requires another slot. These settings apply to SDK Work/Code search, not the legacy MCP Bing implementation.
+  - Work/Code SDK search assesses each batch of candidates using the current Agent model, without a separate model setting or API key. Backend-only `FREE_SEARCH_ASSESSMENT_TIMEOUT_SECONDS=15` limits each assessment to 1–60 seconds and the remaining retrieval deadline. Results are labeled relevant, uncertain, or rejected. Missing models, timeouts, and invalid model output report `Assessment status: unavailable`, retain at most two unverified leads, and do not trigger market retries. Direct background search without an Agent model preserves this warning rather than creating a hidden model client.
+  - Search rejects structurally invalid targets and candidates assessed as clearly unrelated. Fetch distinguishes `blocked`, `dynamic_shell`, `empty`, and `budget_exhausted` from usable content. HTTP 200 and `Content status: ok` do not prove factual accuracy or freshness. Verify dates and requested fields at the source; report missing fields instead of guessing. No second fetch is mandatory when evidence is sufficient.
+  - These behaviors require the matching agent-core changes and a backend restart. Updating Swarm alone does not update an installed SDK. Rebuild the frontend to remove the retired source from an existing settings bundle.
+  - If the optional SDK budget Rail cannot be loaded or constructed, Work/Code sessions still start and log a warning; this does not mean retrieval budgets are active. An SDK without the search-result hook returns an explicit search error instead of untracked results. Candidate Core/Gateway forks are for editable development only: wheel, sdist, and frozen builds are blocked until dependency declarations and the lockfile use one consistent official commit per dependency.
 - **Other TeamSkillsHub settings**: `teamskills_market_url` (marketplace URL), `teamskills_system_token` (system token), and `teamskills_allowed_download_hosts` (allowed download hosts), configured as needed.
 
 ---
@@ -253,7 +296,7 @@ TTSE is independent of Skill-body evolution and is controlled by `react.ttse` (a
 
 | Setting | Path | Default | Description |
 |---------|------|---------|-------------|
-| **Enable TTSE** | `react.ttse.enabled` | `false` | Mount `TTSERail` (Host skips if agent-core lacks it); also auto-acquires `agent_observability` for trajectory capture |
+| **Enable TTSE** | `react.ttse.enabled` | `false` | Mount `TTSERail` (Host skips if agent-core lacks it); also auto-acquires `observability.agent` for trajectory capture |
 | **Induce** | `react.ttse.evolve_enabled` | `true` | Induce FACT/TIP from trajectories |
 | **Inject** | `react.ttse.inject_enabled` | `true` | Inject system-prompt guidance |
 | **Auto-dream** | `react.ttse.dream_enabled` | `true` | Silent bank hygiene |
@@ -288,6 +331,11 @@ KV Cache compute affinity manages Session cache through the unified `agent_hint`
 - **Field**: `kv_cache_affinity_config.enable_kv_cache_affinity`
 - **Default**: `false` (disabled)
 - **Purpose**: When enabled, the system prefetches, offloads, and evicts KV Cache along the Session lifecycle.
+
+
+**Enable from the UI**: In Models, select a custom OpenAI-compatible service and turn on “This service supports Ascend KV-Cache affinity”. Save it, then enable “Experimental → Enable KV-Cache affinity”. The model declaration is stored as `model_client_config.extensions.kv_cache.mode: affinity`.
+
+At least one configured inference model must support affinity; the default model may still use a cloud API. Without a supporting model, the switch stays off and a top toast explains why. Removing or revoking the last supporting model turns the global switch off. Disabling the switch preserves model declarations. Actual calls use affinity only for capable models, while cloud models follow their normal request path. Admission reads local declarations without probing the service.
 
 **KV Cache Explanation**:
 - KV Cache is a cache used by large language models during inference to store intermediate computation results
@@ -376,79 +424,101 @@ The system automatically identifies and filters the following types of sensitive
 
 ---
 
-## 9. Skill Symphony and Skill Retrieval Configuration
+## 9. Symphony configuration
 
-Symphony settings control two related capabilities: **Skill Retrieval** finds candidate skills from installed skills, and **Skill Orchestration** uses the skill graph to organize candidates into a confirmable, executable skill chain.
+The user configuration is `~/.jiuwenswarm/config/config.yaml`. The `symphony` node is validated directly as Core `SymphonyConfig`. Swarm resolves host directories, environment variables, product defaults and session model context. Explicit values win; unknown fields report their complete path.
 
-### 9.1 Frontend switches
+### Switches, models and sessions
 
-The configuration panel exposes two related switches:
+- `retrieval.enabled` controls tree retrieval. Both `orchestration.enabled` and `orchestration.experience.enabled` must be on to record new graph observations and distill skill packs. Swarm defaults these switches to `false`, and `null` inherits the default.
+- The Orchestration Experience switch saves `orchestration.experience.enabled`. Set `orchestration.plan.dynamic_graph_enabled` independently to use existing dynamic observations in planning.
+- Tree and graph builds use the host default model. Online planning uses the current session model. There is no retrieval-specific `llm` configuration. Fingerprint `max_output_tokens: null` inherits the host model output budget.
+- Discovery derives `retrieval.prompt.context_window_tokens` from the actual session model unless explicitly configured. Saved settings affect new sessions; existing sessions retain their frozen budget and index version. Tools and prompt Rails share one Discovery session.
+- `capability.sources` lists Skill and standalone expert directories by `type` and `root`. They share a taxonomy. Graph and Flow require exactly one Skill source. Plugin and selected MCP capabilities belong only to their session views. Session visibility and disabled filters still apply.
 
-| Switch | Config key | Default | Purpose |
-| --- | --- | --- | --- |
-| **Enable Skill Retrieval** | `symphony.skill_retrieval.enabled` | `false` | Registers skill-tree retrieval tools such as `skill_branch_explore`, `skill_branch_peek`, and `skill_index_build` |
-| **Enable Skill Symphony** | `symphony.enabled` | `false` | Registers skill graph and orchestration tools such as `symphony_read_graph`, `symphony_refresh_graph`, and `symphony_compose_graph` |
+### Directories and rebuilding
 
-The two switches are independent. Skill Retrieval answers "how to find candidate skills"; Skill Symphony answers "how to orchestrate candidate skills into a route". If only Skill Retrieval is enabled, the system only gets skill-tree retrieval. If only Skill Symphony is enabled, the system can read and refresh the skill graph, but candidate skills do not automatically come from Skill Retrieval.
+If `capability.sources` is omitted, Swarm uses the workspace `skills` directory. An explicit list replaces that default. An empty `storage.artifact_root` resolves to workspace `symphony/runtime`, overridable through `SYMPHONY_ARTIFACT_ROOT`. Collections with multiple directories or expert sources build their taxonomy under `taxonomy_collections/<scope_id>` inside that root. Existing single-Skill artifacts retain their paths.
 
-### 9.2 Skill index and skill graph
+Old top-level `paths`, `fingerprint`, `build`, `skill_retrieval`, `evolution` and model-backend nodes are rejected. Old signatures and layouts are not reused. Rebuild with the new configuration; old directories are neither migrated nor deleted automatically. Failed refreshes preserve the last published version; cancellation prevents publication.
 
-Related pages are under **Skills** in the left sidebar:
+For the flattened retrieval configuration, fetch the updated YAML template. Current Runtime indexes and v2 Discovery session snapshots can be reused.
 
-| Page | Purpose |
-| --- | --- |
-| **Skill Index** | Builds the local installed-skill tree index used for step-by-step retrieval |
-| **Skill Graph** | Builds and displays connectable relationships between skills for orchestration |
+### Build and discovery settings
 
-After installing, uninstalling, or heavily modifying skills, rebuild the skill index. If the skill changes affect relationships between skills, also run an incremental build or full rebuild on the Skill Graph page.
+Paths below are relative to `symphony`. Main-template values are explicit settings, distinct from omitted-field defaults.
 
-### 9.3 Symphony settings in the main config
+| Setting | Default / template | Purpose |
+|---|---|---|
+| `capability.fingerprint.extraction.max_concurrency` / `batch_size` | omitted `1/1`, template `4/2` | Extraction; effective concurrency is capped by graph build concurrency |
+| `orchestration.build.max_concurrency` / `matching.batch_size` | omitted `1/12`, template `4/16` | Relation matching concurrency and batch size |
+| `orchestration.min_edge_confidence` | `0.5` | Shared graph build and planning threshold |
+| `orchestration.build.matching.require_consensus` | `false` | Require relation consensus |
+| `orchestration.plan.mode` | `fast` | Supports `fast` and `beam`; `top_k` only affects beam search |
+| `retrieval.index_build.structure.branching_factor` / `max_depth` | `128/6` | Split-threshold base and depth; Yuanrong explicitly uses branching `12` |
+| `retrieval.index_build.structure.max_capabilities_per_node_multiplier` | `1.5` | Recursive leaf capacity multiplier; not a one-shot splitting rule |
+| `retrieval.index_build.structure.root_categories` | `null` | Root category list or file; optional `children` preset lower levels |
+| `retrieval.index_build.request.max_concurrency` / `timeout_seconds` | `2/420` | Tree request concurrency and timeout in seconds |
+| `retrieval.index_build.request.classification_batch_limit` | `32` | Recursive classification batch size |
+| `retrieval.index_build.task.total_timeout_seconds` | `0` | Total build timeout; zero means unlimited |
+| `retrieval.output.max_chars` | `12000` | Directory operation output character limit |
+| `orchestration.experience.acceptance.min_successes` | `3` | Successful evidence count required for Flow acceptance |
 
-Advanced build, retrieval, and orchestration parameters are configured in the user runtime config file:
+Root categories stabilize the directory skeleton: provide `id`, `name`, `description` and optional `select_when`, `dont_select_when`, `children`. This example explicitly enables the features; the product template keeps them off. Rebuild after changing build policy. Planning, Flow acceptance and display settings do not invalidate the tree cache unnecessarily.
 
-```text
-~/.jiuwenswarm/config/config.yaml
+```yaml
+symphony:
+  capability:
+    sources:
+      - type: skill
+        root: /path/to/skills
+    fingerprint:
+      extraction:
+        max_concurrency: 4
+        batch_size: 2
+        max_output_tokens: null
+  storage:
+    artifact_root: ""
+  retrieval:
+    enabled: true
+    index_build:
+      structure:
+        branching_factor: 128
+        max_depth: 6
+        max_capabilities_per_node_multiplier: 1.5
+        root_categories:
+          - id: office-docs
+            name: Office documents
+            description: Read, edit and generate office files.
+      request:
+        max_concurrency: 2
+        max_retries: 2
+        timeout_seconds: 420.0
+        classification_batch_limit: 32
+      task:
+        total_timeout_seconds: 0.0
+        preserve_previous_index_on_failure: true
+    use_existing_index: true
+    output:
+      max_chars: 12000
+  orchestration:
+    enabled: true
+    min_edge_confidence: 0.5
+    build:
+      max_concurrency: 4
+      matching:
+        batch_size: 16
+        require_consensus: false
+    plan:
+      mode: fast
+      max_depth: 4
+      dynamic_graph_enabled: true
+    experience:
+      enabled: true
+      acceptance:
+        min_successes: 3
+        min_pack_success_rate: 0.8
 ```
-
-Common settings:
-
-The retained `symphony.fingerprint.scan` and `symphony.fingerprint.extraction`
-settings are mapped by the JiuwenSwarm Adapter to agent-core's
-`SkillFolderScanner` and `FingerprintService` configuration.
-
-| Setting | Default | Description |
-| --- | --- | --- |
-| `symphony.paths.skills_root` | Empty string | Skill source directory; empty means the runtime default is used |
-| `symphony.paths.graph_dir` | Empty string | Skill score artifact directory; empty means the runtime default is used |
-| `symphony.fingerprint.scan.max_depth` | Empty | Maximum skill-file scan depth mapped to agent-core `SkillFolderScanner`; empty means the runtime default is used |
-| `symphony.fingerprint.extraction.workers` | `4` | Fingerprint extraction concurrency mapped to agent-core `FingerprintService` |
-| `symphony.fingerprint.extraction.batch_size` | `2` | Fingerprint extraction batch size mapped to agent-core `FingerprintService` |
-| `symphony.fingerprint.extraction.body_limit` | Empty | Body length limit mapped to agent-core `FingerprintService`; empty means the runtime default is used |
-| `symphony.build.workers` | `4` | Skill graph build concurrency |
-| `symphony.build.batch_size` | `16` | Skill graph build batch size |
-| `symphony.build.require_consensus` | `false` | Whether multiple judgments must agree before accepting a relationship |
-| `symphony.build.min_edge_confidence` | `0.1` | Minimum edge confidence written into the skill graph |
-| `symphony.orchestration.mode` | `fast` | Orchestration mode. The current runtime uses the fast orchestration path |
-| `symphony.orchestration.max_depth` | `4` | Maximum skill-chain search depth |
-| `symphony.orchestration.min_edge_confidence` | `0.3` | Minimum skill-graph edge confidence preferred by orchestration |
-| `symphony.skill_retrieval.artifact_root` | Empty string | Skill index artifact directory; empty means the default workspace is used; can be supplied by `SYMPHONY_SKILL_RETRIEVAL_ROOT` |
-| `symphony.skill_retrieval.build.branching_factor` | `128` | Skill-tree split-threshold base; controls how coarse or fine the tree is |
-| `symphony.skill_retrieval.build.max_depth` | `6` | Maximum skill-tree depth |
-| `symphony.skill_retrieval.build.root_categories` | Empty string | Root taxonomy configuration used to stabilize the first tree layer |
-| `symphony.skill_retrieval.build.max_workers` | `2` | Skill index build concurrency |
-| `symphony.skill_retrieval.build.max_retries` | `2` | Retry count for failed LLM classification or grouping calls |
-| `symphony.skill_retrieval.build.request_timeout_seconds` | `420` | Timeout for one LLM build request |
-| `symphony.skill_retrieval.build.classification_batch_limit` | `32` | Maximum number of skills per classification call |
-| `symphony.skill_retrieval.build.discovery_seed` | `42` | Random seed used during build sampling for better reproducibility |
-| `symphony.skill_retrieval.build.postprocess_enabled` | `true` | Whether to clean up unclear or too-small branches after build |
-| `symphony.skill_retrieval.build.postprocess_max_passes` | `1` | Maximum number of postprocess passes after build |
-| `symphony.skill_retrieval.build.postprocess_min_skills` | `6` | Minimum skill-count reference used by postprocess branch cleanup |
-| `symphony.skill_retrieval.build.equivalence_enabled` | `false` | Whether to merge semantically duplicate branches |
-| `symphony.skill_retrieval.retrieve.compact_codes_enabled` | `false` | Whether retrieval uses more compact node codes |
-| `symphony.skill_retrieval.retrieve.flatten_tree` | `false` | Whether retrieval flattens the skill tree |
-| `symphony.skill_retrieval.retrieve.max_exposure_depth` | `1` | Maximum tree depth exposed by one `skill_branch_explore` call |
-
-> 📖 For details about Skill Retrieval, the skill graph, and Skill Orchestration, see [Symphony: Skill Retrieval, Orchestration, and Dispatch](Symphony.md).
 
 ---
 

@@ -96,7 +96,7 @@ async def test_bootstrap_recovers_automatically_after_resource_failure(monkeypat
 async def test_stop_cancels_delayed_recovery_without_starting_worker(monkeypatch):
     monkeypatch.setattr(module, "_RECOVERY_BACKOFF_INITIAL", 60)
     supervisor = RuntimeSupervisor(Readiness())
-    supervisor._mark_restart_exhausted("temporary resource pressure")
+    supervisor._mark_retryable_failure("temporary resource pressure")
     delayed = supervisor._automatic_recovery_task
     await supervisor.stop()
     assert delayed.done()
@@ -142,16 +142,17 @@ async def test_real_worker_exit_before_ipc_recovers_without_config_reload(monkey
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
     monkeypatch.setattr(module, "_RECOVERY_BACKOFF_INITIAL", .3)
     readiness = Readiness()
+    # The recovering subprocess imports the worker before opening IPC.
     supervisor = RuntimeSupervisor(readiness, stub=True, socket_path=str(tmp_path / "runtime.pipe"),
-        max_restarts=1, connect_timeout=1.5)
+        max_restarts=1, connect_timeout=10)
     try:
         with pytest.raises(RuntimeError):
-            await asyncio.wait_for(supervisor.run_until_ipc_ready(), 12)
+            await asyncio.wait_for(supervisor.run_until_ipc_ready(), 30)
         assert readiness.state is ReadinessState.FAILED
         failed = [int(pid) for pid in attempts.read_text().splitlines()]
         assert len(failed) == 2 and all(not psutil.pid_exists(pid) for pid in failed)
         blocked.unlink()
-        async with asyncio.timeout(20):
+        async with asyncio.timeout(30):
             while not readiness.snapshot()["agent_ready"]:
                 await asyncio.sleep(.01)
         assert supervisor.worker_pid not in failed

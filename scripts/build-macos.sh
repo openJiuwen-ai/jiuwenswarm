@@ -106,6 +106,11 @@ pushd "$PROJECT_ROOT/jiuwenswarm/channels/web/frontend" >/dev/null
 npm install
 npm run build
 popd >/dev/null
+# Office task pane, served by the desktop at /office/ (inside the frontend dist built above).
+pushd "$PROJECT_ROOT/packages/jiuwenswarm-office-addin" >/dev/null
+npm ci --no-audit --no-fund
+npm run build:desktop
+popd >/dev/null
 
 TUI_BINARY=""
 printf '\n[3/9] Build TUI native binary (Bun)...\n'
@@ -130,7 +135,7 @@ else
 fi
 
 printf '\n[4/9] Build macOS app bundle with PyInstaller...\n'
-uv run --with-requirements scripts/computer-use-requirements.txt pyinstaller scripts/jiuwenswarm.spec --noconfirm
+uv run pyinstaller scripts/jiuwenswarm.spec --noconfirm
 
 if [[ ! -d "$APP_PATH" ]]; then
   printf 'Error: app bundle not found: %s\n' "$APP_PATH" >&2
@@ -153,11 +158,18 @@ if [[ ! -x "$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" ]]; then
   exit 1
 fi
 
+printf 'Verifying frozen JiuwenMemory SDK and video tools...\n'
+uv run --no-sync python "$PROJECT_ROOT/scripts/verify_memory_bundle.py" \
+    --executable "$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME"
+
 printf 'Verifying frozen A2UI v0.8 bundle...\n'
 "$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_a2ui_bundle.py"
 
 printf 'Verifying frozen RSI Harness baseline bundle...\n'
 "$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_rsi_bundle.py"
+
+printf 'Verifying frozen Gateway extensions bundle...\n'
+"$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_gateway_extensions_bundle.py"
 
 printf 'Verifying frozen Computer Use runtime without build tools...\n'
 "$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_computer_use_bundle.py"

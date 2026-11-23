@@ -30,6 +30,15 @@ import pytest
 NS = "workspace-1"
 
 
+def _symlink(target, link):
+    try:
+        os.symlink(target, link)
+    except OSError as error:
+        if getattr(error, "winerror", None) == 1314:
+            pytest.skip("Windows test account cannot create symbolic links")
+        raise
+
+
 class FakeModels:
     def default_selection(self):
         return "deepseek#0"
@@ -110,7 +119,7 @@ def test_each_colleague_gets_its_own_skill_copy_and_deletion_keeps_the_others(tm
     outside = tmp_path / "outside"
     outside.mkdir()
     (outside / "secret.txt").write_text("secret", encoding="utf-8")
-    os.symlink(outside / "secret.txt", notes / "leaked.txt")
+    _symlink(outside / "secret.txt", notes / "leaked.txt")
     catalog = MapCatalog(skills={"meeting-notes": SkillSource(name="meeting-notes", directory=notes)})
     ids = iter(["mate_one", "mate_two"])
     host = service(tmp_path, catalog, ids)
@@ -152,7 +161,7 @@ def test_selected_knowledge_pages_are_copied_and_other_pages_stay_out(tmp_path):
     other.write_text("不应复制", encoding="utf-8")
     outside = tmp_path / "outside.md"
     outside.write_text("secret", encoding="utf-8")
-    os.symlink(outside, context / "linked.md")
+    _symlink(outside, context / "linked.md")
     catalog = MapCatalog(
         knowledge={"topics/description.md": KnowledgeSource(name="topics/description.md", path=chosen)}
     )
@@ -208,7 +217,7 @@ def test_installed_catalog_lists_only_regular_pages_inside_the_context_root(tmp_
     article.write_text("专栏", encoding="utf-8")
     outside = tmp_path / "secret.md"
     outside.write_text("secret", encoding="utf-8")
-    os.symlink(outside, context / "linked.md")
+    _symlink(outside, context / "linked.md")
     (context / "notes.txt").write_text("不是页面", encoding="utf-8")
     catalog = InstalledResourceCatalog(knowledge_root=context)
 
@@ -368,6 +377,33 @@ def test_republishing_changed_skill_content_keeps_the_previous_copy(tmp_path):
     assert first_root != second_root
     assert "第一版" in (first_root / "meeting-notes" / "SKILL.md").read_text(encoding="utf-8")
     assert "第二版" in (second_root / "meeting-notes" / "SKILL.md").read_text(encoding="utf-8")
+
+
+def test_skill_version_archive_and_bytecode_stay_out_of_the_employee_copy(tmp_path):
+    library = tmp_path / "library"
+    doc = write_skill(library / "chinese-official-doc", "chinese-official-doc")
+    (doc / "references").mkdir()
+    (doc / "references" / "follow-up-supervision.md").write_text("当前版本", encoding="utf-8")
+    archived = doc / ".archive" / "versions" / "content" / "ver-1abdeaa447d0" / "references"
+    archived.mkdir(parents=True)
+    (archived / "follow-up-supervision.md").write_text("历史版本", encoding="utf-8")
+    (doc / "scripts" / "__pycache__").mkdir(parents=True)
+    (doc / "scripts" / "__pycache__" / "run.cpython-312.pyc").write_bytes(b"\0")
+    catalog = MapCatalog(skills={"chinese-official-doc": SkillSource(name="chinese-official-doc", directory=doc)})
+    host = service(tmp_path, catalog, iter(["mate_doc"]))
+    view = host.create_colleague(
+        NS,
+        settings(capabilities=CapabilitySelection(model="deepseek#0", skills=("chinese-official-doc",))),
+    )
+    copied = Path(host.current_snapshot(NS, view.agent_id).load_spec().rails[0].params["skills_dir"])
+    skill = copied / "chinese-official-doc"
+
+    assert (skill / "references" / "follow-up-supervision.md").read_text(encoding="utf-8") == "当前版本"
+    assert not (skill / ".archive").exists()
+    assert not (skill / "scripts" / "__pycache__").exists()
+
+    (archived / "follow-up-supervision.md").write_text("又一个历史版本", encoding="utf-8")
+    assert host.publish(NS, view.agent_id).config_version == "v1"
 
 
 def test_an_uninstalled_skill_refuses_publication(tmp_path):

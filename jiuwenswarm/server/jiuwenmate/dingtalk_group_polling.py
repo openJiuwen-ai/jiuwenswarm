@@ -23,6 +23,7 @@ from jiuwenswarm.server.jiuwenmate.models import PersistentAgentError
 
 logger = logging.getLogger(__name__)
 _OVERLAP = timedelta(seconds=30)
+_INITIAL_CATCHUP = timedelta(minutes=5)
 _READ_BUDGET = 8
 _GroupKey = tuple[str, str, str]
 _RecipientKey = tuple[str, str, str, str, str]
@@ -57,28 +58,33 @@ class _ReadBudget:
 
 
 class DingTalkGroupPoller:
-    """Read only active adaptive bindings, then use the normal history ingress."""
+    """Reconcile known Bot memberships separately from adaptive history reads."""
 
     def __init__(
         self, manager: Any, inbound: Any, *,
         config_loader: Callable[[], Mapping[str, Any]] | None = None,
         interval: float = 10.0,
+        membership_interval: float = 60.0,
         clock: Callable[[], datetime] = _utc_now,
         state_root: Path | None = None,
     ) -> None:
-        if interval <= 0:
+        if interval <= 0 or membership_interval <= 0:
             raise ValueError('Polling interval must be positive')
         self._manager = manager
         self._inbound = inbound
         self._config_loader = config_loader
         self._interval = interval
+        self._membership_interval = membership_interval
         self._clock = clock
         self._state_root = Path(state_root) if state_root is not None else (
             Path(manager._sessions.db_path).parent / 'dingtalk_group_polling'
         )
         self._task: asyncio.Task[None] | None = None
+        self._membership_task: asyncio.Task[None] | None = None
         self._closed = False
         self._lock = asyncio.Lock()
+        self._membership_lock = asyncio.Lock()
+        self._last_membership_key: tuple[str, ...] | None = None
         self._floors: dict[_RecipientKey, datetime] = {}
         self._progress: dict[_GroupKey, datetime] = {}
         self._recipient_progress: dict[_RecipientKey, datetime] = {}
@@ -86,24 +92,34 @@ class DingTalkGroupPoller:
         self._last_key: _GroupKey | None = None
         self._preferred_readers: dict[_GroupKey, tuple[str, str]] = {}
         self._last_readers: dict[_GroupKey, tuple[str, str]] = {}
+        self._discovery: dict[tuple[str, ...], tuple[datetime, int | None]] = {}
+        self._discovery_failed: set[tuple[str, ...]] = set()
+        self._authorization_started: dict[tuple[str, ...], datetime] = {}
+        self._listening: set[tuple[str, str, str, str]] = set()
+        self._read_failed: set[tuple[str, str, str, str]] = set()
 
     async def start(self) -> None:
         """Start at most one background loop; a closed poller cannot restart."""
         if not self._closed and self._task is None:
             self._task = asyncio.create_task(self._run(), name='dingtalk-group-history')
+            self._membership_task = asyncio.create_task(self._run_memberships(), name='dingtalk-group-membership')
 
     async def aclose(self) -> None:
         """Cancel reads and wait until any manually triggered poll stops dispatching."""
         self._closed = True
-        task = self._task
+        tasks = tuple(task for task in (self._task, self._membership_task) if task is not None)
         self._task = None
-        if task is not None:
+        self._membership_task = None
+        for task in tasks:
             task.cancel()
+        for task in tasks:
             try:
                 await task
             except asyncio.CancelledError:
                 pass
         async with self._lock:
+            pass
+        async with self._membership_lock:
             pass
 
     async def _run(self) -> None:
@@ -119,12 +135,208 @@ class DingTalkGroupPoller:
         config = await asyncio.to_thread(self._config_loader) if self._config_loader is not None else None
         return await asyncio.to_thread(configured_dingtalk_bindings, config)
 
-    def _eligible_accesses(self, binding: DingTalkBinding) -> tuple[Any, ...]:
-        ns, agent = binding.namespace_id, binding.agent_id
-        if not self._inbound.accepts_group_polling(binding):
+    async def _run_memberships(self) -> None:
+        while not self._closed:
+            try:
+                await self.poll_memberships_once()
+            except Exception as exc:
+                logger.warning('DingTalk group membership cycle failed (%s)', type(exc).__name__)
+            await asyncio.sleep(self._membership_interval)
+
+    def _membership_accesses(self, binding: DingTalkBinding) -> tuple[Any, ...]:
+        """Include uncertain known bindings without depending on group reply mode."""
+        service = self._manager.service
+        connection = service.connection_of(binding.namespace_id, binding.agent_id)
+        if connection is None:
+            service.get_config(binding.namespace_id, binding.agent_id)
+        elif (connection.channel, connection.connection_key) != ('dingtalk', binding.app_id):
             return ()
+        groups = self._manager.group_chats
+        accesses = list(groups.active_accesses(binding.namespace_id, binding.agent_id))
+        accesses.extend(groups.unresolved_accesses(binding.namespace_id, binding.agent_id))
+        return tuple(access for access in accesses if access.app_id == binding.app_id)
+
+    async def poll_memberships_once(self) -> int:
+        """Check at most eight known Bot bindings, without reading message bodies."""
+        from jiuwenswarm.common.im_binding_lock import im_binding_lock
+
+        inspect = getattr(self._manager.dingtalk_cli_runtime, 'inspect_group_membership', None)
+        async with self._membership_lock:
+            if self._closed or not callable(inspect):
+                return 0
+            choices = {}
+            for binding in await self._bindings():
+                try:
+                    accesses = await asyncio.to_thread(self._membership_accesses, binding)
+                    for access in accesses:
+                        group = await asyncio.to_thread(
+                            self._manager.group_chats.get, binding.namespace_id, access.group_id,
+                        )
+                        if group.platform == 'dingtalk':
+                            key = (binding.namespace_id, binding.agent_id, binding.app_id, access.group_id)
+                            choices[key] = (binding, access, group)
+                except Exception as exc:
+                    logger.warning('DingTalk membership binding unavailable (%s)', type(exc).__name__)
+            keys = sorted(choices)
+            if self._last_membership_key is not None:
+                keys = ([key for key in keys if key > self._last_membership_key]
+                        + [key for key in keys if key <= self._last_membership_key])
+            used = 0
+            for key in keys:
+                if self._closed or used >= _READ_BUDGET:
+                    break
+                binding, access, group = choices[key]
+                async with im_binding_lock('dingtalk', binding.app_id):
+                    if binding not in await self._bindings():
+                        continue
+                    if access not in await asyncio.to_thread(self._membership_accesses, binding):
+                        continue
+                    observed_at = _utc(self._clock())
+                    self._last_membership_key = key
+                    used += 1
+                    try:
+                        proof = await inspect(
+                            DingTalkCliScope(binding.namespace_id, binding.agent_id, app_id=binding.app_id),
+                            conversation_id=group.platform_chat_id,
+                        )
+                    except Exception as exc:
+                        logger.warning('DingTalk membership probe unavailable (%s)', type(exc).__name__)
+                        proof = {'status': 'unknown'}
+                    if self._closed or binding not in await self._bindings():
+                        continue
+                    if access not in await asyncio.to_thread(self._membership_accesses, binding):
+                        continue
+                    status = proof.get('status') if isinstance(proof, dict) else None
+                    if status not in {'active', 'left'}:
+                        # A failed observation does not revoke the last trusted membership fact.
+                        logger.warning('DingTalk membership could not be refreshed: agent=%s group=%s',
+                                       binding.agent_id, access.group_id)
+                        continue
+                    if status == 'left' and status != access.status:
+                        await asyncio.to_thread(
+                            self._manager.group_chats.update_membership,
+                            binding.namespace_id, binding.agent_id, access.group_id, binding.app_id,
+                            status=status, observed_at=observed_at, source_ref='dingtalk:membership-probe',
+                            expected_revision=access.revision,
+                        )
+            return used
+
+    def _eligible_binding(self, binding: DingTalkBinding) -> bool:
+        return self._inbound.accepts_group_polling(binding)
+
+    def _eligible_accesses(self, binding: DingTalkBinding) -> tuple[Any, ...]:
+        if not self._eligible_binding(binding):
+            return ()
+        ns, agent = binding.namespace_id, binding.agent_id
         return tuple(access for access in self._manager.group_chats.active_accesses(ns, agent)
                      if access.app_id == binding.app_id)
+
+    def status(self, namespace_id: str, agent_id: str, app_id: str) -> dict[str, Any]:
+        """Report group observation independently from the account's OAuth status."""
+        binding = DingTalkBinding(namespace_id=namespace_id, agent_id=agent_id, app_id=app_id, robot_code=app_id)
+        identity = (namespace_id, agent_id, app_id)
+        if self._closed:
+            return {'status': 'unavailable', 'group_count': 0}
+        if not self._manager.service.get_colleague(namespace_id, agent_id).enabled:
+            return {'status': 'disabled', 'group_count': 0}
+        if self._manager.service.read_settings(namespace_id, agent_id).group_reply_mode != 'adaptive':
+            return {'status': 'mentions_only', 'group_count': 0}
+        group_ids = {access.group_id for access in self._eligible_accesses(binding)}
+        count = len(group_ids)
+        scans = [key for key in self._discovery if key[:1] == (namespace_id,) and key[2:] == (agent_id, app_id)]
+        if (
+            any((*identity, group) in self._read_failed for group in group_ids)
+            or any(key in self._discovery_failed for key in scans)
+        ):
+            state = 'error'
+        elif count and all((*identity, group) in self._listening for group in group_ids):
+            state = 'listening'
+        elif scans and all(self._discovery[key][1] is None for key in scans) and not count:
+            state = 'no_groups'
+        else:
+            state = 'discovering'
+        return {'status': state, 'group_count': count}
+
+    def _forget_authorization(self, binding: DingTalkBinding) -> None:
+        identity = (binding.namespace_id, binding.agent_id, binding.app_id)
+        self._authorization_started = {key: value for key, value in self._authorization_started.items()
+                                       if (key[0], *key[2:]) != identity}
+        self._discovery = {key: value for key, value in self._discovery.items() if (key[0], *key[2:]) != identity}
+        self._discovery_failed.intersection_update(self._discovery)
+        self._floors = {key: value for key, value in self._floors.items() if (key[0], *key[3:]) != identity}
+        self._recipient_progress = {key: value for key, value in self._recipient_progress.items()
+                                    if (key[0], *key[3:]) != identity}
+        self._listening = {key for key in self._listening if key[:3] != identity}
+        self._read_failed = {key for key in self._read_failed if key[:3] != identity}
+
+    async def _discover_accesses(self, binding: DingTalkBinding, reader: str, now: datetime) -> bool | None:
+        discover = getattr(self._manager.dingtalk_cli_runtime, 'discover_groups', None)
+        if not callable(discover):
+            return
+        key = (binding.namespace_id, reader, binding.agent_id, binding.app_id)
+        due, cursor = self._discovery.get(key, (now, None))
+        if due > now:
+            return
+        try:
+            page = await discover(
+                DingTalkCliScope(binding.namespace_id, binding.agent_id, app_id=binding.app_id), cursor=cursor,
+            )
+            if page.get('readerKey') != reader:
+                raise ValueError('Group discovery reader changed')
+            from jiuwenswarm.common.im_binding_lock import im_binding_lock
+            async with im_binding_lock('dingtalk', binding.app_id):
+                if self._closed or binding not in await self._bindings():
+                    return False
+                if not await asyncio.to_thread(self._eligible_binding, binding):
+                    return False
+                current = await self._manager.dingtalk_cli_runtime.group_history_identity(
+                    DingTalkCliScope(binding.namespace_id, binding.agent_id, app_id=binding.app_id),
+                )
+                if current != reader or self._closed:
+                    return False
+                confirmed_at = _utc(self._clock())
+                for item in page['groups']:
+                    group = await asyncio.to_thread(
+                        self._manager.group_chats.resolve,
+                        binding.namespace_id, 'dingtalk', item['conversation_id'], now=confirmed_at,
+                    )
+                    active_apps = await asyncio.to_thread(
+                        self._manager.group_chats.active_apps,
+                        binding.namespace_id, binding.agent_id, group.group_chat_id,
+                    )
+                    if binding.app_id not in active_apps:
+                        visible_from = max(self._authorization_started[key], confirmed_at - _INITIAL_CATCHUP)
+                        await asyncio.to_thread(
+                            self._manager.group_chats.observe_access, binding.namespace_id, binding.agent_id,
+                            group.group_chat_id, binding.app_id, observed_at=confirmed_at,
+                            visible_from=visible_from, source_ref='dingtalk:discovery:' + reader,
+                        )
+                        active_apps = await asyncio.to_thread(
+                            self._manager.group_chats.active_apps,
+                            binding.namespace_id, binding.agent_id, group.group_chat_id,
+                        )
+                    if binding.app_id not in active_apps:
+                        # A confirmed rejoin must not replay messages from its departed interval.
+                        await asyncio.to_thread(
+                            self._manager.group_chats.update_membership, binding.namespace_id, binding.agent_id,
+                            group.group_chat_id, binding.app_id, status='active', observed_at=confirmed_at,
+                            source_ref='dingtalk:discovery:' + reader,
+                        )
+                    if item['name']:
+                        await asyncio.to_thread(
+                            self._manager.group_chats.set_name, binding.namespace_id, group.group_chat_id, item['name'],
+                        )
+            delay = self._interval if page['hasMore'] else 60
+            self._discovery[key] = (_utc(self._clock()) + timedelta(seconds=delay), page['nextCursor'])
+            if page['failed']:
+                self._discovery_failed.add(key)
+            elif cursor is None:
+                self._discovery_failed.discard(key)
+            return True
+        except Exception as exc:
+            self._discovery[key] = (_utc(self._clock()) + timedelta(seconds=20), cursor)
+            self._discovery_failed.add(key)
+            logger.warning('DingTalk group discovery failed (%s)', type(exc).__name__)
 
     def _ready(self, key: tuple[str, ...], now: datetime) -> bool:
         retry = self._backoff.get(key)
@@ -137,28 +349,48 @@ class DingTalkGroupPoller:
     async def _discover(self, now: datetime) -> dict[_GroupKey, _Group]:
         groups: dict[_GroupKey, _Group] = {}
         observed: set[_RecipientKey] = set()
+        authorized: set[tuple[str, ...]] = set()
         for binding in await self._bindings():
             if self._closed:
                 break
             scope_key = ('scope', binding.namespace_id, binding.agent_id, binding.app_id)
             recipient = (binding.namespace_id, binding.agent_id, binding.app_id)
             existing = {key for key in self._floors if (key[0], *key[3:]) == recipient}
+            previous_scopes = {key for key in self._authorization_started if (key[0], *key[2:]) == recipient}
             try:
-                accesses = await asyncio.to_thread(self._eligible_accesses, binding)
-                if not accesses:
+                if not await asyncio.to_thread(self._eligible_binding, binding):
                     continue
-                active_groups = {access.group_id for access in accesses}
-                existing = {key for key in existing if key[2] in active_groups}
                 if not self._ready(scope_key, now):
                     observed.update(existing)
+                    authorized.update(previous_scopes)
                     continue
-                scope = DingTalkCliScope(binding.namespace_id, binding.agent_id)
+                scope = DingTalkCliScope(binding.namespace_id, binding.agent_id, app_id=binding.app_id)
                 reader = await self._manager.dingtalk_cli_runtime.group_history_identity(scope)
                 if not isinstance(reader, str) or not reader:
                     # A completed user login should be noticed on the next cycle.
                     # Only uncertain/transient failures need exponential backoff.
                     self._backoff.pop(scope_key, None)
+                    self._forget_authorization(binding)
                     continue
+                authorization_key = (binding.namespace_id, reader, binding.agent_id, binding.app_id)
+                authorized.add(authorization_key)
+                self._authorization_started.setdefault(authorization_key, _utc(self._clock()))
+                stale = {
+                    key for key in self._discovery if (key[0], *key[2:]) == recipient and key[1] != reader
+                }
+                if stale:
+                    self._discovery = {key: value for key, value in self._discovery.items() if key not in stale}
+                    self._discovery_failed.difference_update(stale)
+                    identity = (binding.namespace_id, binding.agent_id, binding.app_id)
+                    self._listening = {key for key in self._listening if key[:3] != identity}
+                    self._read_failed = {key for key in self._read_failed if key[:3] != identity}
+                if await self._discover_accesses(binding, reader, now) is False:
+                    self._forget_authorization(binding)
+                    authorized.discard(authorization_key)
+                    continue
+                accesses = await asyncio.to_thread(self._eligible_accesses, binding)
+                active_groups = {access.group_id for access in accesses}
+                existing = {key for key in existing if key[2] in active_groups}
                 existing = {key for key in existing if key[1] == reader}
                 self._backoff.pop(scope_key, None)
                 for access in accesses:
@@ -172,22 +404,34 @@ class DingTalkGroupPoller:
                     observed.add(recipient_key)
                     if key not in self._progress:
                         self._progress[key] = await asyncio.to_thread(self._load_progress, key, now)
-                    self._recipient_progress.setdefault(recipient_key, self._progress[key])
-                    if recipient_key not in self._floors:
+                    catchup_start = max(
+                        self._authorization_started[authorization_key], _utc(self._clock()) - _INITIAL_CATCHUP,
+                    )
+                    discovered = getattr(access, 'source_ref', '').startswith('dingtalk:discovery:')
+                    readable_from = max(catchup_start, access.visible_from) if discovered else max(
+                        now, getattr(access, 'visible_from', now),
+                    )
+                    first_observation = recipient_key not in self._floors
+                    floor = self._floors.setdefault(recipient_key, readable_from)
+                    self._recipient_progress.setdefault(recipient_key, min(self._progress[key], floor))
+                    if first_observation:
                         logger.info('DingTalk employee group observation started: agent=%s group=%s after=%s',
-                                    binding.agent_id, access.group_id, now.isoformat())
-                    floor = self._floors.setdefault(recipient_key, now)
+                                    binding.agent_id, access.group_id, floor.isoformat())
                     if key not in groups:
                         groups[key] = _Group(key, group.platform_chat_id, [])
                     groups[key].recipients.append(_Recipient(binding, floor))
             except Exception as exc:
                 # Transient lookup failures must not turn outage-period messages into history.
                 observed.update(existing)
+                authorized.update(previous_scopes)
                 self._defer(scope_key, _utc(self._clock()))
                 logger.warning('DingTalk group polling authorization failed (%s)', type(exc).__name__)
         # Reset only confirmed lost access; transient failures retain their original floor.
         self._floors = {key: value for key, value in self._floors.items() if key in observed}
         self._recipient_progress = {key: value for key, value in self._recipient_progress.items() if key in observed}
+        self._authorization_started = {
+            key: value for key, value in self._authorization_started.items() if key in authorized
+        }
         return groups
 
     async def _still_authorized(self, group: _Group, recipient: _Recipient) -> bool:
@@ -203,9 +447,12 @@ class DingTalkGroupPoller:
         if (current_group.platform, current_group.platform_chat_id) != ('dingtalk', group.conversation_id):
             return False
         reader = await self._manager.dingtalk_cli_runtime.group_history_identity(
-            DingTalkCliScope(binding.namespace_id, binding.agent_id),
+            DingTalkCliScope(binding.namespace_id, binding.agent_id, app_id=binding.app_id),
         )
-        return reader == group.key[1] and not self._closed
+        if reader != group.key[1]:
+            self._forget_authorization(binding)
+            return False
+        return not self._closed
 
     def _state_path(self, key: _GroupKey) -> Path:
         digest = hashlib.sha256(json.dumps(key, ensure_ascii=True).encode('utf-8')).hexdigest()
@@ -314,7 +561,7 @@ class DingTalkGroupPoller:
             budget.used += 1
             try:
                 payload = await self._manager.dingtalk_cli_runtime.read_group_history(
-                    DingTalkCliScope(binding.namespace_id, binding.agent_id),
+                    DingTalkCliScope(binding.namespace_id, binding.agent_id, app_id=binding.app_id),
                     conversation_id=group.conversation_id, since=since.isoformat(),
                 )
             except PersistentAgentError as exc:
@@ -394,6 +641,9 @@ class DingTalkGroupPoller:
         for recipient in recipients:
             recipient_key = (*key, recipient.binding.agent_id, recipient.binding.app_id)
             self._recipient_progress[recipient_key] = max(self._recipient_progress.get(recipient_key, since), boundary)
+            identity = (recipient.binding.namespace_id, recipient.binding.agent_id, recipient.binding.app_id, key[2])
+            self._listening.add(identity)
+            self._read_failed.discard(identity)
         self._backoff.pop(('group', *key), None)
 
     async def poll_once(self) -> int:
@@ -417,6 +667,14 @@ class DingTalkGroupPoller:
                 try:
                     await self._read(groups[key], _utc(self._clock()), budget)
                 except Exception as exc:
+                    self._read_failed.update(
+                        (item.binding.namespace_id, item.binding.agent_id, item.binding.app_id, key[2])
+                        for item in groups[key].recipients
+                    )
                     self._defer(retry_key, _utc(self._clock()))
-                    logger.warning('DingTalk group history read failed (%s)', type(exc).__name__)
+                    safe_codes = {'DINGTALK_CLI_AUTH_BUSY', 'DINGTALK_CLI_GROUP_HISTORY_UNAVAILABLE',
+                                  'DINGTALK_CLI_GROUP_HISTORY_INVALID', 'DINGTALK_CLI_USER_AUTH_REQUIRED'}
+                    code = getattr(exc, 'code', None)
+                    logger.warning('DingTalk group history read failed (%s, %s, cause=%s)', type(exc).__name__,
+                                   code if code in safe_codes else 'unknown', type(exc.__cause__).__name__)
             return budget.used

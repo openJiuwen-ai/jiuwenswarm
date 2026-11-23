@@ -249,8 +249,7 @@ function dedupeMediaItems(items: MediaItem[]): MediaItem[] {
       .split(/[\\/]/)
       .pop()!
       .replace(/\.[^.]+$/, '')
-      .trim()
-      .toLowerCase();
+      .trim();
     const path = normalizePath(item.path ?? '').trim();
     // 新任务里这条消息的第一个附件往往还没落盘：那条记录只有 base64 和文件名，没有路径，
     // 而 @素材 引用解析出来的那条带着落盘路径。两者的 src 也各不相同（data: 对 raw-file），

@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import os
+
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.subagent import SubagentRail
 
@@ -15,6 +17,30 @@ from jiuwenswarm.agents.harness.common.prompt.cua_task_prompt import (
     build_cua_task_prompt,
     build_cua_unavailable_prompt,
 )
+from jiuwenswarm.common.cua_config import is_cua_backend_available
+
+
+try:
+    from openjiuwen.harness.tools import is_free_search_enabled
+except ImportError:  # Older SDKs may not export the availability helper.
+
+    def is_free_search_enabled() -> bool:
+        for name in ("FREE_SEARCH_DDG_ENABLED", "FREE_SEARCH_BING_ENABLED"):
+            value = os.environ.get(name, "").strip().lower()
+            if value in {"1", "true", "yes", "on", "enabled"}:
+                return True
+        return False
+
+
+try:
+    from openjiuwen.harness.tools import is_paid_search_enabled
+except ImportError:
+
+    def is_paid_search_enabled() -> bool:
+        for name in ("BOCHA_API_KEY", "PERPLEXITY_API_KEY", "SERPER_API_KEY", "JINA_API_KEY"):
+            if os.environ.get(name, "").strip():
+                return True
+        return False
 
 
 class BrowserTaskPromptRail(SubagentRail):
@@ -27,10 +53,8 @@ class BrowserTaskPromptRail(SubagentRail):
         enable_subagent_runtime: bool = False,
         cua_agent_enabled: bool = False,
     ) -> None:
-        # Enabled in config but unavailable means the model rejects image
-        # input: the adapter skipped mounting it, or the request model in use
-        # now does.
         self._cua_agent_enabled = cua_agent_enabled
+        self._cua_backend_available = cua_agent_enabled and is_cua_backend_available()
         self._channel: str | None = None
         self._deep_agent: object | None = None
         super().__init__(
@@ -68,13 +92,20 @@ class BrowserTaskPromptRail(SubagentRail):
         has_cua = "cua_agent" in mounted and not cua_model_rejects_images(current_model)
         sections: list[str] = []
         if has_browser:
-            sections.append(build_browser_task_prompt(language))
+            sections.append(
+                build_browser_task_prompt(
+                    language,
+                    search_fallback_enabled=not is_paid_search_enabled() and not is_free_search_enabled(),
+                )
+            )
         if has_cua:
             sections.append(
                 build_cua_task_prompt(language, browser_available=has_browser)
             )
         elif self._cua_agent_enabled:
-            sections.append(build_cua_unavailable_prompt(language))
+            sections.append(
+                build_cua_unavailable_prompt(language, backend_available=self._cua_backend_available)
+            )
         if not sections:
             return None
         return "\n\n".join(sections)

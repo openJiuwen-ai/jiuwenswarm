@@ -15,6 +15,7 @@ from jiuwenswarm.agents.harness.common.recommendation.topic_starter import (
     TopicStarterStore,
     compute_interest_drift,
 )
+from .topic_primitives import plain_int as _plain_int
 
 
 # The other stores on recommendation.db use the same wait, so a write here waits like theirs.
@@ -22,11 +23,6 @@ _SQLITE_BUSY_TIMEOUT_SECONDS = 5.0
 _HIGH_INTENT_KINDS = frozenset({"new_goal", "correction", "recent_action"})
 MIN_DRIFT_SAMPLES = 3
 _PIPELINE_RECEIPT_VERSION = "topic-starter-v6-short-intent-read-v1"
-
-
-def _plain_int(value: Any) -> bool:
-    # bool is an int subclass; a JSON boolean is never a version or a count.
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 @dataclass(frozen=True)

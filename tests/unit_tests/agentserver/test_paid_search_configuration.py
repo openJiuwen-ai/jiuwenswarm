@@ -20,6 +20,10 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmD
 def isolated_search_env(monkeypatch):
     for provider in ("bocha", "perplexity", "serper", "jina"):
         monkeypatch.setenv(f"{provider.upper()}_API_KEY", "")
+    # Free-search flags are ambient in CI; leaving them set would register an
+    # extra tool and make refresh call counts order-dependent.
+    for flag in ("FREE_SEARCH_DDG_ENABLED", "FREE_SEARCH_BING_ENABLED"):
+        monkeypatch.delenv(flag, raising=False)
     monkeypatch.setattr(mcp_paid_search.card, "description", mcp_paid_search.card.description)
     monkeypatch.setattr(mcp_paid_search.card, "input_params", deepcopy(mcp_paid_search.card.input_params))
     monkeypatch.setattr(mcp_toolkits, "_SEARCH_ABILITY_MANAGERS", WeakSet())
@@ -194,13 +198,32 @@ async def test_mcp_no_keys_does_not_dispatch(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_existing_mcp_agent_refreshes_model_tools_on_enable_change_and_disable(monkeypatch):
+@pytest.mark.parametrize("register_unrelated_tool", [False, True])
+@pytest.mark.parametrize("free_search_enabled", [False, True])
+async def test_existing_mcp_agent_refreshes_model_tools_on_enable_change_and_disable(
+    monkeypatch: pytest.MonkeyPatch,
+    free_search_enabled: bool,
+    register_unrelated_tool: bool,
+) -> None:
     from openjiuwen.core.single_agent.ability_manager import AbilityManager
 
+    monkeypatch.setenv("FREE_SEARCH_DDG_ENABLED", str(free_search_enabled).lower())
     manager = AbilityManager()
     mcp_toolkits.track_mcp_search_tools(manager)
     resource_add = MagicMock()
-    monkeypatch.setattr(mcp_toolkits.Runner.resource_mgr, "add_tool", resource_add)
+    monkeypatch.setattr(
+        mcp_toolkits,
+        "Runner",
+        SimpleNamespace(resource_mgr=SimpleNamespace(add_tool=resource_add)),
+    )
+    if register_unrelated_tool:
+        list_tool_info = manager.list_tool_info
+
+        async def list_with_unrelated_registration():
+            mcp_toolkits.Runner.resource_mgr.add_tool(mcp_toolkits.mcp_free_search, skip_if_exists=True)
+            return await list_tool_info()
+
+        monkeypatch.setattr(manager, "list_tool_info", list_with_unrelated_registration)
     for provider in ("bocha", "serper"):
         monkeypatch.setenv("BOCHA_API_KEY", "")
         monkeypatch.setenv(f"{provider.upper()}_API_KEY", "test-key")
@@ -211,7 +234,18 @@ async def test_existing_mcp_agent_refreshes_model_tools_on_enable_change_and_dis
     mcp_toolkits.refresh_mcp_paid_search_tools()
     assert manager.get("mcp_paid_search") is None
     assert not any(item.name == "mcp_paid_search" for item in await manager.list_tool_info())
-    assert resource_add.call_count == 2
+    # Other tools may register through the shared Runner during this test.
+    paid_search_registrations = [
+        registration
+        for registration in resource_add.call_args_list
+        if registration.args and registration.args[0] is mcp_paid_search
+    ]
+    assert paid_search_registrations == [
+        call(mcp_paid_search, skip_if_exists=True),
+        call(mcp_paid_search, skip_if_exists=True),
+    ]
+    assert (manager.get("mcp_free_search") is not None) == free_search_enabled
+    assert any(item.name == "mcp_free_search" for item in await manager.list_tool_info()) == free_search_enabled
 
 
 @pytest.mark.asyncio

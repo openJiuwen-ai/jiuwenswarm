@@ -1416,8 +1416,22 @@ class ProjectAdapter(GatewayAdapter):
                 params, request.channel_id,
             )
         if method == ReqMethod.PROJECT_LIFECYCLE:
-            from jiuwenswarm.server.runtime.session.lifecycle import project_admission_snapshot
+            from jiuwenswarm.server.runtime.session.lifecycle import (
+                events_feed,
+                inventory_feed,
+                project_admission_snapshot,
+            )
 
+            # 与 WS ``_handle_lifecycle_request`` 同契约：events / inventory
+            # 无 project_id；单项目准入才走 project_admission_snapshot。
+            if params.get("events"):
+                return await _run_threaded(
+                    request, "project.lifecycle", events_feed, result_mode="plain",
+                )
+            if params.get("inventory"):
+                return await _run_threaded(
+                    request, "project.lifecycle", inventory_feed, result_mode="plain",
+                )
             return await _run_threaded(
                 request, "project.lifecycle", project_admission_snapshot,
                 str(params.get("project_id") or ""),

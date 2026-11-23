@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from functools import partial
 from typing import Final
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.control.methods import CONTROL_SESSION_METHODS
+from jiuwenswarm.server.control.query_executor import run_control_query
 from jiuwenswarm.server.control.responses import (
     build_error_response,
     parse_int_param,
@@ -80,6 +82,11 @@ def _ok(request: AgentRequest, payload: dict) -> AgentResponse:
 
 
 async def handle_list(request: AgentRequest) -> AgentResponse:
+    """Run the full scan, pagination and Web projection outside the Front loop."""
+    return await run_control_query(partial(_load_list, request))
+
+
+def _load_list(request: AgentRequest) -> AgentResponse:
     params = request.params if isinstance(request.params, dict) else {}
     limit = _SESSION_LIST_LIMIT_DEFAULT
     offset = 0
@@ -111,6 +118,35 @@ async def handle_list(request: AgentRequest) -> AgentResponse:
 
 
 async def handle_get_metadata(request: AgentRequest) -> AgentResponse:
+    """Keep metadata file locks, disk reads and inference off the Front loop."""
+    from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError, validate_id
+
+    params = request.params if isinstance(request.params, dict) else {}
+    sid = params.get("session_id")
+    if not isinstance(sid, str) or not sid:
+        return build_error_response(request, "session_id is required", code="BAD_REQUEST")
+    try:
+        validate_id(sid)
+    except LifecycleError as exc:
+        return build_error_response(request, str(exc), code=exc.code)
+    return await run_control_query(partial(_load_metadata, request))
+
+
+def _guard_session_request(request: AgentRequest) -> AgentResponse | None:
+    from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError, guard
+
+    params = request.params if isinstance(request.params, dict) else {}
+    try:
+        guard(str(params.get("session_id") or request.session_id or ""))
+    except LifecycleError as exc:
+        return build_error_response(request, str(exc), code=exc.code)
+    return None
+
+
+def _load_metadata(request: AgentRequest) -> AgentResponse:
+    blocked = _guard_session_request(request)
+    if blocked is not None:
+        return blocked
     params = request.params if isinstance(request.params, dict) else {}
     sid = params.get("session_id")
     if not isinstance(sid, str) or not sid.strip():
@@ -120,6 +156,9 @@ async def handle_get_metadata(request: AgentRequest) -> AgentResponse:
     # 写盘副作用）；缺省 True 保持既有 web/TUI/video_duplex 调用方原行为。
     enable_writeback = params.get("enable_writeback", True)
     if not isinstance(enable_writeback, bool):
+        logger.warning(
+            "[session_repository] session.get_metadata enable_writeback must be boolean; using default True"
+        )
         enable_writeback = True
     try:
         meta = get_session_metadata(
@@ -160,13 +199,7 @@ async def handle_color_set(request: AgentRequest) -> AgentResponse:
         return build_error_response(request, "session_id is required", code="BAD_REQUEST")
     color = params.get("color")
     if color is None:
-        try:
-            metadata = get_session_metadata(target, cache_bust=True)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[session_repository] session.color_set query failed: %s", exc)
-            return build_error_response(request, str(exc), code="INTERNAL_ERROR")
-        accent_color = metadata.get("accent_color", "default") if metadata else "default"
-        return _ok(request, {"session_id": target, "accent_color": accent_color})
+        return await run_control_query(partial(_load_color, request, target))
     if str(color) not in _VALID_ACCENT_COLORS:
         return build_error_response(request, f"invalid color: {color}", code="BAD_REQUEST")
     try:
@@ -175,6 +208,19 @@ async def handle_color_set(request: AgentRequest) -> AgentResponse:
         logger.warning("[session_repository] session.color_set failed: %s", exc)
         return build_error_response(request, str(exc), code="INTERNAL_ERROR")
     return _ok(request, {"session_id": target, "accent_color": str(color)})
+
+
+def _load_color(request: AgentRequest, target: str) -> AgentResponse:
+    blocked = _guard_session_request(request)
+    if blocked is not None:
+        return blocked
+    try:
+        metadata = get_session_metadata(target, cache_bust=True)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[session_repository] session.color_set query failed: %s", exc)
+        return build_error_response(request, str(exc), code="INTERNAL_ERROR")
+    accent_color = metadata.get("accent_color", "default") if metadata else "default"
+    return _ok(request, {"session_id": target, "accent_color": accent_color})
 
 
 async def handle_preview(request: AgentRequest) -> AgentResponse:
@@ -189,9 +235,16 @@ async def handle_preview(request: AgentRequest) -> AgentResponse:
         minimum=1,
         maximum=_PREVIEW_COUNT_MAX,
     )
+    return await run_control_query(partial(_load_preview, request, target, preview_count))
+
+
+def _load_preview(request: AgentRequest, target: str, count: int) -> AgentResponse:
+    blocked = _guard_session_request(request)
+    if blocked is not None:
+        return blocked
     try:
         raw = load_history_records(target)
-        preview_messages = _build_preview_messages(raw, preview_count)
+        preview_messages = _build_preview_messages(raw, count)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[session_repository] session.preview read failed: %s", exc)
         preview_messages = []
@@ -204,20 +257,24 @@ async def handle_session_request(request: AgentRequest) -> AgentResponse:
         return build_error_response(
             request, f"unsupported control session method: {method}", code="BAD_REQUEST"
         )
+    if request.req_method == ReqMethod.SESSION_GET_METADATA:
+        return await handle_get_metadata(request)
+    if request.req_method == ReqMethod.SESSION_PREVIEW:
+        return await handle_preview(request)
+    params = request.params if isinstance(request.params, dict) else {}
+    if request.req_method == ReqMethod.SESSION_COLOR_SET and params.get("color") is None:
+        return await handle_color_set(request)
     if request.req_method != ReqMethod.SESSION_LIST:
         from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError, guard
 
-        params = request.params if isinstance(request.params, dict) else {}
         try:
-            guard(str(params.get("session_id") or request.session_id or ""))
+            await run_control_query(
+                partial(guard, str(params.get("session_id") or request.session_id or ""))
+            )
         except LifecycleError as exc:
             return build_error_response(request, str(exc), code=exc.code)
-    if request.req_method == ReqMethod.SESSION_GET_METADATA:
-        return await handle_get_metadata(request)
     if request.req_method == ReqMethod.SESSION_PIN:
         return await handle_pin(request)
     if request.req_method == ReqMethod.SESSION_COLOR_SET:
         return await handle_color_set(request)
-    if request.req_method == ReqMethod.SESSION_PREVIEW:
-        return await handle_preview(request)
     return await handle_list(request)

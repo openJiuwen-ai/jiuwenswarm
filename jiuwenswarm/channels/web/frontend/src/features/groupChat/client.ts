@@ -1,8 +1,12 @@
+import type { JiuwenMateCategory } from '../jiuwenmate/types';
 import type { ModelSelection, AskUserQuestionPayload, UserAnswer } from '../../types';
 import { webClient, webRequest } from '../../services/webClient';
 
 export interface GroupMember {
-  kind: 'agent_template' | 'agent_group';
+  kind: 'agent_template' | 'agent_group' | 'colleague';
+  avatar_url?: string;
+  colleague_category?: JiuwenMateCategory;
+  is_default?: boolean;
   cli_agent?: 'claude' | 'codex';
   id: string;
   member_name: string;
@@ -15,7 +19,16 @@ export interface GroupQuestion extends AskUserQuestionPayload {
   execution_id?: string | null;
 }
 
+export interface GroupRoute {
+  plan_id: string;
+  owner_member: string;
+  members: string[];
+  status: 'pending' | 'chat' | 'clarification' | 'task' | 'completed' | 'failed';
+  reply_message_id?: string | null;
+}
+
 export interface GroupInfo {
+  organization_routes?: GroupRoute[];
   pending_questions?: GroupQuestion[];
   group_id: string;
   session_id: string;
@@ -122,7 +135,9 @@ export const groupChatClient = {
       group_id: groupId, query: '', source: 'ask_user_interrupt', request_id: requestId, answers,
     }),
   renameFile: (groupId: string, path: string, name: string) =>
-    webRequest<{ group_id: string; path: string; name: string }>('group.file.rename', { group_id: groupId, path, name }),
+    webRequest<{ group_id: string; path: string; old_path: string; name: string }>(
+      'group.file.rename', { group_id: groupId, path, name },
+    ),
   deleteFile: (groupId: string, path: string) =>
     webRequest<{ group_id: string; path: string; deleted: true; file_removed: boolean }>(
       'group.file.delete', { group_id: groupId, path },
@@ -133,6 +148,13 @@ export const groupChatClient = {
     webRequest<{ group_id: string; deleted: boolean }>('group.delete', { group_id: groupId }),
 };
 
+export interface GroupExpertTask {
+  task_id: string;
+  title: string;
+  assignee: string;
+  status: string;
+}
+
 export interface GroupExecution {
   group_id?: string;
   execution_id: string;
@@ -140,6 +162,9 @@ export interface GroupExecution {
   owner_member?: string | null;
   display_name: string;
   execution_kind: 'agent' | 'team' | 'organization';
+  organization_stage?: 'starting' | 'processing' | 'executing' | 'summarizing' | null;
+  organization_plan_id?: string | null;
+  error_code?: string;
   title: string;
   task: string;
   status: string;
@@ -149,7 +174,11 @@ export interface GroupExecution {
   updated_at: number;
   progress: { completed: number; total: number } | null;
   tasks?: Record<string, string>;
-  task_details?: Record<string, { title?: string; content?: string; member_id?: string; status?: string }>;
+  task_details?: Record<string, {
+    title?: string; content?: string; member_id?: string; status?: string;
+    expert_tasks?: GroupExpertTask[];
+    expert_tasks_unavailable?: boolean;
+  }>;
   result?: string | null;
   message_id?: string | null;
   attachments?: Record<string, unknown>[];

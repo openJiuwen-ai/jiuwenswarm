@@ -7,9 +7,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from pathlib import Path
 import uuid
+
 import portalocker
 
+from jiuwenswarm.common.filesystem_paths import extended_path
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.runtime.agent_definition import RuntimeAgentDefinition
 
@@ -66,11 +69,9 @@ def bind_agent(
 ) -> None:
     """Pin a Session to its declared root Agent under its Session lease."""
 
-    directory = get_agent_sessions_dir() / _BINDING_DIR
+    directory = Path(extended_path(get_agent_sessions_dir() / _BINDING_DIR))
     directory.mkdir(parents=True, exist_ok=True)
-    target = (
-        directory / f"{hashlib.sha256(session_id.encode('utf-8')).hexdigest()}.json"
-    )
+    target = directory / f"{hashlib.sha256(session_id.encode('utf-8')).hexdigest()}.json"
     fingerprint = (
         RuntimeAgentDefinition.from_mapping(definition).fingerprint
         if definition is not None

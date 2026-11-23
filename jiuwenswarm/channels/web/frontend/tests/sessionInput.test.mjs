@@ -212,6 +212,36 @@ function addOriginalUser(c, content = 'original question') {
   }));
 }
 
+test('a restored unanswered question renders only when no live prompt owns it', async (context) => {
+  const c = await mount(context);
+  try {
+    const pending = {
+      request_id: 'skillpack-history-6520', source: 'ask_user_interrupt',
+      questions: [{ question: 'Choose a SkillPack', header: 'SkillPack', options: [{ label: 'Use pack' }] }],
+    };
+    const messages = parseHistoryJsonFileToPreviewMessages([{
+      ...pending, id: 'ask-6520', role: 'assistant', event_type: 'chat.ask_user_question', timestamp: 1,
+    }], c.sid);
+    await act(async () => c.store.replaceHistoryMessages(c.sid, messages));
+    assert.ok(document.querySelector('[data-testid="interaction-slot-qa-summary"]'));
+    c.receive('chat.ask_user_question', pending);
+    await c.flush();
+    assert.equal(document.querySelector('[data-testid="interaction-slot-qa-summary"]'), null);
+    assert.equal(c.runtime().pendingQuestions[0].request_id, pending.request_id);
+    await act(async () => {
+      c.store.setActiveSessionId('another-conversation');
+    });
+    await act(async () => {
+      c.store.setActiveSessionId(c.sid);
+      c.store.replaceHistoryMessages(c.sid, messages);
+    });
+    assert.equal(document.querySelector('[data-testid="interaction-slot-qa-summary"]'), null);
+    assert.equal(c.runtime().pendingQuestions[0].request_id, pending.request_id);
+  } finally {
+    await c.dispose();
+  }
+});
+
 test('terminal forwarding error settles the current stream without sending queued input', async (context) => {
   const c = await mount(context);
   try {

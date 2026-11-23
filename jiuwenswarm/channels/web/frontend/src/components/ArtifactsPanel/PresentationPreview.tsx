@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
 import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { AlertCircle, ChevronLeft, ChevronRight, LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -21,7 +22,7 @@ import {
   type PresentationWorkerResponse,
 } from './pptxPreviewModel';
 
-type PreviewState = 'loading' | 'ready' | 'error' | 'resource-limit' | 'too-large';
+type PreviewState = 'loading' | 'ready' | 'error' | 'load-error' | 'resource-limit' | 'too-large';
 
 function PreviewMessage({ children, danger = false }: { children: string; danger?: boolean }) {
   return (
@@ -62,6 +63,7 @@ export function PresentationPreview({
     const controller = new AbortController();
     const worker = new Worker(new URL('./pptxPreview.worker.ts', import.meta.url), { type: 'module' });
     let cancelled = false;
+    let requestFailure: { status?: number; contentType?: string } | undefined;
     setState('loading');
     setPresentation(null);
     worker.onmessage = (event: MessageEvent<PresentationWorkerResponse>) => {
@@ -74,7 +76,7 @@ export function PresentationPreview({
           event.data.presentation.slides.some(slide => slide.status === 'invalid'),
         );
       } else {
-        console.error('Failed to parse presentation preview', event.data.message);
+        console.error('Failed to parse presentation preview', event.data.code, event.data.message);
         setState(event.data.code === 'resource-limit' ? 'resource-limit' : 'error');
       }
       worker.terminate();
@@ -86,12 +88,14 @@ export function PresentationPreview({
       }
       worker.terminate();
     };
-    void fetch(url, { cache: 'no-store', signal: controller.signal })
+    void gatewayFetch(url, { cache: 'no-store', signal: controller.signal })
       .then(async response => {
         const contentType = (response.headers.get('content-type') ?? '').toLowerCase();
         const contentLength = Number(response.headers.get('content-length'));
-        if (!response.ok || contentType.includes('text/html') || contentType.includes('application/json'))
+        if (!response.ok || contentType.includes('text/html') || contentType.includes('application/json')) {
+          requestFailure = { status: response.status, contentType };
           throw new Error(`PPTX request failed with HTTP ${response.status}`);
+        }
         if (Number.isFinite(contentLength) && contentLength > MAX_PRESENTATION_PREVIEW_BYTES) throw new Error('presentation_too_large');
         return readLimitedResponse(response);
       })
@@ -100,7 +104,17 @@ export function PresentationPreview({
       })
       .catch(error => {
         if (cancelled || controller.signal.aborted) return;
-        setState(error instanceof Error && error.message === 'presentation_too_large' ? 'too-large' : 'error');
+        const tooLarge = error instanceof Error && error.message === 'presentation_too_large';
+        // Download failures are logged with the request context so a broken request
+        // can be told apart from an unsupported package instead of one shared message.
+        if (!tooLarge) {
+          console.error('Presentation preview could not be downloaded', {
+            reason: error instanceof Error ? error.message : String(error),
+            status: requestFailure?.status,
+            contentType: requestFailure?.contentType,
+          });
+        }
+        setState(tooLarge ? 'too-large' : 'load-error');
         worker.terminate();
       });
     return () => {
@@ -127,6 +141,12 @@ export function PresentationPreview({
     return (
       <div className="h-full" aria-label={title} data-testid="artifact-presentation-preview" data-variant="too-large">
         <PreviewMessage danger>{t('artifacts.presentationTooLarge', { size: '50 MiB' })}</PreviewMessage>
+      </div>
+    );
+  if (state === 'load-error')
+    return (
+      <div className="h-full" aria-label={title} data-testid="artifact-presentation-preview" data-variant="load-error">
+        <PreviewMessage danger>{t('artifacts.presentationLoadFailed')}</PreviewMessage>
       </div>
     );
   if (state === 'resource-limit')

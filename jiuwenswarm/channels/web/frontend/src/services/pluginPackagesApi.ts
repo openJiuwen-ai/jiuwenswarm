@@ -53,6 +53,26 @@ export class PluginInstallPendingError extends Error {
   }
 }
 
+export interface PluginReplacementConflict {
+  package_id: string;
+  local_version: string;
+  hub_version: string;
+  local_fingerprint: string;
+}
+
+export interface PluginInstallOptions {
+  from_hub?: boolean;
+  replace_local?: boolean;
+  local_fingerprint?: string;
+}
+
+export class PluginReplacementError extends Error {
+  constructor(public code: string, public conflict?: PluginReplacementConflict) {
+    super(code);
+    this.name = 'PluginReplacementError';
+  }
+}
+
 interface RawPluginPackageSummary {
   id: string;
   packageName?: string;
@@ -97,10 +117,8 @@ interface RawPluginPackageDetail extends RawPluginPackageSummary {
   mcps: PluginCapabilityRef[];
   // v2 §3.2：仅 show 有，未就绪的待连 MCP 名单。
   pending_connectors?: string[];
-  // 2026-08-21 后端新增（extension_package_manager.py _build_show_card）：manifest 的
-  // quick_inputs 双语示例问法，字段名后端已经是驼峰 quickInputs，不用像 connection_state 那样
-  // 转写。
-  quickInputs?: LocalizedText[];
+  // 本地包为双语对象，Hub profile 为纯字符串；统一交给 localizedText 处理。
+  quickInputs?: Array<LocalizedText | string>;
 }
 
 function fromRawDetail(raw: RawPluginPackageDetail): PluginPackageDetail {
@@ -133,12 +151,16 @@ function extractPendingConnectors(error: unknown): string[] | undefined {
 export const pluginPackagesApi = {
   // v2 §3.1：filter 值跟 mcp.list 保持一致用无连字符的 'builtin'（不是文档原文的 'built-in'，
   // 见文件头注释）；缺省/非法值后端按全量处理。
-  list: async (filter?: 'builtin+hub' | 'mine', query = ''): Promise<CatalogItems<PluginPackageSummary>> => {
+  list: async (
+    filter?: 'builtin+hub' | 'mine',
+    query = '',
+    options?: { refresh?: boolean },
+  ): Promise<CatalogItems<PluginPackageSummary>> => {
     const payload = await requestEquipmentList<{ packages: RawPluginPackageSummary[]; cache?: CatalogCacheMetadata }>(
       webRequest,
       'plugin_packages.list',
       { ...(filter ? { filter } : {}), ...(query ? { query } : {}) },
-      !query,
+      { preferCache: !query, refresh: options?.refresh === true },
     );
     return withCatalogCache(payload.packages.map(fromRawSummary), payload.cache);
   },
@@ -156,10 +178,15 @@ export const pluginPackagesApi = {
     webRequest<{ id: string }>('plugin_packages.import_local', params),
   // v2 §1.6.3：失败且带 pending_connectors → 包成 PluginInstallPendingError，让调用方走连接
   // 续跑；不带 pending_connectors 的纯硬失败原样上抛。
-  install: async (id: string): Promise<void> => {
+  install: async (id: string, options: PluginInstallOptions = {}): Promise<void> => {
     try {
-      await webRequest<void>('plugin_packages.install', { id }, { timeoutMs: 180000 });
+      await webRequest<void>('plugin_packages.install', { id, ...options }, { timeoutMs: 180000 });
     } catch (error) {
+      const payload = (error as WebError | undefined)?.payload as
+        { error_code?: string; conflict?: PluginReplacementConflict } | undefined;
+      if (payload?.error_code?.startsWith('PLUGIN_')) {
+        throw new PluginReplacementError(payload.error_code, payload.conflict);
+      }
       const pendingConnectors = extractPendingConnectors(error);
       if (pendingConnectors) {
         throw new PluginInstallPendingError(error instanceof Error ? error.message : String(error), pendingConnectors);

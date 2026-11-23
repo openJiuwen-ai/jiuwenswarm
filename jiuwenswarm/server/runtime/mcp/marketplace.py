@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import logging
 import shutil
 from pathlib import Path, PureWindowsPath
@@ -50,6 +52,21 @@ def _state() -> HubInstallStateStore:
     return HubInstallStateStore(_mcp_root())
 
 
+def _remote_icon(icon_uri: Any) -> str | None:
+    """Cache a Hub thumbnail data URL; public http(s) URLs pass through."""
+    value = str(icon_uri or "").strip()
+    if not value:
+        return None
+    if value.lower().startswith(("http://", "https://")):
+        return value
+    from jiuwenswarm.server.runtime.package_avatars import cached_package_avatar_url
+
+    return cached_package_avatar_url(
+        value,
+        cache_key="hub:" + hashlib.sha256(value.encode("utf-8")).hexdigest(),
+    ) or None
+
+
 def _remote_card(item: Any) -> dict[str, Any]:
     return {
         "id": item.asset_id,
@@ -61,7 +78,7 @@ def _remote_card(item: Any) -> dict[str, Any]:
         "integration_type": "",
         "connection_state": "disconnected",
         "has_bundled_skills": False,
-        "icon": item.icon_uri or None,
+        "icon": _remote_icon(item.icon_uri),
         "source": "hub",
         "installed": False,
         "version": item.public_latest_version,
@@ -129,15 +146,22 @@ def installed_mcp_descriptions() -> dict[str, dict[str, str]]:
 
 
 async def list_mcps_with_hub(
-    mcp_filter: str = "builtin",
+    mcp_filter: str | None = "builtin",
     *,
     hub_port: HubAssetPort | None = None,
     cache_mode: str | None = None,
     refresh: bool = False,
     query: str = "",
+    source_id: str | None = None,
+    metadata: Any = None,
 ) -> list[dict[str, Any]]:
     """Merge installed packages with ordinary, non-persisted Hub cards."""
-    local = registry.list_marketplace_mcps("local" if mcp_filter == "local" else "builtin")
+    del source_id, metadata
+    normalized_filter = "local" if mcp_filter == "local" else "builtin"
+    local = await asyncio.to_thread(
+        registry.list_marketplace_mcps,
+        normalized_filter,
+    )
     cards: dict[str, dict[str, Any]] = {}
     installed_asset_ids: set[str] = set()
     for card in local:
@@ -201,14 +225,20 @@ async def list_mcps_with_hub(
             for item in remote_items
             if hub_asset_matches_visible_query(item, normalized_query)
         ]
+    pending: list[Any] = []
     for item in remote_items:
-        if (
-            not item.package_name
-            or item.asset_id in installed_asset_ids
-            or item.package_name in cards
-        ):
+        if not item.package_name:
             continue
-        cards[item.package_name] = _remote_card(item)
+        if item.asset_id in installed_asset_ids or item.package_name in cards:
+            continue
+        pending.append(item)
+    if pending:
+        # Thumbnail caching writes files; keep it off the event loop.
+        remote_cards = await asyncio.to_thread(
+            lambda: [_remote_card(item) for item in pending]
+        )
+        for card in remote_cards:
+            cards.setdefault(card["package_name"], card)
     # Use the same marketplace sort as registry.list_marketplace_mcps.
     priority = {"huaweiyun-mcp": 0, "harmonyos-mcp": 0}
     sorted_cards = sorted(
@@ -299,7 +329,7 @@ async def show_mcp_with_hub(
         "integration_type": "",
         "connection_state": "disconnected",
         "has_bundled_skills": False,
-        "icon": detail.icon_uri or None,
+        "icon": await asyncio.to_thread(_remote_icon, detail.icon_uri),
         "source": "hub",
         "installed": False,
         "version": detail.version,
@@ -326,9 +356,14 @@ def _validate_hub_package_name(value: str) -> str:
 async def install_hub_mcp(
     asset_id: str,
     *,
+    source_id: str | None = None,
+    version_id: str | None = None,
+    package_name: str | None = None,
+    metadata: Any = None,
     hub_port: HubAssetPort | None = None,
     downloader: HubPackageDownloader | None = None,
 ) -> dict[str, Any]:
+    del source_id, version_id, package_name, metadata
     asset = str(asset_id or "").strip()
     if not asset:
         raise ValueError("Hub MCP asset id is required")

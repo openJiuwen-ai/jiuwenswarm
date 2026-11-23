@@ -20,7 +20,7 @@ from openjiuwen.harness.rails.context_engineer.context_processor_rail import Con
 from openjiuwen.harness.tools.skills.list_skill import ListSkillTool
 from openjiuwen.harness.tools.goal import GetCurrentGoalTool
 from openjiuwen.harness.tools import compression_recall
-from openjiuwen.symphony.discovery import InstalledSkillsDirectoryToolkit
+from openjiuwen.symphony.discovery import CapabilitySearchTool
 from jiuwenswarm.common.tool_display import extract_call_goal
 from jiuwenswarm.agents.harness.code.rails.heartbeat.runtime import HeartbeatRailRuntime
 from jiuwenswarm.agents.harness.code.rails.heartbeat.tools import HeartbeatRuntimeBridge
@@ -29,7 +29,9 @@ from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import _CronTools
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronTools
 from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools.timestamp_tool import convert_timestamp_to_utc8_time
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_binding import matches_bound_method, resolve_tool_binding
-from jiuwenswarm.agents.harness.common.rails.permissions.auto_decision import tool_search_args_valid
+from jiuwenswarm.agents.harness.common.rails.permissions.auto_decision import (
+    is_skill_only_search, tool_search_args_valid,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.models import ToolInvocation
 
 # LocalFunction exposes no public callable-identity API; pin the executable, not its name.
@@ -37,7 +39,7 @@ _TIMESTAMP_FUNC = convert_timestamp_to_utc8_time._func  # pylint: disable=protec
 _ACP_DELEGATES = {name: getattr(acp, name) for name in ("read_terminal_output", "wait_for_terminal_exit")}
 _RECALL_DELEGATE = compression_recall.recall_compressed_context
 _SESSION_OBSERVATION_TOOLS = {
-    "tool_search", "skill_index", "list_skill", "get_current_goal", "recall_compressed_context",
+    "tool_search", "capability_search", "list_skill", "get_current_goal", "recall_compressed_context",
 }
 
 
@@ -188,26 +190,22 @@ def _session_observation_binding(invocation, session_id: str, agent) -> bool:
                                ("tool_search", "_render_listing", "_render_schema", "_live_records"))
             and matches_bound_method(tool._func, expected_owner=toolkit, expected_func=ToolRetrievalToolkit.tool_search)
         )
-    if name == "skill_index":
+    if name == "capability_search":
         from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import SkillRetrievalPromptRail
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import SkillRetrievalToolkit
 
+        # Expert and MCP searches, including the default scope, use host callbacks and require manual approval here.
+        if not is_skill_only_search(invocation.tool_args.get("type")):
+            return False
         rail = _owned_rail(agent, SkillRetrievalPromptRail)
         if rail is None:
             return False
         wrapper = rail._source_toolkit
         if type(wrapper) is not SkillRetrievalToolkit or wrapper._session_scope != session_id:
             return False
-        toolkit = wrapper._index_toolkit
-        if not _methods_match(
-            toolkit, InstalledSkillsDirectoryToolkit, ("get_tools", "skill_index", "_execute", "_continue"),
-        ):
-            return False
-        # The verified public factory supplies the concrete SDK executor without a private-module import.
-        reference = InstalledSkillsDirectoryToolkit.get_tools(toolkit)[0]
         binding = _resolve_owned_readonly_tool(
-            invocation, agent, tool_type=type(reference), rail_type=SkillRetrievalPromptRail,
-            invoke_func=type(reference).invoke,
+            invocation, agent, tool_type=CapabilitySearchTool, rail_type=SkillRetrievalPromptRail,
+            invoke_func=CapabilitySearchTool.invoke,
         )
         if binding is None:
             return False
@@ -215,10 +213,7 @@ def _session_observation_binding(invocation, session_id: str, agent) -> bool:
         return bool(
             rail._agent in (agent, callback_agent) and rail._session_scope == session_id
             and rail._prompt_skillfs is wrapper._environment
-            and toolkit._environment is wrapper._environment and not toolkit._closed
-            and matches_bound_method(
-                tool._func, expected_owner=toolkit, expected_func=InstalledSkillsDirectoryToolkit.skill_index,
-            )
+            and CapabilitySearchTool.is_bound_to(tool, wrapper.runtime.retrieval, wrapper._environment, session_id)
         )
     if name == "list_skill":
         binding = _resolve_owned_readonly_tool(

@@ -194,6 +194,7 @@ class SessionExecutionHandle:
     # The interactions (questions, approvals, ...) this execution's pause emitted;
     # an answer to any of them resumes it.
     waiting_control_ids: frozenset[str] = frozenset()
+    answered_control_ids: frozenset[str] = frozenset()
     state: SessionExecutionState = SessionExecutionState.QUEUED
     created_at: float = field(default_factory=time.monotonic)
     started_at: float | None = None
@@ -218,6 +219,7 @@ class SessionExecutionHandle:
             root_work_kind=self.root_work_kind,
             root_request_id=self.root_request_id,
             waiting_control_ids=self.waiting_control_ids,
+            answered_control_ids=self.answered_control_ids,
             state=self.state,
             created_at=self.created_at,
             started_at=self.started_at,
@@ -246,6 +248,7 @@ class SessionExecutionSnapshot:
     finished_at: float | None
     error: str | None
     cancellation_requested: bool
+    answered_control_ids: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True, slots=True)

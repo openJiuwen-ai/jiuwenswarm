@@ -11,6 +11,7 @@ import pytest
 from jiuwenswarm.server.jiuwenmate.conversation_archive import ConversationArchive
 from jiuwenswarm.server.jiuwenmate.conversation_resources import ConversationResources
 from jiuwenswarm.server.jiuwenmate.delivery_service import ResultDeliveryService
+from jiuwenswarm.server.jiuwenmate.delivery_notices import DELIVERED_SHARING_NOTICE
 from jiuwenswarm.server.jiuwenmate.execution_models import (
     ConversationRef,
     RequestRouteSnapshot,
@@ -300,7 +301,8 @@ async def test_revocation_before_public_archive_retry_redacts_candidate(tmp_path
     service.set_sharing_guard(AsyncMock(return_value=False))
     await service.reconcile_archives()
     page = archive.recent(NS, group.group_chat_id, cursor=None, limit=20, visible_from=NOW)
-    assert [(item.message_id, item.text) for item in page.messages] == [("original-receipt", NOTICE)]
+    assert [(item.message_id, item.text) for item in page.messages] == [("original-receipt", DELIVERED_SHARING_NOTICE)]
+    assert page.messages[0].attachment_refs == ()
     assert stored_delivery(repository)["status"] == "delivered"
     assert repository.candidate_output(NS, "out-1").payload.text == PRIVATE
 

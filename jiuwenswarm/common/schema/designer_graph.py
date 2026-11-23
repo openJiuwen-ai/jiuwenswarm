@@ -1031,6 +1031,50 @@ def _asset_ref_uri(ref: object) -> str:
     return str(ref.get("uri") or "").strip()
 
 
+def apply_incoming_layouts(
+    incoming: DesignerExecutionGraph,
+    existing: DesignerExecutionGraph | None,
+) -> DesignerExecutionGraph:
+    """Take node layout from ``incoming`` and keep every other stored field.
+
+    A canvas drag or auto-layout save sends the whole graph, including
+    whatever config the browser last had. Merging only layout prevents that
+    snapshot from overwriting a concurrent prompt or artifact write.
+    """
+    if existing is None:
+        return incoming
+    incoming_by_id = {
+        str(node.get("id") or ""): node
+        for node in incoming.get("nodes") or []
+        if str(node.get("id") or "")
+    }
+    nodes: list[DesignerGraphNode] = []
+    changed = False
+    for node in existing.get("nodes") or []:
+        inc = incoming_by_id.get(str(node.get("id") or ""))
+        if not isinstance(inc, dict):
+            nodes.append(node)
+            continue
+        merged = dict(node)
+        inc_layout = inc.get("layout") if isinstance(inc.get("layout"), dict) else None
+        if inc_layout is not None and inc_layout != (node.get("layout") or {}):
+            merged["layout"] = dict(inc_layout)
+            changed = True
+        inc_cfg = inc.get("config") if isinstance(inc.get("config"), dict) else {}
+        if inc_cfg.get("user_resized") is True:
+            cfg = dict(merged.get("config") or {}) if isinstance(merged.get("config"), dict) else {}
+            if cfg.get("user_resized") is not True:
+                cfg["user_resized"] = True
+                merged["config"] = cfg
+                changed = True
+        nodes.append(merged)
+    if not changed:
+        return existing
+    next_graph = dict(existing)
+    next_graph["nodes"] = nodes
+    return next_graph
+
+
 def preserve_node_output_refs(
     incoming: DesignerExecutionGraph,
     existing: DesignerExecutionGraph | None,
@@ -1548,6 +1592,9 @@ def node_pipeline(node: DesignerGraphNode) -> str:
 
 
 def node_delegate(node: DesignerGraphNode) -> str:
+    # A worker agent has no music tool and only scripts a stand-in bed.
+    if node_pipeline(node) == PIPELINE_MUSIC:
+        return CONFIG_DELEGATE_HANDLER
     delegate = str(node_config(node).get("delegate") or CONFIG_DELEGATE_AGENT).strip()
     if delegate == CONFIG_DELEGATE_SUBAGENT:
         return CONFIG_DELEGATE_AGENT

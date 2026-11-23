@@ -48,6 +48,34 @@ from jiuwenswarm.server.runtime.agent_adapter.browser_runtime_security import (
 )
 
 
+def test_permission_card_channel_prefers_request_context_over_build_channel() -> None:
+    from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
+        TOOL_PERMISSION_CHANNEL_ID,
+    )
+
+    rail = build_permission_rail(
+        {"permissions": {"enabled": True}},
+        channel_id="acp",
+    )
+    assert rail is not None
+    request = SimpleNamespace(
+        ctx=SimpleNamespace(session=None),
+        tool_call=SimpleNamespace(name="bash", arguments="{}"),
+        result=None,
+    )
+    confirm = rail._host.request_permission_confirmation
+
+    current = TOOL_PERMISSION_CHANNEL_ID.set("web")
+    try:
+        chosen = asyncio.run(confirm(request))
+    finally:
+        TOOL_PERMISSION_CHANNEL_ID.reset(current)
+    assert chosen == "interrupt"
+
+    fallback = asyncio.run(confirm(request))
+    assert fallback is None
+
+
 def test_permission_builder_defaults_to_develop_manual_rail() -> None:
     rail = build_permission_rail(
         {"permissions": {"enabled": True, "mode": "auto"}},
@@ -134,6 +162,11 @@ def test_explicit_auto_builder_degrades_when_audit_root_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
+    # 分区后审计根兜底 get_infra_data_dir() 恒可用；显式注入 None 复现降级分支
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions.persistent_audit.resolve_persistent_audit_root",
+        lambda config: None,
+    )
     monkeypatch.delenv("JIUWENSWARM_DATA_DIR", raising=False)
     rail = build_permission_rail(
         {
@@ -685,13 +718,17 @@ def test_permission_interrupt_projects_reviewer_metadata_from_request_object() -
 
 
 def test_permission_interrupt_projects_sanitized_bounded_tool_payload() -> None:
+    reason = "Check /home/user/report.txt，保留后文。\ntoken=plain-secret\n" + "完整理由。" * 400
     interaction = SimpleNamespace(
         id="tool-call-payload",
         metadata={
             "reviewer_assessment_id": "internal-id",
             "decision_digest": "internal-digest",
             "reviewer_prompt": "internal-prompt",
-            "manual_reason_summary": "Check token=plain-secret before approval.",
+            "manual_reason_summary": reason,
+            "evidence_summary": reason,
+            "user_review_hint": reason,
+            "action_summary": "bash token=machine-secret",
             "contract_gate_missing_evidence": [
                 f"missing-{index}" for index in range(10)
             ],
@@ -721,9 +758,9 @@ def test_permission_interrupt_projects_sanitized_bounded_tool_payload() -> None:
         "nested": {"safe": True},
     }
     reviewer = question["reviewer_metadata"]
-    assert (
-        reviewer["manual_reason_summary"] == "Check token=[redacted] before approval."
-    )
+    for key in ("manual_reason_summary", "evidence_summary", "user_review_hint"):
+        assert reviewer[key] == reason
+    assert reviewer["action_summary"] == "bash token=[redacted]"
     assert reviewer["contract_gate_missing_evidence"][-1] == "[TRUNCATED]"
     assert len(reviewer["contract_gate_missing_evidence"]) == 9
     for forbidden in (

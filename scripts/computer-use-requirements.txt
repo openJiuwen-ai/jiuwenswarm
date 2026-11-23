@@ -1,2 +1,0 @@
-# Desktop-only SDK and native build tooling; Python 3.11+.
-computer-use-toolkit @ git+https://gitcode.com/openJiuwen/computer-use.git@65f3e67cd670ea727086d4376f582771ccc4d2d4

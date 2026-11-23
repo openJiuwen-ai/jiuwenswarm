@@ -12,6 +12,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 
+from jiuwenswarm.common.request_ext import reset_ext, set_current
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.context import RequestContext, bind_request_tenant
@@ -48,6 +49,19 @@ async def _request_tenant_scope(ctx: RequestContext):
         yield
 
 
+@asynccontextmanager
+async def _request_scope(ctx: RequestContext):
+    """Bind this invocation's extension fields and restore the caller on exit."""
+    metadata = ctx.request.metadata
+    ext = metadata.get("ext") if isinstance(metadata, dict) else None
+    token = set_current(ext if isinstance(ext, dict) else None)
+    try:
+        async with _request_tenant_scope(ctx):
+            yield
+    finally:
+        reset_ext(token)
+
+
 def _error_response(ctx: RequestContext, exc: BaseException) -> AgentResponse:
     return AgentResponse(
         request_id=ctx.request.request_id,
@@ -61,7 +75,7 @@ def _error_response(ctx: RequestContext, exc: BaseException) -> AgentResponse:
 async def invoke_unary(ctx: RequestContext, handler: Handler) -> None:
     """调用一次性回包。异常变成一条失败 JSON，取消仍向外抛。"""
     try:
-        async with _request_tenant_scope(ctx):
+        async with _request_scope(ctx):
             await handler(ctx)
     except Exception as exc:
         logger.exception(
@@ -75,7 +89,7 @@ async def invoke_unary(ctx: RequestContext, handler: Handler) -> None:
 async def invoke_stream(ctx: RequestContext, handler: Handler) -> None:
     """调用流式回包。取消必须继续向外抛，不能吞掉。"""
     try:
-        async with _request_tenant_scope(ctx):
+        async with _request_scope(ctx):
             await handler(ctx)
     except asyncio.CancelledError:
         logger.info(

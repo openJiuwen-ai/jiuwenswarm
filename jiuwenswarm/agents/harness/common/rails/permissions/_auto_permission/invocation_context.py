@@ -534,22 +534,51 @@ def _normalize_command_invocation_for_execution(
     invocation: ToolInvocation,
     kwargs: dict[str, Any],
 ) -> tuple[ToolInvocation, str]:
-    """Freeze mcp_exec_command's effective workdir into its execution args."""
+    """Freeze the supported shell executor's actual directory without aliases."""
 
-    if invocation.tool_name != "mcp_exec_command":
+    if invocation.tool_name not in {"mcp_exec_command", "bash"}:
         return invocation, ""
+    if invocation.tool_name == "bash":
+        if invocation.ctx is None:
+            return invocation, ""
+        from openjiuwen.harness.tools.shell.bash._tool import BashTool
+
+        from jiuwenswarm.agents.harness.common.rails.permissions.tool_binding import resolve_tool_binding
+        from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.readonly_tool_bindings import (
+            _invoke_matches,
+        )
+
+        try:
+            tool = resolve_tool_binding(invocation.ctx.agent, "bash", BashTool)
+            if tool is None or not _invoke_matches(tool, BashTool.invoke):
+                return invocation, ""
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return invocation, ""
     normalized_args = normalize_invocation_tool_args(
         invocation.tool_name,
         invocation.tool_args,
     )
-    if not normalized_args or "cwd" in normalized_args:
+    if not normalized_args and invocation.tool_name == "bash":
+        return invocation, ""
+    if not normalized_args or (invocation.tool_name == "mcp_exec_command" and "cwd" in normalized_args):
         return invocation, "command_workdir_contract_invalid"
     try:
-        resolved = resolve_command_workdir(
-            normalized_args.get("workdir", "."),
-            runtime_paths=current_command_runtime_paths(require_runtime_cwd=True),
-        )
+        if invocation.tool_name == "bash":
+            raw_workdir = normalized_args.get("workdir")
+            if raw_workdir:
+                if not isinstance(raw_workdir, str) or not Path(raw_workdir).is_absolute():
+                    return invocation, ""
+                resolved = Path(raw_workdir)
+            else:
+                resolved = current_command_runtime_paths(require_runtime_cwd=True).current_cwd
+        else:
+            resolved = resolve_command_workdir(
+                normalized_args.get("workdir", "."),
+                runtime_paths=current_command_runtime_paths(require_runtime_cwd=True),
+            )
     except (OSError, RuntimeError, TypeError, ValueError):
+        if invocation.tool_name == "bash":
+            return invocation, ""
         return invocation, "command_workdir_contract_invalid"
     execution_args = {**normalized_args, "workdir": str(resolved)}
     try:

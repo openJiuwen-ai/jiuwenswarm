@@ -11,6 +11,7 @@ import {
   DragEvent,
   ChangeEvent,
   useMemo,
+  useSyncExternalStore,
   forwardRef,
   useImperativeHandle,
   FormEvent,
@@ -53,9 +54,15 @@ import { effectivePermissionProfile, permissionOptionsForMode } from '../../conf
 import clsx from 'clsx';
 import { PermissionWarningDialog } from './PermissionWarningDialog';
 import ChatModelSelector from './ChatModelSelector';
+import DesignerModelSelector from '../../features/designer/components/DesignerModelSelector';
+import { getTeamSessionLive, subscribeTeamSessionLive, teamFollowUpLiveReady } from '../../services/sessionLive';
+import { getTeamQuota } from '../../services/teamApi';
+import { ENTERPRISE_ATTACHMENT_MAX_BYTES } from '../../services/obsUpload';
+import { designLandingModelProblem } from '../../features/designer/designLandingDraft';
 import { FileIcon } from '../FileIcon';
 import { getEvolutionPillLabel } from './evolution-status';
 import { webRequest } from '../../services/webClient';
+import { GitIdentityOption } from './GitIdentityOption';
 import {
   markUploadDispatched,
   unmarkUploadDispatched,
@@ -735,8 +742,11 @@ function getDocumentValidationError(
   options?: { filename?: string; localPath?: string },
 ): string | null {
   const filename = options?.filename || file?.name || t('chat.inputAttachment.unnamedFile');
-  if (file && !getLocalFilePath(file, options?.localPath) && file.size > MAX_FILE_BYTES) {
-    return t('chat.inputAttachment.fileSizeExceeded', { name: filename, limit: formatAttachmentSize(MAX_FILE_BYTES) });
+  const enterprise = isEnterprise();
+  const maxBytes = enterprise ? ENTERPRISE_ATTACHMENT_MAX_BYTES : MAX_FILE_BYTES;
+  if (file && !getLocalFilePath(file, options?.localPath) && file.size > maxBytes) {
+    const limit = enterprise ? `${maxBytes / (1024 * 1024)} MiB` : formatAttachmentSize(maxBytes);
+    return t('chat.inputAttachment.fileSizeExceeded', { name: filename, limit });
   }
   if (file && isForbiddenDocumentFile(file)) {
     return t('chat.inputAttachment.forbiddenFileType', { name: filename });
@@ -838,6 +848,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   // 才会重置成目标会话的草稿。切会话瞬间两者短暂不一致，谁依赖 attachments 做跨会话操作
   // （比如把它们注册成任务素材）都要先核对这个 ref，否则会把上一个会话的草稿误登记到新会话。
   const attachmentSessionIdRef = useRef(activeSessionId);
+  // 系统文件选择器把文件交给浏览器之前不会触发 change；先展示准备态，
+  // 避免选择确认后输入框长时间没有任何反馈（issue #6493）。
+  const [isPreparingFiles, setIsPreparingFiles] = useState(false);
   const [attachmentAlerts, setAttachmentAlerts] = useState<AttachmentAlert[]>([]);
   const attachmentAlertTimersRef = useRef<Map<string, number>>(new Map());
   const [attachmentMenuId, setAttachmentMenuId] = useState<string | null>(null);
@@ -946,6 +959,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const composerFrameRef = useRef<HTMLDivElement>(null);
   const composerSuggestionMenuRef = useRef<HTMLDivElement>(null);
   const compactingSessionIdsRef = useRef<Set<string>>(new Set());
+  const designLandingGateRef = useRef(false);
   const compactStartedAtRef = useRef<Map<string, number>>(new Map());
   const skillPanelRef = useRef<HTMLDivElement>(null);
   const swarmflowConfigBtnRef = useRef<HTMLButtonElement>(null);
@@ -1202,13 +1216,61 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const isAgentMode = mode === 'agent';
   const isTeamMode = mode === 'team';
   const enterprise = isEnterprise();
-  const modeLocked = enterprise || hasHistory || isProcessing;
+  const teamSessionLive = useSyncExternalStore(
+    subscribeTeamSessionLive,
+    getTeamSessionLive,
+    getTeamSessionLive,
+  );
+  const teamLiveReady = !isTeamMode || teamFollowUpLiveReady(
+    enterprise,
+    activeSessionId,
+    teamSessionLive,
+    NEW_CONVERSATION_ID,
+  );
+  const modeLocked = hasHistory || isProcessing;
+  const [teamQuotaHint, setTeamQuotaHint] = useState('');
+  const [teamCreateBlocked, setTeamCreateBlocked] = useState(false);
 
   useEffect(() => {
-    if (enterprise && activeSessionId === NEW_CONVERSATION_ID && mode !== 'agent') {
-      onSwitchMode('agent');
+    if (!enterprise || !isTeamMode || activeSessionId !== NEW_CONVERSATION_ID) {
+      setTeamQuotaHint('');
+      setTeamCreateBlocked(false);
+      return;
     }
-  }, [enterprise, activeSessionId, mode, onSwitchMode]);
+    let cancelled = false;
+    void getTeamQuota()
+      .then((quota) => {
+        if (cancelled) return;
+        const userLimit = quota.teams.limit;
+        const userUsed = quota.teams.used;
+        if (userLimit > 0 && userUsed >= userLimit) {
+          setTeamQuotaHint(t('teams.createUserFull', { limit: userLimit }));
+          setTeamCreateBlocked(true);
+          return;
+        }
+        const orgLimit = quota.org?.limit ?? 0;
+        const orgUsed = quota.org?.used ?? 0;
+        if (orgLimit > 0 && orgUsed >= orgLimit) {
+          setTeamQuotaHint(t('teams.createOrgFull', { limit: orgLimit }));
+          setTeamCreateBlocked(true);
+          return;
+        }
+        const parts = [t('teams.quota', { used: userUsed, limit: userLimit, default: quota.teams.default })];
+        if (quota.org && orgLimit > 0) {
+          parts.push(t('teams.orgQuota', { used: orgUsed, limit: orgLimit }));
+        }
+        setTeamQuotaHint(parts.join(' · '));
+        setTeamCreateBlocked(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setTeamQuotaHint(t('teams.quotaUnavailable'));
+        setTeamCreateBlocked(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [enterprise, isTeamMode, activeSessionId, t]);
   const isAutoHarnessMode = mode === 'auto_harness';
   const existingTeamGroupSelectionDisabled = Boolean(
     isTeamMode && activeSessionId !== NEW_CONVERSATION_ID && !agentGroupBinding && !agentGroupBindingPending,
@@ -1264,13 +1326,20 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const swarmflowActive = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.enableSwarmflow ?? false);
   const swarmflowBudget = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.swarmflowBudget ?? null);
   // 进入真实会话后开关只读：仅新建对话页可修改，真实会话可查看不可改
-  const swarmflowToggleDisabled = isProcessing || (activeSessionId !== NEW_CONVERSATION_ID && hasHistory);
+  const swarmflowSessionFrozen = activeSessionId !== NEW_CONVERSATION_ID && hasHistory;
+  const swarmflowToggleDisabled = isProcessing || swarmflowSessionFrozen;
   // 会话级调度模式：实验开关「调度模式」打开才展示；团队按首条消息建好后不可再改，
   // 与 swarmflow 开关同一把锁（仅新建对话页可拨）。
   const teamScheduledDispatchEnabled = useTeamScheduledDispatchEnabled();
   const sessionTeamDispatchMode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamDispatchMode);
   const teamDispatchScheduled = resolveTeamDispatchMode(sessionTeamDispatchMode) === 'scheduled';
   const teamDispatchToggleDisabled = swarmflowToggleDisabled;
+  // 置灰原因二分，冻结优先：建队冻结是永久的，会话进行中只是暂时的，两者同时
+  // 成立时报忙态会骗用户白等（团队活着期间常驻忙态，几乎永远轮不到冻结文案）。
+  // 与调度模式的 readonlyHint 同一做法，也与计划开关取 planModeGate 的 reason 对齐。
+  const swarmflowDisabledHint = swarmflowSessionFrozen
+    ? 'swarmflow.readonlyHint'
+    : 'swarmflow.closeTagDisabled';
   // 调度模式的子开关「启动即建队」（F_122）：只在调度模式打开时展示，同一把锁。
   const sessionTeamBootstrapMode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamBootstrapMode);
   const teamBootstrapFramework = resolveTeamBootstrapMode(sessionTeamBootstrapMode) === 'framework';
@@ -1650,6 +1719,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     return selectedProject && !isDefaultInputProject(selectedProject) ? selectedProject : null;
   }, [activeSession, projects, selectedProject, t, workMode]);
 
+  const independentGitIdentity = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.independentGitIdentity ?? false,
+  );
+  // 开关只改本地会话状态，随下一条 team chat.send 的 execution_settings 下发并由后端提交。
+  const toggleIndependentGitIdentity = (next: boolean) => {
+    if (!activeSessionId) return;
+    useSessionStore.getState().setIndependentGitIdentity(activeSessionId, next);
+  };
+
   const appendTaskAsrTranscript = useCallback(
     (transcript: string) => {
       const text = transcript.trim();
@@ -1699,7 +1777,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const uploadLimitsTooltip = [
     t('chat.inputAttachment.imageLimitTooltip', { limit: MAX_IMAGE_BYTES / (1024 * 1024) }),
     ...(!isDesktopBridgeReady
-      ? [t('chat.inputAttachment.fileLimitTooltip', { limit: MAX_FILE_BYTES / (1024 * 1024) })]
+      ? [
+          enterprise
+            ? t('chat.inputAttachment.enterpriseDocumentLimitTooltip', {
+                limit: ENTERPRISE_ATTACHMENT_MAX_BYTES / (1024 * 1024),
+              })
+            : t('chat.inputAttachment.fileLimitTooltip', { limit: MAX_FILE_BYTES / (1024 * 1024) }),
+        ]
       : []),
     t('chat.inputAttachment.countLimitTooltip', { limit: MAX_ATTACHMENT_COUNT }),
   ].join('\n');
@@ -1726,6 +1810,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       }
       clearAttachmentAlertTimers(attachmentAlertTimersRef.current);
     };
+  }, []);
+
+  // 取消选择时现代浏览器会派发 cancel；老版本浏览器由准备卡片上的关闭按钮兜底。
+  useEffect(() => {
+    const input = fileInputRef.current;
+    if (!input) return;
+    const handleCancel = () => setIsPreparingFiles(false);
+    input.addEventListener('cancel', handleCancel);
+    return () => input.removeEventListener('cancel', handleCancel);
   }, []);
 
   const pushAttachmentAlert = useCallback((message: string) => {
@@ -2028,6 +2121,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             // 新会话尚无服务器侧会话路径：浏览器端无法获得 persistedMediaItem.path，
             // 需携带 base64 作为发送载体，否则附件进不了 ready 列表、发送按钮保持灰色。
             const base64Payload = browserFile ? await readBinaryFileAsBase64(browserFile) : null;
+            if (browserFile && !base64Payload?.base64Data) {
+              updateAttachment(attachment.id, {
+                status: 'error',
+                error: t('chat.inputAttachment.uploadFailed'),
+              });
+              return;
+            }
             updateAttachment(attachment.id, {
               persistedMediaItem: {
                 type: 'document',
@@ -2387,6 +2487,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     // Web 直接选择访问者电脑上的文件；桌面端通过原生桥接保留本机路径引用。
     if (!isDesktopBridgeReady && !isDesktopLocalFilePicker()) {
       if (fileInputRef.current) {
+        setIsPreparingFiles(true);
         fileInputRef.current.click();
       } else {
         pushAttachmentAlert(t('chat.inputAttachment.filePickerFailed'));
@@ -2397,7 +2498,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       pushAttachmentAlert(t('chat.inputAttachment.filePickerFailed'));
       return;
     }
+    setIsPreparingFiles(true);
     const result = await selectLocalFiles(true);
+    setIsPreparingFiles(false);
     if (result.ok) {
       appendLocalFilePicks(result.files);
       return;
@@ -2807,8 +2910,17 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     [activeSessionId, planActive, pushAttachmentAlert, t],
   );
 
-  const handleSubmit = useCallback(() => {
+  const handleSubmit = useCallback(async () => {
     if (composerDisabled || isListening || isTranscribing || modelGroupSendBlocked) return;
+    if (
+      enterprise &&
+      isTeamMode &&
+      (useChatStore.getState().activeSessionId ?? NEW_CONVERSATION_ID) === NEW_CONVERSATION_ID &&
+      teamCreateBlocked
+    ) {
+      if (teamQuotaHint) pushAttachmentAlert(teamQuotaHint);
+      return;
+    }
 
     // 用富文本（含 chip 标记）作为发送内容，气泡可交织渲染技能
     const richContent = extractRichContent();
@@ -2874,11 +2986,25 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     const hasReadyMedia = readyMediaItems.length > 0;
     // Block only when there is neither text, a ready attachment, nor a
     // selected skill to send.
-    if ((!trimmedBase && !hasReadyMedia && selectedSkills.length === 0) || hasUploadingAttachments || hasAttachmentErrors) return;
+    if ((!trimmedBase && !hasReadyMedia && selectedSkills.length === 0) || hasUploadingAttachments || hasAttachmentErrors || isPreparingFiles) return;
     // In agent mode attachments queue with the task (taskQueue carries mediaItems).
     // Other non-team modes still go through the text-only onInterrupt channel where
     // attachments would be lost, so keep blocking there.
     if (isInterruptible && !isTeamMode && !isAgentMode && hasReadyMedia) return;
+
+    // Design landing validates models after the click. The composer used to
+    // clear before that check finished, so a missing model wiped the prompt.
+    if (isDesignLanding) {
+      if (designLandingGateRef.current) return;
+      designLandingGateRef.current = true;
+      let modelProblem: string | null = null;
+      try {
+        modelProblem = await designLandingModelProblem();
+      } finally {
+        designLandingGateRef.current = false;
+      }
+      if (modelProblem) return;
+    }
 
     const sid = useChatStore.getState().activeSessionId;
     let sentViaTaskQueue = false;
@@ -2898,6 +3024,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       // 在 session.create 成功、拿到真实 session id 后再落地消息 + 调 onSetGoal
       onSubmit(submitContent, readyMediaItems);
     } else if (isTeamMode) {
+      if (!teamFollowUpLiveReady(enterprise, sid, getTeamSessionLive(), NEW_CONVERSATION_ID)) return;
       onSubmit(submitContent, readyMediaItems);
     } else if (queuePaused && isAgentMode && sid) {
       // 队列已暂停时，弹窗提示用户选择
@@ -2966,7 +3093,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     readyMediaItems,
     hasUploadingAttachments,
     hasAttachmentErrors,
+    isPreparingFiles,
     composerDisabled,
+    isDesignLanding,
     isListening,
     isTranscribing,
     modelGroupSendBlocked,
@@ -2978,6 +3107,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     mode,
     isAgentMode,
     isTeamMode,
+    enterprise,
+    teamCreateBlocked,
+    teamQuotaHint,
     queuePaused,
     goalArmed,
     onSetGoal,
@@ -3003,11 +3135,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       !isListening &&
       !isTranscribing &&
       !modelGroupSendBlocked &&
+      teamLiveReady &&
       (hasTextDraft || hasReadyMedia || selectedSkills.length > 0) &&
       !isLoadingHistory &&
       !isImageInterruptBlocked &&
       !hasUploadingAttachments &&
-      !hasAttachmentErrors);
+      !hasAttachmentErrors &&
+      !isPreparingFiles);
 
   const handleSendButtonClick = useCallback(() => {
     if (designLandingSubmitting) return;
@@ -3511,6 +3645,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   const handleFileInputChange = useCallback(
     (event: ChangeEvent<HTMLInputElement>) => {
+      setIsPreparingFiles(false);
       const files = event.target.files;
       if (files) {
         void appendAttachmentFiles(files);
@@ -4102,7 +4237,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             enterprise && 'chat-input-container--enterprise',
             showWorkContextRow && 'chat-input-container--work-home',
             (isModeMenuOpen || workMenuOpen) && 'chat-input-container--menu-open',
-            composerSuggestion && !showSlashSuggestionBelow && 'chat-input-container--suggestion-open',
+            composerSuggestion && 'chat-input-container--suggestion-open',
             isListening && 'chat-input-container--recording',
             isCompactRunning && 'chat-input-container--command-pending',
           )}
@@ -4124,7 +4259,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
           )}
 
           <div className="chat-input-body" data-testid="chat-panel-input-body">
-            {(attachments.length > 0 || referencedAssetCards.length > 0) && (
+            {(attachments.length > 0 || referencedAssetCards.length > 0 || isPreparingFiles) && (
               <div className="chat-input-attachment-panel" data-testid="chat-panel-input-attachment-panel">
                 <div
                   className={cx(
@@ -4133,6 +4268,51 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                   )}
                   data-testid="chat-panel-input-attachment-grid"
                 >
+                  {isPreparingFiles && (
+                    <div
+                      className="chat-input-attachment-card chat-input-attachment-card--uploading"
+                      data-testid="chat-panel-input-attachment-preparing"
+                      role="status"
+                      aria-live="polite"
+                    >
+                      <div
+                        className="chat-input-attachment-preview"
+                        aria-hidden="true"
+                        data-testid="chat-panel-input-attachment-preparing-preview"
+                      >
+                        <Loader2 className="chat-input-attachment-spin" size={20} strokeWidth={2} />
+                      </div>
+                      <div
+                        className="chat-input-attachment-main"
+                        data-testid="chat-panel-input-attachment-preparing-main"
+                      >
+                        <div
+                          className="chat-input-attachment-name"
+                          data-testid="chat-panel-input-attachment-preparing-name"
+                        >
+                          <span className="chat-input-attachment-name-text">
+                            {t('chat.inputAttachment.preparingFiles')}
+                          </span>
+                        </div>
+                        <div
+                          className="chat-input-attachment-meta"
+                          data-testid="chat-panel-input-attachment-preparing-meta"
+                        >
+                          <span>{t('chat.inputAttachment.preparingFilesHint')}</span>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        className="chat-input-attachment-remove"
+                        data-testid="chat-panel-input-attachment-preparing-dismiss"
+                        title={t('chat.inputAttachment.cancelPreparing')}
+                        aria-label={t('chat.inputAttachment.cancelPreparing')}
+                        onClick={() => setIsPreparingFiles(false)}
+                      >
+                        <X size={12} strokeWidth={2} />
+                      </button>
+                    </div>
+                  )}
                   {attachments.map((attachment) => (
                     <div
                       className={cx(
@@ -4932,6 +5112,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                               </div>
                             );
                           })()}
+                        <GitIdentityOption
+                          visible={isTeamMode && workMode === 'code'}
+                          checked={independentGitIdentity}
+                          label={t('gitIdentity.label')}
+                          hint={t('gitIdentity.hint')}
+                          onChange={toggleIndependentGitIdentity}
+                        />
                         {isTeamMode && teamScheduledDispatchEnabled && (
                           <div
                             className={cx(
@@ -5002,6 +5189,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                 )}
                                 role="menuitem"
                                 data-testid="chat-panel-input-attach-menu-swarmflow"
+                                title={swarmflowToggleDisabled ? t(swarmflowDisabledHint) : undefined}
                               >
                                 <span
                                   className="chat-mode-select__option-main"
@@ -5170,9 +5358,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       }
                       setIsModeMenuOpen((open) => !open);
                     }}
-                    disabled={enterprise}
-                    aria-haspopup={enterprise ? undefined : 'menu'}
-                    aria-expanded={enterprise ? undefined : isModeMenuOpen}
+                    aria-haspopup="menu"
+                    aria-expanded={isModeMenuOpen}
                     style={modeLocked ? { cursor: 'default' } : undefined}
                   >
                     <span className="chat-mode-select__value" data-testid="chat-panel-mode-select-value">
@@ -5195,8 +5382,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     )}
                   </button>
 
-                  {!enterprise &&
-                    isModeMenuOpen &&
+                  {isModeMenuOpen &&
                     modeMenuAnchor &&
                     createPortal(
                       <div
@@ -5266,8 +5452,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       </div>,
                       document.body,
                     )}
-                  {!enterprise &&
-                    isModeMenuOpen &&
+                  {isModeMenuOpen &&
                     hoveredOptionDesc &&
                     hoveredOptionRect &&
                     createPortal(
@@ -5286,6 +5471,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       document.body,
                     )}
                 </div>
+                {enterprise && isTeamMode && activeSessionId === NEW_CONVERSATION_ID && teamQuotaHint ? (
+                  <span
+                    className={clsx('chat-team-quota-hint', teamCreateBlocked && 'chat-team-quota-hint--blocked')}
+                    data-testid="chat-panel-team-quota"
+                  >
+                    {teamQuotaHint}
+                  </span>
+                ) : null}
                 {!enterprise && !isTeamMode && (
                   <PermissionSelector
                     mode={mode}
@@ -5414,15 +5607,19 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     </span>
                     {(() => {
                       // 关闭「计划」chip 与输入框旁 Plan 开关、`/plan` 命令共用同一套限制
-                      // （planModeGate）：会话进行中 / 暂停 / 等待 ask_user 回答时不可退出。
-                      const closeBlocked = !evaluatePlanToggle(activeSessionId, false).ok;
+                      // （planModeGate）：会话进行中 / 暂停 / 等待 ask_user 回答时不可退出，
+                      // 集群会话建队后永久只读。提示语取闸门给的 reason，别写死忙态文案。
+                      const closeDecision = evaluatePlanToggle(activeSessionId, false);
+                      const closeBlocked = !closeDecision.ok;
                       return (
                         <button
                           type="button"
                           className="chat-agent-tag__close"
                           data-testid="chat-panel-plan-tag-close"
                           disabled={closeBlocked}
-                          aria-label={closeBlocked ? t('plan.closeTagDisabled') : t('plan.closeTag')}
+                          aria-label={
+                            closeDecision.reason ? t(closeDecision.reason) : t('plan.closeTag')
+                          }
                           onClick={() => {
                             applyPlanToggle(activeSessionId, false);
                           }}
@@ -5488,7 +5685,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                       className="chat-goal-tag__close"
                       data-testid="chat-panel-swarmflow-tag-close"
                       disabled={swarmflowToggleDisabled}
-                      title={swarmflowToggleDisabled ? t('swarmflow.closeTagDisabled') : t('swarmflow.closeTag')}
+                      title={swarmflowToggleDisabled ? t(swarmflowDisabledHint) : t('swarmflow.closeTag')}
                       onClick={() => {
                         if (swarmflowToggleDisabled) return;
                         if (!activeSessionId) return;
@@ -5540,11 +5737,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
                 {(isAgentMode || isTeamMode) && <ContextUsageIndicator />}
 
-                {isListening ? <RecordingWaveform level={audioLevel} /> : <ChatModelSelector
+                {isListening ? <RecordingWaveform level={audioLevel} /> : workMode === 'design' ? (
+                  <DesignerModelSelector sessionId={activeSessionId ?? undefined}
+                    disabled={isProcessing || composerDisabled} readOnly={!isDesignLanding} />
+                ) : <ChatModelSelector
                   disabled={
                     isProcessing || composerDisabled || (!isAgentMode && activeSessionId !== NEW_CONVERSATION_ID)
                   }
-                  allowModelGroups={!isDesignLanding}
+                  includeModelGroups={!isDesignLanding}
                 />}
 
                 {taskAsrEnabled && <button

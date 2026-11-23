@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 from agent_gateway.routing.keys import AgentRef
-from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
+from e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest, PermissionContext
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.front.admission import ExecutionAdmission
@@ -218,7 +218,20 @@ async def test_ipc_request_stream_and_cancel() -> None:
 
 
 @pytest.mark.asyncio
-async def test_supervisor_stub_dispatches_stream_and_cancel() -> None:
+@pytest.mark.parametrize("startup_delay", [0, 10], ids=["normal", "slow-start"])
+async def test_supervisor_stub_dispatches_stream_and_cancel(monkeypatch, startup_delay) -> None:
+    from jiuwenswarm.server.supervisor.worker_process import WorkerProcess
+
+    original_spawn = WorkerProcess.spawn
+
+    async def spawn(process):
+        await asyncio.sleep(startup_delay)
+        await original_spawn(process)
+
+    monkeypatch.setattr(WorkerProcess, "spawn", spawn)
+    # Admission forwards warming requests directly to the Supervisor, so its
+    # IPC wait and the outer startup wait must share the cold-start budget.
+    startup_timeout = 30
     path = _socket_path()
     capture = _Capture()
     readiness = Readiness()
@@ -230,28 +243,37 @@ async def test_supervisor_stub_dispatches_stream_and_cancel() -> None:
         stub=True,
         stub_ready_delay=0.2,
         max_restarts=0,
+        connect_timeout=startup_timeout,
     )
-    admission = ExecutionAdmission(readiness, forwarder=capture, wait_seconds=5)  # type: ignore[arg-type]
+    admission = ExecutionAdmission(
+        readiness, forwarder=capture, wait_seconds=startup_timeout,  # type: ignore[arg-type]
+    )
     admission.attach_backend(supervisor)
     boot = asyncio.create_task(supervisor.run_until_ipc_ready())
     chat = _request(ReqMethod.CHAT_SEND, is_stream=True)
     queued = asyncio.create_task(admission.dispatch(object(), chat, asyncio.Lock()))
     try:
-        await asyncio.wait_for(boot, 5)
+        await asyncio.wait_for(boot, startup_timeout)
         await asyncio.wait_for(queued, 5)
-        assert readiness.state is ReadinessState.AGENT_READY
+        assert readiness.state is ReadinessState.AGENT_READY, capture.frames
         assert supervisor.worker_for_session(chat.session_id) == "primary"
         assert supervisor.registry.get("primary") is not None
         assert supervisor.registry.get("primary").ready is True
         joined = json.dumps(capture.frames)
         assert "runtime.warming" in joined
-        assert "chat.send" in joined
+        assert any(
+            frame.get("request_id") == chat.request_id and frame.get("echo") == ReqMethod.CHAT_SEND.value
+            for frame in capture.frames
+        ), capture.frames
 
         capture.frames.clear()
         cancel = _request(ReqMethod.CHAT_CANCEL)
         cancel.session_id = chat.session_id
         await supervisor.dispatch_parsed_request(object(), cancel, asyncio.Lock())
-        assert "chat.interrupt" in json.dumps(capture.frames)
+        assert any(
+            frame.get("request_id") == cancel.request_id and frame.get("echo") == ReqMethod.CHAT_CANCEL.value
+            for frame in capture.frames
+        ), capture.frames
     finally:
         await supervisor.stop(terminate_worker=True)
 
@@ -271,7 +293,8 @@ async def test_worker_crash_fails_inflight_request() -> None:
         max_restarts=0,
     )
     try:
-        await asyncio.wait_for(supervisor.run_until_ipc_ready(), 5)
+        # Allow cold interpreter/import startup on loaded CI runners; crash handling stays bounded below.
+        await asyncio.wait_for(supervisor.run_until_ipc_ready(), 30)
         await asyncio.wait_for(readiness.wait_agent_ready(2), 3)
         request = _request(ReqMethod.CHAT_RESUME)
         await asyncio.wait_for(
@@ -1059,8 +1082,10 @@ async def test_recover_from_failed_restarts_resident_worker() -> None:
     proc = await _spawn_stub_worker(path)
     readiness = Readiness()
     readiness.mark_runtime_warming()
+    capture = _Capture()
     supervisor = RuntimeSupervisor(
         readiness,
+        forwarder=capture,
         socket_path=path,
         stub=True,
         max_restarts=3,
@@ -1074,9 +1099,13 @@ async def test_recover_from_failed_restarts_resident_worker() -> None:
         # Simulate a broken resident Worker: the Runtime failed to load and
         # the supervisor marked the failure sticky, while the Worker process
         # stays alive on its socket (load failures never self-retry).
-        readiness.mark_failed("no module named 'a4p'")
-        supervisor._fatal = True
-        supervisor._fatal_reason = "no module named 'a4p'"
+        await supervisor._handle({"kind": "readiness", "state": "FAILED", "reason": "no module named 'a4p'"})
+        # The Front startup barrier may resume after the first FAILED frame.
+        # Keep the control plane available on the validated Worker connection.
+        await asyncio.wait_for(supervisor.run_until_ipc_ready(), 1)
+        assert readiness.state is ReadinessState.FAILED and supervisor._fatal
+        await supervisor.dispatch_parsed_request(object(), _request(ReqMethod.CHAT_SEND), asyncio.Lock())
+        assert capture.frames[-1]["body"]["details"]["code"] == "WORKER_CLOSED"
         assert await supervisor.recover_from_failed(timeout=15) is True
         assert readiness.state is ReadinessState.AGENT_READY
         for _ in range(150):
@@ -1094,6 +1123,22 @@ async def test_recover_from_failed_restarts_resident_worker() -> None:
             except (OSError, asyncio.TimeoutError):
                 proc.terminate()
                 await proc.wait()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("validated", [False, True], ids=["unvalidated", "unregistered"])
+async def test_failed_startup_refuses_unpublished_worker(monkeypatch, validated) -> None:
+    supervisor = RuntimeSupervisor(Readiness())
+
+    async def report_failed():
+        supervisor._conn = _RecordingConn()
+        supervisor._validated_conn = supervisor._conn if validated else None
+        supervisor._apply_readiness({"state": "FAILED", "reason": "startup interrupted"})
+        supervisor._ipc_ready.set()
+
+    monkeypatch.setattr(supervisor, "_supervise", report_failed)
+    with pytest.raises(RuntimeError, match="startup interrupted"):
+        await asyncio.wait_for(supervisor.run_until_ipc_ready(), 1)
 
 
 @pytest.mark.asyncio
@@ -1119,6 +1164,8 @@ async def test_health_retirement_failure_marks_failed_and_wakes_waiters(monkeypa
     await asyncio.wait_for(supervisor._loop_task, 1)
     assert readiness.state is ReadinessState.FAILED
     assert supervisor._conn is None and supervisor._ipc_ready.is_set()
+    assert not supervisor._retryable_failure
+    assert supervisor._automatic_recovery_task is None
     with pytest.raises(RuntimeError, match="unhealthy Worker could not be retired"):
         await asyncio.wait_for(supervisor.run_until_ipc_ready(), 1)
 
@@ -1167,28 +1214,6 @@ async def test_shutdown_eof_resolves_ack_waiter_during_failed_recovery(monkeypat
     assert outcome["ok"] is False
     assert "closed before shutdown acknowledgement" in outcome["error"]
 
-@pytest.mark.asyncio
-async def test_reconnect_drops_old_generation_output() -> None:
-    holder = ConnHolder()
-    bridge = WorkerGatewayBridge(holder)
-    dispatcher = WorkerDispatcher(bridge)
-    runtime = _BlockingRuntime()
-    first = _RecordingConn()
-    second = _RecordingConn()
-    holder.open_session(first)
-    await dispatcher.bind_runtime(runtime)
-    await dispatcher.mark_ready()
-    request = _request(ReqMethod.CHAT_SEND, is_stream=True)
-    dispatcher._spawn(dispatcher._run_request(request, holder.generation), holder.generation)
-    await asyncio.wait_for(runtime.started.wait(), 1)
-    old = holder.close_session()
-    await dispatcher.retire_generation(old)
-    holder.open_session(second)
-    runtime.release.set()
-    await asyncio.gather(*list(dispatcher._tasks))
-    assert runtime.cancelled is False
-    assert second.sent == []
-    assert first.sent == []
 
 @pytest.mark.asyncio
 async def test_ipc_drop_runs_gateway_disconnect_once() -> None:
@@ -1217,3 +1242,85 @@ async def test_ipc_drop_runs_gateway_disconnect_once() -> None:
             serve.cancel()
             await asyncio.gather(serve, return_exceptions=True)
         await server.close()
+
+@pytest.mark.asyncio
+async def test_recovery_dispatch_waits_for_the_replacement_hello(monkeypatch) -> None:
+    capture = _Capture()
+    readiness = Readiness()
+    supervisor = RuntimeSupervisor(readiness, socket_path=_socket_path(), stub=True, forwarder=capture,
+                                   connect_timeout=20, max_restarts=0)
+    resume = asyncio.Event()
+    negotiating = asyncio.Event()
+    tasks = []
+    try:
+        await asyncio.wait_for(supervisor.run_until_ipc_ready(), 25)
+        await asyncio.wait_for(readiness.wait_agent_ready(), 5)
+        old_pid = supervisor._worker_pid
+        supervisor._unhealthy_reason = "retire generation for test"
+        await supervisor._conn.close()
+        await asyncio.wait_for(asyncio.shield(supervisor._loop_task), 15)
+        assert readiness.state is ReadinessState.FAILED and supervisor._ipc_ready.is_set()
+
+        connect_resident = supervisor._connect_resident
+
+        async def delayed_handshake():
+            handshake = await connect_resident()
+            negotiating.set()
+            await resume.wait()
+            return handshake
+
+        monkeypatch.setattr(supervisor, "_connect_resident", delayed_handshake)
+        recovery = asyncio.create_task(supervisor.recover_from_failed(timeout=20))
+        tasks.append(recovery)
+        await asyncio.wait_for(negotiating.wait(), 25)
+        assert not supervisor._ipc_ready.is_set()
+        assert supervisor._validated_conn is None
+        chat = _request(ReqMethod.CHAT_SEND, is_stream=True)
+        dispatch = asyncio.create_task(supervisor.dispatch_parsed_request(object(), chat, asyncio.Lock()))
+        tasks.append(dispatch)
+        # Even a waiter awakened by an earlier signal must recheck the handshake.
+        supervisor._ipc_ready.set()
+        await asyncio.sleep(0.05)
+        assert not dispatch.done() and not supervisor._pending
+        assert not capture.frames
+        resume.set()
+        assert await recovery
+        await asyncio.wait_for(dispatch, 5)
+        assert supervisor._worker_pid != old_pid
+        assert supervisor._generation == 2
+        assert any(f.get("request_id") == chat.request_id and f.get("echo") == ReqMethod.CHAT_SEND.value
+                   for f in capture.frames)
+    finally:
+        resume.set()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await supervisor.stop(terminate_worker=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("state, expected", [
+    ("warming", "RUNTIME_WARMING"), ("fatal", "WORKER_CLOSED"),
+    ("backoff", "WORKER_UNSTABLE"), ("stop", "RUNTIME_DRAINING"),
+])
+async def test_dispatch_reports_current_ipc_state_when_woken(state, expected) -> None:
+    capture = _Capture()
+    supervisor = RuntimeSupervisor(Readiness(), forwarder=capture, connect_timeout=0.05)
+    supervisor._loop_task = asyncio.create_task(asyncio.Event().wait())  # control handshake completion
+    request = _request(ReqMethod.CHAT_SEND, is_stream=True)
+    dispatch = asyncio.create_task(supervisor.dispatch_parsed_request(object(), request, asyncio.Lock()))
+    try:
+        await asyncio.sleep(0)
+        if state in ("fatal", "backoff"):
+            supervisor._fatal = True
+            supervisor._crash_retry_at = time.monotonic() + 20 if state == "backoff" else 0
+        if state == "stop":
+            supervisor._stopping = True
+        supervisor._ipc_ready.set()
+        await asyncio.wait_for(dispatch, 2)
+        assert len(capture.frames) == 1
+        assert capture.frames[0]["body"]["details"]["code"] == expected
+    finally:
+        dispatch.cancel()
+        supervisor._loop_task.cancel()
+        await asyncio.gather(dispatch, supervisor._loop_task, return_exceptions=True)

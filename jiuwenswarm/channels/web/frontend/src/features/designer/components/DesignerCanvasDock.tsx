@@ -27,9 +27,6 @@ import { useDesignerUiStore } from '../designerUiStore';
 import { useComfyuiWorkflowEnabled } from '../comfyuiFeatureConfig';
 import { useComfyuiImport } from '../useComfyuiImport';
 
-/** Dock exposes image + video generation; audio stays for asset drops only. */
-const DOCK_ADD_TEMPLATES = DESIGNER_ADD_TEMPLATES.filter((item) => item.type !== 'audio');
-
 export function DesignerCanvasDock() {
   const { t } = useTranslation();
   const { screenToFlowPosition } = useReactFlow();
@@ -120,7 +117,7 @@ export function DesignerCanvasDock() {
   return (
     <div className="designer-canvas-dock" data-testid="designer-canvas-dock">
       <div className="designer-canvas-dock__bar" role="toolbar" aria-label={t('designer.dock.label')}>
-        {DOCK_ADD_TEMPLATES.map((item) => (
+        {DESIGNER_ADD_TEMPLATES.map((item) => (
           <button
             key={item.id}
             type="button"

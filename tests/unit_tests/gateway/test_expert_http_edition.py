@@ -21,6 +21,7 @@ def test_personal_declared_routes_omit_agent_templates(
     monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
     methods = {method for method, _verb, _path in declared_http_routes()}
     assert "agent_templates.list" not in methods
+    assert "agent_groups.list" not in methods
 
 
 def test_enterprise_agent_server_registers_template_routes(
@@ -31,6 +32,7 @@ def test_enterprise_agent_server_registers_template_routes(
     _register_enterprise_expert_routes(app, app_services=None)  # type: ignore[arg-type]
     paths = {getattr(route, "path", "") for route in app.routes}
     assert "/api/v1/agent-templates" in paths
+    assert "/api/v1/agent-groups" in paths
 
 
 def test_agent_server_expert_dispatch_does_not_import_gateway_enterprise() -> None:

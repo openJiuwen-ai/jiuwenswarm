@@ -48,7 +48,7 @@ function validateItem(module: SettingsModuleDefinition, sectionId: string, item:
     throw new Error(`Component ${item.component} is not compatible with ${source} setting ${item.key}`);
   }
   if (item.component === 'select') {
-    if (item.options.length === 0) throw new Error(`Select item ${module.id}/${sectionId}/${item.id} has no options`);
+    if (item.options.length === 0 && !item.optionsFromSource) throw new Error(`Select item ${module.id}/${sectionId}/${item.id} has no options`);
     const values = item.options.map((option) => `${typeof option.value}:${String(option.value)}`);
     assertUnique(`option in select item ${module.id}/${sectionId}/${item.id}`, values);
     for (const option of item.options) {
@@ -124,6 +124,9 @@ export function validateSettingsI18n(definition: SettingsPageDefinition, hasKey:
       keys.push(settingItemI18nKey(item, 'title'), settingItemI18nKey(item, 'description'));
       if (item.component === 'input') keys.push(settingItemI18nKey(item, 'placeholder'));
       if (item.component === 'select') keys.push(...item.options.map((option) => option.labelKey));
+      if (item.component === 'switch' && item.availableWhen) {
+        keys.push(settingItemI18nKey(item, 'unavailableDescription'));
+      }
     }
   }
   for (const key of keys) {

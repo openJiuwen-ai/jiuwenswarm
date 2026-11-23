@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 async def handle_mcp_list(ctx: RequestContext) -> None:
     """Handle ``mcp.list`` RPC: list marketplace MCPs (read-only).
 
-    filter: builtin(预置目录) | local(已连接预置 + 全部自定义)。兜底 builtin。
+    filter: builtin(预置目录) | local(已连接预置 + 全部自定义)。缺省传 None，
+    非法值原样透传，由 marketplace 校验/兜底。
     web 不转发此入口（网关本地已处理），保留只为语义对齐。
     """
     request = ctx.request
@@ -31,14 +32,18 @@ async def handle_mcp_list(ctx: RequestContext) -> None:
             list_mcps_with_hub,
         )
         params = request.params or {}
-        filter_val = str(params.get("filter") or "builtin").strip().lower() or "builtin"
-        if filter_val not in ("builtin", "local"):
-            filter_val = "builtin"
+        raw_filter = params.get("filter")
+        if raw_filter is None or str(raw_filter).strip() == "":
+            filter_val: str | None = None
+        else:
+            filter_val = str(raw_filter).strip().lower()
         items = await list_mcps_with_hub(
             filter_val,
             cache_mode=params.get("cache_mode"),
             refresh=params.get("refresh") is True,
             query=str(params.get("query") or ""),
+            source_id=params.get("source_id"),
+            metadata=params.get("metadata"),
         )
         resp = AgentResponse(
             request_id=request.request_id,
@@ -113,8 +118,15 @@ async def handle_mcp_install(ctx: RequestContext) -> None:
         from jiuwenswarm.server.runtime.mcp.marketplace import install_hub_mcp
         from jiuwenswarm.server.runtime.mcp.registry import CliConnectError
 
-        asset_id = str((request.params or {}).get("id") or "").strip()
-        item = await install_hub_mcp(asset_id)
+        params = request.params or {}
+        asset_id = str(params.get("id") or "").strip()
+        item = await install_hub_mcp(
+            asset_id,
+            source_id=params.get("source_id"),
+            version_id=params.get("version_id"),
+            package_name=params.get("package_name"),
+            metadata=params.get("metadata"),
+        )
         name = str(item.get("name") or "").strip()
         # Connect failure is non-fatal after a successful download.
         try:
@@ -258,6 +270,7 @@ async def _run_mcp_connect_flow(
     services, name: str, *, rollback_on_probe_failure: bool = True
 ) -> dict[str, Any]:
     """Run the shared connect flow and return a frontend payload."""
+    from jiuwenswarm.common.mcp_config import discard_probed_mcp
     from jiuwenswarm.server.runtime.mcp.registry import (
         connect_mcp,
         was_connect_cancelled,
@@ -276,8 +289,15 @@ async def _run_mcp_connect_flow(
         # Required-token fields are metadata, not secrets.
         return {"type": "credentials_required", **item}
     # Confirm server-bearing MCPs are actually usable before connected.
-    probe_ok, _probe_reason = await services.agent_manager.probe_mcp_live_connection(name)
+    probe_ok, probe_reason = await services.agent_manager.probe_mcp_live_connection(name)
+    # Cancel may land while the probe is in flight; cancel_connect already
+    # rolled the record back, so a late result must not override it.
+    if was_connect_cancelled(name):
+        logger.info("[mcp] connect '%s' cancelled during probe", name)
+        await discard_probed_mcp(name)
+        return {"type": "cancelled", "name": name}
     if not probe_ok:
+        logger.warning("[mcp] probe failed for '%s': %s", name, probe_reason)
         if rollback_on_probe_failure:
             try:
                 from jiuwenswarm.server.runtime.mcp.registry import (

@@ -69,27 +69,26 @@ def test_legacy_requests_keep_previous_adapter_choice(raw_mode, expected_adapter
 # ── 集群不支持 Plan：work / code 集群装配都不得出现 plan 能力 ───────────────
 
 
-@pytest.mark.parametrize("mode", ["team", "code.team"])
-def test_web_team_modes_never_enable_team_plan(mode):
-    """Web 集群只会发 ``team``，任何情况下都不打开 Team-level plan。"""
+@pytest.mark.parametrize(
+    ("mode", "expected"),
+    [
+        # Web cluster only ever sends ``team``: never open Team-level plan.
+        pytest.param("team", False, id="team"),
+        pytest.param("code.team", False, id="code-team"),
+        # Explicit plan modes open Team-level plan.
+        pytest.param("team.plan", True, id="team-plan"),
+        pytest.param("team.plan.normal", True, id="team-plan-normal"),
+        pytest.param("team.plan.code", True, id="team-plan-code"),
+    ],
+)
+def test_team_plan_modes_control_enable_team_plan(mode, expected):
     from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
     from jiuwenswarm.agents.harness.team.team_manager import TeamManager
 
     spec = TeamAgentSpec.model_construct(team_name="t", agents={}, enable_team_plan=False)
     TeamManager.apply_team_plan_mode(spec, request_metadata={"mode": mode})
 
-    assert spec.enable_team_plan is False
-
-
-@pytest.mark.parametrize("mode", ["team.plan", "team.plan.normal", "team.plan.code"])
-def test_team_plan_modes_enable_team_plan(mode):
-    from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
-    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
-
-    spec = TeamAgentSpec.model_construct(team_name="t", agents={}, enable_team_plan=False)
-    TeamManager.apply_team_plan_mode(spec, request_metadata={"mode": mode})
-
-    assert spec.enable_team_plan is True
+    assert spec.enable_team_plan is expected
 
 
 @pytest.mark.parametrize("role", ["leader", "teammate"])

@@ -112,7 +112,16 @@ export function VideoDuplexModelSettings({
         if (active) applyPayload(payload);
       })
       .catch((loadError: unknown) => {
-        if (active) setError(loadError instanceof Error ? loadError.message : t('settingsPanel.videoDuplex.loadError'));
+        if (!active) return;
+        if (loadError instanceof Error && 'httpRouteMissing' in loadError && loadError.httpRouteMissing === true) {
+          setError(t('settingsPanel.videoDuplex.httpRouteUnavailable'));
+          return;
+        }
+        if (loadError instanceof Error && 'code' in loadError && loadError.code === 'METHOD_NOT_FOUND') {
+          setError(t('settingsPanel.videoDuplex.extensionUnavailable'));
+          return;
+        }
+        setError(loadError instanceof Error ? loadError.message : t('settingsPanel.videoDuplex.loadError'));
       })
       .finally(() => {
         if (active) setLoading(false);

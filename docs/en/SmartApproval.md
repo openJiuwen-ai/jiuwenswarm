@@ -47,6 +47,8 @@ When Smart Approval needs your judgment, JiuwenSwarm displays the standard Permi
 
 **Reject** and **Allow once** apply only to the current tool call. A new call with the same tool and arguments in the same session is evaluated against the current rules and shows another card if human approval is still required. **Remember permanently** and **Remember for this session** reuse allow rules within their existing scopes and cannot override an explicit `deny`.
 
+If an approved command cannot be represented by a safe reusable rule, as with some complex shell commands, the current invocation can still be allowed without remembering the permission. The approval reason explains this outcome, and future calls follow the current permission rules. Approval invalidation caused by changed arguments, scope, or effective policy still rejects execution.
+
 ### Enable it in configuration
 
 By default, the configuration file is `~/.jiuwenswarm/config/config.yaml`. If `JIUWENSWARM_CONFIG_DIR` is set, use the `config.yaml` file in that directory instead.
@@ -154,9 +156,15 @@ permissions:
 
 AutoReviewer uses the configured model service, so an eligible request may incur one additional model call and a small amount of latency. If the service is unavailable or times out, or if it returns an invalid response, the request is escalated or denied—never silently allowed.
 
-JSON mode constrains response syntax, not the correctness of the approval decision. An unsupported format or invalid response uses the existing manual-review fallback without retrying.
+For Web file delivery, the Reviewer receives the requested recipient scope. An omitted target or Web-only target means the current session user. Explicit alternate targets remain subject to authorization checks. A delivery request does not establish that the file was sent.
+
+With persistent audit enabled, a private Linux audit file can keep the redacted model recommendation alongside the Host decision. Both records use the same invocation ID. Other platforms and existing shared files keep the standard audit fields. The additional recommendation stays in local audit.
+
+JSON mode constrains response syntax, not the correctness of the approval decision. An unsupported format or invalid response uses the existing manual-review fallback without retrying. The Reviewer must supply a valid outcome, reason code, and rationale. Host discards fields outside the Reviewer contract and still applies the allowed-outcome and approval checks.
 
 The reviewer returns only `outcome`, `reason_code`, and `rationale`. Manual display details are derived by the existing Host path; complete legacy manual details remain accepted. The generated `confidence` score is no longer requested or used as a threshold: an otherwise valid low-score allow can now allow, and a low-score deny retains its reason. Legacy `confidence` response values and `reviewer_min_confidence` configuration are ignored. JSON syntax, allowed outcomes, explicit manual/deny reasons, and final Host validation remain enforced.
+
+Validated approval reasons are preserved in full, without masking paths or secret values or truncating the text, and displayed as plain text. Session history and denial feedback that share these fields also retain the complete reason. Audit records continue to use their existing independent redaction rules.
 
 Complete normalized call arguments and trusted user intent share a 64 KiB UTF-8 JSON budget, checked before and after secret-value redaction. Oversized evidence requires manual review without truncation. This budget does not increase the retained intent window; longer accepted requests can add model cost and latency.
 

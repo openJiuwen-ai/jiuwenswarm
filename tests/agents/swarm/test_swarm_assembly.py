@@ -88,7 +88,6 @@ from jiuwenswarm.agents.swarm.config_specs import (
     build_member_deep_agent_spec,
     build_member_subagent_specs,
 )
-from jiuwenswarm.common.mode_matrix import NEW_TEAM_DESIGN
 from jiuwenswarm.agents.swarm.providers import (
     code_rails,
     evolution_rails,
@@ -250,6 +249,7 @@ _TEAM_SHARED_RAIL_NAMES: frozenset[str] = frozenset(
         registry.SYMPHONY_ORCHESTRATION_PROMPT,
         registry.MEMBER_SKILL_TOOLKIT,
         TEAM_SKILL_USE,
+        registry.OPENCODE_SESSION,
     }
 )
 
@@ -300,7 +300,7 @@ def _make_team_spec() -> TeamAgentSpec:
 
 
 def _agentic_retrieval_config(enabled: bool = True) -> dict:
-    return {"symphony": {"skill_retrieval": {"enabled": enabled}}}
+    return {"symphony": {"retrieval": {"enabled": enabled}}}
 
 
 def _skill_evolution_config(*, enabled: bool = True, auto_save: bool = False) -> dict:
@@ -315,8 +315,10 @@ def _skill_evolution_config(*, enabled: bool = True, auto_save: bool = False) ->
 
 
 @pytest.fixture(autouse=True)
-def _enable_canonical_skill_evolution_for_assembly_tests(monkeypatch: pytest.MonkeyPatch):
+def _enable_canonical_skill_evolution_for_assembly_tests(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     """Keep enrichment tests on the explicitly enabled product path."""
+    monkeypatch.setattr("jiuwenswarm.common.symphony_config.get_agent_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr("jiuwenswarm.agents.swarm.assembly.get_agent_skills_dir", lambda: tmp_path / "skills")
     monkeypatch.setattr(
         "jiuwenswarm.agents.swarm.assembly.get_config",
         lambda: _skill_evolution_config(),
@@ -641,7 +643,7 @@ def test_build_member_capability_specs_rail_names(
 
     assert _TEAM_SHARED_RAIL_NAMES <= rail_names
     assert extra_rails <= rail_names
-    assert len(_TEAM_SHARED_RAIL_NAMES) == 20
+    assert len(_TEAM_SHARED_RAIL_NAMES) == 21
     assert rail_names == expected
     # No DeepAgent is involved; every entry is a plain declarative RailSpec.
     assert all(isinstance(spec, RailSpec) for spec in rails_specs)
@@ -723,6 +725,12 @@ def test_a4p_intent_authorization_provider_is_interactive_web_leader_only() -> N
             "request_a4p_intent_authorization"
         ]
         assert tools.build_a4p_intent_authorization({}, teammate) == []
+        context = AUTHORIZATION_EXECUTION_CONTEXTS.get("session-1")
+        context.metadata["cron"] = {"job_id": "job-1"}
+        assert tools.build_a4p_intent_authorization({}, enabled) == []
+        context.metadata.clear()
+        assert tools.build_a4p_intent_authorization({}, enabled)
+
     finally:
         AUTHORIZATION_EXECUTION_CONTEXTS.clear()
 
@@ -794,9 +802,12 @@ def test_swarm_skill_retrieval_tools_use_live_context_inventory(
     factory = resolve_factory(get_catalog()[registry.SKILL_RETRIEVAL].factory_ref)
     global_skills_dir = tmp_path / "global-skills"
     global_skills_dir.mkdir()
+    catalog_root = tmp_path / "catalog-skills"
     built = factory(
         {},
-        SwarmBuildContext(global_skills_dir=str(global_skills_dir)),
+        SwarmBuildContext(global_skills_dir=str(global_skills_dir), config={"symphony": {
+            "capability": {"sources": [{"type": "skill", "root": str(catalog_root)}]},
+        }}),
     )
 
     assert built == []
@@ -808,11 +819,13 @@ def test_swarm_skill_retrieval_tools_use_live_context_inventory(
     assert callable(sources)
     assert callable(visible)
     assert directories() == [str(global_skills_dir)]
-    assert disabled is tools.load_execution_disabled_skills
+    assert callable(disabled) and disabled() == []
     assert isinstance(sources(), dict)
     assert visible() == set()
     assert captured["session_scope"] == "default:team:member"
-    assert captured["config_base"] is None
+    assert captured["config_base"]["symphony"]["capability"]["sources"] == [
+        {"type": "skill", "root": str(catalog_root)},
+    ]
 
 
 def _install_library_skill(library_dir: Path, name: str) -> None:
@@ -897,15 +910,13 @@ def test_swarm_list_skill_composes_member_team_and_global_visibility(
     assert tools.visible_skill_names_for_list_skill(ctx) == {"alpha", "beta"}
 
 
+@pytest.mark.parametrize("extra_source_kind", [None, "expert", "connector"])
 def test_swarm_skill_retrieval_prompt_uses_same_live_inventory(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    extra_source_kind: str | None,
 ) -> None:
-    """The retrieval prompt uses the same live inventory as the retrieval tool."""
-    monkeypatch.setenv(
-        "SYMPHONY_SKILL_RETRIEVAL_ROOT",
-        str(tmp_path / "skillfs-artifacts"),
-    )
+    """Use the member inventory when Core can start and skip unsupported configurations."""
     workspace_root = str(tmp_path / "member-workspace")
     global_skills_dir = tmp_path / "global-skills"
     skill_dir = global_skills_dir / "demo-skill"
@@ -920,14 +931,26 @@ def test_swarm_skill_retrieval_prompt_uses_same_live_inventory(
         lambda _config_base=None: True,
     )
 
+    sources = [{"type": "skill", "root": str(tmp_path / "catalog-skills")}]
+    if extra_source_kind is not None:
+        sources.append({"type": extra_source_kind, "root": str(tmp_path / extra_source_kind)})
     factory = resolve_factory(get_catalog()[registry.SKILL_RETRIEVAL_PROMPT].factory_ref)
     rail = factory(
         {},
         SwarmBuildContext(
             global_skills_dir=str(global_skills_dir),
+            config={"symphony": {
+                "capability": {"sources": sources},
+                "retrieval": {"enabled": True},
+                "storage": {"artifact_root": str(tmp_path / "skillfs-artifacts")},
+            }},
             workspace=types.SimpleNamespace(root_path=workspace_root),
         ),
     )
+
+    if extra_source_kind == "connector":
+        assert rail is None
+        return
 
     assert rail is not None
     assert rail._prompt_skillfs is not None
@@ -1125,6 +1148,96 @@ def test_enrich_team_spec_for_swarm_has_no_deep_agent_param() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("dispatch_mode", "spawn_mode", "explicit_fork", "enabled"),
+    [
+        ("scheduled", "inprocess", None, True),
+        ("scheduled", "inprocess", False, False),
+        ("scheduled", "process", None, False),
+        ("autonomous", "inprocess", None, False),
+    ],
+)
+def test_enrich_applies_scheduled_fork_default(
+    dispatch_mode: str, spawn_mode: str, explicit_fork: bool | None, enabled: bool
+) -> None:
+    spec = _make_team_spec()
+    spec.dispatch_mode = dispatch_mode
+    spec.spawn_mode = spawn_mode
+    if explicit_fork is not None:
+        spec.enable_fork = explicit_fork
+    enrich_team_spec_for_swarm(spec, session_id="s", mode="team", channel_id="web")
+    assert spec.enable_fork is enabled
+
+
+@pytest.mark.parametrize(
+    ("mode", "dispatch_mode", "disable", "expected"),
+    [
+        ("code.team", "scheduled", True, False),
+        ("team.plan.code", "scheduled", True, False),
+        ("code.team", "scheduled", False, True),
+        ("code.team", "autonomous", True, True),
+        ("team", "scheduled", True, None),
+    ],
+)
+def test_enrich_gates_code_todo_reminders_by_effective_dispatch_mode(
+    monkeypatch: pytest.MonkeyPatch, mode: str, dispatch_mode: str, disable: bool, expected: bool | None,
+) -> None:
+    config = {"modes": {"team": {"jiuwen_team": {"disable_code_todo_reminder": disable}}}}
+    monkeypatch.setattr("jiuwenswarm.agents.swarm.assembly.get_config", lambda: config)
+    spec = _make_team_spec()
+    spec.dispatch_mode = dispatch_mode
+
+    enrich_team_spec_for_swarm(spec, session_id="s", mode=mode, channel_id="web")
+
+    reminders = [rail for rail in spec.agents["teammate"].rails if rail.type == registry.CODE_TASK_PLANNING]
+    if expected is None:
+        assert reminders == []
+    else:
+        assert len(reminders) == 1
+        assert reminders[0].params.get("enable_task_reminders", True) is expected
+
+
+@pytest.mark.parametrize("mode", ["team", "code.team"])
+def test_enrich_adds_project_skill_dirs_to_member_skill_rails(mode: str, tmp_path: Path) -> None:
+    """A project set from the frontend extends every member Skill rail's roots.
+
+    The isolated global library stays first; ``<project>/.agents/skills`` and
+    ``<project>/.claude/skills`` follow, on the leader, the teammate and the
+    reviewer derived from it.
+    """
+    spec = _make_team_spec()
+    enrich_team_spec_for_swarm(
+        spec, session_id="s", mode=mode, channel_id="web", project_dir=str(tmp_path),
+    )
+
+    expected = [
+        str(tmp_path / "skills"),
+        str(tmp_path.resolve() / ".agents" / "skills"),
+        str(tmp_path.resolve() / ".claude" / "skills"),
+    ]
+    members = [spec.agents["leader"], spec.agents["teammate"]]
+    if spec.reviewer_agent is not None:
+        members.append(spec.reviewer_agent)
+    for member in members:
+        skill_rails = [
+            rail for rail in (member.rails or []) if rail.type in {TEAM_SKILL_USE, CORE_SKILL_USE}
+        ]
+        assert skill_rails, "member must declare a Skill rail"
+        for rail in skill_rails:
+            assert rail.params["skills_dir"] == expected
+
+
+def test_enrich_without_project_leaves_skill_dir_to_core_completion() -> None:
+    """Projectless teams keep ``skills_dir`` unset; core fills the library."""
+    spec = _make_team_spec()
+    enrich_team_spec_for_swarm(spec, session_id="s", mode="team", channel_id="web")
+
+    for member in (spec.agents["leader"], spec.agents["teammate"]):
+        for rail in member.rails or []:
+            if rail.type == TEAM_SKILL_USE:
+                assert not rail.params.get("skills_dir")
+
+
 def test_enrich_team_spec_for_swarm_rewrites_spec_in_place() -> None:
     """Enrichment rewrites member rails and attaches the build context."""
     spec = _make_team_spec()
@@ -1187,12 +1300,14 @@ def test_enrich_team_spec_for_swarm_builds_a_narrow_reviewer_spec(
         registry.MEMBER_SKILL_TOOLKIT,
         registry.MEMBER_SKILL_EVOLUTION,
         registry.TEAM_PERMISSION,
+        registry.PERMISSION_INTERRUPT,
         registry.PLUGIN_RAILS,
     ):
         assert dropped not in rail_types
-    # The teammate keeps what the reviewer drops.
+    # The teammate keeps the user permission rail the reviewer drops.
     teammate_rail_types = {rail.type for rail in teammate.rails or []}
-    assert registry.TEAM_PERMISSION in teammate_rail_types
+    assert registry.PERMISSION_INTERRUPT in teammate_rail_types
+    assert registry.TEAM_PERMISSION not in teammate_rail_types
     assert registry.HEARTBEAT in teammate_rail_types
 
     tool_types = {tool.type for tool in reviewer.tools or [] if isinstance(tool, BuiltinToolSpec)}
@@ -1269,10 +1384,6 @@ def test_enrich_team_spec_resolves_team_visibility_path_without_writing_it(
     document lives so the rails can read it; a missing file reads back as "no
     restriction", so there is nothing to create here.
     """
-    monkeypatch.setattr(
-        "jiuwenswarm.agents.swarm.assembly.get_agent_skills_dir",
-        lambda: tmp_path / "global-skills",
-    )
     team_ws_root = tmp_path / "team-workspace"
     spec = _make_team_spec()
     spec.workspace = WorkspaceSpec(root_path=str(team_ws_root))
@@ -1404,10 +1515,6 @@ def test_enrich_team_spec_for_swarm_injects_config_mcp_servers(
     monkeypatch.setattr(
         "jiuwenswarm.common.config.get_mcp_servers",
         lambda: test_servers,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.agents.swarm.assembly.get_agent_skills_dir",
-        lambda: tmp_path / "global-skills",
     )
     spec = _make_team_spec()
 
@@ -2167,7 +2274,7 @@ def test_symphony_orchestration_prompt_provider_is_leader_only() -> None:
 def test_team_leader_spec_includes_symphony_orchestration_prompt() -> None:
     """The team leader spec declares the Symphony orchestration prompt provider."""
     spec = build_member_deep_agent_spec(
-        {"symphony": {"enabled": True}},
+        {"symphony": {"orchestration": {"enabled": True}}},
         "team",
         "leader",
         DeepAgentSpec(),
@@ -2709,6 +2816,57 @@ def test_leader_deep_agent_spec_forces_enable_task_planning_off(mode: str) -> No
 
     assert leader_spec.enable_task_planning is False
     assert teammate_spec.enable_task_planning is True
+
+
+@pytest.mark.parametrize("mode", ["team", "code.team", "team.plan.normal", "team.plan.code"])
+@pytest.mark.parametrize("role", ["leader", "teammate"])
+def test_member_spec_selects_event_tool_registration_when_core_supports_it(
+    mode: str,
+    role: str,
+) -> None:
+    """Swarm opts into event registration only on the new Core contract."""
+    spec = build_member_deep_agent_spec({}, mode, role, DeepAgentSpec())
+
+    expected = (
+        registry.TOOL_REGISTRATION_MODE
+        if registry.supports_tool_registration_event()
+        else "legacy"
+    )
+    assert getattr(spec, "tool_registration_mode", "legacy") == expected
+    if expected == registry.TOOL_REGISTRATION_MODE:
+        assert spec.event_tool_types == list(registry.EVENT_TOOL_TYPES)
+
+
+def test_member_spec_event_allowlist_excludes_swarm_owned_tools() -> None:
+    """The first event slice never opts swarm-owned providers into the bridge."""
+    spec = build_member_deep_agent_spec({}, "team", "leader", DeepAgentSpec())
+
+    declared_types = {
+        tool.type for tool in spec.tools or [] if isinstance(tool, BuiltinToolSpec)
+    }
+    assert set(registry.EVENT_TOOL_TYPES).issubset(declared_types)
+    assert not set(spec.event_tool_types or ()) & {
+        tool_type for tool_type in declared_types if tool_type.startswith("swarm.")
+    }
+
+
+def test_member_spec_forwards_team_extension_bus_into_agent_core() -> None:
+    """The live Team build context reaches agent-core's event-mode parts."""
+    bus = object()
+    spec = DeepAgentSpec(
+        tool_registration_mode=registry.TOOL_REGISTRATION_MODE,
+        enable_task_loop=False,
+        enable_sys_operation=False,
+        enable_security_rail=False,
+        rails=[],
+    )
+    context = SwarmBuildContext(extras={"team.extension_bus": bus})
+
+    parts = spec.resolve_parts(context)
+
+    assert parts.config.tool_registration_mode == registry.TOOL_REGISTRATION_MODE
+    assert parts.event_tool_instances is None
+    assert parts.extension_bus is bus
 
 
 @pytest.mark.parametrize("mode", ["team", "code.team", "team.plan.normal", "team.plan.code"])

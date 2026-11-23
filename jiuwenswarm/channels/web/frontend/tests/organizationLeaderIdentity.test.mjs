@@ -154,3 +154,71 @@ for (const surface of ['timeline', 'message', 'tools']) {
     });
   });
 }
+
+test('reply actions copy and read the visible reply text', async (t) => {
+  await withOrganizationIdentity(async ({ root }) => {
+    const text = 'A reply about the team.leader: prefix';
+    const button = (action) => document.querySelector(`[data-testid="chat-panel-message-${action}-btn"]`);
+    let copied;
+    let spoken;
+    const previousNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: window.navigator });
+    Object.defineProperty(window.navigator, 'clipboard', { value: {
+      writeText: async value => { copied = value; },
+    } });
+    window.speechSynthesis = {
+      getVoices: () => [],
+      cancel() {},
+      speak: utterance => { spoken = utterance.text; },
+    };
+    const previousUtterance = globalThis.SpeechSynthesisUtterance;
+    globalThis.SpeechSynthesisUtterance = class { constructor(value) { this.text = value; } };
+    t.after(() => {
+      if (previousNavigator) Object.defineProperty(globalThis, 'navigator', previousNavigator);
+      else delete globalThis.navigator;
+      if (previousUtterance) globalThis.SpeechSynthesisUtterance = previousUtterance;
+      else delete globalThis.SpeechSynthesisUtterance;
+    });
+
+    async function render(message, props = {}) {
+      const item = createElement(MessageItem, {
+        key: message.id,
+        message: { ...summaryMessage, ...message },
+        onForkFromMessage: async () => {},
+        ...props,
+      });
+      await act(async () => root.render(createElement(A2UIProvider, null, item)));
+    }
+
+    const messages = [
+      { id: 'regular', role: 'assistant', content: text },
+      { id: 'team-leader-final', content: `team.leader:${JSON.stringify({ content: text })}` },
+      { id: 'team-member-writer@1', content: text },
+      { id: 'event', content: `team.event:${JSON.stringify({
+        event: { type: 'team.message.p2p', from_member: 'writer', to_member: 'user', content: text },
+      })}` },
+    ];
+    for (const message of messages) {
+      await render(message);
+      copied = undefined;
+      spoken = undefined;
+      assert.ok(button('copy'), message.id);
+      assert.ok(button('tts'), message.id);
+      await act(async () => button('copy').click());
+      await act(async () => button('tts').click());
+      assert.equal(copied, text);
+      assert.equal(spoken, text);
+      assert.equal(Boolean(button('fork')), message.role === 'assistant');
+    }
+
+    for (const [message, props] of [
+      [{ ...messages[1], isStreaming: true }, {}],
+      [messages[2], { hideMeta: true }],
+      [{ ...messages[1], content: '' }, {}],
+    ]) {
+      await render(message, props);
+      assert.equal(button('copy'), null);
+      assert.equal(button('tts'), null);
+    }
+  });
+});

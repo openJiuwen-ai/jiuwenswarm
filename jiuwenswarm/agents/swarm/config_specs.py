@@ -65,11 +65,9 @@ from jiuwenswarm.common.config import (
     get_skill_evolution_enabled,
     get_symphony_evolution_enabled,
 )
-from jiuwenswarm.common.cua_config import is_cua_agent_enabled
+from jiuwenswarm.common.cua_config import is_cua_agent_enabled, is_cua_backend_available
 from jiuwenswarm.common.kv_cache_affinity_config import (
-    build_kv_cache_affinity_config,
-    get_kv_cache_control_model_client_config,
-    get_kv_cache_control_model_provider,
+    build_application_kv_cache_affinity_config,
 )
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     get_context_engine_enabled,
@@ -90,11 +88,7 @@ _CODE_MODES: frozenset[str] = frozenset(
 
 
 def _kv_cache_affinity_config(config: dict[str, Any]) -> KVCacheAffinityConfig:
-    return build_kv_cache_affinity_config(
-        config,
-        provider=get_kv_cache_control_model_provider(config),
-        model_client_config=get_kv_cache_control_model_client_config(config),
-    )
+    return build_application_kv_cache_affinity_config(config)
 
 
 # Rails common to both roles, in mount order. Each entry is a ``swarm.*``
@@ -221,6 +215,9 @@ _REVIEWER_TEAM_RAIL_NAMES: tuple[str, ...] = (
     registry.MODEL_ANOMALY_DETECTION,
     registry.MULTIMODAL_IMAGE,
     registry.CONTEXT_PROCESSOR,
+    # The reviewer makes model calls of its own; without this rail an OpenCode
+    # Go reviewer sends no session header while every other member sends one.
+    registry.OPENCODE_SESSION,
 )
 _REVIEWER_CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.CODE_RUNTIME_PROMPT,
@@ -233,6 +230,7 @@ _REVIEWER_CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.CONTEXT_PROCESSOR,
     registry.CODE_LSP,
     registry.CODE_AGENT_MD,
+    registry.OPENCODE_SESSION,
 )
 # The Skill rail stays so a reviewer can use installed Skills (e.g. to read a
 # PDF deliverable); installing / removing Skills is a separate rail left out.
@@ -324,18 +322,11 @@ def _build_design_capability_specs(
         # Low rail priority => initializes after the mounting rails and
         # sees the fully assembled surface.
         rails_specs.append(RailSpec(type=registry.DESIGNER_SURFACE_SANITIZER))
-        if enable_permissions:
-            rails_specs.append(
-                RailSpec(
-                    type=registry.TEAM_PERMISSION_POLICY,
-                    params=_rail_params(registry.TEAM_PERMISSION_POLICY, config),
-                ),
-            )
-    if enable_permissions and role == "teammate":
+    if enable_permissions and role in {"leader", "teammate"}:
         rails_specs.append(
             RailSpec(
-                type=registry.TEAM_PERMISSION,
-                params=_rail_params(registry.TEAM_PERMISSION, config),
+                type=registry.PERMISSION_INTERRUPT,
+                params=_rail_params(registry.PERMISSION_INTERRUPT, config),
             ),
         )
 
@@ -428,15 +419,8 @@ def _skill_mode(config: dict[str, Any]) -> str:
 
 def _retrieval_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return whether agentic skill retrieval is enabled for this config."""
-    env_value = os.getenv("SYMPHONY_SKILL_RETRIEVAL_ENABLED")
-    if env_value is not None and env_value.strip():
-        return env_value.strip().lower() in {"1", "true", "yes", "on", "enabled"}
-
-    symphony = _config_section(config or {}, "symphony")
-    retrieval = symphony.get("skill_retrieval")
-    if isinstance(retrieval, dict):
-        return bool(retrieval.get("enabled", False))
-    return False
+    from jiuwenswarm.common.symphony_config import load_symphony_config
+    return load_symphony_config(config or {}).retrieval.enabled
 
 
 def _team_skill_use_rail_spec(config: dict[str, Any], role: str) -> RailSpec:
@@ -650,16 +634,16 @@ def _team_common_rail_names(role: str) -> tuple[str, ...]:
     return _COMMON_RAIL_NAMES
 
 
-def _code_base_rail_names(role: str) -> tuple[str, ...]:
-    """Code-profile rails minus permission interrupt; leaders omit code todo planning.
+def _code_base_rail_names(role: str, *, enable_permissions: bool = False) -> tuple[str, ...]:
+    """Code-profile rails; leaders omit code todo planning.
 
-    ``PERMISSION_INTERRUPT`` is excluded for all team members: it relies on a
-    frontend user response that headless teammates cannot provide, and even the
-    leader's interrupt path is unreliable in a team context.
+    ``PERMISSION_INTERRUPT`` is included only while the global permission switch
+    is on. The user card is forwarded for teammates, so the rail is no longer
+    limited to a headless member that cannot answer itself.
     """
-    names = tuple(
-        name for name in _CODE_RAIL_NAMES if name != registry.PERMISSION_INTERRUPT
-    )
+    names = _CODE_RAIL_NAMES
+    if not enable_permissions:
+        names = tuple(name for name in names if name != registry.PERMISSION_INTERRUPT)
     if role == "leader":
         return tuple(name for name in names if name != registry.CODE_TASK_PLANNING)
     return names
@@ -722,19 +706,11 @@ def _build_team_capability_specs(
     rails_specs.append(_team_skill_use_rail_spec(config, role))
     rails_specs.append(RailSpec(type=registry.MEMBER_SKILL_TOOLKIT))
 
-    if enable_permissions and role == "teammate":
+    if enable_permissions and role in {"leader", "teammate"}:
         rails_specs.append(
             RailSpec(
-                type=registry.TEAM_PERMISSION,
-                params=_rail_params(registry.TEAM_PERMISSION, config),
-            ),
-        )
-
-    if enable_permissions and role == "leader":
-        rails_specs.append(
-            RailSpec(
-                type=registry.TEAM_PERMISSION_POLICY,
-                params=_rail_params(registry.TEAM_PERMISSION_POLICY, config),
+                type=registry.PERMISSION_INTERRUPT,
+                params=_rail_params(registry.PERMISSION_INTERRUPT, config),
             ),
         )
 
@@ -759,20 +735,17 @@ def _build_code_capability_specs(
 ) -> tuple[list[RailSpec], list[BuiltinToolSpec]]:
     """Build the code profile (code.team / team.plan.code) specs for a member.
 
-    PermissionInterruptRail (``swarm.permission_interrupt``) cannot resolve ASK
-    interrupts on headless team members: the user-facing confirmation path
-    requires a frontend connection that team members lack.  When
-    ``enable_permissions`` is true the team permission rails replace it —
-    ``TeamPermissionRail`` for teammates (leader-mediated ASK resolution) and
-    ``TeamPermissionPolicyRail`` for the leader (prompt section injection).
-    When ``enable_permissions`` is false the permission interrupt rail is
-    removed entirely: it would deadlock a teammate on any ASK-level tool call.
+    When ``enable_permissions`` is true the leader and teammate mount
+    ``swarm.permission_interrupt``. The same call is not also checked by
+    ``TeamPermissionRail`` or ``TeamPermissionPolicyRail``. When the switch is
+    false the rail stays off, so an ASK-level tool call is not left waiting
+    for a card the cluster will not show.
     """
     is_team_plan_leader = is_team_plan_mode(mode) and role == "leader"
 
     rails_specs: list[RailSpec] = [
         RailSpec(type=name, params=_rail_params(name, config))
-        for name in _code_base_rail_names(role)
+        for name in _code_base_rail_names(role, enable_permissions=enable_permissions)
     ]
 
     if is_team_plan_leader:
@@ -780,22 +753,6 @@ def _build_code_capability_specs(
 
     if role == "leader":
         rails_specs.append(RailSpec(type=registry.SESSION_MESSAGING_ROUTE))
-
-    if enable_permissions and role == "teammate":
-        rails_specs.append(
-            RailSpec(
-                type=registry.TEAM_PERMISSION,
-                params=_rail_params(registry.TEAM_PERMISSION, config),
-            ),
-        )
-
-    if enable_permissions and role == "leader":
-        rails_specs.append(
-            RailSpec(
-                type=registry.TEAM_PERMISSION_POLICY,
-                params=_rail_params(registry.TEAM_PERMISSION_POLICY, config),
-            ),
-        )
 
     # The plan-only approval gate belongs to the Leader. A code Team Plan
     # teammate must otherwise be assembled exactly like a code.team teammate.
@@ -863,6 +820,9 @@ def build_member_capability_specs(
         rails, tools = _build_team_capability_specs(
             config, mode, role, enable_permissions=enable_permissions
         )
+    # OpenCode Go models need a member-scoped session header; the rail is a
+    # no-op for every other vendor, so mounting it needs no config gate.
+    rails.append(RailSpec(type=registry.OPENCODE_SESSION))
     if availability is not None:
         rails.append(availability)
     if (config.get("experimental") or {}).get("team_organization_ui_enabled", False):
@@ -919,7 +879,7 @@ def _code_subagent_spec(
     elif name == "statusline-setup":
         max_iterations = registry.DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS
     else:
-        max_iterations = react_cfg.get("max_iterations", 100)
+        max_iterations = react_cfg.get("max_iterations", 1000)
     if isinstance(sub_cfg, dict) and sub_cfg.get("max_iterations") is not None:
         max_iterations = sub_cfg["max_iterations"]
     if max_iterations is not None:
@@ -1011,7 +971,7 @@ def build_member_subagent_specs(
     # so every mode uses the same release default and explicit user preference.
     if is_cua_agent_enabled(
         subagents_cfg.get("cua_agent") if isinstance(subagents_cfg, dict) else None
-    ):
+    ) and is_cua_backend_available():
         specs.append(
             _code_subagent_spec("cua_agent", registry.SWARM_CUA_AGENT, react, language)
         )
@@ -1051,6 +1011,7 @@ def build_member_deep_agent_spec(
     *,
     enable_permissions: bool = False,
     mcp_configs: list[McpServerConfig] | None = None,
+    disable_code_todo_reminder: bool = False,
 ) -> DeepAgentSpec:
     """Fold the member capability specs onto *base_spec*.
 
@@ -1068,6 +1029,7 @@ def build_member_deep_agent_spec(
         base_spec: The base member ``DeepAgentSpec`` to extend.
         enable_permissions: Effective team permission toggle from TeamAgentSpec.
         mcp_configs: MCP server configs inherited from ``config.yaml``.
+        disable_code_todo_reminder: Suppress periodic Todo reminders for scheduled Code agents.
 
     Returns:
         A new ``DeepAgentSpec`` with the capability specs applied.
@@ -1081,6 +1043,12 @@ def build_member_deep_agent_spec(
 
     merged_rails = list(base_spec.rails or [])
     merged_rails.extend(rails_specs)
+    if disable_code_todo_reminder and _is_code_mode(mode):
+        merged_rails = [
+            rail.model_copy(update={"params": {**(rail.params or {}), "enable_task_reminders": False}})
+            if rail.type == registry.CODE_TASK_PLANNING else rail
+            for rail in merged_rails
+        ]
     merged_tools = list(base_spec.tools or [])
     merged_tools.extend(tool_specs)
     merged_mcps = _merge_mcp_configs(base_spec.mcps, mcp_configs)
@@ -1105,6 +1073,16 @@ def build_member_deep_agent_spec(
         # Written only when enabled so a disabled switch keeps the base spec
         # byte-identical (a YAML base spec may carry its own value).
         update["progressive_tool"] = ProgressiveToolSpec(enabled=True)
+    # New agent-core routes only the supported core startup providers through
+    # tool.register. Keep the update capability-gated so a rolling upgrade can
+    # construct against an older Core; that combination intentionally retains
+    # the legacy direct-registration path, including all swarm.* providers.
+    if registry.supports_tool_registration_event():
+        update["tool_registration_mode"] = registry.TOOL_REGISTRATION_MODE
+        update["event_tool_types"] = list(registry.EVENT_TOOL_TYPES)
+    if registry.supports_subagent_registration_event():
+        update["subagent_registration_mode"] = registry.SUBAGENT_REGISTRATION_MODE
+        update["event_subagent_types"] = list(registry.EVENT_SUBAGENT_TYPES)
     if role == "leader":
         # Leaders use the team task board (create_task / view_task / update_task).
         # Force off agent-core's enable_task_planning auto-inject path so a YAML

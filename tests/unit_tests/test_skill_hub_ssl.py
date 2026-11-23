@@ -17,9 +17,7 @@ import pytest
 
 from jiuwenswarm.extensions.sdk.skill_source import (
     ArtifactDescriptor,
-    ArtifactRef,
     DownloadPolicy,
-    SkillRef,
     SourceConfig,
 )
 from jiuwenswarm.extensions.swarm_skill_hub.extension import SwarmSkillHubSourceExtension
@@ -69,9 +67,11 @@ def test_source_tls_setting_reaches_api_and_download_clients(setting):
         bundle.writestr("SKILL.md", "# TLS configuration regression\n")
     payload = archive.getvalue()
     descriptor = ArtifactDescriptor(
-        artifact_ref=ArtifactRef(SkillRef("swarmskillhub", "sample"), "v1"),
+        source_id="swarmskillhub",
+        skill_id="sample",
+        version_id="v1",
         download_url="https://download.example.com/sample.zip",
-        checksum_sha256=hashlib.sha256(payload).hexdigest(),
+        content_sha256=hashlib.sha256(payload).hexdigest(),
     )
     urls = []
     verify_values = []
@@ -126,9 +126,11 @@ def test_ported_download_tls_and_integrity_behavior(scenario, error):
     payload = archive.getvalue()
     checksum = hashlib.sha256(payload).hexdigest()
     descriptor = ArtifactDescriptor(
-        artifact_ref=ArtifactRef(SkillRef("swarmskillhub", "sample"), "v1"),
+        source_id="swarmskillhub",
+        skill_id="sample",
+        version_id="v1",
         download_url="https://download.example.com/sample.zip",
-        checksum_sha256="0" * 64 if scenario == "checksum" else checksum,
+        content_sha256="0" * 64 if scenario == "checksum" else checksum,
     )
     policy = DownloadPolicy(max_bytes=1 if scenario == "oversize" else 1024)
     provider = SwarmSkillHubSourceExtension().create_provider(

@@ -44,7 +44,7 @@ import {
   validateZhihuColumnUrl,
 } from '../../services/personalContextApi';
 import { requestSettingsModule } from '../../features/settings/settingsNavigation';
-import { selectProjectDirectory } from '../../features/workspace/projectDirectoryPicker';
+import { isProjectDirectoryPickerSupported, selectProjectDirectory } from '../../features/workspace/projectDirectoryPicker';
 import { selectLocalFiles } from '../../features/workspace/localFilePicker';
 import { toast } from '../../components/ui/Toast/toastStore';
 import { Input } from '../ui/Input/Input';
@@ -506,6 +506,7 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
 
           {/* provider 分支表单 */}
           <ProviderFields
+            hostPlatform={config.host_platform}
             sourceErrorKey={sourceErrorKey}
             submitAttempted={submitAttempted}
             provider={provider}
@@ -747,6 +748,7 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
 
 interface ProviderFieldsProps {
   provider: FetchProvider;
+  hostPlatform?: string;
   sourceErrorKey: string | null;
   /** 是否点过「添加」：必填为空的红色校验只在点过后出现（一进来不红）。 */
   submitAttempted: boolean;
@@ -1070,6 +1072,7 @@ function MultiSelectDropdown<T extends string>({ options, selected, labelKey, on
 
 function ProviderFields(props: ProviderFieldsProps) {
   const { t } = useTranslation();
+  const rootDirEditVersion = useRef(0);
   /** 路径/文件选择器失败时给出反馈；取消选择保持静默。 */
   const notifyPickerFailure = (result: {
     ok: boolean;
@@ -1172,6 +1175,10 @@ function ProviderFields(props: ProviderFieldsProps) {
   }
 
   if (provider === 'local_files') {
+    const hasNativeDirectoryPicker =
+      typeof window !== 'undefined' && typeof window.pywebview?.api?.select_project_directory === 'function';
+    const canSelectDirectory =
+      hasNativeDirectoryPicker || (props.hostPlatform === 'win32' && isProjectDirectoryPickerSupported());
     return (
       <div className="pc-drawer__field">
         <label>{t('personalContext.addContent.localFiles.rootDirLabel')}</label>
@@ -1179,19 +1186,29 @@ function ProviderFields(props: ProviderFieldsProps) {
           value={props.rootDir}
           data-testid="personal-context-local-root-directory"
           invalid={!!props.sourceErrorKey}
-          aria-describedby={props.sourceErrorKey ? 'personal-context-source-error' : undefined}
-          readOnly
+          aria-describedby={props.sourceErrorKey
+            ? 'personal-context-local-root-directory-hint personal-context-source-error'
+            : 'personal-context-local-root-directory-hint'}
+          onChange={(value) => {
+            rootDirEditVersion.current += 1;
+            props.setRootDir(value);
+          }}
           placeholder={t('personalContext.addContent.localFiles.rootDirPlaceholder')}
-          suffix={
+          suffix={canSelectDirectory && (
             <button
               type="button"
               className="pc-drawer__path-btn"
+              data-testid="personal-context-local-root-directory-browse"
               onClick={async () => {
+                const editVersion = rootDirEditVersion.current;
                 const result = await selectProjectDirectory({ initialDir: props.rootDir || undefined });
-                if (result.ok && result.path) props.setRootDir(result.path);
-                else notifyPickerFailure(result);
+                if (result.ok && result.path && editVersion === rootDirEditVersion.current) {
+                  props.setRootDir(result.path);
+                } else if (!result.ok && result.reason === 'unsupported') {
+                  toast.open({ content: t('personalContext.addContent.localFiles.rootDirHint'), variant: 'info' });
+                } else notifyPickerFailure(result);
               }}
-              aria-label="browse"
+              aria-label={t('personalContext.addContent.localFiles.browse')}
             >
               <svg
                 viewBox="0 0 24 24"
@@ -1209,8 +1226,11 @@ function ProviderFields(props: ProviderFieldsProps) {
                 />
               </svg>
             </button>
-          }
+          )}
         />
+        <div className="pc-drawer__field-hint" id="personal-context-local-root-directory-hint" data-testid="personal-context-local-root-directory-hint">
+          {t('personalContext.addContent.localFiles.rootDirHint')}
+        </div>
       </div>
     );
   }

@@ -1,3 +1,4 @@
+import { useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '../../../components/ui/Button/Button';
 import { ColleagueAvatar } from './ColleagueAvatar';
@@ -15,6 +16,29 @@ import {
 import type { JiuwenMateColleague } from '../types';
 import { useGroupSharing } from '../useGroupSharing';
 import './GroupSharingInbox.css';
+
+interface SharingDisclosureProps {
+  testId: string;
+  summaryTestId: string;
+  expandLabel: string;
+  collapseLabel: string;
+  children: ReactNode;
+}
+
+/**
+ * Native details/summary keeps its own expanded state, so only the summary label is tracked here.
+ * The `open` attribute is deliberately not controlled: a re-render must not collapse a panel the
+ * user already expanded.
+ */
+function SharingDisclosure({ testId, summaryTestId, expandLabel, collapseLabel, children }: SharingDisclosureProps) {
+  const [expanded, setExpanded] = useState(false);
+  return (
+    <details data-testid={testId} onToggle={(event) => setExpanded(event.currentTarget.open)}>
+      <summary data-testid={summaryTestId}>{expanded ? collapseLabel : expandLabel}</summary>
+      {children}
+    </details>
+  );
+}
 
 interface GroupSharingInboxProps {
   api: GroupSharingApi;
@@ -177,10 +201,12 @@ export function GroupSharingInbox({ api, configId, colleague, conversationId, co
                     <p data-testid="jiuwenmate-sharing-audience">
                       {t(approval.target.kind === 'group' ? 'jiuwenmate.sharing.groupAudience' : 'jiuwenmate.sharing.audience')}
                     </p>
-                    <details data-testid="jiuwenmate-sharing-messages">
-                      <summary data-testid="jiuwenmate-sharing-expand">
-                        {t('jiuwenmate.sharing.exactMessages', { count: approval.messages.length })}
-                      </summary>
+                    <SharingDisclosure
+                      testId="jiuwenmate-sharing-messages"
+                      summaryTestId="jiuwenmate-sharing-expand"
+                      expandLabel={t('jiuwenmate.sharing.exactMessages', { count: approval.messages.length })}
+                      collapseLabel={t('jiuwenmate.sharing.collapseExactMessages', { count: approval.messages.length })}
+                    >
                       <ol className="jiuwenmate-sharing-message-list" data-testid="jiuwenmate-sharing-message-list">
                         {approval.messages.map((message) => (
                           <li
@@ -198,12 +224,14 @@ export function GroupSharingInbox({ api, configId, colleague, conversationId, co
                           </li>
                         ))}
                       </ol>
-                    </details>
+                    </SharingDisclosure>
                     {approval.artifacts.length > 0 ? (
-                      <details data-testid="jiuwenmate-sharing-artifacts">
-                        <summary data-testid="jiuwenmate-sharing-artifacts-expand">
-                          {t('jiuwenmate.sharing.exactArtifacts', { count: approval.artifacts.length })}
-                        </summary>
+                      <SharingDisclosure
+                        testId="jiuwenmate-sharing-artifacts"
+                        summaryTestId="jiuwenmate-sharing-artifacts-expand"
+                        expandLabel={t('jiuwenmate.sharing.exactArtifacts', { count: approval.artifacts.length })}
+                        collapseLabel={t('jiuwenmate.sharing.collapseExactArtifacts', { count: approval.artifacts.length })}
+                      >
                         <ol className="jiuwenmate-sharing-message-list" data-testid="jiuwenmate-sharing-artifact-list">
                           {approval.artifacts.map((artifact) => (
                             <li
@@ -230,7 +258,7 @@ export function GroupSharingInbox({ api, configId, colleague, conversationId, co
                             </li>
                           ))}
                         </ol>
-                      </details>
+                      </SharingDisclosure>
                     ) : null}
                     <p data-testid="jiuwenmate-sharing-created">{t('jiuwenmate.sharing.created', { time: date(approval.created_at) })}</p>
                     <p data-testid="jiuwenmate-sharing-expires">{t('jiuwenmate.sharing.expires', { time: date(approval.expires_at) })}</p>

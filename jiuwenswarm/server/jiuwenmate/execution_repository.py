@@ -91,6 +91,13 @@ CREATE TABLE IF NOT EXISTS executions (
     PRIMARY KEY (namespace_id, execution_id)
 );
 CREATE INDEX IF NOT EXISTS executions_by_request ON executions (namespace_id, request_id, started_at);
+CREATE TABLE IF NOT EXISTS execution_runtime_specs (
+    namespace_id TEXT NOT NULL,
+    execution_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    PRIMARY KEY (namespace_id, execution_id)
+);
 CREATE TABLE IF NOT EXISTS execution_events (
     namespace_id TEXT NOT NULL,
     event_id TEXT NOT NULL,
@@ -259,6 +266,37 @@ class ExecutionRepository(SQLiteStore):
         return ExecutionRecord(
             request_id=row["request_id"], execution_id=row["execution_id"], recovery_ref=row["recovery_ref"]
         )
+
+    def bind_runtime_fingerprint(self, namespace_id: str, request_id: str, execution_id: str,
+                                 fingerprint: str) -> None:
+        """Pin the validated runtime Spec, independently of the published configuration identity."""
+        if not isinstance(fingerprint, str) or re.fullmatch(r"[a-f0-9]{64}", fingerprint) is None:
+            raise PersistentAgentError("invalid runtime fingerprint")
+        with self._transaction() as conn:
+            execution = conn.execute(
+                "SELECT 1 FROM executions WHERE namespace_id=? AND request_id=? AND execution_id=?",
+                (namespace_id, request_id, execution_id),
+            ).fetchone()
+            if execution is None:
+                raise PersistentAgentError("runtime Spec does not belong to this Execution", code="NOT_FOUND")
+            conn.execute("INSERT OR IGNORE INTO execution_runtime_specs VALUES (?, ?, ?, ?)",
+                         (namespace_id, execution_id, request_id, fingerprint))
+            row = conn.execute(
+                "SELECT request_id,fingerprint FROM execution_runtime_specs WHERE namespace_id=? AND execution_id=?",
+                (namespace_id, execution_id),
+            ).fetchone()
+            if (row["request_id"], row["fingerprint"]) != (request_id, fingerprint):
+                raise PersistentAgentError("Execution runtime Spec changed", code="CONFLICT")
+
+    def runtime_fingerprint(self, namespace_id: str, request_id: str, execution_id: str) -> str | None:
+        """Read only the Spec bound to the exact original request and execution."""
+        with self._transaction(write=False) as conn:
+            row = conn.execute(
+                "SELECT fingerprint FROM execution_runtime_specs "
+                "WHERE namespace_id=? AND request_id=? AND execution_id=?",
+                (namespace_id, request_id, execution_id),
+            ).fetchone()
+        return row["fingerprint"] if row is not None else None
 
     def resolve_session(
         self, namespace_id: str, agent_id: str, conversation: ConversationRef, *, now: datetime
@@ -962,7 +1000,7 @@ class ExecutionRepository(SQLiteStore):
             raise ValueError("limit must be a positive integer")
         if not channels:
             return []
-        if not channels <= {"feishu", "dingtalk", "welink"}:
+        if not channels <= {"feishu", "dingtalk", "welink", "swarmchat"}:
             raise ValueError("unsupported IM delivery channel")
         channel_placeholders = ", ".join("?" for _ in channels)
         exclude_clause = ""
@@ -987,7 +1025,9 @@ class ExecutionRepository(SQLiteStore):
             for row in rows:
                 record = RequestRecord.from_dict(json.loads(row["record_json"]))
                 route = record.route_snapshot
-                if route is None or route.channel != row["channel"] or route.app_id is None:
+                route_missing = route is None or route.channel != row["channel"]
+                app_missing = route is not None and route.channel != "swarmchat" and route.app_id is None
+                if route_missing or app_missing:
                     conn.execute(
                         "UPDATE result_deliveries SET status = 'failed', error_code = 'ROUTE_MISSING', "
                         "updated_at = ? WHERE namespace_id = ? AND delivery_id = ? AND status = 'pending'",
@@ -1164,6 +1204,8 @@ class ExecutionRepository(SQLiteStore):
                 raise PersistentAgentError("result delivery not found", code="NOT_FOUND")
             if row["status"] not in {"pending", "sending", "unknown", "delivered"}:
                 raise PersistentAgentError("result delivery cannot be replaced", code="CONFLICT")
+            if row["notice_text"] == notice_text and row["file_key"] is None and row["handoff_done"] == 1:
+                return
             snapshot = (
                 json.dumps(_notice_delivery_job(json.loads(row["job_json"]), notice_text), ensure_ascii=False)
                 if row["job_json"] else None
@@ -1263,19 +1305,27 @@ class ExecutionRepository(SQLiteStore):
     def recover_sending_result_deliveries(
         self, namespace_id: str, *, now: datetime, channels: frozenset[str] = frozenset({"feishu"}),
     ) -> int:
-        """Fence only this runtime's interrupted sends; never blindly resend unknown outcomes."""
+        """Recover interrupted local sends and fence interrupted IM sends."""
         if not channels:
             return 0
-        if not channels <= {"feishu", "dingtalk", "welink"}:
+        if not channels <= {"feishu", "dingtalk", "welink", "swarmchat"}:
             raise ValueError("unsupported IM delivery channel")
         placeholders = ", ".join("?" for _ in channels)
         with self._transaction() as conn:
+            local_retries = 0
+            if "swarmchat" in channels:
+                # Core deduplicates retries of the same public message identity.
+                local_retries = conn.execute(
+                    "UPDATE result_deliveries SET status='pending', error_code=NULL, updated_at=? "
+                    "WHERE namespace_id=? AND channel='swarmchat' AND status='sending'",
+                    (now.isoformat(), namespace_id),
+                ).rowcount
             cursor = conn.execute(
                 "UPDATE result_deliveries SET status = 'unknown', error_code = 'ACK_UNKNOWN', updated_at = ? "
                 f"WHERE namespace_id = ? AND channel IN ({placeholders}) AND status = 'sending'",
                 (now.isoformat(), namespace_id, *sorted(channels)),
             )
-            return cursor.rowcount
+            return local_retries + cursor.rowcount
 
     def pending_requests(self, namespace_id: str) -> list[RequestState]:
         """Queued and dispatched Requests, grouped by Session in arrival order, for restart recovery."""

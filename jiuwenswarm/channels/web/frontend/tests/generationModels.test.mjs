@@ -4,7 +4,9 @@ import {
   catalogModels,
   credentialsOptional,
   defaultGeneration,
+  GENERATION_SLOT_VENDORS,
   generationApiBase,
+  generationModelOptions,
   generationVendor,
   isEditableBaseVendor,
   isArkGenerationApiBase,
@@ -19,6 +21,33 @@ test('Ark generation accepts official regional addresses and rejects Coding Plan
   assert.equal(isArkGenerationApiBase('https://ark.cn-beijing.volces.com/api/coding/v3'), false);
   assert.equal(isArkGenerationApiBase('https://ark.cn-beijing.volces.com.evil.example/api/v3'), false);
   assert.equal(isArkGenerationApiBase('http://ark.cn-beijing.volces.com/api/v3'), false);
+});
+
+test('MiniMax image catalog suggests H3 models and still surfaces a custom saved name', () => {
+  assert.deepEqual(defaultGeneration('visual_gen', 'minimax'), {
+    protocol: 'minimax',
+    model: 'MiniMax-H3-Image',
+  });
+  assert.deepEqual(
+    catalogModels('visual_gen', 'minimax').map((entry) => entry.model),
+    ['MiniMax-H3-Image', 'MiniMax-H3-Image-Highspeed'],
+  );
+  const options = generationModelOptions(
+    'visual_gen',
+    'minimax',
+    false,
+    'minimax',
+    'some-new-lab-image',
+  );
+  assert.equal(options[0], 'some-new-lab-image');
+  assert.ok(options.includes('MiniMax-H3-Image'));
+});
+
+test('MiniMax video offers the H3, Highspeed, Lite and Max presets', () => {
+  assert.deepEqual(
+    catalogModels('video_gen', 'minimax').map((entry) => entry.model),
+    ['MiniMax-H3', 'MiniMax-H3-Highspeed', 'MiniMax-H3-Lite', 'MiniMax-H3-Max'],
+  );
 });
 
 test('DashScope lists wan 3.0 video and qwen-image 3.0 image models', () => {
@@ -69,4 +98,41 @@ test('a slot counts as configured without key and model only for vLLM-Omni', () 
     true,
   );
   assert.equal(isGenerationSlotConfigured({ ...base, video_gen_api_base: '' }, 'video_gen'), false);
+});
+
+test('music generation offers OpenRouter and vLLM-Omni only; MiniMax stays for video and image', () => {
+  assert.deepEqual(GENERATION_SLOT_VENDORS.music_gen, ['openrouter', 'vllm-omni']);
+  assert.equal(GENERATION_SLOT_VENDORS.video_gen.includes('minimax'), true);
+  assert.equal(GENERATION_SLOT_VENDORS.visual_gen.includes('minimax'), true);
+  assert.deepEqual(catalogModels('music_gen', 'minimax'), []);
+  assert.deepEqual(defaultGeneration('music_gen', 'openrouter'), {
+    protocol: 'google',
+    model: 'google/lyria-3-pro-preview',
+  });
+  assert.equal(
+    catalogModels('music_gen', 'vllm-omni').some((entry) => entry.model === 'MiniMaxAI/MiniMax-Music3'),
+    true,
+  );
+});
+
+test('MiniMax video catalog suggests the official H3 models and still surfaces a custom saved name', () => {
+  assert.deepEqual(defaultGeneration('video_gen', 'minimax'), {
+    protocol: 'minimax',
+    model: 'MiniMax-H3',
+  });
+  assert.deepEqual(
+    catalogModels('video_gen', 'minimax').map((entry) => entry.model),
+    ['MiniMax-H3', 'MiniMax-H3-Highspeed', 'MiniMax-H3-Lite', 'MiniMax-H3-Max'],
+  );
+  const options = generationModelOptions(
+    'video_gen',
+    'minimax',
+    false,
+    'minimax',
+    'some-new-lab-video',
+  );
+  assert.equal(options[0], 'some-new-lab-video');
+  assert.ok(options.includes('MiniMax-H3-Highspeed'));
+  assert.ok(options.includes('MiniMax-H3-Lite'));
+  assert.ok(options.includes('MiniMax-H3-Max'));
 });

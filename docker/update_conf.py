@@ -41,6 +41,32 @@ def setpath(d, dotted_path: str, value) -> None:
     cur[keys[-1]] = value
 
 
+def apply_react_max_iterations(data) -> bool:
+    """按 AGENT_SERVER_REACT_MAX_ITER 写入或删除 react.max_iterations。
+
+    未设置或空字符串时不写该项，与个人版模板一样表示不限制。
+    正整数写入上限。0、负数、前导零或其他文字视为非法。
+    """
+    raw = os.getenv("AGENT_SERVER_REACT_MAX_ITER")
+    react = data.get("react")
+    if raw is None or raw.strip() == "":
+        if isinstance(react, dict):
+            react.pop("max_iterations", None)
+        return True
+    text = raw.strip()
+    if not text.isdigit() or text[0] == "0":
+        logger.error(
+            "AGENT_SERVER_REACT_MAX_ITER must be a positive integer or unset, got %r",
+            raw,
+        )
+        return False
+    if not isinstance(react, dict):
+        react = {}
+        data["react"] = react
+    react["max_iterations"] = int(text)
+    return True
+
+
 def inject_feishu_bots(data) -> None:
     """原 gen_gateway_config_file 的 FEISHU_BOTS 注入，改由 env 驱动。"""
     data["channels"]["feishu"] = {}
@@ -87,10 +113,11 @@ def main() -> int:
     setpath(data, "gateway.edition", "enterprise")
     setpath(data, "config.source", "enterprise")
     setpath(data, "gateway.session_map_scope", "${GATEWAY_SESSION_MAP_SCOPE:-per_chat_bot}")
-    setpath(data, "react.max_iterations", "${AGENT_SERVER_REACT_MAX_ITER:-100}")
+    if not apply_react_max_iterations(data):
+        return 1
     setpath(data, "react.evolution.enabled", False)
-    # 用户面团队下拉框。个人版模板保持 false，企业版默认打开。
-    setpath(data, "experimental.team_organization_ui_enabled", True)
+    # 用户面组织视图保持关闭，与模板一致。
+    setpath(data, "experimental.team_organization_ui_enabled", False)
     # 沙箱可插拔：由部署工具 SANDBOX_TYPE 控制（jiuwenbox 才启用沙箱域）
     # 非 jiuwenbox 时整个 sandbox 域不写入，业务路由走 LOCAL 直跑
     sandbox_enabled = os.getenv("SANDBOX_TYPE", "jiuwenbox").strip().lower() == "jiuwenbox"

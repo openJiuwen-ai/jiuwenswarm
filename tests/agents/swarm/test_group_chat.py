@@ -437,3 +437,124 @@ def test_run_paths_leave_room_under_the_windows_limits():
     runs = rf"C:\Users\75797\.jiuwenswarm\.agent_teams\{team}\runs"
     assert len(rf"{runs}\{'c' * gc.RUN_PATH_HASH_LENGTH}") <= 110
     assert len(rf"{runs}\org-{'d' * gc.RUN_PATH_HASH_LENGTH}.json") <= 120
+
+
+def test_complete_team_run_names_the_attached_outputs_directory(monkeypatch, tmp_path):
+    monkeypatch.setitem(gc._private_runs, "outputs-name-test", {"outputs_dir": str(tmp_path)})
+
+    description = gc.CompleteTeamRun("outputs-name-test").card.description
+
+    assert str(tmp_path) in description
+    assert "pass any other final file in attachments" in description
+
+
+def test_expert_proxy_does_not_choose_where_the_private_team_writes():
+    from jiuwenswarm.agents.swarm.group_execution import EXPERT_TEAM_RULES
+
+    assert "never tell it where to write deliverables" in EXPERT_TEAM_RULES
+
+
+
+@pytest.mark.asyncio
+async def test_complete_team_run_refuses_while_this_runs_tasks_are_unfinished(monkeypatch):
+    started = 1000.0
+    tasks = [
+        SimpleNamespace(task_id="old", status="in_progress", updated_at=int(started * 1000) - 1),
+        SimpleNamespace(task_id="audit", status="in_progress", updated_at=int(started * 1000) + 5),
+        SimpleNamespace(task_id="done", status="completed", updated_at=int(started * 1000) + 9),
+    ]
+    backend = SimpleNamespace(task_manager=SimpleNamespace(list_tasks=AsyncMock(return_value=tasks)))
+    future = asyncio.get_running_loop().create_future()
+    monkeypatch.setitem(gc._results, "early-test", future)
+    monkeypatch.setitem(gc._private_runs, "early-test", {"started_at": started})
+    tool = gc.CompleteTeamRun("early-test", backend)
+
+    refused = await tool.invoke({"result": "Started the audit, please wait"})
+
+    assert not refused.success
+    assert "#audit" in refused.error and "#old" not in refused.error
+    assert not future.done()
+    tasks[1].status = "completed"
+    assert (await tool.invoke({"result": "Final report"})).success
+    assert future.result() == "Final report"
+
+
+@pytest.mark.asyncio
+async def test_complete_team_run_attaches_only_files_written_during_this_run(monkeypatch, tmp_path):
+    import os
+
+    old, new = tmp_path / "old.md", tmp_path / "new.md"
+    old.write_text("earlier round", encoding="utf-8")
+    new.write_text("this round", encoding="utf-8")
+    os.utime(old, (100, 100))
+    os.utime(new, (300, 300))
+    future = asyncio.get_running_loop().create_future()
+    monkeypatch.setitem(gc._results, "since-test", future)
+    monkeypatch.setitem(gc._private_runs, "since-test", {"outputs_dir": str(tmp_path), "started_at": 200.0})
+
+    assert (await gc.CompleteTeamRun("since-test").invoke({"result": "Summary"})).success
+
+    assert [item["name"] for item in future.result()["attachments"]] == ["new.md"]
+
+
+@pytest.mark.asyncio
+async def test_parallel_completions_submit_only_once(monkeypatch):
+    entered = 0
+    release = asyncio.Event()
+
+    async def list_tasks(**kwargs):
+        nonlocal entered
+        entered += 1
+        if entered == 2:
+            release.set()
+        await release.wait()
+        return []
+
+    backend = SimpleNamespace(task_manager=SimpleNamespace(list_tasks=list_tasks))
+    future = asyncio.get_running_loop().create_future()
+    monkeypatch.setitem(gc._results, "parallel-test", future)
+    monkeypatch.setitem(gc._private_runs, "parallel-test", {"started_at": 1000.0})
+    tool = gc.CompleteTeamRun("parallel-test", backend)
+
+    results = await asyncio.wait_for(asyncio.gather(
+        tool.invoke({"result": "First"}), tool.invoke({"result": "Second"}),
+    ), 1)
+
+    assert sum(result.success for result in results) == 1
+    rejected = next(result for result in results if not result.success)
+    assert "not awaiting a result" in rejected.error
+    assert future.result() in {"First", "Second"}
+
+
+@pytest.mark.asyncio
+async def test_private_policy_binds_the_live_board_on_each_run(monkeypatch):
+    backend = object()
+    monkeypatch.setattr(gc, "get_team_backend", lambda _: backend)
+    policy = gc.PrivateTaskPolicy(None, "board-test")
+    ctx = SimpleNamespace(agent=SimpleNamespace(system_prompt_builder=Mock()))
+
+    for execution_id in ("first", "resumed"):
+        record = {"execution_id": execution_id}
+        monkeypatch.setitem(gc._private_runs, "board-test", record)
+        await policy.before_invoke(ctx)
+        assert record["backend"] is backend
+
+
+def test_group_tools_stay_visible_under_progressive_tool_search(monkeypatch):
+    from openjiuwen.core.foundation.tool import ToolExposure
+
+    monkeypatch.setitem(gc._private_runs, "exposure-test", {"execution_id": "e1"})
+    for tool in (gc.CompleteTeamRun("exposure-test"), gc.BeginTeamTask("exposure-test")):
+        assert tool.card.exposure == ToolExposure.DIRECT
+        assert tool.card.get_exposure_declared()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wrapper", ["tool_call", "tool_search"])
+async def test_private_gate_leaves_progressive_wrappers_to_the_inner_call(monkeypatch, wrapper):
+    monkeypatch.setitem(gc._private_runs, "wrapper-test", {"execution_id": "e1", "group_id": "missing"})
+    ctx = SimpleNamespace(inputs=SimpleNamespace(tool_name=wrapper, tool_call=None), extra={})
+
+    await gc.PrivateTaskPolicy(None, "wrapper-test").before_tool_call(ctx)
+
+    assert not ctx.extra

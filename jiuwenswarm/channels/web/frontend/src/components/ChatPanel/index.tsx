@@ -48,6 +48,7 @@ import { MessageList } from './MessageList';
 import { ContextCompressionLines } from './MessageItem';
 import { activeMoaPhase, MoaProgress } from './MoaProgress';
 import { InputArea, type InputAreaHandle } from './InputArea';
+import { WebUIHost, type WebUIStyleOverrides } from '../../features/webui';
 import ChatOverviewIcon from '../../assets/chat-overview.svg?react';
 import PanelCollapseIcon from '../../assets/panel-collapse.svg?react';
 import lineUpIcon from '../../assets/lineUp.svg';
@@ -104,7 +105,6 @@ import {
   buildSessionBoundEvent,
   buildTopicClickEvent,
   buildTopicStarterRequest,
-  topicStarterShowsSettingsAction,
   topicStarterShowsStatus,
   topicStarterStatusMessageKey,
   type TopicStarterEvent,
@@ -112,6 +112,11 @@ import {
   type TopicStarterTopic,
   type TopicStarterVisibleSlate,
 } from '../../features/topicStarterVisibility';
+
+const pluginHeaderActionStyles: WebUIStyleOverrides = {
+  Button: { className: 'chat-panel-header__plugin-action shrink-0' },
+  Box: { unstyled: true, className: 'flex min-w-0 items-center gap-2' },
+};
 
 export interface ChatHistoryPagerProps {
   loadedBatchSeq: number;
@@ -182,6 +187,9 @@ interface ChatPanelProps {
   historyPager?: ChatHistoryPagerProps | null;
   /** 历史会话首屏恢复中：保持聊天布局，避免短暂退回欢迎态 */
   isHistoryRestoring?: boolean;
+  /** Show an already-created empty conversation with the regular bottom composer. */
+  conversationCreated?: boolean;
+  headerActions?: React.ReactNode;
   /** 右侧面板展开状态：展开时隐藏对话框上方的活跃成员，null 表示面板隐藏 */
   teamAreaExpanded?: boolean | null;
   autoFocusKey?: string | null;
@@ -265,17 +273,22 @@ function SuggestionCard({
   const sourceText = typeof source?.source_text === 'string' ? source.source_text : '';
   const searchUrl = safeHttpUrl(typeof source?.search_url === 'string' ? source.search_url : sourceUrl);
   const listedAt = typeof source?.listed_at === 'string' ? new Date(source.listed_at) : null;
+  const listedAtLabel =
+    listedAt && !Number.isNaN(listedAt.getTime())
+      ? [
+          listedAt.getFullYear(),
+          String(listedAt.getMonth() + 1).padStart(2, '0'),
+          String(listedAt.getDate()).padStart(2, '0'),
+        ].join('-') +
+        ` ${String(listedAt.getHours()).padStart(2, '0')}:${String(listedAt.getMinutes()).padStart(2, '0')}`
+      : '';
   const sourceBadge = !sourceSite
     ? null
     : hotList
       ? [
           t(source?.publisher === 'weibo.com' ? 'chat.topicStarter.weiboHotList' : 'chat.topicStarter.baiduHotList'),
           t('chat.topicStarter.hotListRank', { rank: source?.hot_list_rank }),
-          listedAt && !Number.isNaN(listedAt.getTime())
-            ? t('chat.topicStarter.hotListListedAt', {
-                time: `${String(listedAt.getHours()).padStart(2, '0')}:${String(listedAt.getMinutes()).padStart(2, '0')}`,
-              })
-            : '',
+          listedAtLabel ? t('chat.topicStarter.hotListListedAt', { time: listedAtLabel }) : '',
         ].filter(Boolean).join(' · ')
       : [
           source?.source_kind === 'news_report' ? '资讯' : '近期',
@@ -1107,9 +1120,6 @@ function HumanShareCard({ commands, onShare }: { commands: HumanShareCommand[]; 
 
 // The dismissal notice stays long enough to use its buttons, fades out over its last second
 // (ChatPanel.css) and then leaves the page.
-// An open global new page asks for the hot-list check every 30 minutes. The gateway runs one only
-// 30 minutes after the last one ended, so the page asks a minute later to land past that mark.
-const NEWS_CHECK_INTERVAL_MS = 31 * 60 * 1000;
 const SCROLL_BOTTOM_THRESHOLD_PX = 40;
 const LOAD_OLDER_THRESHOLD_PX = 8;
 const VISIBILITY_RESTORE_SCROLL_SUPPRESS_MS = 300;
@@ -1203,6 +1213,8 @@ export const ChatPanel = React.memo(function ChatPanel({
   topicStarterProjectId = null,
   historyPager = null,
   isHistoryRestoring = false,
+  conversationCreated = false,
+  headerActions,
   teamAreaExpanded = false,
   autoFocusKey = null,
   onNavigateToSkills,
@@ -1231,6 +1243,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   onToggleDiagnosis,
 }: ChatPanelProps) {
   const { t } = useTranslation();
+  const workMode = useWorkspaceStore((state) => state.workMode);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const conversationId = useOrganizationConversationKey(activeSessionId);
   const expertIsProcessing = useChatStore((s) => s.runtimes[conversationId]?.isProcessing ?? false);
@@ -1294,7 +1307,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   const hasTimelineContent = messages.length > 0 || toolExecutionOrder.length > 0;
   // 还在等你点选时，不能退回首页欢迎语。提问卡片要留在普通聊天页里。
   const hasConversation = Boolean(
-    isHistoryRestoring || historyPager || hasTimelineContent || hasPendingQuestion,
+    conversationCreated || isHistoryRestoring || historyPager || hasTimelineContent || hasPendingQuestion,
   );
   const isGroupCreateWelcome = welcomeVariant === 'group-create';
   const historyLoadedBatchSeq = historyPager?.loadedBatchSeq ?? 0;
@@ -1324,7 +1337,7 @@ export const ChatPanel = React.memo(function ChatPanel({
     : 'chat-content chat-content--welcome';
   const topicStarterVisitId = useMemo(
     () => newTopicStarterVisitId(),
-    [activeSessionId, autoFocusKey, topicStarterProjectId],
+    [activeSessionId, autoFocusKey, topicStarterProjectId, workMode],
   );
   const [dynamicSlate, setDynamicSlate] = useState<{
     visitId: string;
@@ -1343,7 +1356,8 @@ export const ChatPanel = React.memo(function ChatPanel({
   const readyWhileHiddenRef = useRef(false);
   const [topicStarterErrorKey, setTopicStarterErrorKey] = useState<string | null>(null);
   // Disabled still shows packaged cold-start cards; personalized generation waits on the switch.
-  const visibleTopicSlate = dynamicSlate?.visitId === topicStarterVisitId
+  const topicStartersEnabled = !isEnterprise();
+  const visibleTopicSlate = topicStartersEnabled && dynamicSlate?.visitId === topicStarterVisitId
     ? dynamicSlate.slate : null;
   const visibleTopicSlateId = visibleTopicSlate?.slateId;
   const acceptingDynamicRef = useRef(false);
@@ -1720,31 +1734,8 @@ export const ChatPanel = React.memo(function ChatPanel({
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [activeSessionId, rememberSessionScrollTop, restoreSessionScrollTop]);
 
-  // 空白全局新建页回到前台、以及开在前台时每 30 分钟：让后台检查资讯，页面本身不等待结果。
   useEffect(() => {
-    if (!isConnected || hasConversation || topicStarterProjectId) return;
-    const checkNews = () => {
-      if (document.hidden || !acceptingDynamicRef.current) return;
-      void webRequest('topic_starters.foreground', { context_scope: 'global_new_chat', visit_id: topicStarterVisitIdRef.current }).catch(() => undefined);
-    };
-    let timer: number | null = null;
-    const keepChecking = () => {
-      if (timer !== null) window.clearInterval(timer);
-      timer = document.hidden ? null : window.setInterval(checkNews, NEWS_CHECK_INTERVAL_MS);
-    };
-    const handleVisibility = () => {
-      checkNews();
-      keepChecking();
-    };
-    keepChecking();
-    document.addEventListener('visibilitychange', handleVisibility);
-    return () => {
-      document.removeEventListener('visibilitychange', handleVisibility);
-      if (timer !== null) window.clearInterval(timer);
-    };
-  }, [hasConversation, isConnected, topicStarterProjectId]);
-
-  useEffect(() => {
+    if (!topicStartersEnabled) return;
     const handleTopicPageVisibility = () => {
       const visible = document.visibilityState === 'visible';
       setPageVisible(visible);
@@ -1756,7 +1747,7 @@ export const ChatPanel = React.memo(function ChatPanel({
     };
     document.addEventListener('visibilitychange', handleTopicPageVisibility);
     return () => document.removeEventListener('visibilitychange', handleTopicPageVisibility);
-  }, []);
+  }, [topicStartersEnabled]);
 
   useLayoutEffect(() => {
     const el = scrollContainerRef.current;
@@ -1869,31 +1860,41 @@ export const ChatPanel = React.memo(function ChatPanel({
     [sendTopicStarterEvent],
   );
 
-  useEffect(() => useChatStore.subscribe((state, previous) => {
-    if (!activeSessionId || hasConversation || state.activeSessionId !== activeSessionId) return;
-    const input = state.runtimes[activeSessionId]?.inputValue;
-    const previousInput = previous.runtimes[activeSessionId]?.inputValue;
-    if (previousInput && !input && !visibleTopicSlateRef.current && !acceptingDynamicRef.current) {
-      interactedRecommendationVisitRef.current = null;
-      acceptingDynamicRef.current = true;
-      setRecommendationRefresh(value => value + 1);
-    }
-  }), [activeSessionId, hasConversation]);
+  useEffect(() => {
+    if (!topicStartersEnabled) return;
+    return useChatStore.subscribe((state, previous) => {
+      if (!activeSessionId || hasConversation || state.activeSessionId !== activeSessionId) return;
+      const input = state.runtimes[activeSessionId]?.inputValue;
+      const previousInput = previous.runtimes[activeSessionId]?.inputValue;
+      if (previousInput && !input && !visibleTopicSlateRef.current && !acceptingDynamicRef.current) {
+        interactedRecommendationVisitRef.current = null;
+        acceptingDynamicRef.current = true;
+        setRecommendationRefresh(value => value + 1);
+      }
+    });
+  }, [activeSessionId, hasConversation, topicStartersEnabled]);
 
   // v6 展示只读预计算池，后台 Ark 配置与会话回答模型相互独立。因此新欢迎页
   // WebChannel ready 后立即请求，不等待模型列表，也不把会话 model_name 传给 Topic Starter。
   // 连接恢复会重新进入该 effect，避免页面先启动时的一次失败永久留下静态入口。
   useEffect(() => {
-    acceptingDynamicRef.current = Boolean(activeSessionId && !hasConversation && interactedRecommendationVisitRef.current !== topicStarterVisitId);
-    if (!isConnected || !activeSessionId || hasConversation) {
+    acceptingDynamicRef.current = topicStartersEnabled && Boolean(
+      activeSessionId && !hasConversation && interactedRecommendationVisitRef.current !== topicStarterVisitId,
+    );
+    if (!topicStartersEnabled || !isConnected || !activeSessionId || hasConversation) {
       return;
     }
     const requestSessionId = activeSessionId;
-    const requestParams = buildTopicStarterRequest(requestSessionId, topicStarterProjectId);
+    const requestParams = buildTopicStarterRequest(requestSessionId, topicStarterProjectId, workMode);
     let active = true;
     let receivedScopeState = false;
-    const unsubscribeReady = webClient.on<{ visit_id?: string; context_scope: string; state: string; pool_written?: boolean }>("topic_starters.ready", ({ payload }) => {
-      if (!active || (payload.visit_id && payload.visit_id !== topicStarterVisitId) || payload.context_scope !== requestParams.context_scope) return;
+    const unsubscribeReady = webClient.on<{ visit_id?: string; context_scope: string; work_mode?: string; state: string; pool_written?: boolean }>("topic_starters.ready", ({ payload }) => {
+      if (
+        !active
+        || (payload.visit_id && payload.visit_id !== topicStarterVisitId)
+        || payload.context_scope !== requestParams.context_scope
+        || (payload.work_mode || 'work') !== requestParams.work_mode
+      ) return;
       receivedScopeState = true;
       setRecommendationState(payload.state);
       // Preparation that wrote no pool leaves the cards on screen as the pool still serves them.
@@ -1933,11 +1934,13 @@ export const ChatPanel = React.memo(function ChatPanel({
     if (!keepSlateOnRefreshRef.current) setDynamicSlate(null);
     keepSlateOnRefreshRef.current = false;
     setTopicStarterErrorKey(null);
-    setRecommendationState(heldSwitchState ?? "");
+    // Disabling recommendations is global, not a project-specific loading state.
+    // Preserve it while the new scope is read so the bee hint does not change content/style.
+    setRecommendationState(current => heldSwitchState ?? (current === 'disabled' ? current : ""));
     // This read also serves a pool that became ready while the page was in the background.
     readyWhileHiddenRef.current = false;
     void webRequest<TopicStarterResponse>('topic_starters.get', {
-      ...requestParams, visit_id: topicStarterVisitId, manual_retry: false,
+      ...requestParams, visit_id: topicStarterVisitId,
       ...(refillSlateId ? { slate_id: refillSlateId } : {}),
     }, { timeoutMs: 60_000 })
       .then(response => {
@@ -1975,7 +1978,16 @@ export const ChatPanel = React.memo(function ChatPanel({
       unsubscribeReady();
       unsubscribeControl();
     };
-  }, [activeSessionId, hasConversation, isConnected, topicStarterProjectId, topicStarterVisitId, recommendationRefresh]);
+  }, [
+    activeSessionId,
+    hasConversation,
+    isConnected,
+    topicStarterProjectId,
+    topicStarterVisitId,
+    recommendationRefresh,
+    workMode,
+    topicStartersEnabled,
+  ]);
 
 
   useEffect(() => {
@@ -2319,8 +2331,10 @@ export const ChatPanel = React.memo(function ChatPanel({
       {shouldShowChatHeader && (
         <div className="chat-panel-header" data-testid="chat-panel-header">
           <div className="chat-panel-header__meta" data-testid="chat-panel-header-meta">
-            <div className="chat-panel-header__title" title={sessionTitle} data-testid="chat-panel-header-title">
-              {sessionTitle}
+            <div className="flex min-w-0 items-center gap-2" data-testid="chat-panel-header-title-row">
+              <div className="chat-panel-header__title" title={sessionTitle} data-testid="chat-panel-header-title">
+                {sessionTitle}
+              </div>
             </div>
             {sessionProjectName && (
               <div
@@ -2332,6 +2346,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                 <span>{sessionProjectName}</span>
               </div>
             )}
+            <WebUIHost slotId="conversation.header.title.after" sessionId={activeSessionId} layout="row" />
           </div>
           <div className="chat-panel-header__actions" data-testid="chat-panel-header-actions">
             {diagnosisEntryAvailable && onToggleDiagnosis && (
@@ -2347,6 +2362,13 @@ export const ChatPanel = React.memo(function ChatPanel({
                 <ClipboardList size={16} strokeWidth={2} aria-hidden />
               </button>
             )}
+            <WebUIHost
+              slotId="conversation.header.actions"
+              sessionId={activeSessionId}
+              layout="row"
+              instanceClassName="flex min-w-0 items-center gap-2"
+              styles={pluginHeaderActionStyles}
+            />
             {composerDockVisible && onToggleComposerCollapsed && (
               <button
                 type="button"
@@ -2368,6 +2390,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   : <PanelBottomClose size={16} strokeWidth={2} aria-hidden />}
               </button>
             )}
+            {headerActions}
             {shouldShowShareExport && (
               <button
                 type="button"
@@ -2413,7 +2436,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                 onClick={() => onToggleHeartbeatPanel?.()}
                 title={t('heartbeat.panel.title')}
               >
-                <Activity size={14} strokeWidth={2} />
+                <Activity size={18} strokeWidth={2} />
               </button>
             )}
             <button
@@ -2580,13 +2603,14 @@ export const ChatPanel = React.memo(function ChatPanel({
                       className="chat-welcome__banner chat-welcome__banner--bee"
                       altText={t('chat.welcomeLogoAlt')}
                       onTrigger={() => {
-                        setTopicBubbleActive(false);
+                        if (!showTopicBubble || !bubbleVisible) setTopicBubbleActive(false);
                         handleBubbleShow();
                       }}
                       onLeave={handleBubbleLeave}
                     />
                   </>
                 )}
+                <WebUIHost slotId="conversation.input.above" className="chat-input-webui-above" />
                 <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
                 <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onContinueQueuedSessionMessages={onContinueQueuedSessionMessages} />
                 <InterruptResultBubble />
@@ -2616,8 +2640,9 @@ export const ChatPanel = React.memo(function ChatPanel({
                   onRefreshGoal={onRefreshGoal}
                   onClearGoal={onClearGoal}
                 />
+                <WebUIHost slotId="conversation.input.below" className="mt-1 px-1 min-h-10 max-h-none" />
               </div>
-              <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
+              {topicStartersEnabled && <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
                 {recommendationState !== 'disabled' && topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? (
                   <div
                     className="chat-suggestions__title"
@@ -2629,16 +2654,6 @@ export const ChatPanel = React.memo(function ChatPanel({
                     }
                   >
                     {t(topicStarterStatusMessageKey(recommendationState, Boolean(visibleTopicSlate)))}
-                    {topicStarterShowsSettingsAction(recommendationState) ? (
-                      <button
-                        type="button"
-                        className="ml-2 text-text-link underline"
-                        data-testid="chat-panel-topic-settings"
-                        onClick={() => onOpenGeneralSettings?.()}
-                      >
-                        {t('chat.topicStarter.openSettings')}
-                      </button>
-                    ) : null}
                   </div>
                 ) : null}
                 {recommendationState !== 'disabled' && topicStarterErrorKey && topicStarterErrorKey !== 'network.requestFailed' && (
@@ -2670,7 +2685,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                     />
                   );
                 })}
-              </div>
+              </div>}
               {isGroupCreateWelcome && (
                 <div className="chat-welcome__capabilities" data-testid="chat-panel-welcome-capabilities">
                   <span className="chat-welcome__capability">
@@ -2703,6 +2718,7 @@ export const ChatPanel = React.memo(function ChatPanel({
 
       {hasConversation && (
         <div ref={composeRef} className="chat-compose" data-testid="chat-panel-compose">
+          <WebUIHost slotId="conversation.input.above" className="chat-input-webui-above" />
           <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
           <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onContinueQueuedSessionMessages={onContinueQueuedSessionMessages} />
           <InterruptResultBubble />
@@ -2743,6 +2759,7 @@ export const ChatPanel = React.memo(function ChatPanel({
             onClearGoal={onClearGoal}
             onDrainTaskQueueIfIdle={onDrainTaskQueueIfIdle}
           />
+          <WebUIHost slotId="conversation.input.below" className="mt-1 px-1 min-h-10 max-h-none" />
         </div>
       )}
       <div className="chat-ai-disclaimer" data-testid="chat-panel-ai-disclaimer">

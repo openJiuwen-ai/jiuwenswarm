@@ -1,3 +1,4 @@
+import { gatewayFetch } from '../../services/gatewayFetch';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { CircleAlert } from 'lucide-react';
@@ -7,7 +8,8 @@ import { isHistoryPreviewFile } from '../../features/historyFilePreview';
 import { webRequest } from '../../services/webClient';
 import { getArchiveErrorCode, getArchiveErrorFinishingCause } from '../../features/workspace/archivedTaskClient';
 import { useChatStore } from '../../stores/chatStore';
-import { useWorkspaceStore } from '../../stores/workspaceStore';
+import { getWorkspaceModeRevision, useWorkspaceStore } from '../../stores/workspaceStore';
+import { isEnterprise } from '../../edition';
 import { toDisplaySessionTitle } from '../../utils/documentMessage';
 
 function SessionErrorIndicator({ sessionId }: { sessionId: string }) {
@@ -24,6 +26,7 @@ interface SessionsPanelProps {
   currentSessionId: string;
   isConnected: boolean;
   isProcessing: boolean;
+  mode?: string;
   onRestoreSession: (sessionId: string, mode?: string) => void | Promise<void>;
 }
 
@@ -263,9 +266,11 @@ export function SessionsPanel({
   currentSessionId,
   isConnected,
   isProcessing,
+  mode,
   onRestoreSession,
 }: SessionsPanelProps) {
   const { t } = useTranslation();
+  const workMode = useWorkspaceStore((state) => state.workMode);
   const [sessions, setSessions] = useState<SessionItem[]>([]);
   const [loadingSessions, setLoadingSessions] = useState(true);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
@@ -283,17 +288,29 @@ export function SessionsPanel({
   selectedSessionIdRef.current = selectedSessionId;
   const currentSessionIdRef = useRef(currentSessionId);
   currentSessionIdRef.current = currentSessionId;
+  const sessionListRequestIdRef = useRef(0);
+  const filesRequestIdRef = useRef(0);
+
+  useEffect(() => () => {
+    sessionListRequestIdRef.current += 1;
+    filesRequestIdRef.current += 1;
+  }, []);
 
   const loadSessionFilesForSession = useCallback(
     async (
       sessionId: string | null,
       options?: { preserveSelectionPath?: string | null }
     ) => {
+      const requestId = ++filesRequestIdRef.current;
+      const modeRevision = getWorkspaceModeRevision();
+      const isCurrent = () => requestId === filesRequestIdRef.current
+        && modeRevision === getWorkspaceModeRevision();
       const preservePath = options?.preserveSelectionPath;
       const preserve =
         typeof preservePath === 'string' && preservePath.length > 0;
 
       if (!sessionId) {
+        setLoadingFiles(false);
         setFiles([]);
         setFilesError(null);
         setSelectedFile(null);
@@ -306,13 +323,15 @@ export function SessionsPanel({
       }
       try {
         const fetchDirEntries = async (dir: string, depth: number): Promise<SessionFileItem[]> => {
+          if (!isCurrent()) return [];
           const encodedDir = encodeURIComponent(dir);
-          const resp = await fetch(`/file-api/list-files?dir=${encodedDir}`, { cache: 'no-store' });
+          const resp = await gatewayFetch(`/file-api/list-files?dir=${encodedDir}`, { cache: 'no-store' });
           if (!resp.ok) {
             const text = await resp.text();
             throw new Error(`HTTP ${resp.status}: ${text.substring(0, 120)}`);
           }
           const payload = (await resp.json()) as ListFilesResponse;
+          if (!isCurrent()) return [];
           const rows = Array.isArray(payload?.files) ? toSessionFiles(payload.files) : [];
           const withDepth = rows.map((item) => ({ ...item, depth }));
           const result: SessionFileItem[] = [];
@@ -330,11 +349,12 @@ export function SessionsPanel({
 
         const rootDir = `agent/sessions/${sessionId}`;
         const rows = await fetchDirEntries(rootDir, 0);
+        if (!isCurrent()) return;
 
         // Check for todo.json in DeepAgent workspace todo directory
         const todoPath = `agent/workspace/todo/${sessionId}/todo.json`;
         try {
-          const todoResp = await fetch(`/file-api/file-content?path=${encodeURIComponent(todoPath)}`, { cache: 'no-store' });
+          const todoResp = await gatewayFetch(`/file-api/file-content?path=${encodeURIComponent(todoPath)}`, { cache: 'no-store' });
           if (todoResp.ok) {
             rows.push({
               name: 'todo.json',
@@ -348,6 +368,7 @@ export function SessionsPanel({
           // todo.json not found or error, ignore
         }
 
+        if (!isCurrent()) return;
         setFiles(rows);
         if (preserve && preservePath) {
           const np = normalizeWorkspacePath(preservePath);
@@ -375,24 +396,33 @@ export function SessionsPanel({
           }
         }
       } catch (error) {
+        if (!isCurrent()) return;
         console.error('Failed to load session files:', error);
         setFiles([]);
         setFilesError(t('sessions.errors.loadFiles'));
         setSelectedFile(null);
       } finally {
-        setLoadingFiles(false);
+        if (isCurrent()) setLoadingFiles(false);
       }
     },
     [t]
   );
 
   const loadSessions = useCallback(async () => {
+    const requestId = ++sessionListRequestIdRef.current;
+    const modeRevision = getWorkspaceModeRevision();
+    const requestedWorkMode = useWorkspaceStore.getState().workMode;
+    const isCurrent = () => requestId === sessionListRequestIdRef.current
+      && modeRevision === getWorkspaceModeRevision()
+      && requestedWorkMode === useWorkspaceStore.getState().workMode;
+    filesRequestIdRef.current += 1;
     setLoadingSessions(true);
     try {
       const payload = await webRequest<SessionListResponse>('session.list', {
         limit: 20,
-        work_mode: useWorkspaceStore.getState().workMode,
+        work_mode: requestedWorkMode,
       });
+      if (!isCurrent()) return;
       const rows = Array.isArray(payload?.sessions) ? toSessionItems(payload.sessions) : [];
       setSessions(rows);
       setSessionsError(null);
@@ -415,20 +445,22 @@ export function SessionsPanel({
         underNext ? { preserveSelectionPath: openPath } : undefined
       );
     } catch (error) {
+      if (!isCurrent()) return;
       console.error('Failed to load sessions:', error);
       setSessions([]);
       setSessionsError(t('sessions.errors.loadSessions'));
       setSelectedSessionId(null);
+      void loadSessionFilesForSession(null);
     } finally {
-      setLoadingSessions(false);
+      if (isCurrent()) setLoadingSessions(false);
     }
   }, [t, loadSessionFilesForSession]);
 
   useEffect(() => {
     void loadSessions();
-    // loadSessions 随 currentSessionId / t 更新；此处仅希望在语言切换时与首屏拉列表，避免把 loadSessions 放进 deps 引发多余轮询
+    // Refresh on mount, language and work-mode changes, without polling on selection.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [t]);
+  }, [t, workMode]);
 
   // 聊天处理完成后刷新会话列表，拾取自动生成的标题
   const prevProcessingRef = useRef(false);
@@ -481,10 +513,11 @@ export function SessionsPanel({
   const isWebSession = Boolean(
     selectedSessionId?.startsWith('sess_') || selectedSessionId?.startsWith('web_')
   );
-  const canRestoreSelectedSession = isWebSession && isConnected && !isProcessing;
+  const restoreWhileProcessing = isEnterprise() && mode === 'team';
+  const canRestoreSelectedSession = isWebSession && isConnected && (restoreWhileProcessing || !isProcessing);
   const restoreButtonTitle = !isConnected
     ? t('sessions.restoreDisabledNotConnected')
-    : isProcessing
+    : isProcessing && !restoreWhileProcessing
       ? t('sessions.restoreDisabledProcessing')
       : !isWebSession
         ? t('sessions.restoreDisabledUnsupported')

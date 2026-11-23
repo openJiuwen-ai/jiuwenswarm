@@ -53,6 +53,24 @@ async def test_rejected_turn_keeps_processing_while_round_runs(monkeypatch: pyte
     assert chunks[-1].is_complete is True
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("running", [True, False])
+async def test_recovery_rejection_preserves_code_and_team_activity(monkeypatch, running):
+    from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
+
+    manager = team_manager.TeamManager()
+    monkeypatch.setattr(team_manager, "_team_manager", manager)
+    if running:
+        manager.begin_round("sess_a", "req_1")
+    error = HistoryReplayError("restore queue full", code="HISTORY_RESTORE_BUSY")
+    chunks = []
+    with pytest.raises(HistoryReplayError) as rejected:
+        async for chunk in _team_preflight_failure_chunks("req_2", "web", "sess_a", error):
+            chunks.append(chunk)
+    assert rejected.value is error
+    assert _event_types(chunks) == ([] if running else ["chat.processing_status"])
+
+
 def test_team_active_work_tracks_admitted_turns(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(team_manager, "_team_manager", None)
     assert team_manager.team_session_has_active_work("sess_a") is False

@@ -44,6 +44,44 @@ export function isFilePreviewable(entry: { type: string; mime_type: string | nul
   return PREVIEWABLE_FILE_EXTS.includes(ext);
 }
 
+/**
+ * Resolve a relative Markdown file reference against the file currently being previewed.
+ *
+ * External URLs, fragments, and root-relative application routes are not skill files.
+ */
+export function resolveSkillFileReference(currentFilePath: string, href: string): string | null {
+  const trimmedHref = href.trim();
+  const pathHref = trimmedHref.split(/[?#]/, 1)[0];
+  if (
+    !pathHref ||
+    trimmedHref.startsWith('#') ||
+    pathHref.startsWith('/') ||
+    /^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(pathHref)
+  ) {
+    return null;
+  }
+
+  let decodedPath = pathHref;
+  try {
+    decodedPath = decodeURIComponent(pathHref);
+  } catch {
+    // Keep the original path when it contains malformed percent encoding.
+  }
+
+  const resolvedParts = currentFilePath.replace(/\\/g, '/').split('/').filter(Boolean);
+  resolvedParts.pop();
+  for (const part of decodedPath.replace(/\\/g, '/').split('/')) {
+    if (!part || part === '.') continue;
+    if (part === '..') {
+      if (resolvedParts.length === 0) return null;
+      resolvedParts.pop();
+      continue;
+    }
+    resolvedParts.push(part);
+  }
+  return resolvedParts.length > 0 ? resolvedParts.join('/') : null;
+}
+
 /** 与后端一致：tags/allowed_tools 可能是逗号分隔字符串，统一为 string[] */
 export function coerceStringList(val: unknown): string[] {
   if (val == null) return [];
@@ -142,21 +180,20 @@ export function isBuiltinSkill(skill: Pick<SkillItem, 'source_type' | 'source'>)
 
 /**
  * 不展示编辑、卸载的技能（发布见 shouldShowSkillPublish）。
- * - 预置：各版本均管理员托管
- * - 内置：仅企业版托管；个人版与 origin/develop 一致，可编辑/卸载
- * （后端也会拒绝对应 uninstall；启停见 shouldShowEnableSwitch。）
+ * 预置和内置在各版本都由产品托管，不提供编辑和卸载。
+ * 启停见 shouldShowEnableSwitch。
  */
 export function isAdminManagedSkill(
   skill: Pick<SkillItem, 'source_type' | 'source'>,
-  enterpriseEdition = false,
+  _enterpriseEdition = false,
 ): boolean {
   if (isPrebuiltSkill(skill)) return true;
-  return enterpriseEdition && isBuiltinSkill(skill);
+  return isBuiltinSkill(skill);
 }
 
 /**
  * 是否展示技能详情「发布」入口。
- * 与编辑/卸载一致：非管理员托管技能可发布（企业版仅屏蔽 prebuilt/builtin）。
+ * 与编辑/卸载一致：预置和内置不提供发布。
  */
 export function shouldShowSkillPublish(
   skill: Pick<SkillItem, 'source_type' | 'source'>,

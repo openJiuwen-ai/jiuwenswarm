@@ -1,6 +1,5 @@
 import base64
 import io
-import time
 
 import httpx
 import pytest
@@ -39,8 +38,28 @@ def test_oversized_dimensions_are_rejected():
 @pytest.mark.asyncio
 async def test_untrusted_url_is_not_requested():
     cache = HubAvatarCache()
-    for url in ('http://127.0.0.1/a', 'https://example.com/a', 'file:///tmp/a'):
+    for url in (
+        'http://example.com/a',
+        'https://example.com/a',
+        'http://user:pass@127.0.0.1/a',
+        'file:///tmp/a',
+    ):
         assert await cache.get(url) == ''
+
+
+@pytest.mark.asyncio
+async def test_loopback_http_avatar_is_allowed(monkeypatch):
+    import jiuwenswarm.server.runtime.marketplace.hub_avatar_cache as module
+    calls = []
+    def handle(request):
+        calls.append(str(request.url))
+        return httpx.Response(200, content=png())
+    client = httpx.AsyncClient
+    monkeypatch.setattr(module.httpx, 'AsyncClient', lambda **kw: client(transport=httpx.MockTransport(handle), **kw))
+    cache = HubAvatarCache()
+    value = await cache.get('http://127.0.0.1:9000/bucket/icon.png?signature=local')
+    assert value.startswith('data:image/webp;base64,')
+    assert calls == ['http://127.0.0.1:9000/bucket/icon.png?signature=local']
 
 
 @pytest.mark.asyncio

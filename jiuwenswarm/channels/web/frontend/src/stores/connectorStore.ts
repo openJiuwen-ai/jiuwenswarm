@@ -1,4 +1,4 @@
-import { scheduleCatalogRefresh, catalogScope } from '../features/catalogCache';
+import { scheduleCatalogRefresh, catalogScope, type CatalogItems } from '../features/catalogCache';
 import { create } from 'zustand';
 import i18n from '../i18n';
 import { connectorApi } from '../services/connectorApi';
@@ -81,7 +81,7 @@ interface ConnectorState {
   // 2026-08-17：'delete' 取值随 deleteConnector action 一并删除，不再有"删除中"这个分支。
   busyMap: Record<string, McpBusyKind | undefined>;
 
-  loadList: (filter: 'builtin' | 'local', options?: { silent?: boolean }) => Promise<void>;
+  loadList: (filter: 'builtin' | 'local', options?: { silent?: boolean; refresh?: boolean }) => Promise<boolean>;
   loadDetail: (name: string, options?: { refresh?: boolean }) => Promise<void>;
   installPackage: (assetId: string) => Promise<ConnectorInstallResponse | null>;
   uninstallPackage: (identifier: string) => Promise<boolean>;
@@ -246,6 +246,32 @@ function scheduleQuickRefresh(get: () => ConnectorState): void {
 // 直接丢弃、不覆盖任何东西——不管这次结果本身是好是坏。
 const listRequestSeq: Record<'builtin' | 'local', number> = { builtin: 0, local: 0 };
 
+// 静默轮询仅校准：内容与 cache 元数据都没变时保留原数组，避免整表重渲染。
+// cache 仍参与比较，否则刷新完成/失败时 CatalogCacheNotice 拿不到最新状态。
+function connectorListSignature(items: ConnectorSummary[]): string {
+  return items
+    .map((item) => [
+      item.id,
+      item.runtimePackageName,
+      item.displayName,
+      item.description,
+      item.category,
+      item.connectionState,
+      item.integrationType,
+      item.hasBundledSkills ? '1' : '0',
+      item.installed ? '1' : '0',
+      item.source,
+      item.version ?? '',
+      item.icon ?? '',
+      (item.tags ?? []).join(','),
+    ].join('\u0001'))
+    .join('\u0002');
+}
+
+function connectorCacheSignature(items: ConnectorSummary[]): string {
+  return JSON.stringify((items as CatalogItems<ConnectorSummary>).cache ?? null);
+}
+
 export const useConnectorStore = create<ConnectorState>((set, get) => ({
   builtinConnectors: [],
   myConnectors: [],
@@ -264,8 +290,8 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
     const requestScope = catalogScope();
     if (!silent) set({ isLoading: true, error: null });
     try {
-      const response = await connectorApi.list(filter);
-      if (requestScope !== catalogScope()) return;
+      const response = await connectorApi.list(filter, '', { refresh: options?.refresh === true });
+      if (requestScope !== catalogScope()) return true;
       scheduleCatalogRefresh(
         'connectorStore.ts:' + filter,
         response.cache,
@@ -274,20 +300,34 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
         },
         () => listRequestSeq[filter] === mySeq,
       );
-      if (listRequestSeq[filter] !== mySeq) return; // 已有更新的同 filter 调用发起过，这次结果作废
+      if (listRequestSeq[filter] !== mySeq) return true; // 已有更新的同 filter 调用发起过，这次结果作废
       const fresh = response;
+      if (silent) {
+        const current = filter === 'builtin' ? get().builtinConnectors : get().myConnectors;
+        if (
+          connectorListSignature(current) === connectorListSignature(fresh)
+          && connectorCacheSignature(current) === connectorCacheSignature(fresh)
+        ) {
+          // 早些时候的非静默请求可能已被本次静默请求顶掉，收尾它的 loading 态。
+          if (get().isLoading) set({ isLoading: false });
+          return true;
+        }
+      }
       set((state) => ({
         connectors: mergeByName(state.connectors, fresh),
         ...(filter === 'builtin' ? { builtinConnectors: fresh } : { myConnectors: fresh }),
         isLoading: false,
       }));
+      return true;
     } catch (error) {
-      if (listRequestSeq[filter] !== mySeq) return;
-      if (silent) return;
-      set({
-        isLoading: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      if (listRequestSeq[filter] !== mySeq) return true;
+      if (!silent) {
+        set({
+          isLoading: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return false;
     }
   },
 

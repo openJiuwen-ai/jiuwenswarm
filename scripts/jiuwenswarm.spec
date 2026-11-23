@@ -24,6 +24,8 @@ block_cipher = None
 
 SPEC_DIR = os.path.abspath(globals().get("SPECPATH", os.getcwd()))
 project_root = os.path.abspath(os.path.join(SPEC_DIR, os.pardir))
+release_dependencies = runpy.run_path(os.path.join(project_root, "scripts", "release_dependencies.py"))
+release_dependencies["validate_release_dependencies"](Path(project_root))
 build_config_module = runpy.run_path(os.path.join(project_root, "scripts", "build_config.py"))
 build_config = build_config_module["load_build_config"](Path(project_root))
 computer_use_build = runpy.run_path(os.path.join(project_root, "scripts", "build_computer_use.py"))
@@ -215,6 +217,8 @@ for _relative in (
     ))
 datas += collect_data_files("jiuwenswarm.server.runtime.designer.skills", include_py_files=False)
 datas += collect_data_files("agent_gateway", include_py_files=False)
+# Gateway reads the product version from the frozen WorkSwarm distribution metadata.
+datas += copy_metadata("workswarm")
 datas += copy_metadata("agent-gateway", recursive=True)
 datas += copy_metadata("fastmcp", recursive=True)
 datas += copy_metadata("mcp", recursive=True)
@@ -236,12 +240,12 @@ datas += collect_data_files(
     include_py_files=True,
     includes=EXTENSION_DATA_FILE_PATTERNS,
 )
-# Office app packages (manifest.json, persona/, rails/, skills/, tools.json, profile.json), read at runtime;
-# the template loads its rail from rails/*.py.
+# Office app packages (manifest.json, persona/, rails/, skills/, tools.json, profile.json, review.md) and the icon set
+# (fluent_icons/), read at runtime; the template loads its rail from rails/*.py.
 datas += collect_data_files(
     "jiuwenswarm.office",
     include_py_files=True,
-    includes=["powerpoint/**/*"],
+    includes=["powerpoint/**/*", "word/**/*", "excel/**/*", "fluent_icons/*"],
 )
 # DesignRail 的 config.yaml + skills/ 树（SKILL.md / workflows / references / scripts）
 # 含 .mjs 脚本和 _templates/ 模板（脚本运行时读取），需额外 pattern
@@ -281,6 +285,11 @@ http2_submodules = [
 
 # 部分包需要显式声明隐藏导入
 lazy_runtime_submodules = []
+memory_bundle = runpy.run_path(os.path.join(project_root, "scripts", "memory_bundle.py"))
+lazy_runtime_submodules += list(memory_bundle["MEMORY_RUNTIME_MODULES"])
+for memory_package in memory_bundle["MEMORY_RUNTIME_PACKAGES"]:
+    lazy_runtime_submodules += collect_submodules(memory_package, on_error="raise")
+
 for lazy_package in (
     "agent_gateway",
     "jiuwenswarm.agents.harness.common.auto_harness",
@@ -288,14 +297,21 @@ for lazy_package in (
     "jiuwenswarm.agents.harness.common.rails",
     "jiuwenswarm.common.auth",
     "jiuwenswarm.agents.swarm",
+    "jiuwenswarm.server.client_attachments",
     # An app template's rail file imports its rail (jiuwenswarm.office.rails) at load time.
     "jiuwenswarm.office",
 ):
     lazy_runtime_submodules += collect_submodules(lazy_package)
 
 hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdown"] + webview_hiddenimports + http2_submodules + [
+    "jiuwenswarm.channels.cli.extension",  # Shared extension command in frozen subprocesses.
+    "jiuwenswarm.common.extension_cli",
+    # Installed Gateway packages import WebUI ops outside the entry point graph.
+    "agent_gateway.extensions_v2.webui.ops",
     "jiuwenswarm.server.jiuwenmate.agent_mail_local_provider",
     "jiuwenswarm.server.jiuwenmate.dingtalk_cli_local_provider",
+    # Full-duplex Python sources load by path, outside the static import graph.
+    "jiuwenswarm.common.asr_client",
     "matplotlib",  # 论文 reporting 阶段生成结果图
     "pandas",  # pymilvus 依赖
     # ``--doctor`` imports these targets dynamically before business imports.
@@ -309,7 +325,6 @@ hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdo
     "lxml.etree",
     "PIL._imaging",
     "bcrypt._bcrypt",
-    "faiss",
     "chromadb_rust_bindings",
     "tiktoken_ext",  # tiktoken 编码插件（cl100k_base 等）
     "tiktoken_ext.openai_public",
@@ -322,11 +337,14 @@ hiddenimports = lazy_runtime_submodules + ["jiuwenswarm.server.supervisor.shutdo
     "aiosqlite",
     "croniter",
     "websockets",
+    # The extension loader opens extension.py from disk in frozen builds.
+    *collect_submodules("jiuwenswarm.extensions.app_market"),
     "loguru",
     "dotenv",
     "webview",
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
     "jiuwenswarm.channels.desktop.desktop_app",  # 桌面入口
+    "jiuwenswarm.common.system_plugin_recovery_sidecar",
 ] + openjiuwen_submodules + symphony_submodules + gateway_adapter_submodules + runtime_worker_submodules + cli_channel_submodules
 hiddenimports += gateway_submodules
 
@@ -512,6 +530,17 @@ _sqlite_vec_datas, _sqlite_vec_binaries, _sqlite_vec_hidden = collect_all("sqlit
 datas += _sqlite_vec_datas
 hiddenimports += _sqlite_vec_hidden
 _bundled_binaries = _bundled_binaries + _sqlite_vec_binaries
+
+# AgentSSAS（agent_ssas）把检测模块与决策策略写成包内 YAML
+# （core/detection_modules/*/module.yaml、backend_client/openjiuwen/
+# decision_policies.yaml），并按 YAML 动态装配检测模块与 rail；PyInstaller
+# 静态分析既收不到这些数据文件，也跟不到动态导入的模块。冻结包缺
+# decision_policies.yaml 时策略模式会静默降级为默认行为，因此统一用
+# collect_all 收集数据文件与子模块。
+_agent_ssas_datas, _agent_ssas_binaries, _agent_ssas_hidden = collect_all("agent_ssas")
+datas += _agent_ssas_datas
+hiddenimports += _agent_ssas_hidden
+_bundled_binaries = _bundled_binaries + _agent_ssas_binaries
 
 a = Analysis(
     [entry_script],

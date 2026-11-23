@@ -5,7 +5,7 @@ export type SettingsModuleId =
   'general' | 'models' | 'agent' | 'browser' | 'channels' | 'personalContext' | 'archivedTasks' | 'security' | 'experimental' | (string & {});
 export type SettingsAccessLevel = 'hidden' | 'readOnly' | 'editable';
 export type SettingsCompositionMode = 'base' | 'extended';
-export type SettingsSource = 'config' | 'browser' | 'locale';
+export type SettingsSource = 'config' | 'browser' | 'locale' | 'multimodal';
 export type SettingValue = string | number | boolean;
 export type SettingsAccessNode =
   | { kind: 'module'; moduleId: string }
@@ -52,7 +52,13 @@ export type SettingItemDefinition =
   | (SettingItemBase & {
       component: 'switch';
       key: string;
-      errorDisplay?: 'inline';
+      /** A false read-only capability disables the switch. */
+      availableWhen?: string;
+      /** Read-only reason code for the unavailable tooltip. */
+      unavailableReasonKey?: string;
+      errorDisplay?: 'inline' | 'toast';
+      /** Set false when backend validation must succeed before changing the visible value. */
+      optimistic?: boolean;
       subItems?: SettingSubItems;
       configure?: ComponentType<{ onSave: () => Promise<void>; onClose: () => void }>;
     })
@@ -60,6 +66,8 @@ export type SettingItemDefinition =
       component: 'select';
       key: string;
       options: readonly SettingSelectOption[];
+      optionsFromSource?: boolean;
+      configure?: ComponentType<{ onClose: () => void }>;
     })
   | (SettingItemBase & {
       component: 'input';
@@ -72,8 +80,6 @@ export type SettingItemDefinition =
     });
 export interface SettingsSectionDefinition {
   id: string;
-  /** A read-only boolean from the module source; absent/unknown means hidden. */
-  visibleWhen?: string;
   titleKey?: I18nKey;
   descriptionKey?: I18nKey;
   separatedRows?: boolean;
@@ -83,6 +89,8 @@ export interface SettingsModuleDefinition {
   id: SettingsModuleId;
   titleKey: I18nKey;
   descriptionKey?: I18nKey;
+  /** The module renders its own page title and introductory content. */
+  hideHeader?: boolean;
   icon: ElementType;
   source?: SettingsSource;
   sections: readonly SettingsSectionDefinition[];

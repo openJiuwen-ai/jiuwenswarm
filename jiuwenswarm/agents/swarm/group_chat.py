@@ -10,11 +10,13 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from pathlib import Path
 from weakref import WeakValueDictionary
 
 from openjiuwen.agent_teams.harness.manifest import ElementKind, harness_element
 from openjiuwen.agent_teams.rails.team_context import get_team_backend
+from openjiuwen.agent_teams.rails.team_tool_rail import declare_team_tool_direct
 from openjiuwen.agent_teams.schema.blueprint import TeamAgentSpec
 from openjiuwen.agent_teams.schema.team import (
     ExternalCliAgentSpec,
@@ -22,7 +24,6 @@ from openjiuwen.agent_teams.schema.team import (
     TeamMemberSpec,
     TeamRole,
 )
-from openjiuwen.agent_teams.external import external_cli_agent_spec_from_template
 from openjiuwen.core.foundation.tool import Tool, ToolCard, ToolOutput
 from openjiuwen.core.runner import Runner
 from openjiuwen.harness.resources import load_agent_template_package
@@ -86,6 +87,7 @@ def assemble_group_members(spec, members: list[dict]) -> None:
     from jiuwenswarm.agents.swarm.assembly import (
         _apply_agent_group,
         _merge_team_prompt,
+        template_external_cli_config,
     )
     from openjiuwen.agent_teams.experts import compose_template_member, load_agent_group_package_bundle
     from jiuwenswarm.server.runtime.extension_package_manager import (
@@ -114,6 +116,17 @@ def assemble_group_members(spec, members: list[dict]) -> None:
             raise ValueError("group member_name must be valid and unique")
         names.add(name)
         kind, definition = item.get("kind"), item.get("id")
+        if kind == "colleague":
+            # Identity comes from the saved roster. Availability is checked when the
+            # colleague joins and before each execution, so a disabled or deleted
+            # colleague never prevents the rest of the group from starting.
+            member = TeamMemberSpec(
+                member_name=name, display_name=item.get("display_name") or name,
+                desc=item.get("description") or "AI colleague", prompt="",
+                role_type=TeamRole.HOST_MANAGED,
+            )
+            prepared.append((name, None, member))
+            continue
         if kind == "agent_template":
             template = load_agent_template_package(
                 resolve_agent_template_dir(definition) / "manifest.json"
@@ -166,11 +179,12 @@ def assemble_group_members(spec, members: list[dict]) -> None:
                 "Call run_team when the expert team should do it. That call resumes the same instance "
                 "and loads the context from its earlier child task. "
                 "Results are posted automatically; do not post or submit them twice. "
-                "If the same message mentions multiple expert teams, call run_team and do not reply. "
-                "That call joins your bound instance to one shared Team Organization. "
-                "Only the Owner posts the group reply. A teammate proxy and its expert-team instance "
-                "must not call group_send_message or send_file for that message. "
-                "Use group_send_message only when this message mentions you alone. "
+                "For a message mentioning only multiple expert teams, the first mentioned team is the Owner. "
+                "Only the Owner decides: ordinary conversation uses group_send_message; "
+                "substantive work uses run_team; "
+                "missing requirements use ask_user. A mention alone does not require an organization task. "
+                "Other proxies wait until the Owner accepts a task, then each calls run_team for that message. "
+                "Only the Owner posts the group's reply. "
                 "Do not build the outer group.",
             )
         member_params = dict(
@@ -179,7 +193,7 @@ def assemble_group_members(spec, members: list[dict]) -> None:
             desc=template.agent_card.description or "",
             prompt=prompt,
         )
-        external = external_cli_agent_spec_from_template(template)
+        external = template_external_cli_config(spec, template)
         member = (
             ExternalCliMemberSpec(**member_params, external_cli=external)
             if external is not None
@@ -193,7 +207,8 @@ def assemble_group_members(spec, members: list[dict]) -> None:
             install_execution_policy(agent)
         prepared.append((name, agent, member))
     for name, agent, member in prepared:
-        spec.agents[name] = agent
+        if agent is not None:
+            spec.agents[name] = agent
         spec.predefined_members = [*spec.predefined_members, member]
     spec.metadata = {**spec.metadata, "group_members": members}
     spec.team_mode = "hybrid"
@@ -272,7 +287,7 @@ def track_leader_reply(chunk, reply: list[str]) -> None:
     if getattr(role, "value", role) != TeamRole.LEADER.value:
         return
     chunk_type, payload = getattr(chunk, "type", None), chunk.payload
-    if chunk_type in {"tool_call", "tool_result"}:
+    if chunk_type in {"tool_call", "tool_result"} or payload.get("retrying"):
         reply.clear()
     elif chunk_type == "llm_output" and not payload.get("retrying"):
         content = payload.get("content")
@@ -292,13 +307,77 @@ async def cancel_waiting_runs(execution_ids) -> None:
         await asyncio.wait(workers)
 
 
+def with_output_files(outputs_dir: str | None, attachments: list[dict], since: float | None = None) -> list[dict]:
+    """Append files under ``outputs_dir`` that ``attachments`` does not already name.
+
+    With ``since``, only files written at or after it count, so a follow-up run
+    does not resend the deliverables of earlier runs that share the directory.
+    """
+    attachments = list(attachments)
+    if not outputs_dir:
+        return attachments
+    root = Path(outputs_dir).resolve()
+    paths = {item.get("path") for item in attachments if isinstance(item.get("path"), str)}
+    for file in sorted(root.rglob("*")):
+        resolved = file.resolve()
+        if not file.is_file() or not resolved.is_relative_to(root):
+            continue
+        if since is not None and file.stat().st_mtime < since:
+            continue
+        path = str(resolved)
+        if path not in paths:
+            attachments.append({"name": file.name, "path": path})
+            paths.add(path)
+    return attachments
+
+
+PRIVATE_RESULT_REMINDER = (
+    "The team is idle but this run has no result yet. If the work is finished, review the deliverable "
+    "and call complete_team_run now. If something is still unfinished, get it done, then call "
+    "complete_team_run. Your last message is not published as the result."
+)
+
+
 class _GroupTool(Tool):
     async def stream(self, inputs, **kwargs):
         yield await self.invoke(inputs, **kwargs)
 
 
+_TERMINAL_TASK_STATUSES = frozenset({"completed", "cancelled"})
+# Let core nudge and escalate stalled work before the host fails an idle run.
+_PRIVATE_IDLE_GRACE_WINDOWS = 4
+
+
+async def unfinished_run_tasks(backend, started_at: float | None) -> list:
+    """Private-board tasks this run touched that have not reached a terminal status.
+
+    Tasks last changed before the run started belong to earlier runs and are
+    ignored, so a task stranded by an older run cannot hold this one back.
+    """
+    manager = getattr(backend, "task_manager", None)
+    if manager is None or started_at is None:
+        return []
+    try:
+        tasks = await manager.list_tasks(with_content=False)
+    except Exception:
+        logger.warning("Could not read the private task board before submission", exc_info=True)
+        return []
+    return [
+        task for task in tasks
+        if task.status not in _TERMINAL_TASK_STATUSES and (task.updated_at or 0) >= started_at * 1000
+    ]
+
+
 class CompleteTeamRun(_GroupTool):
-    def __init__(self, key: str):
+    def __init__(self, key: str, backend=None):
+        outputs_dir = _private_runs.get(key, {}).get("outputs_dir")
+        # Naming the directory lets the leader see that a file written anywhere else is not attached.
+        outputs_note = (
+            f" Files in the team's outputs directory ({outputs_dir}) are attached automatically; "
+            "pass any other final file in attachments as {name, path}. "
+            if outputs_dir
+            else " Final files in the team's outputs directory are attached automatically. "
+        )
         super().__init__(
             ToolCard(
                 id="group.complete_team_run",
@@ -306,8 +385,8 @@ class CompleteTeamRun(_GroupTool):
                 description=(
                     "Complete this private-team run with its final result; the host publishes it to the group. "
                     "Direct answers need no task card; call start_group_task before doing substantive work."
-                    " Final files in the team's outputs directory are attached automatically. "
-                    "Include the complete answer in result when no file was produced."
+                    + outputs_note
+                    + "Include the complete answer in result when no file was produced."
                 ),
                 input_params={
                     "type": "object",
@@ -322,7 +401,10 @@ class CompleteTeamRun(_GroupTool):
                 },
             )
         )
+        # Group tools are this agent's primary interface; keep them out of progressive tool search.
+        declare_team_tool_direct(self.card)
         self.key = key
+        self.backend = backend
 
     async def invoke(self, inputs, **kwargs):
         result = inputs.get("result")
@@ -342,19 +424,20 @@ class CompleteTeamRun(_GroupTool):
         if current is not None and current.get("execution_id"):
             if inputs.get("execution_id") != current["execution_id"]:
                 return ToolOutput(success=False, error="execution_id must match the active private-team task")
-        attachments = list(attachments)
-        outputs_dir = current.get("outputs_dir") if current is not None else None
-        if outputs_dir:
-            root = Path(outputs_dir).resolve()
-            paths = {item.get("path") for item in attachments if isinstance(item.get("path"), str)}
-            for file in sorted(root.rglob("*")):
-                resolved = file.resolve()
-                if not file.is_file() or not resolved.is_relative_to(root):
-                    continue
-                path = str(resolved)
-                if path not in paths:
-                    attachments.append({"name": file.name, "path": path})
-                    paths.add(path)
+        started_at = current.get("started_at") if current is not None else None
+        unfinished = await unfinished_run_tasks(self.backend, started_at)
+        if future.done():
+            return ToolOutput(success=False, error="expert-team execution is not awaiting a result")
+        if unfinished:
+            listed = ", ".join(f"#{task.task_id} ({task.status})" for task in unfinished[:8])
+            return ToolOutput(success=False, error=(
+                f"Tasks of this run are not finished yet: {listed}. Do not submit a progress note as the result. "
+                "End your turn without a reply; you are notified as they finish. Call complete_team_run with the "
+                "final deliverable once they are done, or cancel a task with update_task if it is no longer needed."
+            ))
+        attachments = with_output_files(
+            current.get("outputs_dir") if current is not None else None, attachments, since=started_at,
+        )
         submission = {"result": result, "attachments": attachments} if attachments else result
         future.set_result(submission)
         return ToolOutput(success=True, data={"submitted": True})
@@ -386,6 +469,8 @@ class RunTeam(_GroupTool):
                 },
             )
         )
+        # Group tools are this agent's primary interface; keep them out of progressive tool search.
+        declare_team_tool_direct(self.card)
         self.backend, self.context, self.child_spec = backend, context, child_spec
 
     async def invoke(self, inputs, **kwargs):
@@ -396,6 +481,20 @@ class RunTeam(_GroupTool):
             return ToolOutput(success=False, error="invalid run_team action")
         if self.backend.conversation_mode != "group_chat":
             return ToolOutput(success=False, error="run_team requires a group_chat runtime")
+        from jiuwenswarm.agents.swarm.group_turn import current_group_turn
+
+        turn = current_group_turn(self.context.session_id, self.backend.member_name)
+        if turn is not None and turn.route == "unknown":
+            return ToolOutput(success=False, error="run_team requires an unambiguous triggering group message")
+        if turn is not None and turn.route == "organization":
+            if action == "cancel":
+                return ToolOutput(success=False, error="one expert team cannot cancel a Team Organization")
+            from jiuwenswarm.agents.swarm.group_route import activate
+
+            result = await activate(self.context.session_id, turn.client_message_id, self.backend)
+            if result is not None:
+                return result
+            return await self._invoke_bound_organization(turn.client_message_id)
         if action in {"update", "cancel"}:
             return await self._adjust({**inputs, "action": action})
         run_id, task = inputs.get("run_id"), inputs.get("content") or inputs.get("task")
@@ -410,6 +509,7 @@ class RunTeam(_GroupTool):
             direct_route_for_member,
             recorded_organization_plan,
             release_organization_plan_claim,
+            release_member_turn,
             remember_proxy_backend,
             remember_proxy_tool,
             route_live_organization_plan,
@@ -426,19 +526,21 @@ class RunTeam(_GroupTool):
         remember_proxy_backend(session, self.backend)
         remember_proxy_tool(session, self)
 
-        bound = peek_member_turn(session, self.backend.member_name)
-        message_plan_id = bound or await triggering_plan_id(
-            self.backend, self.backend.member_name
+        bound = peek_member_turn(session, self.backend.member_name) if turn is None else None
+        message_plan_id = turn.client_message_id if turn is not None else (
+            bound or await triggering_plan_id(self.backend, self.backend.member_name)
         )
         if bound and bound == message_plan_id:
             consume_member_turn(session, self.backend.member_name)
+        elif turn is not None and turn.route == "direct" and message_plan_id:
+            release_member_turn(session, self.backend.member_name, message_plan_id)
         direct = direct_route_for_member(
             session, self.backend.member_name, message_plan_id
-        )
+        ) or bool(turn is not None and getattr(turn, "mixed_mentions", False))
         live = pending_organization_plan(session, self.backend.member_name)
         recorded = (
             recorded_organization_plan(session, self.backend.member_name, message_plan_id)
-            if message_plan_id and not direct
+            if turn is None and message_plan_id and not direct
             else None
         )
         plan = None
@@ -449,7 +551,7 @@ class RunTeam(_GroupTool):
             plan = organization_plan_for_member(
                 session, self.backend.member_name, message_plan_id
             )
-        elif live is not None and not organization_plan_accepted(
+        elif turn is None and live is not None and not organization_plan_accepted(
             session, str(live.get("plan_id") or ""), self.backend.member_name
         ):
             # The proxy still owes its join to an older organization message.
@@ -619,6 +721,56 @@ class RunTeam(_GroupTool):
                     if current["phase"] != "publishing":
                         await store.update(execution["execution_id"], status="failed", phase="failed")
                 return ToolOutput(success=False, error=str(exc))
+
+    async def _invoke_bound_organization(self, plan_id: str) -> ToolOutput:
+        """A consumed multi-team message always keeps its own organization."""
+        from jiuwenswarm.agents.swarm.group_org_bootstrap import (
+            closed_organization_plan_result,
+            organization_execution_id,
+            queue_organization_plan,
+            recorded_organization_plan,
+            release_member_turn,
+            release_organization_plan_claim,
+            remember_proxy_backend,
+            remember_proxy_tool,
+            route_bound_organization_plan,
+            run_organization_member,
+        )
+
+        session = self.context.session_id
+        member = self.backend.member_name
+        plan = recorded_organization_plan(session, member, plan_id)
+        if plan is None:
+            return ToolOutput(success=False, error="the triggering message has no organization plan for this member")
+        if plan.get("status") not in {"pending", "running"}:
+            release_member_turn(session, member, plan_id)
+            return closed_organization_plan_result(plan)
+        remember_proxy_backend(session, self.backend)
+        remember_proxy_tool(session, self)
+        route, plan = route_bound_organization_plan(session, member, plan)
+        from jiuwenswarm.agents.swarm.group_turn import bind_group_turn, reset_group_turn
+
+        # Background tasks carry their explicit plan, not this proxy tool's
+        # invocation context. Otherwise asyncio would retain a stale turn.
+        token = bind_group_turn(None)
+        try:
+            if route == "queue":
+                result = queue_organization_plan(backend=self.backend, session_id=session, plan=plan)
+            else:
+                result = await run_organization_member(backend=self.backend, session_id=session, plan=plan)
+        except Exception:
+            release_organization_plan_claim(session, plan_id, member)
+            raise
+        finally:
+            reset_group_turn(token)
+        if getattr(result, "success", True) is False:
+            release_organization_plan_claim(session, plan_id, member)
+        else:
+            # Consume only the accepted message, even if an older turn is still queued.
+            release_member_turn(session, member, plan_id)
+            if isinstance(result.data, dict):
+                result.data.update(plan_id=plan_id, execution_id=organization_execution_id(session, plan_id))
+        return result
 
     async def _adjust(self, inputs):
         from jiuwenswarm.server.runtime.group_execution import GroupExecutions
@@ -834,6 +986,7 @@ class RunTeam(_GroupTool):
                 "execution_id": execution["execution_id"] if execution is not None else None,
                 "group_id": self.context.session_id if execution is not None else None,
                 "outputs_dir": getattr(child.build_context, "team_outputs_dir", None),
+                "started_at": time.time(),
             }
             child.leader = child.leader.model_copy(
                 update={
@@ -858,24 +1011,102 @@ class RunTeam(_GroupTool):
             future = asyncio.get_running_loop().create_future()
             _results[team_key] = future
 
+            idle_since: float | None = None
+            idle_elapsed = 0.0
+            idle_board: tuple | None = None
+            idle_timeout = _PRIVATE_IDLE_GRACE_WINDOWS * max(
+                child.stale_claim_idle_timeout, child.stale_pending_idle_timeout,
+            )
+
+            def leave_idle():
+                nonlocal idle_since, idle_elapsed
+                if idle_since is not None:
+                    idle_elapsed += time.monotonic() - idle_since
+                idle_since = None
+
+            async def watch_idle():
+                nonlocal idle_since, idle_elapsed, idle_board
+                from jiuwenswarm.server.runtime.group_questions import GroupQuestions
+
+                while True:
+                    await asyncio.sleep(min(30, idle_timeout / 4))
+                    if idle_since is None:
+                        continue
+                    if execution is not None:
+                        pending = GroupQuestions(self.context.session_id).pending(self.backend.member_name)
+                        if any(item["execution_id"] == execution["execution_id"] for item in pending):
+                            idle_since = None
+                            idle_elapsed = 0.0
+                            continue
+                    run = _private_runs.get(team_key, {})
+                    tasks = await unfinished_run_tasks(run.get("backend"), run.get("started_at"))
+                    # Activity may have resumed while the board read was awaiting I/O.
+                    if idle_since is None:
+                        continue
+                    board = tuple(sorted((item.task_id, item.status, item.updated_at) for item in tasks))
+                    now = time.monotonic()
+                    if board != idle_board:
+                        idle_board = board
+                        idle_since = now
+                        idle_elapsed = 0.0
+                    elif idle_elapsed + now - idle_since >= idle_timeout:
+                        raise RuntimeError("expert team remained idle without task progress or a submitted result")
+
             async def consume():
+                nonlocal idle_since, idle_elapsed
                 from openjiuwen.agent_teams.context import set_session_id, reset_session_id
+                from openjiuwen.agent_teams.interaction.payload import GodViewMessage
                 from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
 
                 handler = None
                 progress_worker = None
                 leader_reply: list[str] = []
+                reminded = False
+
+                async def has_unfinished_tasks() -> bool:
+                    run = _private_runs.get(team_key, {})
+                    return bool(await unfinished_run_tasks(run.get("backend"), run.get("started_at")))
 
                 def settle_with_leader_reply() -> bool:
                     # A leader that answered in plain text has answered; its words are the result.
                     text = "".join(leader_reply).strip()
                     if not text or future.done():
                         return False
+                    # Some providers return this interruption sentinel as normal
+                    # model text instead of a structured failure frame.
+                    if text.endswith("[Request interrupted by an unexpected error]"):
+                        raise RuntimeError("expert-team response was interrupted by an unexpected error")
                     logger.info("Private team finished without complete_team_run; using its last reply")
-                    future.set_result(text)
+                    run = _private_runs.get(team_key, {})
+                    attachments = with_output_files(run.get("outputs_dir"), [], since=run.get("started_at"))
+                    future.set_result({"result": text, "attachments": attachments} if attachments else text)
+                    return True
+
+                async def remind_leader() -> bool:
+                    # Started work can go idle on an interim note; ask once for the real submission.
+                    nonlocal reminded
+                    if reminded or execution is None:
+                        return False
+                    record = GroupExecutions(self.context.session_id).get(execution["execution_id"])
+                    if record.get("presentation") != "card":
+                        return False
+                    reminded = True
+                    delivered = await Runner.interact_agent_team(
+                        GodViewMessage(body=PRIVATE_RESULT_REMINDER),
+                        team_name=child.team_name, session_id=child_session,
+                    )
+                    if not delivered.ok:
+                        logger.warning("Private leader reminder was not delivered: %s", delivered.reason)
+                        return False
+                    leader_reply.clear()
                     return True
 
                 async def record_progress(event):
+                    member_event = event.get("event", {})
+                    if event.get("event_type") == "team.member" and member_event.get("new_status") in {
+                        "starting", "running", "busy", "restarting",
+                    }:
+                        leave_idle()
                     await GroupExecutions(self.context.session_id).task_event(execution["execution_id"], event)
 
                 async def watch_progress():
@@ -886,7 +1117,17 @@ class RunTeam(_GroupTool):
                     async for chunk in Runner.run_agent_team_streaming(
                         child, {"query": query or task}, session=child_session,
                     ):
+                        if getattr(chunk, "type", None) in {"llm_output", "tool_call", "tool_result"}:
+                            leave_idle()
                         payload = getattr(chunk, "payload", None)
+                        # Core task_failed uses a typed CustomSchema payload.
+                        # Check it before the dictionary-only progress path.
+                        payload_type = (
+                            payload.get("type") if isinstance(payload, dict)
+                            else getattr(payload, "type", None)
+                        )
+                        if payload_type == "task_failed":
+                            raise RuntimeError("expert-team execution failed")
                         if not isinstance(payload, dict):
                             continue
                         track_leader_reply(chunk, leader_reply)
@@ -914,11 +1155,20 @@ class RunTeam(_GroupTool):
                                 pending = GroupQuestions(self.context.session_id).pending(self.backend.member_name)
                                 waiting = any(item["execution_id"] == execution["execution_id"] for item in pending)
                                 if waiting:
+                                    idle_since = None
+                                    idle_elapsed = 0.0
                                     continue
+                            if idle_since is None:
+                                idle_since = time.monotonic()
+                            if await remind_leader():
+                                continue
+                            if await has_unfinished_tasks():
+                                continue
                             if settle_with_leader_reply():
                                 return
                             raise RuntimeError("expert team became idle without submitting a result")
-                    settle_with_leader_reply()
+                    if not await has_unfinished_tasks():
+                        settle_with_leader_reply()
                 finally:
                     if progress_worker is not None:
                         progress_worker.cancel()
@@ -927,10 +1177,13 @@ class RunTeam(_GroupTool):
                         await handler.stop()
 
             worker = asyncio.create_task(consume())
+            idle_watcher = asyncio.create_task(watch_idle())
             try:
                 done, _ = await asyncio.wait(
-                    {worker, future}, return_when=asyncio.FIRST_COMPLETED
+                    {worker, future, idle_watcher}, return_when=asyncio.FIRST_COMPLETED
                 )
+                if idle_watcher in done and not future.done():
+                    await idle_watcher
                 if future not in done:
                     await worker
                     raise RuntimeError("expert team ended without submitting a result")
@@ -942,6 +1195,8 @@ class RunTeam(_GroupTool):
                 state["status"] = "completed"
                 save()
             finally:
+                idle_watcher.cancel()
+                await asyncio.gather(idle_watcher, return_exceptions=True)
                 try:
                     paused = await Runner.pause_agent_team(
                         team_name=child.team_name, session_id=child_session
@@ -997,6 +1252,8 @@ class BeginTeamTask(_GroupTool):
                 "properties": {"execution_id": {"type": "string"}}, "additionalProperties": False,
             },
         ))
+        # Group tools are this agent's primary interface; keep them out of progressive tool search.
+        declare_team_tool_direct(self.card)
         self.key = key
 
     async def invoke(self, inputs, **kwargs):
@@ -1031,10 +1288,12 @@ class PrivateTaskPolicy(DeepAgentRail):
         current = _private_runs.get(self.key)
         if current is None:
             return
+        # Rails are reused on resume; bind the live board to each new run record.
+        current["backend"] = get_team_backend(self.context)
         content = (
             "Current execution_id: " + current["execution_id"]
             + ". If you can answer directly, call complete_team_run with this ID; do not start a task. "
-            "Before substantive work or using other tools, call start_group_task with this ID. "
+            "Before substantive work or using other tools except build_team, call start_group_task with this ID. "
             "Follow the normal team collaboration rules for planning, delegation and task execution. "
             "Submit the final result with complete_team_run. "
             "Ask the user with ask_user if important requirements are unclear, before substantive work. "
@@ -1050,8 +1309,11 @@ class PrivateTaskPolicy(DeepAgentRail):
         from jiuwenswarm.server.runtime.group_execution import GroupExecutions
         from openjiuwen.core.foundation.llm import ToolMessage
 
+        # build_team publishes nothing, and the leader's bootstrap makes it the first call.
         # tool_call relays a searched tool through the normal tool path, so the gate checks the inner call.
-        if ctx.inputs.tool_name in {"start_group_task", "complete_team_run", "ask_user", "tool_call", "tool_search"}:
+        if ctx.inputs.tool_name in {
+            "build_team", "start_group_task", "complete_team_run", "ask_user", "tool_call", "tool_search",
+        }:
             return
         current = _private_runs.get(self.key)
         if current is None:
@@ -1100,7 +1362,7 @@ def build_group_complete_run(params, context):
     backend = get_team_backend(context)
     if backend is None or not backend.is_leader:
         raise ValueError("only the private expert-team leader may submit results")
-    return CompleteTeamRun(params["key"])
+    return CompleteTeamRun(params["key"], backend)
 
 
 class GroupMemberTemplateRail(DeepAgentRail):

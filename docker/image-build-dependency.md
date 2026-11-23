@@ -103,6 +103,7 @@ graph TD
 | manager-web | `agent-runtime/docker/Dockerfile.manager-web` | Manager 管理端前端（**nginx 启动**，监听 5273） |
 | gateway / agentserver | `jiuwenswarm/docker/Dockerfile.claw` | **同一个镜像**，两者共用；差异只在部署侧（deploy 模板的 command / securityContext） |
 | web | `jiuwenswarm/docker/Dockerfile.web` | 用户面 Web（**nginx 启动**，监听 5173） |
+| user-backend | `jiuwenswarm/docker/Dockerfile.user-backend` | 用户面后端（**app_web.py 启动**，监听 8780），使用 Swarm 基础镜像，产物填入 `USER_BACKEND_IMAGE` |
 | sandbox | `jiuwenswarm/docker/Dockerfile.sandbox` | 沙箱 |
 
 ## 三、关键点

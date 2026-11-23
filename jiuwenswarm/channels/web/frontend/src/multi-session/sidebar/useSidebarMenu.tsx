@@ -17,6 +17,7 @@ import {
   useCronStore,
   useGoalStore,
   useHarnessStore,
+  usePlanStore,
   useSessionStore,
   useSubagentStore,
   useTodoStore,
@@ -112,7 +113,6 @@ export async function toggleSessionPin(session: Session, translate: Translate): 
     toast.open({
       content: `${translate('multiSession.project.pinFailed')}: ${error instanceof Error ? error.message : String(error)}`,
       variant: 'error',
-      wide: true,
     });
   } finally {
     refreshExpandedCronSessions();
@@ -124,7 +124,6 @@ function openArchiveFailureToast(content: string) {
     content,
     variant: 'error',
     duration: 5,
-    wide: true,
   });
 }
 
@@ -158,7 +157,6 @@ function openArchiveSuccessToast(
     content: options.content,
     icon: createElement(Archive, { 'aria-hidden': true, size: 16, strokeWidth: 1.8 }),
     duration: 5,
-    wide: true,
     actions: [
       {
         label: translate('multiSession.project.archiveView'),
@@ -306,7 +304,6 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
     removeSessionLocally,
     workMode,
   } = useWorkspaceStore();
-  const loadCronJobs = useCronStore((s) => s.loadJobs);
   const loadCronSessions = useCronStore((s) => s.loadCronSessions);
 
   const activeSessionId = options.type === 'session' ? options.activeSessionId : null;
@@ -326,6 +323,10 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
     useTodoStore.getState().removeRuntime(sessionId);
     useHarnessStore.getState().removeRuntime(sessionId);
     useGoalStore.getState().removeRuntime(sessionId);
+    // Plan 模式的 runtime（active、pendingExplicitEntry）也按 session 挂在内存里，
+    // 侧边栏删除漏掉它会让已删会话的 plan 状态永久残留；App.tsx 的
+    // handleTeamSessionsDeleted 删除路径已包含这条，这里对齐补齐。
+    usePlanStore.getState().removeRuntime(sessionId);
   }
 
   async function archiveSessionAction(session: Session) {
@@ -334,6 +335,10 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
     archiveInFlightRef.current.add(opKey);
     try {
       await archiveSession(session.session_id);
+      // Archive stops a live turn in the backend without terminal wire frames.
+      // Settle the local turn before the Session leaves the workspace so an
+      // undo/restore cannot resurrect it as still running (GitCode #6533).
+      useChatStore.getState().settleLifecycleStoppedSession(session.session_id);
       flushSync(() => {
         removeSessionLocally(session.session_id);
         openArchiveSuccessToast(t, {
@@ -414,7 +419,6 @@ export function useSidebarMenu(options: SidebarMenuOptions): {
       const projectId = deleteProjectTarget.project_id;
       if (projectAction === 'delete') {
         const removed = await removeProject(projectId);
-        await loadCronJobs();
         if (options.type === 'project') options.onRemoved?.(projectId);
         // 项目下没有定时任务时只提示“项目已移除”；字段缺失（旧网关）沿用原文案。
         toast.open({

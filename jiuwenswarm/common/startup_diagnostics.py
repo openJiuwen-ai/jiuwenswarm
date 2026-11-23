@@ -49,7 +49,6 @@ _NATIVE_IMPORT_CHECKS: tuple[tuple[str, str], ...] = (
     ("lxml.etree", "lxml Native 扩展"),
     ("PIL._imaging", "Pillow Native 扩展"),
     ("bcrypt._bcrypt", "bcrypt Native 扩展"),
-    ("faiss", "FAISS Native 扩展"),
     ("chromadb_rust_bindings", "ChromaDB Rust 扩展"),
 )
 
