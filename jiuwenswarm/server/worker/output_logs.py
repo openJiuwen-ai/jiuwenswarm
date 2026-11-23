@@ -107,21 +107,27 @@ def open_worker_stderr(path: Path) -> BinaryIO:
 def _active_log_paths(directory: Path) -> set[str] | None:
     """Protect open files, including stderr inherited by SDK/tool children.
 
-    Unknown process access protects old base logs rather than guessing that
-    they are retired. Immutable archives can still be pruned in that case.
+    Numeric UIDs avoid username lookups for unrelated processes. An incomplete
+    scan still protects base logs; a partial active set cannot prove closure.
     """
     import psutil
 
     active = set()
     root = os.path.normcase(str(directory.resolve()))
     try:
-        username = psutil.Process().username()
+        uid = os.geteuid()
         deadline = time.monotonic() + 2.0
-        for process in psutil.process_iter(["pid", "username"]):
+        for process in psutil.process_iter(["pid", "uids"]):
             try:
-                if process.info["username"] is None or time.monotonic() >= deadline:
+                if time.monotonic() >= deadline:
+                    logger.warning("[Worker] output log cleanup deferred: process scan timed out")
                     return None
-                if process.info["username"] != username:
+                uids = process.info["uids"]
+                if uids is None:
+                    # process_iter may cache an unavailable attribute. Recheck
+                    # it so an exited process does not poison the whole scan.
+                    uids = process.uids()
+                if uid not in uids:
                     continue
                 for entry in process.open_files():
                     path = Path(entry.path)
@@ -129,7 +135,13 @@ def _active_log_paths(directory: Path) -> set[str] | None:
                         active.add(os.path.normcase(str(path)))
             except (psutil.NoSuchProcess, psutil.ZombieProcess):
                 continue
-    except (psutil.AccessDenied, OSError, NotImplementedError):
+            except psutil.AccessDenied:
+                logger.warning(
+                    "[Worker] output log cleanup deferred: process access denied (pid=%s)", process.pid,
+                )
+                return None
+    except (psutil.AccessDenied, OSError, NotImplementedError) as error:
+        logger.warning("[Worker] output log cleanup deferred: process scan unavailable (%s)", type(error).__name__)
         return None
     return active
 

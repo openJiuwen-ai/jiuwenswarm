@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import psutil
 import pytest
@@ -256,13 +257,14 @@ def test_retention_protects_another_process_inherited_stderr(tmp_path, monkeypat
         while not active.stat().st_size and time.monotonic() < deadline:
             time.sleep(0.01)
         _age(active, 200)
-        child = psutil.Process(process.pid)
-        child.info = {"pid": process.pid, "username": child.username()}
-        # Inspect real OS handles of the controlled child, independently of
-        # unrelated applications' process permissions on the test machine.
-        monkeypatch.setattr(psutil, "process_iter", lambda *_args: iter([child]))
-        live = output_logs._active_log_paths(tmp_path)
-        assert live is not None and os.path.normcase(str(active)) in live
+        if os.name != "nt":
+            child = psutil.Process(process.pid)
+            child.info = {"pid": process.pid, "uids": child.uids()}
+            # Inspect real OS handles of the controlled child, independently of
+            # unrelated applications' process permissions on the test machine.
+            monkeypatch.setattr(psutil, "process_iter", lambda *_args: iter([child]))
+            live = output_logs._active_log_paths(tmp_path)
+            assert live is not None and os.path.normcase(str(active)) in live
 
         output_logs.prune_worker_logs(tmp_path, max_bytes=32, backup_count=2)
 
@@ -273,6 +275,90 @@ def test_retention_protects_another_process_inherited_stderr(tmp_path, monkeypat
         if process.poll() is None:
             process.kill()
         process.wait(timeout=5)
+
+
+def _posix_processes(monkeypatch, processes):
+    # Execute POSIX retention on any test host without changing pathlib's OS.
+    monkeypatch.setattr(output_logs, "os", SimpleNamespace(name="posix", path=os.path, geteuid=lambda: 1000))
+    monkeypatch.setattr(psutil, "process_iter", lambda *_args: iter(processes))
+
+
+def test_posix_retention_ignores_unresolvable_names_and_protects_inherited_output(tmp_path, monkeypatch):
+    active = _stderr(tmp_path, 10)
+    active.write_bytes(b"active output")
+    _age(active, 200)
+    retired = [_stderr(tmp_path, number) for number in range(5)]
+    for number, path in enumerate(retired):
+        path.write_bytes(b"closed output")
+        _age(path, 150-number)
+
+    def forbidden_files():
+        raise psutil.AccessDenied(10)
+
+    foreign = SimpleNamespace(pid=10, info={"uids": (2000, 2000, 2000), "username": None}, open_files=forbidden_files)
+    own = SimpleNamespace(
+        pid=11, info={"uids": (1000, 1000, 1000), "username": None},
+        open_files=lambda: [SimpleNamespace(path=str(active))],
+    )
+    _posix_processes(monkeypatch, [foreign, own])
+    output_logs.prune_worker_logs(tmp_path, max_bytes=32, backup_count=2)
+    assert active.read_bytes() == b"active output"
+    assert [path for path in retired if path.exists()] == retired[-2:]
+
+
+@pytest.mark.parametrize("uids", [(1000, 2000, 2000), (2000, 1000, 2000), (2000, 2000, 1000)])
+def test_posix_retention_protects_real_effective_and_saved_user_handles(tmp_path, monkeypatch, uids):
+    active = _stderr(tmp_path)
+    active.write_bytes(b"inherited output")
+    own = SimpleNamespace(pid=11, info={"uids": uids}, open_files=lambda: [SimpleNamespace(path=str(active))])
+    _posix_processes(monkeypatch, [own])
+    assert output_logs._active_log_paths(tmp_path) == {os.path.normcase(str(active))}
+
+
+@pytest.mark.parametrize("failure", [psutil.NoSuchProcess, psutil.ZombieProcess])
+def test_posix_retention_skips_exited_process_with_unavailable_cached_uid(tmp_path, monkeypatch, failure):
+    def vanished_uid():
+        raise failure(10)
+
+    vanished = SimpleNamespace(pid=10, info={"uids": None}, uids=vanished_uid)
+    _posix_processes(monkeypatch, [vanished])
+    assert output_logs._active_log_paths(tmp_path) == set()
+
+
+@pytest.mark.parametrize("known_uid", [True, False])
+def test_posix_retention_keeps_base_logs_when_process_access_is_unknown(tmp_path, monkeypatch, caplog, known_uid):
+    def denied():
+        raise psutil.AccessDenied(10)
+
+    uncertain = SimpleNamespace(
+        pid=10, info={"uids": (1000, 1000, 1000) if known_uid else None},
+        uids=denied, open_files=denied,
+    )
+    bases = [_stderr(tmp_path, number) for number in range(3)]
+    for path in bases:
+        path.write_bytes(b"possibly active")
+        _age(path)
+    _posix_processes(monkeypatch, [uncertain])
+    output_logs.prune_worker_logs(tmp_path, max_bytes=32, backup_count=2)
+    assert all(path.exists() for path in bases)
+    assert "process access denied (pid=10)" in caplog.text
+
+
+def test_posix_retention_timeout_does_not_delete_unscanned_active_output(tmp_path, monkeypatch, caplog):
+    bases = [_stderr(tmp_path, number) for number in range(3)]
+    for path in bases:
+        path.write_bytes(b"possibly active")
+        _age(path)
+    own = [
+        SimpleNamespace(pid=10+number, info={"uids": (1000, 1000, 1000)}, open_files=lambda: [])
+        for number in range(2)
+    ]
+    _posix_processes(monkeypatch, own)
+    clock = iter([0.0, 0.0, 3.0])
+    monkeypatch.setattr(output_logs, "time", SimpleNamespace(monotonic=lambda: next(clock), time=time.time))
+    output_logs.prune_worker_logs(tmp_path, max_bytes=32, backup_count=2)
+    assert all(path.exists() for path in bases)
+    assert "process scan timed out" in caplog.text
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows delete-sharing protection")
