@@ -167,6 +167,7 @@ generated: true
 | [F_20261027_1843_ttse-plugin-rail](features/F_20261027_1843_ttse-plugin-rail.md) | F | TTSE 以插件 Rail 接入主 Coding Agent | xinyang_bali | 无独立 D：用户确认执行 D:/files/自演进/方案/ttse适配code agent 中的外部适配方案，该资料没有仓内 D 标识。 |
 | [F_20261111_1528_unified-observability-config](features/F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
 | [F_20261117_2300_conflict-free-tool-registry](features/F_20261117_2300_conflict-free-tool-registry.md) | F | 内置工具声明式自发现注册表与文档索引无冲突合并机制 | zhuxiangju | 无独立 D：架构级消除多分支并行开发工具与文档时的中心注册表及索引冲突热点。 |
+| [F_20261120_1220_enhance-web-fetch-trafilatura](features/F_20261120_1220_enhance-web-fetch-trafilatura.md) | F | 增强 mcp_fetch_webpage 基于 trafilatura 的正文智能抽取与降噪能力 | zhuxiangju | 无独立 D：增强现有 mcp_fetch_webpage 工具的 HTML 正文提取与降噪，保留既有签名与 SSRF 防护链路，无独立前置设计文档。 |
 
 <a id="module-jiuwenswarm-agents-harness-code-rails-heartbeat"></a>
 
