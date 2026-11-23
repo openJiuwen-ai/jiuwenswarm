@@ -17109,6 +17109,7 @@ class JiuWenSwarmDeepAdapter:
             )
         await self._close_agent_initialization_loop()
         self._teardown_agent_owned_tools()
+        await self._release_session_agent_callbacks()
         self._release_sys_operations()
         # 取消未到期的延时重索引 task，避免 adapter cleanup 后仍有孤儿 task
         # 去触发 manager.sync（此时 rail/manager 可能已失效）。
@@ -17176,17 +17177,195 @@ class JiuWenSwarmDeepAdapter:
         re-registers over the stale ids (one refresh warning per tool) and the
         residual instances keep holding a stale SysOperation reference. Shared
         singletons and externally-scoped ids are left alone.
+
+        Session-scoped registry purge always runs afterwards (even when
+        ``_instance`` / ``ability_manager`` is missing) so the
+        tools-registered-before-instance-ready failure path still drops
+        ``{name}_{owner}`` entries from ``resource_mgr``.
         """
-        if self._instance is None:
-            return
-        ability_manager = getattr(self._instance, "ability_manager", None)
-        if ability_manager is None:
+        instance = self._instance
+        if instance is not None:
+            ability_manager = getattr(instance, "ability_manager", None)
+            if ability_manager is not None:
+                try:
+                    ability_manager.teardown_tools()
+                except Exception as exc:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] agent tool teardown failed: %s", exc
+                    )
+        self._purge_session_scoped_registry_entries()
+
+    def _purge_session_scoped_registry_entries(self) -> None:
+        """issue#5240 止血:会话级注册的全局资源表条目按后缀批量注销。
+
+        会话 adapter 构建时以 ``{name}_{owner}``（owner="{card}_s_{session}"，
+        见 _tool_owner_id）向 Runner.resource_mgr 注册 stateful 工具卡——id
+        内嵌会话键、每会话唯一。teardown_tools 只摘 ability_manager 侧 owner
+        命名的条目，resource_mgr 里会话后缀形态没有注销路径，逐出后永驻
+        （census 实证 gc.collect 后仍 +20 ToolCard/会话，RSS 线性涨至 OOM）。
+
+        只覆盖 ToolCard：AgentCard 不进 _id_to_card（resource_mgr.add_agent
+        仅 BaseTeam 体系调用，本服务团队运行时走 TeamRuntimeManager），其堆
+        对象滞留由 _release_session_agent_callbacks 承担。匹配用
+        ``{name}_{owner}`` 精确重构而非裸 endswith：session key 为客户端可
+        控字符串，裸后缀匹配存在会话 B 的 key 字面以会话 A 的 owner 段结尾
+        时误删 B 在用工具的理论窗口。
+        """
+        if not self._is_session_scoped_adapter:
             return
         try:
-            ability_manager.teardown_tools()
-        except Exception as exc:
+            owner = self._tool_owner_id()
+            rm = Runner.resource_mgr
+            id_to_card = getattr(rm, "_id_to_card", None) or {}
+            suffix = f"_{owner}"
+            stale: list[str] = []
+            for rid in id_to_card:
+                card = id_to_card.get(rid)
+                if not rid.endswith(suffix):
+                    continue
+                if rid != f"{getattr(card, 'name', '')}_{owner}":
+                    continue
+                stale.append(rid)
+            if not stale:
+                return
+            removed = 0
+            for rid in stale:
+                try:
+                    rm.remove_tool(rid)
+                    removed += 1
+                except Exception as exc:  # noqa: BLE001 - 单条失败不中止
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] session registry purge "
+                        "failed: id=%s error=%s", rid, exc,
+                    )
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] session registry purged: owner=%s "
+                "removed=%d/%d", owner, removed, len(stale),
+            )
+        except Exception as exc:  # noqa: BLE001 - 止血路径不阻塞 cleanup
             logger.warning(
-                "[JiuWenSwarmDeepAdapter] agent tool teardown failed: %s", exc
+                "[JiuWenSwarmDeepAdapter] session registry purge error: %s", exc
+            )
+
+    async def _release_session_agent_callbacks(self) -> None:
+        """issue#5240 止血:反注册会话内全部 agent 实例的回调。
+
+        BaseAgent.__init__ 以实例命名空间(uuid4)向进程全局
+        Runner.callback_framework 注册 rail/hook 回调,agent 无任何生命周期
+        方法反注册——空闲逐出后 CallbackInfo 持 bound method 把整个 agent
+        对象图钉死(census 实证:_callbacks items 与存活 CallbackInfo 总数
+        一一相等,~144 个/会话,AbilityManager/ToolCard/ContextEngine/PromptSection
+        全被连带滞留,RSS 线性涨至 OOM)。
+
+        从 self._instance 出发做有界 DFS(只走前向引用,不触全局表),收集
+        agent_callback_manager / _agent_callback_manager 后逐个 clear()——按
+        实例命名空间整组反注册。遍历显式跳过 adapter 对象:skill_turbo 启用时
+        (出厂默认开) rail 持本 adapter 引用,经 _session_parent_adapter/
+        _session_adapters 回边可达常驻 root agent 与其他活跃会话的实例,误清
+        其回调且 rail 无重注册自愈。agent-core 提供 BaseAgent.aclose 时优先
+        调用(实例+内裹 react agent+子代理控制一并释放),DFS 保留作残余清扫
+        (clear 幂等,旧版 core 无 aclose 时 DFS 独立兜底)。
+        """
+        if not self._is_session_scoped_adapter or self._instance is None:
+            return
+        try:
+            instance_close = getattr(self._instance, "aclose", None)
+            if instance_close is not None:
+                try:
+                    await instance_close()
+                except Exception as exc:  # noqa: BLE001 - 失败降级 DFS
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] session instance aclose "
+                        "failed: %s", exc,
+                    )
+            from types import BuiltinFunctionType, FunctionType, MethodType, ModuleType
+
+            managers: list = []
+            seen: set[int] = set()
+            manager_ids: set[int] = set()
+            stack: list = [self._instance]
+            while stack and len(seen) < 4000:
+                obj = stack.pop()
+                obj_id = id(obj)
+                if obj_id in seen:
+                    continue
+                seen.add(obj_id)
+                if isinstance(
+                    obj, (type, ModuleType, FunctionType, MethodType, BuiltinFunctionType)
+                ):
+                    continue
+                if isinstance(obj, JiuWenSwarmDeepAdapter):
+                    # 切断 adapter 回边:StreamEventRail._skill_turbo_adapter、
+                    # _session_parent_adapter、_session_adapters 均以 adapter
+                    # 对象为载体,跳过即全部不可达(CR-1)。
+                    continue
+                # Prefer public agent_callback_manager (same contract as
+                # _isolate_permission_instance / native_harness), then the
+                # private field. Resolve via __dict__/property/slots only —
+                # bare getattr on arbitrary graph nodes (e.g. MagicMock)
+                # auto-creates attributes and would false-positive.
+                manager = None
+                obj_dict = getattr(obj, "__dict__", None)
+                if isinstance(obj_dict, dict):
+                    if "agent_callback_manager" in obj_dict:
+                        manager = obj_dict["agent_callback_manager"]
+                    elif "_agent_callback_manager" in obj_dict:
+                        manager = obj_dict["_agent_callback_manager"]
+                if manager is None:
+                    public_attr = getattr(type(obj), "agent_callback_manager", None)
+                    if isinstance(public_attr, property):
+                        try:
+                            manager = public_attr.__get__(obj, type(obj))
+                        except Exception:  # noqa: BLE001 - skip broken descriptors
+                            manager = None
+                if manager is None:
+                    slots = getattr(type(obj), "__slots__", ())
+                    if isinstance(slots, str):
+                        slots = (slots,)
+                    if "_agent_callback_manager" in slots:
+                        manager = getattr(obj, "_agent_callback_manager", None)
+                    elif "agent_callback_manager" in slots:
+                        manager = getattr(obj, "agent_callback_manager", None)
+                if manager is not None:
+                    mid = id(manager)
+                    if mid not in manager_ids:
+                        manager_ids.add(mid)
+                        managers.append(manager)
+                if isinstance(obj, dict):
+                    stack.extend(obj.values())
+                elif isinstance(obj, (list, tuple, set, frozenset)):
+                    stack.extend(obj)
+                else:
+                    try:
+                        stack.extend(vars(obj).values())
+                    except TypeError:
+                        pass
+            released = 0
+            for manager in managers:
+                try:
+                    await manager.clear()
+                    released += 1
+                except Exception as exc:  # noqa: BLE001 - 单个失败不中止
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] session agent callback release "
+                        "failed: error=%s", exc,
+                    )
+            if managers:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] session agent callbacks released: "
+                    "%d/%d (session_id=%s)", released, len(managers),
+                    self._parent_session_id,
+                )
+            else:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] session agent callback release "
+                    "found no managers (session_id=%s); hemostasis may be a "
+                    "no-op for this instance",
+                    self._parent_session_id,
+                )
+        except Exception as exc:  # noqa: BLE001 - 止血路径不阻塞 cleanup
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] session agent callback release error: %s", exc
             )
 
     def _collect_registered_ability_names(self) -> set[str]:
