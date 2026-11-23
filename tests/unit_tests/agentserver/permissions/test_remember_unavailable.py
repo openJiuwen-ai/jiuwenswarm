@@ -313,3 +313,64 @@ async def test_remember_warning_survives_tool_result_projection(storage, tmp_pat
     assert payload["reviewer_metadata"]["evidence_summary"] == metadata["evidence_summary"]
     assert payload["reviewer_metadata"]["reviewer_status"] == "approved"
     assert "unchanged-output" in str(payload) and "approval_invalidated" not in str(payload)
+
+
+@pytest.mark.parametrize("changed_context", ["unchanged", "environment", "sdk_downgrade"])
+async def test_posix_shell_approval_rechecks_context_and_never_remembers_parent(
+    storage, tmp_path, monkeypatch, changed_context,
+):
+    import sys
+
+    from openjiuwen.core.sys_operation import LocalWorkConfig, SysOperation, SysOperationCard
+    from openjiuwen.harness.tools.shell.bash._tool import BashTool
+    from jiuwenswarm.agents.harness.common.rails.permissions import shell_path_context
+    from jiuwenswarm.common import config
+
+    pytest.importorskip("openjiuwen.harness.security.permission_engine.shell_path_context")
+    if sys.platform not in {"linux", "darwin"}:
+        pytest.skip("Verified local POSIX executor only")
+    for name in ("CDPATH", "ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS"):
+        monkeypatch.delenv(name, raising=False)
+    policy, global_path = storage
+    root = tmp_path.resolve() / "work"
+    root.mkdir()
+    policy["tools"]["bash"] = "ask"
+    policy["file_guard"] = {
+        "enabled": True,
+        "defaults": {"read": "ask", "write": "ask", "exec": "ask"},
+        "workspace": {"read": "allow", "write": "allow"},
+    }
+    config._dump_yaml_round_trip(global_path, {"permissions": policy})
+    rail = build(policy, root, "session-a", True)
+    manager = AbilityManager(owner_id="shell-remember")
+    operation = SysOperation(SysOperationCard(
+        id="shell-remember", work_config=LocalWorkConfig(sandbox_root=[str(tmp_path)]),
+    ))
+    tool = BashTool(operation)
+    manager.add_ability(tool.card, tool)
+    first = context("session-a", "bash", {
+        "command": "cd sub && printf '%s' data > out; cd .. && cat out",
+        "workdir": str(root),
+    })
+    first.agent = SimpleNamespace(ability_manager=manager)
+
+    def before_answer():
+        if changed_context == "environment":
+            monkeypatch.setenv("CDPATH", str(tmp_path))
+        if changed_context == "sdk_downgrade":
+            monkeypatch.setattr(shell_path_context, "_core_shell_path_call", None)
+            monkeypatch.setattr(shell_path_context, "_core_current_shell_paths", None)
+
+    try:
+        resumed = await approve(rail, first, True, before_answer=before_answer)
+        assert not layers.user_permissions_path().exists()
+        assert first.session.get_state(INTERRUPT_AUTO_CONFIRM_KEY) in (None, {})
+        if changed_context != "unchanged":
+            assert resumed.extra.get("_skip_tool")
+            assert "approval_context_changed" in str(resumed.extra)
+        else:
+            assert not resumed.extra.get("_skip_tool")
+            metadata = peek_reviewer_tool_result_metadata(resumed.extra, tool_call_id="call-1")
+            assert metadata["reviewer_reason_code"] == "manual_allow_once_remember_unavailable"
+    finally:
+        manager.teardown_tools()
