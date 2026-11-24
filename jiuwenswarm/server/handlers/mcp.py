@@ -293,11 +293,17 @@ async def _persist_and_probe_mcp(
         )
     if not probe_ok:
         logger.warning("[command.mcp] live-probe failed: %s", probe_reason)
+        from jiuwenswarm.common.mcp_config import (
+            probe_failure_is_auth_rejected,
+        )
+        auth_rejected = probe_failure_is_auth_rejected(probe_reason)
         try:
             from jiuwenswarm.server.runtime.mcp.registry import (
                 rollback_failed_connect,
             )
-            rollback_failed_connect(name)
+            # Only a proven auth rejection wipes the stored tokens; a
+            # network-class failure keeps them for the next connect.
+            rollback_failed_connect(name, wipe_credentials=auth_rejected)
         except Exception as rollback_exc:  # noqa: BLE001
             logger.warning("[command.mcp] rollback '%s' failed: %s", name, rollback_exc)
         return AgentResponse(
@@ -308,7 +314,7 @@ async def _persist_and_probe_mcp(
                 "type": types.fail,
                 "name": payload["name"],
                 "error": probe_reason or "MCP live-connect probe failed",
-                "code": "MCP_UNREACHABLE",
+                "code": "MCP_CREDENTIALS_INVALID" if auth_rejected else "MCP_UNREACHABLE",
             },
         )
     if not is_config_yaml:
