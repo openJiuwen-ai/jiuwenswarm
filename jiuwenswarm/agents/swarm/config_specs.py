@@ -103,6 +103,7 @@ _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.RESPONSE_PROMPT,
     registry.SYS_OPERATION,
     registry.STREAM_EVENT,
+    registry.WORKSPACE_QUOTA,
     registry.TASK_PLANNING,
     registry.SECURITY,
     registry.MODEL_ANOMALY_DETECTION,

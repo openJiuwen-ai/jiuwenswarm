@@ -538,6 +538,65 @@ def _should_record_user_history(params: Any) -> bool:
     return str(params.get("source") or "") != "proactive_recommendation"
 
 
+def _workspace_quota_exceeded_payload(*, stream: bool = False) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "error": "WORKSPACE_QUOTA_EXCEEDED",
+        "code": "WORKSPACE_QUOTA_EXCEEDED",
+        "detail": "WORKSPACE_QUOTA_EXCEEDED",
+    }
+    if stream:
+        payload["event_type"] = "chat.error"
+    return payload
+
+
+async def _enter_workspace_quota_identity(
+    request: AgentRequest,
+) -> tuple[Any, Any] | None:
+    """为本轮 chat 绑定租户根 + 配额身份；未开启配额时返回 None。
+
+    返回 ``(tenant_ctx, quota_tokens)``，须配对 :func:`_exit_workspace_quota_identity`。
+    只绑身份不绑租户根时，用量会落到默认 workspace，满额用户可能被误放行。
+    """
+    from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+        bind_quota_identity,
+        is_workspace_quota_enabled,
+    )
+
+    if not is_workspace_quota_enabled():
+        return None
+    from jiuwenswarm.enterprise.capabilities.workspace.policy_reload import (
+        reload_quota_policies_from_gateway_db,
+    )
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+    from jiuwenswarm.enterprise.tenant.tenant_identity import (
+        extract_tenant_key,
+        extract_triple,
+    )
+
+    await reload_quota_policies_from_gateway_db()
+    group_id, bot_id, user_id = extract_triple(request)
+    tenant_ctx = TenantContext.bind(extract_tenant_key(request))
+    quota_tokens = bind_quota_identity(
+        user_id=user_id, group_id=group_id, bot_id=bot_id
+    )
+    return tenant_ctx, quota_tokens
+
+
+def _exit_workspace_quota_identity(
+    state: tuple[Any, Any] | None,
+) -> None:
+    if state is None:
+        return
+    tenant_ctx, quota_tokens = state
+    from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+        reset_quota_identity,
+    )
+
+    reset_quota_identity(quota_tokens)
+    if tenant_ctx is not None:
+        tenant_ctx.reset()
+
+
 def _is_ask_user_answer_resume(params: Any) -> bool:
     """问题澄清答案 resume：source=ask_user_interrupt 且带非空 answers 数组。
 
@@ -4015,24 +4074,43 @@ class JiuWenSwarm:
             )
         # proactive_recommendation 是系统触发的推荐指令（不是用户说的话），不写 user
         # history——否则刷新页面会显示"[主动推荐指令] xxx"这种用户没说过的消息。
-        if _should_record_user_history(request.params):
-            try:
-                await _check_user_input_guard(adapter, request, query)
-            except InputTooLongError:
-                _schedule_feedback_once("error")
-                raise
-            await _run_history_io(
-                append_history_record,
-                session_id=session_id,
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                role="user",
-                content=_history_user_content(request.params, query),
-                timestamp=time.time(),
-                extra=_history_user_extra(request.params),
-                channel_metadata=request.metadata,
-                mode=request.params.get("mode", "unknown"),
+        # 写 history 前 bind 配额身份；满额拒绝本轮对话（§2.3，对齐 origin/dev-stable）。
+        quota_tokens = await _enter_workspace_quota_identity(request)
+        try:
+            if _should_record_user_history(request.params):
+                try:
+                    await _check_user_input_guard(adapter, request, query)
+                except InputTooLongError:
+                    _schedule_feedback_once("error")
+                    raise
+                await _run_history_io(
+                    append_history_record,
+                    session_id=session_id,
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    role="user",
+                    content=_history_user_content(request.params, query),
+                    timestamp=time.time(),
+                    extra=_history_user_extra(request.params),
+                    channel_metadata=request.metadata,
+                    mode=request.params.get("mode", "unknown"),
+                )
+        except Exception as exc:
+            from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+                WorkspaceQuotaExceeded,
             )
+
+            if isinstance(exc, WorkspaceQuotaExceeded):
+                return AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=False,
+                    payload=_workspace_quota_exceeded_payload(),
+                    metadata=request.metadata,
+                )
+            raise
+        finally:
+            _exit_workspace_quota_identity(quota_tokens)
         # 注：ask_user_answer 的落盘在 deliver_control_input 里——ask_user_interrupt
         # resume 走 control-input 路径，不经过本方法。
 
@@ -4803,23 +4881,41 @@ class JiuWenSwarm:
         ):
             # Reject before history recording: a rejected message must not be
             # restored into the model context on the next session warmup.
+            quota_tokens = await _enter_workspace_quota_identity(request)
             try:
-                await _check_user_input_guard(adapter, request, query)
-            except InputTooLongError:
-                _schedule_feedback_once("error")
+                try:
+                    await _check_user_input_guard(adapter, request, query)
+                except InputTooLongError:
+                    _schedule_feedback_once("error")
+                    raise
+                await _run_history_io(
+                    append_history_record,
+                    session_id=session_id,
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    role="user",
+                    content=_history_user_content(params_for_history, query),
+                    timestamp=time.time(),
+                    extra=_history_user_extra(params_for_history),
+                    channel_metadata=history_channel_metadata,
+                    mode=params_for_history.get("mode", "unknown"),
+                )
+            except Exception as exc:
+                from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+                    WorkspaceQuotaExceeded,
+                )
+
+                if isinstance(exc, WorkspaceQuotaExceeded):
+                    yield AgentResponseChunk(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        payload=_workspace_quota_exceeded_payload(stream=True),
+                        is_complete=True,
+                    )
+                    return
                 raise
-            await _run_history_io(
-                append_history_record,
-                session_id=session_id,
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                role="user",
-                content=_history_user_content(params_for_history, query),
-                timestamp=time.time(),
-                extra=_history_user_extra(params_for_history),
-                channel_metadata=history_channel_metadata,
-                mode=params_for_history.get("mode", "unknown"),
-            )
+            finally:
+                _exit_workspace_quota_identity(quota_tokens)
         logger.info(
             "[JiuWenSwarm] 处理流式请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
             request.request_id, request.channel_id, session_id, self._sdk_name,

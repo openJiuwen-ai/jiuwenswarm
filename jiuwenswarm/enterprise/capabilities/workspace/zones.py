@@ -51,7 +51,24 @@ _PREFIX_RULES: Final[tuple[tuple[str, WorkspaceZone], ...]] = (
     ("agent/workspace/messages/", WorkspaceZone.RUNTIME),
     ("agent/workspace/prompt_attachment/", WorkspaceZone.ARTIFACT),
     ("agent/workspace/received_files/", WorkspaceZone.ARTIFACT),
+    ("agent/workspace/uploads/", WorkspaceZone.ARTIFACT),
 )
+
+
+def _is_session_chat_uploads(path: str) -> bool:
+    """``agent/sessions/<sid>/uploads`` 及其子路径：聊天附件，可删（artifact）。
+
+    ``sid`` 为单段目录名；``history.jsonl`` / ``metadata.json`` 等会话元数据
+    仍落在 ``session_meta``，不可经本规则删除。
+    """
+    parts = path.split("/")
+    # agent / sessions / <sid> / uploads [/ ...]
+    if len(parts) < 4:
+        return False
+    if parts[0] != "agent" or parts[1] != "sessions" or parts[3] != "uploads":
+        return False
+    sid = parts[2]
+    return bool(sid) and sid not in {".", ".."} and "/" not in sid
 
 
 def normalize_relative_path(relative_path: str | None) -> str:
@@ -89,6 +106,10 @@ def classify_zone(relative_path: str | None) -> WorkspaceZone:
     parent = path[: -len(name)].rstrip("/") if "/" in path else ""
     if name in _ROLE_MD_NAMES and parent == "agent/workspace":
         return WorkspaceZone.ROLE_MD
+
+    # 比 ``agent/sessions/`` 更具体：会话聊天附件归 artifact（可删）。
+    if _is_session_chat_uploads(path):
+        return WorkspaceZone.ARTIFACT
 
     best: WorkspaceZone | None = None
     best_len = -1

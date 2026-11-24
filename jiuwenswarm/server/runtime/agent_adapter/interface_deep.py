@@ -10823,6 +10823,17 @@ class JiuWenSwarmDeepAdapter:
         sys_operation = self._resolve_sys_operation()
         if sys_operation is not None:
             self._retain_sys_operation(str(sys_operation.id))
+            try:
+                from jiuwenswarm.enterprise.capabilities.workspace.fs_quota_guard import (
+                    install_write_quota_guard,
+                )
+
+                install_write_quota_guard(sys_operation)
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] install write quota guard failed",
+                    exc_info=True,
+                )
         self._release_sys_operations(previously_retained)
         return sys_operation
 
