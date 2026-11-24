@@ -5268,8 +5268,8 @@
         "hub": "OpenJiuwen Agentic Hub"
       },
       "defaultSwitch": {
-        "label": "Default for new sessions",
-        "hint": "When on, new sessions will have this connector pre-checked",
+        "label": "Use by default",
+        "hint": "When checked, new sessions will use this connector by default",
         "unavailableHint": "Marked as default, but currently disconnected — new sessions will skip it",
         "disabledDisconnected": "Connect first to set as default",
         "disabledMax": "Default equipment limit reached ({{max}})",

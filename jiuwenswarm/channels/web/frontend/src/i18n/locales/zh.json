@@ -5265,8 +5265,8 @@
         "hub": "OpenJiuwen Agentic Hub"
       },
       "defaultSwitch": {
-        "label": "新会话默认启用",
-        "hint": "开启后，新建会话将默认勾选此连接器",
+        "label": "默认使用",
+        "hint": "勾选后，新会话将自动使用此连接器",
         "unavailableHint": "已设为默认，但当前未连接，新会话会跳过此项",
         "disabledDisconnected": "连接后可设为默认",
         "disabledMax": "默认装备已达上限（{{max}}）",

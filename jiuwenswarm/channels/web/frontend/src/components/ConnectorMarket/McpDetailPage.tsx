@@ -14,7 +14,6 @@ import { CliAuthModal } from './CliAuthModal';
 import { ConfirmDialog } from './ConfirmDialog';
 import { IconAvatar } from './Buttons';
 import { deriveCardState, deriveMcpAvailability } from './mcpState';
-import { Switch } from '../Switch';
 import {
   getEquipmentDefaults,
   setEquipmentDefaults,
@@ -451,32 +450,39 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
           </div>
         )}
 
-        {/* SDD-0030 阶段二：全局默认装备开关。开=新会话默认勾选此连接器（state.json
-            is_default），关=恢复逐会话手动选择。断连/达上限/清单读取失败时置灰；被标记
-            但断连的项保持开启态并提示"新会话会跳过"。 */}
+        {/* SDD-0030 阶段二：全局默认装备复选框（社区对齐形态：每个 MCP 一个
+            "默认使用"复选框）。勾选=新会话默认勾选此连接器（state.json
+            is_default），取消=恢复逐会话手动选择。断连/达上限/清单读取失败时
+            置灰；被标记但断连的项保持勾选态并提示"新会话会跳过"。 */}
         <div
           className="flex items-center justify-between gap-3 rounded-lg bg-secondary px-3 py-2 text-[13px]"
           data-testid="connector-market-mcp-detail-default-row"
         >
-          <div className="flex min-w-0 flex-col">
-            <span className="font-medium">{t('connectorMarket.detail.defaultSwitch.label')}</span>
-            <span
-              className={defaultsError ? 'text-danger' : 'text-text-muted'}
-              data-testid="connector-market-mcp-detail-default-hint"
-            >
-              {defaultsError
-                ? defaultsError
-                : defaultsUnavailable
-                  ? t('connectorMarket.detail.defaultSwitch.unavailableHint')
-                  : t('connectorMarket.detail.defaultSwitch.hint')}
-            </span>
-          </div>
-          <Switch
-            checked={isDefaultOn}
-            onChange={handleToggleDefault}
-            disabled={defaultSwitchDisabled}
+          <label
+            className="flex shrink-0 cursor-pointer items-center gap-2 font-medium"
             title={defaultSwitchTitle}
-          />
+            data-testid="connector-market-mcp-detail-default-label"
+          >
+            <input
+              type="checkbox"
+              checked={isDefaultOn}
+              onChange={(e) => handleToggleDefault(e.target.checked)}
+              disabled={defaultSwitchDisabled}
+              className="h-3.5 w-3.5 rounded border-border"
+              data-testid="connector-market-mcp-detail-default-checkbox"
+            />
+            {t('connectorMarket.detail.defaultSwitch.label')}
+          </label>
+          <span
+            className={defaultsError ? 'text-danger' : 'text-text-muted'}
+            data-testid="connector-market-mcp-detail-default-hint"
+          >
+            {defaultsError
+              ? defaultsError
+              : defaultsUnavailable
+                ? t('connectorMarket.detail.defaultSwitch.unavailableHint')
+                : t('connectorMarket.detail.defaultSwitch.hint')}
+          </span>
         </div>
 
         {confirmUnbind && (

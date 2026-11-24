@@ -48,7 +48,7 @@ author_email: chensitong2@huawei.com
 | 存储原子性 | `replace_default_mcps()` 单锁内全量替换 `is_default` 集（PUT 语义基础）；`set_mcp_default()` 单项翻转不动连接状态；`list_default_mcps()` 只回活记录（断连默认项回填时静默跳过）；`list_default_flagged_mcps()` 供 UI 显示"默认但断连" |
 | RPC 双通道 | 共享核心 `read/apply_session_equipment_defaults_payload`（handlers/session.py）：dispatch.py HANDLERS（HTTP REST 路径）与 `JiuWenSwarm.process_message` 的 `_handle_session_equipment_defaults_request`（WS 聊天线，`_SESSION_ASSET_ROUTES` 同款模式，adapter 创建前应答）共用，两种传输不可能漂移 |
 | set 校验链 | 类型 → strip/去重 → 上限 10（`_EQUIPMENT_DEFAULTS_MAX`，防 tool schema 挤占新会话上下文）→ 每名必须有活记录（断连项在回填时本就静默失效，写入时直接 BAD_REQUEST 让用户当场修正）；KeyError → MCP_NOT_FOUND |
-| UI（Cursor 模式） | MCP 详情页"新会话默认启用"Switch（读 `defaults.get.runtime`，写 PUT 全量清单；断连/达上限/读取失败置灰，set 错误红字透出）；无快照新会话打开扩展面板即预勾选默认集（`prefillDefaultMcps` 整体初始化 + hydrate，所见即所发）；已 hydrate 会话以快照为准不被覆盖；team 模式跳过；空默认集不预填（保持省略字段 → 后端回填活读取） |
+| UI（Cursor 模式） | MCP 详情页"默认使用"复选框（社区对齐形态；读 `defaults.get.runtime`，写 PUT 全量清单；断连/达上限/读取失败置灰，set 错误红字透出）；无快照新会话打开扩展面板即预勾选默认集（`prefillDefaultMcps` 整体初始化 + hydrate，所见即所发）；已 hydrate 会话以快照为准不被覆盖；team 模式跳过；空默认集不预填（保持省略字段 → 后端回填活读取） |
 
 ## 已知边界
 

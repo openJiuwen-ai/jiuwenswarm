@@ -90,7 +90,7 @@ Use `/mcp` commands during conversations to manage MCP servers:
 
 Frequently used MCPs no longer need to be re-checked in every new session. Two ways to set defaults:
 
-1. **Web UI**: toggle **Default for new sessions** on the connector detail page. Once on, new sessions without a saved snapshot pre-check this connector in the extensions panel and mount it with the first message.
+1. **Web UI**: tick **Use by default** on the connector detail page. Once checked, new sessions without a saved snapshot pre-check this connector in the extensions panel and mount it with the first message.
 2. **config.yaml preset** (for deployment-level rollout):
 
    ```yaml
