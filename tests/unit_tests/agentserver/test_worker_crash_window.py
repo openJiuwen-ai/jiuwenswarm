@@ -89,14 +89,14 @@ async def test_restore_error_code_survives_runtime_and_e2a_conversion():
 @pytest.mark.parametrize("ipc_mode", ["resident", "front_loopback"])
 @pytest.mark.parametrize("exit_observation_delayed", [False, True])
 async def test_real_ready_workers_open_the_crash_circuit(
-    monkeypatch, tmp_path, ipc_mode, exit_observation_delayed,
+    monkeypatch, tmp_path, ipc_dir, ipc_mode, exit_observation_delayed,
 ):
     monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", ipc_mode)
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
     readiness = Readiness()
     supervisor = module.RuntimeSupervisor(readiness, stub=True, stub_exit_on_request=True,
-        socket_path=str(tmp_path / "worker.pipe"), forwarder=SimpleNamespace(send=AsyncMock()))
+        socket_path=str(ipc_dir / "worker.pipe"), forwarder=SimpleNamespace(send=AsyncMock()))
     if exit_observation_delayed:
         # IPC EOF can arrive before exit is visible to the process observer.
         monkeypatch.setattr(supervisor, "_confirmed_worker_exit", lambda: False)
@@ -127,13 +127,13 @@ async def test_real_ready_workers_open_the_crash_circuit(
 
 
 @pytest.mark.asyncio
-async def test_live_resident_reconnect_does_not_consume_the_crash_budget(monkeypatch, tmp_path):
+async def test_live_resident_reconnect_does_not_consume_the_crash_budget(monkeypatch, tmp_path, ipc_dir):
     monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", "resident")
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
     readiness = Readiness()
     supervisor = module.RuntimeSupervisor(readiness, stub=True,
-        socket_path=str(tmp_path / "worker.pipe"), forwarder=SimpleNamespace(send=AsyncMock()))
+        socket_path=str(ipc_dir / "worker.pipe"), forwarder=SimpleNamespace(send=AsyncMock()))
     try:
         await asyncio.wait_for(supervisor.run_until_ipc_ready(), 15)
         assert await readiness.wait_agent_ready(10)
@@ -151,13 +151,13 @@ async def test_live_resident_reconnect_does_not_consume_the_crash_budget(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_manual_failed_recovery_does_not_consume_the_crash_budget(monkeypatch, tmp_path):
+async def test_manual_failed_recovery_does_not_consume_the_crash_budget(monkeypatch, tmp_path, ipc_dir):
     monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", "resident")
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
     readiness = Readiness()
     supervisor = module.RuntimeSupervisor(readiness, stub=True,
-        socket_path=str(tmp_path / "worker.pipe"), forwarder=SimpleNamespace(send=AsyncMock()))
+        socket_path=str(ipc_dir / "worker.pipe"), forwarder=SimpleNamespace(send=AsyncMock()))
     try:
         await asyncio.wait_for(supervisor.run_until_ipc_ready(), 15)
         assert await readiness.wait_agent_ready(10)

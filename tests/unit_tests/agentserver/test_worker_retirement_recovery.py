@@ -190,7 +190,7 @@ async def test_identity_failure_stays_nonretryable_when_startup_retirement_times
 @pytest.mark.parametrize("ipc_mode,reattach", [
     ("resident", False), ("resident", True), ("front_loopback", False),
 ])
-async def test_real_worker_retirement_timeout_recovers_without_reload(monkeypatch, tmp_path, ipc_mode, reattach):
+async def test_real_worker_retirement_timeout_recovers_without_reload(monkeypatch, tmp_path, ipc_dir, ipc_mode, reattach):
     monkeypatch.setenv("JIUWEN_HARMONY_RUNTIME", "1")
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_IPC", ipc_mode)
     monkeypatch.setenv("JIUWENSWARM_HOME", str(tmp_path))
@@ -199,7 +199,7 @@ async def test_real_worker_retirement_timeout_recovers_without_reload(monkeypatc
     monkeypatch.setattr(module, "_FINAL_SHUTDOWN_TIMEOUT", 2)
     readiness = Readiness()
     supervisor = RuntimeSupervisor(readiness, forwarder=EventForwarder(), stub=True, max_restarts=1,
-        socket_path=str(tmp_path / "runtime.pipe"))
+        socket_path=str(ipc_dir / "runtime.pipe"))
     try:
         await asyncio.wait_for(supervisor.run_until_ipc_ready(), 20)
         assert await readiness.wait_agent_ready(5)
@@ -207,7 +207,7 @@ async def test_real_worker_retirement_timeout_recovers_without_reload(monkeypatc
             await supervisor.stop()
             readiness = Readiness()
             supervisor = RuntimeSupervisor(readiness, forwarder=EventForwarder(), stub=True, max_restarts=1,
-                socket_path=str(tmp_path / "runtime.pipe"))
+                socket_path=str(ipc_dir / "runtime.pipe"))
             await asyncio.wait_for(supervisor.run_until_ipc_ready(), 20)
             assert await readiness.wait_agent_ready(5)
             assert not supervisor.owns_process
