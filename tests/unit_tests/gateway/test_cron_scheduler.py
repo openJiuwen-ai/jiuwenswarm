@@ -393,6 +393,39 @@ class TestSchedulerRunRecords:
         assert (await store.list_run_records())[0]["status"] == "success"
 
 
+class TestRunNowDisabledJob:
+    @pytest.mark.asyncio
+    async def test_run_now_executes_and_records_when_job_disabled(self, tmp_path):
+        """开关关闭时「立即执行」仍应真正跑一轮并落执行记录，且不改开关状态。"""
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store)
+        job = await store.update_job(job.id, {"enabled": False})
+        assert job is not None and job.enabled is False
+
+        agent = FakeAgentClient()
+        svc = _make_scheduler(store, agent_client=agent)
+        await svc.reload()
+        assert svc.jobs[job.id].enabled is False
+
+        info = await svc.trigger_run_now_info(job.id)
+        run_id = info["run_id"]
+        assert svc.runs[run_id].manual is True
+
+        # 手动处理 wake 事件（测试不启动调度主循环）
+        await svc.handle_event(_Event(time.time(), 1, "wake", job.id, run_id))
+        assert run_id in svc.run_tasks
+        await svc.run_tasks[run_id]
+
+        records = await store.list_run_records()
+        assert len(records) == 1
+        assert records[0]["id"] == run_id
+        assert records[0]["status"] == "success"
+        assert any(env.method == "chat.send" for env in agent.unary_requests)
+        # 立即执行不应把关闭的开关重新打开
+        stored = await store.get_job(job.id)
+        assert stored is not None and stored.enabled is False
+
+
 class TestWithWorkspaceDir:
     def test_appends_constraint_after_task_text(self, tmp_path):
         workspace = tmp_path / "定时任务-ws"

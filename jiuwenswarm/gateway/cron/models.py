@@ -633,6 +633,8 @@ class CronRunState:
     wake_at_iso: str
     push_at_iso: str
     status: str = "pending"  # pending|running|succeeded|failed
+    # 手动「立即执行」：即使 job.enabled=False 也必须真正执行并落记录。
+    manual: bool = False
     placeholder_sent: bool = False
     pushed_final: bool = False
     started_at: float | None = None
