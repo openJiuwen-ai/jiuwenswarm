@@ -217,18 +217,21 @@ class AppMarketPlugin(ApplicationPluginExtension):
 
         async def handle_delete(ws, req_id, params, session_id):  # noqa: ANN001
             del session_id
-            app_id = params.get("app_id", "") if isinstance(params, dict) else ""
-            if not app_id:
+            params = params if isinstance(params, dict) else {}
+            app_id = params.get("app_id", "")
+            if _invalid_app_id(app_id):
                 await channel.send_response(
                     ws, req_id, ok=False, error="app_id is required", code="BAD_REQUEST"
                 )
                 return
             try:
-                ok = await self._manager.delete_app(app_id, owner(ws))
+                result = await self._manager.delete_app(
+                    app_id, owner(ws), remove_files=params.get("remove_files") is True
+                )
             except AppMarketError as exc:
                 await send_market_error(ws, req_id, exc)
                 return
-            await channel.send_response(ws, req_id, ok=ok, payload={"deleted": ok})
+            await channel.send_response(ws, req_id, ok=bool(result.get("deleted")), payload=result)
 
         async def handle_market_list(ws, req_id, params, session_id):  # noqa: ANN001
             del session_id
@@ -368,7 +371,11 @@ class AppMarketPlugin(ApplicationPluginExtension):
                 return
 
             try:
-                result = await self._manager.convert_to_local(app_id, owner(ws))
+                result = await self._manager.convert_to_local(
+                    app_id,
+                    owner(ws),
+                    project_request=routed_request(owner(ws), "app_market.convert_to_local"),
+                )
             except AppMarketError as exc:
                 await send_market_error(ws, req_id, exc)
                 return

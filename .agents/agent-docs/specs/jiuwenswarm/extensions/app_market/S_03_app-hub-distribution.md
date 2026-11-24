@@ -64,8 +64,8 @@ files:
 
 - 安装根解析顺序：RPC `install_dir`（必须是服务端绝对路径）→ 环境变量 `APP_MARKET_INSTALL_ROOT` → `get_user_workspace_dir()/apps`。最终目录为 `<install_root>/<package_name>`；Windows 下安装路径长度超过 240 字符时预检失败。
 - `app_id = hub-<asset_id 安全化>-<sha256(hub_url, asset_id, owner)[:24]>`；同一 Hub 资产与所有者只允许一份安装。同版本摘要发生变化时可更新。更新前校验当前 Hub 与安装凭据的来源一致。
-- 安装先下载并解压到暂存目录，再提交目标目录、注册清单并写入安装凭据，提交前的失败回滚本次目录和登记。随后市场尽力通过 Core 按应用目录创建或复用项目并把归属写回清单；项目解析失败不丢弃已完成的安装，应用保持已安装未绑定，由启动前补齐绑定。暂存目录和新发布目录使用同一随机发布标记。包不得携带这个标记。
-- 市场应用通过 `app_market.convert_to_local` 原地转为本地应用。转换按所有者校验并与安装、更新互斥，保留原目录、`app_id`、项目绑定和应用权限，清除 Hub 安装关联。编辑及再发布使用同一登记，Swarm 停止对该登记提供 Hub 更新和卸载；此时 `app_market.update` 与 `app_market.uninstall` 返回 `app_not_hub_installed`，本地维护走编辑和 `app_market.delete`。对于历史本地登记与安装目录重叠的情况，市场更新和卸载清理仍会保护该目录。
+- 安装先下载并解压到暂存目录，再提交目标目录、注册清单并写入安装凭据，提交前的失败回滚本次目录和登记。注册清单不继承旧副本的 `project_id`、项目目录、来源会话和编辑会话绑定；随后市场尽力通过 Core 按当前应用目录创建或复用项目并把归属写回清单；项目解析失败不丢弃已完成的安装，应用保持已安装未绑定，由启动前补齐绑定。暂存目录和新发布目录使用同一随机发布标记。包不得携带这个标记。
+- 市场应用通过 `app_market.convert_to_local` 原地转为本地应用。转换按所有者校验，与安装、更新、删除、启动和打开编辑会话按应用互斥。转换保留原目录、`app_id` 和应用权限，清除 Hub 安装关联。项目目录与当前应用目录一致时，保留项目、来源会话及编辑会话绑定。跨目录绑定一并解除，尝试为应用目录创建或复用独立项目。项目上下文变化时，先停止旧实例，再保存转换后的登记。编辑及再发布使用同一登记，Swarm 停止对该登记提供 Hub 更新和卸载；此时 `app_market.update` 与 `app_market.uninstall` 返回 `app_not_hub_installed`，本地维护走编辑和 `app_market.delete`。对于历史本地登记与安装目录重叠的情况，市场更新和卸载清理仍会保护该目录。
 - 安装和更新在数据根的 `app_market/install_ops/<job_id>.json` 记录事务。只有目录归属、清单和凭据的版本及摘要相符时才确认完成。部分写入回滚，更新回滚同时恢复原目录、原清单和原凭据。恢复失败保留事务记录。无发布归属的旧记录、用户目录和备份保留。
 - `install.json` 记录 `install_id`、`release_id`、所有者、安装根、工作目录、Hub 资产及制品身份、安装时间和运行能力。注册表位于数据根的 `app_market/apps/<app_id>/`。
 - 包结构校验拒绝市场生成的启停脚本、`data/`、`.git` 和 `.workswarm-app-release`。包名最长 64 字符，符号链接和不安全路径由解包入口拒绝。
@@ -79,7 +79,7 @@ files:
 - Hub 进程仅继承启动所需的系统环境变量，由市场另外注入运行上下文。随包服务脚本默认仅在 WebChannel 绑定回环地址时可启动。共享部署可设置 `APP_MARKET_ALLOW_HUB_CODE=0` 显式关闭，受信部署可设为 `1` 启用。
 - 启停脚本与 `/_workswarm/shutdown`、端口、进程回收、`*.localhost` 来源隔离沿用本地应用模型。
 - 清单新增可选字段 `source`（`local`/`hub`）、`hub_asset_id`、`hub_url`、`artifact_sha256`、`requires_project`、`project_id`、`project_dir`、`project_work_mode`；旧清单缺省 `source=local`。
-- 所有市场应用在启动前都须绑定可用项目。Hub 应用安装时尽力绑定，绑定失败或本地登记、旧安装缺少绑定时在启动前补齐。启动时注入 `WORKSWARM_APP_PROJECT_ID`、`WORKSWARM_APP_PROJECT_DIR`、`WORKSWARM_APP_WORK_MODE`，工作模式采用项目实际值。绑定不可用时返回 `app_project_unavailable`。转为本地应用沿用已有绑定。
+- 所有市场应用在启动前都须绑定可用项目。Hub 应用安装时按当前应用目录尽力创建或绑定项目，绑定失败或本地登记、旧安装缺少绑定时在启动前补齐。启动时注入 `WORKSWARM_APP_PROJECT_ID`、`WORKSWARM_APP_PROJECT_DIR`、`WORKSWARM_APP_WORK_MODE`，工作模式采用项目实际值。绑定不可用时返回 `app_project_unavailable`。转为本地应用只沿用与当前目录一致的项目绑定，跨目录绑定在转换时解除并为当前目录重建。
 - 发布页不提供运行项目开关。Swarm 打包统一写入 `metadata.app.requires_project: true`，旧发布请求仍可传入该布尔字段。旧 Hub 包与安装记录保留原字段用于兼容，Swarm 启动规则对所有应用生效。
 - 安装、启动补绑和打开编辑会话共用项目解析。清单已有 `project_id` 时，通过 `project.info` 验证该项目并跳过会话统计。清单没有绑定时优先查找来源会话项目。已绑定的项目被删除或找不到来源会话项目时，按应用 `work_dir` 复用项目或新建 `code` 项目。隐藏项目会恢复。新建时遇到同名项目，在项目名称后附加应用 ID 短后缀，后缀仍重名时追加序号。打开编辑会话时，Git 可用且未初始化则初始化 `main` 并写最小 `.gitignore`，不自动提交。Git 不可用时继续编辑。
 
@@ -89,12 +89,12 @@ files:
 - 同一应用存在进行中的安装/更新任务时，重复 `install/update` 返回现有 `job_id`；启动返回 `app_operation_conflict`。
 - 所有写操作按连接所有者校验；任务查询、取消、更新、卸载均拒绝跨所有者访问。提交点之后不再接受安装取消请求。安装任务在后续项目绑定期间被取消时，状态仍为 `done`，结果保留已提交的安装信息。
 - `app_market.list` 为每个应用返回 `work_dir_missing` 和 `pinned`；列表先展示置顶应用，再按 `created_at` 从新到旧排列。目录缺失时前端禁用启动/编辑，并为 Hub 来源提供“重新安装”（删除失效登记后回到市场）。本地应用保留登记，恢复原目录后可继续使用。
-- 更新与启动、编辑入口和卸载按应用互斥。更新检查应用绑定的全部编辑会话，任一会话忙碌时拒绝替换目录。更新会停止实例并复制 `data/` 和 `.git` 到新目录。原工作树（含未提交编辑）完整保存在安装根的 `.app-archive/`，成功响应返回 `backup_dir`。
-- 卸载先停止实例并移除应用市场登记，默认保留本地程序文件、数据、项目与 Git 历史。用户选择清理时，市场验证应用目录归属、归档 `data/` 和 `.git`，再删除程序目录。归属核验、归档或删除失败时，卸载 RPC 仍成功，并通过 `cleanup_warning` 和 `work_dir` 提示检查本地文件。旧安装可在首次成功更新后获得发布标记。既有 `app_market.delete` 对 Hub 应用使用默认卸载行为。
+- 更新与启动、编辑入口和卸载按应用互斥。更新只替换程序文件和版本、名称、简介、图标等描述字段，保留 `app_id`、市场登记、`pinned`、创建时间、项目绑定和编辑会话绑定。更新检查应用绑定的全部编辑会话，任一会话忙碌时拒绝替换目录。更新会停止实例并复制 `data/` 和 `.git` 到新目录。原工作树（含未提交编辑）完整保存在安装根的 `.app-archive/`，成功响应返回 `backup_dir`。
+- 移除分为两种显式操作，二者都不修改应用项目或编辑会话记录。**下架并保留文件**停止实例并移除市场登记，保留程序目录、数据与 Git 历史。**删除并清理文件**确认登记移除成功后，验证目录归属，归档 `data/` 和 `.git`，再删除程序目录。Hub 应用通过 `app_market.uninstall` 的 `remove_files` 选择模式，本地应用通过 `app_market.delete` 的 `remove_files` 选择。本地清理只处理市场安装根的子目录，或能用转换时保存的原安装发布 ID 核验发布标记的目录。市场安装根及其上级、归档目录、与其他应用登记重叠的目录均保留。归属核验、归档或清理失败时，登记移除仍成功，并通过 `cleanup_warning` 和 `work_dir` 提示检查文件。旧 Hub 安装可在首次成功更新后获得发布标记。已经转为本地的历史登记如果缺少可核验凭据且位于安装根外，自动清理会保留其目录。
 
 ## 兼容性
 
 - 本地命令行、Python 桌面和 Electron 开发版/打包版启动共用 Swarm 的 Gateway 配置准备逻辑。Gateway 未指定独立配置且默认配置文件缺失时，使用 Swarm 实例的配置。Swarm 默认配置先扫描 `EXTENSION_DIRS` 中的自定义目录，再扫描包内 `jiuwenswarm/extensions`。旧的 Swarm 默认值随配置模板迁移。已有的 Gateway 默认配置若仍使用旧版内置目录表达式，Swarm 启动时会追加包内目录。显式的 Gateway 配置、扩展目录设置及 AgentOS 部署配置沿用各自规则。
-- 本地应用 `app_market.publish/list/start/stop/delete/edit_session` 入口保持不变；个人版空所有者重复 `start` 复用同一运行实例（避免重复静态服务），同一应用按所有者各保留一份运行实例；`publish_app` 重新登记时保留来源、摘要与项目绑定字段。
+- 本地应用 `app_market.publish/list/start/stop/delete/edit_session` 入口保持不变；个人版空所有者重复 `start` 复用同一运行实例（避免重复静态服务），同一应用按所有者各保留一份运行实例；`publish_app` 重新登记本地应用时保留来源、摘要与项目绑定字段，Hub 来源登记不继承旧副本的项目和编辑会话绑定。打包到 Hub 的 `plugin.yaml` 不包含本地项目或编辑会话信息。
 - 个人版允许空身份启动已有所有者的本地应用，清单中已记录的所有者在启动成功或失败时均保留。企业版和 Hub 应用继续按原所有者校验。
 - 既有插件/MCP/Agent 资产的 Hub 客户端、下载器与安装器调用默认参数不变。

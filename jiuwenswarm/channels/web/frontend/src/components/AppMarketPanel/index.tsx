@@ -755,24 +755,20 @@ export function AppMarketPanel({
     setDetailTarget((current) => current?.kind === 'installed' && current.id === appId ? null : current);
   };
 
-  const handleDelete = async (app: AppInfo) => {
-    if (actionLocks.current.has(app.app_id) || !window.confirm(t('appMarket.deleteConfirm'))) return;
+  const handleRemove = async (app: AppInfo, removeFiles: boolean) => {
+    if (actionLocks.current.has(app.app_id)) return;
+    if (removeFiles && !window.confirm(t('appMarket.deleteCleanConfirm', { name: app.name }))) return;
     if (!beginAction(app.app_id, 'deleting')) return;
     try {
-      let messageKey = 'appMarket.deleteSuccess';
+      let messageKey = removeFiles ? 'appMarket.deleteCleanSuccess' : 'appMarket.removeKeepSuccess';
       let directory = '';
-      if (app.source === 'hub') {
-        const removeFiles = window.confirm(t('appMarket.uninstallRemoveFiles'));
-        const result = await webRequest<{ cleanup_warning?: string; work_dir?: string }>('app_market.uninstall', {
-          app_id: app.app_id,
-          remove_files: removeFiles,
-        });
-        if (result?.cleanup_warning) {
-          messageKey = 'appMarket.uninstallCleanupWarning';
-          directory = result.work_dir || '';
-        }
-      } else {
-        await webRequest('app_market.delete', { app_id: app.app_id });
+      const result = await webRequest<{ cleanup_warning?: string; work_dir?: string }>(
+        app.source === 'hub' ? 'app_market.uninstall' : 'app_market.delete',
+        { app_id: app.app_id, remove_files: removeFiles },
+      );
+      if (result?.cleanup_warning) {
+        messageKey = 'appMarket.uninstallCleanupWarning';
+        directory = result.work_dir || '';
       }
       removeInstalledApp(app.app_id);
       showNotice(t(messageKey, { directory }), messageKey === 'appMarket.uninstallCleanupWarning' ? 'warning' : 'success');
@@ -960,13 +956,21 @@ export function AppMarketPanel({
               </DropdownMenuItem>
             ) : null}
             <DropdownMenuItem
+              icon={<HardDrive size={16} aria-hidden="true" />}
+              testId="app-market-remove"
+              disabled={busy}
+              onSelect={() => void handleRemove(app, false)}
+            >
+              {t('appMarket.removeKeepFiles')}
+            </DropdownMenuItem>
+            <DropdownMenuItem
               danger
               icon={<Trash2 size={16} aria-hidden="true" />}
               testId="app-market-delete"
               disabled={busy}
-              onSelect={() => void handleDelete(app)}
+              onSelect={() => void handleRemove(app, true)}
             >
-              {t('appMarket.delete')}
+              {t('appMarket.deleteCleanFiles')}
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

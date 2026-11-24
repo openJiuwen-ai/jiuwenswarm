@@ -133,23 +133,31 @@ class MarketService:
                 return None
             existing = self._storage.load_manifest(manifest.app_id)
             if existing and existing.owner_id == manifest.owner_id:
-                manifest.editor_session_id = existing.editor_session_id
-                manifest.editor_create_token = existing.editor_create_token
-                manifest.editor_create_pending = existing.editor_create_pending
-                manifest.editor_session_ids = existing.editor_session_ids
+                # A Hub download is an independent copy: it may reuse an app_id
+                # from an earlier local conversion, but that project/editor
+                # belongs to the old copy. Local republishing still preserves it.
+                local_registration = manifest.source != "hub"
+                if local_registration:
+                    manifest.editor_session_id = existing.editor_session_id
+                    manifest.editor_create_token = existing.editor_create_token
+                    manifest.editor_create_pending = existing.editor_create_pending
+                    manifest.editor_session_ids = existing.editor_session_ids
                 # Republishing/updating the same app must not silently drop its
-                # distribution provenance or project binding.
+                # distribution provenance.
                 for field in (
                     "source",
                     "hub_asset_id",
                     "hub_url",
                     "artifact_sha256",
-                    "project_id",
-                    "project_dir",
-                    "project_work_mode",
                 ):
                     if not getattr(manifest, field, "") and getattr(existing, field, ""):
                         setattr(manifest, field, getattr(existing, field))
+                if local_registration:
+                    for field in ("project_id", "project_dir", "project_work_mode"):
+                        if not getattr(manifest, field, "") and getattr(existing, field, ""):
+                            setattr(manifest, field, getattr(existing, field))
+                    if manifest.source == "local" and manifest.work_dir == existing.work_dir:
+                        manifest.local_release_id = existing.local_release_id
                 if "requires_project" not in options:
                     manifest.requires_project = existing.requires_project
             if not manifest.source:
