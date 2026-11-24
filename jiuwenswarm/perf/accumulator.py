@@ -48,6 +48,42 @@ class RequestSummaryAccumulator:
     first_byte_latency_ms: int | None = None
     first_answer_latency_ms: int | None = None
     ended_at: float | None = None
+    # --- monitoring summary line extensions (issue #6745) ---
+    # Stage marks in time.monotonic() space; first mark per stage wins.
+    # Raw timestamps only — offsets are computed by the pipeline, which owns
+    # the recv-side monotonic origin.
+    stage_marks: dict[str, float] = field(default_factory=dict)
+    ask_emitted: bool = False
+    chat_error_count: int = 0
+    # Last LLM call's stream timing (from llm_sse_patch); last call wins.
+    llm_ttft_ms: float | None = None
+    llm_tpot_ms: float | None = None
+    llm_model: str = ""
+    # Thinking segments (chat.reasoning spans) in ms.
+    thinking_count: int = 0
+    thinking_total_ms: float = 0.0
+    thinking_max_ms: float = 0.0
+    thinking_segments: dict[str, float] = field(default_factory=dict)
+    # Message generation spans (chat.delta → chat.final) in ms.
+    msg_gen_count: int = 0
+    msg_gen_total_ms: float = 0.0
+    msg_gen_max_ms: float = 0.0
+    # Inter-chunk idle gaps (no LLM/tool call in flight at either boundary).
+    stream_gap_total_ms: float = 0.0
+    stream_gap_max_ms: float = 0.0
+    # Skill invocations seen on the rail: skill name → call count.
+    skill_stats: dict[str, int] = field(default_factory=dict)
+    # Last context.usage snapshot (limit_tokens / occupancy_rate); last wins.
+    ctx_window_tokens: int | None = None
+    ctx_occupancy: float | None = None
+    # Wire chunks actually sent to the client (counted at the send sink).
+    chunk_count: int = 0
+    # In-flight counters maintained by rail hooks. Hooks and the stream loop
+    # run on different asyncio tasks whose ContextVars do not cross — the
+    # accumulator object is the only state both sides share, so "is a model
+    # call / tool running right now" is tracked here, not via ContextVar.
+    llm_in_flight: int = 0
+    tool_in_flight: int = 0
     llm_stats: LlmStatsAccumulator = field(default_factory=LlmStatsAccumulator)
     tool_stats: ToolStatsAccumulator = field(default_factory=ToolStatsAccumulator)
     task_count: int = 0
@@ -111,11 +147,110 @@ class RequestSummaryAccumulator:
         if self.first_answer_latency_ms is None and latency_ms >= 0:
             self.first_answer_latency_ms = int(round(latency_ms))
 
+    def mark_stage(self, stage: str, monotonic_ts: float) -> None:
+        """Record the first monotonic timestamp at which ``stage`` was reached."""
+        name = (stage or "").strip()
+        if name and name not in self.stage_marks:
+            self.stage_marks[name] = monotonic_ts
+
+    def record_llm_stream_timing(
+        self,
+        *,
+        ttft_ms: float | None,
+        total_ms: float,
+        chunk_count: int,
+        status: str,
+    ) -> None:
+        """Record one LLM HTTP stream timing; the last call wins.
+
+        ``tpot`` is an approximation: (total - ttft) spread over the streamed
+        chunks after the first one (chunks, not tokens — the SSE patch does not
+        see token ids).
+        """
+        if ttft_ms is not None:
+            self.llm_ttft_ms = round(max(0.0, float(ttft_ms)), 1)
+        if ttft_ms is not None and chunk_count > 1 and total_ms > ttft_ms:
+            self.llm_tpot_ms = round(
+                max(0.0, (float(total_ms) - float(ttft_ms)) / (chunk_count - 1)), 1
+            )
+        del status  # llm_stats.fail_count already accounts for failures
+
+    def record_skill_usage(self, skill_name: str) -> None:
+        name = (skill_name or "").strip()
+        if name:
+            self.skill_stats[name] = self.skill_stats.get(name, 0) + 1
+
+    def record_context_usage(self, *, limit_tokens: Any, occupancy_rate: Any) -> None:
+        """Record the latest context.usage snapshot (last snapshot wins)."""
+        try:
+            limit = int(limit_tokens)
+        except (TypeError, ValueError):
+            limit = 0
+        if limit > 0:
+            self.ctx_window_tokens = limit
+        try:
+            rate = float(occupancy_rate)
+        except (TypeError, ValueError):
+            rate = -1.0
+        if 0.0 <= rate <= 1.0:
+            self.ctx_occupancy = round(rate, 4)
+
+    def record_chat_error(self) -> None:
+        self.chat_error_count += 1
+
+    def record_chunk_sent(self) -> None:
+        self.chunk_count += 1
+
+    def set_llm_in_flight(self, active: bool) -> None:
+        if active:
+            self.llm_in_flight += 1
+        else:
+            self.llm_in_flight = max(0, self.llm_in_flight - 1)
+
+    def set_tool_in_flight(self, active: bool) -> None:
+        if active:
+            self.tool_in_flight += 1
+        else:
+            self.tool_in_flight = max(0, self.tool_in_flight - 1)
+
+    def has_in_flight(self) -> bool:
+        """True while a model call or tool tracked by the rail is running."""
+        return self.llm_in_flight > 0 or self.tool_in_flight > 0
+
+    def set_ask_emitted(self) -> None:
+        self.ask_emitted = True
+
+    def record_thinking_segment(self, duration_ms: float) -> None:
+        if duration_ms < 0:
+            return
+        self.thinking_count += 1
+        self.thinking_total_ms += duration_ms
+        if duration_ms > self.thinking_max_ms:
+            self.thinking_max_ms = duration_ms
+        self.thinking_segments[str(self.thinking_count)] = round(duration_ms, 1)
+
+    def record_message_gen(self, duration_ms: float) -> None:
+        if duration_ms < 0:
+            return
+        self.msg_gen_count += 1
+        self.msg_gen_total_ms += duration_ms
+        if duration_ms > self.msg_gen_max_ms:
+            self.msg_gen_max_ms = duration_ms
+
+    def record_stream_gap(self, duration_ms: float) -> None:
+        if duration_ms <= 0:
+            return
+        self.stream_gap_total_ms += duration_ms
+        if duration_ms > self.stream_gap_max_ms:
+            self.stream_gap_max_ms = duration_ms
+
     def record_llm(self, event: LlmPerfEvent) -> None:
         self.llm_stats.record(
             duration_ms=event.duration_ms,
             status=event.status,
         )
+        if event.model:
+            self.llm_model = event.model
         self.input_tokens += max(0, event.input_tokens)
         self.output_tokens += max(0, event.output_tokens)
         self.total_tokens += max(0, event.input_tokens) + max(0, event.output_tokens)
@@ -324,6 +459,18 @@ class RequestSummaryAccumulator:
         else:
             first_answer_latency_s = ms_to_s(float(self.first_answer_latency_ms))
 
+        llm_stats_dict = self.llm_stats.to_dict()
+        if self.llm_model:
+            llm_stats_dict["model"] = self.llm_model
+        if self.llm_ttft_ms is not None:
+            llm_stats_dict["ttft_ms"] = self.llm_ttft_ms
+        if self.llm_tpot_ms is not None:
+            llm_stats_dict["tpot_ms"] = self.llm_tpot_ms
+        tool_stats_dict = self.tool_stats.to_dict()
+        tool_detail = self.tool_stats.to_detail_dict()
+        if tool_detail:
+            tool_stats_dict["detail"] = tool_detail
+
         summary: dict[str, Any] = {
             "schema_version": 1,
             "meta": {
@@ -341,8 +488,8 @@ class RequestSummaryAccumulator:
                 "first_answer_latency_s": first_answer_latency_s,
                 "status": self.status,
                 "stats": {
-                    "llm": self.llm_stats.to_dict(),
-                    "tool": self.tool_stats.to_dict(),
+                    "llm": llm_stats_dict,
+                    "tool": tool_stats_dict,
                     "task": {
                         "count": self.task_count,
                         "total_s": ms_to_s(self.task_total_ms),
@@ -365,6 +512,31 @@ class RequestSummaryAccumulator:
                 "tool": self.bottleneck_tool,
             },
         }
+        # Additive keys for the request-level monitoring summary log (#6745).
+        # Existing jsonl consumers ignore unknown keys; schema_version stays 1.
+        summary["stage_marks"] = dict(self.stage_marks)
+        if self.chunk_count:
+            summary["chunk_count"] = self.chunk_count
+        summary["stream"] = {
+            "chat_errors": self.chat_error_count,
+            "ask_emitted": self.ask_emitted,
+            "thinking_count": self.thinking_count,
+            "thinking_total_ms": round(self.thinking_total_ms, 1),
+            "thinking_max_ms": round(self.thinking_max_ms, 1),
+            "thinking_segments": dict(self.thinking_segments),
+            "msg_gen_count": self.msg_gen_count,
+            "msg_gen_total_ms": round(self.msg_gen_total_ms, 1),
+            "msg_gen_max_ms": round(self.msg_gen_max_ms, 1),
+            "stream_gap_total_ms": round(self.stream_gap_total_ms, 1),
+            "stream_gap_max_ms": round(self.stream_gap_max_ms, 1),
+        }
+        if self.skill_stats:
+            summary["skills"] = dict(self.skill_stats)
+        if self.ctx_window_tokens is not None or self.ctx_occupancy is not None:
+            summary["context_window"] = {
+                "limit_tokens": self.ctx_window_tokens,
+                "occupancy_rate": self.ctx_occupancy,
+            }
         if self._include_by_agent:
             summary["summary"]["stats"]["by_agent"] = self._by_agent_dict()
         if self._include_errors:

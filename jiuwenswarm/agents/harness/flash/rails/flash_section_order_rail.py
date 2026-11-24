@@ -141,11 +141,23 @@ class FlashSectionOrderRail(DeepAgentRail):
     priority = 2
     inherit_to_subagents = False
 
-    def __init__(self) -> None:
+    def __init__(self, config_provider: Any = None) -> None:
         super().__init__()
+        self._config_provider = config_provider
         self._system_prompt_builder: Any = None
         # 层级重整幂等：段名 → 已处理段对象的 id。对象未变（跨轮驻留）跳过；变（重注入）重做。
         self._transformed: dict[str, int] = {}
+
+    def _enabled_by_config(self) -> bool:
+        """每轮现读 flash.section_order.enabled（热重载同步）。provider 缺省时默认启用。"""
+        provider = self._config_provider
+        if provider is None:
+            return True
+        try:
+            config = provider()
+        except Exception:
+            return True
+        return bool(config.get("enabled", True)) if isinstance(config, dict) else True
 
     def init(self, agent: Any) -> None:
         self._system_prompt_builder = getattr(agent, "system_prompt_builder", None)
@@ -162,6 +174,9 @@ class FlashSectionOrderRail(DeepAgentRail):
         if builder is None:
             return
         self._system_prompt_builder = builder
+        if not self._enabled_by_config():
+            # 禁用：不再迁号/剥除/重锚；段号由源 rail 每轮按原生 priority 重注入。
+            return
         self.apply(builder)
 
     def apply(self, builder: Any) -> None:

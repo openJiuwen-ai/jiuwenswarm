@@ -8,7 +8,7 @@
 | 编号 / slug | S_20 / stream-event-emission-channel |
 | 关联模块（agent-core 仓） | `openjiuwen/core/session/stream/`（`base.py` 三 schema 与模式枚举 / `emitter.py` StreamEmitter + AsyncStreamQueue / `writer.py` StreamWriter 三型 / `manager.py` StreamWriterManager / `chunk_logging.py` 分块日志开关） |
 | 关联模块（jiuwenswarm 仓） | `agents/harness/common/rails/stream_event_rail.py`（发射面：六个 `_emit_*` + sid 解析 + cwd rebind + symphony 桥接）；`agents/harness/common/rails/symphony/tool_stream_events.py`（SymphonyToolStreamHandler）；装配层：`server/runtime/agent_adapter/interface_deep.py`（`_build_stream_event_rail` @9620 / `_RailBuildInfo` 注册 @10618）、`server/runtime/agent_adapter/interface_code.py`（@730）、`server/runtime/agent_adapter/interface_flash.py`（`_FLASH_RAIL_KEEP` @238 继承）、`server/runtime/skill_turbo/executor.py`（@471）、`agents/harness/team/team_runtime_inheritance.py`（@202）、`agents/harness/common/auto_harness/service.py`（@276）、`agents/swarm/providers/builtin_rails.py`（`swarm.stream_event` 命名空间）；消费侧：`jiuwenswarm/cli/events.py`（终态/交互判定）、`jiuwenswarm/perf/todo_tracker.py`（todo 快照旁路） |
-| 最近一次修订日期 | 2026-10-28 |
+| 最近一次修订日期 | 2026-11-21 |
 | 关联 feature | 暂无 |
 
 ## 范围 / 边界
@@ -84,7 +84,7 @@ stream_output(first_frame_timeout=-1, timeout=-1, need_close=True)
 | `_emit_tool_call` | @1504 | `tool_call` | `{"tool_call": {name, arguments, tool_call_id, display_name?, source_skill?}}` | before_tool_call（非跳过名单） |
 | `_emit_tool_result` | @1537 | `tool_result` | `{"tool_result": {tool_name, tool_call_id, result, raw_output?, success?/status?/is_error?, source_skill?}}` | after_tool_call（非 TIE / 非 nudge） |
 | `_emit_tool_update` | @1607 | `tool_update` | `{"tool_update": {tool_name, tool_call_id, arguments, status, source_skill?}}` | before_tool_call（in_progress） |
-| `_emit_todo_updated` | @1630 | `todo.updated` | `{"todos": [...]}` | after_tool_call（todo 工具后） |
+| `_emit_todo_updated` | @1630 | `todo.updated` | `{"todos": [...]}` | after_tool_call（todo 工具后）；before_invoke（step-resume 补发，见 P2） |
 | `_emit_context_usage` | @1753 | `context.usage` | `{rate, context_max, tokens_used, role?, member_name?}` | after_model_call |
 | `_emit_ask_user_question_if_interrupted` | @1579 | `chat.ask_user_question` | interrupt payload | after_tool_call（ask_user + TIE） |
 
@@ -134,7 +134,7 @@ _runtime_cwd / _runtime_project_root / _runtime_workspace: str | None
 ## 执行路径全景
 
 - **P1 装配**：deep `_build_stream_event_rail`（@9620，失败降级 None）→ `_RailBuildInfo` 注册（@10618）→ adapter 集成面注入（checkpointer @14084 / adapter @14082 / metadata @13542 / cwd @13396）；code 同构（@730 / @1475-1497）；flash 经 `_FLASH_RAIL_KEEP` 继承（@238）；skill_turbo executor 独立实例（@471）；team_runtime_inheritance 团队继承（@202，member_name / role 参数）；auto_harness（@276）；swarm `builtin_rails` 以 `swarm.stream_event` 注册
-- **P2 invoke 边界**：`before_invoke`（@933）→ sid 捕获（conversation_id 或 default，`_conversation_ids` / `_main_sessions` 登记）→ extra 写 `_SID_KEY` → `set_shell_session_id` 存 token → `_rebind_runtime_cwd(replace=True)`；`after_invoke`（@970）→ pop token 复位 shell 会话 → `reset_skill_turbo_context` → adapter 兜底清空
+- **P2 invoke 边界**：`before_invoke`（@933）→ sid 捕获（conversation_id 或 default，`_conversation_ids` / `_main_sessions` 登记）→ step-resume 补发 `_emit_todo_updated`（条件是 conversation_id 为真且 `has_pending_step_resume(ctx.session)`；补发失败只 `logger.debug`，见 N1）→ extra 写 `_SID_KEY` → `set_shell_session_id` 存 token → `_rebind_runtime_cwd(replace=True)`；`after_invoke`（@970）→ pop token 复位 shell 会话 → `reset_skill_turbo_context` → adapter 兜底清空
 - **P3 模型边界**：`before_model_call`（@1006）→ pause wait + abort 检查（S_21）→ `_rebind_runtime_cwd(replace=False)` → call_goal schema 注入（S_21）→ 图片剥离 + 上下文修复（S_21）→ 早 checkpoint（S_21）；`after_model_call`（@1179）→ `_context_usage_event_emitted` 检查 → light 模式分支 → `_emit_context_usage`
 - **P4 工具边界**：`before_tool_call`（@1208）→ pause/abort（S_21）→ cwd mutate → write_file/edit_file rebase + whitespace fix → call_goal 剥离（S_21）→ 跳过名单判定 → `_emit_tool_call` + `_emit_tool_update` → symphony bind_progress → inflight 登记；`after_tool_call`（@1312）→ skill_turbo 复位 → HITL 改写（S_21）→ `_emit_tool_result` + symphony force_finish → `_emit_ask_user_question_if_interrupted` → todo 工具则 `_emit_todo_updated`
 - **P5 todo 旁路**：`_emit_todo_updated`（@1630）→ `_get_todo_tool`（deep_config.workspace 固定路径，避开 Runner.resource_mgr 覆盖）→ `load_todos` → 代际过滤（S_05）→ 主 rail 才 `sync_main_agent_todos`（perf 旁路，`run_perf_safe` 包裹）→ `overlay_serial_todo_statuses` → write_stream

@@ -163,6 +163,7 @@ def test_react_override_replaces_eager_tools_and_keeps_siblings() -> None:
         "skill_tool",
         "skill_complete",
         "todo",
+        "memory",
         "office_claw_list_wishes",
     ]
     assert lazy["enabled"] is True

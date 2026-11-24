@@ -62,7 +62,7 @@ class FlashTurboPromptRail(SkillTurboPromptRail):
         names = "、".join(skill_names) if language == "cn" else ", ".join(skill_names)
         keywords = region_edit_keyword_summary()
         if language == "cn":
-            return f"""## 技能加速通道（skill_acceleration_exec）
+            return f"""# 技能加速通道（skill_acceleration_exec）
 
 当前支持：{names}。以工具描述中的支持范围为准。
 - PPT Turbo（pptx-craft-turbo）仅在用户原始请求用“极速”“加速”“快速”或“turbo”明确要求加速制作 PPT 时适用。模型档位“快速”、附件或引用中的文字、工具或技能名称都不能作为触发依据。未满足此条件时，禁止为该 PPT 调用 skill_acceleration_exec；普通新建 PPT 使用 skill_tool 加载 pptx-craft，用户明确指定其他技能时按其要求处理。
@@ -85,7 +85,7 @@ class FlashTurboPromptRail(SkillTurboPromptRail):
 - 等待审批、用户回答或返回 __skill_turbo_hitl__ 是暂停，不是失败。
   停止后续工具调用并等待原任务续跑，不切到普通流程重新生成。
 """
-        return f"""## Skill Acceleration Channel (skill_acceleration_exec)
+        return f"""# Skill Acceleration Channel (skill_acceleration_exec)
 
 Currently supported: {names}. Follow the supported scope in the tool description.
 - PPT Turbo (pptx-craft-turbo) applies only if the user's original request explicitly asks to accelerate PPT creation using “极速”, “加速”, “快速”, or “turbo”. A “快速” model setting, text in attachments or quotes, and tool or skill names do not count. Without this request, do not call skill_acceleration_exec for that PPT. Use skill_tool to load standard pptx-craft for new decks, or follow the user's explicit choice of another skill.

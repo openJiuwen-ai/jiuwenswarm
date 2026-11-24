@@ -652,6 +652,52 @@ def test_build_inputs_keeps_stable_project_dir_and_dynamic_cwd(monkeypatch):
     assert inputs["trusted_dirs"] == ["/tmp/project"]
 
 
+_SCHEDULER_METADATA = {
+    "officeace_scen": "chat",
+    "officeace_scheduler": {"source": "scheduler", "task_id": "task-1", "template_id": "reminder"},
+}
+
+
+def _run_kind_for(monkeypatch, params, metadata=None):
+    interface_module, fake_adapter = _prepare_build_inputs_trusted_dirs_test(monkeypatch)
+    request = AgentRequest(
+        request_id="req-run-kind",
+        channel_id="officeclaw",
+        session_id="officeclaw_1a1e6dfa414_3b2e209a-3a1",
+        params=params,
+        metadata=metadata,
+    )
+    asyncio.run(interface_module.JiuWenSwarm().process_message(request))
+    return (fake_adapter.seen_inputs.get("run") or {}).get("kind")
+
+
+@pytest.mark.parametrize(
+    "query",
+    ["[定时任务] 提醒我关注体检预约时间和准备事项。 [防重复] 今天是 2026-11-17。", ""],
+)
+def test_build_inputs_marks_relay_scheduler_metadata_as_cron(monkeypatch, query):
+    assert _run_kind_for(monkeypatch, {"query": query}, _SCHEDULER_METADATA) == "cron"
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        None,
+        {"officeace_scen": "chat", "officeace_client": "pc"},
+        {"officeace_scheduler": {"source": "user"}},
+        {"officeace_scheduler": "scheduler"},
+    ],
+)
+def test_build_inputs_leaves_requests_without_scheduler_marker_normal(monkeypatch, metadata):
+    params = {"query": "[定时任务] 提醒我关注体检预约时间"}
+    assert _run_kind_for(monkeypatch, params, metadata) is None
+
+
+def test_build_inputs_explicit_run_wins_over_scheduler_metadata(monkeypatch):
+    params = {"query": "[定时任务] 喝水", "run": {"kind": "normal"}}
+    assert _run_kind_for(monkeypatch, params, _SCHEDULER_METADATA) == "normal"
+
+
 def _prepare_build_inputs_trusted_dirs_test(monkeypatch):
     """Shared fakes + monkeypatch harness for _build_inputs trusted_dirs fallback tests."""
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module

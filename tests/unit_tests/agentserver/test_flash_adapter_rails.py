@@ -18,6 +18,7 @@ Covers the review findings on PR6431:
 """
 
 import asyncio
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -32,6 +33,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
 from jiuwenswarm.server.runtime.agent_adapter import interface_flash
 from jiuwenswarm.server.runtime.agent_adapter.interface_flash import (
     JiuwenSwarmFlashAdapter,
+    _FLASH_OWNED_CONFIG_KEYS,
 )
 from jiuwenswarm.server.runtime.agent_adapter.deep.pure_helpers import _resolve_enable_task_loop
 
@@ -168,6 +170,41 @@ def test_skill_execution_rails_are_in_keep():
     assert "_skill_create_rail" not in keep
 
 
+def test_skill_protocol_prompt_rail_is_in_flash_keep():
+    """技能执行规范（skill_protocol 段，含「执行 skill 前必须建 todo」）必须进 flash。
+
+    父类 ``_build_agent_rails`` 对 ``SkillProtocolPromptRail`` 用
+    ``mode.startswith("agent")`` 门控，flash 模式拿不到；flash 适配器在
+    ``_instantiate_rails`` 显式补装配（见 test_flash_artifact_post_process 的
+    ``flash_skill_protocol_builder.assert_called_once``）。进 keep 保证 reload
+    一致性（``_rail_snapshot``/``_profile_fingerprint``）与白名单过滤都覆盖到它。
+    """
+    assert "_skill_protocol_prompt_rail" in JiuwenSwarmFlashAdapter._FLASH_RAIL_KEEP
+
+
+def test_flash_prompt_static_rails_are_in_keep():
+    """A1 三 rail（段序收口 / 最后审计 / 静态正文 composer）必须进白名单并冷启动装配。
+
+    漏掉任何一个：FlashSectionOrderRail 段序收口与剥除不执行、FlashPromptAuditRail
+    每轮校验不执行、FlashPromptComposerRail（persona/safety/tools/response 四域重组
+    的唯一入口）整段静默丢失——sections.py 已写明「审计对账」会误导后续维护者。
+    """
+    keep = JiuwenSwarmFlashAdapter._FLASH_RAIL_KEEP
+    assert "_flash_section_order_rail" in keep
+    assert "_flash_prompt_audit_rail" in keep
+    assert "_flash_prompt_composer_rail" in keep
+
+
+def test_static_prompt_text_rails_use_one_composer():
+    """静态提示词转换只注册一个 Composer，不再分散成四个后处理 Rail。"""
+    keep = JiuwenSwarmFlashAdapter._FLASH_RAIL_KEEP
+    assert "_flash_prompt_composer_rail" in keep
+    assert "_flash_persona_rail" not in keep
+    assert "_flash_safety_rail" not in keep
+    assert "_flash_tool_guide_rail" not in keep
+    assert "_flash_response_rail" not in keep
+
+
 def test_ask_user_rail_is_in_keep_to_avoid_churn():
     """#4 (corrected): ``_ask_user_rail`` is kept so the per-request drop skips it.
 
@@ -188,67 +225,6 @@ def test_multimodal_image_rail_is_in_keep():
     assert "_multimodal_image_rail" in adapter._FLASH_RAIL_KEEP
     filtered = adapter._filter_rail_infos_by_keep([_info("_multimodal_image_rail")])
     assert [info.attr_name for info in filtered] == ["_multimodal_image_rail"]
-
-
-def test_flash_prompt_static_rails_are_in_keep():
-    """A1 三 rail（段序收口 / 最后审计 / 静态正文 composer）必须进白名单并冷启动装配。
-
-    漏掉任何一个：FlashSectionOrderRail 段序收口与剥除不执行、FlashPromptAuditRail
-    每轮校验不执行、FlashPromptComposerRail（persona/safety/tools/response 四域重组
-    的唯一入口）整段静默丢失——sections.py 已写明「审计对账」会误导后续维护者。
-    """
-    keep = JiuwenSwarmFlashAdapter._FLASH_RAIL_KEEP
-    assert "_flash_section_order_rail" in keep
-    assert "_flash_prompt_audit_rail" in keep
-    assert "_flash_prompt_composer_rail" in keep
-
-
-def test_flash_owned_config_keys_cover_static_rail_switches():
-    """静态区三 rail 及其四域开关都在 flash.* 命名空间内（_flash_config 双读范围）。"""
-    owned = interface_flash._FLASH_OWNED_CONFIG_KEYS
-    for key in ("composer", "section_order", "audit", "persona", "safety", "tool_guide", "response"):
-        assert key in owned
-
-
-def test_flash_config_keys_declared_in_template_and_survive_merge():
-    """评审 #1：7 组 flash 配置须在 config.yaml 模板声明，用户 YAML 覆盖后保留。
-
-    模板合并（merge_template_with_override）会删除「override 有、模板没有」的键；若
-    这 7 组未在模板声明，audit.fail_closed=true / persona.enabled=false 会被静默丢弃。
-    """
-    import yaml
-
-    from jiuwenswarm.common.utils import (
-        merge_template_with_override,
-        resolve_shipped_template_config_path,
-    )
-
-    template = yaml.safe_load(
-        resolve_shipped_template_config_path().read_text(encoding="utf-8")
-    )
-    assert isinstance(template.get("flash"), dict)
-    for key in ("audit", "persona", "safety", "tool_guide", "response", "composer", "section_order"):
-        assert key in template["flash"], f"flash.{key} 未在 config.yaml 模板声明"
-
-    override = {
-        "flash": {
-            "audit": {"fail_closed": True},
-            "persona": {"enabled": False},
-            "safety": {"enabled": False},
-            "tool_guide": {"enabled": False},
-            "response": {"enabled": False},
-            "composer": {"takeover_domains": [], "verify_only": True},
-            "section_order": {"enabled": False},
-        }
-    }
-    merged = merge_template_with_override(template, override)
-    flash = merged["flash"]
-    assert flash["audit"]["fail_closed"] is True
-    assert flash["persona"]["enabled"] is False
-    assert flash["safety"]["enabled"] is False
-    assert flash["composer"]["takeover_domains"] == []
-    assert flash["composer"]["verify_only"] is True
-    assert flash["section_order"]["enabled"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -750,6 +726,323 @@ def test_flash_overrides_are_present_on_subclass_not_inherited():
     assert "_drop_non_whitelist_dynamic_rails" in JiuwenSwarmFlashAdapter.__dict__
     # Sanity: the parent still has the real dreaming impl flash is shadowing.
     assert "try_start_dreaming" in JiuWenSwarmDeepAdapter.__dict__
+
+
+# ---------------------------------------------------------------------------
+# config namespace dual-read: flash.* 优先、react.* 兜底
+# ---------------------------------------------------------------------------
+
+
+def _adapter_with_config(flash_section=None, react_cache=None):
+    adapter = object.__new__(JiuwenSwarmFlashAdapter)
+    adapter._config_base_cache = {"flash": flash_section or {}, "react": react_cache or {}}
+    adapter._config_cache = react_cache or {}
+    return adapter
+
+
+def test_flash_config_prefers_flash_namespace():
+    """flash.<key> 命中时优先于 react.<key>。"""
+    adapter = _adapter_with_config(
+        flash_section={"persona": {"enabled": False}},
+        react_cache={"persona": {"enabled": True}},
+    )
+    assert adapter._flash_config("persona") == {"enabled": False}
+
+
+def test_flash_config_falls_back_to_react():
+    """flash.<key> 缺省时回退 react.<key>，迁移期旧配置仍生效。"""
+    adapter = _adapter_with_config(
+        flash_section={},
+        react_cache={"composer": {"verify_only": True}},
+    )
+    assert adapter._flash_config("composer") == {"verify_only": True}
+
+
+def test_flash_config_returns_default_when_both_absent():
+    """两个命名空间都没有时返回传入 default。"""
+    adapter = _adapter_with_config(flash_section={}, react_cache={})
+    assert adapter._flash_config("relay_merge", {"enabled": True}) == {"enabled": True}
+
+
+def test_flash_config_excludes_shared_react_keys():
+    """共享 react 键（skill_turbo / disabled_tools）不进入 flash 双读键表。
+
+    _flash_config 只用于 _FLASH_OWNED_CONFIG_KEYS 内的 flash 专属键；与 Deep 共享的
+    react.* 键仍走 react.* 单一语义，避免 flash.* 下同名键顶掉共享配置。
+    """
+    assert "skill_turbo" not in _FLASH_OWNED_CONFIG_KEYS
+    assert "disabled_tools" not in _FLASH_OWNED_CONFIG_KEYS
+
+
+def test_flash_owned_config_keys_cover_static_rail_switches():
+    """静态区三 rail 及其四域开关都在 flash.* 命名空间内（_flash_config 双读范围）。"""
+    owned = interface_flash._FLASH_OWNED_CONFIG_KEYS
+    for key in ("composer", "section_order", "audit", "persona", "safety", "tool_guide", "response"):
+        assert key in owned
+
+
+def test_flash_owned_config_keys_covers_all_rail_switches():
+    """所有 flash 专属 rail 开关都在双读键表内，缺一即漏改。"""
+    assert _FLASH_OWNED_CONFIG_KEYS == {
+        "persona",
+        "safety",
+        "tool_guide",
+        "response",
+        "composer",
+        "repeat_call_guard",
+        "skill_catalog",
+        "state",
+        "pressure",
+        "relay_merge",
+        "section_order",
+        "audit",
+    }
+
+
+def test_flash_config_keys_declared_in_template_and_survive_merge():
+    """评审 #1：flash 配置键须在 config.yaml 模板声明，用户 YAML 覆盖后保留。
+
+    模板合并（merge_template_with_override）会删除「override 有、模板没有」的键；若
+    这些键未在模板声明，audit.fail_closed=true / persona.enabled=false / 线 B 的
+    pressure.warning_ratio 等都会被静默丢弃。
+    """
+    import yaml
+
+    from jiuwenswarm.common.utils import (
+        merge_template_with_override,
+        resolve_shipped_template_config_path,
+    )
+
+    template = yaml.safe_load(
+        resolve_shipped_template_config_path().read_text(encoding="utf-8")
+    )
+    assert isinstance(template.get("flash"), dict)
+    for key in (
+        "audit", "persona", "safety", "tool_guide", "response", "composer", "section_order",
+        "repeat_call_guard", "skill_catalog", "state", "pressure", "relay_merge",
+    ):
+        assert key in template["flash"], f"flash.{key} 未在 config.yaml 模板声明"
+
+    override = {
+        "flash": {
+            "audit": {"fail_closed": True},
+            "persona": {"enabled": False},
+            "safety": {"enabled": False},
+            "tool_guide": {"enabled": False},
+            "response": {"enabled": False},
+            "composer": {"takeover_domains": [], "verify_only": True},
+            "section_order": {"enabled": False},
+            "repeat_call_guard": {"thresholds": [2, 4], "exclude": ["bash"]},
+            "skill_catalog": {"enabled": False, "catalog_max_entries": 30},
+            "state": {"enabled": False},
+            "pressure": {"warning_ratio": 0.5, "critical_ratio": 0.8},
+            "relay_merge": {"enabled": False},
+        }
+    }
+    merged = merge_template_with_override(template, override)
+    flash = merged["flash"]
+    assert flash["audit"]["fail_closed"] is True
+    assert flash["persona"]["enabled"] is False
+    assert flash["safety"]["enabled"] is False
+    assert flash["composer"]["takeover_domains"] == []
+    assert flash["composer"]["verify_only"] is True
+    assert flash["section_order"]["enabled"] is False
+    assert flash["repeat_call_guard"]["thresholds"] == [2, 4]
+    assert flash["repeat_call_guard"]["exclude"] == ["bash"]
+    assert flash["skill_catalog"]["enabled"] is False
+    assert flash["skill_catalog"]["catalog_max_entries"] == 30
+    assert flash["state"]["enabled"] is False
+    assert flash["pressure"]["warning_ratio"] == 0.5
+    assert flash["pressure"]["critical_ratio"] == 0.8
+    assert flash["relay_merge"]["enabled"] is False
+
+
+# ---------------------------------------------------------------------------
+# E：默认生产接管装配（adapter 缺省 takeover_domains = safety/response）
+# ---------------------------------------------------------------------------
+
+
+def _fake_composer_module():
+    """给 adapter 懒加载的 composer 打桩，捕获 FlashPromptComposerRail 构造入参。
+
+    composer 在 ``_build_flash_prompt_composer_rail`` 内懒 import，本地无 agent_shield
+    也能测 adapter 的缺省接线（不必真正 import composer/rails 链）。
+    """
+    import types
+
+    composer_mod = types.ModuleType("jiuwenswarm.agents.harness.flash.prompt.composer")
+    composer_mod.TAKEOVERABLE_DOMAINS = frozenset({"safety", "response"})
+    composer_mod.coerce_takeover_domains = lambda domains: frozenset(domains)
+    captured = {}
+
+    def _fake_rail(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace()
+
+    composer_mod.FlashPromptComposerRail = _fake_rail
+    return composer_mod, captured
+
+
+def test_adapter_default_takeover_domains_are_safety_response(monkeypatch):
+    """生产缺省：provider 返回 safety+response（Composer 构造器缺省为空集）。
+
+    Composer 单元测试里的默认实例 takeover_domains 为空，但生产路径的默认接管来自
+    adapter——缺了这条测试，改掉 adapter 缺省值不会在单测层暴露。
+    """
+    composer_mod, captured = _fake_composer_module()
+    adapter = _adapter_with_config()  # flash/ 与 react/ 均无 composer 配置
+
+    monkeypatch.setitem(
+        sys.modules, "jiuwenswarm.agents.harness.flash.prompt.composer", composer_mod
+    )
+    adapter._build_flash_prompt_composer_rail()
+
+    assert captured["config_provider"]()["takeover_domains"] == frozenset({"safety", "response"})
+
+
+def test_adapter_explicit_takeover_domains_pass_through(monkeypatch):
+    """显式配置接管域时，provider 原样返回（不强制默认 safety/response）。"""
+    composer_mod, captured = _fake_composer_module()
+    adapter = _adapter_with_config(
+        flash_section={"composer": {"takeover_domains": ["response"]}},
+    )
+
+    monkeypatch.setitem(
+        sys.modules, "jiuwenswarm.agents.harness.flash.prompt.composer", composer_mod
+    )
+    adapter._build_flash_prompt_composer_rail()
+
+    assert captured["config_provider"]()["takeover_domains"] == frozenset({"response"})
+
+
+def test_adapter_explicit_empty_takeover_disables_all(monkeypatch):
+    """显式空列表 = 全部关闭接管，provider 不退回默认 safety/response。"""
+    composer_mod, captured = _fake_composer_module()
+    adapter = _adapter_with_config(
+        flash_section={"composer": {"takeover_domains": []}},
+    )
+
+    monkeypatch.setitem(
+        sys.modules, "jiuwenswarm.agents.harness.flash.prompt.composer", composer_mod
+    )
+    adapter._build_flash_prompt_composer_rail()
+
+    assert captured["config_provider"]()["takeover_domains"] == frozenset()
+
+
+# ---------------------------------------------------------------------------
+# B：Todo disabled_tools 热更新同步（reload 后 FlashTodoRail 快照不陈旧）
+# ---------------------------------------------------------------------------
+
+
+def test_sync_flash_todo_disabled_tools_resyncs_from_disabled_rail():
+    """reload 后 FlashTodoRail._disabled_tools 与 DisabledToolsRail 保持一致。"""
+    adapter = object.__new__(JiuwenSwarmFlashAdapter)
+    adapter._disabled_tools_rail = SimpleNamespace(_disabled_tools=["todo", "bash"])
+    received = {}
+    adapter._task_planning_rail = SimpleNamespace(
+        update_disabled_tools=lambda d: received.update(disabled_tools=d)
+    )
+
+    adapter._sync_flash_todo_disabled_tools()
+
+    assert received["disabled_tools"] == ["todo", "bash"]
+
+
+def test_sync_flash_todo_disabled_tools_clears_when_no_disabled_rail():
+    """disabled_tools 清空（DisabledToolsRail 为 None）→ todo rail 快照清空。"""
+    adapter = object.__new__(JiuwenSwarmFlashAdapter)
+    adapter._disabled_tools_rail = None
+    received = {}
+    adapter._task_planning_rail = SimpleNamespace(
+        update_disabled_tools=lambda d: received.update(disabled_tools=d)
+    )
+
+    adapter._sync_flash_todo_disabled_tools()
+
+    assert received["disabled_tools"] == []
+
+
+def test_sync_flash_todo_disabled_tools_noop_without_todo_rail():
+    """todo rail 未装配时同步是安全 no-op。"""
+    adapter = object.__new__(JiuwenSwarmFlashAdapter)
+    adapter._disabled_tools_rail = SimpleNamespace(_disabled_tools=["todo"])
+    adapter._task_planning_rail = None
+    adapter._sync_flash_todo_disabled_tools()  # 不抛异常
+
+
+def test_sync_flash_todo_disabled_tools_noop_without_update_method():
+    """todo rail 无 update_disabled_tools 入口时跳过（不抛异常）。"""
+    adapter = object.__new__(JiuwenSwarmFlashAdapter)
+    adapter._disabled_tools_rail = SimpleNamespace(_disabled_tools=["todo"])
+    adapter._task_planning_rail = SimpleNamespace()
+    adapter._sync_flash_todo_disabled_tools()  # 不抛异常
+
+
+def test_reload_resyncs_todo_disabled_tools_after_disabled_rail_rebuild(monkeypatch):
+    """reload 入口必须在 DisabledToolsRail 重建后同步 todo rail 的 disabled_tools。
+
+    上面 4 个用例只测了 helper 自身分支；本用例覆盖真正要保证的契约——reload 路径
+    （``_get_current_agent_rails``）会恰好调用一次同步，且入参是重建后的列表。若接线
+    漏调或提前调用（在 ``_disabled_tools_rail`` 重建前同步），todo 被禁后仍会注入
+    430 todo 纪律段（提示词要求调 todo、工具面却没有），而前 4 个用例会静默通过。
+    """
+    adapter = object.__new__(JiuwenSwarmFlashAdapter)
+    adapter._disabled_tools_rail = SimpleNamespace(_disabled_tools=["todo", "bash"])
+    calls = []
+    adapter._task_planning_rail = SimpleNamespace(
+        update_disabled_tools=lambda d: calls.append(list(d))
+    )
+    adapter._flash_skill_selection_rail = None
+
+    # 隔离出 reload 的同步逻辑：父类 rail 表返回空、skill_selection 返回 None。
+    monkeypatch.setattr(
+        JiuWenSwarmDeepAdapter, "_get_current_agent_rails",
+        lambda self, config, config_base: ([], []),
+    )
+    monkeypatch.setattr(
+        JiuwenSwarmFlashAdapter, "_build_flash_skill_selection_rail",
+        lambda self, config_base: None,
+    )
+
+    adapter._get_current_agent_rails({}, {})
+
+    # 恰好调用一次，且入参是 DisabledToolsRail 重建后的列表。
+    assert calls == [["todo", "bash"]]
+
+
+# ---------------------------------------------------------------------------
+# 评审 #1/#3：flash 配置热更新改为每轮 config_provider 现读；fallback 目录兜底
+# ---------------------------------------------------------------------------
+
+
+def test_read_fallback_skills_filters_disabled():
+    """fallback 目录来自实际加载技能，并过滤 list_execution_disabled_skills（评审 #3）。"""
+    adapter = object.__new__(JiuwenSwarmFlashAdapter)
+    adapter._skill_rail = SimpleNamespace(
+        skills_meta=[
+            SimpleNamespace(name="a", description="A"),
+            SimpleNamespace(name="b", description="B"),
+        ],
+    )
+    adapter._skill_manager = SimpleNamespace(list_execution_disabled_skills=lambda: {"b"})
+
+    assert adapter._read_fallback_skills() == [("a", "A")]
+
+
+def test_read_fallback_skills_empty_without_skill_rail():
+    adapter = object.__new__(JiuwenSwarmFlashAdapter)
+    adapter._skill_rail = None
+    adapter._skill_manager = None
+
+    assert adapter._read_fallback_skills() == []
+
+
+def test_read_disabled_tools_from_config_cache():
+    adapter = object.__new__(JiuwenSwarmFlashAdapter)
+    adapter._config_cache = {"disabled_tools": ["todo", "bash"]}
+
+    assert adapter._read_disabled_tools() == ["todo", "bash"]
 
 
 # ---------------------------------------------------------------------------

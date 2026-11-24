@@ -29,11 +29,9 @@ OfficeAce 中首次安装 `ppt-master`，用户在界面卸载后，在同一会
 1. 运行时目录提示按工作区拼出 skills 路径，而加载入口按实际 `SkillUseRail` 配置发现技能，给模型提供了不一致的路径含义。
 2. Flash 去重文案未突出本次用户请求的作用范围，模型将历史查询当作当前状态依据。
 
-修复后 `RuntimePromptRail` 在每次模型调用通过宿主 DeepAgent 的公开 `find_rails_by_type()` 查找当前 `SkillUseRail`，用其公开 `normalize_skill_dirs()` 规范化实际根目录，按顺序去重。读取发生在运行时，不缓存旧实例，团队子类也适用。
-没有相应目录信息时明确提示未提供，不回退到工作区并宣称其为当前发现目录。
+当前实现沿用上游已合入的 `skill_dirs_provider`：Adapter 注入每次现读 `self._skill_rail.skills_dir` 的回调，`RuntimePromptRail` 在模型调用前获取当前加载目录。加载器被替换或禁用后不复用旧目录；提供者返回空列表时显示暂无可用目录，不回退到工作区存储路径。
 
-与原讨论中的回调传参方案相比，直接复用现有框架公开查询接口，避免增加构造参数和多个装配入口的重复传递；工作区存储路径保持原有 PathProvider 语义。
-提示明确区分存储目录与发现目录，并说明目录存在不证明安装或可用状态。
+提示使用上游统一命名“JiuwenSwarm 内部技能存储目录”和“当前会话技能加载目录”，只输出一套加载目录，并补充目录存在不证明安装或可用状态的提醒。工作区存储路径保持原有 PathProvider 语义，OfficeAce 的宿主安装工具指引保持不变。
 
 初版曾在共享技能协议中加入四条安装状态规则；该部分已按用户要求撤回，当前仅保留目录提示与去重规则的修改，撤回依据见下文。
 同步更新 Flash 工具去重范围，保留重复调用守卫。未加入“加载失败后处理”、强制重装或名称冲突的新规则。
@@ -61,7 +59,7 @@ python -m pytest tests/unit_tests/agentserver/test_skill_install_state_prompt.py
 
 ## 资料同步与遗留
 
-- 当前目录事实源、去重范围及安装规则写入关联 S_05；开发记录集中在本文，不新增重复台账。
+- 当前目录事实源及去重范围写入关联 S_05；四条共享协议安装规则已撤回。开发记录集中在本文，不新增重复台账。
 - 这些测试证明目录展示与提示词装配契约，不证明真实模型一定遵循规则。尚未进行 OfficeAce 真机/真实模型的“安装→界面卸载→同会话再安装”回归，也未验证其安装副作用。
 - 用户日志中的工作区技能目录来源与清理归属仍待调查；不属于本次修复。
 
@@ -74,3 +72,13 @@ python -m pytest tests/unit_tests/agentserver/test_skill_install_state_prompt.py
 初版 323 项通过的结果保留为历史记录，不作为撤回后的验证结果。
 
 撤回后验证：共享协议文件内容与当前 HEAD 完全一致，relay vendor 通过指向本仓的目录链接同步恢复。运行 `test_skill_install_state_prompt.py`、`test_system_prompt_restructure.py`、`test_skill_protocol_extraction.py`、`test_flash_skill_rail.py`、`test_flash_skill_protocol_rail.py`、`test_flash_prompt_tools_content.py`，结果为 82 passed、1 个既有 Authlib 弃用警告；未执行真实模型回归。
+
+## 2026-11-24 合并上游目录修复并解决 PR !10834 冲突
+
+上游 `dev-stable` 已通过 !10733 合入 `skill_dirs_provider` 目录提供机制及 Adapter 回归。原 PR 与上游同时修改了中英文存储目录标签和多租户测试断言，且自动合并会保留两套目录读取和展示逻辑。
+
+处理方案：沿用上游提供者、标签及安装指引，移除本 PR 的 `find_rails_by_type` 读取与重复目录块；保留目录存在性提醒和 Flash 工具去重修改。目录测试复用上游真实 Adapter 入口，增加工作区残留文件、加载目录只展示一套及中英文状态核实提醒的断言；删除直接手动注册加载 rail 的重复测试，独立测试文件仅保留去重规则用例。
+
+在加入提醒前，六项 Adapter 参数化用例均因缺少对应提醒失败；这证明现有上游路径能够复现本次补充项的差异。
+
+合并后在仓库 `.venv` 中运行上文列出的同组 12 个测试文件（覆盖目录提示、协议抽取、去重守卫、Flash 提示词组装和 Swarm 装配），结果为 330 passed、1 个既有 Authlib 弃用警告。测试覆盖目录来源与提示装配，不证明真实模型必然遵守；本次未执行 OfficeAce 真机回归。

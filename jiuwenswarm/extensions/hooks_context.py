@@ -113,6 +113,33 @@ class ModelHttpHookContext:
 
 
 @dataclass
+class McpHttpHookContext:
+    """MCP HTTP 出口埋点（``before_mcp_http``）的扩展回调上下文。
+
+    在每次发往 MCP 服务端的 HTTP 请求之前触发（``initialize`` / ``tools/list`` /
+    ``tools/call`` / SSE 建流都会经过）。扩展往 ``headers`` 写值，宿主在触发返回后
+    按协议头白名单过滤并合并进本次请求：
+
+    - ``server_name`` / ``method`` / ``request_id`` / ``session_id`` 只读；
+    - ``headers`` 可写；``Content-Type`` / ``Accept`` / ``Mcp-Session-Id`` 等协议头
+      即使写了也会被丢弃；
+    - 请求级身份不可用时 ``request_id`` / ``session_id`` 为空串。
+
+    与 ``before_model_http`` 的分工相同：那个管模型出口，这个管 MCP 出口。
+    """
+
+    server_name: str = ""
+    method: str = ""
+    request_id: str = ""
+    session_id: str = ""
+    # 扩展可写：合并进本次 MCP HTTP 请求头
+    headers: dict[str, str] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
 class ImageArtifactHookContext:
     """图像产物落盘后的扩展回调上下文（兼容旧版扩展）。
 

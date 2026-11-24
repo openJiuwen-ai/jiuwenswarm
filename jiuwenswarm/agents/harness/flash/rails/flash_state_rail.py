@@ -50,10 +50,22 @@ class FlashStateRail(DeepAgentRail):
     priority = 4
     inherit_to_subagents = False
 
-    def __init__(self) -> None:
+    def __init__(self, config_provider: Any = None) -> None:
         super().__init__()
+        self._config_provider = config_provider
         self._system_prompt_builder: Any = None
         self._attachment_manager: Any = None
+
+    def _enabled_by_config(self) -> bool:
+        """每轮现读 flash.state.enabled（热重载同步）。provider 缺省时默认启用。"""
+        provider = self._config_provider
+        if provider is None:
+            return True
+        try:
+            config = provider()
+        except Exception:
+            return True
+        return bool(config.get("enabled", True)) if isinstance(config, dict) else True
 
     def init(self, agent: Any) -> None:
         self._system_prompt_builder = getattr(agent, "system_prompt_builder", None)
@@ -72,8 +84,24 @@ class FlashStateRail(DeepAgentRail):
             return
         self._system_prompt_builder = builder
 
+        if not self._enabled_by_config():
+            # 禁用：清掉残留 runtime.time 附件、保留原生静态 time 段（不再迁移）。
+            await self._clear_time_attachment(ctx)
+            return
+
         # 820 时间事实：撤下静态段，转 attachment。
         await self._move_time_to_attachment(ctx, builder)
+
+    async def _clear_time_attachment(self, ctx: AgentCallbackContext) -> None:
+        """禁用时清除之前迁到 attachment 的时间事实（reload 关闭后下一轮生效）。"""
+        manager = self._resolve_manager(ctx)
+        if manager is None:
+            return
+        try:
+            writer = manager.bind_context(ctx)
+            await writer.clear_section(_ATTACHMENT_SECTION)
+        except (ValueError, TypeError):
+            logger.debug("[FlashStateRail] clear time attachment skipped")
 
     def _resolve_manager(self, ctx: AgentCallbackContext) -> Any:
         """每轮优先取 ``ctx.agent`` 上的最新 manager（agent 热重建时不用 init 期旧引用）。"""

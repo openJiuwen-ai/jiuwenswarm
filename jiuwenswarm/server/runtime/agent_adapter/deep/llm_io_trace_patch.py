@@ -66,6 +66,9 @@ def _log_latency_pre_llm_once(request_id: str | None) -> None:
         "[latency] stage=3 name=pre_llm request_id=%s",
         (request_id or "").strip() or "-",
     )
+    from jiuwenswarm.perf.interface_hooks import mark_request_stage
+
+    mark_request_stage(request_id, "pre_llm")
 
 
 def _apply_llm_io_trace_patch() -> None:

@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -73,8 +74,17 @@ def _parsed_command(command: str = "echo hi") -> SimpleNamespace:
 
 @pytest.fixture
 def temp_dir():
-    dir_path = tempfile.mkdtemp()
-    yield dir_path
+    # Windows 用户名含撇号时，默认 %TEMP% 路径会把这个撇号带进测试路径；
+    # stock ``_parse_rm_targets`` 用 ``shlex.split`` 解析 rm 目标，
+    # 未闭合撇号会被当成引号而返回空列表，显式 rm 探测因此整体失效。此时改用
+    # 当前工作目录（不含撇号）作临时目录基址，保证测试路径可被 shlex 正常切分。
+    base = tempfile.gettempdir()
+    if any(quote in base for quote in ("'", '"')):
+        base = os.getcwd()
+    dir_path = tempfile.mkdtemp(dir=base)
+    # macOS 上 gettempdir() 返回 /var/folders/...（/var 是 /private/var 的符号链接），
+    # 被测代码内部 Path.resolve() 后以 resolved 路径为账本 key，这里同样归一，避免 KeyError。
+    yield str(Path(dir_path).resolve())
     shutil.rmtree(dir_path, ignore_errors=True)
 
 

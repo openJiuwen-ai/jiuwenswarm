@@ -180,3 +180,29 @@ async def test_fresh_turn_replaces_previous_token(monkeypatch) -> None:
         "fresh user turn must start a new todo generation so entries stamped "
         "with the previous token are filtered from broadcasts"
     )
+
+
+@pytest.mark.asyncio
+async def test_step_resume_turn_keeps_generation_token(monkeypatch) -> None:
+    """A step-resume turn is a continuation, not a fresh user turn.
+
+    The resumed run replays the todo list that was persisted with the last
+    completed step. Bumping the generation token here would stamp those
+    restored entries as stale and the broadcast layer would filter the list
+    out, so the frontend never redraws it.
+    """
+    _patch_session_factory(monkeypatch)
+    runtime_session = _FakeSession("sess-1")
+    runtime_session.update_state({"todo_generation_token": "gen-current"})
+    runtime_session.peek_agent_step_resume = lambda: SimpleNamespace(
+        iteration=3, query="你好，帮我查个产品"
+    )
+
+    ok = await prepare_stale_todo_cleanup_for_request(
+        _request(),
+        agent_card=SimpleNamespace(),
+        runtime_session=runtime_session,
+    )
+
+    assert ok is False
+    assert get_todo_generation_token(runtime_session) == "gen-current"

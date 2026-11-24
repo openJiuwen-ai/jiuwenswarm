@@ -163,3 +163,44 @@ async def test_before_model_call_non_dict_content_noop() -> None:
     await rail.before_model_call(SimpleNamespace(agent=agent))
     section = agent.system_prompt_builder.get_section("skill_protocol")
     assert section.content == "not-a-dict"
+
+
+# ── 3. todo 禁用时删掉「必须使用 todo」整条（评审 #2） ─────────────────────
+def test_strip_todo_rules_removes_mandatory_todo() -> None:
+    """flash 本地 _strip_todo_rules 去掉 todo 强制规则（评审 #2）。"""
+    from jiuwenswarm.agents.harness.common.rails.skill_protocol_prompt_rail import (
+        _build_skill_protocol_section_text,
+    )
+    from jiuwenswarm.agents.harness.flash.rails.flash_skill_protocol_rail import (
+        _strip_todo_rules,
+    )
+
+    cn = _strip_todo_rules(_build_skill_protocol_section_text("cn"), "cn")
+    en = _strip_todo_rules(_build_skill_protocol_section_text("en"), "en")
+    assert "必须使用 todo" not in cn
+    assert "todo_create" not in cn and "todo_modify" not in cn
+    assert "Use todo (mandatory)" not in en
+    assert "todo_create" not in en and "todo_modify" not in en
+    # 未剥离时保留规则 2。
+    assert "必须使用 todo" in _build_skill_protocol_section_text("cn")
+    assert "Use todo (mandatory)" in _build_skill_protocol_section_text("en")
+
+
+@pytest.mark.asyncio
+async def test_before_model_call_strips_todo_rules_when_disabled() -> None:
+    """disabled_tools_provider 报告 todo 被禁时，整段删掉 todo 规则而非只改工具名。"""
+    from jiuwenswarm.agents.harness.common.rails.skill_protocol_prompt_rail import (
+        _build_skill_protocol_section_text,
+    )
+
+    content = _build_skill_protocol_section_text("cn")  # 完整正文（含规则 2）
+    agent = _FakeAgent([_sec("skill_protocol", 45, {"cn": content})])
+    rail = FlashSkillProtocolRail(disabled_tools_provider=lambda: ["todo"])
+    rail.init(agent)
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+
+    section = agent.system_prompt_builder.get_section("skill_protocol")
+    assert "必须使用 todo" not in section.content["cn"]
+    assert "todo_create" not in section.content["cn"]
+    assert "todo_modify" not in section.content["cn"]
+    assert "3. **严格顺序**" in section.content["cn"]

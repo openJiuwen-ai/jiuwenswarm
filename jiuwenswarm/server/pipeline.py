@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+import time
 from typing import Any
 
 from openjiuwen.core.common.logging import server_logger
@@ -25,16 +26,88 @@ from jiuwenswarm.common.ws_diagnostics import (
 )
 from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
 from jiuwenswarm.extensions.hooks_context import AgentServerChatHookContext
+from jiuwenswarm.perf.collector import get_perf_collector
 from jiuwenswarm.server.context import RequestContext
 from jiuwenswarm.server.dispatch import dispatch_with_context
 from jiuwenswarm.server.handlers._default import _handle_stream, _handle_unary
 from jiuwenswarm.server.handlers._shared import _request_query_text
 from jiuwenswarm.server.handlers.chat import _ensure_auto_team_binding_for_chat
+from jiuwenswarm.server.request_summary_log import (
+    STATUS_CANCELLED,
+    STATUS_CLIENT_GONE,
+    STATUS_FAILED,
+    STATUS_OK,
+    build_summary_payload,
+    classify_error_class,
+    emit_request_summary,
+)
 from jiuwenswarm.server.runtime.swarm_skill_session import SwarmSkillSessionError
 from jiuwenswarm.server.runtime.team_binding_store import TeamSessionBindingError
 from jiuwenswarm.server.ws_send import send_wire_payload
 
 logger = logging.getLogger(__name__)
+
+
+def _emit_monitoring_summary(
+    request: AgentRequest,
+    *,
+    t0_monotonic: float,
+    t0_wall: float,
+    pipeline_status: str,
+    pipeline_error: BaseException | None,
+    error_class: str,
+) -> None:
+    """Request-end monitoring summary line (issue #6745).
+
+    Consumes the finalized perf summary retained by the collector (the adapter
+    finalize runs before this pipeline finally-block, and finalize pops the
+    accumulator — retention is what keeps it readable here). Chat-family
+    requests that follow a pending ask_user card additionally carry the
+    cross-request HITL wait (the resume may be CHAT_RESUME / CHAT_ANSWER or a
+    fresh CHAT_SEND, depending on the channel). Never raises; summary problems
+    must not affect the request outcome.
+    """
+    try:
+        collector = get_perf_collector()
+        perf = collector.pop_finalized_summary(request.request_id)
+        hitl_wait_total_ms: float | None = None
+        hitl_wait_count = 0
+        if request.req_method in (
+            ReqMethod.CHAT_SEND,
+            ReqMethod.CHAT_RESUME,
+            ReqMethod.CHAT_ANSWER,
+        ):
+            # The ask line itself must not consume its own registration
+            # (exclude_request_id keeps it for the follow-up request). The
+            # resume may arrive as CHAT_RESUME / CHAT_ANSWER, or — flash /
+            # officeclaw style — as a fresh CHAT_SEND in the same session;
+            # either way the wait is attributed to this second line.
+            ask = collector.pop_hitl_ask(
+                request.session_id or "",
+                exclude_request_id=request.request_id,
+            )
+            if ask is not None:
+                hitl_wait_total_ms = max(0.0, (t0_wall - ask[1]) * 1000.0)
+                hitl_wait_count = 1
+        payload = build_summary_payload(
+            request=request,
+            pipeline_status=pipeline_status,
+            pipeline_error=pipeline_error,
+            error_class=error_class,
+            t0_monotonic=t0_monotonic,
+            t_end_monotonic=time.monotonic(),
+            t0_wall=t0_wall,
+            perf=perf,
+            hitl_wait_total_ms=hitl_wait_total_ms,
+            hitl_wait_count=hitl_wait_count,
+        )
+        emit_request_summary(payload)
+    except Exception:
+        logger.debug(
+            "[request_summary] pipeline emit failed: request_id=%s",
+            request.request_id,
+            exc_info=True,
+        )
 
 
 def _should_trigger_before_chat_request_hook(request: AgentRequest) -> bool:
@@ -104,9 +177,19 @@ async def dispatch_parsed_request(
 
     HTTP 入口因此可以直接构造 ``AgentRequest`` 调本方法。
     """
+    # 监控汇总日志（#6745）计时基线：recv 即 t0，total_ms/DurationMs 与全部
+    # t_* 阶段偏移都以这里的 monotonic 为原点。
+    _t0_monotonic = time.monotonic()
+    _t0_wall = time.time()
+    _pipeline_status = STATUS_OK
+    _pipeline_error: BaseException | None = None
+    _error_class = "none"
+    _emit_summary = True
     log_bind = bind_log_session(getattr(request, "session_id", None))
     try:
         if await _consume_runtime_approval_reply(ctx, request):
+            # DLL 审批应答不是真实对话轮次（工具仍在进程内等待），不出汇总行。
+            _emit_summary = False
             return
         logger.info(
             "[AgentWebSocketServer] 收到请求: request_id=%s channel_id=%s is_stream=%s",
@@ -165,8 +248,10 @@ async def dispatch_parsed_request(
                 request.request_id,
                 request.session_id,
             )
+            _pipeline_status = STATUS_CANCELLED
             raise
         except WebSocketConnectionClosed as e:
+            _pipeline_status = STATUS_CLIENT_GONE
             logger.info(
                 "[AgentWebSocketServer] WebSocket 已关闭，放弃请求回包: %s",
                 format_ws_diagnostics(
@@ -181,6 +266,9 @@ async def dispatch_parsed_request(
                 ),
             )
         except (SwarmSkillSessionError, TeamSessionBindingError) as e:
+            _pipeline_status = STATUS_FAILED
+            _pipeline_error = e
+            _error_class = "policy"
             logger.info(
                 "[AgentWebSocketServer] session policy rejected: "
                 "request_id=%s session_id=%s code=%s",
@@ -221,6 +309,9 @@ async def dispatch_parsed_request(
                     send_err,
                 )
         except Exception as e:
+            _pipeline_status = STATUS_FAILED
+            _pipeline_error = e
+            _error_class = classify_error_class(e)
             logger.exception(
                 "[AgentWebSocketServer] 处理请求失败: request_id=%s: %s",
                 request.request_id,
@@ -260,4 +351,13 @@ async def dispatch_parsed_request(
         finally:
             reset_ext(_ext_token)
     finally:
+        if _emit_summary:
+            _emit_monitoring_summary(
+                request,
+                t0_monotonic=_t0_monotonic,
+                t0_wall=_t0_wall,
+                pipeline_status=_pipeline_status,
+                pipeline_error=_pipeline_error,
+                error_class=_error_class,
+            )
         unbind_log_session(*log_bind)

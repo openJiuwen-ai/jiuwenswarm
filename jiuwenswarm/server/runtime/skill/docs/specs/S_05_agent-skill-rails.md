@@ -144,10 +144,10 @@ swarm 子类只做四件事：
 
 ### 运行时目录提示与查询去重
 
-- `RuntimePromptRail` 每次模型调用通过当前宿主 DeepAgent 的公开 `find_rails_by_type((SkillUseRail,))` 读取实际加载根目录，兼容团队子类；目录采用 `SkillUseRail.normalize_skill_dirs` 的解析口径，按配置顺序去重。不得用工作区存储目录替代当前加载目录，也不保存旧 rail 的目录快照。
-- 提示区分“Agent 工作区技能存储目录”和“当前技能发现根目录”。没有加载目录信息时明确提示未提供，不推断技能不存在；安装/可用状态仍须由管理查询工具确认。
+- `RuntimePromptRail` 每次模型调用通过 Adapter 注入的 `skill_dirs_provider` 读取当前 `self._skill_rail.skills_dir`，不保存旧加载器的目录快照。沿用上游唯一的目录提供机制，不另行通过 `find_rails_by_type` 重复生成目录提示。
+- 提示区分“JiuwenSwarm 内部技能存储目录”和“当前会话技能加载目录”。提供者返回空列表时显示暂无可用目录，不用工作区存储路径替代；目录存在不能证明已安装或可用，应通过安装管理查询工具核实。OfficeAce 安装由宿主安装工具选择目标目录并注册。
 - Flash 工具选择规则的去重范围限定在本次用户请求内。新请求需要核实安装、卸载或当前可用状态时，相同工具和参数也必须重新查询；保留同一请求内无状态变化的重复调用约束。
-- 验证覆盖中英文目录提示与去重规则、团队子类、加载 rail 替换/移除，以及共享根目录与工作区残留目录分离。故障与验证记录见 [B_03_skill-install-state-and-runtime-paths.md](../bugfix/B_03_skill-install-state-and-runtime-paths.md)。
+- 验证覆盖真实 Adapter 构建、中英文目录提示与去重规则、加载器替换/禁用、多种技能来源，以及共享根目录与工作区残留目录分离；目录提示只输出一套加载目录。故障与验证记录见 [B_03_skill-install-state-and-runtime-paths.md](../bugfix/B_03_skill-install-state-and-runtime-paths.md)。
 
 ## SkillRetrievalPromptRail — Agentic 树检索提示
 

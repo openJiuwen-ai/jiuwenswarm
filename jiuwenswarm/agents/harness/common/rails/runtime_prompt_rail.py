@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from collections.abc import Callable
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -26,7 +27,6 @@ from openjiuwen.harness.prompts.prompt_attachment_manager import (
 )
 
 from openjiuwen.harness.rails.base import DeepAgentRail
-from openjiuwen.harness.rails.skills.skill_use_rail import SkillUseRail
 from jiuwenswarm.agents.harness.common.prompt.shell_environment import build_shell_environment_prompt
 from jiuwenswarm.common.utils import (
     get_agent_memory_dir,
@@ -82,6 +82,7 @@ class RuntimePromptRail(DeepAgentRail):
         timezone_offset: int = 8,
         agent_id: str | None = None,
         service_id: str | None = None,
+        skill_dirs_provider: Callable[[], str | list[str]] | None = None,
     ) -> None:
         super().__init__()
         self._agent = None
@@ -106,6 +107,7 @@ class RuntimePromptRail(DeepAgentRail):
         self._request_system_prompt: str = ""
         self._agent_id = agent_id
         self._service_id = service_id
+        self._skill_dirs_provider = skill_dirs_provider
 
     def init(self, agent) -> None:
         """从 agent 获取 system_prompt_builder 引用。"""
@@ -248,12 +250,17 @@ class RuntimePromptRail(DeepAgentRail):
         config_dir: str,
         *,
         language: str,
-        registered_skill_dirs: list[str],
     ) -> str:
-        """展示内部存储路径和由当前 SkillUseRail 提供的实际技能发现根目录。
+        """Absolute agent-internal paths for the runtime directory context.
 
-        工作区存储路径保留 PathProvider 语义；技能发现目录独立传入，
-        避免把工作区中的旧技能文件误认为当前已安装、可用的技能。
+        Identity prompt only describes logical layout; this block is the sole
+        source of absolute paths for agent data (skills/memory/todo).
+
+        When ``agent_workspace_dir`` matches the bound
+        :func:`get_agent_workspace_dir`, resolve skills/memory/todo via the
+        PathProvider-aware getters so custom deployments stay consistent with
+        tools. An explicit alternate workspace root keeps the standard layout
+        contract (``<workspace>/{skills,memory,todo}``).
         """
         root = Path(agent_workspace_dir)
         bound_ws = os.path.abspath(str(get_agent_workspace_dir()))
@@ -269,35 +276,23 @@ class RuntimePromptRail(DeepAgentRail):
             skills = str(root / "skills")
             memory = str(root / "memory")
             todo = str(root / "todo")
-        cn_skill_dirs = (
-            "\n".join(f"  - {path}" for path in registered_skill_dirs)
-            or "  - 未提供可用目录信息"
-        )
-        en_skill_dirs = (
-            "\n".join(f"  - {path}" for path in registered_skill_dirs)
-            or "  - No loading-directory information provided"
-        )
         if language == "cn":
             return (
                 f"- Agent 内部数据目录：{agent_workspace_dir}\n"
-                f"- Agent 工作区技能存储目录：{skills}\n"
-                f"- 当前技能发现根目录（按配置顺序）：\n{cn_skill_dirs}\n\n"
-                "技能发现根目录来自当前加载配置；工作区中的技能文件不一定属于当前可用技能。"
-                "目录存在不能证明目标技能已安装或可用，应通过安装管理查询工具核实。\n"
+                f"- JiuwenSwarm 内部技能存储目录：{skills}\n"
                 f"- Agent 记忆目录：{memory}\n"
                 f"- Agent 待办目录：{todo}\n"
                 f"- JiuwenSwarm 启动配置目录：{config_dir}\n"
+                "目录存在不能证明目标技能已安装或可用，应通过安装管理查询工具核实。\n"
             )
         return (
             f"- Agent internal data directory: {agent_workspace_dir}\n"
-            f"- Agent workspace skill-storage directory: {skills}\n"
-            f"- Current skill-discovery roots (in configured order):\n{en_skill_dirs}\n\n"
-            "Discovery roots follow the current loading configuration. Workspace skill files "
-            "are not necessarily available skills. Directory existence does not establish "
-            "installation or availability; verify through the installation-management query tool.\n"
+            f"- JiuwenSwarm internal skill storage directory: {skills}\n"
             f"- Agent memory directory: {memory}\n"
             f"- Agent todo directory: {todo}\n"
             f"- JiuwenSwarm startup configuration directory: {config_dir}\n"
+            "Directory existence does not establish installation or availability; "
+            "verify through the installation-management query tool.\n"
         )
 
     @staticmethod
@@ -772,23 +767,32 @@ class RuntimePromptRail(DeepAgentRail):
                 other_dirs.append(path)
             cn_dirs_display = ", ".join(other_dirs) if other_dirs else "无"
             en_dirs_display = ", ".join(other_dirs) if other_dirs else "none"
-            agent = self._agent or ctx.agent
-            find_rails = getattr(agent, "find_rails_by_type", None)
-            registered_skill_dirs = []
-            if callable(find_rails):
-                for skill_rail in find_rails((SkillUseRail,)):
-                    for root in SkillUseRail.normalize_skill_dirs(skill_rail.skills_dir):
-                        path = str(root)
-                        if path not in registered_skill_dirs:
-                            registered_skill_dirs.append(path)
             cn_agent_paths = self._format_agent_data_paths(
-                agent_workspace_dir, config_dir, language="cn",
-                registered_skill_dirs=registered_skill_dirs,
+                agent_workspace_dir, config_dir, language="cn"
             )
             en_agent_paths = self._format_agent_data_paths(
-                agent_workspace_dir, config_dir, language="en",
-                registered_skill_dirs=registered_skill_dirs,
+                agent_workspace_dir, config_dir, language="en"
             )
+            if self._skill_dirs_provider is not None:
+                skill_dirs = self._skill_dirs_provider()
+                if isinstance(skill_dirs, str):
+                    skill_dirs = [skill_dirs]
+                if skill_dirs:
+                    loading_paths = "\n".join(f"  - {path}" for path in skill_dirs)
+                    cn_agent_paths += f"\n- 当前会话技能加载目录：\n{loading_paths}\n"
+                    en_agent_paths += f"\n- Current session skill loading directories:\n{loading_paths}\n"
+                else:
+                    cn_agent_paths += "\n- 当前会话技能加载目录：暂无可用目录\n"
+                    en_agent_paths += "\n- Current session skill loading directories: none available\n"
+            if self._channel == "officeclaw":
+                cn_agent_paths += (
+                    "\nOfficeAce 技能安装通过宿主提供的安装工具完成，"
+                    "由安装工具选择目标目录并完成注册。\n"
+                )
+                en_agent_paths += (
+                    "\nInstall OfficeAce skills through the host-provided installation tool. "
+                    "The installation tool selects the destination and registers the skill.\n"
+                )
             logger.info(
                 "[RuntimePromptRail] directory context: channel=%s project_dir=%s "
                 "cwd=%s agent_workspace=%s has_project=%s",

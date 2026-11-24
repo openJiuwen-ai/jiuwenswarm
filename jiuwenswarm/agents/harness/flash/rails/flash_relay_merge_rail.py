@@ -55,10 +55,22 @@ class FlashRelayMergeRail(DeepAgentRail):
     priority = 3
     inherit_to_subagents = False
 
-    def __init__(self) -> None:
+    def __init__(self, config_provider: Any = None) -> None:
         super().__init__()
+        self._config_provider = config_provider
         self._system_prompt_builder: Any = None
         self._warned_guard_miss = False
+
+    def _enabled_by_config(self) -> bool:
+        """每轮现读 flash.relay_merge.enabled（热重载同步）。provider 缺省时默认启用。"""
+        provider = self._config_provider
+        if provider is None:
+            return True
+        try:
+            config = provider()
+        except Exception:
+            return True
+        return bool(config.get("enabled", True)) if isinstance(config, dict) else True
 
     def init(self, agent: Any) -> None:
         self._system_prompt_builder = getattr(agent, "system_prompt_builder", None)
@@ -74,6 +86,9 @@ class FlashRelayMergeRail(DeepAgentRail):
         if builder is None:
             return
         self._system_prompt_builder = builder
+        if not self._enabled_by_config():
+            # 禁用：不再把 request_system_prompt 从 110 挪到 999，保留原生 110 段。
+            return
         self._maybe_strip_duplicates(builder)
 
     def _maybe_strip_duplicates(self, builder: Any) -> None:
