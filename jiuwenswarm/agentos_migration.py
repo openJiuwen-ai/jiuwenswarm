@@ -140,9 +140,12 @@ def apply_deploy_owned(
 def is_agentos_gateway_config(path: Path) -> bool:
     try:
         data = load_yaml(path)
-    except (OSError, ValueError):
+    except (OSError, ValueError, TypeError):
         return False
-    client = data.get("gateway", {}).get("agent_client", {})
+    gateway = data.get("gateway")
+    if not isinstance(gateway, Mapping):
+        return False
+    client = gateway.get("agent_client")
     return isinstance(client, Mapping) and client.get("type") == "agentos_router"
 
 
@@ -174,6 +177,11 @@ def migrate(
 
     target_dir = Path(gateway_dir) if gateway_dir else get_gateway_config_dir(workspace)
     target_path = target_dir / "config.yaml"
+    if target_path.resolve() == legacy_path.resolve():
+        raise ValueError(
+            "gateway config dir points at the legacy shared config: "
+            f"{target_path}; refusing to rewrite the AgentServer config in place"
+        )
     if target_path.is_file() and is_agentos_gateway_config(target_path) and not force:
         return {
             "status": "skipped",
@@ -212,6 +220,56 @@ def migrate(
     }
 
 
+def refresh_deploy_owned(
+    *,
+    workspace: Path,
+    rendered_template: Path,
+    gateway_dir: Path | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Refresh deploy-owned fields in an existing AgentOS Gateway config.
+
+    User-owned fields stay untouched; only ``DEPLOY_OWNED_PATHS`` are replaced
+    with the freshly rendered values. This is the deploy-time path for an
+    already migrated Gateway config after ``.env.custom`` changed.
+    """
+    workspace = Path(workspace)
+    target_dir = Path(gateway_dir) if gateway_dir else get_gateway_config_dir(workspace)
+    target_path = target_dir / "config.yaml"
+    if not target_path.is_file():
+        return {
+            "status": "skipped",
+            "reason": "gateway config not found",
+            "target": str(target_path),
+        }
+    if not is_agentos_gateway_config(target_path):
+        return {
+            "status": "skipped",
+            "reason": "gateway config is not agentos_router",
+            "target": str(target_path),
+        }
+
+    rendered = load_yaml(rendered_template)
+    current = load_yaml(target_path)
+    updated = apply_deploy_owned(current, rendered)
+
+    if dry_run:
+        return {
+            "status": "dry-run",
+            "target": str(target_path),
+            "deploy_owned": list(DEPLOY_OWNED_PATHS),
+        }
+
+    backup = _backup(target_path)
+    dump_yaml_atomic(target_path, updated)
+    return {
+        "status": "refreshed",
+        "target": str(target_path),
+        "target_backup": str(backup) if backup else None,
+        "deploy_owned": list(DEPLOY_OWNED_PATHS),
+    }
+
+
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Migrate AgentOS legacy shared config to Gateway config",
@@ -239,6 +297,11 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="overwrite an existing agentos_router config",
     )
+    parser.add_argument(
+        "--refresh-deploy-owned",
+        action="store_true",
+        help="refresh deploy-owned fields in an existing agentos_router config",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args(argv)
 
@@ -254,13 +317,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     workspace = args.workspace or get_user_workspace_dir()
     try:
-        report = migrate(
-            workspace=workspace,
-            rendered_template=args.template,
-            gateway_dir=args.gateway_dir,
-            force=args.force,
-            dry_run=args.dry_run,
-        )
+        if args.refresh_deploy_owned:
+            report = refresh_deploy_owned(
+                workspace=workspace,
+                rendered_template=args.template,
+                gateway_dir=args.gateway_dir,
+                dry_run=args.dry_run,
+            )
+        else:
+            report = migrate(
+                workspace=workspace,
+                rendered_template=args.template,
+                gateway_dir=args.gateway_dir,
+                force=args.force,
+                dry_run=args.dry_run,
+            )
     except Exception as exc:  # noqa: BLE001 - CLI should surface a stable message
         logger.error("%s", exc)
         return 2

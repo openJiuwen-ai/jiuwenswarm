@@ -2,12 +2,15 @@
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from jiuwenswarm.agentos_migration import (
     apply_deploy_owned,
+    is_agentos_gateway_config,
     migrate,
     project_user_config,
+    refresh_deploy_owned,
 )
 
 
@@ -220,3 +223,73 @@ def test_migrate_dry_run_writes_nothing(tmp_path: Path) -> None:
 
     assert report["status"] == "dry-run"
     assert not (gateway_dir / "config.yaml").exists()
+
+
+def test_is_agentos_gateway_config_tolerates_invalid_shapes(tmp_path: Path) -> None:
+    target = tmp_path / "config.yaml"
+    target.write_text("[]\n", encoding="utf-8")
+    assert is_agentos_gateway_config(target) is False
+
+    _write(target, {"gateway": None})
+    assert is_agentos_gateway_config(target) is False
+
+    _write(target, {"gateway": "not-a-mapping"})
+    assert is_agentos_gateway_config(target) is False
+
+    _write(target, {"gateway": {"agent_client": None}})
+    assert is_agentos_gateway_config(target) is False
+
+
+def test_migrate_fails_fast_when_gateway_dir_is_shared_config(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    legacy = _write(workspace / "config" / "config.yaml", _legacy_config())
+    rendered = _write(tmp_path / "rendered.yaml", _rendered_template())
+
+    with pytest.raises(ValueError, match="legacy shared config"):
+        migrate(
+            workspace=workspace,
+            rendered_template=rendered,
+            gateway_dir=workspace / "config",
+        )
+
+    assert _read(legacy) == _legacy_config()
+    assert not list((workspace / "config").glob("config.yaml.bak.*"))
+
+
+def test_migrate_skips_when_legacy_missing(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    rendered = _write(tmp_path / "rendered.yaml", _rendered_template())
+    target = workspace / "infra" / "config" / "config.yaml"
+
+    report = migrate(
+        workspace=workspace,
+        rendered_template=rendered,
+        gateway_dir=workspace / "infra" / "config",
+    )
+
+    assert report["status"] == "skipped"
+    assert report["reason"] == "legacy config not found"
+    assert not target.exists()
+
+
+def test_refresh_deploy_owned_updates_only_deploy_fields(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    target = _write(workspace / "infra" / "config" / "config.yaml", _legacy_config())
+    rendered = _write(tmp_path / "rendered.yaml", _rendered_template())
+
+    report = refresh_deploy_owned(
+        workspace=workspace,
+        rendered_template=rendered,
+        gateway_dir=workspace / "infra" / "config",
+    )
+
+    assert report["status"] == "refreshed"
+    updated = _read(target)
+    assert updated["gateway"]["agent_client"]["frontend_endpoint"] == "http://new-vip:8888"
+    assert updated["gateway"]["agentos"]["registry"]["endpoint"] == "http://new-vip:4003"
+    assert updated["gateway"]["cron"]["etcd_endpoints"] == ""
+    assert updated["channels"]["feishu"]["apps"][0]["app_id"] == "cli_old"
+    assert updated["hooks"]["disable_all_hooks"] is True
+    assert list((workspace / "infra" / "config").glob("config.yaml.bak.*"))

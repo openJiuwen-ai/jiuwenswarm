@@ -424,26 +424,48 @@ gateway_wait_port() {
 
 gateway_migrate_legacy_config() {
     local host="$1"
-    local workspace config_dir legacy
+    local workspace config_dir legacy target
     workspace=$(gateway_workspace_dir)
     config_dir=$(gateway_get_config_dir)
     legacy="${workspace}/config/config.yaml"
+    target="${config_dir}/config.yaml"
 
-    if ! exec_on_host "${host}" "test -f '${legacy}'" 2>/dev/null; then
+    local has_legacy=0 has_target=0
+    if exec_on_host "${host}" "test -f '${legacy}'" 2>/dev/null; then
+        has_legacy=1
+    fi
+    if exec_on_host "${host}" "test -f '${target}'" 2>/dev/null; then
+        has_target=1
+    fi
+    if [ "${has_legacy}" = "0" ] && [ "${has_target}" = "0" ]; then
         return 0
     fi
 
-    info "Legacy shared config detected on ${host}: ${legacy}"
     local remote_template="/tmp/agentos-gateway-template.$$.yaml"
     copy_to_host "${host}" "${GATEWAY_CONFIG_FILE}" "${remote_template}"
     local py="python${DEPLOY_VARS["YR_PYTHON_VERSION"]:-3.11}"
-    if ! exec_on_host "${host}" \
-        "JIUWENSWARM_RUNTIME_PROFILE=agentos ${py} -m jiuwenswarm.agentos_migration --workspace '${workspace}' --template '${remote_template}' --gateway-dir '${config_dir}'"; then
-        exec_on_host "${host}" "rm -f '${remote_template}'" || true
-        error "Failed to migrate legacy AgentOS config on ${host}"
+    local common_args="--workspace '${workspace}' --template '${remote_template}' --gateway-dir '${config_dir}'"
+
+    if [ "${has_legacy}" = "1" ]; then
+        info "Legacy shared config detected on ${host}: ${legacy}"
+        if ! exec_on_host "${host}" \
+            "JIUWENSWARM_RUNTIME_PROFILE=agentos ${py} -m jiuwenswarm.agentos_migration ${common_args}"; then
+            exec_on_host "${host}" "rm -f '${remote_template}'" || true
+            error "Failed to migrate legacy AgentOS config on ${host}"
+        fi
+        success "Legacy AgentOS config migrated on ${host}"
+    fi
+
+    if [ "${has_legacy}" = "1" ] || [ "${has_target}" = "1" ]; then
+        info "Refreshing deploy-owned Gateway config fields on ${host}: ${target}"
+        if ! exec_on_host "${host}" \
+            "JIUWENSWARM_RUNTIME_PROFILE=agentos ${py} -m jiuwenswarm.agentos_migration ${common_args} --refresh-deploy-owned"; then
+            exec_on_host "${host}" "rm -f '${remote_template}'" || true
+            error "Failed to refresh deployed Gateway config fields on ${host}"
+        fi
+        success "Gateway deploy-owned fields refreshed on ${host}"
     fi
     exec_on_host "${host}" "rm -f '${remote_template}'" || true
-    success "Legacy AgentOS config migrated on ${host}"
 }
 
 gateway_deploy_process() {
@@ -503,7 +525,8 @@ gateway_deploy_process() {
         as_config_exists=1
     fi
 
-    # 升级：旧共享配置 -> Gateway 独立配置。迁移在 init 之前执行，
+    # 升级：旧共享配置 -> Gateway 独立配置；已存在的 Gateway 配置只刷新
+    # deploy-owned 字段，保留用户配置。迁移/刷新在 init 之前执行，
     # 因为 init 会补齐/保留 AS 配置，但不会生成 AgentOS Gateway 配置。
     gateway_migrate_legacy_config "${master_host}"
 
