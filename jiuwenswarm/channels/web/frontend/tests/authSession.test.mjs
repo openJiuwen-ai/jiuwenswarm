@@ -167,17 +167,17 @@ test('the retried request is sent only once even when it also returns 401', asyn
   assert.deepEqual(redirects, []);
 });
 
-test('login redirect keeps the portal prefix and honors an explicit entry URL', () => {
+test('login redirect uses the user origin root and honors an explicit entry URL', () => {
   reset();
   setManagerTokens('access', 'refresh');
   window.location.pathname = '/portal/chat/session-1';
   assert.equal(redirectToManagerLogin(), true);
-  assert.deepEqual(redirects, ['/portal/auth']);
+  assert.deepEqual(redirects, ['/auth']);
 
   setManagerTokens('access', 'refresh');
   window.__JIUWEN_LOGIN_ENTRY_URL__ = 'https://portal.example.test/sign-in';
   assert.equal(redirectToManagerLogin(), true);
-  assert.deepEqual(redirects, ['/portal/auth', 'https://portal.example.test/sign-in']);
+  assert.deepEqual(redirects, ['/auth', 'https://portal.example.test/sign-in']);
 });
 
 test('clearing tokens removes both local values and expires the access cookie', () => {
@@ -212,12 +212,12 @@ test('requests synchronize externally written tokens to the cookie and include c
 });
 
 for (const prefix of ['', '/portal/']) {
-  test(`refresh uses the API prefix ${JSON.stringify(prefix)} and includes credentials on every attempt`, async () => {
+  test(`refresh ignores legacy prefix ${JSON.stringify(prefix)} and includes credentials on every attempt`, async () => {
     reset();
     const session = await loadAuthSession(prefix);
     session.setManagerTokens('old-access', 'refresh');
     const calls = [];
-    const refreshPath = `${prefix.replace(/\/+$/, '')}/idp/v1/auth/refresh?surface=user`;
+    const refreshPath = '/idp/v1/auth/refresh?surface=user';
     globalThis.fetch = async (input, init) => {
       calls.push({ path: String(input), credentials: init.credentials });
       if (String(input) === refreshPath) {

@@ -1002,11 +1002,15 @@ def test_electron_macos_close_hides_window_and_dock_reopens_it() -> None:
 
 
 def test_electron_module_map_matches_python_entry_points() -> None:
-    """开发模式 serviceCommand 的 -m 模块映射须与 pyproject 入口点一致。
+    """开发模式 serviceCommand 的 -m 模块映射须与 Python 入口一致。
 
     M0-c 盲区回归：main.cjs 曾长期残留 gateway.app_gateway
     （Python 侧与打包模式都已改 gateway.app_gateway），契约测试不覆盖
     该映射导致 CI 抓不到开发模式启动断链。
+
+    gateway 例外：桌面开发模式有意经 `jiuwenswarm.channels.desktop.gateway_entry`
+    包装 Gateway，在导入 `agent_gateway.app_gateway` 前完成本地配置准备
+    （见 B_20261119_1416）；pyproject 的 `jiuwenswarm-gateway` CLI 入口保持不变。
     """
     import re as _re
 
@@ -1023,7 +1027,8 @@ def test_electron_module_map_matches_python_entry_points() -> None:
     # 对应的 agent / gateway 两项。
     expected = {
         "agent": entry_points["jiuwenswarm-agentserver"].split(":")[0],
-        "gateway": entry_points["jiuwenswarm-gateway"].split(":")[0],
+        # 桌面开发模式走 desktop wrapper（内部仍调用 pyproject 的 Gateway 入口）。
+        "gateway": "jiuwenswarm.channels.desktop.gateway_entry",
     }
     for service, module in expected.items():
         assert electron_map[service] == module, (

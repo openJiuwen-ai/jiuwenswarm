@@ -32,6 +32,26 @@ BUILTIN_TOOL_DISCOVERY: dict[str, ToolDiscoveryMetadata] = {
     "coding_memory_read": _entry("Read persistent project coding memory.", "读取 查看 编码记忆 项目记忆"),
     "coding_memory_write": _entry("Write facts, decisions, and lessons to project coding memory.", "写入 记录 编码记忆 项目记忆"),
     "read_pdf": _entry("Read PDF text by page or in chunks.", "读取 查看 PDF 文档 分页"),
+    "read_docx": _entry(
+        "Read structured text, headings, and tables from Word (.docx) documents.",
+        "读取 查看 Word docx 文档 表格",
+    ),
+    "read_spreadsheet": _entry(
+        "Read tabular data from Excel (.xlsx) and CSV (.csv) files as Markdown tables.",
+        "读取 查看 表格 Excel xlsx csv 数据 工作表",
+    ),
+    "read_pptx": _entry(
+        "Read PowerPoint (.pptx) presentation slides, tables, and notes.",
+        "读取 ppt pptx 幻灯片 演示文稿 幻灯片表格 演讲备注",
+    ),
+    "inspect_archive": _entry(
+        "Preview file tree and uncompressed size of an archive (.zip, .tar, .tgz).",
+        "预览 查看 压缩包 zip tar tgz 目录 文件树",
+    ),
+    "extract_archive": _entry(
+        "Safely extract an archive (.zip, .tar, .tgz) to a target folder.",
+        "解压 提取 压缩包 zip tar tgz 释放",
+    ),
     "acp_chat": _entry("Exchange messages with an external ACP-compatible coding agent.", "外部智能体 ACP 对话 Codex Gemini"),
     "list_files": _entry("List files and directories in a local path.", "列出 查看 文件 目录 文件夹"),
     "get_current_goal": _entry("Inspect the current persistent goal and its status.", "查看 查询 当前目标 持续目标 状态"),
@@ -134,6 +154,23 @@ BUILTIN_TOOL_DISCOVERY: dict[str, ToolDiscoveryMetadata] = {
     "add_collection": _entry("Save public knowledge to the user's personal collection.", "添加 保存 收藏 知识"),
     "xiaoyi_gui_agent": _entry("Operate phone apps through screen interaction.", "操作 手机应用 点击 屏幕 GUI"),
 }
+
+
+def _merge_discovered_metadata() -> None:
+    # pylint: disable-next=import-outside-toplevel
+    from jiuwenswarm.agents.harness.common.tools.builtin_tool_registry import (
+        discover_builtin_tool_specs,
+    )
+
+    for spec in discover_builtin_tool_specs():
+        if spec.name not in BUILTIN_TOOL_DISCOVERY and spec.display_en:
+            BUILTIN_TOOL_DISCOVERY[spec.name] = ToolDiscoveryMetadata(
+                spec.display_en,
+                spec.aliases_zh,
+            )
+
+
+_merge_discovered_metadata()
 
 
 def discovery_metadata(name: str) -> ToolDiscoveryMetadata | None:

@@ -30,6 +30,44 @@ def test_group_archive_root_allows_nested_expert_manifests(tmp_path):
     assert _find_package_root(tmp_path, "agent_group") == root
 
 
+def test_plugin_archive_root_allows_nested_skill_manifests(tmp_path):
+    """包内子资产的 manifest.json 不是包根，不能被算成「多个 manifest」（#6602）。"""
+    root = tmp_path / "my-plugin"
+    skill = root / "skills" / "helper"
+    skill.mkdir(parents=True)
+    (root / "manifest.json").write_text('{"package_type":"plugin"}')
+    (skill / "manifest.json").write_text('{"package_type":"skill"}')
+    assert _find_package_root(tmp_path, "plugin") == root
+
+
+def test_plugin_archive_single_child_allows_nested_manifests(tmp_path):
+    root = tmp_path / "my-plugin"
+    nested = root / "skills" / "helper"
+    nested.mkdir(parents=True)
+    (root / "manifest.json").write_text('{"package_type":"plugin"}')
+    (nested / "manifest.json").write_text('{"package_type":"skill"}')
+    assert _find_package_root(tmp_path, "plugin") == root
+
+
+def test_archive_rejects_sibling_package_roots(tmp_path):
+    """同级出现多个包根仍视为非法，避免误把其中一个当成整包。"""
+    for name in ("first", "second"):
+        pkg = tmp_path / name
+        pkg.mkdir()
+        (pkg / "manifest.json").write_text('{"package_type":"plugin"}')
+    with pytest.raises(ValueError, match="exactly one manifest.json"):
+        _find_package_root(tmp_path, "plugin")
+
+
+def test_group_archive_root_wins_over_nested_group_manifests(tmp_path):
+    root = tmp_path / "group"
+    member = root / "agents" / "sub-group"
+    member.mkdir(parents=True)
+    (root / "manifest.json").write_text('{"package_type":"agent_group"}')
+    (member / "manifest.json").write_text('{"package_type":"agent_group"}')
+    assert _find_package_root(tmp_path, "agent_group") == root
+
+
 class _HubPort:
     async def query_asset(self, request) -> HubAssetDetail:
         return HubAssetDetail(

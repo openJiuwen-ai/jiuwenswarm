@@ -3,6 +3,7 @@ export type ChatRoute =
   | { kind: 'group-chat'; groupId?: string }
   | { kind: 'chat-session'; sessionId: string }
   | { kind: 'design-project'; projectId: string; sessionId?: string }
+  | { kind: 'system-plugin-recovery' }
   | { kind: 'not-found'; pathname: string };
 
 function basePath(): string {
@@ -23,6 +24,7 @@ export function parseChatRoute(pathname: string): ChatRoute | null {
   if (path === '/groups') return { kind: 'group-chat' };
   const groupMatch = path.match(/^\/groups\/([^/]+)$/);
   if (groupMatch) return { kind: 'group-chat', groupId: decodeURIComponent(groupMatch[1]) };
+  if (path === '/system-plugin-recovery') return { kind: 'system-plugin-recovery' };
   const designSessionMatch = path.match(/^\/design\/([^/]+)\/([^/]+)$/);
   if (designSessionMatch) {
     return {
@@ -45,6 +47,7 @@ export function chatRoutePath(route: ChatRoute): string {
   if (route.kind === 'chat-new') return withBasePath('/chat/new');
   if (route.kind === 'chat-session') return withBasePath(`/chat/${encodeURIComponent(route.sessionId)}`);
   if (route.kind === 'group-chat') return withBasePath(route.groupId ? `/groups/${encodeURIComponent(route.groupId)}` : '/groups');
+  if (route.kind === 'system-plugin-recovery') return withBasePath('/system-plugin-recovery');
   if (route.kind === 'design-project') {
     const projectPath = `/design/${encodeURIComponent(route.projectId)}`;
     return route.sessionId

@@ -1000,7 +1000,7 @@ class ExecutionRepository(SQLiteStore):
             raise ValueError("limit must be a positive integer")
         if not channels:
             return []
-        if not channels <= {"feishu", "dingtalk", "welink"}:
+        if not channels <= {"feishu", "dingtalk", "welink", "swarmchat"}:
             raise ValueError("unsupported IM delivery channel")
         channel_placeholders = ", ".join("?" for _ in channels)
         exclude_clause = ""
@@ -1025,7 +1025,9 @@ class ExecutionRepository(SQLiteStore):
             for row in rows:
                 record = RequestRecord.from_dict(json.loads(row["record_json"]))
                 route = record.route_snapshot
-                if route is None or route.channel != row["channel"] or route.app_id is None:
+                route_missing = route is None or route.channel != row["channel"]
+                app_missing = route is not None and route.channel != "swarmchat" and route.app_id is None
+                if route_missing or app_missing:
                     conn.execute(
                         "UPDATE result_deliveries SET status = 'failed', error_code = 'ROUTE_MISSING', "
                         "updated_at = ? WHERE namespace_id = ? AND delivery_id = ? AND status = 'pending'",
@@ -1303,19 +1305,27 @@ class ExecutionRepository(SQLiteStore):
     def recover_sending_result_deliveries(
         self, namespace_id: str, *, now: datetime, channels: frozenset[str] = frozenset({"feishu"}),
     ) -> int:
-        """Fence only this runtime's interrupted sends; never blindly resend unknown outcomes."""
+        """Recover interrupted local sends and fence interrupted IM sends."""
         if not channels:
             return 0
-        if not channels <= {"feishu", "dingtalk", "welink"}:
+        if not channels <= {"feishu", "dingtalk", "welink", "swarmchat"}:
             raise ValueError("unsupported IM delivery channel")
         placeholders = ", ".join("?" for _ in channels)
         with self._transaction() as conn:
+            local_retries = 0
+            if "swarmchat" in channels:
+                # Core deduplicates retries of the same public message identity.
+                local_retries = conn.execute(
+                    "UPDATE result_deliveries SET status='pending', error_code=NULL, updated_at=? "
+                    "WHERE namespace_id=? AND channel='swarmchat' AND status='sending'",
+                    (now.isoformat(), namespace_id),
+                ).rowcount
             cursor = conn.execute(
                 "UPDATE result_deliveries SET status = 'unknown', error_code = 'ACK_UNKNOWN', updated_at = ? "
                 f"WHERE namespace_id = ? AND channel IN ({placeholders}) AND status = 'sending'",
                 (now.isoformat(), namespace_id, *sorted(channels)),
             )
-            return cursor.rowcount
+            return local_retries + cursor.rowcount
 
     def pending_requests(self, namespace_id: str) -> list[RequestState]:
         """Queued and dispatched Requests, grouped by Session in arrival order, for restart recovery."""

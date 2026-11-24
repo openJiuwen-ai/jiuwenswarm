@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="1020" viewBox="0 0 1440 1020" role="img" aria-labelledby="diagram-title diagram-desc">
+  <title id="diagram-title">openjiuwen 扩展性架构</title>
+  <desc id="diagram-desc">Client、Gateway 和 Agent 三层架构，以及每层的缺省能力和扩展能力。</desc>
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto">
+      <path d="M0,0 L10,4 L0,8 Z" fill="#64748b"/>
+    </marker>
+  </defs>
+
+  <!-- 画布 -->
+  <rect width="1440" height="1020" fill="#e5e7eb"/>
+  <text x="40" y="34" fill="#0f172a" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="22" font-weight="700">openjiuwen 扩展性架构</text>
+  <text x="1080" y="34" fill="#475569" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12">图例</text>
+  <rect x="1118" y="20" width="14" height="14" rx="3" fill="#dbeafe" stroke="#3b82f6"/>
+  <text x="1140" y="32" fill="#334155" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12">缺省能力</text>
+  <rect x="1235" y="20" width="14" height="14" rx="3" fill="#fce7f3" stroke="#ec4899"/>
+  <text x="1257" y="32" fill="#334155" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12">扩展能力</text>
+
+  <!-- 数据流箭头：先绘制，保证位于层级框之后方 -->
+  <path d="M720 220 V258" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrowhead)"/>
+  <path d="M720 445 V498" fill="none" stroke="#64748b" stroke-width="2" marker-end="url(#arrowhead)"/>
+
+  <!-- Client 层：与其它层使用相同的外框宽度 -->
+  <g id="client-layer">
+    <rect x="40" y="60" width="1360" height="160" rx="12" fill="#ffffff" stroke="#475569" stroke-width="2"/>
+    <text x="70" y="94" fill="#0f172a" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="18" font-weight="700">Client 层</text>
+
+    <rect x="80" y="115" width="620" height="75" rx="8" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.5"/>
+    <text x="390" y="145" text-anchor="middle" fill="#1e3a8a" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="15" font-weight="700">
+      <tspan x="390" dy="0">缺省 Client</tspan>
+      <tspan x="390" dy="22" font-size="12" font-weight="400">皮肤、功能页、smd</tspan>
+    </text>
+
+    <rect x="740" y="115" width="620" height="75" rx="8" fill="#fce7f3" stroke="#ec4899" stroke-width="1.5"/>
+    <text x="1050" y="145" text-anchor="middle" fill="#831843" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="15" font-weight="700">
+      <tspan x="1050" dy="0">扩展：ClientU 插件</tspan>
+      <tspan x="1050" dy="22" font-size="12" font-weight="400">桌宠、数据可视化等</tspan>
+    </text>
+  </g>
+
+  <!-- Gateway 层：与其它层使用相同的外框宽度 -->
+  <g id="gateway-layer">
+    <rect x="40" y="270" width="1360" height="175" rx="12" fill="#ffffff" stroke="#475569" stroke-width="2"/>
+    <text x="70" y="304" fill="#0f172a" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="18" font-weight="700">Gateway 层</text>
+
+    <rect x="80" y="325" width="620" height="90" rx="8" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.5"/>
+    <text x="390" y="361" text-anchor="middle" fill="#1e3a8a" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="15" font-weight="700">缺省 Gateway</text>
+
+    <rect x="740" y="325" width="620" height="90" rx="8" fill="#fce7f3" stroke="#ec4899" stroke-width="1.5"/>
+    <text x="1050" y="355" text-anchor="middle" fill="#831843" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="15" font-weight="700">
+      <tspan x="1050" dy="0">扩展：请求路由逻辑</tspan>
+      <tspan x="1050" dy="22" font-size="12" font-weight="400">Channel、路由策略、Hook 等</tspan>
+    </text>
+  </g>
+
+  <!-- Agent 层：与 Client、Gateway 使用相同的外框宽度 -->
+  <g id="agent-layer" transform="translate(0 40)">
+    <rect x="40" y="470" width="1360" height="480" rx="12" fill="#ffffff" stroke="#475569" stroke-width="2"/>
+    <text x="70" y="504" fill="#0f172a" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="18" font-weight="700">Agent 层</text>
+
+    <!-- 缺省 Agent Server 实例 -->
+    <rect x="80" y="520" width="620" height="400" rx="10" fill="#dbeafe" stroke="#3b82f6" stroke-width="1.5"/>
+    <text x="102" y="548" fill="#1e3a8a" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="16" font-weight="700">缺省 Agent Server 实例</text>
+
+    <!-- 缺省 Swarm 后端接口 -->
+    <rect x="100" y="565" width="390" height="315" rx="8" fill="#eff6ff" stroke="#60a5fa" stroke-width="1.5"/>
+    <text x="120" y="592" fill="#1e40af" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700">缺省 Swarm 后端接口</text>
+
+    <!-- 缺省 Harness -->
+    <rect x="115" y="630" width="220" height="220" rx="7" fill="#dbeafe" stroke="#60a5fa" stroke-width="1.5"/>
+    <text x="127" y="657" fill="#1e3a8a" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="14" font-weight="700">缺省 Harness</text>
+
+    <!-- Harness 内的 prompts、rails、subagents、skills、tools -->
+    <rect x="125" y="690" width="100" height="130" rx="6" fill="#dbeafe" stroke="#3b82f6"/>
+    <text x="175" y="720" text-anchor="middle" fill="#1e3a8a" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="10" font-weight="700">
+      <tspan x="175" dy="0">缺省 prompts</tspan>
+      <tspan x="175" dy="18" font-size="9" font-weight="400">rails / tools</tspan>
+      <tspan x="175" dy="16" font-size="9" font-weight="400">subagents</tspan>
+      <tspan x="175" dy="16" font-size="9" font-weight="400">/ skills</tspan>
+    </text>
+
+    <rect x="230" y="690" width="100" height="130" rx="6" fill="#fce7f3" stroke="#ec4899"/>
+    <text x="280" y="720" text-anchor="middle" fill="#831843" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="10" font-weight="700">
+      <tspan x="280" dy="0">扩展 prompts</tspan>
+      <tspan x="280" dy="18" font-size="9" font-weight="400">rails / tools</tspan>
+      <tspan x="280" dy="16" font-size="9" font-weight="400">subagents</tspan>
+      <tspan x="280" dy="16" font-size="9" font-weight="400">/ skills</tspan>
+    </text>
+
+    <!-- 三方 Harness -->
+    <rect x="345" y="630" width="125" height="220" rx="7" fill="#fce7f3" stroke="#ec4899" stroke-width="1.5"/>
+    <text x="407.5" y="715" text-anchor="middle" fill="#831843" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="12" font-weight="700">
+      <tspan x="407.5" dy="0">扩展：</tspan>
+      <tspan x="407.5" dy="20">三方 Harness</tspan>
+      <tspan x="407.5" dy="24" font-size="10" font-weight="400">cc / codex / dsh 等</tspan>
+    </text>
+
+    <!-- 扩展后端接口 -->
+    <rect x="510" y="565" width="170" height="315" rx="8" fill="#fce7f3" stroke="#ec4899" stroke-width="1.5"/>
+    <text x="595" y="690" text-anchor="middle" fill="#831843" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="13" font-weight="700">
+      <tspan x="595" dy="0">扩展：后端接口</tspan>
+      <tspan x="595" dy="24" font-size="10" font-weight="400">与前端UI插件相对应</tspan>
+      <tspan x="595" dy="17" font-size="10" font-weight="400">如桌宠、数据可视化等</tspan>
+    </text>
+
+    <!-- 三方 Agent Server 实例 -->
+    <rect x="740" y="520" width="620" height="400" rx="10" fill="#fce7f3" stroke="#ec4899" stroke-width="1.5"/>
+    <text x="1050" y="700" text-anchor="middle" fill="#831843" font-family="Microsoft YaHei, Noto Sans CJK SC, sans-serif" font-size="16" font-weight="700">
+      <tspan x="1050" dy="0">扩展：三方 Agent</tspan>
+      <tspan x="1050" dy="24">Server 实例</tspan>
+      <tspan x="1050" dy="24" font-size="13" font-weight="400">web、ssh服务</tspan>
+    </text>
+  </g>
+</svg>

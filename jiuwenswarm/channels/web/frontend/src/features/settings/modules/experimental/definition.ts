@@ -1,8 +1,11 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 import { settingsNavigationIcons } from '../../../../assets/settings';
 import type { SettingsModuleDefinition } from '../../registry/types';
 import {
   A2UISetting,
   ExternalCliCustomAgentsItem,
+  REASetting,
   RSISetting,
   TrajectoryDiagnosisSetting,
 } from './ExperimentalSettings';
@@ -25,6 +28,11 @@ export const experimentalModule: SettingsModuleDefinition = {
       id: 'rsi',
       titleKey: 'settingsPanel.experimental.rsi',
       items: [{ id: 'rsi-enabled', component: 'custom', render: RSISetting }],
+    },
+    {
+      id: 'rea',
+      titleKey: 'settingsPanel.experimental.rea',
+      items: [{ id: 'rea-enabled', component: 'custom', render: REASetting }],
     },
     {
       id: 'a2ui',
@@ -91,6 +99,7 @@ export const experimentalModule: SettingsModuleDefinition = {
             disabled: 'when-parent-unchecked',
             uncheckWithParent: true,
             items: [
+              { id: 'team-leader-goal-enabled', component: 'switch', key: 'team_leader_goal_enabled' },
               { id: 'team-task-verification-enabled', component: 'switch', key: 'team_task_verification_enabled' },
               { id: 'team-member-messaging-enabled', component: 'switch', key: 'team_member_messaging_enabled' },
               { id: 'team-member-subtasks-enabled', component: 'switch', key: 'team_member_subtasks_enabled' },

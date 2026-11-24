@@ -54,6 +54,7 @@
 | Swarmflow | 用 Python 工作流脚本做确定性多阶段编排：Leader 驱动各阶段 Agent 衔接；支持 **HITL**（`human` / `human_session`）、**Team token 预算**、TUI **`/swarmflows`** 运行树监控，以及 worker 可选开启的**渐进式工具暴露**（`swarmflow_progressive_tool`） |
 | Skill 自演进 | 能力越用越强而非越跑越僵：执行出错或用户不满时自动检测信号、优化 Skill 定义 |
 | Skill Hub 流通 | 能力资产一次沉淀、处处复用：Skill 在开发者之间搜索、安装、组合与二次创作 |
+| App Hub | 在应用市场安装应用。分享本地应用时，从应用卡片点击 **发布到 Hub**，登录并预览待上传文件后提交。 |
 | Auto Harness | 评测驱动、端到端自动优化 Harness：不是训练模型权重，而是让 Harness 在实战中自动学习、自动优化 |
 | AI 基础设施亲和 | 一套系统适配多种推理后端：兼容华为云 MaaS 等主流平台，支持 OpenAI 兼容接口与本地模型 |
 | 工具权限与安全防护 | 每一步操作都在你的掌控中：工具执行前审批、文件访问白名单、敏感操作拦截 |

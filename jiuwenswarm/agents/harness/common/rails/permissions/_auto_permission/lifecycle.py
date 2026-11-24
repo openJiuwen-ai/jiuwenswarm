@@ -6,6 +6,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from jiuwenswarm.agents.harness.common.rails.permissions.artifact_path_provenance import SessionArtifactPaths
+
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
     normalize_auto_permission_options,
 )
@@ -40,6 +42,7 @@ class AutoPermissionLifecycleMixin:
         policy_evaluator: OpenJiuwenPolicyEvaluator | None = None,
         auto_reviewer: AutoReviewer | None = None,
         trusted_search_urls: SessionTrustedSearchUrls | None = None,
+        session_artifact_paths: SessionArtifactPaths | None = None,
         persistent_audit_writer: Any | None = None,
         browser_runtime_security_profile: Any | None = None,
         written_permissions: Callable[[], dict[str, Any]] | None = None,
@@ -68,6 +71,7 @@ class AutoPermissionLifecycleMixin:
         self.auto_options = normalize_auto_permission_options(self.permission_config.get("auto"))
         self.auto_reviewer = auto_reviewer
         self.trusted_search_urls = trusted_search_urls
+        self.session_artifact_paths = session_artifact_paths
         self.persistent_audit_writer = persistent_audit_writer
         self.browser_runtime_security_profile = browser_runtime_security_profile
 
@@ -87,6 +91,8 @@ class AutoPermissionLifecycleMixin:
                 uninit(agent)
         finally:
             self._owner_agent = None
+            if self.session_artifact_paths is not None:
+                self.session_artifact_paths.clear_pending()
 
     def get_tools(self) -> set[str]:
         """Return the base rail tool labels used by OpenJiuwen registration."""
@@ -155,6 +161,12 @@ class AutoPermissionLifecycleMixin:
         self.permission_config = permission_config
         self.auto_options = auto_options
         self.persistent_audit_writer = persistent_audit_writer
+
+        if self.session_artifact_paths is not None:
+            self.session_artifact_paths.configure(
+                self.workspace_root,
+                protected_paths=auto_options.get("bounded_write_excluded_paths", ()),
+            )
 
     def _recent_url_sources(self, session_id: str | None) -> tuple[Any, ...]:
         """Return exact trusted-search provenance for the current root session."""

@@ -3,6 +3,7 @@ import { FileText, ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useChatStore, useSessionStore } from '../stores';
 import type { A4PAuthorizationRequest } from '../stores/chatStore';
+import { NEW_CONVERSATION_ID } from '../multi-session/state/newConversationLifecycle';
 import { webClient } from '../services/webClient';
 import './a4p/authorizationCard.css';
 
@@ -57,7 +58,7 @@ export function A4PAuthorizationCard() {
   const error = errorState?.requestId === pending?.requestId ? errorState?.message : null;
 
   useEffect(() => {
-    if (!activeSessionId || !isConnected) {
+    if (!activeSessionId || activeSessionId === NEW_CONVERSATION_ID || !isConnected) {
       return;
     }
     let cancelled = false;

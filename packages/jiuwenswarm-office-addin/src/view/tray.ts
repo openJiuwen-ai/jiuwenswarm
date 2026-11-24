@@ -15,9 +15,13 @@ export interface TrayItem {
 
 const seconds = (at: number, now: number): number => Math.max(0, Math.ceil((at - now) / 1000));
 
-/** The tray's lines for ``state`` at ``now``, the most pressing first. */
+/**
+ * The tray's lines for ``state`` at ``now``, the most pressing first; ``waiting`` is what a host call waits for the
+ * user to do in the document.
+ */
 export function trayItems(
-  { connection, attachment, alert }: Pick<PaneState, 'connection' | 'attachment' | 'alert'>,
+  { connection, attachment, alert, waiting }: Pick<PaneState, 'connection' | 'attachment' | 'alert'>
+    & { waiting?: string },
   now: number,
   actions: { continueHere: () => void; dismissAlert: () => void },
   noun: string,
@@ -44,6 +48,7 @@ export function trayItems(
       action: { label: copy.retry, run: actions.continueHere },
     });
   }
+  if (waiting) items.push({ key: 'waiting', tone: 'warning', icon: 'info', text: waiting });
   if (alert) {
     items.push({
       key: 'alert', tone: alert.tone, icon: alert.tone === 'error' ? 'alert' : 'info', text: alert.text,

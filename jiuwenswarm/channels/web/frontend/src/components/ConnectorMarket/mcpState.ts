@@ -79,6 +79,12 @@ export function busyLabelKey(kind: McpBusyKind | undefined): string {
   }
 }
 
+// 取消入口只对"正在建立连接"生效：connect/saveCredentials 或后端推来的 connecting
+// （无本地 busy）。安装/卸载/断连/删除由对应操作自己收尾，不提供取消。
+export function canCancelConnect(kind: McpBusyKind | undefined): boolean {
+  return !kind || kind === 'connect' || kind === 'saveCredentials';
+}
+
 // MCP 详情页可达性。2026-08-15 新方案要求"已安装+未连接"这个中间态也要能打开详情页（展示断联
 // banner），不再像旧版一样只要不是 connected 就整个拒绝进入（canOpenDetail 旧逻辑）。
 // "已安装"对 MCP 来说：customize（我的MCP）一旦注册就有持久身份，不管当下连没连，恒为 true；

@@ -62,16 +62,12 @@ class HubAvatarCache:
         if not url:
             return ''
         parsed = urlsplit(url)
-        # Only public Hub object-storage hosts; never forward credentials or redirects.
-        if parsed.scheme != 'https' or parsed.username or parsed.password:
+        # Only public Hub hosts; never forward credentials or redirects.
+        if parsed.username or parsed.password:
             return ''
         try:
-            HubPackageDownloader(
-                allowed_download_hosts=("openjiuwen-market.obs.*.myhuaweicloud.com", "*.obs.*.myhuaweicloud.com")
-            ).assert_download_url_allowed(url)
-        except ValueError:
-            return ''
-        except RuntimeError:
+            HubPackageDownloader().assert_download_url_allowed(url)
+        except (ValueError, RuntimeError):
             return ''
         key = hashlib.sha256(f'{parsed.netloc}{parsed.path}'.encode()).hexdigest()
         async with self.semaphore:

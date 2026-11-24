@@ -8,7 +8,7 @@
   padding: 6px;
   border: 1px solid rgba(var(--color-border-default-rgb), 0.74);
   border-radius: 10px;
-  background: var(--color-surface-card, #fff);
+  background: var(--color-surface-popover);
   box-shadow: var(--effect-chat-popover-shadow, 0 8px 24px rgba(15, 23, 42, 0.16));
   color: var(--color-text-primary, #0f172a);
   user-select: none;

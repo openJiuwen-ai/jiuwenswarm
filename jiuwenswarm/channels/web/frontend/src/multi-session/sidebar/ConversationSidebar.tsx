@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Check, ChevronDown, CircleAlert, Code2, Palette, Workflow } from 'lucide-react';
+import { Check, ChevronDown, CircleAlert, ClipboardList, Code2, Palette, Workflow } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { isEnterprise } from '../../edition';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
@@ -49,6 +49,19 @@ import PinIcon from '../../assets/work-mode/pin.svg?react';
 import PlusIcon from '../../assets/work-mode/plus.svg?react';
 import UnpinIcon from '../../assets/work-mode/unpin.svg?react';
 import PanelCollapseIcon from '../../assets/panel-collapse.svg?react';
+import { WebUINavigationHost, type WebUIStyleOverrides } from '../../features/webui';
+
+const pluginTaskStyles: WebUIStyleOverrides = {
+  Button: {
+    unstyled: true,
+    className: 'conversation-sidebar__new min-w-0 disabled:cursor-not-allowed disabled:opacity-50',
+    activeClassName: 'is-active',
+    icon: <ClipboardList aria-hidden />,
+    iconClassName: 'flex shrink-0 items-center justify-center',
+    labelClassName: 'min-w-0 truncate',
+  },
+  Box: { unstyled: true, className: 'flex min-w-0 flex-col gap-2' },
+};
 
 const UNREAD_KEY = 'jiuwenswarm_session_unread';
 const RELATIVE_TIME_REFRESH_MS = 60_000;
@@ -281,6 +294,11 @@ function ConversationListItem({
         >
           {title}
         </span>
+        {session.npc_session && (
+          <span className="shrink-0 text-xs text-text-muted" data-testid="multi-session-conversation-list-item-npc">
+            {t('chat.npcSessionLabel')}
+          </span>
+        )}
         <span
           className="conversation-list-item__meta"
           data-testid="multi-session-conversation-list-item-status"
@@ -1360,6 +1378,12 @@ export function ConversationSidebar({
                 <span data-testid="multi-session-open-cron-label">{t('nav.cron')}</span>
               </button>
             ) : null}
+            <WebUINavigationHost
+              slotId="task.function"
+              className="min-w-0"
+              instanceClassName="flex min-w-0 flex-col gap-2"
+              styles={pluginTaskStyles}
+            />
           </div>
           <div className="conversation-sidebar__body" data-testid="multi-session-sidebar-body">
             {hasPinnedSection ? (

@@ -82,7 +82,16 @@ class FakeWebChannel:
         self.connect_handler = handler
 
     def on_disconnect(self, handler):
-        self.disconnect_handler = handler
+        previous = self.disconnect_handler
+        if previous is None:
+            self.disconnect_handler = handler
+            return
+
+        async def combined(ws, session_ids):
+            await previous(ws, session_ids)
+            await handler(ws, session_ids)
+
+        self.disconnect_handler = combined
 
     async def send_response(self, ws, req_id, *, ok, payload=None, error=None, code=None):
         self.responses.append(
@@ -98,6 +107,9 @@ class FakeWebChannel:
     async def routing_keys_for_ws(self, ws):
         return list(self.routing_keys)
 
+    def a4p_pending_routes(self, routes, *, ws, session_id):
+        return set()
+
     def record_a4p_rebound(self, session_id, ws_id):
         self.rebounds.append((session_id, ws_id))
 
@@ -110,7 +122,8 @@ class FakeWebChannel:
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["a4p.authorization.complete", "a4p.config.get", "a4p.config.update"])
-async def test_a4p_rpc_uses_current_websocket_route(method) -> None:
+@pytest.mark.parametrize("untrusted_identity", [False, True])
+async def test_a4p_rpc_uses_current_websocket_route(method, untrusted_identity) -> None:
     class _AgentClient:
         server_ready = True
 
@@ -133,28 +146,63 @@ async def test_a4p_rpc_uses_current_websocket_route(method) -> None:
     ]
     agent_client = _AgentClient()
     _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=agent_client))
-    ws = SimpleNamespace(_jiuwen_ws_id="ws-1")
+    ws = SimpleNamespace(_jiuwen_ws_id="ws-1", _jiuwen_app_id="app-1")
+    params: dict[str, object] = {}
+    if untrusted_identity:
+        params["agent_ref"] = {"mode": "agent", "id": "untrusted"}
+    if method == "a4p.authorization.complete":
+        params["requestId"] = "intent-1"
+    elif method == "a4p.config.update":
+        params["enabled"] = True
 
     await channel.methods[method](
         ws,
         "rpc-1",
-        {"requestId": "intent-1", "agent_ref": {"mode": "agent", "id": "untrusted"}},
+        params,
         "session-1",
     )
 
-    assert channel.responses[-1]["ok"] is True
-    assert agent_client.envelope.channel_context == {
-        "ws_id": "ws-1",
-        "app_id": "app-1",
-        "agent_ref": {"mode": "team", "id": "research"},
-    }
+    if untrusted_identity and method != "a4p.authorization.complete":
+        assert channel.responses[-1]["ok"] is False
+        assert channel.responses[-1]["code"] == "BAD_REQUEST"
+        assert agent_client.envelope is None
+        return
+    assert channel.responses[-1]["ok"] is True, channel.responses[-1]
     if method == "a4p.authorization.complete":
+        assert agent_client.envelope.channel_context == {
+            "ws_id": "ws-1",
+            "app_id": "app-1",
+            "agent_ref": {"mode": "team", "id": "research"},
+        }
         # 完成授权时把恢复 turn 的输出改绑到当前连接（当前 ws_id 覆盖授权方冻结的旧 ws）。
         assert channel.rebounds == [("session-1", "ws-1")]
         assert channel.forgotten_routes == [(channel.routing_keys[0], "intent-1")]
     else:
+        # Configuration belongs to the application, independently of the active session.
+        assert agent_client.envelope.session_id is None
+        assert agent_client.envelope.channel_context == {"app_id": "app-1"}
         assert channel.rebounds == []
         assert channel.forgotten_routes == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "method,params,code",
+    [
+        ("a4p.authorization.complete", {"requestId": "intent-1"}, "A4P_WEB_SESSION_REQUIRED"),
+        ("a4p.authorization.pending", {}, "A4P_SESSION_IDENTITY_UNAVAILABLE"),
+    ],
+)
+async def test_a4p_authorization_rejects_websocket_without_session_route(method, params, code) -> None:
+    channel = FakeWebChannel()
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=SimpleNamespace(server_ready=True))
+    )
+    await channel.methods[method](
+        SimpleNamespace(_jiuwen_ws_id="ws-1"), "rpc-1", params, "session-1"
+    )
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == code
 
 
 class FakeAgentClient:
@@ -1491,6 +1539,31 @@ async def test_config_get_returns_rsi_switch(monkeypatch, raw_config, expected):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_config", "expected"),
+    [
+        ({}, "true"),
+        ({"rea": {"enabled": False}}, "false"),
+    ],
+)
+async def test_config_get_returns_rea_switch(monkeypatch, raw_config, expected):
+    channel = FakeWebChannel()
+    monkeypatch.setattr(config_set_handlers, "get_config_raw", lambda: raw_config)
+    monkeypatch.setattr(config_set_handlers, "get_config", lambda: raw_config)
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
+
+    await channel.methods["config.get"](
+        object(),
+        "req-get-rea",
+        {},
+        "sess-get-rea",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"]["rea_enabled"] == expected
+
+
+@pytest.mark.asyncio
 async def test_config_save_all_persists_rsi_switch(monkeypatch):
     channel = FakeWebChannel()
     persisted: list[bool] = []
@@ -1541,6 +1614,62 @@ async def test_config_save_all_persists_rsi_switch(monkeypatch):
     ]
     assert channel.responses[-1]["payload"] == {
         "updated": ["rsi_enabled"],
+        "applied_without_restart": True,
+        "models_count": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_config_save_all_persists_rea_switch(monkeypatch):
+    channel = FakeWebChannel()
+    persisted: list[bool] = []
+    reload_options_seen: list[dict] = []
+
+    monkeypatch.setattr(
+        config_set_handlers,
+        "get_config_raw",
+        lambda: {"rea": {"enabled": True}},
+    )
+    monkeypatch.setattr(
+        config_set_handlers,
+        "get_config",
+        lambda: {"rea": {"enabled": False}},
+    )
+    monkeypatch.setattr(
+        config_set_handlers,
+        "update_rea_enabled_in_config",
+        lambda enabled: persisted.append(enabled),
+    )
+
+    async def on_config_saved(updated_keys, *, env_updates, config_payload, reload_options):
+        del updated_keys, env_updates, config_payload
+        reload_options_seen.append(dict(reload_options))
+        return True
+
+    _register_web_handlers(
+        WebHandlersBindParams(
+            channel=channel,
+            agent_client=make_config_routing_client(on_config_saved),
+            on_config_saved=on_config_saved,
+        )
+    )
+
+    await channel.methods["config.save_all"](
+        object(),
+        "req-set-rea",
+        {"config": {"rea_enabled": False}},
+        "sess-set-rea",
+    )
+
+    assert persisted == [False]
+    assert reload_options_seen == [
+        {
+            "target_channel_id": "web",
+            "reload_scopes": ["web_ui"],
+        }
+    ]
+    assert channel.responses[-1]["payload"] == {
+        "updated": ["rea_enabled"],
         "applied_without_restart": True,
         "models_count": None,
     }
@@ -3227,27 +3356,18 @@ def test_config_panel_flatten_reads_external_cli_paths() -> None:
 
 
 def test_config_panel_flatten_reads_symphony_enabled_and_skill_retrieval():
-    raw = {
-        "symphony": {
-            "enabled": True,
-            "evolution": {"enabled": False},
-            "orchestration": {"mode": "fast"},
-            "skill_retrieval": {
-                "enabled": True,
-                "index": {"enabled": True},
-                "discovery": {"max_results": 17},
-            },
-        }
-    }
-
+    raw = {"symphony": {
+        "orchestration": {"enabled": True, "plan": {"mode": "fast"}, "experience": {"enabled": False}},
+        "retrieval": {"enabled": True, "output": {"max_results": 17}},
+    }}
     flat = _flatten_symphony_for_config_panel(raw)
-
     assert flat["symphony_enabled"] == "true"
+    assert flat["symphony_evolution_enabled"] == "false"
+    assert flat["skill_retrieval_enabled"] == "true"
+    assert "skill_retrieval_index_enabled" not in flat
+    assert flat["skill_retrieval_max_results"] == "17"
     assert "symphony_dynamic_graph_enabled" not in flat
     assert "symphony_orchestration_mode" not in flat
-    assert flat["skill_retrieval_enabled"] == "true"
-    assert flat["skill_retrieval_index_enabled"] == "true"
-    assert flat["skill_retrieval_max_results"] == "17"
     assert "skill_retrieval_build_branching_factor" not in flat
 
 
@@ -3281,16 +3401,15 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
         "req-3",
         {
             "symphony_enabled": "true",
-            "symphony_dynamic_graph_enabled": "false",
+            "symphony_evolution_enabled": "true",
             "skill_retrieval_enabled": "false",
-            "skill_retrieval_index_enabled": "true",
         },
         "sess-3",
     )
 
-    assert recorded_symphony == [{"enabled": True}]
+    assert recorded_symphony == [{"orchestration": {"enabled": True, "experience": {"enabled": True}}}]
     assert recorded_skill_retrieval == [
-        {"enabled": False, "index": {"enabled": True}}
+        {"enabled": False}
     ]
     assert channel.responses[-1] == {
         "id": "req-3",
@@ -3298,8 +3417,8 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
         "payload": {
             "updated": [
                 "symphony_enabled",
+                "symphony_evolution_enabled",
                 "skill_retrieval_enabled",
-                "skill_retrieval_index_enabled",
             ],
             "applied_without_restart": True,
         },
@@ -3689,11 +3808,11 @@ def test_update_channel_subsection_in_config_overwrites_existing(tmp_path, monke
 # ── media.persist 大图 HTTP bridge 分流（Phase 2 传输取舍） ──────────────────
 
 
-def _a4p_config_request(method, params, channel="web", session="session"):
+def _a4p_config_request(method, params, channel="web", session=None, user_id="", metadata=None):
     from e2a.agent_models import AgentRequest
     from e2a.message import ReqMethod
     return AgentRequest(request_id="rpc", channel_id=channel, session_id=session,
-                        req_method=ReqMethod(method), params=params)
+                        req_method=ReqMethod(method), params=params, user_id=user_id, metadata=metadata)
 
 
 @pytest.mark.asyncio
@@ -3709,9 +3828,9 @@ async def test_a4p_config_disabled_partial_update_and_get(monkeypatch):
         events.append("apply")
     monkeypatch.setattr(a4p_rpc, "update_a4p_in_config", persist)
     monkeypatch.setattr(a4p_rpc, "reconfigure_a4p_runtime", apply)
-    response = await a4p_rpc.dispatch_a4p_request(_a4p_config_request("a4p.config.get", {"session_id": "session"}))
+    response = await a4p_rpc.dispatch_a4p_request(_a4p_config_request("a4p.config.get", {}))
     assert response.ok and response.payload == {"enabled": False}
-    response = await a4p_rpc.dispatch_a4p_request(_a4p_config_request("a4p.config.update", {"enabled": True, "session_id": "session"}))
+    response = await a4p_rpc.dispatch_a4p_request(_a4p_config_request("a4p.config.update", {"enabled": True}))
     assert response.ok and response.payload == {"enabled": True}
     assert events == ["persist", "apply"]
     assert config["server_id"] == "private"
@@ -3728,11 +3847,33 @@ async def test_a4p_config_rejects_invalid_updates_without_writing(monkeypatch, p
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("method", ["a4p.config.get", "a4p.config.update"])
-async def test_a4p_config_requires_web_route(monkeypatch, method):
+@pytest.mark.parametrize("channel,metadata", [("cli", None), ("web", {"cron": True})])
+async def test_a4p_config_requires_interactive_web_ingress(monkeypatch, method, channel, metadata):
     from jiuwenswarm.agents.harness.common.a4p import rpc as a4p_rpc
     monkeypatch.setattr(a4p_rpc, "get_a4p_config", lambda: pytest.fail("unexpected config access"))
-    response = await a4p_rpc.dispatch_a4p_request(_a4p_config_request(method, {"enabled": True}, channel="cli"))
-    assert not response.ok and response.payload["code"] == "A4P_WEB_SESSION_REQUIRED"
+    monkeypatch.setattr(a4p_rpc, "update_a4p_in_config", lambda _: pytest.fail("unexpected write"))
+    params = {"enabled": True} if method == "a4p.config.update" else {}
+    response = await a4p_rpc.dispatch_a4p_request(
+        _a4p_config_request(method, params, channel=channel, metadata=metadata),
+    )
+    assert not response.ok and response.payload["code"] == "FORBIDDEN"
+
+
+@pytest.mark.asyncio
+async def test_a4p_config_enterprise_uses_forwarded_user_identity(monkeypatch):
+    from jiuwenswarm.agents.harness.common.a4p import rpc as a4p_rpc
+
+    monkeypatch.setattr(a4p_rpc, "is_enterprise", lambda: True)
+    monkeypatch.setattr(a4p_rpc, "get_a4p_config", lambda: {"enabled": True})
+    monkeypatch.setattr(a4p_rpc, "update_a4p_in_config", lambda _: pytest.fail("unexpected write"))
+    response = await a4p_rpc.dispatch_a4p_request(
+        _a4p_config_request("a4p.config.update", {"enabled": True, "user_id": "forged"}),
+    )
+    assert not response.ok and response.payload["code"] == "FORBIDDEN"
+    response = await a4p_rpc.dispatch_a4p_request(
+        _a4p_config_request("a4p.config.get", {}, user_id="alice"),
+    )
+    assert response.ok and response.payload == {"enabled": True}
 
 
 @pytest.mark.asyncio
@@ -3954,3 +4095,59 @@ async def test_cron_session_selection_rpc_rejects_group_before_resolving(monkeyp
     assert response["ok"] is False
     assert response["code"] == "BAD_REQUEST"
     assert "only support a single model" in response["error"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("experience_enabled", [True, False])
+async def test_config_save_all_persists_new_symphony_nodes_and_preserves_hidden_values(
+    monkeypatch, tmp_path, experience_enabled,
+):
+    import yaml
+    from jiuwenswarm.common import config as host_config
+    from jiuwenswarm.common.symphony_config import load_symphony_config
+
+    path = tmp_path / "config.yaml"
+    sources = [
+        {"type": "skill", "root": str(tmp_path / "skills")},
+        {"type": "expert", "root": str(tmp_path / "experts")},
+    ]
+    path.write_text(yaml.safe_dump({"symphony": {
+        "capability": {"sources": sources},
+        "retrieval": {"enabled": False, "index_build": {"structure": {"max_depth": 9}}},
+        "orchestration": {
+            "enabled": None,
+            "min_edge_confidence": 0.73,
+            "plan": {"dynamic_graph_enabled": not experience_enabled},
+            "experience": {"enabled": not experience_enabled, "acceptance": {"min_successes": 5}},
+        },
+    }}))
+    read_config = lambda: yaml.safe_load(path.read_text())
+    monkeypatch.setattr(host_config, "CONFIG_YAML_PATH", path)
+    monkeypatch.setattr(config_set_handlers, "get_config_raw", read_config)
+    monkeypatch.setattr(config_set_handlers, "get_config", read_config)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
+    frozen = load_symphony_config(read_config())
+    await channel.methods["config.save_all"](
+        object(), "symphony-save", {"config": {
+            "symphony_enabled": True,
+            "symphony_evolution_enabled": experience_enabled,
+            "skill_retrieval_enabled": True,
+            "skill_retrieval_max_results": 17,
+        }}, "session-save",
+    )
+    assert channel.responses[-1]["ok"] is True
+    current = load_symphony_config(read_config())
+    assert current.orchestration.enabled is True
+    assert current.orchestration.plan.dynamic_graph_enabled is not experience_enabled
+    assert current.orchestration.experience.enabled is experience_enabled
+    assert current.orchestration.experience.acceptance.min_successes == 5
+    assert current.retrieval.enabled is True
+    assert current.orchestration.min_edge_confidence == 0.73
+    assert current.retrieval.index_build.structure.max_depth == 9
+    assert current.retrieval.output.max_results == 17
+    assert frozen.retrieval.enabled is False
+    assert frozen.orchestration.experience.enabled is not experience_enabled
+    saved = read_config()["symphony"]
+    assert set(saved) == {"capability", "retrieval", "orchestration"}
+    assert saved["capability"]["sources"] == sources

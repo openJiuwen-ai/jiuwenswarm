@@ -205,17 +205,22 @@ _SHUTDOWN_GUARD_ATTR = "_jiuwen_teammate_quota_shutdown_attached"
 _ORIGINAL_SHUTDOWN_ATTR = "_jiuwen_original_shutdown_member"
 
 
+async def quota_member_names(backend: Any) -> list[str]:
+    """Return roster identities that occupy ordinary team runtime slots."""
+    members = await backend.db.member.get_team_members(backend.team_name)
+    return [member.member_name for member in members if member.role != "host_managed"]
+
+
 async def count_non_leader_members(backend: Any) -> int:
-    """Count members on the roster excluding the leader row."""
+    """Count runtime slots excluding the leader and host-managed identities."""
     leader_name = str(getattr(backend, "leader_member_name", "") or "")
-    rows = await backend.db.member.get_member_roster(backend.team_name)
-    return sum(1 for name, _display, _status in rows if name != leader_name)
+    names = await quota_member_names(backend)
+    return sum(1 for name in names if name != leader_name)
 
 
 async def count_team_members(backend: Any) -> int:
-    """Count the whole roster including the leader."""
-    rows = await backend.db.member.get_member_roster(backend.team_name)
-    return len(rows)
+    """Count runtime slots including the leader, excluding host-managed identities."""
+    return len(await quota_member_names(backend))
 
 
 def attach_teammate_limit_guard(
@@ -235,13 +240,16 @@ def attach_teammate_limit_guard(
 
     if getattr(team_agent, "role", None) != TeamRole.LEADER:
         return False
-    tid = str(team_id or "").strip()
-    roster_limit = int(max_teammates or 0)
-    if not tid and roster_limit <= 0:
-        return False
     backend = getattr(team_agent, "team_backend", None)
     if backend is None:
         logger.debug("[MemberLimits] no team_backend on leader; skip guard")
+        return False
+    if getattr(backend, "conversation_mode", None) == "group_chat":
+        detach_teammate_limit_guard(team_agent)
+        return False
+    tid = str(team_id or "").strip()
+    roster_limit = int(max_teammates or 0)
+    if not tid and roster_limit <= 0:
         return False
     if getattr(backend, _GUARD_ATTR, False):
         return True
@@ -256,8 +264,9 @@ def attach_teammate_limit_guard(
         role_value = getattr(role, "value", role)
         leader_name = str(getattr(self, "leader_member_name", "") or "").strip()
         # build_team registers the leader via spawn_member without role=LEADER
-        # (openjiuwen default is TEAMMATE). That must not consume a Y slot.
-        if role_value == TeamRole.LEADER.value or (
+        # (openjiuwen default is TEAMMATE). Host-managed identities run outside
+        # this team and must not reserve an ordinary runtime slot either.
+        if role_value in {TeamRole.LEADER.value, "host_managed"} or (
             leader_name and str(member_name or "").strip() == leader_name
         ):
             return await original(member_name, *args, **kwargs)
@@ -412,6 +421,7 @@ __all__ = [
     "requested_team_size_over_limit",
     "whole_team_member_limit",
     "attach_teammate_limit_guard",
+    "quota_member_names",
     "count_non_leader_members",
     "count_team_members",
     "detach_teammate_limit_guard",

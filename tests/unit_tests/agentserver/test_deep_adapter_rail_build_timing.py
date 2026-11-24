@@ -4,7 +4,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
+import threading
+import time
 import types
 
 import pytest
@@ -14,6 +17,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
     _RailBuildInfo,
 )
+from jiuwenswarm.server.runtime.session.history_io import run_history_io
 
 
 class _RecordingLogger:
@@ -228,3 +232,154 @@ def test_non_numeric_override_falls_back_to_the_site_threshold(
 
     assert len(server_log.info_records) == 1
     assert any("ignoring non-numeric" in rec[0] for rec in module_log.records)
+
+
+@pytest.mark.asyncio
+async def test_slow_rail_build_does_not_block_the_event_loop(loggers) -> None:
+    """The production rail builder can run while other loop tasks make progress."""
+    adapter = _make_adapter()
+    loop_thread = threading.get_ident()
+    ticks = 0
+    build_thread: int | None = None
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0)
+
+    def slow_rail() -> object:
+        nonlocal build_thread
+        build_thread = threading.get_ident()
+        time.sleep(0.02)
+        return object()
+
+    ticker_task = asyncio.create_task(ticker())
+    built_rails = await run_history_io(
+        adapter._instantiate_rails,
+        [_RailBuildInfo("_slow_rail", slow_rail)],
+        {},
+    )
+    ticker_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await ticker_task
+
+    assert built_rails
+    assert ticks > 0
+    assert build_thread is not None
+    assert build_thread != loop_thread
+
+
+@pytest.mark.asyncio
+async def test_rail_initialization_does_not_block_the_event_loop(loggers) -> None:
+    """Synchronous rail.init work inside ensure_initialized runs off-loop."""
+    adapter = _make_adapter()
+    loop_thread = threading.get_ident()
+    ticks = 0
+    init_thread: int | None = None
+    init_loop: asyncio.AbstractEventLoop | None = None
+    cleanup_loop: asyncio.AbstractEventLoop | None = None
+
+    class _BlockingDeepAgent:
+        async def ensure_initialized(self) -> None:
+            nonlocal init_loop, init_thread
+            init_thread = threading.get_ident()
+            init_loop = asyncio.get_running_loop()
+            time.sleep(0.02)
+
+        def configured_rails(self) -> list[object]:
+            return [object()]
+
+        async def unregister_rail(self, _rail: object) -> None:
+            nonlocal cleanup_loop
+            cleanup_loop = asyncio.get_running_loop()
+
+        async def cleanup_task_resources(self) -> None:
+            nonlocal cleanup_loop
+            cleanup_loop = asyncio.get_running_loop()
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while True:
+            ticks += 1
+            await asyncio.sleep(0)
+
+    adapter._instance = _BlockingDeepAgent()
+    ticker_task = asyncio.create_task(ticker())
+    try:
+        await adapter._ensure_instance_initialized_off_loop()
+        initialization_loop = adapter._agent_initialization_loop
+        assert initialization_loop is not None
+        assert initialization_loop.is_running()
+        assert init_loop is not None
+        assert not init_loop.is_closed()
+    finally:
+        ticker_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await ticker_task
+        await adapter._close_agent_initialization_loop()
+
+    assert ticks > 0
+    assert init_thread is not None
+    assert init_thread != loop_thread
+    assert init_loop is not None
+    assert init_loop.is_closed()
+    assert cleanup_loop is init_loop
+
+
+@pytest.mark.asyncio
+async def test_cancelled_sys_operation_build_publishes_result_before_cancel(loggers) -> None:
+    """Cancellation cannot hide a registered sys operation from cleanup."""
+    adapter = _make_adapter()
+    started = threading.Event()
+    release = threading.Event()
+    sys_operation = object()
+
+    def build_sys_operation() -> object:
+        started.set()
+        release.wait()
+        return sys_operation
+
+    adapter._create_sys_operation = build_sys_operation
+    build_task = asyncio.create_task(adapter._create_sys_operation_off_loop())
+    assert await asyncio.to_thread(started.wait, 0.1)
+    build_task.cancel()
+    await asyncio.sleep(0)
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await build_task
+
+    assert adapter._sys_operation is sys_operation
+
+
+@pytest.mark.asyncio
+async def test_cancelled_rail_build_waits_for_worker_to_finish(loggers) -> None:
+    """Cancellation must not release the serialized build slot early."""
+    finished = threading.Event()
+    started = threading.Event()
+    release = threading.Event()
+    adapter = _make_adapter()
+
+    def blocking_rail() -> object:
+        started.set()
+        release.wait()
+        finished.set()
+        return object()
+
+    build_task = asyncio.create_task(
+        run_history_io(
+            adapter._instantiate_rails,
+            [_RailBuildInfo("_blocking_rail", blocking_rail)],
+            {},
+        )
+    )
+    await asyncio.to_thread(started.wait, 0.1)
+    build_task.cancel()
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await build_task
+
+    assert started.is_set()
+    assert finished.is_set()

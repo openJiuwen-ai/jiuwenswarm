@@ -1,0 +1,55 @@
+[
+  {
+    "name": "literal remains literal",
+    "root": { "component": "Text", "props": { "value": "窗口 / Window" } },
+    "valid": true
+  },
+  {
+    "name": "localized text",
+    "root": {
+      "component": "Text",
+      "props": { "value": { "zh": "上下文上限 262.1k Token", "en": "Context limit 262.1k tokens" } }
+    },
+    "valid": true
+  },
+  {
+    "name": "localized button",
+    "root": { "component": "Button", "props": { "value": { "zh": "换个风格", "en": "Shuffle" } } },
+    "valid": true
+  },
+  {
+    "name": "localized accessible label",
+    "root": { "component": "Switch", "props": { "ariaLabel": { "zh": "显示用量", "en": "Show usage" } } },
+    "valid": true
+  },
+  {
+    "name": "missing English text",
+    "root": { "component": "Text", "props": { "value": { "zh": "用量" } } },
+    "valid": false
+  },
+  {
+    "name": "missing Chinese label",
+    "root": { "component": "Button", "props": { "value": { "en": "Shuffle" } } },
+    "valid": false
+  },
+  {
+    "name": "numeric translation",
+    "root": { "component": "Text", "props": { "value": { "zh": "用量", "en": 12 } } },
+    "valid": false
+  },
+  {
+    "name": "extra language",
+    "root": { "component": "Text", "props": { "value": { "zh": "用量", "en": "Usage", "fr": "Usage" } } },
+    "valid": false
+  },
+  {
+    "name": "array instead of translations",
+    "root": { "component": "Switch", "props": { "ariaLabel": ["显示用量", "Show usage"] } },
+    "valid": false
+  },
+  {
+    "name": "nested translated value",
+    "root": { "component": "Button", "props": { "value": { "zh": { "value": "换个风格" }, "en": "Shuffle" } } },
+    "valid": false
+  }
+]

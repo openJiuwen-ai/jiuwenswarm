@@ -48,6 +48,7 @@ import { MessageList } from './MessageList';
 import { ContextCompressionLines } from './MessageItem';
 import { activeMoaPhase, MoaProgress } from './MoaProgress';
 import { InputArea, type InputAreaHandle } from './InputArea';
+import { WebUIHost, type WebUIStyleOverrides } from '../../features/webui';
 import ChatOverviewIcon from '../../assets/chat-overview.svg?react';
 import PanelCollapseIcon from '../../assets/panel-collapse.svg?react';
 import lineUpIcon from '../../assets/lineUp.svg';
@@ -111,6 +112,11 @@ import {
   type TopicStarterTopic,
   type TopicStarterVisibleSlate,
 } from '../../features/topicStarterVisibility';
+
+const pluginHeaderActionStyles: WebUIStyleOverrides = {
+  Button: { className: 'chat-panel-header__plugin-action shrink-0' },
+  Box: { unstyled: true, className: 'flex min-w-0 items-center gap-2' },
+};
 
 export interface ChatHistoryPagerProps {
   loadedBatchSeq: number;
@@ -183,6 +189,7 @@ interface ChatPanelProps {
   isHistoryRestoring?: boolean;
   /** Show an already-created empty conversation with the regular bottom composer. */
   conversationCreated?: boolean;
+  npcSession?: boolean;
   headerActions?: React.ReactNode;
   /** 右侧面板展开状态：展开时隐藏对话框上方的活跃成员，null 表示面板隐藏 */
   teamAreaExpanded?: boolean | null;
@@ -285,7 +292,7 @@ function SuggestionCard({
           listedAtLabel ? t('chat.topicStarter.hotListListedAt', { time: listedAtLabel }) : '',
         ].filter(Boolean).join(' · ')
       : [
-          source?.source_kind === 'news_report' ? '资讯' : '近期',
+          source?.source_kind === 'news_report' ? t('chat.topicStarter.newsReport') : t('chat.topicStarter.recent'),
           sourceSite,
           typeof source?.published_at === 'string' ? source.published_at.slice(5, 10).replace('-', '/') : '',
         ].filter(Boolean).join(' · ');
@@ -326,7 +333,7 @@ function SuggestionCard({
               </div>
             </details>
           ) : (
-            <a data-testid="chat-panel-topic-source" data-variant={topic.title} className="chat-suggestion-card__source" href={sourceUrl} target="_blank" rel="noreferrer" aria-label={`打开原文：${sourceBadge}`}>
+            <a data-testid="chat-panel-topic-source" data-variant={topic.title} className="chat-suggestion-card__source" href={sourceUrl} target="_blank" rel="noreferrer" aria-label={t('chat.topicStarter.openOriginal', { source: sourceBadge })}>
               {sourceBadge} <span aria-hidden="true">↗</span>
             </a>
           )}
@@ -1208,6 +1215,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   historyPager = null,
   isHistoryRestoring = false,
   conversationCreated = false,
+  npcSession = false,
   headerActions,
   teamAreaExpanded = false,
   autoFocusKey = null,
@@ -1301,7 +1309,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   const hasTimelineContent = messages.length > 0 || toolExecutionOrder.length > 0;
   // 还在等你点选时，不能退回首页欢迎语。提问卡片要留在普通聊天页里。
   const hasConversation = Boolean(
-    conversationCreated || isHistoryRestoring || historyPager || hasTimelineContent || hasPendingQuestion,
+    npcSession || conversationCreated || isHistoryRestoring || historyPager || hasTimelineContent || hasPendingQuestion,
   );
   const isGroupCreateWelcome = welcomeVariant === 'group-create';
   const historyLoadedBatchSeq = historyPager?.loadedBatchSeq ?? 0;
@@ -1380,7 +1388,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   } = promptSuggestionBox;
   const nextInputSuggestionKey = nextInputSuggestions.map(item => item.suggestionId).join('\n');
   const shouldShowChatHeader = hasConversation;
-  const composerDockVisible = composerDocked && hasConversation;
+  const composerDockVisible = composerDocked && hasConversation && !npcSession;
   // Report the composer's measured height so the docked trajectory view can
   // keep its last records clear of it. A collapsed or undocked composer covers
   // nothing, so it reports zero rather than its laid-out size.
@@ -2325,8 +2333,10 @@ export const ChatPanel = React.memo(function ChatPanel({
       {shouldShowChatHeader && (
         <div className="chat-panel-header" data-testid="chat-panel-header">
           <div className="chat-panel-header__meta" data-testid="chat-panel-header-meta">
-            <div className="chat-panel-header__title" title={sessionTitle} data-testid="chat-panel-header-title">
-              {sessionTitle}
+            <div className="flex min-w-0 items-center gap-2" data-testid="chat-panel-header-title-row">
+              <div className="chat-panel-header__title" title={sessionTitle} data-testid="chat-panel-header-title">
+                {sessionTitle}
+              </div>
             </div>
             {sessionProjectName && (
               <div
@@ -2338,6 +2348,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                 <span>{sessionProjectName}</span>
               </div>
             )}
+            <WebUIHost slotId="conversation.header.title.after" sessionId={activeSessionId} layout="row" />
           </div>
           <div className="chat-panel-header__actions" data-testid="chat-panel-header-actions">
             {diagnosisEntryAvailable && onToggleDiagnosis && (
@@ -2353,6 +2364,13 @@ export const ChatPanel = React.memo(function ChatPanel({
                 <ClipboardList size={16} strokeWidth={2} aria-hidden />
               </button>
             )}
+            <WebUIHost
+              slotId="conversation.header.actions"
+              sessionId={activeSessionId}
+              layout="row"
+              instanceClassName="flex min-w-0 items-center gap-2"
+              styles={pluginHeaderActionStyles}
+            />
             {composerDockVisible && onToggleComposerCollapsed && (
               <button
                 type="button"
@@ -2420,7 +2438,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                 onClick={() => onToggleHeartbeatPanel?.()}
                 title={t('heartbeat.panel.title')}
               >
-                <Activity size={14} strokeWidth={2} />
+                <Activity size={18} strokeWidth={2} />
               </button>
             )}
             <button
@@ -2498,7 +2516,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                     <HumanShareCard commands={teamHumanShareCommands} onShare={() => setHumanShareOpen(true)} />
                   )}
                   {/* 内联审批卡片（演进审批 & 权限审批共用） */}
-                  <InlineQuestionCard onSubmit={onUserAnswer} />
+                  {!npcSession && <InlineQuestionCard onSubmit={onUserAnswer} />}
                   <ContextCompressionLines runtime={contextCompressionRuntime} summary={contextCompressionSummary} />
                   <MoaProgress phase={moaPhase} />
                 </>
@@ -2587,13 +2605,14 @@ export const ChatPanel = React.memo(function ChatPanel({
                       className="chat-welcome__banner chat-welcome__banner--bee"
                       altText={t('chat.welcomeLogoAlt')}
                       onTrigger={() => {
-                        setTopicBubbleActive(false);
+                        if (!showTopicBubble || !bubbleVisible) setTopicBubbleActive(false);
                         handleBubbleShow();
                       }}
                       onLeave={handleBubbleLeave}
                     />
                   </>
                 )}
+                <WebUIHost slotId="conversation.input.above" className="chat-input-webui-above" />
                 <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
                 <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onContinueQueuedSessionMessages={onContinueQueuedSessionMessages} />
                 <InterruptResultBubble />
@@ -2623,6 +2642,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   onRefreshGoal={onRefreshGoal}
                   onClearGoal={onClearGoal}
                 />
+                <WebUIHost slotId="conversation.input.below" className="mt-1 px-1 min-h-10 max-h-none" />
               </div>
               {topicStartersEnabled && <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
                 {recommendationState !== 'disabled' && topicStarterShowsStatus(recommendationState, Boolean(visibleTopicSlate)) ? (
@@ -2698,8 +2718,14 @@ export const ChatPanel = React.memo(function ChatPanel({
         </div>
       </div>
 
-      {hasConversation && (
+      {npcSession && (
+        <div className="shrink-0 px-4 py-3 text-center text-sm text-text-muted" data-testid="chat-panel-npc-read-only">
+          {t('chat.npcSessionReadOnly')}
+        </div>
+      )}
+      {hasConversation && !npcSession && (
         <div ref={composeRef} className="chat-compose" data-testid="chat-panel-compose">
+          <WebUIHost slotId="conversation.input.above" className="chat-input-webui-above" />
           <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
           <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} onContinueQueuedSessionMessages={onContinueQueuedSessionMessages} />
           <InterruptResultBubble />
@@ -2740,6 +2766,7 @@ export const ChatPanel = React.memo(function ChatPanel({
             onClearGoal={onClearGoal}
             onDrainTaskQueueIfIdle={onDrainTaskQueueIfIdle}
           />
+          <WebUIHost slotId="conversation.input.below" className="mt-1 px-1 min-h-10 max-h-none" />
         </div>
       )}
       <div className="chat-ai-disclaimer" data-testid="chat-panel-ai-disclaimer">

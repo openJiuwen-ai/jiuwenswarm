@@ -110,6 +110,11 @@ def app_role_instructions(metadata: dict[str, Any]) -> str | None:
     return instructions if profile == APP_ROLE_PROFILE else None
 
 
+def is_npc_session(metadata: dict[str, Any]) -> bool:
+    """Recognize explicitly marked NPCs and existing app-role conversations."""
+    return metadata.get("npc_session") is True or metadata.get("execution_profile") == APP_ROLE_PROFILE
+
+
 def app_role_npc_team(metadata: dict[str, Any]) -> dict[str, Any] | None:
     """Return the persisted roster definition, or ``None`` for single-agent roles."""
     if app_role_instructions(metadata) is None:

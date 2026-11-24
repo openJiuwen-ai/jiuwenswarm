@@ -152,6 +152,45 @@ async def test_runtime_entry_wait_retains_deadline_without_cancelling_request():
 
 
 @pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("metadata", [
+    {"execution_profile": "app_role"},
+    {"npc_session": True},
+])
+@pytest.mark.asyncio
+async def test_swarm_cannot_send_chat_to_npc(monkeypatch, streaming, metadata):
+    load_metadata = MagicMock(return_value={"mode": "agent.work.normal", "work_mode": "work", **metadata})
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        load_metadata,
+    )
+    runtime = AgentRuntime(agent_manager=FakeAgentManager())
+    runtime._started = True
+    runtime._ensure_session_registered = AsyncMock()
+    request = AgentRequest(
+        request_id="attempt", session_id="app-npc", channel_id="web",
+        req_method=ReqMethod.CHAT_SEND, is_stream=streaming,
+        params={"chat_surface": "swarm", "query": "hello"},
+    )
+    events = await _collect_events(runtime.stream(request)) if streaming else await runtime.invoke(request)
+    assert len(events) == 1
+    assert events[0].payload["code"] == "NPC_SESSION_READ_ONLY"
+    assert events[0].is_complete and not events[0].ok
+    runtime._ensure_session_registered.assert_not_awaited()
+    load_metadata.assert_called_once()
+
+
+def test_npc_chat_keeps_app_messages_and_read_only_attachments():
+    request = AgentRequest(
+        request_id="app", session_id="app-npc", channel_id="web", req_method=ReqMethod.CHAT_SEND,
+        params={"query": "player input"},
+    )
+    metadata = {"npc_session": True}
+    assert AgentRuntime._swarm_npc_chat_refusal(request, metadata) is None
+    request.params = {"chat_surface": "swarm", "attach_only": True, "query": ""}
+    assert AgentRuntime._swarm_npc_chat_refusal(request, metadata) is None
+
+
+@pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize("work_mode", ["work", "code"])
 @pytest.mark.parametrize("session_type", ["agent", "team"])
 async def test_runtime_corrects_mode_before_scheduling(monkeypatch, streaming, work_mode, session_type):
@@ -1803,7 +1842,19 @@ async def test_team_pause_retains_attach_for_later_mailbox_output(
     session = await coordinator.register_session("session-a", "web")
     manager = TeamManager()
     manager.bind_generation("session-a", session.generation)
-    monkeypatch.setattr(manager, "pause_session_runtime", AsyncMock(return_value=True))
+    from jiuwenswarm.agents.harness.team.team_manager import PauseSessionResult
+
+    monkeypatch.setattr(
+        manager,
+        "pause_session_runtime",
+        AsyncMock(
+            return_value=PauseSessionResult(
+                work_stopped=True,
+                resumable=True,
+                outcome="parked",
+            )
+        ),
+    )
     monkeypatch.setattr(manager, "stop_session_runtime", AsyncMock(return_value=True))
     lifecycle = TeamSessionLifecycleAdapter(coordinator=coordinator, team_manager=manager)
     runtime = AgentRuntime(
@@ -3475,6 +3526,32 @@ def _chat_request(request_id: str) -> AgentRequest:
         req_method=ReqMethod.CHAT_SEND,
         params={"query": "hello", "mode": "agent", "work_mode": "work"},
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True])
+@pytest.mark.parametrize("mode", ["normal", "plan"])
+async def test_recovery_error_ends_code_request_without_a_second_cold_start(streaming, mode):
+    from jiuwenswarm.server.runtime.session.history_replay import HistoryReplayError
+
+    manager = FakeAgentManager()
+    agent = manager.agent
+    agent.get_live_session_instance = lambda _sid: None
+    error = HistoryReplayError("restore queue full", code="HISTORY_RESTORE_BUSY")
+    agent.ensure_live_session_instance = AsyncMock(side_effect=error)
+    agent.ensure_instance = AsyncMock()
+    runtime = AgentRuntime(agent_manager=manager, initializer=AsyncMock(), plan_controller=PlanModeController())
+    request = _plan_turn_request("busy-code-session", "code")
+    request.params["mode"] = f"agent.code.{mode}"
+    if streaming:
+        events = [event async for event in runtime.stream(request, trigger_hook=False)]
+    else:
+        events = await runtime.invoke(request, trigger_hook=False)
+    assert events[-1].event_type == "runtime.error"
+    assert events[-1].payload["code"] == error.code
+    agent.ensure_live_session_instance.assert_awaited_once()
+    agent.ensure_instance.assert_not_awaited()
+    assert manager.foreground_calls == ["begin", "end"]
 
 
 @pytest.mark.asyncio

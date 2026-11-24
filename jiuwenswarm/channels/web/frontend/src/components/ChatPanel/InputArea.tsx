@@ -57,6 +57,7 @@ import ChatModelSelector from './ChatModelSelector';
 import DesignerModelSelector from '../../features/designer/components/DesignerModelSelector';
 import { getTeamSessionLive, subscribeTeamSessionLive, teamFollowUpLiveReady } from '../../services/sessionLive';
 import { getTeamQuota } from '../../services/teamApi';
+import { ENTERPRISE_ATTACHMENT_MAX_BYTES } from '../../services/obsUpload';
 import { designLandingModelProblem } from '../../features/designer/designLandingDraft';
 import { FileIcon } from '../FileIcon';
 import { getEvolutionPillLabel } from './evolution-status';
@@ -741,8 +742,11 @@ function getDocumentValidationError(
   options?: { filename?: string; localPath?: string },
 ): string | null {
   const filename = options?.filename || file?.name || t('chat.inputAttachment.unnamedFile');
-  if (file && !getLocalFilePath(file, options?.localPath) && file.size > MAX_FILE_BYTES) {
-    return t('chat.inputAttachment.fileSizeExceeded', { name: filename, limit: formatAttachmentSize(MAX_FILE_BYTES) });
+  const enterprise = isEnterprise();
+  const maxBytes = enterprise ? ENTERPRISE_ATTACHMENT_MAX_BYTES : MAX_FILE_BYTES;
+  if (file && !getLocalFilePath(file, options?.localPath) && file.size > maxBytes) {
+    const limit = enterprise ? `${maxBytes / (1024 * 1024)} MiB` : formatAttachmentSize(maxBytes);
+    return t('chat.inputAttachment.fileSizeExceeded', { name: filename, limit });
   }
   if (file && isForbiddenDocumentFile(file)) {
     return t('chat.inputAttachment.forbiddenFileType', { name: filename });
@@ -1773,7 +1777,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const uploadLimitsTooltip = [
     t('chat.inputAttachment.imageLimitTooltip', { limit: MAX_IMAGE_BYTES / (1024 * 1024) }),
     ...(!isDesktopBridgeReady
-      ? [t('chat.inputAttachment.fileLimitTooltip', { limit: MAX_FILE_BYTES / (1024 * 1024) })]
+      ? [
+          enterprise
+            ? t('chat.inputAttachment.enterpriseDocumentLimitTooltip', {
+                limit: ENTERPRISE_ATTACHMENT_MAX_BYTES / (1024 * 1024),
+              })
+            : t('chat.inputAttachment.fileLimitTooltip', { limit: MAX_FILE_BYTES / (1024 * 1024) }),
+        ]
       : []),
     t('chat.inputAttachment.countLimitTooltip', { limit: MAX_ATTACHMENT_COUNT }),
   ].join('\n');
@@ -2111,6 +2121,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             // 新会话尚无服务器侧会话路径：浏览器端无法获得 persistedMediaItem.path，
             // 需携带 base64 作为发送载体，否则附件进不了 ready 列表、发送按钮保持灰色。
             const base64Payload = browserFile ? await readBinaryFileAsBase64(browserFile) : null;
+            if (browserFile && !base64Payload?.base64Data) {
+              updateAttachment(attachment.id, {
+                status: 'error',
+                error: t('chat.inputAttachment.uploadFailed'),
+              });
+              return;
+            }
             updateAttachment(attachment.id, {
               persistedMediaItem: {
                 type: 'document',
@@ -4956,11 +4973,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                           ) : null}
                           {agentTooltipNode}
                         </div>
-                        {/* 插件/MCP 装备目前后端在集群模式下不生效（JiuWenSwarmDeepAdapter
-                    ._ensure_chat_extensions 对 team 模式直接短路，见
-                    interface_deep.py），继续展示这个入口只会让用户以为选了插件/MCP 会生效，
-                    实际发出去也是白发。集群模式下直接不渲染这个入口，跟旁边 SkillSelector
-                    （!isTeamMode 判断）保持同样的处理方式。 */}
+                        {/* 插件/MCP 装备：team 模式下后端 _ensure_chat_extensions 直接短路，
+                    展示入口会误导用户；agent 模式（含企业版）正常展示。 */}
                         <div className="chat-attach-menu-item-anchor">
                           <button
                             type="button"
@@ -5001,7 +5015,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             />
                           )}
                         </div>
-                        {!enterprise && !isTeamMode && (
+                        {!isTeamMode && (
                           <div className="chat-attach-menu-item-anchor">
                             <button
                               type="button"

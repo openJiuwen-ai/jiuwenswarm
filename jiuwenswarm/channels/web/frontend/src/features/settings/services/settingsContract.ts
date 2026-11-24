@@ -1,3 +1,5 @@
+// Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+
 import type { ModelEntry } from '../../../types';
 
 export const SETTINGS_CONFIG_CHANGED_EVENT = 'jiuwen:settings-config-changed';
@@ -75,8 +77,7 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('embed_model', 'models', 'text', 'EMBED_MODEL'),
 
   yamlField('skill_evolution', 'agent', 'boolean', 'react.evolution.skill_evolution'),
-  yamlField('skill_retrieval_enabled', 'agent', 'boolean', 'symphony.skill_retrieval.enabled'),
-  yamlField('skill_retrieval_index_enabled', 'agent', 'boolean', 'symphony.skill_retrieval.index.enabled'),
+  yamlField('skill_retrieval_enabled', 'agent', 'boolean', 'symphony.retrieval.enabled'),
   yamlField('ttse_enabled', 'agent', 'boolean', 'react.ttse.enabled'),
   envField('free_search_ddg_enabled', 'agent', 'boolean', 'FREE_SEARCH_DDG_ENABLED'),
   envField('free_search_bing_enabled', 'agent', 'boolean', 'FREE_SEARCH_BING_ENABLED'),
@@ -160,6 +161,7 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   ),
 
   yamlField('a2ui_enabled', 'experimental', 'boolean', 'a2ui.enabled'),
+  yamlField('rea_enabled', 'experimental', 'boolean', 'rea.enabled'),
   yamlField('rsi_enabled', 'experimental', 'boolean', 'rsi.enabled'),
   yamlField('cua_agent_enabled', 'experimental', 'boolean', 'react.subagents.cua_agent.enabled'),
   yamlField('trajectory_ui_enabled', 'experimental', 'boolean', 'trajectory_ui.enabled'),
@@ -168,6 +170,7 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   yamlField('team_message_delivery_enabled', 'experimental', 'boolean', 'experimental.team_message_delivery_enabled'),
   yamlField('team_organization_ui_enabled', 'experimental', 'boolean', 'experimental.team_organization_ui_enabled'),
   yamlField('comfyui_workflow_enabled', 'experimental', 'boolean', 'experimental.comfyui_workflow_enabled'),
+  yamlField('team_leader_goal_enabled', 'experimental', 'boolean', 'modes.team.jiuwen_team.leader.goal'),
   yamlField('team_scheduled_dispatch_enabled', 'experimental', 'boolean', 'modes.team.jiuwen_team.dispatch_mode'),
   yamlField(
     'team_task_verification_enabled',
@@ -195,7 +198,7 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   ),
   yamlField('task_full_duplex_enabled', 'experimental', 'boolean', 'experimental.task_full_duplex_enabled'),
   yamlField('task_asr_enabled', 'experimental', 'boolean', 'experimental.task_asr_enabled'),
-  yamlField('symphony_evolution_enabled', 'experimental', 'boolean', 'symphony.evolution.flow.enabled'),
+  yamlField('symphony_evolution_enabled', 'experimental', 'boolean', 'symphony.orchestration.experience.enabled'),
   envField('asr_api_base', 'experimental', 'text', 'ASR_API_BASE'),
   envField('asr_api_key', 'experimental', 'text', 'ASR_API_KEY'),
   envField('asr_model', 'experimental', 'text', 'ASR_MODEL_NAME'),
@@ -250,7 +253,8 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
 export const SETTINGS_CONFIG_FIELD_BY_KEY = new Map(SETTINGS_CONFIG_FIELDS.map((field) => [field.key, field] as const));
 
 export const SETTINGS_OTHER_PERSISTENCE = [
-  { id: 'language', method: 'locale.set_conf', persistence: 'config.yaml', path: 'preferred_language' },
+  // 个人版：写 config.yaml；企业版：Gateway 写 user_preference[user_id]（不写 yaml）。
+  { id: 'language', method: 'locale.set_conf', persistence: 'config.yaml | gateway.user_preference', path: 'preferred_language' },
   { id: 'models', method: 'models.replace_all', persistence: 'config.yaml', path: 'models.defaults' },
   {
     id: 'browser',

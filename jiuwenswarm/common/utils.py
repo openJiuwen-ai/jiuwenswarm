@@ -42,6 +42,7 @@ import threading
 import time
 import zipfile
 from pathlib import Path
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from typing import Any, Literal, Optional
 import logging
@@ -1086,6 +1087,144 @@ def _read_external_cli_state_sidecar(workspace_dir: Path) -> Optional[dict[str, 
         return None
 
 
+def _load_yaml_mapping(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    data = YAML(typ="safe").load(path.read_text(encoding="utf-8"))
+    return data if isinstance(data, dict) else {}
+
+
+def _project_gateway_config(template: Any, legacy: Any) -> Any:
+    """Keep only Gateway template keys while preserving user values."""
+    if isinstance(template, dict):
+        if not isinstance(legacy, dict):
+            return deepcopy(template)
+        result: dict[str, Any] = {}
+        for key, default in template.items():
+            result[key] = _project_gateway_config(default, legacy.get(key))
+        return result
+    if isinstance(template, list):
+        return deepcopy(legacy if isinstance(legacy, list) else template)
+    return deepcopy(legacy if legacy is not None else template)
+
+
+def _merge_gateway_hooks(generated: dict[str, Any], legacy: dict[str, Any]) -> None:
+    """Preserve legacy hooks owned by Gateway, excluding AgentServer hooks."""
+    old_hooks = legacy.get("hooks")
+    if not isinstance(old_hooks, dict):
+        return
+    target = generated.setdefault("hooks", {})
+    if not isinstance(target, dict):
+        return
+
+    from agent_gateway.common.hooks_config import GATEWAY_HOOK_EVENTS
+
+    for event in GATEWAY_HOOK_EVENTS:
+        if event in old_hooks:
+            target[event] = deepcopy(old_hooks[event])
+
+
+_GATEWAY_OWNED_CONFIG_PATHS = (
+    ("extensions", "install_dir"),
+    ("extensions", "data_dir"),
+    ("extensions", "install_report"),
+    ("models", "login_model_settings"),
+    ("modes", "team", "jiuwen_team", "swarmflow_budget"),
+    ("modes", "team", "jiuwen_team", "external_cli_path_histories"),
+)
+
+
+def _copy_gateway_owned_config(generated: dict[str, Any], legacy: dict[str, Any]) -> None:
+    """Preserve Gateway-owned keys that are intentionally absent from the template."""
+    for path in _GATEWAY_OWNED_CONFIG_PATHS:
+        source: Any = legacy
+        for key in path:
+            if not isinstance(source, dict) or key not in source:
+                source = None
+                break
+            source = source[key]
+        if source is None:
+            continue
+
+        target = generated
+        for key in path[:-1]:
+            child = target.setdefault(key, {})
+            if not isinstance(child, dict):
+                child = {}
+                target[key] = child
+            target = child
+        target[path[-1]] = deepcopy(source)
+
+
+def _merge_existing_gateway_config(gateway_dest: Path, template_path: Path) -> None:
+    """Add missing template defaults to an existing Gateway config."""
+    from agent_gateway.common.config import migrate_config_from_template
+
+    migrate_config_from_template(template_path, gateway_dest, prune=False)
+
+
+def _install_gateway_config(
+    workspace_dir: Path,
+    legacy_config: Path | None,
+    *,
+    overwrite: bool,
+    cumulative_diff: CopyDiffResult,
+) -> None:
+    """Create the personal-edition Gateway config without touching AS config."""
+    if is_agentos_runtime():
+        return
+
+    gateway_dir = get_gateway_config_dir(workspace_dir)
+    gateway_dir.mkdir(parents=True, exist_ok=True)
+    gateway_dest = gateway_dir / "config.yaml"
+    template_path = get_gateway_config_template()
+    if gateway_dest.exists() and not overwrite:
+        _merge_existing_gateway_config(gateway_dest, template_path)
+        return
+
+    template = _load_yaml_mapping(template_path)
+    legacy = _load_yaml_mapping(legacy_config) if legacy_config is not None else {}
+    generated = _project_gateway_config(template, legacy)
+    _merge_gateway_hooks(generated, legacy)
+    _copy_gateway_owned_config(generated, legacy)
+
+    with TrackCopyDiff(
+        dest=gateway_dest,
+        is_file=True,
+        cumulative=cumulative_diff,
+        overwrite=overwrite,
+    ):
+        yaml = YAML(typ="safe")
+        with gateway_dest.open("w", encoding="utf-8") as stream:
+            yaml.dump(generated, stream)
+
+
+def ensure_gateway_config(workspace_dir: Path | None = None) -> bool:
+    """Ensure the personal Gateway config exists and has current template keys."""
+    if is_agentos_runtime():
+        return False
+
+    workspace = Path(workspace_dir) if workspace_dir is not None else get_user_workspace_dir()
+    gateway_dest = get_gateway_config_dir(workspace) / "config.yaml"
+    try:
+        template_path = get_gateway_config_template()
+        if gateway_dest.exists():
+            _merge_existing_gateway_config(gateway_dest, template_path)
+            return True
+
+        legacy = workspace / "config" / "config.yaml"
+        _install_gateway_config(
+            workspace,
+            legacy if legacy.is_file() else None,
+            overwrite=False,
+            cumulative_diff=CopyDiffResult([], [], []),
+        )
+        return True
+    except Exception:  # noqa: BLE001
+        logger.warning("Gateway config ensure failed", exc_info=True)
+        return False
+
+
 def prepare_workspace(
     overwrite: bool = True,
     preferred_language: Optional[str] = None,
@@ -1115,6 +1254,7 @@ def prepare_workspace(
     config_dest_dir = workspace_dir / "config"
     config_dest_dir.mkdir(parents=True, exist_ok=True)
     config_yaml_dest = config_dest_dir / "config.yaml"
+    had_as_config = config_yaml_dest.exists()
 
     config_initialized = overwrite or not config_yaml_dest.exists()
     if config_initialized:
@@ -1172,6 +1312,14 @@ def prepare_workspace(
             overwrite=overwrite,
         ):
             shutil.copy2(env_template_src, env_dest)
+
+    # ----- Gateway config: separate file, never reuse AS config -----
+    _install_gateway_config(
+        workspace_dir,
+        None if overwrite else (config_yaml_dest if had_as_config else None),
+        overwrite=overwrite,
+        cumulative_diff=cumulative_diff,
+    )
 
     # ----- copy runtime dirs (new layout) -----
     agent_root = workspace_dir / "agent"
@@ -1549,6 +1697,44 @@ def _ensure_mcp_builtins(
         pass  # 仅登记到 diff 摘要，文件已解压就位
 
 
+def _migrate_local_gateway_extension_dirs(config_path: Path) -> None:
+    """Add Swarm's built-ins to the old stock Gateway search path."""
+    from agent_gateway.common.config import config_write_lock, dump_yaml_round_trip, load_yaml_round_trip
+
+    legacy_dirs = "${EXTENSION_DIRS:-agent_gateway/extensions}"
+    try:
+        with config_write_lock(config_path=config_path):
+            config = load_yaml_round_trip(config_path)
+            extensions = config.get("extensions") if isinstance(config, dict) else None
+            if isinstance(extensions, dict) and extensions.get("extension_dirs") == legacy_dirs:
+                extensions["extension_dirs"] = f"{legacy_dirs};jiuwenswarm/extensions"
+                dump_yaml_round_trip(config_path, config)
+    except (OSError, YAMLError, portalocker.exceptions.LockException) as exc:
+        logger.warning("Could not migrate local Gateway extension directories in %s: %s", config_path, exc)
+
+
+def prepare_local_gateway_config(env: dict[str, str]) -> None:
+    """Prepare the effective Gateway config for a local Swarm launcher."""
+    key = "JIUWENSWARM_GATEWAY_CONFIG_DIR"
+    if env.get(key, "").strip() or is_agentos_runtime():
+        return
+
+    from agent_gateway.common.paths import get_config_file as get_agent_gateway_config_file
+
+    gateway_config = get_agent_gateway_config_file()
+    if gateway_config.is_file():
+        _migrate_local_gateway_extension_dirs(gateway_config)
+        return
+    env[key] = str(get_config_dir())
+
+    # Gateway reads its own dotenv file even when using the instance's YAML.
+    from dotenv import dotenv_values
+
+    extension_dirs = dotenv_values(get_env_file()).get("EXTENSION_DIRS")
+    if extension_dirs is not None:
+        env["EXTENSION_DIRS"] = extension_dirs
+
+
 def prepare_runtime_workspace(
     *,
     cleanup_stale_descs: bool = True,
@@ -1587,6 +1773,8 @@ def prepare_runtime_workspace(
     )
     if workspace_preparation_needed:
         prepare_workspace(overwrite=False, workspace_dir=workspace_dir, migrate_config=False)
+        if config_missing and config_file.is_file():
+            reset_config_path_cache()
 
     if migrate_config:
         ensure_config_migrated_from_template(workspace_dir)
@@ -1725,6 +1913,15 @@ def init_user_workspace(
     return workspace_dir
 
 
+def reset_config_path_cache() -> None:
+    """Drop cached config paths so the next lookup sees a newly created workspace."""
+    global _initialized, _config_dir, _workspace_dir, _root_dir
+    _initialized = False
+    _config_dir = None
+    _workspace_dir = None
+    _root_dir = None
+
+
 def _resolve_paths() -> None:
     """Resolve and cache all paths."""
     global _initialized, _config_dir, _workspace_dir, _root_dir
@@ -1767,6 +1964,37 @@ def get_config_dir() -> Path:
     """Get the config directory path."""
     _resolve_paths()
     return _config_dir
+
+
+def get_gateway_config_dir(workspace_dir: Path | None = None) -> Path:
+    """Get the Gateway-only config directory, honoring the env override."""
+    base = Path(workspace_dir) if workspace_dir is not None else get_user_workspace_dir()
+    override = (os.getenv("JIUWENSWARM_GATEWAY_CONFIG_DIR") or "").strip()
+    if override:
+        path = Path(override).expanduser()
+        if not path.is_absolute():
+            path = base / "infra" / "config" / path
+        return path
+    return base / "infra" / "config"
+
+
+def get_gateway_config_file() -> Path:
+    """Get the Gateway-only config.yaml path."""
+    return get_gateway_config_dir() / "config.yaml"
+
+
+def get_gateway_config_template() -> Path:
+    """Return the installed agent-gateway config template."""
+    try:
+        import agent_gateway
+    except ImportError as exc:
+        raise RuntimeError(
+            "agent-gateway is not installed; cannot initialize the Gateway config"
+        ) from exc
+    template = Path(agent_gateway.__file__).resolve().parent / "resources" / "config.yaml"
+    if not template.is_file():
+        raise RuntimeError(f"agent-gateway config template not found: {template}")
+    return template
 
 
 def get_runtime_state_path(session_id: str | None = None) -> Path:

@@ -196,7 +196,7 @@ async def test_outer_symphony_timeout_terminates_without_retry(
     ability_manager = AbilityManager()
     ability_manager.add(card)
     orchestration_rail = SymphonyOrchestrationRail(
-        config_base={"symphony": {"enabled": True}},
+        config_base={"symphony": {"orchestration": {"enabled": True}}},
     )
     resilience_rail = ToolCallResilienceRail()
     callback_manager = _LifecycleCallbackManager(
@@ -263,7 +263,7 @@ async def test_outer_symphony_timeout_terminates_without_retry(
         orchestration_rail._model_tool_name(tool)
         for tool in new_invoke_model_ctx.inputs.tools
     ] == ["symphony_compose_graph", "symphony_refresh_graph"]
-    assert "## Skill Orchestration Contract" in agent.system_prompt_builder.build()
+    assert "## Capability Orchestration Contract" in agent.system_prompt_builder.build()
 
     exceptions = {
         id(ctx.exception): ctx.exception

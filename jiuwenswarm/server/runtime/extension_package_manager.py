@@ -69,6 +69,7 @@ class AgentGroupPackageError(ValueError):
         super().__init__(message)
         self.code = code
 
+
 _CATALOG_PREVIEWABLE_EXTS: frozenset[str] = frozenset(
     {".md", ".mdx", ".json", ".py", ".pdf"}
 )
@@ -705,30 +706,61 @@ def _connection_state(names: list[str] | tuple[str, ...], *, installed: bool) ->
     return "disconnected"
 
 
-def _resolve_package_avatar(pkg_dir: Path, manifest: dict) -> str:
-    """Inline manifest avatar as a data URL so the frontend can render <img src>."""
-    raw = manifest.get("avatar")
+def _package_avatar_file(pkg_dir: Path, raw: Any) -> tuple[Path, str] | None:
     if not isinstance(raw, str):
-        return ""
+        return None
     rel = raw.strip().replace("\\", "/")
-    if not rel or rel.startswith("/") or ".." in PurePosixPath(rel).parts:
-        return ""
+    if not rel or PureWindowsPath(rel).anchor or ".." in PurePosixPath(rel).parts:
+        return None
     mime = _AVATAR_MIME.get(Path(rel).suffix.lower())
     if mime is None:
-        return ""
-    root = pkg_dir.resolve()
-    full = (pkg_dir / rel).resolve()
+        return None
     try:
+        root = pkg_dir.resolve()
+        full = (pkg_dir / rel).resolve()
         full.relative_to(root)
-    except ValueError:
+        if full.is_file():
+            return full, mime
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return None
+
+
+def _avatar_data_url(data: bytes, mime: str) -> str:
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _resolve_package_avatar(pkg_dir: Path, manifest: dict) -> str:
+    """Inline manifest avatar as a data URL so the frontend can render <img src>."""
+    avatar = _package_avatar_file(pkg_dir, manifest.get("avatar"))
+    if avatar is None:
         return ""
-    if not full.is_file():
-        return ""
+    path, mime = avatar
     try:
-        data = full.read_bytes()
+        return _avatar_data_url(path.read_bytes(), mime)
     except OSError:
         return ""
-    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def resolve_package_avatar_thumbnail(pkg_dir: Path, reference: str) -> str:
+    """Return a package avatar small enough to replay from a roster event."""
+    from .marketplace.hub_avatar_cache import MAX_INPUT_BYTES, MAX_THUMBNAIL_BYTES, thumbnail
+
+    avatar = _package_avatar_file(pkg_dir, reference)
+    if avatar is None:
+        return ""
+    path, mime = avatar
+    limit = MAX_THUMBNAIL_BYTES if mime == "image/svg+xml" else MAX_INPUT_BYTES
+    try:
+        with path.open("rb") as image:
+            data = image.read(limit + 1)
+        if not data or len(data) > limit:
+            return ""
+        if mime == "image/svg+xml":
+            return _avatar_data_url(data, mime)
+        return thumbnail(data)
+    except Exception:  # noqa: BLE001 - avatar I/O or decoding must not fail delegation
+        return ""
 
 
 def _build_list_card(
@@ -1708,7 +1740,7 @@ def _build_file_tree(directory: Path, root: Path) -> list[dict]:
         # PermissionError is an OSError subclass — do not list both (G.ERR.09).
         return result
     for entry in entries:
-        if entry.name.startswith(".") or entry.is_symlink():
+        if entry.name.startswith(".") or entry.name == "__pycache__" or entry.is_symlink():
             continue
         rel = entry.relative_to(root).as_posix()
         if entry.is_dir():
@@ -1765,6 +1797,11 @@ def _nest_preview_tree(entries: list[tuple[str, int]]) -> list[dict]:
         return dirs + files
 
     return walk(root, "")
+
+
+def preview_file_tree(entries: list[tuple[str, int]]) -> list[dict]:
+    """Build the preview tree JSON from package-relative (path, size) entries."""
+    return _nest_preview_tree(entries)
 
 
 def _reject_preview_path_symlink(pkg_dir: Path, rel: str) -> Path:
@@ -3809,15 +3846,24 @@ def _read_previewable_file(pkg_dir: Path, rel_path: str) -> dict:
     }
 
 
+def list_package_files(pkg_dir: Path) -> list[dict]:
+    """Return the previewable file tree of one package directory."""
+    return _build_file_tree(pkg_dir, pkg_dir)
+
+
+def read_package_file(pkg_dir: Path, rel_path: str) -> dict:
+    """Read one previewable file from a package directory."""
+    return _read_previewable_file(pkg_dir, rel_path)
+
+
 def list_agent_template_files(name: str) -> list[dict]:
     """Return the file tree for one agent_template package."""
-    pkg_dir = _agent_template_preview_dir(name)
-    return _build_file_tree(pkg_dir, pkg_dir)
+    return list_package_files(_agent_template_preview_dir(name))
 
 
 def read_agent_template_file(name: str, rel_path: str) -> dict:
     """Read one previewable file from an agent_template package."""
-    return _read_previewable_file(_agent_template_preview_dir(name), rel_path)
+    return read_package_file(_agent_template_preview_dir(name), rel_path)
 
 
 async def list_agent_template_files_with_hub(

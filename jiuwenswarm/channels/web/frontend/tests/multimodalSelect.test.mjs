@@ -73,3 +73,34 @@ test('single selection retains scalar callbacks and closes after an option click
     await act(async () => root.unmount());
   }
 });
+
+test('option titles preserve disabled reasons and panel positioning excludes opening transforms', async () => {
+  const root = createRoot(document.getElementById('root'));
+  const prototype = dom.window.HTMLElement.prototype;
+  const width = Object.getOwnPropertyDescriptor(prototype, 'offsetWidth');
+  const height = Object.getOwnPropertyDescriptor(prototype, 'offsetHeight');
+  Object.defineProperty(prototype, 'offsetWidth', { configurable: true, get: () => 300 });
+  Object.defineProperty(prototype, 'offsetHeight', { configurable: true, get: () => 280 });
+  try {
+    await act(async () => root.render(createElement(Select, {
+      value: 'a', options: [
+        { value: 'a', label: 'Shared', title: 'model-a\nhttps://a.invalid\na' },
+        { value: 'b', label: 'Shared', title: 'model-b\nhttps://b.invalid\nb', disabled: true, disabledReason: 'Unavailable' },
+      ],
+    })));
+    const trigger = document.querySelector('[data-testid="ui-select-trigger"]');
+    trigger.getBoundingClientRect = () => ({ left: 900, top: 650, bottom: 682, width: 100, height: 32 });
+    await act(async () => trigger.click());
+    const panel = document.querySelector('[role="listbox"]');
+    assert.equal(panel.style.left, '716px');
+    assert.equal(panel.style.top, '364px');
+    assert.equal(trigger.textContent, 'Shared');
+    assert.equal(trigger.title, '');
+    assert.equal(document.querySelector('[role="option"][data-variant="a"]').title, 'model-a\nhttps://a.invalid\na');
+    assert.equal(document.querySelector('[role="option"][data-variant="b"]').title, 'Unavailable');
+  } finally {
+    await act(async () => root.unmount());
+    Object.defineProperty(prototype, 'offsetWidth', width);
+    Object.defineProperty(prototype, 'offsetHeight', height);
+  }
+});

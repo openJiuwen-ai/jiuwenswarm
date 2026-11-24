@@ -5,14 +5,24 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any, Callable
 
-from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
+from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard, ToolExposure
 
 from jiuwenswarm.agents.harness.common.tool_progress_context import (
     current_tool_progress,
 )
 from jiuwenswarm.common.symphony_config import load_symphony_config
+from jiuwenswarm.runtime.symphony.adapter import normalize_candidate_ids
+from jiuwenswarm.runtime.symphony.planning_inputs import (
+    DISPATCH_GRAPH_ATTR,
+    PLANNING_INPUTS_ATTR,
+    PLANNING_INPUTS_SCHEMA,
+    annotate_unavailable_inputs,
+    prepare_planning_inputs,
+    supports_planning_inputs,
+)
 if TYPE_CHECKING:
     from jiuwenswarm.runtime.symphony.service import SwarmSymphonyService
 from jiuwenswarm.runtime.symphony.llm import LLMConfig, current_request_llm_config
@@ -21,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_SERVICE_TIMEOUT_S = 1800.0
 _COMPOSE_SERVICE_TIMEOUT_S = 3300.0
+_COMPOSE_CALLBACK_CONTEXT: ContextVar[Any] = ContextVar("symphony_compose_callback", default=None)
 
 
 def get_swarm_symphony_service() -> SwarmSymphonyService:
@@ -32,24 +43,47 @@ def get_swarm_symphony_service() -> SwarmSymphonyService:
 def _coerce_compose_inputs(inputs: Any) -> Any:
     if not isinstance(inputs, dict):
         return inputs
-    encoded_candidate_ids = inputs.get("candidate_skill_ids")
-    if not isinstance(encoded_candidate_ids, str):
-        return inputs
-    try:
-        decoded_candidate_ids = json.loads(encoded_candidate_ids)
-    except json.JSONDecodeError:
-        return inputs
-    if not isinstance(decoded_candidate_ids, list):
-        return inputs
-
     normalized_inputs = dict(inputs)
-    normalized_inputs["candidate_skill_ids"] = decoded_candidate_ids
+    for key in ("candidate_ids", "candidate_skill_ids", "inputs"):
+        value = inputs.get(key)
+        if not isinstance(value, str):
+            continue
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(decoded, list):
+            normalized_inputs[key] = decoded
     return normalized_inputs
 
 
 class _ComposeGraphLocalFunction(LocalFunction):
+    accepts_tool_callback_context = True
+
     async def invoke(self, inputs: Any, **kwargs: Any) -> Any:
-        return await super().invoke(_coerce_compose_inputs(inputs), **kwargs)
+        args = _coerce_compose_inputs(inputs)
+        if not isinstance(args, dict):
+            return await super().invoke(args, **kwargs)
+        available, unavailable = [], []
+        if "inputs" in args:
+            if not supports_planning_inputs():
+                return {"success": False, "reason": "planning_inputs_unsupported", "detail": (
+                    "Named planning inputs are unavailable in this environment."
+                )}
+            try:
+                available, unavailable = await asyncio.to_thread(prepare_planning_inputs, args["inputs"])
+            except ValueError as exc:
+                return {"success": False, "reason": "invalid_planning_inputs", "detail": str(exc)}
+            args["inputs"] = available
+        context = kwargs.get("_tool_callback_context")
+        if context is not None:
+            setattr(context, PLANNING_INPUTS_ATTR, tuple(available))
+        token = _COMPOSE_CALLBACK_CONTEXT.set(context)
+        try:
+            result = await super().invoke(args, **kwargs)
+        finally:
+            _COMPOSE_CALLBACK_CONTEXT.reset(token)
+        return annotate_unavailable_inputs(result, unavailable)
 
 
 class SymphonyToolkit:
@@ -130,7 +164,7 @@ class SymphonyToolkit:
             "success": False,
             "disabled": True,
             "method": method,
-            "detail": "Symphony is disabled by config: symphony.enabled=false",
+            "detail": "Symphony is disabled by config: symphony.orchestration.enabled=false",
         }
 
     def _llm_config_kwargs(
@@ -165,10 +199,6 @@ class SymphonyToolkit:
         if not self.is_enabled():
             return self._disabled_payload("symphony_refresh_graph")
         kwargs: dict[str, Any] = {"progress": current_tool_progress()}
-        llm_kwargs, error = self._llm_config_kwargs("refresh_graph")
-        if error is not None:
-            return error
-        kwargs.update(llm_kwargs)
         return await self._call_service(
             "refresh_graph",
             **kwargs,
@@ -181,12 +211,16 @@ class SymphonyToolkit:
         }
         if bool(compact["success"]):
             planned_graph = payload.get("planned_graph")
-            if not isinstance(planned_graph, dict):
+            route = payload.get("execution_route")
+            if not isinstance(planned_graph, dict) and not (
+                isinstance(route, dict) and route.get("requires_planning") is False
+            ):
                 return {
                     "success": False,
                     "detail": "Symphony orchestration returned no planned_graph",
                 }
-            compact["planned_graph"] = planned_graph
+            if isinstance(planned_graph, dict):
+                compact["planned_graph"] = cls._public_planned_graph(planned_graph)
             graph_build = payload.get("graph_build")
             if isinstance(graph_build, dict) and graph_build.get("rebuilt") is True:
                 compact["graph_build"] = cls._compact_graph_build(graph_build)
@@ -217,6 +251,22 @@ class SymphonyToolkit:
         return compact
 
     @staticmethod
+    def _public_planned_graph(planned_graph: dict[str, Any]) -> dict[str, Any]:
+        """Omit node material bindings from the graph returned to the model."""
+        graph = planned_graph.get("graph")
+        nodes = graph.get("nodes") if isinstance(graph, dict) else None
+        if not isinstance(nodes, dict):
+            return planned_graph
+        public_nodes = nodes.copy()
+        for node_id, node in nodes.items():
+            metadata = node.get("metadata") if isinstance(node, dict) else None
+            if isinstance(metadata, dict) and "external_inputs" in metadata:
+                public_metadata = metadata.copy()
+                del public_metadata["external_inputs"]
+                public_nodes[node_id] = {**node, "metadata": public_metadata}
+        return {**planned_graph, "graph": {**graph, "nodes": public_nodes}}
+
+    @staticmethod
     def _compact_graph_status(status: dict[str, Any]) -> dict[str, Any]:
         compact = _copy_compact_fields(
             status,
@@ -225,6 +275,7 @@ class SymphonyToolkit:
                 "exists",
                 "stale",
                 "skill_count",
+                "expert_count",
                 "changed_count",
                 "added_count",
                 "removed_count",
@@ -243,6 +294,7 @@ class SymphonyToolkit:
                 "rebuilt",
                 "success",
                 "skill_count",
+                "expert_count",
                 "reused_count",
                 "extracted_count",
                 "removed_count",
@@ -293,6 +345,11 @@ class SymphonyToolkit:
         query: str,
         mode: str | None = None,
         candidate_skill_ids: list[str] | None = None,
+        *,
+        # LocalFunction binds the public tool schema's "type" keyword directly.
+        type: str = "auto",  # pylint: disable=redefined-builtin
+        candidate_ids: list[str] | None = None,
+        inputs: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         if not self.is_enabled():
             return self._compact_plan_payload(
@@ -300,29 +357,72 @@ class SymphonyToolkit:
             )
         query_text = str(query or "").strip()
         mode_text = str(mode or "").strip()
-        normalized_candidate_skill_ids = _normalize_candidate_skill_ids(
-            candidate_skill_ids
-        )
         kwargs: dict[str, Any] = {
             "mode": mode_text or None,
-            "candidate_skill_ids": normalized_candidate_skill_ids,
+            "capability_type": type,
+            "candidate_ids": normalize_candidate_ids(candidate_ids),
+            "candidate_skill_ids": normalize_candidate_ids(candidate_skill_ids),
             "progress": current_tool_progress(),
         }
+        if inputs:
+            kwargs["inputs"] = inputs
         llm_kwargs, error = self._llm_config_kwargs("plan")
         if error is not None:
             return self._compact_plan_payload(error)
         kwargs.update(llm_kwargs)
+        callback_context = _COMPOSE_CALLBACK_CONTEXT.get()
+        if type == "auto" and callback_context is not None:
+            kwargs["context"] = await self._planning_context(callback_context)
         payload = await self._call_service("plan", query_text, **kwargs)
         if isinstance(payload, dict):
+            if callback_context is not None:
+                setattr(callback_context, DISPATCH_GRAPH_ATTR, payload.get("planned_graph"))
+                if "_planning_inputs" in payload:
+                    setattr(callback_context, PLANNING_INPUTS_ATTR, tuple(payload["_planning_inputs"]))
             return self._compact_plan_payload(payload)
         return payload
+
+    @staticmethod
+    async def _planning_context(ctx: Any) -> dict[str, Any] | None:
+        agent = ctx.extra.get("_symphony_host_agent") or ctx.agent
+        configured_rails = getattr(agent, "configured_rails", None)
+        if not callable(configured_rails):
+            return None
+        from jiuwenswarm.runtime.symphony.capabilities import _installed_expert_candidates
+
+        skills = {}
+        for rail in configured_rails():
+            read_skills = getattr(rail, "get_skills_for_session", None)
+            for skill in read_skills(ctx.session) if callable(read_skills) else ():
+                skills[skill.name] = {"id": skill.name, "name": skill.name, "description": skill.description}
+        manager = agent.ability_manager
+        controls = {"skill_tool", "list_skill", "list_tools", "capability_search",
+                    "task_tool", "subagent_spawn", "ask_user"}
+        tools = [{"id": card.name, "name": card.name, "description": card.description}
+                 for card in manager.list()
+                 if isinstance(card, ToolCard) and card.name not in controls and not card.name.startswith("symphony_")]
+        task = manager.get("task_tool")
+        properties = (getattr(task, "input_params", None) or {}).get("properties", {})
+        extra = getattr(ctx.extra.get("run_context"), "extra", None)
+        if isinstance(ctx.extra.get("run_context"), dict):
+            extra = ctx.extra["run_context"].get("extra")
+        experts = await _installed_expert_candidates()
+        return {
+            "request_id": str(getattr(ctx.inputs.tool_call, "id", "") or ""),
+            "skills": list(skills.values()), "tools": tools,
+            "experts": [{"id": item.descriptor.capability_id, "name": item.descriptor.name,
+                         "description": item.descriptor.description}
+                        for item in experts if item.descriptor.available],
+            "required_skill_ids": (extra or {}).get("skills", []),
+            "allow_experts": "plan_id" in properties,
+        }
 
     @staticmethod
     def is_enabled(config: dict[str, Any] | None = None) -> bool:
         try:
             if config is None:
-                return bool(load_symphony_config().enabled)
-            return bool(load_symphony_config(config).enabled)
+                return bool(load_symphony_config().orchestration.enabled)
+            return bool(load_symphony_config(config).orchestration.enabled)
         except Exception as exc:  # noqa: BLE001
             logger.warning("failed to load Symphony config; tools disabled: %s", exc)
             return False
@@ -349,24 +449,23 @@ class SymphonyToolkit:
                     {"resilience": {"timeout_s": None}} if uses_internal_timeout else {}
                 ),
             )
-            tool_type = (
-                _ComposeGraphLocalFunction
-                if name == "symphony_compose_graph"
-                else LocalFunction
-            )
-            return tool_type(card=card, func=func)
+            if name == "symphony_compose_graph":
+                card.exposure = ToolExposure.DIRECT
+                card.set_exposure_declared(True)
+                return _ComposeGraphLocalFunction(card=card, func=func)
+            return LocalFunction(card=card, func=func)
 
         return [
             make_tool(
                 "symphony_read_graph",
-                "Read whether the Skill Graph exists or is stale before composing Skill execution.",
+                "Inspect whether the Skill relationship graph is available and up to date.",
                 {"type": "object", "properties": {}},
                 self.graph_status,
             ),
             make_tool(
                 "symphony_refresh_graph",
                 (
-                    "Extract installed Skill features and refresh the Skill Graph. "
+                    "Refresh the Skill relationship graph when Skills are added, removed, or changed. "
                     "If a result reports graph_build_timeout or manual_graph_build, "
                     "do not call this tool or symphony_compose_graph again in this round."
                 ),
@@ -377,20 +476,9 @@ class SymphonyToolkit:
             make_tool(
                 "symphony_compose_graph",
                 (
-                    "Compose an execution plan for a task that requires multiple installed "
-                    "skills or an ordered skill workflow. Discovery, comparison, and "
-                    "recommendation alone do not require this tool. Pass only shortlisted "
-                    "exact skill IDs in candidate_skill_ids; omit that argument when the "
-                    "user requested a plan but no candidate is known. Before composing, use "
-                    "discovery metadata directly; do not call skill_tool, read_file, or read "
-                    "any SKILL.md. The tool may refresh a missing or stale graph before "
-                    "composing. Use its returned plan and ask for any missing inputs it "
-                    "reports. When the plan is ready, choose one currently executable Skill, "
-                    "read only that Skill's SKILL.md immediately before executing it, and do "
-                    "not preload all selected Skill instructions. When the plan needs input "
-                    "or no plan is available, do not read Skills merely for orchestration. "
-                    "If it returns graph_build_timeout or manual_graph_build, do not retry "
-                    "graph tools in the same round."
+                    "Plan the user's task using the available capabilities. Call when orchestration is requested "
+                    "or complex work needs planning. Omit type for automatic selection. Follow planned_graph "
+                    "when present. On success without a graph, continue the task directly."
                 ),
                 {
                     "type": "object",
@@ -399,27 +487,38 @@ class SymphonyToolkit:
                             "type": "string",
                             "description": "The user's original task, without retrieval commands or internal notes.",
                         },
+                        "type": {
+                            "type": "string",
+                            "enum": ["auto", "skill", "expert"],
+                            "default": "auto",
+                            "description": (
+                                "Default auto selects an execution strategy. Use skill for a Skill workflow or expert "
+                                "for expert task assignments only when the user explicitly requests that kind of plan."
+                            ),
+                        },
                         "mode": {
                             "type": "string",
                             "enum": ["fast", "beam"],
                             "description": (
-                                "Optional planning mode. Use fast for simple tasks, "
-                                "short execution chains, or when candidate skills are "
-                                "already clear; fast is the default. Use beam for "
-                                "complex multi-step tasks, tasks with multiple possible "
-                                "skill paths, or when prerequisite skills need to be "
-                                "discovered through bidirectional search."
+                                "Normally omit mode to use the session setting. For Skill workflows, fast suits "
+                                "a short, clear workflow; beam explores several plausible paths."
+                            ),
+                        },
+                        "candidate_ids": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Exact available capability IDs shortlisted for this task. With auto, selection is "
+                                "limited to these candidates; omit to select from visible capabilities. "
+                                "Include only relevant candidates."
                             ),
                         },
                         "candidate_skill_ids": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": (
-                                "Exact installed skill IDs already shortlisted for the task. "
-                                "Batch all relevant IDs in this one argument; do not include "
-                                "weak matches or every skill from a catalog overview."
-                            ),
+                            "description": "Legacy alias for candidate_ids when type=skill. Supply only one field.",
                         },
+                        **({"inputs": PLANNING_INPUTS_SCHEMA} if supports_planning_inputs() else {}),
                     },
                     "required": ["query"],
                 },
@@ -442,19 +541,3 @@ def _copy_compact_fields(
             continue
         compact[key] = value
     return compact
-
-
-def _normalize_candidate_skill_ids(values: Any) -> list[str] | None:
-    if values is None:
-        return None
-    if not isinstance(values, (list, tuple)):
-        return []
-    output: list[str] = []
-    seen: set[str] = set()
-    for value in values:
-        current_skill_id = str(value or "").strip()
-        if not current_skill_id or current_skill_id in seen:
-            continue
-        seen.add(current_skill_id)
-        output.append(current_skill_id)
-    return output

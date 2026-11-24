@@ -2,15 +2,27 @@ import type { SessionId } from './clientAttachment';
 import type { DocumentId } from './documentIdentity';
 import { isRecord, type GatewayClient, type JsonObject } from './gatewayClient';
 
-/** A user-picked image, base64-encoded, waiting to be persisted server-side. */
-export interface OutgoingImageAttachment {
+/** A user-picked file, base64-encoded, waiting to be persisted server-side: an image, or a document the agent reads. */
+export interface OutgoingAttachment {
   filename: string;
   mimeType: string;
   base64Data: string;
 }
 
+export function isImage({ mimeType }: OutgoingAttachment): boolean {
+  return mimeType.startsWith('image/');
+}
+
+/** The size of the file, from its base64. */
+export function attachmentBytes({ base64Data }: OutgoingAttachment): number {
+  return Math.floor(base64Data.length * 3 / 4) - (base64Data.match(/=*$/)?.[0].length ?? 0);
+}
+
+/** The line a message's uploaded documents follow, one ``@path`` each, as the web chat writes it. */
+export const DOCUMENT_BLOCK_HEADER = '【上传文档】';
+
 /** The image as a ``data:`` URL, to show it in the pane. */
-export function imageDataUrl({ mimeType, base64Data }: OutgoingImageAttachment): string {
+export function imageDataUrl({ mimeType, base64Data }: OutgoingAttachment): string {
   return `data:${mimeType};base64,${base64Data}`;
 }
 
@@ -39,8 +51,8 @@ export interface ClientState {
   sent(): void;
 }
 
-interface PersistedImageAttachment {
-  type: 'image';
+interface PersistedAttachment {
+  type: 'image' | 'document';
   filename: string;
   mime_type: string;
   path: string;
@@ -116,6 +128,16 @@ export class SessionFacade {
     return response.messages.filter(isRecord);
   }
 
+  /**
+   * Whether the conversation's turn runs now, as ``session.get_metadata`` reads it from the running agent and the web
+   * chat restores it; undefined while the server cannot tell yet.
+   */
+  async processing(sessionId: SessionId): Promise<boolean | undefined> {
+    const response = await this.gateway.request('session.get_metadata', { session_id: sessionId });
+    const recovering = isRecord(response.runtime) && response.runtime.recovery_pending === true;
+    return typeof response.is_processing === 'boolean' && !recovering ? response.is_processing : undefined;
+  }
+
   /** The user's attached documents (``client.list``), by the conversation each is attached to. */
   async openDocuments(sessionId: SessionId): Promise<Map<string, OpenDocument>> {
     const response = await this.gateway.request('client.list', { session_id: sessionId });
@@ -142,23 +164,35 @@ export class SessionFacade {
     });
   }
 
-  /** A message, on ``modelName`` when given (``chat.send`` ``model_name``, as the web chat's model picker sends it). */
+  /**
+   * A message, on ``modelName`` when given (``chat.send`` ``model_name``, as the web chat's model picker sends it).
+   * Its documents' paths end the message, as the web chat names them to the agent.
+   */
   async sendText(
-    sessionId: SessionId, content: string, images: readonly OutgoingImageAttachment[] = [], modelName?: string,
+    sessionId: SessionId, content: string, attachments: readonly OutgoingAttachment[] = [], modelName?: string,
   ): Promise<void> {
-    const mediaItems = images.length ? await this.persistImages(sessionId, images) : undefined;
-    const uploadedImages = mediaItems?.map(({ filename, path, mime_type, size_bytes }) => (
+    const images = attachments.filter(isImage);
+    const imageItems = images.length ? await this.persistImages(sessionId, images) : [];
+    const documentItems = await this.persistDocuments(sessionId, attachments.filter(item => !isImage(item)));
+    const listed = (items: PersistedAttachment[]) => items.map(({ filename, path, mime_type, size_bytes }) => (
       { filename, path, mime_type, size_bytes }));
+    const mediaItems = [...imageItems, ...documentItems];
+    const files = {
+      ...(imageItems.length ? { uploaded_images: listed(imageItems) } : {}),
+      ...(documentItems.length ? { uploaded_documents: listed(documentItems) } : {}),
+    };
+    const message = documentItems.length ? [content, DOCUMENT_BLOCK_HEADER, ...documentItems.map(({ path }) => (
+      /\s/.test(path) ? `@"${path}"` : `@${path}`))].filter(Boolean).join('\n') : content;
     const state = this.clientState ? await this.clientState(sessionId) : undefined;
     await this.gateway.request(
       'chat.send',
       {
         session_id: sessionId,
-        content,
+        content: message,
         mode: 'agent.work.normal',
         work_mode: 'work',
         ...(modelName ? { model_name: modelName } : {}),
-        ...(mediaItems ? { media_items: mediaItems, files: { uploaded_images: uploadedImages } } : {}),
+        ...(mediaItems.length ? { media_items: mediaItems, files } : {}),
         ...(state === undefined ? {} : { client_state: state.text }),
       },
       { stream: true, timeoutMs: 60_000 },
@@ -185,8 +219,8 @@ export class SessionFacade {
    * the multimodal rail) and ``files.uploaded_images`` (for the user turn).
    */
   private async persistImages(
-    sessionId: SessionId, images: readonly OutgoingImageAttachment[],
-  ): Promise<PersistedImageAttachment[]> {
+    sessionId: SessionId, images: readonly OutgoingAttachment[],
+  ): Promise<PersistedAttachment[]> {
     const response = await this.gateway.request(
       'media.persist',
       {
@@ -202,9 +236,43 @@ export class SessionFacade {
     return persisted.map(({ filename, mime_type, path, size_bytes }) => (
       { type: 'image', filename, mime_type, path, size_bytes }));
   }
+
+  /**
+   * Documents go one at a time to ``document.persist``, as the web chat sends them, which writes each under the
+   * conversation's uploads and hands back its path. A document it refuses, as one of a blocked type, fails the message.
+   */
+  private async persistDocuments(
+    sessionId: SessionId, documents: readonly OutgoingAttachment[],
+  ): Promise<PersistedAttachment[]> {
+    const persisted: PersistedAttachment[] = [];
+    for (const item of documents) {
+      const { filename, mimeType, base64Data } = item;
+      const response = await this.gateway.request(
+        'document.persist',
+        {
+          session_id: sessionId,
+          content: '',
+          documents: [
+            { filename, mime_type: mimeType, base64_data: base64Data, size_bytes: attachmentBytes(item) }],
+        },
+        { timeoutMs: 120_000 },
+      );
+      const [refused] = Array.isArray(response.document_errors) ? response.document_errors.filter(isRecord) : [];
+      if (refused) throw new Error(`${filename}：${String(refused.error ?? '')}`);
+      const [stored] = Array.isArray(response.media_items) ? response.media_items.filter(isPersistedDocument) : [];
+      if (!stored) throw new Error('document.persist 未返回文件路径');
+      persisted.push(stored);
+    }
+    return persisted;
+  }
 }
 
-function isPersistedImage(value: unknown): value is PersistedImageAttachment {
+function isPersistedDocument(value: unknown): value is PersistedAttachment {
+  return isRecord(value) && value.type === 'document' && typeof value.filename === 'string'
+    && typeof value.path === 'string' && value.path.length > 0 && typeof value.mime_type === 'string';
+}
+
+function isPersistedImage(value: unknown): value is PersistedAttachment {
   return isRecord(value)
     && (value.type === undefined || value.type === 'image')
     && typeof value.filename === 'string' && value.filename.length > 0

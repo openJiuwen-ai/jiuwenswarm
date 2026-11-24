@@ -45,6 +45,23 @@ describe('GatewayClient', () => {
     vi.useRealTimers();
   });
 
+  it('gives every host the same user without an installed one, so the hosts see each other\'s documents', async () => {
+    const stored = new Map<string, string>();
+    vi.stubGlobal('window', {
+      location: { protocol: 'http:', host: '127.0.0.1:5373', search: '?doc=a' },
+      localStorage: { getItem: (key: string) => stored.get(key) ?? null, setItem: (key: string, value: string) => {
+        stored.set(key, value);
+      } },
+      addEventListener: vi.fn(),
+    });
+    const users = ['office_excel', 'office_powerpoint', 'office_word'].map(app => {
+      void new GatewayClient(app).connect();
+      return new URL(FakeWebSocket.instances.at(-1)!.url).searchParams.get('user_id');
+    });
+    expect(new Set(users).size).toBe(1);
+    expect(users[0]).toMatch(/^office-/);
+  });
+
   async function connected(): Promise<{ client: GatewayClient; socket: FakeWebSocket }> {
     const client = new GatewayClient('office_powerpoint');
     const opening = client.connect();

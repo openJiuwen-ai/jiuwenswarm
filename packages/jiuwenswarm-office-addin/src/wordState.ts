@@ -7,9 +7,10 @@
  * (the user's decisions on suggestion cards). Comments, tracked changes and content controls come inside
  * ``<untrusted_content>``.
  */
-import type { OfficeHost } from './appContract';
+import type { OfficeHost, Platform } from './appContract';
 import type { DocEditReview } from './docEditReview';
 import { type HostWriteQueue, type Looks, UserChanges } from './hostWriteQueue';
+import type { Selection } from './selectionLine';
 import type { ClientState } from './sessionFacade';
 import { quoted } from './stateText';
 import { headingLevel, markedLines, PARAGRAPH_FIELDS } from './wordParagraphs';
@@ -30,6 +31,31 @@ const COLUMNS_SET = ['WordApiDesktop', '1.3'] as const;
 const EVENTS_SET = ['WordApi', '1.6'] as const;
 /** Where a selection counts as in the body: the body itself, or a table cell in it. */
 const BODY_TYPES = new Set(['MainDoc', 'TableCell']);
+
+/** How the model's code reaches what the state names but does not show, by the platform's code tool. */
+interface CodePaths {
+  /** A header's or footer's label, by section index from 0, ``Primary``, ``FirstPage`` or ``EvenPages``. */
+  part(section: number, kind: string, place: 'Header' | 'Footer'): string;
+  parts: string;
+  selection: string;
+  elsewhere: string;
+}
+
+const CODE_PATHS: Record<Platform, CodePaths> = {
+  office: {
+    part: (section, kind, place) => `sections.items[${section}]${kind === 'Primary' ? '' : ` ${kind}`} ${place}`,
+    parts: 'edit them through sections.items[i].getHeader or getFooter',
+    selection: 'read it with context.document.getSelection() in execute_office_js',
+    elsewhere: 'Read it through the matching Word API',
+  },
+  wps: {
+    part: (section, kind, place) => `section ${section + 1}${kind === 'Primary' ? '' : ` ${kind}`} ${place}`,
+    parts: 'edit them in execute_wps_js through document.Sections.Item(n).Headers or Footers, Item(1) for the '
+      + 'primary one, 2 for the first page, 3 for even pages',
+    selection: 'read it with document.ActiveWindow.Selection.Range in execute_wps_js',
+    elsewhere: 'Read it with execute_wps_js',
+  },
+};
 
 type ChangeType = 'ParagraphAdded' | 'ParagraphChanged' | 'ParagraphDeleted';
 
@@ -69,9 +95,13 @@ export class WordState {
   /** By paragraph id. */
   private readonly changes = new UserChanges<Change>(changeLine);
 
+  private readonly code: CodePaths;
+
   constructor(private readonly run: WordRun, private readonly office: Pick<Office.Context, 'contentLanguage'
     | 'displayLanguage'>, private readonly host: OfficeHost, private readonly reviews: DocEditReview,
-  private readonly writes: HostWriteQueue) {}
+  private readonly writes: HostWriteQueue, platform: Platform = 'office') {
+    this.code = CODE_PATHS[platform];
+  }
 
   /**
    * Listens to the user's paragraph edits for as long as the pane runs, on ``context``, a context of its own.
@@ -127,7 +157,8 @@ export class WordState {
   async forMessage(sessionId: string): Promise<ClientState> {
     let document: string;
     try {
-      document = await this.run(async context => [await this.docState(context), await selection(context)].join('\n'));
+      document = await this.run(async context => [await this.docState(context),
+        await selection(context, this.code)].join('\n'));
     } catch (error) {
       document = `<doc_state>\nThe document could not be read when this message was sent (${
         error instanceof Error ? error.message : String(error)}).\n</doc_state>`;
@@ -172,7 +203,7 @@ export class WordState {
       : `Track Changes: ${document.changeTrackingMode}; edits land as redlines.`);
     lines.push(...await this.columns(context, sections.items));
     lines.push(...await outline(context, items.filter(paragraph => headingLevel(paragraph) !== undefined)));
-    lines.push(...await headersAndFooters(context, sections.items));
+    lines.push(...await headersAndFooters(context, sections.items, this.code));
     if (words < FULL_TEXT_WORDS && text.length < FULL_TEXT_CHARS) {
       const reviewed = changes.items.length > 0;
       lines.push(reviewed ? 'Full text (pending tracked changes applied; the revisions listed below are not '
@@ -227,7 +258,7 @@ export class WordState {
     if (language) {
       const of = contentLanguage ? displayLanguage && displayLanguage !== contentLanguage
         ? ` (authoring language; Office is in ${displayLanguage})` : ' (authoring language)'
-        : ' (Office display language; the document may be in another)';
+        : ' (the app\'s display language; the document may be in another)';
       lines.push(`Language: ${language}${of}; write new text in this locale's spelling and conventions unless the `
         + 'document clearly follows another variety.');
     }
@@ -273,17 +304,17 @@ async function outline(context: Word.RequestContext, headings: Word.Paragraph[])
   ];
 }
 
-async function headersAndFooters(context: Word.RequestContext, sections: Word.Section[]): Promise<string[]> {
+async function headersAndFooters(context: Word.RequestContext, sections: Word.Section[], code: CodePaths):
+Promise<string[]> {
   const kinds = ['Primary', 'FirstPage', 'EvenPages'] as const;
   const parts = sections.flatMap((section, index) => kinds.flatMap(kind => [
-    { index, kind, place: 'Header', body: section.getHeader(kind).load('text') },
-    { index, kind, place: 'Footer', body: section.getFooter(kind).load('text') },
+    { index, kind, place: 'Header' as const, body: section.getHeader(kind).load('text') },
+    { index, kind, place: 'Footer' as const, body: section.getFooter(kind).load('text') },
   ]));
   await context.sync();
   const lines = parts.filter(part => part.body.text.trim()).map(({ index, kind, place, body }) => (
-    `  [sections.items[${index}]${kind === 'Primary' ? '' : ` ${kind}`} ${place}] ${quote(body.text)}`));
-  return lines.length ? ['Headers and footers (not in the body; edit them through sections.items[i].getHeader or '
-    + 'getFooter):', ...lines] : [];
+    `  [${code.part(index, kind, place)}] ${quote(body.text)}`));
+  return lines.length ? [`Headers and footers (not in the body; ${code.parts}):`, ...lines] : [];
 }
 
 async function commentThreads(context: Word.RequestContext, comments: Word.Comment[]): Promise<string[]> {
@@ -309,8 +340,18 @@ async function commentThreads(context: Word.RequestContext, comments: Word.Comme
   ];
 }
 
+/** How many characters the user selected, white space aside, for the pane's selection line. */
+export function selectedText(run: WordRun): Promise<Selection> {
+  return run(async context => {
+    const range = context.document.getSelection();
+    range.load('text');
+    await context.sync();
+    return { kind: 'text', characters: [...range.text.replace(/\s/g, '')].length };
+  });
+}
+
 /** What the user selected: a cursor, a place outside the body, part of one paragraph, or several paragraphs. */
-async function selection(context: Word.RequestContext): Promise<string> {
+async function selection(context: Word.RequestContext, code: CodePaths): Promise<string> {
   const range = context.document.getSelection().load('text');
   const paragraphs = range.paragraphs.load('items/text,items/styleBuiltIn,items/style,items/tableNestingLevel,'
     + 'items/isListItem');
@@ -321,7 +362,7 @@ async function selection(context: Word.RequestContext): Promise<string> {
   let block: string;
   if (!BODY_TYPES.has(where.type)) {
     block = `The selection is in the document's ${where.type.toLowerCase()}, not the body; its text is not shown `
-      + 'here. Read it through the matching Word API, or ask the user to paste it.';
+      + `here. ${code.elsewhere}, or ask the user to paste it.`;
   } else if (!range.text) {
     block = `Cursor${style ? ` (${style})` : ''}; no text selected.`;
   } else {
@@ -331,7 +372,7 @@ async function selection(context: Word.RequestContext): Promise<string> {
     if (paragraphs.items.some(paragraph => paragraph.isListItem)) facts.push('in a list');
     const structure = `Structure: ${facts.join(', ')}`;
     if (paragraphs.items.length > 1) {
-      block = `${structure}\nContent not included; read it with context.document.getSelection() in execute_office_js.`;
+      block = `${structure}\nContent not included; ${code.selection}.`;
     } else {
       const whole = first.text.length > MAX_SELECTION ? `${first.text.slice(0, MAX_SELECTION)}… (cut at `
         + `${MAX_SELECTION} of ${first.text.length} characters)` : first.text;

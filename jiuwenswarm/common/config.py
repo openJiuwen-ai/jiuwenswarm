@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import secrets
+import shutil
 import sys
 import threading
 import time
@@ -19,6 +20,7 @@ from ruamel.yaml.scalarstring import DoubleQuotedScalarString, PlainScalarString
 import yaml
 import portalocker
 
+from jiuwenswarm.common.cua_config import is_cua_agent_enabled
 from jiuwenswarm.common.kv_cache_affinity_config import (
     APPLICATION_KV_CACHE_CONFIG_KEY,
     KV_CACHE_AFFINITY_ENABLED_KEY,
@@ -320,6 +322,11 @@ def get_config():
             except (ValueError, TypeError):
                 logger.warning("Ignoring malformed AgentOS %s deployment config", section)
 
+    if "symphony" in config_base:
+        from jiuwenswarm.common.symphony_config import load_symphony_config, migrate_legacy_symphony_config
+        if isinstance(config_base["symphony"], dict):
+            config_base["symphony"] = migrate_legacy_symphony_config(config_base["symphony"])
+        load_symphony_config(config_base)
     return apply_runtime_model_config(config_base)
 
 
@@ -383,24 +390,9 @@ def get_skill_evolution_enabled(config: dict[str, Any] | None) -> bool:
 def get_symphony_evolution_enabled(config: dict[str, Any] | None) -> bool:
     """Read the persisted Discover SkillPack setting without deployment overrides."""
 
-    from jiuwenswarm.common.symphony_config import (
-        resolve_symphony_evolution_enabled,
-    )
-
-    if not isinstance(config, dict):
-        return False
-    symphony = config.get("symphony")
-    if not isinstance(symphony, dict):
-        symphony = {}
-    evolution = symphony.get("evolution")
-    if not isinstance(evolution, dict):
-        evolution = {}
-    # enabled 位于 evolution.flow 下；旧配置（evolution.enabled）向后兼容
-    flow = evolution.get("flow")
-    flow_enabled = flow.get("enabled") if isinstance(flow, dict) else None
-    if flow_enabled is None:
-        flow_enabled = evolution.get("enabled")
-    return resolve_symphony_evolution_enabled(flow_enabled)
+    from jiuwenswarm.common.symphony_config import load_symphony_config
+    resolved = load_symphony_config(config or {})
+    return resolved.orchestration.experience.enabled
 
 
 def coerce_config_bool(value: Any, default: bool) -> bool:
@@ -510,8 +502,7 @@ def is_tool_retrieval_enabled(config: dict[str, Any] | None = None) -> bool:
 
     True only when both top-level switches are true: ``progressive_tool_enabled``
     (AbilityManager deferred assignment) and ``progressive_tool_optimize`` (the
-    retrieval layer itself). ``true`` means our skill_index-framework
-    ``tool_search`` is mounted and deferred tools are hidden until discovered;
+    retrieval layer itself). ``true`` mounts ``tool_search`` and hides deferred tools until discovered.
     ``false`` disables it and every tool stays direct.
     """
 
@@ -778,6 +769,70 @@ def update_channel_in_config(channel_id: str, conf: dict[str, Any]) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+_CHANNEL_CONFIG_SYNC_SECTIONS = frozenset({"feishu", "dingtalk", "welink"})
+_CHANNEL_APP_LIST_SYNC_SECTIONS = frozenset({"xiaoyi"})
+
+
+def apply_channel_config_snapshot(channels: Any) -> bool:
+    """Merge a Gateway channel snapshot into the local AgentServer config."""
+    if not isinstance(channels, dict) or not channels:
+        return False
+
+    changed = False
+
+    def _mutate(data: dict[str, Any]) -> dict[str, Any] | None:
+        nonlocal changed
+        current = data.get("channels")
+        if not isinstance(current, dict):
+            current = {}
+            data["channels"] = current
+        for channel_id, section in channels.items():
+            if not isinstance(channel_id, str) or not isinstance(section, dict):
+                continue
+            if channel_id == "feishu_enterprise":
+                # feishu_enterprise is a dynamic bot map. Keep only bots present
+                # in the snapshot, while preserving local fields on retained bots.
+                previous = current.get(channel_id)
+                previous = previous if isinstance(previous, dict) else {}
+                merged = {}
+                for bot_id, bot_conf in section.items():
+                    old_bot = previous.get(bot_id)
+                    if isinstance(old_bot, dict) and isinstance(bot_conf, dict):
+                        bot_conf = {**deepcopy(old_bot), **deepcopy(bot_conf)}
+                    else:
+                        bot_conf = deepcopy(bot_conf)
+                    merged[bot_id] = bot_conf
+                current[channel_id] = merged
+                changed = True
+            elif channel_id in _CHANNEL_CONFIG_SYNC_SECTIONS or channel_id in _CHANNEL_APP_LIST_SYNC_SECTIONS:
+                # Gateway owns the app list. Replace apps as a whole; preserve
+                # local-only fields such as dingtalk file settings unless the
+                # snapshot explicitly provides a replacement.
+                target = current.get(channel_id)
+                if not isinstance(target, dict):
+                    target = {}
+                    current[channel_id] = target
+                if "apps" in section:
+                    target["apps"] = deepcopy(section["apps"])
+                elif channel_id in _CHANNEL_CONFIG_SYNC_SECTIONS:
+                    target.pop("apps", None)
+                for key, value in section.items():
+                    if key != "apps":
+                        target[key] = deepcopy(value)
+                changed = True
+            elif "send_file_allowed" in section:
+                target = current.get(channel_id)
+                if not isinstance(target, dict):
+                    target = {}
+                    current[channel_id] = target
+                target["send_file_allowed"] = deepcopy(section["send_file_allowed"])
+                changed = True
+        return data if changed else None
+
+    update_config(_mutate)
+    return changed
+
+
 def _as_plain_yaml_str(value: Any) -> Any:
     """字符串写成无引号 plain scalar，避免顶层/apps 因旧值风格（如 ``''``）不一致。"""
     if isinstance(value, str):
@@ -1025,19 +1080,23 @@ def update_symphony_in_config(updates: dict[str, Any]) -> None:
         data["symphony"] = {}
     symphony = data["symphony"]
     _merge_config_dict(symphony, updates)
+    from jiuwenswarm.common.symphony_config import load_symphony_config
+    load_symphony_config(data)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
 def update_skill_retrieval_in_config(updates: dict[str, Any]) -> None:
-    """更新 symphony.skill_retrieval 配置段并写回。"""
+    """更新 symphony.retrieval 配置段并写回。"""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
     if "symphony" not in data or data["symphony"] is None:
         data["symphony"] = {}
     symphony = data["symphony"]
-    if "skill_retrieval" not in symphony or symphony["skill_retrieval"] is None:
-        symphony["skill_retrieval"] = {}
-    section = symphony["skill_retrieval"]
+    if "retrieval" not in symphony or symphony["retrieval"] is None:
+        symphony["retrieval"] = {}
+    section = symphony["retrieval"]
     _merge_config_dict(section, updates)
+    from jiuwenswarm.common.symphony_config import load_symphony_config
+    load_symphony_config(data)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
@@ -1114,21 +1173,41 @@ def update_rsi_enabled_in_config(value: bool) -> None:
     update_config(mutator)
 
 
-def update_cua_agent_enabled_in_config(value: bool | None) -> None:
-    """Persist an explicit desktop preference, or null to follow the release default."""
+def update_rea_enabled_in_config(value: bool) -> None:
+    """原子更新 rea.enabled（Web REA 逆向入口开关）。"""
+
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        section = data.get("rea")
+        if not isinstance(section, dict):
+            section = {}
+            data["rea"] = section
+        section["enabled"] = value
+        return data
+
+    update_config(mutator)
+
+
+def update_cua_agent_enabled_in_config(value: bool | None) -> bool:
+    """Persist the desktop preference and report a transition to enabled."""
     if value is not None and not isinstance(value, bool):
         raise ValueError("cua_agent.enabled must be true, false or null")
 
+    just_enabled = False
+
     def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        nonlocal just_enabled
         current = data
         for key in ("react", "subagents", "cua_agent"):
             if not isinstance(current.get(key), dict):
                 current[key] = {}
             current = current[key]
+        was_enabled = is_cua_agent_enabled(current)
         current["enabled"] = value
+        just_enabled = is_cua_agent_enabled(current) and not was_enabled
         return data
 
     update_config(mutator)
+    return just_enabled
 
 
 def update_enable_free_models_in_config(value: bool) -> None:
@@ -1615,10 +1694,10 @@ def _parse_custom_headers(value: str | dict | None) -> dict[str, Any] | None:
         result = json.loads(value)
         if isinstance(result, dict):
             return result
-        logger.warning(f"custom_headers must be a JSON object, got: {type(result).__name__}")
+        logger.warning("custom_headers must be a JSON object, got: %s", type(result).__name__)
         return None
     except json.JSONDecodeError as e:
-        logger.warning(f"custom_headers JSON parse failed: {e}")
+        logger.warning("custom_headers JSON parse failed: %s", e)
         return None
 
 
@@ -1703,8 +1782,6 @@ def _models_for_write(data: dict[str, Any]) -> dict[str, Any]:
     if _recover_existing_model_fields(models):
         # Preserve the exact original, including comments and invalid values.
         # A failed backup must abort the write rather than lose user data.
-        import shutil
-
         backup = CONFIG_YAML_PATH.with_name(f"{CONFIG_YAML_PATH.name}.models-{uuid.uuid4().hex}.bak")
         shutil.copy2(CONFIG_YAML_PATH, backup)
         logger.warning("Recovered invalid model fields; original configuration saved to %s", backup)
@@ -1974,7 +2051,8 @@ def _normalize_model_entry(entry: dict[str, Any]) -> dict[str, Any]:
         if value or value in (None, ""):
             mcc[key] = str(value) if value else value
     temp = saved.pop("temperature", None)
-    if temp is not None:
+    # An empty string means "unset" (same as models.replace_all); float("") raises.
+    if temp is not None and not (isinstance(temp, str) and not temp.strip()):
         mco["temperature"] = float(temp)
     rl = saved.pop("reasoning_level", None)
     if rl is not None and str(rl).strip():
@@ -2053,8 +2131,23 @@ def _remove_initial_model_placeholder(models: dict[str, Any], saved: dict[str, A
             saved["is_default"] = True
 
 
+def _clears_temperature(entry: dict[str, Any]) -> bool:
+    """Return whether the payload explicitly clears ``temperature`` (#6856).
+
+    An empty string means "unset", matching ``models.replace_all``, which
+    normalises a blank ``temperature`` to null instead of persisting ``""``.
+    """
+    model_config = entry.get("model_config_obj")
+    if isinstance(model_config, dict) and "temperature" in model_config:
+        value = model_config["temperature"]
+    else:
+        value = entry.get("temperature")
+    return isinstance(value, str) and not value.strip()
+
+
 def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
     saved = _normalize_model_entry(entry)
+    clear_temperature = _clears_temperature(entry)
     clear_max_tokens = (
         isinstance(entry.get("model_config_obj"), dict)
         and "max_tokens" in entry["model_config_obj"]
@@ -2097,6 +2190,12 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
                 # A null max_tokens is the resource API's explicit "unlimited"
                 # signal. Omission still preserves an existing user setting.
                 saved_model_config.pop("max_tokens", None)
+        if clear_temperature:
+            saved_model_config = saved.get("model_config_obj")
+            if isinstance(saved_model_config, dict):
+                # A blank temperature is "unset", never a literal empty string,
+                # so the response and persisted YAML stay numeric-or-absent.
+                saved_model_config.pop("temperature", None)
         for key in ("vendor_key", "plan"):
             if key in client_update and client_update[key] in (None, ""):
                 saved.pop(key, None)
@@ -3132,6 +3231,25 @@ def _set_config_path(path: tuple[str, ...], value: Any) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def update_team_goal_settings_in_config(
+    *, scheduled: bool | None, enabled: bool | None,
+) -> None:
+    """Commit dispatch mode and leader goal together under the config lock."""
+    from jiuwenswarm.common.team_goal_config import resolve_leader_goal_update
+
+    def mutate(data: dict[str, Any]) -> dict[str, Any]:
+        modes = _ensure_config_object(data, "modes", "modes")
+        teams = _ensure_config_object(modes, "team", "modes.team")
+        team = _ensure_config_object(teams, "jiuwen_team", "modes.team.jiuwen_team")
+        mode, goal = resolve_leader_goal_update(team, scheduled=scheduled, enabled=enabled)
+        leader = _ensure_config_object(team, "leader", "modes.team.jiuwen_team.leader")
+        team["dispatch_mode"] = mode
+        leader["goal"] = goal
+        return data
+
+    update_config(mutate)
+
+
 def update_team_scheduled_dispatch_in_config(enabled: bool) -> None:
     """Update ``modes.team.jiuwen_team.dispatch_mode`` (scheduled / autonomous)."""
     _set_config_path(TEAM_DISPATCH_MODE_CONFIG_PATH, "scheduled" if enabled else "autonomous")
@@ -3812,6 +3930,35 @@ def _deep_merge(
 _LEGACY_AGENT_SUBMODE_KEYS: tuple[str, ...] = ("plan", "fast", "agent.plan", "agent.fast")
 
 
+def _migrate_legacy_symphony_config(
+    user_data: dict[str, Any],
+    template_data: dict[str, Any],
+    user_config_path: Path,
+) -> bool:
+    """Convert the Symphony section before merging defaults and back up the original YAML."""
+    symphony = user_data.get("symphony")
+    if not isinstance(symphony, dict):
+        return False
+    from jiuwenswarm.common.symphony_config import load_symphony_config, migrate_legacy_symphony_config
+
+    converted = migrate_legacy_symphony_config(symphony, template=template_data.get("symphony"))
+    if converted == symphony:
+        return False
+
+    load_symphony_config({"symphony": converted})
+    backup = user_config_path.with_name(f"{user_config_path.name}.symphony-legacy.bak")
+    if backup.exists():
+        backup = backup.with_name(f"{backup.stem}.{uuid.uuid4().hex}.bak")
+    shutil.copy2(user_config_path, backup)
+    user_data["symphony"] = converted
+    logger.warning(
+        "Migrated legacy Symphony settings; original configuration is in %s. "
+        "Old indexes need rebuilding; retired builder model/cache options are not used by the Runtime.",
+        backup,
+    )
+    return True
+
+
 def _migrate_legacy_agent_submode_memory(user_data: dict[str, Any]) -> None:
     modes = user_data.get("modes")
     if not isinstance(modes, dict):
@@ -3932,6 +4079,7 @@ def migrate_config_from_template(
         # 必须在 _deep_merge 之前执行，否则旧子节点会被静默丢弃而非迁移。
         _migrate_legacy_agent_submode_memory(user_data)
         _migrate_legacy_kv_cache_affinity_config(user_data)
+        legacy_symphony_migrated = _migrate_legacy_symphony_config(user_data, template_data, user_config_path)
         # team_observability / agent_observability -> observability.{team,agent}
         # 必须在 _deep_merge 之前执行：合并会先按模板塞入默认的 observability 段，
         # 旧段里用户改过的 exporter / endpoint 等就会被模板默认值挡住。
@@ -3939,17 +4087,27 @@ def migrate_config_from_template(
 
         # Deep merge: template provides defaults, user values preserved.
         # user_data is updated in place, which keeps comments and formatting.
-        if "extensions" in user_data and user_data["extensions"] is None:
-            template_extensions = template_data.get("extensions")
-            if (
-                isinstance(template_extensions, dict)
-                and template_extensions.get("extension_dirs") == "${EXTENSION_DIRS:-jiuwenswarm/extensions}"
-                and _has_local_team_config(user_data)
-            ):
+        changes = 0
+        template_extensions = template_data.get("extensions")
+        local_extension_dirs = "${EXTENSION_DIRS:-};jiuwenswarm/extensions"
+        if (
+            isinstance(template_extensions, dict)
+            and template_extensions.get("extension_dirs") == local_extension_dirs
+            and _has_local_team_config(user_data)
+        ):
+            extensions = user_data.get("extensions")
+            if "extensions" in user_data and extensions is None:
                 # Environment-driven markers can resolve differently after a child reloads its dotenv files.
                 user_data["extensions"] = {}
-        changes = _deep_merge(template_data, user_data, prune=prune)
+            elif isinstance(extensions, dict) and (
+                extensions.get("extension_dirs") == "${EXTENSION_DIRS:-jiuwenswarm/extensions}"
+            ):
+                extensions["extension_dirs"] = local_extension_dirs
+                changes += 1
+        changes += _deep_merge(template_data, user_data, prune=prune)
         if legacy_observability_migrated:
+            changes += 1
+        if legacy_symphony_migrated:
             changes += 1
 
         # Guard against an empty result overwriting a valid user config

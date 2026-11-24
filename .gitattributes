@@ -1,2 +1,4 @@
 *.mp4 filter=lfs diff=lfs merge=lfs -text
 jiuwenswarm/server/runtime/agent_adapter/browser_runtime_network_guard.js text eol=lf
+.agents/agent-docs/INDEX.md merge=union
+.agents/agent-docs/*/INDEX.md merge=union

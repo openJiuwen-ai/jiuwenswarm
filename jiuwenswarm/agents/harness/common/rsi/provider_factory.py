@@ -61,8 +61,8 @@ def build_rsi_adapters(
 
     ``mode='mock'`` installs Harness, Program, and Paper mock adapters.  In
     production mode a concrete ``HarnessProvider`` can be injected and is
-    wrapped at the same seam.  The program and paper adapters default to the
-    concrete Providers shipped by the configured agent-core RSI dependency;
+    wrapped at the same seam. The default program and paper Providers extend
+    the configured agent-core implementations with workspace behavior.
     ``paper_provider`` remains injectable for compatibility and tests.
     """
     normalized_mode = str(mode or "real").strip().lower()
@@ -84,14 +84,11 @@ def build_rsi_adapters(
                 tasks_root=tasks_root,
             )
         if paper_provider is None and "ARTIFACT:PAPER" not in adapters:
-            # The implementation is intentionally owned by agent-core.  The
-            # public ``paper_opt.provider`` module is only the Protocol; the
-            # concrete implementation lives under the autoResearch tree provider.
-            from openjiuwen.rsi.artifact_rsi.paper_opt.auto_research.tree_provider.provider import (
-                PaperArtifactProviderImpl,
+            from jiuwenswarm.agents.harness.common.rsi.paper_workspace_provider import (
+                WorkspacePaperArtifactProvider,
             )
 
-            paper_provider = PaperArtifactProviderImpl()
+            paper_provider = WorkspacePaperArtifactProvider(tasks_root)
         if paper_provider is not None:
             adapters["ARTIFACT:PAPER"] = ArtifactEngineAdapter(
                 "PAPER",

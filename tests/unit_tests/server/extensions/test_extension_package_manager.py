@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+from PIL import Image
 
 import jiuwenswarm.common.utils as utils
 from jiuwenswarm.server.runtime import extension_package_manager as catalog
@@ -42,6 +43,30 @@ _KINDS = (AGENT_TEMPLATES, PLUGIN_PACKAGES)
 def _run(coro):
     """Drive an async catalog call from a synchronous test."""
     return _asyncio.run(coro)
+
+
+def test_package_avatar_thumbnail_stays_inside_package(tmp_path: Path) -> None:
+    package_dir = tmp_path / "expert"
+    package_dir.mkdir()
+    image = tmp_path / "avatar.png"
+    Image.new("RGB", (512, 512), "blue").save(image)
+    shutil.copyfile(image, package_dir / "avatar.png")
+
+    thumbnail = catalog.resolve_package_avatar_thumbnail(package_dir, "avatar.png")
+    assert thumbnail.startswith("data:image/webp;base64,")
+    assert len(thumbnail) < 16 * 1024
+    for reference in ("../avatar.png", str(image), "missing.png", "https://example.test/avatar.png"):
+        assert catalog.resolve_package_avatar_thumbnail(package_dir, reference) == ""
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Creating a symlink can require Windows developer mode")
+def test_package_avatar_thumbnail_rejects_symlink_to_other_directory(tmp_path: Path) -> None:
+    package_dir = tmp_path / "expert"
+    package_dir.mkdir()
+    image = tmp_path / "avatar.png"
+    Image.new("RGB", (32, 32), "blue").save(image)
+    (package_dir / "outside.png").symlink_to(image)
+    assert catalog.resolve_package_avatar_thumbnail(package_dir, "outside.png") == ""
 
 
 def test_normalize_agent_group_display_identity_preserves_binding_and_asset_id():
@@ -2014,13 +2039,8 @@ class TestListShowAndFileRead:
         assert "teamCompatible" not in default_card
         assert calls == []
 
-        group_card = next(
-            card
-            for card in _run(catalog.list_agent_templates(
-                {"include_team_compatibility": True}
-            ))
-            if card["id"] == "mine"
-        )
+        group_cards = _run(catalog.list_agent_templates({"include_team_compatibility": True}))
+        group_card = next(card for card in group_cards if card["id"] == "mine")
         assert group_card["teamCompatible"] == {"leader": True, "member": True}
         assert len(calls) == 1
 

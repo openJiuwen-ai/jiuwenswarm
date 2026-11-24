@@ -9946,3 +9946,78 @@ def test_group_input_restores_persisted_type_without_per_message_type(monkeypatc
     request.params["type"] = "chat"
     with pytest.raises(ValueError, match="requires group_chat"):
         team_helpers._group_chat_input(request, "Hello")
+
+
+@pytest.mark.anyio
+async def test_leader_goal_blocked_ends_request_without_ending_resident_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broadcasted: list[dict] = []
+    terminal = asyncio.Event()
+    keep_open = asyncio.Event()
+
+    async def stream(
+        *, agent_team: Any, inputs: dict, session: Any, envs: dict,
+        stream_logger: Any, background_task_controller: Any,
+    ):
+        yield SimpleNamespace(
+            type="message", role=TeamRole.LEADER,
+            payload={"event_type": "team.goal.blocked", "reason": "attempt limit reached"},
+        )
+        await keep_open.wait()
+
+    class FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            pass
+
+        @staticmethod
+        def pop_stream_task(session_id: str, *, generation: int | None = None) -> None:
+            pass
+
+    manager = FakeManager()
+    record = _broadcast_recorder(broadcasted, manager)
+
+    async def broadcast(channel_id: str, session_id: str, payload: dict) -> None:
+        await record(channel_id, session_id, payload)
+        if payload.get("reason") == "team.goal.blocked":
+            terminal.set()
+
+    monkeypatch.setattr(team_helpers.Runner, "run_agent_team_streaming", stream)
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _channel: manager)
+    monkeypatch.setattr(team_helpers, "_broadcast_event", broadcast)
+    task = asyncio.create_task(_TeamHelpersTestApi.consume_stream_with_query(
+        "web", "goal-blocked-session", SimpleNamespace(team_name="goal-team"), "ship it",
+    ))
+    try:
+        await asyncio.wait_for(terminal.wait(), timeout=2)
+        assert not task.done()
+        error = next(event for event in broadcasted if event.get("code") == "TEAM_GOAL_BLOCKED")
+        assert error["error"] == "attempt limit reached"
+        assert any(event.get("is_processing") is False for event in broadcasted)
+        assert not any(event["event_type"] == "team.completed" for event in broadcasted)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+
+@pytest.mark.asyncio
+async def test_public_group_ready_skips_enterprise_occupancy_and_quota_reconciliation(monkeypatch):
+    from jiuwenswarm.enterprise.team import member_limits
+
+    backend = SimpleNamespace(conversation_mode="group_chat")
+    leader = SimpleNamespace(team_backend=backend)
+    monkeypatch.setattr(team_helpers, "_current_pool_team_agent", AsyncMock(return_value=leader))
+    occupancy = Mock()
+    detach = Mock()
+    actor = AsyncMock()
+    monkeypatch.setattr(team_helpers, "_record_session_team_occupancy", occupancy)
+    monkeypatch.setattr(member_limits, "detach_teammate_limit_guard", detach)
+    monkeypatch.setattr("jiuwenswarm.infrastructure.db.team_store_actor.run_team_store", actor)
+    await team_helpers._apply_enterprise_runtime_ready_hooks(
+        channel_id="web", session_id="group", runtime_team_name="group-team", parsed={},
+    )
+    detach.assert_called_once_with(leader)
+    occupancy.assert_not_called()
+    actor.assert_not_awaited()

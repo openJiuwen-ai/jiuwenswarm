@@ -65,7 +65,8 @@ async def test_first_snapshot_lists_both_platforms_without_reading_messages(tmp_
     assert "feishu" in content and "dingtalk" in content
     assert '"active_count":2' in content
     assert "OTHER-SECRET" not in content and "NAMESPACE-SECRET" not in content
-    assert "审批" in content
+    assert "授权群消息通过 search_group_messages 直接查询" in content
+    assert "文件与在线文档仍遵守分享授权规则" in content
 
 
 @pytest.mark.asyncio

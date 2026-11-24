@@ -146,11 +146,11 @@ def _error_text(key: str, **values: object) -> str:
     zh_text, en_text = _ERROR_TEXT[key]
     use_en = False
     try:
-        from jiuwenswarm.common.config import get_config
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
 
-        config = get_config()
-        if isinstance(config, Mapping):
-            use_en = str(config.get("preferred_language") or "").strip().lower() == "en"
+        use_en = resolve_preferred_language() == "en"
     except Exception:
         logger.debug("read preferred_language failed, fallback to zh", exc_info=True)
     return (en_text if use_en else zh_text).format(**values)

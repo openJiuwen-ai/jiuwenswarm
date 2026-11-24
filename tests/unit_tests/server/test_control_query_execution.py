@@ -64,6 +64,21 @@ async def test_project_scan_leaves_front_loop_running(monkeypatch, method, loade
 
 
 @pytest.mark.asyncio
+async def test_project_info_can_skip_scanning_session_history(monkeypatch):
+    from jiuwenswarm.server.control.store import project_queries
+
+    def unexpected_scan():
+        pytest.fail("binding lookup should not scan sessions")
+
+    monkeypatch.setattr(project_queries, "collect_all_sessions_metadata", unexpected_scan)
+    request = _request(ReqMethod.PROJECT_INFO)
+    request.params["include_session_stats"] = False
+    response = await project_repository.handle_project_request(request)
+    assert response.ok
+    assert response.payload["project"]["project_id"] == "default"
+
+
+@pytest.mark.asyncio
 async def test_unary_history_scan_preserves_loop_and_request_context(monkeypatch):
     from jiuwenswarm.server.control import history_service
 
@@ -303,10 +318,14 @@ async def test_parallel_queries_keep_tenant_and_request_context(monkeypatch, met
                 context.reset(token)
 
     responses = await asyncio.gather(query("group::bot::alice"), query("group::bot::bob"))
-    assert [response.payload for response in responses] == [
+    expected = [
         {"tenant": "group::bot::alice", "request": "group::bot::alice-request"},
         {"tenant": "group::bot::bob", "request": "group::bot::bob-request"},
     ]
+    if method == ReqMethod.SESSION_GET_METADATA:
+        # session.get_metadata always injects durable is_paused.
+        expected = [{**item, "is_paused": False} for item in expected]
+    assert [response.payload for response in responses] == expected
     assert TenantContext.current_tenant_key() == previous_tenant
     assert context.get() == "unbound"
 

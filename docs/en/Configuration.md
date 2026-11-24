@@ -424,79 +424,101 @@ The system automatically identifies and filters the following types of sensitive
 
 ---
 
-## 9. Skill Symphony and Skill Retrieval Configuration
+## 9. Symphony configuration
 
-Symphony settings control two related capabilities: **Skill Retrieval** finds candidate skills from installed skills, and **Skill Orchestration** uses the skill graph to organize candidates into a confirmable, executable skill chain.
+The user configuration is `~/.jiuwenswarm/config/config.yaml`. The `symphony` node is validated directly as Core `SymphonyConfig`. Swarm resolves host directories, environment variables, product defaults and session model context. Explicit values win; unknown fields report their complete path.
 
-### 9.1 Frontend switches
+### Switches, models and sessions
 
-The configuration panel exposes two related switches:
+- `retrieval.enabled` controls tree retrieval. Both `orchestration.enabled` and `orchestration.experience.enabled` must be on to record new graph observations and distill skill packs. Swarm defaults these switches to `false`, and `null` inherits the default.
+- The Orchestration Experience switch saves `orchestration.experience.enabled`. Set `orchestration.plan.dynamic_graph_enabled` independently to use existing dynamic observations in planning.
+- Tree and graph builds use the host default model. Online planning uses the current session model. There is no retrieval-specific `llm` configuration. Fingerprint `max_output_tokens: null` inherits the host model output budget.
+- Discovery derives `retrieval.prompt.context_window_tokens` from the actual session model unless explicitly configured. Saved settings affect new sessions; existing sessions retain their frozen budget and index version. Tools and prompt Rails share one Discovery session.
+- `capability.sources` lists Skill and standalone expert directories by `type` and `root`. They share a taxonomy. Graph and Flow require exactly one Skill source. Plugin and selected MCP capabilities belong only to their session views. Session visibility and disabled filters still apply.
 
-| Switch | Config key | Default | Purpose |
-| --- | --- | --- | --- |
-| **Enable Skill Retrieval** | `symphony.skill_retrieval.enabled` | `false` | Registers skill-tree retrieval tools such as `skill_branch_explore`, `skill_branch_peek`, and `skill_index_build` |
-| **Enable Skill Symphony** | `symphony.enabled` | `false` | Registers skill graph and orchestration tools such as `symphony_read_graph`, `symphony_refresh_graph`, and `symphony_compose_graph` |
+### Directories and rebuilding
 
-The two switches are independent. Skill Retrieval answers "how to find candidate skills"; Skill Symphony answers "how to orchestrate candidate skills into a route". If only Skill Retrieval is enabled, the system only gets skill-tree retrieval. If only Skill Symphony is enabled, the system can read and refresh the skill graph, but candidate skills do not automatically come from Skill Retrieval.
+If `capability.sources` is omitted, Swarm uses the workspace `skills` directory. An explicit list replaces that default. An empty `storage.artifact_root` resolves to workspace `symphony/runtime`, overridable through `SYMPHONY_ARTIFACT_ROOT`. Collections with multiple directories or expert sources build their taxonomy under `taxonomy_collections/<scope_id>` inside that root. Existing single-Skill artifacts retain their paths.
 
-### 9.2 Skill index and skill graph
+Old top-level `paths`, `fingerprint`, `build`, `skill_retrieval`, `evolution` and model-backend nodes are rejected. Old signatures and layouts are not reused. Rebuild with the new configuration; old directories are neither migrated nor deleted automatically. Failed refreshes preserve the last published version; cancellation prevents publication.
 
-Related pages are under **Skills** in the left sidebar:
+For the flattened retrieval configuration, fetch the updated YAML template. Current Runtime indexes and v2 Discovery session snapshots can be reused.
 
-| Page | Purpose |
-| --- | --- |
-| **Skill Index** | Builds the local installed-skill tree index used for step-by-step retrieval |
-| **Skill Graph** | Builds and displays connectable relationships between skills for orchestration |
+### Build and discovery settings
 
-After installing, uninstalling, or heavily modifying skills, rebuild the skill index. If the skill changes affect relationships between skills, also run an incremental build or full rebuild on the Skill Graph page.
+Paths below are relative to `symphony`. Main-template values are explicit settings, distinct from omitted-field defaults.
 
-### 9.3 Symphony settings in the main config
+| Setting | Default / template | Purpose |
+|---|---|---|
+| `capability.fingerprint.extraction.max_concurrency` / `batch_size` | omitted `1/1`, template `4/2` | Extraction; effective concurrency is capped by graph build concurrency |
+| `orchestration.build.max_concurrency` / `matching.batch_size` | omitted `1/12`, template `4/16` | Relation matching concurrency and batch size |
+| `orchestration.min_edge_confidence` | `0.5` | Shared graph build and planning threshold |
+| `orchestration.build.matching.require_consensus` | `false` | Require relation consensus |
+| `orchestration.plan.mode` | `fast` | Supports `fast` and `beam`; `top_k` only affects beam search |
+| `retrieval.index_build.structure.branching_factor` / `max_depth` | `128/6` | Split-threshold base and depth; Yuanrong explicitly uses branching `12` |
+| `retrieval.index_build.structure.max_capabilities_per_node_multiplier` | `1.5` | Recursive leaf capacity multiplier; not a one-shot splitting rule |
+| `retrieval.index_build.structure.root_categories` | `null` | Root category list or file; optional `children` preset lower levels |
+| `retrieval.index_build.request.max_concurrency` / `timeout_seconds` | `2/420` | Tree request concurrency and timeout in seconds |
+| `retrieval.index_build.request.classification_batch_limit` | `32` | Recursive classification batch size |
+| `retrieval.index_build.task.total_timeout_seconds` | `0` | Total build timeout; zero means unlimited |
+| `retrieval.output.max_chars` | `12000` | Directory operation output character limit |
+| `orchestration.experience.acceptance.min_successes` | `3` | Successful evidence count required for Flow acceptance |
 
-Advanced build, retrieval, and orchestration parameters are configured in the user runtime config file:
+Root categories stabilize the directory skeleton: provide `id`, `name`, `description` and optional `select_when`, `dont_select_when`, `children`. This example explicitly enables the features; the product template keeps them off. Rebuild after changing build policy. Planning, Flow acceptance and display settings do not invalidate the tree cache unnecessarily.
 
-```text
-~/.jiuwenswarm/config/config.yaml
+```yaml
+symphony:
+  capability:
+    sources:
+      - type: skill
+        root: /path/to/skills
+    fingerprint:
+      extraction:
+        max_concurrency: 4
+        batch_size: 2
+        max_output_tokens: null
+  storage:
+    artifact_root: ""
+  retrieval:
+    enabled: true
+    index_build:
+      structure:
+        branching_factor: 128
+        max_depth: 6
+        max_capabilities_per_node_multiplier: 1.5
+        root_categories:
+          - id: office-docs
+            name: Office documents
+            description: Read, edit and generate office files.
+      request:
+        max_concurrency: 2
+        max_retries: 2
+        timeout_seconds: 420.0
+        classification_batch_limit: 32
+      task:
+        total_timeout_seconds: 0.0
+        preserve_previous_index_on_failure: true
+    use_existing_index: true
+    output:
+      max_chars: 12000
+  orchestration:
+    enabled: true
+    min_edge_confidence: 0.5
+    build:
+      max_concurrency: 4
+      matching:
+        batch_size: 16
+        require_consensus: false
+    plan:
+      mode: fast
+      max_depth: 4
+      dynamic_graph_enabled: true
+    experience:
+      enabled: true
+      acceptance:
+        min_successes: 3
+        min_pack_success_rate: 0.8
 ```
-
-Common settings:
-
-The retained `symphony.fingerprint.scan` and `symphony.fingerprint.extraction`
-settings are mapped by the JiuwenSwarm Adapter to agent-core's
-`SkillFolderScanner` and `FingerprintService` configuration.
-
-| Setting | Default | Description |
-| --- | --- | --- |
-| `symphony.paths.skills_root` | Empty string | Skill source directory; empty means the runtime default is used |
-| `symphony.paths.graph_dir` | Empty string | Skill score artifact directory; empty means the runtime default is used |
-| `symphony.fingerprint.scan.max_depth` | `1` | Skill entry-point discovery depth. `1` checks the skill root and its direct subdirectories. An empty value allows discovery at any depth. |
-| `symphony.fingerprint.extraction.workers` | `4` | Fingerprint extraction concurrency mapped to agent-core `FingerprintService` |
-| `symphony.fingerprint.extraction.batch_size` | `2` | Fingerprint extraction batch size mapped to agent-core `FingerprintService` |
-| `symphony.fingerprint.extraction.body_limit` | Empty | Body length limit mapped to agent-core `FingerprintService`; empty means the runtime default is used |
-| `symphony.build.workers` | `4` | Skill graph build concurrency |
-| `symphony.build.batch_size` | `16` | Skill graph build batch size |
-| `symphony.build.require_consensus` | `false` | Whether multiple judgments must agree before accepting a relationship |
-| `symphony.build.min_edge_confidence` | `0.1` | Minimum edge confidence written into the skill graph |
-| `symphony.orchestration.mode` | `fast` | Orchestration mode. The current runtime uses the fast orchestration path |
-| `symphony.orchestration.max_depth` | `4` | Maximum skill-chain search depth |
-| `symphony.orchestration.min_edge_confidence` | `0.3` | Minimum skill-graph edge confidence preferred by orchestration |
-| `symphony.skill_retrieval.artifact_root` | Empty string | Skill index artifact directory; empty means the default workspace is used; can be supplied by `SYMPHONY_SKILL_RETRIEVAL_ROOT` |
-| `symphony.skill_retrieval.build.branching_factor` | `128` | Skill-tree split-threshold base; controls how coarse or fine the tree is |
-| `symphony.skill_retrieval.build.max_depth` | `6` | Maximum skill-tree depth |
-| `symphony.skill_retrieval.build.root_categories` | Empty string | Root taxonomy configuration used to stabilize the first tree layer |
-| `symphony.skill_retrieval.build.max_workers` | `2` | Skill index build concurrency |
-| `symphony.skill_retrieval.build.max_retries` | `2` | Retry count for failed LLM classification or grouping calls |
-| `symphony.skill_retrieval.build.request_timeout_seconds` | `420` | Timeout for one LLM build request |
-| `symphony.skill_retrieval.build.classification_batch_limit` | `32` | Maximum number of skills per classification call |
-| `symphony.skill_retrieval.build.discovery_seed` | `42` | Random seed used during build sampling for better reproducibility |
-| `symphony.skill_retrieval.build.postprocess_enabled` | `true` | Whether to clean up unclear or too-small branches after build |
-| `symphony.skill_retrieval.build.postprocess_max_passes` | `1` | Maximum number of postprocess passes after build |
-| `symphony.skill_retrieval.build.postprocess_min_skills` | `6` | Minimum skill-count reference used by postprocess branch cleanup |
-| `symphony.skill_retrieval.build.equivalence_enabled` | `false` | Whether to merge semantically duplicate branches |
-| `symphony.skill_retrieval.retrieve.compact_codes_enabled` | `false` | Whether retrieval uses more compact node codes |
-| `symphony.skill_retrieval.retrieve.flatten_tree` | `false` | Whether retrieval flattens the skill tree |
-| `symphony.skill_retrieval.retrieve.max_exposure_depth` | `1` | Maximum tree depth exposed by one `skill_branch_explore` call |
-
-> 📖 For details about Skill Retrieval, the skill graph, and Skill Orchestration, see [Symphony: Skill Retrieval, Orchestration, and Dispatch](Symphony.md).
 
 ---
 

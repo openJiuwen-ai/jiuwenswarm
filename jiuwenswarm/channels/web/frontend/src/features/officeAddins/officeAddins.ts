@@ -5,10 +5,10 @@ export type OfficeAddinProblem =
   | 'tls_unavailable'
   | 'stale_origin';
 
-export type SuiteId = 'office';
-export type AppId = 'word' | 'excel' | 'powerpoint';
+export type SuiteId = 'office' | 'wps';
+export type AppId = 'word' | 'excel' | 'powerpoint' | 'wps-writer' | 'wps-spreadsheet' | 'wps-presentation';
 export type InfoSection = 'requirement' | 'start' | 'data';
-export type StartStep = 'restart' | 'openPane' | 'connect';
+export type StartStep = 'restart' | 'openPane' | 'connect' | 'trust';
 
 /** The plugin plaza category of every suite card (办公效率). */
 export const SUITE_CATEGORY = 'Office Productivity';
@@ -26,21 +26,31 @@ export const SUITE_CATALOG: Record<
     sections: ['requirement', 'start', 'data'],
     steps: ['restart', 'openPane', 'connect'],
   },
+  wps: {
+    apps: ['wps-presentation', 'wps-writer', 'wps-spreadsheet'],
+    sections: ['requirement', 'start', 'data'],
+    steps: ['restart', 'trust', 'openPane'],
+  },
 };
 
-/** An app this computer does not have is not a problem of its suite: the suite installs into the apps it finds. */
-export type AppState = 'installed' | 'not_installed' | 'host_not_found';
+/**
+ * An app this computer does not have is not a problem of its suite: the suite installs into the apps it finds.
+ * An app older than its add-in requires is left out the same way, with the version to update to.
+ */
+export type AppState = 'installed' | 'not_installed' | 'host_not_found' | 'host_outdated';
 
 export interface SuiteStatus {
   installed: boolean;
   problems: OfficeAddinProblem[];
-  apps: Record<AppId, AppState>;
+  apps: Partial<Record<AppId, AppState>>;
+  required?: Partial<Record<AppId, string>>;
 }
 
 export type Suites = Partial<Record<SuiteId, SuiteStatus>>;
 
 export type SuiteState =
   | { kind: 'notFound' }
+  | { kind: 'outdated' }
   | { kind: 'notInstalled' }
   | { kind: 'installed' }
   | { kind: 'needsRepair'; problems: OfficeAddinProblem[] };
@@ -50,16 +60,18 @@ export function suiteState(status: SuiteStatus): SuiteState {
     return { kind: 'needsRepair', problems: status.problems };
   }
   if (status.installed) return { kind: 'installed' };
-  const found = Object.values(status.apps).some((app) => app !== 'host_not_found');
-  return found ? { kind: 'notInstalled' } : { kind: 'notFound' };
+  const states = Object.values(status.apps);
+  if (states.some((app) => app === 'installed' || app === 'not_installed')) return { kind: 'notInstalled' };
+  return states.includes('host_outdated') ? { kind: 'outdated' } : { kind: 'notFound' };
 }
 
 /** What the detail page says next to one app's logo. The logo itself always stays as the host ships it. */
-export type AppStatus = 'installed' | 'notInstalled' | 'needsRepair' | 'notFound';
+export type AppStatus = 'installed' | 'notInstalled' | 'needsRepair' | 'notFound' | 'outdated';
 
 export function appStatus(status: SuiteStatus, app: AppId): AppStatus {
   const state = status.apps[app];
   if (state === 'host_not_found') return 'notFound';
+  if (state === 'host_outdated') return 'outdated';
   if (status.problems.length > 0) return 'needsRepair';
   return state === 'installed' ? 'installed' : 'notInstalled';
 }

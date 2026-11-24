@@ -175,7 +175,10 @@ class TestHandleMcpList:
             cache_mode: str | None = None,
             refresh: bool = False,
             query: str = "",
+            source_id: str | None = None,
+            metadata: Any = None,
         ) -> list[dict[str, Any]]:
+            del source_id, metadata
             captured.update(filter=filter, cache_mode=cache_mode, refresh=refresh, query=query)
             return [{"name": "github", "connection_state": "disconnected"}]
 
@@ -204,7 +207,8 @@ class TestHandleMcpList:
             "query": "github",
         }
 
-        # 无 filter → 兜底 builtin
+        # 无 filter → handler 传 None，由 marketplace 按版本人设默认
+        captured.clear()
         with patch(
             "jiuwenswarm.server.runtime.mcp.marketplace.list_mcps_with_hub",
             side_effect=_fake,
@@ -215,13 +219,14 @@ class TestHandleMcpList:
                 send_lock,
             )
         assert captured == {
-            "filter": "builtin",
+            "filter": None,
             "cache_mode": None,
             "refresh": False,
             "query": "",
         }
 
-        # 非法值 → 兜底 builtin
+        # 非法值原样透传，由 marketplace 校验/兜底
+        captured.clear()
         with patch(
             "jiuwenswarm.server.runtime.mcp.marketplace.list_mcps_with_hub",
             side_effect=_fake,
@@ -232,7 +237,7 @@ class TestHandleMcpList:
                 send_lock,
             )
         assert captured == {
-            "filter": "builtin",
+            "filter": "bogus",
             "cache_mode": None,
             "refresh": False,
             "query": "",
@@ -341,7 +346,13 @@ class TestHandleMcpInstall:
         ):
             await _call(server, "handle_mcp_install", ws, request, asyncio.Lock())
 
-        install.assert_awaited_once_with("mcp-asset-uuid")
+        install.assert_awaited_once_with(
+            "mcp-asset-uuid",
+            source_id=None,
+            version_id=None,
+            package_name=None,
+            metadata=None,
+        )
         payload = _extract_payload(json.loads(ws.sent[0]))
         assert payload["type"] == "installed"
         assert payload["item"]["name"] == "hub-mcp"

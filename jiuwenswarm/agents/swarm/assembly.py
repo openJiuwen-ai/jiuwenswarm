@@ -53,6 +53,7 @@ from openjiuwen.agent_teams.schema.team import (
     TeamRole,
 )
 from openjiuwen.core.foundation.tool import McpServerConfig
+from openjiuwen.core.runner import Runner
 from openjiuwen.extensions.observability.demand import get_trajectory_span_processor
 from agent_gateway.common.mode_matrix import (
     NEW_TEAM_DESIGN,
@@ -633,30 +634,53 @@ def enrich_team_spec_for_swarm(
     team_visibility_path = str(Path(team_ws_root) / SKILL_VISIBILITY_FILENAME)
     global_skills_dir = str(skills_library)
 
-    base = SwarmBuildContext(
-        session_id=session_id,
-        request_id=request_id,
-        user_id=user_id,
-        channel_id=channel_id,
-        channel=channel_id or "default",
-        request_metadata=request_metadata,
-        mode=mode,
-        project_dir=project_dir,
-        trusted_dirs=trusted_dirs,
-        disable_teammate_worktree=(
+    context_kwargs = {
+        "session_id": session_id,
+        "request_id": request_id,
+        "user_id": user_id,
+        "channel_id": channel_id,
+        "channel": channel_id or "default",
+        "request_metadata": request_metadata,
+        "mode": mode,
+        "project_dir": project_dir,
+        "trusted_dirs": trusted_dirs,
+        "disable_teammate_worktree": (
             str(channel_id or "").strip().lower() == "web"
             and not (is_team_mode(mode) and is_code_profile_mode(mode))
         ),
-        team_id=spec.team_name,
-        team_ws_root=team_ws_root,
-        task_workspace_root=task_workspace_root,
-        team_outputs_dir=team_outputs_dir,
-        team_skill_visibility_path=team_visibility_path,
-        global_skills_dir=global_skills_dir,
-        trajectory_span_processor=get_trajectory_span_processor(),
-        heartbeat_job_service=get_heartbeat_job_service(),
-        config=config,
-    )
+        "team_id": spec.team_name,
+        "team_ws_root": team_ws_root,
+        "task_workspace_root": task_workspace_root,
+        "team_outputs_dir": team_outputs_dir,
+        "team_skill_visibility_path": team_visibility_path,
+        "global_skills_dir": global_skills_dir,
+        "trajectory_span_processor": get_trajectory_span_processor(),
+        "heartbeat_job_service": get_heartbeat_job_service(),
+        "config": config,
+    }
+    try:
+        extension_bus = Runner.get_extension_bus()
+    except (AttributeError, RuntimeError):
+        extension_bus = None
+    if extension_bus is not None:
+        context_kwargs["extras"] = {"team.extension_bus": extension_bus}
+    if "extension_bus" in getattr(SwarmBuildContext, "__dataclass_fields__", {}):
+        context_kwargs["extension_bus"] = extension_bus
+    base = SwarmBuildContext(**context_kwargs)
+    from jiuwenswarm.common.team_memory_binding import team_memory_key, uses_jiuwen_team_memory
+    if uses_jiuwen_team_memory(config, mode):
+        from jiuwenswarm.common.coding_memory_paths import resolve_coding_memory_project_name
+        from jiuwenswarm.agents.harness.common.memory.jiuwen_rail_builder import (
+            get_jiuwen_memory_scope,
+        )
+        identity = get_jiuwen_memory_scope(config)
+        base.memory_agent_name = identity["agent"]
+        base.memory_project = resolve_coding_memory_project_name(project_dir)
+        base.memory_team = team_memory_key(identity["org"], identity["user"],
+            base.memory_project, agent_group_name or "")
+        if spec.memory is not None:
+            spec.memory = spec.memory.model_copy(update={"enabled": False})
+
     mcp_configs = build_enabled_mcp_server_configs(
         config,
         server_id_scope=f"team:{spec.team_name}",

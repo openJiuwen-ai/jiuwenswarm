@@ -1,5 +1,11 @@
-import { scheduleCatalogRefresh, catalogScope } from '../features/catalogCache';
+import { scheduleCatalogRefresh, catalogScope, type CatalogItems } from '../features/catalogCache';
+import {
+  equipmentListFilter,
+  isMcpCatalogFilter,
+  type McpListFilter,
+} from '../features/equipmentMarketplace';
 import { create } from 'zustand';
+import { isEnterprise } from '../edition';
 import i18n from '../i18n';
 import { connectorApi } from '../services/connectorApi';
 import type {
@@ -80,10 +86,23 @@ interface ConnectorState {
   // "解绑"（disconnect 也置 busy）时同样显示"连接中"会误导用户，见 mcpState.ts busyLabelKey。
   // 2026-08-17：'delete' 取值随 deleteConnector action 一并删除，不再有"删除中"这个分支。
   busyMap: Record<string, McpBusyKind | undefined>;
+  /** Last catalogue source_id used for filter=hub/builtin (enterprise multi-source). */
+  catalogSourceId: string | null;
 
-  loadList: (filter: 'builtin' | 'local', options?: { silent?: boolean }) => Promise<void>;
-  loadDetail: (name: string, options?: { refresh?: boolean }) => Promise<void>;
-  installPackage: (assetId: string) => Promise<ConnectorInstallResponse | null>;
+  loadList: (
+    filter: McpListFilter,
+    options?: { silent?: boolean; refresh?: boolean; sourceId?: string },
+  ) => Promise<boolean>;
+  loadDetail: (
+    name: string,
+    options?: { refresh?: boolean; sourceId?: string; id?: string },
+  ) => Promise<void>;
+  /** Merge catalogue/search hits into the lookup view used by detail pages. */
+  rememberConnectors: (items: ConnectorSummary[]) => void;
+  installPackage: (
+    assetId: string,
+    options?: { sourceId?: string; versionId?: string; packageName?: string },
+  ) => Promise<ConnectorInstallResponse | null>;
   uninstallPackage: (identifier: string) => Promise<boolean>;
   connect: (name: string) => Promise<ConnectorConnectResponse | null>;
   disconnect: (name: string) => Promise<void>;
@@ -161,13 +180,30 @@ function mergeByName(existing: ConnectorSummary[], fresh: ConnectorSummary[]): C
   return Array.from(map.values());
 }
 
+// Enterprise catalogue show is scoped by source_id; same package name from two
+// sources must not share one cache slot. Personal / customize omit sourceId → bare name.
+export function detailCacheKey(name: string, sourceId?: string | null): string {
+  const id = String(name || '').trim();
+  const src = (typeof sourceId === 'string' ? sourceId : '').trim();
+  return src ? `${src}:${id}` : id;
+}
+
 // connect/disconnect/enable/disable/registerCustom 成功后，name 对应的 detail 缓存（含 tools）
 // 必须失效——见文档 §5.2.1，这几个操作都可能改变已连接态/enabled/tools 可见性。
+// Drop every source-scoped variant (`name` and `*:name`) — callers often only know runtime name.
 function invalidateDetail(detailCache: Record<string, ConnectorDetail>, name: string): Record<string, ConnectorDetail> {
-  if (!(name in detailCache)) return detailCache;
+  const wanted = String(name || '').trim();
+  if (!wanted) return detailCache;
+  const suffix = `:${wanted}`;
+  let changed = false;
   const next = { ...detailCache };
-  delete next[name];
-  return next;
+  for (const key of Object.keys(next)) {
+    if (key === wanted || key.endsWith(suffix)) {
+      delete next[key];
+      changed = true;
+    }
+  }
+  return changed ? next : detailCache;
 }
 
 // 2026-08-20 MCP 连接错误提示友好化：CLI 型 MCP 失败时后端下发
@@ -227,11 +263,15 @@ function friendlyCliError(error: unknown): string {
 let quickRefreshTimer: number | null = null;
 const QUICK_REFRESH_DELAY_MS = 1500;
 
+function catalogListFilter(): 'builtin' | 'hub' {
+  return equipmentListFilter('mcp', 'catalog');
+}
+
 function scheduleQuickRefresh(get: () => ConnectorState): void {
   if (quickRefreshTimer !== null) window.clearTimeout(quickRefreshTimer);
   quickRefreshTimer = window.setTimeout(() => {
     quickRefreshTimer = null;
-    void get().loadList('builtin', { silent: true });
+    void get().loadList(catalogListFilter(), { silent: true });
     void get().loadList('local', { silent: true });
   }, QUICK_REFRESH_DELAY_MS);
 }
@@ -244,7 +284,33 @@ function scheduleQuickRefresh(get: () => ConnectorState): void {
 // 用一个按 filter 自增的序号给每次调用打标记，只有当前仍是"这个 filter 最后一次发起的调用"，
 // 它的结果（无论成功失败）才允许写入 state；比它更晚发起的调用已经存在，说明这次结果已经过时，
 // 直接丢弃、不覆盖任何东西——不管这次结果本身是好是坏。
-const listRequestSeq: Record<'builtin' | 'local', number> = { builtin: 0, local: 0 };
+const listRequestSeq: Record<McpListFilter, number> = { builtin: 0, hub: 0, local: 0 };
+
+// 静默轮询仅校准：内容与 cache 元数据都没变时保留原数组，避免整表重渲染。
+// cache 仍参与比较，否则刷新完成/失败时 CatalogCacheNotice 拿不到最新状态。
+function connectorListSignature(items: ConnectorSummary[]): string {
+  return items
+    .map((item) => [
+      item.id,
+      item.runtimePackageName,
+      item.displayName,
+      item.description,
+      item.category,
+      item.connectionState,
+      item.integrationType,
+      item.hasBundledSkills ? '1' : '0',
+      item.installed ? '1' : '0',
+      item.source,
+      item.version ?? '',
+      item.icon ?? '',
+      (item.tags ?? []).join(','),
+    ].join('\u0001'))
+    .join('\u0002');
+}
+
+function connectorCacheSignature(items: ConnectorSummary[]): string {
+  return JSON.stringify((items as CatalogItems<ConnectorSummary>).cache ?? null);
+}
 
 export const useConnectorStore = create<ConnectorState>((set, get) => ({
   builtinConnectors: [],
@@ -256,61 +322,134 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
   successMessage: null,
   noticeMessage: null,
   busyMap: {},
+  catalogSourceId: null,
 
   // silent=true 仅用于安装/连接后的快速校准，不改变页面的加载状态。
   loadList: async (filter, options) => {
     const silent = options?.silent ?? false;
+    const explicitSourceId =
+      typeof options?.sourceId === 'string' ? options.sourceId.trim() : '';
+    const catalog = isMcpCatalogFilter(filter);
+    const sourceId = catalog
+      ? explicitSourceId || get().catalogSourceId || undefined
+      : undefined;
+    // Enterprise catalogue (hub) must send source_id; skip until a source is chosen.
+    if (catalog && isEnterprise() && !sourceId) {
+      if (!silent) set({ isLoading: false });
+      return true;
+    }
     const mySeq = ++listRequestSeq[filter];
     const requestScope = catalogScope();
     if (!silent) set({ isLoading: true, error: null });
     try {
-      const response = await connectorApi.list(filter);
-      if (requestScope !== catalogScope()) return;
+      const response = await connectorApi.list(filter, '', {
+        sourceId,
+        refresh: options?.refresh === true,
+      });
+      if (requestScope !== catalogScope()) return true;
       scheduleCatalogRefresh(
         'connectorStore.ts:' + filter,
         response.cache,
         () => {
-          void get().loadList(filter, { silent: true });
+          void get().loadList(filter, { silent: true, sourceId });
         },
         () => listRequestSeq[filter] === mySeq,
       );
-      if (listRequestSeq[filter] !== mySeq) return; // 已有更新的同 filter 调用发起过，这次结果作废
+      if (listRequestSeq[filter] !== mySeq) return true; // 已有更新的同 filter 调用发起过，这次结果作废
       const fresh = response;
+      if (silent) {
+        const current = catalog ? get().builtinConnectors : get().myConnectors;
+        if (
+          connectorListSignature(current) === connectorListSignature(fresh)
+          && connectorCacheSignature(current) === connectorCacheSignature(fresh)
+        ) {
+          // 早些时候的非静默请求可能已被本次静默请求顶掉，收尾它的 loading 态。
+          if (get().isLoading) set({ isLoading: false });
+          return true;
+        }
+      }
       set((state) => ({
         connectors: mergeByName(state.connectors, fresh),
-        ...(filter === 'builtin' ? { builtinConnectors: fresh } : { myConnectors: fresh }),
+        ...(catalog ? { builtinConnectors: fresh } : { myConnectors: fresh }),
+        ...(catalog && explicitSourceId ? { catalogSourceId: explicitSourceId } : {}),
         isLoading: false,
       }));
+      return true;
     } catch (error) {
-      if (listRequestSeq[filter] !== mySeq) return;
-      if (silent) return;
-      set({
-        isLoading: false,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      if (listRequestSeq[filter] !== mySeq) return true;
+      if (!silent) {
+        set({
+          isLoading: false,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      return false;
     }
   },
 
   loadDetail: async (name: string, options) => {
-    if (!options?.refresh && get().detailCache[name]) return;
+    // Only fall back to catalogSourceId when the caller omitted sourceId entirely.
+    // Explicit `sourceId: undefined` (customize edit) must stay unscoped so the
+    // cache key stays a bare name and does not collide with a prior catalogue tab.
+    const sourceId =
+      options != null && Object.prototype.hasOwnProperty.call(options, 'sourceId')
+        ? (typeof options.sourceId === 'string' && options.sourceId.trim()) || undefined
+        : get().catalogSourceId || undefined;
+    const cacheKey = detailCacheKey(name, sourceId);
+    if (!options?.refresh && get().detailCache[cacheKey]) return;
+    const showId =
+      (typeof options?.id === 'string' && options.id.trim()) || name;
     try {
-      const detail = await connectorApi.show(name);
+      const detail = await connectorApi.show(showId, { sourceId });
       set((state) => ({
-        detailCache: { ...state.detailCache, [name]: detail },
+        detailCache: { ...state.detailCache, [cacheKey]: detail },
       }));
     } catch (error) {
       set({ error: error instanceof Error ? error.message : String(error) });
     }
   },
 
-  installPackage: async (assetId: string) => {
+  rememberConnectors: (items) => {
+    if (!items.length) return;
+    set((state) => ({
+      connectors: mergeByName(state.connectors, items),
+    }));
+  },
+
+  installPackage: async (assetId: string, options) => {
     if (get().busyMap[assetId]) return null;
     set((state) => ({
       busyMap: { ...state.busyMap, [assetId]: 'install' },
       error: null,
     }));
     try {
-      const response = await connectorApi.install(assetId);
+      const sourceId =
+        (typeof options?.sourceId === 'string' && options.sourceId.trim()) ||
+        get().catalogSourceId ||
+        undefined;
+      const versionId =
+        typeof options?.versionId === 'string' ? options.versionId.trim() : '';
+      const packageName =
+        typeof options?.packageName === 'string' ? options.packageName.trim() : '';
+      // Enterprise may still resolve version/package from the in-memory catalogue
+      // card when the caller only passed assetId (quick actions / pending flow).
+      const catalogHint =
+        !versionId || !packageName
+          ? [...get().connectors, ...get().builtinConnectors, ...get().myConnectors].find(
+              (item) => item.id === assetId || item.hubAssetId === assetId,
+            )
+          : undefined;
+      const resolvedVersionId = versionId || catalogHint?.version?.trim() || undefined;
+      const resolvedPackageName =
+        packageName ||
+        catalogHint?.runtimePackageName?.trim() ||
+        catalogHint?.name?.trim() ||
+        undefined;
+      const response = await connectorApi.install(assetId, {
+        sourceId,
+        versionId: resolvedVersionId,
+        packageName: resolvedPackageName,
+      });
       const runtimeName = response.item.name;
       const connectResult = response.connect;
       // mcp.install 下载成功后内联 connect；connect_failed 需转成可见错误态，
@@ -358,7 +497,7 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
       // 连接失败时保持 error 态（按钮「重试」）直到用户再次操作：立刻回拉 list 会拿到
       // 后端的 disconnected 快照，把刚写下的失败态覆盖掉，失败反馈就消失了。
       if (!connectFailed) {
-        void get().loadList('builtin', { silent: true });
+        void get().loadList(catalogListFilter(), { silent: true });
         void get().loadList('local', { silent: true });
       }
       return response;
@@ -388,10 +527,10 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
           ? { ...item, installed: false, connectionState: 'disconnected' as const }
           : item;
       set((state) => {
-        const detailCache = { ...state.detailCache };
-        delete detailCache[identifier];
-        delete detailCache[assetId];
-        delete detailCache[runtimeName];
+        let detailCache = state.detailCache;
+        detailCache = invalidateDetail(detailCache, identifier);
+        detailCache = invalidateDetail(detailCache, assetId);
+        detailCache = invalidateDetail(detailCache, runtimeName);
         return {
           connectors: state.connectors.map(keepCatalogCard),
           builtinConnectors: state.builtinConnectors.map(keepCatalogCard),
@@ -406,7 +545,7 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
             : response.error || i18n.t('connectorMarket.toast.mcpUninstallPendingReload'),
         };
       });
-      void get().loadList('builtin', { silent: true });
+      void get().loadList(catalogListFilter(), { silent: true });
       void get().loadList('local', { silent: true });
       return true;
     } catch (error) {

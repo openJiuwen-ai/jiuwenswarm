@@ -101,6 +101,67 @@ def test_corrupt_line_never_returns_an_earlier_valid_prefix(stored):
         replay.read_history_replay(sid)
 
 
+def test_truncated_tail_from_concurrent_append_retries_and_converges(stored, monkeypatch):
+    sid, path, write = stored
+    write([user()])
+    appended = user("racing input", "current")
+    line = json.dumps(appended, ensure_ascii=False).encode("utf-8")
+    with path.open("ab") as out:
+        out.write(line[:len(line) // 2])
+    sleeps = []
+
+    def finish_append_during_backoff(_seconds):
+        sleeps.append(_seconds)
+        with path.open("ab") as out:
+            out.write(line[len(line) // 2:])
+
+    monkeypatch.setattr(replay.time, "sleep", finish_append_during_backoff)
+    batch = replay.read_history_replay(sid)
+    assert batch.records == [user(), appended]
+    assert sleeps == [0.05]
+
+
+def test_truncated_tail_does_not_retry_a_cursor_read(stored, monkeypatch):
+    sid, path, write = stored
+    write([user()])
+    cursor = replay.read_history_replay(sid).cursor
+    line = json.dumps(user("racing input", "current")).encode("utf-8")
+    with path.open("ab") as out:
+        out.write(line[:len(line) // 2])
+
+    def no_retry(_seconds):
+        raise AssertionError("cursor reads keep the single-attempt semantics")
+
+    monkeypatch.setattr(replay.time, "sleep", no_retry)
+    with pytest.raises(replay.HistoryReplayError, match="HISTORY_RESTORE_CHANGED"):
+        replay.read_history_replay(sid, cursor=cursor)
+
+
+def test_backoff_releases_the_global_read_slot(stored, monkeypatch):
+    sid, path, write = stored
+    write([user()])
+    appended = user("racing input", "current")
+    line = json.dumps(appended, ensure_ascii=False).encode("utf-8")
+    with path.open("ab") as out:
+        out.write(line[:len(line) // 2])
+    seen = {}
+
+    def inspect_slot_during_backoff(_seconds):
+        first = replay._READ_SLOTS.acquire(blocking=False)
+        second = replay._READ_SLOTS.acquire(blocking=False)
+        seen["all_free"] = first and second
+        for acquired in (first, second):
+            if acquired:
+                replay._READ_SLOTS.release()
+        with path.open("ab") as out:
+            out.write(line[len(line) // 2:])
+
+    monkeypatch.setattr(replay.time, "sleep", inspect_slot_during_backoff)
+    batch = replay.read_history_replay(sid)
+    assert seen["all_free"] is True, "a backing-off reader must hold no read slot"
+    assert batch.records == [user(), appended]
+
+
 def test_voice_cursor_skips_known_text_only_appends_and_reads_only_new_speech(stored, monkeypatch):
     sid, path, write = stored
     write([user(), user("old voice", "voice-old", "video_duplex"), user("new input", "current")])

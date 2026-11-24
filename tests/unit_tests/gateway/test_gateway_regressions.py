@@ -235,7 +235,7 @@ def joined():
 @pytest.mark.asyncio
 async def test_silent_joins_are_acknowledged_without_registering_groups_or_requests(tmp_path, monkeypatch):
     from jiuwenswarm.server import agent_ws_server as module
-    from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
+    from e2a.agent_compat import e2a_to_agent_request
     from agent_gateway.message_handler.message_handler import MessageHandler
     from jiuwenswarm.server.jiuwenmate.feishu_group_fanout import FeishuBinding
     from tests.unit_tests.gateway.test_persistent_group_fanout import _Host, NS

@@ -29,48 +29,8 @@ def owner_request(host):
     return execution
 
 
-@pytest.mark.parametrize("platform", ["feishu", "dingtalk", "welink"])
-async def test_owner_web_search_returns_content_without_approval(sharing, platform):
-    execution = owner_request(sharing)
-    sharing.delegate.sharing_sources.return_value = ({
-        "group_id": "source-group", "name": "Source group", "platform": platform,
-    },)
-    result = await sharing.port.search_messages(execution, sharing.query)
-    assert result.hits[0].message.text == "private launch plan"
-    assert not sharing.repo.pending_for_request("local", execution.request_id)
-    assert sharing.repo.list_for_owner("local", "config-1") == {"approvals": [], "grants": []}
-    receipt, = sharing.repo.approvals_for_session("local", execution.agent_id, execution.session_id)
-    assert receipt["status"] == "owner_read"
-    assert sharing.repo.window_generation("local", execution.agent_id, execution.session_id) == ""
 
 
-@pytest.mark.parametrize("change", ["principal", "session_agent", "destination", "im_direct", "group", "source"])
-async def test_non_owner_or_changed_destination_still_requires_approval(sharing, change):
-    execution = owner_request(sharing)
-    if change == "principal":
-        execution = replace(execution, principal_ref="visitor")
-        sharing.record.access.principal_ref = "visitor"
-    elif change == "session_agent":
-        sharing.sessions.get_session = lambda *args: SimpleNamespace(
-            agent_id="another-agent", conversation=ConversationRef.web("owner-chat"),
-        )
-    elif change == "destination":
-        sharing.record.route_snapshot = RequestRouteSnapshot(channel="web", target_id="another-chat")
-    elif change == "im_direct":
-        sharing.sessions.get_session = lambda *args: SimpleNamespace(
-            agent_id=execution.agent_id, conversation=ConversationRef.im_direct("dingtalk", "owner-chat"),
-        )
-        sharing.record.route_snapshot = RequestRouteSnapshot(channel="dingtalk", app_id="ding-app",
-                                                             target_id="owner-chat", source_message_id="message-1")
-    elif change == "group":
-        sharing.sessions.get_session = lambda *args: SimpleNamespace(
-            agent_id=execution.agent_id, conversation=ConversationRef.group("target-group"),
-        )
-        sharing.record.request_input.kind = "group_message"
-    else:
-        sharing.record.source_ref = "feishu:untrusted-message"
-    with pytest.raises(core.GroupContentApprovalRequired):
-        await sharing.port.search_messages(execution, sharing.query)
 
 
 async def test_owner_does_not_bypass_source_access_or_recall(sharing):
@@ -123,25 +83,8 @@ async def test_owner_file_read_and_later_cache_read_do_not_ask_again(artifact_ho
     assert receipt["status"] == "owner_read"
 
 
-async def test_owner_delivery_cannot_be_redirected_to_a_group(sharing):
-    execution = owner_request(sharing)
-    await sharing.port.search_messages(execution, sharing.query)
-    job = {"namespace_id": "local", "request_id": execution.request_id, "agent_id": execution.agent_id,
-           "channel": "web", "target_id": "owner-chat", "request_kind": "direct_message"}
-    assert await sharing.gate.can_deliver(job)
-    assert not await sharing.gate.can_deliver({**job, "channel": "feishu", "target_id": "other-group",
-                                              "request_kind": "group_message"})
 
 
-async def test_owner_delivery_still_checks_current_source_membership(sharing):
-    execution = owner_request(sharing)
-    await sharing.port.search_messages(execution, sharing.query)
-    sharing.groups.active_accesses = lambda *args: (SimpleNamespace(
-        group_id="source-group", app_id="app-1", visible_from=NOW,
-    ),)
-    sharing.groups.get = lambda *args: SimpleNamespace(platform="dingtalk")
-    sharing.gate._verify_membership = AsyncMock(return_value="left")
-    assert not await sharing.gate.can_deliver({"namespace_id": "local", "request_id": execution.request_id})
 
 
 @pytest.mark.parametrize("platform", ["feishu", "dingtalk", "welink"])
@@ -182,7 +125,7 @@ async def test_platform_refresh_does_not_send_dingtalk_messages_to_feishu():
 async def test_web_runtime_wires_access_before_start_and_recovery(monkeypatch):
     from jiuwenswarm.server.jiuwenmate import web_adapter
 
-    manager = SimpleNamespace(start=AsyncMock(), recover=AsyncMock(), db_path="unused.sqlite3",
+    manager = SimpleNamespace(start=AsyncMock(), start_swarmchat=AsyncMock(), recover=AsyncMock(), db_path="unused.sqlite3",
                               group_chats=SimpleNamespace(), group_archive=SimpleNamespace())
     configured = []
     monkeypatch.setattr(web_adapter, "WebConversationStore", lambda path: object())

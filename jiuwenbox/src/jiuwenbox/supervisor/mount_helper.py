@@ -10,22 +10,32 @@ never leaves the host namespaces, so it can serve the next request.
 from __future__ import annotations
 
 import ctypes
+import errno
 import json
 import os
+import shutil
 import sys
+import tempfile
 from collections.abc import Callable
 
 CLONE_NEWNS = 0x00020000
 CLONE_NEWUSER = 0x10000000
 AT_FDCWD = -100
+AT_EMPTY_PATH = 0x1000
+AT_RECURSIVE = 0x8000
 OPEN_TREE_CLONE = 1
 OPEN_TREE_CLOEXEC = os.O_CLOEXEC
 MOVE_MOUNT_F_EMPTY_PATH = 0x4
 SYS_OPEN_TREE = 428
 SYS_MOVE_MOUNT = 429
+SYS_MOUNT_SETATTR = 442
 MS_RDONLY = 1
 MS_REMOUNT = 32
 MS_BIND = 4096
+MS_REC = 1 << 14
+MS_PRIVATE = 1 << 18
+MS_SLAVE = 1 << 19
+MNT_DETACH = 2
 
 _libc = ctypes.CDLL("libc.so.6", use_errno=True)
 _libc.setns.argtypes = [ctypes.c_int, ctypes.c_int]
@@ -38,8 +48,23 @@ _libc.mount.argtypes = [
     ctypes.c_void_p,
 ]
 _libc.mount.restype = ctypes.c_int
+_libc.unshare.argtypes = [ctypes.c_int]
+_libc.unshare.restype = ctypes.c_int
+_libc.umount2.argtypes = [ctypes.c_char_p, ctypes.c_int]
+_libc.umount2.restype = ctypes.c_int
 _syscall = _libc.syscall
 _syscall.restype = ctypes.c_long
+
+
+class _MountAttr(ctypes.Structure):
+    """``struct mount_attr`` passed to ``mount_setattr(2)``."""
+
+    _fields_ = (
+        ("attr_set", ctypes.c_uint64),
+        ("attr_clr", ctypes.c_uint64),
+        ("propagation", ctypes.c_uint64),
+        ("userns_fd", ctypes.c_uint64),
+    )
 
 
 def _errno(prefix: str) -> OSError:
@@ -67,6 +92,137 @@ def _open_tree(src: str) -> int:
     if fd < 0:
         raise _errno(f"open_tree {src}")
     return fd
+
+
+def _make_private(tree_fd: int) -> bool:
+    """Drop the cloned mount out of its source peer group.
+
+    ``open_tree(OPEN_TREE_CLONE)`` copies the source propagation. On a
+    systemd host that source is ``shared``, so the detached mount stays in
+    the host peer group and ``move_mount`` publishes a copy back onto the
+    host. Returns ``False`` when this kernel has no ``mount_setattr``
+    (``ENOSYS``). The caller must close that still-shared fd and rebuild
+    the clone with :func:`_bind_private_clones`.
+    """
+    attr = _MountAttr(propagation=MS_PRIVATE)
+    empty = ctypes.create_string_buffer(b"")
+    ctypes.set_errno(0)
+    result = _syscall_long(
+        SYS_MOUNT_SETATTR,
+        tree_fd,
+        ctypes.addressof(empty),
+        AT_EMPTY_PATH | AT_RECURSIVE,
+        ctypes.addressof(attr),
+        ctypes.sizeof(attr),
+    )
+    if result == 0:
+        return True
+    err = ctypes.get_errno()
+    # glibc ``syscall`` returns -1 and sets errno. A raw failure can also
+    # come back as -ENOSYS with errno left at 0.
+    if err == errno.ENOSYS or result == -errno.ENOSYS:
+        return False
+    raise OSError(err, f"mount_setattr private: {os.strerror(err)}")
+
+
+def _make_rslave(path: str = "/") -> None:
+    """Stop mounts under ``path`` from propagating out of this namespace.
+
+    A private clone attached onto a still-shared parent is propagated
+    anyway: the kernel walks the destination peer group, not the source's.
+    Bubblewrap's ``/usr`` bind is such a parent — it cloned a shared host
+    mount and was never made a slave. Slave conversion here touches only
+    this namespace's mounts.
+    """
+    if _libc.mount(None, path.encode(), None, MS_REC | MS_SLAVE, None) != 0:
+        raise _errno(f"make rslave {path}")
+
+
+def _isolate_mount_namespace() -> None:
+    """Enter a new mount namespace whose mounts cannot propagate to the host."""
+    if _libc.unshare(CLONE_NEWNS) != 0:
+        raise _errno("unshare mount")
+    ctypes.set_errno(0)
+    if _libc.mount(None, b"/", None, MS_REC | MS_PRIVATE, None) == 0:
+        return
+    private_err = ctypes.get_errno()
+    if _libc.mount(None, b"/", None, MS_REC | MS_SLAVE, None) == 0:
+        return
+    raise OSError(private_err, f"make rprivate /: {os.strerror(private_err)}")
+
+
+def _create_mountpoint(path: str, is_dir: bool) -> None:
+    if is_dir:
+        os.mkdir(path)
+        return
+    fd = os.open(path, os.O_CREAT | os.O_WRONLY, 0o644)
+    os.close(fd)
+
+
+def _bind_private_clones(mounts: list[dict]) -> list[tuple[int, str, bool, bool]]:
+    """Clone each source as a private detached mount without ``mount_setattr``.
+
+    A bind of a shared source joins that source's peer group even when the
+    destination parent is private. ``MS_PRIVATE`` on the new mountpoint
+    removes only the new mount from the group, which ``mount(2)`` can do
+    because the mount is still attached. The following ``open_tree`` clone
+    of a private mount stays private, so ``move_mount`` into the sandbox
+    does not publish a copy on the host.
+    """
+    _isolate_mount_namespace()
+    work = tempfile.mkdtemp(prefix="jiuwenbox-mnt-")
+    opened: list[int] = []
+    prepared: list[tuple[int, str, bool, bool]] = []
+    try:
+        for index, mount in enumerate(mounts):
+            src = str(mount["src"])
+            dst = str(mount["dst"])
+            is_dir = os.path.isdir(src)
+            point = os.path.join(work, str(index))
+            _create_mountpoint(point, is_dir)
+            source = src.encode()
+            target = point.encode()
+            if _libc.mount(source, target, None, MS_BIND, None) != 0:
+                raise _errno(f"private bind {src}")
+            if _libc.mount(None, target, None, MS_PRIVATE, None) != 0:
+                raise _errno(f"make private {src}")
+            fd = _open_tree(point)
+            opened.append(fd)
+            prepared.append((fd, dst, bool(mount.get("ro")), is_dir))
+            # The attached bind exists only in this private namespace. setns
+            # abandons that namespace, so a busy detach must not fail checkout.
+            _libc.umount2(target, MNT_DETACH)
+    except Exception:
+        for fd in opened:
+            os.close(fd)
+        raise
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    return prepared
+
+
+def _collect_clones(mounts: list[dict]) -> tuple[list[tuple[int, str, bool, bool]], str]:
+    """Return detached clones and how their propagation was made private."""
+    opened: list[int] = []
+    prepared: list[tuple[int, str, bool, bool]] = []
+    try:
+        for mount in mounts:
+            src = str(mount["src"])
+            dst = str(mount["dst"])
+            is_dir = os.path.isdir(src)
+            fd = _open_tree(src)
+            opened.append(fd)
+            if not _make_private(fd):
+                for tree_fd in opened:
+                    os.close(tree_fd)
+                opened.clear()
+                return _bind_private_clones(mounts), "private-bind"
+            prepared.append((fd, dst, bool(mount.get("ro")), is_dir))
+    except Exception:
+        for tree_fd in opened:
+            os.close(tree_fd)
+        raise
+    return prepared, "mount_setattr"
 
 
 def _move_mount(tree_fd: int, dst: str) -> None:
@@ -134,8 +290,12 @@ def _ensure_destination(dst: str, is_dir: bool) -> None:
         os.close(fd)
 
 
-def _apply(pid: int, user_ns: bool, mounts: list[dict]) -> None:
-    """Join ``pid``'s namespaces and attach each source tree."""
+def _apply(pid: int, user_ns: bool, mounts: list[dict]) -> str:
+    """Join ``pid``'s namespaces and attach each source tree.
+
+    Returns ``mount_setattr`` or ``private-bind``, naming how the detached
+    clones were removed from the host peer group.
+    """
     user_fd = -1
     mnt_fd = -1
     trees: list[int] = []
@@ -143,18 +303,23 @@ def _apply(pid: int, user_ns: bool, mounts: list[dict]) -> None:
         if user_ns:
             user_fd = os.open(f"/proc/{pid}/ns/user", os.O_RDONLY)
         mnt_fd = os.open(f"/proc/{pid}/ns/mnt", os.O_RDONLY)
-        prepared: list[tuple[int, str, bool, bool]] = []
-        for mount in mounts:
-            src = str(mount["src"])
-            dst = str(mount["dst"])
-            is_dir = os.path.isdir(src)
-            trees.append(_open_tree(src))
-            prepared.append((trees[-1], dst, bool(mount.get("ro")), is_dir))
+        # Namespace fds are opened first. The private-bind fallback unshares
+        # a throwaway mount namespace, and these fds must already point at
+        # the sandbox.
+        prepared, propagation = _collect_clones(mounts)
+        trees.extend(tree_fd for tree_fd, _, _, _ in prepared)
         if user_fd >= 0:
             _setns(user_fd, CLONE_NEWUSER, "setns user")
         _setns(mnt_fd, CLONE_NEWNS, "setns mnt")
 
         def attach() -> None:
+            # Existing sandbox binds (bwrap's /usr) are still shared peers of
+            # the host. Slave them before attaching, or the new mount is
+            # copied back onto the host at the same path and never unmounted.
+            # The clones themselves are already private: either mount_setattr
+            # detached them from the host peer group, or the private-bind
+            # fallback created them outside that group.
+            _make_rslave("/")
             for tree_fd, dst, read_only, is_dir in prepared:
                 _ensure_destination(dst, is_dir)
                 _move_mount(tree_fd, dst)
@@ -162,6 +327,7 @@ def _apply(pid: int, user_ns: bool, mounts: list[dict]) -> None:
                     _remount_readonly(dst)
 
         with_writable_root(attach)
+        return propagation
     finally:
         for tree_fd in trees:
             os.close(tree_fd)
@@ -173,17 +339,21 @@ def _apply(pid: int, user_ns: bool, mounts: list[dict]) -> None:
 
 def _child_apply(pid: int, user_ns: bool, mounts: list[dict], err_w: int) -> None:
     try:
-        _apply(pid, user_ns, mounts)
+        propagation = _apply(pid, user_ns, mounts)
     except Exception as exc:  # noqa: BLE001 - the parent only has the pipe.
         try:
             os.write(err_w, str(exc).encode()[:4000])
         except OSError:
             pass
         getattr(os, "_exit")(1)
+    try:
+        os.write(err_w, propagation.encode()[:200])
+    except OSError:
+        pass
     getattr(os, "_exit")(0)
 
 
-def apply_request(message: dict) -> None:
+def apply_request(message: dict) -> str:
     """Fork a child that performs one mount batch, then wait for it."""
     pid = int(message["pid"])
     user_ns = bool(message.get("user_ns"))
@@ -202,6 +372,7 @@ def apply_request(message: dict) -> None:
     if os.waitstatus_to_exitcode(status) != 0:
         detail = err.decode(errors="replace").strip() or f"mount helper status {status}"
         raise RuntimeError(detail)
+    return err.decode(errors="replace").strip() or "mount_setattr"
 
 
 def _write_reply(payload: dict) -> None:
@@ -219,11 +390,11 @@ def main() -> int:
         try:
             message = json.loads(text)
             request_id = message.get("id")
-            apply_request(message)
+            propagation = apply_request(message)
         except Exception as exc:  # noqa: BLE001 - reported to the server.
             _write_reply({"id": request_id, "ok": False, "error": str(exc)})
             continue
-        _write_reply({"id": request_id, "ok": True})
+        _write_reply({"id": request_id, "ok": True, "propagation": propagation})
     return 0
 
 

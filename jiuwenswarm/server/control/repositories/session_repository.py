@@ -169,7 +169,11 @@ def _load_metadata(request: AgentRequest) -> AgentResponse:
         return build_error_response(request, str(exc), code="INTERNAL_ERROR")
     if not meta:
         return build_error_response(request, "session not found", code="NOT_FOUND")
-    return _ok(request, meta)
+    payload = dict(meta)
+    # Front control path is sync: only durable metadata.is_paused.
+    # Live Runner PAUSED OR stays on async session_adapter._handle_get_metadata.
+    payload["is_paused"] = meta.get("is_paused") is True
+    return _ok(request, payload)
 
 
 async def handle_pin(request: AgentRequest) -> AgentResponse:

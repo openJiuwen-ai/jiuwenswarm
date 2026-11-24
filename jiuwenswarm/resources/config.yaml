@@ -35,96 +35,85 @@ a2ui:
 rsi:
   enabled: true
 
+# REA 逆向工程入口；默认开启
+rea:
+  enabled: true
+
 a4p:
   enabled: false
 
 symphony:
-  enabled: null  # null = 跟随程序默认；用户切换后保存 true/false
-  paths:
-    skills_root: ""
-    graph_dir: ""
-
-  fingerprint:
+  capability:
+    # sources 缺省时使用工作区 skills 目录。Skill 和专家来源可以共用一棵分类树。
+    # sources:
+    #   - type: skill
+    #     root: /path/to/skills
+    #   - type: expert
+    #     root: /path/to/agent_templates/local
     scan:
-      max_depth: 1
-    extraction:
-      workers: 4
-      batch_size: 2
-      body_limit:
-
-  build:
-    workers: 4
-    batch_size: 16
-    max_candidates_per_skill_relation: 32
-    require_consensus: false
-    min_edge_confidence: 0.5
-
-  evolution:
-    # Core Flow 沉淀：分组签名 = 轨迹全部成功边（确定性、不漂移），
-    # 一条新轨迹最多触发一个技能包的完整蒸馏；达标（成功次数 + 成功率）即 verified。
-    flow:
-      enabled: null              # null = 跟随程序默认；true = 由 Core Graph-Evolution Rail 学习动态图并沉淀经验
-      min_successes: 3           # 同一结构至少成功几次且成功率达标后才可安装
-      min_pack_success_rate: 0.8  # pack 成功率阈值
-
-  orchestration:
-    # fast is the default one-shot path; beam enables bidirectional search.
-    mode: fast
-    # Beam-only candidate count retained after each search round.
-    top_k: 3
-    max_depth: 4
-    min_edge_confidence: 0.5
-
-  skill_retrieval:
+      max_depth: null
+    fingerprint:
+      extraction:
+        llm_enabled: true
+        max_concurrency: 4
+        batch_size: 2
+        max_body_chars: 16000
+        max_output_tokens: null  # 沿用宿主默认模型的输出预算
+  storage:
+    artifact_root: ${SYMPHONY_ARTIFACT_ROOT:-}  # 默认工作区 symphony/runtime；混合分类树单独存放
+  retrieval:
     enabled: false
-    artifact_root: ${SYMPHONY_SKILL_RETRIEVAL_ROOT:-}
-    discovery:
-      # Strictly below the fixed 1% context threshold, a new session receives
-      # a complete metadata snapshot; larger inventories use skill_index.
-      max_output_chars: 12000
-      incremental_notice_max_chars: 4000
-      prompt_preferred_skills:
+    index_build:
+      structure:
+        max_depth: 6
+        branching_factor: 128
+        root_categories: null
+      request:
+        max_concurrency: 2
+        max_retries: 2
+        timeout_seconds: 420.0
+        classification_batch_limit: 32
+      task:
+        preserve_previous_index_on_failure: true
+      prompt:
+        discovery_seed: 42
+      postprocess:
+        enabled: true
+        max_passes: 1
+        min_capabilities: 6
+      equivalence:
+        enabled: false
+    use_existing_index: true
+    prompt:
+      candidate_budget_ratio: 0.01
+      # context_window_tokens 缺省从当前会话模型解析；显式值优先。
+      preferred_capability_ids:
         - skill-creator
         - swarmskill-creator
         - symphony-assistant
+    output:
+      max_chars: 12000
+      incremental_notice_max_chars: 4000
+  orchestration:
+    enabled: null  # null 继承程序默认；用户切换后保存 true/false
+    min_edge_confidence: 0.5  # 构图与规划共用的关系阈值
     build:
-      # A failed refresh keeps the last usable taxonomy available to discovery.
-      preserve_previous_index_on_failure: true
-      # Everything below is forwarded to SkillIndexBuildConfig, which accepts
-      # only the field names it declares and silently drops the rest. The
-      # values here are that dataclass's own defaults, so listing them changes
-      # nothing on its own; they are listed because a key this template omits
-      # is deleted from an operator's config on the next start, and these were
-      # being deleted while the builder was still reading them.
-      # Taxonomy shape: how deep the tree may go and how wide one node may get.
-      max_depth: 6
-      branching_factor: 128
-      # Classification concurrency, retries and per-request budget.
-      max_workers: 2
-      max_retries: 2
-      request_timeout_seconds: 420.0
-      # Skills classified per model call.
-      classification_batch_limit: 32
-      # Fixed root categories. Empty lets the builder discover its own.
-      root_categories:
-      # Seed for the discovery pass, so a rebuild reproduces its predecessor.
-      discovery_seed: 42
-      # Post-processing pass that merges thin branches back together.
-      postprocess_enabled: true
-      postprocess_max_passes: 1
-      postprocess_min_skills: 6
-      # Group skills that do the same job under one equivalence node.
-      equivalence_enabled: false
-    # Index construction uses the default configured model. An optional llm
-    # mapping can override model, api_key, base_url and seed for this builder.
-    # Left empty rather than {} on purpose: a mapping here would be treated as
-    # the complete set of allowed sub-keys when a config is upgraded against
-    # this template, and every override an operator added would be dropped.
-    llm:
+      max_concurrency: 4
+      matching:
+        batch_size: 16
+        max_candidates_per_capability_relation: 32
+        require_consensus: false
+    plan:
+      mode: fast
+      top_k: 3  # 仅 beam 束搜索使用
+      max_depth: 4
+      dynamic_graph_enabled: null  # 规划是否采用已有动态观测
+    experience:
+      enabled: null  # null 继承 Core 默认值；设置面板保存 true/false
 
-# Auto Memory：对话结束后自动提取记忆，按项目隔离存储
-# 存储路径：~/.jiuwenswarm/projects/{sanitized-project-path}/memory/
-# 类似 Claude Code 的 auto-memory 功能
+# Auto Memory：对话结束后自动提取，存到 {agent_workspace}/coding_memory/{项目键}/。
+# agent.code.* 沿用此全局开关；历史 code.* 入口读 modes.code.memory.auto_coding_memory。
+# 启用 jiuwen 不跳过此任务；它仍写旧主题文件，与新文档记忆的 sync_turn 独立。
 auto_memory_enabled: false
 
 # 日志目录：~/.jiuwenswarm/agent/.logs/
@@ -158,33 +147,40 @@ memory:
   #   external — 仅外接记忆（LTM / Mem0 / OpenViking / 插件）
   #   both     — 内置 + 外接并存
   #   none     — 全部关闭
+  # Exception: Jiuwen Team uses provider selection, not this engine gate.
   engine: ${MEMORY_ENGINE:-builtin}
 
   # ------------------------------------------------------------
-  # 内置记忆的 jiuwen 变体（engine ∈ {builtin, both} 且 provider=jiuwen 时生效）
-  # 用 JiuwenMemoryRail + AgentMemoryMemoryProvider 替换原生 MemoryRail；
-  # modes.agent.memory.enabled 仍是总开关。模板默认使用 jiuwen，
-  # 依赖 site-packages 的 jiuwen_memory_adapter 包。
-  # 两种挂载模式（memory.builtin.jiuwen.mode）：
-  #   http — 连远程 agent-memory HTTP 服务（需服务在跑）
-  #   sdk  — 进程内装配 agent-memory 内核，内核配置统一由 provider 内置
-  #          agent 场景默认装配（F09：md 真源 + shadow 索引 + agent_llm 抽取，
-  #          serve-doc 的代码化副本，随 adapter 部署）
+  # 单人内置记忆的 jiuwen 变体（engine ∈ {builtin, both} 且 provider=jiuwen 时生效）
+  # Work 选择 JiuwenMemoryRail；单人 Code 选择 JiuwenMemoryCodingRail。
+  # 各自仍受 modes.agent/code.memory.enabled 控制，且 memory.mode 必须为 local。
+  # 模板默认使用 jiuwen；core 与 JiuwenMemory 依赖须包含对应接入功能。
+  # 两种连接方式（memory.builtin.jiuwen.mode）：
+  #   http — 连远程 agent-memory 服务；Runtime、模型、文档与看门狗由服务端配置和持有。
+  #   sdk  — 进程内装配 Runtime/看门狗，以下 sdk 段覆盖 Provider 场景默认配置；
+  #          模板使用本地 hashing 向量，LLM 凭证留空时从 Swarm 默认对话模型注入。
+  # 选中 jiuwen 后编码 Rail 创建失败则清空编码槽位，不回退旧 Rail；ProjectMemoryRail 独立。
+  # 配置示例、工具和目录见 docs/zh/编码记忆.md。
   # ------------------------------------------------------------
+  # Jiuwen Team: provider=jiuwen enables team.work/team.code independently of
+  # modes.team.*.memory.enabled, single-agent memory switches and memory.mode/engine.
+  # Same identity shares USER.md; project/team keys isolate facts/conclusions.
+  # SDK reuses one runtime per root;
+  # first runtime config wins until all users release it. HTTP stays remote.
   builtin:
-    provider: jiuwen              # jiuwen = JiuwenMemoryRail；'' = 原生 MemoryRail
+    provider: jiuwen              # jiuwen = agent-memory 文档记忆；空 = 原生 Work/Code 记忆
     jiuwen:
       mode: ${JIUWEN_MEMORY_MODE:-sdk}   # http = HTTP 服务；sdk = 进程内内核
       base_url: ${JIUWEN_MEMORY_BASE_URL:-http://127.0.0.1:8137}  # http：AgentMemory HTTP 服务
       api_key: ${JIUWEN_MEMORY_API_KEY:-}                          # http：可选 Bearer
       user_id: ${MEMORY_USER_ID:-__default__}     # 数据隔离标识（与 memory.external 共用 env）
       scope_id: ${MEMORY_SCOPE_ID:-__default__}
-      session_id: ""               # 空 = 跨会话共享；显式传值 = 按会话隔离
-      agent_id: jiuwenswarm        # AgentMemory scope 的 agent 轴
+      session_id: ""               # 记忆 session，原样透传；不自动绑定聊天会话，影子搜索跨 session
+      agent_id: main_agent         # Work/Code/Team 共用；默认兼容旧 main_agent 记忆
       space: ""                    # 只认显式传入，不从 scope_id 猜测
       identity_org: local          # http 模式认证身份 org（对齐 dev 认证器缺省）
       identity_user: developer     # http 模式认证身份 user
-      session_end_extract: false   # uninit 时批量 EXTRACT（infer 模式下冗余，保持关）
+      session_end_extract: false   # Work uninit 时批量 EXTRACT；Code 不使用此项
 
       # ---- sdk 模式专用（mode=sdk）----
       # SDK 配置会与 provider 内置的 agent 场景默认装配深合并。
@@ -210,7 +206,7 @@ memory:
           default:
             target: local           # md 真源落本地文件系统
             params:
-              root: ""              # 记忆文档根目录；留空由 provider 设为 {user_workspace}/agent
+              root: ""              # 记忆文档根；空 = {user_workspace}/agent/workspace，Work/Code 共用
 
   forbidden_memory_definition:
     enabled: false
@@ -1102,6 +1098,52 @@ execution_guard:
     # 未知/错误工具连续调用达到该次数时停止重试并中断
     unknown_tool_threshold: 10
 
+# AgentSSAS 安全态势感知系统配置
+ssas:
+  # 总开关. 关闭后不注册 AgentSSASSecurityRail. 基础模板面向单机默认部署
+  # (单进程常驻), 默认开启安全感知; 若同机多进程并发运行(如 web 与 CLI
+  # 同时常驻)且未隔离 ssas_home, 多进程将解析到同一 ssas_core.db 并发写入
+  # (留空时按 SSAS_HOME -> JIUWENSWARM_DATA_DIR -> JIUWENSWARM_HOME ->
+  # ~/.jiuwenswarm 顺序自动解析), 可能触发 SQLite 文件锁冲突、安全事件
+  # 混库——该场景请为各进程显式配置不同 ssas_home(或按进程设置 SSAS_HOME
+  # 环境变量)隔离数据目录, 或切换 mode=http 指向同一 AgentSSAS HTTP 服务
+  # 集中统一感知(分布式 leader/teammate 模板因该冲突默认关闭, 详见模板注释)
+  enabled: true
+  # 运行模式: inprocess (进程内) / http (独立 HTTP 服务)
+  mode: inprocess
+  # HTTP 模式配置 (默认 mode=inprocess 不启用; 切换 mode=http 时需显式取消注释并配置,
+  # 注意: http_host 未配置时配置类默认为 0.0.0.0(监听全部网卡), 启用 http 模式前
+  # 必须显式配置 127.0.0.1 或内网地址, 并同时配置 http_token, 避免无鉴权端点对外暴露)
+  # http_endpoint: "http://127.0.0.1:8443"
+  # http_timeout: 5.0
+  # http_token:
+  # http_host: "127.0.0.1"
+  # http_port: 8443
+  # 存储配置 (遵循 JIUWENSWARM_HOME 约定; ssas_home 留空字符串时按
+  # SSAS_HOME -> JIUWENSWARM_DATA_DIR -> JIUWENSWARM_HOME -> ~/.jiuwenswarm 顺序自动解析)
+  ssas_home: ""
+  storage_backend: sqlite
+  event_ttl_days: 30
+  alert_ttl_days: 90
+  # Rail 配置 (rail_priority 生效于 agent-core 回调链排序, higher=first;
+  # 默认 80, 低于 PermissionInterruptRail 的 90, 保持"在其他安全 Rail 之后执行")
+  rail_priority: 80
+  enable_exception_hooks: true
+  # 风险报告阈值: safe / low / medium / high / critical
+  risk_report_threshold: low
+  # auth 模式超时 (秒)
+  auth_timeout: 2.0
+  # AgentSSASSecurityRail 决策策略:
+  # - observe_only: 全部放行 (仅感知)
+  # - active_protection: 按风险等级处理 (critical->阻断, high/medium/low->告警)
+  # 策略定义在 AgentSSAS 的 decision_policies.yaml 中
+  decision_policy: observe_only
+  # 检测模块配置覆盖 (可覆盖 module.yaml 的 enabled 字段)
+  modules:
+    # test_detection 默认 disabled, 测试时设为 true 启用
+    test_detection:
+      enabled: false
+
 channels:
   web:
     send_file_allowed: true
@@ -1622,8 +1664,20 @@ updater:
 
 extensions:
   # 扩展包搜索目录（字符串），用 ';' 分割多个目录：
-  # EXTENSION_DIRS="E:/a;D:/b"
-  extension_dirs: ${EXTENSION_DIRS:-jiuwenswarm/extensions}
+  # EXTENSION_DIRS adds custom search directories before the built-in directory.
+  extension_dirs: "${EXTENSION_DIRS:-};jiuwenswarm/extensions"
+  # V2 扩展包安装目录；相对路径相对于用户工作目录（可由 JIUWENSWARM_DATA_DIR 改变）。
+  install_dir: ${EXTENSION_INSTALL_DIR:-extension_pkgs}
+  # V2 extension runtime data; report filename is fixed by the host.
+  data_dir: ${EXTENSION_DATA_DIR:-extension}
+  install_report:
+    poll_interval_ms: 500
+    dependency_timeout_seconds: 300
+    lock_timeout_seconds: 5
+  # 包级 JSON store；相对路径相对于用户工作目录。
+  store_dir: ${EXTENSION_STORE_DIR:-extension/store}
+  # 包级 durable state；相对路径相对于用户工作目录。
+  state_dir: ${EXTENSION_STATE_DIR:-extension/state}
 
 # ============================================================
 # Hooks 配置
@@ -1709,10 +1763,11 @@ modes:
     rails:
     tools:
   code:
-    # 记忆开关 — 控制 CodingMemoryRail 和 ProjectMemoryRail 加载
-    # 关闭后，coding_memory_read/write/edit 工具不可用，项目记忆文件不自动加载
+    # 单人编码记忆总开关 — 控制编码 Rail（原生或 jiuwen）和 ProjectMemoryRail。
+    # 关闭后不注册对应记忆工具，也不自动加载项目说明书。
     memory:
       enabled: true
+      auto_coding_memory: false  # 历史 code.* 入口；agent.code.* 仍读全局 auto_memory_enabled
 
     # SDD 开关 — 控制 DesignRail 加载（wave1：需求分析与设计阶段）
     # 开启后对 Agent 说"需求分析"即进入 SDD 流程，按阶段产出 RAS/RDS
@@ -1725,8 +1780,8 @@ modes:
     #   RuntimePromptRail, ResponsePromptRail, JiuSwarmStreamEventRail, SecurityRail,
     #   PermissionInterruptRail, SysOperationRail(FileSystemRail), LspRail,
     #   AgentModeRail, StructuredAskUserRail, ConfirmInterruptRail, ContextProcessorRail
-    # 注意：ProjectMemoryRail, CodingMemoryRail 受 memory.enabled 开关控制，
-    #       开关关闭时不加载，开关开启时固定挂载。
+    # 注意：ProjectMemoryRail 及编码 Rail 受 memory.enabled 控制，无需列入动态 rails。
+    #       provider=jiuwen 选 JiuwenMemoryCodingRail；空值保留 CodingMemoryRail。
     #       TTSERail 受 react.ttse.enabled 控制（与 agent 模式同一开关），
     #       开启后挂载 FACT/TIP 双轨自演进；不要放进下方动态 rails 列表。
     rails:
@@ -1735,7 +1790,8 @@ modes:
 
     # 动态 Tools — 列表中出现的 = 启用
     # send_file_to_user 由运行时 _update_session_tools 注册，不在此配置
-    # coding_memory_read/write/edit 由 CodingMemoryRail 在 subagent 内部注册，不在此配置
+    # 原生 coding_memory_read/write/edit 或 jiuwen 的 agent_memory_coding_memory_*
+    # （read/write/edit/search）由所选编码 Rail 注册，不在此配置。
     tools:
       - web_free_search
       - web_fetch_webpage
@@ -1881,7 +1937,13 @@ modes:
       # Suppress periodic Todo reminders for Code agents in scheduled teams.
       disable_code_todo_reminder: false
 
+      # Member goal policy is YAML-only. Null keeps it disabled.
+      member_goal: null
+
       leader:
+        # Scheduled dispatch only. An object enables hybrid assessment and 10
+        # continuation rounds by default. No token budget is configured.
+        goal: null
         member_name: team-leader
         display_name: 团队领导
         persona: "天才项目管理专家，擅长任务分解和团队协调"
@@ -1910,7 +1972,8 @@ modes:
       # ============================================================
       memory:
         # ---------- 总开关 ----------
-        # 关闭时 TeamMemoryManager 不创建，成员记忆回退到各自独立的 MemoryRail
+        # Jiuwen Team ignores this switch and uses its own Rail, not TeamMemoryManager.
+        # Native route: false skips TeamMemoryManager; existing member rails are retained.
         enabled: false
 
         # ---------- 场景标识 ----------

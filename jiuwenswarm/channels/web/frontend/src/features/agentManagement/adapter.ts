@@ -29,7 +29,7 @@ import type {
   RawTeamSkillMarketplaceItem,
 } from './raw';
 import { normalizeEquipmentIdentity, normalizeEquipmentSource } from '../equipmentMarketplace';
-import { getApiBase, resolveApiUrl } from '../../utils/env';
+import { getApiBase } from '../../utils/env';
 import { resolveUserId } from '../../utils/userId';
 
 export type SupportedLocale = 'zh' | 'en';
@@ -94,7 +94,7 @@ function normalizeAvatarUrl(value: string | undefined): string | null {
     const userId = resolveUserId();
     const routed = userId ? `${avatar}&user_id=${encodeURIComponent(userId)}` : avatar;
     const base = getApiBase();
-    return base ? `${base}${routed}` : resolveApiUrl(routed);
+    return base ? `${base}${routed}` : routed;
   }
   if (/^(?:https?:|data:image\/)/i.test(avatar)) return avatar;
   return null;

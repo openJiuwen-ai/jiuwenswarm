@@ -15,9 +15,11 @@ import logging
 import os
 import threading
 import time
-from collections import deque
+import uuid
+from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Any, Callable
 
 from jiuwenswarm.server.ipc.io_loop import on_loop
@@ -25,6 +27,8 @@ from jiuwenswarm.server.ipc.protocol import (
     HEADER,
     IpcError,
     KIND_HEARTBEAT,
+    KIND_REQUEST,
+    KIND_REQUEST_DONE,
     MAX_FRAME_BYTES,
     decode_frame,
     encode_frame,
@@ -39,6 +43,8 @@ _STREAM_PENDING_MESSAGES = 256
 _STREAM_PENDING_BYTES = 2 * MAX_FRAME_BYTES
 # Let an active consumer drain a burst without removing the overload bound.
 _RECEIVE_BACKLOG_TIMEOUT = 0.5
+# Lost/cancelled requests cannot leave an unbounded correlation table on a long-lived IPC session.
+_PROBE_REQUEST_HISTORY = 256
 
 
 def endpoint_address(path: str) -> str:
@@ -47,6 +53,13 @@ def endpoint_address(path: str) -> str:
         return path
     digest = hashlib.sha1(os.path.abspath(path).encode("utf-8")).hexdigest()[:20]
     return rf"\\.\pipe\jiuwenswarm-{digest}"
+
+
+@dataclass(frozen=True)
+class HeartbeatProbeResult:
+    state: str
+    received_at: float = 0.0
+    frame: dict[str, Any] | None = None
 
 
 class IpcConnection:
@@ -58,6 +71,13 @@ class IpcConnection:
         self._sending_since = self._receiving_since = 0.0
         self._write_waiters: dict[object, float] = {}
         self._stats_lock = threading.Lock()
+        self._recent_requests: OrderedDict[tuple[int, str], float] = OrderedDict()
+        self._recent_completions: OrderedDict[tuple[int, str], tuple[float, float]] = OrderedDict()
+        self._last_delivered_rx = 0.0
+        self._probe_lock = asyncio.Lock()
+        self._probe_write: asyncio.Task[None] | None = None
+        self._native_probe_write: asyncio.Task[None] | None = None
+        self._probe_observer: Callable[[dict[str, Any], float | None, float], None] | None = None
         self._heartbeat_responder: Callable[[dict[str, Any]], None] | None = None
 
     def set_heartbeat_responder(
@@ -69,6 +89,194 @@ class IpcConnection:
         I/O loop. Neither responder needs the Runtime business loop.
         """
         self._heartbeat_responder = responder
+
+    def _remember_request(self, message: dict[str, Any], issued_at: float | None) -> None:
+        if issued_at is None:
+            return
+        generation, dispatch_id = message.get("generation"), message.get("dispatch_id")
+        if type(generation) is int and isinstance(dispatch_id, str) and 0 < len(dispatch_id) <= 128:
+            with self._stats_lock:
+                self._recent_completions.pop((generation, dispatch_id), None)
+                self._recent_requests.setdefault((generation, dispatch_id), issued_at)
+                if len(self._recent_requests) > _PROBE_REQUEST_HISTORY:
+                    self._recent_requests.popitem(last=False)
+
+    @property
+    def last_received_at(self) -> float:
+        """Decode time of the frame returned by the most recent successful recv."""
+        return self._last_delivered_rx
+
+    def _record_frame(self, message: dict[str, Any]) -> float:
+        received_at = self._last_rx = time.monotonic()
+        issued_at = None
+        if message.get("kind") == KIND_REQUEST_DONE:
+            generation, dispatch_id = message.get("generation"), message.get("dispatch_id")
+            if type(generation) is int and isinstance(dispatch_id, str):
+                with self._stats_lock:
+                    issued_at = self._recent_requests.pop((generation, dispatch_id), None)
+                    if issued_at is not None:
+                        self._recent_completions[(generation, dispatch_id)] = (issued_at, received_at)
+                        if len(self._recent_completions) > _PROBE_REQUEST_HISTORY:
+                            self._recent_completions.popitem(last=False)
+        observer = self._probe_observer
+        if observer is not None:
+            observer(message, issued_at, received_at)
+        return received_at
+
+    def _recent_business_reply(
+        self, request_since: float | None, generation: int | None,
+    ) -> HeartbeatProbeResult | None:
+        if request_since is None or type(generation) is not int:
+            return None
+        with self._stats_lock:
+            for (peer, dispatch_id), (issued_at, received_at) in reversed(self._recent_completions.items()):
+                if peer == generation and issued_at >= request_since:
+                    # Retain correlation metadata only, never business payloads.
+                    return HeartbeatProbeResult("business_reply", received_at, {
+                        "kind": KIND_REQUEST_DONE, "generation": peer, "dispatch_id": dispatch_id,
+                    })
+        return None
+
+    async def probe_heartbeat(
+        self, timeout: float, *, correlated: bool,
+        request_since: float | None = None, generation: int | None = None, write_grace: float = 0.0,
+    ) -> HeartbeatProbeResult:
+        """Bound a round trip, allowing one extra interval only for an unfinished write."""
+        deadline = time.monotonic() + timeout
+        try:
+            async with asyncio.timeout(timeout):
+                await self._probe_lock.acquire()
+        except TimeoutError:
+            return HeartbeatProbeResult("write_timeout")
+        try:
+            if time.monotonic() >= deadline:
+                return HeartbeatProbeResult("write_timeout")
+            return await self._probe_until(deadline, correlated, request_since, generation, write_grace)
+        finally:
+            self._probe_lock.release()
+
+    async def _probe_until(
+        self, deadline: float, correlated: bool, request_since: float | None,
+        generation: int | None, write_grace: float,
+    ) -> HeartbeatProbeResult:
+        """Own the reader observation while writing and confirming this probe."""
+        token = uuid.uuid4().hex
+        loop = asyncio.get_running_loop()
+        started = time.monotonic()
+        write_deadline = deadline + max(0.0, write_grace)
+        reply = asyncio.Event()
+        result: HeartbeatProbeResult | None = None
+
+        def observe(message: dict[str, Any], issued_at: float | None, received_at: float) -> None:
+            nonlocal result
+            if strong_reply() or not started <= received_at <= write_deadline:
+                return
+            fresh_request = issued_at is not None and request_since is not None and issued_at >= request_since
+            legacy_pong = not correlated and "probe_id" not in message
+            if fresh_request and message.get("generation") == generation:
+                # Only this connection could have received the freshly issued
+                # dispatch ID. Its single matching completion proves both directions.
+                state = "business_reply"
+            elif message.get("kind") == KIND_HEARTBEAT and (message.get("probe_id") == token or legacy_pong):
+                state = "received"
+            else:
+                return
+            result = HeartbeatProbeResult(state, received_at, message)
+            loop.call_soon_threadsafe(reply.set)
+
+        def strong_reply() -> bool:
+            if result is None or result.frame is None:
+                return False
+            return result.state == "business_reply" or result.frame.get("probe_id") == token
+
+        def outcome(fallback: str) -> HeartbeatProbeResult:
+            if getattr(self, "_closed", False) or getattr(self, "_reader_error", None) is not None:
+                return HeartbeatProbeResult("connection_closed")
+            if result is not None and result.received_at <= deadline:
+                if fallback != "write_timeout" or strong_reply():
+                    if result.state == "business_reply" and result.frame is not None:
+                        with self._stats_lock:
+                            self._recent_completions.pop(
+                                (result.frame.get("generation"), result.frame.get("dispatch_id")), None,
+                            )
+                    return result
+            return HeartbeatProbeResult(fallback)
+
+        async def wait_for_write(task: asyncio.Task[None]) -> bool:
+            nonlocal deadline
+            done, _ = await asyncio.wait({task}, timeout=max(0.0, deadline - time.monotonic()))
+            if not done and deadline < write_deadline and outcome("write_timeout").state == "write_timeout":
+                # Retain the same write and nonce. Cancelling a native pipe
+                # send here would close a healthy connection before it drains.
+                deadline = write_deadline
+                done, _ = await asyncio.wait({task}, timeout=max(0.0, deadline - time.monotonic()))
+            return bool(done)
+
+        sent_at = None
+
+        async def send_probe() -> None:
+            nonlocal sent_at
+            await self.send({"kind": KIND_HEARTBEAT, "probe_id": token})
+            sent_at = time.monotonic()
+
+        self._probe_observer = observe
+        send = None
+        try:
+            # The I/O reader may finish a post-resume request before the Front
+            # registers this observer. That verified round trip is still fresh.
+            cached = self._recent_business_reply(request_since, generation)
+            if cached is not None and not strong_reply():
+                result = cached
+            if strong_reply():
+                return outcome("write_timeout")
+            # A confirmed business reply can arrive while a native probe write is
+            # blocked. Keep at most one such write alive on this physical connection.
+            previous = self._probe_write
+            if previous is not None and not previous.done():
+                if not await wait_for_write(previous) or time.monotonic() >= deadline:
+                    return outcome("write_timeout")
+            send = asyncio.create_task(send_probe())
+            self._probe_write = send
+            send.add_done_callback(self._finish_probe_write)
+            if not await wait_for_write(send):
+                return outcome("write_timeout")
+            if send.cancelled() and getattr(self, "_closed", False):
+                return HeartbeatProbeResult("connection_closed")
+            await send
+            # A write and its timeout may wake the loop in the same turn.
+            if sent_at is not None and sent_at > deadline:
+                deadline = write_deadline
+            if result is None:
+                try:
+                    async with asyncio.timeout(max(0.0, deadline - time.monotonic())):
+                        await reply.wait()
+                except TimeoutError:
+                    pass
+            return outcome("reply_timeout")
+        except ConnectionError:
+            return HeartbeatProbeResult("connection_closed")
+        except (OSError, RuntimeError):
+            if getattr(self, "_closed", False) or getattr(self, "_reader_error", None) is not None:
+                return HeartbeatProbeResult("connection_closed")
+            return HeartbeatProbeResult("write_failed")
+        finally:
+            self._probe_observer = None
+            # A socket write or a request still waiting for the async lock can
+            # be cancelled. Cancelling an in-flight Win32 write closes its pipe.
+            keep_native_write = self._native_probe_write is send and strong_reply()
+            if send is not None and not send.done() and not keep_native_write:
+                send.cancel()
+
+    def _cancel_probe_on_close(self) -> None:
+        task = self._probe_write
+        if task is not None and not task.done() and task is not asyncio.current_task():
+            task.get_loop().call_soon_threadsafe(task.cancel)
+
+    def _finish_probe_write(self, task: asyncio.Task[None]) -> None:
+        if self._probe_write is task:
+            self._probe_write = None
+        if not task.cancelled():
+            task.exception()
 
     @asynccontextmanager
     async def _locked_write(self):
@@ -134,7 +342,7 @@ class StreamConnection(IpcConnection):
         self._write_lock = asyncio.Lock()
         self._closed = False
         self._loop = asyncio.get_running_loop()
-        self._pending: deque[tuple[dict[str, Any], int]] = deque()
+        self._pending: deque[tuple[dict[str, Any], int, float]] = deque()
         self._pending_bytes = 0
         self._pending_ready = asyncio.Event()
         self._pending_space = asyncio.Event()
@@ -144,14 +352,16 @@ class StreamConnection(IpcConnection):
         self._last_frame_bytes = 0
 
     async def send(self, message: dict[str, Any]) -> None:
-        await on_loop(self._loop, self._send(message))
+        issued_at = time.monotonic() if message.get("kind") == KIND_REQUEST else None
+        await on_loop(self._loop, self._send(message, issued_at))
 
-    async def _send(self, message: dict[str, Any]) -> None:
+    async def _send(self, message: dict[str, Any], issued_at: float | None) -> None:
         if self._closed:
             raise ConnectionError("ipc connection is closed")
         frame = encode_frame(message)
         async with self._locked_write():
             self._writer.write(frame)
+            self._remember_request(message, issued_at)
             await self._writer.drain()
             self._last_tx = time.monotonic()
 
@@ -184,9 +394,10 @@ class StreamConnection(IpcConnection):
                     if self._closed:
                         raise ConnectionError("ipc connection is closed")
                     if self._pending:
-                        result, size = self._pending.popleft()
+                        result, size, received_at = self._pending.popleft()
                         self._pending_bytes -= size
                         self._pending_space.set()
+                        self._last_delivered_rx = received_at
                         return result
                     if self._reader_error is not None:
                         raise self._reader_error
@@ -200,7 +411,7 @@ class StreamConnection(IpcConnection):
         try:
             while not self._closed:
                 message = await self._recv_frame()
-                self._last_rx = time.monotonic()
+                received_at = self._record_frame(message)
                 responder = self._heartbeat_responder
                 if responder is not None and message.get("kind") == KIND_HEARTBEAT:
                     responder(message)
@@ -211,7 +422,7 @@ class StreamConnection(IpcConnection):
                     await self._wait_for_receive_space(size, message)
                 if self._closed:
                     return
-                self._pending.append((message, size))
+                self._pending.append((message, size, received_at))
                 self._pending_bytes += size
                 self._pending_ready.set()
         except Exception as exc:  # noqa: BLE001 - recv owns transport/protocol errors
@@ -266,6 +477,7 @@ class StreamConnection(IpcConnection):
         if self._closed:
             return
         self._closed = True
+        self._cancel_probe_on_close()
         self._pending.clear()
         self._pending_bytes = 0
         self._pending_ready.set()
@@ -305,7 +517,7 @@ class PipeConnection(IpcConnection):
         self._receive_lock = asyncio.Lock()
         self._receive_mutex = threading.Lock()
         self._receive_space = threading.Condition(self._receive_mutex)
-        self._pending: deque[tuple[dict[str, Any], int]] = deque()
+        self._pending: deque[tuple[dict[str, Any], int, float]] = deque()
         self._pending_bytes = 0
         self._reader_started = False
         self._reader_error: Exception | None = None
@@ -316,11 +528,15 @@ class PipeConnection(IpcConnection):
     async def send(self, message: dict[str, Any]) -> None:
         if self._closed:
             raise ConnectionError("ipc connection is closed")
+        issued_at = time.monotonic() if message.get("kind") == KIND_REQUEST else None
         frame = encode_frame(message)
         async with self._locked_write():
+            task = asyncio.current_task()
+            if task is self._probe_write:
+                self._native_probe_write = task
             try:
                 await asyncio.get_running_loop().run_in_executor(
-                    self._writer_pool, self._send_bytes_locked, frame
+                    self._writer_pool, self._send_bytes_locked, frame, message, issued_at
                 )
                 self._last_tx = time.monotonic()
             except asyncio.CancelledError:
@@ -328,11 +544,18 @@ class PipeConnection(IpcConnection):
                 # Abort it before another send can reuse the same pipe.
                 await self.close()
                 raise
+            finally:
+                if self._native_probe_write is task:
+                    self._native_probe_write = None
 
-    def _send_bytes_locked(self, frame: bytes) -> None:
+    def _send_bytes_locked(
+        self, frame: bytes, message: dict[str, Any] | None = None, issued_at: float | None = None,
+    ) -> None:
         with self._send_mutex:
             if self._closed:
                 raise ConnectionError("ipc connection is closed")
+            if issued_at is not None and message is not None:
+                self._remember_request(message, issued_at)
             self._conn.send_bytes(frame)
 
     def send_direct(self, message: dict[str, Any]) -> None:
@@ -358,8 +581,8 @@ class PipeConnection(IpcConnection):
                     if self._closed:
                         return
                     frame = self._conn.recv_bytes(maxlength=MAX_FRAME_BYTES + HEADER.size)
-                self._last_rx = time.monotonic()
                 message = self._decode_pipe_frame(frame)
+                received_at = self._record_frame(message)
                 responder = self._heartbeat_responder
                 if responder is not None and message.get("kind") == KIND_HEARTBEAT:
                     responder(message)
@@ -383,7 +606,7 @@ class PipeConnection(IpcConnection):
                             _PIPE_PENDING_MESSAGES, _PIPE_PENDING_BYTES,
                         )
                         raise IpcError("ipc business receive backlog exceeded")
-                    self._pending.append((message, len(frame)))
+                    self._pending.append((message, len(frame), received_at))
                     self._pending_bytes += len(frame)
                 self._notify_reader()
         except Exception as exc:  # noqa: BLE001 - deliver native and protocol errors to recv
@@ -422,9 +645,10 @@ class PipeConnection(IpcConnection):
                 if self._closed:
                     raise ConnectionError("ipc connection is closed")
                 if self._pending:
-                    message, size = self._pending.popleft()
+                    message, size, received_at = self._pending.popleft()
                     self._pending_bytes -= size
                     self._receive_space.notify()
+                    self._last_delivered_rx = received_at
                     return message
                 if self._reader_error is not None:
                     raise self._reader_error
@@ -461,9 +685,7 @@ class PipeConnection(IpcConnection):
         self._receiving_since = time.monotonic()
         try:
             async with self._receive_lock:
-                message = await self._next_message()
-            self._last_rx = time.monotonic()
-            return message
+                return await self._next_message()
         except asyncio.CancelledError:
             await self.close()
             raise
@@ -480,6 +702,7 @@ class PipeConnection(IpcConnection):
     async def close(self) -> None:
         if self._close_task is None:
             self._closed = True
+            self._cancel_probe_on_close()
             with self._receive_space:
                 self._pending.clear()
                 self._pending_bytes = 0

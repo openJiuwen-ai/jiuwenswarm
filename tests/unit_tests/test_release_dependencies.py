@@ -191,6 +191,25 @@ def test_release_rejects_mutable_or_inconsistent_sdk_revisions(tmp_path, revisio
         validate_release_dependencies(tmp_path)
 
 
+@pytest.mark.parametrize("location", ["dependencies", "lock"])
+def test_release_ignores_computer_use_git_reference(tmp_path, location):
+    _project(tmp_path)
+    repository = "https://gitcode.com/openJiuwen/computer-use.git"
+    if location == "dependencies":
+        config = tmp_path / "pyproject.toml"
+        requirement = f"openjiuwen-computeruse @ git+{repository}@refs/merge-requests/32/head"
+        config.write_text(config.read_text(encoding="utf-8").replace(
+            "dependencies = [", f"dependencies = [{json.dumps(requirement)}, "
+        ), encoding="utf-8")
+    else:
+        (tmp_path / "uv.lock").write_text(
+            '[[package]]\nname = "openjiuwen-computeruse"\n'
+            f'source = {{ git = "{repository}?rev=refs%2Fmerge-requests%2F32%2Fhead#{REVISION}" }}\n',
+            encoding="utf-8",
+        )
+    validate_release_dependencies(tmp_path)
+
+
 @pytest.mark.parametrize("location", ["dependencies", "harmony", "override"])
 @pytest.mark.parametrize("suffix", ["#subdirectory=packages/core", "?download=1#subdirectory=packages/core"])
 def test_release_accepts_official_pins_with_url_components(tmp_path, location, suffix):

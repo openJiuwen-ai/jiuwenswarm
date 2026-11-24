@@ -48,7 +48,8 @@ def cua_repl_unavailable_reason() -> str:
             return "unsupported_platform"
         if sys.platform == "darwin" and int(platform.mac_ver()[0].split(".")[0]) < 14:
             return "unsupported_platform"
-        if any(importlib.util.find_spec(name) is None for name in ("computer_use", "computer_use_mcp")):
+        sdk_modules = ("computer_use", "computer_use_mcp", "computer_use_agent")
+        if any(importlib.util.find_spec(name) is None for name in sdk_modules):
             return "backend_missing"
         if not getattr(sys, "frozen", False):
             if importlib.util.find_spec("computer_use_native_tools") is None:
@@ -59,16 +60,19 @@ def cua_repl_unavailable_reason() -> str:
             return "unsupported_platform"
         if not bundle:
             return "backend_missing"
-        root = Path(bundle) / "computer_use/_resources/os_adapter"
+        root = Path(bundle) / "computer_use/_resources"
         if sys.platform == "darwin":
-            driver = root / "macos/.build/ComputerUseDriver.app/Contents/MacOS/computer-use-driver"
+            from computer_use.paths import native_driver
+
+            # The explicit root makes this a path lookup without materializing SDK resources.
+            driver = Path(native_driver(platform="darwin", root=root)["command"])
             available = driver.is_file() and os.access(driver, os.X_OK)
         else:
-            directory = root / "windows/.build"
+            directory = root / "os_adapter/windows/.build"
             files = ("computer-use-driver.exe", "computer-use-capture.exe", "Interop.NativeUIA.dll")
             available = all((directory / name).is_file() for name in files)
         return "" if available else "backend_missing"
-    except (ImportError, OSError, ValueError):
+    except (ImportError, OSError, ValueError, TypeError, KeyError, AttributeError):
         return "backend_missing"
 
 
@@ -77,31 +81,14 @@ def is_cua_repl_available() -> bool:
     return not cua_repl_unavailable_reason()
 
 
-def is_legacy_cua_available() -> bool:
-    """Check the prerequisites of agent-core's single-step desktop tools."""
-    try:
-        if _is_harmony_desktop():
-            return False
-        modules = ("pyautogui", "PIL")
-        if sys.platform.startswith("linux"):
-            if not os.getenv("DISPLAY"):
-                return False
-            modules += ("Xlib",)
-        elif sys.platform != "win32":
-            return False
-        return all(importlib.util.find_spec(name) is not None for name in modules)
-    except (ImportError, OSError, ValueError):
-        return False
-
-
 def is_cua_backend_available() -> bool:
     """Report installation capability independently of permissions and preferences."""
-    return is_cua_repl_available() or is_legacy_cua_available()
+    return is_cua_repl_available()
 
 
 def cua_backend_settings() -> dict[str, str]:
     """Provide the same read-only capability to both settings transports."""
-    reason = "" if is_legacy_cua_available() else cua_repl_unavailable_reason()
+    reason = cua_repl_unavailable_reason()
     return {
         "cua_backend_available": "false" if reason else "true",
         "cua_backend_unavailable_reason": reason,

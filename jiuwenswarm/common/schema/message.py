@@ -65,6 +65,7 @@ _ensure_req_method("JIUWENMATE_CONNECTION_ATTACH", "jiuwenmate.connection.attach
 _ensure_req_method("JIUWENMATE_COLLEAGUE_CONNECTIONS", "jiuwenmate.colleague.connections")
 _ensure_req_method("JIUWENMATE_COLLEAGUE_REMOVE", "jiuwenmate.colleague.remove")
 _ensure_req_method("JIUWENMATE_FEISHU_PREPARE", "jiuwenmate.feishu.prepare")
+_ensure_req_method("JIUWENMATE_CHANNEL_CONFIG_SYNC", "jiuwenmate.channel_config.sync")
 _ensure_req_method("JIUWENMATE_DELIVERY_ACK", "jiuwenmate.delivery.ack")
 _ensure_req_method("JIUWENMATE_THINKING_NOTICE_ACK", "jiuwenmate.thinking_notice.ack")
 _ensure_req_method("JIUWENMATE_GROUP_RESPONSE", "jiuwenmate.group.response")
@@ -131,6 +132,7 @@ _ensure_req_method("RECOMMENDATION", "recommendation.job")
 # does not define it, so a missing attribute fails chat and session creation
 # before their own handlers run.
 _ensure_req_method("MCP_OAUTH_START", "mcp.oauth.start")
+_ensure_req_method("MCP_SOURCES_PROVIDERS", "mcp.sources.providers")
 # Trajectory reads are served by the AgentServer. The pinned protocol package
 # does not define these members yet; registration leaves a matching upstream
 # member in place once that package ships the same name and value.
@@ -144,6 +146,7 @@ _ensure_req_method("TRAJECTORY_RAW_GET", "trajectory.raw.get")
 _ensure_req_method("TRAJECTORY_ARCHIVE_OPEN", "trajectory.archive.open")
 _ensure_req_method("TRAJECTORY_BLOB_READ", "trajectory.blob.read")
 _ensure_req_method("TRAJECTORY_BLOB_CLOSE", "trajectory.blob.close")
+_ensure_req_method("MCP_SOURCES_PROVIDERS", "mcp.sources.providers")
 # Enterprise verify still registers these wire methods in HANDLERS / adapters,
 # but the pinned openjiuwen-protocol revision does not ship them yet. Without
 # ensure, importing dispatch crashes the runtime worker and HTTP :8766 never
@@ -177,6 +180,27 @@ _ensure_req_method("SKILLDEV_FILE_READ", "skilldev.file.read")
 # registry entry it created (see session_assets.py). The pinned protocol
 # package does not define this member yet.
 _ensure_req_method("SESSION_ASSETS_REMOVE", "session.assets.remove")
+# WebUI extension events share the protocol package's request enum.
+_ensure_req_method("WEBUI_DISPATCH", "webui.dispatch")
+_ensure_req_method("WEBUI_SETTINGS_CATALOG", "webui.settings.catalog")
+_ensure_req_method("WEBUI_RESOURCE_READ", "webui.resource.read")
+_ensure_req_method("SESSION_DETACH", "session.detach")
+_ensure_req_method("WEBUI_CONNECTION_CLOSED", "webui.connection.closed")
+_ensure_req_method("EXTENSIONS_V2_QUERY", "extensions.v2.query")
+_ensure_req_method("EXTENSIONS_V2_CATALOG", "extensions.v2.catalog")
+_ensure_req_method("EXTENSIONS_V2_SHOW", "extensions.v2.show")
+_ensure_req_method("EXTENSIONS_V2_IMPORT", "extensions.v2.import")
+_ensure_req_method("EXTENSIONS_V2_FILE_LIST", "extensions.v2.file.list")
+_ensure_req_method("EXTENSIONS_V2_FILE_READ", "extensions.v2.file.read")
+_ensure_req_method("EXTENSIONS_V2_INSTALL", "extensions.v2.install")
+_ensure_req_method("EXTENSIONS_V2_UNINSTALL", "extensions.v2.uninstall")
+_ensure_req_method("EXTENSIONS_V2_RELOAD", "extensions.v2.reload")
+_ensure_req_method("EXTENSIONS_V2_SET_ENABLED", "extensions.v2.set_enabled")
+# 资产统一导入导出：skill/skillpack/专家/专家组/插件五类资产共用
+# assets.export / assets.import 单一入口，禁止各模块自造私有协议方法；
+# 协议包当前 pin 尚未定义这两个成员。
+_ensure_req_method("ASSETS_EXPORT", "assets.export")
+_ensure_req_method("ASSETS_IMPORT", "assets.import")
 # Hub expert/equipment catalog served by AgentServer (dispatch.py / methods.py /
 # http_invoke.py reference this member); 协议包当前 pin 尚未定义。
 _ensure_req_method("HUB_EXPERT_PACKAGES_CATALOG", "hub.expert_packages.catalog")

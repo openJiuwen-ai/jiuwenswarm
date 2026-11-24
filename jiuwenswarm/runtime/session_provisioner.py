@@ -22,7 +22,13 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Generic, Protocol, TypeAlias, TypeVar
 from weakref import WeakValueDictionary
 
-from jiuwenswarm.runtime.app_role import APP_ROLE_PROFILE, app_role_team_mode
+from jiuwenswarm.runtime.app_role import (
+    APP_ROLE_PROFILE,
+    app_role_team_mode,
+    is_npc_session,
+    normalize_execution_profile,
+    normalize_npc_team,
+)
 from jiuwenswarm.runtime.session_delete import (
     TEAM_DELETION_GATE,
     SessionDeleteResult,
@@ -110,6 +116,23 @@ def _session_fork_error_code(error: ValueError) -> str:
     return "BAD_REQUEST"
 
 
+def _stored_profile_conflicts(
+    stored: dict[str, Any],
+    execution_profile: str,
+    role_instructions: str,
+    npc_team: dict[str, Any] | None,
+    npc_session: bool,
+) -> bool:
+    """Report whether a stored session profile differs from the requested one."""
+    stored_identity = (
+        stored.get("execution_profile", "default"),
+        stored.get("role_instructions", ""),
+        normalize_npc_team(stored.get("npc_team")),
+        is_npc_session(stored),
+    )
+    return stored_identity != (execution_profile, role_instructions, npc_team, npc_session)
+
+
 @dataclass(frozen=True, slots=True, kw_only=True)
 class SessionCreateInput:
     """Normalized business input for create; contains no transport objects.
@@ -145,6 +168,7 @@ class SessionCreateInput:
     role_instructions: str = ""
     npc_team: dict[str, Any] | None = None
     role_tools: list[str] | None = None
+    npc_session: bool = False
 
     def __post_init__(self) -> None:
         if self.client_app:
@@ -158,6 +182,7 @@ class SessionCreateInput:
         _require_bool("persist_session_supplied", self.persist_session_supplied)
         _require_bool("is_swarm", self.is_swarm)
         _require_bool("team_hint", self.team_hint)
+        _require_bool("npc_session", self.npc_session)
         _require_optional_bool("moa_enabled", self.moa_enabled)
         if self.model_selection is not None:
             from agent_gateway.common.model_selection import ModelSelection
@@ -212,6 +237,7 @@ class SessionCreateResult:
     explicit_id_compatibility: bool = False
     moa_enabled: bool = False
     execution_profile: str = "default"
+    npc_session: bool = False
 
     def __post_init__(self) -> None:
         _require_bool("persist_session", self.persist_session)
@@ -631,8 +657,6 @@ class RuntimeSessionProvisioner:
         external_lock_acquired = False
         claimed_session_id: str | None = None
         try:
-            from jiuwenswarm.runtime.app_role import normalize_execution_profile, normalize_npc_team
-
             try:
                 execution_profile, role_instructions = normalize_execution_profile(
                     provision_input.execution_profile, provision_input.role_instructions,
@@ -646,6 +670,7 @@ class RuntimeSessionProvisioner:
                     raise ValueError("npc_team requires execution_profile='app_role'")
             except ValueError as exc:
                 raise SessionProvisionError(str(exc), code="BAD_REQUEST") from exc
+            npc_session = provision_input.npc_session or execution_profile == APP_ROLE_PROFILE
             app_role_unsupported = (
                 provision_input.persist_session
                 or provision_input.cron_id
@@ -852,7 +877,7 @@ class RuntimeSessionProvisioner:
             prewarm_eligible = (
                 not is_swarm
                 and not (provision_input.cron_id and channel_id == "web")
-                and execution_profile != "app_role"
+                and not npc_session
                 and not moa_enabled
                 # A pooled agent is built before its conversation exists;
                 # a client app's conversation is built for its app.
@@ -888,6 +913,7 @@ class RuntimeSessionProvisioner:
                     execution_profile=execution_profile,
                     role_instructions=role_instructions,
                     npc_team=npc_team,
+                    npc_session=npc_session,
                     **({"moa_enabled": True} if moa_enabled else {}),
                 )
                 session_id = claim.session_id
@@ -902,19 +928,15 @@ class RuntimeSessionProvisioner:
             ).is_file()
             if metadata_exists and explicit_tui_session:
                 stored_profile = get_session_metadata(session_id)
-                if (
-                    stored_profile.get("execution_profile", "default") != execution_profile
-                    or stored_profile.get("role_instructions", "") != role_instructions
-                    or normalize_npc_team(stored_profile.get("npc_team")) != npc_team
+                if _stored_profile_conflicts(
+                    stored_profile, execution_profile, role_instructions, npc_team, npc_session,
                 ):
                     raise SessionProvisionError("session execution profile cannot change")
             if metadata_exists and not explicit_tui_session:
                 self._agent_manager.activate_session_prewarm(session_id)
                 stored = get_session_metadata(session_id)
-                if (
-                    stored.get("execution_profile", "default") != execution_profile
-                    or stored.get("role_instructions", "") != role_instructions
-                    or normalize_npc_team(stored.get("npc_team")) != npc_team
+                if _stored_profile_conflicts(
+                    stored, execution_profile, role_instructions, npc_team, npc_session,
                 ):
                     raise SessionProvisionError("create_token conflicts with the session execution profile")
                 result = SessionCreateResult(
@@ -930,6 +952,7 @@ class RuntimeSessionProvisioner:
                     canonical_mode=canonical_mode,
                     moa_enabled=stored.get("moa_enabled") is True,
                     execution_profile=execution_profile,
+                    npc_session=npc_session,
                 )
                 return self._stage_create_result(
                     result,
@@ -985,6 +1008,7 @@ class RuntimeSessionProvisioner:
                         role_instructions=role_instructions,
                         npc_team=npc_team,
                         npc_member_sessions=member_sessions,
+                        npc_session=npc_session,
                     )
                     if member_sessions:
                         leader_user_id = str(provision_input.user_id or "").strip()
@@ -1045,6 +1069,7 @@ class RuntimeSessionProvisioner:
                 explicit_id_compatibility=explicit_tui_session,
                 moa_enabled=moa_enabled,
                 execution_profile=execution_profile,
+                npc_session=npc_session,
             )
             return self._stage_create_result(
                 result,
@@ -1241,7 +1266,7 @@ class RuntimeSessionProvisioner:
         previous: SessionLifecycleTarget | None,
         view_id: str,
     ) -> None:
-        participants = self._participant_registry.snapshot_activity()
+        participants = self._participant_registry.snapshot_foreground()
         if not participants:
             self._participant_registry.remember_target(target)
             return

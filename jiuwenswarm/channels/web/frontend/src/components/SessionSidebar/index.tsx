@@ -4,7 +4,7 @@
  * Redesigned sidebar with logo and navigation.
  */
 
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import './SessionSidebar.css';
 import PlusIcon from '../../assets/sidebar/plus.svg?react';
@@ -15,6 +15,7 @@ import WorkIcon from '../../assets/工作.svg?react';
 import SkillDesignIcon from '../../assets/agent-management/agent-skill.svg?react';
 import AgentDesignIcon from '../../assets/智能体.svg?react';
 import PluginIcon from '../../assets/agent-management/extension.svg?react';
+import ReaNavIcon from '../../assets/sidebar/rea.svg';
 import type { SidebarNavKey } from '../../utils/frontendPlatform';
 import type {
   ApplicationPluginContribution,
@@ -22,10 +23,24 @@ import type {
 } from '../../applicationPlugins/types';
 import { EnterpriseContextSwitcher } from './EnterpriseContextSwitcher';
 import { JiuwenMateModeSwitch } from '../../features/jiuwenmate/components/JiuwenMateModeSwitch';
+import { WebUIHost, WebUINavigationHost, type WebUIStyleOverrides } from '../../features/webui';
 
-type MainNavKey = SidebarNavKey | 'connectorMarket' | ApplicationPluginNavKey;
+const pluginNavigationStyles: WebUIStyleOverrides = {
+  Button: {
+    unstyled: true,
+    className: 'icon-rail-nav-item disabled:cursor-not-allowed disabled:opacity-50',
+    activeClassName: 'icon-rail-nav-item--active',
+    icon: <PluginIcon aria-hidden />,
+    iconClassName: 'icon-rail-nav-item__icon',
+    labelClassName: 'icon-rail-nav-item__label',
+  },
+  Box: { unstyled: true, className: 'flex min-w-0 w-full flex-col items-center' },
+};
+
+type MainNavKey = SidebarNavKey | 'connectorMarket' | 'webui' | ApplicationPluginNavKey;
 
 interface SessionSidebarProps {
+  webUIReady?: boolean;
   activeNav: MainNavKey;
   onNavigate: (nav: MainNavKey) => void;
   onNewSession?: () => void;
@@ -114,6 +129,7 @@ const mainNavItems: NavItem[] = [
   { key: 'agents', labelKey: 'nav.agent', icon: <AgentDesignIcon aria-hidden /> },
   { key: 'teams', labelKey: 'nav.teams', icon: teamNavIcon },
   { key: 'skills', labelKey: 'nav.skills', icon: <SkillDesignIcon aria-hidden /> },
+  { key: 'rea', labelKey: 'nav.rea', icon: <img src={ReaNavIcon} alt="" width={16} height={16} /> },
   { key: 'connectorMarket', labelKey: 'nav.connectorMarket', icon: connectorMarketNavIcon },
   { key: 'appMarket', labelKey: 'nav.appMarket', icon: appMarketNavIcon },
   { key: 'experiments', labelKey: 'nav.experiments', icon: experimentsNavIcon },
@@ -123,6 +139,7 @@ const mainNavItems: NavItem[] = [
 ];
 
 export function SessionSidebar({
+  webUIReady = true,
   activeNav,
   onNavigate,
   onNewSession,
@@ -134,6 +151,7 @@ export function SessionSidebar({
   onToggleJiuwenMate,
 }: SessionSidebarProps) {
   const { t } = useTranslation();
+  const footerMountOptions = useMemo(() => ({ notifyReady: webUIReady }), [webUIReady]);
 
   const handleNewSession = useCallback(() => {
     onNavigate('chat');
@@ -202,6 +220,13 @@ export function SessionSidebar({
         </button>
       ))}
 
+      <WebUINavigationHost
+        slotId="application.menu"
+        className="min-w-0 w-full items-center"
+        style={{ gap: 0 }}
+        instanceClassName="flex min-w-0 w-full flex-col items-center"
+        styles={pluginNavigationStyles}
+      />
       <div className="icon-rail-spacer" />
       {onToggleJiuwenMate ? (
         <JiuwenMateModeSwitch
@@ -211,6 +236,10 @@ export function SessionSidebar({
         />
       ) : null}
       <EnterpriseContextSwitcher />
+      <WebUIHost slotId="application.sidebar.footer" sessionId=""
+        mountOptions={footerMountOptions}
+        className="w-full shrink-0 items-center pb-3" instanceClassName="flex justify-center"
+      />
     </aside>
   );
 }
