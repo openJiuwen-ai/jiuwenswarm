@@ -88,18 +88,9 @@ Use `/mcp` commands during conversations to manage MCP servers:
 
 ## Default Equipment (Auto-Mount in New Sessions)
 
-Frequently used MCPs no longer need to be re-checked in every new session. Two ways to set defaults:
+Frequently used MCPs no longer need to be re-checked in every new session: tick **Use by default** on the connector detail page — new sessions without a saved snapshot pre-check this connector in the extensions panel and mount it with the first message.
 
-1. **Web UI**: tick **Use by default** on the connector detail page. Once checked, new sessions without a saved snapshot pre-check this connector in the extensions panel and mount it with the first message.
-2. **config.yaml preset** (for deployment-level rollout):
-
-   ```yaml
-   session:
-     equipment:
-       inherit: true            # false = disable the feature; per-session manual selection is restored
-       defaults:
-         mcp: ["my-local-tool"]  # MCP names mounted by default in new sessions (limit 10)
-   ```
+> MCPs registered via `config.yaml` `mcp.servers` are already visible to every session and are out of scope for this mechanism.
 
 Semantics:
 
@@ -107,6 +98,7 @@ Semantics:
 - Manually clearing equipment inside a session (sending `mcp: []`) is never back-filled by defaults.
 - Disconnected default MCPs are silently skipped in new sessions and resume automatically once reconnected.
 - The default set is capped at 10 to keep default tool schemas from flooding fresh session context.
+- Clearing the default list (unchecking every **Use by default**) restores per-session manual selection.
 
 ---
 

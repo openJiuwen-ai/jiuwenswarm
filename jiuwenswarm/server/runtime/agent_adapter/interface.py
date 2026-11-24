@@ -240,8 +240,7 @@ def restore_chat_send_equipment_params(
     Third-level source: when the session has no equipment snapshot at all
     (``get_session_equipment`` returns ``{}`` — a fresh session that never
     persisted one) and ``mcp`` is omitted, the global default equipment set
-    (``session.equipment.defaults`` in config.yaml ∪ state.json
-    ``is_default`` flags) seeds the field once. The first successful mount
+    (state.json ``is_default`` flags, live-filtered) seeds the field once. The first successful mount
     persists it as the session snapshot, so later default-list changes never
     retro-apply to this session. A snapshot that exists but is empty
     (explicit clear) is truthy here, so the escape hatch is preserved.

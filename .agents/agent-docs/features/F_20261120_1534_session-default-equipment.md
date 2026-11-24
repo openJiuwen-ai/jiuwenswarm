@@ -36,14 +36,14 @@ author_email: chensitong2@huawei.com
 
 | 项 | 值 |
 |---|---|
-| 范围 | 后端阶段一（state `is_default` + config 合并层 + restore 第三级回填 + defaults.get/set 双通道路由 + WS 聊天线接线）+ 前端阶段二（详情页开关 + 新会话面板预勾选 + i18n）+ 中英文档 |
-| 可靠性 | 新增 UT 46 个（state_store 5 + defaults 24+17 参数化）；回归：extension mount/dispatch 108、message/warmup/cron 202 全绿；WS 直连冒烟（get/PUT/非法项拒绝）通过 |
+| 范围 | 后端阶段一（state `is_default` 单一来源 + restore 第三级回填 + defaults.get/set 双通道路由 + WS 聊天线接线）+ 前端阶段二（详情页复选框 + 新会话面板预勾选 + i18n）+ 中英文档 |
+| 可靠性 | 新增 UT 29 个用例（state_store 6 + defaults 23）全绿；回归：extension mount / dispatch / message / warmup / cron 全绿；WS 直连冒烟（get/PUT/非法项拒绝）通过 |
 
 ## 实施要点
 
 | 决策 | 实施落地 |
 |---|---|
-| 两级默认来源 | `config.yaml` `session.equipment.defaults.mcp`（部署预置，无活性过滤）∪ `state.json` `is_default` 标记（UI 写入，读取时过滤 connected/connecting），合并去重排序；`inherit: false` 短路为空集（特性总闸）；provider 读取异常降级为仅 yaml，绝不阻塞 chat.send |
+| 默认来源（单一） | state.json `is_default` 标记（UI 复选框写入，读取时过滤 connected/connecting，去重排序）——2026-11-24 社区简化：config.yaml 预置层已删除，`mcp.servers` 注册的 MCP 本就全局可见不需此机制；provider 读取异常降级为空，绝不阻塞 chat.send |
 | 第三级回填 | `restore_chat_send_equipment_params()`：`not saved and "mcp" not in params` 时播种一次。`{}`（无快照）与 `{"mcp": []}`（显式清空）靠 dict 真值区分，逃生门契约原样保留；首轮回合成功后 `save_session_equipment` 落快照，默认清单变更不追溯 |
 | 存储原子性 | `replace_default_mcps()` 单锁内全量替换 `is_default` 集（PUT 语义基础）；`set_mcp_default()` 单项翻转不动连接状态；`list_default_mcps()` 只回活记录（断连默认项回填时静默跳过）；`list_default_flagged_mcps()` 供 UI 显示"默认但断连" |
 | RPC 双通道 | 共享核心 `read/apply_session_equipment_defaults_payload`（handlers/session.py）：dispatch.py HANDLERS（HTTP REST 路径）与 `JiuWenSwarm.process_message` 的 `_handle_session_equipment_defaults_request`（WS 聊天线，`_SESSION_ASSET_ROUTES` 同款模式，adapter 创建前应答）共用，两种传输不可能漂移 |
@@ -52,7 +52,6 @@ author_email: chensitong2@huawei.com
 
 ## 已知边界
 
-- **跨仓依赖（发布前置）**：web WS 转发链上 agent-gateway 有三处硬编码门（`_FORWARD_REQ_METHODS` / `_FORWARD_NO_LOCAL_HANDLER_METHODS` / `protocol_methods.py` 枚举清单），需 agent-gateway 正式加入两个方法并升级 pin，前端 RPC 才能对外生效；后端回填（SDK/cron/无面板场景）不依赖网关，先行生效。
-- WS 路由必须显式接线：合法 ReqMethod 不接 `process_message` 路由会落入聊天路径按空 query 触发 LLM 调用（阶段一初版踩过，冒烟发现后修复，见 SDD §5 第 6 行）。
-- 默认范围第一版仅 `mcp`；`plugin_names` / 团队级默认 / TUI `/mcp default` 列入 SDD §8 开放问题。
-- 失败回合不落快照（既有行为）：回合失败的会话刷新后重新预勾选默认，回合中手动取消的选择会丢——边缘场景，接受，不做"面板操作即落盘"。
+- **跨仓依赖（发布前置）**：web WS 转发链上 agent-gateway 有三处硬编码门（`_FORWARD_REQ_METHODS` / `_FORWARD_NO_LOCAL_HANDLER_METHODS` / `protocol_methods.py` 枚举清单），需 agent-gateway 正式加入两个方法并升级 pin，前端 RPC 才能对外生效；后端回填（SDK/cron/无面板场景）不依赖网关，先行生效。详见 SDD-0030 §4。
+- 默认范围仅 `mcp`（`plugin_names` / 专家模板不在本特性内）。
+- 失败回合不落快照（既有行为）：回合失败的会话下一条消息默认重新播种。

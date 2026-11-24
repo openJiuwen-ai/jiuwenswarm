@@ -92,7 +92,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [SDD-0030](designs/proposals/SDD-0030-session-default-equipment/design.md) | D | 全局默认装备（Default Equipment）：新会话自动挂载默认扩展/连接器 | StoneChan_ | server/runtime/agent_adapter, server/runtime/session, server/runtime/mcp, gateway, channels/web/frontend | — | — |
+| [SDD-0030](designs/proposals/SDD-0030-session-default-equipment/design.md) | D | 全局默认装备（Default Equipment）：新会话自动挂载默认扩展/连接器 | StoneChan_ | server/runtime/agent_adapter, server/runtime/session, server/runtime/mcp, gateway, channels/web/frontend | jiuwenswarm/server/runtime/mcp/state_store.py, jiuwenswarm/common/config.py, jiuwenswarm/common/schema/message.py, jiuwenswarm/server/dispatch.py, jiuwenswarm/server/handlers/session.py, jiuwenswarm/server/runtime/agent_adapter/interface.py, jiuwenswarm/channels/web/frontend/src/services/equipmentDefaultsApi.ts, jiuwenswarm/channels/web/frontend/src/stores/sessionStore.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/ExtensionPickerPanel.tsx, jiuwenswarm/channels/web/frontend/src/components/ConnectorMarket/McpDetailPage.tsx, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, tests/unit_tests/agentserver/mcp/test_mcp_state_store.py, tests/unit_tests/server/extensions/test_session_equipment_defaults.py | — |
 
 <a id="module-6"></a>
 
@@ -100,7 +100,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [SDD-0030](designs/proposals/SDD-0030-session-default-equipment/design.md) | D | 全局默认装备（Default Equipment）：新会话自动挂载默认扩展/连接器 | StoneChan_ | server/runtime/agent_adapter, server/runtime/session, server/runtime/mcp, gateway, channels/web/frontend | — | — |
+| [SDD-0030](designs/proposals/SDD-0030-session-default-equipment/design.md) | D | 全局默认装备（Default Equipment）：新会话自动挂载默认扩展/连接器 | StoneChan_ | server/runtime/agent_adapter, server/runtime/session, server/runtime/mcp, gateway, channels/web/frontend | jiuwenswarm/server/runtime/mcp/state_store.py, jiuwenswarm/common/config.py, jiuwenswarm/common/schema/message.py, jiuwenswarm/server/dispatch.py, jiuwenswarm/server/handlers/session.py, jiuwenswarm/server/runtime/agent_adapter/interface.py, jiuwenswarm/channels/web/frontend/src/services/equipmentDefaultsApi.ts, jiuwenswarm/channels/web/frontend/src/stores/sessionStore.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/ExtensionPickerPanel.tsx, jiuwenswarm/channels/web/frontend/src/components/ConnectorMarket/McpDetailPage.tsx, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, tests/unit_tests/agentserver/mcp/test_mcp_state_store.py, tests/unit_tests/server/extensions/test_session_equipment_defaults.py | — |
 
 <a id="module-7"></a>
 
@@ -306,7 +306,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [SDD-0030](designs/proposals/SDD-0030-session-default-equipment/design.md) | D | 全局默认装备（Default Equipment）：新会话自动挂载默认扩展/连接器 | StoneChan_ | server/runtime/agent_adapter, server/runtime/session, server/runtime/mcp, gateway, channels/web/frontend | — | — |
+| [SDD-0030](designs/proposals/SDD-0030-session-default-equipment/design.md) | D | 全局默认装备（Default Equipment）：新会话自动挂载默认扩展/连接器 | StoneChan_ | server/runtime/agent_adapter, server/runtime/session, server/runtime/mcp, gateway, channels/web/frontend | jiuwenswarm/server/runtime/mcp/state_store.py, jiuwenswarm/common/config.py, jiuwenswarm/common/schema/message.py, jiuwenswarm/server/dispatch.py, jiuwenswarm/server/handlers/session.py, jiuwenswarm/server/runtime/agent_adapter/interface.py, jiuwenswarm/channels/web/frontend/src/services/equipmentDefaultsApi.ts, jiuwenswarm/channels/web/frontend/src/stores/sessionStore.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/ExtensionPickerPanel.tsx, jiuwenswarm/channels/web/frontend/src/components/ConnectorMarket/McpDetailPage.tsx, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, tests/unit_tests/agentserver/mcp/test_mcp_state_store.py, tests/unit_tests/server/extensions/test_session_equipment_defaults.py | — |
 
 <a id="module-29"></a>
 
@@ -314,7 +314,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [SDD-0030](designs/proposals/SDD-0030-session-default-equipment/design.md) | D | 全局默认装备（Default Equipment）：新会话自动挂载默认扩展/连接器 | StoneChan_ | server/runtime/agent_adapter, server/runtime/session, server/runtime/mcp, gateway, channels/web/frontend | — | — |
+| [SDD-0030](designs/proposals/SDD-0030-session-default-equipment/design.md) | D | 全局默认装备（Default Equipment）：新会话自动挂载默认扩展/连接器 | StoneChan_ | server/runtime/agent_adapter, server/runtime/session, server/runtime/mcp, gateway, channels/web/frontend | jiuwenswarm/server/runtime/mcp/state_store.py, jiuwenswarm/common/config.py, jiuwenswarm/common/schema/message.py, jiuwenswarm/server/dispatch.py, jiuwenswarm/server/handlers/session.py, jiuwenswarm/server/runtime/agent_adapter/interface.py, jiuwenswarm/channels/web/frontend/src/services/equipmentDefaultsApi.ts, jiuwenswarm/channels/web/frontend/src/stores/sessionStore.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/ExtensionPickerPanel.tsx, jiuwenswarm/channels/web/frontend/src/components/ConnectorMarket/McpDetailPage.tsx, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, tests/unit_tests/agentserver/mcp/test_mcp_state_store.py, tests/unit_tests/server/extensions/test_session_equipment_defaults.py | — |
 
 <a id="module-30"></a>
 
@@ -322,7 +322,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 模块 | 代码文件 | 关联 D |
 |---|---|---|---|---|---|---|
-| [SDD-0030](designs/proposals/SDD-0030-session-default-equipment/design.md) | D | 全局默认装备（Default Equipment）：新会话自动挂载默认扩展/连接器 | StoneChan_ | server/runtime/agent_adapter, server/runtime/session, server/runtime/mcp, gateway, channels/web/frontend | — | — |
+| [SDD-0030](designs/proposals/SDD-0030-session-default-equipment/design.md) | D | 全局默认装备（Default Equipment）：新会话自动挂载默认扩展/连接器 | StoneChan_ | server/runtime/agent_adapter, server/runtime/session, server/runtime/mcp, gateway, channels/web/frontend | jiuwenswarm/server/runtime/mcp/state_store.py, jiuwenswarm/common/config.py, jiuwenswarm/common/schema/message.py, jiuwenswarm/server/dispatch.py, jiuwenswarm/server/handlers/session.py, jiuwenswarm/server/runtime/agent_adapter/interface.py, jiuwenswarm/channels/web/frontend/src/services/equipmentDefaultsApi.ts, jiuwenswarm/channels/web/frontend/src/stores/sessionStore.ts, jiuwenswarm/channels/web/frontend/src/components/ChatPanel/ExtensionPickerPanel.tsx, jiuwenswarm/channels/web/frontend/src/components/ConnectorMarket/McpDetailPage.tsx, jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json, jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json, tests/unit_tests/agentserver/mcp/test_mcp_state_store.py, tests/unit_tests/server/extensions/test_session_equipment_defaults.py | — |
 
 <a id="module-31"></a>
 

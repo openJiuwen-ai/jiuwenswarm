@@ -6,7 +6,7 @@ generated: true
 ---
 
 <!-- 本文件由 .agents/skills/jw-design/scripts/generate_index.py 自动生成，请勿手改。重新生成：python .agents/skills/jw-design/scripts/generate_index.py -->
-<!-- generated-at: 2026-11-24T09:16+08:00 -->
+<!-- generated-at: 2026-11-24T09:48+08:00 -->
 
 # 设计文档索引 (INDEX)
 
@@ -54,21 +54,9 @@ generated: true
 
 ## channels/web/frontend
 
-### 开发前 (proposals)
-
-| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
-|---|---|---|---|---|---|
-| [SDD-0030](proposals/SDD-0030-session-default-equipment/design.md) | 全局默认装备（Default Equipment）：新会话自动挂载默认扩展/连接器 | draft | StoneChan_ | core | 2026-11-20 |
-
 <a id="module-4"></a>
 
 ## gateway
-
-### 开发前 (proposals)
-
-| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
-|---|---|---|---|---|---|
-| [SDD-0030](proposals/SDD-0030-session-default-equipment/design.md) | 全局默认装备（Default Equipment）：新会话自动挂载默认扩展/连接器 | draft | StoneChan_ | core | 2026-11-20 |
 
 <a id="module-5"></a>
 
@@ -116,28 +104,10 @@ generated: true
 
 ## server/runtime/agent_adapter
 
-### 开发前 (proposals)
-
-| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
-|---|---|---|---|---|---|
-| [SDD-0030](proposals/SDD-0030-session-default-equipment/design.md) | 全局默认装备（Default Equipment）：新会话自动挂载默认扩展/连接器 | draft | StoneChan_ | core | 2026-11-20 |
-
 <a id="module-10"></a>
 
 ## server/runtime/mcp
 
-### 开发前 (proposals)
-
-| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
-|---|---|---|---|---|---|
-| [SDD-0030](proposals/SDD-0030-session-default-equipment/design.md) | 全局默认装备（Default Equipment）：新会话自动挂载默认扩展/连接器 | draft | StoneChan_ | core | 2026-11-20 |
-
 <a id="module-11"></a>
 
 ## server/runtime/session
-
-### 开发前 (proposals)
-
-| ID | 标题 | 状态 | 作者 | 领域 | 更新日期 |
-|---|---|---|---|---|---|
-| [SDD-0030](proposals/SDD-0030-session-default-equipment/design.md) | 全局默认装备（Default Equipment）：新会话自动挂载默认扩展/连接器 | draft | StoneChan_ | core | 2026-11-20 |

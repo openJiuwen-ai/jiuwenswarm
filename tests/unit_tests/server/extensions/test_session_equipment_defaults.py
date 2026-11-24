@@ -1,5 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Session default equipment: config parsing, restore backfill, RPC handlers."""
+"""Session default equipment: state-flag reading, restore backfill, RPC handlers."""
 
 from __future__ import annotations
 
@@ -33,79 +33,38 @@ async def _resp_payload(ctx: SimpleNamespace) -> dict[str, Any]:
     return resp.ok, resp.payload
 
 
-class TestSessionEquipmentConfig:
-    """config.yaml ``session.equipment`` parsing (common.config)."""
+class TestDefaultEquipmentNames:
+    """get_default_equipment_mcp_names: single source (state.json is_default)."""
 
-    def test_missing_block_defaults(self, monkeypatch) -> None:
+    def test_state_flags_sorted_and_deduped(self, monkeypatch) -> None:
         from jiuwenswarm.common import config as cfg_mod
 
-        monkeypatch.setattr(cfg_mod, "get_config_raw", lambda: {})
-        assert cfg_mod.get_session_equipment_config() == {"inherit": True, "mcp": []}
-
-    def test_preset_and_inherit_false(self, monkeypatch) -> None:
-        from jiuwenswarm.common import config as cfg_mod
-
-        monkeypatch.setattr(
-            cfg_mod,
-            "get_config_raw",
-            lambda: {
-                "session": {
-                    "equipment": {
-                        "inherit": False,
-                        "defaults": {"mcp": ["a", " a ", "", "b", "a"]},
-                    }
-                }
-            },
-        )
-        assert cfg_mod.get_session_equipment_config() == {
-            "inherit": False,
-            "mcp": ["a", "b"],
-        }
-
-    def test_default_names_merge_preset_and_state(self, monkeypatch) -> None:
-        from jiuwenswarm.common import config as cfg_mod
-
-        monkeypatch.setattr(
-            cfg_mod,
-            "get_config_raw",
-            lambda: {"session": {"equipment": {"defaults": {"mcp": ["preset-x"]}}}},
-        )
-        fake_state = SimpleNamespace(list_default_mcps=lambda: ["preset-x", "state-y"])
+        fake_state = SimpleNamespace(list_default_mcps=lambda: ["b", "a", "b", " a "])
         monkeypatch.setattr(
             "jiuwenswarm.common.external_providers.provider",
             lambda domain: fake_state,
         )
-        assert cfg_mod.get_default_equipment_mcp_names() == ["preset-x", "state-y"]
+        assert cfg_mod.get_default_equipment_mcp_names() == ["a", "b"]
 
-    def test_default_names_inherit_false_short_circuits(self, monkeypatch) -> None:
+    def test_non_string_entries_skipped(self, monkeypatch) -> None:
         from jiuwenswarm.common import config as cfg_mod
 
-        monkeypatch.setattr(
-            cfg_mod,
-            "get_config_raw",
-            lambda: {"session": {"equipment": {"inherit": False, "defaults": {"mcp": ["a"]}}}},
-        )
-        fake_state = SimpleNamespace(list_default_mcps=lambda: ["b"])
+        fake_state = SimpleNamespace(list_default_mcps=lambda: ["a", None, 3, "", " "])
         monkeypatch.setattr(
             "jiuwenswarm.common.external_providers.provider",
             lambda domain: fake_state,
         )
-        assert cfg_mod.get_default_equipment_mcp_names() == []
+        assert cfg_mod.get_default_equipment_mcp_names() == ["a"]
 
-    def test_default_names_tolerate_state_failure(self, monkeypatch) -> None:
+    def test_provider_failure_degrades_to_empty(self, monkeypatch) -> None:
+        """Default equipment must never break chat.send."""
         from jiuwenswarm.common import config as cfg_mod
-
-        monkeypatch.setattr(
-            cfg_mod,
-            "get_config_raw",
-            lambda: {"session": {"equipment": {"defaults": {"mcp": ["preset-x"]}}}},
-        )
 
         def _boom(domain):
             raise RuntimeError("state down")
 
         monkeypatch.setattr("jiuwenswarm.common.external_providers.provider", _boom)
-        assert cfg_mod.get_default_equipment_mcp_names() == ["preset-x"]
+        assert cfg_mod.get_default_equipment_mcp_names() == []
 
 
 class TestRestoreChatSendEquipmentDefaults:
@@ -190,20 +149,15 @@ class TestRestoreChatSendEquipmentDefaults:
 class TestSessionEquipmentDefaultsHandlers:
     """session_equipment.defaults.get/set RPC handlers."""
 
-    async def test_get_returns_merged_view(self, monkeypatch) -> None:
+    async def test_get_returns_single_source_view(self, monkeypatch) -> None:
         from jiuwenswarm.common import config as cfg_mod
         from jiuwenswarm.server.handlers import session as session_handlers
         from jiuwenswarm.server.runtime.mcp import state_store as ss
 
         monkeypatch.setattr(
-            cfg_mod, "get_session_equipment_config",
-            lambda: {"inherit": True, "mcp": ["preset-x"]},
-        )
-        monkeypatch.setattr(
-            cfg_mod, "get_default_equipment_mcp_names", lambda: ["preset-x", "live-y"]
+            cfg_mod, "get_default_equipment_mcp_names", lambda: ["live-y"]
         )
         monkeypatch.setattr(ss, "list_default_flagged_mcps", lambda: ["dead-z", "live-y"])
-        monkeypatch.setattr(ss, "list_default_mcps", lambda: ["live-y"])
 
         ctx = _ctx({})
         await session_handlers.handle_session_equipment_defaults_get(ctx)
@@ -211,12 +165,13 @@ class TestSessionEquipmentDefaultsHandlers:
         ok, payload = await _resp_payload(ctx)
         assert ok is True
         assert payload["type"] == "session_equipment_defaults"
-        assert payload["mcp"] == ["preset-x", "live-y"]
-        assert payload["preset"] == ["preset-x"]
+        assert payload["mcp"] == ["live-y"]
         assert payload["runtime"] == ["dead-z", "live-y"]
         assert payload["unavailable"] == ["dead-z"]
-        assert payload["inherit"] is True
         assert payload["max"] == 10
+        # The yaml preset layer was dropped (2026-11-24): no preset/inherit keys.
+        assert "preset" not in payload
+        assert "inherit" not in payload
 
     async def test_set_replaces_runtime_defaults(self, monkeypatch) -> None:
         from jiuwenswarm.common import config as cfg_mod

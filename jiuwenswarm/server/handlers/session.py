@@ -1632,33 +1632,26 @@ async def read_session_equipment_defaults_payload() -> dict[str, Any]:
 
     Consumed by ``handle_session_equipment_defaults_get`` (dispatch.py HTTP
     route) and by ``JiuWenSwarm._handle_session_equipment_defaults_request``
-    (WS chat wire, see ``agent_adapter/interface.py``). Returns the merged
-    effective list (yaml preset ∪ live state.json ``is_default`` flags), the
+    (WS chat wire, see ``agent_adapter/interface.py``). Single source:
+    state.json ``is_default`` flags (2026-11-24 simplification, the yaml
+    preset layer was dropped). Returns the live effective list, the
     runtime-flagged set, and the flagged-but-not-live subset (``unavailable``)
-    so the settings UI can warn about dropped connections. ``inherit=False``
-    means the feature is disabled by config.
+    so the settings UI can warn about dropped connections.
     """
-    from jiuwenswarm.common.config import (
-        get_default_equipment_mcp_names,
-        get_session_equipment_config,
-    )
+    from jiuwenswarm.common.config import get_default_equipment_mcp_names
     from jiuwenswarm.server.runtime.mcp.state_store import (
         list_default_flagged_mcps,
-        list_default_mcps,
     )
 
-    cfg = await asyncio.to_thread(get_session_equipment_config)
     effective = await asyncio.to_thread(get_default_equipment_mcp_names)
     flagged = await asyncio.to_thread(list_default_flagged_mcps)
-    live = set(await asyncio.to_thread(list_default_mcps))
+    live = set(effective)
     unavailable = sorted(name for name in flagged if name not in live)
     return {
         "type": "session_equipment_defaults",
         "mcp": effective,
-        "preset": cfg["mcp"],
         "runtime": flagged,
         "unavailable": unavailable,
-        "inherit": cfg["inherit"],
         "max": _EQUIPMENT_DEFAULTS_MAX,
     }
 
