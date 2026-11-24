@@ -1,23 +1,53 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Mapping from JiuwenSwarm settings to the SDK observability config.
+"""Shared JiuwenSwarm observability policy and SDK config mapping.
 
 Provider lifecycle itself lives in the SDK: each runtime acquires and releases
 its own demand (``openjiuwen.harness.observability`` for single agent,
 ``openjiuwen.agent_teams.observability`` for Team) and the shared coordinator in
 ``openjiuwen.extensions.observability.demand`` keeps one runtime's shutdown from
 tearing down a provider the other still needs. What remains here is the part the
-SDK cannot own: turning this platform's ``config.yaml`` section into an
-``ObservabilityConfig``.
+SDK cannot own: mapping ``config.yaml`` to ``ObservabilityConfig`` and applying
+its unified export switch to all demands acquired by this platform.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import Mapping
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+# Serialize both platform entry points, including plugin leases and shutdown.
+# Never take an entry-point-specific lock while holding this lock.
+observability_state_lock = threading.RLock()
+# Only successfully acquired Swarm demands belong here. SDK callers outside
+# Swarm retain their own export intent. Values are independent debug overrides.
+_export_overrides: dict[str, bool] = {}
+
+
+def sync_observability_export_policy(enabled: bool) -> None:
+    """Refresh every acquired Swarm demand from the shared config switch.
+
+    Caller holds ``observability_state_lock`` through acquire/release as well,
+    so another entry point cannot publish an older config halfway through sync.
+    """
+    from openjiuwen.extensions.observability.demand import set_export_demand
+
+    for runtime, force_export in _export_overrides.items():
+        set_export_demand(runtime, enabled or force_export)
+
+
+def remember_observability_demand(runtime: str, *, force_export: bool = False) -> None:
+    """Record a successful acquire; caller holds the shared state lock."""
+    _export_overrides[runtime] = force_export
+
+
+def forget_observability_demand(runtime: str) -> None:
+    """Forget a successfully released demand under the shared state lock."""
+    _export_overrides.pop(runtime, None)
 
 
 def build_observability_config(

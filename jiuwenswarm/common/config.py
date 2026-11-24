@@ -4077,7 +4077,8 @@ def migrate_config_from_template(
         _migrate_legacy_agent_submode_memory(user_data)
         _migrate_legacy_kv_cache_affinity_config(user_data)
         legacy_symphony_migrated = _migrate_legacy_symphony_config(user_data, template_data, user_config_path)
-        # team_observability / agent_observability -> observability.{team,agent}
+        # team_observability / agent_observability（以及旧的两个 team/agent 开关）
+        # -> observability.enabled
         # 必须在 _deep_merge 之前执行：合并会先按模板塞入默认的 observability 段，
         # 旧段里用户改过的 exporter / endpoint 等就会被模板默认值挡住。
         legacy_observability_migrated = migrate_legacy_observability_config(user_data)

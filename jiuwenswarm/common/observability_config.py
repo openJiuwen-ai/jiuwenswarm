@@ -1,28 +1,29 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Unified ``observability`` config section and its legacy migration.
+"""Unified ``observability`` config section and its legacy migrations.
 
 Team and single-agent tracing used to be configured by two top-level sections,
 ``team_observability`` and ``agent_observability``. Both fed the same
 ``ObservabilityConfig``, and OpenTelemetry allows one global ``TracerProvider``
 per process, so the two exporter blocks could never take effect side by side:
 whichever runtime initialized first won and the other block was silently
-ignored. The only settings that are genuinely per runtime are the switches.
-
-The canonical shape is therefore one shared exporter block with one switch per
-runtime::
+ignored. A first unification kept one exporter block but one switch per
+runtime; with Team and Agent also sharing one export gate the switches had
+nothing left to differ on either, so the canonical shape is now one shared
+block with a single switch::
 
     observability:
-      team:
-        enabled: true
-      agent:
-        enabled: false
+      enabled: true
       exporter: file
       endpoint: http://localhost:4317
       ...
 
-``migrate_legacy_observability_config`` rewrites a config carrying the legacy
-sections into that shape. It runs inside ``migrate_config_from_template``
+An explicitly configured section defaults ``enabled`` to true. An absent or
+invalid section resolves to disabled, so a minimal config does not start an
+OTLP exporter merely because no observability settings were supplied.
+
+``migrate_legacy_observability_config`` rewrites a config carrying either
+legacy shape into that one. It runs inside ``migrate_config_from_template``
 before the template merge, and ``resolve_observability_section`` applies it to
 an in-memory copy at read time so a config the template migration skips (for
 example under AgentOS) still resolves correctly.
@@ -79,6 +80,8 @@ _LEGACY_SERVICE_NAME_DEFAULTS: dict[ObservabilityScope, str] = {
 
 _legacy_warning_lock = threading.Lock()
 _legacy_warning_emitted = False
+_scope_warning_lock = threading.Lock()
+_scope_warning_emitted = False
 
 
 def _legacy_default(scope: ObservabilityScope, key: str) -> Any:
@@ -145,18 +148,27 @@ def _merge_legacy_value(
     return True, customized[winner]
 
 
+def _scope_enabled(switch: Any) -> bool:
+    """Read one switch of the retired per-runtime (``team`` / ``agent``) layout."""
+    return isinstance(switch, Mapping) and bool(switch.get("enabled", False))
+
+
 def migrate_legacy_observability_config(
     config: MutableMapping[str, Any],
     *,
     log_conflicts: bool = True,
 ) -> bool:
-    """Fold ``team_observability`` / ``agent_observability`` into ``observability``.
+    """Fold both legacy observability shapes into ``observability``.
 
-    The legacy sections are removed. Values already present in the canonical
-    section win; legacy values only fill keys it does not set. Each legacy
-    ``enabled`` flag becomes ``observability.<scope>.enabled``. Shared fields
-    that disagree between the two legacy sections resolve to the operator's
-    edit over a shipped default, then to the enabled section, then to Team.
+    Removed: the top-level ``team_observability`` / ``agent_observability``
+    sections, and the ``team`` / ``agent`` scope switches an earlier unified
+    layout carried inside ``observability``. Every ``enabled`` flag folds into
+    one ``observability.enabled`` switch that is false only when all switches
+    present read false — a config that never chose keeps the default-on.
+    Values already present in the canonical section win; legacy values only
+    fill keys it does not set. Shared fields that disagree between the two
+    top-level sections resolve to the operator's edit over a shipped default,
+    then to the enabled section, then to Team.
 
     Args:
         config: Whole config mapping, mutated in place.
@@ -175,10 +187,13 @@ def migrate_legacy_observability_config(
         section = config.pop(legacy_key)
         if isinstance(section, Mapping):
             legacy_sections[scope] = section
-    if not found_legacy:
-        return False
 
     canonical = config.get(OBSERVABILITY_CONFIG_KEY)
+    has_scope_switches = isinstance(canonical, MutableMapping) and any(
+        scope in canonical for scope in OBSERVABILITY_SCOPES
+    )
+    if not found_legacy and not has_scope_switches:
+        return False
     if not isinstance(canonical, MutableMapping):
         canonical = {}
         config[OBSERVABILITY_CONFIG_KEY] = canonical
@@ -204,45 +219,72 @@ def migrate_legacy_observability_config(
         found, value = _merge_legacy_value(key, legacy_sections, log_conflicts=log_conflicts)
         if found:
             canonical[key] = deepcopy(value)
-    return True
+
+    # The ``team`` / ``agent`` scope switches are transient here: the loop above
+    # may have just written the top-level sections' flags into them, and the
+    # single canonical switch below consumes them either way.
+    team_switch = canonical.pop("team", None)
+    agent_switch = canonical.pop("agent", None)
+    if team_switch is not None or agent_switch is not None:
+        _claim_scope_warning()
+        if "enabled" not in canonical:
+            canonical["enabled"] = _scope_enabled(team_switch) or _scope_enabled(agent_switch)
+        return True
+    return found_legacy
 
 
 def resolve_observability_section(config: Mapping[str, Any]) -> dict[str, Any]:
     """Return the effective ``observability`` section of one loaded config.
 
-    A config still carrying the legacy sections is migrated on a copy, so the
-    caller's mapping is never modified. The deprecation warning, and any
-    conflict warnings from the migration, are logged once per process: this
-    runs on every Team / Agent request, so repeating them would flood logs.
+    A config still carrying a legacy shape — the top-level sections, or the
+    retired per-runtime switches inside ``observability`` — is migrated on a
+    copy, so the caller's mapping is never modified. The deprecation
+    warnings, and any conflict warnings from the migration, are logged once
+    per process: this runs on every Team / Agent request, so repeating them
+    would flood logs.
 
     Args:
         config: Whole loaded config.
 
     Returns:
-        The canonical section as a plain dict (empty when absent).
+        The canonical section as a plain dict. An absent or invalid section
+        returns ``{"enabled": False}``; an explicitly empty mapping retains
+        the configured section's default-on semantics.
     """
     view: dict[str, Any] = {}
     for key in _OBSERVABILITY_SECTION_KEYS:
         if key in config:
             view[key] = deepcopy(config[key])
+    section = view.get(OBSERVABILITY_CONFIG_KEY)
+    has_scope_switches = isinstance(section, Mapping) and any(
+        scope in section for scope in OBSERVABILITY_SCOPES
+    )
     if LEGACY_TEAM_OBSERVABILITY_KEY in view or LEGACY_AGENT_OBSERVABILITY_KEY in view:
         migrate_legacy_observability_config(view, log_conflicts=_claim_legacy_warning())
+    elif has_scope_switches:
+        migrate_legacy_observability_config(view, log_conflicts=False)
     section = view.get(OBSERVABILITY_CONFIG_KEY)
-    return dict(section) if isinstance(section, Mapping) else {}
+    return dict(section) if isinstance(section, Mapping) else {"enabled": False}
 
 
-def is_observability_scope_enabled(
-    section: Mapping[str, Any],
-    scope: ObservabilityScope,
-) -> bool:
-    """Return the explicit switch of one runtime (``team`` or ``agent``)."""
-    switch = section.get(scope)
-    return isinstance(switch, Mapping) and bool(switch.get("enabled", False))
+def is_observability_enabled(section: Mapping[str, Any]) -> bool:
+    """Return a resolved section's switch, defaulting to enabled.
+
+    Team and single-agent tracing share one switch. A section predating it
+    resolves through the migrations above; a section with no switch at all
+    keeps the section's default-on behavior. The resolver explicitly disables
+    an absent or invalid section before this function is called.
+    """
+    return bool(section.get("enabled", True))
 
 
 def observability_export_settings(section: Mapping[str, Any]) -> dict[str, Any]:
-    """Return the shared exporter settings, without the per-runtime switches."""
-    return {key: value for key, value in section.items() if key not in OBSERVABILITY_SCOPES}
+    """Return the shared exporter settings, without the switch."""
+    return {
+        key: value
+        for key, value in section.items()
+        if key != "enabled" and key not in OBSERVABILITY_SCOPES
+    }
 
 
 def _claim_legacy_warning() -> bool:
@@ -254,10 +296,25 @@ def _claim_legacy_warning() -> bool:
         _legacy_warning_emitted = True
     logger.warning(
         "config sections '%s' / '%s' are deprecated and were read as '%s' "
-        "(team.enabled / agent.enabled plus one shared exporter block); "
+        "(one enabled switch plus a shared exporter block); "
         "they are rewritten automatically on the next config migration",
         LEGACY_TEAM_OBSERVABILITY_KEY,
         LEGACY_AGENT_OBSERVABILITY_KEY,
         OBSERVABILITY_CONFIG_KEY,
     )
     return True
+
+
+def _claim_scope_warning() -> None:
+    """Log the retired per-runtime switches once per process."""
+    global _scope_warning_emitted
+    with _scope_warning_lock:
+        if _scope_warning_emitted:
+            return
+        _scope_warning_emitted = True
+    logger.warning(
+        "observability switches 'team' / 'agent' were folded into '%s.enabled' "
+        "(false only when every switch read false); they are rewritten "
+        "automatically on the next config migration",
+        OBSERVABILITY_CONFIG_KEY,
+    )
