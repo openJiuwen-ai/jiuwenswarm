@@ -261,6 +261,31 @@ def test_discard_rejects_path_outside_upload_root(upload_server, tmp_path):
     assert outside.is_file()
 
 
+def test_upload_discard_rejects_nul_path(upload_server):
+    port, _ = upload_server
+    invalid_path = f"{SKILL_UPLOAD_PREFIX}bad\x00path"
+
+    assert discard_skill_upload(invalid_path) is False
+    status, result = _post_discard(port, json.dumps({"path": invalid_path}).encode())
+    assert status == 200
+    assert result == {"ok": True, "discarded": False}
+
+
+def test_upload_discard_rejects_unprefixed_directory_in_upload_root(upload_server):
+    port, upload_root = upload_server
+    upload_dir = upload_root / "ordinary-directory"
+    upload_dir.mkdir()
+    uploaded = upload_dir / "keep.zip"
+    uploaded.write_bytes(b"keep")
+
+    assert discard_skill_upload(str(uploaded)) is False
+    assert uploaded.is_file()
+    status, result = _post_discard(port, json.dumps({"path": str(uploaded)}).encode())
+    assert status == 200
+    assert result == {"ok": True, "discarded": False}
+    assert uploaded.is_file()
+
+
 def test_stale_dangling_symlink_upload_dirs_are_cleaned(upload_server):
     _, upload_root = upload_server
     link = upload_root / f"{SKILL_UPLOAD_PREFIX}dangling"

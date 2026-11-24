@@ -91,7 +91,7 @@ def parse_multipart_form(content_type: str, body: bytes) -> dict[str, Any]:
 def _resolve_existing(path: Path) -> Path | None:
     try:
         return path.resolve(strict=True)
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return None
 
 

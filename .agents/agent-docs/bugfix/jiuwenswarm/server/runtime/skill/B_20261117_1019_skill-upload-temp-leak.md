@@ -12,6 +12,7 @@ files:
   - jiuwenswarm/server/runtime/skill/skill_manager.py
   - jiuwenswarm/channels/web/app_web.py
   - jiuwenswarm/channels/web/frontend/src/components/SkillPanel/index.tsx
+  - jiuwenswarm/channels/web/frontend/tests/skillHubEndpointContract.test.mjs
   - tests/unit_tests/test_app_web_skill_upload.py
 designs: []
 design_note: 两阶段上传缺少文件生命周期归属，属实现缺陷的小范围修复，不引入新的架构设计；接口与生命周期契约记录在本文。
@@ -49,8 +50,12 @@ design_note: 两阶段上传缺少文件生命周期归属，属实现缺陷的�
   用户取消覆盖时由前端 finally 的 discard 回收。
 - `cleanup_stale_skill_uploads`：启动后台线程与每次上传前各执行一次，按 24h TTL 回收；
   用 `lstat` 读 mtime，悬空符号链接同样能按 TTL 回收。
-- 前端 `SkillPanel.handleSkillUpload`：在 `finally` 中对本次上传路径发起 discard，不等待结果，
-  避免网络异常拖住上传按钮的 loading 态；失败由 TTL 兜底。
+- 前端 `SkillPanel.handleSkillUpload`：首次导入、覆盖确认及 `overwrite=true` 二次导入都在同一个
+  `handleSkillUpload` 调用链内完成；首次与二次导入均串行 `await`，覆盖确认当前为同步 `window.confirm`。
+  只有该调用链进入 `finally` 后才对本次上传路径发起 discard，不等待 discard 结果，避免网络异常拖住上传按钮的
+  loading 态。因此覆盖确认与二次导入期间不会提前清理。未来若将覆盖确认改为异步流程，仍须在同一调用链内
+  `await` 确认及后续二次导入，完成后才进入 `finally`，不得在确认前或二次导入未完成时触发 discard；
+  discard 失败由 TTL 兜底。
 - 请求体大小早检：upload-temp 在读取 body 前校验 Content-Length，超限直接 413。
 - 保持既有本地服务安全边界：默认绑定 `FRONTEND_HOST`（缺省 localhost），
   `/file-api` POST 统一拒绝 `Sec-Fetch-Site: cross-site`。
@@ -88,7 +93,12 @@ design_note: 两阶段上传缺少文件生命周期归属，属实现缺陷的�
 
 - `tests/unit_tests/test_app_web_skill_upload.py`：上传后可导入并回收、同名冲突保留与覆盖回收、
   越界路径拒绝、TTL 回收、悬空符号链接回收；discard 接口删除成功与重复调用幂等、64KB 超限 413
-  且无删除副作用、非法 JSON 与缺 `path` 的 400、越界路径返回 `discarded: false` 且文件保留。
+  且无删除副作用、非法 JSON 与缺 `path` 的 400、越界路径返回 `discarded: false` 且文件保留；
+  NUL 路径及临时根下无前缀目录均在直接函数与 HTTP 接口层返回 `discarded: false`，不删除文件、不产生 500。
+- `jiuwenswarm/channels/web/frontend/tests/skillHubEndpointContract.test.mjs`：校验 discard 使用
+  `gatewayFetch` 并检查 `response.ok`；`npm run test:skill-hub-endpoint` 3 项测试通过。
+- 本次复核（Windows / Python 3.12.16）：`python -m pytest tests/unit_tests/test_app_web_skill_upload.py --no-cov -q`
+  21 项通过、1 项符号链接平台用例跳过。
 - 本地 default 实例冒烟：upload-temp 返回 `<tmp>/jiuwenswarm_skill_upload_<rand>/smoke.zip`，
   导入终态后文件与专属目录均被删除。
 
