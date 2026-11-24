@@ -67,7 +67,7 @@ class _Lease:
         async def call(*args: Any, **kwargs: Any) -> Any:
             # Authentication is resolved on the caller thread, once per operation.
             security = self._security_provider()
-            client = self._entry.resource.bind_security(lambda: security)
+            client = self._client.bind_security(lambda: security)
             operation = getattr(client, name)
             future = self._holder.submit(self, lambda: operation(*args, **kwargs))
             return await _await_result(future)

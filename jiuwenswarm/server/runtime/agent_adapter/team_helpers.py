@@ -3770,6 +3770,12 @@ async def _process_team_message_stream(
     )
     has_execution_context = isinstance(execution_context, TeamExecutionContext)
     run_context = _team_input_run_context(request) if has_execution_context else None
+    from jiuwenswarm.agents.harness.common.rails.permissions.root_context import extract_permission_user_content
+    from jiuwenswarm.common.team_memory_binding import team_memory_user_context
+
+    human_text = extract_permission_user_content(inputs.get("query"))
+    if human_text:
+        run_context = team_memory_user_context(run_context, human_text)
 
     # Attach-only subscription: entering a running Team Session observes the
     # live stream without submitting input. It must short-circuit before the

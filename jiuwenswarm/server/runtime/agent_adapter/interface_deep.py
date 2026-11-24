@@ -12469,6 +12469,12 @@ class JiuWenSwarmDeepAdapter:
             if hasattr(agent, "__dict__"):
                 setattr(agent, "_jiuwenswarm_memory_project_dir", project_dir)
 
+    def _jiuwen_memory_project_key(self) -> str:
+        from jiuwenswarm.common.coding_memory_paths import resolve_coding_memory_project_name
+
+        project_dir = getattr(getattr(self, "_instance", None), "_jiuwenswarm_memory_project_dir", None)
+        return resolve_coding_memory_project_name(project_dir)
+
     def _jiuwen_memory_media_globals(self, config: dict[str, Any]) -> dict[str, Any]:
         workspace = getattr(self, "_memory_media_workspace", None)
         if getattr(self._sys_operation_card, "mode", None) != OperationMode.LOCAL:
@@ -12503,6 +12509,7 @@ class JiuWenSwarmDeepAdapter:
                     agent_name=getattr(self, "_agent_name", None),
                     sdk_media_globals=sdk_media_globals,
                     shared_document_root=True,
+                    project=self._jiuwen_memory_project_key(),
                 )
                 if rail is not None:
                     logger.info(
@@ -24543,9 +24550,10 @@ class JiuWenSwarmDeepAdapter:
                 sdk_media_globals = None
                 if is_jiuwen_builtin_memory(config):
                     sdk_media_globals = self._jiuwen_memory_media_globals(config)
-                    new_embed_fp = jiuwen_builtin_config_fingerprint(
+                    jiuwen_config_fp = jiuwen_builtin_config_fingerprint(
                         config, agent_name=self._agent_name, sdk_media_globals=sdk_media_globals,
                     )
+                    new_embed_fp = f"{jiuwen_config_fp}|project={self._jiuwen_memory_project_key()}"
                 previous_embed_fp = self._memory_embedding_fingerprint
                 if self._memory_rail is not None:
                     cur_memory_type = is_proactive_memory(mode, config)
@@ -24573,6 +24581,14 @@ class JiuWenSwarmDeepAdapter:
                     # 重建（或首次注册）后记录新指纹，作为下次比对的基线
                     self._memory_embedding_fingerprint = new_embed_fp
                     try:
+                        if is_jiuwen_builtin_memory(config):
+                            from jiuwenswarm.agents.harness.common.memory.team_memory_members import (
+                                prepare_project_memory,
+                            )
+
+                            await prepare_project_memory(
+                                config, self._jiuwen_memory_project_key(), sdk_media_globals=sdk_media_globals,
+                            )
                         await self._instance.register_rail(self._memory_rail)
                     except Exception as e:
                         # register_rail 失败：回滚指纹与 rail，避免留下"指纹已是新值、
