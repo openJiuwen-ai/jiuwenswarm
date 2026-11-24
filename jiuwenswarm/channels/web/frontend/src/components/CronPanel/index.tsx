@@ -57,12 +57,13 @@ function clearCronError() {
 // 是「请求送达但未起新轮」，用 warning 变体走语义描边与警示图标。
 function showCronRunNowToast(
   content: string,
+  toastId: string,
   testId: string,
   panelRect?: DOMRect,
   variant: 'default' | 'warning' = 'default',
 ) {
   toast.open({
-    id: testId,
+    id: toastId,
     content,
     variant,
     testId,
@@ -990,6 +991,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         clearCronError();
         showCronRunNowToast(
           t('cron.errors.runNowPreviousActive'),
+          'cron-run-now-rejected',
           'cron-run-now-rejected-toast',
           panelRect,
           'warning',
@@ -1018,7 +1020,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
           throw new Error(t('cron.errors.sessionOpenFailed'));
         }
         clearCronError();
-        showCronRunNowToast(t('cron.success.runNow'), 'cron-success-toast', panelRect);
+        showCronRunNowToast(t('cron.success.runNow'), 'cron-run-now-success', 'cron-success-toast', panelRect);
       } else {
         // 后端未返回 session_id：面板不卸载，local state 提示生命周期足够
         clearCronError();

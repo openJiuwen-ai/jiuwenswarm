@@ -521,7 +521,26 @@ class _RunNowWebChannel(_TestWebChannel):
         return queue.get_nowait()
 
 
+def _previous_run_active_guard_available() -> bool:
+    """Whether the pinned agent-gateway already carries the JW-77 run-now guard.
+
+    The guard lives in the agent-gateway repo and reaches this repo only
+    through the ``pyproject.toml`` pin rev; while the pin still points at a
+    pre-guard rev these regressions would fail deterministically on a bare
+    checkout. Skipped fail-closed: a partially landed guard still fails the
+    assertions below.
+    """
+    return hasattr(CronSchedulerService, "_find_active_run")
+
+
+_JW77_GUARD_SKIP = pytest.mark.skipif(
+    not _previous_run_active_guard_available(),
+    reason="JW-77 run-now guard lives in agent-gateway; pending the pyproject pin rev bump",
+)
+
+
 @pytest.mark.asyncio
+@_JW77_GUARD_SKIP
 @pytest.mark.parametrize("mode", ["agent", "team"])
 async def test_run_now_rejected_while_previous_run_active(harness_factory, mode):
     """JW-77: manual run_now must not start a second parallel run.
@@ -554,7 +573,14 @@ async def test_run_now_rejected_while_previous_run_active(harness_factory, mode)
         if env.method == ReqMethod.SESSION_CREATE.value
     ]
     assert len(created_after) == len(created_before)
-    assert len([state for state in harness.scheduler.runs_state() if state.job_id == harness.job.id]) == 1
+    # Run ids only have one-second resolution: a second run registered in the
+    # same second would overwrite this state object in _runs rather than add a
+    # new entry, so counting entries alone cannot see the collision. Pin the
+    # surviving state to the original run instead.
+    job_run_states = [state for state in harness.scheduler.runs_state() if state.job_id == harness.job.id]
+    assert len(job_run_states) == 1
+    assert job_run_states[0].run_id == run_id
+    assert job_run_states[0].exec_session_id == active_sid
 
     # Let the first run finish; a fresh run_now is accepted (new run, new session).
     harness.client.release.set()
@@ -578,6 +604,7 @@ async def test_run_now_rejected_while_previous_run_active(harness_factory, mode)
 
 
 @pytest.mark.asyncio
+@_JW77_GUARD_SKIP
 async def test_concurrent_run_now_starts_only_one_run(harness_factory, monkeypatch):
     """JW-77: two run_now RPCs in flight must not both allocate a run.
 
@@ -634,3 +661,12 @@ async def test_concurrent_run_now_starts_only_one_run(harness_factory, monkeypat
         env for env in harness.client.requests
         if env.method == ReqMethod.SESSION_CREATE.value
     ]) == 1
+    # The rejection must not have registered a second run whose state
+    # overwrites the first one in _runs (run ids are second-granular, so a
+    # same-second collision keeps the entry count at 1 while clobbering the
+    # first run's state).
+    job_run_states = [
+        state for state in harness.scheduler.runs_state() if state.job_id == harness.job.id
+    ]
+    assert len(job_run_states) == 1
+    assert job_run_states[0].exec_session_id == first_response["payload"]["session_id"]

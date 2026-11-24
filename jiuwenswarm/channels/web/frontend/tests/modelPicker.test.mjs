@@ -450,9 +450,11 @@ test('run now rejection shows a warning toast and jumps to the active run', asyn
     assert.equal(navigationDone.value, true);
     assert.equal(byId('cron-confirm-dialog'), null);
     // 拒绝提示挂 App 根部、warning 语义，不出现成功 toast
+    // 去重 id 与 DOM testid 分离，与本文件既有约定一致（record id 'cron-error'
+    // ↔ testid 'cron-error-toast'）。
     assert.equal(byId('cron-success-toast'), null);
     const rejected = toastStore.getSnapshot().find(
-      (record) => record.id === 'cron-run-now-rejected-toast',
+      (record) => record.id === 'cron-run-now-rejected',
     );
     assert.ok(rejected, 'rejected toast is open');
     assert.equal(rejected.variant, 'warning');
