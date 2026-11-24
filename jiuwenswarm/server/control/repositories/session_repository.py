@@ -24,6 +24,7 @@ from jiuwenswarm.server.control.responses import (
 from jiuwenswarm.server.runtime.session.session_history import load_history_records
 from jiuwenswarm.server.runtime.session.session_info import to_session_info
 from jiuwenswarm.server.runtime.session.session_metadata import (
+    SessionPinRejection,
     patch_session_metadata,
     get_all_sessions_metadata,
     get_session_metadata,
@@ -187,6 +188,11 @@ async def handle_pin(request: AgentRequest) -> AgentResponse:
         return build_error_response(request, "pinned must be boolean", code="BAD_REQUEST")
     try:
         result = await asyncio.to_thread(set_session_pinned, sid, raw_pinned)
+    except SessionPinRejection as exc:
+        # Pinning a cron session without job identity would make it vanish
+        # from every sidebar list; surface the refusal as a client error.
+        logger.info("[session_repository] session.pin rejected: %s", exc)
+        return build_error_response(request, str(exc), code=exc.code)
     except Exception as exc:  # noqa: BLE001
         logger.warning("[session_repository] session.pin failed: %s", exc)
         return build_error_response(request, str(exc), code="INTERNAL_ERROR")

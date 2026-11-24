@@ -3355,6 +3355,55 @@ class TestSessionPinOptimization:
             assert after["pin_order"] == order
             assert after["last_message_at"] == before[sid]["last_message_at"]
 
+
+class TestSessionPinCronIdentityGuard:
+    """缺 job 身份的 ``__cron__`` 执行会话不得置顶(置顶后三列表盲区)。"""
+
+    @staticmethod
+    @pytest.mark.parametrize(
+        ("sid", "cron_id", "channel_id", "rejected"),
+        [
+            # __cron___<ts>_<rand>:随机后缀、无 cron_id → 拒绝
+            ("__cron___1770000000000_abc123", "", "__cron__", True),
+            # 有 cron_id → 放行
+            ("__cron___1770000000000_abc123", "job-1", "__cron__", False),
+            # cron_<ts>_<job>:目录名嵌 job id → 放行
+            ("cron_1770000000000_job-1", "", "__cron__", False),
+            # cron_<job>(tick 会话) → 放行
+            ("cron_job-1", "", "__cron__", False),
+            # web 渠道会话 → 放行
+            ("web_1770000000000_x", "", "web", False),
+            # __cron__ 渠道但 id 无 cron 前缀且无 cron_id → 拒绝(畸形存量)
+            ("plain_sid", "", "__cron__", True),
+        ],
+    )
+    def test_pin_guard_by_identity(sessions_dir, sid, cron_id, channel_id, rejected):
+        from jiuwenswarm.server.runtime.session import session_metadata as sm
+
+        sm.init_session_metadata(
+            session_id=sid, channel_id=channel_id, cron_id=cron_id
+        )
+        if rejected:
+            with pytest.raises(sm.SessionPinRejection) as exc_info:
+                sm.set_session_pinned(sid, True)
+            assert exc_info.value.code == "FORBIDDEN"
+            data = _read_json(sessions_dir / sid / "metadata.json")
+            assert data.get("pinned") is not True
+        else:
+            assert sm.set_session_pinned(sid, True) == (True, 1)
+
+    @staticmethod
+    def test_unpin_not_blocked_for_identity_less_cron_session(sessions_dir):
+        """取消置顶不走拒绝分支:即便会话缺身份,unpin 也要放行(修复存量入口)。"""
+        from jiuwenswarm.server.runtime.session import session_metadata as sm
+
+        sid = "__cron___1770000000000_abc123"
+        sm.init_session_metadata(session_id=sid, channel_id="__cron__")
+        # 模拟修复前的存量状态:已被置顶落盘
+        sm.update_session_metadata(session_id=sid, pinned=True, pin_order=1)
+        _drain_queue()
+        assert sm.set_session_pinned(sid, False) == (False, 0)
+
 class TestCanonicalModeBoundary:
     """公共会话数据保持 canonical mode；客户端兼容由 Gateway 出口负责。"""
 

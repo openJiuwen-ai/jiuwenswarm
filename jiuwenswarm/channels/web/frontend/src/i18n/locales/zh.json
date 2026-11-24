@@ -5833,7 +5833,8 @@
         "cronStopFailed": "该项目的定时任务未能全部停止，项目保持可见未移除。请稍后重试。",
         "removeSessionBusy": "项目下有对话正在运行，无法移除。请先停止相关对话，再重试移除。",
         "archiveSessionFinalizing": "会话正在收尾，请稍后重试归档。",
-        "removeSessionFinalizing": "会话正在收尾，请稍后重试移除。"
+        "removeSessionFinalizing": "会话正在收尾，请稍后重试移除。",
+        "pinCronNoIdentity": "该定时任务会话缺少任务标识，置顶后将无法在侧边栏找到，已取消置顶"
       },
       "cancel": "取消",
       "confirm": "确定"

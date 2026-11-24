@@ -1945,6 +1945,43 @@ def get_session_equipment(
     }
 
 
+class SessionPinRejection(RuntimeError):
+    """置顶被拒绝：该会话置顶后将落入侧边栏可见性盲区。
+
+    ``__cron__`` 渠道且 ``cron_id`` 为空、目录名又不匹配任何 job 约定的
+    存量 team 执行会话，置顶区准入（``load_pinned_sessions``）、cron 分组
+    （排除 pinned）与项目普通列表（排除非 web 渠道）三处过滤条件交叉后
+    无一可见，用户在 UI 上无法再触达该会话取消置顶。置顶前直接拒绝，
+    ``code`` 供 handler 映射为 FORBIDDEN 错误码。
+    """
+
+    code = "FORBIDDEN"
+
+
+def _cron_session_without_identity(session_id: str, meta: dict[str, Any]) -> bool:
+    """Whether a cron execution session carries no resolvable job identity.
+
+    True only for ``__cron__`` channel sessions whose ``cron_id`` metadata is
+    empty and whose directory name follows neither ``cron_<job_id>`` nor
+    ``cron_<ts>_<job_id>``. Sessions with a job identity can always be shown
+    by the pinned area or the cron group; identity-less ones cannot, which is
+    exactly the visibility black hole pin must not enter.
+    """
+    if str(meta.get("channel_id") or "").strip() != "__cron__":
+        return False
+    if str(meta.get("cron_id") or "").strip():
+        return False
+    sid = str(session_id or "").strip()
+    if sid.startswith("cron_") and sid[len("cron_"):]:
+        # cron_<ts>_<job_id> (legacy team per-run) and cron_<job_id> (tick)
+        # both embed the job id in the name, so the cron group fallback and
+        # the pinned-area admission can still see them.
+        return False
+    # __cron___<ts>_<rand> ids never match cron_session_matches_job and rely
+    # on the persisted cron_id; with cron_id empty they have no identity left.
+    return True
+
+
 # 会话级 pin 重编号全局序列化锁:保障「设置目标 → 收集所有置顶 → 重编号 → 写回」全过程原子性。
 # Gateway 为会话级 pin 的唯一写入方(仅经 Web 本地 handler 处理,不转发 AgentServer)。
 _SESSION_PIN_LOCK = threading.Lock()
@@ -1973,6 +2010,11 @@ def set_session_pinned(session_id: str, pinned: bool) -> tuple[bool, int] | None
     Returns:
         ``(操作后的 pinned, 操作后的 pin_order)``;会话不存在(metadata 缺失)时返回 ``None``。
         取消置顶时 ``pin_order`` 恒为 0。
+
+    Raises:
+        SessionPinRejection: 置顶(``pinned=True``)一个 ``__cron__`` 渠道、无
+        ``cron_id`` 且目录名不符合 job 命名约定的存量 team 执行会话。这类会话
+        置顶后三个侧边栏列表均不可见(见类 docstring);取消置顶不受影响。
     """
     started = time.perf_counter()
     lock_ms = read_ms = scan_ms = write_ms = 0.0
@@ -1989,6 +2031,15 @@ def set_session_pinned(session_id: str, pinned: bool) -> tuple[bool, int] | None
                 return None
 
             current_order = int(meta.get("pin_order", 0))
+            if pinned and _cron_session_without_identity(session_id, meta):
+                # Pin would drop this session into the sidebar visibility
+                # black hole (pinned area rejects it, cron group and project
+                # list exclude pinned). Refuse before any write.
+                outcome = "rejected_cron_without_identity"
+                raise SessionPinRejection(
+                    "cron execution session without cron_id cannot be pinned: "
+                    "it would disappear from every sidebar list"
+                )
             if bool(meta.get("pinned")) == pinned and (
                 current_order > 0 if pinned else current_order == 0
             ):

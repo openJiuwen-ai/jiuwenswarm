@@ -30,6 +30,21 @@ from jiuwenswarm.server.runtime.session.work_mode import resolve_request_work_mo
 logger = logging.getLogger(__name__)
 
 
+def cron_session_name_has_job(session_id: str) -> bool:
+    """Whether a session directory name embeds a cron job id by convention.
+
+    Mirrors the ``cron_<job_id>`` / ``cron_<ts>_<job_id>`` shapes accepted by
+    ``common.cron_session.cron_session_matches_job`` without needing a job id
+    to compare against: the suffix after ``cron_`` must be non-empty for the
+    name to count as job-shaped. ``__cron___<ts>_<rand>`` ids never match —
+    they rely on the persisted ``cron_id`` instead.
+    """
+    sid = str(session_id or "").strip()
+    if not sid.startswith("cron_"):
+        return False
+    return bool(sid[len("cron_"):])
+
+
 def attribute_session_project(
     metadata: dict[str, Any],
     visible_project_ids: set[str],
@@ -209,16 +224,32 @@ def load_pinned_sessions() -> dict[str, Any]:
     content, pinned conversations included.  Their ``pinned`` flag stays in the
     session metadata, so restoring the project puts them back in the pinned
     area without any bookkeeping here.
+
+    ``__cron__`` channel sessions are admitted when they carry a ``cron_id`` or
+    their directory name embeds a job id (``cron_<job_id>`` / ``cron_<ts>_<job_id>``,
+    the legacy team execution convention). Admitting the name-matched shape keeps
+    sessions that were pinned before this identity check existed visible in the
+    pinned area, so the user can unpin them from the UI; the project session
+    list and the cron group both exclude pinned sessions, so without this
+    fallback the session would disappear from every sidebar list.
     """
     all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
     _, removed_project_ids = split_project_ids(all_projects)
     sessions = collect_all_sessions_metadata()
     pinned = []
     for session in sessions:
+        if not session.get("pinned"):
+            continue
         channel_id = session.get("channel_id")
-        if not session.get("pinned") or not (
-            channel_id == "web" or (channel_id == "__cron__" and session.get("cron_id"))
-        ):
+        if channel_id == "__cron__":
+            # Name-shaped legacy team runs keep their job id in the directory
+            # name; without the fallback they would be pinned yet invisible.
+            admitted = bool(session.get("cron_id")) or cron_session_name_has_job(
+                str(session.get("session_id") or "")
+            )
+        else:
+            admitted = channel_id == "web"
+        if not admitted:
             continue
         if str(session.get("project_id") or "") in removed_project_ids:
             continue

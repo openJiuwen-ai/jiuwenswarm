@@ -167,7 +167,10 @@ class _FakeSessionCreateAgentClient:
 
     @staticmethod
     def _handle_session_pin(params: dict):
-        from jiuwenswarm.server.runtime.session.session_metadata import set_session_pinned
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            SessionPinRejection,
+            set_session_pinned,
+        )
 
         sid = str(params.get("session_id") or "").strip()
         raw_pinned = params.get("pinned")
@@ -175,7 +178,12 @@ class _FakeSessionCreateAgentClient:
             return SimpleNamespace(
                 ok=False, payload={"error": "session_id required / pinned must be bool", "code": "BAD_REQUEST"},
             )
-        result = set_session_pinned(sid, raw_pinned)
+        try:
+            result = set_session_pinned(sid, raw_pinned)
+        except SessionPinRejection as exc:
+            return SimpleNamespace(
+                ok=False, payload={"error": str(exc), "code": exc.code},
+            )
         if result is None:
             return SimpleNamespace(
                 ok=False, payload={"error": "session not found", "code": "NOT_FOUND"},
@@ -1101,6 +1109,102 @@ class TestSessionPin:
         sessions = resp["payload"]["sessions"]
         assert [s["session_id"] for s in sessions] == ["s3", "s1"]
         assert [s["pin_order"] for s in sessions] == [1, 2]
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_pin_rejects_cron_session_without_identity(
+        registered_channel, sessions_dir
+    ):
+        """缺 cron_id 的 ``__cron___`` 会话置顶被拒绝(FORBIDDEN),置顶后三列表
+        均不可见的盲区从入口堵死;取消置顶不受影响。"""
+        _make_session("__cron___1770000000000_abc123", channel_id="__cron__")
+
+        pin = await _call(
+            registered_channel,
+            "session.pin",
+            {"session_id": "__cron___1770000000000_abc123", "pinned": True},
+        )
+        assert pin["ok"] is False
+        assert pin["code"] == "FORBIDDEN"
+
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        _drain()
+        meta = get_session_metadata(
+            "__cron___1770000000000_abc123", cache_bust=True, enable_writeback=False
+        )
+        assert meta.get("pinned") is not True
+        assert int(meta.get("pin_order", 0)) == 0
+
+        # 取消置顶仍放行(幂等路径不经过拒绝分支)
+        unpin = await _call(
+            registered_channel,
+            "session.pin",
+            {"session_id": "__cron___1770000000000_abc123", "pinned": False},
+        )
+        assert unpin["ok"] is True
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_pinned_cron_session_without_id_recoverable_in_pinned_area(
+        registered_channel, sessions_dir
+    ):
+        """存量已"蒸发"会话(修复前被置顶的缺 cron_id ``cron_<ts>_<job>`` 会话)
+        在放宽准入后于置顶区可见,可再通过 UI 取消置顶恢复。"""
+        # 模拟修复前的数据:pinned 已落盘、cron_id 缺失
+        _make_session("cron_1770000000000_job-legacy", channel_id="__cron__")
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            update_session_metadata,
+        )
+
+        update_session_metadata(
+            session_id="cron_1770000000000_job-legacy", pinned=True, pin_order=1
+        )
+        _drain()
+
+        pinned = await _call(registered_channel, "project.pinned_sessions", {})
+        assert [s["session_id"] for s in pinned["payload"]["sessions"]] == [
+            "cron_1770000000000_job-legacy"
+        ]
+
+        # 置顶区可见后即可取消置顶,会话回到 cron 分组
+        unpin = await _call(
+            registered_channel,
+            "session.pin",
+            {"session_id": "cron_1770000000000_job-legacy", "pinned": False},
+        )
+        assert unpin["ok"] is True
+        cron = await _call(
+            registered_channel,
+            "project.get_cron_sessions",
+            {"project_id": "default", "cron_id": "job-legacy"},
+        )
+        assert [
+            s["session_id"] for s in cron["payload"]["sessions"]
+        ] == ["cron_1770000000000_job-legacy"]
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_pin_allows_cron_session_with_name_identity(
+        registered_channel, sessions_dir
+    ):
+        """目录名嵌 job id 的存量 team 执行会话(cron_<ts>_<job>)可正常置顶:
+        名字里的 job id 是置顶区准入的兜底身份信号,与 cron 分组的兜底同源。"""
+        _make_session("cron_1770000000999_job-named", channel_id="__cron__")
+
+        pin = await _call(
+            registered_channel,
+            "session.pin",
+            {"session_id": "cron_1770000000999_job-named", "pinned": True},
+        )
+        assert pin["ok"] is True
+
+        pinned = await _call(registered_channel, "project.pinned_sessions", {})
+        assert [s["session_id"] for s in pinned["payload"]["sessions"]] == [
+            "cron_1770000000999_job-named"
+        ]
 
 
 # ===========================================================================
