@@ -225,6 +225,12 @@ _ensure_protocol_member(EventType, "CLIENT_ATTACHMENTS_CHANGED", "client.attachm
 _ensure_req_method("VOICE_SESSION_RECEIPTS", "voice.session.receipts")
 _ensure_req_method("VOICE_TASK_PENDING_INTERRUPT", "voice.task.pending_interrupt")
 
+# Video conversation append served by AgentServer (dispatch.py / video_duplex
+# reference this member); gateway 侧 agent_gateway.common.protocol_methods 的
+# 同名 ensure 仅在网关启动链路执行，不在 dispatch 导入链上，协议包当前 pin
+# 尚未定义该成员。
+_ensure_req_method("VIDEO_CONVERSATION_APPEND", "video.conversation.append")
+
 _TEAM_CONTROL_REQ_METHODS = (
     ("TEAM_CREATE", "team.create"),
     ("TEAM_GET", "team.get"),
