@@ -131,6 +131,68 @@ def test_catalog_navigation_updates_known_release_and_preserves_user_edit(tmp_pa
     assert (catalog / "SKILL.md").read_text() == "my custom navigation"
 
 
+def test_catalog_capability_updates_known_release_and_preserves_user_edit(tmp_path):
+    builtin, skills = _workspace(tmp_path)
+    catalog = skills / BUILTIN_CATALOG_NAME
+    target = catalog / "references/capabilities/sample"
+    previous_digest = skill_tree_digest(target)
+    versions = {"sample": [{"digest": previous_digest, "revision": "previous"}]}
+    (builtin / BUILTIN_CATALOG_NAME / "legacy_versions.json").write_text(
+        json.dumps(versions),
+        encoding="utf-8",
+    )
+    source = builtin / BUILTIN_CATALOG_NAME / "references/capabilities/sample/SKILL.md"
+    source.write_text(
+        "---\nname: sample\ndescription: updated\n---\nnew rules\n",
+        encoding="utf-8",
+    )
+
+    migrate_builtin_catalog(builtin, skills)
+
+    assert target.joinpath("SKILL.md").read_bytes() == source.read_bytes()
+    backups = list((catalog / ".legacy/catalog-capabilities").glob("sample-*"))
+    assert len(backups) == 1
+    assert skill_tree_digest(backups[0]) == previous_digest
+
+    target.joinpath("SKILL.md").write_text("user customization\n", encoding="utf-8")
+    source.write_text(
+        "---\nname: sample\ndescription: newer\n---\nnewer rules\n",
+        encoding="utf-8",
+    )
+    migrate_builtin_catalog(builtin, skills)
+    assert target.joinpath("SKILL.md").read_text(encoding="utf-8") == "user customization\n"
+
+
+def test_unreadable_catalog_capability_does_not_abort_legacy_migration(tmp_path, monkeypatch):
+    from jiuwenswarm.common import builtin_skills
+
+    builtin, skills = _workspace(tmp_path)
+    catalog = skills / BUILTIN_CATALOG_NAME
+    target = catalog / "references/capabilities/sample"
+    previous_digest = skill_tree_digest(target)
+    (builtin / BUILTIN_CATALOG_NAME / "legacy_versions.json").write_text(
+        json.dumps({"sample": [{"digest": previous_digest, "revision": "previous"}]}),
+        encoding="utf-8",
+    )
+    source = builtin / BUILTIN_CATALOG_NAME / "references/capabilities/sample/SKILL.md"
+    source.write_text("---\nname: sample\ndescription: updated\n---\nnew rules\n", encoding="utf-8")
+    original_digest = builtin_skills.skill_tree_digest
+
+    def digest_with_unreadable_target(directory):
+        if Path(directory).resolve() == target.resolve():
+            raise OSError("unreadable capability")
+        return original_digest(directory)
+
+    monkeypatch.setattr(builtin_skills, "skill_tree_digest", digest_with_unreadable_target)
+
+    migrate_builtin_catalog(builtin, skills)
+
+    assert target.joinpath("SKILL.md").read_text(encoding="utf-8").endswith("sample\n---\n")
+    assert not (skills / "sample").exists()
+    state = json.loads((skills / "skills_state.json").read_text(encoding="utf-8"))
+    assert "sample" in state["builtin_catalog_migrated"]
+
+
 def test_skill_list_reconciles_stale_state_and_separates_customized_builtin(tmp_path, monkeypatch):
     from jiuwenswarm.server.runtime.skill import skill_manager
 
@@ -181,9 +243,17 @@ def test_shipped_catalog_has_one_discovery_entry_and_all_leaf_links_work(tmp_pat
     root = skills / BUILTIN_CATALOG_NAME
     catalog = root / "references" / "catalog.md"
     links = re.findall(r"\]\((capabilities/[^)]+/SKILL\.md)\)", catalog.read_text(encoding="utf-8"))
-    assert len(links) == len(json.loads((source / BUILTIN_CATALOG_NAME / "legacy_hashes.json").read_text())) == 36
+    legacy_names = set(json.loads((source / BUILTIN_CATALOG_NAME / "legacy_hashes.json").read_text()))
+    linked_names = {Path(link).parts[1] for link in links}
+    shipped_names = {
+        path.parent.name
+        for path in (source / BUILTIN_CATALOG_NAME / "references/capabilities").glob("*/SKILL.md")
+    }
+    assert linked_names == shipped_names
+    assert legacy_names <= linked_names
     assert all((catalog.parent / link).is_file() for link in links)
     assert "capabilities/jiuwen-system-plugin-dev/SKILL.md" in links
+    assert "capabilities/deepseek-harness-plugin-converter/SKILL.md" in links
     assert not (skills / "jiuwen-system-plugin-dev").exists()
     assert (root / "references" / "capabilities" / "workswarm-app-builder" / "scripts" / "publish.py").is_file()
 
@@ -201,7 +271,7 @@ def test_release_system_plugin_copy_migrates_only_when_its_full_resources_match(
     assert len([
         path for path in legacy.rglob("*")
         if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
-    ]) == 15
+    ]) == 16
     if customized:
         with (legacy / "SKILL.md").open("a", encoding="utf-8") as page:
             page.write("\nUser-authored local instructions.\n")
