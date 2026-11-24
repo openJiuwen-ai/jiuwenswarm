@@ -2212,6 +2212,15 @@ function AppContent({
         session.is_processing = false;
         session.status = 'interrupted';
       }
+      // Enterprise HTTP refresh: rebuild pause UI from AgentServer pool state.
+      // Do this before history merge so later team-board restore can re-freeze.
+      if (session.is_paused === true) {
+        useChatStore.getState().setPaused(targetSessionId, true);
+        useChatStore.getState().setProcessing(targetSessionId, false);
+        useChatStore.getState().setThinking(targetSessionId, false);
+        useSessionStore.getState().freezeRunningTeamTasks(targetSessionId);
+        session.is_processing = false;
+      }
       upsertSessionMetadata(session, { setCurrent: sessionIdRef.current === targetSessionId });
       useWorkspaceStore.getState().upsertSession(session);
       // is_processing 由 Gateway 在 session.get_metadata 响应入队前读取当前
@@ -4169,6 +4178,9 @@ function AppContent({
     // （paused/blocked/completed/无目标）下，停止只结束会话，不碰目标本身。
     const isGoalActive = useGoalStore.getState().runtimes[currentSessionId]?.goal?.status === 'active';
     if (mode === 'team') {
+      // 与个人版一致：输入框「停止」对临时团队走 pause（可同会话续跑）。
+      // 组织 Owner 停整队仍走 cancel。pause 成功后由 interrupt_result 立刻
+      // freeze 任务板进度，避免右侧 in_progress 继续转圈（issue #90）。
       if (organizationOwnerStopTarget(currentSessionId)) {
         void cancel(currentSessionId);
       } else {
