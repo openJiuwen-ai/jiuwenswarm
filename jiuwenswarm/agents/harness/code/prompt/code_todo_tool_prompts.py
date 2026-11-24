@@ -36,7 +36,7 @@ Do NOT create one todo per file unless the user explicitly asks for file-level t
 
 Call once before substantive work. Prefer todo_create in parallel with the first write/bash when possible — avoid a todo-only first round.
 
-{"tasks": [{"id": "backend", "content": "Implement Flask backend", "activeForm": "Implementing Flask backend", "description": "app.py, SQLite scores API, static routes"}, {"id": "verify", "content": "Verify end-to-end", "activeForm": "Verifying end-to-end", "description": "Run app, exercise APIs, confirm game loads"}]}
+{"todos": [{"id": "backend", "content": "Implement Flask backend", "activeForm": "Implementing Flask backend", "description": "app.py, SQLite scores API, static routes"}, {"id": "verify", "content": "Verify end-to-end", "activeForm": "Verifying end-to-end", "description": "Run app, exercise APIs, confirm game loads"}]}
 """.strip()
 
 CODE_TODO_LIST_DESCRIPTION_EN = """
@@ -101,7 +101,7 @@ def get_code_todo_create_input_params() -> dict[str, Any]:
         "type": "object",
         "properties": {
             "plan_action": {"type": "string", "enum": ["new", "rebuild"]},
-            "tasks": {
+            "todos": {
                 "type": "array",
                 "minItems": 1,
                 "description": (
@@ -121,7 +121,7 @@ def get_code_todo_create_input_params() -> dict[str, Any]:
                 },
             },
         },
-        "required": ["tasks"],
+        "required": ["todos"],
     }
 
 

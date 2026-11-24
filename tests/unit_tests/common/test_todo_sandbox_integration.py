@@ -152,6 +152,7 @@ async def test_flash_research_updates_the_bound_sandbox_plan_and_rejects_old_pla
         capture_deepresearch_todo_target,
         persist_deepresearch_task_update,
     )
+    from jiuwenswarm.agents.harness.common.tools.todo_compat import core_todo_container_key
     from jiuwenswarm.agents.harness.flash.rails.flash_todo_rail import (
         bind_todo_lifecycle,
     )
@@ -169,14 +170,17 @@ async def test_flash_research_updates_the_bound_sandbox_plan_and_rejects_old_pla
     ]}
     token = _BINDING.set(None)
     try:
-        await create.invoke({"tasks": tasks}, session=session)
+        await create.invoke({core_todo_container_key(): tasks}, session=session)
         path = Path(modify.get_file_path("s"))
         target = await capture_deepresearch_todo_target(path, tool=modify, session_id="s")
         assert await persist_deepresearch_task_update(payload, todo_path=path, target=target)
         assert all(item.status.value == "completed" for item in await modify.load_todos("s"))
 
         create.reset_invoke_marker("s")
-        newer = await create.invoke({"plan_action": "new", "tasks": [{"id": "new", "content": "new"}]}, session=session)
+        newer = await create.invoke(
+            {core_todo_container_key(): [{"id": "new", "content": "new"}], "plan_action": "new"},
+            session=session,
+        )
         with pytest.raises(ValueError, match="older plan"):
             await persist_deepresearch_task_update(payload, todo_path=path, target=target)
         assert [item.id for item in await modify.load_todos("s")] == ["new"]

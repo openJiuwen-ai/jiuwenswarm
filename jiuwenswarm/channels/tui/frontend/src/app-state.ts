@@ -2865,7 +2865,9 @@ export class CliPiAppState {
   }
 
   private applyTodoCreateArgs(args: Record<string, unknown>): void {
-    const tasks = Array.isArray(args.tasks) ? args.tasks : [];
+    // 容器键已统一为 todos；保留 tasks 读取以兼容历史事件与旧宿主。
+    const rawTasks = Array.isArray(args.todos) ? args.todos : args.tasks;
+    const tasks = Array.isArray(rawTasks) ? rawTasks : [];
     const nowIso = new Date().toISOString();
     const nextTodos = tasks
       .filter((task): task is Record<string, unknown> => {

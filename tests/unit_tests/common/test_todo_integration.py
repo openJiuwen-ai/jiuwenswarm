@@ -42,6 +42,17 @@ from jiuwenswarm.server.runtime.agent_adapter.plan_pause_helpers import (
 )
 
 
+def _create_payload(items):
+    """按已安装 Core 的契约包 create 入参（新 Core 为 todos，旧 Core 为 tasks）。
+
+    CI 可能尚未升级到键统一后的 Core；直接驱动引擎的用例跟随实际契约，
+    模型面契约（todos）由 flash / code 分发层的用例覆盖。
+    """
+    from jiuwenswarm.agents.harness.common.tools.todo_compat import core_todo_container_key
+
+    return {core_todo_container_key(): items}
+
+
 @pytest_asyncio.fixture
 async def env(tmp_path, monkeypatch):
     await ReadWriteLockManager.stop()
@@ -87,11 +98,14 @@ async def test_flash_create_schema_accepts_optional_id_and_persists_it(env, lang
     task = {"content": "Create task"}
     if task_id is not None:
         task["id"] = task_id
-    inputs = {"action": "create", "tasks": [task]}
+    inputs = {"action": "create", "todos": [task]}
     validator = Draft7Validator(tool.card.input_params)
     validator.validate(inputs)
-    assert not validator.is_valid({"action": "create", "tasks": [{}]})
-    assert not validator.is_valid({"action": "create", "tasks": [{"content": ""}]})
+    # 卡片保持 simple schema：缺 content 由分发层拒绝，空 content 仍由 minLength 拦住。
+    assert not validator.is_valid({"action": "create", "todos": [{"content": ""}]})
+    rejected = await tool.invoke({"action": "create", "todos": [{}]}, session=session)
+    assert rejected.success is False
+    assert not path.exists()
     result = await tool.invoke(inputs, session=session)
     saved = json.loads(path.read_text())
     assert saved == result.todo_snapshot
@@ -99,6 +113,109 @@ async def test_flash_create_schema_accepts_optional_id_and_persists_it(env, lang
     assert isinstance(saved_id, str) and saved_id
     if task_id is not None:
         assert saved_id == task_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["en", "cn"])
+async def test_flash_todo_rejects_item_shape_mismatch(env, language):
+    """条目形态按动作校验：create 需 content，update/append 需 id。
+
+    工具卡保持 simple schema（禁 if/then/allOf，见 test_todo_schema_compatibility），
+    单容器键无法在卡片层按动作区分必填，因此校验落在分发层。
+    """
+    from jsonschema import Draft7Validator
+    from jiuwenswarm.agents.harness.flash.tools.flash_todo import UnifiedTodoTool
+
+    creator, modifier, session, path = env
+    tool = UnifiedTodoTool({"create": creator, "modify": modifier}, language)
+    validator = Draft7Validator(tool.card.input_params)
+    assert validator.is_valid({"action": "create", "todos": [{"content": "A"}]})
+    assert validator.is_valid(
+        {"action": "modify", "modify_action": "update", "todos": [{"id": "env", "status": "completed"}]}
+    )
+    bad_create = await tool.invoke({"action": "create", "todos": [{"id": "A"}]}, session=session)
+    assert bad_create.success is False
+    assert "content" in bad_create.error
+    assert not path.exists()
+    await tool.invoke({"action": "create", "todos": [{"content": "A"}]}, session=session)
+    bad_update = await tool.invoke(
+        {"action": "modify", "modify_action": "update", "todos": [{"content": "B"}]},
+        session=session,
+    )
+    assert bad_update.success is False
+    assert "id" in bad_update.error
+
+
+@pytest.mark.asyncio
+async def test_flash_create_accepts_legacy_tasks_key(env):
+    """flash 入口与 Core 装饰器入口对旧键的处理一致：tasks 回落为 todos。"""
+    from jiuwenswarm.agents.harness.flash.tools.flash_todo import UnifiedTodoTool
+
+    creator, _, session, _ = env
+    tool = UnifiedTodoTool({"create": creator}, "cn")
+    result = await tool.invoke({"action": "create", "tasks": [{"content": "Legacy"}]}, session=session)
+    assert "Successfully created 1 task(s)" in result["message"]
+
+
+@pytest.mark.asyncio
+async def test_flash_create_rejects_both_container_keys(env):
+    """双容器键同传属于歧义输入，flash 入口须拒绝而非静默取其一。"""
+    from jiuwenswarm.agents.harness.flash.tools.flash_todo import UnifiedTodoTool
+
+    creator, _, session, path = env
+    tool = UnifiedTodoTool({"create": creator}, "cn")
+    result = await tool.invoke(
+        {"action": "create", "todos": [{"content": "A"}], "tasks": [{"content": "B"}]},
+        session=session,
+    )
+    assert result.success is False
+    assert "same container" in result.error
+    assert not path.exists()
+    # todos 存在但取值非法时同样算双键歧义，不能静默拿 tasks 落盘。
+    null_todos = await tool.invoke(
+        {"action": "create", "todos": None, "tasks": [{"content": "B"}]},
+        session=session,
+    )
+    assert null_todos.success is False
+    assert "same container" in null_todos.error
+    assert not path.exists()
+
+
+@pytest.mark.asyncio
+async def test_flash_list_normalizes_legacy_tasks_output(env):
+    """旧 Core 的 list 出口是 tasks；flash 必须归一到 todos 再交给模型。"""
+    from jiuwenswarm.agents.harness.flash.tools.flash_todo import UnifiedTodoTool
+
+    class _LegacyList:
+        async def invoke(self, inputs, **kwargs):
+            return {"tasks": [{"id": "A", "content": "old", "status": "pending"}]}
+
+    tool = UnifiedTodoTool({"list": _LegacyList()}, "cn")
+    result = await tool.invoke({"action": "list"}, session=env[2])
+    assert [row["id"] for row in result["todos"]] == ["A"]
+    assert "tasks" not in result
+
+
+@pytest.mark.asyncio
+async def test_code_create_rejects_both_container_keys(env):
+    """Code 侧同样按容器键存在性拒绝歧义输入，避免旧 Core 按旧键落盘。"""
+    from jiuwenswarm.agents.harness.code.tools.code_todo_tools import CodeTodoCreateTool
+
+    _, base, session, path = env
+    create = CodeTodoCreateTool(SimpleNamespace(fs=lambda: base.fs), str(path.parent.parent), agent_id="code")
+    with pytest.raises(Exception, match="same container"):
+        await create.invoke(
+            {"todos": [{"content": "A"}], "tasks": [{"content": "B"}]}, session=session
+        )
+    assert not path.exists()
+
+
+@pytest.mark.asyncio
+async def test_core_create_accepts_legacy_tasks_key(env):
+    """Core 侧兼容分支在 jiuwenswarm 依赖版本上真实生效。"""
+    creator, _, session, _ = env
+    result = await creator.invoke({"tasks": [{"id": "A", "content": "legacy"}]}, session=session)
+    assert "Successfully created 1 task(s)" in result["message"]
 
 
 @pytest.mark.asyncio
@@ -120,18 +237,18 @@ async def test_code_tools_preserve_native_creation_and_incremental_updates(env, 
     listing = CodeTodoListTool(op, workspace, language=language, agent_id="code")
 
     await create.invoke(
-        {"tasks": [{"id": "A", "content": "first"}, {"id": "B", "content": "second"}]}, session=session
+        {"todos": [{"id": "A", "content": "first"}, {"id": "B", "content": "second"}]}, session=session
     )
     await modify.invoke({"action": "update", "todos": [{"id": "A", "status": "completed"}]}, session=session)
     await modify.invoke(
         {"action": "append", "todos": [{"id": "C", "content": "third", "status": "pending"}]}, session=session
     )
-    assert [task["id"] for task in (await listing.invoke({}, session=session))["tasks"]] == ["B", "C"]
+    assert [task["id"] for task in (await listing.invoke({}, session=session))["todos"]] == ["B", "C"]
     assert (await get.invoke({"id": "A"}, session=session))["todo"]["status"] == "completed"
     assert [item["id"] for item in json.loads(path.read_text())["todos"]] == ["A", "B", "C"]
     # Code keeps the prior default: a new turn may replace an active plan.
     create.reset_invoke_marker(session.get_session_id())
-    await create.invoke({"tasks": [{"id": "D", "content": "new plan"}]}, session=session)
+    await create.invoke({"todos": [{"id": "D", "content": "new plan"}]}, session=session)
     assert [item["id"] for item in json.loads(path.read_text())["todos"]] == ["D"]
 
 
@@ -155,7 +272,7 @@ async def test_code_read_tools_preserve_read_only_legacy_backend(env):
     listing = CodeTodoListTool(op, str(path.parent.parent))
     get = CodeTodoGetTool(op, str(path.parent.parent))
 
-    assert (await listing.invoke({}, session=session))["tasks"][0]["id"] == "A"
+    assert (await listing.invoke({}, session=session))["todos"][0]["id"] == "A"
     assert (await get.invoke({"id": "A"}, session=session))["todo"]["id"] == "A"
 
 
@@ -203,9 +320,9 @@ async def test_flash_creation_policy_differs_from_default_creator(env):
     from jiuwenswarm.agents.harness.flash.rails.flash_todo_rail import FlashTodoRail
 
     creator, _, session, path = env
-    await creator.invoke({"tasks": [{"id": "A", "content": "First"}]}, session=session)
+    await creator.invoke(_create_payload([{"id": "A", "content": "First"}]), session=session)
     creator.reset_invoke_marker(session.get_session_id())
-    await creator.invoke({"tasks": [{"id": "B", "content": "Default replacement"}]}, session=session)
+    await creator.invoke(_create_payload([{"id": "B", "content": "Default replacement"}]), session=session)
     assert [item["id"] for item in json.loads(path.read_text())["todos"]] == ["B"]
 
     registered = {}
@@ -222,7 +339,7 @@ async def test_flash_creation_policy_differs_from_default_creator(env):
     before = path.read_bytes()
     with pytest.raises(Exception, match="active plan"):
         await registered["todo"].invoke(
-            {"action": "create", "tasks": [{"id": "C", "content": "Flash replacement"}]}, session=session
+            {"action": "create", "todos": [{"id": "C", "content": "Flash replacement"}]}, session=session
         )
     assert path.read_bytes() == before
 
@@ -251,7 +368,7 @@ async def test_flash_assembly_enforces_lifecycle_on_real_unified_tool(env, has_m
     ctx = SimpleNamespace(extra={}, session=session)
     await rail.before_invoke(ctx)
     tool = registered["todo"]
-    result = await tool.invoke({"action": "create", "tasks": [
+    result = await tool.invoke({"action": "create", "todos": [
         {"id": "A", "content": "Flash"}, {"id": "B", "content": "Keep"},
     ]}, session=session)
     assert json.loads(path.read_text()) == result.todo_snapshot
@@ -270,7 +387,7 @@ async def test_flash_assembly_enforces_lifecycle_on_real_unified_tool(env, has_m
     await rail.before_invoke(ctx)
     before = path.read_bytes()
     with pytest.raises(Exception, match="active plan"):
-        await tool.invoke({"action": "create", "tasks": [{"id": "new", "content": "New"}]}, session=session)
+        await tool.invoke({"action": "create", "todos": [{"id": "new", "content": "New"}]}, session=session)
     assert path.read_bytes() == before
 
     from jiuwenswarm.server.runtime.agent_adapter.interface_flash import (
@@ -289,7 +406,10 @@ async def test_flash_assembly_enforces_lifecycle_on_real_unified_tool(env, has_m
     path.unlink()
     await rail.before_invoke(ctx)
     with pytest.raises(Exception, match="first initialization"):
-        await tool.invoke({"action": "create", "plan_action": "rebuild", "tasks": [{"id": "A", "content": "bad"}]}, session=session)
+        await tool.invoke(
+            {"action": "create", "plan_action": "rebuild", "todos": [{"id": "A", "content": "bad"}]},
+            session=session,
+        )
     assert not path.exists()
 
 
@@ -305,13 +425,13 @@ async def test_unknown_legacy_empty_and_lost_file_share_the_accepted_initializat
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps([{"id": "previous", "content": "Previous"}]))
         path.unlink()
-    result = await creator.invoke({"tasks": [{"id": "A", "content": "New"}]}, session=session)
+    result = await creator.invoke(_create_payload([{"id": "A", "content": "New"}]), session=session)
     assert result.todo_snapshot == json.loads(path.read_text())
     assert json.loads(metadata_path.read_text())["todo_initialized"] is True
     path.unlink()
     creator.reset_invoke_marker("s")
     with pytest.raises(Exception, match="first initialization"):
-        await creator.invoke({"tasks": [{"id": "B", "content": "must not recreate"}]}, session=session)
+        await creator.invoke(_create_payload([{"id": "B", "content": "must not recreate"}]), session=session)
     assert not path.exists()
 
 
@@ -358,7 +478,7 @@ async def test_reminder_create_and_mark_are_one_commit(env, monkeypatch):
 
     monkeypatch.setattr(tool.fs, "write_file", capture)
     result = await tool.invoke(
-        {"tasks": [{"id": "reminder", "content": "明天下午提交报告"}]}, session=session
+        _create_payload([{"id": "reminder", "content": "明天下午提交报告"}]), session=session
     )
     assert len(writes) == 1
     saved = json.loads(path.read_text())
@@ -372,7 +492,7 @@ async def test_reminder_create_and_mark_are_one_commit(env, monkeypatch):
 async def test_pause_isolation_preserves_reminder_without_legacy_cache(env, monkeypatch):
     creator, original, session, path = env
     await creator.invoke(
-        {"tasks": [{"id": "reminder", "content": "remind"}, {"id": "work", "content": "work"}]},
+        _create_payload([{"id": "reminder", "content": "remind"}, {"id": "work", "content": "work"}]),
         session=session,
     )
 
@@ -400,7 +520,7 @@ async def test_pause_isolation_preserves_reminder_without_legacy_cache(env, monk
 async def test_pause_and_concurrent_completion_preserve_new_state(env):
     c, m, session, path = env
     await c.invoke(
-        {"tasks": [{"id": "A", "content": "A"}, {"id": "B", "content": "B"}]},
+        _create_payload([{"id": "A", "content": "A"}, {"id": "B", "content": "B"}]),
         session=session,
     )
     await asyncio.gather(
@@ -416,10 +536,10 @@ async def test_pause_and_concurrent_completion_preserve_new_state(env):
 @pytest.mark.asyncio
 async def test_cancelled_research_cannot_write_back_to_same_plan(env):
     c, m, session, path = env
-    await c.invoke({"tasks": [
+    await c.invoke(_create_payload([
         {"id": f"deepresearch_stage_{i}", "content": title}
         for i, title in enumerate(DEEPRESEARCH_STAGES, 1)
-    ]}, session=session)
+    ]), session=session)
     ready = asyncio.Event()
     captured = []
 
@@ -460,24 +580,28 @@ async def test_recreated_tools_reject_missing_file_even_with_explicit_rebuild(en
     )
 
     c, _, session, path = env
-    result = await c.invoke({"tasks": [{"id": "A", "content": "first"}]}, session=session)
+    result = await c.invoke(_create_payload([{"id": "A", "content": "first"}]), session=session)
     committed = path.read_bytes()
     path.unlink()
     restarted = TodoCreateTool(SimpleNamespace(fs=lambda: c.fs), c.workspace)
     bind_todo_lifecycle(restarted)
     with pytest.raises(Exception, match="first initialization"):
-        await restarted.invoke({"plan_action": "rebuild", "tasks": [{"id": "A", "content": "bad"}]}, session=session)
+        await restarted.invoke(
+            {**_create_payload([{"id": "A", "content": "bad"}]), "plan_action": "rebuild"}, session=session
+        )
     assert not path.exists()
     # Restoring this exact latest authoritative file keeps the version sequence.
     path.write_bytes(committed)
-    after = await restarted.invoke({"plan_action": "rebuild", "tasks": [{"id": "A", "content": "new"}]}, session=session)
+    after = await restarted.invoke(
+        {**_create_payload([{"id": "A", "content": "new"}]), "plan_action": "rebuild"}, session=session
+    )
     assert after.todo_snapshot["revision"] == result.todo_snapshot["revision"] + 1
 
 
 @pytest.mark.asyncio
 async def test_event_uses_its_commit_even_after_another_write(env):
     c, m, session, path = env
-    result = await c.invoke({"tasks": [{"id": "A", "content": "A"}]}, session=session)
+    result = await c.invoke(_create_payload([{"id": "A", "content": "A"}]), session=session)
     await m.invoke(
         {"action": "update", "todos": [{"id": "A", "status": "completed"}]},
         session=session,
@@ -503,7 +627,7 @@ async def test_research_updates_only_captured_plan_existing_stages(env):
         for i, title in enumerate(DEEPRESEARCH_STAGES, 1)
     ]
     tasks.append({"id": "keep", "content": "unrelated"})
-    await c.invoke({"tasks": tasks}, session=session)
+    await c.invoke(_create_payload(tasks), session=session)
     ctx = SimpleNamespace(extra={}, session=session)
     prepare_todo_batch(ctx)
     bind_todo_batch(ctx, m)
@@ -523,7 +647,7 @@ async def test_research_updates_only_captured_plan_existing_stages(env):
         saved["todos"][-1]["id"] == "keep" and saved["todos"][-1]["status"] == "pending"
     )
     c.reset_invoke_marker("s")
-    await c.invoke({"tasks": tasks, "plan_action": "new"}, session=session)
+    await c.invoke({**_create_payload(tasks), "plan_action": "new"}, session=session)
     before = path.read_bytes()
     with pytest.raises(ValueError, match="older plan"):
         await persist_deepresearch_task_update(payload, todo_path=path, target=target)
@@ -540,7 +664,7 @@ async def test_auto_advance_uses_latest_plan_and_refuses_old_work(env):
 
     c, m, session, path = env
     await c.invoke(
-        {"tasks": [{"id": "A", "content": "A"}, {"id": "B", "content": "B"}]},
+        _create_payload([{"id": "A", "content": "A"}, {"id": "B", "content": "B"}]),
         session=session,
     )
     await m.invoke(
@@ -573,8 +697,8 @@ async def test_auto_advance_uses_latest_plan_and_refuses_old_work(env):
     c.reset_invoke_marker("s")
     await c.invoke(
         {
+            **_create_payload([{"id": "A", "content": "New"}, {"id": "B", "content": "New B"}]),
             "plan_action": "new",
-            "tasks": [{"id": "A", "content": "New"}, {"id": "B", "content": "New B"}],
         },
         session=session,
     )
@@ -593,7 +717,7 @@ async def test_flash_unified_update_errors_preserve_file_and_allow_valid_batch(e
     creator, modifier, session, path = env
     listing = TodoListTool(SimpleNamespace(fs=lambda: modifier.fs), creator.workspace)
     unified = UnifiedTodoTool({"create": creator, "modify": modifier, "list": listing}, "cn")
-    await unified.invoke({"action": "create", "tasks": [
+    await unified.invoke({"action": "create", "todos": [
         {"id": "env", "content": "Prepare"}, {"id": "build", "content": "Build"},
     ]}, session=session)
     before = path.read_bytes()
