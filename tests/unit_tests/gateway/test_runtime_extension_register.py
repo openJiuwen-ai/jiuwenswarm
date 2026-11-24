@@ -105,6 +105,25 @@ def test_identity_headers_forward_cron_targets() -> None:
     assert headers["X-Cron-Targets"] == "web"
 
 
+def test_identity_headers_forward_cron_meta() -> None:
+    envelope = E2AEnvelope(
+        request_id="req-cron",
+        channel="web",
+        session_id="web_cron_sess",
+        user_id="user-1",
+        channel_context={
+            "routing": {"group_id": "g1", "bot_id": "b1"},
+            "targets": "web",
+            "cron": {"job_id": "job-1", "run_id": "job-1:1", "timezone": "Asia/Shanghai"},
+        },
+    )
+    headers = identity_headers(envelope, accept="application/json")
+    assert headers["X-Cron-Targets"] == "web"
+    assert headers["X-Cron-Meta"] == (
+        '{"job_id":"job-1","run_id":"job-1:1","timezone":"Asia/Shanghai"}'
+    )
+
+
 def _http_request(headers: dict[str, str]) -> Request:
     raw = [
         (key.lower().encode("latin-1"), value.encode("latin-1"))
@@ -140,3 +159,25 @@ def test_rebuild_identity_restores_cron_targets_metadata() -> None:
     assert _user_id == "user-1"
     assert metadata is not None
     assert metadata["targets"] == "web"
+
+
+def test_rebuild_identity_restores_cron_meta_like_websocket() -> None:
+    """HTTP rebuild must yield the same metadata['cron'] WebSocket would keep."""
+    _user_id, metadata = _rebuild_identity_from_headers(
+        _http_request(
+            {
+                "X-User-Id": "user-1",
+                "X-Channel-Id": "web",
+                "X-Cron-Targets": "web",
+                "X-Cron-Meta": '{"job_id":"job-1","run_id":"job-1:1","timezone":"Asia/Shanghai"}',
+            }
+        )
+    )
+    assert _user_id == "user-1"
+    assert metadata is not None
+    assert metadata["targets"] == "web"
+    assert metadata["cron"] == {
+        "job_id": "job-1",
+        "run_id": "job-1:1",
+        "timezone": "Asia/Shanghai",
+    }
