@@ -31,6 +31,7 @@ interface Window {
   __JIUWEN_LOGIN_ENTRY_URL__?: string;
   __JIUWEN_WEB_TRANSPORT__?: string;
   __JIUWENSWARM_EDITION__?: string;
+  __WORKSPACE_QUOTA_ENABLED__?: string;
   /** Set by desktop_app.py after the webview page loads. */
   __JIUWEN_DESKTOP__?: boolean;
   /** Set by desktop_app.py when OS file-drag accept handlers are injected. */

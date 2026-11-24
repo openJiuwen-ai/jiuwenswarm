@@ -469,6 +469,9 @@ def _runtime_web_transport() -> str:
 
 def _inject_user_web_runtime_config(document: str) -> str:
     from jiuwenswarm.enterprise import is_enterprise
+    from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+        is_workspace_quota_enabled,
+    )
 
     edition = "enterprise" if is_enterprise() else "personal"
     login_auth_simulate = (os.getenv("LOGIN_AUTH_SIMULATE") or "").strip().lower() or "true"
@@ -479,6 +482,10 @@ def _inject_user_web_runtime_config(document: str) -> str:
         .replace("__JIUWEN_WEB_TRANSPORT_VALUE__", _runtime_web_transport())
         .replace("__JIUWEN_LOGIN_AUTH_SIMULATE_VALUE__", login_auth_simulate)
         .replace("__JIUWEN_IFRAME_HOST_ISOLATION_VALUE__", str(edition == "personal").lower())
+        .replace(
+            "__WORKSPACE_QUOTA_ENABLED_VALUE__",
+            "true" if is_workspace_quota_enabled() else "false",
+        )
     )
 
 

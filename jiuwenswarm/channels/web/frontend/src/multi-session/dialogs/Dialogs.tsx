@@ -44,6 +44,112 @@ function DialogActions({ busy, danger = false, confirmLabel, onCancel, onConfirm
   );
 }
 
+
+interface NoticeDialogProps {
+  title: string;
+  message?: string;
+  /** 使用 Trans 渲染文案（如配额满：空间 / 申请扩容可点击）。 */
+  messageKey?: string;
+  confirmLabel?: string;
+  /** 次要/确定按钮旁的主操作（如「申请扩容」）。 */
+  actionLabel?: string;
+  onAction?: () => void;
+  onNavigateSpace?: () => void;
+  onRequestExpand?: () => void;
+  onClose: () => void;
+}
+
+/** 提示框（配额已满等），样式与 DeleteDialog 同壳；配额场景带超链接与「申请扩容」按钮。 */
+export function NoticeDialog({
+  title,
+  message,
+  messageKey,
+  confirmLabel,
+  actionLabel,
+  onAction,
+  onNavigateSpace,
+  onRequestExpand,
+  onClose,
+}: NoticeDialogProps) {
+  const { t } = useTranslation();
+  const showExpandAction = Boolean(actionLabel && onAction);
+  return (
+    <div
+      className="conversation-dialog"
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      data-testid="multi-session-notice-dialog"
+    >
+      <button
+        type="button"
+        className="conversation-dialog__backdrop"
+        onClick={onClose}
+        aria-label={t('common.cancel')}
+        data-testid="multi-session-notice-dialog-backdrop"
+      />
+      <div className="conversation-dialog__panel" data-testid="multi-session-notice-dialog-panel">
+        <button
+          type="button"
+          className="conversation-dialog__close"
+          onClick={onClose}
+          aria-label={t('common.close')}
+          data-testid="multi-session-notice-dialog-close"
+        >
+          <X size={20} />
+        </button>
+        <h2 data-testid="multi-session-notice-dialog-title">{title}</h2>
+        {messageKey ? (
+          <p data-testid="multi-session-notice-dialog-message">
+            <Trans
+              i18nKey={messageKey}
+              components={{
+                space: (
+                  <button
+                    type="button"
+                    className="conversation-dialog__link"
+                    onClick={onNavigateSpace}
+                    data-testid="multi-session-notice-dialog-space-link"
+                  />
+                ),
+                expand: (
+                  <button
+                    type="button"
+                    className="conversation-dialog__link"
+                    onClick={onRequestExpand ?? onAction}
+                    data-testid="multi-session-notice-dialog-expand-link"
+                  />
+                ),
+              }}
+            />
+          </p>
+        ) : message ? (
+          <p data-testid="multi-session-notice-dialog-message">{message}</p>
+        ) : null}
+        <div className="conversation-dialog__actions" data-testid="multi-session-notice-dialog-actions">
+          {showExpandAction ? (
+            <button
+              type="button"
+              onClick={onClose}
+              data-testid="multi-session-notice-dialog-dismiss"
+            >
+              {confirmLabel || t('common.ok')}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            className="is-primary"
+            onClick={showExpandAction ? onAction : onClose}
+            data-testid="multi-session-notice-dialog-confirm"
+          >
+            {showExpandAction ? actionLabel : (confirmLabel || t('common.ok'))}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function DeleteDialog({
   title,
   dialogTitle,

@@ -125,6 +125,14 @@
       "copy": "复制",
       "paste": "粘贴",
       "selectAll": "全选"
+    },
+    "pagination": {
+      "total": "共 {{count}} 个",
+      "prev": "上一页",
+      "next": "下一页",
+      "pageSize": "每页",
+      "jumpTo": "跳至",
+      "go": "确定"
     }
   },
   "a2ui": {
@@ -163,7 +171,9 @@
     "logs": "日志",
     "update": "更新",
     "personalContext": "知识",
-    "appMarket": "应用"
+    "appMarket": "应用",
+    "workspace": "空间",
+    "approvals": "申请"
   },
   "appMarket": {
     "resourceMemory": "内存",
@@ -4670,10 +4680,10 @@
     }
   },
   "agent": {
-    "title": "智能体管理",
-    "subtitle": "查看智能体工作区文件与记忆内容",
+    "title": "工作空间管理",
+    "subtitle": "查看用量、清理可删文件，并预览或下载工作空间内容",
     "root": "根目录",
-    "workspace": "工作区",
+    "workspace": "工作空间",
     "workspaceMeta": "{{directories}} 个目录，{{files}} 个文件",
     "directoryCount": "{{count}} 个目录",
     "fileCount": "{{count}} 个文件",
@@ -4687,8 +4697,69 @@
     "markdownOnly": "仅支持 Markdown/JSON（.md/.mdx/.json）预览",
     "errors": {
       "refreshFailed": "刷新失败：无法重建 agent 文件索引，请检查生成脚本日志。",
-      "loadFailed": "无法读取 agent 文件列表，请检查 agent/workspace/agent-data.json 是否已生成。"
-    }
+      "loadFailed": "无法读取 agent 文件列表，请检查 agent/workspace/agent-data.json 是否已生成。",
+      "deleteFailed": "删除失败",
+      "downloadFailed": "下载失败"
+    },
+    "binaryPreview": "二进制文件不展示正文，请使用下载。",
+    "confirmDelete": "确认删除「{{name}}」？此操作不可恢复。",
+    "deletable": "可删",
+    "delete": "删除",
+    "deleteConfirmTitle": "删除确认",
+    "dirSelectedHint": "已选中目录。可下载为 zip，或在可删时删除整棵子树。",
+    "download": "下载",
+    "emptyDeletable": "暂无可删除内容（清理区为空）",
+    "filterDeletable": "仅可删除",
+    "meta": {
+      "zone": "分区",
+      "size": "大小",
+      "mtime": "修改时间",
+      "deletable": "可删除"
+    },
+    "notDeletableReason": "该 zone 受保护，不可删除",
+    "previewEmpty": "暂无预览内容",
+    "previewTruncated": "内容已截断，完整文件请下载。",
+    "quota": {
+      "title": "工作空间用量",
+      "ok": "正常",
+      "warn": "接近上限",
+      "block": "已满额",
+      "unlimited": "无限制",
+      "unavailable": "暂无法读取用量",
+      "requestExpand": "申请扩容",
+      "expandHint": "向管理面提交扩容申请",
+      "expandIdleHint": "用量正常时无需扩容",
+      "expandUnlimitedHint": "当前为无限制配额，无需扩容",
+      "expandSoon": "扩容申请将对接管理面审批（即将上线）。当前请先清理可删文件，或联系管理员调整配额。",
+      "expandTitle": "申请工作区扩容",
+      "expandDialogHint": "请填写目标配额（GiB）与申请说明。审批通过后配额才会生效。",
+      "expandLimitLabel": "目标配额（GiB）",
+      "expandReasonLabel": "申请说明",
+      "expandApproverLabel": "审批人",
+      "expandApproverPlaceholder": "请选择审批人",
+      "expandApproverSearch": "搜索用户 ID 或显示名",
+      "expandApproverNoMatch": "没有匹配的审批人",
+      "expandApproverRequired": "请选择审批人",
+      "expandApproverEmpty": "暂无可选审批人，请联系管理员配置审批权限",
+      "expandApproverLoadFailed": "加载审批人列表失败",
+      "expandSubmit": "提交申请",
+      "expandInvalidLimit": "请输入有效的目标配额（GiB）",
+      "expandReasonRequired": "请填写申请说明",
+      "expandMustIncrease": "目标配额必须大于当前生效配额",
+      "expandFailed": "提交扩容申请失败",
+      "expandSubmittedTitle": "申请已提交",
+      "expandSubmittedBody": "扩容申请已提交，审批通过后配额将自动生效。可在<approvals>我的申请</approvals>查看进度。",
+      "expandViewApprovals": "查看我的申请",
+      "expandSubmitted": "扩容申请已提交。审批通过后配额将自动生效，可在侧栏「我的申请」查看进度。",
+      "expandContextRequired": "请先选择 Agent 上下文（集群与 Bot）后再申请扩容",
+      "openWorkspace": "打开工作空间",
+      "chatWarnTitle": "工作空间即将用尽",
+      "chatWarnBody": "已超过 80% 配额，建议清理会话产物或申请扩容。",
+      "chatBlockTitle": "工作空间已满，无法继续写入",
+      "chatBlockBody": "已用尽配额。请清理可删文件或申请扩容后再发送消息。"
+    },
+    "selectEntry": "选择左侧文件或目录查看元信息",
+    "selectEntryHint": "点击左侧条目查看路径、zone、大小等信息；文件可预览与下载"
   },
   "agentManagement": {
     "title": "专家管理",
@@ -5766,7 +5837,9 @@
     "errors": {
       "delete": "删除对话失败",
       "create": "创建对话失败",
-      "send": "发送消息失败"
+      "send": "发送消息失败",
+      "quotaExceededTitle": "工作空间已满",
+      "quotaExceeded": "无法创建新对话。请先到「<space>空间</space>」清理可删除文件，或<expand>申请扩容</expand>后再试。"
     }
   },
   "subagent": {
@@ -8067,5 +8140,62 @@
   },
   "workspace": {
     "selectFilesUnavailable": "后端未注册 path.select_files，请重启 jiuwenswarm-start 后再试"
+  },
+  "approvals": {
+    "myTitle": "我的申请",
+    "mySubtitle": "查看并管理本人提交的审批单",
+    "unavailable": "当前环境无法查看申请记录",
+    "empty": "暂无申请记录",
+    "loadFailed": "加载申请列表失败",
+    "cancelFailed": "撤回申请失败",
+    "cancel": "撤回",
+    "resubmit": "编辑并重新提交",
+    "resubmitTitle": "重新提交申请",
+    "resubmitHint": "修改后重新提交，将更新同一张申请单。",
+    "resubmitSubmit": "重新提交",
+    "resubmitFailed": "重新提交失败",
+    "rejectComment": "驳回意见",
+    "currentQuota": "当前配额",
+    "approvers": "当前审批人",
+    "copyLink": "复制审批链接",
+    "copyLinkSuccess": "审批链接已复制",
+    "copyLinkFailed": "复制审批链接失败",
+    "copyOrderNum": "点击复制单号",
+    "copyOrderNumSuccess": "单号已复制",
+    "copyOrderNumFailed": "复制单号失败",
+    "stats": {
+      "total": "申请总数 {{count}}"
+    },
+    "search": {
+      "placeholder": "搜索单号、标题或申请说明",
+      "noResults": "没有符合条件的申请"
+    },
+    "filter": {
+      "reset": "清除筛选"
+    },
+    "table": {
+      "title": "标题",
+      "orderNum": "单号",
+      "type": "类型",
+      "summary": "摘要",
+      "requestedQuota": "申请配额",
+      "approver": "当前审批人",
+      "reason": "申请说明",
+      "status": "状态",
+      "createdAt": "提交时间",
+      "actions": "操作"
+    },
+    "status": {
+      "pending": "审批中",
+      "approved": "已通过",
+      "rejected": "已驳回",
+      "cancelled": "已撤回"
+    },
+    "business": {
+      "workspace_quota_expand": "工作区扩容"
+    },
+    "summary": {
+      "quotaExpand": "申请配额 {{size}}"
+    }
   }
 }
