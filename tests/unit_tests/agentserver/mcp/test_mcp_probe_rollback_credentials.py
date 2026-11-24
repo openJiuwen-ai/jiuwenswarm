@@ -372,3 +372,111 @@ async def test_host_oauth_network_probe_failure_keeps_oauth_tokens(
     assert recorder.calls == [("canva", False)]
     assert cred_file.is_file()  # OAuth token survives
     assert "unreachable" in result["error"]  # honest error, not "rejected"
+
+
+@pytest.mark.asyncio
+async def test_persist_and_probe_rejects_credentials_on_auth_rejection() -> None:
+    """Both ``_persist_and_probe_mcp`` copies (command.mcp add/update path) must
+    classify a 401 probe failure as a credential rejection: wipe_credentials=True
+    and MCP_CREDENTIALS_INVALID on the wire — the classification agent that
+    wipes the just-saved token so the next add re-prompts."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer, McpUpsertTypes
+    from jiuwenswarm.server.handlers import mcp as mcp_handler
+
+    class _Manager:
+        async def probe_mcp_live_connection(self, name: str):
+            return False, "auth rejected (HTTP 401)"
+
+    recorder = _RollbackRecorder()
+    request = SimpleNamespace(
+        request_id="req-jw79-auth", channel_id="tui",
+    )
+    payload = {"name": "demo", "transport": "stdio", "command": "python", "args": []}
+    types = McpUpsertTypes(ok="added", fail="add_failed")
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._agent_manager = _Manager()
+    with (
+        patch("jiuwenswarm.server.agent_ws_server.upsert_mcp_server", lambda p, **kw: None),
+        patch(
+            "jiuwenswarm.server.agent_ws_server.get_config_yaml_mcp_servers",
+            return_value=[],
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.mcp.registry.rollback_failed_connect",
+            new=recorder,
+        ),
+    ):
+        resp = await AgentWebSocketServer._persist_and_probe_mcp(
+            server, request, payload, None, types,
+        )
+    assert resp.ok is False
+    assert resp.payload["type"] == "add_failed"
+    assert resp.payload["code"] == "MCP_CREDENTIALS_INVALID"
+    assert recorder.calls == [("demo", True)]
+
+    # The handlers/mcp.py copy must behave identically (dual implementations,
+    # both must classify — one regression pin per copy).
+    hub_recorder = _RollbackRecorder()
+    services = SimpleNamespace(agent_manager=_Manager())
+    with (
+        patch("jiuwenswarm.server.handlers.mcp.upsert_mcp_server", lambda p, **kw: None),
+        patch(
+            "jiuwenswarm.server.handlers.mcp.get_config_yaml_mcp_servers",
+            return_value=[],
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.mcp.registry.rollback_failed_connect",
+            new=hub_recorder,
+        ),
+    ):
+        resp2 = await mcp_handler._persist_and_probe_mcp(
+            services, request, payload, None, types,
+        )
+    assert resp2.ok is False
+    assert resp2.payload["type"] == "add_failed"
+    assert resp2.payload["code"] == "MCP_CREDENTIALS_INVALID"
+    assert hub_recorder.calls == [("demo", True)]
+
+
+@pytest.mark.asyncio
+async def test_persist_and_probe_network_failure_keeps_credentials() -> None:
+    """Network-class probe failure on the command.mcp add path keeps the stored
+    tokens (wipe_credentials=False) and reports MCP_UNREACHABLE — the exact
+    scenario-A reproduction from the defect report."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer, McpUpsertTypes
+
+    class _Manager:
+        async def probe_mcp_live_connection(self, name: str):
+            return False, "unreachable: ConnectError: connection refused"
+
+    recorder = _RollbackRecorder()
+    request = SimpleNamespace(request_id="req-jw79-net", channel_id="tui")
+    payload = {"name": "demo", "transport": "stdio", "command": "python", "args": []}
+    types = McpUpsertTypes(ok="added", fail="add_failed")
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._agent_manager = _Manager()
+    with (
+        patch("jiuwenswarm.server.agent_ws_server.upsert_mcp_server", lambda p, **kw: None),
+        patch(
+            "jiuwenswarm.server.agent_ws_server.get_config_yaml_mcp_servers",
+            return_value=[],
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.mcp.registry.rollback_failed_connect",
+            new=recorder,
+        ),
+    ):
+        resp = await AgentWebSocketServer._persist_and_probe_mcp(
+            server, request, payload, None, types,
+        )
+    assert resp.ok is False
+    assert resp.payload["code"] == "MCP_UNREACHABLE"
+    assert recorder.calls == [("demo", False)]
