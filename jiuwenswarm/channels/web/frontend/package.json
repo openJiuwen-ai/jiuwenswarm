@@ -217,6 +217,7 @@
     "test:appearance-preferences": "node --test tests/appearancePreferences.test.mjs",
     "test:model-presentation": "node --test tests/modelPresentation.test.mjs",
     "test:settings-channel-icons": "node --test tests/settingsChannelIcons.test.mjs",
+    "test:channels-error-feedback": "node scripts/test-channels-error-feedback.mjs",
     "test:prompt-suggestion-box": "npm run test:recommendation",
     "test:a2ui-feature-config": "esbuild src/features/a2ui/featureConfig.ts src/features/a2ui/A2UIMessageContent.tsx --bundle --splitting --packages=external --platform=node --format=esm --outdir=node_modules/.cache/a2ui-feature-config --loader:.svg=dataurl --loader:.png=dataurl --define:import.meta.env.DEV=false && node --test tests/a2uiFeatureConfig.test.mjs",
     "test:upload-document-block": "tsc src/utils/documentMessage.ts --target ES2020 --module ES2020 --moduleResolution Bundler --rootDir src --outDir node_modules/.cache/upload-document-block --skipLibCheck --noEmitOnError && node --test tests/uploadDocumentBlock.test.mjs",

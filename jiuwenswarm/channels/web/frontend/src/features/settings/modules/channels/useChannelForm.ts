@@ -117,12 +117,6 @@ export function useChannelForm<TValues extends FormValues>({
     setSuccess(null);
   }, [formState.hasUnsavedChanges]);
 
-  useEffect(() => {
-    if (!error) return;
-    const timer = window.setTimeout(() => setError(null), 2000);
-    return () => window.clearTimeout(timer);
-  }, [error]);
-
   return {
     form,
     loading,
