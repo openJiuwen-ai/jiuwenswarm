@@ -1973,6 +1973,11 @@ def _with_general_purpose_max_iterations(
             changed = True
         else:
             patched.append(spec)
+    logger.debug(
+        "[JiuWenSwarmDeepAdapter] general-purpose max_iterations=%s resolved from react config (patched=%s)",
+        max_iterations,
+        changed,
+    )
     return patched if changed else subagents
 
 
@@ -2243,7 +2248,12 @@ def _build_deep_agent_context_engine_config(
             model_context_windows[selected_model_name] = selected_model_context_window
         supported["model_context_window_tokens"] = model_context_windows
 
-    return ContextEngineConfig.model_validate({**defaults.model_dump(), **supported})
+    built = ContextEngineConfig.model_validate({**defaults.model_dump(), **supported})
+    logger.debug(
+        "[JiuWenSwarmDeepAdapter] effective context_engine_config: %s",
+        built.model_dump(),
+    )
+    return built
 
 
 def _deep_agent_context_engine_config(
@@ -2341,7 +2351,22 @@ def _build_context_processor_rail(config: dict[str, Any]) -> ContextProcessorRai
         if isinstance(round_level_cfg, dict) and round_level_cfg:
             user_processors.append(("RoundLevelCompressor", round_level_cfg))
 
-        user_processors.append(symphony_retrieval_compact_processor_spec())
+        symphony_retrieval_spec = symphony_retrieval_compact_processor_spec()
+        user_processors.append(symphony_retrieval_spec)
+
+        logger.debug(
+            "[JiuWenSwarmDeepAdapter] context processor configs: session_memory=%s "
+            "message_summary_offloader=%s session_memory_compressor=%s "
+            "dialogue_compressor=%s current_round_compressor=%s "
+            "round_level_compressor=%s symphony_retrieval=%s",
+            session_memory_cfg,
+            offloader_cfg,
+            session_memory_compressor_cfg,
+            compressor_cfg,
+            current_round_cfg,
+            round_level_cfg,
+            symphony_retrieval_spec,
+        )
 
         context_rail = ContextProcessorRail(
             processors=user_processors if user_processors else None,
@@ -6163,7 +6188,9 @@ class JiuWenSwarmDeepAdapter:
 
     def _resolve_runtime_language(self) -> str:
         """Resolve normalized runtime language shared by rails and tools."""
-        return resolve_language(self._resolve_prompt_language())
+        from jiuwenswarm.common.i18n import to_runtime_language
+
+        return resolve_language(to_runtime_language(self._resolve_prompt_language()))
 
     def _resolve_model_name(self) -> str:
         """Resolve current model name from model request config."""
@@ -6901,6 +6928,17 @@ class JiuWenSwarmDeepAdapter:
                 exc_info=True,
             )
 
+        logger.debug(
+            "[JiuWenSwarmDeepAdapter] react.subagents resolved specs=%s general_purpose=%s",
+            [
+                {
+                    "name": getattr(getattr(spec, "agent_card", None), "name", None),
+                    "max_iterations": getattr(spec, "max_iterations", None),
+                }
+                for spec in subagents
+            ],
+            should_add_general_purpose,
+        )
         return subagents or None, should_add_general_purpose
 
     @staticmethod
@@ -10785,6 +10823,17 @@ class JiuWenSwarmDeepAdapter:
         sys_operation = self._resolve_sys_operation()
         if sys_operation is not None:
             self._retain_sys_operation(str(sys_operation.id))
+            try:
+                from jiuwenswarm.enterprise.capabilities.workspace.fs_quota_guard import (
+                    install_write_quota_guard,
+                )
+
+                install_write_quota_guard(sys_operation)
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] install write quota guard failed",
+                    exc_info=True,
+                )
         self._release_sys_operations(previously_retained)
         return sys_operation
 
@@ -12127,11 +12176,12 @@ class JiuWenSwarmDeepAdapter:
         enable_runtime = self._resolve_enable_subagent_runtime(config_base)
         try:
             subagents_cfg = ((config_base or {}).get("react") or {}).get("subagents")
+            cua_agent_enabled = is_cua_agent_enabled(
+                subagents_cfg.get("cua_agent") if isinstance(subagents_cfg, dict) else None
+            )
             subagent_rail = BrowserTaskPromptRail(
                 enable_subagent_runtime=enable_runtime,
-                cua_agent_enabled=is_cua_agent_enabled(
-                    subagents_cfg.get("cua_agent") if isinstance(subagents_cfg, dict) else None
-                ),
+                cua_agent_enabled=cua_agent_enabled,
                 symphony_tasks_enabled=(
                     None if is_team_mode(getattr(self, "_session_instance_mode", "agent"))
                     else lambda: SymphonyToolkit.is_enabled(getattr(self, "_config_base_cache", None) or config_base)
@@ -12139,8 +12189,9 @@ class JiuWenSwarmDeepAdapter:
             )
             logger.info(
                 "[JiuWenSwarmDeepAdapter] SubagentRail create success "
-                "(load-aware browser policy, subagent_runtime=%s)",
+                "(load-aware browser policy, subagent_runtime=%s cua_agent_enabled=%s)",
                 enable_runtime,
+                cua_agent_enabled,
             )
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] SubagentRail create failed: %s", exc)
@@ -12450,7 +12501,11 @@ class JiuWenSwarmDeepAdapter:
     def _get_memory_workspace(
         self, language: str | None = None, *, config: dict[str, Any] | None = None,
     ) -> Workspace:
-        resolved_language = language or getattr(self, "_resolved_language", None) or "zh"
+        resolved_language = (
+            language
+            or getattr(self, "_resolved_language", None)
+            or self._resolve_runtime_language()
+        )
         workspace = Workspace(root_path=self._workspace_dir or "./", language=resolved_language)
         effective_config = config if config is not None else getattr(self, "_config_base_cache", None)
         if is_jiuwen_builtin_memory(effective_config):
@@ -12633,6 +12688,7 @@ class JiuWenSwarmDeepAdapter:
                 repeat_window_chars=retry_cfg.get("repeat_window_chars", 1024),
                 single_char_repeat_count=retry_cfg.get("single_char_repeat_count", 100),
                 tool_loop_compact=retry_cfg.get("tool_loop_compact"),
+                transient_max_retries=retry_cfg.get("transient_max_retries", 3),
             )
             logger.info("[JiuWenSwarmDeepAdapter] ModelAnomalyDetectionRail create success")
             return rail
@@ -16204,6 +16260,7 @@ class JiuWenSwarmDeepAdapter:
                 getattr(existing, "name", "").startswith("send_file_to_user")
                 for existing in (self._instance.ability_manager.list() or [])
             )
+            send_file_language = self._resolve_prompt_language()
             if not already_registered:
                 self._send_file_toolkit = SendFileToolkit(
                     request_id=request_id,
@@ -16213,6 +16270,7 @@ class JiuWenSwarmDeepAdapter:
                     user_id=_CRON_TOOL_USER_ID.get(),
                     project_dir=self._project_dir,
                     require_execution_authorization=require_send_authorization,
+                    language=send_file_language,
                 )
                 for sf_tool in self._send_file_toolkit.get_tools():
                     self._register_agent_owned_tool(sf_tool, self._tool_owner_id())

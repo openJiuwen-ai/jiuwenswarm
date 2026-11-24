@@ -66,9 +66,11 @@ class HubPackageDownloader:
         max_single_file_bytes: int | None = None,
         max_file_count: int | None = None,
         verify_archive_crc: bool = True,
+        verify: bool = True,
     ) -> None:
         self._fetch_bytes = fetch_bytes or self._http_fetch_bytes
         self.timeout = max(1.0, float(timeout))
+        self.verify = verify
         self.max_download_bytes = max_download_bytes or _MAX_DOWNLOAD_BYTES
         self.max_total_uncompressed_bytes = (
             max_total_uncompressed_bytes or _MAX_TOTAL_UNCOMPRESSED_BYTES
@@ -88,7 +90,7 @@ class HubPackageDownloader:
     async def _http_fetch_bytes(self, url: str) -> bytes:
         try:
             async with httpx.AsyncClient(
-                timeout=self.timeout, follow_redirects=False
+                timeout=self.timeout, follow_redirects=False, verify=self.verify
             ) as client:
                 async with client.stream("GET", url) as response:
                     response.raise_for_status()

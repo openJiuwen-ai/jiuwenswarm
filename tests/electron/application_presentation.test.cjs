@@ -67,6 +67,28 @@ function fixture(readyTimeoutMs = 1000, ownerUrl = 'http://127.0.0.1:5173/chat/s
   return { controller, owner, windows, invoke, config, handlers, screen };
 }
 
+test('the native host rejects in-app declarations without hiding or replacing the workspace', async () => {
+  const f = fixture();
+  await assert.rejects(f.invoke('open', f.owner, { ...f.config, mode: 'overlay' }), /Invalid application presentation/);
+  assert.equal(f.owner.visible, true);
+  assert.equal(f.windows.length, 1);
+  f.controller.dispose();
+});
+
+test('the native host accepts an explicit desktop mode and closes idempotently', async () => {
+  const f = fixture();
+  try {
+    const pending = f.invoke('open', f.owner, { ...f.config, mode: 'desktop' });
+    const floating = f.windows[1];
+    await f.invoke('bootstrap', floating);
+    await f.invoke('ready', floating);
+    assert.equal(typeof (await pending).generation, 'string');
+    assert.equal(f.owner.visible, false);
+    assert.equal(await f.invoke('close', f.owner, f.config.key), true);
+    assert.equal(await f.invoke('close', f.owner, f.config.key), false);
+  } finally { f.controller.dispose(); }
+});
+
 test('the workspace stays visible until the plugin confirms readiness; closing restores it', async () => {
   const f = fixture();
   const pending = f.invoke('open', f.owner, f.config);

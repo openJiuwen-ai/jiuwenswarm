@@ -329,6 +329,38 @@ test('install directory prompt remains usable after opening a market detail', as
 
 const response = (method, instances = []) => (method === 'app_market.list' ? { apps: [app] } : { instances });
 
+test('installed app details load AI role cards and show the session policy', async () => {
+  const ctx = await mount((method) => {
+    if (method !== 'app_market.ai_roles') return response(method);
+    return { session_groups: [{
+      id: 'council', mode: 'team', leader: 'mayor', session_description: 'New team for each game.',
+      roles: [
+        { id: 'mayor', name: 'Mayor', description: 'Leads the council', avatar_url: 'data:image/gif;base64,R0lGODlh' },
+        { id: 'doctor', name: 'Doctor', description: 'Advises the council' },
+      ],
+    }] };
+  });
+  try {
+    assert.equal(ctx.calls.some(({ method }) => method === 'app_market.ai_roles'), false);
+    await click(card('gomoku'));
+    assert.deepEqual(ctx.calls.filter(({ method }) => method === 'app_market.ai_roles'), [
+      { method: 'app_market.ai_roles', params: { app_id: 'gomoku' } },
+    ]);
+    const section = find('app-market-ai-roles');
+    assert.match(section.textContent, /AI Roles.*Team session.*New team for each game\./s);
+    const cards = section.querySelectorAll('[data-testid="app-market-ai-role-card"]');
+    assert.equal(cards.length, 2);
+    assert.match(cards[0].textContent, /Mayor.*Leader.*Leads the council/s);
+    assert.ok(cards[0].querySelector('img[src^="data:image/gif"]'));
+    assert.match(cards[1].textContent, /Doctor.*Advises the council/s);
+    assert.equal(cards[1].querySelector('img'), null);
+    await click(find('app-market-detail-back'));
+    assert.equal(find('app-market-ai-roles'), null);
+  } finally {
+    await ctx.close();
+  }
+});
+
 test('uninstall leaves app details and reports incomplete local cleanup', async () => {
   const directory = '/workspace/apps/gomoku';
   const ctx = await mount(method => {
@@ -533,7 +565,7 @@ for (const action of ['stop', 'delete']) {
       const requests = ctx.calls.filter(({ method }) => ['app_market.stop', 'app_market.delete'].includes(method));
       assert.deepEqual(requests, [{
         method: `app_market.${action}`,
-        params: action === 'stop' ? { instance_id: 'second-active' } : { app_id: 'second' },
+        params: action === 'stop' ? { instance_id: 'second-active' } : { app_id: 'second', remove_files: true },
       }]);
       assert.equal(instances.some(item => item.instance_id === running.instance_id), true);
     } finally {
@@ -554,7 +586,7 @@ test('application cards reuse market layout and display metadata with an accessi
     assert.match(document.body.textContent, /Play five in a row/);
     assert.equal(find('app-market-card-avatar').getAttribute('src'), '/gomoku.png');
     assert.equal(find('app-market-status'), null);
-    assert.equal(await menuText('app-market-delete'), 'Delete');
+    assert.equal(await menuText('app-market-delete'), 'Delete and clean files');
     assert.equal(find('app-market-status-text'), null);
     assert.ok(find('app-market-pane-hint'));
   } finally {
@@ -1086,10 +1118,44 @@ test('delete keeps app details on cancellation and returns to the list on succes
     assert.equal(find('app-market-detail-page'), null);
     assert.ok(find('categoryTabs'));
     assert.equal(find('app-market-card'), null);
+    assert.deepEqual(ctx.calls.find(call => call.method === 'app_market.delete')?.params, {
+      app_id: 'gomoku', remove_files: true,
+    });
     const notice = actionNotice();
-    assert.equal(notice.textContent, i18next.t('appMarket.deleteSuccess'));
+    assert.equal(notice.textContent, i18next.t('appMarket.deleteCleanSuccess'));
     assert.equal(notice.parentElement, find('ui-toast-stack-right'));
     assert.equal(find('app-market-list').contains(notice), false);
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('remove keeps app files and unregisters without cleanup', async () => {
+  const ctx = await mount((method) => response(method));
+  try {
+    await menuClick('app-market-remove');
+    assert.deepEqual(ctx.calls.find(call => call.method === 'app_market.delete')?.params, {
+      app_id: 'gomoku', remove_files: false,
+    });
+    assert.equal(find('app-market-card'), null);
+    assert.equal(actionNotice().textContent, i18next.t('appMarket.removeKeepSuccess'));
+  } finally {
+    await ctx.close();
+  }
+});
+
+test('remove for a Hub app uninstalls but keeps files', async () => {
+  const ctx = await mount((method) => {
+    if (method === 'app_market.list') return { apps: [{ ...app, source: 'hub' }] };
+    return response(method);
+  });
+  try {
+    await menuClick('app-market-remove');
+    assert.deepEqual(ctx.calls.find(call => call.method === 'app_market.uninstall')?.params, {
+      app_id: 'gomoku', remove_files: false,
+    });
+    assert.equal(find('app-market-card'), null);
+    assert.equal(actionNotice().textContent, i18next.t('appMarket.removeKeepSuccess'));
   } finally {
     await ctx.close();
   }

@@ -72,6 +72,8 @@ import { isTeamLeaderMember, type TeamMemberIdentity } from '../../utils/teamMem
 import { writeClipboard } from '../../utils/writeClipboard';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import './ChatPanel.css';
+import { WorkspaceQuotaBanner } from '../WorkspacePanel/WorkspaceQuotaBanner';
+import { useWorkspaceQuotaEnabled } from '../../features/workspace/useWorkspaceQuotaEnabled';
 import { CodeChangesCard } from '../../features/code-mode/CodeChangesCard';
 import { useCodeTurnDiffHistory } from '../../features/code-mode/useCodeTurnDiffHistory';
 import { turnDiffKey } from '../../features/code-mode/turnChangeState';
@@ -1245,6 +1247,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   onToggleDiagnosis,
 }: ChatPanelProps) {
   const { t } = useTranslation();
+  const workspaceQuotaEnabled = useWorkspaceQuotaEnabled();
   const workMode = useWorkspaceStore((state) => state.workMode);
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const conversationId = useOrganizationConversationKey(activeSessionId);
@@ -2470,6 +2473,7 @@ export const ChatPanel = React.memo(function ChatPanel({
           </div>
         </div>
       )}
+      {workspaceQuotaEnabled ? <WorkspaceQuotaBanner /> : null}
       {hasHarnessProgress && (
         <div
           className="sticky top-0 z-10 px-3 pt-2 bg-bg/95 backdrop-blur-sm"

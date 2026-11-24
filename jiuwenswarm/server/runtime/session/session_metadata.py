@@ -1225,6 +1225,31 @@ def init_session_metadata(
             }
     if isinstance(channel_metadata, dict) and channel_metadata:
         metadata["channel_metadata"] = channel_metadata
+    # 配额门禁：metadata.json 落盘前检查（对齐 !7494；覆盖 designer/rename 等
+    # 不经 session.create bootstrap 预检的调用方）。
+    try:
+        from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+            WorkspaceQuotaExceeded as _workspace_quota_exceeded,
+            check_workspace_write,
+            is_workspace_quota_enabled,
+        )
+    except Exception:  # noqa: BLE001
+        _workspace_quota_exceeded = ()  # type: ignore[misc, assignment]
+        check_workspace_write = None  # type: ignore[assignment]
+        is_workspace_quota_enabled = None  # type: ignore[assignment]
+    if callable(is_workspace_quota_enabled) and is_workspace_quota_enabled():
+        try:
+            approx = len(
+                json.dumps(metadata, ensure_ascii=False, default=str).encode("utf-8")
+            )
+            check_workspace_write(additional_bytes=max(64, approx))
+        except _workspace_quota_exceeded:
+            raise
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "[workspace.quota] init_session_metadata precheck skipped",
+                exc_info=True,
+            )
     _write_metadata_sync(session_id, metadata)
 
 

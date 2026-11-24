@@ -1,17 +1,18 @@
 # 系统插件开发流程
 
 按用户希望的效果确定已有能力，再开发独立的系统插件，使用最终 ZIP 完成加载测试；是否运行安装按用户意愿决定。
-本文补充环境核对与系统插件实现，只在当前步骤需要时读取对应小节；源码搜索方法见 [局部阅读](source-reading.md#2-先搜索再读命中片段)，安装阶段再查 [安装与状态核对](package-installation.md)。
+本文补充环境核对与系统插件实现，只在当前步骤需要时读取对应小节；源码搜索方法见 [局部阅读](source-reading.md#2-集中搜索再批量读取必要上下文)，安装阶段再查 [安装与状态核对](package-installation.md)。
 
 ## 1. 确认源码和阅读位置
 
-Swarm 和 Core 分别按以下顺序确定源码：用户指定的源码、固定远端分支、远端获取失败后的处理。
-只为尚未取得源码的仓库继续下一步。
+先按运行域选择仓库：两域都需要 Core；`agentserver` 域再需要 Swarm，`gateway` 域再需要 Gateway。
+只有安装入口或跨域协作确实涉及另一仓库时才补充。对选中的仓库按以下顺序确定源码：用户指定的源码、固定远端分支、
+远端获取失败后的处理。只为尚未取得且本次需要的仓库继续下一步。
 
 ### 1.1 优先使用用户指定的源码
 
-- **两个仓库都已指定：** 分别从指定目录阅读 Swarm 和 Core，不另行下载替代。
-- **只指定一个仓库：** 保留该仓库的阅读位置，另一个仓库按下一节获取。
+- **需要的仓库都已指定：** 分别从指定目录阅读本次运行域需要的仓库，不另行下载替代。
+- **只指定部分仓库：** 保留这些仓库的阅读位置，只为本次需要且尚未指定的仓库按下一节获取。
 - **指定仓库：** 核对目录和模块是否存在，不自行切换分支或改动仓库。路径不可读时，向用户确认正确位置。
 
 ### 1.2 获取固定分支的源码
@@ -20,14 +21,15 @@ Swarm 和 Core 分别按以下顺序确定源码：用户指定的源码、固�
 
 | 仓库 | 固定分支 | GitCode | GitHub |
 | --- | --- | --- | --- |
-| Swarm | `releases/0.2.9.beta3` | [openJiuwen/jiuwenswarm](https://gitcode.com/openJiuwen/jiuwenswarm) | [openJiuwen-ai/jiuwenswarm](https://github.com/openJiuwen-ai/jiuwenswarm) |
-| Core | `release/v0.1.20.post3` | [openJiuwen/agent-core](https://gitcode.com/openJiuwen/agent-core) | [openJiuwen-ai/agent-core](https://github.com/openJiuwen-ai/agent-core) |
+| Swarm | `develop` | [openJiuwen/jiuwenswarm](https://gitcode.com/openJiuwen/jiuwenswarm/tree/develop) | [openJiuwen-ai/jiuwenswarm](https://github.com/openJiuwen-ai/jiuwenswarm/tree/develop) |
+| Core | `develop` | [openJiuwen/agent-core](https://gitcode.com/openJiuwen/agent-core/tree/develop) | [openJiuwen-ai/agent-core](https://github.com/openJiuwen-ai/agent-core/tree/develop) |
+| Gateway | `develop` | [openJiuwen/agent-gateway](https://gitcode.com/openJiuwen/agent-gateway/tree/develop) | — |
 
 获取时注意：
 
-- **平台顺序：** 优先从 GitCode 获取指定分支；无法获取时，再从 GitHub 获取同一分支。
+- **平台顺序：** Swarm 和 Core 优先从 GitCode 获取指定分支，无法获取时再从 GitHub 获取同一分支；Gateway 从上表的独立 GitCode 仓库获取。
 - **分支选择：** 获取命令或下载地址必须明确指向表中分支，不使用仓库默认分支，也不换成其他分支或 Tag。
-- **稀疏检出：** 需要 clone 时，按 [源码获取说明](source-reading.md#1-按需稀疏检出) 使用浅克隆、文件内容过滤和 sparse-checkout，只取本次所需模块；后续按需补充目录。
+- **稀疏检出：** 需要 clone 时，按 [源码获取说明](source-reading.md#1-按域选择并复用稀疏缓存) 使用浅克隆、文件内容过滤和 sparse-checkout，只取本次所需模块；按仓库和固定分支复用缓存，后续把必要目录集中补充。
 - **保存位置：** 使用现有终端或下载工具，把源码保存到工作区的独立目录。源码只用于阅读，不安装其中的依赖，不替换 APP 内的运行代码。
 - **适用范围：** 固定分支是本 Skill 的默认阅读来源，不据此宣称它与当前运行包来自同一次提交；实际能力仍以目标宿主为准。
 
@@ -43,19 +45,22 @@ Swarm 和 Core 分别按以下顺序确定源码：用户指定的源码、固�
 
 ### 1.4 确认阅读目录
 
-用户指定或从固定分支获取的源码仓根分别记作 `CORE_ROOT` 和 `SWARM_ROOT`。
-读取适用的仓库根、模块规则后，从以下入口按文件名和关键词搜索，先读命中片段，必要时再展开相关函数、类或规约小节。表中目录按当前问题选择，不预先通读文档和源码：
+用户指定或从固定分支获取的源码仓根分别记作 `CORE_ROOT`、`SWARM_ROOT` 和 `GATEWAY_ROOT`。
+读取适用的仓库根、模块规则后，从以下入口集中搜索文件名和关键词，整理必要定义、登记、触发点、Ops 契约和测试清单，
+再批量读取命中范围；必要时对新发现的直接依赖补一批。表中目录按当前问题选择，不预先通读文档和源码：
 
 | 阅读目的 | 确定位置 |
 | --- | --- |
 | Core 事件、Matcher、上下文和 Ops | `<CORE_ROOT>/openjiuwen/core/events/` 下的规则、`docs/` 和公开实现 |
 | manifest、Registrar、加载和生命周期 | `<CORE_ROOT>/openjiuwen/core/extension/` 下的规则、`docs/` 和公开实现 |
-| Swarm 事件、Ops 和 WebUI | `<SWARM_ROOT>/jiuwenswarm/extensions_v2/` 下的规则、`docs/` 和相关业务实现 |
+| Swarm 的 AgentServer 事件、Ops 和管理适配 | `<SWARM_ROOT>/jiuwenswarm/extensions_v2/` 下的规则、`docs/` 和相关业务实现 |
+| Gateway 事件、Ops、WebUI、加载和生命周期 | `<GATEWAY_ROOT>/agent_gateway/extensions_v2/` 下的规则、`docs/` 和相关业务实现 |
 | 可用参考系统插件 | 从上述模块的索引或测试进入，确认示例适用的实际宿主版本 |
 
 查阅时注意：
 
 - **Swarm 路径：** 仓库内部还有同名 `jiuwenswarm/` 包目录，不能省略；从名为 `jiuwenswarm` 的仓库父目录看，路径为 `jiuwenswarm/jiuwenswarm/extensions_v2/`。
+- **Gateway 路径：** Gateway 是独立仓库，系统插件代码和文档位于 `agent_gateway/extensions_v2/`。不要继续从 Swarm 仓库推断 Gateway 的事件、Ops、WebUI 或生命周期实现。
 - **模块根与仓库根：** `openjiuwen.core` 的模块目录对应 `openjiuwen/core/`，`jiuwenswarm` 的模块目录对应 Python 包；它们不一定是源码仓根。Wheel 回退时，按实际模块位置阅读。
 - **资料缺失：** 找不到附带文档时，结合公开接口、源码和测试判断；缺少关键契约时说明具体缺口。
 - **其他执行域：** 系统插件涉及 Gateway 等宿主能力时，沿对应模块规则核对当前实现和管理入口，不套用 AgentServer 专属契约。
@@ -81,16 +86,18 @@ Swarm 和 Core 分别按以下顺序确定源码：用户指定的源码、固�
 - **Windows 临时目录：** 安装测试会生成较深的目录，临时路径宜简短；遇到路径长度限制时，可给测试脚本传 `--basetemp "<较短的独立临时目录>"`。
 - **环境缺失：** 入口不可用或缺少必要模块时，说明具体缺口，并向用户确认可用的已有环境；不自动安装依赖或重建完整环境。
 
-PowerShell 调用示例：
+PowerShell 最终验证示例：
 
 ```powershell
-& "<PYTHON_ENTRY>" "<SKILL_ROOT>/scripts/run_tests.py" "<系统插件测试目录或文件>"
-& "<PYTHON_ENTRY>" "<SKILL_ROOT>/scripts/build_package.py" "<系统插件源码目录>" "<输出 ZIP 路径>"
+& "<PYTHON_ENTRY>" "<SKILL_ROOT>/scripts/finalize_package.py" "<系统插件源码目录>" "<输出 ZIP 路径>" "<系统插件测试目录或文件>"
 ```
 
 Bash 调用时去掉开头的 `&`，其余路径仍保留引号；EXE、DMG 的执行入口直接使用现有的 `JIUWENSWARM_EXECUTABLE`。
 
-[测试脚本](../scripts/run_tests.py) 使用所选环境中的 pytest 和 pytest-asyncio，支持测试目录或单个文件，不下载依赖。
+[最终验证脚本](../scripts/finalize_package.py) 先生成临时 ZIP，再设置 `JIUWEN_SYSTEM_PLUGIN_ZIP` 并调用
+[测试脚本](../scripts/run_tests.py)，最后才把已通过测试的同一 ZIP 写到交付路径。测试只选择系统插件本轮编写或更新的测试，
+不运行宿主仓测试集；测试必须从该环境变量指向的 ZIP 完成隔离加载。脚本使用所选环境中的 pytest 和 pytest-asyncio，
+支持测试目录或单个文件，不下载依赖。
 测试失败、没有发现测试或缺少测试工具时，保留实际退出码，不能只因脚本已执行就判断验证通过。
 桌面包中的测试若要启动子进程，使用当前 `sys.executable` 执行脚本；标准输入不需要时传 `stdin=subprocess.DEVNULL`，不要照搬普通 Python 的 `-B` 等启动参数。
 
@@ -144,7 +151,8 @@ package-root/
 
 ## 4. 验证最终文件
 
-先测试真实加载、可信系统插件身份、Handler 发布和事件结果，再生成最终 ZIP。
+实现完成后再集中验证，不在每次小改动后运行测试。最终验证脚本先生成临时 ZIP，再用系统插件自己的测试从该 ZIP
+验证真实加载、可信系统插件身份、Handler 发布和事件结果；验证通过后将同一 ZIP 写成最终产物。
 测试可模拟网络或存储，但不能绕过本次要验证的系统插件加载和处理链。
 
 - **最终 ZIP：** 使用正式打包脚本生成交付文件，将同一文件安装到临时宿主中验证；测试后保持文件不变，按用户意愿交付或安装。

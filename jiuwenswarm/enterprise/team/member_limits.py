@@ -20,11 +20,18 @@ logger = logging.getLogger(__name__)
 TEAM_MEMBER_QUOTA_EXCEEDED = "TEAM_MEMBER_QUOTA_EXCEEDED"
 
 
+def _t(message_id: str, **params: Any) -> str:
+    from jiuwenswarm.common.i18n import t
+    from jiuwenswarm.enterprise.config.preferred_language import (
+        resolve_preferred_language,
+    )
+
+    return t(message_id, language=resolve_preferred_language(), **params)
+
+
 def teammate_quota_user_message(limit: int) -> str:
     """User-facing spawn failure. ``limit`` is whole-team size including the leader."""
-    return (
-        f"人数已满：该团队最多{max(int(limit), 0)}人（含 Leader），无法再添加队员"
-    )
+    return _t("enterprise.team.teammate_full", limit=max(int(limit), 0))
 
 
 def teammate_quota_fail_reason(limit: int) -> str:
@@ -33,9 +40,10 @@ def teammate_quota_fail_reason(limit: int) -> str:
 
 def requested_team_size_user_message(requested: int, limit: int) -> str:
     """User-facing refusal when the original sentence already exceeds the cap."""
-    return (
-        f"无法创建：你要求的是 {int(requested)} 人团队，"
-        f"该团队最多 {max(int(limit), 0)} 人（含 Leader）。"
+    return _t(
+        "enterprise.team.requested_size_over",
+        requested=int(requested),
+        limit=max(int(limit), 0),
     )
 
 
@@ -161,10 +169,7 @@ def enterprise_recruit_constraint(query: str) -> str:
     if size is None:
         return ""
     recruit = max(size - 1, 0)
-    return (
-        f"【团队人数约束】本次含组长共 {size} 人，再招募 {recruit} 名队员。"
-        "侧边成员列表不含组长，不要因为列表里没有组长而再多招募一人。"
-    )
+    return _t("enterprise.team.recruit_constraint", size=size, recruit=recruit)
 
 
 def requested_team_size_over_limit(

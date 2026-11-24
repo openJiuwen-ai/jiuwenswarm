@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
@@ -127,3 +128,20 @@ def create_default_hub_asset_port() -> HubAssetPort:
     from jiuwenswarm.server.runtime.marketplace.hub_client import HubClient
 
     return HubClient()
+
+
+def verify_package_hub_tls(kind: HubAssetKind) -> bool:
+    """Apply the AgentServer Hub TLS setting to experts and expert teams."""
+    if kind not in {"agent_template", "agent_group"}:
+        return True
+    return os.getenv("TEAM_SKILLS_HUB_VERIFY_SSL", "").strip().lower() not in {"false", "0", "no", "off"}
+
+
+def create_package_hub_port(kind: HubAssetKind) -> HubAssetPort:
+    """Build a Hub client with the TLS policy for the requested package kind."""
+    if verify_package_hub_tls(kind):
+        return create_default_hub_asset_port()
+
+    from jiuwenswarm.server.runtime.marketplace.hub_client import HubClient
+
+    return HubClient(verify=False)

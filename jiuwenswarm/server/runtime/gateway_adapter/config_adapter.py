@@ -256,9 +256,11 @@ class ConfigAdapter(GatewayAdapter):
                 )
 
             if request.req_method == ReqMethod.LOCALE_GET_CONF:
-                lang = str(get_config().get("preferred_language") or "zh").strip().lower()
-                if lang not in {"zh", "en"}:
-                    lang = "zh"
+                from jiuwenswarm.common.i18n import normalize_preferred_language
+
+                lang = normalize_preferred_language(
+                    get_config().get("preferred_language")
+                )
                 return AgentResponse(
                     request_id=request.request_id, channel_id=request.channel_id,
                     ok=True, payload={"preferred_language": lang}, metadata=request.metadata,

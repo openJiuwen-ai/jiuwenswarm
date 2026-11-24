@@ -56,6 +56,9 @@ def _ensure_req_method(name: str, value: str) -> None:
     _ensure_protocol_member(ReqMethod, name, value)
 
 
+_ensure_req_method("ORG_EXPERT_TEAMS_ADD", "org.expert_teams.add")
+
+
 # Published release methods required by JiuwenMate and its existing callers.
 _ensure_req_method("JIUWENMATE_FEISHU_INBOUND", "jiuwenmate.feishu.inbound")
 _ensure_req_method("JIUWENMATE_DINGTALK_INBOUND", "jiuwenmate.dingtalk.inbound")
@@ -156,6 +159,7 @@ _ensure_req_method("WORKSPACE_TREE", "workspace.tree")
 _ensure_req_method("WORKSPACE_PREVIEW", "workspace.preview")
 _ensure_req_method("WORKSPACE_USAGE", "workspace.usage")
 _ensure_req_method("WORKSPACE_ENTRIES_DELETE", "workspace.entries.delete")
+_ensure_req_method("WORKSPACE_DOWNLOAD", "workspace.download")
 # skills.rebuild 的静默改写没有稳定上限。状态查询走独立方法，避免继续占着
 # 600 秒的非流式请求。协议包尚未发布该成员时在这里补齐。
 _ensure_req_method("SKILLS_REBUILD_STATUS", "skills.rebuild_status")

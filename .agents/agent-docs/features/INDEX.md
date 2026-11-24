@@ -222,6 +222,7 @@ generated: true
 | [F_20261117_1752_colleague-swarmchat](F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
 | [F_20261119_1039_app-hub](F_20261119_1039_app-hub.md) | F | Hub 应用分发与本地安装实施 | kdgmpw | 无独立 D：设计输入为仓库外部的《App Hub 应用资产方案设计》与《App Hub 双仓实施方案》，未在 .agents/agent-docs/designs 建立 D 记录。 |
 | [F_20261121_0906_swarmchat-auto-reply](F_20261121_0906_swarmchat-auto-reply.md) | F | SwarmChat 群成员自动判断回复实施记录 | weichenhao | [D-20261120-1701-swarmchat-auto-reply](../designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) |
+| [F_20261124_1556_app-market-ai-roles](F_20261124_1556_app-market-ai-roles.md) | F | 应用市场 AI 角色清单与接入指引 | kdgmpw | 无独立 D：依据对话中确认的 Skill 优化、角色清单及已安装应用详情范围实施，沿用现有发布和应用会话契约。 |
 
 <a id="module-jiuwenswarm-channels-web-frontend-src-features-settings"></a>
 
@@ -252,6 +253,7 @@ generated: true
 | [F_20261111_1528_unified-observability-config](F_20261111_1528_unified-observability-config.md) | F | Team 与单 Agent 可观测性配置统一为 observability 段 | alan_cheng | 无独立 D：用户在会话中确认的配置收敛改动，无独立设计编号。 |
 | [F_20261111_1755_team-leader-goal](F_20261111_1755_team-leader-goal.md) | F | 调度模式领导目标驱动设置实施与验证 | alan_cheng | [D-20261111-1722-team-goal-config](../designs/active/D-20261111-1722-team-goal-config/design.md) |
 | [F_20261119_1624_beta3-extensions-develop-port](F_20261119_1624_beta3-extensions-develop-port.md) | F | beta3 扩展能力线性迁入 develop | lizhiyuan | 无独立 D：按用户明确确认的逐笔迁移、保留 develop 行为和 Gateway 跨仓边界执行；本次没有另立设计，原扩展契约沿用模块内规约。 |
+| [F_20261124_1556_app-market-ai-roles](F_20261124_1556_app-market-ai-roles.md) | F | 应用市场 AI 角色清单与接入指引 | kdgmpw | 无独立 D：依据对话中确认的 Skill 优化、角色清单及已安装应用详情范围实施，沿用现有发布和应用会话契约。 |
 
 <a id="module-jiuwenswarm-common-config_panel"></a>
 
@@ -280,6 +282,7 @@ generated: true
 | [F_20261103_1106_app-market-containers-and-editing](app-market-implementation.md) | F | 应用市场浏览器容器与编辑会话 | default | 无独立 D：用户明确授权初步本地实现，无独立设计文档。 |
 | [F_20261103_1501_app-role-session](app-role-session.md) | F | 保留基础系统提示的轻量 NPC 会话 | kdgmpw | [D-20261103-1444-app-role-session](../designs/active/D-20261103-1444-app-role-session/design.md) |
 | [F_20261119_1039_app-hub](F_20261119_1039_app-hub.md) | F | Hub 应用分发与本地安装实施 | kdgmpw | 无独立 D：设计输入为仓库外部的《App Hub 应用资产方案设计》与《App Hub 双仓实施方案》，未在 .agents/agent-docs/designs 建立 D 记录。 |
+| [F_20261124_1556_app-market-ai-roles](F_20261124_1556_app-market-ai-roles.md) | F | 应用市场 AI 角色清单与接入指引 | kdgmpw | 无独立 D：依据对话中确认的 Skill 优化、角色清单及已安装应用详情范围实施，沿用现有发布和应用会话契约。 |
 
 <a id="module-jiuwenswarm-extensions-sdk"></a>
 
@@ -321,6 +324,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F_20261103_1149_builtin-skill-catalog](builtin-skill-catalog.md) | F | 内置能力总目录实施记录 | kdgmpw | [D-20261103-1123-builtin-skill-catalog](../designs/active/D-20261103-1123-builtin-skill-catalog/design.md) |
+| [F_20261124_1556_app-market-ai-roles](F_20261124_1556_app-market-ai-roles.md) | F | 应用市场 AI 角色清单与接入指引 | kdgmpw | 无独立 D：依据对话中确认的 Skill 优化、角色清单及已安装应用详情范围实施，沿用现有发布和应用会话契约。 |
 
 <a id="module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin"></a>
 
@@ -411,6 +415,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F_20261119_1039_app-hub](F_20261119_1039_app-hub.md) | F | Hub 应用分发与本地安装实施 | kdgmpw | 无独立 D：设计输入为仓库外部的《App Hub 应用资产方案设计》与《App Hub 双仓实施方案》，未在 .agents/agent-docs/designs 建立 D 记录。 |
+| [F_20261124_1556_app-market-ai-roles](F_20261124_1556_app-market-ai-roles.md) | F | 应用市场 AI 角色清单与接入指引 | kdgmpw | 无独立 D：依据对话中确认的 Skill 优化、角色清单及已安装应用详情范围实施，沿用现有发布和应用会话契约。 |
 
 <a id="module-jiuwenswarm-server-runtime-session"></a>
 

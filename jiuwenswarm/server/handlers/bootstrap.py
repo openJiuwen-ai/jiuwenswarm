@@ -13,6 +13,7 @@ ACP 是编辑器走的那条连接。它报上来的能力按这条连接记住�
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import sys
 
@@ -85,6 +86,92 @@ async def handle_initialize(ctx: RequestContext) -> None:
         await ctx.sink.send_response(resp)
 
 
+async def _enter_session_create_quota_context(
+    request,
+) -> tuple[object | None, object | None]:
+    """为整次 ``session.create`` 绑定租户根 + 配额身份。
+
+    预检与后续 ``init_session_metadata`` 写盘门禁共用同一绑定；若只在预检
+    里 bind/reset，预检通过后身份被清掉，写盘会落到空身份并误命中
+    ``match_expr=[]`` 的兜底策略（表现为配额已扩容仍提示空间不足）。
+    返回 ``(tenant_ctx, quota_tokens)``，调用方必须在 finally 里复位。
+    """
+    from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+        bind_quota_identity,
+        is_workspace_quota_enabled,
+    )
+    from jiuwenswarm.enterprise.capabilities.workspace.policy_reload import (
+        reload_quota_policies_from_gateway_db,
+    )
+    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
+    from jiuwenswarm.enterprise.tenant.tenant_identity import (
+        extract_tenant_key,
+        extract_triple,
+    )
+
+    if not is_workspace_quota_enabled():
+        return None, None
+
+    await reload_quota_policies_from_gateway_db()
+    group_id, bot_id, user_id = extract_triple(request)
+    tenant_ctx = TenantContext.bind(extract_tenant_key(request))
+    quota_tokens = bind_quota_identity(
+        user_id=user_id, group_id=group_id, bot_id=bot_id
+    )
+    return tenant_ctx, quota_tokens
+
+
+def _exit_session_create_quota_context(
+    tenant_ctx: object | None,
+    quota_tokens: object | None,
+) -> None:
+    if quota_tokens is not None:
+        from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+            reset_quota_identity,
+        )
+
+        reset_quota_identity(quota_tokens)  # type: ignore[arg-type]
+    if tenant_ctx is not None:
+        tenant_ctx.reset()  # type: ignore[union-attr]
+
+
+async def _reject_session_create_if_quota_blocked(ctx: RequestContext) -> bool:
+    """超限时拒绝新建会话；返回 True 表示已回写错误响应。
+
+    调用前须已由 :func:`_enter_session_create_quota_context` 绑好身份与租户根。
+    """
+    from jiuwenswarm.enterprise.capabilities.workspace.quota import (
+        WorkspaceQuotaExceeded,
+        check_workspace_write,
+        is_workspace_quota_enabled,
+    )
+
+    if not is_workspace_quota_enabled():
+        return False
+
+    request = ctx.request
+    try:
+        # 与 init_session_metadata 写盘门禁同量级的最小净增探测。
+        # 冷缓存/近限时可能同步 du，放线程避免堵事件循环（对齐 fs_quota_guard）。
+        await asyncio.to_thread(
+            functools.partial(check_workspace_write, additional_bytes=64)
+        )
+    except WorkspaceQuotaExceeded:
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=False,
+            payload={
+                "error": "WORKSPACE_QUOTA_EXCEEDED",
+                "code": "WORKSPACE_QUOTA_EXCEEDED",
+                "detail": "WORKSPACE_QUOTA_EXCEEDED",
+            },
+        )
+        await ctx.sink.send_response(resp)
+        return True
+    return False
+
+
 async def handle_session_create(ctx: RequestContext) -> None:
     """Translate ``session.create`` between WebSocket wire and Runtime."""
     request = ctx.request
@@ -96,6 +183,8 @@ async def handle_session_create(ctx: RequestContext) -> None:
         request.request_id,
     )
 
+    tenant_ctx = None
+    quota_tokens = None
     runtime = None
     prepared = None
     response_delivered = False
@@ -131,6 +220,10 @@ async def handle_session_create(ctx: RequestContext) -> None:
             )
 
     try:
+        tenant_ctx, quota_tokens = await _enter_session_create_quota_context(request)
+        if await _reject_session_create_if_quota_blocked(ctx):
+            return
+
         channel_id = request.channel_id or "default"
         params = request.params if isinstance(request.params, dict) else {}
         persist_session_supplied = "persist_session" in params
@@ -285,6 +378,7 @@ async def handle_session_create(ctx: RequestContext) -> None:
         await ctx.sink.send_response(response)
     finally:
         await abort_prepared(sys.exception())
+        _exit_session_create_quota_context(tenant_ctx, quota_tokens)
 
 
 async def handle_session_fork(ctx: RequestContext) -> None:

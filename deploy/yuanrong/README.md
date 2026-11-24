@@ -76,7 +76,8 @@ vim .env.custom
 
 | 变量                          | 说明                                                                                                 | 默认值                 |
 | --------------------------- | -------------------------------------------------------------------------------------------------- | ------------------- |
-| `JIUWENSWARM_INSTANCE_NAME` | jiuwenswarm 实例名（留空则使用默认路径 `~/.jiuwenswarm`）。指定实例名后配置目录变为 `~/.jiuwenswarm-instances/<实例名>`          | `""`                |
+| `JIUWENSWARM_INSTANCE_NAME` | jiuwenswarm 实例名（留空则使用默认 workspace `~/.jiuwenswarm`）。指定实例名后：AS 使用 `~/.jiuwenswarm-instances/<实例名>/config/`，Gateway 使用 `~/.jiuwenswarm-instances/<实例名>/infra/config/` | `""`                |
+| `JIUWENSWARM_GATEWAY_CONFIG_DIR` | Gateway 配置目录覆盖。绝对路径直接使用；相对路径按 `<workspace>/infra/config/<override>` 解析。留空使用 `<workspace>/infra/config` | `""`                |
 | `GATEWAY_CONCURRENCY`       | 网关同时向后端发送的最大并发请求数                                                                                  | `1`                 |
 | `GATEWAY_INVOKE_TIMEOUT`    | 网关调用后端接口的超时时间（秒）                                                                                   | `60`                |
 | `GATEWAY_SESSION_MAP_SCOPE` | SessionMap 会话映射策略。可选值：`per_chat_bot`（同聊天窗口+机器人共享会话）、`per_chat_bot_user`（按用户维度隔离会话）                 | `per_chat_bot_user` |
@@ -168,8 +169,10 @@ vim .env.custom
 ```
 
 可选参数：`--home-base`（默认 `/home/agentos/users`）、`--template`
-（默认 `/root/.jiuwenswarm/config/config.yaml`）、`--all`。
+（默认 `/root/.jiuwenswarm/config/config.yaml`；命名实例为
+`/root/.jiuwenswarm-instances/<name>/config/config.yaml`）、`--all`。
 脚本必须以 root 运行，目标用户需先由 `agentos.sh create-user` 初始化。
+注意：该脚本刷新的是 AS `config/config.yaml`，不会复制 Gateway 的 `infra/config`。
 
 ## 参数解析
 
@@ -238,7 +241,16 @@ vim .env.custom
 
 通过 `.env.custom` 中的 `JIUWENSWARM_INSTANCE_NAME` 可配置 gateway 实例名：
 
-- 未设置实例名（默认）：gateway 使用默认路径 `~/.jiuwenswarm/config/config.yaml`
-- 设置实例名（如 `JIUWENSWARM_INSTANCE_NAME=prod`）：gateway 使用实例路径 `~/.jiuwenswarm-instances/prod/config/config.yaml`
+- 未设置实例名（默认）：
+  - AS：`~/.jiuwenswarm/config/config.yaml`
+  - Gateway：`~/.jiuwenswarm/infra/config/config.yaml`
+- 设置实例名（如 `JIUWENSWARM_INSTANCE_NAME=prod`）：
+  - AS：`~/.jiuwenswarm-instances/prod/config/config.yaml`
+  - Gateway：`~/.jiuwenswarm-instances/prod/infra/config/config.yaml`
 
 实例名配置后，`jiuwenswarm-init` 和 `jiuwenswarm-gateway` 命令会自动通过 `JIUWENSWARM_DATA_DIR` 环境变量指向对应的实例目录。
+
+AgentOS 升级（旧版共享配置）由 `gateway_handler.sh` 在 `jiuwenswarm-init` 前调用
+`python -m jiuwenswarm.agentos_migration`：把旧 `config/config.yaml` 中的用户配置
+投影到新 Gateway 模板，再用本次部署值覆盖 VIP / etcd / function ID 等字段。
+旧 AS 配置由不带 `-f` 的 `jiuwenswarm-init` 保留并补齐新键。

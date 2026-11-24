@@ -110,19 +110,13 @@ _MANUAL_HINTS = {
 
 def _configured_reviewer_display_language() -> str:
     try:
-        from jiuwenswarm.common.config import get_config
+        from jiuwenswarm.enterprise.config.preferred_language import (
+            resolve_preferred_language,
+        )
 
-        config = get_config()
-        if isinstance(config, Mapping):
-            return (
-                "en"
-                if str(config.get("preferred_language") or "").strip().lower()
-                == "en"
-                else "zh"
-            )
+        return resolve_preferred_language()
     except Exception:
-        return "zh"
-    return "zh"
+        return "en"
 
 
 def _localized(pair: tuple[str, str], language: str) -> str:

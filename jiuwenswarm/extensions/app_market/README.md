@@ -39,9 +39,9 @@ sequenceDiagram
 - **状态上报**：每个运行实例签发独立的状态令牌（经 `WORKSWARM_STATUS_TOKEN` 注入），应用按 push 主动上报运行状态，或由市场按 pull 轮询应用的 `/_workswarm/status` 读取（静态托管默认 pull）。上报携带单调递增序号，旧消息不会覆盖新状态；市场据此跟踪 `starting / running / stopping` 生命周期——启动后等待应用进入 `running`（最长 30 秒），发现应用自行退出则转入 `stopping` 清理。
 - **AI 能力**：应用自己的客户端或服务直接访问 Gateway，不经过应用市场。应用按 AI 角色管理会话，复用默认模型策略和历史；超时、重试、清空及退出删除均由应用负责。
 
-所有市场应用启动前都须绑定可用项目。市场安装 Hub 应用时按应用目录创建或绑定项目，本地发布应用与旧安装缺少绑定时在启动前补齐。应用优先使用市场注入的 `WORKSWARM_APP_PROJECT_ID` 和 `WORKSWARM_APP_WORK_MODE`。兼容旧宿主时，本地发布应用可用 `WORKSWARM_SOURCE_SESSION` 调用 Gateway 的 `session.get_metadata`。
+所有市场应用启动前都须绑定可用项目。市场安装 Hub 应用时按当前应用目录创建或绑定项目；Hub 登记不继承旧副本的项目和编辑会话绑定，本地发布应用与旧安装缺少绑定时在启动前补齐。应用优先使用市场注入的 `WORKSWARM_APP_PROJECT_ID` 和 `WORKSWARM_APP_WORK_MODE`。兼容旧宿主时，本地发布应用可用 `WORKSWARM_SOURCE_SESSION` 调用 Gateway 的 `session.get_metadata`。
 
-Every market app needs an available project before it can start. Installation creates or links a project for Hub apps. The market repairs missing bindings for locally published apps and older installations before launching them. Use the injected `WORKSWARM_APP_PROJECT_ID` and `WORKSWARM_APP_WORK_MODE`. On older hosts, locally published apps can use `WORKSWARM_SOURCE_SESSION` to query `session.get_metadata`.
+Every market app needs an available project before it can start. Installation creates or links a project for the current Hub app directory; a Hub registration never inherits project or editor bindings from an older copy. The market repairs missing bindings for locally published apps and older installations before launching them. Use the injected `WORKSWARM_APP_PROJECT_ID` and `WORKSWARM_APP_WORK_MODE`. On older hosts, locally published apps can use `WORKSWARM_SOURCE_SESSION` to query `session.get_metadata`.
 
 纯对话 NPC 可在 `session.create` 中指定 `execution_profile:"app_role"` 和 `role_instructions`：保留精简基础系统提示、应用角色规则及自身历史，不加载项目指令、记忆、技能或工具。项目归属不变，支持流式响应和取消。详见[角色会话说明](../../../docs/zh/AppRoleSessions.md)。
 
@@ -53,9 +53,9 @@ Text-only NPCs can create sessions with `execution_profile:"app_role"` and `role
 
 ## Hub 应用更新与二次开发 / Updates and local development
 
-在已安装的 Hub 应用卡片点击「转为本地应用」，即可在原目录编辑、运行或发布。转换保留同一张卡片、项目、数据和 Git 历史。应用退出原 Hub 资产的更新流程。
+在已安装的 Hub 应用卡片点击「转为本地应用」，即可在原目录编辑、运行或发布。转换保留同一张卡片、数据和 Git 历史。项目目录一致时保留原项目和编辑会话。项目目录不一致时，市场尝试为应用目录绑定独立项目，并停止使用旧绑定的运行实例。应用退出原 Hub 资产的更新流程。
 
-Choose **Convert to Local App** on an installed Hub app to edit, run, or publish it from its current directory. The card, project, data, and Git history stay in place. The app stops receiving updates for the original Hub asset.
+Choose **Convert to Local App** on an installed Hub app to edit, run, or publish it from its current directory. The card, data, and Git history stay in place. A project rooted in the app directory keeps its editor sessions. If the directory differs, the market tries to bind an independent project and stops instances using the old binding. The app stops receiving updates for the original Hub asset.
 
 发布抽屉顶部预览应用图标、名称、版本和简介。停止、删除等市场操作的结果显示在右上角，卡片列表保持原位。
 
@@ -65,13 +65,13 @@ The publish drawer previews the app icon, name, version, and description. App Ma
 
 After deleting or uninstalling an app from its detail page, App Market returns to All Apps. Choosing **Reinstall** opens App Plaza. The detail page shows update progress and lets you cancel the update.
 
-更新前，应用绑定的所有编辑会话都必须空闲。更新时会备份完整的旧工作目录，成功提示会显示备份位置。安装目录内的 `data/` 和 Git 仓库会复制到新版本。Hub 随包服务脚本仅继承启动所需的系统环境变量，默认在 WebChannel 绑定回环地址的部署开启。共享部署可设 `APP_MARKET_ALLOW_HUB_CODE=0`，受信部署可设为 `1`。
+更新前，应用绑定的所有编辑会话都必须空闲。更新只替换程序文件和版本、名称、简介、图标等描述字段，保留 `app_id`、市场登记、pin 状态、创建时间、项目与编辑会话绑定。更新时会备份完整的旧工作目录，成功提示会显示备份位置。安装目录内的 `data/` 和 Git 仓库会复制到新版本。Hub 随包服务脚本仅继承启动所需的系统环境变量，默认在 WebChannel 绑定回环地址的部署开启。共享部署可设 `APP_MARKET_ALLOW_HUB_CODE=0`，受信部署可设为 `1`。
 
-All editor sessions linked to the app must be idle before updating. Updates back up the entire previous working directory and report its location. The installed `data/` directory and Git repository are copied to the new release. Bundled Hub servers inherit only the system environment needed to launch. Execution defaults to enabled for loopback WebChannel bindings. Set `APP_MARKET_ALLOW_HUB_CODE=0` on shared deployments or opt in with `1` on trusted deployments.
+All editor sessions linked to the app must be idle before updating. Updates replace the program files and package metadata and retain the app ID, pin, creation time, project, and editor bindings. Updates back up the entire previous working directory and report its location. The installed `data/` directory and Git repository are copied to the new release. Bundled Hub servers inherit only the system environment needed to launch. Execution defaults to enabled for loopback WebChannel bindings. Set `APP_MARKET_ALLOW_HUB_CODE=0` on shared deployments or opt in with `1` on trusted deployments.
 
-卸载会从应用市场移除应用，默认保留本地文件。选择同时清理本地文件时，如果清理未完成，市场会提示检查安装目录。
+**下架并保留文件**停止实例并移除市场登记，保留程序目录、数据、项目和编辑会话。**删除并清理文件**在登记移除成功后归档 `data/` 和 `.git` 到 `.app-archive/`，再清理程序目录。市场会保留安装根、其他应用使用的目录，以及位于安装根外且缺少可核验安装凭据的本地目录，并提示检查保留位置。
 
-Uninstalling removes the app from App Market and keeps local files by default. If you choose to remove local files and cleanup is incomplete, App Market shows the installation directory to check.
+**Remove and keep files** stops the app and removes its market registration while keeping the program directory, data, project, and editor sessions. **Delete and clean files** removes the registration, archives `data/` and `.git` under `.app-archive/`, and then cleans up the program directory. The market keeps the installation root, directories in use by another app, and local directories outside the installation root whose ownership it cannot verify. It reports the directory to check when cleanup is incomplete.
 
 ## 打开应用：Web 与桌面分开
 
@@ -116,6 +116,10 @@ Closing an app page leaves its service running. The market removes the correspon
 
 - 上架提示针对具体应用，不将整个会话标记为“已上架”。
 - 同一会话可以开发和上架多个应用。
+
+本地应用和已安装的 Hub 应用可在详情页查看「AI 角色」。该栏目读取应用包的 `app-ai-roles.json`，按会话组展示角色名称、头像、简介与会话复用说明。省略头像时显示由角色名生成的占位头像。新开发的 AI 应用按[角色清单规范](../../resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/references/ai-roles.md)随包提供清单，发布时据此声明 `ai`。
+
+The **AI Roles** section on local and installed app details displays character cards and session behavior from the app's `app-ai-roles.json`. Roles without an image use a name-based avatar. New apps that call AI at runtime ship a role declaration, which App Market uses to mark `ai` capability when publishing.
 
 应用开发规范与接口用法见 [技能说明](../../resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/SKILL.md)。
 

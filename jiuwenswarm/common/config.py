@@ -986,10 +986,10 @@ def update_channel_app_field(
 
 
 def update_preferred_language_in_config(lang: str) -> None:
-    """只更新顶层 preferred_language 并写回。非法值回退为 zh，与 set_preferred_language_in_config_file 一致。"""
-    normalized = str(lang or "zh").strip().lower()
+    """只更新顶层 preferred_language 并写回。仅接受已归一的 ``zh`` / ``en``。"""
+    normalized = str(lang or "").strip().lower()
     if normalized not in ("zh", "en"):
-        normalized = "zh"
+        raise ValueError(f"preferred_language must be zh or en, got {lang!r}")
     data = load_yaml_round_trip(CONFIG_YAML_PATH)
     data["preferred_language"] = normalized
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
@@ -997,13 +997,13 @@ def update_preferred_language_in_config(lang: str) -> None:
 
 def set_preferred_language_in_config_file(config_path: Path, lang: str) -> None:
     """将 preferred_language 写入指定 config.yaml（用于 init 等尚未绑定全局路径的场景）。"""
-    lang = str(lang or "zh").strip().lower()
-    if lang not in ("zh", "en"):
-        lang = "zh"
+    normalized = str(lang or "").strip().lower()
+    if normalized not in ("zh", "en"):
+        raise ValueError(f"preferred_language must be zh or en, got {lang!r}")
     if not config_path.exists():
         return
     data = load_yaml_round_trip(config_path)
-    data["preferred_language"] = lang
+    data["preferred_language"] = normalized
     dump_yaml_round_trip(config_path, data)
 
 

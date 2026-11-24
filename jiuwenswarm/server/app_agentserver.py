@@ -184,6 +184,36 @@ async def _run(host: str, port: int) -> None:
             exc_info=True,
         )
 
+    # 企业版：冷加载配额策略 + 启动用量后台校准（离开对话热路径）。
+    try:
+        from jiuwenswarm.enterprise import is_enterprise
+
+        if is_enterprise():
+            from jiuwenswarm.enterprise.capabilities.workspace.policy_reload import (
+                reload_quota_policies_from_gateway_db,
+            )
+
+            await reload_quota_policies_from_gateway_db(force=True)
+            logger.info(
+                "[AgentServer] workspace_quota_policy loaded from Gateway DB (if any)"
+            )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[AgentServer] workspace_quota_policy cold load skipped",
+            exc_info=True,
+        )
+    try:
+        from jiuwenswarm.enterprise.capabilities.workspace.usage_reconciler import (
+            start_usage_reconciler,
+        )
+
+        start_usage_reconciler()
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[AgentServer] workspace usage reconciler start skipped",
+            exc_info=True,
+        )
+
     for import_stage, marked_at in _STARTUP_IMPORT_PHASES:
         logger.info(
             "[AgentServer] startup import stage=%s process_elapsed=%.2fs",
@@ -258,6 +288,16 @@ async def _run(host: str, port: int) -> None:
     finally:
         logger.info("[AgentServer] stopping…")
         stop_event.set()
+        try:
+            from jiuwenswarm.enterprise.capabilities.workspace.usage_reconciler import (
+                stop_usage_reconciler,
+            )
+
+            await stop_usage_reconciler()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[AgentServer] workspace usage reconciler stop failed: %s", exc
+            )
         begin_drain = getattr(front, "begin_drain", None)
         if callable(begin_drain):
             begin_drain()

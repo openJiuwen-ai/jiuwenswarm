@@ -12,7 +12,7 @@ from jiuwenswarm.server.runtime.marketplace.hub_asset_port import (
     HubAssetPort,
     HubAssetSummary,
     HubSearchRequest,
-    create_default_hub_asset_port,
+    create_package_hub_port,
 )
 
 logger = logging.getLogger(__name__)
@@ -74,11 +74,10 @@ async def list_hub_equipment_catalog(
     port: HubAssetPort | None = None,
 ) -> dict[str, Any]:
     """读取本进程 Hub 上的专家和专家团。失败时返回空列表和错误说明，不向外抛。"""
-    hub = port or create_default_hub_asset_port()
     collected: list[HubAssetSummary] = []
     try:
         for kind in _KINDS:
-            collected.extend(await _remote_assets(hub, kind))
+            collected.extend(await _remote_assets(port or create_package_hub_port(kind), kind))
     except Exception as exc:
         logger.warning("failed to list Hub equipment catalog", exc_info=True)
         return {"items": [], "error": str(exc)}

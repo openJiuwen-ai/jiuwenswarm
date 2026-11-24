@@ -125,6 +125,14 @@
       "copy": "Copy",
       "paste": "Paste",
       "selectAll": "Select All"
+    },
+    "pagination": {
+      "total": "{{count}} total",
+      "prev": "Previous",
+      "next": "Next",
+      "pageSize": "Per page",
+      "jumpTo": "Go to",
+      "go": "Go"
     }
   },
   "a2ui": {
@@ -163,7 +171,9 @@
     "logs": "Logs",
     "update": "Updates",
     "personalContext": "Knowledge",
-    "appMarket": "Apps"
+    "appMarket": "Apps",
+    "workspace": "Workspace",
+    "approvals": "Requests"
   },
   "appMarket": {
     "resourceMemory": "RAM",
@@ -186,6 +196,14 @@
     "unpinSuccess": "Unpinned {{name}}",
     "pinFailed": "Failed to update pin state",
     "detailLoadFailed": "Failed to load app details",
+    "aiRoles": {
+      "title": "AI Roles",
+      "empty": "No AI roles declared",
+      "loadFailed": "Failed to load AI roles",
+      "agent": "Single-role session",
+      "team": "Team session",
+      "leader": "Leader"
+    },
     "backToAll": "Back to All Apps",
     "backToMarket": "Back to App Plaza",
     "sourceHub": "Hub",
@@ -288,6 +306,11 @@
     "stopSuccess": "App stopped",
     "stopFailed": "Failed to stop",
     "deleteSuccess": "App deleted",
+    "removeKeepFiles": "Remove and keep files",
+    "deleteCleanFiles": "Delete and clean files",
+    "removeKeepSuccess": "Removed from App Market; local files kept",
+    "deleteCleanSuccess": "App deleted and local files cleaned",
+    "deleteCleanConfirm": "Delete “{{name}}” and clean its local files? The project is not affected.",
     "uninstallCleanupWarning": "The app was removed from App Market. Local cleanup was incomplete. Check {{directory}}.",
     "deleteFailed": "Failed to delete",
     "deleteConfirm": "Are you sure you want to delete this app? Running instances will be stopped.",
@@ -1351,6 +1374,12 @@
       "preferred_language": {
         "title": "Language",
         "description": "Set the display language for the application interface."
+      },
+      "max_context_size_mb": {
+        "title": "Knowledge capacity (MB)",
+        "description": "After collection, trim over-limit content to 60%.",
+        "placeholder": "10 to 10000, default 50",
+        "invalid": "Enter a whole number from 10 to 10000 MB."
       },
       "chrome_path": {
         "title": "Browser path",
@@ -2626,6 +2655,16 @@
     "skillsAdd": "Add to composer",
     "skillsRemove": "Remove",
     "agent": "Experts",
+    "expertBatchTitle": "Expert team collaboration",
+    "expertBatchExisting": "Added",
+    "expertBatchCreating": "Starting expert teams…",
+    "expertBatchOwner": "Primary expert team",
+    "expertBatchConfirm": "Confirm ({{count}})",
+    "expertBatchUnknownError": "Unknown error",
+    "expertBatchError": "Could not start teams: {{error}}. Retry safely; created teams will be reused.",
+    "expertBatchRequestFailed": "Could not start expert teams. View details",
+    "expertBatchSummary": "Expert teams: {{success}} succeeded, {{failed}} failed",
+    "expertBatchStatus": {"created": "Started", "existing": "Already added; reused", "failed": "Failed"},
     "agentGroup": "Expert Teams",
     "agentToggle": "Choose an installed Expert",
     "agentSearchPlaceholder": "Enter keywords to search",
@@ -3805,6 +3844,8 @@
       "createdNodes": "Added {{nodes}} nodes ({{files}} files) in this run",
       "updatedNodes": "Updated {{count}} nodes",
       "noNewContent": "No new content",
+      "capacityRemoved": "Capacity maintenance removed {{count}} content files",
+      "capacityIncomplete": "Capacity maintenance is incomplete. Knowledge may still exceed the limit",
       "collectionDisabledHint": "Enable Personal Context and content collection in settings before fetching now.",
       "collectionStoppingHint": "Collection is stopping. Wait until it has stopped and try again.",
       "statePartial": "Partially completed: {{completed}}/{{total}}, {{failed}} failed",
@@ -4663,8 +4704,8 @@
     }
   },
   "agent": {
-    "title": "Agent Management",
-    "subtitle": "View agent workspace files and memory content",
+    "title": "Workspace",
+    "subtitle": "View usage, clean deletable files, and preview or download workspace content",
     "root": "Root",
     "workspace": "Workspace",
     "workspaceMeta": "{{directories}} directories, {{files}} files",
@@ -4680,8 +4721,69 @@
     "markdownOnly": "Only Markdown/JSON (.md/.mdx/.json) preview is supported",
     "errors": {
       "refreshFailed": "Refresh failed: unable to rebuild the agent file index. Check the generator script logs.",
-      "loadFailed": "Unable to read the agent file list. Check whether agent/workspace/agent-data.json has been generated."
-    }
+      "loadFailed": "Unable to read the agent file list. Check whether agent/workspace/agent-data.json has been generated.",
+      "deleteFailed": "Delete failed",
+      "downloadFailed": "Download failed"
+    },
+    "binaryPreview": "Binary files have no text preview. Use Download.",
+    "confirmDelete": "Delete \"{{name}}\"? This cannot be undone.",
+    "deletable": "Deletable",
+    "delete": "Delete",
+    "deleteConfirmTitle": "Confirm delete",
+    "dirSelectedHint": "Folder selected. Download as zip, or delete the subtree when allowed.",
+    "download": "Download",
+    "emptyDeletable": "Nothing deletable (cleanup zones are empty)",
+    "filterDeletable": "Deletable only",
+    "meta": {
+      "zone": "Zone",
+      "size": "Size",
+      "mtime": "Modified",
+      "deletable": "Deletable"
+    },
+    "notDeletableReason": "Protected zone — cannot delete",
+    "previewEmpty": "No preview content",
+    "previewTruncated": "Preview truncated. Download for the full file.",
+    "quota": {
+      "title": "Workspace usage",
+      "ok": "OK",
+      "warn": "Near limit",
+      "block": "Full",
+      "unlimited": "Unlimited",
+      "unavailable": "Usage unavailable",
+      "requestExpand": "Request expansion",
+      "expandHint": "Submit an expansion request to the admin plane",
+      "expandIdleHint": "Expansion is not needed while usage is healthy",
+      "expandUnlimitedHint": "Quota is unlimited; expansion is not applicable",
+      "expandSoon": "Expansion requests will connect to admin approval soon. Clean deletable files first, or ask an admin to raise the quota.",
+      "expandTitle": "Request workspace expansion",
+      "expandDialogHint": "Enter the target quota (GiB) and a reason. The new limit takes effect after approval.",
+      "expandLimitLabel": "Target quota (GiB)",
+      "expandReasonLabel": "Reason",
+      "expandApproverLabel": "Approver",
+      "expandApproverPlaceholder": "Select an approver",
+      "expandApproverSearch": "Search by user ID or display name",
+      "expandApproverNoMatch": "No matching approvers",
+      "expandApproverRequired": "Please select an approver",
+      "expandApproverEmpty": "No approvers available. Ask an admin to grant approval permission.",
+      "expandApproverLoadFailed": "Failed to load approvers",
+      "expandSubmit": "Submit request",
+      "expandInvalidLimit": "Enter a valid target quota in GiB",
+      "expandReasonRequired": "Please provide a reason",
+      "expandMustIncrease": "Target quota must be greater than the current limit",
+      "expandFailed": "Failed to submit expansion request",
+      "expandSubmittedTitle": "Request submitted",
+      "expandSubmittedBody": "Your expansion request was submitted. The new quota takes effect after approval. Track progress under <approvals>My Requests</approvals>.",
+      "expandViewApprovals": "View My Requests",
+      "expandSubmitted": "Expansion request submitted. The new quota takes effect after approval — track progress under My Requests in the sidebar.",
+      "expandContextRequired": "Select an Agent context (cluster and bot) before requesting expansion",
+      "openWorkspace": "Open workspace",
+      "chatWarnTitle": "Workspace nearly full",
+      "chatWarnBody": "Over 80% of quota used. Clean session artifacts or request expansion.",
+      "chatBlockTitle": "Workspace full — writes blocked",
+      "chatBlockBody": "Quota exhausted. Clean deletable files or request expansion before sending messages."
+    },
+    "selectEntry": "Select a file or folder on the left to view metadata",
+    "selectEntryHint": "Click an entry to see path, zone, and size. Files can be previewed or downloaded."
   },
   "agentManagement": {
     "title": "Expert Management",
@@ -5759,7 +5861,9 @@
     "errors": {
       "delete": "Failed to delete conversation",
       "create": "Failed to create conversation",
-      "send": "Failed to send message"
+      "send": "Failed to send message",
+      "quotaExceededTitle": "Workspace is full",
+      "quotaExceeded": "Unable to create a new conversation. Clean deletable files in <space>Workspace</space>, or <expand>request expansion</expand> and try again."
     }
   },
   "subagent": {
@@ -7975,15 +8079,19 @@
     "holdToSkip": "Hold Space to skip"
   },
   "webuiPresentation": {
+    "autoStartBusy": "An application form is already in use. Close it, then enable the floating plugin again.",
+    "closeOverlay": "Close floating form",
     "enter": "Open {{title}}",
-    "opening": "Opening desktop form…",
-    "desktopRequired": "Application forms require the desktop app",
+    "opening": "Opening application form…",
+    "desktopRequired": "Desktop forms require the desktop app",
     "newConversation": "New conversation",
-    "openFailed": "Unable to open the desktop form. The workspace is still available.",
-    "updateFailed": "Unable to update the desktop form. Check the connection in the workspace.",
+    "openFailed": "Unable to open the application form. The workspace is still available.",
+    "updateFailed": "Unable to update the application form. Check the connection in the workspace.",
     "actionFailed": "The action did not complete. Check the conversation status.",
     "restored": "The desktop form ended and the workspace was restored",
     "errors": {
+      "DESKTOP_REQUIRED": "This form requires the desktop app.",
+      "UNSUPPORTED_ACTION": "This action is unavailable for an in-app form.",
       "DISCONNECTED": "Disconnected. Return to the workspace.",
       "TARGET_INACTIVE": "This conversation is unavailable. Select another one.",
       "CONVERSATION_BUSY": "This conversation is running or awaiting confirmation. Complete the current action first.",
@@ -8054,5 +8162,62 @@
   },
   "workspace": {
     "selectFilesUnavailable": "The backend did not register path.select_files. Restart jiuwenswarm-start and try again."
+  },
+  "approvals": {
+    "myTitle": "My requests",
+    "mySubtitle": "View and manage approval requests you submitted",
+    "unavailable": "Requests are unavailable in the current environment",
+    "empty": "No requests yet",
+    "loadFailed": "Failed to load requests",
+    "cancelFailed": "Failed to cancel request",
+    "cancel": "Cancel",
+    "resubmit": "Edit and resubmit",
+    "resubmitTitle": "Resubmit request",
+    "resubmitHint": "Update the request and resubmit. This revises the same request.",
+    "resubmitSubmit": "Resubmit",
+    "resubmitFailed": "Failed to resubmit",
+    "rejectComment": "Rejection comment",
+    "currentQuota": "Current quota",
+    "approvers": "Approvers",
+    "copyLink": "Copy approval link",
+    "copyLinkSuccess": "Approval link copied",
+    "copyLinkFailed": "Failed to copy approval link",
+    "copyOrderNum": "Click to copy order number",
+    "copyOrderNumSuccess": "Order number copied",
+    "copyOrderNumFailed": "Failed to copy order number",
+    "stats": {
+      "total": "Total {{count}}"
+    },
+    "search": {
+      "placeholder": "Search by order number, title, or reason",
+      "noResults": "No matching requests"
+    },
+    "filter": {
+      "reset": "Clear filters"
+    },
+    "table": {
+      "title": "Title",
+      "orderNum": "Order No.",
+      "type": "Type",
+      "summary": "Summary",
+      "requestedQuota": "Requested quota",
+      "approver": "Current approver",
+      "reason": "Reason",
+      "status": "Status",
+      "createdAt": "Submitted",
+      "actions": "Actions"
+    },
+    "status": {
+      "pending": "Pending",
+      "approved": "Approved",
+      "rejected": "Rejected",
+      "cancelled": "Cancelled"
+    },
+    "business": {
+      "workspace_quota_expand": "Workspace expansion"
+    },
+    "summary": {
+      "quotaExpand": "Requested quota {{size}}"
+    }
   }
 }
