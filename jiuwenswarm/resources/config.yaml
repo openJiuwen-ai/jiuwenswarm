@@ -950,7 +950,7 @@ gateway:
     # 以下两项仅在 store_backend=etcd 时生效，由 load_cron_store_settings 读取。
     # 留空表示未配置 etcd 地址：store_backend=etcd 而此处为空时不回退到文件，
     # 直接报错。值为逗号分隔的字符串或列表。
-    etcd_endpoints:
+    etcd_endpoints: ${ETCD_ENDPOINTS:-}
     # 作业键前缀，与 EtcdCronJobStore 的默认值一致。
     etcd_prefix: /jiuwenswarm/cron/jobs/
 
