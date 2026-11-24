@@ -19,15 +19,17 @@ _installed = False
 
 
 def install_default_adapters() -> None:
-    """幂等安装默认适配器（当前：skill；后续 kind 逐期追加）。"""
+    """幂等安装默认适配器（当前：skill / agent_template / agent_group）。"""
     global _installed
     if _installed:
         return
-    # 延迟导入：适配器依赖各自业务模块（如 skill_manager），避免包加载
-    # 期引入重依赖与潜在循环。
+    # 延迟导入：适配器依赖各自业务模块（如 skill_manager、扩展包管理），
+    # 避免包加载期引入重依赖与潜在循环。
+    from jiuwenswarm.server.runtime.assets.adapters.agent import register_agent_adapters
     from jiuwenswarm.server.runtime.assets.adapters.skill import SkillAssetAdapter
 
     register_asset_adapter(SkillAssetAdapter())
+    register_agent_adapters()
     _installed = True
 
 
