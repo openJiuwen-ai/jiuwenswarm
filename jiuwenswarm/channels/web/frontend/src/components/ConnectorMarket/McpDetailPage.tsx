@@ -231,19 +231,15 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   const connectorName = connector.name;
   const runtimeDefaults = defaultsView?.runtime ?? [];
   const isDefaultOn = runtimeDefaults.includes(connectorName);
-  const defaultMax = defaultsView?.max ?? 10;
-  const defaultsAtMax = !isDefaultOn && runtimeDefaults.length >= defaultMax;
   const defaultsUnavailable = isDefaultOn
     ? (defaultsView?.unavailable ?? []).includes(connectorName)
     : false;
-  const defaultSwitchDisabled = !linked || defaultsBusy || !defaultsView || defaultsAtMax;
+  const defaultSwitchDisabled = !linked || defaultsBusy || !defaultsView;
   const defaultSwitchTitle = !linked
     ? t('connectorMarket.detail.defaultSwitch.disabledDisconnected')
-    : defaultsAtMax
-      ? t('connectorMarket.detail.defaultSwitch.disabledMax', { max: defaultMax })
-      : !defaultsView
-        ? t('connectorMarket.detail.defaultSwitch.loadError')
-        : undefined;
+    : !defaultsView
+      ? t('connectorMarket.detail.defaultSwitch.loadError')
+      : undefined;
 
   async function handleToggleDefault(next: boolean) {
     if (!defaultsView || defaultsBusy) return;

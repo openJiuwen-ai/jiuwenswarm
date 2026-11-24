@@ -7,7 +7,7 @@ import { webRequest } from './webClient';
 //
 // get 返回单一来源视图（2026-11-24 社区简化：预置层已删，仅剩 state.json
 // is_default）：mcp=生效默认集（活标记，已按活性过滤）；runtime=state.json 里所有
-// 被标记的（含断连）；unavailable=被标记但当前不可用的子集；max=默认数量上限。
+// 被标记的（含断连）；unavailable=被标记但当前不可用的子集。
 //
 // set 是 PUT 语义：mcp 传"完整期望清单"（不是增量），后端在单锁内原子替换全部
 // is_default 标记；每个名字必须已连接（connected/connecting），否则 BAD_REQUEST。
@@ -17,7 +17,6 @@ export interface EquipmentDefaultsView {
   mcp: string[];
   runtime: string[];
   unavailable?: string[];
-  max?: number;
 }
 
 export async function getEquipmentDefaults(): Promise<EquipmentDefaultsView> {

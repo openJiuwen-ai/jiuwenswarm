@@ -168,7 +168,6 @@ class TestSessionEquipmentDefaultsHandlers:
         assert payload["mcp"] == ["live-y"]
         assert payload["runtime"] == ["dead-z", "live-y"]
         assert payload["unavailable"] == ["dead-z"]
-        assert payload["max"] == 10
         # The yaml preset layer was dropped (2026-11-24): no preset/inherit keys.
         assert "preset" not in payload
         assert "inherit" not in payload
@@ -205,19 +204,6 @@ class TestSessionEquipmentDefaultsHandlers:
         ok, payload = await _resp_payload(ctx)
         assert ok is False
         assert payload["code"] == "BAD_REQUEST"
-
-    async def test_set_rejects_over_limit(self, monkeypatch) -> None:
-        from jiuwenswarm.server.handlers import session as session_handlers
-        from jiuwenswarm.server.runtime.mcp import state_store as ss
-
-        monkeypatch.setattr(ss, "get_mcp_record", lambda name: {"state": "connected"})
-        ctx = _ctx({"mcp": [f"mcp-{i}" for i in range(11)]})
-        await session_handlers.handle_session_equipment_defaults_set(ctx)
-
-        ok, payload = await _resp_payload(ctx)
-        assert ok is False
-        assert payload["code"] == "BAD_REQUEST"
-        assert "10" in payload["error"]
 
     @pytest.mark.parametrize(
         "record,needle",

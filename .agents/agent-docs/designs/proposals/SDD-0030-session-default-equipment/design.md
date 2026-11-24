@@ -76,8 +76,8 @@ MCP state store（`server/runtime/mcp/state_store.py`）每条记录新增 `is_d
 
 ### 2.3 RPC：`session_equipment.defaults.get/set`（双通道）
 
-- **get** → `{mcp: 生效名单, runtime: 全部标记, unavailable: 标记但断连, max: 10}`；
-- **set** 参数 `{mcp: [...]}`：PUT 语义原子替换。校验链：必须 list → 条目 string → strip/去重 → ≤10 → 每名必须有活记录（否则 `BAD_REQUEST`，错误带具体名字与状态）；KeyError → `MCP_NOT_FOUND`；
+- **get** → `{mcp: 生效名单, runtime: 全部标记, unavailable: 标记但断连}`；
+- **set** 参数 `{mcp: [...]}`：PUT 语义原子替换。校验链：必须 list → 条目 string → strip/去重 → 每名必须有活记录（否则 `BAD_REQUEST`，错误带具体名字与状态）；KeyError → `MCP_NOT_FOUND`。数量不设上限（2026-11-24 评审决定：数量由用户自行控制）；
 - **双通道共享核心**（`handlers/session.py` `read/apply_session_equipment_defaults_payload`，WS 与 HTTP 不可能漂移）：
   - WS 聊天线：`JiuWenSwarm.process_message` 的 `_handle_session_equipment_defaults_request`，在 adapter 创建前应答（`_SESSION_ASSET_ROUTES` 同款模式；不接线的合法 ReqMethod 会落入聊天路径按空 query 触发 LLM 调用）；
   - HTTP：`dispatch.py` HANDLERS 注册（`agent_http_routes` 消费）；
@@ -106,7 +106,6 @@ MCP state store（`server/runtime/mcp/state_store.py`）每条记录新增 `is_d
 
 ## 3. 防护
 
-- **数量上限 10**（`_EQUIPMENT_DEFAULTS_MAX`）：防默认连接器的 tool schema 挤占新会话上下文；
 - **set 拒绝断连名**：断连项在回填时本就静默失效，写入时报错让用户当场修正（先重连再设）；
 - **读取异常降级为空**：默认装备不能成为 `chat.send` 的故障源；
 - **`is_default` 与 TUI `enabled` 独立**：前者是 web 新会话默认，后者是 TUI 全局加载开关，互不污染。

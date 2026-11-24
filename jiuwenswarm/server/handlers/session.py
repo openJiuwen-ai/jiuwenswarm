@@ -1576,10 +1576,6 @@ def get_conversation_history_cursor(
 # Session default equipment (web): global default MCP set for fresh sessions
 # ---------------------------------------------------------------------------
 
-# Default equipment size cap: keeps tool schemas from flooding fresh
-# session context with too many default MCPs.
-_EQUIPMENT_DEFAULTS_MAX = 10
-
 
 class EquipmentDefaultsError(ValueError):
     """Validation failure carrying a stable machine-readable code."""
@@ -1614,7 +1610,6 @@ async def read_session_equipment_defaults_payload() -> dict[str, Any]:
         "mcp": effective,
         "runtime": flagged,
         "unavailable": unavailable,
-        "max": _EQUIPMENT_DEFAULTS_MAX,
     }
 
 
@@ -1625,8 +1620,7 @@ async def apply_session_equipment_defaults_payload(params: dict) -> dict[str, An
     flags are replaced atomically). Every name must have a live
     (connected/connecting) state.json record — a default entry for a
     disconnected MCP would silently no-op at restore time, so reject it here
-    where the user can see the error. The config.yaml preset layer is not
-    touched (operator-managed).
+    where the user can see the error.
     """
     raw = params.get("mcp")
     if not isinstance(raw, list):
@@ -1641,10 +1635,6 @@ async def apply_session_equipment_defaults_payload(params: dict) -> dict[str, An
             continue
         seen.add(name)
         names.append(name)
-    if len(names) > _EQUIPMENT_DEFAULTS_MAX:
-        raise EquipmentDefaultsError(
-            f"too many default mcps: {len(names)} > {_EQUIPMENT_DEFAULTS_MAX}"
-        )
 
     from jiuwenswarm.server.runtime.mcp.state_store import (
         get_mcp_record,

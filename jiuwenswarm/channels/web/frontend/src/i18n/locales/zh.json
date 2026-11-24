@@ -5950,7 +5950,6 @@
         "hint": "勾选后，新会话将自动使用此连接器",
         "unavailableHint": "已设为默认，但当前未连接，新会话会跳过此项",
         "disabledDisconnected": "连接后可设为默认",
-        "disabledMax": "默认装备已达上限（{{max}}）",
         "loadError": "默认装备读取失败，请稍后重试"
       },
       "cliSpecPresentHint": "支持命令行驱动",

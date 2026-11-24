@@ -97,7 +97,6 @@ Semantics:
 - Priority: explicit request params > session equipment snapshot > global defaults. Defaults seed a session only when it has **no snapshot** and the message omits `mcp`; after the first successful turn the snapshot takes over, so later default-list changes never affect existing sessions.
 - Manually clearing equipment inside a session (sending `mcp: []`) is never back-filled by defaults.
 - Disconnected default MCPs are silently skipped in new sessions and resume automatically once reconnected.
-- The default set is capped at 10 to keep default tool schemas from flooding fresh session context.
 - Clearing the default list (unchecking every **Use by default**) restores per-session manual selection.
 ---
 ## CLI Connector Authorization
