@@ -918,6 +918,7 @@ generated: true
 | [B_20261126_1052_team-memory-rail-race](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261126_1052_team-memory-rail-race.md) | B | Team 订阅与用户请求并发卸载记忆 Rail | Wang Tao | 无独立 D：按已确认的最小修复方案恢复被动订阅和记忆生命周期契约，无独立新设计。 |
 | [B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple](bugfix/jiuwenswarm/agents/harness/common/rails/B_20261126_1625_enterprise-cron-permission-rail-a4p-decouple.md) | B | 企业版 Cron 权限护栏与 A4P 解耦，ask 无人值守 fail-closed | zhangxiangyu52 | 无独立 D：无独立 D：依据企业版安全护栏与定时任务无人值守契约的既有产品要求及 PR |
 | [B_20261124_1214_skill-index-refresh-event-loop-block](bugfix/jiuwenswarm/server/runtime/skill/B_20261124_1214_skill-index-refresh-event-loop-block.md) | B | Skill 安装与索引刷新同步 rglob 扫描阻塞 Worker 事件循环 | Xiangju Zhu | 无独立 D：针对异步事件循环被同步磁盘扫描阻塞的运行时缺陷修复，不改变外部 RPC 协议与 agent-data.json 产物格式，无独立前置设计文档。 |
+| [B_20261126_1052_team-memory-rail-race](bugfix/jiuwenswarm/server/runtime/agent_adapter/B_20261126_1052_team-memory-rail-race.md) | B | Team 订阅与用户请求并发卸载记忆 Rail | Wang Tao | 无独立 D：按已确认的最小修复方案恢复被动订阅和记忆生命周期契约，无独立新设计。 |
 | [S_01_app-agent-interaction](specs/mcpApps/S_01_app-agent-interaction.md) | S | MCP App 到 Agent 交互规约 | LI Jinyang | — |
 | [S_01_team-goal-config](specs/jiuwenswarm/agents/harness/team/S_01_team-goal-config.md) | S | Swarm 团队 Goal 配置契约 | alan_cheng | — |
 | [S_01_tool-discovery-language](specs/jiuwenswarm/agents/harness/common/tools/S_01_tool-discovery-language.md) | S | 渐进式工具发现语言与原始执行契约 | MengHan18 | — |

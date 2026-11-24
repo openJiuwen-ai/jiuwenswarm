@@ -47,7 +47,7 @@ design_note: 针对异步事件循环被同步磁盘扫描阻塞的运行时缺�
   - 新增 `SkillManager._refresh_agent_data_indexes_async()`（内部调用 `asyncio.to_thread(self._refresh_agent_data_indexes)`）。
   - 将上述所有受影响的 `async` RPC 入口的同步解压/落盘/`inventory_mutex` 提交/未管理技能登记/索引刷新统一通过 `asyncio.to_thread` 下沉到工作线程执行，确保锁获取与释放在同一工作线程内闭环。
   - `_install_imported_skill_dir` 改为在工作线程内使用 `_SKILL_IMPORT_LOCK_TIMEOUT_SECONDS = 5.0` 有界等待 `inventory_mutex`（与 `skills.toggle` 保持一致），使并发导入请求能够有序排队完成；若超时，各导入入口统一捕获 `InventoryLockTimeout` 返回结构化 `SKILL_INVENTORY_BUSY`，且 `handle_skills_import_upload` 保留已上传 zip 供用户重试。
-  - 为非企业版 `state_transaction()` 与状态写方法补充进程内按 `skills_state.json` 路径隔离的 `threading.RLock`（最外层进入时重载磁盘状态），消除 `skills.list` 未管理技能补登记与并发导入/安装线程之间的 `skills_state.json` 覆盖竞态。
+  - 为非企业版 `state_transaction()` 与状态写方法补充进程内按 `skills_state.json` 路径隔离的 `threading.RLock`（不触发非企业版磁盘重载，兼容内存态 `marketplaces` 注入），消除 `skills.list` 未管理技能补登记与并发导入/安装线程之间的 `skills_state.json` 覆盖竞态。
   - 对 `interface.py`（`finalize_create_from_knowledge`）与 `skillpack_install.py`（`_commit_staged_records`）的 `to_thread` future 增加 `asyncio.shield` 保护：遇到 `CancelledError` 时先等待已启动的工作线程收尾，再允许外层 `finally` / `TemporaryDirectory` 清理临时目录。
 - **备选与拒绝原因**：
   - 仅做后台 fire-and-forget 异步刷新被拒绝：部分调用方与前端在安装返回后立即可读取 `agent-data.json`（及测试断言落盘顺序），改为 `await asyncio.to_thread(...)` 既保证事件循环心跳持续活跃，又维持返回即索引就绪的强一致契约。

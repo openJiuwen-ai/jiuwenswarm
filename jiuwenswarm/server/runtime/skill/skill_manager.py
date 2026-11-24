@@ -365,7 +365,6 @@ _REBUILD_FILE_LOCK = threading.Lock()
 _AGENT_DATA_WRITE_LOCK = threading.Lock()
 _LOCAL_STATE_LOCKS_GUARD = threading.Lock()
 _LOCAL_STATE_LOCKS: dict[str, threading.RLock] = {}
-_LOCAL_STATE_TX_DEPTH = threading.local()
 
 
 def _get_local_state_lock(state_file: Path) -> threading.RLock:
@@ -12986,22 +12985,7 @@ class SkillManager:
         """
         if not is_enterprise() or not self._persist_skills_state:
             with _get_local_state_lock(self._state_file):
-                depth_map: dict[str, int] = getattr(_LOCAL_STATE_TX_DEPTH, "depths", None)
-                if depth_map is None:
-                    depth_map = {}
-                    _LOCAL_STATE_TX_DEPTH.depths = depth_map
-                key = str(self._state_file.resolve())
-                depth = depth_map.get(key, 0)
-                depth_map[key] = depth + 1
-                try:
-                    if depth == 0 and self._persist_skills_state:
-                        self._state = self._load_state()
-                    yield
-                finally:
-                    if depth == 0:
-                        depth_map.pop(key, None)
-                    else:
-                        depth_map[key] = depth
+                yield
             return
         with skill_state_lock(self._state_file) as outermost:
             if outermost:
