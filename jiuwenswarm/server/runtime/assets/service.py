@@ -35,6 +35,7 @@ from jiuwenswarm.server.runtime.assets.contract import (
     build_export_filename,
     parse_export_params,
     parse_import_params,
+    sanitize_export_stem,
     validate_asset_id,
 )
 from jiuwenswarm.server.runtime.assets.errors import AssetError, AssetErrorCode
@@ -92,7 +93,12 @@ def export_asset(
 
     export_root = assets_export_root()
     prune_stale_entries(export_root)
-    filename = build_export_filename(asset_id, source.version or version)
+    # 下载文件名主干优先取 UI 显示名（与界面列表一致），缺省回退 asset_id；
+    # 显示名先经 sanitize 清洗，产物不含路径分隔符与文件名特殊字符，必然通过
+    # build_export_filename 内部的安全校验。包内顶层目录仍为 asset_id
+    # （root_name 单独传入），不受下载文件名影响。
+    filename_stem = sanitize_export_stem(source.display_name) or asset_id
+    filename = build_export_filename(filename_stem, source.version or version)
     # 每次导出落独立子目录：并发导出同一资产不互相覆盖；子目录名随机，
     # 包文件 basename 保持契约文件名（下载端按 basename 生成
     # Content-Disposition）。
@@ -105,6 +111,7 @@ def export_asset(
             zip_path,
             root_name=asset_id,
             exclude_paths=source.exclude_paths,
+            extra_files=source.extra_files,
         )
         info = build_file_download_info(
             str(zip_path),

@@ -11,7 +11,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from types import MappingProxyType
+from typing import Mapping, Protocol, runtime_checkable
 
 from jiuwenswarm.server.runtime.assets.contract import AssetKind
 
@@ -24,6 +25,8 @@ class ExportSource:
     asset_id: str  # 包内顶层目录名，必须与 <id> 严格一致
     version: str | None = None  # 适配器确认的实际版本；导出文件名据此构造
     exclude_paths: tuple[Path, ...] = ()  # 源内需额外排除的运行时文件
+    display_name: str = ""  # UI 显示名；下载文件名主干优先用它，缺省回退 asset_id
+    extra_files: Mapping[str, bytes] = MappingProxyType({})  # 打包时补充的额外文件（包内相对路径→字节内容），只进 zip 不回写源目录
 
 
 @dataclass(frozen=True)

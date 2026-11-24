@@ -29,6 +29,7 @@ import re
 import stat
 import zipfile
 from collections.abc import Iterator, Mapping
+from types import MappingProxyType
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -555,6 +556,26 @@ class PackedDirectory:
     excluded: tuple[str, ...]  # 被安全过滤剔除的源内相对路径
 
 
+def _extra_entry_name(root_name: str, rel: str) -> str:
+    """校验调用方补充文件的包内相对路径并换算 zip 条目名。
+
+    只接受规范化的非空 POSIX 相对路径：拒绝绝对路径、``..``、反斜杠
+    与 ``./x``、``a//b`` 等非规范写法；条目名与源内文件同样受单层根
+    目录约束。
+    """
+    posix = PurePosixPath(rel) if isinstance(rel, str) else None
+    if (
+        posix is None
+        or not rel.strip()
+        or "\\" in rel
+        or posix.is_absolute()
+        or ".." in posix.parts
+        or posix.as_posix() != rel
+    ):
+        raise ValueError(f"invalid extra file path: {rel!r}")
+    return f"{root_name}/{posix.as_posix()}"
+
+
 def pack_directory_single_root(
     source: Path,
     zip_path: Path,
@@ -562,6 +583,7 @@ def pack_directory_single_root(
     root_name: str | None = None,
     limits: ArchiveLimits = ArchiveLimits(),
     exclude_paths: tuple[Path, ...] = (),
+    extra_files: Mapping[str, bytes] = MappingProxyType({}),
 ) -> PackedDirectory:
     """导出场景：把 source 打成 ``<root_name>/…`` 的纯净单层根目录 zip。
 
@@ -569,6 +591,11 @@ def pack_directory_single_root(
     嵌套发布外壳（plugin.yaml 等由发布场景自行追加，导出禁止）。与发布
     场景共用同一套安全收集，并扫描环境模板凭证。过滤后无文件可打包时抛
     ``EMPTY_SOURCE``（资产包内容缺失属上游校验问题，由入口收敛）。
+
+    ``extra_files`` 为调用方补充的内存文件（包内相对路径 → 字节内容），
+    写入 ``<root_name>/<rel>``，与源内文件一并计入限额与产物摘要，如
+    导出链路按 manifest 代生成的 README.md；相对路径非法或与源内条目
+    重名抛 ``ValueError``（属调用方错误，入口按参数非法收敛）。
     """
     source = Path(source)
     if source.is_symlink():
@@ -585,6 +612,11 @@ def pack_directory_single_root(
     entries = {
         f"{root_name}/{path.relative_to(source).as_posix()}": path for path in files
     }
+    for rel, data in extra_files.items():
+        arcname = _extra_entry_name(root_name, rel)
+        if arcname in entries:
+            raise ValueError(f"extra file conflicts with source content: {rel!r}")
+        entries[arcname] = data
     if not entries:
         raise SafeArchiveError("EMPTY_SOURCE")
     artifact = write_zip_entries(entries, Path(zip_path), limits=limits)

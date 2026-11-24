@@ -41,6 +41,8 @@ class _FakeAdapter:
         marker: str = "expert.json",
         source_dir: Path | None = None,
         version: str | None = None,
+        display_name: str = "",
+        extra_files: dict[str, bytes] | None = None,
         missing: bool = False,
         forbidden: bool = False,
         conflict_code: str | None = None,
@@ -49,6 +51,8 @@ class _FakeAdapter:
         self.marker = marker
         self.source_dir = source_dir
         self.version = version
+        self.display_name = display_name
+        self.extra_files = extra_files or {}
         self.missing = missing
         self.forbidden = forbidden
         self.conflict_code = conflict_code
@@ -65,6 +69,8 @@ class _FakeAdapter:
             source_dir=self.source_dir,
             asset_id=local_id,
             version=self.version or version,
+            display_name=self.display_name,
+            extra_files=self.extra_files,
         )
 
     def sniff_package(self, package_dir: Path) -> bool:
@@ -186,6 +192,105 @@ def test_export_happy_path(workspace, isolated_registry, agent_source, monkeypat
     assert payload["sha256"] == hashlib.sha256(zip_path.read_bytes()).hexdigest()
     with zipfile.ZipFile(zip_path) as archive:
         assert archive.namelist() == ["my-expert/README.md", "my-expert/expert.json"]
+
+
+def test_export_includes_adapter_extra_files(
+    workspace, isolated_registry, agent_source, monkeypatch
+):
+    """适配器补充的 extra_files（如导出链路代生成的 README）随单根打包
+    进 zip，包内顶层目录仍为 asset id，产物摘要按最终包计算。"""
+    captured: dict = {}
+
+    def fake_download_info(file_path, file_name, **kwargs):
+        captured.update(file_path=file_path)
+        return {"download_url": "/file-api/download?token=fake"}
+
+    monkeypatch.setattr(service, "build_file_download_info", fake_download_info)
+    (agent_source / "README.md").unlink()  # 模拟本地创建包：源内无 README
+    readme = "# 示例专家\n\n示例描述\n".encode("utf-8")
+    isolated_registry.register_asset_adapter(
+        _FakeAdapter(source_dir=agent_source, extra_files={"README.md": readme})
+    )
+
+    payload = service.export_asset({"kind": "agent_template", "local_id": "my-expert"})
+
+    zip_path = Path(captured["file_path"])
+    with zipfile.ZipFile(zip_path) as archive:
+        assert archive.namelist() == ["my-expert/README.md", "my-expert/expert.json"]
+        assert archive.read("my-expert/README.md") == readme
+    assert payload["size_bytes"] == zip_path.stat().st_size
+    assert payload["sha256"] == hashlib.sha256(zip_path.read_bytes()).hexdigest()
+
+
+def test_export_filename_prefers_display_name(
+    workspace, isolated_registry, agent_source, monkeypatch
+):
+    """下载文件名优先 UI 显示名：包目录的 ``-<uuid>`` 内部后缀不进文件名，
+    包内顶层目录名仍为 asset id（导入契约不受显示名影响）。"""
+    captured: dict = {}
+
+    def fake_download_info(file_path, file_name, **kwargs):
+        captured.update(file_path=file_path)
+        return {"download_url": "/file-api/download?token=fake"}
+
+    monkeypatch.setattr(service, "build_file_download_info", fake_download_info)
+    isolated_registry.register_asset_adapter(
+        _FakeAdapter(source_dir=agent_source, display_name="测试专家")
+    )
+
+    payload = service.export_asset(
+        {"kind": "agent_template", "local_id": "test-expert-0f8fad5b-d9cb-469f"}
+    )
+    assert payload["filename"] == "测试专家.zip"
+    assert Path(captured["file_path"]).name == "测试专家.zip"
+    with zipfile.ZipFile(captured["file_path"]) as archive:
+        assert all(
+            name.startswith("test-expert-0f8fad5b-d9cb-469f/")
+            for name in archive.namelist()
+        )
+
+
+def test_export_filename_version_and_display_name_matrix(
+    workspace, isolated_registry, agent_source, monkeypatch
+):
+    """文件名矩阵：显示名 × 版本 四种组合全覆盖；显示名不可用时回退 asset_id。
+
+    版本后缀只来自包 manifest 实际版本（source.version）：显示名与版本
+    互不影响，包内顶层目录名始终为 asset_id（导入契约不受两者影响）。
+    """
+    captured: dict = {}
+
+    def fake_download_info(file_path, file_name, **kwargs):
+        captured.update(file_path=file_path, file_name=file_name)
+        return {"download_url": "/file-api/download?token=fake"}
+
+    monkeypatch.setattr(service, "build_file_download_info", fake_download_info)
+
+    def export(display_name: str, version: str | None) -> str:
+        isolated_registry.register_asset_adapter(
+            _FakeAdapter(
+                source_dir=agent_source, display_name=display_name, version=version
+            ),
+            replace=True,
+        )
+        return service.export_asset(
+            {"kind": "agent_template", "local_id": "my-expert"}
+        )["filename"]
+
+    # 有显示名 + 有版本：两者都进文件名
+    assert export("测试专家", "1.0.1") == "测试专家-1.0.1.zip"
+    assert Path(captured["file_path"]).name == "测试专家-1.0.1.zip"
+    with zipfile.ZipFile(captured["file_path"]) as archive:
+        assert all(name.startswith("my-expert/") for name in archive.namelist())
+    # 有显示名 + 无版本
+    assert export("测试专家", None) == "测试专家.zip"
+    # 无显示名：回退 asset_id，版本后缀照常
+    assert export("", "1.0.1") == "my-expert-1.0.1.zip"
+    assert export("", None) == "my-expert.zip"
+    # 显示名含文件名非法字符：清洗后仍可用
+    assert export('专家A:B*C?"<>|', None) == "专家A_B_C.zip"
+    # 显示名清洗后为空：回退 asset_id，版本后缀照常
+    assert export("***", "2.0") == "my-expert-2.0.zip"
 
 
 def test_export_prunes_stale_entries(workspace, isolated_registry, agent_source, monkeypatch):
