@@ -685,6 +685,7 @@ def _build_model_anomaly_detection(
             repeat_window_chars=rail_cfg.get("repeat_window_chars", 1024),
             single_char_repeat_count=rail_cfg.get("single_char_repeat_count", 100),
             tool_loop_compact=rail_cfg.get("tool_loop_compact"),
+            transient_max_retries=rail_cfg.get("transient_max_retries", 3),
         )
     except Exception as exc:
         logger.warning("[SwarmRails] ModelAnomalyDetectionRail create failed: %s", exc)
