@@ -11,6 +11,7 @@ modules:
   - jiuwenswarm/server/control/store
   - jiuwenswarm/channels/web/frontend
 files:
+  - jiuwenswarm/common/cron_session.py
   - jiuwenswarm/server/runtime/session/session_metadata.py
   - jiuwenswarm/server/control/store/project_queries.py
   - jiuwenswarm/server/control/repositories/session_repository.py
@@ -18,8 +19,10 @@ files:
   - jiuwenswarm/channels/web/frontend/src/multi-session/sidebar/useSidebarMenu.tsx
   - jiuwenswarm/channels/web/frontend/src/i18n/locales/zh.json
   - jiuwenswarm/channels/web/frontend/src/i18n/locales/en.json
+  - tests/unit_tests/common/test_cron_session.py
   - tests/unit_tests/server/test_session_metadata.py
   - tests/unit_tests/server/test_project_handlers.py
+  - tests/unit_tests/server/test_gateway_adapter.py
 ---
 
 # 缺 cron_id 的 cron 执行会话置顶后从侧边栏所有区域消失且无法取消置顶
@@ -29,8 +32,8 @@ files:
 ## 现象
 
 存在**缺 `cron_id` 元数据**的 cron 执行会话（存量旧版 team 定时任务执行会话，
-`channel_id="__cron__"`、session_id 形如 `__cron___<ts>_<rand>`）时，用户在
-侧边栏定时任务分组的会话列表里 hover 会话行点击置顶：
+`channel_id="__cron__"`、session_id 形如 `cron_<ts>_<job_id>`，job id 只嵌在
+目录名里）时，用户在侧边栏定时任务分组的会话列表里 hover 会话行点击置顶：
 
 1. 置顶"成功"（无任何报错）；
 2. 该会话从 cron 分组列表消失（列表排除 `pinned`）；
@@ -72,6 +75,8 @@ files:
    准入放宽为"`cron_id` 非空 **或** 目录名嵌 job id"，与 `get_cron_sessions`
    的准入语义对齐——修复前已被置顶"蒸发"的存量 `cron_<ts>_<job>` 会话自动
    回到置顶区，用户可在 UI 中取消置顶恢复。
+   准入与拒绝共用 `common.cron_session.cron_session_has_job_identity` 单一谓词，
+   任何一侧调整都会同步另一侧，避免两处判断再次漂移出新的可见性盲区。
 3. **错误可达**：`session_repository.handle_pin` 与 `SessionAdapter._handle_pin`
    把 `SessionPinRejection` 映射为 FORBIDDEN 错误响应（不再落入
    INTERNAL_ERROR）；前端 `toggleSessionPin` 对 FORBIDDEN 展示专门文案
@@ -86,6 +91,9 @@ files:
 - `pinned=False` 一律放行：包括缺身份的会话（存量已置顶数据的唯一恢复路径）。
 - `_cron_session_without_identity` 只认 `channel_id == "__cron__"`；web 渠道
   会话、目录名 job 形态的 cron 会话、有 `cron_id` 的会话不受影响。
+- 无身份且目录名非 job 形态的 `__cron___<ts>_<rand>` 会话从来不会出现在任何
+  侧边栏列表（cron 分组要求 `cron_id` 或名字匹配），因此不存在"UI 曾可置顶"
+  的存量实例；入口拒绝只为封死未来新增的同形会话。
 
 ## 验证
 
@@ -94,6 +102,13 @@ files:
   - `__cron___<ts>_<rand>` 无 cron_id → 拒绝（FORBIDDEN）且不落盘；
   - 有 cron_id / `cron_<ts>_<job>` / `cron_<job>` / web 渠道 → 放行；
   - 缺身份会话的 unpin 不受拦截。
+- 公共谓词（`tests/unit_tests/common/test_cron_session.py`）：
+  `cron_session_name_has_job` / `cron_session_has_job_identity` 的名字形态、
+  空白 cron_id 与非 cron 会话边界。
+- 错误映射（`test_gateway_adapter.py::TestSessionAdapter::
+  test_pin_rejection_maps_to_forbidden`）：真实 `SessionAdapter.handle`
+  分发（委托 `session_repository.handle_pin`）下 `SessionPinRejection`
+  返回 `code=FORBIDDEN`，不退化为 INTERNAL_ERROR。
 - 集成路径（`tests/unit_tests/server/test_project_handlers.py` `TestSessionPin`
   扩至 6 例）：
   - 缺身份会话 RPC 置顶返回 `ok=false, code=FORBIDDEN`，metadata 未写
@@ -117,3 +132,6 @@ files:
   单独处理。
 - 前端会话行的 pin 按钮对这类会话仍渲染（点击后被拒并提示）；未做置灰预判
   （需要前端知道 cron_id 缺失与否，Session 投影含 cron_id 字段，可后续增强）。
+- `SessionAdapter._handle_pin` 当前不参与 `handle()` 分发（`SESSION_PIN` 委托
+  `session_repository.handle_pin`）；其中保留的同源 FORBIDDEN 映射是防御性的，
+  避免未来路由回切时退化为 INTERNAL_ERROR。真实生效入口由上述 handler 测试覆盖。

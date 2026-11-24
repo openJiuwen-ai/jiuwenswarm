@@ -17,7 +17,10 @@ from agent_gateway.common.work_mode import (
     is_default_project_id,
 )
 
-from jiuwenswarm.common.cron_session import cron_session_matches_job
+from jiuwenswarm.common.cron_session import (
+    cron_session_has_job_identity,
+    cron_session_matches_job,
+)
 from jiuwenswarm.server.runtime.session import project_store
 from jiuwenswarm.server.runtime.session.lifecycle import projection as lifecycle_projection
 from jiuwenswarm.server.runtime.session.session_info import to_session_info
@@ -28,21 +31,6 @@ from jiuwenswarm.server.runtime.session.session_metadata import (
 from jiuwenswarm.server.runtime.session.work_mode import resolve_request_work_mode
 
 logger = logging.getLogger(__name__)
-
-
-def cron_session_name_has_job(session_id: str) -> bool:
-    """Whether a session directory name embeds a cron job id by convention.
-
-    Mirrors the ``cron_<job_id>`` / ``cron_<ts>_<job_id>`` shapes accepted by
-    ``common.cron_session.cron_session_matches_job`` without needing a job id
-    to compare against: the suffix after ``cron_`` must be non-empty for the
-    name to count as job-shaped. ``__cron___<ts>_<rand>`` ids never match —
-    they rely on the persisted ``cron_id`` instead.
-    """
-    sid = str(session_id or "").strip()
-    if not sid.startswith("cron_"):
-        return False
-    return bool(sid[len("cron_"):])
 
 
 def attribute_session_project(
@@ -244,8 +232,10 @@ def load_pinned_sessions() -> dict[str, Any]:
         if channel_id == "__cron__":
             # Name-shaped legacy team runs keep their job id in the directory
             # name; without the fallback they would be pinned yet invisible.
-            admitted = bool(session.get("cron_id")) or cron_session_name_has_job(
-                str(session.get("session_id") or "")
+            # Must stay identical to the predicate set_session_pinned rejects
+            # on, otherwise the two can disagree and reopen the black hole.
+            admitted = cron_session_has_job_identity(
+                session.get("session_id"), session.get("cron_id")
             )
         else:
             admitted = channel_id == "web"

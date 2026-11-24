@@ -25,6 +25,7 @@ from agent_gateway.common.mode_matrix import (
     is_team_mode,
 )
 
+from jiuwenswarm.common.cron_session import cron_session_has_job_identity
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 from jiuwenswarm.server.runtime.debug_trace.directives import strip_debug_directive
 from jiuwenswarm.server.runtime.session.work_mode import (
@@ -1962,24 +1963,15 @@ def _cron_session_without_identity(session_id: str, meta: dict[str, Any]) -> boo
     """Whether a cron execution session carries no resolvable job identity.
 
     True only for ``__cron__`` channel sessions whose ``cron_id`` metadata is
-    empty and whose directory name follows neither ``cron_<job_id>`` nor
-    ``cron_<ts>_<job_id>``. Sessions with a job identity can always be shown
-    by the pinned area or the cron group; identity-less ones cannot, which is
-    exactly the visibility black hole pin must not enter.
+    empty and whose directory name is not job-shaped either
+    (``cron_<job_id>`` / ``cron_<ts>_<job_id>``). The identity predicate is
+    shared with ``load_pinned_sessions`` so pin-time rejection and pinned-area
+    admission can never disagree: sessions with a job identity stay visible
+    after pinning, identity-less ones would vanish from every sidebar list.
     """
     if str(meta.get("channel_id") or "").strip() != "__cron__":
         return False
-    if str(meta.get("cron_id") or "").strip():
-        return False
-    sid = str(session_id or "").strip()
-    if sid.startswith("cron_") and sid[len("cron_"):]:
-        # cron_<ts>_<job_id> (legacy team per-run) and cron_<job_id> (tick)
-        # both embed the job id in the name, so the cron group fallback and
-        # the pinned-area admission can still see them.
-        return False
-    # __cron___<ts>_<rand> ids never match cron_session_matches_job and rely
-    # on the persisted cron_id; with cron_id empty they have no identity left.
-    return True
+    return not cron_session_has_job_identity(session_id, meta.get("cron_id"))
 
 
 # 会话级 pin 重编号全局序列化锁:保障「设置目标 → 收集所有置顶 → 重编号 → 写回」全过程原子性。
