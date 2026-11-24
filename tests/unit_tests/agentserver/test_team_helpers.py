@@ -175,7 +175,7 @@ def test_persist_team_compression_state_leader_persists_boundary(
     team_helpers._persist_team_compression_state(
         "web",
         "sess-team-compact",
-        "round-1",
+        1,
         {
             "status": "completed",
             "compact_summary": "压缩摘要正文",
@@ -189,7 +189,7 @@ def test_persist_team_compression_state_leader_persists_boundary(
     assert len(recorded) == 1
     call = recorded[0]
     assert call["session_id"] == "sess-team-compact"
-    assert call["request_id"] == "round-1"
+    assert call["request_id"] == "1"
     assert call["mode"] == "team"
     assert call["trigger"] == "auto"
     assert call["summary"] == "压缩摘要正文"
@@ -212,13 +212,147 @@ def test_persist_team_compression_state_member_carries_attribution(
     team_helpers._persist_team_compression_state(
         "web",
         "sess-team-compact",
-        "round-2",
+        2,
         {"status": "completed", "compact_summary": "成员压缩摘要"},
         member_name="teammate-a",
     )
 
     assert len(recorded) == 1
     assert recorded[0]["stats"]["member_name"] == "teammate-a"
+
+
+def test_persist_team_compression_state_uses_user_turn_request_id(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """团队 boundary 用当前用户轮 request_id 归轮，round_id 仅留排障。"""
+    recorded: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        team_helpers,
+        "append_compact_history_records",
+        lambda **kwargs: recorded.append(kwargs),
+    )
+
+    team_helpers._persist_team_compression_state(
+        "web",
+        "sess-team-compact",
+        2,
+        {"status": "completed", "compact_summary": "成员压缩摘要"},
+        request_id="user-turn-rid",
+        member_name="teammate-a",
+    )
+
+    assert len(recorded) == 1
+    assert recorded[0]["request_id"] == "user-turn-rid"
+    assert recorded[0]["stats"]["round_id"] == 2
+    assert recorded[0]["stats"]["request_id_source"] == "session_current"
+    assert recorded[0]["stats"]["member_name"] == "teammate-a"
+
+
+def test_persist_team_compression_state_stringifies_round_id_fallback(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """request_id 缺失时 round_id 转字符串落盘，不把 int 混进 history 键。"""
+    recorded: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        team_helpers,
+        "append_compact_history_records",
+        lambda **kwargs: recorded.append(kwargs),
+    )
+
+    team_helpers._persist_team_compression_state(
+        "web",
+        "sess-team-compact",
+        7,
+        {"status": "completed", "compact_summary": "成员压缩摘要"},
+        request_id=None,
+        request_id_source="round_id_fallback",
+    )
+
+    assert len(recorded) == 1
+    assert recorded[0]["request_id"] == "7"
+    assert recorded[0]["stats"]["round_id"] == 7
+    assert recorded[0]["stats"]["request_id_source"] == "round_id_fallback"
+
+
+def test_log_team_compression_event_summary_chars_uses_compact_summary(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """summary_chars 必须量压缩摘要正文，不能量核心侧状态描述行。"""
+    compact_summary = "成员压缩摘要"
+    status_summary = "Compressed 10 -> 2 messages, ~45000 -> ~8000 tokens"
+    captured: dict[str, Any] = {}
+
+    def _capture(level: int, msg: str, *args: Any) -> None:
+        captured["level"] = level
+        captured["args"] = args
+
+    monkeypatch.setattr(team_helpers.logger, "log", _capture)
+    team_helpers._log_team_compression_event(
+        "sess-log",
+        2,
+        None,
+        {
+            "status": "completed",
+            "summary": status_summary,
+            "compact_summary": compact_summary,
+        },
+    )
+
+    # 格式参数第 13 位（下标 12）是 summary_chars。
+    assert captured["args"][12] == len(compact_summary)
+
+
+def test_resolve_compression_request_id_prefers_session_current(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """长寿命流内优先取 TeamManager 当前用户轮 id，不用流启动缓存。"""
+
+    class _Manager:
+        @staticmethod
+        def current_request_id(session_id: str) -> str:
+            assert session_id == "sess-1"
+            return "turn-current"
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _channel: _Manager())
+
+    assert team_helpers._resolve_compression_request_id(
+        "web", "sess-1", fallback="turn-stream-start"
+    ) == ("turn-current", "session_current")
+
+
+def test_resolve_compression_request_id_marks_stream_start_fallback(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """取不到会话当前 id 时显式降级到流启动 id，并标注来源。"""
+
+    class _Manager:
+        @staticmethod
+        def current_request_id(session_id: str) -> None:
+            return None
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _channel: _Manager())
+
+    assert team_helpers._resolve_compression_request_id(
+        "web", "sess-1", fallback="turn-stream-start"
+    ) == ("turn-stream-start", "stream_start_fallback")
+    assert team_helpers._resolve_compression_request_id(
+        "web", "sess-1", fallback=None
+    ) == (None, "round_id_fallback")
+
+
+def test_should_persist_generic_compaction_skips_team_modes() -> None:
+    """团队压缩只由 team_helpers 落盘，通用链路不得再写无归因副本。"""
+    from jiuwenswarm.server.runtime.agent_adapter import interface
+
+    for mode in ("team", "code.team", "team.plan", "design.team"):
+        assert interface._should_persist_generic_compaction({"mode": mode}) is False
+    # team flag 不决定 interface_deep 的团队路由；mode 明确为非团队时仍须由
+    # 通用链路落盘，否则两条链路都不写 boundary。
+    assert interface._should_persist_generic_compaction(
+        {"mode": "agent", "team": True}
+    ) is True
+    assert interface._should_persist_generic_compaction({"mode": "agent"}) is True
+    assert interface._should_persist_generic_compaction({"mode": "code.normal"}) is True
 
 
 @pytest.mark.parametrize(
@@ -244,7 +378,7 @@ def test_persist_team_compression_state_skips_unsuccessful(
     )
 
     team_helpers._persist_team_compression_state(
-        "web", "sess-team-compact", "round-3", payload,
+        "web", "sess-team-compact", 3, payload,
     )
 
     assert recorded == []
@@ -2161,6 +2295,7 @@ async def test_process_team_message_stream_restarts_round_after_shutdown_race(mo
             query: str,
             *,
             round_id: int,
+            request_id: str | None = None,
             envs: dict | None = None,
     ) -> None:
         _ = channel_id, spec, envs
@@ -2260,6 +2395,7 @@ async def test_process_team_message_stream_fallback_reuses_first_request_directi
             query: str,
             *,
             round_id: int,
+            request_id: str | None = None,
             envs: dict | None = None,
     ) -> None:
         _ = channel_id, spec
@@ -2966,6 +3102,7 @@ async def test_process_team_message_stream_treats_plain_query_as_first_request_a
             query: str,
             *,
             round_id: int,
+            request_id: str | None = None,
             envs: dict | None = None,
     ) -> None:
         _ = channel_id, spec, envs
@@ -3051,6 +3188,7 @@ async def test_process_team_message_stream_survives_skill_link_init_failure(monk
             query: str,
             *,
             round_id: int,
+            request_id: str | None = None,
             envs: dict | None = None,
     ) -> None:
         _ = channel_id, spec, envs
@@ -3198,6 +3336,7 @@ async def test_process_team_message_stream_defers_first_evolve_until_team_runtim
             query: str,
             *,
             round_id: int,
+            request_id: str | None = None,
             envs: dict | None = None,
     ) -> None:
         captured_queries.append(query)
@@ -3267,6 +3406,7 @@ async def test_process_team_message_stream_syncs_team_skills_before_evolve_slash
             query: str,
             *,
             round_id: int,
+            request_id: str | None = None,
             envs: dict | None = None,
     ) -> None:
         captured_queries.append(query)
@@ -3339,6 +3479,7 @@ async def test_process_team_message_stream_runs_evolve_followup_without_rail(mon
             query: str,
             *,
             round_id: int,
+            request_id: str | None = None,
             envs: dict | None = None,
     ) -> None:
         captured_queries.append(query)
@@ -8410,3 +8551,116 @@ async def test_member_status_last_seen_survives_pause_cleanup_cleared_on_destroy
     # 会话终毁（_destroy_team）清除——无 team_agent 早期返回前已清
     await manager._destroy_team("sess-pm80")
     assert manager.get_member_status_last_seen("sess-pm80") == {}
+
+
+@pytest.mark.anyio
+async def test_consume_stream_compression_boundary_uses_current_user_request_id(
+        monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """压缩 boundary 的 request_id 取自事件时 TeamManager 当前用户轮，不取流启动缓存。"""
+    persisted: list[dict[str, Any]] = []
+    compression_payload = {
+        "event_type": "context.compression_state",
+        "status": "completed",
+        "phase": "get_context_window",
+        "processor": "DialogueCompressor",
+        "compact_summary": "compressed summary",
+        "before": {"messages": 3, "tokens": 200000},
+        "after": {"messages": 1, "tokens": 1000},
+        "saved": {"messages": 2, "tokens": 199000, "percent": 99.5},
+        "duration_ms": 10,
+    }
+
+    async def _fake_stream(**_kwargs):
+        yield SimpleNamespace(
+            type="team.runtime_ready",
+            payload={
+                "event_type": "team.runtime_ready",
+                "team_name": "demo-team",
+                "activation_kind": "create",
+            },
+            role=TeamRole.LEADER,
+        )
+        yield SimpleNamespace(
+            type="context.compression_state",
+            payload=compression_payload,
+            role=TeamRole.TEAMMATE,
+            source_member="analyst",
+        )
+        yield SimpleNamespace(
+            type="team.completed",
+            payload={"event_type": "team.completed"},
+            role=TeamRole.LEADER,
+        )
+
+    class _FakeRunner:
+        run_agent_team_streaming = staticmethod(_fake_stream)
+
+        @staticmethod
+        async def get_agent_team_monitor(team_name: str, session_id: str, hide_dm: bool = False):
+            return None
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def current_request_id(session_id: str) -> str:
+            assert session_id == "sess-current-turn"
+            return "current-user-turn-rid"
+
+        @staticmethod
+        def commit_runtime_ready(session_id: str, team_name: str) -> None:
+            return None
+
+        @staticmethod
+        def clear_pending_runtime(session_id: str) -> None:
+            return None
+
+        @staticmethod
+        def pop_stream_task(session_id: str) -> None:
+            return None
+
+        @staticmethod
+        def get_monitor(session_id: str):
+            return None
+
+        @staticmethod
+        async def attach_distributed_hooks_for_runner_runtime(
+                team_name: str, session_id: str, channel_id: str,
+        ) -> None:
+            return None
+
+        @staticmethod
+        def resolve_team_agent(session_id: str):
+            return None
+
+        @staticmethod
+        def get_workflow_handler(session_id: str):
+            return None
+
+        @staticmethod
+        def register_workflow_handler(session_id: str, handler: object) -> None:
+            return None
+
+    fake_mgr = _FakeManager()
+    monkeypatch.setattr(team_helpers, "Runner", _FakeRunner)
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _channel_id: fake_mgr)
+    monkeypatch.setattr(team_helpers, "_broadcast_event", _broadcast_recorder([], fake_mgr))
+    monkeypatch.setattr(team_helpers, "ensure_team_evolution_watcher", lambda *a, **k: None)
+    monkeypatch.setattr(team_helpers, "get_session_metadata", lambda _sid: {})
+    monkeypatch.setattr(team_helpers, "update_session_metadata", lambda **kwargs: None)
+    monkeypatch.setattr(
+        team_helpers,
+        "_persist_team_compression_state",
+        lambda *args, **kwargs: persisted.append(kwargs),
+    )
+
+    await _TeamHelpersTestApi.consume_stream_with_query(
+        "web",
+        "sess-current-turn",
+        SimpleNamespace(team_name="demo-team"),
+        "hello",
+        request_id="stream-start-rid",
+    )
+
+    assert len(persisted) == 1
+    assert persisted[0]["request_id"] == "current-user-turn-rid"
+    assert persisted[0]["request_id_source"] == "session_current"

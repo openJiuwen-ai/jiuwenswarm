@@ -509,6 +509,19 @@ class TeamManager(metaclass=_TeamManagerMeta):
         # （轮次号已推进，应清除）。只在 delete_session_runtime 释放——
         # fresh-start/terminate 不动（追问轮次必须跨流实例保持单调）。
         self._user_turn_epochs: dict[str, int] = {}
+        # session_id → 最近一次用户请求 id：长寿命团队流内压缩等事件落盘时
+        # 需要按「当前用户轮」归组，不能用流启动时缓存的 request_id。
+        self._current_request_ids: dict[str, str] = {}
+
+    def set_current_request_id(self, session_id: str, request_id: str) -> None:
+        """Record the latest user-turn request id for a session."""
+        text = str(request_id or "").strip()
+        if text:
+            self._current_request_ids[session_id] = text
+
+    def current_request_id(self, session_id: str) -> str | None:
+        """Return the latest user-turn request id, if one has been recorded."""
+        return self._current_request_ids.get(session_id)
 
     def bump_user_turn_epoch(self, session_id: str) -> int:
         """Advance and return the user-turn epoch for a session."""
@@ -3057,6 +3070,7 @@ class TeamManager(metaclass=_TeamManagerMeta):
         team_name = self._resolve_delete_session_team_name(session_id)
         self._degraded_sessions.pop(session_id, None)
         self._user_turn_epochs.pop(session_id, None)
+        self._current_request_ids.pop(session_id, None)
         self._member_status_last_seen.pop(session_id, None)
         await kv_cache_hooks.stop_runtime_before_terminal_delete(
             self.stop_session_runtime,
