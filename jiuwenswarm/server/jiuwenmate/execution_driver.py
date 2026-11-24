@@ -250,6 +250,7 @@ class ExecutionDriver:
     async def run(self, state: RequestState, execution: ExecutionRecord, handle: ExecutionHandle) -> str:
         record = state.record
         context = None
+        inbound_images = None
         try:
             window_generation = ''
             if self._group_sharing is not None:
@@ -410,6 +411,18 @@ class ExecutionDriver:
                 inputs = inputs.model_copy(update={"source": source,
                     "text": trigger.text or ("[附件消息]" if trigger.attachment_refs else "[群消息正文为空]"),
                     "attachment_refs": trigger.attachment_refs})
+                from dataclasses import replace
+                from jiuwenswarm.server.jiuwenmate.feishu_inbound_media import prepare_feishu_images, SCOPE_KEY
+
+                inbound_images = await prepare_feishu_images(replace(record, request_input=inputs), session_workspace)
+                if inbound_images is not None:
+                    context.extras[SCOPE_KEY] = inbound_images
+                    async def check_image_source():
+                        current = await ports.group_chat.current_trigger(context.execution, inputs.trigger_message_id)
+                        if current is None or current.status in {"recalled", "unavailable"}:
+                            raise PersistentAgentError("图片原消息已不可读，请重新发送。", code="TRIGGER_UNAVAILABLE")
+                    inbound_images.source_guard = check_image_source
+                    inputs = inputs.model_copy(update={"text": inputs.text + "\n\n" + inbound_images.guidance()})
             terminal = None
             approval = (
                 await asyncio.to_thread(
@@ -456,7 +469,11 @@ class ExecutionDriver:
             return "failed"
         finally:
             try:
-                await close_bash_runtime(context)
+                try:
+                    await close_bash_runtime(context)
+                finally:
+                    if inbound_images is not None:
+                        await inbound_images.aclose()
             finally:
                 self._queue.forget(record.namespace_id, execution.execution_id)
                 try:
