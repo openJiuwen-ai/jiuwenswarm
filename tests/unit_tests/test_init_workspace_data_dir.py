@@ -6,6 +6,26 @@ from jiuwenswarm import init_workspace
 from jiuwenswarm.common import utils
 
 
+def test_run_init_force_with_data_dir_skips_default_instance_check(monkeypatch, tmp_path: Path) -> None:
+    target = tmp_path / "instance-workspace"
+    monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(target))
+    monkeypatch.setattr(utils, "_workspace_base_dir", None)
+    monkeypatch.setattr(utils, "_user_home", tmp_path / "home")
+    monkeypatch.setattr(utils, "_initialized", False)
+
+    def fail_default_status():
+        raise AssertionError("default instance status must not be checked for DATA_DIR init")
+
+    monkeypatch.setattr(init_workspace, "get_default_instance_status", fail_default_status)
+    monkeypatch.setattr(
+        init_workspace,
+        "init_user_workspace",
+        lambda *, overwrite, workspace_dir: str(workspace_dir),
+    )
+
+    assert init_workspace.run_init(force=True) == 0
+
+
 def test_run_init_uses_data_dir_for_default_workspace(monkeypatch, tmp_path: Path) -> None:
     target = tmp_path / "instance-workspace"
     monkeypatch.setenv("JIUWENSWARM_DATA_DIR", str(target))
