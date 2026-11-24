@@ -3111,7 +3111,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
         length = self._parse_content_length()
         if length > SKILL_UPLOAD_DISCARD_MAX_REQUEST_BYTES:
-            # 只含一个路径，超限请求不再读取，避免被超大 Content-Length 拖住。
+            # 先消费请求体再应答：未读完就回包会复位连接，浏览器收不到 413 JSON
+            # （与 _handle_skills_upload_temp 同一处理）。
+            self._discard_request_body(length)
             self._write_json(
                 413,
                 skill_http_error_body("SKILL_FILE_TOO_LARGE", "请求体超过限制"),

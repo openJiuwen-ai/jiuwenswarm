@@ -67,8 +67,8 @@ design_note: 两阶段上传缺少文件生命周期归属，属实现缺陷的�
 `POST /file-api/skills/upload-discard`
 
 - 请求：`application/json`，`{"path": "<upload-temp 返回的绝对路径>"}`；
-  请求体上限 64KB（`SKILL_UPLOAD_DISCARD_MAX_REQUEST_BYTES`），超限在读取 body 前直接 413，
-  避免被超大 Content-Length 拖住。
+  请求体上限 64KB（`SKILL_UPLOAD_DISCARD_MAX_REQUEST_BYTES`），超限时先消费请求体再返回 413，
+  避免未读完就应答导致连接复位、浏览器收不到错误响应；`path` 不参与任何拼接。
 - 响应 `200`：`{"ok": true, "discarded": <bool>}`。`discarded` 表示本次是否删除了目标目录；
   路径不存在（已回收、重复调用）返回 `false`，属正常幂等结果，不是错误。
 - 错误响应：
