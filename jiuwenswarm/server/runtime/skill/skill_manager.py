@@ -630,6 +630,24 @@ _IMPORT_LOCAL_DEFAULT_ALLOWED_DOWNLOAD_HOSTS: tuple[str, ...] = ("*.obs.*.myhuaw
 _IMPORT_LOCAL_FORBIDDEN_DIRS_ENV = "IMPORT_LOCAL_FORBIDDEN_DIRS"
 # 本地导入结构校验：SKILL.md 开头（仅允许前置空行）必须是 --- frontmatter。
 _SKILL_FRONTMATTER_RE = re.compile(r"^(?:\s*\n)*---\s*\n(.*?)\n---\s*\n?(.*)", re.DOTALL)
+
+
+def parse_skill_frontmatter(text: str) -> tuple[dict[str, Any], str]:
+    """SKILL.md frontmatter 的解析实现与公开入口（跨模块复用）。
+
+    开头必须是 ``---`` frontmatter（仅允许前置空行），YAML 解析为 dict；
+    SkillManager 内的同名静态方法委托本函数，语义一致。
+    """
+    match = _SKILL_FRONTMATTER_RE.match(text)
+    if not match:
+        raise ValueError("SKILL.md 开头必须是 --- frontmatter（仅允许前置空行）")
+    try:
+        metadata = yaml.safe_load(match.group(1))
+    except (yaml.YAMLError, RecursionError) as exc:
+        raise ValueError("SKILL.md frontmatter YAML 无效") from exc
+    if not isinstance(metadata, dict):
+        raise ValueError("SKILL.md frontmatter 必须是 YAML 对象")
+    return metadata, match.group(2).strip()
 _ONLINE_SEARCH_RRF_K = 60
 _ONLINE_SEARCH_SOURCE_ORDER = {"skillnet": 0, "teamskillshub": 1, "clawhub": 2}
 _ONLINE_SEARCH_SOURCE_TIMEOUT = 30.0
@@ -6412,17 +6430,8 @@ class SkillManager:
 
     @staticmethod
     def _parse_skill_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-        """解析原始 frontmatter，不填充展示默认值。"""
-        match = _SKILL_FRONTMATTER_RE.match(text)
-        if not match:
-            raise ValueError("SKILL.md 开头必须是 --- frontmatter（仅允许前置空行）")
-        try:
-            metadata = yaml.safe_load(match.group(1))
-        except (yaml.YAMLError, RecursionError) as exc:
-            raise ValueError("SKILL.md frontmatter YAML 无效") from exc
-        if not isinstance(metadata, dict):
-            raise ValueError("SKILL.md frontmatter 必须是 YAML 对象")
-        return metadata, match.group(2).strip()
+        """解析原始 frontmatter，不填充展示默认值（委托公开模块函数）。"""
+        return parse_skill_frontmatter(text)
 
     @staticmethod
     def _validate_skill_metadata(path: Path) -> dict[str, Any]:

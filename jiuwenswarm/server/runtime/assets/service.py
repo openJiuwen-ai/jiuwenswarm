@@ -50,6 +50,20 @@ from jiuwenswarm.server.runtime.assets.staging import (
 
 logger = logging.getLogger(__name__)
 
+
+def _install_default_adapters() -> None:
+    """装配默认真实适配器（skill 等）。
+
+    延迟且幂等：HTTP（handlers/assets）与 WS（agent_adapter）两个入口
+    共用本模块，首次调用前完成注册；未注册的 kind 收敛为契约错误。
+    """
+    from jiuwenswarm.server.runtime.assets.adapters import install_default_adapters
+
+    install_default_adapters()
+
+
+_install_default_adapters()
+
 # 导出下载 token 有效期（秒）：导出后应立即完成下载，短时效缩小
 # token 泄露后的可用窗口。
 EXPORT_DOWNLOAD_EXPIRES_S = 600
