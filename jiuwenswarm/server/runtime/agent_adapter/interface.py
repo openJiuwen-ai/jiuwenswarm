@@ -3320,7 +3320,8 @@ class JiuWenSwarm:
                 for name in sorted(after_names - before_names)
                 if name not in skip_names
             ]
-            result = self._skill_manager.finalize_create_from_knowledge(
+            result = await asyncio.to_thread(
+                self._skill_manager.finalize_create_from_knowledge,
                 output_dir,
                 workspace_candidates=workspace_candidates,
                 existing_skill_names=before_names,
