@@ -118,14 +118,14 @@ from jiuwenswarm.common.schema.agent import (
 )
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.todo_snapshot import load_todo_snapshot_for_frontend
+from jiuwenswarm.common.paths import get_personal_context_dir
 from jiuwenswarm.common.utils import (
     get_agent_root_dir,
     get_agent_sessions_dir,
     get_config_file,
-    get_domain_data_dir,
-    get_user_workspace_dir,
     mask_sensitive,
 )
+
 from jiuwenswarm.common.version import get_runtime_version
 from jiuwenswarm.runtime import AgentRuntime
 from jiuwenswarm.runtime.events import TERMINAL_ERROR_EVENT_TYPES, RuntimeEvent
@@ -1435,7 +1435,7 @@ class AgentWebSocketServer:
         self._jiuwenbox_runner = JiuwenBoxRunner.instance()
         # AgentServer 内唯一持有的进程内 PersonalContext Host；Context Rail 使用同一固定目录。
         self._personal_context_host = PersonalContextHostAPI(
-            home=get_domain_data_dir() / ".personal_context",
+            home=get_personal_context_dir(),
         )
         self._personal_context_start_task: asyncio.Task[None] | None = None
         self._sandbox_start_task: asyncio.Task[None] | None = None
@@ -3250,14 +3250,14 @@ class AgentWebSocketServer:
     ) -> None:
         """Tell Gateway whether a colleague may serve a DingTalk app before that binding is saved."""
         from jiuwenswarm.server.jiuwenmate.execution_repository import ExecutionRepository
-        from jiuwenswarm.server.jiuwenmate.service import default_data_dir
+        from jiuwenswarm.common.paths import get_jiuwenmate_dir
 
         params = request.params if isinstance(request.params, dict) else {}
         agent_id, app_id = params.get("agent_id"), params.get("app_id")
         ok, payload = False, {"error": "invalid DingTalk binding check"}
         if all(isinstance(value, str) and value.strip() for value in (agent_id, app_id)):
             try:
-                repository = ExecutionRepository(default_data_dir() / "agents.sqlite3")
+                repository = ExecutionRepository(get_jiuwenmate_dir() / "agents.sqlite3")
                 served_elsewhere = await asyncio.to_thread(
                     repository.has_sessions_outside_dingtalk_app, "local", agent_id.strip(), app_id.strip(),
                 )
@@ -11081,6 +11081,7 @@ class AgentWebSocketServer:
         async with self._asset_publish_lock:
             if self._asset_publish_api is None:
                 from jiuwenswarm.common.utils import get_workspace_dir
+
                 from jiuwenswarm.server.runtime.marketplace.asset_publish_api import (
                     AssetPublishAPI,
                 )
@@ -14925,6 +14926,7 @@ class AgentWebSocketServer:
         from jiuwenswarm.common.utils import (
             get_user_workspace_dir as current_workspace_dir,
         )
+
         requested_id = str(
             (params or {}).get("package_id") or ""
         ).strip()

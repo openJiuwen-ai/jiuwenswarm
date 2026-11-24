@@ -18,7 +18,7 @@ from tests.unit_tests.rsi.test_plugin_roundtrip import _agent, _make_plugin_pack
 
 @pytest.fixture
 def harness_selection(tmp_path, rsi_catalog_workspace, monkeypatch):
-    monkeypatch.setattr("jiuwenswarm.common.utils._workspace_base_dir", tmp_path / "user")
+    monkeypatch.setattr("jiuwenswarm.common.paths._workspace_base_dir", tmp_path / "user")
     packages = {}
     for version in ("aabbcc", "ddeeff", "112233"):
         package = tmp_path / version
@@ -361,7 +361,7 @@ async def test_global_fanout_failure_restores_default_without_replacing_selectio
 async def test_selection_keeps_original_plugin_displaced_until_default_is_restored(
     tmp_path, rsi_catalog_workspace, monkeypatch,
 ):
-    monkeypatch.setattr("jiuwenswarm.common.utils._workspace_base_dir", tmp_path / "user")
+    monkeypatch.setattr("jiuwenswarm.common.paths._workspace_base_dir", tmp_path / "user")
     source = _make_plugin_package(tmp_path, "coding-guard")
     register_harness_plugin(source, "rsi-harness-aabbcc")
     register_harness_plugin(source, "rsi-harness-ddeeff")
@@ -394,7 +394,7 @@ async def test_uninstalled_displaced_plugin_does_not_block_chat_or_restore(
 ):
     from jiuwenswarm.server.runtime.session.session_metadata import get_session_equipment
 
-    monkeypatch.setattr("jiuwenswarm.common.utils._workspace_base_dir", tmp_path / "user")
+    monkeypatch.setattr("jiuwenswarm.common.paths._workspace_base_dir", tmp_path / "user")
     source = _make_plugin_package(tmp_path, "coding-guard")
     catalog.import_plugin_package({"path": str(source)})
     catalog.install_plugin_package({"id": "coding-guard"})

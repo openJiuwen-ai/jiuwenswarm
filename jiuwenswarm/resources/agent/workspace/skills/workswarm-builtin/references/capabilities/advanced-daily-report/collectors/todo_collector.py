@@ -89,7 +89,7 @@ class TodoCollector:
         初始化待办采集器
 
         Args:
-            workspace_dir: Agent 根目录（如 ~/.jiuwenswarm/agent）
+            workspace_dir: Agent 根目录（如 ~/.jiuwenswarm/profile/agent）
         """
         self.workspace_dir = Path(workspace_dir)
         self.session_dir = self.workspace_dir / "sessions"

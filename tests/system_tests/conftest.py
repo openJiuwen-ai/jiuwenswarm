@@ -41,7 +41,8 @@ def clean_environment(temp_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     Use this fixture when testing initialization to ensure tests are isolated.
     """
     # Import before monkeypatching to get reference
-    import jiuwenswarm.common.utils as utils_module
+    import jiuwenswarm.common.paths as _paths_unused_marker
+import jiuwenswarm.common.utils as utils_module
 
     # Override HOME to use temporary directory
     monkeypatch.setenv("HOME", str(temp_home))
@@ -60,12 +61,12 @@ def clean_environment(temp_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # leaving it set kept every path pointing at the developer's real workspace. A test
     # calling run_init(force=True) then wiped the real ~/.jiuwenswarm/config -- config.yaml
     # and every stored credential -- and still passed.
-    monkeypatch.setattr(utils_module, "_user_home", temp_home)
-    monkeypatch.setattr(utils_module, "_workspace_base_dir", None)
-    monkeypatch.setattr(utils_module, "_initialized", False)
-    monkeypatch.setattr(utils_module, "_config_dir", None)
-    monkeypatch.setattr(utils_module, "_workspace_dir", None)
-    monkeypatch.setattr(utils_module, "_root_dir", None)
+    monkeypatch.setattr(paths_module, "_user_home", temp_home)
+    monkeypatch.setattr(paths_module, "_workspace_base_dir", None)
+    monkeypatch.setattr(paths_module, "_initialized", False)
+    monkeypatch.setattr(paths_module, "_config_dir", None)
+    monkeypatch.setattr(paths_module, "_workspace_dir", None)
+    monkeypatch.setattr(paths_module, "_root_dir", None)
     monkeypatch.setattr(utils_module, "_is_package", None)
 
 

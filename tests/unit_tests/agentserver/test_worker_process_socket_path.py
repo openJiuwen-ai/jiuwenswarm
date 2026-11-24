@@ -46,7 +46,7 @@ def test_short_workspace_keeps_infra_socket_path(monkeypatch, _cleanup_dirs) -> 
     short_root = _tmp_dir("jw-ws-")
     _cleanup_dirs.append(short_root)
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_user_workspace_dir", lambda: short_root
+        "jiuwenswarm.common.paths.get_user_workspace_dir", lambda: short_root
     )
 
     result = default_socket_path()
@@ -63,7 +63,7 @@ def test_first_level_fallback_uses_gettempdir(monkeypatch, _cleanup_dirs) -> Non
     short_tmp = _tmp_dir("jw-tmp-")
     _cleanup_dirs.append(short_tmp)
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_user_workspace_dir", lambda: long_workspace
+        "jiuwenswarm.common.paths.get_user_workspace_dir", lambda: long_workspace
     )
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(short_tmp))
 
@@ -84,7 +84,7 @@ def test_second_level_fallback_lands_in_tmp_when_gettempdir_long(
     long_tmp = tmp_path / ("T" * 60)
     long_tmp.mkdir(parents=True)
     monkeypatch.setattr(
-        "jiuwenswarm.common.utils.get_user_workspace_dir", lambda: long_workspace
+        "jiuwenswarm.common.paths.get_user_workspace_dir", lambda: long_workspace
     )
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(long_tmp))
 
