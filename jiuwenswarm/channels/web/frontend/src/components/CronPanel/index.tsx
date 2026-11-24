@@ -943,9 +943,27 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         session_id?: string;
         awaiting_approval?: boolean;
         reused_pending_session?: boolean;
+        reason?: string;
       }>('cron.job.run_now', {
         id: job.id,
       });
+      if (result.accepted === false) {
+        // 后端守卫拒绝了本次触发（如上一轮还在执行中）：请求本身成功送达，
+        // 不是错误；提示用户任务正在执行，并跳到进行中的会话（若有）。
+        clearCronError();
+        setSuccess(t('cron.errors.runNowPreviousActive'));
+        if (result.session_id) {
+          try {
+            await onSelectSession(result.session_id, undefined);
+          } catch {
+            // 跳转失败不掩盖主反馈：会话仍可从任务的触发会话列表进入
+          }
+        }
+        if (job.id) {
+          void loadCronSessions(job.projectId || 'default', job.id);
+        }
+        return;
+      }
       if (result.session_id) {
         // 跳转会卸载 CronPanel，面板内 success state 活不到下一次渲染，用户看不到
         // 「任务已触发立即执行」反馈。改由 App 根部常驻的命令式 toast 承载。
