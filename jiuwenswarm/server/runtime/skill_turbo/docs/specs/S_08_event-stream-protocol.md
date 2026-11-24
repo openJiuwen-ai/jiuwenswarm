@@ -7,7 +7,7 @@
 | 类型 | spec |
 | 编号 / slug | S_08 / event-stream-protocol |
 | 关联模块 | `jiuwenswarm/server/runtime/skill_turbo/`：executor.py（事件构造 / 缓冲 / task 管线）、markdown_stream.py、skill_turbo_tools.py（tool 层转发）、rails/artifact_rail.py、rails/delivery_summary_rail.py；外层 interface_deep.py（HITL 三件套 / invocation_paused） |
-| 最近一次修订日期 | 2026-10-21 |
+| 最近一次修订日期 | 2026-11-24 |
 | 关联 feature | [[F_02]]（失败横幅换行五状态 / resume 横幅不再抑制 / 二次中断发卡同源）；关联 bugfix [[B_03]]（taskProgress 槽位泄漏登记清算——不变量 5 例外 / tool 层协议第 2 步 / P3 六件套 / 边界 case 21-22） |
 
 ## 范围 / 边界
@@ -187,7 +187,7 @@ call_llm / stream_llm
 | `node.started` / `node.finished` | plan_name(显示名), content?, task_id? | `_make_node_started/finished_chunk`（produce 协程） | task.start 先于同 stage chat 事件 | **skip** |
 | `chat.delta` | content, plan_name, task_id?, data?, `_bubble_progress`? | `_make_node_delta_chunk`（节点流输出；显示名替换、progress/ok/failed/error/warning 五类状态消息 `rstrip("\n") + "\n"` 补恰好一个换行——防失败/降级横幅与后续 delta 粘连成一行） | 缓冲桶合并；横幅绕缓冲 | 映射 `llm_output`；横幅 → `content_chunk`（剥 task_id） |
 | `chat.reasoning` | content… | 节点流 / 通道 B 归一 | 可缓冲 | 映射 `llm_reasoning` |
-| `chat.error` | error, plan_name?, task_id? | `_make_error_chunk` / `_make_node_error_chunk` | 先 drain task 事件再发 | 映射 `error`（gateway：is_complete+chat.error → E2A final FAILED） |
+| `chat.error` | error, plan_name?, task_id?, code? | `_make_error_chunk` / `_make_node_error_chunk`（统一经 `server.utils.stream_utils.build_chat_error_event` 构造，按错误正文兜底补 `code`，如 `image_url_unsafe`） | 先 drain task 事件再发 | 映射 `error`（gateway：is_complete+chat.error → E2A final FAILED） |
 | `task.start` | task_id, task_content(显示名), task_index, status="in_progress", source="skill_turbo", timestamp | `_build_task_start_event` + `_before_subplan_execute`（仅 depth=1） | 延期至开始横幅之后 | 外层无活跃 todo 转发；有 → skip + 剥 task_id |
 | `task.complete` | task_id, status="completed"/"failed", duration_ms, error? | `_build_task_complete_event` + `_after_subplan_execute`（业务失败 `export_status=failed` / `status=error` 也标 failed） | 先 flush deferred start 再入队 | 同上；FIFO 禁 OOB |
 | `task.update` | tasks[全量快照(深拷贝,按 index 排序)], total/completed/in_progress/pending/failed_tasks, parent_request_id, timestamp | `_build_task_update_event` / `_emit_task_update_event` | 幂等快照后到覆盖 | 转发 + **OOB 推送** |

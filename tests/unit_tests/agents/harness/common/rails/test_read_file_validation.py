@@ -14,6 +14,7 @@ from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
     _looks_like_binary_payload,
     build_native_image_tool_error,
     build_provided_image_read_error,
+    build_unsafe_image_read_error,
     extract_paths_from_arguments,
     is_image_file_path,
     is_non_text_file_path,
@@ -143,6 +144,22 @@ def test_provided_image_read_error_forbids_read_file(language, forbidden_phrase)
 
     assert error.startswith("[READ_FILE_ERROR]")
     assert "/uploads/home.png" in error
+    assert forbidden_phrase in error
+
+
+@pytest.mark.parametrize(
+    ("language", "forbidden_phrase"),
+    [("cn", "不能再次读取同一张图"), ("en", "must not be read again")],
+    ids=["cn", "en"],
+)
+def test_unsafe_image_read_error_forbids_reread(language, forbidden_phrase) -> None:
+    """被上游判 unsafe 的图片：文案必须明确禁止再次读取。"""
+
+    error = build_unsafe_image_read_error("/uploads/w2006_p28_0.png", language=language)
+
+    assert error.startswith("[READ_FILE_ERROR]")
+    assert "/uploads/w2006_p28_0.png" in error
+    assert "image_url unsafe" in error
     assert forbidden_phrase in error
 
 

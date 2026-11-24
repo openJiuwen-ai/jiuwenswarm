@@ -660,6 +660,7 @@ from jiuwenswarm.server.runtime.agent_adapter.subagent_stream import (
     try_handle_subagent_chunk,
 )
 from jiuwenswarm.server.utils.stream_utils import (
+    build_chat_error_event,
     build_tool_result_payload,
     normalize_context_usage_payload,
     parse_ask_user_question_payload,
@@ -18747,14 +18748,14 @@ class JiuWenSwarmDeepAdapter:
 
             if run_failure is not None and not emitted_chat_error:
                 error_type, error_message = run_failure
+                # 统一构造器兜底补 code（image_url unsafe 等已知分型），避免这里
+                # 裸 chat.error 丢结构化错误码、前端落到 unknown / OA.05000090。
+                error_event = build_chat_error_event({}, error_message)
+                error_event["error_type"] = error_type
                 yield AgentResponseChunk(
                     request_id=rid,
                     channel_id=cid,
-                    payload=note_chat_payload({
-                        "event_type": "chat.error",
-                        "error": error_message,
-                        "error_type": error_type,
-                    }),
+                    payload=note_chat_payload(error_event),
                     is_complete=False,
                 )
                 emitted_chat_error = True
@@ -18912,14 +18913,12 @@ class JiuWenSwarmDeepAdapter:
                 session_id,
                 reason="task_error",
             )
+            error_event = build_chat_error_event({}, str(exc))
+            error_event["error_type"] = type(exc).__name__
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=cid,
-                payload={
-                    "event_type": "chat.error",
-                    "error": str(exc),
-                    "error_type": type(exc).__name__,
-                },
+                payload=error_event,
                 is_complete=False,
             )
         finally:

@@ -59,7 +59,10 @@ from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
     save_resume_ctx,
     set_skill_turbo_id,
 )
-from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk
+from jiuwenswarm.server.utils.stream_utils import (
+    build_chat_error_event,
+    parse_stream_chunk,
+)
 from jiuwenswarm.server.runtime.skill_turbo.json_utils import extract_llm_json
 from jiuwenswarm.server.runtime.skill_turbo.markdown_stream import (
     markdown_stream_incoming,
@@ -2745,10 +2748,12 @@ class SkillTurboExecutor:
         channel_id: str,
         error: str,
     ) -> AgentResponseChunk:
+        # 统一构造器兜底补 code（image_url unsafe 等已知分型），与 server 侧
+        # chat.error 出口保持同一词法口径，避免前端落到 unknown / OA.05000090。
         return self._make_chunk(
             request_id,
             channel_id,
-            {"event_type": "chat.error", "error": error},
+            build_chat_error_event({}, error),
         )
 
     def _make_plan_started_chunk(
@@ -2915,11 +2920,10 @@ class SkillTurboExecutor:
         error: str,
         task_id: str | None,
     ) -> AgentResponseChunk:
-        payload = {
-            "event_type": "chat.error",
-            "error": error,
-            "plan_name": self._display_name(node.plan_name),
-        }
+        # 节点失败同样走统一构造器：节点内 LLM 异常文本可能携带 image_url unsafe，
+        # 裸 payload 会丢 code，前端无法分类。
+        payload = build_chat_error_event({}, error)
+        payload["plan_name"] = self._display_name(node.plan_name)
         if task_id:
             payload["task_id"] = task_id
         return self._make_chunk(request_id, channel_id, payload)

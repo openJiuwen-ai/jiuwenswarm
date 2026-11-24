@@ -31,6 +31,7 @@ from jiuwenswarm.agents.harness.common.multimodal.image_processing import (
 )
 from jiuwenswarm.agents.harness.common.multimodal.image_reference import (
     _IMAGE_ATTACHED_LINE_RE,
+    _IMAGE_OMITTED_TEXT_RE,
     _IMAGE_REFERENCE_LINE_RE,
     _READ_FILE_IMAGE_TEXT_RE,
     _build_image_state_line,
@@ -55,6 +56,7 @@ def inject_image_content_from_references(
     max_total_bytes: int = 0,
     max_visual_tokens: int = 0,
     max_count: int = 0,
+    blocked_paths: list[str] | None = None,
 ) -> tuple[list[Any], int]:
     """Materialize referenced images into the conversation history as ``image_url`` blocks.
 
@@ -81,9 +83,18 @@ def inject_image_content_from_references(
       adapter 在 invoke 内绑定）里的路径才会被读盘物化。引用行是模型可见的纯文本，
       用户可以手写任意服务器路径；若只校验 MIME 与文件存在性，就能把 file_guard /
       沙箱之外的本地图片内联进模型请求。清单为空时一律不物化任何新像素。
+    - ``blocked_paths``：请求级黑名单（上游内容安全判为 unsafe 的图片路径）。命中的
+      引用行不读盘物化，改写为 ``[image #n omitted: unsafe]`` 终态——即使模型在同一
+      请求里重新引用同一路径（team steer 补图 / 成员确定性分发补行），也不会把已被
+      上游拒绝的像素再次塞回窗口（[[S_22]] N11）。
     """
 
     messages_list = list(messages)
+    blocked = {
+        normalize_image_path(path)
+        for path in (blocked_paths or [])
+        if str(path or "").strip()
+    }
     # 上传清单与引用路径两侧都用 normalize_image_path 归一后比较，口径与
     # is_provided_image_path 一致（大小写 / 相对段 / ~ 形态不同不影响判定）。
     # 显式传入 image_files 时优先用它（rail 从 agent 实例读，跨请求→agent 任务边界），
@@ -154,6 +165,15 @@ def inject_image_content_from_references(
                     "[inject_image_content] skip non-uploaded image ref: index=%d path=%s",
                     index,
                     path,
+                )
+                continue
+            if path_key in blocked:
+                # 请求级黑名单：这张图本轮已被上游判 unsafe，禁止经引用行重新物化。
+                # 写终态状态行（与摘图改写同 reason），后续注入 / 成员确定性分发
+                # 按 N5 的「omitted 即已处理」直接跳过。
+                _append_state_marker(
+                    message,
+                    _build_image_state_line(index, "omitted", "unsafe"),
                 )
                 continue
             if index_owners.get(index, set()) - {message_key}:
@@ -399,6 +419,44 @@ def _append_image_part(message: Any, index: int, data_uri: str) -> None:
     )
 
 
+def _read_file_omitted_paths(messages: list[Any]) -> set[str]:
+    """收集「路径说明行 + ``[image omitted: ...]`` 占位」配对的 read_file 图路径。
+
+    read_file 注入的图没有引用行 / 状态行：预算卸载或 unsafe 摘图只把像素块换成
+    ``[image omitted: ...]`` 文本，前面的 ``Image loaded from read_file: <path>``
+    说明行仍然保留。若只按引用行 + 状态行判定「已处理」，成员侧
+    ``ensure_manifest_images_referenced`` 会把说明行里的路径当成未处理清单图，重新
+    补引用行并把已卸载的图再次物化（预算淘汰失效 / unsafe 摘图后再次出图）。
+
+    只认**相邻**配对：说明行之后的下一个非空文本行必须是 omitted 占位；非文本 part
+    （图片块）或其它文本都会打断配对，避免把更早的说明行与后面的无关占位误配。
+    """
+
+    paths: set[str] = set()
+    for message in messages:
+        pending_source: str | None = None
+        for part in _message_parts(message):
+            text = _text_from_content_part(part)
+            if text is None:
+                # 图片块 / 非文本 part 打断配对：说明行与占位必须在其位置相邻。
+                pending_source = None
+                continue
+            for line in text.splitlines():
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                source_match = _READ_FILE_IMAGE_TEXT_RE.match(stripped)
+                if source_match:
+                    pending_source = source_match.group(1).strip()
+                    continue
+                if pending_source and _IMAGE_OMITTED_TEXT_RE.match(stripped):
+                    paths.add(normalize_image_path(pending_source))
+                    pending_source = None
+                    continue
+                pending_source = None
+    return paths
+
+
 def _processed_image_paths(messages: list[Any]) -> set[str]:
     """历史里已被处理过（``attached`` ∪ ``omitted``）的上传图路径集合。
 
@@ -411,9 +469,13 @@ def _processed_image_paths(messages: list[Any]) -> set[str]:
 
     状态行与引用行按消息作用域配对（同一条消息里的 index→path）：压缩把老消息搬进
     摘要后，新消息里的同号引用不会被老状态行误判成「已处理」。
+
+    read_file 注入的图没有引用行：按 ``_read_file_omitted_paths`` 的相邻配对
+    （路径说明行 + omitted 占位）并入已处理集合。
     """
 
     processed: set[str] = set()
+    processed |= _read_file_omitted_paths(messages)
     for message in messages:
         if not is_user_authored_message(message):
             # 引用行只认 user 消息：tool result / assistant 文本里的同格式行不参与
@@ -579,6 +641,57 @@ def _slot_image_part(slot: dict[str, Any]) -> Any:
     return None
 
 
+def collect_image_content_paths(messages: list[Any]) -> list[str]:
+    """收集历史里**当前确实携带像素块**的图片路径。
+
+    两类来源：
+
+    - 引用行注入：``[image #n attached]`` 状态行按消息作用域配对引用行的 path；
+    - read_file 注入：像素块前面保留的 ``Image loaded from read_file: <path>`` 说明行。
+
+    供图片被上游内容安全拦截（``image_url unsafe``）后建立请求级黑名单：上游不返回
+    具体哪张图违规，本地只能把**已发出**的全部图片路径都记为嫌疑；之后 read_file
+    再读同一路径会命中黑名单被拒，避免摘图重试后模型又把同一张图塞回窗口、再次
+    触发 400 却已无降级额度（[[S_22]] N11）。
+
+    只算带像素块的槽位：``omitted`` 状态的图本轮没发出去，不是拦截对象。
+    """
+
+    messages_list = list(messages)
+    slots = _collect_image_slots(messages_list)
+    if not slots:
+        return []
+    refs_by_message: dict[int, dict[int, str]] = {}
+    for message in messages_list:
+        if not is_user_authored_message(message):
+            continue
+        text = _content_to_query_text(_message_content(message))
+        if not text:
+            continue
+        refs = {
+            int(ref["index"]): str(ref.get("path") or "")
+            for ref in parse_image_references(text)
+        }
+        if refs:
+            refs_by_message[id(message)] = refs
+    paths: list[str] = []
+    seen: set[str] = set()
+    for slot in slots:
+        if slot["index"] is not None:
+            path = refs_by_message.get(id(slot["message"]), {}).get(slot["index"], "")
+        else:
+            path = str(slot.get("source_path") or "")
+        path = str(path or "").strip()
+        if not path:
+            continue
+        key = normalize_image_path(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(path)
+    return paths
+
+
 def rewrite_orphan_attached_markers(messages: list[Any]) -> int:
     """把「attached 状态行还在、像素块已被搬走」的孤儿标记改写为 ``omitted``。
 
@@ -653,14 +766,16 @@ def rewrite_orphan_attached_markers(messages: list[Any]) -> int:
     return rewritten
 
 
-def _replace_attached_state_line(part: Any, index: int) -> Any:
+def _replace_attached_state_line(
+    part: Any, index: int, *, reason: str = "request budget"
+) -> Any:
     """把文本 part 里的 ``[image #n attached]`` 行改写成 ``omitted``，保留其它行。
 
     状态行不一定独占整个文本 part：压缩链路会把多条文本合并成一个多行 part。
     整段替换会连用户正文一起吞掉，所以按行定位、只改命中的那一行。
     """
 
-    replacement = _build_image_state_line(index, "omitted", "request budget")
+    replacement = _build_image_state_line(index, "omitted", reason)
     text = _text_from_content_part(part)
     if text is None:
         return {"type": "text", "text": replacement}
@@ -712,6 +827,61 @@ def _apply_image_evictions(slots: list[dict[str, Any]]) -> None:
                 continue
             rebuilt.append(part)
         _set_message_content(message, rebuilt)
+
+
+def strip_image_content_from_messages(
+    messages: list[Any], *, reason: str = "unsafe"
+) -> int:
+    """就地摘除历史里全部图片块，并把 attached 状态行改写为 omitted。
+
+    供图片被上游内容安全拦截（``the content of image_url.url field is unsafe``）
+    后的降级重试用：重试前把本轮窗口像素全部摘除，``[image #n attached]`` 状态行
+    改写为 ``[image #n omitted: unsafe]``（终态，[[S_22]]）——下一次注入不再把同一
+    路径重新物化，模型拿到纯文本窗口继续任务。改写就地生效（与
+    ``_apply_image_evictions`` / ``rewrite_orphan_attached_markers`` 同语义）。
+
+    read_file 注入的图没有状态行：像素块就地换成 ``[image omitted: unsafe]`` 文本，
+    保留其前面的路径说明行，模型仍可用 read_file 重读原文件。
+
+    Returns:
+        摘除的图片块数量（0 = 历史里没有图）。
+    """
+
+    slots = _collect_image_slots(list(messages))
+    if not slots:
+        return 0
+
+    # 按消息分组：同一条消息只重建一次，避免多次 _set_message_content 互相覆盖。
+    buckets: dict[int, dict[str, Any]] = {}
+    for slot in slots:
+        bucket = buckets.setdefault(
+            id(slot["message"]),
+            {"message": slot["message"], "image_parts": {}, "state_parts": {}},
+        )
+        bucket["image_parts"][slot["part_index"]] = slot["index"]
+        if slot["index"] is not None and slot["state_part_index"] is not None:
+            bucket["state_parts"][slot["state_part_index"]] = slot["index"]
+
+    for bucket in buckets.values():
+        message = bucket["message"]
+        parts = _message_parts(message)
+        rebuilt: list[Any] = []
+        for part_index, part in enumerate(parts):
+            if part_index in bucket["image_parts"]:
+                index = bucket["image_parts"][part_index]
+                if index is None or index not in bucket["state_parts"].values():
+                    # read_file 注入的图没有状态行，就地换成省略说明；前面的路径说明行
+                    # 保留，模型可以再用 read_file 按原文件重新出图。
+                    rebuilt.append({"type": "text", "text": f"[image omitted: {reason}]"})
+                # 有配对状态行时由状态行承载事实（改写为 omitted），像素块直接摘除。
+                continue
+            if part_index in bucket["state_parts"]:
+                index = bucket["state_parts"][part_index]
+                rebuilt.append(_replace_attached_state_line(part, index, reason=reason))
+                continue
+            rebuilt.append(part)
+        _set_message_content(message, rebuilt)
+    return len(slots)
 
 
 def _apply_image_budget(

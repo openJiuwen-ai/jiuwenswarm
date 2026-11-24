@@ -25,6 +25,11 @@
 ``provided_image_paths``）：read_file 护栏按它判定"这张图已随消息提供像素、别重复读"。
 快照只写 ``ctx.extra``（没有跨任务读的 agent 属性需求），且写入点是内层
 ``before_model_call``（N7），空列表表示"这次确实没有像素"（放行重读）。
+
+另有「本轮被上游判 unsafe 的图片路径」请求级黑名单
+（``UNSAFE_IMAGE_PATHS_KEY`` / ``mark_unsafe_image_paths`` /
+``unsafe_image_paths``）：摘图降级重试后，read_file 护栏按它拒绝对同一张图的重复
+读取，引用行注入按它跳过物化，避免同一张图重新进入窗口后再无降级额度（N11）。
 """
 
 from __future__ import annotations
@@ -41,6 +46,13 @@ NATIVE_IMAGES_SENT_KEY = "_jiuwenswarm_native_images_sent"
 # 像素进了消息（预算淘汰 / 引用行解析失败 / 读文件失败都可能 0 张），read_file 护栏
 # 只有看到这张图真的 attached 才能拒绝重复读。
 PROVIDED_IMAGE_PATHS_KEY = "_jiuwenswarm_provided_image_paths"
+
+# ctx.extra 键：本轮被上游内容安全判为 unsafe 的图片路径黑名单（list[str]）。
+# 上游 400 只给 ``image_url.url field is unsafe`` 不指明具体哪张图，本地把已发出像素
+# 的全部路径都记为嫌疑；read_file 物化 / 引用行注入按它拦截，避免摘图重试后模型又
+# 把同一张图塞回窗口、再次 400 却已无降级额度（[[S_22]] N11）。请求级：新 invoke 的
+# ``before_model_call`` 清空，同一次 invoke 的降级重试保留。
+UNSAFE_IMAGE_PATHS_KEY = "_jiuwenswarm_unsafe_image_paths"
 
 _AGENT_OWNER_ATTRS = ("_deep_agent", "_config_agent", "_runtime_agent")
 
@@ -94,6 +106,61 @@ def provided_image_paths(ctx: Any = None, agent: Any = None) -> list[str] | None
         if target is None:
             continue
         value = _agent_list_attr(target, PROVIDED_IMAGE_PATHS_KEY)
+        if value is not None:
+            return value
+    return None
+
+
+def mark_unsafe_image_paths(
+    ctx: Any, paths: list[str] | None, agent: Any = None
+) -> list[str]:
+    """把「本轮被上游内容安全判为 unsafe 的图片路径」写入请求级黑名单。
+
+    空列表是**权威事实**（本轮尚未发生拦截），不是"没写"——``before_model_call``
+    每个新 invoke 用它清掉上一请求的残留；同一次 invoke 的降级重试保留（不被
+    ``before_model_call`` 覆盖），read_file 护栏据此拒绝重新读取同一张图。
+
+    与 ``mark_provided_image_paths`` 同理由镜像到 agent 属性：工具执行可能没有 rail
+    ctx（``invoke_tool`` / ``tools_search``），只能从 agent 实例上读。
+    """
+
+    normalized: list[str] = []
+    for item in paths or []:
+        text = str(item or "").strip()
+        if text and text not in normalized:
+            normalized.append(text)
+    extra = getattr(ctx, "extra", None)
+    if isinstance(extra, dict):
+        extra[UNSAFE_IMAGE_PATHS_KEY] = normalized
+    targets = [agent, getattr(ctx, "agent", None)]
+    for target in targets:
+        if target is None:
+            continue
+        try:
+            setattr(target, UNSAFE_IMAGE_PATHS_KEY, normalized)
+        except Exception:  # pragma: no cover - 冻结对象 / 属性拦截时降级为只写 extra
+            logger.debug(
+                "[multimodal_image_state] set unsafe paths attr failed: %r", target
+            )
+    return normalized
+
+
+def unsafe_image_paths(ctx: Any = None, agent: Any = None) -> list[str] | None:
+    """读取请求级 unsafe 图片黑名单；``None`` 表示本次请求尚未写过。
+
+    优先读 ``ctx.extra``，读不到再回退 agent 属性（无 rail ctx 的工具执行场景）。
+    空列表是有效值（本轮不允许拦截任何图片）。
+    """
+
+    extra = getattr(ctx, "extra", None) if ctx is not None else None
+    if isinstance(extra, dict):
+        cached = extra.get(UNSAFE_IMAGE_PATHS_KEY)
+        if isinstance(cached, list):
+            return [str(item).strip() for item in cached if str(item or "").strip()]
+    for target in (agent, getattr(ctx, "agent", None) if ctx is not None else None):
+        if target is None:
+            continue
+        value = _agent_list_attr(target, UNSAFE_IMAGE_PATHS_KEY)
         if value is not None:
             return value
     return None
