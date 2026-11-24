@@ -1528,6 +1528,10 @@ class PersonalContextHostAPI:
                     exc,
                     "PersonalContext fetch service could not be deleted",
                 ) from None
+            with contextlib.suppress(Exception):
+                discard_usage = getattr(self._personal_context, "_discard_run_token_usage", None)
+                if callable(discard_usage):
+                    discard_usage(normalized_id)
 
     async def patch_fetch_service(
         self,
