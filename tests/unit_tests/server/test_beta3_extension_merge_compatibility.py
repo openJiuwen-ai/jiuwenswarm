@@ -238,7 +238,6 @@ async def test_workspace_binding_keeps_history_facts_and_both_memory_agent_coord
     adapter = deep.JiuWenSwarmDeepAdapter()
     adapter._project_dir = str(tmp_path) if project_binding == "explicit" else project_binding
     adapter._instance = SimpleNamespace(_react_agent=SimpleNamespace())
-    monkeypatch.setattr(deep, "init_cwd", Mock())
     monkeypatch.setattr(deep, "get_cwd", lambda: str(tmp_path))
     monkeypatch.setattr(adapter, "_resolve_runtime_language", lambda: "cn")
 
