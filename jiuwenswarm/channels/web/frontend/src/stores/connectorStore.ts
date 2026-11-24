@@ -210,6 +210,9 @@ function invalidateDetail(detailCache: Record<string, ConnectorDetail>, name: st
 // code（MCP_RUNTIME_MISSING 等四种）+ runtime + install_cmd；这里按 code
 // 映射 i18n 文案，其余错误回退 error.message。
 // mcp.install 内联的 connect_failed 复用同一套映射。
+// 2026-11-25：探活失败按原因分流——MCP_UNREACHABLE（网络类，凭据保留）与
+// MCP_CREDENTIALS_INVALID（服务确证拒绝凭据）分别给文案，避免"提示不可达、
+// 实际 token 被清"的误导。
 const RUNTIME_LABELS: Record<string, string> = { node: 'Node.js', python: 'Python' };
 
 interface McpFailureFields {
@@ -237,6 +240,12 @@ function friendlyMcpFailure(fields: McpFailureFields): string {
     return installCmd
       ? i18n.t('connectorMarket.errors.cliIncompleteNamed', { command: installCmd })
       : i18n.t('connectorMarket.errors.cliIncomplete');
+  }
+  if (fields.code === 'MCP_CREDENTIALS_INVALID') {
+    return i18n.t('connectorMarket.errors.probeAuthRejected');
+  }
+  if (fields.code === 'MCP_UNREACHABLE') {
+    return i18n.t('connectorMarket.errors.probeUnreachable');
   }
   return fields.message ?? ''; // 兜底：非 CLI 边界失败，展示原文
 }

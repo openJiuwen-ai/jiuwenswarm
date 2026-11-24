@@ -6056,7 +6056,9 @@
       "installNetwork": "Failed to download a dependency. Please check your network connection and retry.",
       "installScriptDep": "The CLI install script requires PowerShell. Please enable or restore PowerShell and retry.",
       "cliIncomplete": "The CLI is incomplete or outdated. Please reconnect to retry.",
-      "cliIncompleteNamed": "The CLI is incomplete or outdated. Please run the following command to install or upgrade it, then retry: {{command}}"
+      "cliIncompleteNamed": "The CLI is incomplete or outdated. Please run the following command to install or upgrade it, then retry: {{command}}",
+      "probeUnreachable": "The service is temporarily unreachable. Please retry later; your saved credentials are kept.",
+      "probeAuthRejected": "The service rejected the saved credentials. Please re-enter the token and retry."
     },
     "card": {
       "connect": "Connect",
