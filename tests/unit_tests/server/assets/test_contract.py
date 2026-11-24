@@ -69,7 +69,7 @@ def test_normalize_asset_kind_rejects_unknown(raw) -> None:
 
 
 @pytest.mark.parametrize(
-    "asset_id", ["my-expert", "bond_analyst", "债券投研专家", "v1.2", "a b"]
+    "asset_id", ["my-expert", "data_analyst", "中文专家名", "v1.2", "a b"]
 )
 def test_validate_asset_id_accepts_plain_names(asset_id) -> None:
     assert validate_asset_id(asset_id) == asset_id
@@ -126,11 +126,11 @@ def test_build_export_filename_rejects_degenerate() -> None:
 
 def test_parse_export_params_normalizes() -> None:
     parsed = parse_export_params(
-        {"kind": "agent_templates", "local_id": " bond-analyst ", "version": " 1.0 "}
+        {"kind": "agent_templates", "local_id": " data-analyst ", "version": " 1.0 "}
     )
     assert parsed == {
         "kind": AssetKind.AGENT_TEMPLATE,
-        "local_id": "bond-analyst",
+        "local_id": "data-analyst",
         "version": "1.0",
     }
     parsed = parse_export_params({"kind": "skill", "local_id": "web-search"})
