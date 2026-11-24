@@ -527,7 +527,7 @@ async def test_front_recovery_has_terminal_failure_and_cleanup(monkeypatch, fail
     (False, False, False), (True, False, False), (True, True, False), (True, False, True),
 ])
 async def test_real_worker_resumes_original_stream_once(
-    monkeypatch, tmp_path, finish_offline, delayed_resume, uncertain_send,
+    monkeypatch, tmp_path, ipc_dir, finish_offline, delayed_resume, uncertain_send,
 ):
     source = Path(supervisor_module.__file__).resolve().parents[3]
     bootstrap = tmp_path / "bootstrap"
@@ -547,7 +547,7 @@ async def test_real_worker_resumes_original_stream_once(
     monkeypatch.setenv("JIUWENSWARM_IDENTITY_CACHE_DIR", str(tmp_path / "identity"))
     readiness = Readiness()
     supervisor = RuntimeSupervisor(readiness, forwarder=EventForwarder(),
-        socket_path=str(tmp_path / "runtime.pipe"))
+        socket_path=str(ipc_dir / "runtime.pipe"))
     reconnect = asyncio.Event()
     detached = asyncio.Event()
     schedule = supervisor._schedule_restart
