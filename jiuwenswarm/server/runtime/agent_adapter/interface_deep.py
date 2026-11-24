@@ -10196,21 +10196,21 @@ class JiuWenSwarmDeepAdapter:
 
     def _set_main_agent_trace_name(self, request: AgentRequest, run_span: Span | None) -> None:
         """Bind the matching session snapshot's template name to this recorded turn."""
-        if run_span is None or not self._is_session_scoped_adapter or not run_span.is_recording():
-            return
-        policy = self._enterprise_config
-        if policy is None:
-            return
-        params = request.params or {}
-        if (
-            not is_single_agent_mode(deprecate_mode(params.get("mode", "agent")))
-            or is_team_params(params)
-            or self._session_instance_agent_definition is not None
-            or getattr(self, "_session_instance_spec", None) is not None
-            or "agent_name" in self._instance_overrides
-        ):
-            return
         try:
+            if run_span is None or not self._is_session_scoped_adapter or not run_span.is_recording():
+                return
+            policy = self._enterprise_config
+            params = request.params
+            if policy is None or not isinstance(params, dict):
+                return
+            if (
+                not is_single_agent_mode(deprecate_mode(params.get("mode", "agent")))
+                or is_team_params(params)
+                or self._session_instance_agent_definition is not None
+                or getattr(self, "_session_instance_spec", None) is not None
+                or "agent_name" in self._instance_overrides
+            ):
+                return
             from jiuwenswarm.agents.harness.agent_observability import MainAgentObservabilityRail
             from jiuwenswarm.common.request_identity import web_routing_identity
 
@@ -13068,16 +13068,22 @@ class JiuWenSwarmDeepAdapter:
         # The harness rail is the whole agent tier here: the team contribution
         # (agentteam.* identity) is a separate rail the team blueprint mounts,
         # and a single agent has no team to describe.
+        trace_rail = None
         try:
-            from openjiuwen.harness.observability import AgentObservabilityRail
             from jiuwenswarm.enterprise import is_enterprise
 
             if is_enterprise() and self._parent_session_id:
                 from jiuwenswarm.agents.harness.agent_observability import MainAgentObservabilityRail
 
-                rails_list.append(MainAgentObservabilityRail(self._parent_session_id))
-            else:
-                rails_list.append(AgentObservabilityRail())
+                trace_rail = MainAgentObservabilityRail(self._parent_session_id)
+        except Exception as exc:
+            logger.warning("%s Using the default observability rail after template tracing failed: %s", log_prefix, exc)
+        try:
+            if trace_rail is None:
+                from openjiuwen.harness.observability import AgentObservabilityRail
+
+                trace_rail = AgentObservabilityRail()
+            rails_list.append(trace_rail)
         except Exception as exc:
             logger.warning("%s Failed to attach AgentObservabilityRail: %s", log_prefix, exc)
         stage_timer.mark("observability_rail")
@@ -20983,6 +20989,12 @@ class JiuWenSwarmDeepAdapter:
     async def _process_message_impl(
         self, request: AgentRequest, inputs: dict[str, Any]
     ) -> AgentResponse:
+        with ExitStack() as trace_scope:
+            return await self._run_message(request, inputs, trace_scope)
+
+    async def _run_message(
+        self, request: AgentRequest, inputs: dict[str, Any], trace_scope: ExitStack,
+    ) -> AgentResponse:
         """Execute a single non-streaming request and return the response.
 
         Args:
@@ -21209,6 +21221,7 @@ class JiuWenSwarmDeepAdapter:
         )
 
         from jiuwenswarm.agents.harness.agent_observability import (  # noqa: E402
+            main_agent_trace_turn,
             sync_agent_observability,
         )
         inputs = self._with_symphony_request_model(inputs, resolved_model)
@@ -21292,6 +21305,7 @@ class JiuWenSwarmDeepAdapter:
                 else mode
             )
             _turn = self._resolve_trajectory_turn(request.params)
+            trace_scope.enter_context(main_agent_trace_turn(self._parent_session_id))
             _run_span = open_agent_run_span(
                 session_id=session_id,
                 mode=_trajectory_mode,
@@ -21842,6 +21856,14 @@ class JiuWenSwarmDeepAdapter:
 
     async def _process_message_stream_impl(
         self, request: AgentRequest, inputs: dict[str, Any]
+    ) -> AsyncIterator[AgentResponseChunk]:
+        with ExitStack() as trace_scope:
+            async with aclosing(self._run_message_stream(request, inputs, trace_scope)) as stream:
+                async for chunk in stream:
+                    yield chunk
+
+    async def _run_message_stream(
+        self, request: AgentRequest, inputs: dict[str, Any], trace_scope: ExitStack,
     ) -> AsyncIterator[AgentResponseChunk]:
         """Execute a streaming request; yield response chunks.
 
@@ -22561,6 +22583,7 @@ class JiuWenSwarmDeepAdapter:
         )
 
         from jiuwenswarm.agents.harness.agent_observability import (  # noqa: E402
+            main_agent_trace_turn,
             sync_agent_observability,
         )
         inputs = self._with_symphony_request_model(inputs, resolved_model)
@@ -22682,6 +22705,7 @@ class JiuWenSwarmDeepAdapter:
                 else _debug_trace_mode
             )
             _turn = self._resolve_trajectory_turn(request.params)
+            trace_scope.enter_context(main_agent_trace_turn(self._parent_session_id))
             _run_span = open_agent_run_span(
                 session_id=session_id,
                 mode=_trajectory_mode,

@@ -30,13 +30,14 @@ import logging
 import threading
 import time
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 from weakref import WeakKeyDictionary
 
 from openjiuwen.core.common.logging import server_logger
 from opentelemetry.trace import Span
-from openjiuwen.extensions.observability.span_context import get_session_root_span
 from openjiuwen.harness.observability import (
     AgentObservabilityRail,
     acquire_observability,
@@ -131,23 +132,66 @@ def plugin_trajectory_demand_count() -> int:
 _ROOT_SPANS: dict[str, Any] = {}
 
 
+@dataclass
+class _SessionTraceTurns:
+    active: int = 0
+    overlapped: bool = False
+
+
+_trace_turns: dict[str, _SessionTraceTurns] = {}
+_trace_turns_lock = threading.Lock()
+
+
+@contextmanager
+def main_agent_trace_turn(session_id: str | None) -> Iterator[None]:
+    """Track overlapping enterprise turns across rail rebuilds until the session is idle."""
+    from jiuwenswarm.enterprise import is_enterprise
+
+    if not session_id or not is_enterprise():
+        yield
+        return
+
+    with _trace_turns_lock:
+        turns = _trace_turns.setdefault(session_id, _SessionTraceTurns())
+        if turns.active:
+            turns.overlapped = True
+        turns.active += 1
+    try:
+        yield
+    finally:
+        with _trace_turns_lock:
+            turns.active -= 1
+            if turns.active == 0:
+                del _trace_turns[session_id]
+
+
 class MainAgentObservabilityRail(AgentObservabilityRail):
     """Resolve the main agent's telemetry label for the exact recorded turn."""
 
     def __init__(self, session_id: str) -> None:
+        from openjiuwen.extensions.observability.span_context import get_bound_root_span, get_session_root_span
+
         super().__init__()
+        self._get_bound_root = get_bound_root_span
+        self._get_session_root = get_session_root_span
         self._session_id = session_id
         self._template_names: WeakKeyDictionary[Span, str] = WeakKeyDictionary()
 
     def bind_template_name(self, run_span: Span, name: str) -> None:
-        self._template_names[run_span] = name
+        with _trace_turns_lock:
+            self._template_names[run_span] = name
 
     def resolve_agent_name(self, agent: Any) -> str:
-        root = get_session_root_span(self._session_id)
-        if root is not None:
-            name = self._template_names.get(root)
-            if name is not None:
-                return name
+        with _trace_turns_lock:
+            root = self._get_session_root(self._session_id)
+            turns = _trace_turns.get(self._session_id)
+            # The SDK registry keeps only the latest root per session. Without
+            # a callback-bound root it is authoritative only for an isolated turn.
+            isolated = turns is not None and not turns.overlapped
+            if root is not None and (root is self._get_bound_root() or isolated):
+                name = self._template_names.get(root)
+                if name is not None:
+                    return name
         return super().resolve_agent_name(agent)
 
 
