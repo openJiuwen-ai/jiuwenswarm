@@ -237,22 +237,49 @@ def test_first_fetch_is_retried_after_the_cooldown(monkeypatch):
     assert get_config() is not None, "冷却期过了要再试一次"
 
 
+def _gateway_jitter_bounds() -> tuple[float, float]:
+    """Return the jitter bounds exposed by the pinned agent-gateway."""
+    try:
+        from agent_gateway.common import retry as gateway_retry
+    except ImportError:
+        # Older gateway keeps the jitter factor in remote_config.
+        jitter = getattr(remote_config, "_RETRY_JITTER", None)
+        if jitter is None:  # pragma: no cover - unknown gateway jitter contract
+            return 0.0, 2.0
+        return 1.0 - float(jitter), 1.0 + float(jitter)
+    return float(gateway_retry.JITTER_LOW), float(gateway_retry.JITTER_HIGH)
+
+
 def test_cooldown_backs_off_while_the_service_stays_down():
+    low, high = _gateway_jitter_bounds()
     base = remote_config._RETRY_AFTER_FAILURE_S
-    jitter = remote_config._RETRY_JITTER
     cap = remote_config._RETRY_BACKOFF_MAX_S
 
     waits = []
+    next_bases = []
     for _ in range(12):
         wait, base = remote_config._backoff(base)
         waits.append(wait)
+        next_bases.append(base)
 
-    assert waits[0] <= remote_config._RETRY_AFTER_FAILURE_S * (1 + jitter), "第一次仍是 30 秒上下"
-    # 只比封顶之前的几次：到了封顶值，抖动会让后一次可能略短于前一次
-    assert all(waits[index] < waits[index + 1] for index in range(4)), "连续失败要越等越久"
-    assert all(wait <= cap * (1 + jitter) for wait in waits), "封顶 10 分钟"
-    assert waits[-1] >= cap * (1 - jitter), "一直失败下去会走到封顶值"
+    # _backoff 的第二个返回值是未抖动的下一基准，用它验证翻倍与封顶，
+    # 不依赖 gateway 内部抖动是乘法、加法还是由哪个模块生成。
+    assert next_bases[0] == min(remote_config._RETRY_AFTER_FAILURE_S * 2, cap)
+    assert all(
+        next_bases[index] < next_bases[index + 1]
+        for index in range(len(next_bases) - 1)
+        if next_bases[index] < cap
+    ), "连续失败要越等越久，直到封顶"
     assert base == cap, "基准也停在封顶值，不会无限涨"
+
+    # 每次 wait 都围绕调用前的基准抖动；上下界取当前 gateway 暴露的契约。
+    previous_bases = [remote_config._RETRY_AFTER_FAILURE_S, *next_bases[:-1]]
+    assert all(
+        previous_base * low <= wait <= previous_base * high
+        for previous_base, wait in zip(previous_bases, waits)
+    ), "等待时间要落在当前 gateway 的抖动范围内"
+    assert waits[-1] >= cap * low, "一直失败下去会走到封顶值"
+    assert waits[-1] <= cap * high, "封顶 10 分钟"
 
 
 def test_http_error_is_treated_as_a_failure(monkeypatch):
