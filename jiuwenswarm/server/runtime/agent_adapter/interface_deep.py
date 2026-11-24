@@ -16042,6 +16042,7 @@ class JiuWenSwarmDeepAdapter:
             getattr(existing, "name", "")
             for existing in (self._instance.ability_manager.list() or [])
         }
+        # 先算便宜的基础条件；只有本来就有资格挂载的会话才付出 metadata 查询。
         eligible = bool(
             normalized_session_id
             and not normalized_session_id.startswith(
@@ -16051,6 +16052,22 @@ class JiuWenSwarmDeepAdapter:
             and not is_team_mode(deprecate_mode(self._last_mode))
             and getattr(runtime, "session_message_service", None) is not None
         )
+        # cron 执行会话（__cron__ 前缀、cron_execution 标记或持久化 cron_id）按
+        # 设计不参与跨会话消息（SessionMessageService._supported 拒绝 cron_id
+        # 会话）。不识别的话 rail 仍挂着 service，每次模型调用都吃一条服务端拒绝
+        # + state_unavailable 假快照注入（JW-69）；与 HeartbeatRail 的 cron 会话
+        # 跳过同一判定。
+        cron_session_id = normalized_session_id or getattr(
+            self, "_parent_session_id", None
+        )
+        if eligible and self._is_cron_execution_session(cron_session_id):
+            # Steady-state expected skip on a per-request path: debug, not INFO,
+            # so cron sessions do not trade WARNING spam for INFO spam.
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] skip SessionMessaging for cron session %s",
+                cron_session_id,
+            )
+            eligible = False
         messaging_rail = getattr(self, "_session_messaging_route_rail", None)
         if messaging_rail is not None:
             messaging_rail.set_service(runtime.session_message_service if eligible else None)
