@@ -3021,7 +3021,11 @@ def _prune_override_keys(
             continue
         tmpl_val = template[key]
         if isinstance(tmpl_val, dict) and isinstance(over_val, dict):
-            if not tmpl_val:
+            if parent_key == "permissions" and key in _PERMISSIONS_OVERRIDE_KEEP_KEYS:
+                # host_guard 等扩展段在模板里只声明了部分键（如 enabled），
+                # 递归裁剪会把用户自定义的嵌套键（protected_patterns）删掉。
+                result[key] = over_val
+            elif not tmpl_val:
                 result[key] = over_val
             else:
                 result[key] = _prune_override_keys(

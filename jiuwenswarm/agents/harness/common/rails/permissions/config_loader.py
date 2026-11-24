@@ -115,6 +115,20 @@ def _load_permissions_from_yaml() -> dict[str, Any]:
             result["shell_allowlist"] = copy.deepcopy(
                 user_permissions.get("shell_allowlist")
             )
+        # host_guard: 模板只声明 enabled，用户自带的 protected_patterns 是
+        # 模板里不存在的嵌套键，会被模板 deep-merge 丢掉。用户段为 dict 时与
+        # 已合并段深合并：既补回自定义规则，也保留模板 enabled 与 provider
+        # 下发的其它键；显式 null/非 dict 才按原样覆盖。
+        if "host_guard" in user_permissions:
+            user_host_guard = user_permissions.get("host_guard")
+            merged_host_guard = result.get("host_guard")
+            if isinstance(user_host_guard, dict) and isinstance(
+                merged_host_guard, dict
+            ):
+                merged_host_guard.update(copy.deepcopy(user_host_guard))
+                result["host_guard"] = merged_host_guard
+            else:
+                result["host_guard"] = copy.deepcopy(user_host_guard)
     return result
 
 
