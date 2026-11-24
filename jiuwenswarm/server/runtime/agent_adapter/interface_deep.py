@@ -32,6 +32,7 @@ from urllib.parse import urlparse
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Coroutine, List, Optional, Tuple
 
 if TYPE_CHECKING:
+    from opentelemetry.trace import Span
     from agent_gateway.common.model_selection import ModelSelection
     from jiuwenswarm.server.runtime.agent_adapter.plugin_runtime import PluginRuntimeHost, PluginRuntimeManager
     from jiuwenswarm.server.runtime.agent_config_service import AgentDefinition
@@ -416,6 +417,7 @@ from agent_gateway.common.mode_matrix import (  # pylint: disable=wrong-import-o
     NEW_AGENT_WORK_PLAN,
     deprecate_mode,
     is_code_profile_mode,
+    is_single_agent_mode,
     is_team_mode,
 )
 
@@ -10192,6 +10194,40 @@ class JiuWenSwarmDeepAdapter:
             return hint.strip()[:500]
         return "该模型需要登录华为账号后使用（未登录或登录已过期），请登录后重试"
 
+    def _set_main_agent_trace_name(self, request: AgentRequest, run_span: Span | None) -> None:
+        """Bind the matching session snapshot's template name to this recorded turn."""
+        if run_span is None or not self._is_session_scoped_adapter or not run_span.is_recording():
+            return
+        policy = self._enterprise_config
+        if policy is None:
+            return
+        params = request.params or {}
+        if (
+            not is_single_agent_mode(deprecate_mode(params.get("mode", "agent")))
+            or is_team_params(params)
+            or self._session_instance_agent_definition is not None
+            or getattr(self, "_session_instance_spec", None) is not None
+            or "agent_name" in self._instance_overrides
+        ):
+            return
+        try:
+            from jiuwenswarm.agents.harness.agent_observability import MainAgentObservabilityRail
+            from jiuwenswarm.common.request_identity import web_routing_identity
+
+            bot_id = web_routing_identity(request.metadata).get("bot_id")
+            if not bot_id or getattr(policy, "resource_id", None) != bot_id:
+                return
+            template = getattr(policy, "agent_template", None)
+            name = template.get("template_name") if isinstance(template, dict) else None
+            if not isinstance(name, str) or not name.strip():
+                return
+            for rail in self._instance.configured_rails():
+                if isinstance(rail, MainAgentObservabilityRail):
+                    rail.bind_template_name(run_span, name.strip())
+                    return
+        except Exception:  # Telemetry must not interrupt a chat.
+            logger.warning("Could not set the Agent template name for tracing", exc_info=True)
+
     async def _ensure_enterprise_models(self, request: AgentRequest) -> None:
         """把本次请求对应的企业模型模板写入进程内模型缓存。
 
@@ -13034,8 +13070,14 @@ class JiuWenSwarmDeepAdapter:
         # and a single agent has no team to describe.
         try:
             from openjiuwen.harness.observability import AgentObservabilityRail
+            from jiuwenswarm.enterprise import is_enterprise
 
-            rails_list.append(AgentObservabilityRail())
+            if is_enterprise() and self._parent_session_id:
+                from jiuwenswarm.agents.harness.agent_observability import MainAgentObservabilityRail
+
+                rails_list.append(MainAgentObservabilityRail(self._parent_session_id))
+            else:
+                rails_list.append(AgentObservabilityRail())
         except Exception as exc:
             logger.warning("%s Failed to attach AgentObservabilityRail: %s", log_prefix, exc)
         stage_timer.mark("observability_rail")
@@ -21258,6 +21300,7 @@ class JiuWenSwarmDeepAdapter:
                 turn_id=_turn.turn_id,
                 turn_number=_turn.turn_number,
             )
+            self._set_main_agent_trace_name(request, _run_span)
             # Reuse the host-owned trajectory turn number for inference-side
             # affinity. The UUID remains an observability identity; the wire
             # protocol deliberately carries the 1-based integer sequence.
@@ -22647,6 +22690,7 @@ class JiuWenSwarmDeepAdapter:
                 turn_id=_turn.turn_id,
                 turn_number=_turn.turn_number,
             )
+            self._set_main_agent_trace_name(request, _run_span)
             # Propagate the host-owned turn number explicitly; ContextVars from
             # this request do not cross the long-lived Agent Core scheduler.
             inputs = dict(inputs)

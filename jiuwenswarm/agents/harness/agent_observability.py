@@ -32,9 +32,13 @@ import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from openjiuwen.core.common.logging import server_logger
+from opentelemetry.trace import Span
+from openjiuwen.extensions.observability.span_context import get_session_root_span
 from openjiuwen.harness.observability import (
+    AgentObservabilityRail,
     acquire_observability,
     release_observability,
 )
@@ -125,6 +129,26 @@ def plugin_trajectory_demand_count() -> int:
 # A session's entry is dropped when its run closes, and sessions overlap, so
 # closing never clears another still-running session's entry.
 _ROOT_SPANS: dict[str, Any] = {}
+
+
+class MainAgentObservabilityRail(AgentObservabilityRail):
+    """Resolve the main agent's telemetry label for the exact recorded turn."""
+
+    def __init__(self, session_id: str) -> None:
+        super().__init__()
+        self._session_id = session_id
+        self._template_names: WeakKeyDictionary[Span, str] = WeakKeyDictionary()
+
+    def bind_template_name(self, run_span: Span, name: str) -> None:
+        self._template_names[run_span] = name
+
+    def resolve_agent_name(self, agent: Any) -> str:
+        root = get_session_root_span(self._session_id)
+        if root is not None:
+            name = self._template_names.get(root)
+            if name is not None:
+                return name
+        return super().resolve_agent_name(agent)
 
 
 def sync_agent_observability(*, force: bool = False) -> None:
