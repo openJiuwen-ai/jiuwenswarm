@@ -58,6 +58,7 @@ generated: true
 | [jiuwenswarm/resources](#module-jiuwenswarm-resources) |
 | [jiuwenswarm/resources/agent/workspace/skills](#module-jiuwenswarm-resources-agent-workspace-skills) |
 | [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin](#module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin) |
+| [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/advanced-daily-report](#module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin-references-capabilities-advanced-daily-report) |
 | [jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder](#module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin-references-capabilities-workswarm-app-builder) |
 | [jiuwenswarm/resources/plugins/ttse](#module-jiuwenswarm-resources-plugins-ttse) |
 | [jiuwenswarm/runtime](#module-jiuwenswarm-runtime) |
@@ -561,6 +562,14 @@ generated: true
 | [F_20261104_1225_npc-team-member-sessions](features/F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
 | [B_20261103_1433_npc-session-project](bugfix/jiuwenswarm/extensions/app_market/npc-session-project.md) | B | 微缩生活岛 NPC 会话归属错误 | kdgmpw | 无独立 D：根据明确的故障修复要求落实既有项目绑定接口，无独立设计。 |
 | [S_01_app-session-project](specs/jiuwenswarm/extensions/app_market/app-session-project.md) | S | 应用角色会话的项目归属 | kdgmpw | — |
+
+<a id="module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin-references-capabilities-advanced-daily-report"></a>
+
+## jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/advanced-daily-report
+
+| ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
+|---|---|---|---|---|
+| [B_20261119_1547_daily-report-todo-collection](bugfix/jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/advanced-daily-report/B_20261119_1547_daily-report-todo-collection.md) | B | 日报技能的待办采集始终为空 | liujiayu75 | 无独立 D：采集路径与现行存储契约不一致导致的实现缺陷；按 workspace todo.json 契约修复，无独立设计。 |
 
 <a id="module-jiuwenswarm-resources-agent-workspace-skills-workswarm-builtin-references-capabilities-workswarm-app-builder"></a>
 
