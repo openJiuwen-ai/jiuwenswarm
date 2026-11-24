@@ -1526,21 +1526,6 @@ _PACKAGE_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.PLUGIN_PACKAGES_UNINSTALL: "uninstall_plugin_package",
 }
 
-_EXPERT_HUB_PACKAGE_METHODS = frozenset(
-    {
-        ReqMethod.AGENT_GROUPS_LIST,
-        ReqMethod.AGENT_GROUPS_SHOW,
-        ReqMethod.AGENT_GROUPS_FILE_LIST,
-        ReqMethod.AGENT_GROUPS_FILE_READ,
-        ReqMethod.AGENT_GROUPS_INSTALL,
-        ReqMethod.AGENT_TEMPLATES_LIST,
-        ReqMethod.AGENT_TEMPLATES_SHOW,
-        ReqMethod.AGENT_TEMPLATES_FILE_LIST,
-        ReqMethod.AGENT_TEMPLATES_FILE_READ,
-        ReqMethod.AGENT_TEMPLATES_INSTALL,
-    }
-)
-
 _AGENT_GROUP_PACKAGE_METHODS: frozenset[ReqMethod] = frozenset(
     {
         ReqMethod.AGENT_GROUPS_LIST,
@@ -3330,32 +3315,23 @@ class JiuWenSwarm:
         # Frontend contract uses `id`; accept legacy `name` as alias.
         name = params.get("id") if params.get("id") not in (None, "") else params.get("name")
         try:
-            hub_port, downloader = None, None
-            local_list = (
-                method in {ReqMethod.AGENT_GROUPS_LIST, ReqMethod.AGENT_TEMPLATES_LIST}
-                and params.get("filter") in ("local", "mine")
-            )
-            if method in _EXPERT_HUB_PACKAGE_METHODS and not local_list:
-                hub_port, downloader = package_manager.expert_hub_clients()
             if method == ReqMethod.AGENT_GROUPS_LIST:
-                cards = await package_manager.list_agent_groups_with_hub(params, hub_port=hub_port)
+                cards = await package_manager.list_agent_groups_with_hub(params)
                 payload: dict[str, Any] = {"agentGroups": cards}
                 if hasattr(cards, "cache"):
                     payload["cache"] = cards.cache
             elif method == ReqMethod.AGENT_GROUPS_SHOW:
-                group = await package_manager.show_agent_group_with_hub(str(name or ""), hub_port=hub_port)
+                group = await package_manager.show_agent_group_with_hub(str(name or ""))
                 if group is None:
                     raise ValueError(f"agent_group not found: {name!r}")
                 payload = {"group": group}
             elif method == ReqMethod.AGENT_GROUPS_FILE_LIST:
                 payload = {
-                    "tree": await package_manager.list_agent_group_files_with_hub(
-                        str(name or ""), hub_port=hub_port, downloader=downloader
-                    )
+                    "tree": await package_manager.list_agent_group_files_with_hub(str(name or ""))
                 }
             elif method == ReqMethod.AGENT_GROUPS_FILE_READ:
                 payload = await package_manager.read_agent_group_file_with_hub(
-                    str(name or ""), str(params.get("path", "")), hub_port=hub_port, downloader=downloader
+                    str(name or ""), str(params.get("path", ""))
                 )
             elif method == ReqMethod.AGENT_GROUPS_CREATE:
                 payload = package_manager.create_agent_group(params)
@@ -3363,9 +3339,7 @@ class JiuWenSwarm:
                 payload = package_manager.import_agent_group(params)
             elif method == ReqMethod.AGENT_GROUPS_INSTALL:
                 await asyncio.wait_for(
-                    package_manager.install_agent_group_with_hub(
-                        params, hub_port=hub_port, downloader=downloader
-                    ),
+                    package_manager.install_agent_group_with_hub(params),
                     timeout=220,
                 )
                 payload = {}
@@ -3377,13 +3351,13 @@ class JiuWenSwarm:
                 await uninstall_organization_agent_group(params)
                 payload = {}
             elif method == ReqMethod.AGENT_TEMPLATES_LIST:
-                cards = await package_manager.list_agent_templates_with_hub(params, hub_port=hub_port)
+                cards = await package_manager.list_agent_templates_with_hub(params)
                 payload = {"templates": cards}
                 if hasattr(cards, "cache"):
                     payload["cache"] = cards.cache
             elif method == ReqMethod.AGENT_TEMPLATES_SHOW:
                 card = await package_manager.show_agent_template_with_hub(
-                    str(name or ""), hub_port=hub_port, downloader=downloader
+                    str(name or "")
                 )
                 if card is None:
                     raise ValueError(f"agent_template not found: {name!r}")
@@ -3391,12 +3365,12 @@ class JiuWenSwarm:
             elif method == ReqMethod.AGENT_TEMPLATES_FILE_LIST:
                 payload = {
                     "tree": await package_manager.list_agent_template_files_with_hub(
-                        str(name or ""), hub_port=hub_port, downloader=downloader
+                        str(name or "")
                     )
                 }
             elif method == ReqMethod.AGENT_TEMPLATES_FILE_READ:
                 payload = await package_manager.read_agent_template_file_with_hub(
-                    str(name or ""), str(params.get("path", "")), hub_port=hub_port, downloader=downloader
+                    str(name or ""), str(params.get("path", ""))
                 )
             elif method == ReqMethod.PLUGIN_PACKAGES_LIST:
                 cards = await package_manager.list_plugin_packages_with_hub(params)
@@ -3412,9 +3386,7 @@ class JiuWenSwarm:
                 payload = {"package": card}
             elif method == ReqMethod.AGENT_TEMPLATES_INSTALL:
                 ok, payload = await asyncio.wait_for(
-                    package_manager.install_equipment_from_hub_gated(
-                        "agent_templates", params, hub_port=hub_port, downloader=downloader
-                    ),
+                    package_manager.install_equipment_from_hub_gated("agent_templates", params),
                     timeout=120,
                 )
                 if not ok:

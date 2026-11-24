@@ -112,15 +112,23 @@ class _HubPreviewArchive(NamedTuple):
 _HUB_PREVIEW_ARCHIVES: OrderedDict[tuple[str, str, str, bool], _HubPreviewArchive] = OrderedDict()
 
 
-def expert_hub_clients() -> tuple[HubAssetPort | None, HubPackageDownloader | None]:
-    """Apply the AgentServer TLS setting to expert marketplace requests."""
-    verify = os.getenv("TEAM_SKILLS_HUB_VERIFY_SSL", "").strip().lower()
-    if verify not in {"false", "0", "no", "off"}:
-        return None, None
+def _verify_package_hub_tls(kind: HubAssetKind) -> bool:
+    if kind not in {"agent_template", "agent_group"}:
+        return True
+    return os.getenv("TEAM_SKILLS_HUB_VERIFY_SSL", "").strip().lower() not in {"false", "0", "no", "off"}
+
+
+def _create_package_hub_port(kind: HubAssetKind) -> HubAssetPort:
+    if _verify_package_hub_tls(kind):
+        return create_default_hub_asset_port()
 
     from jiuwenswarm.server.runtime.marketplace.hub_client import HubClient
 
-    return HubClient(verify=False), HubPackageDownloader(verify=False)
+    return HubClient(verify=False)
+
+
+def _create_package_hub_downloader(kind: HubAssetKind) -> HubPackageDownloader:
+    return HubPackageDownloader(verify=_verify_package_hub_tls(kind))
 
 
 def reject_package_name(name: Any, kind: str) -> str:
@@ -2402,7 +2410,7 @@ async def _list_equipment_with_hub(
             if _matches_market_search(card, query)
         }
 
-    port = hub_port or create_default_hub_asset_port()
+    port = hub_port or _create_package_hub_port(hub_asset_kind)
     cache_state = None
     if (
         not query
@@ -2615,7 +2623,7 @@ async def list_agent_groups_with_hub(
             if _matches_market_search(card, query)
         }
 
-    port = hub_port or create_default_hub_asset_port()
+    port = hub_port or _create_package_hub_port("agent_group")
     cache_state = None
     if (
         not query
@@ -2914,7 +2922,7 @@ async def show_agent_group_with_hub(
     local = show_agent_group(name)
     if local is not None:
         return local
-    port = hub_port or create_default_hub_asset_port()
+    port = hub_port or _create_package_hub_port("agent_group")
     detail = await port.query_asset(HubAssetQuery(kind="agent_group", asset_id=name))
     if detail.kind != "agent_group" or detail.asset_id != name:
         raise ValueError("Hub agent group identity mismatch")
@@ -3164,7 +3172,7 @@ async def _show_equipment_with_hub(
                 }
             )
             if not local_card.get("avatar"):
-                port = hub_port or create_default_hub_asset_port()
+                port = hub_port or _create_package_hub_port(hub_asset_kind)
                 try:
                     remote = await port.query_asset(
                         HubAssetQuery(
@@ -3180,7 +3188,7 @@ async def _show_equipment_with_hub(
                 else:
                     local_card = _apply_hub_identity(local_card, remote)
         return local_card
-    port = hub_port or create_default_hub_asset_port()
+    port = hub_port or _create_package_hub_port(hub_asset_kind)
     remote_asset_id = record.asset_id if record is not None else name
     remote = await port.query_asset(
         HubAssetQuery(kind=hub_asset_kind, asset_id=remote_asset_id)
@@ -3443,8 +3451,8 @@ async def prepare_hub_equipment(
         on_rollback=None if staging_root is not None else lambda runtime_package_id: _remove_marketplace_entry(
             kind, runtime_package_id
         ),
-        hub_port=hub_port,
-        downloader=downloader,
+        hub_port=hub_port or _create_package_hub_port(hub_asset_kind),
+        downloader=downloader or _create_package_hub_downloader(hub_asset_kind),
     )
     return result.package_id
 
@@ -3762,7 +3770,7 @@ async def _load_hub_preview_archive(
     kind_label = hub_asset_kind
     package_type = hub_asset_kind
     asset_id = reject_package_name(identifier, kind_label)
-    port = hub_port or create_default_hub_asset_port()
+    port = hub_port or _create_package_hub_port(hub_asset_kind)
     if detail is None:
         detail = await port.query_asset(
             HubAssetQuery(kind=hub_asset_kind, asset_id=asset_id)
@@ -3776,10 +3784,11 @@ async def _load_hub_preview_archive(
     version = str(detail.version or "").strip()
     if not version:
         raise ValueError(f"Hub package has no public version: {asset_id}")
+    package_downloader = downloader or _create_package_hub_downloader(hub_asset_kind)
     transport = getattr(port, "transport", None)
     verified = (
         getattr(transport, "verify", True) is not False
-        and getattr(downloader, "verify", True) is not False
+        and getattr(package_downloader, "verify", True) is not False
     )
     cache_key = (kind, asset_id, version, verified)
     cached = _HUB_PREVIEW_ARCHIVES.get(cache_key)
@@ -3803,7 +3812,6 @@ async def _load_hub_preview_archive(
             f"got {artifact.version!r}"
         )
 
-    package_downloader = downloader or HubPackageDownloader()
     body = await _download_hub_preview_bytes(package_downloader, artifact)
     package_root = _inspect_hub_preview_zip(
         body, kind_label=kind_label, package_type=package_type
@@ -4879,8 +4887,8 @@ async def install_agent_group_with_hub(
                 value.package_id, installed=False, source="hub"
             ),
             on_rollback=remove_agent_group_marketplace_entry,
-            hub_port=hub_port,
-            downloader=downloader,
+            hub_port=hub_port or _create_package_hub_port("agent_group"),
+            downloader=downloader or _create_package_hub_downloader("agent_group"),
         )
         package_id = result.package_id
     install_agent_group({"id": package_id})

@@ -54,21 +54,25 @@ def _bind_packages(packages: list[dict], **identity):
     return bind_request_subject(metadata)
 
 
+@pytest.mark.parametrize("kind", ["agent_template", "agent_group", "plugin"])
 @pytest.mark.parametrize(
-    ("verify_env", "skip_tls"),
+    ("verify_env", "verify_experts"),
     [
-        (None, False),
-        ("", False),
-        ("true", False),
-        ("invalid", False),
-        (" false ", True),
-        ("0", True),
-        ("no", True),
-        ("OFF", True),
+        (None, True),
+        ("", True),
+        ("true", True),
+        ("invalid", True),
+        (" false ", False),
+        ("0", False),
+        ("no", False),
+        ("OFF", False),
     ],
 )
-def test_expert_clients_use_agentserver_tls_setting(monkeypatch, verify_env, skip_tls) -> None:
-    from jiuwenswarm.server.runtime.extension_package_manager import expert_hub_clients
+def test_expert_clients_use_agentserver_tls_setting(monkeypatch, kind, verify_env, verify_experts) -> None:
+    from jiuwenswarm.server.runtime.extension_package_manager import (
+        _create_package_hub_downloader,
+        _create_package_hub_port,
+    )
 
     base_url = "https://expert-hub.example.test"
     monkeypatch.setenv("TEAM_SKILLS_HUB_BASE_URL", base_url)
@@ -77,13 +81,12 @@ def test_expert_clients_use_agentserver_tls_setting(monkeypatch, verify_env, ski
     else:
         monkeypatch.setenv("TEAM_SKILLS_HUB_VERIFY_SSL", verify_env)
 
-    hub_port, downloader = expert_hub_clients()
-    if skip_tls:
-        assert hub_port.base_url == base_url
-        assert hub_port.transport.verify is False
-        assert downloader.verify is False
-    else:
-        assert (hub_port, downloader) == (None, None)
+    hub_port = _create_package_hub_port(kind)
+    downloader = _create_package_hub_downloader(kind)
+    expected = verify_experts or kind == "plugin"
+    assert hub_port.base_url == base_url
+    assert hub_port.transport.verify is expected
+    assert downloader.verify is expected
 
 
 def test_personal_bind_does_not_read_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
