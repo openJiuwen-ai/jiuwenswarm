@@ -10770,6 +10770,51 @@ class JiuWenSwarmDeepAdapter:
             )
             return None
 
+    @staticmethod
+    def _registered_card_for(sys_operation: SysOperation) -> SysOperationCard | None:
+        """Return the registered SysOperationCard backing *sys_operation*.
+
+        ``_resolve_sys_operation`` may reuse an operation another registrar
+        (the MCP CLI sandbox) already registered under the same isolation
+        key. The reused operation's providers read the gateway config of the
+        *registered* card, not the locally built one, so runtime patches must
+        target that card. Look it up from the resource manager's id→card
+        cache; a miss returns None so callers keep the local card (best
+        effort, mirrors ``cli_sandbox._sandbox_key_owner``'s tolerance).
+        """
+        try:
+            id_to_card = getattr(Runner.resource_mgr, "_id_to_card", None) or {}
+            card = id_to_card.get(str(sys_operation.id))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] failed to look up registered card: %s",
+                exc,
+            )
+            return None
+        if isinstance(card, SysOperationCard):
+            return card
+        return None
+
+    def _sync_card_to_reused_sys_operation(self, sys_operation: SysOperation) -> None:
+        """Point ``_sys_operation_card`` at *sys_operation*'s registered card.
+
+        Called on every reuse branch of ``_resolve_sys_operation``. Without
+        this, ``apply_sandbox_runtime_patch`` and the other card consumers
+        (effective-files display, ``sandboxed`` probes) keep mutating the
+        never-registered local card while the reused operation's providers
+        read the registered card — ``/sandbox files deny`` would silently
+        never reach the running sandbox.
+        """
+        registered_card = JiuWenSwarmDeepAdapter._registered_card_for(sys_operation)
+        if registered_card is None:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] reused sys_operation %s has no "
+                "registered card; runtime patches stay on the local card",
+                sys_operation.id,
+            )
+            return
+        self._sys_operation_card = registered_card
+
     def _create_sys_operation(self) -> SysOperation | None:
         """Resolve this adapter's sys operation and take a reference on it.
 
@@ -10881,7 +10926,9 @@ class JiuWenSwarmDeepAdapter:
         ``/sandbox enable`` 会动态写入这两个字段; yuanrong 也会填默认占位 url。
 
         副作用: 在 ``self._sys_operation_card`` 保存生成或复用的 SysOperationCard，
-        供 ``apply_sandbox_runtime_patch`` 等运行时热更使用。
+        供 ``apply_sandbox_runtime_patch`` 等运行时热更使用。复用已注册的
+        sys_operation 时（隔离键撞键，如 CLI 连接器先注册的沙箱），
+        card 指向被复用 op 的注册卡——热更与 provider 读取的是同一对象。
         """
         try:
             endpoint = get_sandbox_endpoint()
@@ -10918,6 +10965,7 @@ class JiuWenSwarmDeepAdapter:
                     "[JiuWenSwarmDeepAdapter] reuse registered sys_operation: %s",
                     registered_sys_operation.id,
                 )
+                self._sync_card_to_reused_sys_operation(registered_sys_operation)
                 return registered_sys_operation
 
             result = Runner.resource_mgr.add_sys_operation(sysop_card)
@@ -10932,6 +10980,7 @@ class JiuWenSwarmDeepAdapter:
                         "[JiuWenSwarmDeepAdapter] reuse registered sys_operation after add failure: %s",
                         registered_sys_operation.id,
                     )
+                    self._sync_card_to_reused_sys_operation(registered_sys_operation)
                     return registered_sys_operation
                 logger.warning("[JiuWenSwarmDeepAdapter] add sys_operation failed: %s", result.msg())
                 return None
