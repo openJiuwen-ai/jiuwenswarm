@@ -1473,7 +1473,7 @@ _SESSION_ASSET_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SESSION_ASSETS_REMOVE: "handle_session_assets_remove",
 }
 
-# Session default equipment (web, SDD-0030): read/replace the global default
+# Session default equipment (web): read/replace the global default
 # MCP set that fresh sessions inherit. Stateless RPCs answered before adapter
 # setup in process_message — an unrouted legal ReqMethod would otherwise fall
 # through to the chat path as an empty query (same trap as _SKILL_SYNC_*).

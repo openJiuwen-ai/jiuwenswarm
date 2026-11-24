@@ -896,7 +896,7 @@ interface SessionState {
   /** 本会话启用MCP：清空 */
   clearEnabledMcps: (sessionId: string) => void;
   /**
-   * 全局默认装备预勾选（SDD-0030 阶段二）：无快照的新会话首次打开扩展面板时，用全局
+   * 全局默认装备预勾选：无快照的新会话首次打开扩展面板时，用全局
    * 默认 MCP 集整体初始化 enabledMcps 并标记 hydrated——之后首条消息会带显式数组
    * （语义与后端第三级回填等价，所见即所发）。只在未 hydrate 的会话上调用：已 hydrate
    * 说明后端快照已恢复或用户已手动改过，整体替换会覆盖用户选择。

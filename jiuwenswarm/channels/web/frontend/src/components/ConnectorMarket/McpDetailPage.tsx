@@ -141,7 +141,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   const [busy, setBusy] = useState(false);
   const confirmActionRef = useRef(false);
 
-  // SDD-0030 阶段二：全局默认装备开关的视图数据。defaults 为 null（get 失败/未返回）时
+  // 全局默认装备开关的视图数据。defaults 为 null（get 失败/未返回）时
   // 开关置灰且不参与切换——PUT 语义要求"完整期望清单"，读不到现有清单时盲开会把其他
   // 默认项清掉，宁可禁用也不盲写。挂载时读一次即可：runtime 集是用户标记（不随本页连接
   // 状态即时变化），断连后仍显示开启 + unavailable 提示，重进详情页自然刷新。
@@ -224,7 +224,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   const isHub = connector.source === 'hub';
   const isDeleteMode = isHub || (isCustomize && !linked);
 
-  // ---- SDD-0030 阶段二：全局默认装备开关的派生与切换 -----------------------------
+  // ---- 全局默认装备开关的派生与切换 -----------------------------
   // connector.name 就是 state.json / defaults RPC 使用的运行时名（与扩展面板勾选、
   // chat.send mcp 字段同一标识，见 ExtensionPickerPanel 的 enabledMcps 用法）。早捕获
   // 成常量供闭包使用——`if (!connector) return null` 的窄化不会带进嵌套函数（同上）。
@@ -502,7 +502,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
           </div>
         )}
 
-        {/* SDD-0030 阶段二：全局默认装备复选框（社区对齐形态：每个 MCP 一个
+        {/* 全局默认装备复选框（社区对齐形态：每个 MCP 一个
             "默认使用"复选框）。勾选=新会话默认勾选此连接器（state.json
             is_default），取消=恢复逐会话手动选择。断连/达上限/清单读取失败时
             置灰；被标记但断连的项保持勾选态并提示"新会话会跳过"。 */}

@@ -79,7 +79,7 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
   const loadConnectorList = useConnectorStore((s) => s.loadList);
   const connectMcp = useConnectorStore((s) => s.connect);
 
-  // SDD-0030 阶段二：无快照新会话的默认装备预勾选。仅在会话未 hydrate 时触发一次——
+  // 无快照新会话的默认装备预勾选。仅在会话未 hydrate 时触发一次——
   // 已 hydrate 说明后端快照已恢复（App.tsx restoreSessionEquipment）或用户已手动改过，
   // 默认集不得覆盖；团队模式不适用（装备走 team spec 级，后端 restore 对 team 直接跳过，
   // 这里保持一致）。预填即 hydrate：首条消息带显式默认数组，所见即所发。默认集为空或

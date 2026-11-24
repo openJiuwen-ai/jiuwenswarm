@@ -2,7 +2,7 @@ import { webRequest } from './webClient';
 
 // 薄封装，照抄 connectorApi.ts 惯例：一个方法一个 webRequest，不额外包装错误处理。
 // 后端 handler 见 jiuwenswarm/server/handlers/session.py 的
-// handle_session_equipment_defaults_get/set（SDD-0030 阶段一已实现），方法名/参数按
+// handle_session_equipment_defaults_get/set 的薄封装，方法名/参数按
 // session_equipment.defaults.* 命名，响应体即 handler payload。
 //
 // get 返回单一来源视图（2026-11-24 社区简化：预置层已删，仅剩 state.json
