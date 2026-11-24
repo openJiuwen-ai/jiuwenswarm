@@ -332,8 +332,35 @@ def _node_version(node: Path) -> str | None:
     return result.stdout.strip().removeprefix("v")
 
 
-def _npm_version(node: Path) -> str | None:
-    package_json = node.parent / "node_modules" / "npm" / "package.json"
+def _npx_cli_candidates(node: Path, npx: Path) -> list[Path]:
+    candidates: list[Path] = []
+    try:
+        resolved_npx = npx.resolve()
+        if resolved_npx.name == "npx-cli.js":
+            candidates.append(resolved_npx)
+    except OSError:
+        pass
+    candidates.extend(
+        (
+            node.parent / "node_modules" / "npm" / "bin" / "npx-cli.js",
+            node.parent.parent / "lib" / "node_modules" / "npm" / "bin" / "npx-cli.js",
+        )
+    )
+    return candidates
+
+
+def _same_path(left: str | Path, right: str | Path) -> bool:
+    try:
+        left_path = Path(left).expanduser().resolve()
+        right_path = Path(right).expanduser().resolve()
+    except OSError:
+        left_path = Path(left).expanduser()
+        right_path = Path(right).expanduser()
+    return os.path.normcase(str(left_path)) == os.path.normcase(str(right_path))
+
+
+def _npm_version(npx_cli: Path) -> str | None:
+    package_json = npx_cli.parent.parent / "package.json"
     if not package_json.is_file():
         return None
     try:
@@ -389,7 +416,11 @@ def resolve_node_runtime(preferred_node: str | Path | None = None) -> NodeRuntim
         if not version or not supports_rea_node(version):
             continue
         npx = node.parent / ("npx.cmd" if os.name == "nt" else "npx")
-        npx_cli = node.parent / "node_modules" / "npm" / "bin" / "npx-cli.js"
+        npx_cli_candidates = _npx_cli_candidates(node, npx)
+        npx_cli = next(
+            (candidate for candidate in npx_cli_candidates if candidate.is_file()),
+            npx_cli_candidates[0],
+        )
         if not npx.is_file() and not npx_cli.is_file():
             continue
         compatible.append(
@@ -410,7 +441,7 @@ def resolve_node_runtime(preferred_node: str | Path | None = None) -> NodeRuntim
     if not compatible:
         return None
     selected = compatible[0]
-    return replace(selected, npm_version=_npm_version(selected.node))
+    return replace(selected, npm_version=_npm_version(selected.npx_cli))
 
 
 def _npx_argv(runtime: NodeRuntime, args: list[str]) -> list[str]:
@@ -1255,12 +1286,15 @@ def _mcp_registration_check(
     command = str(record.get("command") or "")
     args = [str(item) for item in record.get("args") or []]
     joined = " ".join([command, *args])
+    command_matches_runtime = runtime is None or any(
+        _same_path(command, expected) for expected in (runtime.node, runtime.npx)
+    )
     ok = (
         record.get("transport") == "stdio"
         and record.get("state") == "connected"
         and f"{REA_PACKAGE_NAME}@{REA_PACKAGE_VERSION}" in joined
         and "mcp" in args
-        and (runtime is None or command == str(runtime.node))
+        and command_matches_runtime
     )
     return {
         "id": "rea_mcp",

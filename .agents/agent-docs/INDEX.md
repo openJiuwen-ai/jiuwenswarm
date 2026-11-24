@@ -297,8 +297,8 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
-| [F-20261118-1150-team-document-memory](features/F_20261118_1150_team-document-memory.md) | F | Team 接入 Jiuwen 文档记忆 | Wang Tao | 无独立 D：依据 D-20261113-2017-jiuwen-memory-team-upgrade 及已确认的跨仓 Team 方案。 |
 | [D-20261120-1701-swarmchat-auto-reply](designs/proposals/D-20261120-1701-swarmchat-auto-reply/design.md) | D | SwarmChat 群成员自动判断是否回复设计方案 | weichenhao | — |
+| [F-20261118-1150-team-document-memory](features/F_20261118_1150_team-document-memory.md) | F | Team 接入 Jiuwen 文档记忆 | Wang Tao | 无独立 D：依据 D-20261113-2017-jiuwen-memory-team-upgrade 及已确认的跨仓 Team 方案。 |
 | [F_20261104_1225_npc-team-member-sessions](features/F_20261104_1225_npc-team-member-sessions.md) | F | NPC 主从会话与成员咨询 | kdgmpw | [D-20261104-1141-npc-team-member-sessions](designs/active/D-20261104-1141-npc-team-member-sessions/design.md) |
 | [F_20261110_1438_opencode-go-provider](features/F_20261110_1438_opencode-go-provider.md) | F | 新增 opencode-go 模型供应商 | wang_njust_608 | 无独立 D：需求与方案由本地 Spec Kit 资产 specs/001-opencode-go-provider/ 承载（spec/plan/tasks，仅本地保留、不入库），未另建 .agents/agent-docs 下的 D 编号；上游供应商预设归 agent-gateway 仓。 |
 | [F_20261117_1752_colleague-swarmchat](features/F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
@@ -478,6 +478,7 @@ generated: true
 | [B_20261119_1416_builtin-extension-discovery](bugfix/jiuwenswarm/extensions/app_market/B_20261119_1416_builtin-extension-discovery.md) | B | 本地默认启动未加载 Swarm 内置扩展导致 app_market RPC 不可用 | kdgmpw | 无独立 D：本次为本地启动装配缺陷修复，依据现有应用市场扩展契约与 Gateway 扩展加载实现，无独立设计。 |
 | [B_20261120_1735_upsert-empty-temperature](bugfix/jiuwenswarm/common/B_20261120_1735_upsert-empty-temperature.md) | B | models.upsert 将空串 temperature 原样落库，与文档约定的空串转 null 不符 | openjiuwen_ai | 无独立 D：仅统一 upsert 与 replace_all 对空串 temperature 的归一化口径，不改模型配置结构与合并语义；无独立设计。 |
 | [B_20261121_0108_pypi-update-version-baseline](bugfix/jiuwenswarm/common/B_20261121_0108_pypi-update-version-baseline.md) | B | 更新检查用打包源版本比较、并展示非最新版本的 whl，导致每日构建显示可升级到更旧的版本 | openjiuwen_ai | 无独立 D：仅修正更新检查的版本基线取值与 PyPI 源对最新版本文件的归属判定，不改变更新源配置、安装方式与前端展示契约；无独立设计。 |
+| [B_20261124_2201_rea-npx-readiness](bugfix/jiuwenswarm/common/B_20261124_2201_rea-npx-readiness.md) | B | 系统 Node 安装后 REA 被误判未就绪并反复回到一键安装 | xiaotian077 | 无独立 D：对既有 REA 安装就绪判定的局部缺陷修复，不新增架构方案。 |
 | [S_01_affinity-settings](specs/jiuwenswarm/common/kv_cache_affinity_config/S_01_affinity-settings.md) | S | 算力亲和设置与模型能力契约 | MengHan18 | — |
 | [S_01_builtin-catalog](specs/jiuwenswarm/server/runtime/skill/builtin-catalog.md) | S | 内置能力目录规约 | kdgmpw | — |
 
@@ -869,7 +870,6 @@ generated: true
 | [REGISTRY](designs/REGISTRY.md) | D | SDD 编号台账 (REGISTRY) | 待确认 | — |
 | [legacy-documents](designs/legacy-documents.md) | D | 旧格式设计资料 | 待确认 | — |
 | [migration-20261026](designs/migration-20261026.md) | D | 设计文档迁移与跨仓引用 | 待确认 | — |
-| [overview](designs/proposals/D-20261120-1701-swarmchat-auto-reply/assets/overview.md) | D | SwarmChat 群聊自动判断回复：方案说明 | weichenhao | — |
 | [team_expert_group_manifest_design](designs/archive/team_expert_group_manifest_design.md) | D | Team 模式接入专家团 Manifest 加载设计 | 待确认 | — |
 | [team_permission_design](designs/archive/team_permission_design.md) | D | Team 模式 Permissions 设计方案 | 待确认 | — |
 | [team_plan_design](designs/archive/team_plan_design.md) | D | Team Plan 模式设计文档 | 待确认 | — |
