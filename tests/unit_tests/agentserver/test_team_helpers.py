@@ -7901,6 +7901,23 @@ def _install_stall_watchdog_fakes(monkeypatch: pytest.MonkeyPatch, broadcasted: 
     # 看门狗已抽为独立模块 team_stall_watchdog：常量/get_team_manager 打在那里，
     # broadcast 由调用点注入（不反向 import team_helpers，防循环依赖）
     monkeypatch.setattr(team_stall_watchdog, "TEAM_STALL_WATCHDOG_SEC", 0.02)
+    # 新增的“进度数据连续不可用”门限也压到 3 窗口：默认 6×0.02s 与 0.12s
+    # sleep 恰好相等，会让终端帧落入调度竞态（flaky）。
+    monkeypatch.setattr(
+        team_stall_watchdog,
+        "TEAM_PROGRESS_UNAVAILABLE_TERMINAL_WINDOWS",
+        3,
+    )
+    # 默认 DB 对照确认“零在途 + 有一项 pending”：停摆类用例走 DB 确认通道，
+    # 不再依赖旧的“DB 不可用 → live-only 立即判死”语义。
+    async def _db_confirmed(_cid, _sid):
+        return (0, 1, False)
+
+    monkeypatch.setattr(
+        team_stall_watchdog,
+        "team_progress_snapshot_db",
+        _db_confirmed,
+    )
     monkeypatch.setattr(
         team_stall_watchdog,
         "get_team_manager",
@@ -8067,9 +8084,11 @@ async def test_team_stall_watchdog_quiet_when_db_shows_in_flight(monkeypatch: py
 
 
 @pytest.mark.asyncio
-async def test_team_stall_watchdog_fires_when_db_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
-    """DB 对照不可用（team_name 解析不到/读取失败）→ 退回 live-only 判定，
-    真停摆照常补终态（不因此赦免）。"""
+async def test_team_stall_watchdog_fires_when_progress_data_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """进度读数连续不可用（DB 初始化/读取失败、team_name/快照解析不到）→
+    不按 live-only 立即判“停摆”；达到独立门限后按“团队状态数据不可用”收口。"""
     broadcasted: list[dict] = []
     handler = _StallFakeMonitorHandler(tasks=[{"task_id": "t1", "status": "pending"}])
     _install_stall_watchdog_fakes(monkeypatch, broadcasted, handler)
@@ -8091,6 +8110,65 @@ async def test_team_stall_watchdog_fires_when_db_unavailable(monkeypatch: pytest
         if e.get("event_type") == "chat.processing_status" and e.get("is_complete")
     ]
     assert len(terminals) == 1
+    assert "团队状态数据不可用" in terminals[0]["error"]
+    assert "停摆" not in terminals[0]["error"]
+
+
+@pytest.mark.asyncio
+async def test_team_stall_watchdog_defers_when_progress_unavailable_below_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """进度读数不可用未达门限 → 不提前收口（保留 live 证据，等下一窗口）。"""
+    broadcasted: list[dict] = []
+    handler = _StallFakeMonitorHandler(tasks=[{"task_id": "t1", "status": "pending"}])
+    _install_stall_watchdog_fakes(monkeypatch, broadcasted, handler)
+
+    async def _db_none(_cid, _sid):
+        return None
+
+    monkeypatch.setattr(team_stall_watchdog, "team_progress_snapshot_db", _db_none)
+    task = team_stall_watchdog.schedule_team_stall_watchdog(
+        "web", "s-dbfail-below", 1, liveness=lambda: 0, completion_signals=lambda: 0,
+        propose=_make_probe_arbiter(broadcasted).propose,
+    )
+    # 2 个窗口 < 压缩后的 3 窗口门限
+    await asyncio.sleep(0.04)
+    task.cancel()
+
+    assert [e for e in broadcasted if e.get("event_type") == "chat.processing_status"] == []
+
+
+@pytest.mark.asyncio
+async def test_team_stall_watchdog_fires_after_intermittent_progress_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DB 间歇失败（None/确认交替）不会把两个门限互相清零：DB 确认窗口继续
+    累计停摆证据，最终仍按“停摆”收口（回归评审 P2）。"""
+    broadcasted: list[dict] = []
+    handler = _StallFakeMonitorHandler(tasks=[{"task_id": "t1", "status": "pending"}])
+    _install_stall_watchdog_fakes(monkeypatch, broadcasted, handler)
+    calls = [0]
+
+    async def _db_alternating(_cid, _sid):
+        calls[0] += 1
+        return None if calls[0] % 2 == 1 else (0, 1, False)
+
+    monkeypatch.setattr(
+        team_stall_watchdog, "team_progress_snapshot_db", _db_alternating
+    )
+    task = team_stall_watchdog.schedule_team_stall_watchdog(
+        "web", "s-dbflaky", 1, liveness=lambda: 0, completion_signals=lambda: 0,
+        propose=_make_probe_arbiter(broadcasted).propose,
+    )
+    await asyncio.sleep(0.12)
+    task.cancel()
+
+    terminals = [
+        e for e in broadcasted
+        if e.get("event_type") == "chat.processing_status" and e.get("is_complete")
+    ]
+    assert len(terminals) == 1
+    assert "停摆" in terminals[0]["error"]
 
 
 @pytest.mark.asyncio

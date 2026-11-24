@@ -14,14 +14,17 @@
 1. 在途口径含 starting/restarting——成员进程拉起/重启耗时（模型客户端初始化、
    MCP 服务器、上下文恢复）可超 90s，此前只认 busy，拉起期被误判"零在途"；
 2. live 快照判零在途时再读 DB 快照对照——DAO 直写点不经事件，live 内存视图
-   可能滞后，DB 是落库真值；对照不可用退回 live-only 判定（不因此赦免真停摆）；
+   可能滞后，DB 是落库真值；对照不可用时不按 live-only 立即判死（避免 DB
+   初始化/读取超时误杀尚未跑起来的团队），但保留已累计的停摆证据；连续多个
+   窗口仍不可用则按"团队状态数据不可用"明确收口；
 3. 任务 updated_at 在窗口内有更新 = 刚发生认领/推进，直接证有活动；
 4. leader kernel 运行时活性——状态采样有两个结构性盲区：agentic 循环
    "失败透传→下一迭代"的间隙期成员/leader 的 status 采样就是 ready；且快照 members
    剔除 leader，leader 长考/重试对采样不可见。kernel lifecycle_state
    == 'running' 是"回合仍在推进"的运行时真值，覆盖这两个盲区。
 
-退化方向与死亡探针一致：快照不可用/有任何活动迹象都按"不停摆"处理。
+退化方向与死亡探针一致：快照不可用先延迟判定（保留停摆证据），连续多窗口
+仍不可用则报数据服务不可用，避免"伪装成停摆"或永久挂起。
 跨轮存活：收尾信号变化不终止看门狗，只重置计数（长寿命流多轮复用）。
 
 propose 由调用方注入（team_helpers 侧裁决器的 propose），避免对本模块的
@@ -42,6 +45,11 @@ from jiuwenswarm.agents.harness.team import get_team_manager
 # 延迟，单窗口误杀风险高。窗口需大于成员启动的典型耗时。
 TEAM_STALL_WATCHDOG_SEC = 45.0
 TEAM_STALL_CONFIRM_WINDOWS = 2
+
+# 进度读数连续不可用的收口窗口：DB 初始化/读取超时、team_name/快照解析失败
+# 期间不能按 live-only 判“任务停摆”（会把尚未真正跑起来的团队误杀）；
+# 连续多个窗口仍读不到才按“团队状态数据不可用”明确收口，而不是伪装成停摆。
+TEAM_PROGRESS_UNAVAILABLE_TERMINAL_WINDOWS = 6
 
 # 任务流转判活的回溯视野（秒）：任务 updated_at 落在此视野内 = 窗口内有认领/
 # 推进活动。独立于判定窗口常量——测试会压缩判定窗口，判活视野不能跟着缩。
@@ -395,6 +403,7 @@ def schedule_team_stall_watchdog(
         )
 
         stall_windows = 0
+        progress_unavailable_windows = 0
         last_chunks = liveness()
         last_signals = completion_signals()
         while True:
@@ -411,20 +420,24 @@ def schedule_team_stall_watchdog(
                     # 回合已正常收尾：重置基线继续守下一轮（长寿命流跨轮复用）
                     last_signals = signals
                     stall_windows = 0
+                    progress_unavailable_windows = 0
                     last_chunks = liveness()
                     continue
                 current = liveness()
                 if current != last_chunks:
                     last_chunks = current
                     stall_windows = 0
+                    progress_unavailable_windows = 0
                     continue
                 progress = await team_progress_snapshot(channel_id, session_id)
                 if progress is None:
                     stall_windows = 0
+                    progress_unavailable_windows = 0
                     continue
                 in_flight, pending, recent = progress
                 if in_flight > 0 or pending == 0 or recent:
                     stall_windows = 0
+                    progress_unavailable_windows = 0
                     continue
                 # leader kernel 活性：agentic 迭代间隙/leader 长考期间成员与
                 # leader 的状态采样都是 ready，快照判定必误判——看运行时真值。
@@ -432,10 +445,16 @@ def schedule_team_stall_watchdog(
                 alive = await team_runtime_liveness(channel_id, session_id)
                 if alive:
                     stall_windows = 0
+                    progress_unavailable_windows = 0
                     continue
                 # live 判零在途：DB 对照复核（live 内存视图滞后于 DAO 直写的
-                # 盲区兜底）；对照不可用退回 live-only 判定（保留击杀能力——
-                # 误杀主场景已由在途口径扩展+任务判活覆盖，不依赖对照）
+                # 盲区兜底）。对照不可用分两类：
+                # - TeamNotEstablishedError：团队行已不存在（确定性终结/被删），
+                #   维持既有 live-only 判定；
+                # - 普通 None（初始化/读取超时、team_name/快照解析失败）：证据不足，
+                #   不能按 live-only 判“停摆”误杀；保留已累计的停摆证据并延迟判定，
+                #   连续多窗仍不可用才明确报进度数据不可用。
+                db_not_established = False
                 try:
                     db_progress = await team_progress_snapshot_db(channel_id, session_id)
                 except TeamNotEstablishedError:
@@ -452,6 +471,45 @@ def schedule_team_stall_watchdog(
                         session_id,
                     )
                     db_progress = None
+                    db_not_established = True
+                if db_progress is None and not db_not_established:
+                    progress_unavailable_windows += 1
+                    # 保留 stall_windows 的既有 live 证据（不清零），但本窗口不
+                    # 累加停摆证据：间歇性 DB 失败时，DB 可用窗口仍能继续累计并
+                    # 最终收口，不会出现两个门限互相清零、永不收口。
+                    if progress_unavailable_windows < TEAM_PROGRESS_UNAVAILABLE_TERMINAL_WINDOWS:
+                        logger.info(
+                            "[TeamStallWatchdog] progress cross-check unavailable; "
+                            "stall judgement deferred: session_id=%s "
+                            "window=%s/%s stall_windows=%s",
+                            session_id,
+                            progress_unavailable_windows,
+                            TEAM_PROGRESS_UNAVAILABLE_TERMINAL_WINDOWS,
+                            stall_windows,
+                        )
+                        continue
+                    logger.warning(
+                        "[TeamStallWatchdog] team progress data unavailable for %s "
+                        "windows; terminating with progress-data error: session_id=%s "
+                        "round_id=%s",
+                        progress_unavailable_windows,
+                        session_id,
+                        round_id,
+                    )
+                    outcome = await propose(
+                        {
+                            "source": "progress_unavailable",
+                            "error": (
+                                "团队状态数据不可用（数据库初始化/读取或团队快照读取失败），"
+                                "请重试或重启应用"
+                            ),
+                        }
+                    )
+                    if outcome != "suppressed" or completion_signals() > 0:
+                        return
+                    progress_unavailable_windows = 0
+                    continue
+                progress_unavailable_windows = 0
                 if db_progress is not None:
                     db_in_flight, db_pending, db_recent = db_progress
                     if db_in_flight > 0 or db_recent:
