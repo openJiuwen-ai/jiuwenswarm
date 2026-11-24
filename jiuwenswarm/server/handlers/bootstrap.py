@@ -86,59 +86,24 @@ async def handle_initialize(ctx: RequestContext) -> None:
         await ctx.sink.send_response(resp)
 
 
-async def _enter_session_create_quota_context(
-    request,
-) -> tuple[object | None, object | None]:
-    """为整次 ``session.create`` 绑定租户根 + 配额身份。
-
-    预检与后续 ``init_session_metadata`` 写盘门禁共用同一绑定；若只在预检
-    里 bind/reset，预检通过后身份被清掉，写盘会落到空身份并误命中
-    ``match_expr=[]`` 的兜底策略（表现为配额已扩容仍提示空间不足）。
-    返回 ``(tenant_ctx, quota_tokens)``，调用方必须在 finally 里复位。
-    """
+async def _reload_session_create_quota_policies_if_enabled() -> None:
+    """``session.create`` 前刷新策略；身份由 ``bind_request_tenant`` 信封覆盖整次请求。"""
     from jiuwenswarm.enterprise.capabilities.workspace.quota import (
-        bind_quota_identity,
         is_workspace_quota_enabled,
     )
     from jiuwenswarm.enterprise.capabilities.workspace.policy_reload import (
         reload_quota_policies_from_gateway_db,
     )
-    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
-    from jiuwenswarm.enterprise.tenant.tenant_identity import (
-        extract_tenant_key,
-        extract_triple,
-    )
 
     if not is_workspace_quota_enabled():
-        return None, None
-
+        return
     await reload_quota_policies_from_gateway_db()
-    group_id, bot_id, user_id = extract_triple(request)
-    tenant_ctx = TenantContext.bind(extract_tenant_key(request))
-    quota_tokens = bind_quota_identity(
-        user_id=user_id, group_id=group_id, bot_id=bot_id
-    )
-    return tenant_ctx, quota_tokens
-
-
-def _exit_session_create_quota_context(
-    tenant_ctx: object | None,
-    quota_tokens: object | None,
-) -> None:
-    if quota_tokens is not None:
-        from jiuwenswarm.enterprise.capabilities.workspace.quota import (
-            reset_quota_identity,
-        )
-
-        reset_quota_identity(quota_tokens)  # type: ignore[arg-type]
-    if tenant_ctx is not None:
-        tenant_ctx.reset()  # type: ignore[union-attr]
 
 
 async def _reject_session_create_if_quota_blocked(ctx: RequestContext) -> bool:
     """超限时拒绝新建会话；返回 True 表示已回写错误响应。
 
-    调用前须已由 :func:`_enter_session_create_quota_context` 绑好身份与租户根。
+    依赖请求信封上的明文三元组与租户根（``bind_request_tenant``）。
     """
     from jiuwenswarm.enterprise.capabilities.workspace.quota import (
         WorkspaceQuotaExceeded,
@@ -183,8 +148,6 @@ async def handle_session_create(ctx: RequestContext) -> None:
         request.request_id,
     )
 
-    tenant_ctx = None
-    quota_tokens = None
     runtime = None
     prepared = None
     response_delivered = False
@@ -220,7 +183,7 @@ async def handle_session_create(ctx: RequestContext) -> None:
             )
 
     try:
-        tenant_ctx, quota_tokens = await _enter_session_create_quota_context(request)
+        await _reload_session_create_quota_policies_if_enabled()
         if await _reject_session_create_if_quota_blocked(ctx):
             return
 
@@ -378,7 +341,6 @@ async def handle_session_create(ctx: RequestContext) -> None:
         await ctx.sink.send_response(response)
     finally:
         await abort_prepared(sys.exception())
-        _exit_session_create_quota_context(tenant_ctx, quota_tokens)
 
 
 async def handle_session_fork(ctx: RequestContext) -> None:

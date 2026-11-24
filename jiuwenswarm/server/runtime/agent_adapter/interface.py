@@ -549,52 +549,19 @@ def _workspace_quota_exceeded_payload(*, stream: bool = False) -> dict[str, Any]
     return payload
 
 
-async def _enter_workspace_quota_identity(
-    request: AgentRequest,
-) -> tuple[Any, Any] | None:
-    """为本轮 chat 绑定租户根 + 配额身份；未开启配额时返回 None。
-
-    返回 ``(tenant_ctx, quota_tokens)``，须配对 :func:`_exit_workspace_quota_identity`。
-    只绑身份不绑租户根时，用量会落到默认 workspace，满额用户可能被误放行。
-    """
+async def _reload_workspace_quota_policies_if_enabled() -> None:
+    """Chat 入口刷新策略缓存；身份由 ``bind_request_tenant`` 信封覆盖整轮请求。"""
     from jiuwenswarm.enterprise.capabilities.workspace.quota import (
-        bind_quota_identity,
         is_workspace_quota_enabled,
     )
 
     if not is_workspace_quota_enabled():
-        return None
+        return
     from jiuwenswarm.enterprise.capabilities.workspace.policy_reload import (
         reload_quota_policies_from_gateway_db,
     )
-    from jiuwenswarm.enterprise.tenant.tenant_context import TenantContext
-    from jiuwenswarm.enterprise.tenant.tenant_identity import (
-        extract_tenant_key,
-        extract_triple,
-    )
 
     await reload_quota_policies_from_gateway_db()
-    group_id, bot_id, user_id = extract_triple(request)
-    tenant_ctx = TenantContext.bind(extract_tenant_key(request))
-    quota_tokens = bind_quota_identity(
-        user_id=user_id, group_id=group_id, bot_id=bot_id
-    )
-    return tenant_ctx, quota_tokens
-
-
-def _exit_workspace_quota_identity(
-    state: tuple[Any, Any] | None,
-) -> None:
-    if state is None:
-        return
-    tenant_ctx, quota_tokens = state
-    from jiuwenswarm.enterprise.capabilities.workspace.quota import (
-        reset_quota_identity,
-    )
-
-    reset_quota_identity(quota_tokens)
-    if tenant_ctx is not None:
-        tenant_ctx.reset()
 
 
 def _is_ask_user_answer_resume(params: Any) -> bool:
@@ -4074,8 +4041,8 @@ class JiuWenSwarm:
             )
         # proactive_recommendation 是系统触发的推荐指令（不是用户说的话），不写 user
         # history——否则刷新页面会显示"[主动推荐指令] xxx"这种用户没说过的消息。
-        # 写 history 前 bind 配额身份；满额拒绝本轮对话（§2.3，对齐 origin/dev-stable）。
-        quota_tokens = await _enter_workspace_quota_identity(request)
+        # 配额身份由 bind_request_tenant 信封覆盖整轮请求，此处只刷新策略缓存。
+        await _reload_workspace_quota_policies_if_enabled()
         try:
             if _should_record_user_history(request.params):
                 try:
@@ -4095,6 +4062,199 @@ class JiuWenSwarm:
                     channel_metadata=request.metadata,
                     mode=request.params.get("mode", "unknown"),
                 )
+            # 注：ask_user_answer 的落盘在 deliver_control_input 里——ask_user_interrupt
+            # resume 走 control-input 路径，不经过本方法。
+
+            logger.info(
+                "[JiuWenSwarm] 处理请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
+                request.request_id, request.channel_id, session_id, self._sdk_name,
+            )
+
+            try:
+                inputs, memory_mode, user_turn = await self._build_inputs_async(request)
+            except asyncio.CancelledError:
+                _schedule_feedback_once("cancelled")
+                raise
+            except _TeamPlanApprovalPayloadError as exc:
+                _schedule_feedback_once("error")
+                return AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=False,
+                    payload={"error": str(exc)},
+                    metadata=request.metadata,
+                )
+            except Exception:
+                _schedule_feedback_once("error")
+                raise
+
+            # Session-level MCP enable: reconcile to explicit mcp ∪ equipment
+            # connectors before the agent runs. Always pass a list (never None):
+            # empty clears selection when neither side contributes names.
+            params = request.params if isinstance(request.params, dict) else {}
+            try:
+                runtime_binding = await self._resolve_runtime_binding_for_request(
+                    adapter,
+                    request,
+                    session_id,
+                )
+            except (OSError, TypeError, ValueError) as exc:
+                return AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=False,
+                    payload={"error": str(exc)},
+                    metadata=request.metadata,
+                )
+            reconcile_kwargs: dict[str, Any] = {
+                "model_name": params.get("model_name"),
+                "history_before_request_id": request.request_id,
+            }
+            if runtime_binding is not None:
+                reconcile_kwargs["runtime_binding"] = runtime_binding
+            if params.get("model_selection") is not None:
+                reconcile_kwargs["model_selection"] = params["model_selection"]
+            if "moa_enabled" in params:
+                reconcile_kwargs["moa_enabled"] = params["moa_enabled"]
+            moa_access = getattr(adapter, "moa_access_kwargs", None)
+            if callable(moa_access):
+                reconcile_kwargs.update(moa_access(request))
+            reconcile_kwargs["execution_request"] = request
+            try:
+                await self.reconcile_session_mcp(
+                    request.session_id,
+                    compute_chat_send_mcp_needed(params),
+                    **reconcile_kwargs,
+                )
+            except asyncio.CancelledError:
+                _schedule_feedback_once("cancelled")
+                raise
+            except Exception:
+                _schedule_feedback_once("error")
+                raise
+
+            # cloud memory: before chat hook
+            if memory_mode == "cloud":
+                mem_ctx = MemoryHookContext(
+                    session_id=request.session_id or "default",
+                    request_id=request.request_id or "",
+                    channel_id=request.channel_id,
+                    agent_name="main_agent",
+                    workspace_dir=str(get_agent_home_dir()),
+                    extra=request.params,
+                )
+                try:
+                    await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.MEMORY_BEFORE_CHAT, mem_ctx)
+                except asyncio.CancelledError:
+                    _schedule_feedback_once("cancelled")
+                    raise
+                except Exception:
+                    _schedule_feedback_once("error")
+                    raise
+                memory_block = "\n\n".join(b for b in mem_ctx.memory_blocks if b)
+                inputs["memory_block"] = memory_block
+
+            async def run_agent_task():
+                return await adapter.process_message_impl(request, inputs)
+
+            try:
+                if schedule_session:
+                    result = await self._session_manager.submit_and_wait(
+                        session_id, run_agent_task
+                    )
+                else:
+                    result = await run_agent_task()
+            except asyncio.CancelledError:
+                _schedule_feedback_once("cancelled")
+                raise
+            except Exception:
+                _schedule_feedback_once("error")
+                raise
+
+            waiting_for_user = (
+                result.payload.get("event_type") in USER_INTERACTION_EVENTS
+                or any(chunk.get("event_type") in USER_INTERACTION_EVENTS
+                       for chunk in result.payload.get("approval_chunks", []) if isinstance(chunk, dict))
+            )
+            if result.ok and result.payload.get("content"):
+                content = result.payload["content"]
+                content_str = content if isinstance(content, str) else str(content)
+                repair_call = getattr(adapter, "repair_model_response", None)
+                retry_without_a2ui_call = self._make_retry_without_a2ui_call(
+                    adapter=adapter,
+                    request=request,
+                )
+                try:
+                    content_str = await finalize_assistant_response_if_a2ui(
+                        content_str,
+                        channel=request.channel_id,
+                        user_query=user_turn.text,
+                        request_id=request.request_id or "",
+                        repair_call=repair_call,
+                        retry_without_a2ui_call=retry_without_a2ui_call,
+                    )
+                except asyncio.CancelledError:
+                    _schedule_feedback_once("cancelled")
+                    raise
+                except Exception:
+                    _schedule_feedback_once("error")
+                    raise
+                if isinstance(content, str):
+                    result.payload["content"] = content_str
+                result.payload = _with_web_agent_template_payload(
+                    result.payload,
+                    request.params,
+                    request.channel_id,
+                    event_type="chat.final",
+                )
+                await _run_history_io(
+                    append_history_record,
+                    session_id=session_id,
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    role="assistant",
+                    event_type="chat.final",
+                    content=content_str,
+                    timestamp=time.time(),
+                    extra=_with_heartbeat_history_metadata(
+                        _with_web_agent_template_metadata(
+                            None,
+                            request.params,
+                            request.channel_id,
+                            event_type="chat.final",
+                            payload=result.payload,
+                        ),
+                        request.params,
+                    ),
+                    mode=request.params.get("mode", "unknown"),
+                )
+                _schedule_feedback_once("success")
+
+                # cloud memory: after chat hook
+                if memory_mode == "cloud":
+                    after_ctx = MemoryHookContext(
+                        session_id=request.session_id or "default",
+                        request_id=request.request_id or "",
+                        channel_id=request.channel_id,
+                        agent_name="main_agent",
+                        workspace_dir=str(get_agent_home_dir()),
+                        assistant_message=content_str,
+                        extra=request.params,
+                    )
+                    await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.MEMORY_AFTER_CHAT, after_ctx)
+
+                # auto memory: extract memories after conversation ends
+                # 需要 auto_memory_enabled 和 memory.enabled 都为 true 才触发
+                mode = request.params.get("mode", "code") if isinstance(request.params, dict) else "code"
+                config = get_config()
+                if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
+                    _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=False)
+
+            if not feedback_scheduled:
+                _schedule_feedback_once("success" if result.ok else "error")
+            if completion_receipt is not None:
+                await _await_history_receipt(completion_receipt)
+            return result
         except Exception as exc:
             from jiuwenswarm.enterprise.capabilities.workspace.quota import (
                 WorkspaceQuotaExceeded,
@@ -4109,201 +4269,6 @@ class JiuWenSwarm:
                     metadata=request.metadata,
                 )
             raise
-        finally:
-            _exit_workspace_quota_identity(quota_tokens)
-        # 注：ask_user_answer 的落盘在 deliver_control_input 里——ask_user_interrupt
-        # resume 走 control-input 路径，不经过本方法。
-
-        logger.info(
-            "[JiuWenSwarm] 处理请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
-            request.request_id, request.channel_id, session_id, self._sdk_name,
-        )
-
-        try:
-            inputs, memory_mode, user_turn = await self._build_inputs_async(request)
-        except asyncio.CancelledError:
-            _schedule_feedback_once("cancelled")
-            raise
-        except _TeamPlanApprovalPayloadError as exc:
-            _schedule_feedback_once("error")
-            return AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={"error": str(exc)},
-                metadata=request.metadata,
-            )
-        except Exception:
-            _schedule_feedback_once("error")
-            raise
-
-        # Session-level MCP enable: reconcile to explicit mcp ∪ equipment
-        # connectors before the agent runs. Always pass a list (never None):
-        # empty clears selection when neither side contributes names.
-        params = request.params if isinstance(request.params, dict) else {}
-        try:
-            runtime_binding = await self._resolve_runtime_binding_for_request(
-                adapter,
-                request,
-                session_id,
-            )
-        except (OSError, TypeError, ValueError) as exc:
-            return AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={"error": str(exc)},
-                metadata=request.metadata,
-            )
-        reconcile_kwargs: dict[str, Any] = {
-            "model_name": params.get("model_name"),
-            "history_before_request_id": request.request_id,
-        }
-        if runtime_binding is not None:
-            reconcile_kwargs["runtime_binding"] = runtime_binding
-        if params.get("model_selection") is not None:
-            reconcile_kwargs["model_selection"] = params["model_selection"]
-        if "moa_enabled" in params:
-            reconcile_kwargs["moa_enabled"] = params["moa_enabled"]
-        moa_access = getattr(adapter, "moa_access_kwargs", None)
-        if callable(moa_access):
-            reconcile_kwargs.update(moa_access(request))
-        reconcile_kwargs["execution_request"] = request
-        try:
-            await self.reconcile_session_mcp(
-                request.session_id,
-                compute_chat_send_mcp_needed(params),
-                **reconcile_kwargs,
-            )
-        except asyncio.CancelledError:
-            _schedule_feedback_once("cancelled")
-            raise
-        except Exception:
-            _schedule_feedback_once("error")
-            raise
-
-        # cloud memory: before chat hook
-        if memory_mode == "cloud":
-            mem_ctx = MemoryHookContext(
-                session_id=request.session_id or "default",
-                request_id=request.request_id or "",
-                channel_id=request.channel_id,
-                agent_name="main_agent",
-                workspace_dir=str(get_agent_home_dir()),
-                extra=request.params,
-            )
-            try:
-                await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.MEMORY_BEFORE_CHAT, mem_ctx)
-            except asyncio.CancelledError:
-                _schedule_feedback_once("cancelled")
-                raise
-            except Exception:
-                _schedule_feedback_once("error")
-                raise
-            memory_block = "\n\n".join(b for b in mem_ctx.memory_blocks if b)
-            inputs["memory_block"] = memory_block
-
-        async def run_agent_task():
-            return await adapter.process_message_impl(request, inputs)
-
-        try:
-            if schedule_session:
-                result = await self._session_manager.submit_and_wait(
-                    session_id, run_agent_task
-                )
-            else:
-                result = await run_agent_task()
-        except asyncio.CancelledError:
-            _schedule_feedback_once("cancelled")
-            raise
-        except Exception:
-            _schedule_feedback_once("error")
-            raise
-
-        waiting_for_user = (
-            result.payload.get("event_type") in USER_INTERACTION_EVENTS
-            or any(chunk.get("event_type") in USER_INTERACTION_EVENTS
-                   for chunk in result.payload.get("approval_chunks", []) if isinstance(chunk, dict))
-        )
-        if result.ok and result.payload.get("content"):
-            content = result.payload["content"]
-            content_str = content if isinstance(content, str) else str(content)
-            repair_call = getattr(adapter, "repair_model_response", None)
-            retry_without_a2ui_call = self._make_retry_without_a2ui_call(
-                adapter=adapter,
-                request=request,
-            )
-            try:
-                content_str = await finalize_assistant_response_if_a2ui(
-                    content_str,
-                    channel=request.channel_id,
-                    user_query=user_turn.text,
-                    request_id=request.request_id or "",
-                    repair_call=repair_call,
-                    retry_without_a2ui_call=retry_without_a2ui_call,
-                )
-            except asyncio.CancelledError:
-                _schedule_feedback_once("cancelled")
-                raise
-            except Exception:
-                _schedule_feedback_once("error")
-                raise
-            if isinstance(content, str):
-                result.payload["content"] = content_str
-            result.payload = _with_web_agent_template_payload(
-                result.payload,
-                request.params,
-                request.channel_id,
-                event_type="chat.final",
-            )
-            await _run_history_io(
-                append_history_record,
-                session_id=session_id,
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                role="assistant",
-                event_type="chat.final",
-                content=content_str,
-                timestamp=time.time(),
-                extra=_with_heartbeat_history_metadata(
-                    _with_web_agent_template_metadata(
-                        None,
-                        request.params,
-                        request.channel_id,
-                        event_type="chat.final",
-                        payload=result.payload,
-                    ),
-                    request.params,
-                ),
-                mode=request.params.get("mode", "unknown"),
-            )
-            _schedule_feedback_once("success")
-
-            # cloud memory: after chat hook
-            if memory_mode == "cloud":
-                after_ctx = MemoryHookContext(
-                    session_id=request.session_id or "default",
-                    request_id=request.request_id or "",
-                    channel_id=request.channel_id,
-                    agent_name="main_agent",
-                    workspace_dir=str(get_agent_home_dir()),
-                    assistant_message=content_str,
-                    extra=request.params,
-                )
-                await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.MEMORY_AFTER_CHAT, after_ctx)
-
-            # auto memory: extract memories after conversation ends
-            # 需要 auto_memory_enabled 和 memory.enabled 都为 true 才触发
-            mode = request.params.get("mode", "code") if isinstance(request.params, dict) else "code"
-            config = get_config()
-            if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
-                _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=False)
-
-        if not feedback_scheduled:
-            _schedule_feedback_once("success" if result.ok else "error")
-        if completion_receipt is not None:
-            await _await_history_receipt(completion_receipt)
-        return result
 
     async def deliver_session_input(
         self, request: AgentRequest
@@ -4875,13 +4840,14 @@ class JiuWenSwarm:
                 completion=completion_receipt,
             )
 
+        # 配额身份由 bind_request_tenant 信封覆盖整轮请求，此处只刷新策略缓存。
+        await _reload_workspace_quota_policies_if_enabled()
         if (
             request.req_method != ReqMethod.COMMAND_GOAL
             and _should_record_user_history(params_for_history)
         ):
             # Reject before history recording: a rejected message must not be
             # restored into the model context on the next session warmup.
-            quota_tokens = await _enter_workspace_quota_identity(request)
             try:
                 try:
                     await _check_user_input_guard(adapter, request, query)
@@ -4914,8 +4880,6 @@ class JiuWenSwarm:
                     )
                     return
                 raise
-            finally:
-                _exit_workspace_quota_identity(quota_tokens)
         logger.info(
             "[JiuWenSwarm] 处理流式请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
             request.request_id, request.channel_id, session_id, self._sdk_name,
