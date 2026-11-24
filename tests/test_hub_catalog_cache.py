@@ -373,6 +373,37 @@ async def test_malformed_card_and_description_url_do_not_break_catalog(tmp_path,
     await cache.close()
 
 @pytest.mark.asyncio
+async def test_expert_catalog_cache_separates_tls_policies(tmp_path, monkeypatch):
+    import jiuwenswarm.server.runtime.marketplace.hub_catalog_cache as module
+    from jiuwenswarm.server.runtime.marketplace.hub_asset_port import HubAssetSummary, HubSearchPage
+    from jiuwenswarm.server.runtime.marketplace.hub_client import HubClient
+
+    cache = HubCatalogCache(tmp_path / 'expert-catalog.sqlite')
+    monkeypatch.setattr(module, 'get_hub_catalog_cache', lambda: cache)
+
+    async def search(self, request):
+        asset_id = 'verified' if self.transport.verify else 'unverified'
+        item = HubAssetSummary(request.kind, asset_id, asset_id, '', '1', '', ())
+        return HubSearchPage((item,), 1, 1, 100)
+
+    monkeypatch.setattr(HubClient, 'search_assets', search)
+    unchecked = HubClient(base_url='https://hub.test', verify=False)
+    checked = HubClient(base_url='https://hub.test')
+    try:
+        await module.cached_asset_catalog(unchecked, 'agent_template')
+        await asyncio.gather(*cache.tasks.values())
+        items, state = await module.cached_asset_catalog(checked, 'agent_template')
+        assert items == [] and state['state'] == 'miss'
+        await asyncio.gather(*cache.tasks.values())
+        checked_items, _ = await module.cached_asset_catalog(checked, 'agent_template')
+        unchecked_items, _ = await module.cached_asset_catalog(unchecked, 'agent_template')
+        assert [item.asset_id for item in checked_items] == ['verified']
+        assert [item.asset_id for item in unchecked_items] == ['unverified']
+    finally:
+        await cache.close()
+
+
+@pytest.mark.asyncio
 async def test_authenticated_clients_share_memory_scope_across_instances(tmp_path, monkeypatch):
     import jiuwenswarm.server.runtime.marketplace.hub_catalog_cache as module
     from jiuwenswarm.server.runtime.marketplace.hub_client import HubClient

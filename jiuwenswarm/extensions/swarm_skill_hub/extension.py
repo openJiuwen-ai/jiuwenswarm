@@ -100,6 +100,11 @@ def _resolve_endpoint_ref(reference: str | None) -> str | None:
     return resolved or None
 
 
+def resolve_source_endpoint(reference: str | None) -> str:
+    """Resolve a configured Hub URL or its environment reference."""
+    return _resolve_endpoint_ref(reference) or str(reference or "").strip() or _DEFAULT_BASE_URL
+
+
 def trust_policy_from_env() -> HubTrustPolicy:
     """从扩展包 config.yaml 构建信任策略（密钥走 secret_ref 引用，不落盘）。"""
     key_id = str(_config_value("hmac_key_id") or "default").strip() or "default"
@@ -153,10 +158,7 @@ class SwarmSkillHubSourceExtension(SkillSourceExtension):
         return None
 
     def create_provider(self, config: SourceConfig) -> SkillSourceProvider:
-        endpoint = _resolve_endpoint_ref(config.endpoint_ref)
-        if not endpoint:
-            # config.yaml 的 endpoint 是 URL，直接用；否则内置默认地址兜底。
-            endpoint = str(config.endpoint_ref or "").strip() or _DEFAULT_BASE_URL
+        endpoint = resolve_source_endpoint(config.endpoint_ref)
         display_name = (
             str(config.options.get("display_name") or "").strip() or "SwarmSkillHub"
         )

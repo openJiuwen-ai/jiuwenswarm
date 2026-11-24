@@ -277,7 +277,10 @@ async def cached_asset_catalog(port, kind, *, refresh=False, preload=False):
                 scope = secrets.token_hex(16)
             identity = catalog_memory_scope(base_url, credentials, scope)
 
-    key = json.dumps([identity, kind, 'search_assets_thumbnails_v1', '', 1, 100])
+    catalog_version = 'search_assets_thumbnails_v1'
+    if getattr(transport, 'verify', True) is False:
+        catalog_version = 'search_assets_thumbnails_unverified_v1'
+    key = json.dumps([identity, kind, catalog_version, '', 1, 100])
 
     async def loader():
         items, seen = [], set()

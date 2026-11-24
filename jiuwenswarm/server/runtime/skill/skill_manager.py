@@ -11437,22 +11437,19 @@ class SkillManager:
             verify_ssl=verify_ssl,
         )
 
-    async def apply_skill_source_configs(
-        self,
+    @classmethod
+    def parse_skill_source_configs(
+        cls,
         extension_config: list[dict[str, Any]] | None,
-    ) -> dict[str, Any]:
-        """Atomically apply ``custom_config.skill_sources`` from effective policy.
-
-        Distinguishes ``skill_sources`` absent (leave registry unchanged) from
-        an explicit empty array (clear configured sources, keep defaults only).
-        """
+    ) -> list[SourceConfig] | None:
+        """Parse policy sources, returning None if no template defines the list."""
         raw_sources: list[dict[str, Any]] = []
         # 任一 extension 显式带了 skill_sources 键（含 []）即视为本次要应用。
         skill_sources_present = False
         for record in extension_config or []:
             if not isinstance(record, dict):
                 continue
-            custom = self._source_config_custom_payload(record)
+            custom = cls._source_config_custom_payload(record)
             if custom is None or "skill_sources" not in custom:
                 continue
             skill_sources_present = True
@@ -11468,12 +11465,21 @@ class SkillManager:
                     )
                 raw_sources.append(item)
         if not skill_sources_present:
+            return None
+        return [cls._parse_source_config(item) for item in raw_sources]
+
+    async def apply_skill_source_configs(
+        self,
+        extension_config: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        """Apply explicit sources, leaving the registry unchanged if absent."""
+        configs = self.parse_skill_source_configs(extension_config)
+        if configs is None:
             return {
                 "applied": False,
                 "source_count": len(self._source_registry.list()),
             }
 
-        configs = [self._parse_source_config(item) for item in raw_sources]
         candidate = SourceRegistry()
         configured_ids = {config.source_id for config in configs}
         # 默认源由扩展工厂自决是否提供（含企业版门控），与配置源同表绑定。

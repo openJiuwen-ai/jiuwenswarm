@@ -539,7 +539,7 @@ class TestPackageCatalogReqMethodRouting:
 
         assert response.ok is True
         assert response.payload == {"agentGroups": expected}
-        wrapper.assert_awaited_once_with({"filter": "builtin"})
+        wrapper.assert_awaited_once_with({"filter": "builtin"}, hub_port=None)
 
     async def test_agent_group_show_payload(self, monkeypatch) -> None:
         iface = _iface()
@@ -595,7 +595,10 @@ class TestPackageCatalogReqMethodRouting:
 
         assert response.ok is True
         assert response.payload == {envelope: expected}
-        wrapper.assert_awaited_once_with({"filter": "builtin+hub"})
+        if method == ReqMethod.AGENT_TEMPLATES_LIST:
+            wrapper.assert_awaited_once_with({"filter": "builtin+hub"}, hub_port=None)
+        else:
+            wrapper.assert_awaited_once_with({"filter": "builtin+hub"})
 
     @pytest.mark.parametrize(
         "method,function_name,envelope",
@@ -627,7 +630,10 @@ class TestPackageCatalogReqMethodRouting:
 
         assert response.ok is True
         assert response.payload == {envelope: expected}
-        wrapper.assert_awaited_once_with("remote")
+        if method == ReqMethod.AGENT_TEMPLATES_SHOW:
+            wrapper.assert_awaited_once_with("remote", hub_port=None, downloader=None)
+        else:
+            wrapper.assert_awaited_once_with("remote")
 
     @pytest.mark.parametrize(
         "method,function_name,expected",
@@ -674,9 +680,9 @@ class TestPackageCatalogReqMethodRouting:
         assert response.ok is True
         assert response.payload == expected
         if method == ReqMethod.AGENT_GROUPS_FILE_LIST:
-            wrapper.assert_awaited_once_with("group-a")
+            wrapper.assert_awaited_once_with("group-a", hub_port=None, downloader=None)
         elif method == ReqMethod.AGENT_GROUPS_FILE_READ:
-            wrapper.assert_awaited_once_with("group-a", "README.md")
+            wrapper.assert_awaited_once_with("group-a", "README.md", hub_port=None, downloader=None)
 
     async def test_agent_group_failures_expose_stable_codes(self, monkeypatch) -> None:
         iface = _iface()
@@ -711,7 +717,7 @@ class TestPackageCatalogReqMethodRouting:
         iface = _iface()
         calls: list[dict] = []
         if method == ReqMethod.AGENT_GROUPS_INSTALL:
-            wrapper = AsyncMock(side_effect=lambda params: calls.append(params))
+            wrapper = AsyncMock(side_effect=lambda params, *, hub_port, downloader: calls.append(params))
             monkeypatch.setattr(
                 iface.package_manager, "install_agent_group_with_hub", wrapper
             )
@@ -727,7 +733,7 @@ class TestPackageCatalogReqMethodRouting:
         assert response.payload == {}
         assert calls == [{"id": "group-a"}]
         if method == ReqMethod.AGENT_GROUPS_INSTALL:
-            wrapper.assert_awaited_once_with({"id": "group-a"})
+            wrapper.assert_awaited_once_with({"id": "group-a"}, hub_port=None, downloader=None)
 
     async def test_agent_template_update_payload(self, monkeypatch) -> None:
         """agent_templates.update falls through to update_agent_template(params)."""

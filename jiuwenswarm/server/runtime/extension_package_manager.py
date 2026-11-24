@@ -58,6 +58,7 @@ from jiuwenswarm.server.runtime.marketplace.hub_package_downloader import (
 
 if TYPE_CHECKING:
     from openjiuwen.harness.resources import AgentTemplateCard, AgentTemplateSpec, RuntimeSpec
+    from jiuwenswarm.common.schema.agent import AgentRequest
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,56 @@ class _HubPreviewArchive(NamedTuple):
     package_root: str
 
 
-_HUB_PREVIEW_ARCHIVES: OrderedDict[tuple[str, str, str], _HubPreviewArchive] = OrderedDict()
+_HUB_PREVIEW_ARCHIVES: OrderedDict[tuple[str, str, str, bool], _HubPreviewArchive] = OrderedDict()
+
+
+async def expert_hub_clients(
+    request: AgentRequest,
+) -> tuple[HubAssetPort | None, HubPackageDownloader | None]:
+    """Reuse the active Agent's TLS setting for the same expert Hub endpoint."""
+    from jiuwenswarm.enterprise import is_enterprise
+
+    if not is_enterprise():
+        return None, None
+
+    from jiuwenswarm.enterprise.config.effective.loader import (
+        TemplateRefSlot,
+        load_effective_enterprise_config,
+    )
+    from jiuwenswarm.extensions.swarm_skill_hub.extension import (
+        SWARM_SKILL_HUB_PROVIDER_TYPE,
+        resolve_source_endpoint,
+    )
+    from jiuwenswarm.server.runtime.marketplace.hub_client import (
+        HubClient,
+        configured_hub_base_url,
+    )
+    from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+
+    try:
+        effective = await load_effective_enterprise_config(
+            request, slots={TemplateRefSlot.EXTENSION_CONFIG}
+        )
+        sources = (
+            SkillManager.parse_skill_source_configs(effective.extension_config)
+            if effective is not None
+            else None
+        )
+    except Exception as exc:
+        logger.warning("Could not load expert Hub TLS policy: %s", type(exc).__name__)
+        return None, None
+
+    base_url = configured_hub_base_url()
+    verify_values = {
+        source.verify_ssl
+        for source in sources or []
+        if source.enabled
+        and source.provider_type == SWARM_SKILL_HUB_PROVIDER_TYPE
+        and resolve_source_endpoint(source.endpoint_ref).rstrip("/") == base_url
+    }
+    if verify_values == {False}:
+        return HubClient(base_url=base_url, verify=False), HubPackageDownloader(verify=False)
+    return None, None
 
 
 def reject_package_name(name: Any, kind: str) -> str:
@@ -3540,7 +3590,7 @@ def _clear_hub_preview_archives() -> None:
 
 
 def _store_hub_preview_archive(
-    key: tuple[str, str, str], archive: _HubPreviewArchive
+    key: tuple[str, str, str, bool], archive: _HubPreviewArchive
 ) -> _HubPreviewArchive:
     _HUB_PREVIEW_ARCHIVES.pop(key, None)
     _HUB_PREVIEW_ARCHIVES[key] = archive
@@ -3764,7 +3814,12 @@ async def _load_hub_preview_archive(
     version = str(detail.version or "").strip()
     if not version:
         raise ValueError(f"Hub package has no public version: {asset_id}")
-    cache_key = (kind, asset_id, version)
+    transport = getattr(port, "transport", None)
+    verified = (
+        getattr(transport, "verify", True) is not False
+        and getattr(downloader, "verify", True) is not False
+    )
+    cache_key = (kind, asset_id, version, verified)
     cached = _HUB_PREVIEW_ARCHIVES.get(cache_key)
     if cached is not None:
         _HUB_PREVIEW_ARCHIVES.move_to_end(cache_key)
@@ -3929,23 +3984,31 @@ def read_agent_group_file(name: str, rel_path: str) -> dict:
     return _read_previewable_file(pkg_dir, rel_path)
 
 
-async def list_agent_group_files_with_hub(name: str) -> list[dict]:
+async def list_agent_group_files_with_hub(
+    name: str, *, hub_port: HubAssetPort | None = None, downloader: Any = None
+) -> list[dict]:
     _require_package_allowed("agent_group", name)
     record = hub_install_state_store(_AGENT_GROUP_KIND).get(name)
     package_id = record.package_id if record is not None else name
     if _resolve_agent_group_definition_dir(package_id) is not None:
         return list_agent_group_files(package_id)
-    archive = await _load_hub_preview_archive(_AGENT_GROUP_KIND, name)
+    archive = await _load_hub_preview_archive(
+        _AGENT_GROUP_KIND, name, hub_port=hub_port, downloader=downloader
+    )
     return _build_file_tree_from_zip(archive.body, archive.package_root)
 
 
-async def read_agent_group_file_with_hub(name: str, rel_path: str) -> dict:
+async def read_agent_group_file_with_hub(
+    name: str, rel_path: str, *, hub_port: HubAssetPort | None = None, downloader: Any = None
+) -> dict:
     _require_package_allowed("agent_group", name)
     record = hub_install_state_store(_AGENT_GROUP_KIND).get(name)
     package_id = record.package_id if record is not None else name
     if _resolve_agent_group_definition_dir(package_id) is not None:
         return read_agent_group_file(package_id, rel_path)
-    archive = await _load_hub_preview_archive(_AGENT_GROUP_KIND, name)
+    archive = await _load_hub_preview_archive(
+        _AGENT_GROUP_KIND, name, hub_port=hub_port, downloader=downloader
+    )
     return _read_previewable_file_from_zip(archive.body, archive.package_root, rel_path)
 
 
