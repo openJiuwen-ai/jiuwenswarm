@@ -167,7 +167,10 @@ def _resolve_send_file_language(language: object | None = None) -> str:
     mapped = try_normalize_preferred_language(language)
     if mapped is not None:
         return mapped
-    return normalize_preferred_language(resolve_preferred_language())
+    try:
+        return normalize_preferred_language(resolve_preferred_language())
+    except Exception:  # noqa: BLE001 - toolkit init must not fail on language lookup
+        return "en"
 
 
 class SendFileToolkit:

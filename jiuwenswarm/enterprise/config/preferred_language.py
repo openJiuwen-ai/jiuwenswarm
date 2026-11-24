@@ -139,6 +139,17 @@ def current_preferred_language_user_id() -> str | None:
     return text or None
 
 
+def framework_language_from_params(
+    params: dict[str, Any] | None, preferred_lang: str
+) -> str:
+    """Resolve framework-copy language: ``ui_language`` overrides memo/yaml."""
+    from jiuwenswarm.common.i18n import try_normalize_preferred_language
+
+    raw_params = params if isinstance(params, dict) else {}
+    ui_language = try_normalize_preferred_language(raw_params.get("ui_language"))
+    return ui_language if ui_language is not None else preferred_lang
+
+
 @asynccontextmanager
 async def bind_preferred_language(request: Any) -> AsyncIterator[str]:
     """绑定本请求 user_id，并预取语言写入 memo。"""
@@ -183,11 +194,22 @@ def bind_preferred_language_memo(
         _MEMO_CV.reset(token_memo)
 
 
+def _register_i18n_resolver() -> None:
+    """Wire common.i18n t() to this module without a common→enterprise import."""
+    from jiuwenswarm.common.i18n import set_preferred_language_resolver
+
+    set_preferred_language_resolver(resolve_preferred_language)
+
+
+_register_i18n_resolver()
+
+
 __all__ = (
     "DEFAULT_USER_ID",
     "bind_preferred_language",
     "bind_preferred_language_memo",
     "current_preferred_language_user_id",
+    "framework_language_from_params",
     "resolve_preferred_language",
     "resolve_preferred_language_async",
 )

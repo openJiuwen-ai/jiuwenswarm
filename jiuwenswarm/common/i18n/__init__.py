@@ -3,6 +3,7 @@
 
 from jiuwenswarm.common.i18n.translate import (
     normalize_preferred_language,
+    set_preferred_language_resolver,
     t,
     to_runtime_language,
     try_normalize_preferred_language,
@@ -10,6 +11,7 @@ from jiuwenswarm.common.i18n.translate import (
 
 __all__ = (
     "normalize_preferred_language",
+    "set_preferred_language_resolver",
     "t",
     "to_runtime_language",
     "try_normalize_preferred_language",

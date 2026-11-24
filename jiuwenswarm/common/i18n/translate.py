@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -22,6 +23,13 @@ _EN_ALIASES = frozenset({"en", "en_us", "en-us"})
 _CATALOG_DIR = Path(__file__).resolve().parent / "catalog"
 _LOCK = threading.Lock()
 _CATALOGS: dict[str, dict[str, str]] | None = None
+_PREFERRED_LANGUAGE_RESOLVER: Callable[[], str] | None = None
+
+
+def set_preferred_language_resolver(resolver: Callable[[], str] | None) -> None:
+    """Inject preferred-language lookup without importing enterprise from common."""
+    global _PREFERRED_LANGUAGE_RESOLVER
+    _PREFERRED_LANGUAGE_RESOLVER = resolver
 
 
 def try_normalize_preferred_language(raw: object) -> str | None:
@@ -99,14 +107,13 @@ def _resolve_language(language: object | None) -> str:
         mapped = try_normalize_preferred_language(language)
         if mapped is not None:
             return mapped
+    resolver = _PREFERRED_LANGUAGE_RESOLVER
+    if resolver is None:
+        return "en"
     try:
-        from jiuwenswarm.enterprise.config.preferred_language import (
-            resolve_preferred_language,
-        )
-
-        return normalize_preferred_language(resolve_preferred_language())
+        return normalize_preferred_language(resolver())
     except Exception:  # noqa: BLE001
-        logger.debug("resolve_preferred_language failed in t()", exc_info=True)
+        logger.debug("preferred_language resolver failed in t()", exc_info=True)
         return "en"
 
 

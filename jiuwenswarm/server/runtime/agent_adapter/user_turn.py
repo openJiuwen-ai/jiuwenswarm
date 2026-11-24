@@ -313,6 +313,17 @@ class UserTurn:
         self._add_prepared_context_carrier(envelope)
         return envelope
 
+    def _keeps_configured_response_language(self, prompt_channel: str) -> bool:
+        """Whether this turn keeps yaml/memo UI language instead of ``match``."""
+        if prompt_channel in _SYSTEM_CHANNELS or prompt_channel in {
+            "agent_session",
+            "__cron__",
+        }:
+            return True
+        return isinstance(self.metadata, dict) and isinstance(
+            self.metadata.get("cron"), dict
+        )
+
     def _envelope_response_language(self, prompt_channel: str) -> str:
         """Return envelope ``preferred_response_language``.
 
@@ -320,15 +331,7 @@ class UserTurn:
         System (cron / heartbeat / ``__cron__``) and cross-session turns keep
         the configured UI language — they have no user utterance to match.
         """
-        if (
-            prompt_channel in _SYSTEM_CHANNELS
-            or prompt_channel == "agent_session"
-            or prompt_channel == "__cron__"
-            or (
-                isinstance(self.metadata, dict)
-                and isinstance(self.metadata.get("cron"), dict)
-            )
-        ):
+        if self._keeps_configured_response_language(prompt_channel):
             return self.language
         return "match"
 

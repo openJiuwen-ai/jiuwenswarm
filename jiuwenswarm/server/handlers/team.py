@@ -15,8 +15,9 @@ import asyncio
 import logging
 from typing import Any
 
-from jiuwenswarm.common.i18n import t
 from agent_gateway.common.mode_matrix import is_team_mode
+
+from jiuwenswarm.common.i18n import t
 from jiuwenswarm.common.schema.agent import AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.context import RequestContext

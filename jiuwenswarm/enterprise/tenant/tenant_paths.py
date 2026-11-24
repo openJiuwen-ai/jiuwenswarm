@@ -94,18 +94,11 @@ def seed_tenant_agent_workspace(tenant_root: Path) -> None:
     首次进入某租户请求时调用本函数补齐，使 write_memory/read_memory 等记忆工具
     有完整的工作区骨架。
     """
-    from jiuwenswarm.common.i18n import (
-        normalize_preferred_language,
-        try_normalize_preferred_language,
-    )
     from jiuwenswarm.common.utils import (
         _find_package_root,
         _resolve_preferred_language,
         _uses_jiuwen_memory,
         get_config_file,
-    )
-    from jiuwenswarm.enterprise.config.preferred_language import (
-        resolve_preferred_language,
     )
 
     workspace = Path(tenant_root) / get_agent_workspace_relative_dir()
@@ -125,12 +118,8 @@ def seed_tenant_agent_workspace(tenant_root: Path) -> None:
         return
 
     config_path = get_config_file()
-    # Prefer per-request / enterprise memo; fall back to yaml preferred_language.
-    resolved_lang = try_normalize_preferred_language(resolve_preferred_language())
-    if resolved_lang is None:
-        resolved_lang = normalize_preferred_language(
-            _resolve_preferred_language(config_path, None)
-        )
+    # Tenant-shared skeleton: use global yaml, not per-request user memo.
+    resolved_lang = _resolve_preferred_language(config_path, None)
     suffix = "_ZH" if resolved_lang == "zh" else "_EN"
     # (模板内相对路径, 落盘相对路径)，多语言文件去掉 _ZH/_EN 后缀
     entries: list[tuple[str, str]] = [

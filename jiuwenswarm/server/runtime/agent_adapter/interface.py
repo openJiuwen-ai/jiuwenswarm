@@ -3728,22 +3728,44 @@ class JiuWenSwarm:
         from jiuwenswarm.enterprise.capabilities.experts.request_packages import bind_request_subject
         from jiuwenswarm.enterprise.config.preferred_language import (
             bind_preferred_language,
+            bind_preferred_language_memo,
+            current_preferred_language_user_id,
+            framework_language_from_params,
         )
 
         with bind_request_subject(request.metadata):
-            async with bind_preferred_language(request):
-                return await self._process_message(request, schedule_session=True)
+            async with bind_preferred_language(request) as preferred_lang:
+                with bind_preferred_language_memo(
+                    user_id=current_preferred_language_user_id(),
+                    language=framework_language_from_params(
+                        request.params, preferred_lang
+                    ),
+                ):
+                    return await self._process_message(
+                        request, schedule_session=True
+                    )
 
     async def execute_message(self, request: AgentRequest) -> AgentResponse:
         """Execute one request when scheduling is owned by AgentRuntime."""
         from jiuwenswarm.enterprise.capabilities.experts.request_packages import bind_request_subject
         from jiuwenswarm.enterprise.config.preferred_language import (
             bind_preferred_language,
+            bind_preferred_language_memo,
+            current_preferred_language_user_id,
+            framework_language_from_params,
         )
 
         with bind_request_subject(request.metadata):
-            async with bind_preferred_language(request):
-                return await self._process_message(request, schedule_session=False)
+            async with bind_preferred_language(request) as preferred_lang:
+                with bind_preferred_language_memo(
+                    user_id=current_preferred_language_user_id(),
+                    language=framework_language_from_params(
+                        request.params, preferred_lang
+                    ),
+                ):
+                    return await self._process_message(
+                        request, schedule_session=False
+                    )
 
     async def _process_message(
         self,
@@ -4537,11 +4559,15 @@ class JiuWenSwarm:
             bind_preferred_language,
             bind_preferred_language_memo,
             current_preferred_language_user_id,
+            framework_language_from_params,
         )
 
         # 先预取语言；流式路径不把 ContextVar token 留过 yield（关流可能在另一 Task）。
         async with bind_preferred_language(request) as preferred_lang:
             preferred_user_id = current_preferred_language_user_id()
+            framework_lang = framework_language_from_params(
+                request.params, preferred_lang
+            )
 
         stream = self._process_message_stream(request)
         try:
@@ -4549,7 +4575,7 @@ class JiuWenSwarm:
                 with bind_request_subject(request.metadata):
                     with bind_preferred_language_memo(
                         user_id=preferred_user_id,
-                        language=preferred_lang,
+                        language=framework_lang,
                     ):
                         try:
                             chunk = await anext(stream)
