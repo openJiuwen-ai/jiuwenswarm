@@ -568,6 +568,27 @@ async def fill_mcp_tools_fallback(item: dict[str, Any], name: str) -> None:
         logger.debug("[mcp-config] show tools fallback for '%s' failed: %s", name, fetch_exc)
 
 
+# Probe reasons proven (not guessed) to mean the stored tokens were rejected
+# by the server's auth layer. Only these justify wiping stored credentials on
+# rollback; anything else (timeout / unreachable / 5xx / local env) never
+# validated the tokens and must keep them for the next connect.
+_AUTH_REJECTED_REASON_MARKERS = ("auth rejected (HTTP 401", "auth rejected (HTTP 403")
+
+
+def probe_failure_is_auth_rejected(reason: str) -> bool:
+    """Classify a failed probe reason: True only for proven credential denial.
+
+    ``preflight_mcp_server_reachable`` returns ``auth rejected (HTTP 401/403)``
+    only when the server itself answered and rejected the credentials — the one
+    failure class where the stored tokens are known bad. Network-layer failures
+    (timeout, ConnectError/NetworkError, HTTP 5xx) never reached the auth
+    layer, so their reason strings do not match and the caller must keep the
+    stored credentials so a retry can reuse them.
+    """
+    text = str(reason or "")
+    return any(marker in text for marker in _AUTH_REJECTED_REASON_MARKERS)
+
+
 async def probe_mcp_live_connection(name: str) -> tuple[bool, str]:
     """Live-connect probe for one MCP by name (connect-time preflight).
 
@@ -822,5 +843,6 @@ __all__ = [
     "extract_enabled_mcp_server_entries",
     "preflight_mcp_server_reachable",
     "prewarm_connected_mcps",
+    "probe_failure_is_auth_rejected",
     "resolve_node_package_runner",
 ]
