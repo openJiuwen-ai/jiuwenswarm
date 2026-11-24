@@ -19,6 +19,7 @@ gateway 拆分：ConfigAdapter（AgentServer 进程）复用这些成熟实现�
 
 from __future__ import annotations
 
+import asyncio
 import importlib.metadata
 import importlib.util
 import inspect
@@ -95,6 +96,7 @@ from jiuwenswarm.common.recommendation_switches import (
     flatten_recommendation_for_config_panel,
     save_recommendation_switches,
 )
+from jiuwenswarm.common.config_panel.cua_permission_guide import open_macos_cua_permission_guide
 from jiuwenswarm.common.config_panel.external_cli_read import (
     EXTERNAL_CLI_AGENT_KEY_SUFFIXES,
     EXTERNAL_CLI_AGENT_KINDS,
@@ -278,6 +280,7 @@ class ConfigApplyResult:
     canonical_config: dict[str, str] | None = None
     pending_permission_profile: str | None = None
     pending_permission_key: str | None = None
+    cua_agent_just_enabled: bool = False
 
 
 # .env 路径（调用方可 monkeypatch 本模块属性以隔离测试）
@@ -1488,6 +1491,7 @@ def apply_config_payload(
     params = encrypt_config_params({key: value for key, value in params.items() if key not in MOA_CONFIG_KEYS})
     env_updates: dict[str, str] = {}
     yaml_updated: list[str] = []
+    cua_agent_just_enabled = False
     codex_dependency_install: dict[str, Any] | None = None
     external_cli_dependency_installs: dict[str, dict[str, Any]] = {}
     canonical_config: dict[str, str] | None = None
@@ -1595,7 +1599,7 @@ def apply_config_payload(
             elif param_key == "rea_enabled":
                 update_rea_enabled_in_config(parsed)
             elif param_key == "cua_agent_enabled":
-                update_cua_agent_enabled_in_config(None if val is None else parsed)
+                cua_agent_just_enabled = update_cua_agent_enabled_in_config(None if val is None else parsed)
             elif param_key == "enable_free_models":
                 update_enable_free_models_in_config(parsed)
             elif param_key == "memory_forbidden_enabled":
@@ -1812,6 +1816,7 @@ def apply_config_payload(
             if "permissions_enabled" in params
             else None
         ),
+        cua_agent_just_enabled=cua_agent_just_enabled,
     )
 
 
@@ -2063,6 +2068,8 @@ async def config_set_handler(
     env_updates = apply_result.env_updates
     yaml_updated = apply_result.yaml_updated
     change_set = ConfigChangeSet(env_updates, yaml_updated)
+    if apply_result.cua_agent_just_enabled:
+        await asyncio.to_thread(open_macos_cua_permission_guide)
     try:
         applied_without_restart = await apply_config_change_set(
             change_set,
@@ -2205,6 +2212,8 @@ async def config_save_all_handler(
         commit_pending_permission_profile(apply_result)
         yaml_updated.extend(apply_result.yaml_updated)
 
+        if apply_result.cua_agent_just_enabled:
+            await asyncio.to_thread(open_macos_cua_permission_guide)
         change_set = ConfigChangeSet(
             env_updates,
             yaml_updated,

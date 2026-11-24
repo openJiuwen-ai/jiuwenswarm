@@ -4,7 +4,7 @@
 
 import sys
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 import yaml
@@ -30,7 +30,6 @@ def panel_config(tmp_path, monkeypatch):
     monkeypatch.setattr(handlers, "ENV_FILE", tmp_path / ".env")
     monkeypatch.setattr(handlers, "_get_crypto_provider", lambda: None)
     monkeypatch.setattr(cua_config, "cua_repl_unavailable_reason", lambda: "native_build_failed")
-    monkeypatch.setattr(cua_config, "is_legacy_cua_available", lambda: False)
     monkeypatch.setattr(config_service, "get_config_file", lambda: path)
     monkeypatch.setattr(config_service, "get_env_file", lambda: tmp_path / ".env")
     original = handlers.provider
@@ -54,6 +53,80 @@ async def test_desktop_preference_round_trips_through_both_config_readers(panel_
         assert payload["cua_backend_unavailable_reason"] == "native_build_failed"
 
 
+@pytest.fixture
+def permission_guide_sdk(tmp_path, monkeypatch):
+    bundle = tmp_path / "runtime" / "Jiuwen CUA.app"
+    driver = Mock(return_value={"command": str(bundle / "Contents/MacOS/computer-use-driver")})
+    launch = Mock()
+    monkeypatch.setitem(sys.modules, "computer_use.paths", SimpleNamespace(native_driver=driver))
+    monkeypatch.setitem(sys.modules, "computer_use.native.macos_app", SimpleNamespace(open_permission_guide=launch))
+    return bundle, driver, launch
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("save_all", [True, False], ids=["config.save_all", "config.set"])
+async def test_enabling_desktop_control_opens_the_macos_guide_once(
+    panel_config, permission_guide_sdk, monkeypatch, save_all,
+):
+    bundle, driver, launch = permission_guide_sdk
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(cua_config, "cua_repl_unavailable_reason", lambda: "")
+    channel = SimpleNamespace(send_response=AsyncMock())
+    saved_during_launch = []
+
+    def capture_saved_preference(_bundle, *, timeout):
+        saved = yaml.safe_load(panel_config.read_text(encoding="utf-8"))
+        saved_during_launch.append(saved["react"]["subagents"]["cua_agent"]["enabled"])
+
+    launch.side_effect = capture_saved_preference
+    for value in ("true", True, False, None):
+        params = {"cua_agent_enabled": value}
+        if save_all:
+            await handlers.config_save_all_handler(channel, None, "save", {"config": params}, None)
+        else:
+            await handlers.config_set_handler(channel, None, "save", params, None)
+        assert channel.send_response.call_args.kwargs["ok"] is True
+    driver.assert_called_once_with()
+    launch.assert_called_once()
+    assert launch.call_args.args == (bundle,)
+    assert saved_during_launch == [True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("system", "reason"), [("win32", ""), ("linux", ""), ("darwin", "backend_missing")])
+async def test_enabling_desktop_control_skips_the_guide_without_a_macos_backend(
+    panel_config, permission_guide_sdk, monkeypatch, system, reason,
+):
+    _, driver, launch = permission_guide_sdk
+    monkeypatch.setattr(sys, "platform", system)
+    monkeypatch.setattr(cua_config, "cua_repl_unavailable_reason", lambda: reason)
+    channel = SimpleNamespace(send_response=AsyncMock())
+    await handlers.config_save_all_handler(
+        channel, None, "save", {"config": {"cua_agent_enabled": True}}, None,
+    )
+    assert channel.send_response.call_args.kwargs["ok"] is True
+    driver.assert_not_called()
+    launch.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_macos_guide_launch_failure_keeps_the_saved_preference(
+    panel_config, permission_guide_sdk, monkeypatch, caplog,
+):
+    _, _, launch = permission_guide_sdk
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(cua_config, "cua_repl_unavailable_reason", lambda: "")
+    launch.side_effect = RuntimeError("launch failed")
+    channel = SimpleNamespace(send_response=AsyncMock())
+    await handlers.config_save_all_handler(
+        channel, None, "save", {"config": {"cua_agent_enabled": True}}, None,
+    )
+    assert channel.send_response.call_args.kwargs["ok"] is True
+    saved = yaml.safe_load(panel_config.read_text(encoding="utf-8"))
+    assert saved["react"]["subagents"]["cua_agent"]["enabled"] is True
+    assert "launch failed" in caplog.text
+
+
 @pytest.mark.parametrize("value", ["yes", 1, {}, []])
 def test_invalid_desktop_preference_does_not_modify_config(panel_config, value):
     before = panel_config.read_bytes()
@@ -70,9 +143,14 @@ def test_frozen_backend_uses_external_resource_layout(tmp_path, monkeypatch, sys
     monkeypatch.setattr(cua_config.sys, "_MEIPASS", str(tmp_path), raising=False)
     monkeypatch.setattr(cua_config.platform, "mac_ver", lambda: ("14.0", (), ""))
     monkeypatch.setattr(cua_config.importlib.util, "find_spec", lambda name: object())
+    if system == "darwin":
+        from computer_use import paths
+
+        prepare = Mock(side_effect=AssertionError("The settings probe must not prepare SDK resources"))
+        monkeypatch.setattr(paths, "repository_root", prepare)
     assert not cua_config.is_cua_repl_available()
     root = tmp_path / "computer_use/_resources/os_adapter"
-    files = (["macos/.build/ComputerUseDriver.app/Contents/MacOS/computer-use-driver"] if system == "darwin"
+    files = (["macos/.build/Jiuwen CUA.app/Contents/MacOS/computer-use-driver"] if system == "darwin"
              else ["windows/.build/" + name for name in (
                  "computer-use-driver.exe", "computer-use-capture.exe", "Interop.NativeUIA.dll",
              )])
@@ -87,6 +165,28 @@ def test_frozen_backend_uses_external_resource_layout(tmp_path, monkeypatch, sys
     monkeypatch.setattr(cua_config.importlib.util, "find_spec", lambda name: object())
     path.unlink()
     assert not cua_config.is_cua_repl_available()
+    if system == "darwin":
+        prepare.assert_not_called()
+
+
+@pytest.mark.parametrize("result", [None, {}, {"command": None}, AttributeError("SDK probe failed")])
+def test_frozen_macos_sdk_probe_failure_keeps_settings_available(tmp_path, monkeypatch, result):
+    monkeypatch.setattr(cua_config, "sys", SimpleNamespace(platform="darwin", frozen=True, _MEIPASS=str(tmp_path)))
+    monkeypatch.setattr(cua_config, "_is_harmony_desktop", lambda: False)
+    monkeypatch.setattr(cua_config.platform, "mac_ver", lambda: ("14.0", (), ""))
+    monkeypatch.setattr(cua_config.importlib.util, "find_spec", lambda name: object())
+
+    def native_driver(*, platform, root):
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    monkeypatch.setitem(sys.modules, "computer_use.paths", SimpleNamespace(native_driver=native_driver))
+
+    assert cua_config.cua_backend_settings() == {
+        "cua_backend_available": "false",
+        "cua_backend_unavailable_reason": "backend_missing",
+    }
 
 
 @pytest.mark.parametrize(("version", "installed", "reason", "expected"), [
@@ -126,18 +226,18 @@ def test_source_sdk_needs_the_paths_module_but_can_lack_the_status_probe(monkeyp
     assert cua_config.cua_repl_unavailable_reason() == expected
 
 
-def test_existing_backend_keeps_the_setting_available_when_the_repl_build_failed(monkeypatch):
+def test_linux_switch_is_unavailable_without_the_repl_backend(monkeypatch):
+    monkeypatch.setattr(cua_config, "sys", SimpleNamespace(platform="linux"))
     monkeypatch.setattr(cua_config, "cua_repl_unavailable_reason", lambda: "native_build_failed")
-    monkeypatch.setattr(cua_config, "is_legacy_cua_available", lambda: True)
-    assert not cua_config.is_cua_repl_available()
-    assert cua_config.is_cua_backend_available()
+
+    assert not cua_config.is_cua_backend_available()
     assert cua_config.cua_backend_settings() == {
-        "cua_backend_available": "true",
-        "cua_backend_unavailable_reason": "",
+        "cua_backend_available": "false",
+        "cua_backend_unavailable_reason": "native_build_failed",
     }
 
 
-def test_harmony_has_no_desktop_backend_even_with_sdk_and_legacy_dependencies(monkeypatch):
+def test_harmony_has_no_desktop_backend_even_with_sdk_installed(monkeypatch):
     monkeypatch.setenv("JIUWENSWARM_RUNTIME_PLATFORM", " Harmony ")
     monkeypatch.setenv("DISPLAY", ":0")
     monkeypatch.setattr(cua_config.sys, "platform", "linux")
@@ -145,5 +245,4 @@ def test_harmony_has_no_desktop_backend_even_with_sdk_and_legacy_dependencies(mo
     monkeypatch.setattr(cua_config.importlib.util, "find_spec", lambda name: object())
 
     assert not cua_config.is_cua_repl_available()
-    assert not cua_config.is_legacy_cua_available()
     assert not cua_config.is_cua_backend_available()

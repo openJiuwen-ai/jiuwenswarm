@@ -370,6 +370,7 @@ excludes = [
 ]
 if sys.platform in ("darwin", "win32"):
     hiddenimports += collect_submodules("computer_use") + collect_submodules("computer_use_mcp")
+    hiddenimports += collect_submodules("computer_use_agent")
 
 # 入口脚本位于 scripts 目录
 entry_script = os.path.join(project_root, "scripts", "jiuwenswarm_exe_entry.py")
