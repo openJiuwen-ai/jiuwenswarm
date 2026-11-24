@@ -125,6 +125,14 @@
       "copy": "Copy",
       "paste": "Paste",
       "selectAll": "Select All"
+    },
+    "pagination": {
+      "total": "{{count}} total",
+      "prev": "Previous",
+      "next": "Next",
+      "pageSize": "Per page",
+      "jumpTo": "Go to",
+      "go": "Go"
     }
   },
   "a2ui": {
@@ -163,7 +171,9 @@
     "logs": "Logs",
     "update": "Updates",
     "personalContext": "Knowledge",
-    "appMarket": "Apps"
+    "appMarket": "Apps",
+    "workspace": "Workspace",
+    "approvals": "Requests"
   },
   "appMarket": {
     "resourceMemory": "RAM",
@@ -4658,8 +4668,8 @@
     }
   },
   "agent": {
-    "title": "Agent Management",
-    "subtitle": "View agent workspace files and memory content",
+    "title": "Workspace",
+    "subtitle": "View usage, clean deletable files, and preview or download workspace content",
     "root": "Root",
     "workspace": "Workspace",
     "workspaceMeta": "{{directories}} directories, {{files}} files",
@@ -4675,8 +4685,69 @@
     "markdownOnly": "Only Markdown/JSON (.md/.mdx/.json) preview is supported",
     "errors": {
       "refreshFailed": "Refresh failed: unable to rebuild the agent file index. Check the generator script logs.",
-      "loadFailed": "Unable to read the agent file list. Check whether agent/workspace/agent-data.json has been generated."
-    }
+      "loadFailed": "Unable to read the agent file list. Check whether agent/workspace/agent-data.json has been generated.",
+      "deleteFailed": "Delete failed",
+      "downloadFailed": "Download failed"
+    },
+    "binaryPreview": "Binary files have no text preview. Use Download.",
+    "confirmDelete": "Delete \"{{name}}\"? This cannot be undone.",
+    "deletable": "Deletable",
+    "delete": "Delete",
+    "deleteConfirmTitle": "Confirm delete",
+    "dirSelectedHint": "Folder selected. Download as zip, or delete the subtree when allowed.",
+    "download": "Download",
+    "emptyDeletable": "Nothing deletable (cleanup zones are empty)",
+    "filterDeletable": "Deletable only",
+    "meta": {
+      "zone": "Zone",
+      "size": "Size",
+      "mtime": "Modified",
+      "deletable": "Deletable"
+    },
+    "notDeletableReason": "Protected zone — cannot delete",
+    "previewEmpty": "No preview content",
+    "previewTruncated": "Preview truncated. Download for the full file.",
+    "quota": {
+      "title": "Workspace usage",
+      "ok": "OK",
+      "warn": "Near limit",
+      "block": "Full",
+      "unlimited": "Unlimited",
+      "unavailable": "Usage unavailable",
+      "requestExpand": "Request expansion",
+      "expandHint": "Submit an expansion request to the admin plane",
+      "expandIdleHint": "Expansion is not needed while usage is healthy",
+      "expandUnlimitedHint": "Quota is unlimited; expansion is not applicable",
+      "expandSoon": "Expansion requests will connect to admin approval soon. Clean deletable files first, or ask an admin to raise the quota.",
+      "expandTitle": "Request workspace expansion",
+      "expandDialogHint": "Enter the target quota (GiB) and a reason. The new limit takes effect after approval.",
+      "expandLimitLabel": "Target quota (GiB)",
+      "expandReasonLabel": "Reason",
+      "expandApproverLabel": "Approver",
+      "expandApproverPlaceholder": "Select an approver",
+      "expandApproverSearch": "Search by user ID or display name",
+      "expandApproverNoMatch": "No matching approvers",
+      "expandApproverRequired": "Please select an approver",
+      "expandApproverEmpty": "No approvers available. Ask an admin to grant approval permission.",
+      "expandApproverLoadFailed": "Failed to load approvers",
+      "expandSubmit": "Submit request",
+      "expandInvalidLimit": "Enter a valid target quota in GiB",
+      "expandReasonRequired": "Please provide a reason",
+      "expandMustIncrease": "Target quota must be greater than the current limit",
+      "expandFailed": "Failed to submit expansion request",
+      "expandSubmittedTitle": "Request submitted",
+      "expandSubmittedBody": "Your expansion request was submitted. The new quota takes effect after approval. Track progress under <approvals>My Requests</approvals>.",
+      "expandViewApprovals": "View My Requests",
+      "expandSubmitted": "Expansion request submitted. The new quota takes effect after approval — track progress under My Requests in the sidebar.",
+      "expandContextRequired": "Select an Agent context (cluster and bot) before requesting expansion",
+      "openWorkspace": "Open workspace",
+      "chatWarnTitle": "Workspace nearly full",
+      "chatWarnBody": "Over 80% of quota used. Clean session artifacts or request expansion.",
+      "chatBlockTitle": "Workspace full — writes blocked",
+      "chatBlockBody": "Quota exhausted. Clean deletable files or request expansion before sending messages."
+    },
+    "selectEntry": "Select a file or folder on the left to view metadata",
+    "selectEntryHint": "Click an entry to see path, zone, and size. Files can be previewed or downloaded."
   },
   "agentManagement": {
     "title": "Expert Management",
@@ -5754,7 +5825,9 @@
     "errors": {
       "delete": "Failed to delete conversation",
       "create": "Failed to create conversation",
-      "send": "Failed to send message"
+      "send": "Failed to send message",
+      "quotaExceededTitle": "Workspace is full",
+      "quotaExceeded": "Unable to create a new conversation. Clean deletable files in <space>Workspace</space>, or <expand>request expansion</expand> and try again."
     }
   },
   "subagent": {
@@ -8049,5 +8122,62 @@
   },
   "workspace": {
     "selectFilesUnavailable": "The backend did not register path.select_files. Restart jiuwenswarm-start and try again."
+  },
+  "approvals": {
+    "myTitle": "My requests",
+    "mySubtitle": "View and manage approval requests you submitted",
+    "unavailable": "Requests are unavailable in the current environment",
+    "empty": "No requests yet",
+    "loadFailed": "Failed to load requests",
+    "cancelFailed": "Failed to cancel request",
+    "cancel": "Cancel",
+    "resubmit": "Edit and resubmit",
+    "resubmitTitle": "Resubmit request",
+    "resubmitHint": "Update the request and resubmit. This revises the same request.",
+    "resubmitSubmit": "Resubmit",
+    "resubmitFailed": "Failed to resubmit",
+    "rejectComment": "Rejection comment",
+    "currentQuota": "Current quota",
+    "approvers": "Approvers",
+    "copyLink": "Copy approval link",
+    "copyLinkSuccess": "Approval link copied",
+    "copyLinkFailed": "Failed to copy approval link",
+    "copyOrderNum": "Click to copy order number",
+    "copyOrderNumSuccess": "Order number copied",
+    "copyOrderNumFailed": "Failed to copy order number",
+    "stats": {
+      "total": "Total {{count}}"
+    },
+    "search": {
+      "placeholder": "Search by order number, title, or reason",
+      "noResults": "No matching requests"
+    },
+    "filter": {
+      "reset": "Clear filters"
+    },
+    "table": {
+      "title": "Title",
+      "orderNum": "Order No.",
+      "type": "Type",
+      "summary": "Summary",
+      "requestedQuota": "Requested quota",
+      "approver": "Current approver",
+      "reason": "Reason",
+      "status": "Status",
+      "createdAt": "Submitted",
+      "actions": "Actions"
+    },
+    "status": {
+      "pending": "Pending",
+      "approved": "Approved",
+      "rejected": "Rejected",
+      "cancelled": "Cancelled"
+    },
+    "business": {
+      "workspace_quota_expand": "Workspace expansion"
+    },
+    "summary": {
+      "quotaExpand": "Requested quota {{size}}"
+    }
   }
 }

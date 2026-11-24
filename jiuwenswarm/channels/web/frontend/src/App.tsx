@@ -34,6 +34,10 @@ import { reenterJiuwenMate } from './features/jiuwenmate/publicNav';
 import type { JiuwenMateExistingPage } from './features/jiuwenmate/types';
 import { SkillPanel } from './components/SkillPanel';
 import { AgentManagementPanel } from './components/AgentManagementPanel';
+import { WorkspacePanel } from './components/WorkspacePanel/index';
+import { ApprovalsPanel } from './components/ApprovalsPanel/index';
+import { useWorkspaceQuotaEnabled } from './features/workspace/useWorkspaceQuotaEnabled';
+import { requestOpenWorkspaceExpand } from './features/workspace/workspaceExpandRequest';
 import { TeamPanel } from './components/TeamPanel';
 import { RsiPage } from './features/rsi/RsiPage';
 import { ReaSetupPage } from './features/reaSetup/ReaSetupPage';
@@ -204,8 +208,10 @@ import {
 } from './utils/frontendPlatform';
 import {
   createConversationSession,
+  isWorkspaceQuotaError,
   parsePersistSessionCommand,
 } from './multi-session/state/createConversationSession';
+import { NoticeDialog } from './multi-session/dialogs/Dialogs';
 import {
   resolvePendingPreviousSession,
   type PendingPreviousSession,
@@ -662,6 +668,12 @@ function AppContent({
   const [authToastVisible, setAuthToastVisible] = useState(false);
   const [securityAlertVisible, setSecurityAlertVisible] = useState(false);
   const [securityAlertContent, setSecurityAlertContent] = useState('');
+  /** 新建会话失败提示（配额满等）：配额场景带「空间/申请扩容」超链接与申请扩容按钮。 */
+  const [createErrorNotice, setCreateErrorNotice] = useState<{
+    title: string;
+    message?: string;
+    kind?: 'quota' | 'generic';
+  } | null>(null);
   const [externalCliInstallStatuses, setExternalCliInstallStatuses] = useState<ExternalCliInstallStatuses>({});
   const [hasVisitedAgents, setHasVisitedAgents] = useState(false);
   const [agentManagementNavigationRequest, setAgentManagementNavigationRequest] = useState<{
@@ -1290,11 +1302,16 @@ function AppContent({
   );
   const rsiFeatureEnabled = useRSIFeatureEnabled();
   const reaFeatureEnabled = useREAFeatureEnabled();
+  const workspaceQuotaEnabled = useWorkspaceQuotaEnabled();
   const hiddenNavItems = useMemo<MainNavKey[]>(() => {
     const base: MainNavKey[] = [
       ...getHiddenNavItemsForPlatform(frontendPlatform),
       ...(isEnterprise() ? ENTERPRISE_HIDDEN_NAV_ITEMS : PERSONAL_HIDDEN_NAV_ITEMS),
     ];
+    // 用户空间仅企业版 + WORKSPACE_QUOTA_ENABLED；关闭时隐藏工作空间与审批入口。
+    if (!workspaceQuotaEnabled) {
+      base.push('workspace', 'approvals');
+    }
     const hiddenFeatureItems: MainNavKey[] = [
       ...(rsiFeatureEnabled ? [] : ['experiments' as const]),
       ...(reaFeatureEnabled ? [] : ['rea' as const]),
@@ -1309,7 +1326,7 @@ function AppContent({
     // 总开关关闭时隐藏导航入口（设置页入口保留，供打开总开关）
     if (!masterEnabled) return [...rsiFiltered, 'personalContext'];
     return rsiFiltered;
-  }, [frontendPlatform, masterEnabled, reaFeatureEnabled, rsiFeatureEnabled]);
+  }, [frontendPlatform, masterEnabled, reaFeatureEnabled, rsiFeatureEnabled, workspaceQuotaEnabled]);
   const jiuwenMateHiddenPages = useMemo<JiuwenMateExistingPage[]>(
     () => (FEATURE_PERSONAL_CONTEXT_UI && masterEnabled ? [] : ['personalContext']),
     [masterEnabled],
@@ -1321,6 +1338,13 @@ function AppContent({
       setActiveNav('chat');
     }
   }, [activeNav]);
+
+
+  useEffect(() => {
+    if (!workspaceQuotaEnabled && (activeNav === 'workspace' || activeNav === 'approvals')) {
+      setActiveNav('chat');
+    }
+  }, [activeNav, workspaceQuotaEnabled]);
 
   useEffect(() => {
     if (!rsiFeatureEnabled && activeNav === 'experiments') {
@@ -3810,7 +3834,15 @@ function AppContent({
       useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
       useChatStore.getState().setThinking(NEW_CONVERSATION_ID, false);
       console.error('Failed to create application plugin conversation:', error);
-      window.alert(t('multiSession.errors.create'));
+      const quotaHit = isWorkspaceQuotaError(error);
+      setCreateErrorNotice(
+        quotaHit
+          ? {
+              title: t('multiSession.errors.quotaExceededTitle'),
+              kind: 'quota',
+            }
+          : { title: t('multiSession.errors.create'), kind: 'generic' },
+      );
       return null;
     } finally {
       creatingSessionRef.current = false;
@@ -4091,7 +4123,15 @@ function AppContent({
         useChatStore.getState().setThinking(NEW_CONVERSATION_ID, false);
         restoreUnsentInput(NEW_CONVERSATION_ID, content);
         console.error('Failed to create conversation:', error);
-        window.alert(t('multiSession.errors.create'));
+        const quotaHit = isWorkspaceQuotaError(error);
+        setCreateErrorNotice(
+          quotaHit
+            ? {
+                title: t('multiSession.errors.quotaExceededTitle'),
+                kind: 'quota',
+              }
+            : { title: t('multiSession.errors.create'), kind: 'generic' },
+        );
       } finally {
         creatingSessionRef.current = false;
       }
@@ -5617,6 +5657,16 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
             />
           </div>
         )}
+        {activeNav === 'workspace' && isEnterprise() && workspaceQuotaEnabled && (
+          <div className="app-section min-h-0">
+            <WorkspacePanel sessionId={sessionId} />
+          </div>
+        )}
+        {activeNav === 'approvals' && isEnterprise() && workspaceQuotaEnabled && (
+          <div className="app-section min-h-0">
+            <ApprovalsPanel />
+          </div>
+        )}
         {isEnterprise() && activeNav === 'teams' && (
           <div className="app-section min-h-0">
             <TeamPanel onSessionsDeleted={handleTeamSessionsDeleted} />
@@ -5817,6 +5867,36 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
       )}
 
       {/* 安全警告提示 */}
+      {createErrorNotice && (
+        <NoticeDialog
+          title={createErrorNotice.title}
+          message={createErrorNotice.message}
+          messageKey={
+            createErrorNotice.kind === 'quota'
+              ? 'multiSession.errors.quotaExceeded'
+              : undefined
+          }
+          actionLabel={
+            createErrorNotice.kind === 'quota' && isEnterprise()
+              ? t('agent.quota.requestExpand')
+              : undefined
+          }
+          onNavigateSpace={() => {
+            setCreateErrorNotice(null);
+            window.dispatchEvent(new CustomEvent<string>('jiuwen:nav', { detail: 'workspace' }));
+          }}
+          onRequestExpand={() => {
+            setCreateErrorNotice(null);
+            requestOpenWorkspaceExpand();
+          }}
+          onAction={() => {
+            setCreateErrorNotice(null);
+            requestOpenWorkspaceExpand();
+          }}
+          onClose={() => setCreateErrorNotice(null)}
+        />
+      )}
+
       {securityAlertVisible && (
         <div className="app-toast-wrapper app-toast-wrapper--top" data-testid="app-security-alert">
           <div className="app-security-alert animate-rise" data-testid="app-security-alert-panel">
