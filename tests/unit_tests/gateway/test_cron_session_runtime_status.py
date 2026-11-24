@@ -506,13 +506,18 @@ async def test_stopped_owner_metadata_is_idle_while_child_keeps_git_guard_busy(h
 class _RunNowWebChannel(_TestWebChannel):
     """Invoke the registered cron.job.run_now handler the way the WS dispatcher would."""
 
-    async def run_now(self, job_id: str, user_id: str | None = "alice") -> dict:
-        ws_id = "run-now-test"
+    async def run_now(
+        self,
+        job_id: str,
+        user_id: str | None = "alice",
+        *,
+        ws_id: str = "run-now-test",
+    ) -> dict:
         ws = SimpleNamespace(_jiuwen_ws_id=ws_id, closed=False)
         queue = asyncio.Queue()
         self._send_queues[ws_id] = queue
         handler = self._method_handlers["cron.job.run_now"]
-        await handler(ws, "run-now-request", {"id": job_id}, "current-web-session", user_id)
+        await handler(ws, f"{ws_id}-request", {"id": job_id}, "current-web-session", user_id)
         return queue.get_nowait()
 
 
@@ -556,7 +561,76 @@ async def test_run_now_rejected_while_previous_run_active(harness_factory, mode)
     await asyncio.wait_for(harness.scheduler.task(run_id), timeout=2)
     assert harness.scheduler.state(run_id).status == "succeeded"
     harness.client.metadata_payload.update(status="idle", is_processing=False)
+    created_before_retry = len([
+        env for env in harness.client.requests
+        if env.method == ReqMethod.SESSION_CREATE.value
+    ])
     response = await harness.channel.run_now(harness.job.id)
     assert response["ok"] is True
     assert response["payload"]["accepted"] is True
-    assert response["payload"]["run_id"] != run_id
+    # 每次手动触发都重新分配执行会话；run_id 只精确到秒，不能作为新一轮的
+    # 唯一判据（同一秒内连续触发会复用同一个 run_id 文本）。
+    assert response["payload"]["session_id"]
+    assert len([
+        env for env in harness.client.requests
+        if env.method == ReqMethod.SESSION_CREATE.value
+    ]) == created_before_retry + 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_run_now_starts_only_one_run(harness_factory, monkeypatch):
+    """JW-77: two run_now RPCs in flight must not both allocate a run.
+
+    The WS dispatcher runs every message in its own task, and the run state is
+    registered only after project admission and session allocation.  Without a
+    synchronous reservation both requests pass ``_find_active_run`` and create
+    a session each (the second run state also overwrites the first because
+    run ids are second-granular).
+    """
+    harness = await harness_factory()
+    harness.channel.__class__ = _RunNowWebChannel
+    allocate = harness.scheduler._allocate_execution_session
+    entered = asyncio.Event()
+    gate = asyncio.Event()
+    second_allocated = asyncio.Event()
+    calls = 0
+
+    async def controlled_allocate(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            entered.set()
+        else:
+            second_allocated.set()
+        await gate.wait()
+        return await allocate(*args, **kwargs)
+
+    monkeypatch.setattr(
+        harness.scheduler, "_allocate_execution_session", controlled_allocate,
+    )
+
+    first = asyncio.create_task(harness.channel.run_now(harness.job.id, ws_id="run-now-first"))
+    await asyncio.wait_for(entered.wait(), timeout=2)
+    second = asyncio.create_task(harness.channel.run_now(harness.job.id, ws_id="run-now-second"))
+    # 等第二个请求得出结论：被守卫同步拒绝，或者（守卫缺失时）也走到
+    # session 分配。不能用固定次数的 sleep(0) 猜调度进度。
+    settled = asyncio.ensure_future(second_allocated.wait())
+    await asyncio.wait_for(
+        asyncio.wait({second, settled}, return_when=asyncio.FIRST_COMPLETED),
+        timeout=2,
+    )
+    settled.cancel()
+    gate.set()
+    first_response = await asyncio.wait_for(first, timeout=2)
+    second_response = await asyncio.wait_for(second, timeout=2)
+
+    assert first_response["ok"] is True
+    assert first_response["payload"]["accepted"] is True
+    assert second_response["ok"] is True
+    assert second_response["payload"]["accepted"] is False
+    assert second_response["payload"]["reason"] == "previous_run_active"
+    assert calls == 1
+    assert len([
+        env for env in harness.client.requests
+        if env.method == ReqMethod.SESSION_CREATE.value
+    ]) == 1
