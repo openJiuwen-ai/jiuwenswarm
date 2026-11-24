@@ -1040,7 +1040,7 @@ export const MessageItem = memo(function MessageItem({
 	         <TeamLeaderPlainTextMessage
 	           renderTextActions={renderTextActions}
 	           member="team_leader"
-	           content={messageContent || (isStreaming ? '正在接收中...' : '')}
+	           content={messageContent || (isStreaming ? t('chat.teamReceiving') : '')}
 	           messageId={id}
 	           timestamp={timestamp}
 	           isStreaming={isStreaming}
@@ -1064,7 +1064,7 @@ export const MessageItem = memo(function MessageItem({
 	           renderTextActions={renderTextActions}
 	           member={teamMemberName}
               timestamp={timestamp}
-	           content={content || (isStreaming ? '正在接收中...' : '')}
+	           content={content || (isStreaming ? t('chat.teamReceiving') : '')}
 	           messageId={id}
 	           isStreaming={isStreaming}
 	           showAvatar={showAvatar}
