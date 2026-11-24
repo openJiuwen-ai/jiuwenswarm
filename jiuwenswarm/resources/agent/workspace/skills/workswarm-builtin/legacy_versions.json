@@ -33,6 +33,20 @@
         "digest": "d34e3f20fc5bdcb8e7f758fb1634cfb4223135f8b1dc96a5d9a6976f90bc3385",
         "revision": "4b1b4fcff703578308871a5828d338b90797c05d"
       }
+    ],
+    "references/capabilities/workswarm-app-builder/SKILL.md": [
+      {
+        "digest": "51440f4d8f3b5831401d4a1e8ee6e5fe693425323dba3818e971952895dddedc",
+        "revision": "eb0da001058a675a5646bbbef4408436d19f8f82"
+      },
+      {
+        "digest": "9051ffaa7410ae07a431904a83a2923a3b118603a0c357ec308258c577ee016c",
+        "revision": "e81838343d3b01c0c2395c87da41045698478bb5"
+      },
+      {
+        "digest": "6d25d9772c8c538b4dd1d142e2080b68935bbd5ffa1eeb7e81ae5a233d9486db",
+        "revision": "5f9cee94de49ccfb025b4617cd82a67d4226d522"
+      }
     ]
   },
   "agent-creator": [

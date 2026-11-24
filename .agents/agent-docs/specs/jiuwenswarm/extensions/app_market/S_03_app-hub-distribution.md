@@ -21,6 +21,7 @@ files:
   - jiuwenswarm/server/runtime/marketplace/asset_package_builder.py
   - jiuwenswarm/server/runtime/marketplace/hub_publish_client.py
   - jiuwenswarm/extensions/app_market/hub_install.py
+  - jiuwenswarm/extensions/app_market/app_ai_roles.py
   - jiuwenswarm/extensions/app_market/manager.py
   - jiuwenswarm/extensions/app_market/extension.py
   - jiuwenswarm/extensions/app_market/editor_sessions.py
@@ -29,6 +30,7 @@ files:
   - jiuwenswarm/extensions/app_market/app_market/storage.py
   - jiuwenswarm/extensions/app_market/app_market/run_consent.py
   - jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/index.tsx
+  - jiuwenswarm/channels/web/frontend/src/components/AppMarketPanel/AppMarketAiRoles.tsx
   - jiuwenswarm/channels/web/frontend/src/components/AssetPublishDrawer/index.tsx
 ---
 
@@ -45,6 +47,12 @@ files:
 - `plugin.yaml` 的 `version` 为字符串，使用 1 至 4 段数字，可加 `-` 或 `+` 引导的后缀。后缀由 1 至 16 个英文字母、数字、点号或连字符组成，版本总长最多 32 字符。Hub 网页校验并原样提交包内版本。
 - Hub 发布 HTTP 请求体上限 512 MiB（含 multipart 开销）。Swarm 制品下载上限 600 MiB，zip 内非目录条目声明大小之和（源文件）上限 512 MiB。单文件 64 MiB、1000 条目、压缩比 50:1 沿用现有检查。
 - 内层 `index.html` 若声明 `application-version`，必须等于包版本；Hub 发布和 Swarm 安装、更新均核对该版本。超过 64 KiB 的入口文件须在前 64 KiB 内结束 head 或开始 body。
+
+## AI 角色声明与展示
+
+- 新开发的运行时 AI 应用将 UTF-8 的 `app-ai-roles.json` 放在入口 HTML 同目录。版本 1 声明至少一个会话组，包含应用内唯一的组 ID、`agent` 或 `team`、会话简介及角色列表。单角色组有一个角色，团队组声明 leader 和 1–5 名成员。角色填写组内唯一的 ID、名称和简介。头像可省略，声明时必须指向应用目录内的 PNG、JPEG、WebP 或 GIF。字段和示例由 [AI 角色清单规范](../../../../../../jiuwenswarm/resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/references/ai-roles.md)维护。
+- 本地 `app_market.publish` 和 Swarm 的 Hub 发布预检校验已提供的清单。有效清单将发布权限标记为 `ai`。Hub 根据预检快照重算并携带清单和打包范围内的头像。没有清单的登记兼容旧 HTML 标记，Hub 打包沿用本地登记中的权限。能力声明用于展示，运行授权仍按制品摘要确认。
+- `app_market.ai_roles` 按当前连接所有者与 `app_id` 读取本地或已安装应用的清单，返回公开的 `session_groups`。头像以受限大小的图像数据返回，前端缺图时使用角色名生成占位头像。详情加载时发起请求，列表、运行和 Hub 安装前详情无需读取角色文件。无清单返回空列表，清单有误时返回 `app_ai_roles_invalid`。
 
 ## 从 Swarm 发布本地应用
 

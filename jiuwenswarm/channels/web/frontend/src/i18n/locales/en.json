@@ -196,6 +196,14 @@
     "unpinSuccess": "Unpinned {{name}}",
     "pinFailed": "Failed to update pin state",
     "detailLoadFailed": "Failed to load app details",
+    "aiRoles": {
+      "title": "AI Roles",
+      "empty": "No AI roles declared",
+      "loadFailed": "Failed to load AI roles",
+      "agent": "Single-role session",
+      "team": "Team session",
+      "leader": "Leader"
+    },
     "backToAll": "Back to All Apps",
     "backToMarket": "Back to App Plaza",
     "sourceHub": "Hub",
