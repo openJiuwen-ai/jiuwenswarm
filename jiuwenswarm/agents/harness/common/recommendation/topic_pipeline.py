@@ -2502,16 +2502,17 @@ async def _invoke_batched_diversity_proxy(
             candidate_id for pair in requested_pairs for candidate_id in pair
         }
         involved_ids.update(requested_marginal_ids)
+        involved_candidates: list[dict[str, Any]] = []
+        for candidate in candidates:
+            if not isinstance(candidate, dict):
+                continue
+            if candidate.get("candidate_id") in involved_ids:
+                involved_candidates.append(candidate)
         request_payload = json.dumps(
             {
                 "input_snapshot_id": payload.get("input_snapshot_id"),
                 "discussion_coverage": payload.get("discussion_coverage", []),
-                "candidates": [
-                    candidate
-                    for candidate in candidates
-                    if isinstance(candidate, dict)
-                    and candidate.get("candidate_id") in involved_ids
-                ],
+                "candidates": involved_candidates,
                 "requested_pairs": [
                     {
                         "left_candidate_id": left,
