@@ -9,6 +9,7 @@ import base64
 import io
 import json
 import logging
+import os
 import re
 import shutil
 import stat
@@ -58,7 +59,6 @@ from jiuwenswarm.server.runtime.marketplace.hub_package_downloader import (
 
 if TYPE_CHECKING:
     from openjiuwen.harness.resources import AgentTemplateCard, AgentTemplateSpec, RuntimeSpec
-    from jiuwenswarm.common.schema.agent import AgentRequest
 
 logger = logging.getLogger(__name__)
 
@@ -112,53 +112,15 @@ class _HubPreviewArchive(NamedTuple):
 _HUB_PREVIEW_ARCHIVES: OrderedDict[tuple[str, str, str, bool], _HubPreviewArchive] = OrderedDict()
 
 
-async def expert_hub_clients(
-    request: AgentRequest,
-) -> tuple[HubAssetPort | None, HubPackageDownloader | None]:
-    """Reuse the active Agent's TLS setting for the same expert Hub endpoint."""
-    from jiuwenswarm.enterprise import is_enterprise
-
-    if not is_enterprise():
+def expert_hub_clients() -> tuple[HubAssetPort | None, HubPackageDownloader | None]:
+    """Apply the AgentServer TLS setting to expert marketplace requests."""
+    verify = os.getenv("TEAM_SKILLS_HUB_VERIFY_SSL", "").strip().lower()
+    if verify not in {"false", "0", "no", "off"}:
         return None, None
 
-    from jiuwenswarm.enterprise.config.effective.loader import (
-        TemplateRefSlot,
-        load_effective_enterprise_config,
-    )
-    from jiuwenswarm.extensions.swarm_skill_hub.extension import (
-        SWARM_SKILL_HUB_PROVIDER_TYPE,
-        resolve_source_endpoint,
-    )
-    from jiuwenswarm.server.runtime.marketplace.hub_client import (
-        HubClient,
-        configured_hub_base_url,
-    )
-    from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+    from jiuwenswarm.server.runtime.marketplace.hub_client import HubClient
 
-    try:
-        effective = await load_effective_enterprise_config(
-            request, slots={TemplateRefSlot.EXTENSION_CONFIG}
-        )
-        sources = (
-            SkillManager.parse_skill_source_configs(effective.extension_config)
-            if effective is not None
-            else None
-        )
-    except Exception as exc:
-        logger.warning("Could not load expert Hub TLS policy: %s", type(exc).__name__)
-        return None, None
-
-    base_url = configured_hub_base_url()
-    verify_values = {
-        source.verify_ssl
-        for source in sources or []
-        if source.enabled
-        and source.provider_type == SWARM_SKILL_HUB_PROVIDER_TYPE
-        and resolve_source_endpoint(source.endpoint_ref).rstrip("/") == base_url
-    }
-    if verify_values == {False}:
-        return HubClient(base_url=base_url, verify=False), HubPackageDownloader(verify=False)
-    return None, None
+    return HubClient(verify=False), HubPackageDownloader(verify=False)
 
 
 def reject_package_name(name: Any, kind: str) -> str:

@@ -48,11 +48,6 @@ _DEFAULT_HUB_TIMEOUT = 60.0
 _TRUE_VALUES = {"1", "true", "yes", "on", "enabled"}
 
 
-def configured_hub_base_url() -> str:
-    """Return the configured marketplace endpoint."""
-    return (os.getenv("TEAM_SKILLS_HUB_BASE_URL") or DEFAULT_HUB_BASE_URL).strip().rstrip("/")
-
-
 def _allow_insecure_http() -> bool:
     return (
         os.getenv("TEAM_SKILLS_HUB_ALLOW_INSECURE_HTTP", "").strip().lower()
@@ -91,7 +86,9 @@ class HttpHubTransport:
         system_token: str | None = None,
         verify: bool = True,
     ) -> None:
-        configured = base_url or configured_hub_base_url()
+        configured = (
+            base_url or os.getenv("TEAM_SKILLS_HUB_BASE_URL") or DEFAULT_HUB_BASE_URL
+        )
         self.base_url = configured.strip().rstrip("/")
         parsed = urlparse(self.base_url)
         host = (parsed.hostname or "").lower()
@@ -217,7 +214,8 @@ class HubClient(HubAssetPort):
         configured_base_url = (
             base_url
             or getattr(self.transport, "base_url", None)
-            or configured_hub_base_url()
+            or os.getenv("TEAM_SKILLS_HUB_BASE_URL")
+            or DEFAULT_HUB_BASE_URL
         )
         self.base_url = str(configured_base_url).strip().rstrip("/")
 

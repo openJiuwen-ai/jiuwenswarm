@@ -7,8 +7,6 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from types import SimpleNamespace
-from unittest.mock import AsyncMock
 
 import pytest
 
@@ -56,46 +54,30 @@ def _bind_packages(packages: list[dict], **identity):
     return bind_request_subject(metadata)
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("endpoint_ref", "enabled", "verify_ssl", "conflict", "skip_tls"),
+    ("verify_env", "skip_tls"),
     [
-        ("env://TEAM_SKILLS_HUB_BASE_URL", True, False, False, True),
-        ("https://expert-hub.example.test/", True, False, False, True),
-        ("https://another-hub.example.test", True, False, False, False),
-        ("https://expert-hub.example.test", False, False, False, False),
-        ("https://expert-hub.example.test", True, True, False, False),
-        ("https://expert-hub.example.test", True, "false", False, False),
-        ("https://expert-hub.example.test", True, False, True, False),
+        (None, False),
+        ("", False),
+        ("true", False),
+        ("invalid", False),
+        (" false ", True),
+        ("0", True),
+        ("no", True),
+        ("OFF", True),
     ],
 )
-async def test_expert_clients_use_matching_effective_tls_policy(
-    monkeypatch, endpoint_ref, enabled, verify_ssl, conflict, skip_tls
-) -> None:
-    from jiuwenswarm.enterprise.config.effective import loader
+def test_expert_clients_use_agentserver_tls_setting(monkeypatch, verify_env, skip_tls) -> None:
     from jiuwenswarm.server.runtime.extension_package_manager import expert_hub_clients
 
-    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     base_url = "https://expert-hub.example.test"
     monkeypatch.setenv("TEAM_SKILLS_HUB_BASE_URL", base_url)
-    source = {
-        "source_id": "expert-hub",
-        "provider_type": "swarmskillhub",
-        "endpoint_ref": endpoint_ref,
-        "enabled": enabled,
-        "verify_ssl": verify_ssl,
-    }
-    sources = [source]
-    if conflict:
-        sources.append({**source, "source_id": "strict-hub", "verify_ssl": True})
-    effective = SimpleNamespace(extension_config=[{"custom_config": {"skill_sources": sources}}])
-    load = AsyncMock(return_value=effective)
-    monkeypatch.setattr(loader, "load_effective_enterprise_config", load)
-    request = SimpleNamespace()
+    if verify_env is None:
+        monkeypatch.delenv("TEAM_SKILLS_HUB_VERIFY_SSL", raising=False)
+    else:
+        monkeypatch.setenv("TEAM_SKILLS_HUB_VERIFY_SSL", verify_env)
 
-    hub_port, downloader = await expert_hub_clients(request)
-
-    load.assert_awaited_once_with(request, slots={loader.TemplateRefSlot.EXTENSION_CONFIG})
+    hub_port, downloader = expert_hub_clients()
     if skip_tls:
         assert hub_port.base_url == base_url
         assert hub_port.transport.verify is False

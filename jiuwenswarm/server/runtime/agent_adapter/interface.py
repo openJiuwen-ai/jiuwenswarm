@@ -3336,7 +3336,7 @@ class JiuWenSwarm:
                 and params.get("filter") in ("local", "mine")
             )
             if method in _EXPERT_HUB_PACKAGE_METHODS and not local_list:
-                hub_port, downloader = await package_manager.expert_hub_clients(request)
+                hub_port, downloader = package_manager.expert_hub_clients()
             if method == ReqMethod.AGENT_GROUPS_LIST:
                 cards = await package_manager.list_agent_groups_with_hub(params, hub_port=hub_port)
                 payload: dict[str, Any] = {"agentGroups": cards}
