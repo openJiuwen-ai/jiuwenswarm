@@ -1802,6 +1802,133 @@ class TestImportLocal:
         ).exists()
 
 
+class TestAgentTemplateNameUniqueness:
+    """Display-name uniqueness on agent_template create/import (mirrors groups)."""
+
+    def test_create_rejects_duplicate_display_name(
+        self, extension_workspace: Path
+    ) -> None:
+        create_package(AGENT_TEMPLATES, "demo-expert")
+
+        with pytest.raises(ValueError, match="already exists in local: DEMO-EXPERT"):
+            catalog.create_agent_template(
+                {
+                    "id": "demo-expert-2",
+                    "name": "DEMO-EXPERT",
+                    "description": "D",
+                    "persona": "P",
+                    "skills": [],
+                }
+            )
+
+        local_root = extension_workspace / "plugins" / AGENT_TEMPLATES / "local"
+        assert not (local_root / "demo-expert-2").exists()
+        assert len(marketplace_entries(AGENT_TEMPLATES)) == 1
+
+    def test_import_rejects_exported_copy_of_created_package(
+        self, extension_workspace: Path, tmp_path: Path
+    ) -> None:
+        # Created packages live under a uuid-suffixed directory id while the
+        # exported copy imports under its clean manifest name, so only the
+        # display-name check can catch the duplicate.
+        seed_package(
+            extension_workspace,
+            AGENT_TEMPLATES,
+            "demo-expert-9f1c2ab4",
+            extra_manifest={
+                "name": "demo-expert",
+                "display_name": {"zh": "demo-expert", "en": "demo-expert"},
+                "persona": {"dir": "./persona"},
+            },
+        )
+        src = _write_src_dir(tmp_path, AGENT_TEMPLATES, "demo-expert")
+
+        with pytest.raises(ValueError, match="already exists in local: demo-expert"):
+            catalog.import_agent_template({"path": str(src)})
+
+        local_root = extension_workspace / "plugins" / AGENT_TEMPLATES / "local"
+        assert not (local_root / "demo-expert").exists()
+        assert (local_root / "demo-expert-9f1c2ab4" / "manifest.json").is_file()
+        assert marketplace_entries(AGENT_TEMPLATES) == []
+
+    def test_import_rejects_duplicate_display_name_other_language(
+        self, extension_workspace: Path, tmp_path: Path
+    ) -> None:
+        seed_package(
+            extension_workspace,
+            AGENT_TEMPLATES,
+            "first-expert",
+            extra_manifest={
+                "name": "first-expert",
+                "display_name": {"zh": "示例专家", "en": "Demo Expert"},
+            },
+        )
+        src = _write_src_dir(tmp_path, AGENT_TEMPLATES, "second-expert")
+        manifest = json.loads((src / "manifest.json").read_text(encoding="utf-8"))
+        manifest["display_name"] = {"zh": "另一个名字", "en": "demo expert"}
+        (src / "manifest.json").write_text(
+            json.dumps(manifest, ensure_ascii=False), encoding="utf-8"
+        )
+
+        with pytest.raises(ValueError, match="already exists in local: demo expert"):
+            catalog.import_agent_template({"path": str(src)})
+
+        assert not (
+            extension_workspace
+            / "plugins"
+            / AGENT_TEMPLATES
+            / "local"
+            / "second-expert"
+        ).exists()
+
+    def test_import_rejects_display_name_claimed_by_built_in(
+        self, extension_workspace: Path, tmp_path: Path
+    ) -> None:
+        seed_package(
+            extension_workspace,
+            AGENT_TEMPLATES,
+            "builtin-expert",
+            under="built_in",
+            extra_manifest={
+                "name": "builtin-expert",
+                "display_name": {"zh": "builtin-expert", "en": "builtin-expert"},
+            },
+        )
+        src = _write_src_dir(tmp_path, AGENT_TEMPLATES, "copy-expert")
+        manifest = json.loads((src / "manifest.json").read_text(encoding="utf-8"))
+        manifest["display_name"] = {"zh": "builtin-expert", "en": "builtin-expert"}
+        (src / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="already exists in built_in"):
+            catalog.import_agent_template({"path": str(src)})
+
+        assert not (
+            extension_workspace / "plugins" / AGENT_TEMPLATES / "local" / "copy-expert"
+        ).exists()
+
+    def test_import_allows_distinct_display_name(
+        self, extension_workspace: Path, tmp_path: Path
+    ) -> None:
+        seed_package(
+            extension_workspace,
+            AGENT_TEMPLATES,
+            "first-expert",
+            extra_manifest={
+                "name": "first-expert",
+                "display_name": {"zh": "示例专家", "en": "Demo Expert"},
+            },
+        )
+        src = _write_src_dir(tmp_path, AGENT_TEMPLATES, "second-expert")
+
+        result = catalog.import_agent_template({"path": str(src)})
+
+        assert result == {"id": "second-expert"}
+        dest = (
+            extension_workspace / "plugins" / AGENT_TEMPLATES / "local" / "second-expert"
+        )
+        assert dest.is_dir()
+
+
 class TestInstallPendingConnectorsGate:
     """Two-phase install: read-only gate, no connect_mcp, pending then retry."""
 
