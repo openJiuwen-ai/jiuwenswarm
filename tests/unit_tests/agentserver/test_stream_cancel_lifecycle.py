@@ -280,6 +280,7 @@ async def test_manual_stop_rpc_is_accepted_when_cleanup_is_pending():
     finally:
         release.set()
         await asyncio.gather(*list(getattr(value, "_stream_shutdown_jobs", {}).values()))
+        assert getattr(value, "_stream_shutdown_states", {}) == {}
 
 
 @pytest.mark.asyncio
@@ -300,4 +301,84 @@ async def test_stop_rpc_fails_when_adapter_rejects_cancellation():
     assert result.completed is False
     assert result.error == "cancel declined"
     await asyncio.gather(*list(getattr(value, "_stream_shutdown_jobs", {}).values()))
+    assert getattr(value, "_stream_shutdown_states", {}) == {}
+
+
+@pytest.mark.asyncio
+async def test_stop_rpc_fails_when_adapter_reports_payload_rejection():
+    value = server()
+
+    async def cancel_agent():
+        return AgentResponse(
+            request_id="stop",
+            channel_id="desktop",
+            ok=True,
+            payload={
+                "event_type": "chat.interrupt_result",
+                "intent": "cancel",
+                "success": False,
+                "message": "当前没有可取消的团队任务",
+            },
+        )
+
+    stop = request(method=ReqMethod.CHAT_CANCEL)
+    result = await value._terminate_session_streams_result(stop, cancel_agent)
+    assert result.accepted is False
+    assert result.completed is False
+    assert result.error == "当前没有可取消的团队任务"
+    await asyncio.gather(*list(getattr(value, "_stream_shutdown_jobs", {}).values()))
+    assert getattr(value, "_stream_shutdown_states", {}) == {}
+
+
+@pytest.mark.asyncio
+async def test_manual_stop_preserves_runtime_payload_rejection():
+    value = server()
+    value._bind_channel_conn = lambda *_: None
+    agent = SimpleNamespace(process_message=AsyncMock(return_value=AgentResponse(
+        request_id="stop",
+        channel_id="desktop",
+        ok=True,
+        payload={
+            "event_type": "chat.interrupt_result",
+            "intent": "cancel",
+            "success": False,
+            "message": "当前没有可取消的团队任务",
+        },
+    )))
+    value._agent_manager = SimpleNamespace(get_agent_for_session=lambda *_: agent)
+    ws = SimpleNamespace(send=AsyncMock())
+    await value._handle_message(ws, json.dumps({"request_id": "stop", "channel": "desktop",
+        "method": "chat.interrupt", "session_id": "cancel-target",
+        "params": {"session_id": "cancel-target", "intent": "cancel"}, "is_stream": False}), asyncio.Lock())
+    frame = json.loads(ws.send.call_args_list[-1].args[0])
+    details = frame["body"].get("details") or frame["body"].get("result") or {}
+    assert details.get("success") is False
+    assert details.get("message") == "当前没有可取消的团队任务"
+    assert "cleanup_pending" not in details
+    await asyncio.gather(*list(getattr(value, "_stream_shutdown_jobs", {}).values()))
+    assert getattr(value, "_stream_shutdown_states", {}) == {}
+
+
+@pytest.mark.asyncio
+async def test_manual_stop_cancel_dispatch_failure_maps_to_cancel_failed():
+    value = server()
+    value._bind_channel_conn = lambda *_: None
+
+    async def cancel_agent(_request):
+        raise RuntimeError("cancel dispatch boom")
+
+    agent = SimpleNamespace(process_message=cancel_agent)
+    value._agent_manager = SimpleNamespace(get_agent_for_session=lambda *_: agent)
+    ws = SimpleNamespace(send=AsyncMock())
+    await value._handle_message(ws, json.dumps({"request_id": "stop", "channel": "desktop",
+        "method": "chat.interrupt", "session_id": "cancel-target",
+        "params": {"session_id": "cancel-target", "intent": "cancel"}, "is_stream": False}), asyncio.Lock())
+    frame = json.loads(ws.send.call_args_list[-1].args[0])
+    details = frame["body"].get("details") or frame["body"].get("result") or {}
+    assert frame["status"] == "failed"
+    assert details.get("success") is False
+    assert details.get("code") == "CANCEL_FAILED"
+    await asyncio.gather(*list(getattr(value, "_stream_shutdown_jobs", {}).values()))
+    assert getattr(value, "_stream_shutdown_states", {}) == {}
+
 

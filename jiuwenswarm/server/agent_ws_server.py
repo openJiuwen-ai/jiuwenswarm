@@ -2596,7 +2596,16 @@ class AgentWebSocketServer:
                     )
                 else:
                     payload = cancel_response.payload if isinstance(cancel_response.payload, dict) else {}
-                    if rpc_ok:
+                    explicit_success = payload.get("success")
+                    if explicit_success is False:
+                        # The runtime already reported a precise rejection
+                        # (e.g. no cancellable team task); never upgrade it.
+                        cancel_response.payload = {
+                            **payload,
+                            "event_type": "chat.interrupt_result",
+                            "success": False,
+                        }
+                    elif rpc_ok:
                         payload = {
                             **payload,
                             "event_type": "chat.interrupt_result",
@@ -5381,7 +5390,6 @@ class AgentWebSocketServer:
         state = states.get(key)
         if state is None:
             state = {"accepted": None, "error": None}
-            states[key] = state
 
         if job is None:
             entries = getattr(self, "_session_stream_tasks", {}).get(sid, {})
@@ -5391,7 +5399,7 @@ class AgentWebSocketServer:
                       and (not target or ids.get(task) == target)]
             # A delayed cancel for an old round must not touch a newer owner.
             if target and not owners and any(not task.done() for task in entries):
-                state["accepted"] = True
+                states.pop(key, None)
                 return _TerminateStreamsResult(True, True, None)
             owner_requests = {task: ids.get(task) for task in owners}
             for task in owners:
@@ -5404,9 +5412,8 @@ class AgentWebSocketServer:
                        if other_key[0] == sid and not pending.done()
                        and other_key != key]
 
-            # The stop has been dispatched once we are entering shutdown.
-            # Explicit adapter failure below can still downgrade accepted.
-            state["accepted"] = True
+            state = {"accepted": True, "error": None}
+            states[key] = state
 
             async def shutdown():
                 succeeded = True
@@ -5414,26 +5421,43 @@ class AgentWebSocketServer:
                     if related:
                         # A stop followed by delete shares the same adapter
                         # shutdown, while still joining any additional owners.
+                        related_states = [states.get(other_key) for other_key, _ in related]
                         results = await asyncio.gather(*[pending for _, pending in related], return_exceptions=True)
                         completed = all(result is True for result in results)
                         accepted = not any(
-                            states.get(other_key, {}).get("accepted") is False
-                            for other_key, _ in related
+                            related_state is not None
+                            and related_state.get("accepted") is False
+                            for related_state in related_states
                         )
                         state["accepted"] = accepted
                         if not completed:
                             succeeded = False
                     elif cancel_agent is not None:
-                        response = await cancel_agent()
-                        if isinstance(response, AgentResponse) and not response.ok:
+                        try:
+                            response = await cancel_agent()
+                            if response is None:
+                                state["accepted"] = True
+                            else:
+                                payload = response.payload if isinstance(response.payload, dict) else {}
+                                if isinstance(response, AgentResponse) and (
+                                    not response.ok or payload.get("success") is False
+                                ):
+                                    state["accepted"] = False
+                                    state["error"] = str(
+                                        payload.get("error")
+                                        or payload.get("message")
+                                        or "cancellation rejected"
+                                    )
+                                    succeeded = False
+                        except Exception as exc:
                             state["accepted"] = False
-                            payload = response.payload if isinstance(response.payload, dict) else {}
-                            state["error"] = str(
-                                payload.get("error")
-                                or payload.get("message")
-                                or response.ok
-                            )
+                            state["error"] = str(exc)[:300]
                             succeeded = False
+                            logger.warning(
+                                "[AgentWebSocketServer] session cancellation dispatch failed: session=%s",
+                                sid,
+                                exc_info=True,
+                            )
                     else:
                         state["accepted"] = True
 
@@ -5458,8 +5482,8 @@ class AgentWebSocketServer:
                     return succeeded
                 except Exception as exc:
                     succeeded = False
-                    # A cleanup exception does not invalidate the stop signal
-                    # that has already been dispatched above.
+                    # Only owner/cleanup failures reach here after dispatch;
+                    # they do not invalidate an already accepted stop signal.
                     state["error"] = str(exc)[:300]
                     logger.warning(
                         "[AgentWebSocketServer] session cancellation failed: session=%s",
@@ -5467,8 +5491,6 @@ class AgentWebSocketServer:
                         exc_info=True,
                     )
                     return succeeded
-                finally:
-                    state["completed"] = bool(succeeded)
 
             job = asyncio.create_task(shutdown(), name=f"session-shutdown-{sid}")
             jobs[key] = job
@@ -5476,6 +5498,7 @@ class AgentWebSocketServer:
             def finished(task):
                 if jobs.get(key) is task:
                     jobs.pop(key, None)
+                states.pop(key, None)
 
             job.add_done_callback(finished)
 
