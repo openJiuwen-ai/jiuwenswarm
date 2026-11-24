@@ -22,7 +22,7 @@ import time
 import weakref
 from collections import Counter
 from collections.abc import Awaitable, Mapping
-from contextlib import ExitStack, aclosing, asynccontextmanager, contextmanager
+from contextlib import ExitStack, aclosing, asynccontextmanager, contextmanager, nullcontext
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -2690,6 +2690,8 @@ class JiuWenSwarmDeepAdapter:
         self._active_request_model: Model | None = None
         self._context_model_binding: tuple[Any, Model, tuple[Any, ...]] | None = None
         self._selected_model_context_window_tokens: int | None = None
+        # (base model, ACP thinking level, turn-local model) of the last ACP override.
+        self._acp_thinking_model: tuple[Model, str, Model] | None = None
         self._model_config_source: str = "config.yaml"
         self._enterprise_config: Any = None
         self._enterprise_config_resource_id: str | None = None
@@ -10038,7 +10040,7 @@ class JiuWenSwarmDeepAdapter:
         params = request.params or {}
         if ACP_THINKING_PARAM not in params:
             return model
-        previous = getattr(self, "_acp_thinking_model", None)
+        previous = self._acp_thinking_model
         if previous is not None and model is previous[2]:
             model = previous[0]
         level = params[ACP_THINKING_PARAM]
@@ -17507,6 +17509,36 @@ class JiuWenSwarmDeepAdapter:
                 "[JiuWenSwarmDeepAdapter] session agent callback release error: %s", exc
             )
 
+    @contextmanager
+    def bind_acp_mcp_tools(self, request: AgentRequest):
+        """Register the ACP bridge's session MCP tools for one turn.
+
+        Args:
+            request: Runtime request whose params may declare bridge-owned tools.
+
+        Yields:
+            None. The tools are removed again when the turn leaves the block.
+        """
+        from jiuwenswarm.server.runtime.agent_adapter.acp_mcp import acp_mcp_tools
+
+        tools = acp_mcp_tools(request, self._collect_registered_ability_names)
+        if not tools:
+            yield
+            return
+        manager = self._instance.ability_manager
+        registered = set()
+        try:
+            for tool in tools:
+                self._register_agent_owned_tool(tool, self._tool_owner_id())
+                manager.add(tool.card)
+                registered.add(tool.card.name)
+            yield
+        finally:
+            for name in registered:
+                manager.remove_ability(name)
+            if registered:
+                self._prune_tool_cards(registered)
+
     def _collect_registered_ability_names(self) -> set[str]:
         ability_names: set[str] = set()
         for card in self._instance.ability_manager.list() or []:
@@ -21889,9 +21921,13 @@ class JiuWenSwarmDeepAdapter:
                     await session_adapter.configure_process_cli_run(
                         max_turns=process_options.max_turns, host_tools=process_options.host_tools
                     )
-                from jiuwenswarm.server.runtime.agent_adapter.acp_mcp import bind_acp_mcp_tools
+                from jiuwenswarm.server.runtime.agent_adapter.acp_mcp import declares_acp_mcp_tools
 
-                with bind_acp_mcp_tools(session_adapter, request):
+                acp_tools = (
+                    session_adapter.bind_acp_mcp_tools(request)
+                    if declares_acp_mcp_tools(request) else nullcontext()
+                )
+                with acp_tools:
                     child_stream = session_adapter.process_message_stream_impl(request, inputs)
                     async with aclosing(child_stream):
                         async for chunk in child_stream:

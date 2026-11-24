@@ -18,6 +18,7 @@ def test_acp_thinking_applies_to_turn_and_resets_to_configured_default(monkeypat
     )
     adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
     adapter._moa_runtime = None
+    adapter._acp_thinking_model = None
     adapter._last_resolved_model = base
     monkeypatch.setattr(adapter, "_resolve_base_model_for_request", lambda _: adapter._last_resolved_model)
     request = SimpleNamespace(channel_id="acp", params={ACP_THINKING_PARAM: "high"})

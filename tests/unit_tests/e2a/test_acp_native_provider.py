@@ -111,6 +111,8 @@ async def test_native_uses_session_cwd_and_forwards_gateway_usage(tmp_path, alia
                 "_meta": {"usage": usage},
             } in updates
         finally:
+            # Python 3.11's communicate() leaves stdin open when no input is given.
+            process.stdin.close()
             try:
                 await asyncio.wait_for(process.communicate(), 8)
             except TimeoutError:
@@ -217,6 +219,7 @@ async def test_native_load_in_a_second_process_and_switch_model(tmp_path, monkey
             assert capabilities["mcpCapabilities"] == {"http": True, "sse": True}
             return await operations(rpc)
         finally:
+            client.stdin.close()
             async with asyncio.timeout(8):
                 await client.communicate()
 

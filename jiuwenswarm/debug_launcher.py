@@ -836,7 +836,9 @@ def _stop_process_tree(
     return not _process_group_alive(pgid)
 
 
-def _stop_resident_worker(timeout: float = DEFAULT_WORKER_STOP_TIMEOUT, *, legacy_worker_pid: int | None = None) -> bool:
+def _stop_resident_worker(
+    timeout: float = DEFAULT_WORKER_STOP_TIMEOUT, *, legacy_worker_pid: int | None = None,
+) -> bool:
     """Shut down the resident Runtime Worker left behind by the service.
 
     The Worker is spawned in its own session so it outlives Front restarts,
