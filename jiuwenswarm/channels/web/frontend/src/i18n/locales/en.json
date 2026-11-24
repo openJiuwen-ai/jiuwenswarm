@@ -7970,15 +7970,19 @@
     "holdToSkip": "Hold Space to skip"
   },
   "webuiPresentation": {
+    "autoStartBusy": "An application form is already in use. Close it, then enable the floating plugin again.",
+    "closeOverlay": "Close floating form",
     "enter": "Open {{title}}",
-    "opening": "Opening desktop form…",
-    "desktopRequired": "Application forms require the desktop app",
+    "opening": "Opening application form…",
+    "desktopRequired": "Desktop forms require the desktop app",
     "newConversation": "New conversation",
-    "openFailed": "Unable to open the desktop form. The workspace is still available.",
-    "updateFailed": "Unable to update the desktop form. Check the connection in the workspace.",
+    "openFailed": "Unable to open the application form. The workspace is still available.",
+    "updateFailed": "Unable to update the application form. Check the connection in the workspace.",
     "actionFailed": "The action did not complete. Check the conversation status.",
     "restored": "The desktop form ended and the workspace was restored",
     "errors": {
+      "DESKTOP_REQUIRED": "This form requires the desktop app.",
+      "UNSUPPORTED_ACTION": "This action is unavailable for an in-app form.",
       "DISCONNECTED": "Disconnected. Return to the workspace.",
       "TARGET_INACTIVE": "This conversation is unavailable. Select another one.",
       "CONVERSATION_BUSY": "This conversation is running or awaiting confirmation. Complete the current action first.",
