@@ -3121,7 +3121,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return
         try:
             payload = json.loads(self._read_request_body().decode("utf-8") or "{}")
-        except (UnicodeDecodeError, ValueError):
+        except ValueError:
             self._write_json(
                 400,
                 skill_http_error_body("SKILL_INVALID_PACKAGE", "请求体不是合法 JSON"),
