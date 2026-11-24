@@ -20,16 +20,21 @@ from jiuwenswarm.agents.harness.common.tools.cua_runtime import ReplRuntime
 
 LOGGER = logging.getLogger(__name__)
 PROBE = """
+import asyncio
 import json
 from computer_use.native.connection import Connection
 from computer_use.paths import native_driver
-connection = Connection(lambda *args: None)
-try:
-    hello = await connection.connect()
-    print(json.dumps({'platform': hello['platform'], 'driver': native_driver()['command']}))
-finally:
-    connection.close()
-    await connection.wait_closed()
+
+async def probe_driver():
+    connection = Connection(lambda *args: None)
+    try:
+        hello = await connection.connect()
+        print(json.dumps({'platform': hello['platform'], 'driver': native_driver()['command']}))
+    finally:
+        connection.close()
+        await connection.wait_closed()
+
+asyncio.run(probe_driver())
 packaged_value = 41
 """
 
