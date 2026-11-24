@@ -278,6 +278,7 @@ generated: true
 
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
+| [S_01_feishu-trigger-images](jiuwenswarm/server/jiuwenmate/S_01_feishu-trigger-images.md) | S | HyperAgent 飞书触发图片输入 | huanghongyun | — |
 | [S_02_colleague-swarmchat](jiuwenswarm/server/runtime/S_02_colleague-swarmchat.md) | S | SwarmChat AI 同事接入契约 | weichenhao | — |
 
 <a id="module-jiuwenswarm-server-runtime"></a>

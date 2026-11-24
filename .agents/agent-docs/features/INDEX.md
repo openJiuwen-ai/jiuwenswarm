@@ -371,6 +371,7 @@ generated: true
 | ID / 文档 | 类型 | 标题 | 作者 | 关联 D |
 |---|---|---|---|---|
 | [F_20261117_1752_colleague-swarmchat](F_20261117_1752_colleague-swarmchat.md) | F | AI 同事接入 SwarmChat 实施记录 | weichenhao | D-20261116-1201-colleague-swarmchat-membership（非本仓或待定位） |
+| [F_20261124_1439_feishu-trigger-images](F_20261124_1439_feishu-trigger-images.md) | F | HyperAgent 飞书群触发图片接入与真实验收 | huanghongyun | [D-20261123-2128-feishu-group-media](../designs/active/D-20261123-2128-feishu-group-media/design.md) |
 
 <a id="module-jiuwenswarm-server-runtime"></a>
 

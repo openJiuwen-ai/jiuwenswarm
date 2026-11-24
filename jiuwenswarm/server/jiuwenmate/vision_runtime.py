@@ -7,6 +7,7 @@ files inside the office or a WeLink incoming cache.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from pathlib import Path
@@ -49,13 +50,13 @@ def vision_guidance() -> str:
         return ""
     return (
         "## 图片\n\n"
-        "群里发来的图片保存在办公空间的 incoming/ 目录。"
+        "图片引用或工作空间相对路径由本次任务提供，不要猜测路径。"
         "要看画面，调用 visual_question_answering："
-        "image_path_or_url 填消息中的工作空间相对路径，question 填用户的问题。"
+        "image_path_or_url 填本次任务给出的图片编号或工作空间相对路径，question 填用户的问题。"
     )
 
 
-def office_vision_tools(office: Path, *, language: str = "cn", agent_id: str | None = None) -> list[Tool]:
+def office_vision_tools(office: Path, *, language: str = "cn", agent_id: str | None = None, image_scope=None) -> list[Tool]:
     """Build path-checked vision tools, or nothing when the vision slot is off."""
     config = vision_config_from_env()
     if config is None:
@@ -65,7 +66,7 @@ def office_vision_tools(office: Path, *, language: str = "cn", agent_id: str | N
     except Exception:
         logger.info("[JiuwenMate] vision tools were not attached")
         return []
-    return [_OfficeImageTool(tool, office) for tool in built]
+    return [_OfficeImageTool(tool, office, image_scope=image_scope) for tool in built]
 
 
 def resolve_office_image(office: Path, raw: str, *, media_root: Path | None = None) -> str:
@@ -100,7 +101,7 @@ def resolve_office_image(office: Path, raw: str, *, media_root: Path | None = No
 class _OfficeImageTool(Tool):
     """Forward a vision tool after turning a workspace path into a local file."""
 
-    def __init__(self, base: Tool, office: Path) -> None:
+    def __init__(self, base: Tool, office: Path, *, image_scope=None) -> None:
         card = base.card.model_copy(deep=True)
         if card.name == "visual_question_answering":
             card.description = (
@@ -116,11 +117,31 @@ class _OfficeImageTool(Tool):
         super().__init__(card)
         self._base = base
         self._office = office
+        self._image_scope = image_scope
+        if image_scope is not None:
+            self.card.description = (
+                "使用视觉模型理解本次飞书消息的图片。image_path_or_url 必须使用消息给出的 "
+                "feishu-image:N 编号；禁止其他路径或 URL。question 填用户的问题。"
+                if card.name == "visual_question_answering" else
+                "提取本次飞书图片文字，image_path_or_url 使用消息给出的 feishu-image:N 编号。"
+            )
 
     async def invoke(self, inputs: dict[str, Any] | None, **kwargs: Any):
         data = dict(inputs or {})
         raw = data.get("image_path_or_url")
-        if isinstance(raw, str):
+        if self._image_scope is not None:
+            data["image_path_or_url"] = await self._image_scope.resolve(raw)
+            if self.card.name == "visual_question_answering":
+                data.setdefault("include_ocr", False)
+            timeout = float(os.getenv("VISION_REQUEST_TIMEOUT_SECONDS", "60"))
+            if timeout <= 0:
+                raise ValueError("VISION_REQUEST_TIMEOUT_SECONDS 必须大于 0")
+            try:
+                async with asyncio.timeout(timeout):
+                    return await self._base.invoke(data, **kwargs)
+            except TimeoutError as exc:
+                raise ValueError("视觉服务响应超时，请稍后重试。") from exc
+        elif isinstance(raw, str):
             data["image_path_or_url"] = resolve_office_image(self._office, raw)
         return await self._base.invoke(data, **kwargs)
 
