@@ -171,13 +171,21 @@ def test_rollback_empty_name_is_noop() -> None:
 
 
 class _RollbackRecorder:
-    """Capture rollback_failed_connect calls (name, wipe_credentials)."""
+    """Capture rollback_failed_connect calls (name, wipe_credentials).
 
-    def __init__(self) -> None:
+    ``on_wipe`` optionally simulates the destructive half of the rollback so a
+    test can assert the credential file really survives (rather than asserting
+    on a file the patched rollback never touched).
+    """
+
+    def __init__(self, on_wipe=None) -> None:
         self.calls: list[tuple[str, bool]] = []
+        self._on_wipe = on_wipe
 
     def __call__(self, name: str, *, wipe_credentials: bool = True) -> None:
         self.calls.append((name, wipe_credentials))
+        if wipe_credentials and self._on_wipe is not None:
+            self._on_wipe(name)
 
 
 @pytest.mark.asyncio
@@ -246,6 +254,59 @@ async def test_connect_flow_auth_rejected_probe_failure_wipes_credentials() -> N
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("probe_reason", "expected_code", "expected_wipe"),
+    [
+        # Network / environment classes never validated the stored tokens.
+        (
+            "http probe timed out after 10s (server not responding): ReadTimeout",
+            "MCP_UNREACHABLE",
+            False,
+        ),
+        ("unreachable: ConnectError: connection refused", "MCP_UNREACHABLE", False),
+        ("http 503 from server: Service Unavailable", "MCP_UNREACHABLE", False),
+        ("command 'npx' not found on PATH (install it or add to PATH)", "MCP_UNREACHABLE", False),
+        # Proven credential denial (server answered 401/403).
+        ("auth rejected (HTTP 401)", "MCP_CREDENTIALS_INVALID", True),
+        ("auth rejected (HTTP 403)", "MCP_CREDENTIALS_INVALID", True),
+    ],
+)
+async def test_agentserver_connect_flow_classifies_probe_failure(
+    probe_reason: str, expected_code: str, expected_wipe: bool
+) -> None:
+    """The AgentWebSocketServer copy of ``_run_mcp_connect_flow`` (the
+    ``mcp.connect`` path when the WS server handles it directly) must apply
+    the same classification as the mcp_hub copy."""
+    from unittest.mock import patch
+
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+    class _Manager:
+        async def probe_mcp_live_connection(self, name: str):
+            return False, probe_reason
+
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._agent_manager = _Manager()
+    recorder = _RollbackRecorder()
+    name = "jw79-agent-flow"  # unique: avoids the module-level cancel marker
+    with (
+        patch(
+            "jiuwenswarm.server.runtime.mcp.registry.connect_mcp",
+            return_value={"name": name, "transport": "http", "url": "https://x"},
+        ),
+        patch(
+            "jiuwenswarm.server.runtime.mcp.registry.rollback_failed_connect",
+            new=recorder,
+        ),
+    ):
+        payload = await AgentWebSocketServer._run_mcp_connect_flow(server, name)
+
+    assert payload["type"] == "connect_failed"
+    assert payload["code"] == expected_code
+    assert recorder.calls == [(name, expected_wipe)]
+
+
+@pytest.mark.asyncio
 async def test_host_oauth_network_probe_failure_keeps_oauth_tokens(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -288,7 +349,12 @@ async def test_host_oauth_network_probe_failure_keeps_oauth_tokens(
         def _mask_sensitive_fields(item: dict) -> dict:
             return item
 
-    recorder = _RollbackRecorder()
+    # Simulate the wipe half of the rollback so the "token survives" assertion
+    # is meaningful: had the flow passed wipe_credentials=True, this would
+    # delete the file and the final assert would fail.
+    recorder = _RollbackRecorder(
+        on_wipe=lambda n: cred_mod.CredentialStore(workspace_dir=tmp_path).delete_mcp(n)
+    )
     with (
         patch.object(oauth_flow, "load_oauth_credentials", return_value={"access_token": "at-1"}),
         patch.object(registry, "complete_host_oauth_auth", return_value={"name": "canva"}),

@@ -812,7 +812,10 @@ export const useConnectorStore = create<ConnectorState>((set, get) => ({
       set((state) => ({
         ...patchConnectionAll(state, name, 'error'),
         busyMap: { ...state.busyMap, [name]: undefined },
-        error: error instanceof Error ? error.message : String(error),
+        // 与 connect() 一致走错误码映射：Token 弹窗提交后探活失败时，
+        // MCP_CREDENTIALS_INVALID / MCP_UNREACHABLE 也要给出"凭据被拒需重填"
+        // 或"服务暂不可达、凭据保留"的文案，而不是原始英文错误。
+        error: friendlyCliError(error),
       }));
       scheduleQuickRefresh(get);
       return null;

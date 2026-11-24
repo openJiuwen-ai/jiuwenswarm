@@ -1056,6 +1056,13 @@ def rollback_failed_connect(name: str, *, wipe_credentials: bool = True) -> None
             set_mcp_state(n, state="registered")
         if wipe_credentials:
             _wipe_stored_credentials(n)
+        else:
+            # Diagnosability: a retried connect reuses the kept tokens, so the
+            # log must show why they were not treated as proven bad.
+            logger.info(
+                "[mcp.registry] rollback '%s' kept stored credentials "
+                "(probe failure not proven to be an auth rejection)", n,
+            )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[mcp.registry] rollback '%s' failed: %s", n, exc)
 

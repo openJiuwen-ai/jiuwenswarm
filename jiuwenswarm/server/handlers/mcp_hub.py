@@ -336,6 +336,7 @@ async def _run_mcp_connect_flow(
         return {"type": "cancelled", "name": name}
     if not probe_ok:
         logger.warning("[mcp] probe failed for '%s': %s", name, probe_reason)
+        auth_rejected = probe_failure_is_auth_rejected(probe_reason)
         if rollback_on_probe_failure:
             try:
                 from jiuwenswarm.server.runtime.mcp.registry import (
@@ -343,10 +344,7 @@ async def _run_mcp_connect_flow(
                 )
                 # Only a proven auth rejection wipes the stored tokens; a
                 # network-class failure keeps them so a retry reuses them.
-                rollback_failed_connect(
-                    name,
-                    wipe_credentials=probe_failure_is_auth_rejected(probe_reason),
-                )
+                rollback_failed_connect(name, wipe_credentials=auth_rejected)
             except Exception as rollback_exc:  # noqa: BLE001
                 logger.warning(
                     "[mcp] rollback failed-probe entry '%s' failed: %s",
@@ -355,11 +353,7 @@ async def _run_mcp_connect_flow(
         return {
             "type": "connect_failed",
             "error": "MCP live-connect probe failed",
-            "code": (
-                "MCP_CREDENTIALS_INVALID"
-                if probe_failure_is_auth_rejected(probe_reason)
-                else "MCP_UNREACHABLE"
-            ),
+            "code": "MCP_CREDENTIALS_INVALID" if auth_rejected else "MCP_UNREACHABLE",
             "name": name,
         }
     # Promote connecting state and sync skill-only credentials.
