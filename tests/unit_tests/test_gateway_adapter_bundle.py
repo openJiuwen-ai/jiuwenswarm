@@ -45,6 +45,17 @@ def test_spec_collects_lazy_gateway_adapters():
     assert "+gateway_adapter_submodules" in compact
 
 
+def test_spec_collects_lazy_client_attachment_transports():
+    """agent_ws_server imports the package's exported names, so attach/directory/watch
+    are reachable only through __getattr__ + import_module() and must be collected.
+    The package rides the lazy_runtime_submodules loop; pin that single entry so it
+    is never collected (and scanned) twice through a second standalone call."""
+    source = (Path(__file__).resolve().parents[2] / "scripts/jiuwenswarm.spec").read_text(encoding="utf-8")
+    compact = "".join(source.split())
+    assert compact.count('"jiuwenswarm.server.client_attachments"') == 1
+    assert "client_attachment_submodules" not in compact
+
+
 @pytest.fixture
 def gateway_extensions(tmp_path, monkeypatch):
     from agent_gateway.extensions.loader import ExtensionLoader
