@@ -7984,15 +7984,19 @@
     "holdToSkip": "长按空格跳过"
   },
   "webuiPresentation": {
+    "autoStartBusy": "已有应用形态正在使用中。请先关闭，再重新启用悬浮插件。",
+    "closeOverlay": "关闭悬浮形态",
     "enter": "进入{{title}}",
-    "opening": "正在打开桌面形态…",
-    "desktopRequired": "请在桌面客户端使用应用形态",
+    "opening": "正在打开应用形态…",
+    "desktopRequired": "桌面模式的形态需要桌面客户端",
     "newConversation": "新对话",
-    "openFailed": "桌面形态未能打开，工作台仍可继续使用",
-    "updateFailed": "桌面形态更新失败，请返回工作台检查连接",
+    "openFailed": "应用形态未能打开，工作台仍可继续使用",
+    "updateFailed": "应用形态更新失败，请在工作台检查连接",
     "actionFailed": "操作未完成，请检查会话状态",
     "restored": "桌面形态已结束，工作台已恢复",
     "errors": {
+      "DESKTOP_REQUIRED": "这个形态需要桌面客户端",
+      "UNSUPPORTED_ACTION": "应用内悬浮形态不支持这个操作",
       "DISCONNECTED": "连接已断开，请返回工作台",
       "TARGET_INACTIVE": "这个会话已不可用，请重新选择",
       "CONVERSATION_BUSY": "会话正在运行或等待确认，请先完成当前操作",

@@ -642,15 +642,24 @@ Gateway 仅支持展示型触发子树，不接受 icon。展示子树和菜单 
 | --- | --- | --- | --- | --- |
 | `title` | LocalizedText | 是 | — | 形态入口及窗口无障碍名称；每种语言去空白非空、最多 200 UTF-8 字节 |
 | `src` | string | 是 | — | 当前包、当前激活代次的受管 HTML 素材地址；仅允许 `/extension-assets/` 路径 |
-| `width` | integer，160..960 | 否 | 360 | 初始窗口宽度，CSS px |
-| `height` | integer，120..960 | 否 | 440 | 初始窗口高度，CSS px |
+| `mode` | `desktop` / `overlay` | 否 | `desktop` | desktop 使用透明原生窗口；overlay 使用应用内悬浮容器，浏览器与桌面客户端均可使用 |
+| `autoStart` | boolean | 否 | `false` | 实例挂载后按 mode 直接显示，不进入形态切换菜单；desktop 仍要求桌面客户端 |
+| `width` | integer，160..960 | 否 | 360 | 初始承载容器宽度，CSS px |
+| `height` | integer，120..960 | 否 | 440 | 初始承载容器高度，CSS px |
 | `config` | JSON 对象 | 否 | `{}` | 插件自有展示配置；只接受有限、可序列化 JSON，最多 16 KiB |
 
 只能作为 Gateway `application.presentation` 的根，不接受 children 或上行 events。
 页面运行在不具备同源身份的脚本沙箱中，布局、素材映射、动画及展示状态由插件负责。
-宿主提供真实会话数据和限定动作，使用[应用形态协议](../../../gateway/extensions_v2/docs/specs/S_11_application-presentation.md)，
-不把桌宠业务逻辑写入普通组件。客户端确认页面 ready 后才收起主工作台。
-页面可通过形态协议申请通用窗口过渡。宿主仅提供当前工作台画面、局部坐标及窗口交接，
+宿主提供会话数据和限定动作，协议见独立 agent-gateway 仓库的 [S_11](https://gitcode.com/openJiuwen/agent-gateway/blob/develop/agent_gateway/extensions_v2/docs/specs/S_11_application-presentation.md)。
+
+desktop 在页面 ready 后收起主工作台；overlay 保留工作台，覆盖应用内容区，不受会话和设置页滚动容器限制。一个连接同时只激活一个形态。
+mode 或 src 更新结束当前形态，autoStart=true 时按新声明显示；config 更新保留页面。autoStart=true 随挂载显示，停用、卸载或断线时关闭，应用重载后重新显示。
+手动关闭后普通更新不再次打开；可从插件设置、显式启动入口、重新启用插件或重载应用恢复。自动启动不替换已有活动形态，容量占用时提示用户关闭后重新启用。
+
+插件通过受控 Switch.checked / ui.change 管理显示状态，在后端用 ops.ui.render 发布 autoStart=true 的形态或 CLEAR。DELIVERED 只表示渲染帧已下发，打开失败通过 ui.closed 通知插件；visible_when 仅控制挂载条件。
+容器关闭时，宿主通过 webui.dispatch 上报 ui.closed，携带 reason、revision 和 presentation_id。Gateway 校验连接、包、实例、版本和容器序号后通知插件；插件更新显示状态、设置页并决定是否 CLEAR 候选声明。
+
+desktop 页面可通过形态协议申请通用窗口过渡。宿主仅提供当前工作台画面、局部坐标及窗口交接，
 插件决定过渡的绘制与时长；画面仅在当前窗口代次内使用，不进入 Gateway、存储或会话状态。
 该能力不增加组件 props，消息、生命周期与限制统一由上述形态协议定义。
 该组件不在 AgentServer 提供；既有 Iframe、MediaSurface 的接口不变。

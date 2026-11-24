@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createPresentationStartHandler } from '../node_modules/.cache/presentation-start/start.mjs';
+import { createPresentationStartHandler } from '../node_modules/.cache/application-presentation/protocol.mjs';
 
 const target = { scope: 'application', slot_id: 'application.presentation', package_id: 'test.forms', instance_key: 'bee' };
 const request = () => ({ request_id: 'a'.repeat(32), target, revision: 2, deadline: Date.now() + 30000 });
@@ -59,4 +59,15 @@ test('a candidate replaced while opening cannot report success', async () => {
   const ctx = setup(); ctx.options.activate = async () => ctx.replace(undefined);
   await createPresentationStartHandler(ctx.options)(request());
   assert.equal(ctx.results[0].code, 'TARGET_INACTIVE');
+});
+
+
+test('browser connections can start explicitly declared in-app forms', async () => {
+  const ctx = setup();
+  ctx.options.desktop = () => false;
+  ctx.replace({ connected: true, state: 'active', revision: 2, frame: { tree: { component: 'ApplicationSurface',
+    props: { title: 'Pet', src: '/extension-assets/test.forms/g1/pet.html', mode: 'overlay', width: 160, height: 120, config: {} } } } });
+  await createPresentationStartHandler(ctx.options)(request());
+  assert.equal(ctx.activated[0].mode, 'overlay');
+  assert.equal(ctx.results[0].code, 'STARTED');
 });

@@ -68,6 +68,7 @@ export function WebUIInstanceView({
           instanceKey,
           sessionId: frame.target.sessionId,
           packageId: frame.target.packageId,
+          renderRevision: frame.revision,
           connected: instance.connected,
           componentState,
           styles,
