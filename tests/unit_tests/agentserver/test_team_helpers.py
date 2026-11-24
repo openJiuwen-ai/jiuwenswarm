@@ -1611,6 +1611,114 @@ async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch,
 
 
 @pytest.mark.anyio
+async def test_process_team_message_stream_strips_selected_window_from_metadata(
+    monkeypatch, tmp_path,
+):
+    """params 未带 selected 时，不得沿用信封 metadata 注入的窗口键。"""
+    from jiuwenswarm.server.runtime.agent_adapter.deep.context_window import (
+        SELECTED_CONTEXT_WINDOW_KEY,
+    )
+
+    skills_dir = _write_team_skill(
+        tmp_path,
+        "demo-skill",
+        records=[_evolution_record("First summary line")],
+    )
+    _patch_team_skills_dir(monkeypatch, skills_dir)
+    captured_metadata: list[dict[str, Any]] = []
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            return False
+
+        @staticmethod
+        async def get_swarm_enriched_team_spec(**kwargs):
+            meta = kwargs.get("request_metadata") or {}
+            captured_metadata.append(dict(meta))
+            return SimpleNamespace(
+                team_name="unit-team",
+                workspace=SimpleNamespace(root_path=str(tmp_path / "team-workspace")),
+            )
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+
+    request = SimpleNamespace(
+        session_id="sess-team-window-trust",
+        request_id="req-team-window-trust",
+        channel_id="web",
+        metadata={SELECTED_CONTEXT_WINDOW_KEY: 300_000, "mode": "team"},
+        params={"mode": "team"},
+    )
+
+    async for _ in team_helpers.process_team_message_stream(
+        request,
+        {"query": "/evolve_list demo-skill"},
+        object(),
+        config_base={"models": {"defaults": []}},
+        sessions_root=tmp_path / "tenant-sessions",
+    ):
+        pass
+
+    assert captured_metadata
+    assert SELECTED_CONTEXT_WINDOW_KEY not in captured_metadata[0]
+
+
+@pytest.mark.anyio
+async def test_process_team_message_stream_forwards_selected_window_from_params(
+    monkeypatch, tmp_path,
+):
+    """params 合法携带 selected 时仍应透传到 enrich metadata。"""
+    from jiuwenswarm.server.runtime.agent_adapter.deep.context_window import (
+        SELECTED_CONTEXT_WINDOW_KEY,
+    )
+
+    skills_dir = _write_team_skill(
+        tmp_path,
+        "demo-skill",
+        records=[_evolution_record("First summary line")],
+    )
+    _patch_team_skills_dir(monkeypatch, skills_dir)
+    captured_metadata: list[dict[str, Any]] = []
+
+    class _FakeManager(_InactiveTeamRuntimeManagerMixin):
+        @staticmethod
+        def has_stream_task(session_id: str) -> bool:
+            return False
+
+        @staticmethod
+        async def get_swarm_enriched_team_spec(**kwargs):
+            meta = kwargs.get("request_metadata") or {}
+            captured_metadata.append(dict(meta))
+            return SimpleNamespace(
+                team_name="unit-team",
+                workspace=SimpleNamespace(root_path=str(tmp_path / "team-workspace")),
+            )
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+
+    request = SimpleNamespace(
+        session_id="sess-team-window-params",
+        request_id="req-team-window-params",
+        channel_id="web",
+        metadata={SELECTED_CONTEXT_WINDOW_KEY: 999_999},
+        params={"mode": "team", SELECTED_CONTEXT_WINDOW_KEY: 300_000},
+    )
+
+    async for _ in team_helpers.process_team_message_stream(
+        request,
+        {"query": "/evolve_list demo-skill"},
+        object(),
+        config_base={"models": {"defaults": []}},
+        sessions_root=tmp_path / "tenant-sessions",
+    ):
+        pass
+
+    assert captured_metadata
+    assert captured_metadata[0].get(SELECTED_CONTEXT_WINDOW_KEY) == 300_000
+
+
+@pytest.mark.anyio
 async def test_process_team_message_stream_handles_evolve_rebuild(monkeypatch, tmp_path):
     skills_dir = _write_team_skill(tmp_path, "demo-skill")
     _patch_team_skills_dir(monkeypatch, skills_dir)
