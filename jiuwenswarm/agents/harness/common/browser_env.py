@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
+from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.common.local_env_config import read_env, read_env_if_set
@@ -32,6 +34,30 @@ _STALE_REMOTE_CDP_KEYS = (
     "PLAYWRIGHT_CDP_URL",
     "PLAYWRIGHT_MCP_CDP_ENDPOINT",
 )
+
+
+def _load_bundled_chromium_candidates() -> list[str]:
+    """Import bundled-chromium resolution from the browser-move src tree.
+
+    The browser runtime MCP server runs from ``.../browser-move/src``, but that
+    directory is not guaranteed to be on ``sys.path`` in the host process, so
+    append it (at the END of the search path, never the front: front insertion
+    could shadow same-named modules already importable by the host) and retry.
+    """
+    try:
+        from playwright_runtime.drivers.managed_browser import _bundled_chromium_candidates
+    except ModuleNotFoundError:
+        src_root = (
+            Path(__file__).resolve().parent / "tools" / "browser-move" / "src"
+        )
+        if not (src_root / "playwright_runtime" / "__init__.py").exists():
+            raise
+        if str(src_root) not in sys.path:
+            # Append-only: lowest precedence, cannot shadow host modules (G.PSL.03).
+            sys.path.append(str(src_root))
+        from playwright_runtime.drivers.managed_browser import _bundled_chromium_candidates
+
+    return _bundled_chromium_candidates()
 
 
 def resolve_managed_browser_binary(config_base: dict[str, Any] | None = None) -> str:
@@ -139,6 +165,17 @@ def sync_browser_runtime_environment(
     os.environ["PLAYWRIGHT_MCP_ARGS"] = " ".join(mcp_args)
 
     chrome_path = resolve_managed_browser_binary(config_base)
+    if (not chrome_path or chrome_path == "<auto>") and sys.platform == "darwin":
+        # macOS: prefer a bundled Playwright Chromium so the managed headless
+        # browser never shares an app bundle with the user's default browser
+        # (LaunchServices routes external links per app bundle).
+        try:
+            bundled = _load_bundled_chromium_candidates()
+        except Exception:
+            bundled = []
+        if bundled:
+            chrome_path = bundled[0]
+
     if chrome_path:
         os.environ["BROWSER_MANAGED_BINARY"] = chrome_path
     else:

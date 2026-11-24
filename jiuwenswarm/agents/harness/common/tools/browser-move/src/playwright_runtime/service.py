@@ -7,13 +7,17 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import base64
 import json
 import mimetypes
 import os
 import shlex
 import shutil
+import signal
+import sys
 import uuid
+import weakref
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.request import urlopen
@@ -32,7 +36,11 @@ from openjiuwen.core.single_agent.middleware.base import (
 from playwright_runtime import REPO_ROOT
 from playwright_runtime.agents import augment_browser_task_prompt, build_browser_worker_agent
 from playwright_runtime.config import BrowserRunGuardrails, resolve_playwright_mcp_cwd
-from playwright_runtime.drivers.managed_browser import ManagedBrowserDriver, _default_chrome_user_data_dir
+from playwright_runtime.drivers.managed_browser import (
+    ManagedBrowserDriver,
+    _cleanup_chrome_singleton_files,
+    _kill_chrome_by_user_data_dir,
+)
 from playwright_runtime.hooks import BrowserCancellationMiddleware, BrowserRunCancelled
 from playwright_runtime.profiles import BrowserProfile, BrowserProfileStore
 
@@ -43,6 +51,60 @@ from jiuwenswarm.agents.harness.common.tools.browser_timeout_policy import (
 from jiuwenswarm.common.utils import get_user_workspace_dir
 
 MAX_ITERATION_MESSAGE = "Max iterations reached without completion"
+
+_shutdown_hook_installed = False
+_live_browser_services: "weakref.WeakSet[BrowserService]" = weakref.WeakSet()
+
+
+def _sync_stop_managed_browsers() -> None:
+    """Best-effort synchronous stop of managed browsers at process exit."""
+    for service in list(_live_browser_services):
+        driver = getattr(service, "_managed_driver", None)
+        if driver is None:
+            continue
+        try:
+            driver.stop()
+            logger.info(
+                "BrowserService shutdown hook: stopped managed browser pid=%s",
+                driver.pid,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"BrowserService shutdown hook: stop failed: {exc}")
+
+
+def _install_browser_shutdown_hook() -> None:
+    """Install atexit + SIGTERM fallbacks so the managed browser never outlives the host process."""
+    global _shutdown_hook_installed
+    if _shutdown_hook_installed:
+        return
+    _shutdown_hook_installed = True
+    atexit.register(_sync_stop_managed_browsers)
+
+    def _handle_sigterm(signum, frame):  # noqa: ANN001, ARG001
+        _sync_stop_managed_browsers()
+        signal.signal(signum, signal.SIG_DFL)
+        os.kill(os.getpid(), signum)
+
+    try:
+        previous = signal.getsignal(signal.SIGTERM)
+    except (ValueError, OSError):
+        return
+    # Only take over SIGTERM when nobody else owns it: a host handler
+    # (e.g. asyncio add_signal_handler graceful shutdown in app_agentserver)
+    # must keep running the orderly exit chain — atexit then stops the
+    # browsers on that path. Overriding it would skip history/perf flush,
+    # sandbox teardown and MCP/HTTP shutdown.
+    if previous is signal.SIG_DFL:
+        try:
+            signal.signal(signal.SIGTERM, _handle_sigterm)
+        except (ValueError, OSError):
+            # Not in the main thread or unsupported platform; atexit still covers it.
+            pass
+
+
+def _register_browser_service_for_shutdown(service: "BrowserService") -> None:
+    _install_browser_shutdown_hook()
+    _live_browser_services.add(service)
 
 
 def extract_json_object(text: Any) -> Dict[str, Any]:
@@ -141,6 +203,8 @@ class BrowserService:
         self._managed_driver: Optional[ManagedBrowserDriver] = None
         self._registered_cdp_endpoint: str = ""
         self._failure_context_by_session: Dict[str, str] = {}
+        self._idle_recycle_task: Optional[asyncio.Task[Any]] = None
+        _register_browser_service_for_shutdown(self)
 
         logger.info(
             "BrowserService initialized: "
@@ -175,6 +239,30 @@ class BrowserService:
         if configured:
             return Path(configured).expanduser()
         return self._runtime_state_root() / ".browser" / "profiles.json"
+
+    def _dedicated_user_data_roots(self) -> list[Path]:
+        """Directory roots a managed profile's user-data-dir is allowed to live in."""
+        roots = [self._runtime_state_root() / ".browser-profiles"]
+        env_dir = (os.getenv("BROWSER_MANAGED_USER_DATA_DIR") or "").strip()
+        if env_dir:
+            roots.append(Path(env_dir).expanduser())
+        return roots
+
+    def _is_dedicated_user_data_dir(self, user_data_dir: str) -> bool:
+        """Reject persisted profile dirs outside dedicated roots (e.g. the user's
+        real Chrome profile written by legacy versions with kill_existing=1)."""
+        raw = str(user_data_dir or "").strip()
+        if not raw:
+            return False
+        try:
+            resolved = Path(raw).expanduser().resolve()
+            for root in self._dedicated_user_data_roots():
+                root_resolved = root.expanduser().resolve()
+                if resolved == root_resolved or root_resolved in resolved.parents:
+                    return True
+        except OSError:
+            return False
+        return False
 
     def _resolve_driver_mode(self) -> str:
         explicit = (os.getenv("BROWSER_DRIVER") or "").strip().lower()
@@ -251,10 +339,55 @@ class BrowserService:
         return raw in {"1", "true", "yes", "on"}
 
     def _should_close_browser_after_task(self) -> bool:
+        # Desktop builds (macOS/Windows) default to recycling the managed
+        # browser after each task: a lingering headless system Chrome hijacks
+        # user external links via LaunchServices and leaks memory. Explicit
+        # BROWSER_MANAGED_CLOSE_AFTER_TASK still wins.
+        desktop_default = sys.platform == "darwin" or os.name == "nt"
         return self._driver_mode == "managed" and self._env_truthy(
             "BROWSER_MANAGED_CLOSE_AFTER_TASK",
-            default=False,
+            default=desktop_default,
         )
+
+    @staticmethod
+    def _idle_recycle_timeout_s() -> float:
+        raw = (os.getenv("BROWSER_MANAGED_IDLE_TIMEOUT") or "").strip()
+        try:
+            value = float(raw) if raw else 300.0
+        except ValueError:
+            return 300.0
+        return max(0.0, value)
+
+    def _cancel_idle_recycle(self) -> None:
+        timer = self._idle_recycle_task
+        self._idle_recycle_task = None
+        if timer is not None and not timer.done():
+            timer.cancel()
+
+    def _schedule_idle_recycle(self) -> None:
+        self._cancel_idle_recycle()
+        timeout_s = self._idle_recycle_timeout_s()
+        self._idle_recycle_task = asyncio.get_running_loop().create_task(
+            self._idle_recycle_worker(timeout_s)
+        )
+
+    async def _idle_recycle_worker(self, timeout_s: float) -> None:
+        try:
+            if timeout_s > 0:
+                await asyncio.sleep(timeout_s)
+            if self._inflight_tasks:
+                logger.info(
+                    "BrowserService: idle recycle skipped, browser tasks are inflight"
+                )
+                return
+            logger.info(
+                f"BrowserService: managed browser idle for {timeout_s:.0f}s, recycling"
+            )
+            await self._reset_browser_runtime()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.warning(f"BrowserService: idle recycle failed: {exc}")
 
     @staticmethod
     def _is_browser_connection_error_text(value: Any) -> bool:
@@ -360,9 +493,10 @@ class BrowserService:
         explicit_user_data_dir = (os.getenv("BROWSER_MANAGED_USER_DATA_DIR") or "").strip()
         if explicit_user_data_dir:
             user_data_dir = explicit_user_data_dir
-        elif kill_existing:
-            user_data_dir = _default_chrome_user_data_dir()
         else:
+            # Always use the dedicated profile dir. Never point the managed
+            # browser at the user's default Chrome directory: kill_existing
+            # would then operate on (and hijack) the user's real profile.
             user_data_dir = str(self._runtime_state_root() / ".browser-profiles" / self._profile_name)
         browser_binary = (os.getenv("BROWSER_MANAGED_BINARY") or "").strip()
         extra_args = self._parse_env_args(os.getenv("BROWSER_MANAGED_ARGS") or "")
@@ -494,6 +628,32 @@ class BrowserService:
         if self._driver_mode != "managed":
             logger.info("BrowserService: driver mode is not managed; skip auto-start")
             return
+
+        # Orphan cleanup: if a previous process left a Chrome running against
+        # our dedicated profile dir but the CDP endpoint is not reachable, kill
+        # the stale instance before starting a fresh one.
+        our_driver_alive = (
+            self._managed_driver is not None and self._managed_driver.is_running()
+        )
+        if not our_driver_alive:
+            stale_profile = self._profile_store.get_profile(self._profile_name)
+            stale_dir = str(getattr(stale_profile, "user_data_dir", "") or "").strip()
+            if stale_dir and self._is_dedicated_user_data_dir(stale_dir):
+                stale_dir_path = str(Path(stale_dir).expanduser())
+                killed = await asyncio.to_thread(_kill_chrome_by_user_data_dir, stale_dir_path)
+                if killed:
+                    logger.warning(
+                        "BrowserService: recycled %d orphan managed browser process(es) "
+                        f"using user_data_dir={stale_dir_path}",
+                        killed,
+                    )
+                    await asyncio.to_thread(_cleanup_chrome_singleton_files, stale_dir_path)
+            elif stale_dir:
+                logger.warning(
+                    "BrowserService: skip orphan cleanup, persisted user_data_dir is "
+                    f"outside dedicated roots: {stale_dir}"
+                )
+
         if self._managed_driver is not None:
             try:
                 logger.info("BrowserService: reusing existing managed driver instance")
@@ -513,8 +673,15 @@ class BrowserService:
             profile is None
             or profile.driver_type != "managed"
             or profile.debug_port <= 0
-            or not str(profile.user_data_dir).strip()
+            or not self._is_dedicated_user_data_dir(str(profile.user_data_dir))
         ):
+            if profile is not None and not self._is_dedicated_user_data_dir(
+                str(profile.user_data_dir)
+            ):
+                logger.warning(
+                    "BrowserService: persisted user_data_dir is outside dedicated roots "
+                    f"({profile.user_data_dir}); rebuilding managed profile"
+                )
             profile = self._build_managed_profile()
         configured_binary = (os.getenv("BROWSER_MANAGED_BINARY") or "").strip()
         if configured_binary:
@@ -742,6 +909,8 @@ class BrowserService:
             f"started={self.started}, configured_endpoint={self._configured_cdp_endpoint() or '(empty)'}, "
             f"registered_endpoint={self._registered_cdp_endpoint or '(empty)'}"
         )
+        # A new browser task arrived: cancel any pending idle recycle.
+        self._cancel_idle_recycle()
         if self.started:
             await self._ensure_managed_driver_started()
             if self._configured_cdp_endpoint() != self._registered_cdp_endpoint:
@@ -1178,12 +1347,21 @@ class BrowserService:
                 if current_task is not None:
                     self._unregister_inflight_task(sid, rid, current_task)
                 if self._should_close_browser_after_task():
+                    # Recycle after an idle grace window instead of immediately,
+                    # so consecutive tasks can reuse the running browser.
                     try:
-                        await self._reset_browser_runtime()
-                    except Exception:
-                        pass
+                        self._schedule_idle_recycle()
+                    except Exception as schedule_exc:
+                        logger.warning(
+                            f"BrowserService: failed to schedule idle recycle: {schedule_exc}"
+                        )
+                        try:
+                            await self._reset_browser_runtime()
+                        except Exception:
+                            pass
 
     async def shutdown(self) -> None:
+        self._cancel_idle_recycle()
         try:
             if self.started:
                 await Runner.stop()

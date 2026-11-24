@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import platform
 import shutil
 import subprocess
 import sys
@@ -110,6 +111,119 @@ def _cleanup_chrome_singleton_files(user_data_dir: str) -> None:
             )
 
 
+def _playwright_browsers_roots() -> list[Path]:
+    """Return candidate root directories containing bundled Playwright browsers."""
+    roots: list[Path] = []
+    env_root = (os.getenv("PLAYWRIGHT_BROWSERS_PATH") or "").strip()
+    if env_root:
+        roots.append(Path(env_root).expanduser())
+    if sys.platform == "darwin":
+        roots.append(Path.home() / "Library" / "Caches" / "ms-playwright")
+    elif os.name == "nt":
+        local_app_data = os.getenv("LOCALAPPDATA") or str(Path.home() / "AppData" / "Local")
+        roots.append(Path(local_app_data) / "ms-playwright")
+    else:
+        roots.append(Path.home() / ".cache" / "ms-playwright")
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(root)
+    return unique
+
+
+def _version_sort_key(path: Path) -> int:
+    """Extract the numeric build id from parent dirs like chromium-1200 / chromium_headless_shell-987.
+
+    ``path`` is the executable file (e.g. .../chromium-1200/chrome-mac/Chromium.app/
+    Contents/MacOS/Chromium), so scan path parts from the deepest upward and take
+    the first directory name carrying a numeric token.
+    """
+    for part in reversed(path.parts):
+        for token in part.replace("_", "-").split("-"):
+            if token.isdigit():
+                return int(token)
+    return 0
+
+
+def _arch_match_sort_key(path: Path) -> int:
+    """Return 1 when the browser build matches the current CPU architecture."""
+    posix = path.as_posix().lower()
+    machine = (platform.machine() or "").lower()
+    if "arm" in machine or "aarch64" in machine:
+        return 1 if "arm64" in posix else 0
+    # x86_64 builds ship as chrome-mac-x64 / chrome-win64 / chrome-linux64;
+    # legacy untagged dirs (chrome-mac, chrome-win, chrome-linux) also run.
+    x86_64_markers = ("x64", "x86_64", "win64", "linux64")
+    if any(marker in posix for marker in x86_64_markers):
+        return 1
+    return 1 if "arm64" not in posix else 0
+
+
+def _bundled_chromium_candidates() -> list[str]:
+    """Resolve bundled Playwright Chromium / chrome-headless-shell binaries.
+
+    Prefers the full Chromium binary (headed capable), then chrome-headless-shell.
+    Using a bundled browser instead of the system Google Chrome avoids macOS
+    LaunchServices routing external links into the running headless instance.
+    """
+    patterns: list[str] = []
+    if sys.platform == "darwin":
+        patterns = [
+            # Newer Playwright layouts (chrome-mac-x64 / chrome-mac-arm64).
+            "chromium-*/chrome-mac*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+            "chromium-*/chrome-mac*/Chromium.app/Contents/MacOS/Chromium",
+            # Older layout.
+            "chromium-*/chrome-mac/Chromium.app/Contents/MacOS/Chromium",
+            "chromium_headless_shell-*/chrome-headless-shell-mac*/chrome-headless-shell",
+        ]
+    elif os.name == "nt":
+        patterns = [
+            "chromium-*/chrome-win/chrome.exe",
+            "chromium-*/chrome-win64/chrome.exe",
+            "chromium_headless_shell-*/chrome-headless-shell-win64/chrome-headless-shell.exe",
+        ]
+    else:
+        patterns = [
+            "chromium-*/chrome-linux/chrome",
+            "chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell",
+        ]
+
+    found: list[Path] = []
+    for root in _playwright_browsers_roots():
+        if not root.exists():
+            continue
+        for pattern in patterns:
+            found.extend(root.glob(pattern))
+
+    # Arch-matching newest build first; headless-shell kept after the full build.
+    full = sorted(
+        (p for p in found if "headless_shell" not in p.as_posix().lower()),
+        key=lambda p: (_arch_match_sort_key(p), _version_sort_key(p)),
+        reverse=True,
+    )
+    shell = sorted(
+        (p for p in found if "headless_shell" in p.as_posix().lower()),
+        key=lambda p: (_arch_match_sort_key(p), _version_sort_key(p)),
+        reverse=True,
+    )
+    ordered = full + shell
+
+    unique: list[str] = []
+    seen: set[str] = set()
+    for item in ordered:
+        text = str(item)
+        if text in seen:
+            continue
+        seen.add(text)
+        unique.append(text)
+    return unique
+
+
 def _candidate_chrome_binaries() -> list[str]:
     names = [
         "chrome",
@@ -133,10 +247,22 @@ def _candidate_chrome_binaries() -> list[str]:
                 continue
             install_paths.append(str(Path(root) / "Google" / "Chrome" / "Application" / "chrome.exe"))
     elif sys.platform == "darwin":
-        install_paths = [
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-            str(Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
-        ]
+        # Prefer bundled Playwright Chromium over the system Google Chrome:
+        # a headless system-Chrome instance can hijack user external links via
+        # macOS LaunchServices bundle routing.
+        bundled = _bundled_chromium_candidates()
+        if bundled:
+            binaries = bundled + binaries
+            install_paths = []
+        else:
+            logger.warning(
+                "No bundled Playwright Chromium found; falling back to system "
+                "Google Chrome for managed browsing (external-link hijack risk on macOS)."
+            )
+            install_paths = [
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                str(Path.home() / "Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            ]
     else:
         install_paths = [
             "/usr/bin/google-chrome",
@@ -163,7 +289,11 @@ def _is_chrome_identifier(value: str) -> bool:
     lowered = (value or "").strip().replace("\\", "/").lower()
     if not lowered:
         return False
-    return "chrome" in Path(lowered).name
+    name = Path(lowered).name
+    # Accept Chromium-family executables: "chrome", "Google Chrome for Testing",
+    # "chromium" (note: "chromium" does not contain the substring "chrome"),
+    # and "chrome-headless-shell".
+    return "chrome" in name or "chromium" in name
 
 
 class ManagedBrowserDriver:
@@ -177,6 +307,17 @@ class ManagedBrowserDriver:
     def cdp_endpoint(self) -> str:
         host = self.profile.host or "127.0.0.1"
         return f"http://{host}:{int(self.profile.debug_port)}"
+
+    @property
+    def pid(self) -> Optional[int]:
+        """PID of the running browser process, or None when not started."""
+        if self._process is None:
+            return None
+        return self._process.pid
+
+    def is_running(self) -> bool:
+        """Whether the managed browser process is still alive."""
+        return self._process is not None and self._process.poll() is None
 
     def _resolve_binary(self) -> str:
         explicit = (self.profile.browser_binary or "").strip()
