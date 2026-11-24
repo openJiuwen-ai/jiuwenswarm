@@ -1019,13 +1019,13 @@ async def test_manager_session_status_preserves_installed_counts(tmp_path, monke
 @pytest.mark.asyncio
 async def test_manager_closes_live_retrieval_runtime_on_read_failure(tmp_path, monkeypatch):
     from jiuwenswarm.common import config as common_config
-    from jiuwenswarm.runtime.symphony.skill_retrieval import status
+    from jiuwenswarm.runtime.symphony.skill_retrieval import runtime as retrieval_runtime
     from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 
     monkeypatch.setattr(common_config, "get_config", lambda: config_for(tmp_path))
     runtime = Mock(aclose=AsyncMock())
     runtime.retrieval.bind_search.side_effect = OSError("collection unavailable")
-    monkeypatch.setattr(status, "SymphonyRuntime", lambda model, config: runtime)
+    monkeypatch.setattr(retrieval_runtime, "SymphonyRuntime", lambda model, config: runtime)
     manager = SkillManager(workspace_dir=str(tmp_path))
     with pytest.raises(OSError, match="collection unavailable"):
         await manager.handle_skills_retrieval_status({})
