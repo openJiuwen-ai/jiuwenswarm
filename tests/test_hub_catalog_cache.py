@@ -464,10 +464,11 @@ async def test_startup_uses_configured_recommendation_credentials(tmp_path, monk
     cache = HubCatalogCache(tmp_path / 'startup.sqlite')
     monkeypatch.setattr(module, 'get_hub_catalog_cache', lambda: cache)
     monkeypatch.setenv('TEAM_SKILLS_HUB_SYSTEM_TOKEN', 'startup-secret')
+    monkeypatch.setenv('TEAM_SKILLS_HUB_VERIFY_SSL', 'false')
     manager = SkillManager(workspace_dir=str(tmp_path))
-    kinds = []
+    asset_requests = []
     async def asset(port, kind, **kwargs):
-        kinds.append(kind)
+        asset_requests.append((kind, port.transport.verify, kwargs['preload']))
         return [], {}
     async def post(path, **kwargs):
         assert kwargs['headers']['X-System-Token'] == 'startup-secret'
@@ -484,6 +485,11 @@ async def test_startup_uses_configured_recommendation_credentials(tmp_path, monk
             'session_id': 'page',
         })
         assert result['cache']['state'] == 'fresh'
-    assert kinds == ['agent_template', 'agent_group', 'plugin', 'mcp']
+    assert asset_requests == [
+        ('agent_template', False, True),
+        ('agent_group', False, True),
+        ('plugin', True, True),
+        ('mcp', True, True),
+    ]
     assert cache.db.execute('SELECT COUNT(*) FROM catalog').fetchone()[0] == 0
     await cache.close()

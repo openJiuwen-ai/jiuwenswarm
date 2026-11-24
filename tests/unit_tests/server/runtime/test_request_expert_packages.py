@@ -71,7 +71,9 @@ def _bind_packages(packages: list[dict], **identity):
 def test_expert_clients_use_agentserver_tls_setting(monkeypatch, kind, verify_env, verify_experts) -> None:
     from jiuwenswarm.server.runtime.extension_package_manager import (
         _create_package_hub_downloader,
-        _create_package_hub_port,
+    )
+    from jiuwenswarm.server.runtime.marketplace.hub_asset_port import (
+        create_package_hub_port,
     )
 
     base_url = "https://expert-hub.example.test"
@@ -81,7 +83,7 @@ def test_expert_clients_use_agentserver_tls_setting(monkeypatch, kind, verify_en
     else:
         monkeypatch.setenv("TEAM_SKILLS_HUB_VERIFY_SSL", verify_env)
 
-    hub_port = _create_package_hub_port(kind)
+    hub_port = create_package_hub_port(kind)
     downloader = _create_package_hub_downloader(kind)
     expected = verify_experts or kind == "plugin"
     assert hub_port.base_url == base_url

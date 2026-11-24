@@ -362,10 +362,10 @@ async def start_hub_catalog_preload(skill_manager=None):
 
     Skill Plaza home keys are swarmskill/skill × top_k=6 (see useHubMarketplace).
     """
-    from .hub_asset_port import create_default_hub_asset_port
-    port = create_default_hub_asset_port()
+    from .hub_asset_port import create_package_hub_port
+
     for kind in ('agent_template', 'agent_group', 'plugin', 'mcp'):
-        await cached_asset_catalog(port, kind, preload=True)
+        await cached_asset_catalog(create_package_hub_port(kind), kind, preload=True)
     if skill_manager is None:
         return
 
