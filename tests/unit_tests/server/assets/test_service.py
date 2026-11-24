@@ -293,6 +293,41 @@ def test_export_filename_version_and_display_name_matrix(
     assert export("***", "2.0") == "my-expert-2.0.zip"
 
 
+def test_export_filename_truncates_overlong_display_name(
+    workspace, isolated_registry, agent_source, monkeypatch
+):
+    """超长显示名按字节预算截断：文件名不因用户自由输入超出文件名单段
+    上限、导出不会到落盘时才抛 OSError；截断不切断多字节字符，包内顶层
+    目录名仍为 asset_id（导入契约不受影响）。"""
+    captured: dict = {}
+
+    def fake_download_info(file_path, file_name, **kwargs):
+        captured.update(file_path=file_path, file_name=file_name)
+        return {"download_url": "/file-api/download?token=fake"}
+
+    monkeypatch.setattr(service, "build_file_download_info", fake_download_info)
+    long_name = "专" * 200  # 600 字节 UTF-8，远超文件名单段上限
+    isolated_registry.register_asset_adapter(
+        _FakeAdapter(source_dir=agent_source, display_name=long_name, version="1.0.0")
+    )
+
+    payload = service.export_asset(
+        {"kind": "agent_template", "local_id": "my-expert"}
+    )
+
+    expected_stem = (
+        long_name.encode("utf-8")[: service._MAX_EXPORT_STEM_BYTES].decode(
+            "utf-8", "ignore"
+        )
+    )
+    assert payload["filename"] == f"{expected_stem}-1.0.0.zip"
+    # 整个文件名（主干 + 版本后缀 + .zip）远在 255 字节单段上限内
+    assert len(payload["filename"].encode("utf-8")) <= 255
+    assert Path(captured["file_path"]).name == payload["filename"]
+    with zipfile.ZipFile(captured["file_path"]) as archive:
+        assert all(name.startswith("my-expert/") for name in archive.namelist())
+
+
 def test_export_prunes_stale_entries(workspace, isolated_registry, agent_source, monkeypatch):
     monkeypatch.setattr(
         service, "build_file_download_info",

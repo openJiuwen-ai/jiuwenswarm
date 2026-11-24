@@ -69,6 +69,22 @@ _install_default_adapters()
 # token 泄露后的可用窗口。
 EXPORT_DOWNLOAD_EXPIRES_S = 600
 
+# 下载文件名显示名主干的上限（UTF-8 字节）。文件名单段受文件系统
+# NAME_MAX（常见 255 字节）约束，而显示名是用户自由输入、可能很长；
+# 不截断会让 zip 落盘时才抛 OSError（非 AssetError，被兜底成
+# INTERNAL_ERROR）。取 120 字节为版本后缀与 ".zip" 留足余量。只截显示
+# 名，回退的 asset_id 不截（其长度由包命名约束，且 skill 导出走该回退，
+# 行为须逐字节不变）。
+_MAX_EXPORT_STEM_BYTES = 120
+
+
+def _truncate_export_stem(stem: str, budget: int = _MAX_EXPORT_STEM_BYTES) -> str:
+    """把已清洗的文件名主干按字节预算截断，不切断多字节字符。"""
+    encoded = stem.encode("utf-8")
+    if len(encoded) <= budget:
+        return stem
+    return encoded[:budget].decode("utf-8", "ignore")
+
 
 def export_asset(
     params: Any,
@@ -94,10 +110,13 @@ def export_asset(
     export_root = assets_export_root()
     prune_stale_entries(export_root)
     # 下载文件名主干优先取 UI 显示名（与界面列表一致），缺省回退 asset_id；
-    # 显示名先经 sanitize 清洗，产物不含路径分隔符与文件名特殊字符，必然通过
-    # build_export_filename 内部的安全校验。包内顶层目录仍为 asset_id
-    # （root_name 单独传入），不受下载文件名影响。
-    filename_stem = sanitize_export_stem(source.display_name) or asset_id
+    # 显示名先经 sanitize 清洗、再按字节预算截断，产物不含路径分隔符与文件名
+    # 特殊字符、不超文件名单段长度上限，必然通过 build_export_filename 内部的
+    # 安全校验。包内顶层目录仍为 asset_id（root_name 单独传入），不受下载
+    # 文件名影响。
+    filename_stem = (
+        _truncate_export_stem(sanitize_export_stem(source.display_name)) or asset_id
+    )
     filename = build_export_filename(filename_stem, source.version or version)
     # 每次导出落独立子目录：并发导出同一资产不互相覆盖；子目录名随机，
     # 包文件 basename 保持契约文件名（下载端按 basename 生成
