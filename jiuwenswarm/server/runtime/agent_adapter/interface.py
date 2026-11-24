@@ -2003,8 +2003,6 @@ class JiuWenSwarm:
                 payload={
                     "event_type": "chat.error",
                     "error": exception_text(exc, fallback="symphony stream failed"),
-                    "error_type": type(exc).__name__,
-                    "phase": "symphony_stream",
                 },
                 is_complete=False,
             )
@@ -2645,8 +2643,6 @@ class JiuWenSwarm:
                 payload={
                     "event_type": "chat.error",
                     "error": exception_text(exc, fallback="team plan approval payload invalid"),
-                    "error_type": type(exc).__name__,
-                    "phase": "team_plan_approval",
                 },
                 is_complete=False,
             )
@@ -2670,8 +2666,6 @@ class JiuWenSwarm:
                     "event_type": "chat.error",
                     "code": "INVALID_ARGUMENT",
                     "error": exception_text(exc, fallback="invalid chat input"),
-                    "error_type": type(exc).__name__,
-                    "phase": "chat_input",
                 },
                 is_complete=True,
             )

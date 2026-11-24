@@ -59,8 +59,8 @@ class ProposalSource:
     SETTLE = "settle"
     DEATH_PROBE = "death_probe"
     STALL_WATCHDOG = "stall_watchdog"
-    # 团队数据服务（DB 初始化/读取）连续不可用：不是任务停摆，单独收口
-    STORAGE_UNAVAILABLE = "storage_unavailable"
+    # 团队状态数据（DB 快照/进度快照）连续不可用：不是任务停摆，单独收口
+    PROGRESS_UNAVAILABLE = "progress_unavailable"
     STREAM_END = "stream_end"
     INTERACT_FAILED = "interact_failed"
     # 迭代预算耗尽：agent-core 收尾序列
@@ -426,9 +426,9 @@ class RoundTerminalArbiter:
         if source in (
                 ProposalSource.DEATH_PROBE,
                 ProposalSource.STALL_WATCHDOG,
-                ProposalSource.STORAGE_UNAVAILABLE,
+                ProposalSource.PROGRESS_UNAVAILABLE,
             ):
-            # 判死类：检测层自带条件（活性基线/任务判活/kernel 活性/存储可用性），
+            # 判死类：检测层自带条件（活性基线/任务判活/kernel 活性/进度数据可用性），
             # 裁决器只收口——带 error + 级联收流
             return await self._emit_terminal(
                 error=proposal.get("error") or UNCONFIRMED_FINAL_STATE_TEXT,
@@ -437,8 +437,8 @@ class RoundTerminalArbiter:
                 cascade_source=(
                     "leader-death-probe"
                     if source == ProposalSource.DEATH_PROBE
-                    else "storage-unavailable"
-                    if source == ProposalSource.STORAGE_UNAVAILABLE
+                    else "progress-unavailable"
+                    if source == ProposalSource.PROGRESS_UNAVAILABLE
                     else "stall-watchdog"
                 ),
                 log_reason=source,

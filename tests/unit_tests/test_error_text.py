@@ -36,15 +36,12 @@ class ErrorTextTest(unittest.TestCase):
         self.assertTrue(leader_error_text("").strip())
         self.assertTrue(leader_error_text(None).strip())
 
-    def test_chat_error_payload_always_non_empty(self) -> None:
-        payload = chat_error_payload(
-            TimeoutError(),
-            phase="team_db_init",
-            fallback="db init timeout",
-        )
+    def test_chat_error_payload_keeps_original_keys_and_non_empty_error(self) -> None:
+        payload = chat_error_payload(TimeoutError(), fallback="db init timeout")
+        # 评审契约：不扩展 chat.error 键集合，只保证 error 非空。
+        self.assertEqual(set(payload), {"event_type", "error"})
+        self.assertEqual(payload["event_type"], "chat.error")
         self.assertTrue(payload["error"].strip())
-        self.assertEqual(payload["error_type"], "TimeoutError")
-        self.assertEqual(payload["phase"], "team_db_init")
 
 
 if __name__ == "__main__":

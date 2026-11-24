@@ -48,15 +48,10 @@ def exception_text(exc: BaseException, *, fallback: str = DEFAULT_ERROR_FALLBACK
 def chat_error_payload(
     exc: BaseException,
     *,
-    phase: str = "",
     fallback: str = DEFAULT_ERROR_FALLBACK,
 ) -> dict[str, Any]:
-    """构造带异常类型/阶段的 chat.error payload（保留 error 兼容旧前端）。"""
-    payload: dict[str, Any] = {
+    """构造 chat.error payload（保持原有键集合，只保证 error 非空）。"""
+    return {
         "event_type": "chat.error",
         "error": exception_text(exc, fallback=fallback),
-        "error_type": type(exc).__name__,
     }
-    if phase:
-        payload["phase"] = phase
-    return payload

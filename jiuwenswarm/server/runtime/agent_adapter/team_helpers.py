@@ -1227,7 +1227,6 @@ async def _broadcast_event(
             event.get("message"),
             fallback="team error (no error detail)",
         )
-        event.setdefault("error_type", "TeamError")
     result = tm.broadcast_event(session_id, event)
     if inspect.isawaitable(result):
         await result
@@ -2004,7 +2003,6 @@ async def process_team_message_stream(
             channel_id=channel_id,
             payload=chat_error_payload(
                 exc,
-                phase="team_create",
                 fallback="team agent create failed",
             ),
             is_complete=True,
@@ -2421,7 +2419,6 @@ async def process_team_message_stream(
                 channel_id=channel_id,
                 payload=chat_error_payload(
                     exc,
-                    phase="team_event_stream",
                     fallback="team event stream failed",
                 ),
                 is_complete=False,
@@ -3891,8 +3888,6 @@ async def _consume_stream_with_query(
                 {
                     "event_type": "chat.error",
                     "error": error_text,
-                    "error_type": type(exc).__name__,
-                    "phase": "team_stream",
                     "session_id": session_id,
                 },
             )
