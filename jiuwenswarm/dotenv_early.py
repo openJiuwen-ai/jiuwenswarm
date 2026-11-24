@@ -172,6 +172,9 @@ def load_dotenv_runtime(dotenv_path: str | Path | None, *, override: bool = True
     if preserve:
         # Prefer remapped AGENT_SERVER_PORT over any URL from .env/parent env.
         os.environ.pop("AGENT_SERVER_URL", None)
+    from jiuwenswarm.runtime_work_dirs import ensure_runtime_work_dirs
+
+    ensure_runtime_work_dirs()
     return loaded
 
 
