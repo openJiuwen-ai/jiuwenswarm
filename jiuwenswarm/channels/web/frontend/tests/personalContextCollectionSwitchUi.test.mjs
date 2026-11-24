@@ -55,6 +55,7 @@ await build({
         plugin.onResolve({ filter: /personalContextApi$/ }, () => ({ path: 'api', namespace: 'test' }));
         plugin.onResolve({ filter: /ModelPicker$/ }, () => ({ path: 'model-picker', namespace: 'test' }));
         plugin.onResolve({ filter: /Toast\/toastStore$/ }, () => ({ path: 'toast', namespace: 'test' }));
+        plugin.onResolve({ filter: /SettingItemRenderer$/ }, () => ({ path: 'setting-item', namespace: 'test' }));
         plugin.onLoad({ filter: /.*/, namespace: 'test' }, (args) => ({
           contents: {
             i18n: 'export const useTranslation = () => ({ t: (key) => key });',
@@ -63,6 +64,7 @@ await build({
             api: 'export const STRATEGY_OPTIONS = []; export const hasRunningFetchTask = () => false; export const isFetchTaskRunningError = () => false; export const pcApi = {};',
             'model-picker': 'export default function ModelPicker() { return null; }',
             toast: 'export const toast = { open() {} };',
+            'setting-item': 'export const SettingItemRenderer = () => null;',
           }[args.path],
         }));
       },
