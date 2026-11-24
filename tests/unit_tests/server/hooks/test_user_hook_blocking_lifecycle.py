@@ -37,6 +37,12 @@ from jiuwenswarm.server.hooks.executor import HookResult
 from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
 
 
+def _assert_text_answer(result, output):
+    expected = {"output": output, "result_type": "answer"}
+    # Older Core versions omit the termination reason on ordinary text answers.
+    assert result in (expected, {**expected, "termination_reason": "text_termination"})
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize("later_tool", [False, True])
 @pytest.mark.parametrize("hook", [
@@ -100,7 +106,7 @@ async def test_blocked_tool_ends_react_without_another_model_call(monkeypatch, h
             AssistantMessage(content="new request handled"),
         ]
         result = await agent.invoke({"query": "a new request", "conversation_id": session_id})
-        assert result == {"output": "new request handled", "result_type": "answer"}
+        _assert_text_answer(result, "new request handled")
         assert model.await_count == 2
         tool.assert_awaited_once()
     finally:
@@ -255,7 +261,7 @@ async def test_goal_approval_resume_stops_only_its_blocked_original_goal(monkeyp
         assert outcome.error_code is None
         after_task.assert_not_awaited()  # actual approval route bypasses the task-iteration callbacks
         if resume_mode == "allowed":
-            assert write_result.await_args.args[0] == {"output": "done", "result_type": "answer"}
+            _assert_text_answer(write_result.await_args.args[0], "done")
             assert tool.await_count == 2
             model.assert_awaited_once()
             assert not outer.loop_coordinator.is_aborted
@@ -371,7 +377,7 @@ async def test_resumed_batch_blocks_later_tools_and_allows_a_new_request(monkeyp
         # Another resume on the same session also starts with a clean verdict.
         run_hooks.return_value = [HookResult()]
         result = await invoke()
-        assert result == {"output": "new request handled", "result_type": "answer"}
+        _assert_text_answer(result, "new request handled")
         assert tool.await_count == 2
         model.assert_awaited_once()
     finally:
@@ -634,7 +640,7 @@ async def test_full_task_loop_handles_a_block_once_and_preserves_user_action(
                 outcome = await asyncio.wait_for(outer.run_one_round(next_work, uuid4().hex, session), timeout=10)
                 outer.event_manager.mark_finished(next_work)
                 assert outcome.error_code is None
-                assert final_results[-1] == {"output": "resumed successfully", "result_type": "answer"}
+                _assert_text_answer(final_results[-1], "resumed successfully")
                 assert model.await_count == 2
                 tool.assert_awaited_once()
                 assert not outer.loop_coordinator.is_aborted
