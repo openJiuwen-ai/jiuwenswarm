@@ -496,7 +496,7 @@ from jiuwenswarm.agents.harness.common.tools import (
     build_model_discovery_settings,
     SymphonyToolkit,
 )
-from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
+from jiuwenswarm.agents.harness.common.tools.symphony.retrieval_toolkit import (
     SKILL_RETRIEVAL_SESSION_PROFILE_VERSION,
 )
 from jiuwenswarm.agents.harness.common.rails.symphony.retrieval_context_processor import (
@@ -3233,7 +3233,7 @@ class JiuWenSwarmDeepAdapter:
                 return _unrecoverable("profile_checksum_mismatch")
             if str(payload.get("session_id") or "") != sid:
                 return _unrecoverable("session_id_mismatch")
-            from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
+            from jiuwenswarm.agents.harness.common.tools.symphony.retrieval_toolkit import (
                 is_valid_skill_retrieval_session_profile,
             )
 
@@ -8866,7 +8866,7 @@ class JiuWenSwarmDeepAdapter:
     ) -> tuple[bool, Path]:
         """Resolve the effective build permission and root before a reload."""
 
-        from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
+        from jiuwenswarm.agents.harness.common.tools.symphony.retrieval_toolkit import (
             skill_retrieval_artifact_root,
         )
 

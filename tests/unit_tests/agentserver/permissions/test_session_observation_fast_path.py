@@ -34,7 +34,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.tool_capabilities impor
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_decision_facts import build_tool_decision_facts
 from jiuwenswarm.agents.harness.common.rails.symphony import SymphonyRetrievalRail
 from jiuwenswarm.agents.harness.common.rails.tool_retrieval_prompt_rail import ToolRetrievalPromptRail
-from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import SkillRetrievalToolkit
+from jiuwenswarm.agents.harness.common.tools.symphony import SkillRetrievalToolkit
 from jiuwenswarm.agents.harness.common.tools.tool_retrieval_toolkits import ToolRetrievalToolkit
 from tests.unit_tests.agentserver.permissions.test_auto_permission_pipeline import _rail, _runtime_ctx
 

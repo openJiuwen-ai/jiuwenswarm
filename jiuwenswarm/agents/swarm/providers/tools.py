@@ -54,13 +54,13 @@ from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
     complete_multimodal_model_configured,
     multimodal_model_enabled,
 )
-from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
+from jiuwenswarm.agents.harness.common.tools.symphony.retrieval_toolkit import (
     SkillRetrievalToolkit,
     build_model_discovery_settings,
 )
 from jiuwenswarm.runtime.symphony.skill_retrieval import is_skill_retrieval_enabled
 from jiuwenswarm.agents.harness.common.tools.skill_toolkits import SkillToolkit
-from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit
+from jiuwenswarm.agents.harness.common.tools.symphony import SymphonyToolkit
 from jiuwenswarm.agents.harness.common.tools.user_todo_tool import get_decorated_tools
 from jiuwenswarm.agents.harness.common.tools.video_tools import video_understanding
 from jiuwenswarm.agents.harness.common.tools.video_gen_tools import (

@@ -21,7 +21,7 @@ from openjiuwen.symphony.discovery import (
     initialize_incremental_skill_notice_state,
 )
 
-from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
+from jiuwenswarm.agents.harness.common.tools.symphony.retrieval_toolkit import (
     SkillRetrievalToolkit,
     build_model_discovery_settings,
 )

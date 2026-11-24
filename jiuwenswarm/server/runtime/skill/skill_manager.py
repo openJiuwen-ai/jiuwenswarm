@@ -2749,7 +2749,7 @@ class SkillManager:
 
     async def handle_skills_retrieval_search(self, params: dict) -> dict:
         """Search installed Skills through the same directory Tool used by Agents."""
-        from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import SkillRetrievalToolkit
+        from jiuwenswarm.agents.harness.common.tools.symphony import SkillRetrievalToolkit
         from jiuwenswarm.runtime.symphony.skill_retrieval import (
             disabled_skills_from_directories, skill_sources_from_directories,
         )

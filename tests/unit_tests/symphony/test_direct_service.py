@@ -431,7 +431,7 @@ async def test_service_plans_through_public_runtime_with_minimal_jgf(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode", ["fast", "beam"])
 async def test_skill_compose_uses_public_core_plan(monkeypatch, tmp_path, mode):
-    from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit
+    from jiuwenswarm.agents.harness.common.tools.symphony import SymphonyToolkit
 
     config = _config(tmp_path, evolution=False)
     skill = tmp_path / "skills" / "writer" / "SKILL.md"
@@ -454,7 +454,7 @@ async def test_skill_compose_uses_public_core_plan(monkeypatch, tmp_path, mode):
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config)
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.get_config", lambda: {})
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda **_: set())
-    monkeypatch.setattr("jiuwenswarm.agents.harness.common.tools.symphony_toolkits.load_symphony_config", lambda *_: config)
+    monkeypatch.setattr("jiuwenswarm.agents.harness.common.tools.symphony.orchestration_toolkit.load_symphony_config", lambda *_: config)
     compose = next(tool for tool in SymphonyToolkit(service, llm_config_provider=lambda: None).get_tools()
                    if tool.card.name == "symphony_compose_graph")
     try:
@@ -481,7 +481,7 @@ async def test_expert_compose_uses_live_catalog_and_shares_the_web_graph(monkeyp
     from openjiuwen.agent_teams.paths import get_agent_teams_home, reset_task_openjiuwen_home, set_task_openjiuwen_home
     from openjiuwen.agent_teams.tools.database import DatabaseConfig, TeamDatabase
 
-    from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import SymphonyToolkit
+    from jiuwenswarm.agents.harness.common.tools.symphony import SymphonyToolkit
     from jiuwenswarm.agents.harness.team.experts import JiuwenExpertCatalog
 
     skills = tmp_path / "skills"
@@ -559,7 +559,7 @@ async def test_expert_compose_uses_live_catalog_and_shares_the_web_graph(monkeyp
     monkeypatch.setattr(JiuwenExpertCatalog, "list_expert_packages", list_packages)
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_symphony_config", lambda: config)
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.get_config", lambda: {})
-    monkeypatch.setattr("jiuwenswarm.agents.harness.common.tools.symphony_toolkits.load_symphony_config", lambda *_: config)
+    monkeypatch.setattr("jiuwenswarm.agents.harness.common.tools.symphony.orchestration_toolkit.load_symphony_config", lambda *_: config)
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.service.load_execution_disabled_skills", lambda **_: set())
     model = HandoffModel(confidences=[0.95])
     monkeypatch.setattr("jiuwenswarm.runtime.symphony.build.model_from_config", lambda _: model)

@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
-from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
+from jiuwenswarm.agents.harness.common.tools.symphony.retrieval_toolkit import (
     SkillRetrievalToolkit, build_model_discovery_settings,
     is_valid_skill_retrieval_session_profile, skill_sources_from_manager,
 )

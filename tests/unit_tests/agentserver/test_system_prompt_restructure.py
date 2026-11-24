@@ -50,10 +50,8 @@ from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyRetrievalRail,
     retrieval_rail,
 )
-from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import SkillRetrievalToolkit
-from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import (
-    SymphonyToolkit,
-)
+from jiuwenswarm.agents.harness.common.tools.symphony import SkillRetrievalToolkit
+from jiuwenswarm.agents.harness.common.tools.symphony import SymphonyToolkit
 from jiuwenswarm.runtime.symphony.llm import SYMPHONY_LLM_CONFIG_REF_KEY
 
 
@@ -465,7 +463,7 @@ async def test_symphony_timeout_is_terminal_manual_build_result(
         await asyncio.Event().wait()
 
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.tools.symphony_toolkits.load_symphony_config",
+        "jiuwenswarm.agents.harness.common.tools.symphony.orchestration_toolkit.load_symphony_config",
         lambda config=None: SimpleNamespace(orchestration=SimpleNamespace(enabled=True)),
     )
     monkeypatch.setattr(
@@ -968,7 +966,7 @@ async def test_symphony_tool_model_is_isolated_from_interleaved_adapter_requests
     monkeypatch,
 ):
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.tools.symphony_toolkits.load_symphony_config",
+        "jiuwenswarm.agents.harness.common.tools.symphony.orchestration_toolkit.load_symphony_config",
         lambda config=None: SimpleNamespace(orchestration=SimpleNamespace(enabled=True)),
     )
     adapter = object.__new__(JiuWenSwarmDeepAdapter)

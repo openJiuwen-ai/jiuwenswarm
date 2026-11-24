@@ -540,7 +540,7 @@ async def test_revision_change_requires_new_selection_and_never_swaps_pack():
 
 @pytest.mark.asyncio
 async def test_real_skillfs_recall_joins_fresh_manager_snapshot(tmp_path, monkeypatch):
-    from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import SkillRetrievalToolkit
+    from jiuwenswarm.agents.harness.common.tools.symphony import SkillRetrievalToolkit
     from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
     from tests.unit_tests.agentserver.test_skillpack_backend import _write_pack, _write_skill
 

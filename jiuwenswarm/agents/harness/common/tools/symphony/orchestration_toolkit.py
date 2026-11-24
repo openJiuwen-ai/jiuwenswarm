@@ -428,7 +428,7 @@ class SymphonyToolkit:
             return False
 
     def get_tools(self, config: dict[str, Any] | None = None) -> list[Tool]:
-        from jiuwenswarm.agents.harness.common.tools.skillpack_toolkit import SkillPackToolkit
+        from .skillpack_toolkit import SkillPackToolkit
 
         if not self.is_enabled(config):
             return []
