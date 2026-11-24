@@ -461,8 +461,10 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
     """从 Gateway 透传的 ``X-*`` 头重建 ``user_id`` 和 ``metadata``。
 
     Gateway 的 REST 正文只有业务参数。身份在头里：``X-User-Id``、路由三维、
-    企业租户三字段，以及内部扩展头。定时任务推送真渠道在 ``X-Cron-Targets``，
-    重建为顶层 ``metadata["targets"]``。企业版的专家包名单在
+    企业租户三字段，以及内部扩展头。定时任务字段与 WebSocket 对齐重建：
+    ``X-Cron-Targets`` → ``metadata["targets"]``，``X-Cron-Meta`` →
+    ``metadata["cron"]``（个人版 WS 路径由整份 ``channel_context`` 直接作为
+    metadata，HTTP 用头补齐同一字段）。企业版的专家包名单在
     ``X-Jiuwenswarm-Expert-Packages``。没有 ``X-User-Id`` 时 ``user_id`` 为空，
     表示这次请求按匿名处理，和 WebSocket 入口缺省身份时一样。
     """
@@ -491,6 +493,17 @@ def _rebuild_identity_from_headers(request: Request) -> tuple[str, dict[str, Any
     cron_targets = _header(request, "x-cron-targets", "")
     if cron_targets:
         metadata["targets"] = cron_targets
+    cron_meta_raw = _header(request, "x-cron-meta", "")
+    if cron_meta_raw:
+        try:
+            cron_meta = json.loads(cron_meta_raw)
+        except json.JSONDecodeError:
+            logger.warning(
+                "[AgentHTTPServer] X-Cron-Meta is invalid JSON; ignored"
+            )
+        else:
+            if isinstance(cron_meta, dict) and cron_meta:
+                metadata["cron"] = cron_meta
     from jiuwenswarm.common.request_ext import (
         INTERNAL_HEADER_NAME,
         RequestExtCodecError,
