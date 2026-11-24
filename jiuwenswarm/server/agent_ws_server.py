@@ -3756,6 +3756,12 @@ class AgentWebSocketServer:
             if request.req_method == ReqMethod.ORG_SNAPSHOT:
                 await self._handle_org_snapshot(ws, request, send_lock)
                 return
+            if request.req_method == ReqMethod.ORG_EXPERT_TEAMS_ADD:
+                from jiuwenswarm.server.context import build_ws_request_context
+                from jiuwenswarm.server.dispatch import try_dispatch
+
+                await try_dispatch(build_ws_request_context(self, ws, request, send_lock))
+                return
             if request.req_method == ReqMethod.COMMAND_ADD_DIR:
                 await self._handle_command_add_dir(ws, request, send_lock)
                 return
@@ -8329,7 +8335,10 @@ class AgentWebSocketServer:
                     _upsert(
                         active.team_name,
                         state=getattr(getattr(active, "state", None), "value", None) or "running",
-                        display_name=getattr(getattr(active.agent, "card", None), "name", None),
+                        display_name=(
+                            spec_metadata.get("display_name")
+                            or getattr(getattr(active.agent, "card", None), "name", None)
+                        ),
                         leader_id=getattr(backend, "leader_member_name", None),
                         organization_id=organization_id,
                         agent_group_name=spec_metadata.get("agent_group_name"),
