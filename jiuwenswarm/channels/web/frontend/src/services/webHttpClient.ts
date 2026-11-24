@@ -16,6 +16,7 @@ import { buildRuntimeIdentityHeaders } from './runtimeScope';
 import { createSessionEventGate } from './sessionEventGate';
 import { PauseBufferHook, PAUSABLE_STREAM_EVENTS } from './webClient';
 import { withExpertUiLanguage } from './expertUiLanguage';
+import { withSwarmChatSurface } from './swarmChatSurface';
 import {
   isChatSseTerminal,
   isSteerReceiptSseTerminal,
@@ -771,7 +772,7 @@ export class WebHttpClient {
 
     const requestId = this.generateRequestId();
     options.onRequestId?.(requestId);
-    const requestParams = withExpertUiLanguage(method, params);
+    const requestParams = withSwarmChatSurface(method, withExpertUiLanguage(method, params));
     let assembled;
     try {
       assembled = assembleWebRest(method, requestParams, getGatewayHttpBase());

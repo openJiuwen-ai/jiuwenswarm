@@ -49,6 +49,23 @@ test('failed summary keeps its failure mark instead of a success check', () => {
   assert.ok(!html.includes('lucide-circle-check'));
 });
 
+test('degraded summary keeps its stage status and readable account without exposing warning details', () => {
+  const record = {
+    stages: [{ stage_id: 'trajectory_summary', status: 'degraded' }],
+    summary_tree: { trajectory_summary: 'Complete account', status: 'degraded', problems: [],
+      turns: { A: [{ status: 'completed', segments: [{ status: 'completed' }] }] },
+      warnings: [{ code: 'problem_rejected', message: 'candidate 2: invalid evidence' }] },
+  };
+  for (const agentSummaries of [undefined, null, {}]) {
+    const html = render({ ...record, summary_tree: { ...record.summary_tree, agent_summaries: agentSummaries } });
+    assert.ok(html.includes(`data-kind="${record.stages[0].status}"`));
+    assert.ok(html.includes('stageStatus.degraded'));
+    assert.ok(html.includes('Complete account'));
+    assert.ok(!html.includes('summaryTree.warnings') && !html.includes('invalid evidence'));
+    assert.ok(!html.includes('lucide-circle-check'));
+  }
+});
+
 test('summary detail renders the overall account and agent accounts while keeping turn details off the page', () => {
   const root = 'Root context '.repeat(100) + 'ROOT_END_MARKER';
   const segment = { segment_id: 'A:segment:1', start_node_id: 'A:1', end_node_id: 'A:4',

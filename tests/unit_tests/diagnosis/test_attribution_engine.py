@@ -206,7 +206,8 @@ async def test_summary_failure_and_degradation_are_visible_without_losing_diagno
     assert result.error is None
     assert result.summary_tree["status"] == ("failed" if mode == "exception" else mode)
     lines = [event.text_delta or "" for event in events if event.stage_id == "trajectory_summary"]
-    assert any(("摘要存在不完整项" if mode == "degraded" else "摘要生成失败") in line for line in lines)
+    assert any(("已保留可用摘要" if mode == "degraded" else "摘要暂未生成") in line for line in lines)
+    assert all("duplicate input" not in line and "evidence incomplete" not in line for line in lines)
     assert result.summary_tree["warnings"]
 
 

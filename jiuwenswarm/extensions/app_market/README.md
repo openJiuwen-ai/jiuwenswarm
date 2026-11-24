@@ -39,9 +39,9 @@ sequenceDiagram
 - **状态上报**：每个运行实例签发独立的状态令牌（经 `WORKSWARM_STATUS_TOKEN` 注入），应用按 push 主动上报运行状态，或由市场按 pull 轮询应用的 `/_workswarm/status` 读取（静态托管默认 pull）。上报携带单调递增序号，旧消息不会覆盖新状态；市场据此跟踪 `starting / running / stopping` 生命周期——启动后等待应用进入 `running`（最长 30 秒），发现应用自行退出则转入 `stopping` 清理。
 - **AI 能力**：应用自己的客户端或服务直接访问 Gateway，不经过应用市场。应用按 AI 角色管理会话，复用默认模型策略和历史；超时、重试、清空及退出删除均由应用负责。
 
-需要项目的 Hub 应用在包里声明 `metadata.app.requires_project: true`。应用优先使用市场注入的 `WORKSWARM_APP_PROJECT_ID` 与 `WORKSWARM_APP_WORK_MODE`。旧应用和本地发布应用仍可用 `WORKSWARM_SOURCE_SESSION` 查询 Gateway 的 `session.get_metadata`。两种方式均使用实际项目和工作模式，缺失时明确报错。
+所有市场应用启动前都须绑定可用项目。市场安装 Hub 应用时按应用目录创建或绑定项目，本地发布应用与旧安装缺少绑定时在启动前补齐。应用优先使用市场注入的 `WORKSWARM_APP_PROJECT_ID` 和 `WORKSWARM_APP_WORK_MODE`。兼容旧宿主时，本地发布应用可用 `WORKSWARM_SOURCE_SESSION` 调用 Gateway 的 `session.get_metadata`。
 
-Hub apps that require a project declare `metadata.app.requires_project: true` in the package. Use `WORKSWARM_APP_PROJECT_ID` and `WORKSWARM_APP_WORK_MODE` when both are present. For existing or locally published apps, use `WORKSWARM_SOURCE_SESSION` to query `session.get_metadata`. Pass the resolved project and work mode to NPC sessions and report an error if both sources are unavailable.
+Every market app needs an available project before it can start. Installation creates or links a project for Hub apps. The market repairs missing bindings for locally published apps and older installations before launching them. Use the injected `WORKSWARM_APP_PROJECT_ID` and `WORKSWARM_APP_WORK_MODE`. On older hosts, locally published apps can use `WORKSWARM_SOURCE_SESSION` to query `session.get_metadata`.
 
 纯对话 NPC 可在 `session.create` 中指定 `execution_profile:"app_role"` 和 `role_instructions`：保留精简基础系统提示、应用角色规则及自身历史，不加载项目指令、记忆、技能或工具。项目归属不变，支持流式响应和取消。详见[角色会话说明](../../../docs/zh/AppRoleSessions.md)。
 
@@ -53,13 +53,21 @@ Text-only NPCs can create sessions with `execution_profile:"app_role"` and `role
 
 ## Hub 应用更新与二次开发 / Updates and local development
 
-在已安装的 Hub 应用卡片点击「转为本地应用」，即可在原目录编辑、运行或发布。转换保留同一张卡片、项目、数据和 Git 历史，应用退出原 Hub 资产的更新流程。
+在已安装的 Hub 应用卡片点击「转为本地应用」，即可在原目录编辑、运行或发布。转换保留同一张卡片、项目、数据和 Git 历史。应用退出原 Hub 资产的更新流程。
 
 Choose **Convert to Local App** on an installed Hub app to edit, run, or publish it from its current directory. The card, project, data, and Git history stay in place. The app stops receiving updates for the original Hub asset.
 
-更新时会备份完整的旧工作目录，成功提示会显示备份位置。安装目录内的 `data/` 和 Git 仓库会复制到新版本。Hub 随包服务脚本仅继承启动所需的系统环境变量，默认在 WebChannel 绑定回环地址的部署开启。共享部署可设 `APP_MARKET_ALLOW_HUB_CODE=0`，受信部署可设为 `1`。
+发布抽屉顶部预览应用图标、名称、版本和简介。停止、删除等市场操作的结果显示在右上角，卡片列表保持原位。
 
-Updates back up the entire previous working directory and report its location. The installed `data/` directory and Git repository are copied to the new release. Bundled Hub servers inherit only the system environment needed to launch. Execution defaults to enabled for loopback WebChannel bindings. Set `APP_MARKET_ALLOW_HUB_CODE=0` on shared deployments or opt in with `1` on trusted deployments.
+The publish drawer previews the app icon, name, version, and description. App Market reports actions such as stopping or deleting an app in the upper-right corner, keeping the card list in place.
+
+在详情页删除或卸载成功后会返回全部应用。从详情页选择重新安装会进入应用广场。详情页会显示更新进度，并提供取消入口。
+
+After deleting or uninstalling an app from its detail page, App Market returns to All Apps. Choosing **Reinstall** opens App Plaza. The detail page shows update progress and lets you cancel the update.
+
+更新前，应用绑定的所有编辑会话都必须空闲。更新时会备份完整的旧工作目录，成功提示会显示备份位置。安装目录内的 `data/` 和 Git 仓库会复制到新版本。Hub 随包服务脚本仅继承启动所需的系统环境变量，默认在 WebChannel 绑定回环地址的部署开启。共享部署可设 `APP_MARKET_ALLOW_HUB_CODE=0`，受信部署可设为 `1`。
+
+All editor sessions linked to the app must be idle before updating. Updates back up the entire previous working directory and report its location. The installed `data/` directory and Git repository are copied to the new release. Bundled Hub servers inherit only the system environment needed to launch. Execution defaults to enabled for loopback WebChannel bindings. Set `APP_MARKET_ALLOW_HUB_CODE=0` on shared deployments or opt in with `1` on trusted deployments.
 
 卸载会从应用市场移除应用，默认保留本地文件。选择同时清理本地文件时，如果清理未完成，市场会提示检查安装目录。
 
@@ -69,9 +77,9 @@ Uninstalling removes the app from App Market and keeps local files by default. I
 
 普通 Web 端保留应用市场右侧 sandbox iframe 内嵌面板（应用须允许嵌入），支持展开、收起、关闭页面。Electron 使用独立的内置浏览器窗口，不显示子窗口任务栏按钮；最小化后从应用市场“打开／恢复应用”恢复，重复打开不重载当前对局。
 
-两端的“编辑”共用每个应用持久绑定的编辑会话；首次未绑定或确认会话已删除时，在来源会话原项目创建真实空会话并保存关联，预填名称和源码入口（不发送）。再次点击保留原会话历史及草稿，并在右侧展开应用页签；未运行的应用会先启动，失败则留在市场。Electron 在独立窗口与编辑侧栏之间移动同一原生页面，保留运行状态和应用持久分区；Web 复用同一 iframe。关闭编辑页签只隐藏对应预览，不停止服务。侧栏顶栏的“重新加载应用预览”可反复重载页面，不重启服务、不清持久化存档；页面内存态会重置，Web 预览回到应用入口。
+两端的“编辑”每次点击都在应用项目下新建一个会话，并在输入框预填应用名称、版本、简介、源码入口和简短的二次开发引导（不自动发送）。未运行的应用会先启动，失败则留在市场。Electron 在独立窗口与编辑侧栏之间移动同一原生页面，保留运行状态和应用持久分区；Web 复用同一 iframe。关闭编辑页签只隐藏对应预览，不停止服务。侧栏顶栏的“重新加载应用预览”可反复重载页面，不重启服务、不清持久化存档；页面内存态会重置，Web 预览回到应用入口。
 
-Edit creates an empty conversation in the original app conversation’s project, with the app name and source entry prefilled as an unsent draft, and shows the app in the right sidebar on both Web and Electron. A stopped app starts first; startup failure leaves the user in App Market. Electron moves the same native page between its window and the editor without losing its runtime or storage partition. Web reuses the existing iframe. Closing the editor tab does not stop the app. Reload app preview reloads only the page, preserving its service and browser storage. In-memory page state resets; Web previews return to the app entry URL.
+Each Edit click creates a new conversation in the app-owned project and prefills the input with the app name, version, description, source entry, and a short development guide without sending it. A stopped app starts first; startup failure leaves the user in App Market. Electron moves the same native page between its window and the editor without losing its runtime or storage partition. Web reuses the existing iframe. Closing the editor tab does not stop the app. Reload app preview reloads only the page, preserving its service and browser storage. In-memory page state resets; Web previews return to the app entry URL.
 
 关闭窗口或页面后服务继续运行。实例停止、删除或从实例列表消失时，市场清理其对应容器。Electron 使用按应用 ID 划分的持久分区。Web 为每个应用分配专属的 `*.localhost` 主机，避免端口复用时读到其他应用的缓存。浏览器存储按协议、主机和端口隔离，原 `127.0.0.1` 来源的数据不会自动迁移。多存档、世界状态及 NPC 会话绑定由应用存档系统负责。
 
@@ -111,7 +119,7 @@ Closing an app page leaves its service running. The market removes the correspon
 
 应用开发规范与接口用法见 [技能说明](../../resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/SKILL.md)。
 
-`app_market.edit_session` resolves the app-owned persistent editor conversation through routed Core RPCs. First use creates an empty conversation in the source project; subsequent clicks preserve its history and draft. Only a confirmed missing session permits replacement. Transient errors retain the binding; republishing preserves it, while deleting an app does not delete its conversation. Concurrent requests are serialized per app.
+`app_market.edit_session` uses routed Core RPCs to create a conversation for each distinct edit operation. Retries can reuse the operation's `edit_token`. Requests are serialized per app. Republishing preserves the app bindings for all editor conversations, and deleting an app preserves the conversations.
 
 编辑会话标题栏提供“打开应用预览”，关闭侧栏或刷新后都可恢复；应用未运行时先启动。普通会话不显示此入口。The editor header keeps an Open app preview action after closing the pane or refreshing. It starts a stopped app before restoring its preview; ordinary conversations do not show this action.
 

@@ -15,6 +15,8 @@ from typing import Any
 
 from agent_gateway.common.work_mode import DEFAULT_WEB_WORK_MODE
 
+from jiuwenswarm.runtime.app_role import is_npc_session
+
 
 def session_type_from_metadata(meta: dict[str, Any]) -> str:
     """Keep conversation type independent of the agent/team execution mode."""
@@ -40,6 +42,7 @@ def to_session_info(meta: dict[str, Any]) -> dict[str, Any]:
         "message_count": int(meta.get("message_count", 0)),
         "mode": str(meta.get("mode", "unknown")),
         "type": session_type_from_metadata(meta),
+        **({"npc_session": True} if is_npc_session(meta) else {}),
         "team_name": str(meta.get("team_name", "")),
         "agent_group_name": str(meta.get("agent_group_name", "")),
         "pinned": bool(meta.get("pinned", False)),

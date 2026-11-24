@@ -2138,6 +2138,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         assistance_origin: 'none',
       },
     ): Promise<boolean> => {
+      const sessionState = useSessionStore.getState();
+      const sessionMetadata = sessionState.currentSession?.session_id === sessionId
+        ? sessionState.currentSession
+        : sessionState.sessions.find((session) => session.session_id === sessionId);
+      if (sessionMetadata?.npc_session) {
+        onErrorRef.current?.(t('chat.npcSessionReadOnly'));
+        return false;
+      }
       if (!options?.queuedTaskId && selectedExpertTeamId(sessionId)) {
         if (!content.trim() && !mediaItems.length) return false;
         try {
@@ -2167,10 +2175,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           return false;
         }
       }
-      const sessionState = useSessionStore.getState();
-      const sessionMetadata = sessionState.currentSession?.session_id === sessionId
-        ? sessionState.currentSession
-        : sessionState.sessions.find((session) => session.session_id === sessionId);
       if (!useChatStore.getState().getRuntime(sessionId)?.isProcessing && isConversationModelGroupBlocked({
         mode: sessionState.getRuntime(sessionId)?.mode,
         cronId: sessionMetadata?.cron_id,

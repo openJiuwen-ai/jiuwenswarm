@@ -16,6 +16,7 @@ import { readStoredSessionId } from './authClient';
 import i18n from '../i18n';
 import { appendRuntimeScopeQuery } from './runtimeScope';
 import { withExpertUiLanguage } from './expertUiLanguage';
+import { withSwarmChatSurface } from './swarmChatSurface';
 import { GoalRecord } from '../types/goal';
 import { createSessionEventGate } from './sessionEventGate';
 import { RuntimeResume } from './runtimeResume';
@@ -44,6 +45,7 @@ const MAX_RECONNECT_ATTEMPTS = 5;
 const DEFAULT_TIMEOUT_MS = 15000;
 const MAX_RECOVERY_ATTEMPTS = 3;
 const MIN_RECOVERY_RETRY_MS = 1000;
+
 const MAX_RECOVERY_RETRY_MS = 30_000;
 
 /** 暂停期间暂存、恢复后回放的流式事件 */
@@ -370,7 +372,7 @@ class WebClient {
       type: 'req',
       id,
       method,
-      params: withExpertUiLanguage(method, params),
+      params: withSwarmChatSurface(method, withExpertUiLanguage(method, params)),
       ...(options.isStream ? { is_stream: true } : {}),
     });
 
@@ -480,7 +482,7 @@ class WebClient {
       type: 'req',
       id: this.generateRequestId(),
       method,
-      params: params ?? {},
+      params: withSwarmChatSurface(method, params) ?? {},
       ...(options.isStream ? { is_stream: true } : {}),
     });
 

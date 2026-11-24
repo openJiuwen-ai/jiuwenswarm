@@ -7,6 +7,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import json
+from contextvars import ContextVar
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
@@ -44,6 +45,33 @@ from jiuwenswarm.server.wire_truncate import split_history_record_for_stream
 
 _CONFIG = {"symphony": {"orchestration": {"enabled": True}}, "react": {"subagent_runtime": {"enabled": True}}}
 _RESEARCHER_NAMES = {"zh": "调研专家", "en": "Research Expert"}
+
+
+def _reset_core_fs_lock_state() -> None:
+    """Detach openjiuwen's process-global file locks from whichever loop built them.
+
+    The core lock manager caches loop-bound asyncio primitives (its ``_state_lock``
+    and each entry's ``Condition``) in class attributes, while pytest-asyncio gives
+    every test a fresh event loop. A cache inherited from an earlier test fails
+    with "bound to a different event loop" once a file tool runs again, so the
+    dispatch below cannot assume it owns a clean manager.
+    """
+    from openjiuwen.core.sys_operation.local._rw_lock_manager import ReadWriteLockManager
+
+    for entry in tuple(ReadWriteLockManager._locks.values()):  # noqa: SLF001
+        entry.lock.evict_singleton()
+    ReadWriteLockManager._locks.clear()  # noqa: SLF001
+    ReadWriteLockManager._idle_heap.clear()  # noqa: SLF001
+    ReadWriteLockManager._idle_deadlines.clear()  # noqa: SLF001
+    ReadWriteLockManager._state_lock = None  # noqa: SLF001
+
+
+@pytest.fixture(autouse=True)
+def _isolated_core_fs_locks():
+    """Keep this file's file-tool locks from leaking into or out of its tests."""
+    _reset_core_fs_lock_state()
+    yield
+    _reset_core_fs_lock_state()
 
 
 def _reply(content="", *calls):
@@ -494,8 +522,15 @@ async def test_node_failure_blocks_its_branch_only(tmp_path, monkeypatch, proble
         payload = json.loads(manifest.read_text())
         payload["runtime"] = {"provider_name": "codex"}
         manifest.write_text(json.dumps(payload), encoding="utf-8")
+    node_deadline: ContextVar[asyncio.Timeout] = ContextVar("symphony_node_deadline")
     if problem == "timeout":
-        monkeypatch.setattr(task_tool_module, "resolve_subagent_task_timeout_s", lambda: 0.3)
+        def track_node_timeout(delay: float) -> asyncio.Timeout:
+            deadline = asyncio.timeout(delay)
+            node_deadline.set(deadline)
+            return deadline
+
+        monkeypatch.setattr(task_tool_module, "resolve_subagent_task_timeout_s", lambda: 15.0)
+        monkeypatch.setattr(task_tool_module, "timeout", track_node_timeout)
 
     graph = _plan({
         "upstream": _node("upstream", "deliverable", expert=expert),
@@ -517,6 +552,8 @@ async def test_node_failure_blocks_its_branch_only(tmp_path, monkeypatch, proble
             assert task == "upstream"
             if problem == "timeout":
                 try:
+                    # Expire this node once its model is running, regardless of startup time.
+                    node_deadline.get().reschedule(asyncio.get_running_loop().time())
                     await asyncio.Future()
                 finally:
                     stopped.set()

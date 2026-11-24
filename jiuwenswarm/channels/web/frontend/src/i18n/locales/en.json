@@ -194,7 +194,6 @@
       "directory": "App directory",
       "packageSize": "Package size",
       "sourceSize": "Source size",
-      "requiresProject": "Requires project",
       "permissions": "Permissions",
       "serverScript": "Server script"
     },
@@ -206,7 +205,7 @@
     "updateConfirm": "Update {{name}} to v{{version}}{{size}}? Running instances will stop. The full current working directory, including local edits, will be backed up. data/ and the Git repository will be copied to the new version.",
     "installServerWarning": "This app ships scripts/app_server.py and will start a local service process.",
     "installPermissions": "Declared permissions: {{list}}",
-    "installProjectNote": "This app requires a project context and will use its own application project.",
+    "installProjectNote": "Installation creates or links an app project for runtime and editor sessions.",
     "installDirPrompt": "Choose the install directory (empty uses the default):",
     "installDirLabel": "Install directory (server path)",
     "installDirHint": "The directory lives on the machine running the backend; the app is installed into a subdirectory named after the app.",
@@ -220,6 +219,7 @@
     "updateSuccess": "Updated {{name}}",
     "updateBackupSuccess": "Updated {{name}}. The old working directory is backed up at {{path}}",
     "runDisabled": "This deployment does not allow server scripts from Hub apps.",
+    "projectUnavailable": "Could not link an available project to this app. Check the project and retry.",
     "alreadyInstalled": "This version is already installed",
     "alreadyLatest": "Already up to date",
     "installCancelling": "Cancelling installation…",
@@ -260,7 +260,8 @@
     "editSessionTitle": "Edit {{name}}",
     "reloadPreview": "Reload app preview",
     "reloadFailed": "Failed to reload app preview",
-    "editPrompt": "Help me modify the app “{{name}}”. Its source entry is: {{entryPath}}\nPlease keep its existing data and saves. Changes I want: ",
+    "editPrompt": "Help me modify the app “{{name}}” (v{{version}}).\nAbout the app: {{description}}\nSource entry: {{entryPath}}\n\nPlease review the existing code and data first and keep existing data and saves. Suggested steps:\n1. Explain the current implementation, entry file, and key data;\n2. Make the smallest change for my request and test it;\n3. Tell me when a new version should be published.\nChanges I want: ",
+    "noDescription": "No description yet",
     "expandPane": "Expand app panel",
     "restorePane": "Restore split view",
     "hidePane": "Hide app panel",
@@ -2410,6 +2411,8 @@
     }
   },
   "chat": {
+    "npcSessionLabel": "NPC",
+    "npcSessionReadOnly": "This is an application NPC conversation. Continue the conversation in the app.",
     "recordingInProgress": "Recording. Select Stop to transcribe.",
     "toolResultLabel": "Tool result",
     "duplexControls": {

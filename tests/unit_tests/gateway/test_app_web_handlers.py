@@ -60,11 +60,6 @@ _register_test_provider("mcp_registry", _mcp_registry_module)
 from agent_gateway.routing.agent_client import WebSocketAgentServerClient  # pylint: disable=wrong-import-order
 from agent_gateway.routing.keys import AgentRef, RoutingKey  # pylint: disable=wrong-import-order
 
-_REA_CONFIG_READY = hasattr(
-    config_set_handlers,
-    "update_rea_enabled_in_config",
-)
-
 
 class FakeWebChannel:
     connection_user_id = staticmethod(WebChannel.connection_user_id)
@@ -1551,15 +1546,11 @@ async def test_config_get_returns_rsi_switch(monkeypatch, raw_config, expected):
         ({"rea": {"enabled": False}}, "false"),
     ],
 )
-@pytest.mark.skipif(
-    not _REA_CONFIG_READY,
-    reason="REA config support is delivered by the preceding backend PR",
-)
 async def test_config_get_returns_rea_switch(monkeypatch, raw_config, expected):
     channel = FakeWebChannel()
     monkeypatch.setattr(config_set_handlers, "get_config_raw", lambda: raw_config)
     monkeypatch.setattr(config_set_handlers, "get_config", lambda: raw_config)
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=make_config_routing_client()))
 
     await channel.methods["config.get"](
         object(),
@@ -1628,10 +1619,6 @@ async def test_config_save_all_persists_rsi_switch(monkeypatch):
     }
 
 
-@pytest.mark.skipif(
-    not _REA_CONFIG_READY,
-    reason="REA config support is delivered by the preceding backend PR",
-)
 @pytest.mark.asyncio
 async def test_config_save_all_persists_rea_switch(monkeypatch):
     channel = FakeWebChannel()
@@ -1662,6 +1649,7 @@ async def test_config_save_all_persists_rea_switch(monkeypatch):
     _register_web_handlers(
         WebHandlersBindParams(
             channel=channel,
+            agent_client=make_config_routing_client(on_config_saved),
             on_config_saved=on_config_saved,
         )
     )
