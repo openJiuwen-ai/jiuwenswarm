@@ -333,7 +333,7 @@ function typeFromId(id: string): string {
 }
 
 function labelFromId(id: string): string {
-  return id.replace(/^(skill:|expert:|slot:|input:|output:|artifact:|task:|type:)/, '');
+  return id.replace(/^(skill:|slot:|input:|output:|artifact:|task:|type:)/, '');
 }
 
 function normalizeNode(raw: RawRecord, index: number, skillsById: Map<string, RawRecord>): GraphNode {
@@ -386,6 +386,7 @@ function normalizeGraph(payload: SkillGraphPayload): NormalizedGraph {
 
   asArray(payload.graph?.nodes).forEach((node, index) => {
     const normalized = normalizeNode(node, index, skillsById);
+    if (normalized.type === 'expert' || normalized.id.startsWith('expert:')) return;
     nodeMap.set(normalized.id, normalized);
   });
 
@@ -455,8 +456,8 @@ function nodeSearchText(node: GraphNode): string {
   return values.map((value) => String(value || '')).join(' ');
 }
 
-function isCapabilityNode(node: GraphNode): boolean {
-  return node.type === 'skill' || node.type === 'expert' || node.id.startsWith('skill:');
+function isSkillNode(node: GraphNode): boolean {
+  return node.type === 'skill' || node.id.startsWith('skill:');
 }
 
 function nodeRadius(node: GraphNode): number {
@@ -895,12 +896,11 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
 
   const visible = useMemo(() => {
     const text = query.trim().toLowerCase();
-    const hasExperts = graph.nodes.some((node) => node.type === 'expert');
     const nodeById = new Map(graph.nodes.map((node) => [node.id, node]));
     const previousById = new Map(visibleRef.current.nodes.map((node) => [node.id, node]));
-    const matchedCapabilityIds = new Set(
+    const matchedSkillIds = new Set(
       graph.nodes
-        .filter(isCapabilityNode)
+        .filter(isSkillNode)
         .filter((node) => !text || nodeSearchText(node).toLowerCase().includes(text))
         .map((node) => node.id),
     );
@@ -910,7 +910,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
       const target = nodeById.get(edge.target);
       if (!source || !target) return false;
       if (!text) return true;
-      return matchedCapabilityIds.has(edge.source) || matchedCapabilityIds.has(edge.target);
+      return matchedSkillIds.has(edge.source) || matchedSkillIds.has(edge.target);
     });
 
     const linkedIds = new Set<string>();
@@ -920,8 +920,8 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     });
 
     const nodes = graph.nodes.filter((node) => {
-      if (!text) return linkedIds.has(node.id) || graph.edges.length === 0 || (hasExperts && isCapabilityNode(node));
-      return linkedIds.has(node.id) || matchedCapabilityIds.has(node.id);
+      if (!text) return linkedIds.has(node.id) || graph.edges.length === 0 || (isSkillNode(node) && node.degree === 0);
+      return linkedIds.has(node.id) || matchedSkillIds.has(node.id);
     }).map((node) => {
       const previous = previousById.get(node.id);
       return {
@@ -1516,15 +1516,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
           ctx.lineWidth = isPack ? 2 : 1;
         }
         ctx.beginPath();
-        if (node.type === 'expert') {
-          ctx.moveTo(node.x, node.y - displayRadius);
-          ctx.lineTo(node.x + displayRadius, node.y);
-          ctx.lineTo(node.x, node.y + displayRadius);
-          ctx.lineTo(node.x - displayRadius, node.y);
-          ctx.closePath();
-        } else {
-          ctx.arc(node.x, node.y, displayRadius, 0, Math.PI * 2);
-        }
+        ctx.arc(node.x, node.y, displayRadius, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
         ctx.restore();
@@ -1637,11 +1629,10 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     );
   }, [selectedNode, visible.edges]);
 
-  const visibleCapabilityNodes = useMemo(
-    () => visible.nodes.filter(isCapabilityNode),
+  const visibleSkillNodes = useMemo(
+    () => visible.nodes.filter(isSkillNode),
     [visible.nodes],
   );
-  const visibleExpertCount = visibleCapabilityNodes.filter((node) => node.type === 'expert').length;
 
   const isGraphBuildRunning = buildProgress?.status === 'running';
   const isGraphBuildError = buildProgress?.status === 'error';
@@ -1705,10 +1696,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
     <div ref={panelRef} data-testid="skill-graph-panel" className={`skill-graph-panel${isGraphFullscreen ? ' skill-graph-panel--fullscreen' : ''}`}>
       <aside data-testid="skill-graph-panel-sidebar" className="skill-graph-panel__sidebar">
         <div data-testid="skill-graph-panel-stats" className="skill-graph-panel__stats skill-graph-panel__stats--compact">
-          <span data-testid="skill-graph-panel-stats-skill-count"><strong>{visibleCapabilityNodes.length - visibleExpertCount}</strong>{t('skills.graph.stats.skillsSuffix')}</span>
-          {visibleExpertCount > 0 && (
-            <span data-testid="skill-graph-panel-stats-expert-count"><strong>{visibleExpertCount}</strong>{t('skills.graph.stats.expertsSuffix')}</span>
-          )}
+          <span data-testid="skill-graph-panel-stats-skill-count"><strong>{visibleSkillNodes.length}</strong>{t('skills.graph.stats.skillsSuffix')}</span>
           <span data-testid="skill-graph-panel-stats-edge-count"><strong>{visible.edges.length}</strong>{t('skills.graph.stats.edgesSuffix')}</span>
         </div>
 
@@ -1819,7 +1807,7 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
         </div>
 
         <section data-testid="skill-graph-panel-node-list" className="skill-graph-panel__node-list">
-          <h3 data-testid="skill-graph-panel-node-list-title">{t('skills.graph.capabilityList')}</h3>
+          <h3 data-testid="skill-graph-panel-node-list-title">{t('skills.graph.skillList')}</h3>
           <label data-testid="skill-graph-panel-search" className="skill-graph-panel__search">
             <input
               value={query}
@@ -1830,10 +1818,10 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
             />
           </label>
           <div data-testid="skill-graph-panel-node-list-items" className="skill-graph-panel__node-list-items">
-            {visibleCapabilityNodes.length === 0 ? (
-              <div data-testid="skill-graph-panel-node-list-empty" className="skill-graph-panel__empty">{t('skills.graph.noVisibleCapabilities')}</div>
+            {visibleSkillNodes.length === 0 ? (
+              <div data-testid="skill-graph-panel-node-list-empty" className="skill-graph-panel__empty">{t('skills.graph.noVisibleSkills')}</div>
             ) : (
-              [...visibleCapabilityNodes]
+              [...visibleSkillNodes]
                 .sort((a, b) => b.degree - a.degree)
                 .slice(0, 80)
                 .map((node) => (
@@ -1845,11 +1833,6 @@ export const SkillGraphPanel = forwardRef<SkillGraphPanelHandle, SkillGraphPanel
                     onClick={(event) => selectNode(node, event.currentTarget)}
                   >
                     <span>{node.label}</span>
-                    {node.type === 'expert' && (
-                      <span data-testid="skill-graph-panel-node-type" data-variant={node.id} className="shrink-0 text-xs text-text-muted">
-                        {t('skills.graph.expertLabel')}
-                      </span>
-                    )}
                   </button>
                 ))
             )}
