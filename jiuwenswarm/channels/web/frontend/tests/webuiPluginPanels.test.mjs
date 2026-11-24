@@ -17,6 +17,7 @@ import {
   chooseWebUIPluginPanel,
   closeWebUIPluginPanelTab,
   EMPTY_WEBUI_PLUGIN_PANEL_TABS,
+  hideWebUIPluginPanels,
   isWebUIPluginPanelDraftTab,
   openWebUIPluginPanelDraft,
   removeWebUIPluginPanels,
@@ -173,6 +174,26 @@ test('pruning drops plugin tabs whose contribution disappeared and keeps blank t
   state = openWebUIPluginPanelDraft(state);
   state = removeWebUIPluginPanels(state, ['pkg.b|preview']);
   assert.deepEqual(state.tabs, [PLUGIN_A, DRAFT_3]);
+});
+
+test('hiding keeps the parked tab and drops only its activation', () => {
+  let state = openWebUIPluginPanelDraft(EMPTY_WEBUI_PLUGIN_PANEL_TABS);
+  state = chooseWebUIPluginPanel(state, DRAFT_1, 'pkg.a|files');
+  state = openWebUIPluginPanelDraft(state);
+  state = chooseWebUIPluginPanel(state, DRAFT_2, 'pkg.b|preview');
+  // An inactive tab can be hidden without touching the current selection.
+  const inactiveHidden = hideWebUIPluginPanels(state, ['pkg.a|files']);
+  assert.deepEqual(inactiveHidden.tabs, state.tabs);
+  assert.equal(inactiveHidden.activeId, PLUGIN_B);
+  assert.equal(hideWebUIPluginPanels(inactiveHidden, ['pkg.a|files']), inactiveHidden,
+    'hiding an already hidden tab is a no-op');
+  // Hiding the active tab hands the content area to the native page; the tab id stays parked so
+  // the tab bar renders it again once the preference is back on.
+  const hidden = hideWebUIPluginPanels(inactiveHidden, ['pkg.b|preview']);
+  assert.deepEqual(hidden.tabs, inactiveHidden.tabs);
+  assert.equal(hidden.activeId, null, 'hiding the active tab hands the content area to the native page');
+  assert.equal(hideWebUIPluginPanels(hidden, ['pkg.unknown|none']), hidden,
+    'hiding an untracked panel is a no-op');
 });
 
 test('pruning the active plugin tab falls back to the native page', () => {
