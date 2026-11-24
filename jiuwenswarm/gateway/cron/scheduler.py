@@ -724,6 +724,7 @@ class CronSchedulerService:
             timezone=job.timezone,
             exec_channel_id=channel_id,
             exec_session_id=exec_session_id,
+            manual=True,
         )
         self._schedule_event(wake_dt, "wake", job.id, run_id)
         self._schedule_event(push_dt, "push", job.id, run_id)
@@ -892,6 +893,11 @@ class CronSchedulerService:
 
     async def _handle_event(self, ev: _Event) -> None:
         job = self._jobs.get(ev.job_id)
+        state = self._runs.get(ev.run_id)
+        manual_run = bool(state and state.manual)
+        if job is None and manual_run:
+            # 立即执行可能早于 reload：从 store 补取被停用/未装载的 job。
+            job = await self._store.get_job(ev.job_id)
 
         # Handle proactive.tick mode: send WebSocket request to AgentServer
         if job is not None and job.mode == "proactive.tick" and ev.kind == "wake":
@@ -1024,8 +1030,9 @@ class CronSchedulerService:
                 chat_type=state.chat_type,
             )
             logger.info("[Cron] push_update using rebuilt job from state job_id=%s run_id=%s", ev.job_id, ev.run_id)
-        # push_update 是对已触发任务的补发，即使单次任务已过期也必须放行，否则真正结果永远发不出去
-        if not job.enabled and ev.kind != "push_update":
+        # push_update 是对已触发任务的补发，即使单次任务已过期也必须放行，否则真正结果永远发不出去。
+        # 手动「立即执行」同理：开关关闭只影响定时调度，不应吞掉用户显式触发的这一轮。
+        if not job.enabled and ev.kind != "push_update" and not manual_run:
             return
 
         if ev.kind == "wake":
