@@ -141,6 +141,10 @@ def _allowed_identity_path(path: str) -> bool:
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
+    """Create the enterprise backend independently of the personal Web server."""
+    if os.getenv("JIUWENSWARM_EDITION", "").strip().lower() != "enterprise":
+        raise RuntimeError("The enterprise user backend requires JIUWENSWARM_EDITION=enterprise")
+
     cfg = settings or Settings.from_env()
     catalog = Catalog(cfg.schema)
     db = create_async_engine(

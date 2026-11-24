@@ -11,7 +11,7 @@ async function loadModule(file, env) {
   return import(`data:text/javascript;base64,${Buffer.from(bundled.outputFiles[0].text).toString('base64')}`);
 }
 
-for (const base of ['/', './', '/portal/user-web/', '/chat/']) {
+for (const base of ['/', './']) {
   test(`chat and design routes round-trip under ${base}`, async () => {
     const routes = await loadModule('src/multi-session/routing/route.ts', { BASE_URL: base });
     for (const route of [
@@ -24,19 +24,16 @@ for (const base of ['/', './', '/portal/user-web/', '/chat/']) {
       const browserPath = new URL(path, 'https://example.test/chat/current').pathname;
       assert.deepEqual(routes.parseChatRoute(browserPath), route);
     }
-    if (base === '/chat/') {
-      assert.equal(routes.chatRoutePath({ kind: 'chat-new' }), '/chat/chat/new');
-    }
-    if (base === '/portal/user-web/') assert.equal(routes.parseChatRoute('/chat/new'), null);
+    assert.equal(routes.chatRoutePath({ kind: 'chat-new' }), '/chat/new');
   });
 }
 
-test('the actual Vite config defaults to root, accepts portal base and preserves Electron', async () => {
+test('the actual Vite config ignores the legacy base variable and preserves Electron', async () => {
   const saved = { base: process.env.VITE_BASE_PATH, electron: process.env.ELECTRON };
   try {
     for (const [base, electron, expected] of [
-      [undefined, undefined, '/'], ['', undefined, '/'], ['./', undefined, './'],
-      ['/portal/user-web/', undefined, '/portal/user-web/'],
+      [undefined, undefined, '/'], ['', undefined, '/'], ['./', undefined, '/'],
+      ['/portal/user-web/', undefined, '/'],
       ['/portal/user-web/', 'true', './'],
     ]) {
       if (base === undefined) delete process.env.VITE_BASE_PATH;
@@ -54,19 +51,15 @@ test('the actual Vite config defaults to root, accepts portal base and preserves
   }
 });
 
-test('API prefix stays separate from page base and preserves explicit URLs', async () => {
+test('both editions use root API routes and preserve explicit backend addresses', async () => {
   const saved = globalThis.window;
   globalThis.window = { location: { protocol: 'https:', host: 'example.test' } };
   try {
     for (const edition of ['personal', 'enterprise']) {
       globalThis.window.__JIUWENSWARM_EDITION__ = edition;
       const env = await loadModule('src/utils/env.ts', { BASE_URL: '/portal/user-web/', VITE_API_PREFIX: '/portal/api' });
-      assert.equal(env.getGatewayHttpBase(), `/portal/api/${edition === 'enterprise' ? 'gateway-api' : 'api'}/v1`);
-      assert.equal(env.getWsBase(), 'wss://example.test/portal/api/ws');
-      for (const value of ['https://obs.test/file?signature=abc', '//cdn.test/image.png', 'data:image/png;base64,x', 'blob:https://example.test/id']) {
-        assert.equal(env.resolveApiUrl(value), value);
-      }
-      assert.equal(env.resolveApiUrl('/portal/api/file-api/download?token=abc'), '/portal/api/file-api/download?token=abc');
+      assert.equal(env.getGatewayHttpBase(), `/${edition === 'enterprise' ? 'gateway-api' : 'api'}/v1`);
+      assert.equal(env.getWsBase(), '');
     }
     const explicit = await loadModule('src/utils/env.ts', {
       VITE_API_PREFIX: '/portal/api', VITE_GATEWAY_HTTP_BASE: 'https://gateway.test/api/v1', VITE_WS_BASE: 'wss://gateway.test/ws',
@@ -85,7 +78,7 @@ test('URL utilities can be imported before a browser window exists', async () =>
   assert.equal(env.getWebTransport(), 'websocket');
 });
 
-test('attachment and artifact URLs keep tenant scope when a portal prefix is configured', async () => {
+test('root attachment and artifact URLs retain tenant scope and signed external links', async () => {
   const saved = globalThis.window;
   globalThis.window = { location: { search: '?user_id=user1&group_id=group1&bot_id=bot1' } };
   try {
@@ -94,7 +87,7 @@ test('attachment and artifact URLs keep tenant scope when a portal prefix is con
       const uploads = await loadModule('src/services/uploadFileUrl.ts', { VITE_API_PREFIX: '/portal/api' });
       const path = '/workspace/agent/sessions/session-one/uploads/image one.png';
       const url = new URL(uploads.uploadFileUrl(path), 'https://example.test');
-      assert.equal(url.pathname, '/portal/api/file-api/raw-file');
+      assert.equal(url.pathname, '/file-api/raw-file');
       assert.equal(url.searchParams.get('path'), path);
       if (edition === 'enterprise') {
         assert.equal(url.searchParams.get('session_id'), 'session-one');
@@ -105,11 +98,44 @@ test('attachment and artifact URLs keep tenant scope when a portal prefix is con
       }
     }
     const preview = await loadModule('src/components/ArtifactsPanel/filePreviewModel.ts', { VITE_API_PREFIX: '/portal/api' });
-    assert.equal(preview.artifactDownloadUrl({ downloadUrl: '/file-api/download?token=a%2Fb' }), '/portal/api/file-api/download?token=a%2Fb');
-    assert.equal(preview.artifactDownloadUrl({ downloadUrl: 'https://obs.test/file?signature=abc' }), 'https://obs.test/file?signature=abc');
-    assert.equal(preview.artifactBinaryPreviewUrl({ downloadUrl: '/portal/api/file-api/download?token=a%2Fb' }, 'https://example.test'), '/portal/api/file-api/download?token=a%2Fb&inline=1');
+    assert.equal(preview.artifactDownloadUrl({ downloadUrl: '/file-api/download?token=a%2Fb' }), '/file-api/download?token=a%2Fb');
+    for (const value of ['https://obs.test/file?signature=abc', '//cdn.test/image.png', 'data:image/png;base64,x', 'blob:https://example.test/id']) {
+      assert.equal(preview.artifactDownloadUrl({ downloadUrl: value }), value);
+    }
+    assert.equal(preview.artifactBinaryPreviewUrl({ downloadUrl: '/file-api/download?token=a%2Fb' }, 'https://example.test'), '/file-api/download?token=a%2Fb&inline=1');
   } finally {
     if (saved === undefined) delete globalThis.window;
     else globalThis.window = saved;
+  }
+});
+
+test('artifact preview URLs preserve external signed links and non-file resources', async () => {
+  const preview = await loadModule('src/components/ArtifactsPanel/filePreviewModel.ts', {});
+  for (const value of [
+    'https://obs.test/file?signature=a%2Fb&name=image%20one.png#page=2',
+    '//cdn.test/image.png?signature=a%2Fb',
+    'https://obs.test/file-api/download?signature=abc',
+    '/reports/image.png?signature=abc',
+    'data:image/png;base64,x',
+    'blob:https://example.test/id',
+  ]) {
+    assert.equal(preview.artifactDownloadUrl({ downloadUrl: value }), value);
+    assert.equal(preview.artifactBinaryPreviewUrl({ downloadUrl: value }, 'https://example.test'), value);
+    assert.equal(preview.artifactTextPreviewUrl({ downloadUrl: value }, 'https://example.test'), value);
+    assert.equal(preview.inlineDownloadUrl(value, 'https://example.test'), value);
+  }
+});
+
+test('local file previews request inline delivery and preserve tokens and fragments', async () => {
+  const preview = await loadModule('src/components/ArtifactsPanel/filePreviewModel.ts', {});
+  for (const value of [
+    '/file-api/download?token=a%2Fb#page=2',
+    'https://example.test/file-api/download?token=a%2Fb#page=2',
+    '//example.test/file-api/download?token=a%2Fb#page=2',
+    '/file-api/download?token=a%2Fb&inline=0#page=2',
+  ]) {
+    const expected = '/file-api/download?token=a%2Fb&inline=1#page=2';
+    assert.equal(preview.artifactBinaryPreviewUrl({ downloadUrl: value }, 'https://example.test'), expected);
+    assert.equal(preview.artifactTextPreviewUrl({ downloadUrl: value }, 'https://example.test'), expected);
   }
 });

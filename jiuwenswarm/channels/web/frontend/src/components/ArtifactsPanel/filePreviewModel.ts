@@ -1,4 +1,3 @@
-import { resolveApiUrl } from '../../utils/env';
 import { fileExtension, isCodeLanguageExtension } from './codeLanguageExtensions';
 
 type PreviewFile = {
@@ -70,25 +69,26 @@ const IMAGE_EXTENSIONS = new Set([
 export const HTML_PREVIEW_SANDBOX = 'allow-scripts allow-popups';
 
 export function inlineDownloadUrl(downloadUrl: string, origin: string): string {
-  const url = new URL(resolveApiUrl(downloadUrl), origin);
-  if (url.protocol === 'blob:' || url.protocol === 'data:') return url.href;
+  const url = new URL(downloadUrl, origin);
+  // Only the local file API owns this flag; preserve external signatures verbatim.
+  if (url.origin !== new URL(origin).origin || !url.pathname.startsWith('/file-api/')) return downloadUrl;
   url.searchParams.set('inline', '1');
-  return url.pathname + url.search;
+  return url.pathname + url.search + url.hash;
 }
 
 export function artifactDownloadUrl(resource: PreviewResource): string | null {
-  if (resource.downloadUrl) return resolveApiUrl(resource.downloadUrl);
-  return resource.path ? resolveApiUrl(`/file-api/raw-file?path=${encodeURIComponent(resource.path)}`) : null;
+  if (resource.downloadUrl) return resource.downloadUrl;
+  return resource.path ? `/file-api/raw-file?path=${encodeURIComponent(resource.path)}` : null;
 }
 
 export function artifactBinaryPreviewUrl(resource: PreviewResource, origin: string): string | null {
   if (resource.downloadUrl) return inlineDownloadUrl(resource.downloadUrl, origin);
-  return resource.path ? resolveApiUrl(`/file-api/raw-file?path=${encodeURIComponent(resource.path)}`) : null;
+  return resource.path ? `/file-api/raw-file?path=${encodeURIComponent(resource.path)}` : null;
 }
 
 export function artifactTextPreviewUrl(resource: PreviewResource, origin: string): string | null {
   if (resource.downloadUrl) return inlineDownloadUrl(resource.downloadUrl, origin);
-  return resource.path ? resolveApiUrl(`/file-api/file-content?path=${encodeURIComponent(resource.path)}&encoding=auto`) : null;
+  return resource.path ? `/file-api/file-content?path=${encodeURIComponent(resource.path)}&encoding=auto` : null;
 }
 
 type DecoderOptions = { fatal?: boolean };
