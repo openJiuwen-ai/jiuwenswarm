@@ -540,8 +540,8 @@
 }
 
 .conversation-entity-row__title {
-  font-size: 14px;
-  line-height: 20px;
+  font-size: var(--font-size-base);
+  line-height: calc(20em / 14);
 }
 
 .conversation-entity-row__plus {
@@ -632,7 +632,7 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 13px;
+  font-size: var(--font-size-sm);
 }
 
 .conversation-list-item__meta {
@@ -642,7 +642,7 @@
   align-items: center;
   justify-content: flex-end;
   color: var(--color-text-secondary);
-  font-size: 11px;
+  font-size: var(--font-size-2xs);
   white-space: nowrap;
 }
 

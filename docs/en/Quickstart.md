@@ -289,6 +289,10 @@ In the left sidebar of the Web UI, find "Chat" and enter your question to start:
 
 ![](../assets/images/jiuwenswarm_example.png)
 
+### Adjust interface text size
+
+In the open-source app, go to **Settings → Appearance → Interface font size** and choose 90%, 100%, 110%, 125%, or 140%. Messages, the composer, conversation list text, and settings rows update immediately. Your browser or desktop app retains the selection after a reload. Choose **Default (100%)** to reset the text size alone.
+
 ## Session Management
 
 Click the "+" button below to clear the current session and start a new one:

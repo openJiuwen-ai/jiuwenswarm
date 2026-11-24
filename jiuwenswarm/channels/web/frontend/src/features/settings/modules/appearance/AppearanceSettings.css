@@ -11,7 +11,7 @@
   margin: 0;
   color: var(--color-settings-text-secondary);
   font-size: var(--font-size-xs);
-  line-height: 18px;
+  line-height: 1.5;
 }
 
 .appearance-panel__preview {
@@ -26,7 +26,7 @@
   color: var(--color-settings-text-secondary);
   font-size: var(--font-size-sm);
   font-weight: 600;
-  line-height: 20px;
+  line-height: calc(20em / 13);
 }
 
 .appearance-panel__preview-body {
@@ -34,7 +34,7 @@
   color: var(--color-text-primary);
   font-family: var(--font-body);
   font-size: var(--font-size-base);
-  line-height: 22px;
+  line-height: calc(22em / 14);
 }
 
 .appearance-panel__preview-code {
@@ -44,7 +44,7 @@
   color: var(--color-text-primary);
   font-family: var(--font-mono);
   font-size: var(--font-size-sm);
-  line-height: 20px;
+  line-height: calc(20em / 13);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }

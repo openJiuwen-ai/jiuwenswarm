@@ -897,7 +897,7 @@
       "customFontPlaceholder": "Font names, separated by commas",
       "customFontHint": "Fonts are matched in order against locally installed fonts. Generic families such as sans-serif and monospace are also allowed.",
       "fontSize": "Interface font size",
-      "fontSizeDescription": "Scales interface text proportionally. 100% matches the current default.",
+      "fontSizeDescription": "Adjusts text size in messages, the composer, the conversation list, and settings. Changes take effect immediately and are saved in this browser or desktop app.",
       "fontSizeSmaller": "Smaller (90%)",
       "fontSizeDefault": "Default (100%)",
       "fontSizeLarger": "Larger (110%)",
