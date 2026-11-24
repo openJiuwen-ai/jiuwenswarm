@@ -237,9 +237,17 @@ def test_first_fetch_is_retried_after_the_cooldown(monkeypatch):
     assert get_config() is not None, "冷却期过了要再试一次"
 
 
-def test_cooldown_backs_off_while_the_service_stays_down():
+def test_cooldown_backs_off_while_the_service_stays_down(monkeypatch):
+    # Older gateway versions keep a module-local ±20% jitter in
+    # ``remote_config``; newer ones centralize it in
+    # ``agent_gateway.common.retry``. Both ultimately call
+    # ``random.uniform``, so pin it to make the base progression deterministic
+    # across either pinned gateway revision.
+    import random
+
+    monkeypatch.setattr(random, "uniform", lambda low, high: 1.0)
+
     base = remote_config._RETRY_AFTER_FAILURE_S
-    jitter = remote_config._RETRY_JITTER
     cap = remote_config._RETRY_BACKOFF_MAX_S
 
     waits = []
@@ -247,11 +255,11 @@ def test_cooldown_backs_off_while_the_service_stays_down():
         wait, base = remote_config._backoff(base)
         waits.append(wait)
 
-    assert waits[0] <= remote_config._RETRY_AFTER_FAILURE_S * (1 + jitter), "第一次仍是 30 秒上下"
-    # 只比封顶之前的几次：到了封顶值，抖动会让后一次可能略短于前一次
-    assert all(waits[index] < waits[index + 1] for index in range(4)), "连续失败要越等越久"
-    assert all(wait <= cap * (1 + jitter) for wait in waits), "封顶 10 分钟"
-    assert waits[-1] >= cap * (1 - jitter), "一直失败下去会走到封顶值"
+    assert waits[0] == remote_config._RETRY_AFTER_FAILURE_S, "第一次仍是 30 秒"
+    # 只比封顶之前的几次：到了封顶值，等待时间不再增长。
+    assert all(waits[index] < waits[index + 1] for index in range(5)), "连续失败要越等越久"
+    assert all(wait <= cap for wait in waits), "封顶 10 分钟"
+    assert waits[-1] == cap, "一直失败下去会走到封顶值"
     assert base == cap, "基准也停在封顶值，不会无限涨"
 
 
