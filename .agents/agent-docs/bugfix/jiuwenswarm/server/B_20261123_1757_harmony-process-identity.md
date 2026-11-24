@@ -104,6 +104,42 @@ loopback 监听端口与 resident IPC 端点也已关闭，没有遗留锁。两
 原始记录保存在本地任务目录
 `D:/work_space/.codex-temp/harmony-process-identity-20261123/`，不提交运行产物。
 
+## 2026-11-24 Windows 与 HarmonyOS 规约复核
+
+此次运行代码为 `62b5127e6`；工作区只调整认证 UT 的模拟响应顺序，生产代码没有再次改动。
+新发现的基线认证测试竞态另记于
+[登录回调 UT 竞态](../../tests/unit_tests/common/B_20261124_1812_auth-callback-ut-race.md)。
+
+19 文件 Windows 相关回归为 **629 passed、8 skipped、31 deselected**。
+8 个平台失败在候选和未修改 CI develop `3f2ae160b` 上分别重现，包括 POSIX 进程组 API 和端口复用语义；
+另 23 个 slow 用例未在本批执行，均未计为通过。原始报告为本地任务目录的 `windows-final.xml`。
+
+原生 Windows 实进程以原 develop `fe3da0983` 与候选对照，保留实际 `-m jiuwenswarm.server.worker.main` 启动，
+两侧使用各自 cwd 和源码，未注入创建时间失败。默认 resident 均保持浮点创建时间，启动并响应请求后 Front 断开，
+新 Front 复用同一 Worker 再次响应；最终启动器和实际 Worker 均退出且状态为 0，IPC 端点关闭，无残留 owner/startup 锁文件。
+候选显式 front_loopback 也完成请求并关闭监听、退出进程。该范围未发现新增 Windows 功能回归。
+
+逐项核对 [S_01_process-identity](../../../specs/jiuwenswarm/common/S_01_process-identity.md)：
+
+| 规约 | 本次核验 |
+| --- | --- |
+| S-PID-01 | `AccessDenied` 和 `PermissionError` 使用带类型 ticks 回退；权限未知不被当成进程已退出。 |
+| S-PID-02 | HELLO 优先匹配双方可读 ticks，保留已验证身份；重连、服务树与终止前重读，PID 重用拒绝操作。 |
+| S-PID-03 | 时间戳与 ticks 分字段，实例展示时间与身份分开；Windows 保留数值时间戳与历史记录读取。 |
+| S-PID-04 | 两个来源均不可用时启动明确失败，诊断保留 PID、HELLO 阶段和 traceback；Supervisor 读取诊断。 |
+| S-PID-05 | 无法验证的 owner 保留未知状态；未验证的 Worker 不被当作已退出，也不凭 PID 强制结束。 |
+| S-PID-06 | 使用最后一个右括号定位进程名结束，再读取第 22 字段；空、短、非法 UTF-8 与非正计数均保守失败。 |
+
+对应身份专项 50 项在此次 Windows 回归和用户提供的 Linux CI 中均通过。
+另重跑真实子进程的 resident、front_loopback 回退及双来源均拒绝三种实验；前两者完成请求，
+后者受控失败并由 Supervisor 输出诊断，三组均完成进程和 IPC 清理。
+该实验在 Windows 注入权限拒绝，并使用由真实创建时间生成的模拟 start counter，不是 HarmonyOS 原生内核验证。
+Linux CI 对相关 Worker/身份/生命周期调用方的 363 项记录没有失败；它对应旧提交 `62b5127e6`。
+
+本次原始记录和独立副作用验证位于
+`D:/work_space/.codex-temp/harmony-process-identity-ut-20261124/`，包含
+`native-windows-verified.json`、`harmony-controlled/verified.json` 和 `ci-summary.json`。
+
 ## 遗留与重验条件
 
 未连接 HarmonyOS 真机、未构建 HAP；真实模型服务和其他系统 API 的权限仍需用户设备验收。
