@@ -193,6 +193,42 @@ def test_unreadable_catalog_capability_does_not_abort_legacy_migration(tmp_path,
     assert "sample" in state["builtin_catalog_migrated"]
 
 
+@pytest.mark.parametrize("customized", [None, "SKILL.md", "references/ai-roles.md"])
+def test_app_builder_upgrade_installs_guides_before_refreshing_trusted_instructions(tmp_path, customized):
+    builtin, skills = _workspace(tmp_path)
+    catalog = skills / BUILTIN_CATALOG_NAME
+    relative = Path("references/capabilities/workswarm-app-builder")
+    source = builtin / BUILTIN_CATALOG_NAME / relative
+    target = catalog / relative
+    for leaf in (source, target):
+        (leaf / "references").mkdir(parents=True)
+    previous = b"old packaged app builder instructions\n"
+    (target / "SKILL.md").write_bytes(previous)
+    versions = {"_catalog_files": {f"{relative.as_posix()}/SKILL.md": [
+        {"digest": hashlib.sha256(previous).hexdigest()},
+    ]}}
+    (builtin / BUILTIN_CATALOG_NAME / "legacy_versions.json").write_text(json.dumps(versions), encoding="utf-8")
+    replacement = b"instructions linking both new guides\n"
+    (source / "SKILL.md").write_bytes(replacement)
+    for guide in ("single-npc.md", "ai-roles.md"):
+        (source / "references" / guide).write_text(guide, encoding="utf-8")
+    if customized:
+        (target / customized).write_text("custom content", encoding="utf-8")
+
+    migrate_builtin_catalog(builtin, skills)
+    migrate_builtin_catalog(builtin, skills)
+
+    if customized:
+        assert (target / customized).read_text(encoding="utf-8") == "custom content"
+        assert not (target / "references/single-npc.md").exists()
+    else:
+        assert (target / "SKILL.md").read_bytes() == replacement
+        for guide in ("single-npc.md", "ai-roles.md"):
+            assert (target / "references" / guide).read_text(encoding="utf-8") == guide
+        archived, = (catalog / ".legacy/catalog-files" / relative).glob("SKILL.md-*")
+        assert archived.read_bytes() == previous
+
+
 def test_skill_list_reconciles_stale_state_and_separates_customized_builtin(tmp_path, monkeypatch):
     from jiuwenswarm.server.runtime.skill import skill_manager
 

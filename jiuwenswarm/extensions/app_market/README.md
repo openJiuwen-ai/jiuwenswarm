@@ -117,6 +117,10 @@ Closing an app page leaves its service running. The market removes the correspon
 - 上架提示针对具体应用，不将整个会话标记为“已上架”。
 - 同一会话可以开发和上架多个应用。
 
+本地应用和已安装的 Hub 应用可在详情页查看「AI 角色」。该栏目读取应用包的 `app-ai-roles.json`，按会话组展示角色名称、头像、简介与会话复用说明。省略头像时显示由角色名生成的占位头像。新开发的 AI 应用按[角色清单规范](../../resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/references/ai-roles.md)随包提供清单，发布时据此声明 `ai`。
+
+The **AI Roles** section on local and installed app details displays character cards and session behavior from the app's `app-ai-roles.json`. Roles without an image use a name-based avatar. New apps that call AI at runtime ship a role declaration, which App Market uses to mark `ai` capability when publishing.
+
 应用开发规范与接口用法见 [技能说明](../../resources/agent/workspace/skills/workswarm-builtin/references/capabilities/workswarm-app-builder/SKILL.md)。
 
 `app_market.edit_session` uses routed Core RPCs to create a conversation for each distinct edit operation. Retries can reuse the operation's `edit_token`. Requests are serialized per app. Republishing preserves the app bindings for all editor conversations, and deleting an app preserves the conversations.

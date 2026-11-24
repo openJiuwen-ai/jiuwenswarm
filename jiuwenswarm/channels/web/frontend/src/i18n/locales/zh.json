@@ -186,6 +186,14 @@
     "unpinSuccess": "已取消 {{name}} 的置顶",
     "pinFailed": "设置置顶失败",
     "detailLoadFailed": "加载应用详情失败",
+    "aiRoles": {
+      "title": "AI 角色",
+      "empty": "尚未声明 AI 角色",
+      "loadFailed": "加载 AI 角色失败",
+      "agent": "单角色会话",
+      "team": "团队会话",
+      "leader": "队长"
+    },
     "backToAll": "返回全部应用",
     "backToMarket": "返回应用广场",
     "sourceHub": "Hub",

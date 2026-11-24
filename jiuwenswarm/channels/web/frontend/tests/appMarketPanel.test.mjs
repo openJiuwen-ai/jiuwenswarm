@@ -329,6 +329,38 @@ test('install directory prompt remains usable after opening a market detail', as
 
 const response = (method, instances = []) => (method === 'app_market.list' ? { apps: [app] } : { instances });
 
+test('installed app details load AI role cards and show the session policy', async () => {
+  const ctx = await mount((method) => {
+    if (method !== 'app_market.ai_roles') return response(method);
+    return { session_groups: [{
+      id: 'council', mode: 'team', leader: 'mayor', session_description: 'New team for each game.',
+      roles: [
+        { id: 'mayor', name: 'Mayor', description: 'Leads the council', avatar_url: 'data:image/gif;base64,R0lGODlh' },
+        { id: 'doctor', name: 'Doctor', description: 'Advises the council' },
+      ],
+    }] };
+  });
+  try {
+    assert.equal(ctx.calls.some(({ method }) => method === 'app_market.ai_roles'), false);
+    await click(card('gomoku'));
+    assert.deepEqual(ctx.calls.filter(({ method }) => method === 'app_market.ai_roles'), [
+      { method: 'app_market.ai_roles', params: { app_id: 'gomoku' } },
+    ]);
+    const section = find('app-market-ai-roles');
+    assert.match(section.textContent, /AI Roles.*Team session.*New team for each game\./s);
+    const cards = section.querySelectorAll('[data-testid="app-market-ai-role-card"]');
+    assert.equal(cards.length, 2);
+    assert.match(cards[0].textContent, /Mayor.*Leader.*Leads the council/s);
+    assert.ok(cards[0].querySelector('img[src^="data:image/gif"]'));
+    assert.match(cards[1].textContent, /Doctor.*Advises the council/s);
+    assert.equal(cards[1].querySelector('img'), null);
+    await click(find('app-market-detail-back'));
+    assert.equal(find('app-market-ai-roles'), null);
+  } finally {
+    await ctx.close();
+  }
+});
+
 test('uninstall leaves app details and reports incomplete local cleanup', async () => {
   const directory = '/workspace/apps/gomoku';
   const ctx = await mount(method => {

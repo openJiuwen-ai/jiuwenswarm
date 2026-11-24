@@ -1,5 +1,6 @@
 """Regression tests for publishing generated applications from a conversation."""
 import asyncio
+import json
 from pathlib import Path
 
 import pytest
@@ -168,3 +169,26 @@ def test_publish_rejects_invalid_version_meta(tmp_path):
         asyncio.run(manager.publish_app(str(page), "session"))
 
     assert manager.list_apps() == {"apps": []}
+
+
+def test_invalid_role_declaration_does_not_modify_existing_registration(tmp_path):
+    page = tmp_path / "index.html"
+    page.write_text("<html>WorkSwarmApp</html>", encoding="utf-8")
+    manager = AppMarketManager(str(tmp_path / "market"))
+    first = asyncio.run(manager.publish_app(str(page), "session"))
+    assert manager.storage.load_manifest(first["app_id"]).permissions == ["ai"]
+    declaration = {
+        "schema_version": 1,
+        "session_groups": [{
+            "id": "guide",
+            "mode": "agent",
+            "session_description": "One session per game.",
+            "roles": [{"id": "guide", "name": "Guide", "description": "Helps", "avatar": "../avatar.png"}],
+        }],
+    }
+    (tmp_path / "app-ai-roles.json").write_text(json.dumps(declaration), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"app-ai-roles\.json.*avatar.*relative"):
+        asyncio.run(manager.publish_app(str(page), "session", version="2.0.0"))
+
+    assert manager.list_apps()["apps"][0]["version"] == "1.0.0"

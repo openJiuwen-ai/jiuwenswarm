@@ -22,6 +22,7 @@ import {
 } from './appMarketViews';
 import { webAppViews } from './webAppViews';
 import { AppMarketResources } from './AppMarketResources';
+import { AppMarketAiRoles } from './AppMarketAiRoles';
 import { marketResources } from './marketResources';
 import './AppMarketPanel.css';
 
@@ -218,6 +219,7 @@ function InstalledAppDetailPage({ app, state, onBack, actions, memoryLabel }: {
         <DetailRow label={t('appMarket.detail.status')} value={t(`appMarket.states.${state}`)} />
         <DetailRow label={t('appMarket.detail.directory')} value={appDirectory(app)} mono />
       </dl>
+      <AppMarketAiRoles key={`${app.app_id}/${app.version}`} appId={app.app_id} />
     </DetailPageShell>
   );
 }

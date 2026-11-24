@@ -18,6 +18,7 @@ from urllib.parse import quote
 
 from jiuwenswarm.enterprise.edition import is_enterprise
 
+from .app_ai_roles import load_ai_role_groups
 from .app_market.market_service import MarketService
 from .app_market.models import AppManifest, normalize_app_version
 from .app_market.run_consent import RunConsentStore
@@ -271,6 +272,9 @@ class AppMarketManager:
                 or (existing.version if existing is not None else "")
                 or "1.0.0"
             )
+            uses_ai = bool(load_ai_role_groups(entry.parent)) or (
+                "WorkSwarmApp" in entry.read_text(encoding="utf-8", errors="replace")
+            )
             manifest = await self._service.publish_app(
                 str(entry.parent),
                 {
@@ -283,9 +287,7 @@ class AppMarketManager:
                     "description": metadata["description"],
                     "icon_url": metadata["icon_url"],
                     "owner_id": owner_id,
-                    "permissions": (
-                        ["ai"] if "WorkSwarmApp" in entry.read_text(encoding="utf-8", errors="replace") else []
-                    ),
+                    "permissions": ["ai"] if uses_ai else [],
                 },
             )
             if manifest is None:
@@ -442,6 +444,17 @@ class AppMarketManager:
                 for a in apps
             ]
         }
+
+    async def get_ai_role_groups(self, app_id: str, owner_id: str) -> list[dict[str, Any]]:
+        manifest = self._service.get_app(app_id)
+        if manifest is None or manifest.owner_id != owner_id:
+            raise AppMarketError("not_found", "Application not found")
+        if not manifest.work_dir:
+            return []
+        try:
+            return await asyncio.to_thread(load_ai_role_groups, Path(manifest.work_dir), include_avatars=True)
+        except ValueError as exc:
+            raise AppMarketError("app_ai_roles_invalid", str(exc)) from exc
 
     def get_editor_app(self, session_id: str, owner_id: str) -> dict[str, Any] | None:
         """Resolve an editor's preview without listing other session bindings."""
