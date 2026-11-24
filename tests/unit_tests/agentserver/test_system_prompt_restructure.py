@@ -20,6 +20,7 @@ from openjiuwen.harness.prompts.prompt_attachment_manager import (
     PromptAttachmentManager,
 )
 from openjiuwen.harness.prompts import PromptSection, SystemPromptBuilder
+from openjiuwen.harness.rails import SkillUseRail
 from openjiuwen.symphony.discovery import SkillPromptBranch, SkillPromptSnapshot
 
 from jiuwenswarm.agents.harness.common.browser_defaults import (
@@ -42,14 +43,14 @@ from jiuwenswarm.agents.harness.common.prompt.prompt_builder import (
 from jiuwenswarm.agents.harness.common.prompt.browser_task_prompt import (
     build_browser_task_prompt,
 )
-from jiuwenswarm.agents.harness.common.rails import skill_retrieval_prompt_rail as _skill_retrieval_prompt_mod
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import RuntimePromptRail
 from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import ResponsePromptRail
-from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import SkillRetrievalPromptRail
-from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import SkillRetrievalToolkit
 from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyOrchestrationRail,
+    SymphonyRetrievalRail,
+    retrieval_rail,
 )
+from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import SkillRetrievalToolkit
 from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import (
     SymphonyToolkit,
 )
@@ -2247,6 +2248,10 @@ async def test_runtime_prompt_language_output_prefers_rail_language_over_runtime
     assert "当前语言：cn" in rendered
 
 
+def test_symphony_rails_run_on_either_side_of_native_skill_prompt_refresh() -> None:
+    assert SymphonyOrchestrationRail.priority > SkillUseRail.priority > SymphonyRetrievalRail.priority
+
+
 @pytest.mark.parametrize("language", ["cn", "en"])
 def test_skill_retrieval_prompt_counts_as_skills_without_double_counting(language: str) -> None:
     from openjiuwen.core.context_engine.base import ContextWindow
@@ -2257,7 +2262,7 @@ def test_skill_retrieval_prompt_counts_as_skills_without_double_counting(languag
 
     builder = SystemPromptBuilder(language=language)
     builder.add_section(PromptSection(name="identity", content={language: "Core rules."}, priority=10))
-    rail = SkillRetrievalPromptRail(config_base={"symphony": {
+    rail = SymphonyRetrievalRail(config_base={"symphony": {
         "retrieval": {"enabled": True, "prompt": {"context_window_tokens": 4000}},
     }})
     assert rail._prompt_snapshot().candidate_budget_tokens == 40
@@ -2282,7 +2287,7 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
     tmp_path,
 ):
     monkeypatch.setattr(
-        _skill_retrieval_prompt_mod,
+        retrieval_rail,
         "is_skill_retrieval_enabled",
         lambda *_args: True,
     )
@@ -2309,7 +2314,7 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
             "retrieval": {"enabled": True}, "storage": {"artifact_root": str(tmp_path / "skillfs")},
         }}
     )
-    rail = SkillRetrievalPromptRail(toolkit=toolkit)
+    rail = SymphonyRetrievalRail(toolkit=toolkit)
     rail.init(agent)
     await rail.before_model_call(ctx)
 
@@ -2396,7 +2401,7 @@ async def test_skill_retrieval_prompt_clears_section_when_disabled(
     tmp_path,
 ):
     monkeypatch.setattr(
-        _skill_retrieval_prompt_mod,
+        retrieval_rail,
         "is_skill_retrieval_enabled",
         lambda *_args: False,
     )
@@ -2420,7 +2425,7 @@ async def test_skill_retrieval_prompt_clears_section_when_disabled(
             "retrieval": {"enabled": True}, "storage": {"artifact_root": str(tmp_path / "skillfs")},
         }}
     )
-    rail = SkillRetrievalPromptRail(toolkit=toolkit)
+    rail = SymphonyRetrievalRail(toolkit=toolkit)
     rail.init(agent)
     await rail.before_model_call(ctx)
 
@@ -2486,7 +2491,7 @@ def test_deep_adapter_skill_retrieval_prompt_uses_live_toolkit(monkeypatch, tmp_
         lambda: tmp_path,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.SkillRetrievalPromptRail",
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.SymphonyRetrievalRail",
         FakeRail,
     )
 

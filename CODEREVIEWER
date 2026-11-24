@@ -624,7 +624,7 @@ jiuwenswarm/runtime/symphony/build.py xutuo,linxiaoyu
 jiuwenswarm/runtime/symphony/llm.py xutuo
 jiuwenswarm/runtime/symphony/skill_retrieval/ xutuo
 jiuwenswarm/agents/harness/common/tools/skill_retrieval_toolkits.py xutuo
-jiuwenswarm/agents/harness/common/rails/skill_retrieval_prompt_rail.py xutuo
+jiuwenswarm/agents/harness/common/rails/symphony/retrieval_rail.py xutuo
 jiuwenswarm/agents/harness/code/rails/sdd/ yangpenghong
 jiuwenbox/ yangyuan
 jiuwenswarm/server/runtime/no_host_fallback_jiuwenbox.py yangyuan

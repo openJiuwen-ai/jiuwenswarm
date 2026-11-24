@@ -43,8 +43,8 @@ _SYMPHONY_RUNTIME_TOOL_NAMES = frozenset(
 logger = logging.getLogger(__name__)
 
 
-class SkillRetrievalPromptRail(DeepAgentRail):
-    """Make Symphony the sole Skill-discovery surface while preserving SkillTool."""
+class SymphonyRetrievalRail(DeepAgentRail):
+    """Manage skill discovery prompts, candidate snapshots, and skill tool visibility."""
 
     # Higher priorities run first. Hide the native section after SkillUseRail
     # refreshes it for the current model call.
@@ -220,7 +220,7 @@ class SkillRetrievalPromptRail(DeepAgentRail):
             await writer.clear_section(self.CANDIDATE_SECTION_NAME)
         except ValueError as exc:
             logger.warning(
-                "[SkillRetrievalPromptRail] attachment clear failed: %s", exc
+                "[SymphonyRetrievalRail] attachment clear failed: %s", exc
             )
 
     def _disable_agentic_prompt(self, ctx: AgentCallbackContext) -> tuple[Any, ...]:
@@ -496,7 +496,7 @@ class SkillRetrievalPromptRail(DeepAgentRail):
 
         filtered = []
         for tool in tools:
-            name = SkillRetrievalPromptRail._model_tool_name(tool)
+            name = SymphonyRetrievalRail._model_tool_name(tool)
             if name not in _LEGACY_LIST_SKILL_TOOL_NAMES:
                 filtered.append(tool)
         if len(filtered) != len(tools):
@@ -571,4 +571,4 @@ def _compact_prompt_text(value: str) -> str:
     return " ".join(str(value or "").replace("`", "\\`").split())
 
 
-__all__ = ["SkillRetrievalPromptRail"]
+__all__ = ["SymphonyRetrievalRail"]

@@ -32,7 +32,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.openjiuwen_contract imp
 from jiuwenswarm.agents.harness.common.rails.permissions.policy_eval import PolicyEvaluation
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_capabilities import classify_tool
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_decision_facts import build_tool_decision_facts
-from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import SkillRetrievalPromptRail
+from jiuwenswarm.agents.harness.common.rails.symphony import SymphonyRetrievalRail
 from jiuwenswarm.agents.harness.common.rails.tool_retrieval_prompt_rail import ToolRetrievalPromptRail
 from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import SkillRetrievalToolkit
 from jiuwenswarm.agents.harness.common.tools.tool_retrieval_toolkits import ToolRetrievalToolkit
@@ -79,7 +79,7 @@ async def installed(tmp_path, monkeypatch):
             toolkits.append(toolkit)
             tool, = toolkit.get_tools()
             owner.ability_manager.add_ability(tool.card, tool)
-            rail = SkillRetrievalPromptRail(toolkit=toolkit, session_scope="session-a")
+            rail = SymphonyRetrievalRail(toolkit=toolkit, session_scope="session-a")
         elif name == "list_skill":
             rail = SkillUseRail(str(tmp_path / "skills"), include_tools=False, list_skill_model=model)
         elif name == "get_current_goal":

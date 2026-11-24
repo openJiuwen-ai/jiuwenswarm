@@ -324,7 +324,10 @@ from jiuwenswarm.agents.harness.common.rails import (
     ResponsePromptRail,
     RuntimePromptRail,
     StructuredAskUserRail,
+)
+from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyOrchestrationRail,
+    SymphonyRetrievalRail,
 )
 from jiuwenswarm.agents.harness.common.rails.subagent_tool_activity_rail import (
     SubagentToolActivityRail,
@@ -497,9 +500,6 @@ from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
 )
 from jiuwenswarm.agents.harness.common.rails.symphony.retrieval_context_processor import (
     symphony_retrieval_compact_processor_spec,
-)
-from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import (
-    SkillRetrievalPromptRail,
 )
 from jiuwenswarm.common.symphony_config import load_symphony_config
 from jiuwenswarm.agents.harness.common.tools.archive_tools import (
@@ -2839,7 +2839,7 @@ class JiuWenSwarmDeepAdapter:
         self._skill_retrieval_toolkit: SkillRetrievalToolkit | None = None
         self._retired_skill_retrieval_toolkits: list[SkillRetrievalToolkit] = []
         self._skill_retrieval_environment: Any | None = None
-        self._skill_retrieval_prompt_rail: SkillRetrievalPromptRail | None = None
+        self._skill_retrieval_prompt_rail: SymphonyRetrievalRail | None = None
         # Frozen when this adapter/session is created. Config reloads are
         # persisted for future sessions without changing the current tool or
         # prompt prefix halfway through a conversation.
@@ -8826,12 +8826,12 @@ class JiuWenSwarmDeepAdapter:
             except Exception as exc:
                 self._skill_retrieval_prompt_rail = None
                 logger.warning(
-                    "[JiuWenSwarmDeepAdapter] SkillRetrievalPromptRail reload failed: %s",
+                    "[JiuWenSwarmDeepAdapter] SymphonyRetrievalRail reload failed: %s",
                     exc,
                 )
                 return
             self._skill_retrieval_prompt_rail = rail
-            logger.info("[JiuWenSwarmDeepAdapter] SkillRetrievalPromptRail registered")
+            logger.info("[JiuWenSwarmDeepAdapter] SymphonyRetrievalRail registered")
             return
 
         for toolkit in getattr(self, "_retired_skill_retrieval_toolkits", []):
@@ -8853,7 +8853,7 @@ class JiuWenSwarmDeepAdapter:
                 skill_rail.init(self._instance)
         except Exception as exc:
             logger.warning(
-                "[JiuWenSwarmDeepAdapter] SkillRetrievalPromptRail unregister failed: %s",
+                "[JiuWenSwarmDeepAdapter] SymphonyRetrievalRail unregister failed: %s",
                 exc,
             )
         finally:
@@ -12729,7 +12729,7 @@ class JiuWenSwarmDeepAdapter:
         setattr(context_processor_rail, "_session_memory_mgr", None)
         return True
 
-    def _build_skill_retrieval_prompt_rail(self) -> SkillRetrievalPromptRail | None:
+    def _build_skill_retrieval_prompt_rail(self) -> SymphonyRetrievalRail | None:
         """Build Skill directory guidance and per-session reminders."""
         if not self._skill_retrieval_tools_enabled_for_runtime(
             self._config_base_cache
@@ -12737,13 +12737,13 @@ class JiuWenSwarmDeepAdapter:
             return None
         try:
             toolkit = self._get_or_create_skill_retrieval_toolkit()
-            return SkillRetrievalPromptRail(
+            return SymphonyRetrievalRail(
                 toolkit=toolkit,
                 session_scope=self._skill_retrieval_session_scope(),
                 config_base=self._config_base_cache,
             )
         except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] SkillRetrievalPromptRail create failed: %s", exc)
+            logger.warning("[JiuWenSwarmDeepAdapter] SymphonyRetrievalRail create failed: %s", exc)
             return None
 
     async def refresh_skill_rails(self) -> None:

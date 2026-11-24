@@ -191,20 +191,20 @@ def _session_observation_binding(invocation, session_id: str, agent) -> bool:
             and matches_bound_method(tool._func, expected_owner=toolkit, expected_func=ToolRetrievalToolkit.tool_search)
         )
     if name == "capability_search":
-        from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import SkillRetrievalPromptRail
+        from jiuwenswarm.agents.harness.common.rails.symphony import SymphonyRetrievalRail
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import SkillRetrievalToolkit
 
         # Expert and MCP searches, including the default scope, use host callbacks and require manual approval here.
         if not is_skill_only_search(invocation.tool_args.get("type")):
             return False
-        rail = _owned_rail(agent, SkillRetrievalPromptRail)
+        rail = _owned_rail(agent, SymphonyRetrievalRail)
         if rail is None:
             return False
         wrapper = rail._source_toolkit
         if type(wrapper) is not SkillRetrievalToolkit or wrapper._session_scope != session_id:
             return False
         binding = _resolve_owned_readonly_tool(
-            invocation, agent, tool_type=CapabilitySearchTool, rail_type=SkillRetrievalPromptRail,
+            invocation, agent, tool_type=CapabilitySearchTool, rail_type=SymphonyRetrievalRail,
             invoke_func=CapabilitySearchTool.invoke,
         )
         if binding is None:
