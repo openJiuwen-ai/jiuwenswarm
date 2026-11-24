@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import json
+import os
+import signal
 
 import pytest
 
@@ -526,3 +528,77 @@ def test_hook_input_serializes_structured_tool_results():
 
     assert payload["tool_result"]["success"] is True
     assert payload["tool_result"]["data"] == {"content": "a"}
+
+
+# ============================================================
+# Command Hook: timeout reaps the whole process group (issue #6412)
+# ============================================================
+
+class TestCommandHookProcessGroupTimeout:
+    """A timed-out hook must not leave background grandchildren alive.
+
+    ``bash -c 'sleep N & ...'`` spawns a grandchild that inherits the hook's
+    stdout/stderr pipes.  Killing only the direct child leaves the grandchild
+    running as an orphan holding the pipes open.  On POSIX the fix starts the
+    shell in a new session and kills the process group on timeout.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX process-group semantics")
+    async def test_timeout_kills_background_grandchild(self, tmp_path):
+        import time
+
+        marker = tmp_path / "grandchild_alive"
+        # The grandchild periodically refreshes a marker; the foreground shell
+        # hangs so the hook times out.  If the group is killed the marker stops
+        # being refreshed (and the sleep dies); if only bash is killed it keeps
+        # writing for the full sleep window.
+        command = (
+            f"(for i in $(seq 1 40); do echo x > {marker}; sleep 0.1; done) & "
+            f"wait"
+        )
+        results = await HookExecutor().run_all(
+            [{"command": command, "timeout": 1}],
+            {},
+        )
+        assert results[0].outcome == HookOutcome.NON_BLOCKING_ERROR
+        assert "timeout" in results[0].error.lower()
+
+        first = marker.stat().st_mtime_ns if marker.exists() else None
+        time.sleep(0.6)
+        second = marker.stat().st_mtime_ns if marker.exists() else None
+        assert first == second, "grandchild survived hook timeout"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX process-group semantics")
+    def test_kill_hook_tree_uses_killpg(self):
+        """The helper kills the group by pgid (= shell pid) on POSIX."""
+        from unittest.mock import MagicMock
+
+        proc = MagicMock()
+        proc.pid = 4321
+        proc.returncode = None
+        called = {}
+        original = os.killpg
+
+        def fake_killpg(pgid, sig):
+            called["pgid"] = pgid
+            called["sig"] = sig
+
+        try:
+            os.killpg = fake_killpg
+            HookExecutor._kill_hook_tree(proc, start_new_session=True)
+        finally:
+            os.killpg = original
+
+        assert called == {"pgid": 4321, "sig": signal.SIGKILL}
+        proc.kill.assert_not_called()
+
+    def test_kill_hook_tree_falls_back_to_direct_kill(self):
+        """Without a new session (Windows / no pgid) only the child is killed."""
+        from unittest.mock import MagicMock
+
+        proc = MagicMock()
+        proc.pid = 4321
+        proc.returncode = None
+        HookExecutor._kill_hook_tree(proc, start_new_session=False)
+        proc.kill.assert_called_once()
