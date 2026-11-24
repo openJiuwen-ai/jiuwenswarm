@@ -40,13 +40,9 @@ from jiuwenswarm.runtime.symphony.skillpack_candidates import (
     member_snapshot,
     trusted_session_user,
 )
-from jiuwenswarm.runtime.symphony.adapter import (
-    llm_config_signature,
-    model_from_config,
-    normalize_candidate_ids,
-)
 from jiuwenswarm.runtime.symphony.capabilities import expert_candidates
-from jiuwenswarm.runtime.symphony.llm import LLMConfig, probe_model_connection
+from jiuwenswarm.runtime.symphony.llm import LLMConfig, model_from_config, probe_model_connection
+from jiuwenswarm.runtime.symphony.planning_inputs import normalize_candidate_ids
 from jiuwenswarm.common.symphony_config import (
     SymphonyConfig,
     configured_skill_roots,
@@ -662,7 +658,7 @@ class SwarmSymphonyService:
         if llm_config is not None:
             return self._create_runtime(config, llm_config, with_experience=False)
         llm_config = LLMConfig.from_default_model()
-        llm_signature = llm_config_signature(llm_config)
+        llm_signature = llm_config.identity_digest()
         key = (config.model_dump_json(), llm_signature)
         if self._runtime is None or self._runtime_key != key:
             previous_runtime = self._runtime

@@ -12,13 +12,10 @@ from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import build_error
 from openjiuwen.symphony import OrchestrationPlan, SymphonyRuntime
 
-from jiuwenswarm.runtime.symphony.adapter import (
-    llm_config_signature,
-    normalize_candidate_ids,
-)
 from jiuwenswarm.runtime.symphony.build import build_graph, graph_exists
 from jiuwenswarm.common.symphony_config import symphony_config_from_dict
 from jiuwenswarm.runtime.symphony.llm import LLMConfig
+from jiuwenswarm.runtime.symphony.planning_inputs import normalize_candidate_ids
 from jiuwenswarm.runtime.symphony.service import (
     SwarmSymphonyService,
     _BuildProcessLogger,
@@ -184,15 +181,15 @@ def _minimal_planned_graph(status="ready"):
     }
 
 
-def test_adapter_deduplicates_candidate_skill_ids():
-    assert normalize_candidate_ids(["writer", "writer", "reviewer"]) == [
-        "writer",
-        "reviewer",
-    ]
-
-
-
-
+@pytest.mark.parametrize(("supplied", "expected"), [
+    (None, None),
+    ("invalid", []),
+    ('{"candidate": "writer"}', []),
+    ([" writer ", "writer", "", "reviewer"], ["writer", "reviewer"]),
+    ('["reviewer", "writer", "reviewer"]', ["reviewer", "writer"]),
+])
+def test_normalize_candidate_ids(supplied, expected):
+    assert normalize_candidate_ids(supplied) == expected
 
 
 @pytest.mark.asyncio
@@ -929,7 +926,7 @@ def test_runtime_cache_rebuilds_when_default_llm_changes(monkeypatch, tmp_path):
 
     assert third is not second
     assert len(created) == 3
-    signature_text = repr(llm_config_signature(current["value"]))
+    signature_text = repr(current["value"].identity_digest())
     assert "secret-c" not in signature_text
     assert "https://b.example" not in signature_text
 

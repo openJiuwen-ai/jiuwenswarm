@@ -1,7 +1,8 @@
-"""Workspace references that a Symphony planning call may pass to Core."""
+"""Candidate IDs and workspace references for Symphony planning calls."""
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,20 @@ PLANNING_INPUTS_SCHEMA = {
         "additionalProperties": False,
     },
 }
+
+
+def normalize_candidate_ids(value: Any) -> list[str] | None:
+    """Preserve an omitted shortlist and deduplicate supplied capability IDs in order."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(value, (list, tuple)):
+        return []
+    return list(dict.fromkeys(str(item).strip() for item in value if str(item or "").strip()))
 
 
 def supports_planning_inputs() -> bool:
