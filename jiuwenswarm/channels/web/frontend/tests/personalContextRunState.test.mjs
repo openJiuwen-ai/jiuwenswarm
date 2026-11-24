@@ -156,6 +156,15 @@ async function renderStatus({ runState, completed = 0, failed = 0, pending = fal
       card: dom.window.document.querySelector('.pc-services__status-text')?.textContent,
       activeCount: dom.window.document.querySelector('.pc-services__stat-card:last-child .pc-services__stat-number')?.textContent,
       result: dom.window.document.querySelector('[data-testid="personal-context-service-result"]')?.textContent,
+      failureStage: dom.window.document.querySelector('[data-testid="personal-context-service-failure-stage"]')?.textContent,
+      failureCode: dom.window.document.querySelector('[data-testid="personal-context-service-failure-code"]')?.textContent,
+      failureMessage: dom.window.document.querySelector('[data-testid="personal-context-service-failure-message"]')?.textContent,
+      failureCounts: dom.window.document.querySelector('[data-testid="personal-context-service-failure-counts"]')?.textContent,
+      failureItems: [...dom.window.document.querySelectorAll('.pc-services__failure-item')].map((item) => ({
+        ref: item.querySelector('.pc-services__failure-item-ref')?.textContent,
+        message: item.querySelector('.pc-services__failure-item-message')?.textContent,
+      })),
+      failureOmitted: dom.window.document.querySelector('[data-testid="personal-context-service-failure-omitted"]')?.textContent,
       runDisabled: [...dom.window.document.querySelectorAll('button')].find((button) => button.textContent === 'personalContext.services.actionRunNow')?.disabled,
       runHint: dom.window.document.querySelector('[data-testid="personal-context-service-run-hint"]')?.textContent,
     };
@@ -197,6 +206,56 @@ test('a partial run reports completed and failed item counts', async () => {
 
 test('a system failure still displays failure', async () => {
   assert.equal((await renderStatus({ runState: 'failed', failed: 1 })).card, 'personalContext.services.stateFailed');
+});
+
+test('a failed run explains the stages, business code, counts and failed items', async () => {
+  const card = await renderStatus({
+    runState: 'failed',
+    failed: 2,
+    result: {
+      last_error_stage: 'scan',
+      last_error_code: '154002',
+      item_errors: [
+        { item_ref: 'E:/DO WORK/a.log', code: 154002, message: 'personalContext.errors.fileError', failed_at: '2026-11-24T15:16:25Z' },
+        { item_ref: 'E:/DO WORK/b.log', code: 154002, message: 'personalContext.errors.fileError', failed_at: '2026-11-24T15:16:26Z' },
+      ],
+      omitted_item_errors: 3,
+    },
+  });
+  assert.equal(card.failureStage, 'personalContext.services.failureStage.scan');
+  assert.equal(card.failureCode, 'personalContext.services.failureCode:154002');
+  assert.equal(card.failureMessage, 'failed to fetch');
+  assert.equal(card.failureCounts, 'personalContext.services.failureCounts:2/0/2');
+  assert.deepEqual(card.failureItems, [
+    { ref: 'E:/DO WORK/a.log', message: 'personalContext.errors.fileError' },
+    { ref: 'E:/DO WORK/b.log', message: 'personalContext.errors.fileError' },
+  ]);
+  assert.equal(card.failureOmitted, 'personalContext.services.failureOmitted:3');
+});
+
+test('a partially completed run still lists its failed items', async () => {
+  const card = await renderStatus({
+    runState: 'partial_succeeded',
+    completed: 8,
+    failed: 2,
+    result: {
+      last_error_stage: '',
+      last_error_code: '',
+      item_errors: [
+        { item_ref: 'E:/DO WORK/c.log', code: 154002, message: 'personalContext.errors.fileError', failed_at: '2026-11-24T15:16:27Z' },
+      ],
+    },
+  });
+  assert.equal(card.failureStage, undefined);
+  assert.equal(card.failureCode, undefined);
+  assert.equal(card.failureCounts, 'personalContext.services.failureCounts:10/8/2');
+  assert.equal(card.failureItems.length, 1);
+});
+
+test('a successful run renders no failure panel', async () => {
+  const card = await renderStatus({ runState: 'succeeded', completed: 3 });
+  assert.equal(card.failureStage, undefined);
+  assert.equal(card.failureCounts, undefined);
 });
 
 test('a stopping fetch remains visible in the active task count', async () => {

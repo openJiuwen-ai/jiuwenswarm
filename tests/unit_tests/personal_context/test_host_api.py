@@ -3167,7 +3167,18 @@ async def test_get_fetch_run_status_returns_all_or_one_service(
     }
     query = AsyncMock(return_value=expected)
     monkeypatch.setattr(core, "get_fetch_run_status", query, raising=False)
-    assert await host.get_fetch_run_status("local-notes") == expected
+    result = await host.get_fetch_run_status("local-notes")
+    # #7008: run records gain the stable failure code/stage, Core's payload stays untouched.
+    assert result["service_id"] == "local-notes"
+    assert result["runs"] == [
+        {
+            "run_id": "a" * 32,
+            "run_state": "succeeded",
+            "last_error_code": "",
+            "last_error_stage": "",
+        }
+    ]
+    assert expected["runs"] == [{"run_id": "a" * 32, "run_state": "succeeded"}]
     query.assert_awaited_with("local-notes", run_id=None)
     await host.get_fetch_run_status("local-notes", run_id="a" * 32)
     query.assert_awaited_with("local-notes", run_id="a" * 32)

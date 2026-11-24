@@ -55,6 +55,10 @@ export type FetchRunProgress = {
   item_errors: FetchItemError[];
   omitted_item_errors: number;
   last_error: string | null;
+  /** 后端给出的一轮失败阶段标识：scan / fetch / pipeline / publish / config / state / timeout / unknown。 */
+  last_error_stage?: string | null;
+  /** 失败的业务错误码（如 154002），仅稳定数字码，不含内部原因文本。 */
+  last_error_code?: string | null;
   /** 本轮实际发布的 Context Markdown 节点（含目录说明）；旧历史缺字段表示未知。 */
   created_node_count?: number;
   updated_node_count?: number;
