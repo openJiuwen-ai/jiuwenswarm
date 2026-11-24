@@ -99,6 +99,24 @@ def test_session_upload_reader_has_dedicated_route_and_identity_headers() -> Non
     assert request.query["path"] == envelope.params["path"]
 
 
+def test_identity_headers_carry_cron_meta_like_websocket_channel_context() -> None:
+    """HTTP must ferry channel_context.cron so Agent rebuilds metadata['cron']."""
+    envelope = _envelope(
+        "chat.send",
+        user_id="u",
+        channel_context={
+            "routing": {"group_id": "g", "bot_id": "b"},
+            "targets": "web",
+            "cron": {"job_id": "job-1", "run_id": "job-1:99", "timezone": "Asia/Shanghai"},
+        },
+    )
+    headers = assemble_rest_request(envelope, base_url="http://10.0.0.8:8766").headers
+    assert headers["X-Cron-Targets"] == "web"
+    assert headers["X-Cron-Meta"] == (
+        '{"job_id":"job-1","run_id":"job-1:99","timezone":"Asia/Shanghai"}'
+    )
+
+
 def test_forwarded_methods_with_handlers_get_dedicated_urls() -> None:
     expected = {
         "mcp.list": "/api/v1/mcp/actions/list",
