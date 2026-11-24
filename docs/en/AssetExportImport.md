@@ -58,7 +58,7 @@ Button visibility matches what the server can actually export:
 | Expert | The package was created locally, or it is an installed built-in/Hub copy |
 | Expert team | Always, except for Hub assets that are not installed (uninstalled local/built-in packages included) |
 
-> ⚠️ **Note**: Uninstalled shelf and Hub assets have no local materials to pack, so the export button is hidden for them.
+> ⚠️ **Note**: Uninstalled Hub assets have no local materials to pack yet, so the export button is hidden for them; uninstalled local/built-in packages (bundled shelf presets included) still have their materials on disk and can be exported.
 
 ### 2.2 What Export Does to the Content
 
